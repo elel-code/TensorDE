@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
+use std::time::Duration;
 #[cfg(feature = "gtk-renderer")]
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::{cell::RefCell, rc::Rc};
 
 use gilder::config::{ApplicationPaths, GilderConfig};
 use gilder::ipc::RequestMethod;
@@ -116,6 +117,7 @@ fn run_ipc_daemon(
         Ok(sync) => runtime.queue_render_sync(sync),
         Err(err) => eprintln!("gilderd: failed to prepare initial render sync: {err}"),
     }
+    spawn_desktop_refresh_loop(Arc::clone(&runtime));
     accept_loop(listener, runtime);
 }
 
@@ -172,10 +174,10 @@ fn run_gtk_daemon(
         }
 
         let runtime_for_refresh = Arc::clone(&runtime_for_activate);
-        gtk::glib::timeout_add_local(Duration::from_secs(2), move || {
-            match refreshed_render_sync(&runtime_for_refresh) {
-                Ok(sync) => runtime_for_refresh.queue_render_sync(sync),
-                Err(err) => eprintln!("gilderd: failed to refresh render sync: {err}"),
+        gtk::glib::timeout_add_local(desktop_refresh_interval(), move || {
+            match refresh_runtime_desktop_if_changed(&runtime_for_refresh) {
+                Ok(()) => {}
+                Err(err) => eprintln!("gilderd: failed to refresh desktop state: {err}"),
             }
             gtk::glib::ControlFlow::Continue
         });
@@ -196,6 +198,18 @@ fn run_gtk_daemon(
 #[cfg(feature = "gtk-renderer")]
 fn spawn_accept_loop(listener: UnixListener, runtime: Arc<DaemonRuntime>) {
     thread::spawn(move || accept_loop(listener, runtime));
+}
+
+#[cfg(not(feature = "gtk-renderer"))]
+fn spawn_desktop_refresh_loop(runtime: Arc<DaemonRuntime>) {
+    thread::spawn(move || {
+        loop {
+            thread::sleep(desktop_refresh_interval());
+            if let Err(err) = refresh_runtime_desktop_if_changed(&runtime) {
+                eprintln!("gilderd: failed to refresh desktop state: {err}");
+            }
+        }
+    });
 }
 
 #[cfg(all(feature = "video-renderer", not(feature = "gtk-renderer")))]
@@ -312,7 +326,7 @@ fn handle_watch_client(
         json!({
             "subscribed": true,
             "protocol": gilder::ipc::PROTOCOL_VERSION,
-            "events": ["snapshot", "state.changed"],
+            "events": ["snapshot", "desktop.changed", "state.changed"],
         }),
     );
     write_line(&mut stream, &response)?;
@@ -345,6 +359,7 @@ struct DaemonRuntime {
     context: Mutex<DaemonContext>,
     watchers: WatchHub,
     renderer_updates: Vec<mpsc::Sender<StaticRenderSyncPlan>>,
+    last_render_sync: Mutex<Option<StaticRenderSyncPlan>>,
 }
 
 impl DaemonRuntime {
@@ -356,6 +371,7 @@ impl DaemonRuntime {
             context: Mutex::new(context),
             watchers: WatchHub::new(),
             renderer_updates,
+            last_render_sync: Mutex::new(None),
         }
     }
 
@@ -366,6 +382,34 @@ impl DaemonRuntime {
     }
 
     fn queue_render_sync(&self, render_sync: StaticRenderSyncPlan) {
+        self.store_last_render_sync(render_sync.clone());
+        self.send_render_sync(render_sync);
+    }
+
+    fn queue_render_sync_if_changed(&self, render_sync: StaticRenderSyncPlan) -> bool {
+        let Ok(mut last_render_sync) = self.last_render_sync.lock() else {
+            eprintln!("gilderd: render sync cache lock poisoned");
+            self.send_render_sync(render_sync);
+            return true;
+        };
+        if last_render_sync.as_ref() == Some(&render_sync) {
+            return false;
+        }
+        *last_render_sync = Some(render_sync.clone());
+        drop(last_render_sync);
+        self.send_render_sync(render_sync);
+        true
+    }
+
+    fn store_last_render_sync(&self, render_sync: StaticRenderSyncPlan) {
+        let Ok(mut last_render_sync) = self.last_render_sync.lock() else {
+            eprintln!("gilderd: render sync cache lock poisoned");
+            return;
+        };
+        *last_render_sync = Some(render_sync);
+    }
+
+    fn send_render_sync(&self, render_sync: StaticRenderSyncPlan) {
         for sender in &self.renderer_updates {
             if sender.send(render_sync.clone()).is_err() {
                 eprintln!("gilderd: renderer update queue is closed");
@@ -697,6 +741,7 @@ fn output_reports(context: &DaemonContext) -> Vec<serde_json::Value> {
 fn snapshot_event(context: &DaemonContext) -> Value {
     let render_sync = current_render_sync(context);
     json!({
+        "desktop": context.desktop,
         "outputs": output_reports(context),
         "persisted_state": context.state,
         "render_sync": render_sync,
@@ -714,6 +759,7 @@ fn state_changed_event(
     json!({
         "action": action,
         "output": output,
+        "desktop": context.desktop,
         "outputs": output_reports(context),
         "persisted_state": context.state,
         "render_sync": render_sync,
@@ -804,4 +850,83 @@ fn refreshed_render_sync(runtime: &DaemonRuntime) -> Result<StaticRenderSyncPlan
     let mut context = runtime.lock_context()?;
     refresh_desktop(&mut context);
     Ok(current_render_sync(&context))
+}
+
+fn refresh_runtime_desktop_if_changed(runtime: &DaemonRuntime) -> Result<(), String> {
+    let Some((event, render_sync)) = ({
+        let mut context = runtime.lock_context()?;
+        let previous_desktop = context.desktop.clone();
+        refresh_desktop(&mut context);
+        if context.desktop == previous_desktop {
+            None
+        } else {
+            let render_sync = current_render_sync(&context);
+            let event = desktop_changed_event(&context, &render_sync);
+            Some((event, render_sync))
+        }
+    }) else {
+        return Ok(());
+    };
+
+    runtime.queue_render_sync_if_changed(render_sync);
+    runtime.watchers.broadcast("desktop.changed", event);
+    Ok(())
+}
+
+fn desktop_changed_event(context: &DaemonContext, render_sync: &StaticRenderSyncPlan) -> Value {
+    json!({
+        "desktop": context.desktop,
+        "outputs": output_reports(context),
+        "persisted_state": context.state,
+        "render_sync": render_sync,
+        "renderer": renderer_name(),
+        "renderer_capabilities": renderer_capabilities(),
+    })
+}
+
+fn desktop_refresh_interval() -> Duration {
+    Duration::from_secs(2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_sync_dedup_tracks_last_queued_plan() {
+        let runtime = DaemonRuntime::new(test_context(), Vec::new());
+        let first = empty_render_sync();
+        let second = StaticRenderSyncPlan {
+            removals: vec!["eDP-1".to_owned()],
+            ..empty_render_sync()
+        };
+
+        assert!(runtime.queue_render_sync_if_changed(first.clone()));
+        assert!(!runtime.queue_render_sync_if_changed(first));
+        assert!(runtime.queue_render_sync_if_changed(second));
+    }
+
+    fn test_context() -> DaemonContext {
+        DaemonContext {
+            paths: ApplicationPaths {
+                config_file: PathBuf::from("/tmp/gilder-test/config.toml"),
+                state_file: PathBuf::from("/tmp/gilder-test/state.json"),
+                cache_dir: PathBuf::from("/tmp/gilder-test/cache"),
+                data_dir: PathBuf::from("/tmp/gilder-test/data"),
+            },
+            config: GilderConfig::default(),
+            state: AppState::default(),
+            desktop: gilder::desktop::DesktopSnapshot::default(),
+        }
+    }
+
+    fn empty_render_sync() -> StaticRenderSyncPlan {
+        StaticRenderSyncPlan {
+            plans: Vec::new(),
+            video_plans: Vec::new(),
+            removals: Vec::new(),
+            errors: Vec::new(),
+            decisions: Vec::new(),
+        }
+    }
 }
