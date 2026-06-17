@@ -10,7 +10,7 @@ use std::time::Duration;
 #[cfg(feature = "gtk-renderer")]
 use std::{cell::RefCell, rc::Rc};
 
-use gilder::config::{ApplicationPaths, GilderConfig};
+use gilder::config::{ApplicationPaths, GilderConfig, PerformanceConfig};
 use gilder::ipc::RequestMethod;
 use gilder::renderer::StaticRenderSyncPlan;
 use gilder::state::AppState;
@@ -174,7 +174,8 @@ fn run_gtk_daemon(
         }
 
         let runtime_for_refresh = Arc::clone(&runtime_for_activate);
-        gtk::glib::timeout_add_local(desktop_refresh_interval(), move || {
+        let refresh_interval = runtime_desktop_refresh_interval(&runtime_for_activate);
+        gtk::glib::timeout_add_local(refresh_interval, move || {
             match refresh_runtime_desktop_if_changed(&runtime_for_refresh) {
                 Ok(()) => {}
                 Err(err) => eprintln!("gilderd: failed to refresh desktop state: {err}"),
@@ -204,7 +205,7 @@ fn spawn_accept_loop(listener: UnixListener, runtime: Arc<DaemonRuntime>) {
 fn spawn_desktop_refresh_loop(runtime: Arc<DaemonRuntime>) {
     thread::spawn(move || {
         loop {
-            thread::sleep(desktop_refresh_interval());
+            thread::sleep(runtime_desktop_refresh_interval(&runtime));
             if let Err(err) = refresh_runtime_desktop_if_changed(&runtime) {
                 eprintln!("gilderd: failed to refresh desktop state: {err}");
             }
@@ -884,8 +885,18 @@ fn desktop_changed_event(context: &DaemonContext, render_sync: &StaticRenderSync
     })
 }
 
-fn desktop_refresh_interval() -> Duration {
-    Duration::from_secs(2)
+fn runtime_desktop_refresh_interval(runtime: &DaemonRuntime) -> Duration {
+    match runtime.lock_context() {
+        Ok(context) => desktop_refresh_interval(&context.config.performance),
+        Err(err) => {
+            eprintln!("gilderd: failed to read desktop refresh interval: {err}");
+            desktop_refresh_interval(&PerformanceConfig::default())
+        }
+    }
+}
+
+fn desktop_refresh_interval(config: &PerformanceConfig) -> Duration {
+    Duration::from_millis(config.desktop_refresh_interval_ms.max(250))
 }
 
 #[cfg(test)]
@@ -904,6 +915,27 @@ mod tests {
         assert!(runtime.queue_render_sync_if_changed(first.clone()));
         assert!(!runtime.queue_render_sync_if_changed(first));
         assert!(runtime.queue_render_sync_if_changed(second));
+    }
+
+    #[test]
+    fn clamps_desktop_refresh_interval() {
+        let config = PerformanceConfig {
+            desktop_refresh_interval_ms: 0,
+            ..PerformanceConfig::default()
+        };
+        assert_eq!(
+            desktop_refresh_interval(&config),
+            Duration::from_millis(250)
+        );
+
+        let config = PerformanceConfig {
+            desktop_refresh_interval_ms: 1250,
+            ..PerformanceConfig::default()
+        };
+        assert_eq!(
+            desktop_refresh_interval(&config),
+            Duration::from_millis(1250)
+        );
     }
 
     fn test_context() -> DaemonContext {

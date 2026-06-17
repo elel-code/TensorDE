@@ -55,6 +55,8 @@ pub struct PerformanceConfig {
     pub background_max_fps: u32,
     #[serde(default = "default_battery_fps")]
     pub battery_max_fps: u32,
+    #[serde(default = "default_desktop_refresh_interval_ms")]
+    pub desktop_refresh_interval_ms: u64,
     #[serde(default)]
     pub fullscreen: ThrottlePolicy,
     #[serde(default)]
@@ -69,6 +71,7 @@ impl Default for PerformanceConfig {
             interactive_max_fps: default_interactive_fps(),
             background_max_fps: default_background_fps(),
             battery_max_fps: default_battery_fps(),
+            desktop_refresh_interval_ms: default_desktop_refresh_interval_ms(),
             fullscreen: ThrottlePolicy::Pause,
             unfocused: ThrottlePolicy::Throttle,
             battery: PowerPolicy::Throttle,
@@ -160,6 +163,10 @@ fn default_battery_fps() -> u32 {
     24
 }
 
+fn default_desktop_refresh_interval_ms() -> u64 {
+    2000
+}
+
 fn default_true() -> bool {
     true
 }
@@ -183,6 +190,7 @@ mod tests {
             interactive_max_fps = 75
             background_max_fps = 20
             battery_max_fps = 15
+            desktop_refresh_interval_ms = 1000
             fullscreen = "pause"
             unfocused = "throttle"
             battery = "pause"
@@ -193,6 +201,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.performance.interactive_max_fps, 75);
+        assert_eq!(config.performance.desktop_refresh_interval_ms, 1000);
         assert_eq!(config.performance.battery, PowerPolicy::Pause);
         assert!(!config.adapters.niri);
         assert!(config.adapters.hyprland);
