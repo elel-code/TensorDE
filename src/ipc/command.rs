@@ -1,10 +1,24 @@
-use super::protocol::{optional_json_string, PROTOCOL_VERSION};
+use super::protocol::PROTOCOL_VERSION;
+use serde_json::{json, Value};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ClientCommand {
     Ping,
     Status,
     Outputs,
+    PropertiesGet {
+        output: Option<String>,
+        key: Option<String>,
+    },
+    PropertiesSet {
+        output: Option<String>,
+        key: String,
+        value: Value,
+    },
+    PropertiesUnset {
+        output: Option<String>,
+        key: String,
+    },
     Set {
         wallpaper: String,
         output: Option<String>,
@@ -22,33 +36,44 @@ pub enum ClientCommand {
 
 impl ClientCommand {
     pub fn to_json_line(&self) -> String {
-        match self {
-            Self::Ping => format!(
-                r#"{{"jsonrpc":"2.0","id":1,"method":"ping","params":{{"protocol":{}}}}}"#,
-                PROTOCOL_VERSION
+        let request = match self {
+            Self::Ping => json_request("ping", json!({ "protocol": PROTOCOL_VERSION })),
+            Self::Status => json_request("status", json!({})),
+            Self::Outputs => json_request("outputs", json!({})),
+            Self::PropertiesGet { output, key } => json_request(
+                "properties.get",
+                json!({
+                    "output": output,
+                    "key": key,
+                }),
             ),
-            Self::Status => r#"{"jsonrpc":"2.0","id":1,"method":"status","params":{}}"#.to_owned(),
-            Self::Outputs => {
-                r#"{"jsonrpc":"2.0","id":1,"method":"outputs","params":{}}"#.to_owned()
-            }
-            Self::Set { wallpaper, output } => format!(
-                r#"{{"jsonrpc":"2.0","id":1,"method":"set","params":{{"wallpaper":{},"output":{}}}}}"#,
-                optional_json_string(Some(wallpaper)),
-                optional_json_string(output.as_deref())
+            Self::PropertiesSet { output, key, value } => json_request(
+                "properties.set",
+                json!({
+                    "output": output,
+                    "key": key,
+                    "value": value,
+                }),
             ),
-            Self::Pause { output } => format!(
-                r#"{{"jsonrpc":"2.0","id":1,"method":"pause","params":{{"output":{}}}}}"#,
-                optional_json_string(output.as_deref())
+            Self::PropertiesUnset { output, key } => json_request(
+                "properties.unset",
+                json!({
+                    "output": output,
+                    "key": key,
+                }),
             ),
-            Self::Resume { output } => format!(
-                r#"{{"jsonrpc":"2.0","id":1,"method":"resume","params":{{"output":{}}}}}"#,
-                optional_json_string(output.as_deref())
+            Self::Set { wallpaper, output } => json_request(
+                "set",
+                json!({
+                    "wallpaper": wallpaper,
+                    "output": output,
+                }),
             ),
-            Self::Stop { output } => format!(
-                r#"{{"jsonrpc":"2.0","id":1,"method":"stop","params":{{"output":{}}}}}"#,
-                optional_json_string(output.as_deref())
-            ),
-        }
+            Self::Pause { output } => json_request("pause", json!({ "output": output })),
+            Self::Resume { output } => json_request("resume", json!({ "output": output })),
+            Self::Stop { output } => json_request("stop", json!({ "output": output })),
+        };
+        serde_json::to_string(&request).expect("IPC request should serialize")
     }
 }
 
@@ -57,6 +82,60 @@ pub fn parse_client_args(args: &[String]) -> Result<ClientCommand, String> {
         [cmd] if cmd == "ping" => Ok(ClientCommand::Ping),
         [cmd] if cmd == "status" => Ok(ClientCommand::Status),
         [cmd] if cmd == "outputs" => Ok(ClientCommand::Outputs),
+        [cmd, sub] if cmd == "properties" && sub == "get" => Ok(ClientCommand::PropertiesGet {
+            output: None,
+            key: None,
+        }),
+        [cmd, sub, key] if cmd == "properties" && sub == "get" => {
+            Ok(ClientCommand::PropertiesGet {
+                output: None,
+                key: Some(key.clone()),
+            })
+        }
+        [cmd, sub, flag, output] if cmd == "properties" && sub == "get" && flag == "--output" => {
+            Ok(ClientCommand::PropertiesGet {
+                output: Some(output.clone()),
+                key: None,
+            })
+        }
+        [cmd, sub, key, flag, output]
+            if cmd == "properties" && sub == "get" && flag == "--output" =>
+        {
+            Ok(ClientCommand::PropertiesGet {
+                output: Some(output.clone()),
+                key: Some(key.clone()),
+            })
+        }
+        [cmd, sub, key, value] if cmd == "properties" && sub == "set" => {
+            Ok(ClientCommand::PropertiesSet {
+                output: None,
+                key: key.clone(),
+                value: parse_cli_value(value),
+            })
+        }
+        [cmd, sub, key, value, flag, output]
+            if cmd == "properties" && sub == "set" && flag == "--output" =>
+        {
+            Ok(ClientCommand::PropertiesSet {
+                output: Some(output.clone()),
+                key: key.clone(),
+                value: parse_cli_value(value),
+            })
+        }
+        [cmd, sub, key] if cmd == "properties" && sub == "unset" => {
+            Ok(ClientCommand::PropertiesUnset {
+                output: None,
+                key: key.clone(),
+            })
+        }
+        [cmd, sub, key, flag, output]
+            if cmd == "properties" && sub == "unset" && flag == "--output" =>
+        {
+            Ok(ClientCommand::PropertiesUnset {
+                output: Some(output.clone()),
+                key: key.clone(),
+            })
+        }
         [cmd, wallpaper] if cmd == "set" => Ok(ClientCommand::Set {
             wallpaper: wallpaper.clone(),
             output: None,
@@ -89,12 +168,28 @@ pub fn help_text() -> String {
         "  gilderctl ping",
         "  gilderctl status",
         "  gilderctl outputs",
+        "  gilderctl properties get [key] [--output <name>]",
+        "  gilderctl properties set <key> <value-json> [--output <name>]",
+        "  gilderctl properties unset <key> [--output <name>]",
         "  gilderctl set <wallpaper.gwp|wallpaper.gwpdir> [--output <name>]",
         "  gilderctl pause [--output <name>]",
         "  gilderctl resume [--output <name>]",
         "  gilderctl stop [--output <name>]",
     ]
     .join("\n")
+}
+
+fn json_request(method: &str, params: Value) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params,
+    })
+}
+
+fn parse_cli_value(value: &str) -> Value {
+    serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_owned()))
 }
 
 #[cfg(test)]
@@ -125,5 +220,43 @@ mod tests {
             output: None,
         };
         assert!(cmd.to_json_line().contains(r#""wallpaper":"a\"b\\c""#));
+    }
+
+    #[test]
+    fn parses_property_set_with_json_value() {
+        let args = vec![
+            "properties".to_owned(),
+            "set".to_owned(),
+            "speed".to_owned(),
+            "0.5".to_owned(),
+            "--output".to_owned(),
+            "eDP-1".to_owned(),
+        ];
+        assert_eq!(
+            parse_client_args(&args),
+            Ok(ClientCommand::PropertiesSet {
+                output: Some("eDP-1".to_owned()),
+                key: "speed".to_owned(),
+                value: Value::from(0.5)
+            })
+        );
+    }
+
+    #[test]
+    fn parses_property_set_plain_value_as_string() {
+        let args = vec![
+            "properties".to_owned(),
+            "set".to_owned(),
+            "accent".to_owned(),
+            "#ffaa00".to_owned(),
+        ];
+        assert_eq!(
+            parse_client_args(&args),
+            Ok(ClientCommand::PropertiesSet {
+                output: None,
+                key: "accent".to_owned(),
+                value: Value::String("#ffaa00".to_owned())
+            })
+        );
     }
 }

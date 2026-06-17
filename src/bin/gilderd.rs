@@ -129,6 +129,56 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
             &request.id,
             json!({ "outputs": output_reports(context) }),
         ),
+        RequestMethod::PropertiesGet { output, key } => {
+            let result = match key {
+                Some(key) => {
+                    let value = context.state.get_property(output.as_deref(), &key);
+                    json!({
+                        "output": output,
+                        "key": key,
+                        "found": value.is_some(),
+                        "value": value,
+                    })
+                }
+                None => json!({
+                    "output": output,
+                    "properties": context.state.properties(output.as_deref()),
+                }),
+            };
+            gilder::ipc::success_response(&request.id, result)
+        }
+        RequestMethod::PropertiesSet { output, key, value } => {
+            context
+                .state
+                .set_property(output.as_deref(), key.clone(), value.clone());
+            persist_or_error(&request.id, context).unwrap_or_else(|| {
+                gilder::ipc::success_response(
+                    &request.id,
+                    json!({
+                        "accepted": true,
+                        "method": "properties.set",
+                        "output": output,
+                        "key": key,
+                        "value": value,
+                    }),
+                )
+            })
+        }
+        RequestMethod::PropertiesUnset { output, key } => {
+            let removed = context.state.unset_property(output.as_deref(), &key);
+            persist_or_error(&request.id, context).unwrap_or_else(|| {
+                gilder::ipc::success_response(
+                    &request.id,
+                    json!({
+                        "accepted": true,
+                        "method": "properties.unset",
+                        "output": output,
+                        "key": key,
+                        "removed": removed,
+                    }),
+                )
+            })
+        }
         RequestMethod::Set { wallpaper, output } => {
             context
                 .state

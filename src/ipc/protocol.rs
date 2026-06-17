@@ -10,13 +10,26 @@ pub struct IpcRequest {
     pub method: RequestMethod,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RequestMethod {
     Ping {
         protocol: Option<u32>,
     },
     Status,
     Outputs,
+    PropertiesGet {
+        output: Option<String>,
+        key: Option<String>,
+    },
+    PropertiesSet {
+        output: Option<String>,
+        key: String,
+        value: Value,
+    },
+    PropertiesUnset {
+        output: Option<String>,
+        key: String,
+    },
     Set {
         wallpaper: String,
         output: Option<String>,
@@ -105,6 +118,31 @@ pub fn parse_request(line: &str) -> Result<IpcRequest, RpcError> {
         }
         "status" => RequestMethod::Status,
         "outputs" => RequestMethod::Outputs,
+        "properties.get" => {
+            let params: PropertiesGetParams =
+                parse_params(id.clone(), &envelope.method, envelope.params)?;
+            RequestMethod::PropertiesGet {
+                output: params.output,
+                key: params.key,
+            }
+        }
+        "properties.set" => {
+            let params: PropertiesSetParams =
+                parse_params(id.clone(), &envelope.method, envelope.params)?;
+            RequestMethod::PropertiesSet {
+                output: params.output,
+                key: params.key,
+                value: params.value,
+            }
+        }
+        "properties.unset" => {
+            let params: PropertiesUnsetParams =
+                parse_params(id.clone(), &envelope.method, envelope.params)?;
+            RequestMethod::PropertiesUnset {
+                output: params.output,
+                key: params.key,
+            }
+        }
         "set" => {
             let params: SetParams = parse_params(id.clone(), &envelope.method, envelope.params)?;
             RequestMethod::Set {
@@ -187,31 +225,27 @@ struct SetParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct PropertiesGetParams {
+    output: Option<String>,
+    key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PropertiesSetParams {
+    output: Option<String>,
+    key: String,
+    value: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct PropertiesUnsetParams {
+    output: Option<String>,
+    key: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct OutputParams {
     output: Option<String>,
-}
-
-pub(super) fn optional_json_string(value: Option<&str>) -> String {
-    match value {
-        Some(value) => format!(r#""{}""#, escape_json_string(value)),
-        None => "null".to_owned(),
-    }
-}
-
-fn escape_json_string(input: &str) -> String {
-    let mut escaped = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            ch if ch.is_control() => escaped.push_str(&format!("\\u{:04x}", ch as u32)),
-            ch => escaped.push(ch),
-        }
-    }
-    escaped
 }
 
 #[cfg(test)]
@@ -247,5 +281,21 @@ mod tests {
         let response = error_response(Some(&json!(1)), "bad_request", "invalid");
         let value: Value = serde_json::from_str(&response).unwrap();
         assert_eq!(value["error"]["code"], "bad_request");
+    }
+
+    #[test]
+    fn parses_property_set_request() {
+        let request = parse_request(
+            r##"{"jsonrpc":"2.0","id":9,"method":"properties.set","params":{"output":"eDP-1","key":"accent","value":"#ffaa00"}}"##,
+        )
+        .unwrap();
+        assert_eq!(
+            request.method,
+            RequestMethod::PropertiesSet {
+                output: Some("eDP-1".to_owned()),
+                key: "accent".to_owned(),
+                value: Value::String("#ffaa00".to_owned())
+            }
+        );
     }
 }

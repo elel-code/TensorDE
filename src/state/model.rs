@@ -7,6 +7,8 @@ pub struct AppState {
     #[serde(default)]
     pub default_wallpaper: Option<WallpaperAssignment>,
     #[serde(default)]
+    pub properties: BTreeMap<String, Value>,
+    #[serde(default)]
     pub outputs: BTreeMap<String, OutputState>,
 }
 
@@ -42,6 +44,52 @@ impl AppState {
         }
     }
 
+    pub fn properties(&self, output: Option<&str>) -> BTreeMap<String, Value> {
+        match output {
+            Some(output) => self
+                .outputs
+                .get(output)
+                .map(|state| state.properties.clone())
+                .unwrap_or_default(),
+            None => self.properties.clone(),
+        }
+    }
+
+    pub fn get_property(&self, output: Option<&str>, key: &str) -> Option<Value> {
+        match output {
+            Some(output) => self
+                .outputs
+                .get(output)
+                .and_then(|state| state.properties.get(key).cloned()),
+            None => self.properties.get(key).cloned(),
+        }
+    }
+
+    pub fn set_property(&mut self, output: Option<&str>, key: impl Into<String>, value: Value) {
+        match output {
+            Some(output) => {
+                self.outputs
+                    .entry(output.to_owned())
+                    .or_default()
+                    .properties
+                    .insert(key.into(), value);
+            }
+            None => {
+                self.properties.insert(key.into(), value);
+            }
+        }
+    }
+
+    pub fn unset_property(&mut self, output: Option<&str>, key: &str) -> Option<Value> {
+        match output {
+            Some(output) => self
+                .outputs
+                .get_mut(output)
+                .and_then(|state| state.properties.remove(key)),
+            None => self.properties.remove(key),
+        }
+    }
+
     pub fn stop(&mut self, output: Option<&str>) {
         match output {
             Some(output) => {
@@ -52,9 +100,11 @@ impl AppState {
             }
             None => {
                 self.default_wallpaper = None;
+                self.properties.clear();
                 for state in self.outputs.values_mut() {
                     state.wallpaper = None;
                     state.paused = false;
+                    state.properties.clear();
                 }
             }
         }
@@ -97,5 +147,29 @@ mod tests {
         let mut state = AppState::default();
         state.pause(None, true);
         assert!(state.outputs.is_empty());
+    }
+
+    #[test]
+    fn stores_global_and_output_properties_separately() {
+        let mut state = AppState::default();
+        state.set_property(None, "speed", Value::from(0.75));
+        state.set_property(Some("eDP-1"), "speed", Value::from(0.25));
+
+        assert_eq!(state.get_property(None, "speed"), Some(Value::from(0.75)));
+        assert_eq!(
+            state.get_property(Some("eDP-1"), "speed"),
+            Some(Value::from(0.25))
+        );
+    }
+
+    #[test]
+    fn unsets_properties() {
+        let mut state = AppState::default();
+        state.set_property(Some("eDP-1"), "enabled", Value::from(true));
+        assert_eq!(
+            state.unset_property(Some("eDP-1"), "enabled"),
+            Some(Value::from(true))
+        );
+        assert_eq!(state.get_property(Some("eDP-1"), "enabled"), None);
     }
 }
