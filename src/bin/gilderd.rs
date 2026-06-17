@@ -276,6 +276,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                     "desktop": context.desktop,
                     "outputs": output_reports(context),
                     "persisted_state": context.state,
+                    "render_sync": render_sync_report(context),
                     "renderer": renderer_name(),
                 }),
             ))
@@ -477,6 +478,7 @@ fn snapshot_event(context: &DaemonContext) -> Value {
     json!({
         "outputs": output_reports(context),
         "persisted_state": context.state,
+        "render_sync": render_sync_report(context),
         "renderer": renderer_name(),
     })
 }
@@ -487,6 +489,7 @@ fn state_changed_event(action: &str, output: Option<&str>, context: &DaemonConte
         "output": output,
         "outputs": output_reports(context),
         "persisted_state": context.state,
+        "render_sync": render_sync_report(context),
     })
 }
 
@@ -512,4 +515,12 @@ fn renderer_name() -> &'static str {
     } else {
         "not-implemented"
     }
+}
+
+fn render_sync_report(context: &DaemonContext) -> Value {
+    json!(gilder::renderer::static_render_sync_plan(
+        &context.desktop,
+        &context.state,
+        &context.paths.cache_dir,
+    ))
 }
