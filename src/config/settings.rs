@@ -1,3 +1,4 @@
+use crate::core::FitMode;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -51,7 +52,7 @@ pub struct OutputConfig {
     #[serde(default)]
     pub wallpaper: Option<String>,
     #[serde(default)]
-    pub fit: Option<String>,
+    pub fit: Option<FitMode>,
     #[serde(default)]
     pub performance: OutputPerformanceConfig,
 }
@@ -245,6 +246,7 @@ mod tests {
 
             [outputs."HDMI-A-1"]
             wallpaper = "hdmi.gwpdir"
+            fit = "contain"
 
             [outputs."HDMI-A-1".performance]
             background_max_fps = 12
@@ -257,6 +259,7 @@ mod tests {
             config.outputs["HDMI-A-1"].wallpaper.as_deref(),
             Some("hdmi.gwpdir")
         );
+        assert_eq!(config.outputs["HDMI-A-1"].fit, Some(FitMode::Contain));
         assert_eq!(config.performance.interactive_max_fps, 75);
         assert_eq!(config.performance.desktop_refresh_interval_ms, 1000);
         assert_eq!(config.performance.battery, PowerPolicy::Throttle);

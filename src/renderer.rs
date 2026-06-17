@@ -155,6 +155,7 @@ fn static_render_sync_plan_inner(
             &output_state,
         );
         let assignment = effective_wallpaper_assignment(config, state, &output_name, &output_state);
+        let fit_override = output_fit_override(config, &output_name);
 
         if performance.mode == RenderMode::Paused {
             removals.push(output_name.clone());
@@ -179,7 +180,13 @@ fn static_render_sync_plan_inner(
             });
             continue;
         };
-        match wallpaper_plan_for_assignment(&output_name, assignment, cache_dir, &performance) {
+        match wallpaper_plan_for_assignment(
+            &output_name,
+            assignment,
+            cache_dir,
+            &performance,
+            fit_override,
+        ) {
             Ok(WallpaperRenderPlan::StaticImage(plan)) => {
                 decisions.push(StaticRenderOutputDecision {
                     output_name,
@@ -256,6 +263,12 @@ fn config_wallpaper_assignment(path: &str) -> WallpaperAssignment {
     }
 }
 
+fn output_fit_override(config: Option<&GilderConfig>, output_name: &str) -> Option<FitMode> {
+    config
+        .and_then(|config| config.outputs.get(output_name))
+        .and_then(|output| output.fit)
+}
+
 fn video_poster_plan(plan: &VideoWallpaperPlan) -> Option<StaticWallpaperPlan> {
     Some(StaticWallpaperPlan {
         output_name: plan.output_name.clone(),
@@ -284,15 +297,17 @@ pub fn wallpaper_plan_for_assignment(
     assignment: &WallpaperAssignment,
     cache_dir: impl AsRef<Path>,
     performance: &PerformanceDecision,
+    fit_override: Option<FitMode>,
 ) -> Result<WallpaperRenderPlan, RendererPlanError> {
     let package = load_assigned_package(assignment, cache_dir.as_ref())?;
-    wallpaper_plan(output_name, &package, performance)
+    wallpaper_plan(output_name, &package, performance, fit_override)
 }
 
 pub fn wallpaper_plan(
     output_name: impl Into<String>,
     package: &WallpaperPackage,
     performance: &PerformanceDecision,
+    fit_override: Option<FitMode>,
 ) -> Result<WallpaperRenderPlan, RendererPlanError> {
     let output_name = output_name.into();
     match &package.manifest.entry {
@@ -304,7 +319,7 @@ pub fn wallpaper_plan(
         } => Ok(WallpaperRenderPlan::StaticImage(StaticWallpaperPlan {
             output_name,
             source: source.join_to(&package.root),
-            fit: *fit,
+            fit: effective_fit(*fit, fit_override),
             background: background.clone(),
         })),
         WallpaperEntry::Video {
@@ -324,7 +339,7 @@ pub fn wallpaper_plan(
                 output_name,
                 source: source.join_to(&package.root),
                 poster,
-                fit: *fit,
+                fit: effective_fit(*fit, fit_override),
                 loop_playback: *loop_playback,
                 muted: *muted,
                 manifest_max_fps: *max_fps,
@@ -341,12 +356,16 @@ pub fn wallpaper_plan(
             Ok(WallpaperRenderPlan::StaticImage(StaticWallpaperPlan {
                 output_name,
                 source: fallback.join_to(&package.root),
-                fit: FitMode::Cover,
+                fit: effective_fit(FitMode::Cover, fit_override),
                 background: Some("#000000".to_owned()),
             }))
         }
         other => Err(RendererPlanError::UnsupportedEntry(other.kind().as_str())),
     }
+}
+
+fn effective_fit(manifest_fit: FitMode, output_fit: Option<FitMode>) -> FitMode {
+    output_fit.unwrap_or(manifest_fit)
 }
 
 pub fn static_wallpaper_plan(
@@ -774,6 +793,42 @@ mod tests {
             sync.decisions[0].performance.reason,
             DecisionReason::Unfocused
         );
+    }
+
+    #[test]
+    fn output_fit_override_sets_video_and_poster_fit() {
+        let test_dir = TestDir::new("gilder-output-fit-plan");
+        let package_dir = test_dir.path.join("video-demo.gwpdir");
+        write_minimal_video_gwpdir(&package_dir);
+        let mut config = GilderConfig::default();
+        config.outputs.insert(
+            "eDP-1".to_owned(),
+            OutputConfig {
+                fit: Some(FitMode::Stretch),
+                ..OutputConfig::default()
+            },
+        );
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_config(
+            &config,
+            &desktop,
+            &state,
+            test_dir.path.join("cache"),
+        );
+
+        assert_eq!(sync.plans.len(), 1);
+        assert_eq!(sync.video_plans.len(), 1);
+        assert_eq!(sync.plans[0].fit, FitMode::Stretch);
+        assert_eq!(sync.video_plans[0].fit, FitMode::Stretch);
     }
 
     #[test]
