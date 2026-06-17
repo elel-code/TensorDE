@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -13,7 +14,7 @@ use std::{cell::RefCell, rc::Rc};
 use gilder::config::{ApplicationPaths, GilderConfig, PerformanceConfig};
 use gilder::ipc::RequestMethod;
 use gilder::renderer::StaticRenderSyncPlan;
-use gilder::state::AppState;
+use gilder::state::{AppState, WallpaperAssignment};
 use serde_json::{Value, json};
 
 fn main() {
@@ -471,10 +472,22 @@ struct RenderSyncCache {
 #[derive(Debug, Clone, PartialEq)]
 struct RenderSyncCacheKey {
     config: GilderConfig,
-    state: AppState,
+    state: RenderSyncStateKey,
     desktop: gilder::desktop::DesktopSnapshot,
     cache_dir: PathBuf,
     packages: Vec<PackageInputFingerprint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenderSyncStateKey {
+    default_wallpaper: Option<WallpaperAssignment>,
+    outputs: BTreeMap<String, OutputRenderStateKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OutputRenderStateKey {
+    wallpaper: Option<WallpaperAssignment>,
+    paused: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -900,10 +913,29 @@ fn current_render_sync(context: &mut DaemonContext) -> StaticRenderSyncPlan {
 fn render_sync_cache_key(context: &DaemonContext) -> RenderSyncCacheKey {
     RenderSyncCacheKey {
         config: context.config.clone(),
-        state: context.state.clone(),
+        state: render_sync_state_key(&context.state),
         desktop: context.desktop.clone(),
         cache_dir: context.paths.cache_dir.clone(),
         packages: wallpaper_package_fingerprints(context),
+    }
+}
+
+fn render_sync_state_key(state: &AppState) -> RenderSyncStateKey {
+    RenderSyncStateKey {
+        default_wallpaper: state.default_wallpaper.clone(),
+        outputs: state
+            .outputs
+            .iter()
+            .map(|(name, state)| {
+                (
+                    name.clone(),
+                    OutputRenderStateKey {
+                        wallpaper: state.wallpaper.clone(),
+                        paused: state.paused,
+                    },
+                )
+            })
+            .collect(),
     }
 }
 
@@ -1127,6 +1159,38 @@ mod tests {
         write_static_package_manifest(package_dir.path(), "#203040ff");
         let third = current_render_sync(&mut context);
         assert_eq!(third.plans[0].background.as_deref(), Some("#203040ff"));
+    }
+
+    #[test]
+    fn current_render_sync_cache_ignores_existing_output_properties() {
+        let package_dir = TestDir::new("gilder-render-sync-property-cache-package");
+        write_static_package_manifest(package_dir.path(), "#101418");
+
+        let mut context = test_context();
+        context.paths.cache_dir = package_dir.path().join("cache");
+        context.desktop.outputs = vec![gilder::desktop::DesktopOutput::virtual_output("eDP-1")];
+        context
+            .state
+            .set_wallpaper(Some("eDP-1"), package_dir.path().to_string_lossy());
+
+        let cached = StaticRenderSyncPlan {
+            removals: vec!["cached-plan".to_owned()],
+            ..empty_render_sync()
+        };
+        context.render_sync_cache = Some(RenderSyncCache {
+            key: render_sync_cache_key(&context),
+            render_sync: cached.clone(),
+        });
+
+        context
+            .state
+            .set_property(Some("eDP-1"), "speed", json!(0.5));
+        assert_eq!(current_render_sync(&mut context), cached);
+
+        context.state.pause(Some("eDP-1"), true);
+        let paused = current_render_sync(&mut context);
+        assert_ne!(paused, cached);
+        assert_eq!(paused.removals, vec!["eDP-1"]);
     }
 
     fn test_context() -> DaemonContext {
