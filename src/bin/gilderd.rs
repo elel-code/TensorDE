@@ -8,7 +8,6 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
 use gilder::config::{ApplicationPaths, GilderConfig};
-use gilder::desktop::DesktopSnapshot;
 use gilder::ipc::RequestMethod;
 use gilder::state::AppState;
 use serde_json::{json, Value};
@@ -26,11 +25,12 @@ fn run() -> Result<(), String> {
         .map_err(|err| format!("failed to load {}: {err}", paths.config_file.display()))?;
     let state = gilder::state::load_state(&paths.state_file)
         .map_err(|err| format!("failed to load {}: {err}", paths.state_file.display()))?;
+    let desktop = gilder::desktop::adapters::read_desktop_snapshot(&config.adapters);
     let context = DaemonContext {
         paths,
         config,
         state,
-        desktop: DesktopSnapshot::placeholder(),
+        desktop,
     };
 
     let socket = gilder::ipc::runtime_socket_path().ok_or_else(|| {
@@ -230,7 +230,7 @@ struct DaemonContext {
     paths: ApplicationPaths,
     config: GilderConfig,
     state: AppState,
-    desktop: DesktopSnapshot,
+    desktop: gilder::desktop::DesktopSnapshot,
 }
 
 struct IpcOutcome {
@@ -265,21 +265,28 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                 "client_protocol": protocol,
             }),
         )),
-        RequestMethod::Status => IpcOutcome::response(gilder::ipc::success_response(
-            &request.id,
-            json!({
-                "state": "idle",
-                "config_file": context.paths.config_file,
-                "state_file": context.paths.state_file,
-                "outputs": output_reports(context),
-                "persisted_state": context.state,
-                "renderer": "not-implemented",
-            }),
-        )),
-        RequestMethod::Outputs => IpcOutcome::response(gilder::ipc::success_response(
-            &request.id,
-            json!({ "outputs": output_reports(context) }),
-        )),
+        RequestMethod::Status => {
+            refresh_desktop(context);
+            IpcOutcome::response(gilder::ipc::success_response(
+                &request.id,
+                json!({
+                    "state": "idle",
+                    "config_file": context.paths.config_file,
+                    "state_file": context.paths.state_file,
+                    "desktop": context.desktop,
+                    "outputs": output_reports(context),
+                    "persisted_state": context.state,
+                    "renderer": "not-implemented",
+                }),
+            ))
+        }
+        RequestMethod::Outputs => {
+            refresh_desktop(context);
+            IpcOutcome::response(gilder::ipc::success_response(
+                &request.id,
+                json!({ "desktop": context.desktop, "outputs": output_reports(context) }),
+            ))
+        }
         RequestMethod::Watch { .. } => IpcOutcome::response(gilder::ipc::error_response(
             Some(&request.id),
             "bad_request",
@@ -310,6 +317,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
             if let Some(response) = persist_or_error(&request.id, context) {
                 IpcOutcome::response(response)
             } else {
+                refresh_desktop(context);
                 let response = gilder::ipc::success_response(
                     &request.id,
                     json!({
@@ -329,6 +337,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
             if let Some(response) = persist_or_error(&request.id, context) {
                 IpcOutcome::response(response)
             } else {
+                refresh_desktop(context);
                 let response = gilder::ipc::success_response(
                     &request.id,
                     json!({
@@ -350,6 +359,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
             if let Some(response) = persist_or_error(&request.id, context) {
                 IpcOutcome::response(response)
             } else {
+                refresh_desktop(context);
                 let response = renderer_placeholder_response(
                     &request.id,
                     "set",
@@ -367,6 +377,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
             if let Some(response) = persist_or_error(&request.id, context) {
                 IpcOutcome::response(response)
             } else {
+                refresh_desktop(context);
                 let response = renderer_placeholder_response(
                     &request.id,
                     "pause",
@@ -383,6 +394,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
             if let Some(response) = persist_or_error(&request.id, context) {
                 IpcOutcome::response(response)
             } else {
+                refresh_desktop(context);
                 let response = renderer_placeholder_response(
                     &request.id,
                     "resume",
@@ -399,6 +411,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
             if let Some(response) = persist_or_error(&request.id, context) {
                 IpcOutcome::response(response)
             } else {
+                refresh_desktop(context);
                 let response = renderer_placeholder_response(
                     &request.id,
                     "stop",
@@ -417,6 +430,10 @@ fn persist_or_error(id: &serde_json::Value, context: &DaemonContext) -> Option<S
     gilder::state::save_state(&context.paths.state_file, &context.state)
         .err()
         .map(|err| gilder::ipc::error_response(Some(id), "internal_error", &err.to_string()))
+}
+
+fn refresh_desktop(context: &mut DaemonContext) {
+    context.desktop = gilder::desktop::adapters::read_desktop_snapshot(&context.config.adapters);
 }
 
 fn output_reports(context: &DaemonContext) -> Vec<serde_json::Value> {

@@ -1,5 +1,7 @@
 //! Desktop state snapshots supplied by compositor adapters.
 
+pub mod adapters;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
