@@ -300,7 +300,13 @@ pub fn wallpaper_plan_for_assignment(
     fit_override: Option<FitMode>,
 ) -> Result<WallpaperRenderPlan, RendererPlanError> {
     let package = load_assigned_package(assignment, cache_dir.as_ref())?;
-    wallpaper_plan(output_name, &package, performance, fit_override)
+    wallpaper_plan(
+        output_name,
+        &package,
+        performance,
+        fit_override,
+        assignment.variant.as_deref(),
+    )
 }
 
 pub fn wallpaper_plan(
@@ -308,8 +314,10 @@ pub fn wallpaper_plan(
     package: &WallpaperPackage,
     performance: &PerformanceDecision,
     fit_override: Option<FitMode>,
+    variant_id: Option<&str>,
 ) -> Result<WallpaperRenderPlan, RendererPlanError> {
     let output_name = output_name.into();
+    let variant_source = variant_source(package, variant_id)?;
     match &package.manifest.entry {
         WallpaperEntry::StaticImage {
             source,
@@ -318,7 +326,7 @@ pub fn wallpaper_plan(
             ..
         } => Ok(WallpaperRenderPlan::StaticImage(StaticWallpaperPlan {
             output_name,
-            source: source.join_to(&package.root),
+            source: variant_source.unwrap_or(source).join_to(&package.root),
             fit: effective_fit(*fit, fit_override),
             background: background.clone(),
         })),
@@ -337,7 +345,7 @@ pub fn wallpaper_plan(
                 .map(|poster| poster.join_to(&package.root));
             Ok(WallpaperRenderPlan::Video(VideoWallpaperPlan {
                 output_name,
-                source: source.join_to(&package.root),
+                source: variant_source.unwrap_or(source).join_to(&package.root),
                 poster,
                 fit: effective_fit(*fit, fit_override),
                 loop_playback: *loop_playback,
@@ -368,12 +376,28 @@ fn effective_fit(manifest_fit: FitMode, output_fit: Option<FitMode>) -> FitMode 
     output_fit.unwrap_or(manifest_fit)
 }
 
+fn variant_source<'a>(
+    package: &'a WallpaperPackage,
+    variant_id: Option<&str>,
+) -> Result<Option<&'a crate::core::PackagePath>, RendererPlanError> {
+    let Some(variant_id) = variant_id else {
+        return Ok(None);
+    };
+    package
+        .manifest
+        .variants
+        .iter()
+        .find(|variant| variant.id == variant_id)
+        .map(|variant| Some(&variant.source))
+        .ok_or_else(|| RendererPlanError::MissingVariant(variant_id.to_owned()))
+}
+
 pub fn static_wallpaper_plan(
     output_name: impl Into<String>,
     package: &WallpaperPackage,
     output_state: &OutputState,
 ) -> Result<Option<StaticWallpaperPlan>, RendererPlanError> {
-    let Some(_assignment) = &output_state.wallpaper else {
+    let Some(assignment) = &output_state.wallpaper else {
         return Ok(None);
     };
     let WallpaperEntry::StaticImage {
@@ -387,10 +411,11 @@ pub fn static_wallpaper_plan(
             package.manifest.entry.kind().as_str(),
         ));
     };
+    let variant_source = variant_source(package, assignment.variant.as_deref())?;
 
     Ok(Some(StaticWallpaperPlan {
         output_name: output_name.into(),
-        source: source.join_to(&package.root),
+        source: variant_source.unwrap_or(source).join_to(&package.root),
         fit: *fit,
         background: background.clone(),
     }))
@@ -409,6 +434,7 @@ fn effective_max_fps(manifest_max_fps: Option<u32>, policy_max_fps: Option<u32>)
 pub enum RendererPlanError {
     UnsupportedEntry(&'static str),
     MissingAssignment,
+    MissingVariant(String),
     PackageLoad(String),
 }
 
@@ -417,6 +443,9 @@ impl fmt::Display for RendererPlanError {
         match self {
             Self::UnsupportedEntry(kind) => write!(f, "{kind} entries are not supported here"),
             Self::MissingAssignment => f.write_str("wallpaper assignment is missing"),
+            Self::MissingVariant(variant) => {
+                write!(f, "wallpaper variant {variant:?} was not found")
+            }
             Self::PackageLoad(message) => f.write_str(message),
         }
     }
@@ -506,6 +535,49 @@ mod tests {
         assert_eq!(plan.fit, FitMode::Cover);
         assert_eq!(plan.background.as_deref(), Some("#101418"));
         assert!(plan.source.ends_with("assets/wallpaper.svg"));
+    }
+
+    #[test]
+    fn static_wallpaper_plan_uses_requested_variant_source() {
+        let test_dir = TestDir::new("gilder-static-variant-plan");
+        let package_dir = test_dir.path.join("static-variant.gwpdir");
+        write_minimal_static_variant_gwpdir(&package_dir);
+        let assignment = WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: Some("wide".to_owned()),
+        };
+
+        let plan =
+            static_wallpaper_plan_for_assignment("eDP-1", &assignment, test_dir.path.join("cache"))
+                .unwrap();
+
+        assert!(plan.source.ends_with("assets/wide.svg"));
+    }
+
+    #[test]
+    fn missing_requested_variant_reports_error() {
+        let test_dir = TestDir::new("gilder-missing-variant-plan");
+        let package_dir = test_dir.path.join("static-variant.gwpdir");
+        write_minimal_static_variant_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: Some("missing".to_owned()),
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert!(sync.plans.is_empty());
+        assert_eq!(sync.errors.len(), 1);
+        assert_eq!(
+            sync.errors[0].message,
+            "wallpaper variant \"missing\" was not found"
+        );
+        assert_eq!(sync.decisions[0].action, StaticRenderAction::Error);
     }
 
     #[test]
@@ -832,6 +904,35 @@ mod tests {
     }
 
     #[test]
+    fn video_plan_uses_requested_variant_source() {
+        let test_dir = TestDir::new("gilder-video-variant-plan");
+        let package_dir = test_dir.path.join("video-demo.gwpdir");
+        write_minimal_video_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: Some("mobile".to_owned()),
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert_eq!(sync.video_plans.len(), 1);
+        assert!(
+            sync.video_plans[0]
+                .source
+                .ends_with("assets/loop-mobile.webm")
+        );
+        assert_eq!(
+            sync.decisions[0].wallpaper.as_deref(),
+            Some(package_dir.display().to_string().as_str())
+        );
+    }
+
+    #[test]
     fn video_plan_uses_preview_poster_when_entry_poster_is_missing() {
         let test_dir = TestDir::new("gilder-video-preview-poster");
         let package_dir = test_dir.path.join("video-demo.gwpdir");
@@ -907,6 +1008,7 @@ mod tests {
         fs::create_dir_all(path.join("assets")).unwrap();
         fs::create_dir_all(path.join("previews")).unwrap();
         fs::write(path.join("assets/loop.webm"), b"not a real video").unwrap();
+        fs::write(path.join("assets/loop-mobile.webm"), b"not a real video").unwrap();
         fs::write(path.join("previews/poster.jpg"), b"not a real image").unwrap();
         let manifest = json!({
             "format": crate::core::FORMAT_NAME,
@@ -927,7 +1029,47 @@ mod tests {
                 "fit": "contain",
                 "max_fps": 60,
                 "start_offset_ms": 1200
-            }
+            },
+            "variants": [
+                {
+                    "id": "mobile",
+                    "source": "assets/loop-mobile.webm",
+                    "width": 1080,
+                    "height": 1920
+                }
+            ]
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_minimal_static_variant_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(path.join("assets/wallpaper.svg"), b"<svg/>").unwrap();
+        fs::write(path.join("assets/wide.svg"), b"<svg/>").unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.static-variant",
+            "version": "1.0.0",
+            "title": "Static Variant Demo",
+            "kind": "static-image",
+            "entry": {
+                "type": "static-image",
+                "source": "assets/wallpaper.svg",
+                "fit": "cover"
+            },
+            "variants": [
+                {
+                    "id": "wide",
+                    "source": "assets/wide.svg",
+                    "width": 2560,
+                    "height": 1080
+                }
+            ]
         });
         fs::write(
             path.join(crate::core::MANIFEST_FILE),

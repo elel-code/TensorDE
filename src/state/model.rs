@@ -14,9 +14,18 @@ pub struct AppState {
 
 impl AppState {
     pub fn set_wallpaper(&mut self, output: Option<&str>, wallpaper: impl Into<String>) {
+        self.set_wallpaper_with_variant(output, wallpaper, None);
+    }
+
+    pub fn set_wallpaper_with_variant(
+        &mut self,
+        output: Option<&str>,
+        wallpaper: impl Into<String>,
+        variant: Option<String>,
+    ) {
         let assignment = WallpaperAssignment {
             path: wallpaper.into(),
-            variant: None,
+            variant,
         };
         match output {
             Some(output) => {
@@ -139,6 +148,21 @@ mod tests {
         assert_eq!(
             state.outputs["eDP-1"].wallpaper.as_ref().unwrap().path,
             "demo.gwpdir"
+        );
+    }
+
+    #[test]
+    fn stores_wallpaper_variant() {
+        let mut state = AppState::default();
+        state.set_wallpaper_with_variant(Some("eDP-1"), "demo.gwpdir", Some("uhd".to_owned()));
+        assert_eq!(
+            state.outputs["eDP-1"]
+                .wallpaper
+                .as_ref()
+                .unwrap()
+                .variant
+                .as_deref(),
+            Some("uhd")
         );
     }
 

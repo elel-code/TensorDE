@@ -36,6 +36,7 @@ pub enum RequestMethod {
     Set {
         wallpaper: String,
         output: Option<String>,
+        variant: Option<String>,
     },
     Pause {
         output: Option<String>,
@@ -157,6 +158,7 @@ pub fn parse_request(line: &str) -> Result<IpcRequest, RpcError> {
             RequestMethod::Set {
                 wallpaper: params.wallpaper,
                 output: params.output,
+                variant: params.variant,
             }
         }
         "pause" => {
@@ -254,6 +256,8 @@ fn default_true() -> bool {
 struct SetParams {
     wallpaper: String,
     output: Option<String>,
+    #[serde(default)]
+    variant: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -287,7 +291,7 @@ mod tests {
     #[test]
     fn parses_set_request() {
         let request = parse_request(
-            r#"{"jsonrpc":"2.0","id":7,"method":"set","params":{"wallpaper":"demo.gwpdir","output":"eDP-1"}}"#,
+            r#"{"jsonrpc":"2.0","id":7,"method":"set","params":{"wallpaper":"demo.gwpdir","output":"eDP-1","variant":"uhd"}}"#,
         )
         .unwrap();
         assert_eq!(request.id, json!(7));
@@ -295,7 +299,8 @@ mod tests {
             request.method,
             RequestMethod::Set {
                 wallpaper: "demo.gwpdir".to_owned(),
-                output: Some("eDP-1".to_owned())
+                output: Some("eDP-1".to_owned()),
+                variant: Some("uhd".to_owned()),
             }
         );
     }

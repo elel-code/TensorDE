@@ -595,10 +595,16 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                 IpcOutcome::with_render_sync(response, event, render_sync)
             }
         }
-        RequestMethod::Set { wallpaper, output } => {
-            context
-                .state
-                .set_wallpaper(output.as_deref(), wallpaper.clone());
+        RequestMethod::Set {
+            wallpaper,
+            output,
+            variant,
+        } => {
+            context.state.set_wallpaper_with_variant(
+                output.as_deref(),
+                wallpaper.clone(),
+                variant.clone(),
+            );
             if let Some(response) = persist_or_error(&request.id, context) {
                 IpcOutcome::response(response)
             } else {
@@ -610,6 +616,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                     json!({
                         "wallpaper": wallpaper,
                         "output": output,
+                        "variant": variant,
                     }),
                     &render_sync,
                 );

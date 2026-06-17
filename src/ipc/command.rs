@@ -23,6 +23,7 @@ pub enum ClientCommand {
     Set {
         wallpaper: String,
         output: Option<String>,
+        variant: Option<String>,
     },
     Pause {
         output: Option<String>,
@@ -64,11 +65,16 @@ impl ClientCommand {
                     "key": key,
                 }),
             ),
-            Self::Set { wallpaper, output } => json_request(
+            Self::Set {
+                wallpaper,
+                output,
+                variant,
+            } => json_request(
                 "set",
                 json!({
                     "wallpaper": wallpaper,
                     "output": output,
+                    "variant": variant,
                 }),
             ),
             Self::Pause { output } => json_request("pause", json!({ "output": output })),
@@ -142,11 +148,38 @@ pub fn parse_client_args(args: &[String]) -> Result<ClientCommand, String> {
         [cmd, wallpaper] if cmd == "set" => Ok(ClientCommand::Set {
             wallpaper: wallpaper.clone(),
             output: None,
+            variant: None,
         }),
         [cmd, wallpaper, flag, output] if cmd == "set" && flag == "--output" => {
             Ok(ClientCommand::Set {
                 wallpaper: wallpaper.clone(),
                 output: Some(output.clone()),
+                variant: None,
+            })
+        }
+        [cmd, wallpaper, flag, variant] if cmd == "set" && flag == "--variant" => {
+            Ok(ClientCommand::Set {
+                wallpaper: wallpaper.clone(),
+                output: None,
+                variant: Some(variant.clone()),
+            })
+        }
+        [cmd, wallpaper, output_flag, output, variant_flag, variant]
+            if cmd == "set" && output_flag == "--output" && variant_flag == "--variant" =>
+        {
+            Ok(ClientCommand::Set {
+                wallpaper: wallpaper.clone(),
+                output: Some(output.clone()),
+                variant: Some(variant.clone()),
+            })
+        }
+        [cmd, wallpaper, variant_flag, variant, output_flag, output]
+            if cmd == "set" && variant_flag == "--variant" && output_flag == "--output" =>
+        {
+            Ok(ClientCommand::Set {
+                wallpaper: wallpaper.clone(),
+                output: Some(output.clone()),
+                variant: Some(variant.clone()),
             })
         }
         [cmd] if cmd == "pause" => Ok(ClientCommand::Pause { output: None }),
@@ -176,7 +209,7 @@ pub fn help_text() -> String {
         "  gilderctl properties get [key] [--output <name>]",
         "  gilderctl properties set <key> <value-json> [--output <name>]",
         "  gilderctl properties unset <key> [--output <name>]",
-        "  gilderctl set <wallpaper.gwp|wallpaper.gwpdir> [--output <name>]",
+        "  gilderctl set <wallpaper.gwp|wallpaper.gwpdir> [--output <name>] [--variant <id>]",
         "  gilderctl pause [--output <name>]",
         "  gilderctl resume [--output <name>]",
         "  gilderctl stop [--output <name>]",
@@ -213,7 +246,28 @@ mod tests {
             parse_client_args(&args),
             Ok(ClientCommand::Set {
                 wallpaper: "wall.gwp".to_owned(),
-                output: Some("eDP-1".to_owned())
+                output: Some("eDP-1".to_owned()),
+                variant: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_set_with_output_and_variant() {
+        let args = vec![
+            "set".to_owned(),
+            "wall.gwp".to_owned(),
+            "--output".to_owned(),
+            "eDP-1".to_owned(),
+            "--variant".to_owned(),
+            "uhd".to_owned(),
+        ];
+        assert_eq!(
+            parse_client_args(&args),
+            Ok(ClientCommand::Set {
+                wallpaper: "wall.gwp".to_owned(),
+                output: Some("eDP-1".to_owned()),
+                variant: Some("uhd".to_owned()),
             })
         );
     }
@@ -223,8 +277,10 @@ mod tests {
         let cmd = ClientCommand::Set {
             wallpaper: "a\"b\\c".to_owned(),
             output: None,
+            variant: Some("wide".to_owned()),
         };
         assert!(cmd.to_json_line().contains(r#""wallpaper":"a\"b\\c""#));
+        assert!(cmd.to_json_line().contains(r#""variant":"wide""#));
     }
 
     #[test]
