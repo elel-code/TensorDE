@@ -28,6 +28,10 @@ jobs:
           sudo meson install -C /tmp/gtk4-layer-shell/build
           sudo ldconfig
 
+      - name: Install video renderer system dependencies
+        run: |
+          sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
@@ -40,8 +44,17 @@ jobs:
       - name: Check GTK renderer
         run: cargo check --features gtk-renderer
 
+      - name: Check video renderer
+        run: cargo check --features video-renderer
+
+      - name: Check all renderers
+        run: cargo check --features gtk-renderer,video-renderer
+
       - name: Test
         run: cargo test
 
       - name: Test GTK renderer
         run: cargo test --features gtk-renderer
+
+      - name: Test video renderer
+        run: cargo test --features video-renderer

@@ -2,6 +2,8 @@
 
 #[cfg(feature = "gtk-renderer")]
 pub mod gtk;
+#[cfg(feature = "video-renderer")]
+pub mod video;
 
 use crate::config::PerformanceConfig;
 use crate::core::{FitMode, WallpaperEntry, WallpaperPackage};

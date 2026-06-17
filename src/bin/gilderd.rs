@@ -25,15 +25,16 @@ fn main() {
 fn run() -> Result<(), String> {
     let context = load_daemon_context()?;
     let listener = bind_ipc_listener()?;
+    let renderer_updates = renderer_update_senders();
 
     #[cfg(feature = "gtk-renderer")]
     {
-        run_gtk_daemon(context, listener)
+        run_gtk_daemon(context, listener, renderer_updates)
     }
 
     #[cfg(not(feature = "gtk-renderer"))]
     {
-        run_ipc_daemon(context, listener);
+        run_ipc_daemon(context, listener, renderer_updates);
         Ok(())
     }
 }
@@ -83,18 +84,49 @@ fn bind_ipc_listener() -> Result<UnixListener, String> {
     Ok(listener)
 }
 
+fn renderer_update_senders() -> Vec<mpsc::Sender<StaticRenderSyncPlan>> {
+    #[cfg(not(feature = "video-renderer"))]
+    {
+        Vec::new()
+    }
+
+    #[cfg(feature = "video-renderer")]
+    {
+        let mut senders = Vec::new();
+
+        let (sender, receiver) = mpsc::channel::<StaticRenderSyncPlan>();
+        spawn_video_renderer_loop(receiver);
+        senders.push(sender);
+
+        senders
+    }
+}
+
 #[cfg(not(feature = "gtk-renderer"))]
-fn run_ipc_daemon(context: DaemonContext, listener: UnixListener) {
-    let runtime = Arc::new(DaemonRuntime::new(context, None));
+fn run_ipc_daemon(
+    context: DaemonContext,
+    listener: UnixListener,
+    renderer_updates: Vec<mpsc::Sender<StaticRenderSyncPlan>>,
+) {
+    let runtime = Arc::new(DaemonRuntime::new(context, renderer_updates));
+    match refreshed_render_sync(&runtime) {
+        Ok(sync) => runtime.queue_render_sync(sync),
+        Err(err) => eprintln!("gilderd: failed to prepare initial render sync: {err}"),
+    }
     accept_loop(listener, runtime);
 }
 
 #[cfg(feature = "gtk-renderer")]
-fn run_gtk_daemon(context: DaemonContext, listener: UnixListener) -> Result<(), String> {
+fn run_gtk_daemon(
+    context: DaemonContext,
+    listener: UnixListener,
+    mut renderer_updates: Vec<mpsc::Sender<StaticRenderSyncPlan>>,
+) -> Result<(), String> {
     use gtk::prelude::*;
 
     let (renderer_sender, renderer_receiver) = mpsc::channel::<StaticRenderSyncPlan>();
-    let runtime = Arc::new(DaemonRuntime::new(context, Some(renderer_sender)));
+    renderer_updates.push(renderer_sender);
+    let runtime = Arc::new(DaemonRuntime::new(context, renderer_updates));
     spawn_accept_loop(listener, Arc::clone(&runtime));
 
     let renderer = gilder::renderer::gtk::GtkStaticRenderer::new("io.github.elelcode.Gilder");
@@ -109,9 +141,12 @@ fn run_gtk_daemon(context: DaemonContext, listener: UnixListener) -> Result<(), 
     let timers_for_activate = Rc::clone(&timers_installed);
     application.connect_activate(move |_| {
         match refreshed_render_sync(&runtime_for_activate) {
-            Ok(sync) => renderer_for_activate
-                .borrow_mut()
-                .sync_static_render_plan(&sync),
+            Ok(sync) => {
+                renderer_for_activate
+                    .borrow_mut()
+                    .sync_static_render_plan(&sync);
+                runtime_for_activate.queue_render_sync(sync);
+            }
             Err(err) => eprintln!("gilderd: failed to prepare initial render sync: {err}"),
         }
 
@@ -132,12 +167,9 @@ fn run_gtk_daemon(context: DaemonContext, listener: UnixListener) -> Result<(), 
         }
 
         let runtime_for_refresh = Arc::clone(&runtime_for_activate);
-        let renderer_for_refresh = Rc::clone(&renderer_for_activate);
         gtk::glib::timeout_add_local(Duration::from_secs(2), move || {
             match refreshed_render_sync(&runtime_for_refresh) {
-                Ok(sync) => renderer_for_refresh
-                    .borrow_mut()
-                    .sync_static_render_plan(&sync),
+                Ok(sync) => runtime_for_refresh.queue_render_sync(sync),
                 Err(err) => eprintln!("gilderd: failed to refresh render sync: {err}"),
             }
             gtk::glib::ControlFlow::Continue
@@ -159,6 +191,38 @@ fn run_gtk_daemon(context: DaemonContext, listener: UnixListener) -> Result<(), 
 #[cfg(feature = "gtk-renderer")]
 fn spawn_accept_loop(listener: UnixListener, runtime: Arc<DaemonRuntime>) {
     thread::spawn(move || accept_loop(listener, runtime));
+}
+
+#[cfg(feature = "video-renderer")]
+fn spawn_video_renderer_loop(receiver: mpsc::Receiver<StaticRenderSyncPlan>) {
+    thread::spawn(move || {
+        let mut renderer = match gilder::renderer::video::GstVideoRenderer::new() {
+            Ok(renderer) => renderer,
+            Err(err) => {
+                eprintln!("gilderd: failed to initialize video renderer: {err}");
+                return;
+            }
+        };
+
+        loop {
+            match receiver.recv_timeout(std::time::Duration::from_millis(50)) {
+                Ok(mut sync) => {
+                    while let Ok(newer_sync) = receiver.try_recv() {
+                        sync = newer_sync;
+                    }
+                    if let Err(err) = renderer.sync_render_plan(&sync) {
+                        eprintln!("gilderd: failed to sync video renderer: {err}");
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+
+            if let Err(err) = renderer.poll_bus() {
+                eprintln!("gilderd: video renderer pipeline error: {err}");
+            }
+        }
+    });
 }
 
 fn accept_loop(listener: UnixListener, runtime: Arc<DaemonRuntime>) {
@@ -275,13 +339,13 @@ fn write_line(stream: &mut UnixStream, line: &str) -> Result<(), String> {
 struct DaemonRuntime {
     context: Mutex<DaemonContext>,
     watchers: WatchHub,
-    renderer_updates: Option<mpsc::Sender<StaticRenderSyncPlan>>,
+    renderer_updates: Vec<mpsc::Sender<StaticRenderSyncPlan>>,
 }
 
 impl DaemonRuntime {
     fn new(
         context: DaemonContext,
-        renderer_updates: Option<mpsc::Sender<StaticRenderSyncPlan>>,
+        renderer_updates: Vec<mpsc::Sender<StaticRenderSyncPlan>>,
     ) -> Self {
         Self {
             context: Mutex::new(context),
@@ -297,9 +361,9 @@ impl DaemonRuntime {
     }
 
     fn queue_render_sync(&self, render_sync: StaticRenderSyncPlan) {
-        if let Some(sender) = &self.renderer_updates {
-            if sender.send(render_sync).is_err() {
-                eprintln!("gilderd: GTK renderer update queue is closed");
+        for sender in &self.renderer_updates {
+            if sender.send(render_sync.clone()).is_err() {
+                eprintln!("gilderd: renderer update queue is closed");
             }
         }
     }
@@ -662,17 +726,24 @@ fn renderer_action_response(
         "renderer": renderer_name(),
         "render_sync": render_sync,
     });
-    if !cfg!(feature = "gtk-renderer") {
-        result["note"] = json!("renderer was built without the gtk-renderer feature");
+    if !cfg!(any(feature = "gtk-renderer", feature = "video-renderer")) {
+        result["note"] =
+            json!("renderer was built without gtk-renderer or video-renderer features");
+    } else if cfg!(feature = "video-renderer") && !cfg!(feature = "gtk-renderer") {
+        result["note"] = json!("video renderer enabled; static wallpapers need gtk-renderer");
     }
     gilder::ipc::success_response(id, result)
 }
 
 fn renderer_name() -> &'static str {
-    if cfg!(feature = "gtk-renderer") {
-        "gtk-layer-shell-static"
-    } else {
-        "not-implemented"
+    match (
+        cfg!(feature = "gtk-renderer"),
+        cfg!(feature = "video-renderer"),
+    ) {
+        (true, true) => "gtk-layer-shell-static+gstreamer-video",
+        (true, false) => "gtk-layer-shell-static",
+        (false, true) => "gstreamer-video",
+        (false, false) => "not-implemented",
     }
 }
 
@@ -689,7 +760,6 @@ fn current_render_sync(context: &DaemonContext) -> StaticRenderSyncPlan {
     )
 }
 
-#[cfg(feature = "gtk-renderer")]
 fn refreshed_render_sync(runtime: &DaemonRuntime) -> Result<StaticRenderSyncPlan, String> {
     let mut context = runtime.lock_context()?;
     refresh_desktop(&mut context);

@@ -5,7 +5,8 @@ compositors such as niri and Hyprland. The project aims to cover the gap
 between simple static wallpaper tools and richer Wallpaper Engine style
 packages on Linux.
 
-Current status: project skeleton and design documents.
+Current status: daemon IPC, state persistence, static GTK renderer planning, and
+early feature-gated GTK/GStreamer renderer paths.
 
 ## Project Layout
 
@@ -27,6 +28,8 @@ Current status: project skeleton and design documents.
 ```sh
 cargo check
 cargo check --features gtk-renderer
+cargo check --features video-renderer
+cargo check --features gtk-renderer,video-renderer
 cargo run --bin gilderd
 cargo run --bin gilderctl -- ping
 cargo run --bin gilderctl -- outputs
@@ -43,4 +46,10 @@ GTK-layer-shell integration, and Hyprland/niri output discovery are tracked in
 `docs/todo.md`.
 
 The optional `gtk-renderer` feature builds the GTK 4 + gtk4-layer-shell static
-renderer path. It expects system GTK 4 and gtk4-layer-shell development files.
+renderer path. It expects system GTK 4 and gtk4-layer-shell development files;
+CI builds gtk4-layer-shell from source because Ubuntu Noble does not ship a
+`libgtk4-layer-shell-dev` package.
+
+The optional `video-renderer` feature builds the GStreamer controller for video
+wallpaper pipeline lifecycle. It expects GStreamer 1.0 development files and
+plugins from the host system.
