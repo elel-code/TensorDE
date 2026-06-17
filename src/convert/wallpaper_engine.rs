@@ -40,15 +40,7 @@ pub fn convert_project(
         SourceType::Image => convert_static_image(&project, output_dir, &mut report),
         SourceType::Video => convert_video(&project, output_dir, &mut report),
         SourceType::Web => convert_web(&project, output_dir, &mut report),
-        SourceType::Scene => {
-            report.unsupported_features.push("scene-runtime".to_owned());
-            report.warnings.push(
-                "Scene conversion is not implemented yet; use a static/video fallback.".to_owned(),
-            );
-            Err(ConversionError::UnsupportedType {
-                source_type: project.source_type.as_str().to_owned(),
-            })
-        }
+        SourceType::Scene => convert_scene_lite(&project, output_dir, &mut report),
         SourceType::Application => {
             report
                 .unsupported_features
@@ -214,6 +206,55 @@ fn convert_web(
             "index": index_package_path,
             "fallback": preview.and_then(|preview| preview.poster).map(Value::String).unwrap_or(Value::Null),
             "max_fps": 30
+        }),
+    ))
+}
+
+fn convert_scene_lite(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    report: &mut ConversionReport,
+) -> Result<Value, ConversionError> {
+    let source = project.entry_file.as_ref().ok_or_else(|| {
+        ConversionError::MissingEntry("scene project does not define an entry file".to_owned())
+    })?;
+    let copied = copy_project_file(
+        &project.root,
+        source,
+        output_dir.join("assets"),
+        "scene",
+        report,
+    )?;
+    let preview = copy_preview_or_generate(
+        project,
+        output_dir,
+        report,
+        MissingPreviewFallback::Scene { source },
+    )?;
+    let fallback = preview
+        .as_ref()
+        .and_then(|preview| preview.poster.clone())
+        .map(Value::String)
+        .unwrap_or(Value::Null);
+
+    report.converted_features.push("scene-lite".to_owned());
+    report
+        .unsupported_features
+        .extend(["scenescript", "custom-shader", "complex-particles"].map(str::to_owned));
+    report.warnings.push(
+        "Converted Scene project to scene-lite metadata and fallback only; SceneScript, custom shaders, and complex effects were not executed or translated.".to_owned(),
+    );
+
+    Ok(base_manifest(
+        project,
+        "scene-lite",
+        preview,
+        report,
+        json!({
+            "type": "scene-lite",
+            "source": copied.package_path,
+            "fallback": fallback,
+            "max_fps": 60
         }),
     ))
 }
@@ -400,6 +441,19 @@ fn copy_preview_or_generate(
             );
             Ok(Some(preview))
         }
+        MissingPreviewFallback::Scene { source } => {
+            let preview = generate_svg_placeholder_preview(
+                project,
+                output_dir,
+                source,
+                PlaceholderKind::Scene,
+                report,
+            )?;
+            report.warnings.push(
+                "No preview image found; generated metadata-based scene fallback poster and thumbnail.".to_owned(),
+            );
+            Ok(Some(preview))
+        }
         MissingPreviewFallback::None => {
             report.warnings.push(
                 "No preview image found; poster and thumbnail were not generated.".to_owned(),
@@ -413,6 +467,7 @@ enum MissingPreviewFallback<'a> {
     None,
     StaticImage { source: &'a str },
     Video { source: &'a str },
+    Scene { source: &'a str },
 }
 
 fn generate_video_placeholder_preview(
@@ -421,14 +476,38 @@ fn generate_video_placeholder_preview(
     source: &str,
     report: &mut ConversionReport,
 ) -> Result<PreviewPaths, ConversionError> {
+    generate_svg_placeholder_preview(project, output_dir, source, PlaceholderKind::Video, report)
+}
+
+enum PlaceholderKind {
+    Video,
+    Scene,
+}
+
+impl PlaceholderKind {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Video => "Video",
+            Self::Scene => "Scene",
+        }
+    }
+}
+
+fn generate_svg_placeholder_preview(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    source: &str,
+    kind: PlaceholderKind,
+    report: &mut ConversionReport,
+) -> Result<PreviewPaths, ConversionError> {
     let poster_path = output_dir.join("previews/poster.svg");
     let thumbnail_path = output_dir.join("previews/thumbnail.svg");
     let source_name = Path::new(source)
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(source);
-    let poster = video_placeholder_svg(&project.title, source_name, 1920, 1080);
-    let thumbnail = video_placeholder_svg(&project.title, source_name, 512, 288);
+    let poster = placeholder_svg(kind.label(), &project.title, source_name, 1920, 1080);
+    let thumbnail = placeholder_svg(kind.label(), &project.title, source_name, 512, 288);
     fs::write(&poster_path, poster).map_err(ConversionError::WriteFile)?;
     fs::write(&thumbnail_path, thumbnail).map_err(ConversionError::WriteFile)?;
 
@@ -448,7 +527,8 @@ fn generate_video_placeholder_preview(
     })
 }
 
-fn video_placeholder_svg(title: &str, source_name: &str, width: u32, height: u32) -> String {
+fn placeholder_svg(kind: &str, title: &str, source_name: &str, width: u32, height: u32) -> String {
+    let kind = escape_xml(kind);
     let title = escape_xml(title);
     let source_name = escape_xml(source_name);
     let font_size = (height / 14).clamp(18, 96);
@@ -460,6 +540,7 @@ fn video_placeholder_svg(title: &str, source_name: &str, width: u32, height: u32
   <rect x="0" y="0" width="100%" height="100%" fill="#18212b"/>
   <circle cx="{cx}" cy="{cy}" r="{radius}" fill="#263442"/>
   <path d="{play_path}" fill="#d7e0ea"/>
+  <text x="50%" y="{kind_y}" fill="#94a3b8" font-family="sans-serif" font-size="{small_font_size}" text-anchor="middle" letter-spacing="3">{kind}</text>
   <text x="50%" y="{title_y}" fill="#f1f5f9" font-family="sans-serif" font-size="{font_size}" font-weight="700" text-anchor="middle">{title}</text>
   <text x="50%" y="{source_y}" fill="#94a3b8" font-family="sans-serif" font-size="{small_font_size}" text-anchor="middle">{source_name}</text>
 </svg>
@@ -468,6 +549,7 @@ fn video_placeholder_svg(title: &str, source_name: &str, width: u32, height: u32
         cy = center_y - height / 12,
         radius = height / 9,
         play_path = play_path(width, height),
+        kind_y = center_y + height / 10,
         title_y = center_y + height / 7,
         source_y = center_y + height / 7 + small_font_size * 2,
     )
@@ -1144,6 +1226,46 @@ mod tests {
         assert!(output.path().join("assets/web/gilder-bridge.js").exists());
         assert_eq!(manifest["properties"]["enabled"]["type"], "bool");
         assert_eq!(manifest["properties"]["speed"]["type"], "range");
+    }
+
+    #[test]
+    fn converts_scene_project_to_scene_lite_with_fallback() {
+        let source = TestDir::new("we-scene-source");
+        let output = TestDir::new("we-scene-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{"objects":[{"type":"image","path":"background.png"}]}"#,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Scene Example",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(output.path().join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(manifest["kind"], "scene-lite");
+        assert_eq!(manifest["entry"]["type"], "scene-lite");
+        assert_eq!(manifest["entry"]["source"], "assets/scene.json");
+        assert_eq!(manifest["entry"]["fallback"], "previews/poster.svg");
+        assert!(output.path().join("previews/poster.svg").exists());
+        assert!(output.path().join("previews/thumbnail.svg").exists());
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(report.converted_features.contains(&"scene-lite".to_owned()));
+        assert!(
+            report
+                .unsupported_features
+                .contains(&"scenescript".to_owned())
+        );
     }
 
     #[test]

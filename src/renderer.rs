@@ -273,6 +273,19 @@ pub fn wallpaper_plan(
                 start_offset_ms: *start_offset_ms,
             }))
         }
+        WallpaperEntry::SceneLite { fallback, .. } => {
+            let Some(fallback) = fallback else {
+                return Err(RendererPlanError::UnsupportedEntry(
+                    package.manifest.entry.kind().as_str(),
+                ));
+            };
+            Ok(WallpaperRenderPlan::StaticImage(StaticWallpaperPlan {
+                output_name,
+                source: fallback.join_to(&package.root),
+                fit: FitMode::Cover,
+                background: Some("#000000".to_owned()),
+            }))
+        }
         other => Err(RendererPlanError::UnsupportedEntry(other.kind().as_str())),
     }
 }
@@ -617,6 +630,31 @@ mod tests {
     }
 
     #[test]
+    fn scene_lite_fallback_builds_static_plan() {
+        let test_dir = TestDir::new("gilder-scene-lite-plan");
+        let package_dir = test_dir.path.join("scene-demo.gwpdir");
+        write_minimal_scene_lite_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.video_plans.is_empty());
+        assert!(sync.errors.is_empty());
+        assert!(sync.plans[0].source.ends_with("previews/poster.svg"));
+        assert_eq!(sync.plans[0].fit, FitMode::Cover);
+        assert_eq!(sync.plans[0].background.as_deref(), Some("#000000"));
+    }
+
+    #[test]
     fn builds_plan_from_gwp_archive() {
         let test_dir = TestDir::new("gilder-render-archive");
         let archive = test_dir.path.join("static-demo.gwp");
@@ -657,6 +695,35 @@ mod tests {
                 "fit": "contain",
                 "max_fps": 60,
                 "start_offset_ms": 1200
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_minimal_scene_lite_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::create_dir_all(path.join("previews")).unwrap();
+        fs::write(path.join("assets/scene.json"), b"{\"layers\":[]}").unwrap();
+        fs::write(path.join("previews/poster.svg"), b"<svg/>").unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.scene-demo",
+            "version": "1.0.0",
+            "title": "Scene Demo",
+            "kind": "scene-lite",
+            "preview": {
+                "poster": "previews/poster.svg"
+            },
+            "entry": {
+                "type": "scene-lite",
+                "source": "assets/scene.json",
+                "fallback": "previews/poster.svg",
+                "max_fps": 60
             }
         });
         fs::write(
