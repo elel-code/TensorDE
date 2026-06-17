@@ -1,0 +1,27 @@
+_gilder_convert()
+{
+    local cur prev words cword
+    _init_completion || return
+
+    local commands="pack unpack wallpaper-engine"
+
+    if [[ ${cword} -eq 1 ]]; then
+        COMPREPLY=($(compgen -W "${commands}" -- "${cur}"))
+        return
+    fi
+
+    case "${words[1]}" in
+        pack|unpack)
+            COMPREPLY=($(compgen -f -- "${cur}"))
+            ;;
+        wallpaper-engine)
+            if [[ ${cword} -eq 2 ]]; then
+                COMPREPLY=($(compgen -d -W "--pack" -- "${cur}"))
+            else
+                COMPREPLY=($(compgen -f -- "${cur}"))
+            fi
+            ;;
+    esac
+}
+
+complete -F _gilder_convert gilder-convert

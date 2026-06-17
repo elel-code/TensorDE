@@ -1,0 +1,14 @@
+[Unit]
+Description=Gilder Wayland wallpaper daemon
+Documentation=man:gilderd(1)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=gilderd
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=graphical-session.target

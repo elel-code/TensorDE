@@ -1,0 +1,30 @@
+#compdef gilder-convert
+
+local -a commands
+commands=(
+  'pack:pack a .gwpdir package'
+  'unpack:unpack a .gwp archive'
+  'wallpaper-engine:convert a Wallpaper Engine project'
+)
+
+_arguments -C \
+  '1:command:->command' \
+  '*::arg:->args'
+
+case $state in
+  command)
+    _describe 'command' commands
+    ;;
+  args)
+    case $words[2] in
+      pack|unpack)
+        _files
+        ;;
+      wallpaper-engine)
+        _arguments \
+          '--pack[write a .gwp archive]' \
+          '*:path:_files'
+        ;;
+    esac
+    ;;
+esac

@@ -21,7 +21,11 @@ early feature-gated GTK/GStreamer renderer paths.
 - `docs/format.md`: Gilder wallpaper package format.
 - `docs/conversion.md`: Wallpaper Engine conversion plan.
 - `docs/ipc.md`: local IPC protocol.
+- `docs/packaging.md`: packaging asset install notes.
 - `docs/todo.md`: staged implementation checklist.
+- `docs/man/`: man pages for the command line tools.
+- `completions/`: bash and zsh shell completions.
+- `packaging/systemd/`: systemd user service example.
 
 ## Early commands
 
@@ -39,6 +43,10 @@ cargo run --bin gilderctl -- properties set speed 0.5 --output eDP-1
 cargo run --bin gilder-convert -- wallpaper-engine /path/to/we/project ./out.gwpdir
 cargo run --bin gilder-convert -- pack ./examples/wallpapers/static-demo.gwpdir ./static-demo.gwp
 ```
+
+Distribution assets are documented in `docs/packaging.md`. The repository ships
+example systemd user service, man pages, and shell completions, but install
+paths are intentionally left to distro/user packaging.
 
 The daemon currently provides JSON-RPC over a Unix socket, persistent state, and
 policy decisions for desktop-state-based throttling. Rendering,
