@@ -162,6 +162,28 @@ sample_process() {
   ps -p "$target_pid" -o pid=,pcpu=,rss=,vsz=,stat=,comm= | sed -n '1p'
 }
 
+write_summary() {
+  local csv="$1"
+  local summary="$2"
+  awk -F, '
+    NR == 1 { next }
+    {
+      samples += 1
+      cpu_sum += $4
+      if ($5 + 0 > max_rss) { max_rss = $5 + 0 }
+      if ($6 + 0 > max_vsz) { max_vsz = $6 + 0 }
+    }
+    END {
+      printf "samples: %d\n", samples
+      if (samples > 0) {
+        printf "avg_cpu_percent: %.2f\n", cpu_sum / samples
+        printf "max_rss_kib: %d\n", max_rss
+        printf "max_vsz_kib: %d\n", max_vsz
+      }
+    }
+  ' "$csv" > "$summary"
+}
+
 if ! is_positive_integer "$duration"; then
   echo "--duration must be a positive integer" >&2
   exit 2
@@ -174,6 +196,7 @@ fi
 essential_missing=0
 require_command ps || essential_missing=1
 require_command sed || essential_missing=1
+require_command awk || essential_missing=1
 if [[ -z "$pid" ]]; then
   pid="$(find_gilderd_pid || true)"
 fi
@@ -205,6 +228,7 @@ samples=$(( (duration + interval - 1) / interval ))
 [[ "$samples" -ge 1 ]] || samples=1
 csv_path="$work_dir/samples.csv"
 metadata_path="$work_dir/metadata.txt"
+summary_path="$work_dir/summary.txt"
 
 cat > "$metadata_path" <<EOF
 label: ${label}
@@ -242,6 +266,7 @@ for sample in $(seq 1 "$samples"); do
       if ! GILDER_SOCKET="$socket" "$gilderctl" status > "$status_file" 2> "$status_error_file"; then
         status_failures=$((status_failures + 1))
         skip_or_fail "gilderctl status failed for sample $sample"
+        rm -f "$status_file"
         status_file=""
       elif [[ ! -s "$status_error_file" ]]; then
         rm -f "$status_error_file"
@@ -251,6 +276,7 @@ for sample in $(seq 1 "$samples"); do
       if ! "$gilderctl" status > "$status_file" 2> "$status_error_file"; then
         status_failures=$((status_failures + 1))
         skip_or_fail "gilderctl status failed for sample $sample"
+        rm -f "$status_file"
         status_file=""
       elif [[ ! -s "$status_error_file" ]]; then
         rm -f "$status_error_file"
@@ -263,7 +289,7 @@ for sample in $(seq 1 "$samples"); do
     break
   fi
 
-  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "$sample" \
     "$elapsed" \
     "$sample_pid" \
@@ -280,7 +306,9 @@ for sample in $(seq 1 "$samples"); do
   fi
 done
 
+write_summary "$csv_path" "$summary_path"
 pass "wrote process samples to $csv_path"
+pass "wrote summary to $summary_path"
 if [[ "$status_enabled" -eq 1 && "$status_failures" -eq 0 ]]; then
   pass "wrote status snapshots under $work_dir"
 elif [[ "$status_enabled" -eq 1 ]]; then
@@ -296,6 +324,7 @@ else
 fi
 note "metadata: $metadata_path"
 note "samples:  $csv_path"
+note "sample summary: $summary_path"
 note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
 if [[ "$failures" -gt 0 ]]; then
   exit 1
