@@ -1,6 +1,7 @@
 //! Desktop state snapshots supplied by compositor adapters.
 
 pub mod adapters;
+pub mod power;
 
 use serde::{Deserialize, Serialize};
 

@@ -9,13 +9,13 @@ use std::process::Command;
 pub fn read_desktop_snapshot(config: &AdapterConfig) -> DesktopSnapshot {
     if config.hyprland && std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
         if let Ok(snapshot) = hyprland::read_snapshot() {
-            return snapshot;
+            return with_power_state(snapshot);
         }
     }
 
     if config.niri && std::env::var_os("NIRI_SOCKET").is_some() {
         if let Ok(snapshot) = niri::read_snapshot() {
-            return snapshot;
+            return with_power_state(snapshot);
         }
     }
 
@@ -26,6 +26,13 @@ pub fn read_desktop_snapshot(config: &AdapterConfig) -> DesktopSnapshot {
             snapshot.outputs = crate::renderer::gtk::gdk_desktop_outputs();
         }
         snapshot.compositor = Some(CompositorKind::GenericWayland);
+    }
+    with_power_state(snapshot)
+}
+
+fn with_power_state(mut snapshot: DesktopSnapshot) -> DesktopSnapshot {
+    if snapshot.power == PowerState::Unknown {
+        snapshot.power = super::power::read_power_state();
     }
     snapshot
 }
