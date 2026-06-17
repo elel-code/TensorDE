@@ -22,10 +22,12 @@ early feature-gated GTK/GStreamer renderer paths.
 - `docs/conversion.md`: Wallpaper Engine conversion plan.
 - `docs/ipc.md`: local IPC protocol.
 - `docs/packaging.md`: packaging asset install notes.
+- `docs/video-validation.md`: video codec smoke validation notes.
 - `docs/todo.md`: staged implementation checklist.
 - `docs/man/`: man pages for the command line tools.
 - `completions/`: bash and zsh shell completions.
 - `packaging/systemd/`: systemd user service example.
+- `scripts/video-codec-smoke.sh`: MP4/WebM codec smoke validation helper.
 
 ## Early commands
 

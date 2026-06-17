@@ -91,7 +91,8 @@ mkdir -p \
   "$stage_dir/share/bash-completion/completions" \
   "$stage_dir/share/zsh/site-functions" \
   "$stage_dir/lib/systemd/user" \
-  "$stage_dir/share/doc/gilder"
+  "$stage_dir/share/doc/gilder" \
+  "$stage_dir/share/doc/gilder/scripts"
 
 for binary in gilderd gilderctl gilder-convert; do
   source_path="target/${target_profile_dir}/${binary}"
@@ -106,7 +107,8 @@ install -m 0644 docs/man/*.1 "$stage_dir/share/man/man1/"
 install -m 0644 completions/bash/* "$stage_dir/share/bash-completion/completions/"
 install -m 0644 completions/zsh/* "$stage_dir/share/zsh/site-functions/"
 install -m 0644 packaging/systemd/gilder.service "$stage_dir/lib/systemd/user/gilder.service"
-install -m 0644 README.md docs/packaging.md docs/todo.md "$stage_dir/share/doc/gilder/"
+install -m 0644 README.md docs/packaging.md docs/todo.md docs/video-validation.md "$stage_dir/share/doc/gilder/"
+install -m 0755 scripts/video-codec-smoke.sh "$stage_dir/share/doc/gilder/scripts/video-codec-smoke.sh"
 
 cat > "$stage_dir/MANIFEST.txt" <<EOF
 name: gilder
@@ -127,6 +129,11 @@ contents:
   share/zsh/site-functions/_gilderctl
   share/zsh/site-functions/_gilder-convert
   lib/systemd/user/gilder.service
+  share/doc/gilder/README.md
+  share/doc/gilder/packaging.md
+  share/doc/gilder/todo.md
+  share/doc/gilder/video-validation.md
+  share/doc/gilder/scripts/video-codec-smoke.sh
 EOF
 
 mkdir -p "$dest_dir"
