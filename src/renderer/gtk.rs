@@ -1,16 +1,21 @@
 //! GTK 4 + layer-shell renderer for static wallpapers.
 
-use super::StaticWallpaperPlan;
+use super::{StaticRenderSyncPlan, StaticWallpaperPlan};
 use crate::core::FitMode;
 use gtk::gdk;
 use gtk::gio;
 use gtk::prelude::*;
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub struct GtkStaticRenderer {
     application: gtk::Application,
-    windows: BTreeMap<String, gtk::ApplicationWindow>,
+    windows: BTreeMap<String, RenderedOutput>,
+}
+
+struct RenderedOutput {
+    window: gtk::ApplicationWindow,
+    provider: Option<gtk::CssProvider>,
 }
 
 impl GtkStaticRenderer {
@@ -28,24 +33,69 @@ impl GtkStaticRenderer {
         &self.application
     }
 
-    pub fn set_static_wallpaper(&mut self, plan: &StaticWallpaperPlan) {
+    pub fn sync_static_render_plan(&mut self, sync: &StaticRenderSyncPlan) {
+        let mut desired_outputs = BTreeSet::new();
+
+        for output_name in sync
+            .removals
+            .iter()
+            .chain(sync.errors.iter().map(|failure| &failure.output_name))
+        {
+            self.remove_output(output_name);
+        }
+
+        for plan in &sync.plans {
+            if self.set_static_wallpaper(plan) {
+                desired_outputs.insert(plan.output_name.clone());
+            }
+        }
+
+        let stale_outputs = self
+            .windows
+            .keys()
+            .filter(|output_name| !desired_outputs.contains(*output_name))
+            .cloned()
+            .collect::<Vec<_>>();
+        for output_name in stale_outputs {
+            self.remove_output(&output_name);
+        }
+    }
+
+    pub fn set_static_wallpaper(&mut self, plan: &StaticWallpaperPlan) -> bool {
+        let Some(monitor) = monitor_for_output(&plan.output_name) else {
+            self.remove_output(&plan.output_name);
+            return false;
+        };
         let window = self
             .windows
             .entry(plan.output_name.clone())
-            .or_insert_with(|| build_background_window(&self.application, &plan.output_name));
+            .or_insert_with(|| RenderedOutput {
+                window: build_background_window(&self.application, &plan.output_name, &monitor),
+                provider: None,
+            });
+        window.window.set_monitor(Some(&monitor));
         apply_static_wallpaper(window, plan);
-        window.present();
+        window.window.present();
+        true
     }
 
     pub fn remove_output(&mut self, output_name: &str) {
-        if let Some(window) = self.windows.remove(output_name) {
-            window.close();
+        if let Some(mut output) = self.windows.remove(output_name) {
+            if let Some(provider) = output.provider.take() {
+                let display = gtk::prelude::WidgetExt::display(&output.window);
+                gtk::style_context_remove_provider_for_display(&display, &provider);
+            }
+            output.window.close();
         }
     }
 }
 
+pub fn can_read_gdk_desktop_outputs() -> bool {
+    gtk::is_initialized_main_thread() && gdk::Display::default().is_some()
+}
+
 pub fn gdk_desktop_outputs() -> Vec<crate::desktop::DesktopOutput> {
-    if !gtk::is_initialized_main_thread() {
+    if !can_read_gdk_desktop_outputs() {
         return Vec::new();
     }
     let Some(display) = gdk::Display::default() else {
@@ -61,11 +111,7 @@ pub fn gdk_desktop_outputs() -> Vec<crate::desktop::DesktopOutput> {
             continue;
         };
         let geometry = monitor.geometry();
-        let name = monitor
-            .connector()
-            .map(|value| value.to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| format!("gdk-monitor-{index}"));
+        let name = monitor_output_name(&monitor, index);
         outputs.push(crate::desktop::DesktopOutput {
             name,
             make: monitor.manufacturer().map(|value| value.to_string()),
@@ -85,6 +131,7 @@ pub fn gdk_desktop_outputs() -> Vec<crate::desktop::DesktopOutput> {
 fn build_background_window(
     application: &gtk::Application,
     output_name: &str,
+    monitor: &gdk::Monitor,
 ) -> gtk::ApplicationWindow {
     let window = gtk::ApplicationWindow::builder()
         .application(application)
@@ -98,6 +145,7 @@ fn build_background_window(
     window.set_layer(Layer::Background);
     window.set_keyboard_mode(KeyboardMode::None);
     window.set_exclusive_zone(-1);
+    window.set_monitor(Some(monitor));
     for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
         window.set_anchor(edge, true);
     }
@@ -110,8 +158,11 @@ fn build_background_window(
     window
 }
 
-fn apply_static_wallpaper(window: &gtk::ApplicationWindow, plan: &StaticWallpaperPlan) {
-    let display = gtk::prelude::WidgetExt::display(window);
+fn apply_static_wallpaper(output: &mut RenderedOutput, plan: &StaticWallpaperPlan) {
+    let display = gtk::prelude::WidgetExt::display(&output.window);
+    if let Some(provider) = output.provider.take() {
+        gtk::style_context_remove_provider_for_display(&display, &provider);
+    }
     let provider = gtk::CssProvider::new();
     provider.load_from_data(&static_wallpaper_css(plan));
     gtk::style_context_add_provider_for_display(
@@ -119,6 +170,32 @@ fn apply_static_wallpaper(window: &gtk::ApplicationWindow, plan: &StaticWallpape
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+    output.provider = Some(provider);
+}
+
+fn monitor_for_output(output_name: &str) -> Option<gdk::Monitor> {
+    let display = gdk::Display::default()?;
+    let monitors = display.monitors();
+    for index in 0..monitors.n_items() {
+        let Some(item) = monitors.item(index) else {
+            continue;
+        };
+        let Ok(monitor) = item.downcast::<gdk::Monitor>() else {
+            continue;
+        };
+        if monitor_output_name(&monitor, index) == output_name {
+            return Some(monitor);
+        }
+    }
+    None
+}
+
+fn monitor_output_name(monitor: &gdk::Monitor, index: u32) -> String {
+    monitor
+        .connector()
+        .map(|value| value.to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("gdk-monitor-{index}"))
 }
 
 fn static_wallpaper_css(plan: &StaticWallpaperPlan) -> String {

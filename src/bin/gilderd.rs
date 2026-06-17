@@ -6,9 +6,12 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
+#[cfg(feature = "gtk-renderer")]
+use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use gilder::config::{ApplicationPaths, GilderConfig};
 use gilder::ipc::RequestMethod;
+use gilder::renderer::StaticRenderSyncPlan;
 use gilder::state::AppState;
 use serde_json::{Value, json};
 
@@ -20,19 +23,37 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
+    let context = load_daemon_context()?;
+    let listener = bind_ipc_listener()?;
+
+    #[cfg(feature = "gtk-renderer")]
+    {
+        run_gtk_daemon(context, listener)
+    }
+
+    #[cfg(not(feature = "gtk-renderer"))]
+    {
+        run_ipc_daemon(context, listener);
+        Ok(())
+    }
+}
+
+fn load_daemon_context() -> Result<DaemonContext, String> {
     let paths = ApplicationPaths::from_env().map_err(|err| err.to_string())?;
     let config = GilderConfig::load(&paths.config_file)
         .map_err(|err| format!("failed to load {}: {err}", paths.config_file.display()))?;
     let state = gilder::state::load_state(&paths.state_file)
         .map_err(|err| format!("failed to load {}: {err}", paths.state_file.display()))?;
     let desktop = gilder::desktop::adapters::read_desktop_snapshot(&config.adapters);
-    let context = DaemonContext {
+    Ok(DaemonContext {
         paths,
         config,
         state,
         desktop,
-    };
+    })
+}
 
+fn bind_ipc_listener() -> Result<UnixListener, String> {
     let socket = gilder::ipc::runtime_socket_path().ok_or_else(|| {
         "XDG_RUNTIME_DIR is not set; cannot create Wayland-session IPC".to_owned()
     })?;
@@ -59,7 +80,88 @@ fn run() -> Result<(), String> {
     })?;
     eprintln!("gilderd: listening on {}", socket.display());
 
-    let runtime = Arc::new(DaemonRuntime::new(context));
+    Ok(listener)
+}
+
+#[cfg(not(feature = "gtk-renderer"))]
+fn run_ipc_daemon(context: DaemonContext, listener: UnixListener) {
+    let runtime = Arc::new(DaemonRuntime::new(context, None));
+    accept_loop(listener, runtime);
+}
+
+#[cfg(feature = "gtk-renderer")]
+fn run_gtk_daemon(context: DaemonContext, listener: UnixListener) -> Result<(), String> {
+    use gtk::prelude::*;
+
+    let (renderer_sender, renderer_receiver) = mpsc::channel::<StaticRenderSyncPlan>();
+    let runtime = Arc::new(DaemonRuntime::new(context, Some(renderer_sender)));
+    spawn_accept_loop(listener, Arc::clone(&runtime));
+
+    let renderer = gilder::renderer::gtk::GtkStaticRenderer::new("io.github.elelcode.Gilder");
+    let application = renderer.application().clone();
+    let renderer = Rc::new(RefCell::new(renderer));
+    let receiver = Rc::new(RefCell::new(Some(renderer_receiver)));
+    let timers_installed = Rc::new(std::cell::Cell::new(false));
+
+    let runtime_for_activate = Arc::clone(&runtime);
+    let renderer_for_activate = Rc::clone(&renderer);
+    let receiver_for_activate = Rc::clone(&receiver);
+    let timers_for_activate = Rc::clone(&timers_installed);
+    application.connect_activate(move |_| {
+        match refreshed_render_sync(&runtime_for_activate) {
+            Ok(sync) => renderer_for_activate
+                .borrow_mut()
+                .sync_static_render_plan(&sync),
+            Err(err) => eprintln!("gilderd: failed to prepare initial render sync: {err}"),
+        }
+
+        if timers_for_activate.replace(true) {
+            return;
+        }
+
+        if let Some(receiver) = receiver_for_activate.borrow_mut().take() {
+            let renderer_for_updates = Rc::clone(&renderer_for_activate);
+            gtk::glib::timeout_add_local(Duration::from_millis(50), move || {
+                while let Ok(sync) = receiver.try_recv() {
+                    renderer_for_updates
+                        .borrow_mut()
+                        .sync_static_render_plan(&sync);
+                }
+                gtk::glib::ControlFlow::Continue
+            });
+        }
+
+        let runtime_for_refresh = Arc::clone(&runtime_for_activate);
+        let renderer_for_refresh = Rc::clone(&renderer_for_activate);
+        gtk::glib::timeout_add_local(Duration::from_secs(2), move || {
+            match refreshed_render_sync(&runtime_for_refresh) {
+                Ok(sync) => renderer_for_refresh
+                    .borrow_mut()
+                    .sync_static_render_plan(&sync),
+                Err(err) => eprintln!("gilderd: failed to refresh render sync: {err}"),
+            }
+            gtk::glib::ControlFlow::Continue
+        });
+    });
+
+    let _hold = application.hold();
+    let exit_code = application.run();
+    if exit_code == gtk::glib::ExitCode::SUCCESS {
+        Ok(())
+    } else {
+        Err(format!(
+            "GTK application exited with status {}",
+            exit_code.get()
+        ))
+    }
+}
+
+#[cfg(feature = "gtk-renderer")]
+fn spawn_accept_loop(listener: UnixListener, runtime: Arc<DaemonRuntime>) {
+    thread::spawn(move || accept_loop(listener, runtime));
+}
+
+fn accept_loop(listener: UnixListener, runtime: Arc<DaemonRuntime>) {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
@@ -73,8 +175,6 @@ fn run() -> Result<(), String> {
             Err(err) => eprintln!("gilderd: failed to accept client: {err}"),
         }
     }
-
-    Ok(())
 }
 
 fn prepare_socket_parent(socket: &PathBuf) -> Result<(), String> {
@@ -122,6 +222,9 @@ fn handle_client(mut stream: UnixStream, runtime: Arc<DaemonRuntime>) -> Result<
             write_line(&mut stream, &outcome.response)?;
             if let Some(event) = outcome.event {
                 runtime.watchers.broadcast("state.changed", event);
+            }
+            if let Some(render_sync) = outcome.render_sync {
+                runtime.queue_render_sync(render_sync);
             }
             Ok(())
         }
@@ -172,13 +275,18 @@ fn write_line(stream: &mut UnixStream, line: &str) -> Result<(), String> {
 struct DaemonRuntime {
     context: Mutex<DaemonContext>,
     watchers: WatchHub,
+    renderer_updates: Option<mpsc::Sender<StaticRenderSyncPlan>>,
 }
 
 impl DaemonRuntime {
-    fn new(context: DaemonContext) -> Self {
+    fn new(
+        context: DaemonContext,
+        renderer_updates: Option<mpsc::Sender<StaticRenderSyncPlan>>,
+    ) -> Self {
         Self {
             context: Mutex::new(context),
             watchers: WatchHub::new(),
+            renderer_updates,
         }
     }
 
@@ -186,6 +294,14 @@ impl DaemonRuntime {
         self.context
             .lock()
             .map_err(|_| "daemon context lock poisoned".to_owned())
+    }
+
+    fn queue_render_sync(&self, render_sync: StaticRenderSyncPlan) {
+        if let Some(sender) = &self.renderer_updates {
+            if sender.send(render_sync).is_err() {
+                eprintln!("gilderd: GTK renderer update queue is closed");
+            }
+        }
     }
 }
 
@@ -236,6 +352,7 @@ struct DaemonContext {
 struct IpcOutcome {
     response: String,
     event: Option<Value>,
+    render_sync: Option<StaticRenderSyncPlan>,
 }
 
 impl IpcOutcome {
@@ -243,13 +360,15 @@ impl IpcOutcome {
         Self {
             response,
             event: None,
+            render_sync: None,
         }
     }
 
-    fn with_event(response: String, event: Value) -> Self {
+    fn with_render_sync(response: String, event: Value, render_sync: StaticRenderSyncPlan) -> Self {
         Self {
             response,
             event: Some(event),
+            render_sync: Some(render_sync),
         }
     }
 }
@@ -319,6 +438,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                 IpcOutcome::response(response)
             } else {
                 refresh_desktop(context);
+                let render_sync = current_render_sync(context);
                 let response = gilder::ipc::success_response(
                     &request.id,
                     json!({
@@ -329,8 +449,9 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                         "value": value,
                     }),
                 );
-                let event = state_changed_event("properties.set", output.as_deref(), context);
-                IpcOutcome::with_event(response, event)
+                let event =
+                    state_changed_event("properties.set", output.as_deref(), context, &render_sync);
+                IpcOutcome::with_render_sync(response, event, render_sync)
             }
         }
         RequestMethod::PropertiesUnset { output, key } => {
@@ -339,6 +460,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                 IpcOutcome::response(response)
             } else {
                 refresh_desktop(context);
+                let render_sync = current_render_sync(context);
                 let response = gilder::ipc::success_response(
                     &request.id,
                     json!({
@@ -349,8 +471,13 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                         "removed": removed,
                     }),
                 );
-                let event = state_changed_event("properties.unset", output.as_deref(), context);
-                IpcOutcome::with_event(response, event)
+                let event = state_changed_event(
+                    "properties.unset",
+                    output.as_deref(),
+                    context,
+                    &render_sync,
+                );
+                IpcOutcome::with_render_sync(response, event, render_sync)
             }
         }
         RequestMethod::Set { wallpaper, output } => {
@@ -361,16 +488,18 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                 IpcOutcome::response(response)
             } else {
                 refresh_desktop(context);
-                let response = renderer_placeholder_response(
+                let render_sync = current_render_sync(context);
+                let response = renderer_action_response(
                     &request.id,
                     "set",
                     json!({
                         "wallpaper": wallpaper,
                         "output": output,
                     }),
+                    &render_sync,
                 );
-                let event = state_changed_event("set", output.as_deref(), context);
-                IpcOutcome::with_event(response, event)
+                let event = state_changed_event("set", output.as_deref(), context, &render_sync);
+                IpcOutcome::with_render_sync(response, event, render_sync)
             }
         }
         RequestMethod::Pause { output } => {
@@ -379,15 +508,17 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                 IpcOutcome::response(response)
             } else {
                 refresh_desktop(context);
-                let response = renderer_placeholder_response(
+                let render_sync = current_render_sync(context);
+                let response = renderer_action_response(
                     &request.id,
                     "pause",
                     json!({
                         "output": output,
                     }),
+                    &render_sync,
                 );
-                let event = state_changed_event("pause", output.as_deref(), context);
-                IpcOutcome::with_event(response, event)
+                let event = state_changed_event("pause", output.as_deref(), context, &render_sync);
+                IpcOutcome::with_render_sync(response, event, render_sync)
             }
         }
         RequestMethod::Resume { output } => {
@@ -396,15 +527,17 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                 IpcOutcome::response(response)
             } else {
                 refresh_desktop(context);
-                let response = renderer_placeholder_response(
+                let render_sync = current_render_sync(context);
+                let response = renderer_action_response(
                     &request.id,
                     "resume",
                     json!({
                         "output": output,
                     }),
+                    &render_sync,
                 );
-                let event = state_changed_event("resume", output.as_deref(), context);
-                IpcOutcome::with_event(response, event)
+                let event = state_changed_event("resume", output.as_deref(), context, &render_sync);
+                IpcOutcome::with_render_sync(response, event, render_sync)
             }
         }
         RequestMethod::Stop { output } => {
@@ -413,15 +546,17 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                 IpcOutcome::response(response)
             } else {
                 refresh_desktop(context);
-                let response = renderer_placeholder_response(
+                let render_sync = current_render_sync(context);
+                let response = renderer_action_response(
                     &request.id,
                     "stop",
                     json!({
                         "output": output,
                     }),
+                    &render_sync,
                 );
-                let event = state_changed_event("stop", output.as_deref(), context);
-                IpcOutcome::with_event(response, event)
+                let event = state_changed_event("stop", output.as_deref(), context, &render_sync);
+                IpcOutcome::with_render_sync(response, event, render_sync)
             }
         }
     }
@@ -434,6 +569,21 @@ fn persist_or_error(id: &serde_json::Value, context: &DaemonContext) -> Option<S
 }
 
 fn refresh_desktop(context: &mut DaemonContext) {
+    #[cfg(feature = "gtk-renderer")]
+    {
+        if context.config.adapters.generic_wayland
+            && !gilder::renderer::gtk::can_read_gdk_desktop_outputs()
+        {
+            let mut adapters = context.config.adapters.clone();
+            adapters.generic_wayland = false;
+            let snapshot = gilder::desktop::adapters::read_desktop_snapshot(&adapters);
+            if snapshot.compositor.is_some() || !snapshot.outputs.is_empty() {
+                context.desktop = snapshot;
+            }
+            return;
+        }
+    }
+
     context.desktop = gilder::desktop::adapters::read_desktop_snapshot(&context.config.adapters);
 }
 
@@ -475,38 +625,47 @@ fn output_reports(context: &DaemonContext) -> Vec<serde_json::Value> {
 }
 
 fn snapshot_event(context: &DaemonContext) -> Value {
+    let render_sync = current_render_sync(context);
     json!({
         "outputs": output_reports(context),
         "persisted_state": context.state,
-        "render_sync": render_sync_report(context),
+        "render_sync": render_sync,
         "renderer": renderer_name(),
     })
 }
 
-fn state_changed_event(action: &str, output: Option<&str>, context: &DaemonContext) -> Value {
+fn state_changed_event(
+    action: &str,
+    output: Option<&str>,
+    context: &DaemonContext,
+    render_sync: &StaticRenderSyncPlan,
+) -> Value {
     json!({
         "action": action,
         "output": output,
         "outputs": output_reports(context),
         "persisted_state": context.state,
-        "render_sync": render_sync_report(context),
+        "render_sync": render_sync,
     })
 }
 
-fn renderer_placeholder_response(
+fn renderer_action_response(
     id: &serde_json::Value,
     accepted_method: &str,
     accepted_params: serde_json::Value,
+    render_sync: &StaticRenderSyncPlan,
 ) -> String {
-    gilder::ipc::success_response(
-        id,
-        json!({
-            "accepted": true,
-            "method": accepted_method,
-            "params": accepted_params,
-            "note": "renderer is not implemented yet",
-        }),
-    )
+    let mut result = json!({
+        "accepted": true,
+        "method": accepted_method,
+        "params": accepted_params,
+        "renderer": renderer_name(),
+        "render_sync": render_sync,
+    });
+    if !cfg!(feature = "gtk-renderer") {
+        result["note"] = json!("renderer was built without the gtk-renderer feature");
+    }
+    gilder::ipc::success_response(id, result)
 }
 
 fn renderer_name() -> &'static str {
@@ -518,9 +677,20 @@ fn renderer_name() -> &'static str {
 }
 
 fn render_sync_report(context: &DaemonContext) -> Value {
-    json!(gilder::renderer::static_render_sync_plan(
+    json!(current_render_sync(context))
+}
+
+fn current_render_sync(context: &DaemonContext) -> StaticRenderSyncPlan {
+    gilder::renderer::static_render_sync_plan(
         &context.desktop,
         &context.state,
         &context.paths.cache_dir,
-    ))
+    )
+}
+
+#[cfg(feature = "gtk-renderer")]
+fn refreshed_render_sync(runtime: &DaemonRuntime) -> Result<StaticRenderSyncPlan, String> {
+    let mut context = runtime.lock_context()?;
+    refresh_desktop(&mut context);
+    Ok(current_render_sync(&context))
 }
