@@ -2,12 +2,17 @@ use crate::core::{FORMAT_NAME, FORMAT_VERSION, MANIFEST_FILE, load_gwpdir};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
+use std::env;
 use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const PROJECT_FILE: &str = "project.json";
+const FFMPEG_BINARY: &str = "ffmpeg";
+const VIDEO_POSTER_WIDTH: u32 = 1920;
+const VIDEO_THUMBNAIL_WIDTH: u32 = 512;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ConversionSummary {
@@ -435,10 +440,7 @@ fn copy_preview_or_generate(
             }))
         }
         MissingPreviewFallback::Video { source } => {
-            let preview = generate_video_placeholder_preview(project, output_dir, source, report)?;
-            report.warnings.push(
-                "No preview image found; generated metadata-based video poster and thumbnail fallback. First-frame extraction is not implemented yet.".to_owned(),
-            );
+            let preview = generate_video_preview(project, output_dir, source, report)?;
             Ok(Some(preview))
         }
         MissingPreviewFallback::Scene { source } => {
@@ -477,6 +479,177 @@ fn generate_video_placeholder_preview(
     report: &mut ConversionReport,
 ) -> Result<PreviewPaths, ConversionError> {
     generate_svg_placeholder_preview(project, output_dir, source, PlaceholderKind::Video, report)
+}
+
+fn generate_video_preview(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    source: &str,
+    report: &mut ConversionReport,
+) -> Result<PreviewPaths, ConversionError> {
+    match generate_video_first_frame_preview(project, output_dir, source, report) {
+        Ok(preview) => {
+            report
+                .converted_features
+                .push("video:first-frame-preview".to_owned());
+            report.warnings.push(
+                "No preview image found; generated poster and thumbnail from the first video frame."
+                    .to_owned(),
+            );
+            Ok(preview)
+        }
+        Err(reason) => {
+            let preview = generate_video_placeholder_preview(project, output_dir, source, report)?;
+            report.warnings.push(format!(
+                "No preview image found; could not extract the first video frame ({reason}); generated metadata-based video poster and thumbnail fallback."
+            ));
+            Ok(preview)
+        }
+    }
+}
+
+fn generate_video_first_frame_preview(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    source: &str,
+    report: &mut ConversionReport,
+) -> Result<PreviewPaths, String> {
+    let relative = normalize_relative_path(source).map_err(|err| err.to_string())?;
+    let source_path = project.root.join(relative);
+    let ffmpeg = find_executable_on_path(FFMPEG_BINARY)
+        .ok_or_else(|| format!("{FFMPEG_BINARY} executable was not found on PATH"))?;
+    generate_video_first_frame_preview_with_ffmpeg(&ffmpeg, &source_path, output_dir, report)
+}
+
+fn generate_video_first_frame_preview_with_ffmpeg(
+    ffmpeg: &Path,
+    source_path: &Path,
+    output_dir: &Path,
+    report: &mut ConversionReport,
+) -> Result<PreviewPaths, String> {
+    let preview_dir = output_dir.join("previews");
+    fs::create_dir_all(&preview_dir)
+        .map_err(|err| format!("failed to create preview directory: {err}"))?;
+
+    let poster_path = preview_dir.join("poster.jpg");
+    let thumbnail_path = preview_dir.join("thumbnail.jpg");
+    let result = (|| {
+        extract_video_frame(ffmpeg, source_path, &poster_path, VIDEO_POSTER_WIDTH, 2)?;
+        extract_video_frame(
+            ffmpeg,
+            source_path,
+            &thumbnail_path,
+            VIDEO_THUMBNAIL_WIDTH,
+            4,
+        )?;
+        Ok::<(), String>(())
+    })();
+
+    if let Err(err) = result {
+        let _ = fs::remove_file(&poster_path);
+        let _ = fs::remove_file(&thumbnail_path);
+        return Err(err);
+    }
+
+    let poster_package_path =
+        path_to_package_string(poster_path.strip_prefix(output_dir).unwrap_or(&poster_path));
+    let thumbnail_package_path = path_to_package_string(
+        thumbnail_path
+            .strip_prefix(output_dir)
+            .unwrap_or(&thumbnail_path),
+    );
+    report.generated_assets.push(poster_package_path.clone());
+    report.generated_assets.push(thumbnail_package_path.clone());
+
+    Ok(PreviewPaths {
+        thumbnail: Some(thumbnail_package_path),
+        poster: Some(poster_package_path),
+    })
+}
+
+fn extract_video_frame(
+    ffmpeg: &Path,
+    source_path: &Path,
+    output_path: &Path,
+    width: u32,
+    quality: u32,
+) -> Result<(), String> {
+    let scale_filter = format!("scale={width}:-2");
+    let quality = quality.to_string();
+    let output = Command::new(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(source_path)
+        .args([
+            "-map",
+            "0:v:0",
+            "-frames:v",
+            "1",
+            "-an",
+            "-sn",
+            "-vf",
+            &scale_filter,
+            "-q:v",
+            &quality,
+        ])
+        .arg(output_path)
+        .output()
+        .map_err(|err| format!("failed to run {}: {err}", ffmpeg.display()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let reason = if stderr.is_empty() {
+            output.status.to_string()
+        } else {
+            format!("{}: {stderr}", output.status)
+        };
+        return Err(format!("{} failed: {reason}", ffmpeg.display()));
+    }
+
+    let metadata = fs::metadata(output_path).map_err(|err| {
+        format!(
+            "{} did not create {}: {err}",
+            ffmpeg.display(),
+            output_path.display()
+        )
+    })?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(format!(
+            "{} created an empty frame at {}",
+            ffmpeg.display(),
+            output_path.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn find_executable_on_path(program: &str) -> Option<PathBuf> {
+    let path = env::var_os("PATH")?;
+    find_executable_in_path_list(program, env::split_paths(&path))
+}
+
+fn find_executable_in_path_list(
+    program: &str,
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> Option<PathBuf> {
+    paths
+        .into_iter()
+        .map(|path| path.join(program))
+        .find(|candidate| is_executable_file(candidate))
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 enum PlaceholderKind {
@@ -1186,8 +1359,72 @@ mod tests {
             report
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("First-frame extraction is not implemented yet"))
+                .any(|warning| warning.contains("metadata-based video poster"))
         );
+    }
+
+    #[test]
+    fn generates_video_preview_from_first_frame_with_ffmpeg() {
+        let source = TestDir::new("we-video-frame-source");
+        let output = TestDir::new("we-video-frame-output");
+        let tools = TestDir::new("we-video-frame-tools");
+        output.remove();
+        source.write_file("loop.mp4", "not real mp4");
+        let ffmpeg = tools.path().join("ffmpeg");
+        fs::write(
+            &ffmpeg,
+            r#"#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    *.jpg) printf 'jpeg-frame' > "$arg" ;;
+  esac
+done
+exit 0
+"#,
+        )
+        .unwrap();
+        make_executable(&ffmpeg);
+
+        let mut report = ConversionReport::new("video");
+        let preview = generate_video_first_frame_preview_with_ffmpeg(
+            &ffmpeg,
+            &source.path().join("loop.mp4"),
+            output.path(),
+            &mut report,
+        )
+        .unwrap();
+
+        assert_eq!(preview.poster.as_deref(), Some("previews/poster.jpg"));
+        assert_eq!(preview.thumbnail.as_deref(), Some("previews/thumbnail.jpg"));
+        assert_eq!(
+            fs::read(output.path().join("previews/poster.jpg")).unwrap(),
+            b"jpeg-frame"
+        );
+        assert_eq!(
+            fs::read(output.path().join("previews/thumbnail.jpg")).unwrap(),
+            b"jpeg-frame"
+        );
+        assert!(
+            report
+                .generated_assets
+                .contains(&"previews/poster.jpg".to_owned())
+        );
+        assert!(
+            report
+                .generated_assets
+                .contains(&"previews/thumbnail.jpg".to_owned())
+        );
+    }
+
+    #[test]
+    fn finds_executable_on_path_list() {
+        let tools = TestDir::new("we-path-tools");
+        let ffmpeg = tools.path().join("ffmpeg");
+        fs::write(&ffmpeg, "#!/bin/sh\nexit 0\n").unwrap();
+        make_executable(&ffmpeg);
+
+        let found = find_executable_in_path_list("ffmpeg", [tools.path().to_path_buf()]);
+        assert_eq!(found.as_deref(), Some(ffmpeg.as_path()));
     }
 
     #[test]
@@ -1334,4 +1571,16 @@ mod tests {
             let _ = fs::remove_dir_all(&self.path);
         }
     }
+
+    #[cfg(unix)]
+    fn make_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[cfg(not(unix))]
+    fn make_executable(_path: &Path) {}
 }

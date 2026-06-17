@@ -76,7 +76,8 @@ fn help_text() -> String {
         "  gilder-convert wallpaper-engine <source-project-dir> <dest.gwpdir>",
         "  gilder-convert wallpaper-engine --pack <source-project-dir> <dest.gwp>",
         "",
-        "The initial converter supports static image, video, and web wallpapers. Scene projects are reported as unsupported for now.",
+        "The converter supports static image, video, web, and conservative scene-lite Wallpaper Engine projects.",
+        "Video projects without previews use ffmpeg from PATH for first-frame poster generation when available.",
     ]
     .join("\n")
 }
