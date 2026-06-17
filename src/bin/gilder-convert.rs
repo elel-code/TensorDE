@@ -14,17 +14,16 @@ fn run() -> Result<(), String> {
         [kind, source, dest] if kind == "wallpaper-engine" => {
             let source = PathBuf::from(source);
             let dest = PathBuf::from(dest);
+            let summary = gilder::convert::wallpaper_engine::convert_project(&source, &dest)
+                .map_err(|err| format!("failed to convert Wallpaper Engine project: {err}"))?;
             println!(
-                "planned conversion: Wallpaper Engine project {} -> {}",
-                source.display(),
-                dest.display()
+                "converted Wallpaper Engine {} wallpaper",
+                summary.source_type
             );
-            println!(
-                "output format: Gilder v{} ({})",
-                gilder::core::FORMAT_VERSION,
-                gilder::core::MANIFEST_FILE
-            );
-            println!("status: scanner and asset transcoders are tracked in docs/todo.md");
+            println!("title: {}", summary.title);
+            println!("output: {}", summary.output_dir.display());
+            println!("manifest: {}", summary.manifest_file.display());
+            println!("report: {}", summary.report_file.display());
             Ok(())
         }
         _ => Err(help_text()),
@@ -36,7 +35,7 @@ fn help_text() -> String {
         "usage:",
         "  gilder-convert wallpaper-engine <source-project-dir> <dest.gwpdir>",
         "",
-        "The initial converter will support static image, video, web, and a subset of scene wallpapers.",
+        "The initial converter supports static image, video, and web wallpapers. Scene projects are reported as unsupported for now.",
     ]
     .join("\n")
 }

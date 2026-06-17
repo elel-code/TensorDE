@@ -1,4 +1,5 @@
 pub mod config;
+pub mod convert;
 pub mod core;
 pub mod desktop;
 pub mod ipc;
