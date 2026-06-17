@@ -4,6 +4,7 @@ use super::protocol::{optional_json_string, PROTOCOL_VERSION};
 pub enum ClientCommand {
     Ping,
     Status,
+    Outputs,
     Set {
         wallpaper: String,
         output: Option<String>,
@@ -27,6 +28,9 @@ impl ClientCommand {
                 PROTOCOL_VERSION
             ),
             Self::Status => r#"{"jsonrpc":"2.0","id":1,"method":"status","params":{}}"#.to_owned(),
+            Self::Outputs => {
+                r#"{"jsonrpc":"2.0","id":1,"method":"outputs","params":{}}"#.to_owned()
+            }
             Self::Set { wallpaper, output } => format!(
                 r#"{{"jsonrpc":"2.0","id":1,"method":"set","params":{{"wallpaper":{},"output":{}}}}}"#,
                 optional_json_string(Some(wallpaper)),
@@ -52,6 +56,7 @@ pub fn parse_client_args(args: &[String]) -> Result<ClientCommand, String> {
     match args {
         [cmd] if cmd == "ping" => Ok(ClientCommand::Ping),
         [cmd] if cmd == "status" => Ok(ClientCommand::Status),
+        [cmd] if cmd == "outputs" => Ok(ClientCommand::Outputs),
         [cmd, wallpaper] if cmd == "set" => Ok(ClientCommand::Set {
             wallpaper: wallpaper.clone(),
             output: None,
@@ -83,6 +88,7 @@ pub fn help_text() -> String {
         "usage:",
         "  gilderctl ping",
         "  gilderctl status",
+        "  gilderctl outputs",
         "  gilderctl set <wallpaper.gwp|wallpaper.gwpdir> [--output <name>]",
         "  gilderctl pause [--output <name>]",
         "  gilderctl resume [--output <name>]",

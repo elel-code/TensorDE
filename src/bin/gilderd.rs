@@ -1,9 +1,13 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 
+use gilder::config::{ApplicationPaths, GilderConfig};
+use gilder::desktop::DesktopSnapshot;
 use gilder::ipc::RequestMethod;
+use gilder::state::AppState;
 use serde_json::json;
 
 fn main() {
@@ -14,23 +18,47 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
+    let paths = ApplicationPaths::from_env().map_err(|err| err.to_string())?;
+    let config = GilderConfig::load(&paths.config_file)
+        .map_err(|err| format!("failed to load {}: {err}", paths.config_file.display()))?;
+    let state = gilder::state::load_state(&paths.state_file)
+        .map_err(|err| format!("failed to load {}: {err}", paths.state_file.display()))?;
+    let mut context = DaemonContext {
+        paths,
+        config,
+        state,
+        desktop: DesktopSnapshot::placeholder(),
+    };
+
     let socket = gilder::ipc::runtime_socket_path().ok_or_else(|| {
         "XDG_RUNTIME_DIR is not set; cannot create Wayland-session IPC".to_owned()
     })?;
 
     prepare_socket_parent(&socket)?;
     if socket.exists() {
+        if UnixStream::connect(&socket).is_ok() {
+            return Err(format!(
+                "another gilderd instance is already listening on {}",
+                socket.display()
+            ));
+        }
         fs::remove_file(&socket)
-            .map_err(|err| format!("failed to replace stale socket {}: {err}", socket.display()))?;
+            .map_err(|err| format!("failed to remove stale socket {}: {err}", socket.display()))?;
     }
 
     let listener = UnixListener::bind(&socket)
         .map_err(|err| format!("failed to bind {}: {err}", socket.display()))?;
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).map_err(|err| {
+        format!(
+            "failed to set socket permissions {}: {err}",
+            socket.display()
+        )
+    })?;
     eprintln!("gilderd: listening on {}", socket.display());
 
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => handle_client(stream)?,
+            Ok(stream) => handle_client(stream, &mut context)?,
             Err(err) => eprintln!("gilderd: failed to accept client: {err}"),
         }
     }
@@ -43,10 +71,12 @@ fn prepare_socket_parent(socket: &PathBuf) -> Result<(), String> {
         .parent()
         .ok_or_else(|| format!("invalid socket path {}", socket.display()))?;
     fs::create_dir_all(parent)
-        .map_err(|err| format!("failed to create {}: {err}", parent.display()))
+        .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+        .map_err(|err| format!("failed to set permissions on {}: {err}", parent.display()))
 }
 
-fn handle_client(mut stream: UnixStream) -> Result<(), String> {
+fn handle_client(mut stream: UnixStream, context: &mut DaemonContext) -> Result<(), String> {
     let mut request = String::new();
     {
         let mut reader = BufReader::new(&stream);
@@ -56,7 +86,7 @@ fn handle_client(mut stream: UnixStream) -> Result<(), String> {
     }
 
     let response = match gilder::ipc::parse_request(&request) {
-        Ok(request) => handle_ipc_request(request),
+        Ok(request) => handle_ipc_request(request, context),
         Err(err) => gilder::ipc::error_response(err.id.as_ref(), err.code, &err.message),
     };
 
@@ -66,7 +96,14 @@ fn handle_client(mut stream: UnixStream) -> Result<(), String> {
         .map_err(|err| format!("failed to write IPC response: {err}"))
 }
 
-fn handle_ipc_request(request: gilder::ipc::IpcRequest) -> String {
+struct DaemonContext {
+    paths: ApplicationPaths,
+    config: GilderConfig,
+    state: AppState,
+    desktop: DesktopSnapshot,
+}
+
+fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonContext) -> String {
     match request.method {
         RequestMethod::Ping { protocol } => gilder::ipc::success_response(
             &request.id,
@@ -81,40 +118,112 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest) -> String {
             &request.id,
             json!({
                 "state": "idle",
-                "outputs": [],
+                "config_file": context.paths.config_file,
+                "state_file": context.paths.state_file,
+                "outputs": output_reports(context),
+                "persisted_state": context.state,
                 "renderer": "not-implemented",
             }),
         ),
-        RequestMethod::Set { wallpaper, output } => renderer_placeholder_response(
+        RequestMethod::Outputs => gilder::ipc::success_response(
             &request.id,
-            "set",
-            json!({
-                "wallpaper": wallpaper,
-                "output": output,
-            }),
+            json!({ "outputs": output_reports(context) }),
         ),
-        RequestMethod::Pause { output } => renderer_placeholder_response(
-            &request.id,
-            "pause",
-            json!({
-                "output": output,
-            }),
-        ),
-        RequestMethod::Resume { output } => renderer_placeholder_response(
-            &request.id,
-            "resume",
-            json!({
-                "output": output,
-            }),
-        ),
-        RequestMethod::Stop { output } => renderer_placeholder_response(
-            &request.id,
-            "stop",
-            json!({
-                "output": output,
-            }),
-        ),
+        RequestMethod::Set { wallpaper, output } => {
+            context
+                .state
+                .set_wallpaper(output.as_deref(), wallpaper.clone());
+            persist_or_error(&request.id, context).unwrap_or_else(|| {
+                renderer_placeholder_response(
+                    &request.id,
+                    "set",
+                    json!({
+                        "wallpaper": wallpaper,
+                        "output": output,
+                    }),
+                )
+            })
+        }
+        RequestMethod::Pause { output } => {
+            context.state.pause(output.as_deref(), true);
+            persist_or_error(&request.id, context).unwrap_or_else(|| {
+                renderer_placeholder_response(
+                    &request.id,
+                    "pause",
+                    json!({
+                        "output": output,
+                    }),
+                )
+            })
+        }
+        RequestMethod::Resume { output } => {
+            context.state.pause(output.as_deref(), false);
+            persist_or_error(&request.id, context).unwrap_or_else(|| {
+                renderer_placeholder_response(
+                    &request.id,
+                    "resume",
+                    json!({
+                        "output": output,
+                    }),
+                )
+            })
+        }
+        RequestMethod::Stop { output } => {
+            context.state.stop(output.as_deref());
+            persist_or_error(&request.id, context).unwrap_or_else(|| {
+                renderer_placeholder_response(
+                    &request.id,
+                    "stop",
+                    json!({
+                        "output": output,
+                    }),
+                )
+            })
+        }
     }
+}
+
+fn persist_or_error(id: &serde_json::Value, context: &DaemonContext) -> Option<String> {
+    gilder::state::save_state(&context.paths.state_file, &context.state)
+        .err()
+        .map(|err| gilder::ipc::error_response(Some(id), "internal_error", &err.to_string()))
+}
+
+fn output_reports(context: &DaemonContext) -> Vec<serde_json::Value> {
+    let mut names: Vec<String> = context
+        .desktop
+        .outputs
+        .iter()
+        .map(|output| output.name.clone())
+        .chain(context.state.outputs.keys().cloned())
+        .collect();
+    names.sort();
+    names.dedup();
+
+    names
+        .into_iter()
+        .map(|name| {
+            let desktop_output = context.desktop.output(&name);
+            let state = context
+                .state
+                .outputs
+                .get(&name)
+                .cloned()
+                .unwrap_or_default();
+            let performance = gilder::policy::decide_performance(
+                &context.config.performance,
+                &context.desktop,
+                desktop_output,
+                &state,
+            );
+            json!({
+                "name": name,
+                "desktop": desktop_output,
+                "state": state,
+                "performance": performance,
+            })
+        })
+        .collect()
 }
 
 fn renderer_placeholder_response(

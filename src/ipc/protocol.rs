@@ -16,6 +16,7 @@ pub enum RequestMethod {
         protocol: Option<u32>,
     },
     Status,
+    Outputs,
     Set {
         wallpaper: String,
         output: Option<String>,
@@ -103,6 +104,7 @@ pub fn parse_request(line: &str) -> Result<IpcRequest, RpcError> {
             }
         }
         "status" => RequestMethod::Status,
+        "outputs" => RequestMethod::Outputs,
         "set" => {
             let params: SetParams = parse_params(id.clone(), &envelope.method, envelope.params)?;
             RequestMethod::Set {

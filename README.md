@@ -28,10 +28,12 @@ Current status: project skeleton and design documents.
 cargo check
 cargo run --bin gilderd
 cargo run --bin gilderctl -- ping
-cargo run --bin gilderctl -- set ./examples/wallpapers/example.gwp --output eDP-1
+cargo run --bin gilderctl -- outputs
+cargo run --bin gilderctl -- set ./examples/wallpapers/static-demo.gwpdir --output eDP-1
 cargo run --bin gilder-convert -- wallpaper-engine /path/to/we/project ./out.gwpdir
 ```
 
-The daemon currently provides a minimal JSON-lines IPC loop. Rendering,
-GTK-layer-shell integration, Hyprland/niri output discovery, and full format
-parsing are tracked in `docs/todo.md`.
+The daemon currently provides JSON-RPC over a Unix socket, persistent state, and
+policy decisions for desktop-state-based throttling. Rendering,
+GTK-layer-shell integration, and Hyprland/niri output discovery are tracked in
+`docs/todo.md`.
