@@ -128,7 +128,9 @@ impl GstVideoRenderer {
             .pipelines
             .get(&plan.output_name)
             .map(|pipeline| {
-                pipeline.source != plan.source || pipeline.loop_playback != plan.loop_playback
+                pipeline.source != plan.source
+                    || pipeline.loop_playback != plan.loop_playback
+                    || pipeline.muted != plan.muted
             })
             .unwrap_or(true);
         if restart {
@@ -323,14 +325,22 @@ fn build_pipeline(
         .property("sync", true)
         .build()
         .map_err(|err| VideoRendererError::BuildElement(err.to_string()))?;
-    let audio_sink = gst::ElementFactory::make("fakesink")
-        .property("sync", false)
-        .build()
-        .map_err(|err| VideoRendererError::BuildElement(err.to_string()))?;
+    let audio_sink = if plan.muted {
+        Some(
+            gst::ElementFactory::make("fakesink")
+                .property("sync", false)
+                .build()
+                .map_err(|err| VideoRendererError::BuildElement(err.to_string()))?,
+        )
+    } else {
+        None
+    };
     let mut builder = gst::ElementFactory::make("playbin")
         .property("uri", uri.as_str())
-        .property("video-sink", &video_sink)
-        .property("audio-sink", &audio_sink);
+        .property("video-sink", &video_sink);
+    if let Some(audio_sink) = &audio_sink {
+        builder = builder.property("audio-sink", audio_sink);
+    }
     if let Some(frame_limiter) = &frame_limiter {
         builder = builder.property("video-filter", frame_limiter.element());
     }

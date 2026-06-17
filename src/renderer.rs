@@ -428,7 +428,7 @@ fn wallpaper_plan_with_target(
                 poster,
                 fit: effective_fit(*fit, fit_override),
                 loop_playback: *loop_playback,
-                muted: *muted,
+                muted: effective_muted(*muted, package.manifest.runtime.allow_audio),
                 manifest_max_fps: *max_fps,
                 target_max_fps: effective_max_fps(*max_fps, performance.max_fps),
                 start_offset_ms: *start_offset_ms,
@@ -593,6 +593,10 @@ fn effective_max_fps(manifest_max_fps: Option<u32>, policy_max_fps: Option<u32>)
         (None, Some(policy)) => Some(policy),
         (None, None) => None,
     }
+}
+
+fn effective_muted(entry_muted: bool, runtime_allow_audio: bool) -> bool {
+    entry_muted || !runtime_allow_audio
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1124,13 +1128,35 @@ mod tests {
         );
         assert_eq!(plan.fit, FitMode::Contain);
         assert!(!plan.loop_playback);
-        assert!(!plan.muted);
+        assert!(plan.muted);
         assert_eq!(plan.manifest_max_fps, Some(60));
         assert_eq!(plan.target_max_fps, Some(15));
         assert_eq!(plan.start_offset_ms, 1200);
         assert_eq!(sync.decisions[0].action, StaticRenderAction::Render);
         assert_eq!(sync.decisions[0].performance.mode, RenderMode::Throttled);
         assert_eq!(sync.decisions[0].performance.max_fps, Some(15));
+    }
+
+    #[test]
+    fn video_plan_keeps_audio_unmuted_when_runtime_allows_audio() {
+        let test_dir = TestDir::new("gilder-video-runtime-audio");
+        let package_dir = test_dir.path.join("video-demo.gwpdir");
+        write_minimal_video_gwpdir(&package_dir);
+        set_runtime_allow_audio(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert_eq!(sync.video_plans.len(), 1);
+        assert!(!sync.video_plans[0].muted);
     }
 
     #[test]
@@ -1533,6 +1559,16 @@ mod tests {
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
         manifest["runtime"] = json!({
             "pause_when_unfocused": true
+        });
+        fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    }
+
+    fn set_runtime_allow_audio(path: &Path) {
+        let manifest_path = path.join(crate::core::MANIFEST_FILE);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["runtime"] = json!({
+            "allow_audio": true
         });
         fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
     }

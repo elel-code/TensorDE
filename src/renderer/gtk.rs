@@ -180,7 +180,11 @@ impl RenderedOutput {
         let restart = self
             .video
             .as_ref()
-            .map(|video| video.source != plan.source || video.loop_playback != plan.loop_playback)
+            .map(|video| {
+                video.source != plan.source
+                    || video.loop_playback != plan.loop_playback
+                    || video.muted != plan.muted
+            })
             .unwrap_or(true);
         if restart {
             self.remove_video();
@@ -588,14 +592,22 @@ fn build_gtk_video_pipeline(
     picture.set_can_shrink(false);
     picture.set_content_fit(content_fit_for_fit(plan.fit));
 
-    let audio_sink = gst::ElementFactory::make("fakesink")
-        .property("sync", false)
-        .build()
-        .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
+    let audio_sink = if plan.muted {
+        Some(
+            gst::ElementFactory::make("fakesink")
+                .property("sync", false)
+                .build()
+                .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?,
+        )
+    } else {
+        None
+    };
     let mut builder = gst::ElementFactory::make("playbin")
         .property("uri", uri.as_str())
-        .property("video-sink", &video_sink)
-        .property("audio-sink", &audio_sink);
+        .property("video-sink", &video_sink);
+    if let Some(audio_sink) = &audio_sink {
+        builder = builder.property("audio-sink", audio_sink);
+    }
     if let Some(frame_limiter) = &frame_limiter {
         builder = builder.property("video-filter", frame_limiter.element());
     }
