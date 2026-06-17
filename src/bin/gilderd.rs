@@ -85,12 +85,15 @@ fn bind_ipc_listener() -> Result<UnixListener, String> {
 }
 
 fn renderer_update_senders() -> Vec<mpsc::Sender<StaticRenderSyncPlan>> {
-    #[cfg(not(feature = "video-renderer"))]
+    #[cfg(any(
+        not(feature = "video-renderer"),
+        all(feature = "video-renderer", feature = "gtk-renderer")
+    ))]
     {
         Vec::new()
     }
 
-    #[cfg(feature = "video-renderer")]
+    #[cfg(all(feature = "video-renderer", not(feature = "gtk-renderer")))]
     {
         let mut senders = Vec::new();
 
@@ -162,6 +165,8 @@ fn run_gtk_daemon(
                         .borrow_mut()
                         .sync_static_render_plan(&sync);
                 }
+                #[cfg(feature = "video-renderer")]
+                renderer_for_updates.borrow_mut().poll_video_buses();
                 gtk::glib::ControlFlow::Continue
             });
         }
@@ -193,7 +198,7 @@ fn spawn_accept_loop(listener: UnixListener, runtime: Arc<DaemonRuntime>) {
     thread::spawn(move || accept_loop(listener, runtime));
 }
 
-#[cfg(feature = "video-renderer")]
+#[cfg(all(feature = "video-renderer", not(feature = "gtk-renderer")))]
 fn spawn_video_renderer_loop(receiver: mpsc::Receiver<StaticRenderSyncPlan>) {
     thread::spawn(move || {
         let mut renderer = match gilder::renderer::video::GstVideoRenderer::new() {
@@ -740,7 +745,7 @@ fn renderer_name() -> &'static str {
         cfg!(feature = "gtk-renderer"),
         cfg!(feature = "video-renderer"),
     ) {
-        (true, true) => "gtk-layer-shell-static+gstreamer-video",
+        (true, true) => "gtk-layer-shell-static+gtk-gstreamer-video",
         (true, false) => "gtk-layer-shell-static",
         (false, true) => "gstreamer-video",
         (false, false) => "not-implemented",

@@ -1,12 +1,21 @@
-//! GTK 4 + layer-shell renderer for static wallpapers.
+//! GTK 4 + layer-shell renderer for wallpaper output surfaces.
 
+#[cfg(feature = "video-renderer")]
+use super::VideoWallpaperPlan;
 use super::{StaticRenderSyncPlan, StaticWallpaperPlan};
 use crate::core::FitMode;
+#[cfg(feature = "video-renderer")]
+use crate::policy::RenderMode;
 use gtk::gdk;
 use gtk::gio;
 use gtk::prelude::*;
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use std::collections::{BTreeMap, BTreeSet};
+
+#[cfg(feature = "video-renderer")]
+use gst::prelude::*;
+#[cfg(feature = "video-renderer")]
+use gstreamer as gst;
 
 pub struct GtkStaticRenderer {
     application: gtk::Application,
@@ -14,8 +23,16 @@ pub struct GtkStaticRenderer {
 }
 
 struct RenderedOutput {
+    #[cfg(feature = "video-renderer")]
+    output_name: String,
     window: gtk::ApplicationWindow,
+    #[cfg(feature = "video-renderer")]
+    surface: gtk::Box,
     provider: Option<gtk::CssProvider>,
+    #[cfg(feature = "video-renderer")]
+    video: Option<GtkVideoPipeline>,
+    #[cfg(feature = "video-renderer")]
+    video_error: Option<VideoErrorState>,
 }
 
 impl GtkStaticRenderer {
@@ -50,6 +67,29 @@ impl GtkStaticRenderer {
             }
         }
 
+        #[cfg(feature = "video-renderer")]
+        {
+            let mut desired_video_outputs = BTreeSet::new();
+            for plan in &sync.video_plans {
+                let mode = sync
+                    .decisions
+                    .iter()
+                    .find(|decision| decision.output_name == plan.output_name)
+                    .map(|decision| decision.performance.mode)
+                    .unwrap_or(RenderMode::Active);
+                if self.set_video_wallpaper(plan, mode) {
+                    desired_outputs.insert(plan.output_name.clone());
+                    desired_video_outputs.insert(plan.output_name.clone());
+                }
+            }
+
+            for output in self.windows.values_mut() {
+                if !desired_video_outputs.contains(output.output_name()) {
+                    output.remove_video();
+                }
+            }
+        }
+
         let stale_outputs = self
             .windows
             .keys()
@@ -69,9 +109,8 @@ impl GtkStaticRenderer {
         let window = self
             .windows
             .entry(plan.output_name.clone())
-            .or_insert_with(|| RenderedOutput {
-                window: build_background_window(&self.application, &plan.output_name, &monitor),
-                provider: None,
+            .or_insert_with(|| {
+                build_background_output(&self.application, &plan.output_name, &monitor)
             });
         window.window.set_monitor(Some(&monitor));
         apply_static_wallpaper(window, plan);
@@ -79,14 +118,127 @@ impl GtkStaticRenderer {
         true
     }
 
+    #[cfg(feature = "video-renderer")]
+    pub fn set_video_wallpaper(&mut self, plan: &VideoWallpaperPlan, mode: RenderMode) -> bool {
+        let Some(monitor) = monitor_for_output(&plan.output_name) else {
+            self.remove_output(&plan.output_name);
+            return false;
+        };
+        let output = self
+            .windows
+            .entry(plan.output_name.clone())
+            .or_insert_with(|| {
+                build_background_output(&self.application, &plan.output_name, &monitor)
+            });
+        output.window.set_monitor(Some(&monitor));
+
+        match output.set_video(plan, mode) {
+            Ok(()) => output.video_error = None,
+            Err(err) => output.note_video_error(plan, err),
+        }
+        output.window.present();
+        true
+    }
+
+    #[cfg(feature = "video-renderer")]
+    pub fn poll_video_buses(&mut self) {
+        for output in self.windows.values_mut() {
+            if let Some(video) = &mut output.video
+                && let Err(err) = video.poll_bus()
+            {
+                output.note_video_error_for_current_source(err);
+                output.remove_video();
+            }
+        }
+    }
+
     pub fn remove_output(&mut self, output_name: &str) {
         if let Some(mut output) = self.windows.remove(output_name) {
+            #[cfg(feature = "video-renderer")]
+            output.remove_video();
             if let Some(provider) = output.provider.take() {
                 let display = gtk::prelude::WidgetExt::display(&output.window);
                 gtk::style_context_remove_provider_for_display(&display, &provider);
             }
             output.window.close();
         }
+    }
+}
+
+impl RenderedOutput {
+    #[cfg(feature = "video-renderer")]
+    fn output_name(&self) -> &str {
+        &self.output_name
+    }
+
+    #[cfg(feature = "video-renderer")]
+    fn set_video(
+        &mut self,
+        plan: &VideoWallpaperPlan,
+        mode: RenderMode,
+    ) -> Result<(), GtkVideoError> {
+        let restart = self
+            .video
+            .as_ref()
+            .map(|video| video.source != plan.source || video.loop_playback != plan.loop_playback)
+            .unwrap_or(true);
+        if restart {
+            self.remove_video();
+            let video = GtkVideoPipeline::new(plan)?;
+            self.surface.append(video.widget());
+            self.video = Some(video);
+        }
+
+        let Some(video) = &mut self.video else {
+            return Err(GtkVideoError::MissingPipeline);
+        };
+        video.apply_plan(plan)?;
+        video.apply_mode(mode)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "video-renderer")]
+    fn remove_video(&mut self) {
+        if let Some(video) = self.video.take() {
+            self.surface.remove(video.widget());
+            video.stop();
+        }
+    }
+
+    #[cfg(feature = "video-renderer")]
+    fn note_video_error(&mut self, plan: &VideoWallpaperPlan, err: GtkVideoError) {
+        let error = VideoErrorState {
+            source: plan.source.clone(),
+            message: err.to_string(),
+        };
+        if self.video_error.as_ref() != Some(&error) {
+            eprintln!(
+                "gilderd: video surface renderer unavailable for {}: {}",
+                plan.output_name, error.message
+            );
+        }
+        self.video_error = Some(error);
+    }
+
+    #[cfg(feature = "video-renderer")]
+    fn note_video_error_for_current_source(&mut self, err: GtkVideoError) {
+        let source = self
+            .video
+            .as_ref()
+            .map(|video| video.source.clone())
+            .unwrap_or_default();
+        let error = VideoErrorState {
+            source,
+            message: err.to_string(),
+        };
+        if self.video_error.as_ref() != Some(&error) {
+            eprintln!(
+                "gilderd: video surface renderer pipeline error for {}: {}",
+                self.output_name(),
+                error.message
+            );
+        }
+        self.video_error = Some(error);
     }
 }
 
@@ -128,11 +280,11 @@ pub fn gdk_desktop_outputs() -> Vec<crate::desktop::DesktopOutput> {
     outputs
 }
 
-fn build_background_window(
+fn build_background_output(
     application: &gtk::Application,
     output_name: &str,
     monitor: &gdk::Monitor,
-) -> gtk::ApplicationWindow {
+) -> RenderedOutput {
     let window = gtk::ApplicationWindow::builder()
         .application(application)
         .decorated(false)
@@ -155,7 +307,18 @@ fn build_background_window(
     surface.set_vexpand(true);
     surface.set_widget_name(&css_widget_name(output_name));
     window.set_child(Some(&surface));
-    window
+    RenderedOutput {
+        #[cfg(feature = "video-renderer")]
+        output_name: output_name.to_owned(),
+        window,
+        #[cfg(feature = "video-renderer")]
+        surface,
+        provider: None,
+        #[cfg(feature = "video-renderer")]
+        video: None,
+        #[cfg(feature = "video-renderer")]
+        video_error: None,
+    }
 }
 
 fn apply_static_wallpaper(output: &mut RenderedOutput, plan: &StaticWallpaperPlan) {
@@ -267,6 +430,298 @@ fn css_widget_name(output_name: &str) -> String {
     name
 }
 
+#[cfg(feature = "video-renderer")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VideoErrorState {
+    source: std::path::PathBuf,
+    message: String,
+}
+
+#[cfg(feature = "video-renderer")]
+struct GtkVideoPipeline {
+    element: gst::Element,
+    picture: gtk::Picture,
+    frame_limiter: Option<GtkFrameLimiter>,
+    source: std::path::PathBuf,
+    mode: RenderMode,
+    loop_playback: bool,
+    muted: bool,
+    target_max_fps: Option<u32>,
+}
+
+#[cfg(feature = "video-renderer")]
+impl GtkVideoPipeline {
+    fn new(plan: &VideoWallpaperPlan) -> Result<Self, GtkVideoError> {
+        gst::init().map_err(|err| GtkVideoError::Init(err.to_string()))?;
+        let built = build_gtk_video_pipeline(plan)?;
+        let mut pipeline = Self {
+            element: built.element,
+            picture: built.picture,
+            frame_limiter: built.frame_limiter,
+            source: plan.source.clone(),
+            mode: RenderMode::Paused,
+            loop_playback: plan.loop_playback,
+            muted: plan.muted,
+            target_max_fps: plan.target_max_fps,
+        };
+        pipeline.apply_muted(plan.muted);
+        Ok(pipeline)
+    }
+
+    fn widget(&self) -> &gtk::Picture {
+        &self.picture
+    }
+
+    fn apply_plan(&mut self, plan: &VideoWallpaperPlan) -> Result<(), GtkVideoError> {
+        self.loop_playback = plan.loop_playback;
+        self.apply_target_max_fps(plan.target_max_fps);
+        self.apply_muted(plan.muted);
+        self.picture.set_content_fit(content_fit_for_fit(plan.fit));
+        if plan.start_offset_ms > 0 {
+            self.element
+                .seek_simple(
+                    gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                    gst::ClockTime::from_mseconds(plan.start_offset_ms),
+                )
+                .map_err(|err| GtkVideoError::Seek(err.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn apply_target_max_fps(&mut self, target_max_fps: Option<u32>) {
+        self.target_max_fps = target_max_fps;
+        if let Some(frame_limiter) = &self.frame_limiter {
+            frame_limiter.apply_target_max_fps(target_max_fps);
+        }
+    }
+
+    fn apply_mode(&mut self, mode: RenderMode) -> Result<(), GtkVideoError> {
+        self.mode = mode;
+        match mode {
+            RenderMode::Active | RenderMode::Throttled => self.set_state(gst::State::Playing),
+            RenderMode::Paused => self.set_state(gst::State::Paused),
+        }
+    }
+
+    fn poll_bus(&mut self) -> Result<(), GtkVideoError> {
+        let Some(bus) = self.element.bus() else {
+            return Ok(());
+        };
+        while let Some(message) = bus.pop() {
+            match message.view() {
+                gst::MessageView::Eos(_) => {
+                    if self.loop_playback {
+                        self.element
+                            .seek_simple(
+                                gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                                gst::ClockTime::ZERO,
+                            )
+                            .map_err(|err| GtkVideoError::Seek(err.to_string()))?;
+                        if self.mode != RenderMode::Paused {
+                            self.set_state(gst::State::Playing)?;
+                        }
+                    } else {
+                        self.set_state(gst::State::Paused)?;
+                    }
+                }
+                gst::MessageView::Error(err) => {
+                    return Err(GtkVideoError::Pipeline(format!(
+                        "{}: {}",
+                        err.error(),
+                        err.debug().unwrap_or_default()
+                    )));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn stop(self) {
+        let _ = self.element.set_state(gst::State::Null);
+    }
+
+    fn set_state(&self, state: gst::State) -> Result<(), GtkVideoError> {
+        self.element
+            .set_state(state)
+            .map(|_| ())
+            .map_err(|err| GtkVideoError::SetState(err.to_string()))
+    }
+
+    fn apply_muted(&mut self, muted: bool) {
+        self.muted = muted;
+        if self.element.find_property("mute").is_some() {
+            self.element.set_property("mute", muted);
+        }
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+impl Drop for GtkVideoPipeline {
+    fn drop(&mut self) {
+        let _ = self.element.set_state(gst::State::Null);
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+struct BuiltGtkVideoPipeline {
+    element: gst::Element,
+    picture: gtk::Picture,
+    frame_limiter: Option<GtkFrameLimiter>,
+}
+
+#[cfg(feature = "video-renderer")]
+fn build_gtk_video_pipeline(
+    plan: &VideoWallpaperPlan,
+) -> Result<BuiltGtkVideoPipeline, GtkVideoError> {
+    let uri = gst::glib::filename_to_uri(&plan.source, None::<&str>)
+        .map_err(|err| GtkVideoError::Uri(err.to_string()))?;
+    let frame_limiter = Some(GtkFrameLimiter::new(plan.target_max_fps)?);
+    let video_sink = gst::ElementFactory::make("gtk4paintablesink")
+        .property("sync", true)
+        .build()
+        .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
+    let paintable = video_sink.property::<gdk::Paintable>("paintable");
+    let picture = gtk::Picture::for_paintable(&paintable);
+    picture.set_hexpand(true);
+    picture.set_vexpand(true);
+    picture.set_can_shrink(false);
+    picture.set_content_fit(content_fit_for_fit(plan.fit));
+
+    let audio_sink = gst::ElementFactory::make("fakesink")
+        .property("sync", false)
+        .build()
+        .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
+    let mut builder = gst::ElementFactory::make("playbin")
+        .property("uri", uri.as_str())
+        .property("video-sink", &video_sink)
+        .property("audio-sink", &audio_sink);
+    if let Some(frame_limiter) = &frame_limiter {
+        builder = builder.property("video-filter", frame_limiter.element());
+    }
+    let element = builder
+        .build()
+        .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
+
+    Ok(BuiltGtkVideoPipeline {
+        element,
+        picture,
+        frame_limiter,
+    })
+}
+
+#[cfg(feature = "video-renderer")]
+struct GtkFrameLimiter {
+    element: gst::Element,
+    capsfilter: gst::Element,
+}
+
+#[cfg(feature = "video-renderer")]
+impl GtkFrameLimiter {
+    fn new(target_max_fps: Option<u32>) -> Result<Self, GtkVideoError> {
+        let bin = gst::Bin::new();
+        let videorate = gst::ElementFactory::make("videorate")
+            .build()
+            .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
+        let capsfilter = gst::ElementFactory::make("capsfilter")
+            .property("caps", caps_for_target_max_fps(target_max_fps))
+            .build()
+            .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
+        bin.add_many([&videorate, &capsfilter])
+            .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
+        gst::Element::link_many([&videorate, &capsfilter])
+            .map_err(|err| GtkVideoError::LinkElement(err.to_string()))?;
+        add_ghost_pad(&bin, &videorate, "sink")?;
+        add_ghost_pad(&bin, &capsfilter, "src")?;
+        Ok(Self {
+            element: bin.upcast(),
+            capsfilter,
+        })
+    }
+
+    fn element(&self) -> &gst::Element {
+        &self.element
+    }
+
+    fn apply_target_max_fps(&self, target_max_fps: Option<u32>) {
+        self.capsfilter
+            .set_property("caps", caps_for_target_max_fps(target_max_fps));
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+fn add_ghost_pad(
+    bin: &gst::Bin,
+    element: &gst::Element,
+    pad_name: &str,
+) -> Result<(), GtkVideoError> {
+    let pad = element
+        .static_pad(pad_name)
+        .ok_or_else(|| GtkVideoError::MissingPad(pad_name.to_owned()))?;
+    let ghost_pad = gst::GhostPad::with_target(&pad)
+        .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
+    ghost_pad
+        .set_active(true)
+        .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
+    bin.add_pad(&ghost_pad)
+        .map_err(|err| GtkVideoError::BuildElement(err.to_string()))
+}
+
+#[cfg(feature = "video-renderer")]
+fn caps_for_target_max_fps(target_max_fps: Option<u32>) -> gst::Caps {
+    match target_max_fps {
+        Some(max_fps) => gst::Caps::builder("video/x-raw")
+            .field("framerate", gst::Fraction::new(max_fps as i32, 1))
+            .build(),
+        None => gst::Caps::new_any(),
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+fn content_fit_for_fit(fit: FitMode) -> gtk::ContentFit {
+    match fit {
+        FitMode::Cover => gtk::ContentFit::Cover,
+        FitMode::Contain | FitMode::Tile => gtk::ContentFit::Contain,
+        FitMode::Stretch => gtk::ContentFit::Fill,
+        FitMode::Center => gtk::ContentFit::ScaleDown,
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GtkVideoError {
+    Init(String),
+    Uri(String),
+    BuildElement(String),
+    LinkElement(String),
+    MissingPad(String),
+    MissingPipeline,
+    SetState(String),
+    Seek(String),
+    Pipeline(String),
+}
+
+#[cfg(feature = "video-renderer")]
+impl std::fmt::Display for GtkVideoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Init(message) => write!(f, "failed to initialize GStreamer: {message}"),
+            Self::Uri(message) => write!(f, "failed to convert path to URI: {message}"),
+            Self::BuildElement(message) => {
+                write!(f, "failed to build GStreamer element: {message}")
+            }
+            Self::LinkElement(message) => write!(f, "failed to link GStreamer elements: {message}"),
+            Self::MissingPad(pad) => write!(f, "GStreamer element is missing {pad} pad"),
+            Self::MissingPipeline => f.write_str("GTK video pipeline is missing"),
+            Self::SetState(message) => {
+                write!(f, "failed to set GStreamer pipeline state: {message}")
+            }
+            Self::Seek(message) => write!(f, "failed to seek GStreamer pipeline: {message}"),
+            Self::Pipeline(message) => write!(f, "GStreamer pipeline error: {message}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,5 +741,21 @@ mod tests {
             css_widget_name("HDMI-A-1 workspace"),
             "gilder-wallpaper-HDMI-A-1-workspace"
         );
+    }
+
+    #[cfg(feature = "video-renderer")]
+    #[test]
+    fn maps_video_fit_modes_to_gtk_content_fit() {
+        assert_eq!(content_fit_for_fit(FitMode::Cover), gtk::ContentFit::Cover);
+        assert_eq!(
+            content_fit_for_fit(FitMode::Contain),
+            gtk::ContentFit::Contain
+        );
+        assert_eq!(content_fit_for_fit(FitMode::Stretch), gtk::ContentFit::Fill);
+        assert_eq!(
+            content_fit_for_fit(FitMode::Center),
+            gtk::ContentFit::ScaleDown
+        );
+        assert_eq!(content_fit_for_fit(FitMode::Tile), gtk::ContentFit::Contain);
     }
 }
