@@ -229,6 +229,8 @@ mod tests {
     fn parses_performance_config() {
         let config: GilderConfig = toml::from_str(
             r#"
+            default_wallpaper = "default.gwpdir"
+
             [performance]
             interactive_max_fps = 75
             background_max_fps = 20
@@ -241,12 +243,20 @@ mod tests {
             [adapters]
             niri = false
 
+            [outputs."HDMI-A-1"]
+            wallpaper = "hdmi.gwpdir"
+
             [outputs."HDMI-A-1".performance]
             background_max_fps = 12
             battery = "pause"
             "#,
         )
         .unwrap();
+        assert_eq!(config.default_wallpaper.as_deref(), Some("default.gwpdir"));
+        assert_eq!(
+            config.outputs["HDMI-A-1"].wallpaper.as_deref(),
+            Some("hdmi.gwpdir")
+        );
         assert_eq!(config.performance.interactive_max_fps, 75);
         assert_eq!(config.performance.desktop_refresh_interval_ms, 1000);
         assert_eq!(config.performance.battery, PowerPolicy::Throttle);

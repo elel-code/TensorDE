@@ -131,6 +131,9 @@ fn static_render_sync_plan_inner(
         .map(|output| output.name.clone())
         .chain(state.outputs.keys().cloned())
         .collect();
+    if let Some(config) = config {
+        output_names.extend(config.outputs.keys().cloned());
+    }
     output_names.sort();
     output_names.dedup();
 
@@ -151,10 +154,7 @@ fn static_render_sync_plan_inner(
             desktop_output,
             &output_state,
         );
-        let assignment = output_state
-            .wallpaper
-            .as_ref()
-            .or(state.default_wallpaper.as_ref());
+        let assignment = effective_wallpaper_assignment(config, state, &output_name, &output_state);
 
         if performance.mode == RenderMode::Paused {
             removals.push(output_name.clone());
@@ -162,12 +162,14 @@ fn static_render_sync_plan_inner(
                 output_name,
                 action: StaticRenderAction::Remove,
                 performance,
-                wallpaper: assignment.map(|assignment| assignment.path.clone()),
+                wallpaper: assignment
+                    .as_ref()
+                    .map(|assignment| assignment.path.clone()),
             });
             continue;
         }
 
-        let Some(assignment) = assignment else {
+        let Some(assignment) = assignment.as_ref() else {
             removals.push(output_name.clone());
             decisions.push(StaticRenderOutputDecision {
                 output_name,
@@ -221,6 +223,36 @@ fn static_render_sync_plan_inner(
         removals,
         errors,
         decisions,
+    }
+}
+
+fn effective_wallpaper_assignment(
+    config: Option<&GilderConfig>,
+    state: &AppState,
+    output_name: &str,
+    output_state: &OutputState,
+) -> Option<WallpaperAssignment> {
+    output_state
+        .wallpaper
+        .clone()
+        .or_else(|| state.default_wallpaper.clone())
+        .or_else(|| {
+            config
+                .and_then(|config| config.outputs.get(output_name))
+                .and_then(|output| output.wallpaper.as_ref())
+                .map(|path| config_wallpaper_assignment(path))
+        })
+        .or_else(|| {
+            config
+                .and_then(|config| config.default_wallpaper.as_ref())
+                .map(|path| config_wallpaper_assignment(path))
+        })
+}
+
+fn config_wallpaper_assignment(path: &str) -> WallpaperAssignment {
+    WallpaperAssignment {
+        path: path.to_owned(),
+        variant: None,
     }
 }
 
@@ -498,6 +530,78 @@ mod tests {
                 .all(|decision| decision.action == StaticRenderAction::Render)
         );
         assert!(sync.video_plans.is_empty());
+    }
+
+    #[test]
+    fn config_default_wallpaper_builds_plan_for_desktop_output() {
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some("examples/wallpapers/static-demo.gwpdir".to_owned());
+        let state = AppState::default();
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync =
+            static_render_sync_plan_with_config(&config, &desktop, &state, std::env::temp_dir());
+
+        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.plans[0].output_name, "eDP-1");
+        assert_eq!(
+            sync.decisions[0].wallpaper.as_deref(),
+            Some("examples/wallpapers/static-demo.gwpdir")
+        );
+    }
+
+    #[test]
+    fn config_output_wallpaper_adds_named_output_without_state() {
+        let mut config = GilderConfig::default();
+        config.outputs.insert(
+            "DP-1".to_owned(),
+            OutputConfig {
+                wallpaper: Some("examples/wallpapers/static-demo.gwpdir".to_owned()),
+                ..OutputConfig::default()
+            },
+        );
+        let state = AppState::default();
+        let desktop = DesktopSnapshot::default();
+
+        let sync =
+            static_render_sync_plan_with_config(&config, &desktop, &state, std::env::temp_dir());
+
+        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.plans[0].output_name, "DP-1");
+        assert_eq!(
+            sync.decisions[0].wallpaper.as_deref(),
+            Some("examples/wallpapers/static-demo.gwpdir")
+        );
+    }
+
+    #[test]
+    fn persisted_state_wallpaper_overrides_config_default() {
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some("missing-config-default.gwpdir".to_owned());
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: "examples/wallpapers/static-demo.gwpdir".to_owned(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync =
+            static_render_sync_plan_with_config(&config, &desktop, &state, std::env::temp_dir());
+
+        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.errors.is_empty());
+        assert_eq!(
+            sync.decisions[0].wallpaper.as_deref(),
+            Some("examples/wallpapers/static-demo.gwpdir")
+        );
     }
 
     #[test]

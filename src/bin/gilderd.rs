@@ -709,6 +709,7 @@ fn output_reports(context: &DaemonContext) -> Vec<serde_json::Value> {
         .iter()
         .map(|output| output.name.clone())
         .chain(context.state.outputs.keys().cloned())
+        .chain(context.config.outputs.keys().cloned())
         .collect();
     names.sort();
     names.dedup();
@@ -952,11 +953,6 @@ mod tests {
                 ..gilder::config::OutputConfig::default()
             },
         );
-        context
-            .state
-            .outputs
-            .insert("eDP-1".to_owned(), gilder::state::OutputState::default());
-
         let reports = output_reports(&context);
 
         assert_eq!(reports.len(), 1);
