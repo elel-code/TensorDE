@@ -131,6 +131,14 @@ record_pass() {
   note "PASS: $*"
 }
 
+github_error() {
+  local message="$1"
+  message="${message//'%'/'%25'}"
+  message="${message//$'\r'/'%0D'}"
+  message="${message//$'\n'/'%0A'}"
+  printf '::error title=Missing video codec smoke dependency::%s\n' "$message" >&2
+}
+
 write_summary() {
   cat > "$summary_path" <<EOF
 passed: ${passes}
@@ -166,6 +174,9 @@ missing_tool() {
     record_skip "$message"
     record_result "environment" "tool-check" "skip" "$message" ""
     return 0
+  fi
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    github_error "$message. Strict CI smoke must install dependencies first; run scripts/install-video-codec-smoke-deps-ubuntu.sh before scripts/video-codec-smoke.sh, or pass --allow-missing only for optional smoke jobs"
   fi
   record_failure "$message"
   record_result "environment" "tool-check" "fail" "$message" ""

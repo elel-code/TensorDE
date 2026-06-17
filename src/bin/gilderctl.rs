@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -132,8 +133,13 @@ fn render_decisions_csv(response: &str) -> Result<String, String> {
         .result
         .ok_or_else(|| "status response did not contain result".to_owned())?;
 
-    let mut csv = String::from("output_name,action,mode,reason,max_fps,wallpaper\n");
-    for decision in result.render_sync.decisions {
+    let sync = result.render_sync;
+    let plan_details = render_plan_details(&sync);
+    let mut csv = String::from(
+        "output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n",
+    );
+    for decision in &sync.decisions {
+        let details = plan_details.get(decision.output_name.as_str());
         let row = [
             csv_cell(&decision.output_name),
             csv_cell(&decision.action),
@@ -147,11 +153,64 @@ fn render_decisions_csv(response: &str) -> Result<String, String> {
                     .unwrap_or_default(),
             ),
             csv_cell(decision.wallpaper.as_deref().unwrap_or_default()),
+            csv_cell(details.map(|details| details.kind).unwrap_or_default()),
+            csv_cell(details.map(|details| details.source).unwrap_or_default()),
+            csv_cell(details.map(|details| details.fit).unwrap_or_default()),
+            csv_cell(
+                &details
+                    .and_then(|details| details.target_max_fps)
+                    .map(|max_fps| max_fps.to_string())
+                    .unwrap_or_default(),
+            ),
+            csv_cell(
+                details
+                    .and_then(|details| details.muted)
+                    .map(|muted| if muted { "true" } else { "false" })
+                    .unwrap_or_default(),
+            ),
         ];
         csv.push_str(&row.join(","));
         csv.push('\n');
     }
     Ok(csv)
+}
+
+fn render_plan_details(sync: &RenderSync) -> BTreeMap<&str, PlanCsvDetails<'_>> {
+    let mut details = BTreeMap::new();
+    for plan in &sync.plans {
+        details.insert(
+            plan.output_name.as_str(),
+            PlanCsvDetails {
+                kind: "static-image",
+                source: plan.source.as_str(),
+                fit: plan.fit.as_str(),
+                target_max_fps: None,
+                muted: None,
+            },
+        );
+    }
+    for plan in &sync.video_plans {
+        details.insert(
+            plan.output_name.as_str(),
+            PlanCsvDetails {
+                kind: "video",
+                source: plan.source.as_str(),
+                fit: plan.fit.as_str(),
+                target_max_fps: plan.target_max_fps,
+                muted: Some(plan.muted),
+            },
+        );
+    }
+    details
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PlanCsvDetails<'a> {
+    kind: &'static str,
+    source: &'a str,
+    fit: &'a str,
+    target_max_fps: Option<u32>,
+    muted: Option<bool>,
 }
 
 fn csv_cell(value: &str) -> String {
@@ -178,7 +237,28 @@ struct StatusResult {
 #[derive(Debug, Deserialize)]
 struct RenderSync {
     #[serde(default)]
+    plans: Vec<StaticPlan>,
+    #[serde(default)]
+    video_plans: Vec<VideoPlan>,
+    #[serde(default)]
     decisions: Vec<RenderDecision>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StaticPlan {
+    output_name: String,
+    source: String,
+    fit: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VideoPlan {
+    output_name: String,
+    source: String,
+    fit: String,
+    #[serde(default)]
+    target_max_fps: Option<u32>,
+    muted: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -205,28 +285,28 @@ mod tests {
 
     #[test]
     fn formats_render_decisions_as_csv() {
-        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"decisions":[{"output_name":"eDP-1","action":"render","performance":{"mode":"throttled","max_fps":24,"reason":"battery"},"wallpaper":"/tmp/wall.gwpdir"},{"output_name":"HDMI-A-1","action":"remove","performance":{"mode":"paused","max_fps":null,"reason":"fullscreen"},"wallpaper":null}]}}}"##;
+        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[{"output_name":"HDMI-A-1","source":"/tmp/poster.jpg","fit":"contain","background":"#000000"}],"video_plans":[{"output_name":"eDP-1","source":"/tmp/loop.webm","poster":"/tmp/poster.jpg","fit":"cover","loop_playback":true,"muted":true,"manifest_max_fps":60,"target_max_fps":24,"start_offset_ms":0}],"decisions":[{"output_name":"eDP-1","action":"render","performance":{"mode":"throttled","max_fps":24,"reason":"battery"},"wallpaper":"/tmp/wall.gwpdir"},{"output_name":"HDMI-A-1","action":"remove","performance":{"mode":"paused","max_fps":null,"reason":"fullscreen"},"wallpaper":null}]}}}"##;
 
         let csv = render_decisions_csv(response).unwrap();
 
         assert_eq!(
             csv,
-            "output_name,action,mode,reason,max_fps,wallpaper\n\
-             eDP-1,render,throttled,battery,24,/tmp/wall.gwpdir\n\
-             HDMI-A-1,remove,paused,fullscreen,,\n"
+            "output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n\
+             eDP-1,render,throttled,battery,24,/tmp/wall.gwpdir,video,/tmp/loop.webm,cover,24,true\n\
+             HDMI-A-1,remove,paused,fullscreen,,,static-image,/tmp/poster.jpg,contain,,\n"
         );
     }
 
     #[test]
     fn escapes_csv_cells() {
-        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"decisions":[{"output_name":"DP,1","action":"render","performance":{"mode":"active","max_fps":60,"reason":"interactive"},"wallpaper":"/tmp/a\"b.gwpdir"}]}}}"##;
+        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[{"output_name":"DP,1","source":"/tmp/a,b.png","fit":"cover","background":null}],"decisions":[{"output_name":"DP,1","action":"render","performance":{"mode":"active","max_fps":60,"reason":"interactive"},"wallpaper":"/tmp/a\"b.gwpdir"}]}}}"##;
 
         let csv = render_decisions_csv(response).unwrap();
 
         assert_eq!(
             csv,
-            "output_name,action,mode,reason,max_fps,wallpaper\n\
-             \"DP,1\",render,active,interactive,60,\"/tmp/a\"\"b.gwpdir\"\n"
+            "output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n\
+             \"DP,1\",render,active,interactive,60,\"/tmp/a\"\"b.gwpdir\",static-image,\"/tmp/a,b.png\",cover,,\n"
         );
     }
 

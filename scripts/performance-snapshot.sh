@@ -309,7 +309,7 @@ samples: ${samples}
 EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,stat,comm,status_file,status_error_file\n' > "$csv_path"
-printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper\n' > "$decisions_path"
+printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
 
 status_failures=0
 decision_failures=0
