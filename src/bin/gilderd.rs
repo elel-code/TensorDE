@@ -466,6 +466,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                     "persisted_state": context.state,
                     "render_sync": render_sync_report(context),
                     "renderer": renderer_name(),
+                    "renderer_capabilities": renderer_capabilities(),
                 }),
             ))
         }
@@ -700,6 +701,7 @@ fn snapshot_event(context: &DaemonContext) -> Value {
         "persisted_state": context.state,
         "render_sync": render_sync,
         "renderer": renderer_name(),
+        "renderer_capabilities": renderer_capabilities(),
     })
 }
 
@@ -715,6 +717,7 @@ fn state_changed_event(
         "outputs": output_reports(context),
         "persisted_state": context.state,
         "render_sync": render_sync,
+        "renderer_capabilities": renderer_capabilities(),
     })
 }
 
@@ -729,6 +732,7 @@ fn renderer_action_response(
         "method": accepted_method,
         "params": accepted_params,
         "renderer": renderer_name(),
+        "renderer_capabilities": renderer_capabilities(),
         "render_sync": render_sync,
     });
     if !cfg!(any(feature = "gtk-renderer", feature = "video-renderer")) {
@@ -750,6 +754,37 @@ fn renderer_name() -> &'static str {
         (false, true) => "gstreamer-video",
         (false, false) => "not-implemented",
     }
+}
+
+fn renderer_capabilities() -> Value {
+    json!({
+        "gtk": {
+            "built": cfg!(feature = "gtk-renderer"),
+            "layer_shell_background_windows": cfg!(feature = "gtk-renderer"),
+        },
+        "video": video_renderer_capabilities(),
+    })
+}
+
+#[cfg(feature = "video-renderer")]
+fn video_renderer_capabilities() -> Value {
+    json!({
+        "built": true,
+        "gtk_surface_path": cfg!(all(feature = "gtk-renderer", feature = "video-renderer")),
+        "headless_worker": cfg!(all(feature = "video-renderer", not(feature = "gtk-renderer"))),
+        "requires_gtk4paintablesink_for_surface": cfg!(all(feature = "gtk-renderer", feature = "video-renderer")),
+        "gstreamer": gilder::renderer::video::runtime_capabilities(),
+    })
+}
+
+#[cfg(not(feature = "video-renderer"))]
+fn video_renderer_capabilities() -> Value {
+    json!({
+        "built": false,
+        "gtk_surface_path": false,
+        "headless_worker": false,
+        "requires_gtk4paintablesink_for_surface": false,
+    })
 }
 
 fn render_sync_report(context: &DaemonContext) -> Value {

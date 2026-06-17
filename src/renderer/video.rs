@@ -4,6 +4,7 @@ use super::{StaticRenderSyncPlan, VideoWallpaperPlan};
 use crate::policy::RenderMode;
 use gst::prelude::*;
 use gstreamer as gst;
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -12,6 +13,55 @@ pub struct GstVideoRenderer {
     #[cfg(test)]
     test_source: bool,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VideoRuntimeCapabilities {
+    pub gstreamer_initialized: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub init_error: Option<String>,
+    pub elements: Vec<GstElementCapability>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GstElementCapability {
+    pub name: String,
+    pub available: bool,
+}
+
+pub fn runtime_capabilities() -> VideoRuntimeCapabilities {
+    match gst::init() {
+        Ok(()) => VideoRuntimeCapabilities {
+            gstreamer_initialized: true,
+            init_error: None,
+            elements: VIDEO_RUNTIME_ELEMENTS
+                .iter()
+                .map(|element| GstElementCapability {
+                    name: (*element).to_owned(),
+                    available: gst::ElementFactory::find(element).is_some(),
+                })
+                .collect(),
+        },
+        Err(err) => VideoRuntimeCapabilities {
+            gstreamer_initialized: false,
+            init_error: Some(err.to_string()),
+            elements: VIDEO_RUNTIME_ELEMENTS
+                .iter()
+                .map(|element| GstElementCapability {
+                    name: (*element).to_owned(),
+                    available: false,
+                })
+                .collect(),
+        },
+    }
+}
+
+const VIDEO_RUNTIME_ELEMENTS: &[&str] = &[
+    "playbin",
+    "fakesink",
+    "videorate",
+    "capsfilter",
+    "gtk4paintablesink",
+];
 
 impl GstVideoRenderer {
     pub fn new() -> Result<Self, VideoRendererError> {
@@ -503,6 +553,26 @@ mod tests {
                 .and_then(FrameLimiter::target_max_fps),
             None
         );
+    }
+
+    #[test]
+    fn runtime_capabilities_report_expected_elements() {
+        let capabilities = runtime_capabilities();
+        let element_names = capabilities
+            .elements
+            .iter()
+            .map(|element| element.name.as_str())
+            .collect::<Vec<_>>();
+
+        for expected in [
+            "playbin",
+            "fakesink",
+            "videorate",
+            "capsfilter",
+            "gtk4paintablesink",
+        ] {
+            assert!(element_names.contains(&expected));
+        }
     }
 
     fn video_plan(output_name: &str, loop_playback: bool, muted: bool) -> VideoWallpaperPlan {
