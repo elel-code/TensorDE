@@ -167,6 +167,9 @@ pub fn static_render_sync_plan_with_performance(
                     performance,
                     wallpaper: Some(assignment.path.clone()),
                 });
+                if let Some(poster_plan) = video_poster_plan(&plan) {
+                    plans.push(poster_plan);
+                }
                 video_plans.push(plan);
             }
             Err(err) => {
@@ -192,6 +195,15 @@ pub fn static_render_sync_plan_with_performance(
         errors,
         decisions,
     }
+}
+
+fn video_poster_plan(plan: &VideoWallpaperPlan) -> Option<StaticWallpaperPlan> {
+    Some(StaticWallpaperPlan {
+        output_name: plan.output_name.clone(),
+        source: plan.poster.clone()?,
+        fit: plan.fit,
+        background: Some("#000000".to_owned()),
+    })
 }
 
 pub fn static_wallpaper_plan_for_assignment(
@@ -244,17 +256,23 @@ pub fn wallpaper_plan(
             fit,
             max_fps,
             start_offset_ms,
-        } => Ok(WallpaperRenderPlan::Video(VideoWallpaperPlan {
-            output_name,
-            source: source.join_to(&package.root),
-            poster: poster.as_ref().map(|poster| poster.join_to(&package.root)),
-            fit: *fit,
-            loop_playback: *loop_playback,
-            muted: *muted,
-            manifest_max_fps: *max_fps,
-            target_max_fps: effective_max_fps(*max_fps, performance.max_fps),
-            start_offset_ms: *start_offset_ms,
-        })),
+        } => {
+            let poster = poster
+                .as_ref()
+                .or(package.manifest.preview.poster.as_ref())
+                .map(|poster| poster.join_to(&package.root));
+            Ok(WallpaperRenderPlan::Video(VideoWallpaperPlan {
+                output_name,
+                source: source.join_to(&package.root),
+                poster,
+                fit: *fit,
+                loop_playback: *loop_playback,
+                muted: *muted,
+                manifest_max_fps: *max_fps,
+                target_max_fps: effective_max_fps(*max_fps, performance.max_fps),
+                start_offset_ms: *start_offset_ms,
+            }))
+        }
         other => Err(RendererPlanError::UnsupportedEntry(other.kind().as_str())),
     }
 }
@@ -539,10 +557,15 @@ mod tests {
             test_dir.path.join("cache"),
         );
 
-        assert!(sync.plans.is_empty());
+        assert_eq!(sync.plans.len(), 1);
         assert_eq!(sync.video_plans.len(), 1);
         assert!(sync.removals.is_empty());
         assert!(sync.errors.is_empty());
+        let poster_plan = &sync.plans[0];
+        assert_eq!(poster_plan.output_name, "eDP-1");
+        assert!(poster_plan.source.ends_with("previews/poster.jpg"));
+        assert_eq!(poster_plan.fit, FitMode::Contain);
+        assert_eq!(poster_plan.background.as_deref(), Some("#000000"));
         let plan = &sync.video_plans[0];
         assert_eq!(plan.output_name, "eDP-1");
         assert!(plan.source.ends_with("assets/loop.webm"));
@@ -561,6 +584,36 @@ mod tests {
         assert_eq!(sync.decisions[0].action, StaticRenderAction::Render);
         assert_eq!(sync.decisions[0].performance.mode, RenderMode::Throttled);
         assert_eq!(sync.decisions[0].performance.max_fps, Some(15));
+    }
+
+    #[test]
+    fn video_plan_uses_preview_poster_when_entry_poster_is_missing() {
+        let test_dir = TestDir::new("gilder-video-preview-poster");
+        let package_dir = test_dir.path.join("video-demo.gwpdir");
+        write_minimal_video_gwpdir(&package_dir);
+        remove_entry_poster(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert_eq!(sync.video_plans.len(), 1);
+        assert_eq!(sync.plans.len(), 1);
+        assert!(
+            sync.video_plans[0]
+                .poster
+                .as_ref()
+                .unwrap()
+                .ends_with("previews/poster.jpg")
+        );
+        assert!(sync.plans[0].source.ends_with("previews/poster.jpg"));
     }
 
     #[test]
@@ -611,6 +664,18 @@ mod tests {
             serde_json::to_vec_pretty(&manifest).unwrap(),
         )
         .unwrap();
+    }
+
+    fn remove_entry_poster(path: &Path) {
+        let manifest_path = path.join(crate::core::MANIFEST_FILE);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest
+            .get_mut("entry")
+            .and_then(|entry| entry.as_object_mut())
+            .unwrap()
+            .remove("poster");
+        fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
     }
 
     struct TestDir {
