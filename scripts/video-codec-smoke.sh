@@ -10,6 +10,7 @@ playbin, and verify that gilder-convert can create first-frame previews.
 
 Options:
   --work-dir <dir>    Parent directory for temporary smoke data
+  --report-dir <dir>  Exact evidence directory. Created and kept
   --allow-missing     Report missing encoders/plugins as skips instead of failures
   --no-convert        Skip gilder-convert preview checks
   --keep              Keep generated smoke data
@@ -18,6 +19,7 @@ EOF
 }
 
 work_parent="${TMPDIR:-/tmp}"
+report_dir=""
 allow_missing=0
 run_convert=1
 keep=0
@@ -30,6 +32,11 @@ while [[ $# -gt 0 ]]; do
     --work-dir)
       [[ $# -ge 2 ]] || { echo "--work-dir requires a directory" >&2; exit 2; }
       work_parent="$2"
+      shift 2
+      ;;
+    --report-dir)
+      [[ $# -ge 2 ]] || { echo "--report-dir requires a directory" >&2; exit 2; }
+      report_dir="$2"
       shift 2
       ;;
     --allow-missing)
@@ -59,18 +66,54 @@ done
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-mkdir -p "$work_parent"
-work_dir="$(mktemp -d "${work_parent%/}/gilder-video-codecs.XXXXXX")"
-if [[ "$keep" -eq 0 ]]; then
+if [[ -n "$report_dir" ]]; then
+  work_dir="$report_dir"
+  mkdir -p "$work_dir"
+else
+  mkdir -p "$work_parent"
+  work_dir="$(mktemp -d "${work_parent%/}/gilder-video-codecs.XXXXXX")"
+fi
+if [[ "$keep" -eq 0 && -z "$report_dir" ]]; then
   trap 'rm -rf "$work_dir"' EXIT
 fi
 
 failures=0
 skips=0
 passes=0
+results_path="$work_dir/results.csv"
+metadata_path="$work_dir/metadata.txt"
+summary_path="$work_dir/summary.txt"
 
 note() {
   printf '%s\n' "$*"
+}
+
+csv_escape() {
+  local value="$1"
+  if [[ "$value" == *","* || "$value" == *"\""* || "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    printf '"%s"' "${value//\"/\"\"}"
+  else
+    printf '%s' "$value"
+  fi
+}
+
+record_result() {
+  local case_name="$1"
+  local step="$2"
+  local status="$3"
+  local detail="$4"
+  local artifact="$5"
+
+  csv_escape "$case_name" >> "$results_path"
+  printf ',' >> "$results_path"
+  csv_escape "$step" >> "$results_path"
+  printf ',' >> "$results_path"
+  csv_escape "$status" >> "$results_path"
+  printf ',' >> "$results_path"
+  csv_escape "$detail" >> "$results_path"
+  printf ',' >> "$results_path"
+  csv_escape "${artifact#$work_dir/}" >> "$results_path"
+  printf '\n' >> "$results_path"
 }
 
 record_failure() {
@@ -86,6 +129,15 @@ record_skip() {
 record_pass() {
   passes=$((passes + 1))
   note "PASS: $*"
+}
+
+write_summary() {
+  cat > "$summary_path" <<EOF
+passed: ${passes}
+skipped: ${skips}
+failed: ${failures}
+results: ${results_path}
+EOF
 }
 
 tool_hint() {
@@ -112,9 +164,11 @@ missing_tool() {
 
   if [[ "$allow_missing" -eq 1 ]]; then
     record_skip "$message"
+    record_result "environment" "tool-check" "skip" "$message" ""
     return 0
   fi
   record_failure "$message"
+  record_result "environment" "tool-check" "fail" "$message" ""
   return 0
 }
 
@@ -122,22 +176,40 @@ ffmpeg="$(command -v ffmpeg || true)"
 gst_launch="$(command -v gst-launch-1.0 || true)"
 cargo_bin="$(command -v cargo || true)"
 
+printf 'case,step,status,detail,artifact\n' > "$results_path"
+
 [[ -n "$ffmpeg" ]] || missing_tool ffmpeg
 [[ -n "$gst_launch" ]] || missing_tool gst-launch-1.0
 if [[ "$run_convert" -eq 1 ]]; then
   [[ -n "$cargo_bin" ]] || missing_tool cargo
 fi
 
-if [[ -z "$ffmpeg" ]]; then
-  note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
-  exit 0
-fi
-
 if [[ "$run_convert" -eq 1 && -z "$cargo_bin" ]]; then
   run_convert=0
 fi
 
+cat > "$metadata_path" <<EOF
+size: ${size}
+rate: ${rate}
+duration_seconds: ${duration}
+allow_missing: ${allow_missing}
+run_convert: ${run_convert}
+ffmpeg: ${ffmpeg:-unavailable}
+gst_launch: ${gst_launch:-unavailable}
+cargo: ${cargo_bin:-unavailable}
+EOF
+
+if [[ -z "$ffmpeg" ]]; then
+  write_summary
+  note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
+  note "metadata: $metadata_path"
+  note "results:  $results_path"
+  note "report:   $summary_path"
+  exit "$([[ "$failures" -gt 0 ]] && echo 1 || echo 0)"
+fi
+
 if [[ "$failures" -gt 0 ]]; then
+  write_summary
   exit 1
 fi
 
@@ -230,33 +302,45 @@ run_case() {
   if [[ "$status" -ne 0 ]]; then
     if [[ "$status" -eq 10 && "$allow_missing" -eq 1 ]]; then
       record_skip "$name encoder is not available in ffmpeg"
+      record_result "$name" "sample-generation" "skip" "encoder is not available in ffmpeg" ""
       return 0
     fi
     record_failure "$name sample generation failed"
+    record_result "$name" "sample-generation" "fail" "ffmpeg sample generation failed" "$sample"
     return 0
   fi
   record_pass "$name sample generation"
+  record_result "$name" "sample-generation" "pass" "generated synthetic ${ext} sample" "$sample"
 
   local gst_log="$work_dir/${name}.gst.log"
   if [[ -z "$gst_launch" ]]; then
     record_skip "$name GStreamer decode skipped because gst-launch-1.0 is unavailable"
+    record_result "$name" "gstreamer-decode" "skip" "gst-launch-1.0 is unavailable" ""
   elif ! play_sample "$sample" >"$gst_log" 2>&1; then
     if [[ "$allow_missing" -eq 1 ]]; then
       record_skip "$name GStreamer decode failed or required plugin is missing"
+      record_result "$name" "gstreamer-decode" "skip" "decode failed or required plugin is missing" "$gst_log"
     else
       record_failure "$name GStreamer decode failed"
+      record_result "$name" "gstreamer-decode" "fail" "GStreamer playbin decode failed" "$gst_log"
       sed -n '1,40p' "$gst_log"
     fi
   else
     record_pass "$name GStreamer decode"
+    record_result "$name" "gstreamer-decode" "pass" "GStreamer playbin decoded through fakesink" "$gst_log"
   fi
 
   if [[ "$run_convert" -eq 1 ]]; then
     if convert_sample "$name" "$sample" "$ext"; then
       record_pass "$name gilder-convert first-frame preview"
+      record_result "$name" "gilder-convert-preview" "pass" "generated poster and thumbnail previews" "$work_dir/${name}.gwpdir"
     else
       record_failure "$name gilder-convert first-frame preview"
+      record_result "$name" "gilder-convert-preview" "fail" "failed to generate poster or thumbnail previews" "$work_dir/${name}.gwpdir"
     fi
+  else
+    record_skip "$name gilder-convert preview skipped because --no-convert was passed"
+    record_result "$name" "gilder-convert-preview" "skip" "converter check disabled by --no-convert" ""
   fi
 }
 
@@ -265,6 +349,15 @@ run_case mp4-h264 mp4
 run_case webm-vp9 webm
 run_case webm-av1 webm
 
+write_summary
+if [[ "$keep" -eq 1 || -n "$report_dir" ]]; then
+  note "kept work dir: $work_dir"
+else
+  note "work dir will be removed; rerun with --keep or --report-dir to preserve evidence"
+fi
+note "metadata: $metadata_path"
+note "results:  $results_path"
+note "report:   $summary_path"
 note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
 if [[ "$failures" -gt 0 ]]; then
   exit 1

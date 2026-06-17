@@ -53,4 +53,12 @@ jobs:
         run: cargo test --features gtk-renderer,video-renderer
 
       - name: Video codec smoke
-        run: scripts/video-codec-smoke.sh --work-dir /tmp
+        run: scripts/video-codec-smoke.sh --report-dir /tmp/gilder-video-codec-smoke
+
+      - name: Upload video codec smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-codec-smoke
+          path: /tmp/gilder-video-codec-smoke
+          if-no-files-found: ignore
