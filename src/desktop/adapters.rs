@@ -6,6 +6,8 @@ use serde_json::Value;
 use std::fmt;
 use std::process::Command;
 
+const OUTPUT_STATE_OVERRIDE: &str = "GILDER_OUTPUT_STATE";
+
 pub fn read_desktop_snapshot(config: &AdapterConfig) -> DesktopSnapshot {
     if config.hyprland && std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
         if let Ok(snapshot) = hyprland::read_snapshot() {
@@ -36,8 +38,63 @@ fn with_runtime_state(mut snapshot: DesktopSnapshot) -> DesktopSnapshot {
     } else if snapshot.power == PowerState::Unknown {
         snapshot.power = super::power::read_power_state();
     }
+    if let Some(output_state) = read_output_state_override() {
+        apply_output_state_override(&mut snapshot, output_state);
+    }
     snapshot.session_active = snapshot.session_active && super::session::read_session_active();
     snapshot
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputStateOverride {
+    Active,
+    Unfocused,
+    Fullscreen,
+    Hidden,
+}
+
+fn read_output_state_override() -> Option<OutputStateOverride> {
+    std::env::var(OUTPUT_STATE_OVERRIDE)
+        .ok()
+        .and_then(|value| parse_output_state_override(&value))
+}
+
+fn parse_output_state_override(value: &str) -> Option<OutputStateOverride> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "active" | "focused" | "visible" => Some(OutputStateOverride::Active),
+        "unfocused" | "background" => Some(OutputStateOverride::Unfocused),
+        "fullscreen" | "full-screen" => Some(OutputStateOverride::Fullscreen),
+        "hidden" | "output-hidden" | "disabled" => Some(OutputStateOverride::Hidden),
+        "" | "auto" | "compositor" => None,
+        _ => None,
+    }
+}
+
+fn apply_output_state_override(snapshot: &mut DesktopSnapshot, state: OutputStateOverride) {
+    for output in &mut snapshot.outputs {
+        match state {
+            OutputStateOverride::Active => {
+                output.focused = true;
+                output.visible = true;
+                output.has_fullscreen = false;
+            }
+            OutputStateOverride::Unfocused => {
+                output.focused = false;
+                output.visible = true;
+                output.has_fullscreen = false;
+            }
+            OutputStateOverride::Fullscreen => {
+                output.focused = true;
+                output.visible = true;
+                output.has_fullscreen = true;
+            }
+            OutputStateOverride::Hidden => {
+                output.focused = false;
+                output.visible = false;
+                output.has_fullscreen = false;
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -502,5 +559,56 @@ mod tests {
         let snapshot = read_desktop_snapshot(&config);
         assert_eq!(snapshot.compositor, None);
         assert!(snapshot.outputs.is_empty());
+    }
+
+    #[test]
+    fn parses_output_state_override_values() {
+        assert_eq!(
+            parse_output_state_override("unfocused"),
+            Some(OutputStateOverride::Unfocused)
+        );
+        assert_eq!(
+            parse_output_state_override("fullscreen"),
+            Some(OutputStateOverride::Fullscreen)
+        );
+        assert_eq!(
+            parse_output_state_override("hidden"),
+            Some(OutputStateOverride::Hidden)
+        );
+        assert_eq!(parse_output_state_override("auto"), None);
+        assert_eq!(parse_output_state_override("invalid"), None);
+    }
+
+    #[test]
+    fn applies_output_state_override_to_snapshot_outputs() {
+        let mut snapshot = DesktopSnapshot {
+            outputs: vec![
+                DesktopOutput {
+                    focused: true,
+                    visible: true,
+                    has_fullscreen: false,
+                    ..DesktopOutput::virtual_output("eDP-1")
+                },
+                DesktopOutput {
+                    focused: true,
+                    visible: false,
+                    has_fullscreen: true,
+                    ..DesktopOutput::virtual_output("HDMI-A-1")
+                },
+            ],
+            ..DesktopSnapshot::default()
+        };
+
+        apply_output_state_override(&mut snapshot, OutputStateOverride::Unfocused);
+
+        assert!(snapshot.outputs.iter().all(|output| !output.focused));
+        assert!(snapshot.outputs.iter().all(|output| output.visible));
+        assert!(snapshot.outputs.iter().all(|output| !output.has_fullscreen));
+
+        apply_output_state_override(&mut snapshot, OutputStateOverride::Fullscreen);
+
+        assert!(snapshot.outputs.iter().all(|output| output.focused));
+        assert!(snapshot.outputs.iter().all(|output| output.visible));
+        assert!(snapshot.outputs.iter().all(|output| output.has_fullscreen));
     }
 }

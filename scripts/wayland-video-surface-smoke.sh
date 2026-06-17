@@ -24,6 +24,8 @@ Options:
                      Performance sampling interval. Default: 1
   --simulate-power <state>
                      Start daemon with GILDER_POWER_STATE=ac|battery|unknown
+  --simulate-output-state <state>
+                     Start daemon with GILDER_OUTPUT_STATE=active|unfocused|fullscreen|hidden
   --keep              Keep generated smoke data and logs
   -h, --help          Show this help text
 EOF
@@ -39,6 +41,7 @@ sample_paused=0
 sample_duration=8
 sample_interval=1
 simulate_power=""
+simulate_output_state=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -92,6 +95,19 @@ while [[ $# -gt 0 ]]; do
       esac
       shift 2
       ;;
+    --simulate-output-state)
+      [[ $# -ge 2 ]] || { echo "--simulate-output-state requires active, unfocused, fullscreen, or hidden" >&2; exit 2; }
+      case "$2" in
+        active|unfocused|fullscreen|hidden)
+          simulate_output_state="$2"
+          ;;
+        *)
+          echo "--simulate-output-state requires active, unfocused, fullscreen, or hidden" >&2
+          exit 2
+          ;;
+      esac
+      shift 2
+      ;;
     --keep)
       keep=1
       shift
@@ -126,10 +142,21 @@ performance_active_log="$work_dir/performance-active.log"
 performance_paused_dir="$work_dir/performance-paused"
 performance_paused_log="$work_dir/performance-paused.log"
 performance_active_label="wayland-video-active"
+scenario_suffix=""
 if [[ -n "$simulate_power" ]]; then
-  performance_active_dir="$work_dir/performance-${simulate_power}"
-  performance_active_log="$work_dir/performance-${simulate_power}.log"
-  performance_active_label="wayland-video-${simulate_power}"
+  scenario_suffix="$simulate_power"
+fi
+if [[ -n "$simulate_output_state" ]]; then
+  if [[ -n "$scenario_suffix" ]]; then
+    scenario_suffix="${scenario_suffix}-${simulate_output_state}"
+  else
+    scenario_suffix="$simulate_output_state"
+  fi
+fi
+if [[ -n "$scenario_suffix" ]]; then
+  performance_active_dir="$work_dir/performance-${scenario_suffix}"
+  performance_active_log="$work_dir/performance-${scenario_suffix}.log"
+  performance_active_label="wayland-video-${scenario_suffix}"
 fi
 daemon_pid=""
 
@@ -208,6 +235,24 @@ capture_performance() {
   "$performance_snapshot" "${sample_args[@]}" > "$log_file" 2>&1
 }
 
+expected_performance_reason() {
+  if [[ "$simulate_output_state" == "hidden" ]]; then
+    printf '%s\n' "output-hidden"
+  elif [[ "$simulate_output_state" == "fullscreen" ]]; then
+    printf '%s\n' "fullscreen"
+  elif [[ "$simulate_power" == "battery" ]]; then
+    printf '%s\n' "battery"
+  elif [[ "$simulate_output_state" == "unfocused" ]]; then
+    printf '%s\n' "unfocused"
+  else
+    printf '%s\n' ""
+  fi
+}
+
+expects_active_video_plan() {
+  [[ "$simulate_output_state" != "fullscreen" && "$simulate_output_state" != "hidden" ]]
+}
+
 if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
   skip_or_fail "WAYLAND_DISPLAY is not set; run this inside niri, Hyprland, or another Wayland session"
 fi
@@ -268,6 +313,9 @@ daemon_env=(
 if [[ -n "$simulate_power" ]]; then
   daemon_env+=(GILDER_POWER_STATE="$simulate_power")
 fi
+if [[ -n "$simulate_output_state" ]]; then
+  daemon_env+=(GILDER_OUTPUT_STATE="$simulate_output_state")
+fi
 "${daemon_env[@]}" "$gilderd" >"$daemon_log" 2>&1 &
 daemon_pid=$!
 
@@ -315,6 +363,28 @@ if [[ -z "$output_name" ]]; then
 fi
 pass "selected output $output_name"
 
+if [[ -n "$simulate_output_state" ]]; then
+  case "$simulate_output_state" in
+    active)
+      state_pattern='"focused":true.*"visible":true.*"has_fullscreen":false|"has_fullscreen":false.*"focused":true.*"visible":true'
+      ;;
+    unfocused)
+      state_pattern='"focused":false.*"visible":true.*"has_fullscreen":false|"has_fullscreen":false.*"focused":false.*"visible":true'
+      ;;
+    fullscreen)
+      state_pattern='"focused":true.*"visible":true.*"has_fullscreen":true|"has_fullscreen":true.*"focused":true.*"visible":true'
+      ;;
+    hidden)
+      state_pattern='"focused":false.*"visible":false.*"has_fullscreen":false|"has_fullscreen":false.*"focused":false.*"visible":false'
+      ;;
+  esac
+  if grep -Eq "$state_pattern" "$status_before"; then
+    pass "status reports simulated output state ${simulate_output_state}"
+  else
+    skip_or_fail "status does not report simulated output state ${simulate_output_state}"
+  fi
+fi
+
 if ! grep -Eq '"name":"gtk4paintablesink","available":true|"available":true,"name":"gtk4paintablesink"' "$status_before"; then
   skip_or_fail "gtk4paintablesink is not available according to renderer_capabilities"
   note "status evidence: $status_before"
@@ -328,16 +398,25 @@ env GILDER_SOCKET="$socket" "$gilderctl" set "$wallpaper_dir" --output "$output_
 sleep 2
 env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_after"
 
-if ! grep -q '"video_plans":\[' "$status_after" || grep -q '"video_plans":\[\]' "$status_after"; then
-  skip_or_fail "status does not report an active video render plan"
-else
-  pass "status reports active video render plan"
-fi
-if [[ "$simulate_power" == "battery" ]]; then
-  if grep -q '"reason":"battery"' "$status_after"; then
-    pass "status reports battery performance decision"
+if expects_active_video_plan; then
+  if ! grep -q '"video_plans":\[' "$status_after" || grep -q '"video_plans":\[\]' "$status_after"; then
+    skip_or_fail "status does not report an active video render plan"
   else
-    skip_or_fail "status does not report battery performance decision"
+    pass "status reports active video render plan"
+  fi
+else
+  if grep -q '"video_plans":\[\]' "$status_after"; then
+    pass "status omits active video plan for paused simulated output state"
+  else
+    skip_or_fail "status reports video plans for paused simulated output state"
+  fi
+fi
+expected_reason="$(expected_performance_reason)"
+if [[ -n "$expected_reason" ]]; then
+  if grep -q "\"reason\":\"${expected_reason}\"" "$status_after"; then
+    pass "status reports ${expected_reason} performance decision"
+  else
+    skip_or_fail "status does not report ${expected_reason} performance decision"
   fi
 fi
 
