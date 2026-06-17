@@ -25,8 +25,30 @@ pub struct StaticWallpaperPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VideoWallpaperPlan {
+    pub output_name: String,
+    pub source: PathBuf,
+    pub poster: Option<PathBuf>,
+    pub fit: FitMode,
+    pub loop_playback: bool,
+    pub muted: bool,
+    pub manifest_max_fps: Option<u32>,
+    pub target_max_fps: Option<u32>,
+    pub start_offset_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum WallpaperRenderPlan {
+    StaticImage(StaticWallpaperPlan),
+    Video(VideoWallpaperPlan),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StaticRenderSyncPlan {
     pub plans: Vec<StaticWallpaperPlan>,
+    #[serde(default)]
+    pub video_plans: Vec<VideoWallpaperPlan>,
     pub removals: Vec<String>,
     pub errors: Vec<StaticRenderPlanFailure>,
     #[serde(default)]
@@ -87,6 +109,7 @@ pub fn static_render_sync_plan_with_performance(
 
     let cache_dir = cache_dir.as_ref();
     let mut plans = Vec::new();
+    let mut video_plans = Vec::new();
     let mut removals = Vec::new();
     let mut errors = Vec::new();
     let mut decisions = Vec::new();
@@ -125,8 +148,8 @@ pub fn static_render_sync_plan_with_performance(
             });
             continue;
         };
-        match static_wallpaper_plan_for_assignment(&output_name, assignment, cache_dir) {
-            Ok(plan) => {
+        match wallpaper_plan_for_assignment(&output_name, assignment, cache_dir, &performance) {
+            Ok(WallpaperRenderPlan::StaticImage(plan)) => {
                 decisions.push(StaticRenderOutputDecision {
                     output_name,
                     action: StaticRenderAction::Render,
@@ -134,6 +157,15 @@ pub fn static_render_sync_plan_with_performance(
                     wallpaper: Some(assignment.path.clone()),
                 });
                 plans.push(plan);
+            }
+            Ok(WallpaperRenderPlan::Video(plan)) => {
+                decisions.push(StaticRenderOutputDecision {
+                    output_name,
+                    action: StaticRenderAction::Render,
+                    performance,
+                    wallpaper: Some(assignment.path.clone()),
+                });
+                video_plans.push(plan);
             }
             Err(err) => {
                 decisions.push(StaticRenderOutputDecision {
@@ -153,6 +185,7 @@ pub fn static_render_sync_plan_with_performance(
 
     StaticRenderSyncPlan {
         plans,
+        video_plans,
         removals,
         errors,
         decisions,
@@ -171,6 +204,57 @@ pub fn static_wallpaper_plan_for_assignment(
     };
     static_wallpaper_plan(output_name, &package, &output_state)?
         .ok_or(RendererPlanError::MissingAssignment)
+}
+
+pub fn wallpaper_plan_for_assignment(
+    output_name: impl Into<String>,
+    assignment: &WallpaperAssignment,
+    cache_dir: impl AsRef<Path>,
+    performance: &PerformanceDecision,
+) -> Result<WallpaperRenderPlan, RendererPlanError> {
+    let package = load_assigned_package(assignment, cache_dir.as_ref())?;
+    wallpaper_plan(output_name, &package, performance)
+}
+
+pub fn wallpaper_plan(
+    output_name: impl Into<String>,
+    package: &WallpaperPackage,
+    performance: &PerformanceDecision,
+) -> Result<WallpaperRenderPlan, RendererPlanError> {
+    let output_name = output_name.into();
+    match &package.manifest.entry {
+        WallpaperEntry::StaticImage {
+            source,
+            fit,
+            background,
+            ..
+        } => Ok(WallpaperRenderPlan::StaticImage(StaticWallpaperPlan {
+            output_name,
+            source: source.join_to(&package.root),
+            fit: *fit,
+            background: background.clone(),
+        })),
+        WallpaperEntry::Video {
+            source,
+            poster,
+            loop_playback,
+            muted,
+            fit,
+            max_fps,
+            start_offset_ms,
+        } => Ok(WallpaperRenderPlan::Video(VideoWallpaperPlan {
+            output_name,
+            source: source.join_to(&package.root),
+            poster: poster.as_ref().map(|poster| poster.join_to(&package.root)),
+            fit: *fit,
+            loop_playback: *loop_playback,
+            muted: *muted,
+            manifest_max_fps: *max_fps,
+            target_max_fps: effective_max_fps(*max_fps, performance.max_fps),
+            start_offset_ms: *start_offset_ms,
+        })),
+        other => Err(RendererPlanError::UnsupportedEntry(other.kind().as_str())),
+    }
 }
 
 pub fn static_wallpaper_plan(
@@ -199,6 +283,15 @@ pub fn static_wallpaper_plan(
         fit: *fit,
         background: background.clone(),
     }))
+}
+
+fn effective_max_fps(manifest_max_fps: Option<u32>, policy_max_fps: Option<u32>) -> Option<u32> {
+    match (manifest_max_fps, policy_max_fps) {
+        (Some(manifest), Some(policy)) => Some(manifest.min(policy)),
+        (Some(manifest), None) => Some(manifest),
+        (None, Some(policy)) => Some(policy),
+        (None, None) => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,6 +374,7 @@ mod tests {
     use crate::desktop::DesktopOutput;
     use crate::policy::{DecisionReason, RenderMode};
     use crate::state::{OutputState, WallpaperAssignment};
+    use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -343,6 +437,7 @@ mod tests {
                 .iter()
                 .all(|decision| decision.action == StaticRenderAction::Render)
         );
+        assert!(sync.video_plans.is_empty());
     }
 
     #[test]
@@ -416,6 +511,57 @@ mod tests {
     }
 
     #[test]
+    fn builds_video_sync_plan_with_effective_fps() {
+        let test_dir = TestDir::new("gilder-video-plan");
+        let package_dir = test_dir.path.join("video-demo.gwpdir");
+        write_minimal_video_gwpdir(&package_dir);
+        let mut config = PerformanceConfig::default();
+        config.background_max_fps = 15;
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                focused: false,
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_performance(
+            &config,
+            &desktop,
+            &state,
+            test_dir.path.join("cache"),
+        );
+
+        assert!(sync.plans.is_empty());
+        assert_eq!(sync.video_plans.len(), 1);
+        assert!(sync.removals.is_empty());
+        assert!(sync.errors.is_empty());
+        let plan = &sync.video_plans[0];
+        assert_eq!(plan.output_name, "eDP-1");
+        assert!(plan.source.ends_with("assets/loop.webm"));
+        assert!(
+            plan.poster
+                .as_ref()
+                .unwrap()
+                .ends_with("previews/poster.jpg")
+        );
+        assert_eq!(plan.fit, FitMode::Contain);
+        assert!(!plan.loop_playback);
+        assert!(!plan.muted);
+        assert_eq!(plan.manifest_max_fps, Some(60));
+        assert_eq!(plan.target_max_fps, Some(15));
+        assert_eq!(plan.start_offset_ms, 1200);
+        assert_eq!(sync.decisions[0].action, StaticRenderAction::Render);
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Throttled);
+        assert_eq!(sync.decisions[0].performance.max_fps, Some(15));
+    }
+
+    #[test]
     fn builds_plan_from_gwp_archive() {
         let test_dir = TestDir::new("gilder-render-archive");
         let archive = test_dir.path.join("static-demo.gwp");
@@ -430,6 +576,39 @@ mod tests {
         assert_eq!(plan.output_name, "eDP-1");
         assert!(plan.source.ends_with("assets/wallpaper.svg"));
         assert!(cache.join("render-cache").exists());
+    }
+
+    fn write_minimal_video_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::create_dir_all(path.join("previews")).unwrap();
+        fs::write(path.join("assets/loop.webm"), b"not a real video").unwrap();
+        fs::write(path.join("previews/poster.jpg"), b"not a real image").unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.video-demo",
+            "version": "1.0.0",
+            "title": "Video Demo",
+            "kind": "video",
+            "preview": {
+                "poster": "previews/poster.jpg"
+            },
+            "entry": {
+                "type": "video",
+                "source": "assets/loop.webm",
+                "poster": "previews/poster.jpg",
+                "loop": false,
+                "muted": false,
+                "fit": "contain",
+                "max_fps": 60,
+                "start_offset_ms": 1200
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
     }
 
     struct TestDir {
