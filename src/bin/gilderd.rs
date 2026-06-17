@@ -2,11 +2,11 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 #[cfg(feature = "gtk-renderer")]
 use std::{cell::RefCell, rc::Rc};
 
@@ -52,6 +52,7 @@ fn load_daemon_context() -> Result<DaemonContext, String> {
         config,
         state,
         desktop,
+        render_sync_cache: None,
     })
 }
 
@@ -336,8 +337,8 @@ fn handle_watch_client(
 
     if include_snapshot {
         let event = {
-            let context = runtime.lock_context()?;
-            snapshot_event(&context)
+            let mut context = runtime.lock_context()?;
+            snapshot_event(&mut context)
         };
         let line = runtime.watchers.event_line("snapshot", event);
         write_line(&mut stream, &line)?;
@@ -458,6 +459,40 @@ struct DaemonContext {
     config: GilderConfig,
     state: AppState,
     desktop: gilder::desktop::DesktopSnapshot,
+    render_sync_cache: Option<RenderSyncCache>,
+}
+
+#[derive(Debug, Clone)]
+struct RenderSyncCache {
+    key: RenderSyncCacheKey,
+    render_sync: StaticRenderSyncPlan,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RenderSyncCacheKey {
+    config: GilderConfig,
+    state: AppState,
+    desktop: gilder::desktop::DesktopSnapshot,
+    cache_dir: PathBuf,
+    packages: Vec<PackageInputFingerprint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageInputFingerprint {
+    path: String,
+    package: MetadataFingerprint,
+    manifest: Option<MetadataFingerprint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MetadataFingerprint {
+    Available {
+        is_dir: bool,
+        is_file: bool,
+        len: u64,
+        modified: Option<SystemTime>,
+    },
+    Unavailable(String),
 }
 
 struct IpcOutcome {
@@ -497,6 +532,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
         )),
         RequestMethod::Status => {
             refresh_desktop(context);
+            let render_sync = current_render_sync(context);
             IpcOutcome::response(gilder::ipc::success_response(
                 &request.id,
                 json!({
@@ -506,7 +542,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                     "desktop": context.desktop,
                     "outputs": output_reports(context),
                     "persisted_state": context.state,
-                    "render_sync": render_sync_report(context),
+                    "render_sync": render_sync,
                     "renderer": renderer_name(),
                     "renderer_capabilities": renderer_capabilities(),
                 }),
@@ -745,7 +781,7 @@ fn output_reports(context: &DaemonContext) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn snapshot_event(context: &DaemonContext) -> Value {
+fn snapshot_event(context: &mut DaemonContext) -> Value {
     let render_sync = current_render_sync(context);
     json!({
         "desktop": context.desktop,
@@ -840,23 +876,107 @@ fn video_renderer_capabilities() -> Value {
     })
 }
 
-fn render_sync_report(context: &DaemonContext) -> Value {
-    json!(current_render_sync(context))
-}
+fn current_render_sync(context: &mut DaemonContext) -> StaticRenderSyncPlan {
+    let key = render_sync_cache_key(context);
+    if let Some(cache) = &context.render_sync_cache
+        && cache.key == key
+    {
+        return cache.render_sync.clone();
+    }
 
-fn current_render_sync(context: &DaemonContext) -> StaticRenderSyncPlan {
-    gilder::renderer::static_render_sync_plan_with_config(
+    let render_sync = gilder::renderer::static_render_sync_plan_with_config(
         &context.config,
         &context.desktop,
         &context.state,
         &context.paths.cache_dir,
-    )
+    );
+    context.render_sync_cache = Some(RenderSyncCache {
+        key,
+        render_sync: render_sync.clone(),
+    });
+    render_sync
+}
+
+fn render_sync_cache_key(context: &DaemonContext) -> RenderSyncCacheKey {
+    RenderSyncCacheKey {
+        config: context.config.clone(),
+        state: context.state.clone(),
+        desktop: context.desktop.clone(),
+        cache_dir: context.paths.cache_dir.clone(),
+        packages: wallpaper_package_fingerprints(context),
+    }
+}
+
+fn wallpaper_package_fingerprints(context: &DaemonContext) -> Vec<PackageInputFingerprint> {
+    let mut paths = Vec::new();
+    if let Some(assignment) = &context.state.default_wallpaper {
+        paths.push(assignment.path.clone());
+    }
+    paths.extend(context.state.outputs.values().filter_map(|state| {
+        state
+            .wallpaper
+            .as_ref()
+            .map(|assignment| assignment.path.clone())
+    }));
+    if let Some(path) = &context.config.default_wallpaper {
+        paths.push(path.clone());
+    }
+    paths.extend(
+        context
+            .config
+            .outputs
+            .values()
+            .filter_map(|output| output.wallpaper.clone()),
+    );
+    paths.sort();
+    paths.dedup();
+
+    paths
+        .into_iter()
+        .map(|path| PackageInputFingerprint::new(path))
+        .collect()
+}
+
+impl PackageInputFingerprint {
+    fn new(path: String) -> Self {
+        let package_path = Path::new(&path);
+        let package = metadata_fingerprint(package_path);
+        let manifest = if package_path.is_dir()
+            || package_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                == Some("gwpdir")
+        {
+            Some(metadata_fingerprint(
+                &package_path.join(gilder::core::MANIFEST_FILE),
+            ))
+        } else {
+            None
+        };
+        Self {
+            path,
+            package,
+            manifest,
+        }
+    }
+}
+
+fn metadata_fingerprint(path: &Path) -> MetadataFingerprint {
+    match fs::metadata(path) {
+        Ok(metadata) => MetadataFingerprint::Available {
+            is_dir: metadata.is_dir(),
+            is_file: metadata.is_file(),
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        },
+        Err(err) => MetadataFingerprint::Unavailable(err.kind().to_string()),
+    }
 }
 
 fn refreshed_render_sync(runtime: &DaemonRuntime) -> Result<StaticRenderSyncPlan, String> {
     let mut context = runtime.lock_context()?;
     refresh_desktop(&mut context);
-    Ok(current_render_sync(&context))
+    Ok(current_render_sync(&mut context))
 }
 
 fn refresh_runtime_desktop_if_changed(runtime: &DaemonRuntime) -> Result<(), String> {
@@ -867,7 +987,7 @@ fn refresh_runtime_desktop_if_changed(runtime: &DaemonRuntime) -> Result<(), Str
         if context.desktop == previous_desktop {
             None
         } else {
-            let render_sync = current_render_sync(&context);
+            let render_sync = current_render_sync(&mut context);
             let event = desktop_changed_event(&context, &render_sync);
             Some((event, render_sync))
         }
@@ -985,6 +1105,30 @@ mod tests {
         assert_eq!(reports[0]["performance"]["reason"], json!("interactive"));
     }
 
+    #[test]
+    fn current_render_sync_cache_invalidates_when_manifest_changes() {
+        let package_dir = TestDir::new("gilder-render-sync-cache-package");
+        write_static_package_manifest(package_dir.path(), "#101418");
+
+        let mut context = test_context();
+        context.paths.cache_dir = package_dir.path().join("cache");
+        context.desktop.outputs = vec![gilder::desktop::DesktopOutput::virtual_output("eDP-1")];
+        context
+            .state
+            .set_wallpaper(None, package_dir.path().to_string_lossy());
+
+        let first = current_render_sync(&mut context);
+        assert_eq!(first.plans[0].background.as_deref(), Some("#101418"));
+        assert!(context.render_sync_cache.is_some());
+
+        let second = current_render_sync(&mut context);
+        assert_eq!(second, first);
+
+        write_static_package_manifest(package_dir.path(), "#203040ff");
+        let third = current_render_sync(&mut context);
+        assert_eq!(third.plans[0].background.as_deref(), Some("#203040ff"));
+    }
+
     fn test_context() -> DaemonContext {
         DaemonContext {
             paths: ApplicationPaths {
@@ -996,7 +1140,66 @@ mod tests {
             config: GilderConfig::default(),
             state: AppState::default(),
             desktop: gilder::desktop::DesktopSnapshot::default(),
+            render_sync_cache: None,
         }
+    }
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("test clock is before Unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("{name}-{}-{unique}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("failed to create test directory");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn write_static_package_manifest(root: &Path, background: &str) {
+        let assets = root.join("assets");
+        std::fs::create_dir_all(&assets).expect("failed to create package assets");
+        std::fs::write(
+            assets.join("wallpaper.svg"),
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="9"><rect width="16" height="9" fill="#101418"/></svg>"##,
+        )
+        .expect("failed to write package asset");
+        std::fs::write(
+            root.join(gilder::core::MANIFEST_FILE),
+            format!(
+                r#"{{
+  "format": "gilder.wallpaper",
+  "format_version": 1,
+  "id": "io.github.elelcode.gilder.cache-test",
+  "version": "0.1.0",
+  "title": "Cache Test",
+  "kind": "static-image",
+  "entry": {{
+    "type": "static-image",
+    "source": "assets/wallpaper.svg",
+    "fit": "cover",
+    "background": "{background}"
+  }}
+}}
+"#
+            ),
+        )
+        .expect("failed to write package manifest");
     }
 
     fn empty_render_sync() -> StaticRenderSyncPlan {
