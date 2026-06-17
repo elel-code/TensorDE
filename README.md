@@ -28,6 +28,8 @@ early feature-gated GTK/GStreamer renderer paths.
 - `completions/`: bash and zsh shell completions.
 - `packaging/systemd/`: systemd user service example.
 - `scripts/video-codec-smoke.sh`: MP4/WebM codec smoke validation helper.
+- `scripts/wayland-video-surface-smoke.sh`: interactive Wayland video surface
+  validation helper.
 
 ## Early commands
 

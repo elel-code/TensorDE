@@ -109,6 +109,7 @@ install -m 0644 completions/zsh/* "$stage_dir/share/zsh/site-functions/"
 install -m 0644 packaging/systemd/gilder.service "$stage_dir/lib/systemd/user/gilder.service"
 install -m 0644 README.md docs/packaging.md docs/todo.md docs/video-validation.md "$stage_dir/share/doc/gilder/"
 install -m 0755 scripts/video-codec-smoke.sh "$stage_dir/share/doc/gilder/scripts/video-codec-smoke.sh"
+install -m 0755 scripts/wayland-video-surface-smoke.sh "$stage_dir/share/doc/gilder/scripts/wayland-video-surface-smoke.sh"
 
 cat > "$stage_dir/MANIFEST.txt" <<EOF
 name: gilder
@@ -134,6 +135,7 @@ contents:
   share/doc/gilder/todo.md
   share/doc/gilder/video-validation.md
   share/doc/gilder/scripts/video-codec-smoke.sh
+  share/doc/gilder/scripts/wayland-video-surface-smoke.sh
 EOF
 
 mkdir -p "$dest_dir"
