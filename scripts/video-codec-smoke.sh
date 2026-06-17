@@ -88,12 +88,33 @@ record_pass() {
   note "PASS: $*"
 }
 
+tool_hint() {
+  case "$1" in
+    ffmpeg)
+      printf '%s\n' "install the ffmpeg package"
+      ;;
+    gst-launch-1.0)
+      printf '%s\n' "install the gstreamer1.0-tools package"
+      ;;
+    cargo)
+      printf '%s\n' "install Rust/Cargo before running converter checks"
+      ;;
+  esac
+}
+
 missing_tool() {
+  local message="$1 is not available"
+  local hint
+  hint="$(tool_hint "$1")"
+  if [[ -n "$hint" ]]; then
+    message="${message}; ${hint}"
+  fi
+
   if [[ "$allow_missing" -eq 1 ]]; then
-    record_skip "$1 is not available"
+    record_skip "$message"
     return 0
   fi
-  record_failure "$1 is not available"
+  record_failure "$message"
   return 0
 }
 
