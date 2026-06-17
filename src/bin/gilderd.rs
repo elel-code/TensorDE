@@ -114,7 +114,9 @@ fn run_ipc_daemon(
 ) {
     let runtime = Arc::new(DaemonRuntime::new(context, renderer_updates));
     match refreshed_render_sync(&runtime) {
-        Ok(sync) => runtime.queue_render_sync(sync),
+        Ok(sync) => {
+            runtime.queue_render_sync_if_changed(sync);
+        }
         Err(err) => eprintln!("gilderd: failed to prepare initial render sync: {err}"),
     }
     spawn_desktop_refresh_loop(Arc::clone(&runtime));
@@ -150,7 +152,7 @@ fn run_gtk_daemon(
                 renderer_for_activate
                     .borrow_mut()
                     .sync_static_render_plan(&sync);
-                runtime_for_activate.queue_render_sync(sync);
+                runtime_for_activate.store_last_render_sync(sync);
             }
             Err(err) => eprintln!("gilderd: failed to prepare initial render sync: {err}"),
         }
@@ -308,7 +310,7 @@ fn handle_client(mut stream: UnixStream, runtime: Arc<DaemonRuntime>) -> Result<
                 runtime.watchers.broadcast("state.changed", event);
             }
             if let Some(render_sync) = outcome.render_sync {
-                runtime.queue_render_sync(render_sync);
+                runtime.queue_render_sync_if_changed(render_sync);
             }
             Ok(())
         }
@@ -380,11 +382,6 @@ impl DaemonRuntime {
         self.context
             .lock()
             .map_err(|_| "daemon context lock poisoned".to_owned())
-    }
-
-    fn queue_render_sync(&self, render_sync: StaticRenderSyncPlan) {
-        self.store_last_render_sync(render_sync.clone());
-        self.send_render_sync(render_sync);
     }
 
     fn queue_render_sync_if_changed(&self, render_sync: StaticRenderSyncPlan) -> bool {
@@ -924,6 +921,25 @@ mod tests {
         assert!(runtime.queue_render_sync_if_changed(first.clone()));
         assert!(!runtime.queue_render_sync_if_changed(first));
         assert!(runtime.queue_render_sync_if_changed(second));
+    }
+
+    #[test]
+    fn render_sync_dedup_suppresses_repeated_renderer_updates() {
+        let (sender, receiver) = mpsc::channel();
+        let runtime = DaemonRuntime::new(test_context(), vec![sender]);
+        let first = empty_render_sync();
+        let second = StaticRenderSyncPlan {
+            removals: vec!["eDP-1".to_owned()],
+            ..empty_render_sync()
+        };
+
+        runtime.store_last_render_sync(first.clone());
+        assert!(!runtime.queue_render_sync_if_changed(first.clone()));
+        assert!(receiver.try_recv().is_err());
+
+        assert!(runtime.queue_render_sync_if_changed(second.clone()));
+        assert_eq!(receiver.try_recv().ok(), Some(second.clone()));
+        assert!(!runtime.queue_render_sync_if_changed(second));
     }
 
     #[test]
