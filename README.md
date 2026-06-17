@@ -32,6 +32,7 @@ cargo run --bin gilderctl -- outputs
 cargo run --bin gilderctl -- set ./examples/wallpapers/static-demo.gwpdir --output eDP-1
 cargo run --bin gilderctl -- properties set speed 0.5 --output eDP-1
 cargo run --bin gilder-convert -- wallpaper-engine /path/to/we/project ./out.gwpdir
+cargo run --bin gilder-convert -- pack ./examples/wallpapers/static-demo.gwpdir ./static-demo.gwp
 ```
 
 The daemon currently provides JSON-RPC over a Unix socket, persistent state, and

@@ -10,5 +10,8 @@ pub use format::{
     PACKAGE_EXTENSION,
 };
 pub use manifest::{FitMode, Manifest, ManifestError, RuntimePolicy, WallpaperEntry};
-pub use package::{load_gwpdir, PackageIdentity, PackageLoadError, WallpaperPackage};
+pub use package::{
+    load_gwp, load_gwpdir, pack_gwp, unpack_gwp, PackageArchiveError, PackageIdentity,
+    PackageLoadError, WallpaperPackage,
+};
 pub use path::{PackagePath, PackagePathError};
