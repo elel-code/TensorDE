@@ -5,7 +5,7 @@ pub mod gtk;
 #[cfg(feature = "video-renderer")]
 pub mod video;
 
-use crate::config::PerformanceConfig;
+use crate::config::{GilderConfig, PerformanceConfig};
 use crate::core::{FitMode, WallpaperEntry, WallpaperPackage};
 use crate::desktop::DesktopSnapshot;
 use crate::policy::{PerformanceDecision, RenderMode};
@@ -94,11 +94,36 @@ pub fn static_render_sync_plan(
     )
 }
 
+pub fn static_render_sync_plan_with_config(
+    config: &GilderConfig,
+    desktop: &DesktopSnapshot,
+    state: &AppState,
+    cache_dir: impl AsRef<Path>,
+) -> StaticRenderSyncPlan {
+    static_render_sync_plan_inner(
+        &config.performance,
+        Some(config),
+        desktop,
+        state,
+        cache_dir.as_ref(),
+    )
+}
+
 pub fn static_render_sync_plan_with_performance(
     performance_config: &PerformanceConfig,
     desktop: &DesktopSnapshot,
     state: &AppState,
     cache_dir: impl AsRef<Path>,
+) -> StaticRenderSyncPlan {
+    static_render_sync_plan_inner(performance_config, None, desktop, state, cache_dir.as_ref())
+}
+
+fn static_render_sync_plan_inner(
+    performance_config: &PerformanceConfig,
+    config: Option<&GilderConfig>,
+    desktop: &DesktopSnapshot,
+    state: &AppState,
+    cache_dir: &Path,
 ) -> StaticRenderSyncPlan {
     let mut output_names: Vec<String> = desktop
         .outputs
@@ -109,7 +134,6 @@ pub fn static_render_sync_plan_with_performance(
     output_names.sort();
     output_names.dedup();
 
-    let cache_dir = cache_dir.as_ref();
     let mut plans = Vec::new();
     let mut video_plans = Vec::new();
     let mut removals = Vec::new();
@@ -118,8 +142,11 @@ pub fn static_render_sync_plan_with_performance(
     for output_name in output_names {
         let desktop_output = desktop.output(&output_name);
         let output_state = state.outputs.get(&output_name).cloned().unwrap_or_default();
+        let effective_performance_config = config
+            .map(|config| config.performance_for_output(&output_name))
+            .unwrap_or_else(|| performance_config.clone());
         let performance = crate::policy::decide_performance(
-            performance_config,
+            &effective_performance_config,
             desktop,
             desktop_output,
             &output_state,
@@ -402,7 +429,7 @@ fn archive_extract_dir(cache_dir: &Path, archive_path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PerformanceConfig;
+    use crate::config::{GilderConfig, OutputConfig, OutputPerformanceConfig, PerformanceConfig};
     use crate::core::pack_gwp;
     use crate::desktop::DesktopOutput;
     use crate::policy::{DecisionReason, RenderMode};
@@ -597,6 +624,52 @@ mod tests {
         assert_eq!(sync.decisions[0].action, StaticRenderAction::Render);
         assert_eq!(sync.decisions[0].performance.mode, RenderMode::Throttled);
         assert_eq!(sync.decisions[0].performance.max_fps, Some(15));
+    }
+
+    #[test]
+    fn output_performance_override_sets_video_target_fps() {
+        let test_dir = TestDir::new("gilder-output-performance-plan");
+        let package_dir = test_dir.path.join("video-demo.gwpdir");
+        write_minimal_video_gwpdir(&package_dir);
+        let mut config = GilderConfig::default();
+        config.outputs.insert(
+            "eDP-1".to_owned(),
+            OutputConfig {
+                performance: OutputPerformanceConfig {
+                    background_max_fps: Some(12),
+                    ..OutputPerformanceConfig::default()
+                },
+                ..OutputConfig::default()
+            },
+        );
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                focused: false,
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_config(
+            &config,
+            &desktop,
+            &state,
+            test_dir.path.join("cache"),
+        );
+
+        assert_eq!(sync.video_plans.len(), 1);
+        assert_eq!(sync.video_plans[0].target_max_fps, Some(12));
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Throttled);
+        assert_eq!(sync.decisions[0].performance.max_fps, Some(12));
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            DecisionReason::Unfocused
+        );
     }
 
     #[test]

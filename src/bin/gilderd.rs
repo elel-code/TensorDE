@@ -723,8 +723,9 @@ fn output_reports(context: &DaemonContext) -> Vec<serde_json::Value> {
                 .get(&name)
                 .cloned()
                 .unwrap_or_default();
+            let performance_config = context.config.performance_for_output(&name);
             let performance = gilder::policy::decide_performance(
-                &context.config.performance,
+                &performance_config,
                 &context.desktop,
                 desktop_output,
                 &state,
@@ -839,8 +840,8 @@ fn render_sync_report(context: &DaemonContext) -> Value {
 }
 
 fn current_render_sync(context: &DaemonContext) -> StaticRenderSyncPlan {
-    gilder::renderer::static_render_sync_plan_with_performance(
-        &context.config.performance,
+    gilder::renderer::static_render_sync_plan_with_config(
+        &context.config,
         &context.desktop,
         &context.state,
         &context.paths.cache_dir,
@@ -936,6 +937,33 @@ mod tests {
             desktop_refresh_interval(&config),
             Duration::from_millis(1250)
         );
+    }
+
+    #[test]
+    fn output_reports_apply_output_performance_override() {
+        let mut context = test_context();
+        context.config.outputs.insert(
+            "eDP-1".to_owned(),
+            gilder::config::OutputConfig {
+                performance: gilder::config::OutputPerformanceConfig {
+                    interactive_max_fps: Some(42),
+                    ..gilder::config::OutputPerformanceConfig::default()
+                },
+                ..gilder::config::OutputConfig::default()
+            },
+        );
+        context
+            .state
+            .outputs
+            .insert("eDP-1".to_owned(), gilder::state::OutputState::default());
+
+        let reports = output_reports(&context);
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0]["name"], json!("eDP-1"));
+        assert_eq!(reports[0]["performance"]["mode"], json!("active"));
+        assert_eq!(reports[0]["performance"]["max_fps"], json!(42));
+        assert_eq!(reports[0]["performance"]["reason"], json!("interactive"));
     }
 
     fn test_context() -> DaemonContext {

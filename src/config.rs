@@ -4,4 +4,7 @@ pub mod paths;
 pub mod settings;
 
 pub use paths::{ApplicationPaths, PathError};
-pub use settings::{AdapterConfig, GilderConfig, PerformanceConfig, PowerPolicy, ThrottlePolicy};
+pub use settings::{
+    AdapterConfig, GilderConfig, OutputConfig, OutputPerformanceConfig, PerformanceConfig,
+    PowerPolicy, ThrottlePolicy,
+};

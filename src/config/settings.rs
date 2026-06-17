@@ -37,6 +37,13 @@ impl GilderConfig {
             Err(err) => Err(ConfigLoadError::Read(err)),
         }
     }
+
+    pub fn performance_for_output(&self, output_name: &str) -> PerformanceConfig {
+        self.outputs
+            .get(output_name)
+            .map(|output| self.performance.with_output_overrides(&output.performance))
+            .unwrap_or_else(|| self.performance.clone())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -45,6 +52,8 @@ pub struct OutputConfig {
     pub wallpaper: Option<String>,
     #[serde(default)]
     pub fit: Option<String>,
+    #[serde(default)]
+    pub performance: OutputPerformanceConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +86,40 @@ impl Default for PerformanceConfig {
             battery: PowerPolicy::Throttle,
         }
     }
+}
+
+impl PerformanceConfig {
+    pub fn with_output_overrides(&self, overrides: &OutputPerformanceConfig) -> Self {
+        Self {
+            interactive_max_fps: overrides
+                .interactive_max_fps
+                .unwrap_or(self.interactive_max_fps),
+            background_max_fps: overrides
+                .background_max_fps
+                .unwrap_or(self.background_max_fps),
+            battery_max_fps: overrides.battery_max_fps.unwrap_or(self.battery_max_fps),
+            desktop_refresh_interval_ms: self.desktop_refresh_interval_ms,
+            fullscreen: overrides.fullscreen.unwrap_or(self.fullscreen),
+            unfocused: overrides.unfocused.unwrap_or(self.unfocused),
+            battery: overrides.battery.unwrap_or(self.battery),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct OutputPerformanceConfig {
+    #[serde(default)]
+    pub interactive_max_fps: Option<u32>,
+    #[serde(default)]
+    pub background_max_fps: Option<u32>,
+    #[serde(default)]
+    pub battery_max_fps: Option<u32>,
+    #[serde(default)]
+    pub fullscreen: Option<ThrottlePolicy>,
+    #[serde(default)]
+    pub unfocused: Option<ThrottlePolicy>,
+    #[serde(default)]
+    pub battery: Option<PowerPolicy>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,16 +236,25 @@ mod tests {
             desktop_refresh_interval_ms = 1000
             fullscreen = "pause"
             unfocused = "throttle"
-            battery = "pause"
+            battery = "throttle"
 
             [adapters]
             niri = false
+
+            [outputs."HDMI-A-1".performance]
+            background_max_fps = 12
+            battery = "pause"
             "#,
         )
         .unwrap();
         assert_eq!(config.performance.interactive_max_fps, 75);
         assert_eq!(config.performance.desktop_refresh_interval_ms, 1000);
-        assert_eq!(config.performance.battery, PowerPolicy::Pause);
+        assert_eq!(config.performance.battery, PowerPolicy::Throttle);
+        let hdmi_performance = config.performance_for_output("HDMI-A-1");
+        assert_eq!(hdmi_performance.interactive_max_fps, 75);
+        assert_eq!(hdmi_performance.background_max_fps, 12);
+        assert_eq!(hdmi_performance.battery, PowerPolicy::Pause);
+        assert_eq!(config.performance_for_output("eDP-1"), config.performance);
         assert!(!config.adapters.niri);
         assert!(config.adapters.hyprland);
     }
