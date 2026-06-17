@@ -154,6 +154,7 @@ fn convert_video(
         .and_then(|preview| preview.poster.clone())
         .map(Value::String)
         .unwrap_or(Value::Null);
+    let muted = !project.audio_requested();
 
     Ok(base_manifest(
         project,
@@ -165,7 +166,7 @@ fn convert_video(
             "source": copied.package_path,
             "poster": poster,
             "loop": true,
-            "muted": true,
+            "muted": muted,
             "fit": "cover",
             "max_fps": 60
         }),
@@ -272,6 +273,7 @@ fn base_manifest(
     entry: Value,
 ) -> Value {
     let properties = convert_properties(project, report);
+    let allow_audio = runtime_allow_audio(project, report);
     json!({
         "format": FORMAT_NAME,
         "format_version": FORMAT_VERSION,
@@ -292,9 +294,37 @@ fn base_manifest(
             "pause_when_fullscreen": true,
             "pause_when_unfocused": false,
             "allow_network": false,
-            "allow_audio": false
+            "allow_audio": allow_audio
         }
     })
+}
+
+fn runtime_allow_audio(project: &WallpaperEngineProject, report: &mut ConversionReport) -> bool {
+    if !project.audio_requested() {
+        return false;
+    }
+
+    push_unique(&mut report.detected_features, "audio");
+    match project.source_type {
+        SourceType::Video => {
+            push_unique(&mut report.converted_features, "audio-policy");
+            true
+        }
+        SourceType::Web | SourceType::Scene => {
+            push_unique(&mut report.unsupported_features, "audio-runtime");
+            report.warnings.push(
+                "Detected Wallpaper Engine audio features, but audio runtime integration is not available for this converted wallpaper type.".to_owned(),
+            );
+            false
+        }
+        SourceType::Image | SourceType::Application | SourceType::Unknown => false,
+    }
+}
+
+fn push_unique(items: &mut Vec<String>, value: &str) {
+    if !items.iter().any(|item| item == value) {
+        items.push(value.to_owned());
+    }
 }
 
 fn convert_properties(
@@ -1035,6 +1065,86 @@ impl WallpaperEngineProject {
         }
         features
     }
+
+    fn audio_requested(&self) -> bool {
+        explicit_audio_request(&self.raw)
+    }
+}
+
+fn explicit_audio_request(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => object
+            .iter()
+            .any(|(key, value)| key_requests_audio(key, value) || explicit_audio_request(value)),
+        Value::Array(values) => values.iter().any(explicit_audio_request),
+        _ => false,
+    }
+}
+
+fn key_requests_audio(key: &str, value: &Value) -> bool {
+    let normalized = normalize_project_key(key);
+    let audio_key = normalized.contains("audio")
+        || normalized.contains("sound")
+        || normalized.contains("music")
+        || normalized == "volume";
+    if !audio_key {
+        return false;
+    }
+
+    match value {
+        Value::Bool(enabled) => *enabled,
+        Value::Number(number) => number.as_f64().is_some_and(|value| value > 0.0),
+        Value::String(value) => string_requests_audio(value),
+        Value::Array(values) => values.iter().any(value_requests_audio),
+        Value::Object(object) => object.values().any(value_requests_audio),
+        Value::Null => false,
+    }
+}
+
+fn value_requests_audio(value: &Value) -> bool {
+    match value {
+        Value::Bool(enabled) => *enabled,
+        Value::Number(number) => number.as_f64().is_some_and(|value| value > 0.0),
+        Value::String(value) => string_requests_audio(value),
+        Value::Array(values) => values.iter().any(value_requests_audio),
+        Value::Object(object) => object
+            .iter()
+            .any(|(key, value)| key_requests_audio(key, value) || value_requests_audio(value)),
+        Value::Null => false,
+    }
+}
+
+fn string_requests_audio(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    if matches!(
+        lowered.as_str(),
+        "false" | "0" | "off" | "none" | "disabled" | "disable" | "muted" | "mute"
+    ) {
+        return false;
+    }
+    Path::new(trimmed)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(is_audio_extension)
+        .unwrap_or(true)
+}
+
+fn is_audio_extension(extension: &str) -> bool {
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "aac" | "flac" | "m4a" | "mp3" | "oga" | "ogg" | "opus" | "wav" | "weba" | "wma"
+    )
+}
+
+fn normalize_project_key(key: &str) -> String {
+    key.chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn detect_source_type(object: &Map<String, Value>, entry_file: Option<&str>) -> SourceType {
@@ -1364,6 +1474,41 @@ mod tests {
     }
 
     #[test]
+    fn converts_video_audio_intent_to_runtime_audio_policy() {
+        let source = TestDir::new("we-video-audio-source");
+        let output = TestDir::new("we-video-audio-output");
+        output.remove();
+        source.write_file("loop.mp4", "not real mp4");
+        source.write_file("music.ogg", "not real audio");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "video",
+              "title": "Video With Audio",
+              "file": "loop.mp4",
+              "audio": "music.ogg"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(output.path().join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(manifest["entry"]["muted"], false);
+        assert_eq!(manifest["runtime"]["allow_audio"], true);
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(report.detected_features.contains(&"audio".to_owned()));
+        assert!(
+            report
+                .converted_features
+                .contains(&"audio-policy".to_owned())
+        );
+    }
+
+    #[test]
     fn generates_video_preview_from_first_frame_with_ffmpeg() {
         let source = TestDir::new("we-video-frame-source");
         let output = TestDir::new("we-video-frame-output");
@@ -1463,6 +1608,40 @@ exit 0
         assert!(output.path().join("assets/web/gilder-bridge.js").exists());
         assert_eq!(manifest["properties"]["enabled"]["type"], "bool");
         assert_eq!(manifest["properties"]["speed"]["type"], "range");
+    }
+
+    #[test]
+    fn web_audio_intent_is_reported_as_unsupported_runtime_feature() {
+        let source = TestDir::new("we-web-audio-source");
+        let output = TestDir::new("we-web-audio-output");
+        output.remove();
+        source.write_file("index.html", "<!doctype html>");
+        source.write_file("music.mp3", "not real audio");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "web",
+              "title": "Web Audio Example",
+              "file": "index.html",
+              "audiofile": "music.mp3"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(output.path().join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(manifest["runtime"]["allow_audio"], false);
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(report.detected_features.contains(&"audio".to_owned()));
+        assert!(
+            report
+                .unsupported_features
+                .contains(&"audio-runtime".to_owned())
+        );
     }
 
     #[test]
