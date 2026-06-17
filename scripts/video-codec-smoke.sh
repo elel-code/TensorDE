@@ -7,6 +7,8 @@ usage: scripts/video-codec-smoke.sh [options]
 
 Generate small MP4/WebM samples, verify that GStreamer can decode them through
 playbin, and verify that gilder-convert can create first-frame previews.
+In GitHub Actions Ubuntu runners, strict mode auto-installs missing ffmpeg and
+GStreamer smoke dependencies through scripts/install-video-codec-smoke-deps-ubuntu.sh.
 
 Options:
   --work-dir <dir>    Parent directory for temporary smoke data
@@ -183,11 +185,49 @@ missing_tool() {
   return 0
 }
 
-ffmpeg="$(command -v ffmpeg || true)"
-gst_launch="$(command -v gst-launch-1.0 || true)"
-cargo_bin="$(command -v cargo || true)"
+refresh_tool_paths() {
+  ffmpeg="$(command -v ffmpeg || true)"
+  gst_launch="$(command -v gst-launch-1.0 || true)"
+  cargo_bin="$(command -v cargo || true)"
+}
+
+can_auto_install_ubuntu_smoke_deps() {
+  [[ "$allow_missing" -eq 0 ]] || return 1
+  [[ "${GITHUB_ACTIONS:-}" == "true" ]] || return 1
+  [[ "${RUNNER_OS:-Linux}" == "Linux" ]] || return 1
+  command -v apt-get >/dev/null 2>&1 || return 1
+  [[ -x "$repo_root/scripts/install-video-codec-smoke-deps-ubuntu.sh" ]] || return 1
+
+  if [[ -r /etc/os-release ]]; then
+    local os_id=""
+    local os_id_like=""
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    os_id="${ID:-}"
+    os_id_like="${ID_LIKE:-}"
+    [[ " ${os_id} ${os_id_like} " == *" ubuntu "* || " ${os_id} ${os_id_like} " == *" debian "* ]] || return 1
+  fi
+
+  return 0
+}
+
+maybe_auto_install_smoke_deps() {
+  [[ -z "$ffmpeg" || -z "$gst_launch" ]] || return 0
+  can_auto_install_ubuntu_smoke_deps || return 0
+
+  note "missing ffmpeg or gst-launch-1.0 on GitHub Actions Ubuntu; installing codec smoke dependencies"
+  if "$repo_root/scripts/install-video-codec-smoke-deps-ubuntu.sh"; then
+    refresh_tool_paths
+  else
+    note "codec smoke dependency auto-install failed; continuing to dependency checks"
+  fi
+}
+
+refresh_tool_paths
 
 printf 'case,step,status,detail,artifact\n' > "$results_path"
+
+maybe_auto_install_smoke_deps
 
 [[ -n "$ffmpeg" ]] || missing_tool ffmpeg
 [[ -n "$gst_launch" ]] || missing_tool gst-launch-1.0
