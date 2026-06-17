@@ -96,6 +96,8 @@ NR == 1 {
 
   mode_reason = mode "/" reason
   mode_reason_count[mode_reason] += 1
+  mode_count[mode] += 1
+  reason_count[reason] += 1
   action_count[action] += 1
   if (plan_kind != "") {
     plan_kind_count[plan_kind] += 1
@@ -150,6 +152,34 @@ END {
         printf " fps_range=%d-%d", min_decision_fps[key], max_decision_fps[key]
       }
       printf "\n"
+    }
+  }
+
+  print_category("mode", "active", mode_count)
+  print_category("mode", "throttled", mode_count)
+  print_category("mode", "paused", mode_count)
+  for (key in mode_count) {
+    if (key != "active" && key != "throttled" && key != "paused") {
+      print_category("mode", key, mode_count)
+    }
+  }
+
+  print_category("reason", "interactive", reason_count)
+  print_category("reason", "unfocused", reason_count)
+  print_category("reason", "battery", reason_count)
+  print_category("reason", "user-paused", reason_count)
+  print_category("reason", "session-inactive", reason_count)
+  print_category("reason", "output-hidden", reason_count)
+  print_category("reason", "fullscreen", reason_count)
+  for (key in reason_count) {
+    if (key != "interactive" &&
+        key != "unfocused" &&
+        key != "battery" &&
+        key != "user-paused" &&
+        key != "session-inactive" &&
+        key != "output-hidden" &&
+        key != "fullscreen") {
+      print_category("reason", key, reason_count)
     }
   }
 

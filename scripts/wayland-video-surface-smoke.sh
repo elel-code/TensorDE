@@ -218,6 +218,10 @@ capture_performance() {
   local label="$1"
   local output_dir="$2"
   local log_file="$3"
+  local expected_mode="${4:-}"
+  local expected_reason="${5:-}"
+  local expected_action="${6:-}"
+  local expected_plan_kind="${7:-}"
   local -a sample_args
   sample_args=(
     --pid "$daemon_pid"
@@ -229,6 +233,18 @@ capture_performance() {
     --output-dir "$output_dir"
     --keep
   )
+  if [[ -n "$expected_mode" ]]; then
+    sample_args+=(--expect-mode "$expected_mode")
+  fi
+  if [[ -n "$expected_reason" ]]; then
+    sample_args+=(--expect-reason "$expected_reason")
+  fi
+  if [[ -n "$expected_action" ]]; then
+    sample_args+=(--expect-action "$expected_action")
+  fi
+  if [[ -n "$expected_plan_kind" ]]; then
+    sample_args+=(--expect-plan-kind "$expected_plan_kind")
+  fi
   if [[ "$allow_missing" -eq 1 ]]; then
     sample_args+=(--allow-missing)
   fi
@@ -251,6 +267,23 @@ expected_performance_reason() {
 
 expects_active_video_plan() {
   [[ "$simulate_output_state" != "fullscreen" && "$simulate_output_state" != "hidden" ]]
+}
+
+expected_mode_for_reason() {
+  case "$1" in
+    battery|unfocused)
+      printf '%s\n' "throttled"
+      ;;
+    fullscreen|output-hidden|user-paused)
+      printf '%s\n' "paused"
+      ;;
+    interactive)
+      printf '%s\n' "active"
+      ;;
+    *)
+      printf '%s\n' ""
+      ;;
+  esac
 }
 
 if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
@@ -421,7 +454,25 @@ if [[ -n "$expected_reason" ]]; then
 fi
 
 if [[ "$sample_performance" -eq 1 ]]; then
-  if capture_performance "$performance_active_label" "$performance_active_dir" "$performance_active_log"; then
+  expected_mode="$(expected_mode_for_reason "$expected_reason")"
+  expected_action=""
+  expected_plan_kind=""
+  if [[ -n "$expected_reason" ]]; then
+    if expects_active_video_plan; then
+      expected_action="render"
+      expected_plan_kind="video"
+    else
+      expected_action="remove"
+    fi
+  fi
+  if capture_performance \
+    "$performance_active_label" \
+    "$performance_active_dir" \
+    "$performance_active_log" \
+    "$expected_mode" \
+    "$expected_reason" \
+    "$expected_action" \
+    "$expected_plan_kind"; then
     pass "captured ${performance_active_label} performance evidence"
   else
     note "performance sample log:"
@@ -440,7 +491,14 @@ if [[ "$sample_paused" -eq 1 ]]; then
     skip_or_fail "status does not report user-paused decision after pause"
   fi
 
-  if capture_performance wayland-video-paused "$performance_paused_dir" "$performance_paused_log"; then
+  if capture_performance \
+    wayland-video-paused \
+    "$performance_paused_dir" \
+    "$performance_paused_log" \
+    paused \
+    user-paused \
+    remove \
+    ""; then
     pass "captured paused video performance evidence"
   else
     note "paused performance sample log:"

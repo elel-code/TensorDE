@@ -17,6 +17,14 @@ Options:
   --interval <sec>    Sampling interval in whole seconds. Default: 1
   --work-dir <dir>    Parent directory for temporary evidence
   --output-dir <dir>  Exact evidence directory. Created if needed
+  --expect-mode <mode>
+                     Require at least one decision with this mode
+  --expect-reason <reason>
+                     Require at least one decision with this reason
+  --expect-action <action>
+                     Require at least one decision with this action
+  --expect-plan-kind <kind>
+                     Require at least one decision with this plan kind
   --allow-missing     Report missing daemon/tools as skips instead of failures
   --keep              Keep generated evidence after the script exits
   -h, --help          Show this help text
@@ -33,6 +41,10 @@ work_parent="${TMPDIR:-/tmp}"
 output_dir=""
 allow_missing=0
 keep=0
+expect_mode=""
+expect_reason=""
+expect_action=""
+expect_plan_kind=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -74,6 +86,26 @@ while [[ $# -gt 0 ]]; do
     --output-dir)
       [[ $# -ge 2 ]] || { echo "--output-dir requires a directory" >&2; exit 2; }
       output_dir="$2"
+      shift 2
+      ;;
+    --expect-mode)
+      [[ $# -ge 2 ]] || { echo "--expect-mode requires a value" >&2; exit 2; }
+      expect_mode="$2"
+      shift 2
+      ;;
+    --expect-reason)
+      [[ $# -ge 2 ]] || { echo "--expect-reason requires a value" >&2; exit 2; }
+      expect_reason="$2"
+      shift 2
+      ;;
+    --expect-action)
+      [[ $# -ge 2 ]] || { echo "--expect-action requires a value" >&2; exit 2; }
+      expect_action="$2"
+      shift 2
+      ;;
+    --expect-plan-kind)
+      [[ $# -ge 2 ]] || { echo "--expect-plan-kind requires a value" >&2; exit 2; }
+      expect_plan_kind="$2"
       shift 2
       ;;
     --allow-missing)
@@ -224,6 +256,60 @@ write_decision_summary() {
   awk -f "$decision_summary_awk" "$decisions_csv" > "$summary"
 }
 
+has_expectations() {
+  [[ -n "$expect_mode" || -n "$expect_reason" || -n "$expect_action" || -n "$expect_plan_kind" ]]
+}
+
+summary_value() {
+  local key="$1"
+  local summary="$2"
+  awk -v key="$key" -F': ' '$1 == key { print $2; found = 1; exit } END { exit found ? 0 : 1 }' "$summary"
+}
+
+expect_summary_key() {
+  local key="$1"
+  local description="$2"
+  local value
+  if value="$(summary_value "$key" "$decision_summary_path")"; then
+    pass "decision expectation matched ${description}: ${value}"
+  else
+    skip_or_fail "decision expectation not met: ${description}"
+  fi
+}
+
+validate_decision_expectations() {
+  has_expectations || return 0
+  if [[ "$status_enabled" -ne 1 || "$decision_failures" -gt 0 ]]; then
+    skip_or_fail "cannot validate decision expectations without complete decision samples"
+    return 0
+  fi
+
+  if ! summary_value "decision_rows" "$decision_summary_path" >/dev/null; then
+    skip_or_fail "cannot validate decision expectations because decision summary is missing"
+    return 0
+  fi
+  local rows
+  rows="$(summary_value "decision_rows" "$decision_summary_path")"
+  if [[ "$rows" == "0" ]]; then
+    skip_or_fail "cannot validate decision expectations because no decision rows were sampled"
+    return 0
+  fi
+
+  if [[ -n "$expect_mode" && -n "$expect_reason" ]]; then
+    expect_summary_key "mode_reason.${expect_mode}/${expect_reason}" "${expect_mode}/${expect_reason}"
+  elif [[ -n "$expect_mode" ]]; then
+    expect_summary_key "mode.${expect_mode}" "mode ${expect_mode}"
+  elif [[ -n "$expect_reason" ]]; then
+    expect_summary_key "reason.${expect_reason}" "reason ${expect_reason}"
+  fi
+  if [[ -n "$expect_action" ]]; then
+    expect_summary_key "action.${expect_action}" "action ${expect_action}"
+  fi
+  if [[ -n "$expect_plan_kind" ]]; then
+    expect_summary_key "plan_kind.${expect_plan_kind}" "plan kind ${expect_plan_kind}"
+  fi
+}
+
 if ! is_positive_integer "$duration"; then
   echo "--duration must be a positive integer" >&2
   exit 2
@@ -285,6 +371,10 @@ gilderctl: ${gilderctl:-unavailable}
 duration_seconds: ${duration}
 interval_seconds: ${interval}
 samples: ${samples}
+expect_mode: ${expect_mode:-none}
+expect_reason: ${expect_reason:-none}
+expect_action: ${expect_action:-none}
+expect_plan_kind: ${expect_plan_kind:-none}
 EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,stat,comm,status_file,status_error_file\n' > "$csv_path"
@@ -379,6 +469,7 @@ if [[ "$status_enabled" -eq 1 && "$decision_failures" -eq 0 ]]; then
 elif [[ "$status_enabled" -eq 1 ]]; then
   note "render decision extraction had ${decision_failures} failed samples"
 fi
+validate_decision_expectations
 
 if [[ "$keep" -eq 1 ]]; then
   note "kept work dir: $work_dir"
