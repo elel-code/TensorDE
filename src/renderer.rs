@@ -12,7 +12,7 @@ use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot};
 use crate::policy::{PerformanceDecision, RenderMode};
 use crate::state::{AppState, OutputState, WallpaperAssignment};
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{BTreeMap, hash_map::DefaultHasher};
 use std::fmt;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -143,6 +143,7 @@ fn static_render_sync_plan_inner(
     let mut removals = Vec::new();
     let mut errors = Vec::new();
     let mut decisions = Vec::new();
+    let mut package_cache = RenderPackageCache::new(cache_dir);
     for output_name in output_names {
         let desktop_output = desktop.output(&output_name);
         let output_state = state.outputs.get(&output_name).cloned().unwrap_or_default();
@@ -182,10 +183,10 @@ fn static_render_sync_plan_inner(
             continue;
         };
         let render_target = render_target_size(desktop.compositor, desktop_output);
-        match wallpaper_plan_for_assignment_with_target(
+        match wallpaper_plan_for_assignment_with_cache(
             &output_name,
             assignment,
-            cache_dir,
+            &mut package_cache,
             &performance,
             fit_override,
             render_target,
@@ -324,6 +325,25 @@ fn wallpaper_plan_for_assignment_with_target(
     wallpaper_plan_with_target(
         output_name,
         &package,
+        performance,
+        fit_override,
+        assignment.variant.as_deref(),
+        render_target,
+    )
+}
+
+fn wallpaper_plan_for_assignment_with_cache(
+    output_name: impl Into<String>,
+    assignment: &WallpaperAssignment,
+    package_cache: &mut RenderPackageCache<'_>,
+    performance: &PerformanceDecision,
+    fit_override: Option<FitMode>,
+    render_target: Option<RenderTargetSize>,
+) -> Result<WallpaperRenderPlan, RendererPlanError> {
+    let package = package_cache.package(assignment)?;
+    wallpaper_plan_with_target(
+        output_name,
+        package,
         performance,
         fit_override,
         assignment.variant.as_deref(),
@@ -612,6 +632,41 @@ fn load_assigned_package(
             "unsupported wallpaper path {}",
             path.display()
         )))
+    }
+}
+
+struct RenderPackageCache<'a> {
+    cache_dir: &'a Path,
+    packages: BTreeMap<String, Result<WallpaperPackage, RendererPlanError>>,
+}
+
+impl<'a> RenderPackageCache<'a> {
+    fn new(cache_dir: &'a Path) -> Self {
+        Self {
+            cache_dir,
+            packages: BTreeMap::new(),
+        }
+    }
+
+    fn package(
+        &mut self,
+        assignment: &WallpaperAssignment,
+    ) -> Result<&WallpaperPackage, RendererPlanError> {
+        if !self.packages.contains_key(&assignment.path) {
+            self.packages.insert(
+                assignment.path.clone(),
+                load_assigned_package(assignment, self.cache_dir),
+            );
+        }
+
+        match self
+            .packages
+            .get(&assignment.path)
+            .expect("package cache entry was inserted before lookup")
+        {
+            Ok(package) => Ok(package),
+            Err(err) => Err(err.clone()),
+        }
     }
 }
 
@@ -1241,6 +1296,26 @@ mod tests {
         assert_eq!(plan.output_name, "eDP-1");
         assert!(plan.source.ends_with("assets/wallpaper.svg"));
         assert!(cache.join("render-cache").exists());
+    }
+
+    #[test]
+    fn render_package_cache_reuses_loaded_package() {
+        let test_dir = TestDir::new("gilder-render-package-cache");
+        let package_dir = test_dir.path.join("static-variant.gwpdir");
+        write_minimal_static_variant_gwpdir(&package_dir);
+        let assignment = WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        };
+        let mut cache = RenderPackageCache::new(&test_dir.path);
+
+        let first_id = cache.package(&assignment).unwrap().manifest.id.clone();
+        fs::remove_file(package_dir.join(crate::core::MANIFEST_FILE)).unwrap();
+        let second_id = cache.package(&assignment).unwrap().manifest.id.clone();
+
+        assert_eq!(first_id, "org.example.static-variant");
+        assert_eq!(second_id, first_id);
+        assert_eq!(cache.packages.len(), 1);
     }
 
     fn write_minimal_video_gwpdir(path: &Path) {
