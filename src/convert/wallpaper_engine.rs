@@ -107,7 +107,12 @@ fn convert_static_image(
         "wallpaper",
         report,
     )?;
-    let preview = copy_preview(project, output_dir, report)?;
+    let preview = copy_preview_or_generate(
+        project,
+        output_dir,
+        report,
+        MissingPreviewFallback::StaticImage { source },
+    )?;
     report.converted_features.push("static-image".to_owned());
 
     Ok(base_manifest(
@@ -139,7 +144,12 @@ fn convert_video(
         "loop",
         report,
     )?;
-    let preview = copy_preview(project, output_dir, report)?;
+    let preview = copy_preview_or_generate(
+        project,
+        output_dir,
+        report,
+        MissingPreviewFallback::Video { source },
+    )?;
     report.converted_features.push("video".to_owned());
 
     let poster = preview
@@ -190,7 +200,8 @@ fn convert_web(
         .push("assets/web/gilder-bridge.js".to_owned());
     report.converted_features.push("web".to_owned());
 
-    let preview = copy_preview(project, output_dir, report)?;
+    let preview =
+        copy_preview_or_generate(project, output_dir, report, MissingPreviewFallback::None)?;
     let index_package_path = path_to_package_string(&index_path);
     Ok(base_manifest(
         project,
@@ -335,28 +346,161 @@ fn convert_properties(
     converted
 }
 
-fn copy_preview(
+fn copy_preview_or_generate(
     project: &WallpaperEngineProject,
     output_dir: &Path,
     report: &mut ConversionReport,
+    fallback: MissingPreviewFallback<'_>,
 ) -> Result<Option<PreviewPaths>, ConversionError> {
-    let Some(preview) = &project.preview_file else {
-        report
-            .warnings
-            .push("No preview image found; poster and thumbnail were not generated.".to_owned());
-        return Ok(None);
-    };
-    let copied = copy_project_file(
-        &project.root,
-        preview,
-        output_dir.join("previews"),
-        "poster",
-        report,
-    )?;
-    Ok(Some(PreviewPaths {
-        thumbnail: Some(copied.package_path.clone()),
-        poster: Some(copied.package_path),
-    }))
+    if let Some(preview) = &project.preview_file {
+        let copied = copy_project_file(
+            &project.root,
+            preview,
+            output_dir.join("previews"),
+            "poster",
+            report,
+        )?;
+        return Ok(Some(PreviewPaths {
+            thumbnail: Some(copied.package_path.clone()),
+            poster: Some(copied.package_path),
+        }));
+    }
+
+    match fallback {
+        MissingPreviewFallback::StaticImage { source } => {
+            let poster = copy_project_file(
+                &project.root,
+                source,
+                output_dir.join("previews"),
+                "poster",
+                report,
+            )?;
+            let thumbnail = copy_project_file(
+                &project.root,
+                source,
+                output_dir.join("previews"),
+                "thumbnail",
+                report,
+            )?;
+            report.generated_assets.push(poster.package_path.clone());
+            report.generated_assets.push(thumbnail.package_path.clone());
+            report.warnings.push(
+                "No preview image found; generated poster and thumbnail from the source image."
+                    .to_owned(),
+            );
+            Ok(Some(PreviewPaths {
+                thumbnail: Some(thumbnail.package_path),
+                poster: Some(poster.package_path),
+            }))
+        }
+        MissingPreviewFallback::Video { source } => {
+            let preview = generate_video_placeholder_preview(project, output_dir, source, report)?;
+            report.warnings.push(
+                "No preview image found; generated metadata-based video poster and thumbnail fallback. First-frame extraction is not implemented yet.".to_owned(),
+            );
+            Ok(Some(preview))
+        }
+        MissingPreviewFallback::None => {
+            report.warnings.push(
+                "No preview image found; poster and thumbnail were not generated.".to_owned(),
+            );
+            Ok(None)
+        }
+    }
+}
+
+enum MissingPreviewFallback<'a> {
+    None,
+    StaticImage { source: &'a str },
+    Video { source: &'a str },
+}
+
+fn generate_video_placeholder_preview(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    source: &str,
+    report: &mut ConversionReport,
+) -> Result<PreviewPaths, ConversionError> {
+    let poster_path = output_dir.join("previews/poster.svg");
+    let thumbnail_path = output_dir.join("previews/thumbnail.svg");
+    let source_name = Path::new(source)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(source);
+    let poster = video_placeholder_svg(&project.title, source_name, 1920, 1080);
+    let thumbnail = video_placeholder_svg(&project.title, source_name, 512, 288);
+    fs::write(&poster_path, poster).map_err(ConversionError::WriteFile)?;
+    fs::write(&thumbnail_path, thumbnail).map_err(ConversionError::WriteFile)?;
+
+    let poster_package_path =
+        path_to_package_string(poster_path.strip_prefix(output_dir).unwrap_or(&poster_path));
+    let thumbnail_package_path = path_to_package_string(
+        thumbnail_path
+            .strip_prefix(output_dir)
+            .unwrap_or(&thumbnail_path),
+    );
+    report.generated_assets.push(poster_package_path.clone());
+    report.generated_assets.push(thumbnail_package_path.clone());
+
+    Ok(PreviewPaths {
+        thumbnail: Some(thumbnail_package_path),
+        poster: Some(poster_package_path),
+    })
+}
+
+fn video_placeholder_svg(title: &str, source_name: &str, width: u32, height: u32) -> String {
+    let title = escape_xml(title);
+    let source_name = escape_xml(source_name);
+    let font_size = (height / 14).clamp(18, 96);
+    let small_font_size = (height / 26).clamp(12, 48);
+    let center_y = height / 2;
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+  <rect width="100%" height="100%" fill="#101418"/>
+  <rect x="0" y="0" width="100%" height="100%" fill="#18212b"/>
+  <circle cx="{cx}" cy="{cy}" r="{radius}" fill="#263442"/>
+  <path d="{play_path}" fill="#d7e0ea"/>
+  <text x="50%" y="{title_y}" fill="#f1f5f9" font-family="sans-serif" font-size="{font_size}" font-weight="700" text-anchor="middle">{title}</text>
+  <text x="50%" y="{source_y}" fill="#94a3b8" font-family="sans-serif" font-size="{small_font_size}" text-anchor="middle">{source_name}</text>
+</svg>
+"##,
+        cx = width / 2,
+        cy = center_y - height / 12,
+        radius = height / 9,
+        play_path = play_path(width, height),
+        title_y = center_y + height / 7,
+        source_y = center_y + height / 7 + small_font_size * 2,
+    )
+}
+
+fn play_path(width: u32, height: u32) -> String {
+    let cx = width as f32 / 2.0;
+    let cy = height as f32 / 2.0 - height as f32 / 12.0;
+    let size = height as f32 / 12.0;
+    format!(
+        "M {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1} Z",
+        cx - size * 0.35,
+        cy - size * 0.62,
+        cx - size * 0.35,
+        cy + size * 0.62,
+        cx + size * 0.72,
+        cy
+    )
+}
+
+fn escape_xml(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&apos;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
 }
 
 fn copy_project_file(
@@ -883,6 +1027,45 @@ mod tests {
     }
 
     #[test]
+    fn converts_static_image_project_without_preview_from_source_image() {
+        let source = TestDir::new("we-static-no-preview-source");
+        let output = TestDir::new("we-static-no-preview-output");
+        output.remove();
+        source.write_file("wallpaper.png", "not real png");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "image",
+              "title": "Static Without Preview",
+              "file": "wallpaper.png"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(output.path().join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(manifest["preview"]["poster"], "previews/poster.png");
+        assert_eq!(manifest["preview"]["thumbnail"], "previews/thumbnail.png");
+        assert!(output.path().join("previews/poster.png").exists());
+        assert!(output.path().join("previews/thumbnail.png").exists());
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .generated_assets
+                .contains(&"previews/poster.png".to_owned())
+        );
+        assert!(
+            report
+                .generated_assets
+                .contains(&"previews/thumbnail.png".to_owned())
+        );
+    }
+
+    #[test]
     fn converts_video_project() {
         let source = TestDir::new("we-video-source");
         let output = TestDir::new("we-video-output");
@@ -903,6 +1086,26 @@ mod tests {
                 .unwrap();
         assert_eq!(manifest["kind"], "video");
         assert_eq!(manifest["entry"]["source"], "assets/loop.mp4");
+        assert_eq!(manifest["entry"]["poster"], "previews/poster.svg");
+        assert_eq!(manifest["preview"]["poster"], "previews/poster.svg");
+        assert_eq!(manifest["preview"]["thumbnail"], "previews/thumbnail.svg");
+        assert!(output.path().join("previews/poster.svg").exists());
+        assert!(output.path().join("previews/thumbnail.svg").exists());
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .generated_assets
+                .contains(&"previews/poster.svg".to_owned())
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("First-frame extraction is not implemented yet"))
+        );
     }
 
     #[test]
