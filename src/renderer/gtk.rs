@@ -29,6 +29,7 @@ struct RenderedOutput {
     #[cfg(feature = "video-renderer")]
     surface: gtk::Box,
     provider: Option<gtk::CssProvider>,
+    static_plan: Option<StaticWallpaperPlan>,
     #[cfg(feature = "video-renderer")]
     video: Option<GtkVideoPipeline>,
     #[cfg(feature = "video-renderer")]
@@ -113,8 +114,13 @@ impl GtkStaticRenderer {
                 build_background_output(&self.application, &plan.output_name, &monitor)
             });
         window.window.set_monitor(Some(&monitor));
-        apply_static_wallpaper(window, plan);
-        window.window.present();
+        if static_plan_needs_update(window.static_plan.as_ref(), plan) {
+            apply_static_wallpaper(window, plan);
+            window.static_plan = Some(plan.clone());
+        }
+        if !window.window.is_visible() {
+            window.window.present();
+        }
         true
     }
 
@@ -318,6 +324,7 @@ fn build_background_output(
         #[cfg(feature = "video-renderer")]
         surface,
         provider: None,
+        static_plan: None,
         #[cfg(feature = "video-renderer")]
         video: None,
         #[cfg(feature = "video-renderer")]
@@ -338,6 +345,13 @@ fn apply_static_wallpaper(output: &mut RenderedOutput, plan: &StaticWallpaperPla
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
     output.provider = Some(provider);
+}
+
+fn static_plan_needs_update(
+    previous: Option<&StaticWallpaperPlan>,
+    next: &StaticWallpaperPlan,
+) -> bool {
+    previous != Some(next)
 }
 
 fn monitor_for_output(output_name: &str) -> Option<gdk::Monitor> {
@@ -793,6 +807,30 @@ mod tests {
             css_widget_name("HDMI-A-1 workspace"),
             "gilder-wallpaper-HDMI-A-1-workspace"
         );
+    }
+
+    #[test]
+    fn detects_unchanged_static_wallpaper_plans() {
+        let plan = StaticWallpaperPlan {
+            output_name: "eDP-1".to_owned(),
+            source: std::path::PathBuf::from("/wallpapers/current.png"),
+            fit: FitMode::Cover,
+            background: Some("#101010".to_owned()),
+        };
+        assert!(static_plan_needs_update(None, &plan));
+        assert!(!static_plan_needs_update(Some(&plan), &plan));
+
+        let changed_fit = StaticWallpaperPlan {
+            fit: FitMode::Contain,
+            ..plan.clone()
+        };
+        assert!(static_plan_needs_update(Some(&plan), &changed_fit));
+
+        let changed_background = StaticWallpaperPlan {
+            background: Some("#202020".to_owned()),
+            ..plan.clone()
+        };
+        assert!(static_plan_needs_update(Some(&plan), &changed_background));
     }
 
     #[cfg(feature = "video-renderer")]
