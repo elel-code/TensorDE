@@ -2,6 +2,7 @@
 
 pub mod adapters;
 pub mod power;
+pub mod session;
 
 use serde::{Deserialize, Serialize};
 

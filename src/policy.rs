@@ -147,6 +147,18 @@ mod tests {
     }
 
     #[test]
+    fn pauses_when_session_is_inactive() {
+        let config = PerformanceConfig::default();
+        let desktop = DesktopSnapshot {
+            session_active: false,
+            ..DesktopSnapshot::default()
+        };
+        let decision = decide_performance(&config, &desktop, None, &OutputState::default());
+        assert_eq!(decision.mode, RenderMode::Paused);
+        assert_eq!(decision.reason, DecisionReason::SessionInactive);
+    }
+
+    #[test]
     fn throttles_on_battery() {
         let config = PerformanceConfig::default();
         let desktop = DesktopSnapshot {
