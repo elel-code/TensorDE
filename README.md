@@ -29,6 +29,7 @@ cargo check
 cargo run --bin gilderd
 cargo run --bin gilderctl -- ping
 cargo run --bin gilderctl -- outputs
+cargo run --bin gilderctl -- watch
 cargo run --bin gilderctl -- set ./examples/wallpapers/static-demo.gwpdir --output eDP-1
 cargo run --bin gilderctl -- properties set speed 0.5 --output eDP-1
 cargo run --bin gilder-convert -- wallpaper-engine /path/to/we/project ./out.gwpdir

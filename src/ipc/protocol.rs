@@ -17,6 +17,9 @@ pub enum RequestMethod {
     },
     Status,
     Outputs,
+    Watch {
+        include_snapshot: bool,
+    },
     PropertiesGet {
         output: Option<String>,
         key: Option<String>,
@@ -118,6 +121,12 @@ pub fn parse_request(line: &str) -> Result<IpcRequest, RpcError> {
         }
         "status" => RequestMethod::Status,
         "outputs" => RequestMethod::Outputs,
+        "watch" => {
+            let params: WatchParams = parse_params(id.clone(), &envelope.method, envelope.params)?;
+            RequestMethod::Watch {
+                include_snapshot: params.include_snapshot,
+            }
+        }
         "properties.get" => {
             let params: PropertiesGetParams =
                 parse_params(id.clone(), &envelope.method, envelope.params)?;
@@ -195,6 +204,19 @@ pub fn error_response(id: Option<&Value>, code: &str, message: &str) -> String {
     .expect("JSON-RPC error response should serialize")
 }
 
+pub fn event_notification(sequence: u64, event_type: &str, payload: Value) -> String {
+    serde_json::to_string(&json!({
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+            "sequence": sequence,
+            "type": event_type,
+            "payload": payload,
+        },
+    }))
+    .expect("JSON-RPC event notification should serialize")
+}
+
 fn parse_params<T: for<'de> Deserialize<'de>>(
     id: Value,
     method: &str,
@@ -216,6 +238,16 @@ struct JsonRpcRequest {
 #[derive(Debug, Deserialize)]
 struct PingParams {
     protocol: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WatchParams {
+    #[serde(default = "default_true")]
+    include_snapshot: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -297,5 +329,28 @@ mod tests {
                 value: Value::String("#ffaa00".to_owned())
             }
         );
+    }
+
+    #[test]
+    fn parses_watch_request() {
+        let request = parse_request(
+            r#"{"jsonrpc":"2.0","id":11,"method":"watch","params":{"include_snapshot":false}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            request.method,
+            RequestMethod::Watch {
+                include_snapshot: false
+            }
+        );
+    }
+
+    #[test]
+    fn builds_event_notification() {
+        let response = event_notification(3, "state.changed", json!({ "action": "set" }));
+        let value: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(value["method"], "event");
+        assert_eq!(value["params"]["sequence"], 3);
+        assert_eq!(value["params"]["type"], "state.changed");
     }
 }

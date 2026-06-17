@@ -6,6 +6,7 @@ pub enum ClientCommand {
     Ping,
     Status,
     Outputs,
+    Watch,
     PropertiesGet {
         output: Option<String>,
         key: Option<String>,
@@ -40,6 +41,7 @@ impl ClientCommand {
             Self::Ping => json_request("ping", json!({ "protocol": PROTOCOL_VERSION })),
             Self::Status => json_request("status", json!({})),
             Self::Outputs => json_request("outputs", json!({})),
+            Self::Watch => json_request("watch", json!({ "include_snapshot": true })),
             Self::PropertiesGet { output, key } => json_request(
                 "properties.get",
                 json!({
@@ -82,6 +84,7 @@ pub fn parse_client_args(args: &[String]) -> Result<ClientCommand, String> {
         [cmd] if cmd == "ping" => Ok(ClientCommand::Ping),
         [cmd] if cmd == "status" => Ok(ClientCommand::Status),
         [cmd] if cmd == "outputs" => Ok(ClientCommand::Outputs),
+        [cmd] if cmd == "watch" => Ok(ClientCommand::Watch),
         [cmd, sub] if cmd == "properties" && sub == "get" => Ok(ClientCommand::PropertiesGet {
             output: None,
             key: None,
@@ -168,6 +171,7 @@ pub fn help_text() -> String {
         "  gilderctl ping",
         "  gilderctl status",
         "  gilderctl outputs",
+        "  gilderctl watch",
         "  gilderctl properties get [key] [--output <name>]",
         "  gilderctl properties set <key> <value-json> [--output <name>]",
         "  gilderctl properties unset <key> [--output <name>]",
@@ -258,5 +262,11 @@ mod tests {
                 value: Value::String("#ffaa00".to_owned())
             })
         );
+    }
+
+    #[test]
+    fn parses_watch() {
+        let args = vec!["watch".to_owned()];
+        assert_eq!(parse_client_args(&args), Ok(ClientCommand::Watch));
     }
 }

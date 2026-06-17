@@ -1,5 +1,5 @@
 use std::env;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
@@ -33,6 +33,20 @@ fn run() -> Result<(), String> {
         .write_all(request.as_bytes())
         .and_then(|_| stream.write_all(b"\n"))
         .map_err(|err| format!("failed to send request: {err}"))?;
+
+    if matches!(command, gilder::ipc::ClientCommand::Watch) {
+        let mut stdout = std::io::stdout().lock();
+        let reader = BufReader::new(stream);
+        for line in reader.lines() {
+            let line = line.map_err(|err| format!("failed to read response: {err}"))?;
+            stdout
+                .write_all(line.as_bytes())
+                .and_then(|_| stdout.write_all(b"\n"))
+                .and_then(|_| stdout.flush())
+                .map_err(|err| format!("failed to write response: {err}"))?;
+        }
+        return Ok(());
+    }
 
     let mut response = String::new();
     stream
