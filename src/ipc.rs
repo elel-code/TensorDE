@@ -4,9 +4,9 @@ pub mod command;
 mod protocol;
 pub mod socket;
 
-pub use command::{help_text, parse_client_args, ClientCommand};
+pub use command::{ClientCommand, help_text, parse_client_args};
 pub use protocol::{
-    error_response, event_notification, parse_request, success_response, IpcRequest, RequestMethod,
-    RpcError, PROTOCOL_VERSION,
+    IpcRequest, PROTOCOL_VERSION, RequestMethod, RpcError, error_response, event_notification,
+    parse_request, success_response,
 };
-pub use socket::{runtime_socket_path, SOCKET_DIR_NAME, SOCKET_FILE_NAME};
+pub use socket::{SOCKET_DIR_NAME, SOCKET_FILE_NAME, runtime_socket_path};

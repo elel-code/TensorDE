@@ -6,12 +6,12 @@ pub mod package;
 pub mod path;
 
 pub use format::{
-    WallpaperKind, DIRECTORY_EXTENSION, FORMAT_NAME, FORMAT_VERSION, MANIFEST_FILE,
-    PACKAGE_EXTENSION,
+    DIRECTORY_EXTENSION, FORMAT_NAME, FORMAT_VERSION, MANIFEST_FILE, PACKAGE_EXTENSION,
+    WallpaperKind,
 };
 pub use manifest::{FitMode, Manifest, ManifestError, RuntimePolicy, WallpaperEntry};
 pub use package::{
-    load_gwp, load_gwpdir, pack_gwp, unpack_gwp, PackageArchiveError, PackageIdentity,
-    PackageLoadError, WallpaperPackage,
+    PackageArchiveError, PackageIdentity, PackageLoadError, WallpaperPackage, load_gwp,
+    load_gwpdir, pack_gwp, unpack_gwp,
 };
 pub use path::{PackagePath, PackagePathError};

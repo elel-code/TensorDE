@@ -21,6 +21,10 @@ pub fn read_desktop_snapshot(config: &AdapterConfig) -> DesktopSnapshot {
 
     let mut snapshot = DesktopSnapshot::placeholder();
     if config.generic_wayland {
+        #[cfg(feature = "gtk-renderer")]
+        {
+            snapshot.outputs = crate::renderer::gtk::gdk_desktop_outputs();
+        }
         snapshot.compositor = Some(CompositorKind::GenericWayland);
     }
     snapshot

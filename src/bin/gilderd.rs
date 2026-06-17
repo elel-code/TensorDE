@@ -4,13 +4,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
 use gilder::config::{ApplicationPaths, GilderConfig};
 use gilder::ipc::RequestMethod;
 use gilder::state::AppState;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn main() {
     if let Err(err) = run() {
@@ -276,7 +276,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                     "desktop": context.desktop,
                     "outputs": output_reports(context),
                     "persisted_state": context.state,
-                    "renderer": "not-implemented",
+                    "renderer": renderer_name(),
                 }),
             ))
         }
@@ -477,7 +477,7 @@ fn snapshot_event(context: &DaemonContext) -> Value {
     json!({
         "outputs": output_reports(context),
         "persisted_state": context.state,
-        "renderer": "not-implemented",
+        "renderer": renderer_name(),
     })
 }
 
@@ -504,4 +504,12 @@ fn renderer_placeholder_response(
             "note": "renderer is not implemented yet",
         }),
     )
+}
+
+fn renderer_name() -> &'static str {
+    if cfg!(feature = "gtk-renderer") {
+        "gtk-layer-shell-static"
+    } else {
+        "not-implemented"
+    }
 }

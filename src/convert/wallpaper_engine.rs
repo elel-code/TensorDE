@@ -1,6 +1,6 @@
-use crate::core::{load_gwpdir, FORMAT_NAME, FORMAT_VERSION, MANIFEST_FILE};
+use crate::core::{FORMAT_NAME, FORMAT_VERSION, MANIFEST_FILE, load_gwpdir};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
@@ -874,10 +874,12 @@ mod tests {
                 .unwrap();
         assert_eq!(manifest["kind"], "static-image");
         assert_eq!(manifest["properties"]["accent"]["default"], "#ff8000");
-        assert!(output
-            .path()
-            .join("metadata/conversion-report.json")
-            .exists());
+        assert!(
+            output
+                .path()
+                .join("metadata/conversion-report.json")
+                .exists()
+        );
     }
 
     #[test]
@@ -962,9 +964,11 @@ mod tests {
             &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
         )
         .unwrap();
-        assert!(report
-            .unsupported_features
-            .contains(&"executable-application".to_owned()));
+        assert!(
+            report
+                .unsupported_features
+                .contains(&"executable-application".to_owned())
+        );
     }
 
     struct TestDir {

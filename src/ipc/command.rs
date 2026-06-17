@@ -1,5 +1,5 @@
 use super::protocol::PROTOCOL_VERSION;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientCommand {

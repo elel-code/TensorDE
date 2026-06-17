@@ -4,4 +4,5 @@ pub mod core;
 pub mod desktop;
 pub mod ipc;
 pub mod policy;
+pub mod renderer;
 pub mod state;

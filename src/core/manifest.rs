@@ -1,4 +1,4 @@
-use super::format::{WallpaperKind, FORMAT_NAME, FORMAT_VERSION};
+use super::format::{FORMAT_NAME, FORMAT_VERSION, WallpaperKind};
 use super::path::PackagePath;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

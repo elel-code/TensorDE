@@ -26,6 +26,7 @@ Current status: project skeleton and design documents.
 
 ```sh
 cargo check
+cargo check --features gtk-renderer
 cargo run --bin gilderd
 cargo run --bin gilderctl -- ping
 cargo run --bin gilderctl -- outputs
@@ -40,3 +41,6 @@ The daemon currently provides JSON-RPC over a Unix socket, persistent state, and
 policy decisions for desktop-state-based throttling. Rendering,
 GTK-layer-shell integration, and Hyprland/niri output discovery are tracked in
 `docs/todo.md`.
+
+The optional `gtk-renderer` feature builds the GTK 4 + gtk4-layer-shell static
+renderer path. It expects system GTK 4 and gtk4-layer-shell development files.

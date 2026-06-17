@@ -19,6 +19,11 @@ jobs:
         with:
           components: rustfmt
 
+      - name: Install GTK renderer system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libgtk4-layer-shell-dev
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
@@ -28,5 +33,11 @@ jobs:
       - name: Check
         run: cargo check
 
+      - name: Check GTK renderer
+        run: cargo check --features gtk-renderer
+
       - name: Test
         run: cargo test
+
+      - name: Test GTK renderer
+        run: cargo test --features gtk-renderer
