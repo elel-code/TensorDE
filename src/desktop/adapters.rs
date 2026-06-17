@@ -31,7 +31,9 @@ pub fn read_desktop_snapshot(config: &AdapterConfig) -> DesktopSnapshot {
 }
 
 fn with_runtime_state(mut snapshot: DesktopSnapshot) -> DesktopSnapshot {
-    if snapshot.power == PowerState::Unknown {
+    if let Some(power) = super::power::read_power_state_override() {
+        snapshot.power = power;
+    } else if snapshot.power == PowerState::Unknown {
         snapshot.power = super::power::read_power_state();
     }
     snapshot.session_active = snapshot.session_active && super::session::read_session_active();

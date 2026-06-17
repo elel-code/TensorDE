@@ -22,6 +22,8 @@ Options:
                      Performance sampling duration. Default: 8
   --sample-interval <sec>
                      Performance sampling interval. Default: 1
+  --simulate-power <state>
+                     Start daemon with GILDER_POWER_STATE=ac|battery|unknown
   --keep              Keep generated smoke data and logs
   -h, --help          Show this help text
 EOF
@@ -36,6 +38,7 @@ sample_performance=0
 sample_paused=0
 sample_duration=8
 sample_interval=1
+simulate_power=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -76,6 +79,19 @@ while [[ $# -gt 0 ]]; do
       sample_interval="$2"
       shift 2
       ;;
+    --simulate-power)
+      [[ $# -ge 2 ]] || { echo "--simulate-power requires ac, battery, or unknown" >&2; exit 2; }
+      case "$2" in
+        ac|battery|unknown)
+          simulate_power="$2"
+          ;;
+        *)
+          echo "--simulate-power requires ac, battery, or unknown" >&2
+          exit 2
+          ;;
+      esac
+      shift 2
+      ;;
     --keep)
       keep=1
       shift
@@ -109,6 +125,12 @@ performance_active_dir="$work_dir/performance-active"
 performance_active_log="$work_dir/performance-active.log"
 performance_paused_dir="$work_dir/performance-paused"
 performance_paused_log="$work_dir/performance-paused.log"
+performance_active_label="wayland-video-active"
+if [[ -n "$simulate_power" ]]; then
+  performance_active_dir="$work_dir/performance-${simulate_power}"
+  performance_active_log="$work_dir/performance-${simulate_power}.log"
+  performance_active_label="wayland-video-${simulate_power}"
+fi
 daemon_pid=""
 
 cleanup() {
@@ -236,12 +258,17 @@ EOF
 "$gilder_convert" wallpaper-engine "$source_dir" "$wallpaper_dir" >/dev/null
 pass "generated video wallpaper package"
 
-env \
-  GILDER_SOCKET="$socket" \
-  XDG_CONFIG_HOME="$work_dir/config" \
-  XDG_STATE_HOME="$work_dir/state" \
-  XDG_CACHE_HOME="$work_dir/cache" \
-  "$gilderd" >"$daemon_log" 2>&1 &
+daemon_env=(
+  env
+  GILDER_SOCKET="$socket"
+  XDG_CONFIG_HOME="$work_dir/config"
+  XDG_STATE_HOME="$work_dir/state"
+  XDG_CACHE_HOME="$work_dir/cache"
+)
+if [[ -n "$simulate_power" ]]; then
+  daemon_env+=(GILDER_POWER_STATE="$simulate_power")
+fi
+"${daemon_env[@]}" "$gilderd" >"$daemon_log" 2>&1 &
 daemon_pid=$!
 
 for _ in $(seq 1 80); do
@@ -267,6 +294,14 @@ done
 pass "started isolated gilderd"
 
 env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_before"
+
+if [[ -n "$simulate_power" ]]; then
+  if grep -q "\"power\":\"${simulate_power}\"" "$status_before"; then
+    pass "status reports simulated power state ${simulate_power}"
+  else
+    skip_or_fail "status does not report simulated power state ${simulate_power}"
+  fi
+fi
 
 if [[ -z "$output_name" ]]; then
   output_name="$(grep -o '"name":"[^"]*"' "$status_before" | head -n 1 | cut -d '"' -f 4 || true)"
@@ -298,10 +333,17 @@ if ! grep -q '"video_plans":\[' "$status_after" || grep -q '"video_plans":\[\]' 
 else
   pass "status reports active video render plan"
 fi
+if [[ "$simulate_power" == "battery" ]]; then
+  if grep -q '"reason":"battery"' "$status_after"; then
+    pass "status reports battery performance decision"
+  else
+    skip_or_fail "status does not report battery performance decision"
+  fi
+fi
 
 if [[ "$sample_performance" -eq 1 ]]; then
-  if capture_performance wayland-video-active "$performance_active_dir" "$performance_active_log"; then
-    pass "captured active video performance evidence"
+  if capture_performance "$performance_active_label" "$performance_active_dir" "$performance_active_log"; then
+    pass "captured ${performance_active_label} performance evidence"
   else
     note "performance sample log:"
     sed -n '1,120p' "$performance_active_log"
@@ -351,8 +393,8 @@ if [[ "$sample_paused" -eq 1 ]]; then
 fi
 note "daemon log:    $daemon_log"
 if [[ "$sample_performance" -eq 1 ]]; then
-  note "performance active: $performance_active_dir"
-  note "performance active log: $performance_active_log"
+  note "performance ${performance_active_label}: $performance_active_dir"
+  note "performance ${performance_active_label} log: $performance_active_log"
 fi
 if [[ "$sample_paused" -eq 1 ]]; then
   note "performance paused: $performance_paused_dir"

@@ -6,9 +6,19 @@ use std::io;
 use std::path::Path;
 
 const SYSFS_POWER_SUPPLY: &str = "/sys/class/power_supply";
+const POWER_STATE_OVERRIDE: &str = "GILDER_POWER_STATE";
 
 pub fn read_power_state() -> PowerState {
+    if let Some(power) = read_power_state_override() {
+        return power;
+    }
     read_power_state_from_sysfs(SYSFS_POWER_SUPPLY).unwrap_or(PowerState::Unknown)
+}
+
+pub fn read_power_state_override() -> Option<PowerState> {
+    std::env::var(POWER_STATE_OVERRIDE)
+        .ok()
+        .and_then(|value| parse_power_state_override(&value))
 }
 
 pub fn read_power_state_from_sysfs(root: impl AsRef<Path>) -> io::Result<PowerState> {
@@ -63,6 +73,16 @@ pub fn read_power_state_from_sysfs(root: impl AsRef<Path>) -> io::Result<PowerSt
         return Ok(PowerState::Battery);
     }
     Ok(PowerState::Unknown)
+}
+
+fn parse_power_state_override(value: &str) -> Option<PowerState> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "ac" | "mains" | "external" | "plugged" => Some(PowerState::Ac),
+        "battery" | "bat" | "discharging" => Some(PowerState::Battery),
+        "unknown" => Some(PowerState::Unknown),
+        "" | "auto" | "sysfs" => None,
+        _ => None,
+    }
 }
 
 fn is_system_battery(path: &Path) -> bool {
@@ -172,6 +192,21 @@ mod tests {
             read_power_state_from_sysfs(root.path()).unwrap(),
             PowerState::Unknown
         );
+    }
+
+    #[test]
+    fn parses_power_state_override_values() {
+        assert_eq!(
+            parse_power_state_override("battery"),
+            Some(PowerState::Battery)
+        );
+        assert_eq!(parse_power_state_override("AC"), Some(PowerState::Ac));
+        assert_eq!(
+            parse_power_state_override("unknown"),
+            Some(PowerState::Unknown)
+        );
+        assert_eq!(parse_power_state_override("auto"), None);
+        assert_eq!(parse_power_state_override("invalid"), None);
     }
 
     fn write_supply(root: &Path, name: &str, fields: &[(&str, &str)]) {
