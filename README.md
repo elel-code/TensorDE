@@ -30,6 +30,7 @@ early feature-gated GTK/GStreamer renderer paths.
 - `scripts/video-codec-smoke.sh`: MP4/WebM codec smoke validation helper.
 - `scripts/wayland-video-surface-smoke.sh`: interactive Wayland video surface
   validation helper.
+- `scripts/performance-snapshot.sh`: daemon CPU/RSS/status sampling helper.
 
 ## Early commands
 
