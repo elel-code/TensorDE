@@ -191,6 +191,60 @@ write_summary() {
   ' "$csv" > "$summary"
 }
 
+append_status_decisions() {
+  local sample="$1"
+  local elapsed="$2"
+  local status_file="$3"
+  local decisions_csv="$4"
+  local decision_error_file="$5"
+  local temp_decisions="$work_dir/decisions-$(printf '%03d' "$sample").tmp"
+
+  if ! "$gilderctl" status --decisions-csv --from-file "$status_file" > "$temp_decisions" 2> "$decision_error_file"; then
+    rm -f "$temp_decisions"
+    return 1
+  fi
+  if [[ ! -s "$decision_error_file" ]]; then
+    rm -f "$decision_error_file"
+  fi
+
+  awk -v sample="$sample" -v elapsed="$elapsed" '
+    NR == 1 { next }
+    {
+      print sample "," elapsed "," $0
+    }
+  ' "$temp_decisions" >> "$decisions_csv"
+  rm -f "$temp_decisions"
+  return 0
+}
+
+write_decision_summary() {
+  local decisions_csv="$1"
+  local summary="$2"
+  awk -F, '
+    NR == 1 { next }
+    {
+      rows += 1
+      key = $5 "/" $6
+      counts[key] += 1
+      if ($7 != "") {
+        fps = $7 + 0
+        if (!(key in min_fps) || fps < min_fps[key]) { min_fps[key] = fps }
+        if (!(key in max_fps) || fps > max_fps[key]) { max_fps[key] = fps }
+      }
+    }
+    END {
+      printf "decision_rows: %d\n", rows
+      for (key in counts) {
+        printf "%s: %d", key, counts[key]
+        if (key in min_fps) {
+          printf " fps_range=%d-%d", min_fps[key], max_fps[key]
+        }
+        printf "\n"
+      }
+    }
+  ' "$decisions_csv" > "$summary"
+}
+
 if ! is_positive_integer "$duration"; then
   echo "--duration must be a positive integer" >&2
   exit 2
@@ -241,6 +295,8 @@ samples=$(( (duration + interval - 1) / interval ))
 csv_path="$work_dir/samples.csv"
 metadata_path="$work_dir/metadata.txt"
 summary_path="$work_dir/summary.txt"
+decisions_path="$work_dir/decisions.csv"
+decision_summary_path="$work_dir/decision-summary.txt"
 
 cat > "$metadata_path" <<EOF
 label: ${label}
@@ -253,8 +309,10 @@ samples: ${samples}
 EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,stat,comm,status_file,status_error_file\n' > "$csv_path"
+printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper\n' > "$decisions_path"
 
 status_failures=0
+decision_failures=0
 for sample in $(seq 1 "$samples"); do
   if ! kill -0 "$pid" >/dev/null 2>&1; then
     skip_or_fail "process $pid exited during sampling"
@@ -295,6 +353,13 @@ for sample in $(seq 1 "$samples"); do
         status_error_file=""
       fi
     fi
+    if [[ -n "$status_file" ]]; then
+      decision_error_file="$work_dir/decisions-$(printf '%03d' "$sample").err"
+      if ! append_status_decisions "$sample" "$elapsed" "$status_file" "$decisions_path" "$decision_error_file"; then
+        decision_failures=$((decision_failures + 1))
+        skip_or_fail "failed to extract render decisions for sample $sample"
+      fi
+    fi
   fi
 
   if [[ "$failures" -gt 0 ]]; then
@@ -319,6 +384,7 @@ for sample in $(seq 1 "$samples"); do
 done
 
 write_summary "$csv_path" "$summary_path"
+write_decision_summary "$decisions_path" "$decision_summary_path"
 pass "wrote process samples to $csv_path"
 pass "wrote summary to $summary_path"
 if [[ "$status_enabled" -eq 1 && "$status_failures" -eq 0 ]]; then
@@ -327,6 +393,12 @@ elif [[ "$status_enabled" -eq 1 ]]; then
   note "status snapshots had ${status_failures} failed samples"
 else
   note "status snapshots skipped because gilderctl is unavailable"
+fi
+if [[ "$status_enabled" -eq 1 && "$decision_failures" -eq 0 ]]; then
+  pass "wrote render decision samples to $decisions_path"
+  pass "wrote render decision summary to $decision_summary_path"
+elif [[ "$status_enabled" -eq 1 ]]; then
+  note "render decision extraction had ${decision_failures} failed samples"
 fi
 
 if [[ "$keep" -eq 1 ]]; then
@@ -337,6 +409,8 @@ fi
 note "metadata: $metadata_path"
 note "samples:  $csv_path"
 note "sample summary: $summary_path"
+note "decisions: $decisions_path"
+note "decision summary: $decision_summary_path"
 note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
 if [[ "$failures" -gt 0 ]]; then
   exit 1

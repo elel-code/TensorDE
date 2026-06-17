@@ -170,6 +170,7 @@ pub fn help_text() -> String {
         "usage:",
         "  gilderctl ping",
         "  gilderctl status",
+        "  gilderctl status --decisions-csv [--from-file <status.json>]",
         "  gilderctl outputs",
         "  gilderctl watch",
         "  gilderctl properties get [key] [--output <name>]",
