@@ -6,8 +6,9 @@ pub mod gtk;
 pub mod video;
 
 use crate::config::{GilderConfig, PerformanceConfig};
-use crate::core::{FitMode, WallpaperEntry, WallpaperPackage};
-use crate::desktop::DesktopSnapshot;
+use crate::core::manifest::Variant;
+use crate::core::{FitMode, PackagePath, WallpaperEntry, WallpaperPackage};
+use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot};
 use crate::policy::{PerformanceDecision, RenderMode};
 use crate::state::{AppState, OutputState, WallpaperAssignment};
 use serde::{Deserialize, Serialize};
@@ -180,12 +181,14 @@ fn static_render_sync_plan_inner(
             });
             continue;
         };
-        match wallpaper_plan_for_assignment(
+        let render_target = render_target_size(desktop.compositor, desktop_output);
+        match wallpaper_plan_for_assignment_with_target(
             &output_name,
             assignment,
             cache_dir,
             &performance,
             fit_override,
+            render_target,
         ) {
             Ok(WallpaperRenderPlan::StaticImage(plan)) => {
                 decisions.push(StaticRenderOutputDecision {
@@ -299,13 +302,32 @@ pub fn wallpaper_plan_for_assignment(
     performance: &PerformanceDecision,
     fit_override: Option<FitMode>,
 ) -> Result<WallpaperRenderPlan, RendererPlanError> {
+    wallpaper_plan_for_assignment_with_target(
+        output_name,
+        assignment,
+        cache_dir,
+        performance,
+        fit_override,
+        None,
+    )
+}
+
+fn wallpaper_plan_for_assignment_with_target(
+    output_name: impl Into<String>,
+    assignment: &WallpaperAssignment,
+    cache_dir: impl AsRef<Path>,
+    performance: &PerformanceDecision,
+    fit_override: Option<FitMode>,
+    render_target: Option<RenderTargetSize>,
+) -> Result<WallpaperRenderPlan, RendererPlanError> {
     let package = load_assigned_package(assignment, cache_dir.as_ref())?;
-    wallpaper_plan(
+    wallpaper_plan_with_target(
         output_name,
         &package,
         performance,
         fit_override,
         assignment.variant.as_deref(),
+        render_target,
     )
 }
 
@@ -316,8 +338,26 @@ pub fn wallpaper_plan(
     fit_override: Option<FitMode>,
     variant_id: Option<&str>,
 ) -> Result<WallpaperRenderPlan, RendererPlanError> {
+    wallpaper_plan_with_target(
+        output_name,
+        package,
+        performance,
+        fit_override,
+        variant_id,
+        None,
+    )
+}
+
+fn wallpaper_plan_with_target(
+    output_name: impl Into<String>,
+    package: &WallpaperPackage,
+    performance: &PerformanceDecision,
+    fit_override: Option<FitMode>,
+    variant_id: Option<&str>,
+    render_target: Option<RenderTargetSize>,
+) -> Result<WallpaperRenderPlan, RendererPlanError> {
     let output_name = output_name.into();
-    let variant_source = variant_source(package, variant_id)?;
+    let explicit_variant_source = explicit_variant_source(package, variant_id)?;
     match &package.manifest.entry {
         WallpaperEntry::StaticImage {
             source,
@@ -326,7 +366,9 @@ pub fn wallpaper_plan(
             ..
         } => Ok(WallpaperRenderPlan::StaticImage(StaticWallpaperPlan {
             output_name,
-            source: variant_source.unwrap_or(source).join_to(&package.root),
+            source: selected_variant_source(package, explicit_variant_source, render_target)
+                .unwrap_or(source)
+                .join_to(&package.root),
             fit: effective_fit(*fit, fit_override),
             background: background.clone(),
         })),
@@ -345,7 +387,9 @@ pub fn wallpaper_plan(
                 .map(|poster| poster.join_to(&package.root));
             Ok(WallpaperRenderPlan::Video(VideoWallpaperPlan {
                 output_name,
-                source: variant_source.unwrap_or(source).join_to(&package.root),
+                source: selected_variant_source(package, explicit_variant_source, render_target)
+                    .unwrap_or(source)
+                    .join_to(&package.root),
                 poster,
                 fit: effective_fit(*fit, fit_override),
                 loop_playback: *loop_playback,
@@ -376,10 +420,10 @@ fn effective_fit(manifest_fit: FitMode, output_fit: Option<FitMode>) -> FitMode 
     output_fit.unwrap_or(manifest_fit)
 }
 
-fn variant_source<'a>(
+fn explicit_variant_source<'a>(
     package: &'a WallpaperPackage,
     variant_id: Option<&str>,
-) -> Result<Option<&'a crate::core::PackagePath>, RendererPlanError> {
+) -> Result<Option<&'a PackagePath>, RendererPlanError> {
     let Some(variant_id) = variant_id else {
         return Ok(None);
     };
@@ -390,6 +434,92 @@ fn variant_source<'a>(
         .find(|variant| variant.id == variant_id)
         .map(|variant| Some(&variant.source))
         .ok_or_else(|| RendererPlanError::MissingVariant(variant_id.to_owned()))
+}
+
+fn selected_variant_source<'a>(
+    package: &'a WallpaperPackage,
+    explicit_source: Option<&'a PackagePath>,
+    render_target: Option<RenderTargetSize>,
+) -> Option<&'a PackagePath> {
+    explicit_source.or_else(|| automatic_variant_source(package, render_target))
+}
+
+fn automatic_variant_source(
+    package: &WallpaperPackage,
+    render_target: Option<RenderTargetSize>,
+) -> Option<&PackagePath> {
+    let render_target = render_target?;
+    let target_area = render_target.area();
+    package
+        .manifest
+        .variants
+        .iter()
+        .filter_map(|variant| variant_dimensions(variant).map(|dimensions| (variant, dimensions)))
+        .filter(|(_, dimensions)| dimensions.covers(render_target))
+        .min_by_key(|(_, dimensions)| {
+            (
+                dimensions.area().saturating_sub(target_area),
+                dimensions.aspect_delta(render_target),
+            )
+        })
+        .map(|(variant, _)| &variant.source)
+}
+
+fn variant_dimensions(variant: &Variant) -> Option<RenderTargetSize> {
+    Some(RenderTargetSize {
+        width: variant.width?,
+        height: variant.height?,
+    })
+}
+
+fn render_target_size(
+    compositor: Option<CompositorKind>,
+    output: Option<&DesktopOutput>,
+) -> Option<RenderTargetSize> {
+    let output = output?;
+    let width = output.width?;
+    let height = output.height?;
+    if matches!(compositor, Some(CompositorKind::Hyprland)) {
+        return Some(RenderTargetSize { width, height });
+    }
+
+    let scale = if output.scale.is_finite() && output.scale > 0.0 {
+        output.scale
+    } else {
+        1.0
+    };
+    Some(RenderTargetSize {
+        width: scaled_dimension(width, scale),
+        height: scaled_dimension(height, scale),
+    })
+}
+
+fn scaled_dimension(value: u32, scale: f32) -> u32 {
+    ((f64::from(value) * f64::from(scale))
+        .round()
+        .clamp(1.0, f64::from(u32::MAX))) as u32
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RenderTargetSize {
+    width: u32,
+    height: u32,
+}
+
+impl RenderTargetSize {
+    fn covers(self, target: Self) -> bool {
+        self.width >= target.width && self.height >= target.height
+    }
+
+    fn area(self) -> u64 {
+        u64::from(self.width) * u64::from(self.height)
+    }
+
+    fn aspect_delta(self, target: Self) -> u64 {
+        let left = u64::from(self.width) * u64::from(target.height);
+        let right = u64::from(target.width) * u64::from(self.height);
+        left.abs_diff(right)
+    }
 }
 
 pub fn static_wallpaper_plan(
@@ -411,7 +541,7 @@ pub fn static_wallpaper_plan(
             package.manifest.entry.kind().as_str(),
         ));
     };
-    let variant_source = variant_source(package, assignment.variant.as_deref())?;
+    let variant_source = explicit_variant_source(package, assignment.variant.as_deref())?;
 
     Ok(Some(StaticWallpaperPlan {
         output_name: output_name.into(),
@@ -578,6 +708,85 @@ mod tests {
             "wallpaper variant \"missing\" was not found"
         );
         assert_eq!(sync.decisions[0].action, StaticRenderAction::Error);
+    }
+
+    #[test]
+    fn auto_selects_smallest_variant_covering_scaled_output() {
+        let test_dir = TestDir::new("gilder-auto-static-variant-plan");
+        let package_dir = test_dir.path.join("static-auto-variant.gwpdir");
+        write_static_auto_variant_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                width: Some(960),
+                height: Some(540),
+                scale: 2.0,
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.errors.is_empty());
+        assert!(sync.plans[0].source.ends_with("assets/hd.svg"));
+    }
+
+    #[test]
+    fn explicit_variant_overrides_automatic_variant_selection() {
+        let test_dir = TestDir::new("gilder-explicit-static-variant-plan");
+        let package_dir = test_dir.path.join("static-auto-variant.gwpdir");
+        write_static_auto_variant_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: Some("uhd".to_owned()),
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                width: Some(1920),
+                height: Some(1080),
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.errors.is_empty());
+        assert!(sync.plans[0].source.ends_with("assets/uhd.svg"));
+    }
+
+    #[test]
+    fn automatic_variant_keeps_entry_source_when_no_variant_covers_output() {
+        let test_dir = TestDir::new("gilder-no-cover-static-variant-plan");
+        let package_dir = test_dir.path.join("static-auto-variant.gwpdir");
+        write_static_auto_variant_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                width: Some(5000),
+                height: Some(3000),
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.errors.is_empty());
+        assert!(sync.plans[0].source.ends_with("assets/wallpaper.svg"));
     }
 
     #[test]
@@ -933,6 +1142,36 @@ mod tests {
     }
 
     #[test]
+    fn video_plan_auto_selects_portrait_variant_source() {
+        let test_dir = TestDir::new("gilder-video-auto-variant-plan");
+        let package_dir = test_dir.path.join("video-demo.gwpdir");
+        write_minimal_video_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                width: Some(1080),
+                height: Some(1920),
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert_eq!(sync.video_plans.len(), 1);
+        assert!(sync.errors.is_empty());
+        assert!(
+            sync.video_plans[0]
+                .source
+                .ends_with("assets/loop-mobile.webm")
+        );
+    }
+
+    #[test]
     fn video_plan_uses_preview_poster_when_entry_poster_is_missing() {
         let test_dir = TestDir::new("gilder-video-preview-poster");
         let package_dir = test_dir.path.join("video-demo.gwpdir");
@@ -1068,6 +1307,52 @@ mod tests {
                     "source": "assets/wide.svg",
                     "width": 2560,
                     "height": 1080
+                }
+            ]
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_static_auto_variant_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(path.join("assets/wallpaper.svg"), b"<svg/>").unwrap();
+        fs::write(path.join("assets/small.svg"), b"<svg/>").unwrap();
+        fs::write(path.join("assets/hd.svg"), b"<svg/>").unwrap();
+        fs::write(path.join("assets/uhd.svg"), b"<svg/>").unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.static-auto-variant",
+            "version": "1.0.0",
+            "title": "Static Auto Variant Demo",
+            "kind": "static-image",
+            "entry": {
+                "type": "static-image",
+                "source": "assets/wallpaper.svg",
+                "fit": "cover"
+            },
+            "variants": [
+                {
+                    "id": "small",
+                    "source": "assets/small.svg",
+                    "width": 1280,
+                    "height": 720
+                },
+                {
+                    "id": "hd",
+                    "source": "assets/hd.svg",
+                    "width": 1920,
+                    "height": 1080
+                },
+                {
+                    "id": "uhd",
+                    "source": "assets/uhd.svg",
+                    "width": 3840,
+                    "height": 2160
                 }
             ]
         });
