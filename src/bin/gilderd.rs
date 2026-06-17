@@ -681,7 +681,8 @@ fn render_sync_report(context: &DaemonContext) -> Value {
 }
 
 fn current_render_sync(context: &DaemonContext) -> StaticRenderSyncPlan {
-    gilder::renderer::static_render_sync_plan(
+    gilder::renderer::static_render_sync_plan_with_performance(
+        &context.config.performance,
         &context.desktop,
         &context.state,
         &context.paths.cache_dir,

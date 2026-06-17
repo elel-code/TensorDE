@@ -3,8 +3,10 @@
 #[cfg(feature = "gtk-renderer")]
 pub mod gtk;
 
+use crate::config::PerformanceConfig;
 use crate::core::{FitMode, WallpaperEntry, WallpaperPackage};
 use crate::desktop::DesktopSnapshot;
+use crate::policy::{PerformanceDecision, RenderMode};
 use crate::state::{AppState, OutputState, WallpaperAssignment};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -27,6 +29,8 @@ pub struct StaticRenderSyncPlan {
     pub plans: Vec<StaticWallpaperPlan>,
     pub removals: Vec<String>,
     pub errors: Vec<StaticRenderPlanFailure>,
+    #[serde(default)]
+    pub decisions: Vec<StaticRenderOutputDecision>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,7 +40,38 @@ pub struct StaticRenderPlanFailure {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StaticRenderOutputDecision {
+    pub output_name: String,
+    pub action: StaticRenderAction,
+    pub performance: PerformanceDecision,
+    #[serde(default)]
+    pub wallpaper: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StaticRenderAction {
+    Render,
+    Remove,
+    Error,
+}
+
 pub fn static_render_sync_plan(
+    desktop: &DesktopSnapshot,
+    state: &AppState,
+    cache_dir: impl AsRef<Path>,
+) -> StaticRenderSyncPlan {
+    static_render_sync_plan_with_performance(
+        &PerformanceConfig::default(),
+        desktop,
+        state,
+        cache_dir,
+    )
+}
+
+pub fn static_render_sync_plan_with_performance(
+    performance_config: &PerformanceConfig,
     desktop: &DesktopSnapshot,
     state: &AppState,
     cache_dir: impl AsRef<Path>,
@@ -54,27 +89,65 @@ pub fn static_render_sync_plan(
     let mut plans = Vec::new();
     let mut removals = Vec::new();
     let mut errors = Vec::new();
+    let mut decisions = Vec::new();
     for output_name in output_names {
+        let desktop_output = desktop.output(&output_name);
         let output_state = state.outputs.get(&output_name).cloned().unwrap_or_default();
-        if output_state.paused {
-            removals.push(output_name);
-            continue;
-        }
+        let performance = crate::policy::decide_performance(
+            performance_config,
+            desktop,
+            desktop_output,
+            &output_state,
+        );
         let assignment = output_state
             .wallpaper
             .as_ref()
             .or(state.default_wallpaper.as_ref());
+
+        if performance.mode == RenderMode::Paused {
+            removals.push(output_name.clone());
+            decisions.push(StaticRenderOutputDecision {
+                output_name,
+                action: StaticRenderAction::Remove,
+                performance,
+                wallpaper: assignment.map(|assignment| assignment.path.clone()),
+            });
+            continue;
+        }
+
         let Some(assignment) = assignment else {
-            removals.push(output_name);
+            removals.push(output_name.clone());
+            decisions.push(StaticRenderOutputDecision {
+                output_name,
+                action: StaticRenderAction::Remove,
+                performance,
+                wallpaper: None,
+            });
             continue;
         };
         match static_wallpaper_plan_for_assignment(&output_name, assignment, cache_dir) {
-            Ok(plan) => plans.push(plan),
-            Err(err) => errors.push(StaticRenderPlanFailure {
-                output_name,
-                wallpaper: assignment.path.clone(),
-                message: err.to_string(),
-            }),
+            Ok(plan) => {
+                decisions.push(StaticRenderOutputDecision {
+                    output_name,
+                    action: StaticRenderAction::Render,
+                    performance,
+                    wallpaper: Some(assignment.path.clone()),
+                });
+                plans.push(plan);
+            }
+            Err(err) => {
+                decisions.push(StaticRenderOutputDecision {
+                    output_name: output_name.clone(),
+                    action: StaticRenderAction::Error,
+                    performance,
+                    wallpaper: Some(assignment.path.clone()),
+                });
+                errors.push(StaticRenderPlanFailure {
+                    output_name,
+                    wallpaper: assignment.path.clone(),
+                    message: err.to_string(),
+                });
+            }
         }
     }
 
@@ -82,6 +155,7 @@ pub fn static_render_sync_plan(
         plans,
         removals,
         errors,
+        decisions,
     }
 }
 
@@ -202,7 +276,10 @@ fn archive_extract_dir(cache_dir: &Path, archive_path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::PerformanceConfig;
     use crate::core::pack_gwp;
+    use crate::desktop::DesktopOutput;
+    use crate::policy::{DecisionReason, RenderMode};
     use crate::state::{OutputState, WallpaperAssignment};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -260,6 +337,82 @@ mod tests {
         assert!(sync.errors.is_empty());
         assert!(sync.plans.iter().any(|plan| plan.output_name == "eDP-1"));
         assert!(sync.plans.iter().any(|plan| plan.output_name == "DP-1"));
+        assert_eq!(sync.decisions.len(), 2);
+        assert!(
+            sync.decisions
+                .iter()
+                .all(|decision| decision.action == StaticRenderAction::Render)
+        );
+    }
+
+    #[test]
+    fn fullscreen_pause_policy_removes_output_without_loading_wallpaper() {
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: "missing-wallpaper.gwpdir".to_owned(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                has_fullscreen: true,
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_performance(
+            &PerformanceConfig::default(),
+            &desktop,
+            &state,
+            std::env::temp_dir(),
+        );
+        assert!(sync.plans.is_empty());
+        assert_eq!(sync.removals, ["eDP-1"]);
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.decisions.len(), 1);
+        assert_eq!(sync.decisions[0].action, StaticRenderAction::Remove);
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Paused);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            DecisionReason::Fullscreen
+        );
+        assert_eq!(
+            sync.decisions[0].wallpaper.as_deref(),
+            Some("missing-wallpaper.gwpdir")
+        );
+    }
+
+    #[test]
+    fn throttled_policy_keeps_static_plan_with_decision() {
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: "examples/wallpapers/static-demo.gwpdir".to_owned(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                focused: false,
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_performance(
+            &PerformanceConfig::default(),
+            &desktop,
+            &state,
+            std::env::temp_dir(),
+        );
+        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.removals.is_empty());
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.decisions.len(), 1);
+        assert_eq!(sync.decisions[0].action, StaticRenderAction::Render);
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Throttled);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            DecisionReason::Unfocused
+        );
     }
 
     #[test]
