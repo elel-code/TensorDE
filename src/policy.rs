@@ -38,43 +38,72 @@ pub fn decide_performance(
     output: Option<&DesktopOutput>,
     state: &OutputState,
 ) -> PerformanceDecision {
+    let mut decision = active(config.interactive_max_fps, DecisionReason::Interactive);
     if state.paused {
-        return paused(DecisionReason::UserPaused);
+        decision = select_more_conservative(decision, paused(DecisionReason::UserPaused));
     }
     if !desktop.session_active {
-        return paused(DecisionReason::SessionInactive);
+        decision = select_more_conservative(decision, paused(DecisionReason::SessionInactive));
     }
     if let Some(output) = output {
         if !output.visible {
-            return paused(DecisionReason::OutputHidden);
+            decision = select_more_conservative(decision, paused(DecisionReason::OutputHidden));
         }
         if output.has_fullscreen {
-            return apply_throttle(
-                config.fullscreen,
-                config.interactive_max_fps,
-                config.background_max_fps,
-                DecisionReason::Fullscreen,
+            decision = select_more_conservative(
+                decision,
+                apply_throttle(
+                    config.fullscreen,
+                    config.interactive_max_fps,
+                    config.background_max_fps,
+                    DecisionReason::Fullscreen,
+                ),
             );
         }
         if !output.focused {
-            return apply_throttle(
-                config.unfocused,
-                config.interactive_max_fps,
-                config.background_max_fps,
-                DecisionReason::Unfocused,
+            decision = select_more_conservative(
+                decision,
+                apply_throttle(
+                    config.unfocused,
+                    config.interactive_max_fps,
+                    config.background_max_fps,
+                    DecisionReason::Unfocused,
+                ),
             );
         }
     }
     if desktop.power.is_battery() {
-        return match config.battery {
-            PowerPolicy::Continue => {
-                active(config.interactive_max_fps, DecisionReason::Interactive)
-            }
-            PowerPolicy::Throttle => throttled(config.battery_max_fps, DecisionReason::Battery),
-            PowerPolicy::Pause => paused(DecisionReason::Battery),
-        };
+        decision = select_more_conservative(
+            decision,
+            match config.battery {
+                PowerPolicy::Continue => {
+                    active(config.interactive_max_fps, DecisionReason::Interactive)
+                }
+                PowerPolicy::Throttle => throttled(config.battery_max_fps, DecisionReason::Battery),
+                PowerPolicy::Pause => paused(DecisionReason::Battery),
+            },
+        );
     }
-    active(config.interactive_max_fps, DecisionReason::Interactive)
+    decision
+}
+
+fn select_more_conservative(
+    current: PerformanceDecision,
+    candidate: PerformanceDecision,
+) -> PerformanceDecision {
+    if decision_rank(&candidate) > decision_rank(&current) {
+        candidate
+    } else {
+        current
+    }
+}
+
+fn decision_rank(decision: &PerformanceDecision) -> (u8, std::cmp::Reverse<u32>) {
+    match decision.mode {
+        RenderMode::Paused => (2, std::cmp::Reverse(0)),
+        RenderMode::Throttled => (1, std::cmp::Reverse(decision.max_fps.unwrap_or(u32::MAX))),
+        RenderMode::Active => (0, std::cmp::Reverse(decision.max_fps.unwrap_or(u32::MAX))),
+    }
 }
 
 fn apply_throttle(
@@ -168,5 +197,97 @@ mod tests {
         let decision = decide_performance(&config, &desktop, None, &OutputState::default());
         assert_eq!(decision.mode, RenderMode::Throttled);
         assert_eq!(decision.max_fps, Some(config.battery_max_fps));
+    }
+
+    #[test]
+    fn battery_throttle_uses_lower_fps_than_unfocused_throttle() {
+        let config = PerformanceConfig {
+            background_max_fps: 30,
+            battery_max_fps: 12,
+            ..PerformanceConfig::default()
+        };
+        let desktop = DesktopSnapshot {
+            power: PowerState::Battery,
+            ..DesktopSnapshot::default()
+        };
+        let output = DesktopOutput {
+            focused: false,
+            ..DesktopOutput::virtual_output("eDP-1")
+        };
+
+        let decision =
+            decide_performance(&config, &desktop, Some(&output), &OutputState::default());
+
+        assert_eq!(decision.mode, RenderMode::Throttled);
+        assert_eq!(decision.max_fps, Some(12));
+        assert_eq!(decision.reason, DecisionReason::Battery);
+    }
+
+    #[test]
+    fn unfocused_throttle_can_remain_stricter_than_battery_throttle() {
+        let config = PerformanceConfig {
+            background_max_fps: 10,
+            battery_max_fps: 24,
+            ..PerformanceConfig::default()
+        };
+        let desktop = DesktopSnapshot {
+            power: PowerState::Battery,
+            ..DesktopSnapshot::default()
+        };
+        let output = DesktopOutput {
+            focused: false,
+            ..DesktopOutput::virtual_output("eDP-1")
+        };
+
+        let decision =
+            decide_performance(&config, &desktop, Some(&output), &OutputState::default());
+
+        assert_eq!(decision.mode, RenderMode::Throttled);
+        assert_eq!(decision.max_fps, Some(10));
+        assert_eq!(decision.reason, DecisionReason::Unfocused);
+    }
+
+    #[test]
+    fn battery_pause_overrides_unfocused_throttle() {
+        let config = PerformanceConfig {
+            battery: PowerPolicy::Pause,
+            ..PerformanceConfig::default()
+        };
+        let desktop = DesktopSnapshot {
+            power: PowerState::Battery,
+            ..DesktopSnapshot::default()
+        };
+        let output = DesktopOutput {
+            focused: false,
+            ..DesktopOutput::virtual_output("eDP-1")
+        };
+
+        let decision =
+            decide_performance(&config, &desktop, Some(&output), &OutputState::default());
+
+        assert_eq!(decision.mode, RenderMode::Paused);
+        assert_eq!(decision.reason, DecisionReason::Battery);
+    }
+
+    #[test]
+    fn equal_pause_keeps_earlier_higher_priority_reason() {
+        let config = PerformanceConfig {
+            battery: PowerPolicy::Pause,
+            ..PerformanceConfig::default()
+        };
+        let desktop = DesktopSnapshot {
+            power: PowerState::Battery,
+            ..DesktopSnapshot::default()
+        };
+        let output = DesktopOutput {
+            has_fullscreen: true,
+            ..DesktopOutput::virtual_output("eDP-1")
+        };
+
+        let decision =
+            decide_performance(&config, &desktop, Some(&output), &OutputState::default());
+
+        assert_eq!(decision.mode, RenderMode::Paused);
+        assert_eq!(decision.reason, DecisionReason::Fullscreen);
     }
 }
