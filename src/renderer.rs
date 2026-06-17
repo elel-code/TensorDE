@@ -150,7 +150,7 @@ fn static_render_sync_plan_inner(
         let effective_performance_config = config
             .map(|config| config.performance_for_output(&output_name))
             .unwrap_or_else(|| performance_config.clone());
-        let performance = crate::policy::decide_performance(
+        let mut performance = crate::policy::decide_performance(
             &effective_performance_config,
             desktop,
             desktop_output,
@@ -183,12 +183,46 @@ fn static_render_sync_plan_inner(
             continue;
         };
         let render_target = render_target_size(desktop.compositor, desktop_output);
-        match wallpaper_plan_for_assignment_with_cache(
+        let package = match package_cache.package(assignment) {
+            Ok(package) => package,
+            Err(err) => {
+                decisions.push(StaticRenderOutputDecision {
+                    output_name: output_name.clone(),
+                    action: StaticRenderAction::Error,
+                    performance,
+                    wallpaper: Some(assignment.path.clone()),
+                });
+                errors.push(StaticRenderPlanFailure {
+                    output_name,
+                    wallpaper: assignment.path.clone(),
+                    message: err.to_string(),
+                });
+                continue;
+            }
+        };
+        performance = crate::policy::apply_runtime_policy(
+            performance,
+            &package.manifest.runtime,
+            desktop_output,
+        );
+
+        if performance.mode == RenderMode::Paused {
+            removals.push(output_name.clone());
+            decisions.push(StaticRenderOutputDecision {
+                output_name,
+                action: StaticRenderAction::Remove,
+                performance,
+                wallpaper: Some(assignment.path.clone()),
+            });
+            continue;
+        }
+
+        match wallpaper_plan_with_target(
             &output_name,
-            assignment,
-            &mut package_cache,
+            package,
             &performance,
             fit_override,
+            assignment.variant.as_deref(),
             render_target,
         ) {
             Ok(WallpaperRenderPlan::StaticImage(plan)) => {
@@ -325,25 +359,6 @@ fn wallpaper_plan_for_assignment_with_target(
     wallpaper_plan_with_target(
         output_name,
         &package,
-        performance,
-        fit_override,
-        assignment.variant.as_deref(),
-        render_target,
-    )
-}
-
-fn wallpaper_plan_for_assignment_with_cache(
-    output_name: impl Into<String>,
-    assignment: &WallpaperAssignment,
-    package_cache: &mut RenderPackageCache<'_>,
-    performance: &PerformanceDecision,
-    fit_override: Option<FitMode>,
-    render_target: Option<RenderTargetSize>,
-) -> Result<WallpaperRenderPlan, RendererPlanError> {
-    let package = package_cache.package(assignment)?;
-    wallpaper_plan_with_target(
-        output_name,
-        package,
         performance,
         fit_override,
         assignment.variant.as_deref(),
@@ -1030,6 +1045,39 @@ mod tests {
     }
 
     #[test]
+    fn manifest_runtime_policy_can_pause_unfocused_output() {
+        let test_dir = TestDir::new("gilder-runtime-unfocused-pause");
+        let package_dir = test_dir.path.join("static-variant.gwpdir");
+        write_minimal_static_variant_gwpdir(&package_dir);
+        set_runtime_pause_when_unfocused(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                focused: false,
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert!(sync.plans.is_empty());
+        assert!(sync.video_plans.is_empty());
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.removals, ["eDP-1"]);
+        assert_eq!(sync.decisions[0].action, StaticRenderAction::Remove);
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Paused);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            DecisionReason::Unfocused
+        );
+    }
+
+    #[test]
     fn builds_video_sync_plan_with_effective_fps() {
         let test_dir = TestDir::new("gilder-video-plan");
         let package_dir = test_dir.path.join("video-demo.gwpdir");
@@ -1476,6 +1524,16 @@ mod tests {
             .and_then(|entry| entry.as_object_mut())
             .unwrap()
             .remove("poster");
+        fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    }
+
+    fn set_runtime_pause_when_unfocused(path: &Path) {
+        let manifest_path = path.join(crate::core::MANIFEST_FILE);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["runtime"] = json!({
+            "pause_when_unfocused": true
+        });
         fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
     }
 

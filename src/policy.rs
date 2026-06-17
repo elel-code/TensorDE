@@ -1,6 +1,7 @@
 //! Performance policy decisions derived from desktop state.
 
 use crate::config::{PerformanceConfig, PowerPolicy, ThrottlePolicy};
+use crate::core::RuntimePolicy;
 use crate::desktop::{DesktopOutput, DesktopSnapshot};
 use crate::state::OutputState;
 use serde::{Deserialize, Serialize};
@@ -83,6 +84,24 @@ pub fn decide_performance(
                 PowerPolicy::Pause => paused(DecisionReason::Battery),
             },
         );
+    }
+    decision
+}
+
+pub fn apply_runtime_policy(
+    mut decision: PerformanceDecision,
+    runtime: &RuntimePolicy,
+    output: Option<&DesktopOutput>,
+) -> PerformanceDecision {
+    let Some(output) = output else {
+        return decision;
+    };
+
+    if output.has_fullscreen && runtime.pause_when_fullscreen {
+        decision = select_more_conservative(decision, paused(DecisionReason::Fullscreen));
+    }
+    if !output.focused && runtime.pause_when_unfocused {
+        decision = select_more_conservative(decision, paused(DecisionReason::Unfocused));
     }
     decision
 }
@@ -289,5 +308,53 @@ mod tests {
 
         assert_eq!(decision.mode, RenderMode::Paused);
         assert_eq!(decision.reason, DecisionReason::Fullscreen);
+    }
+
+    #[test]
+    fn runtime_policy_can_pause_unfocused_wallpaper() {
+        let config = PerformanceConfig {
+            unfocused: ThrottlePolicy::Continue,
+            ..PerformanceConfig::default()
+        };
+        let output = DesktopOutput {
+            focused: false,
+            ..DesktopOutput::virtual_output("eDP-1")
+        };
+        let base = decide_performance(
+            &config,
+            &DesktopSnapshot::default(),
+            Some(&output),
+            &OutputState::default(),
+        );
+
+        let decision = apply_runtime_policy(
+            base,
+            &RuntimePolicy {
+                pause_when_unfocused: true,
+                ..RuntimePolicy::default()
+            },
+            Some(&output),
+        );
+
+        assert_eq!(decision.mode, RenderMode::Paused);
+        assert_eq!(decision.reason, DecisionReason::Unfocused);
+    }
+
+    #[test]
+    fn runtime_policy_does_not_make_user_pause_less_conservative() {
+        let output = DesktopOutput {
+            focused: false,
+            ..DesktopOutput::virtual_output("eDP-1")
+        };
+        let base = PerformanceDecision {
+            mode: RenderMode::Paused,
+            max_fps: None,
+            reason: DecisionReason::UserPaused,
+        };
+
+        let decision = apply_runtime_policy(base, &RuntimePolicy::default(), Some(&output));
+
+        assert_eq!(decision.mode, RenderMode::Paused);
+        assert_eq!(decision.reason, DecisionReason::UserPaused);
     }
 }
