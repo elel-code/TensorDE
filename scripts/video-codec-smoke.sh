@@ -146,7 +146,7 @@ tool_hint() {
       printf '%s\n' "install the ffmpeg package"
       ;;
     gst-launch-1.0)
-      printf '%s\n' "install the gstreamer1.0-tools package"
+      printf '%s\n' "install the gstreamer1.0-tools package, or run scripts/install-video-codec-smoke-deps-ubuntu.sh before this smoke on Ubuntu CI"
       ;;
     cargo)
       printf '%s\n' "install Rust/Cargo before running converter checks"

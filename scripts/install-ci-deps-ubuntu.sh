@@ -6,16 +6,10 @@ if [[ "$(id -u)" -ne 0 ]]; then
   sudo_cmd=(sudo)
 fi
 
-"${sudo_cmd[@]}" apt-get update
+"$(dirname "${BASH_SOURCE[0]}")/install-video-codec-smoke-deps-ubuntu.sh"
+
 "${sudo_cmd[@]}" apt-get install -y \
-  ffmpeg \
   git \
-  gstreamer1.0-libav \
-  gstreamer1.0-plugins-bad \
-  gstreamer1.0-plugins-base \
-  gstreamer1.0-plugins-good \
-  gstreamer1.0-plugins-ugly \
-  gstreamer1.0-tools \
   libgstreamer-plugins-base1.0-dev \
   libgstreamer1.0-dev \
   libgtk-4-dev \
