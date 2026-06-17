@@ -17,6 +17,7 @@ Options:
   --no-build          Use existing target/debug binaries
   --sample-performance
                      Capture active-video CPU/RSS/status evidence after applying wallpaper
+  --sample-paused    Also pause the output, capture paused-video evidence, then resume
   --sample-duration <sec>
                      Performance sampling duration. Default: 8
   --sample-interval <sec>
@@ -32,6 +33,7 @@ allow_missing=0
 build=1
 keep=0
 sample_performance=0
+sample_paused=0
 sample_duration=8
 sample_interval=1
 
@@ -57,6 +59,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --sample-performance)
       sample_performance=1
+      shift
+      ;;
+    --sample-paused)
+      sample_performance=1
+      sample_paused=1
       shift
       ;;
     --sample-duration)
@@ -94,10 +101,14 @@ socket="$work_dir/runtime/gilder.sock"
 daemon_log="$work_dir/gilderd.log"
 status_before="$work_dir/status-before.json"
 status_after="$work_dir/status-after.json"
+status_paused="$work_dir/status-paused.json"
+status_resumed="$work_dir/status-resumed.json"
 wallpaper_dir="$work_dir/wallpaper.gwpdir"
 source_dir="$work_dir/source"
-performance_dir="$work_dir/performance-active"
-performance_log="$work_dir/performance-snapshot.log"
+performance_active_dir="$work_dir/performance-active"
+performance_active_log="$work_dir/performance-active.log"
+performance_paused_dir="$work_dir/performance-paused"
+performance_paused_log="$work_dir/performance-paused.log"
 daemon_pid=""
 
 cleanup() {
@@ -152,6 +163,27 @@ require_file() {
     return 1
   fi
   return 0
+}
+
+capture_performance() {
+  local label="$1"
+  local output_dir="$2"
+  local log_file="$3"
+  local -a sample_args
+  sample_args=(
+    --pid "$daemon_pid"
+    --socket "$socket"
+    --gilderctl "$gilderctl"
+    --label "$label"
+    --duration "$sample_duration"
+    --interval "$sample_interval"
+    --output-dir "$output_dir"
+    --keep
+  )
+  if [[ "$allow_missing" -eq 1 ]]; then
+    sample_args+=(--allow-missing)
+  fi
+  "$performance_snapshot" "${sample_args[@]}" > "$log_file" 2>&1
 }
 
 if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
@@ -268,25 +300,40 @@ else
 fi
 
 if [[ "$sample_performance" -eq 1 ]]; then
-  sample_args=(
-    --pid "$daemon_pid"
-    --socket "$socket"
-    --gilderctl "$gilderctl"
-    --label wayland-video-active
-    --duration "$sample_duration"
-    --interval "$sample_interval"
-    --output-dir "$performance_dir"
-    --keep
-  )
-  if [[ "$allow_missing" -eq 1 ]]; then
-    sample_args+=(--allow-missing)
-  fi
-  if "$performance_snapshot" "${sample_args[@]}" > "$performance_log" 2>&1; then
+  if capture_performance wayland-video-active "$performance_active_dir" "$performance_active_log"; then
     pass "captured active video performance evidence"
   else
     note "performance sample log:"
-    sed -n '1,120p' "$performance_log"
+    sed -n '1,120p' "$performance_active_log"
     skip_or_fail "performance sampling failed"
+  fi
+fi
+
+if [[ "$sample_paused" -eq 1 ]]; then
+  env GILDER_SOCKET="$socket" "$gilderctl" pause --output "$output_name" >/dev/null
+  sleep 2
+  env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_paused"
+  if grep -q '"reason":"user-paused"' "$status_paused"; then
+    pass "status reports user-paused decision"
+  else
+    skip_or_fail "status does not report user-paused decision after pause"
+  fi
+
+  if capture_performance wayland-video-paused "$performance_paused_dir" "$performance_paused_log"; then
+    pass "captured paused video performance evidence"
+  else
+    note "paused performance sample log:"
+    sed -n '1,120p' "$performance_paused_log"
+    skip_or_fail "paused performance sampling failed"
+  fi
+
+  env GILDER_SOCKET="$socket" "$gilderctl" resume --output "$output_name" >/dev/null
+  sleep 1
+  env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_resumed"
+  if grep -q '"reason":"user-paused"' "$status_resumed"; then
+    skip_or_fail "status still reports user-paused after resume"
+  else
+    pass "resumed output after paused performance sample"
   fi
 fi
 
@@ -298,10 +345,18 @@ fi
 
 note "status before: $status_before"
 note "status after:  $status_after"
+if [[ "$sample_paused" -eq 1 ]]; then
+  note "status paused: $status_paused"
+  note "status resumed: $status_resumed"
+fi
 note "daemon log:    $daemon_log"
 if [[ "$sample_performance" -eq 1 ]]; then
-  note "performance:   $performance_dir"
-  note "performance log: $performance_log"
+  note "performance active: $performance_active_dir"
+  note "performance active log: $performance_active_log"
+fi
+if [[ "$sample_paused" -eq 1 ]]; then
+  note "performance paused: $performance_paused_dir"
+  note "performance paused log: $performance_paused_log"
 fi
 note "Visually confirm that output '$output_name' shows the generated moving test video."
 note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
