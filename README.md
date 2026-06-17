@@ -46,7 +46,8 @@ cargo run --bin gilder-convert -- pack ./examples/wallpapers/static-demo.gwpdir 
 
 Distribution assets are documented in `docs/packaging.md`. The repository ships
 example systemd user service, man pages, and shell completions, but install
-paths are intentionally left to distro/user packaging.
+paths are intentionally left to distro/user packaging. A tarball staging helper
+is available at `packaging/build-dist.sh`.
 
 The daemon currently provides JSON-RPC over a Unix socket, persistent state, and
 policy decisions for desktop-state-based throttling. Rendering,
