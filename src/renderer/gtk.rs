@@ -448,9 +448,12 @@ struct GtkVideoPipeline {
     frame_limiter: Option<GtkFrameLimiter>,
     source: std::path::PathBuf,
     mode: RenderMode,
+    gst_state: gst::State,
     loop_playback: bool,
     muted: bool,
+    fit: FitMode,
     target_max_fps: Option<u32>,
+    start_offset_ms: u64,
 }
 
 #[cfg(feature = "video-renderer")]
@@ -464,9 +467,12 @@ impl GtkVideoPipeline {
             frame_limiter: built.frame_limiter,
             source: plan.source.clone(),
             mode: RenderMode::Paused,
+            gst_state: gst::State::Null,
             loop_playback: plan.loop_playback,
-            muted: plan.muted,
+            muted: !plan.muted,
+            fit: plan.fit,
             target_max_fps: plan.target_max_fps,
+            start_offset_ms: 0,
         };
         pipeline.apply_muted(plan.muted);
         Ok(pipeline)
@@ -480,19 +486,15 @@ impl GtkVideoPipeline {
         self.loop_playback = plan.loop_playback;
         self.apply_target_max_fps(plan.target_max_fps);
         self.apply_muted(plan.muted);
-        self.picture.set_content_fit(content_fit_for_fit(plan.fit));
-        if plan.start_offset_ms > 0 {
-            self.element
-                .seek_simple(
-                    gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
-                    gst::ClockTime::from_mseconds(plan.start_offset_ms),
-                )
-                .map_err(|err| GtkVideoError::Seek(err.to_string()))?;
-        }
+        self.apply_fit(plan.fit);
+        self.apply_start_offset(plan.start_offset_ms)?;
         Ok(())
     }
 
     fn apply_target_max_fps(&mut self, target_max_fps: Option<u32>) {
+        if self.target_max_fps == target_max_fps {
+            return;
+        }
         self.target_max_fps = target_max_fps;
         if let Some(frame_limiter) = &self.frame_limiter {
             frame_limiter.apply_target_max_fps(target_max_fps);
@@ -500,11 +502,12 @@ impl GtkVideoPipeline {
     }
 
     fn apply_mode(&mut self, mode: RenderMode) -> Result<(), GtkVideoError> {
-        self.mode = mode;
-        match mode {
-            RenderMode::Active | RenderMode::Throttled => self.set_state(gst::State::Playing),
-            RenderMode::Paused => self.set_state(gst::State::Paused),
+        let state = gst_state_for_mode(mode);
+        if self.mode == mode && self.gst_state == state {
+            return Ok(());
         }
+        self.mode = mode;
+        self.set_state(state)
     }
 
     fn poll_bus(&mut self) -> Result<(), GtkVideoError> {
@@ -541,22 +544,59 @@ impl GtkVideoPipeline {
         Ok(())
     }
 
-    fn stop(self) {
-        let _ = self.element.set_state(gst::State::Null);
+    fn stop(mut self) {
+        let _ = self.set_state(gst::State::Null);
     }
 
-    fn set_state(&self, state: gst::State) -> Result<(), GtkVideoError> {
+    fn set_state(&mut self, state: gst::State) -> Result<(), GtkVideoError> {
+        if self.gst_state == state {
+            return Ok(());
+        }
         self.element
             .set_state(state)
-            .map(|_| ())
-            .map_err(|err| GtkVideoError::SetState(err.to_string()))
+            .map_err(|err| GtkVideoError::SetState(err.to_string()))?;
+        self.gst_state = state;
+        Ok(())
     }
 
     fn apply_muted(&mut self, muted: bool) {
+        if self.muted == muted {
+            return;
+        }
         self.muted = muted;
         if self.element.find_property("mute").is_some() {
             self.element.set_property("mute", muted);
         }
+    }
+
+    fn apply_fit(&mut self, fit: FitMode) {
+        if self.fit == fit {
+            return;
+        }
+        self.picture.set_content_fit(content_fit_for_fit(fit));
+        self.fit = fit;
+    }
+
+    fn apply_start_offset(&mut self, start_offset_ms: u64) -> Result<(), GtkVideoError> {
+        if self.start_offset_ms == start_offset_ms {
+            return Ok(());
+        }
+        self.element
+            .seek_simple(
+                gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                gst::ClockTime::from_mseconds(start_offset_ms),
+            )
+            .map_err(|err| GtkVideoError::Seek(err.to_string()))?;
+        self.start_offset_ms = start_offset_ms;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+fn gst_state_for_mode(mode: RenderMode) -> gst::State {
+    match mode {
+        RenderMode::Active | RenderMode::Throttled => gst::State::Playing,
+        RenderMode::Paused => gst::State::Paused,
     }
 }
 

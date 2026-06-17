@@ -176,6 +176,7 @@ impl GstVideoRenderer {
                 loop_playback: pipeline.loop_playback,
                 muted: pipeline.muted,
                 target_max_fps: pipeline.target_max_fps,
+                start_offset_ms: pipeline.start_offset_ms,
             })
             .collect()
     }
@@ -186,9 +187,11 @@ struct VideoPipeline {
     frame_limiter: Option<FrameLimiter>,
     source: std::path::PathBuf,
     mode: RenderMode,
+    gst_state: gst::State,
     loop_playback: bool,
     muted: bool,
     target_max_fps: Option<u32>,
+    start_offset_ms: u64,
 }
 
 impl VideoPipeline {
@@ -206,9 +209,11 @@ impl VideoPipeline {
             frame_limiter: pipeline.frame_limiter,
             source: plan.source.clone(),
             mode: RenderMode::Paused,
+            gst_state: gst::State::Null,
             loop_playback: plan.loop_playback,
-            muted: plan.muted,
+            muted: !plan.muted,
             target_max_fps: plan.target_max_fps,
+            start_offset_ms: 0,
         };
         pipeline.apply_muted(plan.muted);
         Ok(pipeline)
@@ -218,16 +223,14 @@ impl VideoPipeline {
         self.loop_playback = plan.loop_playback;
         self.apply_target_max_fps(plan.target_max_fps);
         self.apply_muted(plan.muted);
-        if plan.start_offset_ms > 0 {
-            let position = gst::ClockTime::from_mseconds(plan.start_offset_ms);
-            self.element
-                .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, position)
-                .map_err(|err| VideoRendererError::Seek(err.to_string()))?;
-        }
+        self.apply_start_offset(plan.start_offset_ms)?;
         Ok(())
     }
 
     fn apply_target_max_fps(&mut self, target_max_fps: Option<u32>) {
+        if self.target_max_fps == target_max_fps {
+            return;
+        }
         self.target_max_fps = target_max_fps;
         if let Some(frame_limiter) = &self.frame_limiter {
             frame_limiter.apply_target_max_fps(target_max_fps);
@@ -235,14 +238,15 @@ impl VideoPipeline {
     }
 
     fn apply_mode(&mut self, mode: RenderMode) -> Result<(), VideoRendererError> {
-        self.mode = mode;
-        match mode {
-            RenderMode::Active | RenderMode::Throttled => self.set_state(gst::State::Playing),
-            RenderMode::Paused => self.set_state(gst::State::Paused),
+        let state = gst_state_for_mode(mode);
+        if self.mode == mode && self.gst_state == state {
+            return Ok(());
         }
+        self.mode = mode;
+        self.set_state(state)
     }
 
-    fn stop(self) -> Result<(), VideoRendererError> {
+    fn stop(mut self) -> Result<(), VideoRendererError> {
         self.set_state(gst::State::Null)
     }
 
@@ -280,18 +284,44 @@ impl VideoPipeline {
         Ok(())
     }
 
-    fn set_state(&self, state: gst::State) -> Result<(), VideoRendererError> {
+    fn set_state(&mut self, state: gst::State) -> Result<(), VideoRendererError> {
+        if self.gst_state == state {
+            return Ok(());
+        }
         self.element
             .set_state(state)
-            .map(|_| ())
-            .map_err(|err| VideoRendererError::SetState(err.to_string()))
+            .map_err(|err| VideoRendererError::SetState(err.to_string()))?;
+        self.gst_state = state;
+        Ok(())
     }
 
     fn apply_muted(&mut self, muted: bool) {
+        if self.muted == muted {
+            return;
+        }
         self.muted = muted;
         if self.element.find_property("mute").is_some() {
             self.element.set_property("mute", muted);
         }
+    }
+
+    fn apply_start_offset(&mut self, start_offset_ms: u64) -> Result<(), VideoRendererError> {
+        if self.start_offset_ms == start_offset_ms {
+            return Ok(());
+        }
+        let position = gst::ClockTime::from_mseconds(start_offset_ms);
+        self.element
+            .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, position)
+            .map_err(|err| VideoRendererError::Seek(err.to_string()))?;
+        self.start_offset_ms = start_offset_ms;
+        Ok(())
+    }
+}
+
+fn gst_state_for_mode(mode: RenderMode) -> gst::State {
+    match mode {
+        RenderMode::Active | RenderMode::Throttled => gst::State::Playing,
+        RenderMode::Paused => gst::State::Paused,
     }
 }
 
@@ -444,6 +474,7 @@ pub struct VideoPipelineSnapshot {
     pub loop_playback: bool,
     pub muted: bool,
     pub target_max_fps: Option<u32>,
+    pub start_offset_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -513,6 +544,7 @@ mod tests {
         assert!(snapshot[0].loop_playback);
         assert!(snapshot[0].muted);
         assert_eq!(snapshot[0].target_max_fps, Some(24));
+        assert_eq!(snapshot[0].start_offset_ms, 0);
 
         let sync = StaticRenderSyncPlan {
             plans: Vec::new(),
@@ -563,6 +595,16 @@ mod tests {
                 .and_then(FrameLimiter::target_max_fps),
             None
         );
+    }
+
+    #[test]
+    fn maps_render_modes_to_gstreamer_states() {
+        assert_eq!(gst_state_for_mode(RenderMode::Active), gst::State::Playing);
+        assert_eq!(
+            gst_state_for_mode(RenderMode::Throttled),
+            gst::State::Playing
+        );
+        assert_eq!(gst_state_for_mode(RenderMode::Paused), gst::State::Paused);
     }
 
     #[test]
