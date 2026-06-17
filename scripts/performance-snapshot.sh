@@ -16,6 +16,7 @@ Options:
   --duration <sec>    Sampling duration in whole seconds. Default: 10
   --interval <sec>    Sampling interval in whole seconds. Default: 1
   --work-dir <dir>    Parent directory for temporary evidence
+  --output-dir <dir>  Exact evidence directory. Created if needed
   --allow-missing     Report missing daemon/tools as skips instead of failures
   --keep              Keep generated evidence after the script exits
   -h, --help          Show this help text
@@ -29,6 +30,7 @@ label="sample"
 duration=10
 interval=1
 work_parent="${TMPDIR:-/tmp}"
+output_dir=""
 allow_missing=0
 keep=0
 
@@ -67,6 +69,11 @@ while [[ $# -gt 0 ]]; do
     --work-dir)
       [[ $# -ge 2 ]] || { echo "--work-dir requires a directory" >&2; exit 2; }
       work_parent="$2"
+      shift 2
+      ;;
+    --output-dir)
+      [[ $# -ge 2 ]] || { echo "--output-dir requires a directory" >&2; exit 2; }
+      output_dir="$2"
       shift 2
       ;;
     --allow-missing)
@@ -218,8 +225,13 @@ if [[ "$essential_missing" -eq 1 || -z "$pid" ]]; then
   exit 0
 fi
 
-mkdir -p "$work_parent"
-work_dir="$(mktemp -d "${work_parent%/}/gilder-performance.XXXXXX")"
+if [[ -n "$output_dir" ]]; then
+  work_dir="$output_dir"
+  mkdir -p "$work_dir"
+else
+  mkdir -p "$work_parent"
+  work_dir="$(mktemp -d "${work_parent%/}/gilder-performance.XXXXXX")"
+fi
 if [[ "$keep" -eq 0 ]]; then
   trap 'rm -rf "$work_dir"' EXIT
 fi

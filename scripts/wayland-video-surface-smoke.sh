@@ -15,6 +15,12 @@ Options:
   --work-dir <dir>    Parent directory for temporary smoke data
   --allow-missing     Report missing session/tools/plugins as skips instead of failures
   --no-build          Use existing target/debug binaries
+  --sample-performance
+                     Capture active-video CPU/RSS/status evidence after applying wallpaper
+  --sample-duration <sec>
+                     Performance sampling duration. Default: 8
+  --sample-interval <sec>
+                     Performance sampling interval. Default: 1
   --keep              Keep generated smoke data and logs
   -h, --help          Show this help text
 EOF
@@ -25,6 +31,9 @@ output_name=""
 allow_missing=0
 build=1
 keep=0
+sample_performance=0
+sample_duration=8
+sample_interval=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -45,6 +54,20 @@ while [[ $# -gt 0 ]]; do
     --no-build)
       build=0
       shift
+      ;;
+    --sample-performance)
+      sample_performance=1
+      shift
+      ;;
+    --sample-duration)
+      [[ $# -ge 2 ]] || { echo "--sample-duration requires seconds" >&2; exit 2; }
+      sample_duration="$2"
+      shift 2
+      ;;
+    --sample-interval)
+      [[ $# -ge 2 ]] || { echo "--sample-interval requires seconds" >&2; exit 2; }
+      sample_interval="$2"
+      shift 2
       ;;
     --keep)
       keep=1
@@ -73,6 +96,8 @@ status_before="$work_dir/status-before.json"
 status_after="$work_dir/status-after.json"
 wallpaper_dir="$work_dir/wallpaper.gwpdir"
 source_dir="$work_dir/source"
+performance_dir="$work_dir/performance-active"
+performance_log="$work_dir/performance-snapshot.log"
 daemon_pid=""
 
 cleanup() {
@@ -152,9 +177,13 @@ fi
 gilderd="target/debug/gilderd"
 gilderctl="target/debug/gilderctl"
 gilder_convert="target/debug/gilder-convert"
+performance_snapshot="scripts/performance-snapshot.sh"
 require_file "$gilderd" || true
 require_file "$gilderctl" || true
 require_file "$gilder_convert" || true
+if [[ "$sample_performance" -eq 1 ]]; then
+  require_file "$performance_snapshot" || true
+fi
 if [[ "$failures" -gt 0 || "$skips" -gt 0 ]]; then
   note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
   exit "$([[ "$failures" -gt 0 ]] && echo 1 || echo 0)"
@@ -238,6 +267,29 @@ else
   pass "status reports active video render plan"
 fi
 
+if [[ "$sample_performance" -eq 1 ]]; then
+  sample_args=(
+    --pid "$daemon_pid"
+    --socket "$socket"
+    --gilderctl "$gilderctl"
+    --label wayland-video-active
+    --duration "$sample_duration"
+    --interval "$sample_interval"
+    --output-dir "$performance_dir"
+    --keep
+  )
+  if [[ "$allow_missing" -eq 1 ]]; then
+    sample_args+=(--allow-missing)
+  fi
+  if "$performance_snapshot" "${sample_args[@]}" > "$performance_log" 2>&1; then
+    pass "captured active video performance evidence"
+  else
+    note "performance sample log:"
+    sed -n '1,120p' "$performance_log"
+    skip_or_fail "performance sampling failed"
+  fi
+fi
+
 if ! kill -0 "$daemon_pid" >/dev/null 2>&1; then
   skip_or_fail "gilderd exited during video surface smoke"
 else
@@ -247,6 +299,10 @@ fi
 note "status before: $status_before"
 note "status after:  $status_after"
 note "daemon log:    $daemon_log"
+if [[ "$sample_performance" -eq 1 ]]; then
+  note "performance:   $performance_dir"
+  note "performance log: $performance_log"
+fi
 note "Visually confirm that output '$output_name' shows the generated moving test video."
 note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
 if [[ "$failures" -gt 0 ]]; then
