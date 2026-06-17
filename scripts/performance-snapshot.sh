@@ -97,6 +97,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+decision_summary_awk="$repo_root/scripts/performance-decision-summary.awk"
 cd "$repo_root"
 
 failures=0
@@ -220,29 +221,7 @@ append_status_decisions() {
 write_decision_summary() {
   local decisions_csv="$1"
   local summary="$2"
-  awk -F, '
-    NR == 1 { next }
-    {
-      rows += 1
-      key = $5 "/" $6
-      counts[key] += 1
-      if ($7 != "") {
-        fps = $7 + 0
-        if (!(key in min_fps) || fps < min_fps[key]) { min_fps[key] = fps }
-        if (!(key in max_fps) || fps > max_fps[key]) { max_fps[key] = fps }
-      }
-    }
-    END {
-      printf "decision_rows: %d\n", rows
-      for (key in counts) {
-        printf "%s: %d", key, counts[key]
-        if (key in min_fps) {
-          printf " fps_range=%d-%d", min_fps[key], max_fps[key]
-        }
-        printf "\n"
-      }
-    }
-  ' "$decisions_csv" > "$summary"
+  awk -f "$decision_summary_awk" "$decisions_csv" > "$summary"
 }
 
 if ! is_positive_integer "$duration"; then
