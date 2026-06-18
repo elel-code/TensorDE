@@ -7,13 +7,13 @@ usage: scripts/video-codec-smoke.sh [options]
 
 Generate small MP4/WebM samples, verify that GStreamer can decode them through
 playbin, and verify that gilder-convert can create first-frame previews.
-On Ubuntu CI runners, strict mode can auto-install missing ffmpeg and GStreamer
-smoke dependencies through scripts/install-video-codec-smoke-deps-ubuntu.sh.
+On Ubuntu/Debian and Arch-like CI runners, strict mode can auto-install missing
+ffmpeg and GStreamer smoke dependencies through the matching helper script.
 
 Options:
   --work-dir <dir>    Parent directory for temporary smoke data
   --report-dir <dir>  Exact evidence directory. Created and kept
-  --install-missing   Install codec smoke dependencies on Ubuntu-like hosts
+  --install-missing   Install codec smoke dependencies on supported Linux hosts
   --allow-missing     Report missing encoders/plugins as skips instead of failures
   --no-convert        Skip gilder-convert preview checks
   --keep              Keep generated smoke data
@@ -164,10 +164,10 @@ tool_hint() {
       printf '%s\n' "install the ffmpeg package"
       ;;
     gst-launch-1.0)
-      printf '%s\n' "install the gstreamer1.0-tools package, or run scripts/install-video-codec-smoke-deps-ubuntu.sh before this smoke on Ubuntu CI"
+      printf '%s\n' "install GStreamer tools, or run scripts/install-video-codec-smoke-deps-ubuntu.sh / scripts/install-video-codec-smoke-deps-arch.sh before this smoke"
       ;;
     gst-inspect-1.0)
-      printf '%s\n' "install the gstreamer1.0-tools package, or run scripts/install-video-codec-smoke-deps-ubuntu.sh before this smoke on Ubuntu CI"
+      printf '%s\n' "install GStreamer tools, or run scripts/install-video-codec-smoke-deps-ubuntu.sh / scripts/install-video-codec-smoke-deps-arch.sh before this smoke"
       ;;
     cargo)
       printf '%s\n' "install Rust/Cargo before running converter checks"
@@ -189,7 +189,7 @@ missing_tool() {
     return 0
   fi
   if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-    github_error "$message. Strict CI smoke must install dependencies first; run scripts/install-video-codec-smoke-deps-ubuntu.sh before scripts/video-codec-smoke.sh, or pass --allow-missing only for optional smoke jobs"
+    github_error "$message. Strict CI smoke must install dependencies first; run scripts/install-video-codec-smoke-deps-ubuntu.sh or scripts/install-video-codec-smoke-deps-arch.sh before scripts/video-codec-smoke.sh, or pass --allow-missing only for optional smoke jobs"
   fi
   record_failure "$message"
   record_result "environment" "tool-check" "fail" "$message" ""
@@ -226,13 +226,43 @@ can_install_ubuntu_smoke_deps() {
   return 0
 }
 
+can_install_arch_smoke_deps() {
+  [[ "$allow_missing" -eq 0 ]] || return 1
+  [[ "${RUNNER_OS:-Linux}" == "Linux" ]] || return 1
+  command -v pacman >/dev/null 2>&1 || return 1
+  [[ -f "$repo_root/scripts/install-video-codec-smoke-deps-arch.sh" ]] || return 1
+
+  if [[ -r /etc/os-release ]]; then
+    local os_id=""
+    local os_id_like=""
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    os_id="${ID:-}"
+    os_id_like="${ID_LIKE:-}"
+    [[ " ${os_id} ${os_id_like} " == *" arch "* ]] || return 1
+  fi
+
+  return 0
+}
+
 maybe_auto_install_smoke_deps() {
   [[ "$install_missing" -eq 1 || -z "$ffmpeg" || -z "$gst_launch" || -z "$gst_inspect" ]] || return 0
   should_install_missing_smoke_deps || return 0
-  can_install_ubuntu_smoke_deps || return 0
 
-  note "installing Ubuntu codec smoke dependencies"
-  if bash "$repo_root/scripts/install-video-codec-smoke-deps-ubuntu.sh"; then
+  local installer=""
+  local family=""
+  if can_install_ubuntu_smoke_deps; then
+    installer="$repo_root/scripts/install-video-codec-smoke-deps-ubuntu.sh"
+    family="Ubuntu/Debian"
+  elif can_install_arch_smoke_deps; then
+    installer="$repo_root/scripts/install-video-codec-smoke-deps-arch.sh"
+    family="Arch-like"
+  else
+    return 0
+  fi
+
+  note "installing ${family} codec smoke dependencies"
+  if bash "$installer"; then
     refresh_tool_paths
   else
     note "codec smoke dependency auto-install failed; continuing to dependency checks"

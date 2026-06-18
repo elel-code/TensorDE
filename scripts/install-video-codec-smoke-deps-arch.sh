@@ -11,21 +11,19 @@ if ! command -v pacman >/dev/null 2>&1; then
   exit 1
 fi
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-"$repo_root/scripts/install-video-codec-smoke-deps-arch.sh"
-
 "${sudo_cmd[@]}" pacman -S --needed --noconfirm \
-  gst-plugin-gtk4 \
-  gtk4 \
-  gtk4-layer-shell \
-  pkgconf \
-  wayland-protocols
+  ffmpeg \
+  gstreamer \
+  gst-libav \
+  gst-plugins-bad \
+  gst-plugins-base \
+  gst-plugins-good \
+  gst-plugins-ugly
 
 required_tools=(
   ffmpeg
   gst-inspect-1.0
   gst-launch-1.0
-  pkg-config
 )
 
 for tool in "${required_tools[@]}"; do
@@ -33,10 +31,10 @@ for tool in "${required_tools[@]}"; do
 done
 
 required_gstreamer_elements=(
-  playbin
-  gtk4paintablesink
-  qtdemux
+  fakesink
   matroskademux
+  playbin
+  qtdemux
 )
 
 for element in "${required_gstreamer_elements[@]}"; do
