@@ -152,7 +152,8 @@ impl GtkStaticRenderer {
             });
         window.window.set_monitor(Some(&monitor));
         window.remove_slideshow();
-        if static_plan_needs_update(window.static_plan.as_ref(), plan) {
+        if window.provider.is_none() || static_plan_needs_update(window.static_plan.as_ref(), plan)
+        {
             apply_static_wallpaper(window, plan);
             window.static_plan = Some(plan.clone());
         }
@@ -206,7 +207,10 @@ impl GtkStaticRenderer {
         output.remove_slideshow();
 
         match output.set_video(plan, mode) {
-            Ok(()) => output.video_error = None,
+            Ok(()) => {
+                output.video_error = None;
+                output.release_static_surface();
+            }
             Err(err) => output.note_video_error(plan, err),
         }
         output.window.present();
@@ -221,6 +225,7 @@ impl GtkStaticRenderer {
             {
                 output.note_video_error_for_current_source(err);
                 output.remove_video();
+                output.restore_static_surface();
             }
         }
     }
@@ -295,10 +300,8 @@ impl GtkStaticRenderer {
         if let Some(mut output) = self.windows.remove(output_name) {
             #[cfg(feature = "video-renderer")]
             output.remove_video();
-            if let Some(provider) = output.provider.take() {
-                let display = gtk::prelude::WidgetExt::display(&output.window);
-                gtk::style_context_remove_provider_for_display(&display, &provider);
-            }
+            output.release_static_surface();
+            output.static_plan = None;
             output.remove_slideshow();
             output.window.close();
         }
@@ -358,6 +361,24 @@ impl RenderedOutput {
 
     fn remove_slideshow(&mut self) {
         self.slideshow = None;
+    }
+
+    fn release_static_surface(&mut self) {
+        let Some(provider) = self.provider.take() else {
+            return;
+        };
+        let display = gtk::prelude::WidgetExt::display(&self.window);
+        gtk::style_context_remove_provider_for_display(&display, &provider);
+    }
+
+    #[cfg(feature = "video-renderer")]
+    fn restore_static_surface(&mut self) {
+        if self.provider.is_some() {
+            return;
+        }
+        if let Some(plan) = self.static_plan.clone() {
+            apply_static_wallpaper(self, &plan);
+        }
     }
 
     #[cfg(feature = "video-renderer")]

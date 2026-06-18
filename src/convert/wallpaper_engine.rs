@@ -7,7 +7,9 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
+use std::thread;
+use std::time::Duration;
 
 const PROJECT_FILE: &str = "project.json";
 const FFMPEG_BINARY: &str = "ffmpeg";
@@ -718,8 +720,32 @@ fn generate_static_image_variants_with_tools(
     variants
 }
 
+fn command_output_with_retry(command: &mut Command, executable: &Path) -> Result<Output, String> {
+    for attempt in 0..=5 {
+        match command.output() {
+            Ok(output) => return Ok(output),
+            Err(err) if is_executable_file_busy(&err) && attempt < 5 => {
+                thread::sleep(Duration::from_millis(10 * (attempt + 1) as u64));
+            }
+            Err(err) => return Err(format!("failed to run {}: {err}", executable.display())),
+        }
+    }
+    unreachable!("bounded retry loop must return before exhausting attempts")
+}
+
+#[cfg(unix)]
+fn is_executable_file_busy(err: &io::Error) -> bool {
+    err.raw_os_error() == Some(26)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file_busy(_err: &io::Error) -> bool {
+    false
+}
+
 fn probe_image_dimensions(ffprobe: &Path, source_path: &Path) -> Result<ImageDimensions, String> {
-    let output = Command::new(ffprobe)
+    let mut command = Command::new(ffprobe);
+    command
         .args([
             "-v",
             "error",
@@ -730,9 +756,8 @@ fn probe_image_dimensions(ffprobe: &Path, source_path: &Path) -> Result<ImageDim
             "-of",
             "json",
         ])
-        .arg(source_path)
-        .output()
-        .map_err(|err| format!("failed to run {}: {err}", ffprobe.display()))?;
+        .arg(source_path);
+    let output = command_output_with_retry(&mut command, ffprobe)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         let reason = if stderr.is_empty() {
@@ -780,13 +805,13 @@ fn generate_static_image_variant(
         "scale={}:{}:force_original_aspect_ratio=increase,crop={}:{}",
         spec.width, spec.height, spec.width, spec.height
     );
-    let output = Command::new(ffmpeg)
+    let mut command = Command::new(ffmpeg);
+    command
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(source_path)
         .args(["-frames:v", "1", "-an", "-sn", "-vf", &filter])
-        .arg(output_path)
-        .output()
-        .map_err(|err| format!("failed to run {}: {err}", ffmpeg.display()))?;
+        .arg(output_path);
+    let output = command_output_with_retry(&mut command, ffmpeg)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
@@ -920,7 +945,8 @@ fn extract_video_frame(
 ) -> Result<(), String> {
     let scale_filter = format!("scale={width}:-2");
     let quality = quality.to_string();
-    let output = Command::new(ffmpeg)
+    let mut command = Command::new(ffmpeg);
+    command
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(source_path)
         .args([
@@ -935,9 +961,8 @@ fn extract_video_frame(
             "-q:v",
             &quality,
         ])
-        .arg(output_path)
-        .output()
-        .map_err(|err| format!("failed to run {}: {err}", ffmpeg.display()))?;
+        .arg(output_path);
+    let output = command_output_with_retry(&mut command, ffmpeg)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
@@ -1997,17 +2022,15 @@ mod tests {
             }"#,
         );
         let ffprobe = tools.path().join("ffprobe");
-        fs::write(
+        write_executable_script(
             &ffprobe,
             r#"#!/bin/sh
 printf '{"streams":[{"width":7680,"height":4320}]}'
 exit 0
 "#,
-        )
-        .unwrap();
-        make_executable(&ffprobe);
+        );
         let ffmpeg = tools.path().join("ffmpeg");
-        fs::write(
+        write_executable_script(
             &ffmpeg,
             r#"#!/bin/sh
 out=""
@@ -2017,9 +2040,7 @@ done
 printf 'png-variant' > "$out"
 exit 0
 "#,
-        )
-        .unwrap();
-        make_executable(&ffmpeg);
+        );
         let project = WallpaperEngineProject::load(source.path()).unwrap();
         let mut report = ConversionReport::new("image");
 
@@ -2159,7 +2180,7 @@ exit 0
         output.remove();
         source.write_file("loop.mp4", "not real mp4");
         let ffmpeg = tools.path().join("ffmpeg");
-        fs::write(
+        write_executable_script(
             &ffmpeg,
             r#"#!/bin/sh
 for arg in "$@"; do
@@ -2169,9 +2190,7 @@ for arg in "$@"; do
 done
 exit 0
 "#,
-        )
-        .unwrap();
-        make_executable(&ffmpeg);
+        );
 
         let mut report = ConversionReport::new("video");
         let preview = generate_video_first_frame_preview_with_ffmpeg(
@@ -2208,8 +2227,7 @@ exit 0
     fn finds_executable_on_path_list() {
         let tools = TestDir::new("we-path-tools");
         let ffmpeg = tools.path().join("ffmpeg");
-        fs::write(&ffmpeg, "#!/bin/sh\nexit 0\n").unwrap();
-        make_executable(&ffmpeg);
+        write_executable_script(&ffmpeg, "#!/bin/sh\nexit 0\n");
 
         let found = find_executable_in_path_list("ffmpeg", [tools.path().to_path_buf()]);
         assert_eq!(found.as_deref(), Some(ffmpeg.as_path()));
@@ -2568,4 +2586,20 @@ fetch("https://example.invalid/data.json");
 
     #[cfg(not(unix))]
     fn make_executable(_path: &Path) {}
+
+    fn write_executable_script(path: &Path, contents: &str) {
+        use std::io::Write;
+
+        let temporary_path = path.with_extension("tmp");
+        if let Some(parent) = temporary_path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        {
+            let mut file = fs::File::create(&temporary_path).unwrap();
+            file.write_all(contents.as_bytes()).unwrap();
+            file.sync_all().unwrap();
+        }
+        make_executable(&temporary_path);
+        fs::rename(&temporary_path, path).unwrap();
+    }
 }

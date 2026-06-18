@@ -1220,6 +1220,8 @@ capture_performance() {
   fi
   if [[ -n "$expected_pipeline_latest_at_least" ]]; then
     sample_args+=(--expect-renderer-output-windows-latest-at-least "$expected_pipeline_latest_at_least")
+    sample_args+=(--expect-renderer-static-surfaces-latest-at-most 0)
+    sample_args+=(--expect-renderer-slideshow-surfaces-latest-at-most 0)
     sample_args+=(--expect-renderer-video-surfaces-latest-at-least "$expected_pipeline_latest_at_least")
     sample_args+=(--expect-renderer-video-pipelines-latest-at-least "$expected_pipeline_latest_at_least")
   fi
