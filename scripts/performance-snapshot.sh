@@ -238,6 +238,29 @@ sample_process() {
   ps -p "$target_pid" -o pid=,pcpu=,rss=,vsz=,stat=,comm= | sed -n '1p'
 }
 
+sample_smaps_rollup() {
+  local target_pid="$1"
+  local rollup="/proc/${target_pid}/smaps_rollup"
+  if [[ ! -r "$rollup" ]]; then
+    printf '0 0 0 0 0 0 0 0\n'
+    return 0
+  fi
+
+  awk '
+    /^Pss:/ { pss = $2 + 0 }
+    /^Private_Clean:/ { private_clean = $2 + 0 }
+    /^Private_Dirty:/ { private_dirty = $2 + 0 }
+    /^Shared_Clean:/ { shared_clean = $2 + 0 }
+    /^Shared_Dirty:/ { shared_dirty = $2 + 0 }
+    END {
+      private_total = private_clean + private_dirty
+      uss = private_total
+      shared_total = shared_clean + shared_dirty
+      printf "%d %d %d %d %d %d %d %d\n", pss, private_clean, private_dirty, private_total, uss, shared_clean, shared_dirty, shared_total
+    }
+  ' "$rollup"
+}
+
 write_summary() {
   local csv="$1"
   local summary="$2"
@@ -246,15 +269,53 @@ write_summary() {
     {
       samples += 1
       cpu_sum += $4
+      rss = $5 + 0
+      vsz = $6 + 0
+      pss = $7 + 0
+      private = $10 + 0
+      uss = $11 + 0
+      shared = $14 + 0
+      rss_sum += rss
+      vsz_sum += vsz
+      pss_sum += pss
+      private_sum += private
+      uss_sum += uss
+      shared_sum += shared
+      if (samples == 1 || rss < min_rss) { min_rss = rss }
+      if (samples == 1 || vsz < min_vsz) { min_vsz = vsz }
+      if (samples == 1 || pss < min_pss) { min_pss = pss }
+      if (samples == 1 || private < min_private) { min_private = private }
+      if (samples == 1 || uss < min_uss) { min_uss = uss }
+      if (samples == 1 || shared < min_shared) { min_shared = shared }
       if ($5 + 0 > max_rss) { max_rss = $5 + 0 }
       if ($6 + 0 > max_vsz) { max_vsz = $6 + 0 }
+      if (pss > max_pss) { max_pss = pss }
+      if (private > max_private) { max_private = private }
+      if (uss > max_uss) { max_uss = uss }
+      if (shared > max_shared) { max_shared = shared }
     }
     END {
       printf "samples: %d\n", samples
       if (samples > 0) {
         printf "avg_cpu_percent: %.2f\n", cpu_sum / samples
+        printf "min_rss_kib: %d\n", min_rss
+        printf "avg_rss_kib: %.0f\n", rss_sum / samples
         printf "max_rss_kib: %d\n", max_rss
+        printf "min_vsz_kib: %d\n", min_vsz
+        printf "avg_vsz_kib: %.0f\n", vsz_sum / samples
         printf "max_vsz_kib: %d\n", max_vsz
+        printf "min_pss_kib: %d\n", min_pss
+        printf "avg_pss_kib: %.0f\n", pss_sum / samples
+        printf "max_pss_kib: %d\n", max_pss
+        printf "min_private_kib: %d\n", min_private
+        printf "avg_private_kib: %.0f\n", private_sum / samples
+        printf "max_private_kib: %d\n", max_private
+        printf "min_uss_kib: %d\n", min_uss
+        printf "avg_uss_kib: %.0f\n", uss_sum / samples
+        printf "max_uss_kib: %d\n", max_uss
+        printf "min_shared_kib: %d\n", min_shared
+        printf "avg_shared_kib: %.0f\n", shared_sum / samples
+        printf "max_shared_kib: %d\n", max_shared
       }
     }
   ' "$csv" > "$summary"
@@ -571,7 +632,7 @@ expect_render_sync_update_queued: ${expect_render_sync_update_queued}
 expect_render_sync_update_skipped: ${expect_render_sync_update_skipped}
 EOF
 
-printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,stat,comm,status_file,status_error_file\n' > "$csv_path"
+printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
 printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped\n' > "$telemetry_path"
 
@@ -591,6 +652,7 @@ for sample in $(seq 1 "$samples"); do
     break
   fi
   read -r sample_pid cpu_percent rss_kib vsz_kib stat comm <<< "$ps_line"
+  read -r pss_kib private_clean_kib private_dirty_kib private_kib uss_kib shared_clean_kib shared_dirty_kib shared_kib < <(sample_smaps_rollup "$pid")
 
   status_file=""
   status_error_file=""
@@ -636,13 +698,21 @@ for sample in $(seq 1 "$samples"); do
     break
   fi
 
-  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "$sample" \
     "$elapsed" \
     "$sample_pid" \
     "$cpu_percent" \
     "$rss_kib" \
     "$vsz_kib" \
+    "$pss_kib" \
+    "$private_clean_kib" \
+    "$private_dirty_kib" \
+    "$private_kib" \
+    "$uss_kib" \
+    "$shared_clean_kib" \
+    "$shared_dirty_kib" \
+    "$shared_kib" \
     "$stat" \
     "$comm" \
     "${status_file#$work_dir/}" \
