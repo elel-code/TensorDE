@@ -13,6 +13,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use gilder::config::{
     ApplicationPaths, GilderConfig, OutputConfig, PerformanceConfig, PowerPolicy, ThrottlePolicy,
+    VideoDecoderPolicy,
 };
 use gilder::ipc::RequestMethod;
 use gilder::renderer::StaticRenderSyncPlan;
@@ -637,6 +638,7 @@ struct RenderSyncCacheKey {
 struct RenderSyncConfigKey {
     default_wallpaper: Option<String>,
     outputs: BTreeMap<String, OutputConfig>,
+    video_decoder: VideoDecoderPolicy,
     performance: RenderSyncPerformanceKey,
 }
 
@@ -1198,6 +1200,7 @@ fn render_sync_config_key(config: &GilderConfig) -> RenderSyncConfigKey {
     RenderSyncConfigKey {
         default_wallpaper: config.default_wallpaper.clone(),
         outputs: config.outputs.clone(),
+        video_decoder: config.video.decoder,
         performance: RenderSyncPerformanceKey {
             interactive_max_fps: config.performance.interactive_max_fps,
             background_max_fps: config.performance.background_max_fps,

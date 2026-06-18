@@ -6,5 +6,5 @@ pub mod settings;
 pub use paths::{ApplicationPaths, PathError};
 pub use settings::{
     AdapterConfig, GilderConfig, OutputConfig, OutputPerformanceConfig, PerformanceConfig,
-    PowerPolicy, ThrottlePolicy,
+    PowerPolicy, ThrottlePolicy, VideoConfig, VideoDecoderPolicy,
 };

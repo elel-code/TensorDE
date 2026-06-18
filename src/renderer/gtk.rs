@@ -7,7 +7,9 @@ use crate::core::FitMode;
 #[cfg(feature = "video-renderer")]
 use crate::policy::RenderMode;
 #[cfg(feature = "video-renderer")]
-use crate::renderer::video::{VideoPipelineSnapshot, actual_decoder_elements};
+use crate::renderer::video::{
+    VideoPipelineSnapshot, actual_decoder_elements, actual_decoder_reports,
+};
 use gtk::gdk;
 use gtk::gio;
 use gtk::prelude::*;
@@ -222,8 +224,10 @@ impl GtkStaticRenderer {
                     loop_playback: video.loop_playback,
                     muted: video.muted,
                     target_max_fps: video.target_max_fps,
+                    decoder_policy: video.decoder_policy,
                     start_offset_ms: video.start_offset_ms,
                     actual_decoders: actual_decoder_elements(&video.element),
+                    actual_decoder_reports: actual_decoder_reports(&video.element),
                 })
             })
             .collect()
@@ -311,6 +315,7 @@ impl RenderedOutput {
                 video.source != plan.source
                     || video.loop_playback != plan.loop_playback
                     || video.muted != plan.muted
+                    || video.decoder_policy != plan.decoder_policy
             })
             .unwrap_or(true);
         if restart {
@@ -595,6 +600,7 @@ struct GtkVideoPipeline {
     muted: bool,
     fit: FitMode,
     target_max_fps: Option<u32>,
+    decoder_policy: crate::config::VideoDecoderPolicy,
     start_offset_ms: u64,
 }
 
@@ -614,6 +620,7 @@ impl GtkVideoPipeline {
             muted: !plan.muted,
             fit: plan.fit,
             target_max_fps: plan.target_max_fps,
+            decoder_policy: plan.decoder_policy,
             start_offset_ms: 0,
         };
         pipeline.apply_muted(plan.muted);
@@ -627,6 +634,7 @@ impl GtkVideoPipeline {
     fn apply_plan(&mut self, plan: &VideoWallpaperPlan) -> Result<(), GtkVideoError> {
         self.loop_playback = plan.loop_playback;
         self.apply_target_max_fps(plan.target_max_fps);
+        self.decoder_policy = plan.decoder_policy;
         self.apply_muted(plan.muted);
         self.apply_fit(plan.fit);
         self.apply_start_offset(plan.start_offset_ms)?;

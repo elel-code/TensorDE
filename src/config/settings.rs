@@ -13,6 +13,8 @@ pub struct GilderConfig {
     #[serde(default)]
     pub outputs: BTreeMap<String, OutputConfig>,
     #[serde(default)]
+    pub video: VideoConfig,
+    #[serde(default)]
     pub performance: PerformanceConfig,
     #[serde(default)]
     pub adapters: AdapterConfig,
@@ -23,6 +25,7 @@ impl Default for GilderConfig {
         Self {
             default_wallpaper: None,
             outputs: BTreeMap::new(),
+            video: VideoConfig::default(),
             performance: PerformanceConfig::default(),
             adapters: AdapterConfig::default(),
         }
@@ -45,6 +48,22 @@ impl GilderConfig {
             .map(|output| self.performance.with_output_overrides(&output.performance))
             .unwrap_or_else(|| self.performance.clone())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct VideoConfig {
+    #[serde(default)]
+    pub decoder: VideoDecoderPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoDecoderPolicy {
+    #[default]
+    Auto,
+    HardwarePreferred,
+    HardwareRequired,
+    Software,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -241,6 +260,9 @@ mod tests {
             unfocused = "throttle"
             battery = "throttle"
 
+            [video]
+            decoder = "hardware-preferred"
+
             [adapters]
             niri = false
 
@@ -263,6 +285,7 @@ mod tests {
         assert_eq!(config.performance.interactive_max_fps, 75);
         assert_eq!(config.performance.desktop_refresh_interval_ms, 1000);
         assert_eq!(config.performance.battery, PowerPolicy::Throttle);
+        assert_eq!(config.video.decoder, VideoDecoderPolicy::HardwarePreferred);
         let hdmi_performance = config.performance_for_output("HDMI-A-1");
         assert_eq!(hdmi_performance.interactive_max_fps, 75);
         assert_eq!(hdmi_performance.background_max_fps, 12);

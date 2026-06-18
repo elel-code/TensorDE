@@ -5,7 +5,7 @@ pub mod gtk;
 #[cfg(feature = "video-renderer")]
 pub mod video;
 
-use crate::config::{GilderConfig, PerformanceConfig};
+use crate::config::{GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::Variant;
 use crate::core::{FitMode, PackagePath, Transition, WallpaperEntry, WallpaperPackage};
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot};
@@ -37,6 +37,8 @@ pub struct VideoWallpaperPlan {
     pub muted: bool,
     pub manifest_max_fps: Option<u32>,
     pub target_max_fps: Option<u32>,
+    #[serde(default)]
+    pub decoder_policy: VideoDecoderPolicy,
     pub start_offset_ms: u64,
 }
 
@@ -116,6 +118,7 @@ pub fn static_render_sync_plan_with_config(
 ) -> StaticRenderSyncPlan {
     static_render_sync_plan_inner(
         &config.performance,
+        config.video.decoder,
         Some(config),
         desktop,
         state,
@@ -129,11 +132,19 @@ pub fn static_render_sync_plan_with_performance(
     state: &AppState,
     cache_dir: impl AsRef<Path>,
 ) -> StaticRenderSyncPlan {
-    static_render_sync_plan_inner(performance_config, None, desktop, state, cache_dir.as_ref())
+    static_render_sync_plan_inner(
+        performance_config,
+        VideoDecoderPolicy::default(),
+        None,
+        desktop,
+        state,
+        cache_dir.as_ref(),
+    )
 }
 
 fn static_render_sync_plan_inner(
     performance_config: &PerformanceConfig,
+    video_decoder_policy: VideoDecoderPolicy,
     config: Option<&GilderConfig>,
     desktop: &DesktopSnapshot,
     state: &AppState,
@@ -235,6 +246,7 @@ fn static_render_sync_plan_inner(
             &output_name,
             package,
             &performance,
+            video_decoder_policy,
             fit_override,
             assignment.variant.as_deref(),
             render_target,
@@ -366,6 +378,7 @@ pub fn wallpaper_plan_for_assignment(
         assignment,
         cache_dir,
         performance,
+        VideoDecoderPolicy::default(),
         fit_override,
         None,
     )
@@ -376,6 +389,7 @@ fn wallpaper_plan_for_assignment_with_target(
     assignment: &WallpaperAssignment,
     cache_dir: impl AsRef<Path>,
     performance: &PerformanceDecision,
+    video_decoder_policy: VideoDecoderPolicy,
     fit_override: Option<FitMode>,
     render_target: Option<RenderTargetSize>,
 ) -> Result<WallpaperRenderPlan, RendererPlanError> {
@@ -384,6 +398,7 @@ fn wallpaper_plan_for_assignment_with_target(
         output_name,
         &package,
         performance,
+        video_decoder_policy,
         fit_override,
         assignment.variant.as_deref(),
         render_target,
@@ -401,6 +416,7 @@ pub fn wallpaper_plan(
         output_name,
         package,
         performance,
+        VideoDecoderPolicy::default(),
         fit_override,
         variant_id,
         None,
@@ -411,6 +427,7 @@ fn wallpaper_plan_with_target(
     output_name: impl Into<String>,
     package: &WallpaperPackage,
     performance: &PerformanceDecision,
+    video_decoder_policy: VideoDecoderPolicy,
     fit_override: Option<FitMode>,
     variant_id: Option<&str>,
     render_target: Option<RenderTargetSize>,
@@ -455,6 +472,7 @@ fn wallpaper_plan_with_target(
                 muted: effective_muted(*muted, package.manifest.runtime.allow_audio),
                 manifest_max_fps: *max_fps,
                 target_max_fps: effective_max_fps(*max_fps, performance.max_fps),
+                decoder_policy: video_decoder_policy,
                 start_offset_ms: *start_offset_ms,
             }))
         }
@@ -755,7 +773,9 @@ fn archive_extract_dir(cache_dir: &Path, archive_path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{GilderConfig, OutputConfig, OutputPerformanceConfig, PerformanceConfig};
+    use crate::config::{
+        GilderConfig, OutputConfig, OutputPerformanceConfig, PerformanceConfig, VideoDecoderPolicy,
+    };
     use crate::core::pack_gwp;
     use crate::desktop::DesktopOutput;
     use crate::policy::{DecisionReason, RenderMode};
@@ -1234,6 +1254,7 @@ mod tests {
         let package_dir = test_dir.path.join("video-demo.gwpdir");
         write_minimal_video_gwpdir(&package_dir);
         let mut config = GilderConfig::default();
+        config.video.decoder = VideoDecoderPolicy::Software;
         config.outputs.insert(
             "eDP-1".to_owned(),
             OutputConfig {
@@ -1266,6 +1287,10 @@ mod tests {
 
         assert_eq!(sync.video_plans.len(), 1);
         assert_eq!(sync.video_plans[0].target_max_fps, Some(12));
+        assert_eq!(
+            sync.video_plans[0].decoder_policy,
+            VideoDecoderPolicy::Software
+        );
         assert_eq!(sync.decisions[0].performance.mode, RenderMode::Throttled);
         assert_eq!(sync.decisions[0].performance.max_fps, Some(12));
         assert_eq!(

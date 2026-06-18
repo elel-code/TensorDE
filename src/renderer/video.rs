@@ -1,6 +1,7 @@
 //! GStreamer video pipeline controller.
 
 use super::{StaticRenderSyncPlan, VideoWallpaperPlan};
+use crate::config::VideoDecoderPolicy;
 use crate::policy::RenderMode;
 use gst::prelude::*;
 use gstreamer as gst;
@@ -64,12 +65,34 @@ const VIDEO_RUNTIME_ELEMENTS: &[&str] = &[
 ];
 const MUTED_PLAYBIN_FLAGS: &str = "video+deinterlace+soft-colorbalance";
 const AUDIBLE_PLAYBIN_FLAGS: &str = "video+audio+soft-volume+deinterlace+soft-colorbalance";
+const SOFTWARE_DECODER_ELEMENT_NAMES: &[&str] = &[
+    "avdec_h264",
+    "openh264dec",
+    "vp9dec",
+    "avdec_vp9",
+    "dav1ddec",
+    "avdec_av1",
+    "av1dec",
+];
+const HARDWARE_DECODER_ELEMENT_NAMES: &[&str] = &[
+    "vah264dec",
+    "vaapih264dec",
+    "nvh264dec",
+    "vdph264dec",
+    "vavp9dec",
+    "vaapivp9dec",
+    "nvvp9dec",
+    "vaav1dec",
+    "vaapiav1dec",
+    "nvav1dec",
+];
 const DECODER_ELEMENT_NAMES: &[&str] = &[
     "avdec_h264",
     "openh264dec",
     "vah264dec",
     "vaapih264dec",
     "nvh264dec",
+    "vdph264dec",
     "vp9dec",
     "avdec_vp9",
     "vavp9dec",
@@ -80,6 +103,7 @@ const DECODER_ELEMENT_NAMES: &[&str] = &[
     "av1dec",
     "vaav1dec",
     "vaapiav1dec",
+    "nvav1dec",
 ];
 
 impl GstVideoRenderer {
@@ -150,6 +174,7 @@ impl GstVideoRenderer {
                 pipeline.source != plan.source
                     || pipeline.loop_playback != plan.loop_playback
                     || pipeline.muted != plan.muted
+                    || pipeline.decoder_policy != plan.decoder_policy
             })
             .unwrap_or(true);
         if restart {
@@ -196,8 +221,10 @@ impl GstVideoRenderer {
                 loop_playback: pipeline.loop_playback,
                 muted: pipeline.muted,
                 target_max_fps: pipeline.target_max_fps,
+                decoder_policy: pipeline.decoder_policy,
                 start_offset_ms: pipeline.start_offset_ms,
                 actual_decoders: actual_decoder_elements(&pipeline.element),
+                actual_decoder_reports: actual_decoder_reports(&pipeline.element),
             })
             .collect()
     }
@@ -212,6 +239,7 @@ struct VideoPipeline {
     loop_playback: bool,
     muted: bool,
     target_max_fps: Option<u32>,
+    decoder_policy: VideoDecoderPolicy,
     start_offset_ms: u64,
 }
 
@@ -234,6 +262,7 @@ impl VideoPipeline {
             loop_playback: plan.loop_playback,
             muted: !plan.muted,
             target_max_fps: plan.target_max_fps,
+            decoder_policy: plan.decoder_policy,
             start_offset_ms: 0,
         };
         pipeline.apply_muted(plan.muted);
@@ -244,6 +273,7 @@ impl VideoPipeline {
         self.loop_playback = plan.loop_playback;
         self.apply_target_max_fps(plan.target_max_fps);
         self.apply_muted(plan.muted);
+        self.decoder_policy = plan.decoder_policy;
         self.apply_start_offset(plan.start_offset_ms)?;
         Ok(())
     }
@@ -420,6 +450,26 @@ pub fn actual_decoder_elements(element: &gst::Element) -> Vec<String> {
     decoders
 }
 
+pub fn actual_decoder_reports(element: &gst::Element) -> Vec<VideoDecoderReport> {
+    actual_decoder_elements(element)
+        .into_iter()
+        .map(|element| VideoDecoderReport {
+            class: decoder_class(&element),
+            element,
+        })
+        .collect()
+}
+
+fn decoder_class(element: &str) -> VideoDecoderClass {
+    if HARDWARE_DECODER_ELEMENT_NAMES.contains(&element) {
+        VideoDecoderClass::Hardware
+    } else if SOFTWARE_DECODER_ELEMENT_NAMES.contains(&element) {
+        VideoDecoderClass::Software
+    } else {
+        VideoDecoderClass::Unknown
+    }
+}
+
 struct FrameLimiter {
     element: gst::Element,
     capsfilter: gst::Element,
@@ -512,8 +562,24 @@ pub struct VideoPipelineSnapshot {
     pub loop_playback: bool,
     pub muted: bool,
     pub target_max_fps: Option<u32>,
+    pub decoder_policy: VideoDecoderPolicy,
     pub start_offset_ms: u64,
     pub actual_decoders: Vec<String>,
+    pub actual_decoder_reports: Vec<VideoDecoderReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VideoDecoderReport {
+    pub element: String,
+    pub class: VideoDecoderClass,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoDecoderClass {
+    Hardware,
+    Software,
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -584,8 +650,13 @@ mod tests {
         assert!(snapshot[0].loop_playback);
         assert!(snapshot[0].muted);
         assert_eq!(snapshot[0].target_max_fps, Some(24));
+        assert_eq!(
+            snapshot[0].decoder_policy,
+            crate::config::VideoDecoderPolicy::Auto
+        );
         assert_eq!(snapshot[0].start_offset_ms, 0);
         assert!(snapshot[0].actual_decoders.is_empty());
+        assert!(snapshot[0].actual_decoder_reports.is_empty());
 
         let sync = StaticRenderSyncPlan {
             plans: Vec::new(),
@@ -657,6 +728,13 @@ mod tests {
     }
 
     #[test]
+    fn classifies_known_decoder_elements() {
+        assert_eq!(decoder_class("dav1ddec"), VideoDecoderClass::Software);
+        assert_eq!(decoder_class("vaav1dec"), VideoDecoderClass::Hardware);
+        assert_eq!(decoder_class("customdec"), VideoDecoderClass::Unknown);
+    }
+
+    #[test]
     fn runtime_capabilities_report_expected_elements() {
         let capabilities = runtime_capabilities();
         let element_names = capabilities
@@ -686,6 +764,7 @@ mod tests {
             muted,
             manifest_max_fps: Some(60),
             target_max_fps: Some(24),
+            decoder_policy: crate::config::VideoDecoderPolicy::Auto,
             start_offset_ms: 0,
         }
     }
