@@ -482,6 +482,20 @@ write_summary() {
       shared = $14 + 0
       gpu_avg = $19
       gpu_max_sample = $20
+      if (samples == 1) {
+        first_rss = rss
+        first_vsz = vsz
+        first_pss = pss
+        first_private = private
+        first_uss = uss
+        first_shared = shared
+      }
+      last_rss = rss
+      last_vsz = vsz
+      last_pss = pss
+      last_private = private
+      last_uss = uss
+      last_shared = shared
       rss_sum += rss
       vsz_sum += vsz
       pss_sum += pss
@@ -511,23 +525,47 @@ write_summary() {
       if (samples > 0) {
         printf "avg_cpu_percent: %.2f\n", cpu_sum / samples
         printf "min_rss_kib: %d\n", min_rss
+        printf "first_rss_kib: %d\n", first_rss
         printf "avg_rss_kib: %.0f\n", rss_sum / samples
+        printf "last_rss_kib: %d\n", last_rss
         printf "max_rss_kib: %d\n", max_rss
+        printf "retained_rss_delta_kib: %d\n", last_rss - first_rss
+        printf "peak_over_first_rss_kib: %d\n", max_rss - first_rss
         printf "min_vsz_kib: %d\n", min_vsz
+        printf "first_vsz_kib: %d\n", first_vsz
         printf "avg_vsz_kib: %.0f\n", vsz_sum / samples
+        printf "last_vsz_kib: %d\n", last_vsz
         printf "max_vsz_kib: %d\n", max_vsz
+        printf "retained_vsz_delta_kib: %d\n", last_vsz - first_vsz
+        printf "peak_over_first_vsz_kib: %d\n", max_vsz - first_vsz
         printf "min_pss_kib: %d\n", min_pss
+        printf "first_pss_kib: %d\n", first_pss
         printf "avg_pss_kib: %.0f\n", pss_sum / samples
+        printf "last_pss_kib: %d\n", last_pss
         printf "max_pss_kib: %d\n", max_pss
+        printf "retained_pss_delta_kib: %d\n", last_pss - first_pss
+        printf "peak_over_first_pss_kib: %d\n", max_pss - first_pss
         printf "min_private_kib: %d\n", min_private
+        printf "first_private_kib: %d\n", first_private
         printf "avg_private_kib: %.0f\n", private_sum / samples
+        printf "last_private_kib: %d\n", last_private
         printf "max_private_kib: %d\n", max_private
+        printf "retained_private_delta_kib: %d\n", last_private - first_private
+        printf "peak_over_first_private_kib: %d\n", max_private - first_private
         printf "min_uss_kib: %d\n", min_uss
+        printf "first_uss_kib: %d\n", first_uss
         printf "avg_uss_kib: %.0f\n", uss_sum / samples
+        printf "last_uss_kib: %d\n", last_uss
         printf "max_uss_kib: %d\n", max_uss
+        printf "retained_uss_delta_kib: %d\n", last_uss - first_uss
+        printf "peak_over_first_uss_kib: %d\n", max_uss - first_uss
         printf "min_shared_kib: %d\n", min_shared
+        printf "first_shared_kib: %d\n", first_shared
         printf "avg_shared_kib: %.0f\n", shared_sum / samples
+        printf "last_shared_kib: %d\n", last_shared
         printf "max_shared_kib: %d\n", max_shared
+        printf "retained_shared_delta_kib: %d\n", last_shared - first_shared
+        printf "peak_over_first_shared_kib: %d\n", max_shared - first_shared
         printf "gpu_busy_samples: %d\n", gpu_samples
         if (gpu_samples > 0) {
           printf "avg_gpu_busy_percent: %.0f\n", gpu_sum / gpu_samples

@@ -774,14 +774,34 @@ append_process_memory_evidence_summary() {
     avg_cpu_percent \
     avg_rss_kib \
     max_rss_kib \
+    first_rss_kib \
+    last_rss_kib \
+    retained_rss_delta_kib \
+    peak_over_first_rss_kib \
     avg_pss_kib \
     max_pss_kib \
+    first_pss_kib \
+    last_pss_kib \
+    retained_pss_delta_kib \
+    peak_over_first_pss_kib \
     avg_private_kib \
     max_private_kib \
+    first_private_kib \
+    last_private_kib \
+    retained_private_delta_kib \
+    peak_over_first_private_kib \
     avg_uss_kib \
     max_uss_kib \
+    first_uss_kib \
+    last_uss_kib \
+    retained_uss_delta_kib \
+    peak_over_first_uss_kib \
     avg_shared_kib \
     max_shared_kib \
+    first_shared_kib \
+    last_shared_kib \
+    retained_shared_delta_kib \
+    peak_over_first_shared_kib \
     avg_gpu_busy_percent \
     max_gpu_busy_percent
   do
