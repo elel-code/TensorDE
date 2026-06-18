@@ -95,9 +95,26 @@ note() {
   printf '%s\n' "$*"
 }
 
+csv_escape() {
+  local value="$1"
+  if [[ "$value" == *","* || "$value" == *"\""* || "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    printf '"%s"' "${value//\"/\"\"}"
+  else
+    printf '%s' "$value"
+  fi
+}
+
 pass() {
   passes=$((passes + 1))
   note "PASS: $*"
+}
+
+failure_status() {
+  if [[ "$allow_missing" -eq 1 ]]; then
+    printf '%s\n' "skip"
+  else
+    printf '%s\n' "fail"
+  fi
 }
 
 skip_or_fail() {
@@ -195,12 +212,65 @@ else
   work_dir="$(mktemp -d "${work_parent%/}/gilder-desktop-policy.XXXXXX")"
 fi
 metadata_path="$work_dir/metadata.txt"
+matrix_path="$work_dir/matrix.csv"
+summary_path="$work_dir/summary.txt"
 cat > "$metadata_path" <<EOF
 output: ${output_name}
 sample_duration: ${sample_duration}
 sample_interval: ${sample_interval}
 wallpaper: ${wallpaper_path}
 EOF
+printf 'scenario,status,expected_mode,expected_reason,expected_action,expected_plan_kind,power_state,output_state,session_state,status_before,status_after,performance_dir,daemon_log\n' > "$matrix_path"
+
+record_scenario() {
+  local scenario="$1"
+  local status="$2"
+  local expected_mode="$3"
+  local expected_reason="$4"
+  local expected_action="$5"
+  local expected_plan_kind="$6"
+  local power_state="$7"
+  local output_state="$8"
+  local session_state="$9"
+  local status_before="${10}"
+  local status_after="${11}"
+  local perf_dir="${12}"
+  local daemon_log="${13}"
+
+  local row=(
+    "$scenario"
+    "$status"
+    "$expected_mode"
+    "$expected_reason"
+    "$expected_action"
+    "$expected_plan_kind"
+    "$power_state"
+    "$output_state"
+    "$session_state"
+    "${status_before#$work_dir/}"
+    "${status_after#$work_dir/}"
+    "${perf_dir#$work_dir/}"
+    "${daemon_log#$work_dir/}"
+  )
+  local index
+  for index in "${!row[@]}"; do
+    if [[ "$index" -gt 0 ]]; then
+      printf ',' >> "$matrix_path"
+    fi
+    csv_escape "${row[$index]}" >> "$matrix_path"
+  done
+  printf '\n' >> "$matrix_path"
+}
+
+write_summary() {
+  cat > "$summary_path" <<EOF
+passed: ${passes}
+skipped: ${skips}
+failed: ${failures}
+metadata: ${metadata_path}
+matrix: ${matrix_path}
+EOF
+}
 
 run_scenario() {
   local name="$1"
@@ -219,6 +289,7 @@ run_scenario() {
   local status_after="$scenario_dir/status-after.json"
   local perf_dir="$scenario_dir/performance"
   local perf_log="$scenario_dir/performance.log"
+  local scenario_status="pass"
 
   mkdir -p "$scenario_dir/runtime" "$scenario_dir/config" "$scenario_dir/state" "$scenario_dir/cache"
   chmod 700 "$scenario_dir/runtime"
@@ -247,7 +318,9 @@ run_scenario() {
     if ! kill -0 "$current_daemon_pid" >/dev/null 2>&1; then
       note "daemon log for ${name}:"
       sed -n '1,120p' "$daemon_log"
+      scenario_status="$(failure_status)"
       skip_or_fail "${name}: gilderd exited before creating IPC socket"
+      record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
       stop_daemon
       return 0
     fi
@@ -256,41 +329,53 @@ run_scenario() {
   if [[ ! -S "$socket" ]]; then
     note "daemon log for ${name}:"
     sed -n '1,120p' "$daemon_log"
+    scenario_status="$(failure_status)"
     skip_or_fail "${name}: gilderd did not create IPC socket"
+    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
     stop_daemon
     return 0
   fi
   pass "${name}: started isolated daemon"
 
   if ! env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_before"; then
+    scenario_status="$(failure_status)"
     skip_or_fail "${name}: failed to capture initial status"
+    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
     stop_daemon
     return 0
   fi
   if grep -Fq "\"name\":\"${output_name}\"" "$status_before"; then
     pass "${name}: status reports virtual output"
   else
+    scenario_status="$(failure_status)"
     skip_or_fail "${name}: status does not report virtual output"
   fi
 
   if ! env GILDER_SOCKET="$socket" "$gilderctl" set "$wallpaper_path" --output "$output_name" >/dev/null; then
+    scenario_status="$(failure_status)"
     skip_or_fail "${name}: failed to set wallpaper"
+    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
     stop_daemon
     return 0
   fi
   if ! env GILDER_SOCKET="$socket" "$gilderctl" set "$wallpaper_path" --output "$output_name" >/dev/null; then
+    scenario_status="$(failure_status)"
     skip_or_fail "${name}: failed to repeat wallpaper set"
+    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
     stop_daemon
     return 0
   fi
   if ! env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_after"; then
+    scenario_status="$(failure_status)"
     skip_or_fail "${name}: failed to capture status after set"
+    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
     stop_daemon
     return 0
   fi
   if grep -q "\"reason\":\"${expected_reason}\"" "$status_after"; then
     pass "${name}: status reports ${expected_reason} decision"
   else
+    scenario_status="$(failure_status)"
     skip_or_fail "${name}: status does not report ${expected_reason} decision"
   fi
 
@@ -324,6 +409,7 @@ run_scenario() {
   else
     note "performance log for ${name}:"
     sed -n '1,160p' "$perf_log"
+    scenario_status="$(failure_status)"
     skip_or_fail "${name}: performance sampling failed"
   fi
 
@@ -331,6 +417,7 @@ run_scenario() {
   note "${name}: status after:  $status_after"
   note "${name}: performance:   $perf_dir"
   note "${name}: daemon log:    $daemon_log"
+  record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
   stop_daemon
 }
 
@@ -342,7 +429,10 @@ run_scenario hidden paused output-hidden remove "" ac hidden active
 run_scenario session-inactive paused session-inactive remove "" ac active inactive
 run_scenario session-locked paused session-locked remove "" ac active locked
 
+write_summary
 note "metadata: $metadata_path"
+note "matrix:   $matrix_path"
+note "report:   $summary_path"
 note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
 if [[ "$failures" -gt 0 ]]; then
   exit 1
