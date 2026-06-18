@@ -35,6 +35,14 @@ Options:
                      Require renderer sync queued count to be non-zero
   --expect-render-sync-update-skipped
                      Require renderer sync skipped count to be non-zero
+  --expect-decoder-policy-status <status>
+                     Require at least one video runtime row with this decoder policy status
+  --expect-decoder-class <hardware|software|unknown>
+                     Require at least one video runtime row with this decoder class
+  --expect-memory-feature <feature>
+                     Require at least one video runtime row with this caps memory feature
+  --expect-sink-memory-feature <feature>
+                     Require at least one video runtime row with this sink-side caps memory feature
   --allow-missing     Report missing daemon/tools as skips instead of failures
   --keep              Keep generated evidence after the script exits
   -h, --help          Show this help text
@@ -60,6 +68,10 @@ expect_render_sync_cache_hit=0
 expect_desktop_refresh_skip=0
 expect_render_sync_update_queued=0
 expect_render_sync_update_skipped=0
+expect_decoder_policy_status=""
+expect_decoder_class=""
+expect_memory_feature=""
+expect_sink_memory_feature=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -143,6 +155,26 @@ while [[ $# -gt 0 ]]; do
     --expect-render-sync-update-skipped)
       expect_render_sync_update_skipped=1
       shift
+      ;;
+    --expect-decoder-policy-status)
+      [[ $# -ge 2 ]] || { echo "--expect-decoder-policy-status requires a value" >&2; exit 2; }
+      expect_decoder_policy_status="$2"
+      shift 2
+      ;;
+    --expect-decoder-class)
+      [[ $# -ge 2 ]] || { echo "--expect-decoder-class requires a value" >&2; exit 2; }
+      expect_decoder_class="$2"
+      shift 2
+      ;;
+    --expect-memory-feature)
+      [[ $# -ge 2 ]] || { echo "--expect-memory-feature requires a value" >&2; exit 2; }
+      expect_memory_feature="$2"
+      shift 2
+      ;;
+    --expect-sink-memory-feature)
+      [[ $# -ge 2 ]] || { echo "--expect-sink-memory-feature requires a value" >&2; exit 2; }
+      expect_sink_memory_feature="$2"
+      shift 2
       ;;
     --allow-missing)
       allow_missing=1
@@ -676,6 +708,65 @@ validate_telemetry_expectations() {
   fi
 }
 
+has_video_runtime_expectations() {
+  [[ -n "$expect_decoder_policy_status" ||
+    -n "$expect_decoder_class" ||
+    -n "$expect_memory_feature" ||
+    -n "$expect_sink_memory_feature" ]]
+}
+
+expect_video_runtime_field() {
+  local column="$1"
+  local expected="$2"
+  local description="$3"
+
+  if awk -F, -v column="$column" -v expected="$expected" '
+    NR == 1 { next }
+    {
+      count = split($column, values, /\|/)
+      for (i = 1; i <= count; i += 1) {
+        if (values[i] == expected) {
+          found = 1
+          exit
+        }
+      }
+    }
+    END { exit found ? 0 : 1 }
+  ' "$video_runtime_path"; then
+    pass "video runtime expectation matched ${description}: ${expected}"
+  else
+    skip_or_fail "video runtime expectation not met: ${description} ${expected}"
+  fi
+}
+
+validate_video_runtime_expectations() {
+  has_video_runtime_expectations || return 0
+  if [[ "$status_enabled" -ne 1 || "$video_runtime_failures" -gt 0 ]]; then
+    skip_or_fail "cannot validate video runtime expectations without complete video runtime samples"
+    return 0
+  fi
+
+  local rows
+  rows="$(awk 'NR > 1 { rows += 1 } END { print rows + 0 }' "$video_runtime_path")"
+  if [[ "$rows" == "0" ]]; then
+    skip_or_fail "cannot validate video runtime expectations because no video runtime rows were sampled"
+    return 0
+  fi
+
+  if [[ -n "$expect_decoder_policy_status" ]]; then
+    expect_video_runtime_field 7 "$expect_decoder_policy_status" "decoder policy status"
+  fi
+  if [[ -n "$expect_decoder_class" ]]; then
+    expect_video_runtime_field 9 "$expect_decoder_class" "decoder class"
+  fi
+  if [[ -n "$expect_memory_feature" ]]; then
+    expect_video_runtime_field 11 "$expect_memory_feature" "caps memory feature"
+  fi
+  if [[ -n "$expect_sink_memory_feature" ]]; then
+    expect_video_runtime_field 12 "$expect_sink_memory_feature" "sink caps memory feature"
+  fi
+}
+
 if ! is_positive_integer "$duration"; then
   echo "--duration must be a positive integer" >&2
   exit 2
@@ -688,6 +779,22 @@ if [[ -n "$expect_max_fps" && ! "$expect_max_fps" =~ ^[0-9]+$ ]]; then
   echo "--expect-max-fps must be a non-negative integer" >&2
   exit 2
 fi
+case "$expect_decoder_policy_status" in
+  ""|not-applicable|not-observed|satisfied|software-fallback|violated|unknown-decoder)
+    ;;
+  *)
+    echo "--expect-decoder-policy-status must be one of not-applicable, not-observed, satisfied, software-fallback, violated, unknown-decoder" >&2
+    exit 2
+    ;;
+esac
+case "$expect_decoder_class" in
+  ""|hardware|software|unknown)
+    ;;
+  *)
+    echo "--expect-decoder-class must be one of hardware, software, unknown" >&2
+    exit 2
+    ;;
+esac
 
 essential_missing=0
 require_command ps || essential_missing=1
@@ -753,6 +860,10 @@ expect_render_sync_cache_hit: ${expect_render_sync_cache_hit}
 expect_desktop_refresh_skip: ${expect_desktop_refresh_skip}
 expect_render_sync_update_queued: ${expect_render_sync_update_queued}
 expect_render_sync_update_skipped: ${expect_render_sync_update_skipped}
+expect_decoder_policy_status: ${expect_decoder_policy_status:-none}
+expect_decoder_class: ${expect_decoder_class:-none}
+expect_memory_feature: ${expect_memory_feature:-none}
+expect_sink_memory_feature: ${expect_sink_memory_feature:-none}
 gpu_busy_sources: drm gpu_busy_percent sysfs when readable; nvidia-smi utilization.gpu when available
 EOF
 
@@ -889,6 +1000,7 @@ elif [[ "$status_enabled" -eq 1 ]]; then
 fi
 validate_decision_expectations
 validate_telemetry_expectations
+validate_video_runtime_expectations
 
 if [[ "$keep" -eq 1 ]]; then
   note "kept work dir: $work_dir"
