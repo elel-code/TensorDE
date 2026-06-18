@@ -255,6 +255,8 @@ capture_performance() {
     --interval "$sample_interval"
     --output-dir "$output_dir"
     --keep
+    --expect-render-sync-cache-hit
+    --expect-desktop-refresh-skip
   )
   if [[ -n "$expected_mode" ]]; then
     sample_args+=(--expect-mode "$expected_mode")

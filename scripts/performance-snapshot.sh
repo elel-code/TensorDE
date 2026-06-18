@@ -25,6 +25,10 @@ Options:
                      Require at least one decision with this action
   --expect-plan-kind <kind>
                      Require at least one decision with this plan kind
+  --expect-render-sync-cache-hit
+                     Require render_sync cache hits to increase during sampling
+  --expect-desktop-refresh-skip
+                     Require read-request desktop refresh skips to increase during sampling
   --allow-missing     Report missing daemon/tools as skips instead of failures
   --keep              Keep generated evidence after the script exits
   -h, --help          Show this help text
@@ -45,6 +49,8 @@ expect_mode=""
 expect_reason=""
 expect_action=""
 expect_plan_kind=""
+expect_render_sync_cache_hit=0
+expect_desktop_refresh_skip=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -107,6 +113,14 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "--expect-plan-kind requires a value" >&2; exit 2; }
       expect_plan_kind="$2"
       shift 2
+      ;;
+    --expect-render-sync-cache-hit)
+      expect_render_sync_cache_hit=1
+      shift
+      ;;
+    --expect-desktop-refresh-skip)
+      expect_desktop_refresh_skip=1
+      shift
       ;;
     --allow-missing)
       allow_missing=1
@@ -388,6 +402,47 @@ validate_decision_expectations() {
   fi
 }
 
+has_telemetry_expectations() {
+  [[ "$expect_render_sync_cache_hit" -eq 1 || "$expect_desktop_refresh_skip" -eq 1 ]]
+}
+
+expect_telemetry_minimum() {
+  local key="$1"
+  local minimum="$2"
+  local description="$3"
+  local value
+  if value="$(summary_value "$key" "$telemetry_summary_path")" && [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    if awk -v value="$value" -v minimum="$minimum" 'BEGIN { exit (value + 0 >= minimum + 0) ? 0 : 1 }'; then
+      pass "telemetry expectation matched ${description}: ${value}"
+    else
+      skip_or_fail "telemetry expectation not met: ${description} was ${value}, expected at least ${minimum}"
+    fi
+  else
+    skip_or_fail "telemetry expectation not met: missing ${description}"
+  fi
+}
+
+validate_telemetry_expectations() {
+  has_telemetry_expectations || return 0
+  if [[ "$status_enabled" -ne 1 || "$telemetry_failures" -gt 0 ]]; then
+    skip_or_fail "cannot validate telemetry expectations without complete telemetry samples"
+    return 0
+  fi
+
+  local rows
+  if ! rows="$(summary_value "telemetry_rows" "$telemetry_summary_path")" || [[ "$rows" == "0" ]]; then
+    skip_or_fail "cannot validate telemetry expectations because no telemetry rows were sampled"
+    return 0
+  fi
+
+  if [[ "$expect_render_sync_cache_hit" -eq 1 ]]; then
+    expect_telemetry_minimum "render_sync_cache_hits_delta" 1 "render sync cache hit delta"
+  fi
+  if [[ "$expect_desktop_refresh_skip" -eq 1 ]]; then
+    expect_telemetry_minimum "desktop_refresh_skips_delta" 1 "desktop refresh skip delta"
+  fi
+}
+
 if ! is_positive_integer "$duration"; then
   echo "--duration must be a positive integer" >&2
   exit 2
@@ -455,6 +510,8 @@ expect_mode: ${expect_mode:-none}
 expect_reason: ${expect_reason:-none}
 expect_action: ${expect_action:-none}
 expect_plan_kind: ${expect_plan_kind:-none}
+expect_render_sync_cache_hit: ${expect_render_sync_cache_hit}
+expect_desktop_refresh_skip: ${expect_desktop_refresh_skip}
 EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,stat,comm,status_file,status_error_file\n' > "$csv_path"
@@ -564,6 +621,7 @@ elif [[ "$status_enabled" -eq 1 ]]; then
   note "daemon telemetry extraction had ${telemetry_failures} failed samples"
 fi
 validate_decision_expectations
+validate_telemetry_expectations
 
 if [[ "$keep" -eq 1 ]]; then
   note "kept work dir: $work_dir"
