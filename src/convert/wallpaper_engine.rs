@@ -11,9 +11,32 @@ use std::process::Command;
 
 const PROJECT_FILE: &str = "project.json";
 const FFMPEG_BINARY: &str = "ffmpeg";
+const FFPROBE_BINARY: &str = "ffprobe";
 const VIDEO_POSTER_WIDTH: u32 = 1920;
 const VIDEO_THUMBNAIL_WIDTH: u32 = 512;
 const FEATURE_SCAN_MAX_BYTES: u64 = 2 * 1024 * 1024;
+const STATIC_IMAGE_VARIANTS: &[StaticImageVariantSpec] = &[
+    StaticImageVariantSpec {
+        id: "landscape-1080p",
+        width: 1920,
+        height: 1080,
+        file_name: "landscape-1080p.png",
+    },
+    StaticImageVariantSpec {
+        id: "landscape-2160p",
+        width: 3840,
+        height: 2160,
+        file_name: "landscape-2160p.png",
+    },
+];
+
+#[derive(Debug, Clone, Copy)]
+struct StaticImageVariantSpec {
+    id: &'static str,
+    width: u32,
+    height: u32,
+    file_name: &'static str,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ConversionSummary {
@@ -93,6 +116,15 @@ fn convert_static_image(
     output_dir: &Path,
     report: &mut ConversionReport,
 ) -> Result<Value, ConversionError> {
+    convert_static_image_with_variant_tools(project, output_dir, report, None)
+}
+
+fn convert_static_image_with_variant_tools(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    report: &mut ConversionReport,
+    variant_tools: Option<StaticImageVariantTools<'_>>,
+) -> Result<Value, ConversionError> {
     let source = project.entry_file.as_ref().ok_or_else(|| {
         ConversionError::MissingEntry("image project does not define an entry file".to_owned())
     })?;
@@ -110,8 +142,14 @@ fn convert_static_image(
         MissingPreviewFallback::StaticImage { source },
     )?;
     report.converted_features.push("static-image".to_owned());
+    let variants = match variant_tools {
+        Some(tools) => {
+            generate_static_image_variants_with_tools(project, output_dir, source, report, tools)
+        }
+        None => generate_static_image_variants(project, output_dir, source, report),
+    };
 
-    Ok(base_manifest(
+    let mut manifest = base_manifest(
         project,
         "static-image",
         preview,
@@ -122,7 +160,13 @@ fn convert_static_image(
             "fit": "cover",
             "orientation": "from-metadata"
         }),
-    ))
+    );
+    if !variants.is_empty()
+        && let Some(object) = manifest.as_object_mut()
+    {
+        object.insert("variants".to_owned(), Value::Array(variants));
+    }
+    Ok(manifest)
 }
 
 fn convert_video(
@@ -533,6 +577,219 @@ enum MissingPreviewFallback<'a> {
     StaticImage { source: &'a str },
     Video { source: &'a str },
     Scene { source: &'a str },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StaticImageVariantTools<'a> {
+    ffmpeg: &'a Path,
+    ffprobe: &'a Path,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ImageDimensions {
+    width: u32,
+    height: u32,
+}
+
+impl ImageDimensions {
+    fn can_generate(self, spec: StaticImageVariantSpec) -> bool {
+        self.width >= spec.width
+            && self.height >= spec.height
+            && (self.width > spec.width || self.height > spec.height)
+    }
+}
+
+fn generate_static_image_variants(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    source: &str,
+    report: &mut ConversionReport,
+) -> Vec<Value> {
+    let Some(ffmpeg) = find_executable_on_path(FFMPEG_BINARY) else {
+        report.warnings.push(format!(
+            "Static image resolution variants were not generated: {FFMPEG_BINARY} executable was not found on PATH."
+        ));
+        return Vec::new();
+    };
+    let Some(ffprobe) = find_executable_on_path(FFPROBE_BINARY) else {
+        report.warnings.push(format!(
+            "Static image resolution variants were not generated: {FFPROBE_BINARY} executable was not found on PATH."
+        ));
+        return Vec::new();
+    };
+    generate_static_image_variants_with_tools(
+        project,
+        output_dir,
+        source,
+        report,
+        StaticImageVariantTools {
+            ffmpeg: &ffmpeg,
+            ffprobe: &ffprobe,
+        },
+    )
+}
+
+fn generate_static_image_variants_with_tools(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    source: &str,
+    report: &mut ConversionReport,
+    tools: StaticImageVariantTools<'_>,
+) -> Vec<Value> {
+    if !is_raster_image_path(source) {
+        return Vec::new();
+    }
+
+    let relative = match normalize_relative_path(source) {
+        Ok(relative) => relative,
+        Err(err) => {
+            report.warnings.push(format!(
+                "Static image resolution variants were not generated: {err}."
+            ));
+            return Vec::new();
+        }
+    };
+    let source_path = project.root.join(relative);
+    let dimensions = match probe_image_dimensions(tools.ffprobe, &source_path) {
+        Ok(dimensions) => dimensions,
+        Err(err) => {
+            report.warnings.push(format!(
+                "Static image resolution variants were not generated: {err}."
+            ));
+            return Vec::new();
+        }
+    };
+
+    let mut variants = Vec::new();
+    for spec in STATIC_IMAGE_VARIANTS {
+        if !dimensions.can_generate(*spec) {
+            continue;
+        }
+        let output_path = output_dir.join("variants").join(spec.file_name);
+        match generate_static_image_variant(tools.ffmpeg, &source_path, &output_path, *spec) {
+            Ok(()) => {
+                let package_path = path_to_package_string(
+                    output_path.strip_prefix(output_dir).unwrap_or(&output_path),
+                );
+                report.generated_assets.push(package_path.clone());
+                report
+                    .converted_features
+                    .push(format!("static-image:variant:{}", spec.id));
+                variants.push(json!({
+                    "id": spec.id,
+                    "source": package_path,
+                    "width": spec.width,
+                    "height": spec.height,
+                }));
+            }
+            Err(err) => {
+                let _ = fs::remove_file(&output_path);
+                report.warnings.push(format!(
+                    "Static image variant {} was not generated: {err}.",
+                    spec.id
+                ));
+            }
+        }
+    }
+    variants
+}
+
+fn probe_image_dimensions(ffprobe: &Path, source_path: &Path) -> Result<ImageDimensions, String> {
+    let output = Command::new(ffprobe)
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "json",
+        ])
+        .arg(source_path)
+        .output()
+        .map_err(|err| format!("failed to run {}: {err}", ffprobe.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let reason = if stderr.is_empty() {
+            output.status.to_string()
+        } else {
+            format!("{}: {stderr}", output.status)
+        };
+        return Err(format!("{} failed: {reason}", ffprobe.display()));
+    }
+
+    let value: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|err| format!("{} returned invalid JSON: {err}", ffprobe.display()))?;
+    let stream = value
+        .get("streams")
+        .and_then(Value::as_array)
+        .and_then(|streams| streams.first())
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("{} did not report an image stream", ffprobe.display()))?;
+    let width = stream
+        .get("width")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("{} did not report a valid image width", ffprobe.display()))?;
+    let height = stream
+        .get("height")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("{} did not report a valid image height", ffprobe.display()))?;
+    Ok(ImageDimensions { width, height })
+}
+
+fn generate_static_image_variant(
+    ffmpeg: &Path,
+    source_path: &Path,
+    output_path: &Path,
+    spec: StaticImageVariantSpec,
+) -> Result<(), String> {
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create variant directory: {err}"))?;
+    }
+    let filter = format!(
+        "scale={}:{}:force_original_aspect_ratio=increase,crop={}:{}",
+        spec.width, spec.height, spec.width, spec.height
+    );
+    let output = Command::new(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(source_path)
+        .args(["-frames:v", "1", "-an", "-sn", "-vf", &filter])
+        .arg(output_path)
+        .output()
+        .map_err(|err| format!("failed to run {}: {err}", ffmpeg.display()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let reason = if stderr.is_empty() {
+            output.status.to_string()
+        } else {
+            format!("{}: {stderr}", output.status)
+        };
+        return Err(format!("{} failed: {reason}", ffmpeg.display()));
+    }
+
+    let metadata = fs::metadata(output_path).map_err(|err| {
+        format!(
+            "{} did not create {}: {err}",
+            ffmpeg.display(),
+            output_path.display()
+        )
+    })?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(format!(
+            "{} created an empty variant at {}",
+            ffmpeg.display(),
+            output_path.display()
+        ));
+    }
+
+    Ok(())
 }
 
 fn generate_video_placeholder_preview(
@@ -1330,6 +1587,18 @@ fn is_image_path(value: &str) -> bool {
         })
 }
 
+fn is_raster_image_path(value: &str) -> bool {
+    Path::new(value)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "avif" | "bmp" | "jpeg" | "jpg" | "png" | "webp"
+            )
+        })
+}
+
 fn explicit_audio_request(value: &Value) -> bool {
     match value {
         Value::Object(object) => object
@@ -1686,6 +1955,80 @@ mod tests {
             report
                 .generated_assets
                 .contains(&"previews/thumbnail.png".to_owned())
+        );
+    }
+
+    #[test]
+    fn converts_static_image_project_with_resolution_variants() {
+        let source = TestDir::new("we-static-variant-source");
+        let output = TestDir::new("we-static-variant-output");
+        let tools = TestDir::new("we-static-variant-tools");
+        source.write_file("wallpaper.png", "fake large image");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "image",
+              "title": "Static Variant Source",
+              "file": "wallpaper.png"
+            }"#,
+        );
+        let ffprobe = tools.path().join("ffprobe");
+        fs::write(
+            &ffprobe,
+            r#"#!/bin/sh
+printf '{"streams":[{"width":7680,"height":4320}]}'
+exit 0
+"#,
+        )
+        .unwrap();
+        make_executable(&ffprobe);
+        let ffmpeg = tools.path().join("ffmpeg");
+        fs::write(
+            &ffmpeg,
+            r#"#!/bin/sh
+out=""
+for arg in "$@"; do
+  out="$arg"
+done
+printf 'png-variant' > "$out"
+exit 0
+"#,
+        )
+        .unwrap();
+        make_executable(&ffmpeg);
+        let project = WallpaperEngineProject::load(source.path()).unwrap();
+        let mut report = ConversionReport::new("image");
+
+        let manifest = convert_static_image_with_variant_tools(
+            &project,
+            output.path(),
+            &mut report,
+            Some(StaticImageVariantTools {
+                ffmpeg: &ffmpeg,
+                ffprobe: &ffprobe,
+            }),
+        )
+        .unwrap();
+        write_json_pretty(output.path().join(MANIFEST_FILE), &manifest).unwrap();
+        load_gwpdir(output.path()).unwrap();
+
+        let variants = manifest["variants"].as_array().unwrap();
+        assert_eq!(variants.len(), 2);
+        assert_eq!(variants[0]["id"], "landscape-1080p");
+        assert_eq!(variants[0]["width"], 1920);
+        assert_eq!(variants[0]["height"], 1080);
+        assert_eq!(variants[1]["id"], "landscape-2160p");
+        assert!(output.path().join("variants/landscape-1080p.png").exists());
+        assert!(output.path().join("variants/landscape-2160p.png").exists());
+        assert!(
+            report
+                .generated_assets
+                .contains(&"variants/landscape-1080p.png".to_owned())
+        );
+        assert!(
+            report
+                .converted_features
+                .contains(&"static-image:variant:landscape-2160p".to_owned())
         );
     }
 
