@@ -261,6 +261,53 @@ sample_smaps_rollup() {
   ' "$rollup"
 }
 
+sample_gpu_busy() {
+  local values=()
+  local sources=()
+  local path
+  local value
+  local source
+
+  for path in /sys/class/drm/card*/device/gpu_busy_percent /sys/class/drm/renderD*/device/gpu_busy_percent; do
+    [[ -r "$path" ]] || continue
+    value="$(sed -n '1p' "$path" 2>/dev/null | tr -d '[:space:]')"
+    [[ "$value" =~ ^[0-9]+$ ]] || continue
+    source="${path#/sys/class/drm/}"
+    source="${source%/device/gpu_busy_percent}"
+    values+=("$value")
+    sources+=("$source")
+  done
+
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    local index=0
+    while IFS= read -r value; do
+      value="${value//[[:space:]]/}"
+      [[ "$value" =~ ^[0-9]+$ ]] || continue
+      values+=("$value")
+      sources+=("nvidia-smi:${index}")
+      index=$((index + 1))
+    done < <(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null || true)
+  fi
+
+  if [[ "${#values[@]}" -eq 0 ]]; then
+    printf '||\n'
+    return 0
+  fi
+
+  local sum=0
+  local max=0
+  for value in "${values[@]}"; do
+    sum=$((sum + value))
+    if [[ "$value" -gt "$max" ]]; then
+      max="$value"
+    fi
+  done
+  local avg=$((sum / ${#values[@]}))
+  local joined_sources
+  joined_sources="$(IFS=';'; printf '%s' "${sources[*]}")"
+  printf '%s|%s|%s\n' "$avg" "$max" "$joined_sources"
+}
+
 write_summary() {
   local csv="$1"
   local summary="$2"
@@ -275,12 +322,18 @@ write_summary() {
       private = $10 + 0
       uss = $11 + 0
       shared = $14 + 0
+      gpu_avg = $19
+      gpu_max_sample = $20
       rss_sum += rss
       vsz_sum += vsz
       pss_sum += pss
       private_sum += private
       uss_sum += uss
       shared_sum += shared
+      if (gpu_avg != "") {
+        gpu_samples += 1
+        gpu_sum += gpu_avg + 0
+      }
       if (samples == 1 || rss < min_rss) { min_rss = rss }
       if (samples == 1 || vsz < min_vsz) { min_vsz = vsz }
       if (samples == 1 || pss < min_pss) { min_pss = pss }
@@ -293,6 +346,7 @@ write_summary() {
       if (private > max_private) { max_private = private }
       if (uss > max_uss) { max_uss = uss }
       if (shared > max_shared) { max_shared = shared }
+      if (gpu_max_sample != "" && gpu_max_sample + 0 > max_gpu_busy) { max_gpu_busy = gpu_max_sample + 0 }
     }
     END {
       printf "samples: %d\n", samples
@@ -316,6 +370,11 @@ write_summary() {
         printf "min_shared_kib: %d\n", min_shared
         printf "avg_shared_kib: %.0f\n", shared_sum / samples
         printf "max_shared_kib: %d\n", max_shared
+        printf "gpu_busy_samples: %d\n", gpu_samples
+        if (gpu_samples > 0) {
+          printf "avg_gpu_busy_percent: %.0f\n", gpu_sum / gpu_samples
+          printf "max_gpu_busy_percent: %d\n", max_gpu_busy
+        }
       }
     }
   ' "$csv" > "$summary"
@@ -694,9 +753,10 @@ expect_render_sync_cache_hit: ${expect_render_sync_cache_hit}
 expect_desktop_refresh_skip: ${expect_desktop_refresh_skip}
 expect_render_sync_update_queued: ${expect_render_sync_update_queued}
 expect_render_sync_update_skipped: ${expect_render_sync_update_skipped}
+gpu_busy_sources: drm gpu_busy_percent sysfs when readable; nvidia-smi utilization.gpu when available
 EOF
 
-printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file\n' > "$csv_path"
+printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
 printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts\n' > "$telemetry_path"
 printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,source\n' > "$video_runtime_path"
@@ -719,6 +779,7 @@ for sample in $(seq 1 "$samples"); do
   fi
   read -r sample_pid cpu_percent rss_kib vsz_kib stat comm <<< "$ps_line"
   read -r pss_kib private_clean_kib private_dirty_kib private_kib uss_kib shared_clean_kib shared_dirty_kib shared_kib < <(sample_smaps_rollup "$pid")
+  IFS='|' read -r gpu_busy_percent_avg gpu_busy_percent_max gpu_busy_sources < <(sample_gpu_busy)
 
   status_file=""
   status_error_file=""
@@ -769,7 +830,7 @@ for sample in $(seq 1 "$samples"); do
     break
   fi
 
-  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "$sample" \
     "$elapsed" \
     "$sample_pid" \
@@ -787,7 +848,10 @@ for sample in $(seq 1 "$samples"); do
     "$stat" \
     "$comm" \
     "${status_file#$work_dir/}" \
-    "${status_error_file#$work_dir/}" >> "$csv_path"
+    "${status_error_file#$work_dir/}" \
+    "$gpu_busy_percent_avg" \
+    "$gpu_busy_percent_max" \
+    "$gpu_busy_sources" >> "$csv_path"
 
   if [[ "$sample" -lt "$samples" ]]; then
     sleep "$interval"
