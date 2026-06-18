@@ -1100,12 +1100,19 @@ capture_performance() {
   fi
   if [[ -n "$expected_pipeline_latest_at_least" ]]; then
     sample_args+=(--expect-renderer-output-windows-latest-at-least "$expected_pipeline_latest_at_least")
+    sample_args+=(--expect-renderer-video-surfaces-latest-at-least "$expected_pipeline_latest_at_least")
     sample_args+=(--expect-renderer-video-pipelines-latest-at-least "$expected_pipeline_latest_at_least")
   fi
   if [[ -n "$expected_pipeline_latest_at_most" ]]; then
     sample_args+=(--expect-renderer-output-windows-latest-at-most "$expected_pipeline_latest_at_most")
+    sample_args+=(--expect-renderer-static-surfaces-latest-at-most "$expected_pipeline_latest_at_most")
+    sample_args+=(--expect-renderer-slideshow-surfaces-latest-at-most "$expected_pipeline_latest_at_most")
+    sample_args+=(--expect-renderer-video-surfaces-latest-at-most "$expected_pipeline_latest_at_most")
     if [[ "$expected_pipeline_latest_at_most" == "0" ]]; then
       sample_args+=(--expect-renderer-output-windows-max-at-most 0)
+      sample_args+=(--expect-renderer-static-surfaces-max-at-most 0)
+      sample_args+=(--expect-renderer-slideshow-surfaces-max-at-most 0)
+      sample_args+=(--expect-renderer-video-surfaces-max-at-most 0)
     fi
     sample_args+=(--expect-renderer-video-pipelines-latest-at-most "$expected_pipeline_latest_at_most")
   fi

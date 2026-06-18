@@ -71,6 +71,24 @@ Options:
                      Require latest renderer output window count to be at most count
   --expect-renderer-output-windows-max-at-most <count>
                      Require max sampled renderer output window count to be at most count
+  --expect-renderer-static-surfaces-latest-at-least <count>
+                     Require latest renderer static surface count to be at least count
+  --expect-renderer-static-surfaces-latest-at-most <count>
+                     Require latest renderer static surface count to be at most count
+  --expect-renderer-static-surfaces-max-at-most <count>
+                     Require max sampled renderer static surface count to be at most count
+  --expect-renderer-slideshow-surfaces-latest-at-least <count>
+                     Require latest renderer slideshow surface count to be at least count
+  --expect-renderer-slideshow-surfaces-latest-at-most <count>
+                     Require latest renderer slideshow surface count to be at most count
+  --expect-renderer-slideshow-surfaces-max-at-most <count>
+                     Require max sampled renderer slideshow surface count to be at most count
+  --expect-renderer-video-surfaces-latest-at-least <count>
+                     Require latest renderer video surface count to be at least count
+  --expect-renderer-video-surfaces-latest-at-most <count>
+                     Require latest renderer video surface count to be at most count
+  --expect-renderer-video-surfaces-max-at-most <count>
+                     Require max sampled renderer video surface count to be at most count
   --expect-renderer-video-pipelines-latest-at-least <count>
                      Require latest renderer video pipeline count to be at least count
   --expect-renderer-video-pipelines-latest-at-most <count>
@@ -148,6 +166,15 @@ expect_render_sync_update_skipped=0
 expect_renderer_output_windows_latest_at_least=""
 expect_renderer_output_windows_latest_at_most=""
 expect_renderer_output_windows_max_at_most=""
+expect_renderer_static_surfaces_latest_at_least=""
+expect_renderer_static_surfaces_latest_at_most=""
+expect_renderer_static_surfaces_max_at_most=""
+expect_renderer_slideshow_surfaces_latest_at_least=""
+expect_renderer_slideshow_surfaces_latest_at_most=""
+expect_renderer_slideshow_surfaces_max_at_most=""
+expect_renderer_video_surfaces_latest_at_least=""
+expect_renderer_video_surfaces_latest_at_most=""
+expect_renderer_video_surfaces_max_at_most=""
 expect_renderer_video_pipelines_latest_at_least=""
 expect_renderer_video_pipelines_latest_at_most=""
 expect_renderer_video_pipelines_max_at_most=""
@@ -337,6 +364,51 @@ while [[ $# -gt 0 ]]; do
     --expect-renderer-output-windows-max-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-renderer-output-windows-max-at-most requires a value" >&2; exit 2; }
       expect_renderer_output_windows_max_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-static-surfaces-latest-at-least)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-static-surfaces-latest-at-least requires a value" >&2; exit 2; }
+      expect_renderer_static_surfaces_latest_at_least="$2"
+      shift 2
+      ;;
+    --expect-renderer-static-surfaces-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-static-surfaces-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_static_surfaces_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-static-surfaces-max-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-static-surfaces-max-at-most requires a value" >&2; exit 2; }
+      expect_renderer_static_surfaces_max_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-slideshow-surfaces-latest-at-least)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-slideshow-surfaces-latest-at-least requires a value" >&2; exit 2; }
+      expect_renderer_slideshow_surfaces_latest_at_least="$2"
+      shift 2
+      ;;
+    --expect-renderer-slideshow-surfaces-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-slideshow-surfaces-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_slideshow_surfaces_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-slideshow-surfaces-max-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-slideshow-surfaces-max-at-most requires a value" >&2; exit 2; }
+      expect_renderer_slideshow_surfaces_max_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-video-surfaces-latest-at-least)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-surfaces-latest-at-least requires a value" >&2; exit 2; }
+      expect_renderer_video_surfaces_latest_at_least="$2"
+      shift 2
+      ;;
+    --expect-renderer-video-surfaces-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-surfaces-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_video_surfaces_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-video-surfaces-max-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-surfaces-max-at-most requires a value" >&2; exit 2; }
+      expect_renderer_video_surfaces_max_at_most="$2"
       shift 2
       ;;
     --expect-renderer-video-pipelines-latest-at-least)
@@ -1689,6 +1761,15 @@ has_telemetry_expectations() {
     -n "$expect_renderer_output_windows_latest_at_least" ||
     -n "$expect_renderer_output_windows_latest_at_most" ||
     -n "$expect_renderer_output_windows_max_at_most" ||
+    -n "$expect_renderer_static_surfaces_latest_at_least" ||
+    -n "$expect_renderer_static_surfaces_latest_at_most" ||
+    -n "$expect_renderer_static_surfaces_max_at_most" ||
+    -n "$expect_renderer_slideshow_surfaces_latest_at_least" ||
+    -n "$expect_renderer_slideshow_surfaces_latest_at_most" ||
+    -n "$expect_renderer_slideshow_surfaces_max_at_most" ||
+    -n "$expect_renderer_video_surfaces_latest_at_least" ||
+    -n "$expect_renderer_video_surfaces_latest_at_most" ||
+    -n "$expect_renderer_video_surfaces_max_at_most" ||
     -n "$expect_renderer_video_pipelines_latest_at_least" ||
     -n "$expect_renderer_video_pipelines_latest_at_most" ||
     -n "$expect_renderer_video_pipelines_max_at_most" ||
@@ -1760,6 +1841,33 @@ validate_telemetry_expectations() {
   fi
   if [[ -n "$expect_renderer_output_windows_max_at_most" ]]; then
     expect_telemetry_maximum "renderer_output_windows_max" "$expect_renderer_output_windows_max_at_most" "max renderer output window count"
+  fi
+  if [[ -n "$expect_renderer_static_surfaces_latest_at_least" ]]; then
+    expect_telemetry_minimum "renderer_static_surfaces_latest" "$expect_renderer_static_surfaces_latest_at_least" "latest renderer static surface count"
+  fi
+  if [[ -n "$expect_renderer_static_surfaces_latest_at_most" ]]; then
+    expect_telemetry_maximum "renderer_static_surfaces_latest" "$expect_renderer_static_surfaces_latest_at_most" "latest renderer static surface count"
+  fi
+  if [[ -n "$expect_renderer_static_surfaces_max_at_most" ]]; then
+    expect_telemetry_maximum "renderer_static_surfaces_max" "$expect_renderer_static_surfaces_max_at_most" "max renderer static surface count"
+  fi
+  if [[ -n "$expect_renderer_slideshow_surfaces_latest_at_least" ]]; then
+    expect_telemetry_minimum "renderer_slideshow_surfaces_latest" "$expect_renderer_slideshow_surfaces_latest_at_least" "latest renderer slideshow surface count"
+  fi
+  if [[ -n "$expect_renderer_slideshow_surfaces_latest_at_most" ]]; then
+    expect_telemetry_maximum "renderer_slideshow_surfaces_latest" "$expect_renderer_slideshow_surfaces_latest_at_most" "latest renderer slideshow surface count"
+  fi
+  if [[ -n "$expect_renderer_slideshow_surfaces_max_at_most" ]]; then
+    expect_telemetry_maximum "renderer_slideshow_surfaces_max" "$expect_renderer_slideshow_surfaces_max_at_most" "max renderer slideshow surface count"
+  fi
+  if [[ -n "$expect_renderer_video_surfaces_latest_at_least" ]]; then
+    expect_telemetry_minimum "renderer_video_surfaces_latest" "$expect_renderer_video_surfaces_latest_at_least" "latest renderer video surface count"
+  fi
+  if [[ -n "$expect_renderer_video_surfaces_latest_at_most" ]]; then
+    expect_telemetry_maximum "renderer_video_surfaces_latest" "$expect_renderer_video_surfaces_latest_at_most" "latest renderer video surface count"
+  fi
+  if [[ -n "$expect_renderer_video_surfaces_max_at_most" ]]; then
+    expect_telemetry_maximum "renderer_video_surfaces_max" "$expect_renderer_video_surfaces_max_at_most" "max renderer video surface count"
   fi
   if [[ -n "$expect_renderer_video_pipelines_latest_at_least" ]]; then
     expect_telemetry_minimum "renderer_video_pipelines_latest" "$expect_renderer_video_pipelines_latest_at_least" "latest renderer video pipeline count"
@@ -2002,6 +2110,15 @@ for renderer_resource_expectation in \
   "$expect_renderer_output_windows_latest_at_least" \
   "$expect_renderer_output_windows_latest_at_most" \
   "$expect_renderer_output_windows_max_at_most" \
+  "$expect_renderer_static_surfaces_latest_at_least" \
+  "$expect_renderer_static_surfaces_latest_at_most" \
+  "$expect_renderer_static_surfaces_max_at_most" \
+  "$expect_renderer_slideshow_surfaces_latest_at_least" \
+  "$expect_renderer_slideshow_surfaces_latest_at_most" \
+  "$expect_renderer_slideshow_surfaces_max_at_most" \
+  "$expect_renderer_video_surfaces_latest_at_least" \
+  "$expect_renderer_video_surfaces_latest_at_most" \
+  "$expect_renderer_video_surfaces_max_at_most" \
   "$expect_renderer_video_pipelines_latest_at_least" \
   "$expect_renderer_video_pipelines_latest_at_most" \
   "$expect_renderer_video_pipelines_max_at_most"
@@ -2095,6 +2212,15 @@ expect_render_sync_update_skipped: ${expect_render_sync_update_skipped}
 expect_renderer_output_windows_latest_at_least: ${expect_renderer_output_windows_latest_at_least:-none}
 expect_renderer_output_windows_latest_at_most: ${expect_renderer_output_windows_latest_at_most:-none}
 expect_renderer_output_windows_max_at_most: ${expect_renderer_output_windows_max_at_most:-none}
+expect_renderer_static_surfaces_latest_at_least: ${expect_renderer_static_surfaces_latest_at_least:-none}
+expect_renderer_static_surfaces_latest_at_most: ${expect_renderer_static_surfaces_latest_at_most:-none}
+expect_renderer_static_surfaces_max_at_most: ${expect_renderer_static_surfaces_max_at_most:-none}
+expect_renderer_slideshow_surfaces_latest_at_least: ${expect_renderer_slideshow_surfaces_latest_at_least:-none}
+expect_renderer_slideshow_surfaces_latest_at_most: ${expect_renderer_slideshow_surfaces_latest_at_most:-none}
+expect_renderer_slideshow_surfaces_max_at_most: ${expect_renderer_slideshow_surfaces_max_at_most:-none}
+expect_renderer_video_surfaces_latest_at_least: ${expect_renderer_video_surfaces_latest_at_least:-none}
+expect_renderer_video_surfaces_latest_at_most: ${expect_renderer_video_surfaces_latest_at_most:-none}
+expect_renderer_video_surfaces_max_at_most: ${expect_renderer_video_surfaces_max_at_most:-none}
 expect_renderer_video_pipelines_latest_at_least: ${expect_renderer_video_pipelines_latest_at_least:-none}
 expect_renderer_video_pipelines_latest_at_most: ${expect_renderer_video_pipelines_latest_at_most:-none}
 expect_renderer_video_pipelines_max_at_most: ${expect_renderer_video_pipelines_max_at_most:-none}
