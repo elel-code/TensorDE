@@ -27,6 +27,7 @@ pub enum DecisionReason {
     Interactive,
     UserPaused,
     SessionInactive,
+    SessionLocked,
     OutputHidden,
     Fullscreen,
     Unfocused,
@@ -45,6 +46,9 @@ pub fn decide_performance(
     }
     if !desktop.session_active {
         decision = select_more_conservative(decision, paused(DecisionReason::SessionInactive));
+    }
+    if desktop.session_locked {
+        decision = select_more_conservative(decision, paused(DecisionReason::SessionLocked));
     }
     if let Some(output) = output {
         if !output.visible {
@@ -204,6 +208,18 @@ mod tests {
         let decision = decide_performance(&config, &desktop, None, &OutputState::default());
         assert_eq!(decision.mode, RenderMode::Paused);
         assert_eq!(decision.reason, DecisionReason::SessionInactive);
+    }
+
+    #[test]
+    fn pauses_when_session_is_locked() {
+        let config = PerformanceConfig::default();
+        let desktop = DesktopSnapshot {
+            session_locked: true,
+            ..DesktopSnapshot::default()
+        };
+        let decision = decide_performance(&config, &desktop, None, &OutputState::default());
+        assert_eq!(decision.mode, RenderMode::Paused);
+        assert_eq!(decision.reason, DecisionReason::SessionLocked);
     }
 
     #[test]

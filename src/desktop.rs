@@ -16,6 +16,8 @@ pub struct DesktopSnapshot {
     pub power: PowerState,
     #[serde(default = "default_true")]
     pub session_active: bool,
+    #[serde(default)]
+    pub session_locked: bool,
 }
 
 impl Default for DesktopSnapshot {
@@ -25,6 +27,7 @@ impl Default for DesktopSnapshot {
             outputs: Vec::new(),
             power: PowerState::Unknown,
             session_active: true,
+            session_locked: false,
         }
     }
 }

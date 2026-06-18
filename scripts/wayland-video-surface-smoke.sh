@@ -26,6 +26,8 @@ Options:
                      Start daemon with GILDER_POWER_STATE=ac|battery|unknown
   --simulate-output-state <state>
                      Start daemon with GILDER_OUTPUT_STATE=active|unfocused|fullscreen|hidden
+  --simulate-session <state>
+                     Start daemon with GILDER_SESSION_STATE=active|inactive|locked
   --keep              Keep generated smoke data and logs
   -h, --help          Show this help text
 EOF
@@ -42,6 +44,7 @@ sample_duration=8
 sample_interval=1
 simulate_power=""
 simulate_output_state=""
+simulate_session=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -108,6 +111,19 @@ while [[ $# -gt 0 ]]; do
       esac
       shift 2
       ;;
+    --simulate-session)
+      [[ $# -ge 2 ]] || { echo "--simulate-session requires active, inactive, or locked" >&2; exit 2; }
+      case "$2" in
+        active|inactive|locked)
+          simulate_session="$2"
+          ;;
+        *)
+          echo "--simulate-session requires active, inactive, or locked" >&2
+          exit 2
+          ;;
+      esac
+      shift 2
+      ;;
     --keep)
       keep=1
       shift
@@ -151,6 +167,13 @@ if [[ -n "$simulate_output_state" ]]; then
     scenario_suffix="${scenario_suffix}-${simulate_output_state}"
   else
     scenario_suffix="$simulate_output_state"
+  fi
+fi
+if [[ -n "$simulate_session" ]]; then
+  if [[ -n "$scenario_suffix" ]]; then
+    scenario_suffix="${scenario_suffix}-${simulate_session}"
+  else
+    scenario_suffix="$simulate_session"
   fi
 fi
 if [[ -n "$scenario_suffix" ]]; then
@@ -252,7 +275,11 @@ capture_performance() {
 }
 
 expected_performance_reason() {
-  if [[ "$simulate_output_state" == "hidden" ]]; then
+  if [[ "$simulate_session" == "inactive" ]]; then
+    printf '%s\n' "session-inactive"
+  elif [[ "$simulate_session" == "locked" ]]; then
+    printf '%s\n' "session-locked"
+  elif [[ "$simulate_output_state" == "hidden" ]]; then
     printf '%s\n' "output-hidden"
   elif [[ "$simulate_output_state" == "fullscreen" ]]; then
     printf '%s\n' "fullscreen"
@@ -266,7 +293,7 @@ expected_performance_reason() {
 }
 
 expects_active_video_plan() {
-  [[ "$simulate_output_state" != "fullscreen" && "$simulate_output_state" != "hidden" ]]
+  [[ "$simulate_session" != "inactive" && "$simulate_session" != "locked" && "$simulate_output_state" != "fullscreen" && "$simulate_output_state" != "hidden" ]]
 }
 
 expected_mode_for_reason() {
@@ -274,7 +301,7 @@ expected_mode_for_reason() {
     battery|unfocused)
       printf '%s\n' "throttled"
       ;;
-    fullscreen|output-hidden|user-paused)
+    fullscreen|output-hidden|user-paused|session-inactive|session-locked)
       printf '%s\n' "paused"
       ;;
     interactive)
@@ -349,6 +376,9 @@ fi
 if [[ -n "$simulate_output_state" ]]; then
   daemon_env+=(GILDER_OUTPUT_STATE="$simulate_output_state")
 fi
+if [[ -n "$simulate_session" ]]; then
+  daemon_env+=(GILDER_SESSION_STATE="$simulate_session")
+fi
 "${daemon_env[@]}" "$gilderd" >"$daemon_log" 2>&1 &
 daemon_pid=$!
 
@@ -381,6 +411,25 @@ if [[ -n "$simulate_power" ]]; then
     pass "status reports simulated power state ${simulate_power}"
   else
     skip_or_fail "status does not report simulated power state ${simulate_power}"
+  fi
+fi
+
+if [[ -n "$simulate_session" ]]; then
+  case "$simulate_session" in
+    active)
+      session_pattern='"session_active":true.*"session_locked":false|"session_locked":false.*"session_active":true'
+      ;;
+    inactive)
+      session_pattern='"session_active":false.*"session_locked":false|"session_locked":false.*"session_active":false'
+      ;;
+    locked)
+      session_pattern='"session_active":true.*"session_locked":true|"session_locked":true.*"session_active":true'
+      ;;
+  esac
+  if grep -Eq "$session_pattern" "$status_before"; then
+    pass "status reports simulated session state ${simulate_session}"
+  else
+    skip_or_fail "status does not report simulated session state ${simulate_session}"
   fi
 fi
 

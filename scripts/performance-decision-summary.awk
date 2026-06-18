@@ -132,6 +132,7 @@ END {
   print_mode_reason("throttled", "battery")
   print_mode_reason("paused", "user-paused")
   print_mode_reason("paused", "session-inactive")
+  print_mode_reason("paused", "session-locked")
   print_mode_reason("paused", "output-hidden")
   print_mode_reason("paused", "fullscreen")
   print_mode_reason("paused", "unfocused")
@@ -143,6 +144,7 @@ END {
         key != "throttled/battery" &&
         key != "paused/user-paused" &&
         key != "paused/session-inactive" &&
+        key != "paused/session-locked" &&
         key != "paused/output-hidden" &&
         key != "paused/fullscreen" &&
         key != "paused/unfocused" &&
@@ -169,6 +171,7 @@ END {
   print_category("reason", "battery", reason_count)
   print_category("reason", "user-paused", reason_count)
   print_category("reason", "session-inactive", reason_count)
+  print_category("reason", "session-locked", reason_count)
   print_category("reason", "output-hidden", reason_count)
   print_category("reason", "fullscreen", reason_count)
   for (key in reason_count) {
@@ -177,6 +180,7 @@ END {
         key != "battery" &&
         key != "user-paused" &&
         key != "session-inactive" &&
+        key != "session-locked" &&
         key != "output-hidden" &&
         key != "fullscreen") {
       print_category("reason", key, reason_count)

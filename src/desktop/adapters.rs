@@ -41,7 +41,9 @@ fn with_runtime_state(mut snapshot: DesktopSnapshot) -> DesktopSnapshot {
     if let Some(output_state) = read_output_state_override() {
         apply_output_state_override(&mut snapshot, output_state);
     }
-    snapshot.session_active = snapshot.session_active && super::session::read_session_active();
+    let session = super::session::read_session_state();
+    snapshot.session_active = snapshot.session_active && session.active;
+    snapshot.session_locked = snapshot.session_locked || session.locked;
     snapshot
 }
 
@@ -176,6 +178,7 @@ mod hyprland {
             outputs,
             power: PowerState::Unknown,
             session_active: true,
+            session_locked: false,
         }
     }
 
@@ -303,6 +306,7 @@ mod niri {
             outputs: snapshot_outputs,
             power: PowerState::Unknown,
             session_active: true,
+            session_locked: false,
         }
     }
 
