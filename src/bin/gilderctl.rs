@@ -206,7 +206,7 @@ fn render_telemetry_csv(response: &str) -> Result<String, String> {
 
     let telemetry = result.telemetry;
     let mut csv = String::from(
-        "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped\n",
+        "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius\n",
     );
     let row = [
         telemetry.desktop.refreshes.to_string(),
@@ -221,6 +221,38 @@ fn render_telemetry_csv(response: &str) -> Result<String, String> {
         telemetry.render_sync.cache_misses.to_string(),
         telemetry.render_sync.updates_queued.to_string(),
         telemetry.render_sync.updates_skipped.to_string(),
+        telemetry.adaptive.refreshes.to_string(),
+        telemetry.adaptive.refresh_skips.to_string(),
+        telemetry
+            .adaptive
+            .snapshot
+            .active_triggers
+            .len()
+            .to_string(),
+        telemetry
+            .adaptive
+            .snapshot
+            .sample
+            .as_ref()
+            .and_then(|sample| sample.cpu_pressure_some_avg10_x100)
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        telemetry
+            .adaptive
+            .snapshot
+            .sample
+            .as_ref()
+            .and_then(|sample| sample.memory_pressure_some_avg10_x100)
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        telemetry
+            .adaptive
+            .snapshot
+            .sample
+            .as_ref()
+            .and_then(|sample| sample.temperature_max_millicelsius)
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
     ];
     csv.push_str(&row.join(","));
     csv.push('\n');
@@ -362,6 +394,8 @@ struct Telemetry {
     desktop: DesktopTelemetry,
     #[serde(default)]
     render_sync: RenderSyncTelemetry,
+    #[serde(default)]
+    adaptive: AdaptiveTelemetry,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -386,6 +420,34 @@ struct RenderSyncTelemetry {
     updates_queued: u64,
     #[serde(default)]
     updates_skipped: u64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AdaptiveTelemetry {
+    #[serde(default)]
+    refreshes: u64,
+    #[serde(default)]
+    refresh_skips: u64,
+    #[serde(default)]
+    snapshot: AdaptiveSnapshot,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AdaptiveSnapshot {
+    #[serde(default)]
+    sample: Option<AdaptiveSample>,
+    #[serde(default)]
+    active_triggers: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdaptiveSample {
+    #[serde(default)]
+    cpu_pressure_some_avg10_x100: Option<u32>,
+    #[serde(default)]
+    memory_pressure_some_avg10_x100: Option<u32>,
+    #[serde(default)]
+    temperature_max_millicelsius: Option<i32>,
 }
 
 #[cfg(test)]
@@ -422,14 +484,14 @@ mod tests {
 
     #[test]
     fn formats_daemon_telemetry_as_csv() {
-        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[],"video_plans":[],"decisions":[]},"telemetry":{"desktop":{"refreshes":7,"refresh_skips":11,"changes":2,"last_refresh_age_ms":42},"render_sync":{"cache_hits":23,"cache_misses":5,"updates_queued":3,"updates_skipped":2}}}}"##;
+        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[],"video_plans":[],"decisions":[]},"telemetry":{"desktop":{"refreshes":7,"refresh_skips":11,"changes":2,"last_refresh_age_ms":42},"render_sync":{"cache_hits":23,"cache_misses":5,"updates_queued":3,"updates_skipped":2},"adaptive":{"refreshes":5,"refresh_skips":6,"snapshot":{"sample":{"cpu_pressure_some_avg10_x100":123,"memory_pressure_some_avg10_x100":45,"temperature_max_millicelsius":73500},"active_triggers":[{"metric":"temperature-max-celsius","value_x100":7350,"threshold_x100":7000}]}}}}}"##;
 
         let csv = render_telemetry_csv(response).unwrap();
 
         assert_eq!(
             csv,
-            "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped\n\
-             7,11,2,42,23,5,3,2\n"
+            "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius\n\
+             7,11,2,42,23,5,3,2,5,6,1,123,45,73500\n"
         );
     }
 

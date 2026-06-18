@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 const PROC_PRESSURE_CPU: &str = "/proc/pressure/cpu";
 const PROC_PRESSURE_MEMORY: &str = "/proc/pressure/memory";
+const SYS_CLASS_THERMAL: &str = "/sys/class/thermal";
 
 #[derive(Debug, Clone)]
 pub struct AdaptiveMonitor {
@@ -103,6 +104,8 @@ pub struct AdaptiveSystemSample {
     pub cpu_pressure_some_avg10_x100: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_pressure_some_avg10_x100: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature_max_millicelsius: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +120,7 @@ pub struct AdaptiveTrigger {
 pub enum AdaptiveMetric {
     CpuPressureSomeAvg10,
     MemoryPressureSomeAvg10,
+    TemperatureMaxCelsius,
 }
 
 pub fn monitoring_enabled(config: &GilderConfig) -> bool {
@@ -154,6 +158,9 @@ fn read_system_sample() -> AdaptiveSystemSample {
     AdaptiveSystemSample {
         cpu_pressure_some_avg10_x100: read_pressure_some_avg10_x100(PROC_PRESSURE_CPU).ok(),
         memory_pressure_some_avg10_x100: read_pressure_some_avg10_x100(PROC_PRESSURE_MEMORY).ok(),
+        temperature_max_millicelsius: read_temperature_max_millicelsius(SYS_CLASS_THERMAL)
+            .ok()
+            .flatten(),
     }
 }
 
@@ -173,6 +180,11 @@ fn triggers_for_sample(
         AdaptiveMetric::MemoryPressureSomeAvg10,
         sample.memory_pressure_some_avg10_x100,
         config.adaptive.memory_pressure_threshold_percent,
+    );
+    push_temperature_trigger(
+        &mut triggers,
+        sample.temperature_max_millicelsius,
+        config.adaptive.temperature_threshold_celsius,
     );
     triggers
 }
@@ -199,10 +211,62 @@ fn push_pressure_trigger(
     }
 }
 
+fn push_temperature_trigger(
+    triggers: &mut Vec<AdaptiveTrigger>,
+    value_millicelsius: Option<i32>,
+    threshold_celsius: u32,
+) {
+    let Some(value_millicelsius) = value_millicelsius else {
+        return;
+    };
+    if threshold_celsius == 0 || value_millicelsius < 0 {
+        return;
+    }
+    let value_x100 = (value_millicelsius as u32) / 10;
+    let threshold_x100 = threshold_celsius.saturating_mul(100);
+    if value_x100 >= threshold_x100 {
+        triggers.push(AdaptiveTrigger {
+            metric: AdaptiveMetric::TemperatureMaxCelsius,
+            value_x100,
+            threshold_x100,
+        });
+    }
+}
+
 fn read_pressure_some_avg10_x100(path: impl AsRef<Path>) -> io::Result<u32> {
     let contents = fs::read_to_string(path)?;
     parse_pressure_some_avg10_x100(&contents)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing PSI some avg10"))
+}
+
+fn read_temperature_max_millicelsius(root: impl AsRef<Path>) -> io::Result<Option<i32>> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+
+    let mut max_temperature = None;
+    for entry in entries {
+        let path = entry?.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("thermal_zone") {
+            continue;
+        }
+        let Some(temperature) = read_temperature_millicelsius(path.join("temp")) else {
+            continue;
+        };
+        max_temperature = Some(
+            max_temperature.map_or(temperature, |current| std::cmp::max(current, temperature)),
+        );
+    }
+    Ok(max_temperature)
+}
+
+fn read_temperature_millicelsius(path: impl AsRef<Path>) -> Option<i32> {
+    fs::read_to_string(path).ok()?.trim().parse::<i32>().ok()
 }
 
 fn parse_pressure_some_avg10_x100(contents: &str) -> Option<u32> {
@@ -292,6 +356,7 @@ mod tests {
             adaptive: AdaptiveConfig {
                 cpu_pressure_threshold_percent: 20,
                 memory_pressure_threshold_percent: 5,
+                temperature_threshold_celsius: 85,
                 ..AdaptiveConfig::default()
             },
             ..GilderConfig::default()
@@ -299,10 +364,77 @@ mod tests {
         let sample = AdaptiveSystemSample {
             cpu_pressure_some_avg10_x100: Some(2_001),
             memory_pressure_some_avg10_x100: Some(499),
+            temperature_max_millicelsius: Some(84_000),
         };
         let triggers = triggers_for_sample(&config, &sample);
 
         assert_eq!(triggers.len(), 1);
         assert_eq!(triggers[0].metric, AdaptiveMetric::CpuPressureSomeAvg10);
+    }
+
+    #[test]
+    fn temperature_threshold_creates_trigger() {
+        let config = GilderConfig {
+            adaptive: AdaptiveConfig {
+                temperature_threshold_celsius: 80,
+                ..AdaptiveConfig::default()
+            },
+            ..GilderConfig::default()
+        };
+        let sample = AdaptiveSystemSample {
+            temperature_max_millicelsius: Some(80_500),
+            ..AdaptiveSystemSample::default()
+        };
+        let triggers = triggers_for_sample(&config, &sample);
+
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].metric, AdaptiveMetric::TemperatureMaxCelsius);
+        assert_eq!(triggers[0].value_x100, 8_050);
+        assert_eq!(triggers[0].threshold_x100, 8_000);
+    }
+
+    #[test]
+    fn reads_max_temperature_from_thermal_zones() {
+        let root = TempDir::new("adaptive-thermal");
+        fs::create_dir_all(root.path().join("thermal_zone0")).unwrap();
+        fs::write(root.path().join("thermal_zone0/temp"), "42000\n").unwrap();
+        fs::create_dir_all(root.path().join("thermal_zone1")).unwrap();
+        fs::write(root.path().join("thermal_zone1/temp"), "73500\n").unwrap();
+        fs::create_dir_all(root.path().join("cooling_device0")).unwrap();
+        fs::write(root.path().join("cooling_device0/temp"), "99000\n").unwrap();
+
+        assert_eq!(
+            read_temperature_max_millicelsius(root.path()).unwrap(),
+            Some(73_500)
+        );
+    }
+
+    struct TempDir {
+        path: std::path::PathBuf,
+    }
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "gilder-{name}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
     }
 }

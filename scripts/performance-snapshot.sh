@@ -394,6 +394,12 @@ write_telemetry_summary() {
       misses = $8 + 0
       queued = $9 + 0
       update_skips = $10 + 0
+      adaptive_refreshes = $11 + 0
+      adaptive_skips = $12 + 0
+      adaptive_triggers = $13 + 0
+      cpu_pressure = $14 + 0
+      memory_pressure = $15 + 0
+      temperature = $16 + 0
 
       if (rows == 1) {
         first_refreshes = refreshes
@@ -403,6 +409,8 @@ write_telemetry_summary() {
         first_misses = misses
         first_queued = queued
         first_update_skips = update_skips
+        first_adaptive_refreshes = adaptive_refreshes
+        first_adaptive_skips = adaptive_skips
       }
       last_refreshes = refreshes
       last_skips = skips
@@ -411,7 +419,13 @@ write_telemetry_summary() {
       last_misses = misses
       last_queued = queued
       last_update_skips = update_skips
+      last_adaptive_refreshes = adaptive_refreshes
+      last_adaptive_skips = adaptive_skips
+      last_adaptive_triggers = adaptive_triggers
       if (age > max_age) { max_age = age }
+      if (cpu_pressure > max_cpu_pressure) { max_cpu_pressure = cpu_pressure }
+      if (memory_pressure > max_memory_pressure) { max_memory_pressure = memory_pressure }
+      if (temperature > max_temperature) { max_temperature = temperature }
     }
     END {
       refresh_delta = last_refreshes - first_refreshes
@@ -421,6 +435,8 @@ write_telemetry_summary() {
       miss_delta = last_misses - first_misses
       queued_delta = last_queued - first_queued
       update_skip_delta = last_update_skips - first_update_skips
+      adaptive_refresh_delta = last_adaptive_refreshes - first_adaptive_refreshes
+      adaptive_skip_delta = last_adaptive_skips - first_adaptive_skips
       total_cache_delta = hit_delta + miss_delta
 
       printf "telemetry_rows: %d\n", rows
@@ -434,10 +450,16 @@ write_telemetry_summary() {
         printf "render_sync_updates_skipped_delta: %d\n", update_skip_delta
         printf "render_sync_updates_queued_latest: %d\n", last_queued
         printf "render_sync_updates_skipped_latest: %d\n", last_update_skips
+        printf "adaptive_refreshes_delta: %d\n", adaptive_refresh_delta
+        printf "adaptive_refresh_skips_delta: %d\n", adaptive_skip_delta
+        printf "adaptive_active_triggers_latest: %d\n", last_adaptive_triggers
         if (total_cache_delta > 0) {
           printf "render_sync_cache_hit_ratio: %.4f\n", hit_delta / total_cache_delta
         }
         printf "last_desktop_refresh_age_ms_max: %d\n", max_age
+        printf "cpu_pressure_some_avg10_x100_max: %d\n", max_cpu_pressure
+        printf "memory_pressure_some_avg10_x100_max: %d\n", max_memory_pressure
+        printf "temperature_max_millicelsius_max: %d\n", max_temperature
       }
     }
   ' "$telemetry_csv" > "$summary"
@@ -634,7 +656,7 @@ EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
-printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped\n' > "$telemetry_path"
+printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius\n' > "$telemetry_path"
 
 status_failures=0
 decision_failures=0
