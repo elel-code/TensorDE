@@ -31,6 +31,8 @@ early feature-gated GTK/GStreamer renderer paths.
 - `scripts/wayland-video-surface-smoke.sh`: interactive Wayland video surface
   validation helper.
 - `scripts/performance-snapshot.sh`: daemon CPU/RSS/status sampling helper.
+- `scripts/desktop-policy-smoke.sh`: headless desktop-state performance policy
+  validation helper.
 
 ## Early commands
 

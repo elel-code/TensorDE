@@ -7,8 +7,13 @@ use std::fmt;
 use std::process::Command;
 
 const OUTPUT_STATE_OVERRIDE: &str = "GILDER_OUTPUT_STATE";
+const DESKTOP_OUTPUTS_OVERRIDE: &str = "GILDER_DESKTOP_OUTPUTS";
 
 pub fn read_desktop_snapshot(config: &AdapterConfig) -> DesktopSnapshot {
+    if let Some(snapshot) = read_desktop_outputs_override() {
+        return with_runtime_state(snapshot);
+    }
+
     if config.hyprland && std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
         if let Ok(snapshot) = hyprland::read_snapshot() {
             return with_runtime_state(snapshot);
@@ -30,6 +35,67 @@ pub fn read_desktop_snapshot(config: &AdapterConfig) -> DesktopSnapshot {
         snapshot.compositor = Some(CompositorKind::GenericWayland);
     }
     with_runtime_state(snapshot)
+}
+
+fn read_desktop_outputs_override() -> Option<DesktopSnapshot> {
+    let outputs = std::env::var(DESKTOP_OUTPUTS_OVERRIDE)
+        .ok()
+        .and_then(|value| parse_desktop_outputs_override(&value))?;
+    Some(DesktopSnapshot {
+        outputs,
+        ..DesktopSnapshot::default()
+    })
+}
+
+fn parse_desktop_outputs_override(value: &str) -> Option<Vec<DesktopOutput>> {
+    let value = value.trim();
+    if value.is_empty() || matches!(value.to_ascii_lowercase().as_str(), "auto" | "compositor") {
+        return None;
+    }
+
+    let outputs = value
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(parse_desktop_output_override)
+        .collect::<Option<Vec<_>>>()?;
+    if outputs.is_empty() {
+        None
+    } else {
+        Some(outputs)
+    }
+}
+
+fn parse_desktop_output_override(entry: &str) -> Option<DesktopOutput> {
+    let (name, geometry) = match entry.split_once(':') {
+        Some((name, geometry)) => (name.trim(), Some(geometry.trim())),
+        None => (entry.trim(), None),
+    };
+    if name.is_empty() {
+        return None;
+    }
+
+    let mut output = DesktopOutput::virtual_output(name);
+    let Some(geometry) = geometry else {
+        return Some(output);
+    };
+
+    let (size, scale) = match geometry.split_once('@') {
+        Some((size, scale)) => (size.trim(), Some(scale.trim())),
+        None => (geometry.trim(), None),
+    };
+    let (width, height) = size.split_once('x')?;
+    output.width = Some(width.trim().parse().ok()?);
+    output.height = Some(height.trim().parse().ok()?);
+    if let Some(scale) = scale {
+        let parsed_scale = scale.parse().ok()?;
+        if parsed_scale <= 0.0 {
+            return None;
+        }
+        output.scale = parsed_scale;
+    }
+
+    Some(output)
 }
 
 fn with_runtime_state(mut snapshot: DesktopSnapshot) -> DesktopSnapshot {
@@ -581,6 +647,25 @@ mod tests {
         );
         assert_eq!(parse_output_state_override("auto"), None);
         assert_eq!(parse_output_state_override("invalid"), None);
+    }
+
+    #[test]
+    fn parses_desktop_outputs_override_values() {
+        let outputs = parse_desktop_outputs_override("eDP-1:1920x1080@1.5, HDMI-A-1").unwrap();
+
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].name, "eDP-1");
+        assert_eq!(outputs[0].width, Some(1920));
+        assert_eq!(outputs[0].height, Some(1080));
+        assert_eq!(outputs[0].scale, 1.5);
+        assert_eq!(outputs[1].name, "HDMI-A-1");
+        assert_eq!(outputs[1].width, None);
+        assert_eq!(outputs[1].height, None);
+
+        assert_eq!(parse_desktop_outputs_override("auto"), None);
+        assert_eq!(parse_desktop_outputs_override("compositor"), None);
+        assert_eq!(parse_desktop_outputs_override("eDP-1:bad"), None);
+        assert_eq!(parse_desktop_outputs_override("eDP-1:1920x1080@0"), None);
     }
 
     #[test]
