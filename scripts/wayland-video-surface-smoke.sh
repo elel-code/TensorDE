@@ -24,6 +24,8 @@ Options:
                      Performance sampling duration. Default: 8
   --sample-interval <sec>
                      Performance sampling interval. Default: 1
+  --visual-hold <sec>
+                     Keep the applied video wallpaper visible before sampling/cleanup
   --simulate-power <state>
                      Start daemon with GILDER_POWER_STATE=ac|battery|unknown
   --simulate-output-state <state>
@@ -46,6 +48,7 @@ sample_performance=0
 sample_paused=0
 sample_duration=8
 sample_interval=1
+visual_hold=0
 simulate_power=""
 simulate_output_state=""
 simulate_session=""
@@ -96,6 +99,17 @@ while [[ $# -gt 0 ]]; do
     --sample-interval)
       [[ $# -ge 2 ]] || { echo "--sample-interval requires seconds" >&2; exit 2; }
       sample_interval="$2"
+      shift 2
+      ;;
+    --visual-hold)
+      [[ $# -ge 2 ]] || { echo "--visual-hold requires seconds" >&2; exit 2; }
+      case "$2" in
+        ''|*[!0-9]*)
+          echo "--visual-hold requires a non-negative integer" >&2
+          exit 2
+          ;;
+      esac
+      visual_hold="$2"
       shift 2
       ;;
     --simulate-power)
@@ -366,6 +380,7 @@ sample_performance: ${sample_performance}
 sample_paused: ${sample_paused}
 sample_duration: ${sample_duration}
 sample_interval: ${sample_interval}
+visual_hold: ${visual_hold}
 simulate_power: ${simulate_power:-none}
 simulate_output_state: ${simulate_output_state:-none}
 simulate_session: ${simulate_session:-none}
@@ -665,6 +680,12 @@ if [[ -n "$expected_reason" ]]; then
   else
     skip_or_fail "status does not report ${expected_reason} performance decision"
   fi
+fi
+
+if [[ "$visual_hold" -gt 0 ]]; then
+  note "visual hold: output '$output_name' should show the generated moving test video for ${visual_hold}s"
+  sleep "$visual_hold"
+  pass "held video wallpaper for visual confirmation window"
 fi
 
 if [[ "$sample_performance" -eq 1 ]]; then
