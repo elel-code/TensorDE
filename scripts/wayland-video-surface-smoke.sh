@@ -27,6 +27,22 @@ Options:
                      Performance sampling duration. Default: 8
   --sample-interval <sec>
                      Performance sampling interval. Default: 1
+  --expect-decoder-policy-status <status>
+                     Require sampled video runtime to report this decoder policy status
+  --expect-decoder-class <hardware|software|unknown>
+                     Require sampled video runtime to report this decoder class
+  --expect-memory-feature <feature>
+                     Require sampled video runtime to report this caps memory feature
+  --expect-sink-memory-feature <feature>
+                     Require sampled video runtime to report this sink-side caps memory feature
+  --expect-zero-copy-evidence <level>
+                     Require sampled video runtime to report this zero-copy evidence level
+  --expect-video-position-progress
+                     Require sampled video position to advance
+  --expect-gtk-frame-clock
+                     Require sampled GTK video frame clock ticks
+  --expect-gtk-frame-timings
+                     Require sampled completed GDK frame timings
   --visual-hold <sec>
                      Keep the applied video wallpaper visible before sampling/cleanup
   --simulate-power <state>
@@ -55,6 +71,14 @@ sample_performance=0
 sample_paused=0
 sample_duration=8
 sample_interval=1
+expect_decoder_policy_status=""
+expect_decoder_class=""
+expect_memory_feature=""
+expect_sink_memory_feature=""
+expect_zero_copy_evidence=""
+expect_video_position_progress=0
+expect_gtk_frame_clock=0
+expect_gtk_frame_timings=0
 visual_hold=0
 simulate_power=""
 simulate_output_state=""
@@ -128,6 +152,59 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "--sample-interval requires seconds" >&2; exit 2; }
       sample_interval="$2"
       shift 2
+      ;;
+    --expect-decoder-policy-status)
+      [[ $# -ge 2 ]] || { echo "--expect-decoder-policy-status requires a value" >&2; exit 2; }
+      expect_decoder_policy_status="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-decoder-class)
+      [[ $# -ge 2 ]] || { echo "--expect-decoder-class requires hardware, software, or unknown" >&2; exit 2; }
+      case "$2" in
+        hardware|software|unknown)
+          expect_decoder_class="$2"
+          ;;
+        *)
+          echo "--expect-decoder-class requires hardware, software, or unknown" >&2
+          exit 2
+          ;;
+      esac
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-memory-feature)
+      [[ $# -ge 2 ]] || { echo "--expect-memory-feature requires a value" >&2; exit 2; }
+      expect_memory_feature="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-sink-memory-feature)
+      [[ $# -ge 2 ]] || { echo "--expect-sink-memory-feature requires a value" >&2; exit 2; }
+      expect_sink_memory_feature="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-zero-copy-evidence)
+      [[ $# -ge 2 ]] || { echo "--expect-zero-copy-evidence requires a value" >&2; exit 2; }
+      expect_zero_copy_evidence="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-video-position-progress)
+      expect_video_position_progress=1
+      sample_performance=1
+      shift
+      ;;
+    --expect-gtk-frame-clock)
+      expect_gtk_frame_clock=1
+      sample_performance=1
+      shift
+      ;;
+    --expect-gtk-frame-timings)
+      expect_gtk_frame_timings=1
+      sample_performance=1
+      shift
       ;;
     --visual-hold)
       [[ $# -ge 2 ]] || { echo "--visual-hold requires seconds" >&2; exit 2; }
@@ -438,6 +515,14 @@ expect_compositor: ${expect_compositor:-none}
 actual_compositor: ${actual_compositor}
 sample_duration: ${sample_duration}
 sample_interval: ${sample_interval}
+expect_decoder_policy_status: ${expect_decoder_policy_status:-none}
+expect_decoder_class: ${expect_decoder_class:-none}
+expect_memory_feature: ${expect_memory_feature:-none}
+expect_sink_memory_feature: ${expect_sink_memory_feature:-none}
+expect_zero_copy_evidence: ${expect_zero_copy_evidence:-none}
+expect_video_position_progress: ${expect_video_position_progress}
+expect_gtk_frame_clock: ${expect_gtk_frame_clock}
+expect_gtk_frame_timings: ${expect_gtk_frame_timings}
 visual_hold: ${visual_hold}
 simulate_power: ${simulate_power:-none}
 simulate_output_state: ${simulate_output_state:-none}
@@ -473,6 +558,45 @@ finish_with_summary() {
   exit "$([[ "$failures" -gt 0 ]] && echo 1 || echo 0)"
 }
 
+has_video_runtime_expectations() {
+  [[ -n "$expect_decoder_policy_status" ||
+    -n "$expect_decoder_class" ||
+    -n "$expect_memory_feature" ||
+    -n "$expect_sink_memory_feature" ||
+    -n "$expect_zero_copy_evidence" ||
+    "$expect_video_position_progress" -eq 1 ||
+    "$expect_gtk_frame_clock" -eq 1 ||
+    "$expect_gtk_frame_timings" -eq 1 ]]
+}
+
+append_video_runtime_expectations() {
+  local -n args_ref="$1"
+  if [[ -n "$expect_decoder_policy_status" ]]; then
+    args_ref+=(--expect-decoder-policy-status "$expect_decoder_policy_status")
+  fi
+  if [[ -n "$expect_decoder_class" ]]; then
+    args_ref+=(--expect-decoder-class "$expect_decoder_class")
+  fi
+  if [[ -n "$expect_memory_feature" ]]; then
+    args_ref+=(--expect-memory-feature "$expect_memory_feature")
+  fi
+  if [[ -n "$expect_sink_memory_feature" ]]; then
+    args_ref+=(--expect-sink-memory-feature "$expect_sink_memory_feature")
+  fi
+  if [[ -n "$expect_zero_copy_evidence" ]]; then
+    args_ref+=(--expect-zero-copy-evidence "$expect_zero_copy_evidence")
+  fi
+  if [[ "$expect_video_position_progress" -eq 1 ]]; then
+    args_ref+=(--expect-video-position-progress)
+  fi
+  if [[ "$expect_gtk_frame_clock" -eq 1 ]]; then
+    args_ref+=(--expect-gtk-frame-clock)
+  fi
+  if [[ "$expect_gtk_frame_timings" -eq 1 ]]; then
+    args_ref+=(--expect-gtk-frame-timings)
+  fi
+}
+
 capture_performance() {
   local label="$1"
   local output_dir="$2"
@@ -481,6 +605,7 @@ capture_performance() {
   local expected_reason="${5:-}"
   local expected_action="${6:-}"
   local expected_plan_kind="${7:-}"
+  local include_video_runtime_expectations="${8:-0}"
   local -a sample_args
   sample_args=(
     --pid "$daemon_pid"
@@ -506,6 +631,9 @@ capture_performance() {
   fi
   if [[ -n "$expected_plan_kind" ]]; then
     sample_args+=(--expect-plan-kind "$expected_plan_kind")
+  fi
+  if [[ "$include_video_runtime_expectations" -eq 1 ]]; then
+    append_video_runtime_expectations sample_args
   fi
   if [[ "$allow_missing" -eq 1 ]]; then
     sample_args+=(--allow-missing)
@@ -947,12 +1075,20 @@ if [[ "$sample_performance" -eq 1 ]]; then
   expected_mode="$(expected_mode_for_reason "$expected_reason")"
   expected_action=""
   expected_plan_kind=""
+  include_video_runtime_expectations=0
   if [[ -n "$expected_reason" ]]; then
     if expects_active_video_plan; then
       expected_action="render"
       expected_plan_kind="video"
     else
       expected_action="remove"
+    fi
+  fi
+  if has_video_runtime_expectations; then
+    if expects_active_video_plan; then
+      include_video_runtime_expectations=1
+    else
+      skip_or_fail "video runtime expectations require an active video plan in the sampled scenario"
     fi
   fi
   if capture_performance \
@@ -962,7 +1098,8 @@ if [[ "$sample_performance" -eq 1 ]]; then
     "$expected_mode" \
     "$expected_reason" \
     "$expected_action" \
-    "$expected_plan_kind"; then
+    "$expected_plan_kind" \
+    "$include_video_runtime_expectations"; then
     pass "captured ${performance_active_label} performance evidence"
   else
     note "performance sample log:"
