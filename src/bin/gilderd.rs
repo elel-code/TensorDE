@@ -552,7 +552,13 @@ struct OutputRenderStateKey {
 struct PackageInputFingerprint {
     path: String,
     package: MetadataFingerprint,
-    manifest: Option<MetadataFingerprint>,
+    manifest: Option<PackageManifestFingerprint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageManifestFingerprint {
+    json: MetadataFingerprint,
+    toml: MetadataFingerprint,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1136,9 +1142,10 @@ impl PackageInputFingerprint {
                 .and_then(|extension| extension.to_str())
                 == Some("gwpdir")
         {
-            Some(metadata_fingerprint(
-                &package_path.join(gilder::core::MANIFEST_FILE),
-            ))
+            Some(PackageManifestFingerprint {
+                json: metadata_fingerprint(&package_path.join(gilder::core::MANIFEST_FILE)),
+                toml: metadata_fingerprint(&package_path.join(gilder::core::MANIFEST_TOML_FILE)),
+            })
         } else {
             None
         };

@@ -78,6 +78,7 @@ fn help_text() -> String {
         "",
         "The converter supports static image, video, web, and conservative scene-lite Wallpaper Engine projects.",
         "Video projects without previews use ffmpeg from PATH for first-frame poster generation when available.",
+        "Pack accepts .gwpdir manifests in JSON or TOML and writes canonical JSON into .gwp archives.",
     ]
     .join("\n")
 }

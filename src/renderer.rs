@@ -634,7 +634,9 @@ fn load_assigned_package(
     }
     if path.extension().and_then(|extension| extension.to_str()) == Some("gwp") {
         let extract_dir = archive_extract_dir(cache_dir, path);
-        if extract_dir.join(crate::core::MANIFEST_FILE).exists() {
+        if extract_dir.join(crate::core::MANIFEST_FILE).exists()
+            || extract_dir.join(crate::core::MANIFEST_TOML_FILE).exists()
+        {
             return crate::core::load_gwpdir(&extract_dir)
                 .map_err(|err| RendererPlanError::PackageLoad(err.to_string()));
         }

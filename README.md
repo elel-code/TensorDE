@@ -56,6 +56,10 @@ example systemd user service, man pages, and shell completions, but install
 paths are intentionally left to distro/user packaging. A tarball staging helper
 is available at `packaging/build-dist.sh`.
 
+`.gwpdir` packages can use either `manifest.gilder.json` or authoring-friendly
+`manifest.gilder.toml`; `.gwp` archives are packed with canonical
+`manifest.gilder.json`.
+
 The daemon currently provides JSON-RPC over a Unix socket, persistent state, and
 policy decisions for desktop-state-based throttling. Rendering,
 GTK-layer-shell integration, and Hyprland/niri output discovery are tracked in

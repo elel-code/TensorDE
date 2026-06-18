@@ -1,4 +1,4 @@
-use super::format::{FORMAT_VERSION, MANIFEST_FILE};
+use super::format::{FORMAT_VERSION, MANIFEST_FILE, MANIFEST_TOML_FILE};
 use super::manifest::{Manifest, ManifestError};
 use super::path::PackagePath;
 use std::fmt;
@@ -41,17 +41,7 @@ pub fn load_gwpdir(root: impl AsRef<Path>) -> Result<WallpaperPackage, PackageLo
         return Err(PackageLoadError::NotDirectory(root.to_path_buf()));
     }
 
-    let manifest_path = root.join(MANIFEST_FILE);
-    let manifest_json =
-        fs::read_to_string(&manifest_path).map_err(|source| PackageLoadError::ReadManifest {
-            path: manifest_path.clone(),
-            source,
-        })?;
-    let manifest: Manifest =
-        serde_json::from_str(&manifest_json).map_err(|source| PackageLoadError::ParseManifest {
-            path: manifest_path,
-            source,
-        })?;
+    let manifest = load_manifest(root)?;
     manifest
         .validate()
         .map_err(PackageLoadError::InvalidManifest)?;
@@ -61,6 +51,66 @@ pub fn load_gwpdir(root: impl AsRef<Path>) -> Result<WallpaperPackage, PackageLo
         root: root.to_path_buf(),
         manifest,
     })
+}
+
+fn load_manifest(root: &Path) -> Result<Manifest, PackageLoadError> {
+    let json_path = root.join(MANIFEST_FILE);
+    let json_error = match read_manifest_file(&json_path, ManifestSyntax::Json) {
+        Ok(manifest) => return Ok(manifest),
+        Err(err) => err,
+    };
+    if !is_missing_manifest_file(&json_error) {
+        return Err(json_error);
+    }
+
+    let toml_path = root.join(MANIFEST_TOML_FILE);
+    let toml_error = match read_manifest_file(&toml_path, ManifestSyntax::Toml) {
+        Ok(manifest) => return Ok(manifest),
+        Err(err) => err,
+    };
+    if !is_missing_manifest_file(&toml_error) {
+        return Err(toml_error);
+    }
+
+    Err(PackageLoadError::MissingManifest {
+        json_path,
+        toml_path,
+    })
+}
+
+fn read_manifest_file(path: &Path, syntax: ManifestSyntax) -> Result<Manifest, PackageLoadError> {
+    let contents = fs::read_to_string(path).map_err(|source| PackageLoadError::ReadManifest {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    match syntax {
+        ManifestSyntax::Json => {
+            serde_json::from_str(&contents).map_err(|source| PackageLoadError::ParseManifest {
+                path: path.to_path_buf(),
+                source: ManifestParseError::Json(source),
+            })
+        }
+        ManifestSyntax::Toml => {
+            toml::from_str(&contents).map_err(|source| PackageLoadError::ParseManifest {
+                path: path.to_path_buf(),
+                source: ManifestParseError::Toml(source),
+            })
+        }
+    }
+}
+
+fn is_missing_manifest_file(error: &PackageLoadError) -> bool {
+    matches!(
+        error,
+        PackageLoadError::ReadManifest { source, .. }
+            if source.kind() == io::ErrorKind::NotFound
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManifestSyntax {
+    Json,
+    Toml,
 }
 
 pub fn load_gwp(
@@ -77,7 +127,7 @@ pub fn pack_gwp(
 ) -> Result<(), PackageArchiveError> {
     let source_dir = source_dir.as_ref();
     let archive_path = archive_path.as_ref();
-    load_gwpdir(source_dir).map_err(PackageArchiveError::InvalidPackage)?;
+    let package = load_gwpdir(source_dir).map_err(PackageArchiveError::InvalidPackage)?;
 
     if let Some(parent) = archive_path.parent() {
         fs::create_dir_all(parent).map_err(PackageArchiveError::CreateDir)?;
@@ -96,6 +146,15 @@ pub fn pack_gwp(
     let mut writer = ZipWriter::new(archive_file);
     let stored = file_options(CompressionMethod::Stored);
     let deflated = file_options(CompressionMethod::Deflated);
+
+    let manifest_json = serde_json::to_vec_pretty(&package.manifest)
+        .map_err(PackageArchiveError::SerializeManifest)?;
+    writer
+        .start_file(MANIFEST_FILE, deflated)
+        .map_err(PackageArchiveError::Zip)?;
+    writer
+        .write_all(&manifest_json)
+        .map_err(PackageArchiveError::WriteFile)?;
 
     add_directory_to_zip(&mut writer, source_dir, source_dir, stored, deflated)?;
     writer.finish().map_err(PackageArchiveError::Zip)?;
@@ -165,6 +224,9 @@ fn add_directory_to_zip(
         let relative = path
             .strip_prefix(root)
             .map_err(|_| PackageArchiveError::InvalidSourcePath(path.clone()))?;
+        if relative == Path::new(MANIFEST_FILE) || relative == Path::new(MANIFEST_TOML_FILE) {
+            continue;
+        }
         let zip_name = path_to_zip_name(relative)?;
         if path.is_dir() {
             writer
@@ -254,19 +316,47 @@ fn validate_referenced_resources(root: &Path, manifest: &Manifest) -> Result<(),
 }
 
 #[derive(Debug)]
+pub enum ManifestParseError {
+    Json(serde_json::Error),
+    Toml(toml::de::Error),
+}
+
+impl fmt::Display for ManifestParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Json(source) => write!(f, "JSON parse error: {source}"),
+            Self::Toml(source) => write!(f, "TOML parse error: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for ManifestParseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Json(source) => Some(source),
+            Self::Toml(source) => Some(source),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum PackageLoadError {
     ReadPackageRoot {
         path: PathBuf,
         source: io::Error,
     },
     NotDirectory(PathBuf),
+    MissingManifest {
+        json_path: PathBuf,
+        toml_path: PathBuf,
+    },
     ReadManifest {
         path: PathBuf,
         source: io::Error,
     },
     ParseManifest {
         path: PathBuf,
-        source: serde_json::Error,
+        source: ManifestParseError,
     },
     InvalidManifest(ManifestError),
     MissingResource {
@@ -287,6 +377,7 @@ pub enum PackageArchiveError {
     OpenFile(io::Error),
     ReadFile(io::Error),
     WriteFile(io::Error),
+    SerializeManifest(serde_json::Error),
     Copy(io::Error),
     Zip(zip::result::ZipError),
     OutputExists(PathBuf),
@@ -308,6 +399,15 @@ impl fmt::Display for PackageLoadError {
             Self::NotDirectory(path) => {
                 write!(f, "package root is not a directory: {}", path.display())
             }
+            Self::MissingManifest {
+                json_path,
+                toml_path,
+            } => write!(
+                f,
+                "package manifest not found; expected {} or {}",
+                json_path.display(),
+                toml_path.display()
+            ),
             Self::ReadManifest { path, source } => {
                 write!(f, "failed to read manifest {}: {source}", path.display())
             }
@@ -333,7 +433,9 @@ impl std::error::Error for PackageLoadError {
             }
             Self::ParseManifest { source, .. } => Some(source),
             Self::InvalidManifest(source) => Some(source),
-            Self::NotDirectory(_) | Self::MissingResource { .. } => None,
+            Self::NotDirectory(_) | Self::MissingManifest { .. } | Self::MissingResource { .. } => {
+                None
+            }
         }
     }
 }
@@ -351,6 +453,12 @@ impl fmt::Display for PackageArchiveError {
             Self::OpenFile(source) => write!(f, "failed to open package file: {source}"),
             Self::ReadFile(source) => write!(f, "failed to read package file: {source}"),
             Self::WriteFile(source) => write!(f, "failed to write package archive: {source}"),
+            Self::SerializeManifest(source) => {
+                write!(
+                    f,
+                    "failed to serialize canonical package manifest: {source}"
+                )
+            }
             Self::Copy(source) => write!(f, "failed to copy archive entry: {source}"),
             Self::Zip(source) => write!(f, "zip error: {source}"),
             Self::OutputExists(path) => {
@@ -378,6 +486,7 @@ impl std::error::Error for PackageArchiveError {
             | Self::ReadFile(source)
             | Self::WriteFile(source)
             | Self::Copy(source) => Some(source),
+            Self::SerializeManifest(source) => Some(source),
             Self::Zip(source) => Some(source),
             Self::OutputExists(_)
             | Self::ArchiveExists(_)
@@ -427,6 +536,50 @@ mod tests {
 
         let package = load_gwpdir(package_dir.path()).unwrap();
         assert_eq!(package.manifest.id, "org.example.static");
+    }
+
+    #[test]
+    fn loads_valid_toml_gwpdir() {
+        let package_dir = TestPackageDir::new("valid-toml");
+        package_dir.write_file(
+            MANIFEST_TOML_FILE,
+            &toml_static_manifest("org.example.static-toml"),
+        );
+        package_dir.write_file("assets/wallpaper.svg", "<svg></svg>");
+        package_dir.write_file("previews/thumbnail.svg", "<svg></svg>");
+
+        let package = load_gwpdir(package_dir.path()).unwrap();
+        assert_eq!(package.manifest.id, "org.example.static-toml");
+    }
+
+    #[test]
+    fn prefers_json_manifest_when_both_manifest_formats_exist() {
+        let package_dir = TestPackageDir::new("json-precedence");
+        package_dir.write_file(
+            MANIFEST_FILE,
+            r##"
+            {
+              "format": "gilder.wallpaper",
+              "format_version": 1,
+              "id": "org.example.json",
+              "version": "1.0.0",
+              "title": "JSON",
+              "kind": "static-image",
+              "entry": {
+                "type": "static-image",
+                "source": "assets/wallpaper.svg"
+              }
+            }
+            "##,
+        );
+        package_dir.write_file(
+            MANIFEST_TOML_FILE,
+            &toml_static_manifest("org.example.toml"),
+        );
+        package_dir.write_file("assets/wallpaper.svg", "<svg></svg>");
+
+        let package = load_gwpdir(package_dir.path()).unwrap();
+        assert_eq!(package.manifest.id, "org.example.json");
     }
 
     #[test]
@@ -497,6 +650,59 @@ mod tests {
         assert!(unpacked.path().join("assets/wallpaper.svg").exists());
 
         let _ = fs::remove_file(archive);
+    }
+
+    #[test]
+    fn packs_toml_gwpdir_as_canonical_json_archive() {
+        let package_dir = TestPackageDir::new("toml-archive-source");
+        package_dir.write_file(
+            MANIFEST_TOML_FILE,
+            &toml_static_manifest("org.example.toml-archive"),
+        );
+        package_dir.write_file("assets/wallpaper.svg", "<svg></svg>");
+        package_dir.write_file("previews/thumbnail.svg", "<svg></svg>");
+
+        let archive = std::env::temp_dir().join(format!(
+            "gilder-test-toml-archive-{}-{}.gwp",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let unpacked = TestPackageDir::new("toml-archive-unpacked");
+        unpacked.remove();
+
+        pack_gwp(package_dir.path(), &archive).unwrap();
+        unpack_gwp(&archive, unpacked.path()).unwrap();
+
+        let package = load_gwpdir(unpacked.path()).unwrap();
+        assert_eq!(package.manifest.id, "org.example.toml-archive");
+        assert!(unpacked.path().join(MANIFEST_FILE).exists());
+        assert!(!unpacked.path().join(MANIFEST_TOML_FILE).exists());
+
+        let _ = fs::remove_file(archive);
+    }
+
+    fn toml_static_manifest(id: &str) -> String {
+        format!(
+            r##"
+            format = "gilder.wallpaper"
+            format_version = 1
+            id = "{id}"
+            version = "1.0.0"
+            title = "TOML Static"
+            kind = "static-image"
+
+            [preview]
+            thumbnail = "previews/thumbnail.svg"
+
+            [entry]
+            type = "static-image"
+            source = "assets/wallpaper.svg"
+            fit = "cover"
+            "##
+        )
     }
 
     struct TestPackageDir {

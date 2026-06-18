@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 pub const FORMAT_NAME: &str = "gilder.wallpaper";
 pub const FORMAT_VERSION: u32 = 1;
 pub const MANIFEST_FILE: &str = "manifest.gilder.json";
+pub const MANIFEST_TOML_FILE: &str = "manifest.gilder.toml";
 pub const PACKAGE_EXTENSION: &str = "gwp";
 pub const DIRECTORY_EXTENSION: &str = "gwpdir";
 
