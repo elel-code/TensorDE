@@ -553,10 +553,60 @@ fn store_renderer_runtime_snapshot(
     *runtime = snapshot;
 }
 
-fn renderer_runtime_report(snapshot: RendererRuntimeSnapshot) -> Value {
+fn renderer_runtime_report(snapshot: &RendererRuntimeSnapshot) -> Value {
     json!({
         "video_pipelines": snapshot.video_pipelines,
     })
+}
+
+fn renderer_telemetry_report(snapshot: &RendererRuntimeSnapshot) -> Value {
+    let mut video_qos_messages = 0_u64;
+    let mut video_qos_dropped_max = None;
+    let mut video_gtk_frame_clock_ticks = 0_u64;
+    let mut video_gtk_frame_clock_interval_us_max = None;
+    let mut video_gtk_frame_clock_fps_x1000_max = None;
+
+    for pipeline in &snapshot.video_pipelines {
+        let Some(frame_stats) = pipeline.get("frame_stats") else {
+            continue;
+        };
+        video_qos_messages = video_qos_messages
+            .saturating_add(json_u64(frame_stats, "qos_messages").unwrap_or_default());
+        update_optional_max(
+            &mut video_qos_dropped_max,
+            json_u64(frame_stats, "qos_dropped_max"),
+        );
+        video_gtk_frame_clock_ticks = video_gtk_frame_clock_ticks
+            .saturating_add(json_u64(frame_stats, "gtk_frame_clock_ticks").unwrap_or_default());
+        update_optional_max(
+            &mut video_gtk_frame_clock_interval_us_max,
+            json_u64(frame_stats, "gtk_frame_clock_interval_us_max"),
+        );
+        update_optional_max(
+            &mut video_gtk_frame_clock_fps_x1000_max,
+            json_u64(frame_stats, "gtk_frame_clock_fps_x1000_latest"),
+        );
+    }
+
+    json!({
+        "video_pipelines": snapshot.video_pipelines.len(),
+        "video_qos_messages": video_qos_messages,
+        "video_qos_dropped_max": video_qos_dropped_max,
+        "video_gtk_frame_clock_ticks": video_gtk_frame_clock_ticks,
+        "video_gtk_frame_clock_interval_us_max": video_gtk_frame_clock_interval_us_max,
+        "video_gtk_frame_clock_fps_x1000_max": video_gtk_frame_clock_fps_x1000_max,
+    })
+}
+
+fn json_u64(object: &Value, key: &str) -> Option<u64> {
+    object.get(key).and_then(Value::as_u64)
+}
+
+fn update_optional_max(slot: &mut Option<u64>, value: Option<u64>) {
+    let Some(value) = value else {
+        return;
+    };
+    *slot = Some(slot.map_or(value, |current| current.max(value)));
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -751,8 +801,8 @@ fn handle_ipc_request(
                     "render_sync": render_sync,
                     "renderer": renderer_name(),
                     "renderer_capabilities": renderer_capabilities(),
-                    "renderer_runtime": renderer_runtime_report(renderer_runtime),
-                    "telemetry": telemetry_report(context, runtime_telemetry),
+                    "renderer_runtime": renderer_runtime_report(&renderer_runtime),
+                    "telemetry": telemetry_report(context, runtime_telemetry, &renderer_runtime),
                 }),
             ))
         }
@@ -1076,8 +1126,8 @@ fn snapshot_event(
         "render_sync": render_sync,
         "renderer": renderer_name(),
         "renderer_capabilities": renderer_capabilities(),
-        "renderer_runtime": renderer_runtime_report(renderer_runtime),
-        "telemetry": telemetry_report(context, runtime_telemetry),
+        "renderer_runtime": renderer_runtime_report(&renderer_runtime),
+        "telemetry": telemetry_report(context, runtime_telemetry, &renderer_runtime),
     })
 }
 
@@ -1097,8 +1147,8 @@ fn state_changed_event(
         "persisted_state": context.state,
         "render_sync": render_sync,
         "renderer_capabilities": renderer_capabilities(),
-        "renderer_runtime": renderer_runtime_report(renderer_runtime),
-        "telemetry": telemetry_report(context, runtime_telemetry),
+        "renderer_runtime": renderer_runtime_report(&renderer_runtime),
+        "telemetry": telemetry_report(context, runtime_telemetry, &renderer_runtime),
     })
 }
 
@@ -1147,7 +1197,11 @@ fn renderer_capabilities() -> Value {
     })
 }
 
-fn telemetry_report(context: &DaemonContext, runtime_telemetry: RuntimeTelemetrySnapshot) -> Value {
+fn telemetry_report(
+    context: &DaemonContext,
+    runtime_telemetry: RuntimeTelemetrySnapshot,
+    renderer_runtime: &RendererRuntimeSnapshot,
+) -> Value {
     json!({
         "desktop": {
             "refreshes": context.telemetry.desktop_refreshes,
@@ -1167,6 +1221,7 @@ fn telemetry_report(context: &DaemonContext, runtime_telemetry: RuntimeTelemetry
             "updates_queued": runtime_telemetry.render_sync_updates_queued,
             "updates_skipped": runtime_telemetry.render_sync_updates_skipped,
         },
+        "renderer": renderer_telemetry_report(renderer_runtime),
     })
 }
 
@@ -1445,8 +1500,8 @@ fn runtime_changed_event(
         "render_sync": render_sync,
         "renderer": renderer_name(),
         "renderer_capabilities": renderer_capabilities(),
-        "renderer_runtime": renderer_runtime_report(renderer_runtime),
-        "telemetry": telemetry_report(context, runtime_telemetry),
+        "renderer_runtime": renderer_runtime_report(&renderer_runtime),
+        "telemetry": telemetry_report(context, runtime_telemetry, &renderer_runtime),
     })
 }
 
@@ -1563,10 +1618,30 @@ mod tests {
         };
 
         let renderer_runtime = RendererRuntimeSnapshot {
-            video_pipelines: vec![json!({
-                "output_name": "eDP-1",
-                "actual_decoders": ["dav1ddec"],
-            })],
+            video_pipelines: vec![
+                json!({
+                    "output_name": "eDP-1",
+                    "actual_decoders": ["dav1ddec"],
+                    "frame_stats": {
+                        "qos_messages": 3,
+                        "qos_dropped_max": 2,
+                        "gtk_frame_clock_ticks": 9,
+                        "gtk_frame_clock_interval_us_max": 20000,
+                        "gtk_frame_clock_fps_x1000_latest": 59940,
+                    },
+                }),
+                json!({
+                    "output_name": "HDMI-A-1",
+                    "actual_decoders": ["vaav1dec"],
+                    "frame_stats": {
+                        "qos_messages": 4,
+                        "qos_dropped_max": 3,
+                        "gtk_frame_clock_ticks": 31,
+                        "gtk_frame_clock_interval_us_max": 18000,
+                        "gtk_frame_clock_fps_x1000_latest": 60000,
+                    },
+                }),
+            ],
         };
         let outcome = handle_ipc_request(
             request,
@@ -1597,6 +1672,30 @@ mod tests {
         assert_eq!(
             response["result"]["renderer_runtime"]["video_pipelines"][0]["actual_decoders"],
             json!(["dav1ddec"])
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_pipelines"],
+            json!(2)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_qos_messages"],
+            json!(7)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_qos_dropped_max"],
+            json!(3)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_ticks"],
+            json!(40)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_interval_us_max"],
+            json!(20000)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_fps_x1000_max"],
+            json!(60000)
         );
     }
 

@@ -581,6 +581,12 @@ write_telemetry_summary() {
       adaptive_action_scopes = $26
       adaptive_action_configured_actions = $27
       adaptive_action_max_fps = $28
+      renderer_video_pipelines = $29 + 0
+      renderer_video_qos_messages = $30 + 0
+      renderer_video_qos_dropped_max = $31
+      renderer_video_gtk_frame_clock_ticks = $32 + 0
+      renderer_video_gtk_frame_clock_interval_us_max = $33
+      renderer_video_gtk_frame_clock_fps_x1000_max = $34
 
       if (rows == 1) {
         first_refreshes = refreshes
@@ -640,6 +646,31 @@ write_telemetry_summary() {
       if (adaptive_action_max_fps != "") {
         last_adaptive_action_max_fps = adaptive_action_max_fps
       }
+      last_renderer_video_pipelines = renderer_video_pipelines
+      last_renderer_video_qos_messages = renderer_video_qos_messages
+      if (renderer_video_qos_messages > max_renderer_video_qos_messages) {
+        max_renderer_video_qos_messages = renderer_video_qos_messages
+      }
+      if (renderer_video_qos_dropped_max != "") {
+        last_renderer_video_qos_dropped_max = renderer_video_qos_dropped_max
+        if (renderer_video_qos_dropped_max + 0 > max_renderer_video_qos_dropped) {
+          max_renderer_video_qos_dropped = renderer_video_qos_dropped_max + 0
+        }
+      }
+      last_renderer_video_gtk_frame_clock_ticks = renderer_video_gtk_frame_clock_ticks
+      if (renderer_video_gtk_frame_clock_ticks > max_renderer_video_gtk_frame_clock_ticks) {
+        max_renderer_video_gtk_frame_clock_ticks = renderer_video_gtk_frame_clock_ticks
+      }
+      if (renderer_video_gtk_frame_clock_interval_us_max != "") {
+        if (renderer_video_gtk_frame_clock_interval_us_max + 0 > max_renderer_video_gtk_frame_clock_interval_us) {
+          max_renderer_video_gtk_frame_clock_interval_us = renderer_video_gtk_frame_clock_interval_us_max + 0
+        }
+      }
+      if (renderer_video_gtk_frame_clock_fps_x1000_max != "") {
+        if (renderer_video_gtk_frame_clock_fps_x1000_max + 0 > max_renderer_video_gtk_frame_clock_fps_x1000) {
+          max_renderer_video_gtk_frame_clock_fps_x1000 = renderer_video_gtk_frame_clock_fps_x1000_max + 0
+        }
+      }
     }
     END {
       refresh_delta = last_refreshes - first_refreshes
@@ -692,6 +723,15 @@ write_telemetry_summary() {
         for (action in adaptive_action_seen) {
           printf "adaptive_action.%s: 1\n", action
         }
+        printf "renderer_video_pipelines_latest: %d\n", last_renderer_video_pipelines
+        printf "renderer_video_qos_messages_latest: %d\n", last_renderer_video_qos_messages
+        printf "renderer_video_qos_messages_max: %d\n", max_renderer_video_qos_messages
+        printf "renderer_video_qos_dropped_max_latest: %s\n", last_renderer_video_qos_dropped_max
+        printf "renderer_video_qos_dropped_max: %d\n", max_renderer_video_qos_dropped
+        printf "renderer_video_gtk_frame_clock_ticks_latest: %d\n", last_renderer_video_gtk_frame_clock_ticks
+        printf "renderer_video_gtk_frame_clock_ticks_max: %d\n", max_renderer_video_gtk_frame_clock_ticks
+        printf "renderer_video_gtk_frame_clock_interval_us_max: %d\n", max_renderer_video_gtk_frame_clock_interval_us
+        printf "renderer_video_gtk_frame_clock_fps_x1000_max: %d\n", max_renderer_video_gtk_frame_clock_fps_x1000
       }
     }
   ' "$telemetry_csv" > "$summary"
@@ -1229,7 +1269,7 @@ EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
-printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps\n' > "$telemetry_path"
+printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps,renderer_video_pipelines,renderer_video_qos_messages,renderer_video_qos_dropped_max,renderer_video_gtk_frame_clock_ticks,renderer_video_gtk_frame_clock_interval_us_max,renderer_video_gtk_frame_clock_fps_x1000_max\n' > "$telemetry_path"
 printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,source\n' > "$video_runtime_path"
 
 status_failures=0
