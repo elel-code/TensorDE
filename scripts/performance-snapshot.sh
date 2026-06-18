@@ -35,6 +35,8 @@ Options:
                      Require renderer sync queued count to be non-zero
   --expect-render-sync-update-skipped
                      Require renderer sync skipped count to be non-zero
+  --expect-adaptive-action <type>
+                     Require at least one telemetry row with this adaptive action type
   --expect-decoder-policy-status <status>
                      Require at least one video runtime row with this decoder policy status
   --expect-decoder-class <hardware|software|unknown>
@@ -80,6 +82,7 @@ expect_render_sync_cache_hit=0
 expect_desktop_refresh_skip=0
 expect_render_sync_update_queued=0
 expect_render_sync_update_skipped=0
+expect_adaptive_action=""
 expect_decoder_policy_status=""
 expect_decoder_class=""
 expect_memory_feature=""
@@ -173,6 +176,11 @@ while [[ $# -gt 0 ]]; do
     --expect-render-sync-update-skipped)
       expect_render_sync_update_skipped=1
       shift
+      ;;
+    --expect-adaptive-action)
+      [[ $# -ge 2 ]] || { echo "--expect-adaptive-action requires a value" >&2; exit 2; }
+      expect_adaptive_action="$2"
+      shift 2
       ;;
     --expect-decoder-policy-status)
       [[ $# -ge 2 ]] || { echo "--expect-decoder-policy-status requires a value" >&2; exit 2; }
@@ -569,6 +577,10 @@ write_telemetry_summary() {
       daemon_gpu_avg = $22
       daemon_gpu_max_sample = $23
       daemon_gpu_sources = $24
+      adaptive_action_types = $25
+      adaptive_action_scopes = $26
+      adaptive_action_configured_actions = $27
+      adaptive_action_max_fps = $28
 
       if (rows == 1) {
         first_refreshes = refreshes
@@ -609,6 +621,24 @@ write_telemetry_summary() {
       }
       if (daemon_gpu_sources != "") {
         last_daemon_gpu_sources = daemon_gpu_sources
+      }
+      if (adaptive_action_types != "") {
+        last_adaptive_action_types = adaptive_action_types
+        split(adaptive_action_types, action_parts, "|")
+        for (action_index in action_parts) {
+          if (action_parts[action_index] != "") {
+            adaptive_action_seen[action_parts[action_index]] = 1
+          }
+        }
+      }
+      if (adaptive_action_scopes != "") {
+        last_adaptive_action_scopes = adaptive_action_scopes
+      }
+      if (adaptive_action_configured_actions != "") {
+        last_adaptive_action_configured_actions = adaptive_action_configured_actions
+      }
+      if (adaptive_action_max_fps != "") {
+        last_adaptive_action_max_fps = adaptive_action_max_fps
       }
     }
     END {
@@ -654,6 +684,13 @@ write_telemetry_summary() {
           printf "daemon_avg_gpu_busy_percent: %.0f\n", daemon_gpu_sum / daemon_gpu_samples
           printf "daemon_max_gpu_busy_percent: %d\n", max_daemon_gpu_busy
           printf "daemon_gpu_busy_sources_latest: %s\n", last_daemon_gpu_sources
+        }
+        printf "adaptive_action_types_latest: %s\n", last_adaptive_action_types
+        printf "adaptive_action_scopes_latest: %s\n", last_adaptive_action_scopes
+        printf "adaptive_action_configured_actions_latest: %s\n", last_adaptive_action_configured_actions
+        printf "adaptive_action_max_fps_latest: %s\n", last_adaptive_action_max_fps
+        for (action in adaptive_action_seen) {
+          printf "adaptive_action.%s: 1\n", action
         }
       }
     }
@@ -901,7 +938,8 @@ has_telemetry_expectations() {
   [[ "$expect_render_sync_cache_hit" -eq 1 ||
     "$expect_desktop_refresh_skip" -eq 1 ||
     "$expect_render_sync_update_queued" -eq 1 ||
-    "$expect_render_sync_update_skipped" -eq 1 ]]
+    "$expect_render_sync_update_skipped" -eq 1 ||
+    -n "$expect_adaptive_action" ]]
 }
 
 expect_telemetry_minimum() {
@@ -944,6 +982,9 @@ validate_telemetry_expectations() {
   fi
   if [[ "$expect_render_sync_update_skipped" -eq 1 ]]; then
     expect_telemetry_minimum "render_sync_updates_skipped_latest" 1 "renderer sync skipped latest count"
+  fi
+  if [[ -n "$expect_adaptive_action" ]]; then
+    expect_telemetry_minimum "adaptive_action.${expect_adaptive_action}" 1 "adaptive action ${expect_adaptive_action}"
   fi
 }
 
@@ -1098,6 +1139,14 @@ case "$expect_decoder_class" in
     exit 2
     ;;
 esac
+case "$expect_adaptive_action" in
+  ""|throttle|pause-unfocused|pause-dynamic)
+    ;;
+  *)
+    echo "--expect-adaptive-action must be one of throttle, pause-unfocused, pause-dynamic" >&2
+    exit 2
+    ;;
+esac
 
 essential_missing=0
 require_command ps || essential_missing=1
@@ -1164,6 +1213,7 @@ expect_render_sync_cache_hit: ${expect_render_sync_cache_hit}
 expect_desktop_refresh_skip: ${expect_desktop_refresh_skip}
 expect_render_sync_update_queued: ${expect_render_sync_update_queued}
 expect_render_sync_update_skipped: ${expect_render_sync_update_skipped}
+expect_adaptive_action: ${expect_adaptive_action:-none}
 expect_decoder_policy_status: ${expect_decoder_policy_status:-none}
 expect_decoder_class: ${expect_decoder_class:-none}
 expect_memory_feature: ${expect_memory_feature:-none}
@@ -1179,7 +1229,7 @@ EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
-printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$telemetry_path"
+printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps\n' > "$telemetry_path"
 printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,source\n' > "$video_runtime_path"
 
 status_failures=0

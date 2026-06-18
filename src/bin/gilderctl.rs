@@ -225,9 +225,10 @@ fn render_telemetry_csv(response: &str) -> Result<String, String> {
 
     let telemetry = result.telemetry;
     let mut csv = String::from(
-        "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n",
+        "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps\n",
     );
     let adaptive_sample = telemetry.adaptive.snapshot.sample.as_ref();
+    let adaptive_actions = telemetry.adaptive.action.as_deref();
     let row = [
         telemetry.desktop.refreshes.to_string(),
         telemetry.desktop.refresh_skips.to_string(),
@@ -296,10 +297,35 @@ fn render_telemetry_csv(response: &str) -> Result<String, String> {
         adaptive_sample
             .map(|sample| csv_cell(&pipe_join(sample.gpu_busy_sources.clone())))
             .unwrap_or_default(),
+        csv_cell(&adaptive_action_values(adaptive_actions, |action| {
+            Some(action.kind.clone())
+        })),
+        csv_cell(&adaptive_action_values(adaptive_actions, |action| {
+            action.scope.clone()
+        })),
+        csv_cell(&adaptive_action_values(adaptive_actions, |action| {
+            action.configured_action.clone()
+        })),
+        csv_cell(&adaptive_action_values(adaptive_actions, |action| {
+            action.max_fps.map(|max_fps| max_fps.to_string())
+        })),
     ];
     csv.push_str(&row.join(","));
     csv.push('\n');
     Ok(csv)
+}
+
+fn adaptive_action_values(
+    actions: Option<&[AdaptiveActionReport]>,
+    value: impl Fn(&AdaptiveActionReport) -> Option<String>,
+) -> String {
+    pipe_join(
+        actions
+            .unwrap_or_default()
+            .iter()
+            .filter_map(value)
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn render_video_runtime_csv(response: &str) -> Result<String, String> {
@@ -649,6 +675,20 @@ struct AdaptiveTelemetry {
     refresh_skips: u64,
     #[serde(default)]
     snapshot: AdaptiveSnapshot,
+    #[serde(default)]
+    action: Option<Vec<AdaptiveActionReport>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdaptiveActionReport {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    configured_action: Option<String>,
+    #[serde(default)]
+    max_fps: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -819,14 +859,14 @@ mod tests {
 
     #[test]
     fn formats_daemon_telemetry_as_csv() {
-        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[],"video_plans":[],"decisions":[]},"telemetry":{"desktop":{"refreshes":7,"refresh_skips":11,"changes":2,"last_refresh_age_ms":42},"render_sync":{"cache_hits":23,"cache_misses":5,"updates_queued":3,"updates_skipped":2},"adaptive":{"refreshes":5,"refresh_skips":6,"snapshot":{"sample":{"cpu_pressure_some_avg10_x100":123,"memory_pressure_some_avg10_x100":45,"temperature_max_millicelsius":73500,"power_external_online":true,"power_system_battery_present":true,"power_battery_discharging":false,"power_battery_capacity_percent":88,"power_battery_power_microwatts":12000000,"gpu_busy_percent_avg":37,"gpu_busy_percent_max":72,"gpu_busy_sources":["renderD128","card0"]},"active_triggers":[{"metric":"temperature-max-celsius","value_x100":7350,"threshold_x100":7000}]}}}}}"##;
+        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[],"video_plans":[],"decisions":[]},"telemetry":{"desktop":{"refreshes":7,"refresh_skips":11,"changes":2,"last_refresh_age_ms":42},"render_sync":{"cache_hits":23,"cache_misses":5,"updates_queued":3,"updates_skipped":2},"adaptive":{"refreshes":5,"refresh_skips":6,"snapshot":{"sample":{"cpu_pressure_some_avg10_x100":123,"memory_pressure_some_avg10_x100":45,"temperature_max_millicelsius":73500,"power_external_online":true,"power_system_battery_present":true,"power_battery_discharging":false,"power_battery_capacity_percent":88,"power_battery_power_microwatts":12000000,"gpu_busy_percent_avg":37,"gpu_busy_percent_max":72,"gpu_busy_sources":["renderD128","card0"]},"active_triggers":[{"metric":"temperature-max-celsius","value_x100":7350,"threshold_x100":7000}]},"action":[{"output_name":"eDP-1","type":"throttle","configured_action":"pause-unfocused","max_fps":15},{"output_name":"HDMI-A-1","type":"pause-dynamic","scope":"dynamic-wallpapers"}]}}}}"##;
 
         let csv = render_telemetry_csv(response).unwrap();
 
         assert_eq!(
             csv,
-            "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n\
-             7,11,2,42,23,5,3,2,5,6,1,123,45,73500,true,true,false,88,12000000,37,72,card0|renderD128\n"
+            "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps\n\
+             7,11,2,42,23,5,3,2,5,6,1,123,45,73500,true,true,false,88,12000000,37,72,card0|renderD128,pause-dynamic|throttle,dynamic-wallpapers,pause-unfocused,15\n"
         );
     }
 

@@ -346,6 +346,27 @@ matrix: ${matrix_path}
 EOF
 }
 
+expected_adaptive_action_for_scenario() {
+  local config_profile="$1"
+  local output_state="$2"
+
+  case "$config_profile" in
+    adaptive-throttle)
+      printf '%s\n' "throttle"
+      ;;
+    adaptive-pause-unfocused)
+      if [[ "$output_state" == "unfocused" ]]; then
+        printf '%s\n' "pause-unfocused"
+      else
+        printf '%s\n' "throttle"
+      fi
+      ;;
+    adaptive-pause-dynamic)
+      printf '%s\n' "pause-dynamic"
+      ;;
+  esac
+}
+
 run_scenario() {
   local name="$1"
   local expected_mode="$2"
@@ -368,6 +389,8 @@ run_scenario() {
   local perf_dir="$scenario_dir/performance"
   local perf_log="$scenario_dir/performance.log"
   local scenario_wallpaper_path="$wallpaper_path"
+  local expected_adaptive_action
+  expected_adaptive_action="$(expected_adaptive_action_for_scenario "$config_profile" "$output_state")"
   local scenario_status="pass"
   if [[ "$name" == "adaptive-pause-dynamic-slideshow" ]]; then
     scenario_wallpaper_path="$slideshow_wallpaper_path"
@@ -501,6 +524,9 @@ run_scenario() {
   fi
   if [[ -n "$expected_max_fps" ]]; then
     sample_args+=(--expect-max-fps "$expected_max_fps")
+  fi
+  if [[ -n "$expected_adaptive_action" ]]; then
+    sample_args+=(--expect-adaptive-action "$expected_adaptive_action")
   fi
   if [[ "$allow_missing" -eq 1 ]]; then
     sample_args+=(--allow-missing)
