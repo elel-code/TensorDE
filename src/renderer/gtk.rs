@@ -38,6 +38,14 @@ pub struct GtkStaticRenderer {
     windows: BTreeMap<String, RenderedOutput>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GtkRendererResourceSnapshot {
+    pub output_windows: usize,
+    pub static_surfaces: usize,
+    pub slideshow_surfaces: usize,
+    pub video_surfaces: usize,
+}
+
 struct RenderedOutput {
     output_name: String,
     window: gtk::ApplicationWindow,
@@ -217,6 +225,27 @@ impl GtkStaticRenderer {
         }
     }
 
+    pub fn resource_snapshot(&self) -> GtkRendererResourceSnapshot {
+        GtkRendererResourceSnapshot {
+            output_windows: self.windows.len(),
+            static_surfaces: self
+                .windows
+                .values()
+                .filter(|output| output.provider.is_some())
+                .count(),
+            slideshow_surfaces: self
+                .windows
+                .values()
+                .filter(|output| output.slideshow.is_some())
+                .count(),
+            video_surfaces: self
+                .windows
+                .values()
+                .filter(|output| output.has_video_surface())
+                .count(),
+        }
+    }
+
     #[cfg(feature = "video-renderer")]
     pub fn snapshot(&self) -> Vec<VideoPipelineSnapshot> {
         self.windows
@@ -329,6 +358,16 @@ impl RenderedOutput {
 
     fn remove_slideshow(&mut self) {
         self.slideshow = None;
+    }
+
+    #[cfg(feature = "video-renderer")]
+    fn has_video_surface(&self) -> bool {
+        self.video.is_some()
+    }
+
+    #[cfg(not(feature = "video-renderer"))]
+    fn has_video_surface(&self) -> bool {
+        false
     }
 
     #[cfg(feature = "video-renderer")]

@@ -41,6 +41,10 @@ Options:
                        Require sampled max-minus-first USS/private delta to be at most this KiB value
   --expect-peak-over-first-pss-kib-at-most <kib>
                        Require sampled max-minus-first PSS delta to be at most this KiB value
+  --expect-renderer-output-windows-latest-at-most <count>
+                       Require latest renderer output window count to be at most count
+  --expect-renderer-output-windows-max-at-most <count>
+                       Require max sampled renderer output window count to be at most count
   --expect-renderer-video-pipelines-latest-at-most <count>
                        Require latest renderer video pipeline count to be at most count
   --expect-renderer-video-pipelines-max-at-most <count>
@@ -69,6 +73,8 @@ expect_retained_pss_delta_kib_at_most=""
 expect_peak_over_first_private_kib_at_most=""
 expect_peak_over_first_uss_kib_at_most=""
 expect_peak_over_first_pss_kib_at_most=""
+expect_renderer_output_windows_latest_at_most=""
+expect_renderer_output_windows_max_at_most=""
 expect_renderer_video_pipelines_latest_at_most=""
 expect_renderer_video_pipelines_max_at_most=""
 
@@ -160,6 +166,16 @@ while [[ $# -gt 0 ]]; do
     --expect-peak-over-first-pss-kib-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-peak-over-first-pss-kib-at-most requires a value" >&2; exit 2; }
       expect_peak_over_first_pss_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-output-windows-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-output-windows-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_output_windows_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-output-windows-max-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-output-windows-max-at-most requires a value" >&2; exit 2; }
+      expect_renderer_output_windows_max_at_most="$2"
       shift 2
       ;;
     --expect-renderer-video-pipelines-latest-at-most)
@@ -301,12 +317,14 @@ do
     exit 2
   fi
 done
-for renderer_pipeline_expectation in \
+for renderer_resource_expectation in \
+  "$expect_renderer_output_windows_latest_at_most" \
+  "$expect_renderer_output_windows_max_at_most" \
   "$expect_renderer_video_pipelines_latest_at_most" \
   "$expect_renderer_video_pipelines_max_at_most"
 do
-  if [[ -n "$renderer_pipeline_expectation" && ! "$renderer_pipeline_expectation" =~ ^[0-9]+$ ]]; then
-    echo "renderer video pipeline expectations must be non-negative integers" >&2
+  if [[ -n "$renderer_resource_expectation" && ! "$renderer_resource_expectation" =~ ^[0-9]+$ ]]; then
+    echo "renderer resource expectations must be non-negative integers" >&2
     exit 2
   fi
 done
@@ -373,13 +391,15 @@ expect_retained_pss_delta_kib_at_most: ${expect_retained_pss_delta_kib_at_most:-
 expect_peak_over_first_private_kib_at_most: ${expect_peak_over_first_private_kib_at_most:-none}
 expect_peak_over_first_uss_kib_at_most: ${expect_peak_over_first_uss_kib_at_most:-none}
 expect_peak_over_first_pss_kib_at_most: ${expect_peak_over_first_pss_kib_at_most:-none}
+expect_renderer_output_windows_latest_at_most: ${expect_renderer_output_windows_latest_at_most:-none}
+expect_renderer_output_windows_max_at_most: ${expect_renderer_output_windows_max_at_most:-none}
 expect_renderer_video_pipelines_latest_at_most: ${expect_renderer_video_pipelines_latest_at_most:-none}
 expect_renderer_video_pipelines_max_at_most: ${expect_renderer_video_pipelines_max_at_most:-none}
 wallpaper: ${wallpaper_path}
 slideshow_wallpaper: ${slideshow_wallpaper_path}
 EOF
 printf 'scenario,status,expected_mode,expected_reason,expected_max_fps,expected_action,expected_plan_kind,power_state,output_state,session_state,adaptive_state,config_profile,status_before,status_after,performance_dir,daemon_log\n' > "$matrix_path"
-printf 'scenario,status,expected_mode,expected_reason,expected_max_fps,expected_action,expected_plan_kind,power_state,output_state,session_state,adaptive_state,config_profile,performance_dir,samples,avg_cpu_percent,avg_rss_kib,max_rss_kib,first_rss_kib,last_rss_kib,retained_rss_delta_kib,peak_over_first_rss_kib,avg_pss_kib,max_pss_kib,first_pss_kib,last_pss_kib,retained_pss_delta_kib,peak_over_first_pss_kib,avg_private_kib,max_private_kib,first_private_kib,last_private_kib,retained_private_delta_kib,peak_over_first_private_kib,avg_uss_kib,max_uss_kib,first_uss_kib,last_uss_kib,retained_uss_delta_kib,peak_over_first_uss_kib,avg_shared_kib,max_shared_kib,first_shared_kib,last_shared_kib,retained_shared_delta_kib,peak_over_first_shared_kib,gpu_busy_samples,avg_gpu_busy_percent,max_gpu_busy_percent,decision_rows,decision_outputs,decision_samples,telemetry_rows,desktop_refreshes_delta,desktop_refresh_skips_delta,render_sync_cache_hits_delta,render_sync_cache_misses_delta,render_sync_cache_hit_ratio,render_sync_updates_queued_latest,render_sync_updates_skipped_latest,render_sync_package_cache_entries_latest,render_sync_package_cache_hits_latest,render_sync_package_cache_misses_latest,render_sync_archive_cache_entries_latest,render_sync_archive_cache_max_entries_latest,render_sync_archive_cache_reuses_latest,render_sync_archive_cache_extractions_latest,render_sync_archive_cache_evictions_delta,render_sync_archive_cache_evictions_latest,render_sync_archive_cache_eviction_errors_delta,render_sync_archive_cache_eviction_errors_latest,adaptive_action_types_latest,adaptive_action_max_fps_latest,renderer_video_pipelines_latest,renderer_video_pipelines_max,renderer_video_qos_messages_max,renderer_video_qos_dropped_max,renderer_video_gtk_frame_clock_ticks_max\n' > "$resource_baseline_path"
+printf 'scenario,status,expected_mode,expected_reason,expected_max_fps,expected_action,expected_plan_kind,power_state,output_state,session_state,adaptive_state,config_profile,performance_dir,samples,avg_cpu_percent,avg_rss_kib,max_rss_kib,first_rss_kib,last_rss_kib,retained_rss_delta_kib,peak_over_first_rss_kib,avg_pss_kib,max_pss_kib,first_pss_kib,last_pss_kib,retained_pss_delta_kib,peak_over_first_pss_kib,avg_private_kib,max_private_kib,first_private_kib,last_private_kib,retained_private_delta_kib,peak_over_first_private_kib,avg_uss_kib,max_uss_kib,first_uss_kib,last_uss_kib,retained_uss_delta_kib,peak_over_first_uss_kib,avg_shared_kib,max_shared_kib,first_shared_kib,last_shared_kib,retained_shared_delta_kib,peak_over_first_shared_kib,gpu_busy_samples,avg_gpu_busy_percent,max_gpu_busy_percent,decision_rows,decision_outputs,decision_samples,telemetry_rows,desktop_refreshes_delta,desktop_refresh_skips_delta,render_sync_cache_hits_delta,render_sync_cache_misses_delta,render_sync_cache_hit_ratio,render_sync_updates_queued_latest,render_sync_updates_skipped_latest,render_sync_package_cache_entries_latest,render_sync_package_cache_hits_latest,render_sync_package_cache_misses_latest,render_sync_archive_cache_entries_latest,render_sync_archive_cache_max_entries_latest,render_sync_archive_cache_reuses_latest,render_sync_archive_cache_extractions_latest,render_sync_archive_cache_evictions_delta,render_sync_archive_cache_evictions_latest,render_sync_archive_cache_eviction_errors_delta,render_sync_archive_cache_eviction_errors_latest,adaptive_action_types_latest,adaptive_action_max_fps_latest,renderer_output_windows_latest,renderer_output_windows_max,renderer_static_surfaces_latest,renderer_static_surfaces_max,renderer_slideshow_surfaces_latest,renderer_slideshow_surfaces_max,renderer_video_surfaces_latest,renderer_video_surfaces_max,renderer_video_pipelines_latest,renderer_video_pipelines_max,renderer_video_qos_messages_max,renderer_video_qos_dropped_max,renderer_video_gtk_frame_clock_ticks_max\n' > "$resource_baseline_path"
 
 write_config_profile() {
   local config_file="$1"
@@ -543,6 +563,14 @@ record_resource_baseline() {
     "$(summary_value_or_empty "$telemetry_summary" render_sync_archive_cache_eviction_errors_latest)"
     "$(summary_value_or_empty "$telemetry_summary" adaptive_action_types_latest)"
     "$(summary_value_or_empty "$telemetry_summary" adaptive_action_max_fps_latest)"
+    "$(summary_value_or_empty "$telemetry_summary" renderer_output_windows_latest)"
+    "$(summary_value_or_empty "$telemetry_summary" renderer_output_windows_max)"
+    "$(summary_value_or_empty "$telemetry_summary" renderer_static_surfaces_latest)"
+    "$(summary_value_or_empty "$telemetry_summary" renderer_static_surfaces_max)"
+    "$(summary_value_or_empty "$telemetry_summary" renderer_slideshow_surfaces_latest)"
+    "$(summary_value_or_empty "$telemetry_summary" renderer_slideshow_surfaces_max)"
+    "$(summary_value_or_empty "$telemetry_summary" renderer_video_surfaces_latest)"
+    "$(summary_value_or_empty "$telemetry_summary" renderer_video_surfaces_max)"
     "$(summary_value_or_empty "$telemetry_summary" renderer_video_pipelines_latest)"
     "$(summary_value_or_empty "$telemetry_summary" renderer_video_pipelines_max)"
     "$(summary_value_or_empty "$telemetry_summary" renderer_video_qos_messages_max)"
@@ -672,6 +700,12 @@ append_process_memory_expectations() {
   fi
   if [[ -n "$expect_peak_over_first_pss_kib_at_most" ]]; then
     args_ref+=(--expect-peak-over-first-pss-kib-at-most "$expect_peak_over_first_pss_kib_at_most")
+  fi
+  if [[ -n "$expect_renderer_output_windows_latest_at_most" ]]; then
+    args_ref+=(--expect-renderer-output-windows-latest-at-most "$expect_renderer_output_windows_latest_at_most")
+  fi
+  if [[ -n "$expect_renderer_output_windows_max_at_most" ]]; then
+    args_ref+=(--expect-renderer-output-windows-max-at-most "$expect_renderer_output_windows_max_at_most")
   fi
   if [[ -n "$expect_renderer_video_pipelines_latest_at_most" ]]; then
     args_ref+=(--expect-renderer-video-pipelines-latest-at-most "$expect_renderer_video_pipelines_latest_at_most")

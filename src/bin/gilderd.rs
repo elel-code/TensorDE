@@ -293,14 +293,15 @@ fn spawn_video_renderer_loop(
 fn renderer_runtime_snapshot(
     renderer: &gilder::renderer::gtk::GtkStaticRenderer,
 ) -> RendererRuntimeSnapshot {
-    RendererRuntimeSnapshot::from_video_pipeline_snapshots(renderer.snapshot())
+    RendererRuntimeSnapshot::from_gtk_resource_snapshot(renderer.resource_snapshot())
+        .with_video_pipeline_snapshots(renderer.snapshot())
 }
 
 #[cfg(all(feature = "gtk-renderer", not(feature = "video-renderer")))]
 fn renderer_runtime_snapshot(
-    _renderer: &gilder::renderer::gtk::GtkStaticRenderer,
+    renderer: &gilder::renderer::gtk::GtkStaticRenderer,
 ) -> RendererRuntimeSnapshot {
-    RendererRuntimeSnapshot::default()
+    RendererRuntimeSnapshot::from_gtk_resource_snapshot(renderer.resource_snapshot())
 }
 
 fn accept_loop(listener: UnixListener, runtime: Arc<DaemonRuntime>) {
@@ -518,15 +519,36 @@ impl DaemonRuntime {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 struct RendererRuntimeSnapshot {
+    output_windows: usize,
+    static_surfaces: usize,
+    slideshow_surfaces: usize,
+    video_surfaces: usize,
     video_pipelines: Vec<Value>,
 }
 
 impl RendererRuntimeSnapshot {
+    #[cfg(feature = "gtk-renderer")]
+    fn from_gtk_resource_snapshot(
+        snapshot: gilder::renderer::gtk::GtkRendererResourceSnapshot,
+    ) -> Self {
+        Self {
+            output_windows: snapshot.output_windows,
+            static_surfaces: snapshot.static_surfaces,
+            slideshow_surfaces: snapshot.slideshow_surfaces,
+            video_surfaces: snapshot.video_surfaces,
+            video_pipelines: Vec::new(),
+        }
+    }
+
     #[cfg(feature = "video-renderer")]
     fn from_video_pipeline_snapshots(
         snapshots: Vec<gilder::renderer::video::VideoPipelineSnapshot>,
     ) -> Self {
         Self {
+            output_windows: 0,
+            static_surfaces: 0,
+            slideshow_surfaces: 0,
+            video_surfaces: 0,
             video_pipelines: snapshots
                 .into_iter()
                 .map(|snapshot| {
@@ -538,6 +560,15 @@ impl RendererRuntimeSnapshot {
                 })
                 .collect(),
         }
+    }
+
+    #[cfg(all(feature = "gtk-renderer", feature = "video-renderer"))]
+    fn with_video_pipeline_snapshots(
+        mut self,
+        snapshots: Vec<gilder::renderer::video::VideoPipelineSnapshot>,
+    ) -> Self {
+        self.video_pipelines = Self::from_video_pipeline_snapshots(snapshots).video_pipelines;
+        self
     }
 }
 
@@ -555,6 +586,10 @@ fn store_renderer_runtime_snapshot(
 
 fn renderer_runtime_report(snapshot: &RendererRuntimeSnapshot) -> Value {
     json!({
+        "output_windows": snapshot.output_windows,
+        "static_surfaces": snapshot.static_surfaces,
+        "slideshow_surfaces": snapshot.slideshow_surfaces,
+        "video_surfaces": snapshot.video_surfaces,
         "video_pipelines": snapshot.video_pipelines,
     })
 }
@@ -628,6 +663,10 @@ fn renderer_telemetry_report(snapshot: &RendererRuntimeSnapshot) -> Value {
     }
 
     json!({
+        "output_windows": snapshot.output_windows,
+        "static_surfaces": snapshot.static_surfaces,
+        "slideshow_surfaces": snapshot.slideshow_surfaces,
+        "video_surfaces": snapshot.video_surfaces,
         "video_pipelines": snapshot.video_pipelines.len(),
         "video_qos_messages": video_qos_messages,
         "video_qos_dropped_max": video_qos_dropped_max,
@@ -1688,6 +1727,10 @@ mod tests {
         };
 
         let renderer_runtime = RendererRuntimeSnapshot {
+            output_windows: 3,
+            static_surfaces: 2,
+            slideshow_surfaces: 1,
+            video_surfaces: 2,
             video_pipelines: vec![
                 json!({
                     "output_name": "eDP-1",
@@ -1774,6 +1817,26 @@ mod tests {
         assert_eq!(
             response["result"]["renderer_runtime"]["video_pipelines"][0]["actual_decoders"],
             json!(["dav1ddec"])
+        );
+        assert_eq!(
+            response["result"]["renderer_runtime"]["output_windows"],
+            json!(3)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["output_windows"],
+            json!(3)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["static_surfaces"],
+            json!(2)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["slideshow_surfaces"],
+            json!(1)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_surfaces"],
+            json!(2)
         );
         assert_eq!(
             response["result"]["telemetry"]["renderer"]["video_pipelines"],
