@@ -1327,6 +1327,11 @@ fn telemetry_report(
             "archive_cache_evictions_latest": render_sync_cache.archive_cache_evictions,
             "archive_cache_eviction_errors": context.telemetry.render_archive_cache_eviction_errors,
             "archive_cache_eviction_errors_latest": render_sync_cache.archive_cache_eviction_errors,
+            "planned_static_image_resources": render_sync_cache.planned_static_image_resources,
+            "planned_video_poster_resources": render_sync_cache.planned_video_poster_resources,
+            "planned_slideshow_image_resources": render_sync_cache.planned_slideshow_image_resources,
+            "planned_image_resource_references": render_sync_cache.planned_image_resource_references,
+            "planned_unique_image_resources": render_sync_cache.planned_unique_image_resources,
         },
         "renderer": renderer_telemetry_report(renderer_runtime),
     })
@@ -1819,6 +1824,26 @@ mod tests {
             response["result"]["telemetry"]["render_sync"]["archive_cache_eviction_errors"],
             json!(0)
         );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_static_image_resources"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_video_poster_resources"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_slideshow_image_resources"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_image_resource_references"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_unique_image_resources"],
+            json!(0)
+        );
         assert!(
             response["result"]["telemetry"]["desktop"]["last_refresh_age_ms"]
                 .as_u64()
@@ -1903,6 +1928,47 @@ mod tests {
         assert_eq!(
             response["result"]["telemetry"]["renderer"]["video_gtk_frame_timings_presentation_time_us_max"],
             json!(150000)
+        );
+    }
+
+    #[test]
+    fn status_response_reports_planned_image_resource_telemetry() {
+        let mut context = test_context();
+        context.config.default_wallpaper = Some("examples/wallpapers/slideshow-demo.gwpdir".into());
+        context.desktop.outputs = vec![gilder::desktop::DesktopOutput::virtual_output("eDP-1")];
+        let request = gilder::ipc::IpcRequest {
+            id: json!(1),
+            method: RequestMethod::Status,
+        };
+
+        let outcome = handle_ipc_request(
+            request,
+            &mut context,
+            RuntimeTelemetrySnapshot::default(),
+            RendererRuntimeSnapshot::default(),
+        );
+        let response: serde_json::Value =
+            serde_json::from_str(&outcome.response).expect("status response should be JSON");
+
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_static_image_resources"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_video_poster_resources"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_slideshow_image_resources"],
+            json!(2)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_image_resource_references"],
+            json!(2)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_unique_image_resources"],
+            json!(2)
         );
     }
 

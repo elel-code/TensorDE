@@ -99,6 +99,16 @@ pub struct RenderSyncCacheReport {
     pub archive_cache_evictions: u64,
     #[serde(default)]
     pub archive_cache_eviction_errors: u64,
+    #[serde(default)]
+    pub planned_static_image_resources: usize,
+    #[serde(default)]
+    pub planned_video_poster_resources: usize,
+    #[serde(default)]
+    pub planned_slideshow_image_resources: usize,
+    #[serde(default)]
+    pub planned_image_resource_references: usize,
+    #[serde(default)]
+    pub planned_unique_image_resources: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,7 +376,8 @@ fn static_render_sync_plan_inner(
         }
     }
 
-    let cache = package_cache.finish(cache_config);
+    let mut cache = package_cache.finish(cache_config);
+    update_render_sync_resource_footprint(&mut cache, &plans, &video_plans, &slideshow_plans);
     StaticRenderSyncPlan {
         plans,
         video_plans,
@@ -376,6 +387,52 @@ fn static_render_sync_plan_inner(
         decisions,
         cache,
     }
+}
+
+fn update_render_sync_resource_footprint(
+    report: &mut RenderSyncCacheReport,
+    plans: &[StaticWallpaperPlan],
+    video_plans: &[VideoWallpaperPlan],
+    slideshow_plans: &[SlideshowWallpaperPlan],
+) {
+    let video_poster_resources = video_plans
+        .iter()
+        .filter(|plan| plan.poster.is_some())
+        .count();
+    let slideshow_image_resources = slideshow_plans
+        .iter()
+        .map(|plan| plan.sources.len())
+        .sum::<usize>();
+    let static_image_resources = plans
+        .iter()
+        .filter(|plan| !is_video_poster_resource(plan, video_plans))
+        .count();
+    let mut unique_image_resources = BTreeSet::new();
+    unique_image_resources.extend(plans.iter().map(|plan| plan.source.clone()));
+    unique_image_resources.extend(
+        slideshow_plans
+            .iter()
+            .flat_map(|plan| plan.sources.iter().cloned()),
+    );
+
+    report.planned_static_image_resources = static_image_resources;
+    report.planned_video_poster_resources = video_poster_resources;
+    report.planned_slideshow_image_resources = slideshow_image_resources;
+    report.planned_image_resource_references = plans.len() + slideshow_image_resources;
+    report.planned_unique_image_resources = unique_image_resources.len();
+}
+
+fn is_video_poster_resource(
+    plan: &StaticWallpaperPlan,
+    video_plans: &[VideoWallpaperPlan],
+) -> bool {
+    video_plans.iter().any(|video| {
+        video.output_name == plan.output_name
+            && video
+                .poster
+                .as_ref()
+                .is_some_and(|poster| poster == &plan.source)
+    })
 }
 
 fn effective_wallpaper_assignment(
@@ -1863,6 +1920,64 @@ mod tests {
         assert_eq!(plan.target_max_fps, Some(10));
         assert_eq!(sync.decisions[0].action, StaticRenderAction::Render);
         assert_eq!(sync.decisions[0].performance.mode, RenderMode::Throttled);
+    }
+
+    #[test]
+    fn render_sync_reports_planned_image_resource_footprint() {
+        let test_dir = TestDir::new("gilder-render-resource-footprint");
+        let static_package = test_dir.path.join("static-demo.gwpdir");
+        let video_package = test_dir.path.join("video-demo.gwpdir");
+        let slideshow_package = test_dir.path.join("slideshow-demo.gwpdir");
+        write_minimal_static_variant_gwpdir(&static_package);
+        write_minimal_video_gwpdir(&video_package);
+        write_minimal_slideshow_gwpdir(&slideshow_package);
+        let mut config = GilderConfig::default();
+        config.outputs.insert(
+            "eDP-1".to_owned(),
+            OutputConfig {
+                wallpaper: Some(static_package.display().to_string()),
+                ..OutputConfig::default()
+            },
+        );
+        config.outputs.insert(
+            "HDMI-A-1".to_owned(),
+            OutputConfig {
+                wallpaper: Some(video_package.display().to_string()),
+                ..OutputConfig::default()
+            },
+        );
+        config.outputs.insert(
+            "DP-1".to_owned(),
+            OutputConfig {
+                wallpaper: Some(slideshow_package.display().to_string()),
+                ..OutputConfig::default()
+            },
+        );
+        let desktop = DesktopSnapshot {
+            outputs: vec![
+                DesktopOutput::virtual_output("eDP-1"),
+                DesktopOutput::virtual_output("HDMI-A-1"),
+                DesktopOutput::virtual_output("DP-1"),
+            ],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_config(
+            &config,
+            &desktop,
+            &AppState::default(),
+            test_dir.path.join("cache"),
+        );
+
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.plans.len(), 2);
+        assert_eq!(sync.video_plans.len(), 1);
+        assert_eq!(sync.slideshow_plans.len(), 1);
+        assert_eq!(sync.cache.planned_static_image_resources, 1);
+        assert_eq!(sync.cache.planned_video_poster_resources, 1);
+        assert_eq!(sync.cache.planned_slideshow_image_resources, 2);
+        assert_eq!(sync.cache.planned_image_resource_references, 4);
+        assert_eq!(sync.cache.planned_unique_image_resources, 4);
     }
 
     #[test]
