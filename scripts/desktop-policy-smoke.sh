@@ -8,7 +8,7 @@ usage: scripts/desktop-policy-smoke.sh [options]
 Run a headless daemon smoke matrix for desktop-state performance policy. The
 script uses validation overrides to create a virtual output, applies the static
 example wallpaper, and samples decisions/telemetry for active, battery,
-unfocused, fullscreen, hidden, inactive, and locked scenarios.
+unfocused, fullscreen, hidden, inactive, locked, and output override scenarios.
 
 Options:
   --output <name>       Virtual output name. Default: HEADLESS-1
@@ -220,33 +220,69 @@ sample_duration: ${sample_duration}
 sample_interval: ${sample_interval}
 wallpaper: ${wallpaper_path}
 EOF
-printf 'scenario,status,expected_mode,expected_reason,expected_action,expected_plan_kind,power_state,output_state,session_state,status_before,status_after,performance_dir,daemon_log\n' > "$matrix_path"
+printf 'scenario,status,expected_mode,expected_reason,expected_max_fps,expected_action,expected_plan_kind,power_state,output_state,session_state,config_profile,status_before,status_after,performance_dir,daemon_log\n' > "$matrix_path"
+
+write_config_profile() {
+  local config_file="$1"
+  local profile="$2"
+  [[ -n "$profile" ]] || return 0
+
+  mkdir -p "${config_file%/*}"
+  case "$profile" in
+    output-active-42fps)
+      cat > "$config_file" <<EOF
+[outputs."${output_name}".performance]
+interactive_max_fps = 42
+EOF
+      ;;
+    output-unfocused-12fps)
+      cat > "$config_file" <<EOF
+[outputs."${output_name}".performance]
+background_max_fps = 12
+EOF
+      ;;
+    output-battery-pause)
+      cat > "$config_file" <<EOF
+[outputs."${output_name}".performance]
+battery = "pause"
+EOF
+      ;;
+    *)
+      echo "unknown config profile: $profile" >&2
+      return 2
+      ;;
+  esac
+}
 
 record_scenario() {
   local scenario="$1"
   local status="$2"
   local expected_mode="$3"
   local expected_reason="$4"
-  local expected_action="$5"
-  local expected_plan_kind="$6"
-  local power_state="$7"
-  local output_state="$8"
-  local session_state="$9"
-  local status_before="${10}"
-  local status_after="${11}"
-  local perf_dir="${12}"
-  local daemon_log="${13}"
+  local expected_max_fps="$5"
+  local expected_action="$6"
+  local expected_plan_kind="$7"
+  local power_state="$8"
+  local output_state="$9"
+  local session_state="${10}"
+  local config_profile="${11}"
+  local status_before="${12}"
+  local status_after="${13}"
+  local perf_dir="${14}"
+  local daemon_log="${15}"
 
   local row=(
     "$scenario"
     "$status"
     "$expected_mode"
     "$expected_reason"
+    "$expected_max_fps"
     "$expected_action"
     "$expected_plan_kind"
     "$power_state"
     "$output_state"
     "$session_state"
+    "$config_profile"
     "${status_before#$work_dir/}"
     "${status_after#$work_dir/}"
     "${perf_dir#$work_dir/}"
@@ -276,14 +312,17 @@ run_scenario() {
   local name="$1"
   local expected_mode="$2"
   local expected_reason="$3"
-  local expected_action="$4"
-  local expected_plan_kind="$5"
-  local power_state="$6"
-  local output_state="$7"
-  local session_state="$8"
+  local expected_max_fps="$4"
+  local expected_action="$5"
+  local expected_plan_kind="$6"
+  local power_state="$7"
+  local output_state="$8"
+  local session_state="$9"
+  local config_profile="${10:-}"
 
   local scenario_dir="$work_dir/$name"
   local socket="$scenario_dir/runtime/gilder.sock"
+  local config_file="$scenario_dir/config/gilder/config.toml"
   local daemon_log="$scenario_dir/gilderd.log"
   local status_before="$scenario_dir/status-before.json"
   local status_after="$scenario_dir/status-after.json"
@@ -293,6 +332,12 @@ run_scenario() {
 
   mkdir -p "$scenario_dir/runtime" "$scenario_dir/config" "$scenario_dir/state" "$scenario_dir/cache"
   chmod 700 "$scenario_dir/runtime"
+  if ! write_config_profile "$config_file" "$config_profile"; then
+    scenario_status="$(failure_status)"
+    skip_or_fail "${name}: failed to write config profile ${config_profile}"
+    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
+    return 0
+  fi
 
   local -a daemon_env
   daemon_env=(
@@ -320,7 +365,7 @@ run_scenario() {
       sed -n '1,120p' "$daemon_log"
       scenario_status="$(failure_status)"
       skip_or_fail "${name}: gilderd exited before creating IPC socket"
-      record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
+      record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
       stop_daemon
       return 0
     fi
@@ -331,7 +376,7 @@ run_scenario() {
     sed -n '1,120p' "$daemon_log"
     scenario_status="$(failure_status)"
     skip_or_fail "${name}: gilderd did not create IPC socket"
-    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
+    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
     stop_daemon
     return 0
   fi
@@ -340,7 +385,7 @@ run_scenario() {
   if ! env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_before"; then
     scenario_status="$(failure_status)"
     skip_or_fail "${name}: failed to capture initial status"
-    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
+    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
     stop_daemon
     return 0
   fi
@@ -354,21 +399,21 @@ run_scenario() {
   if ! env GILDER_SOCKET="$socket" "$gilderctl" set "$wallpaper_path" --output "$output_name" >/dev/null; then
     scenario_status="$(failure_status)"
     skip_or_fail "${name}: failed to set wallpaper"
-    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
+    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
     stop_daemon
     return 0
   fi
   if ! env GILDER_SOCKET="$socket" "$gilderctl" set "$wallpaper_path" --output "$output_name" >/dev/null; then
     scenario_status="$(failure_status)"
     skip_or_fail "${name}: failed to repeat wallpaper set"
-    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
+    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
     stop_daemon
     return 0
   fi
   if ! env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_after"; then
     scenario_status="$(failure_status)"
     skip_or_fail "${name}: failed to capture status after set"
-    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
+    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
     stop_daemon
     return 0
   fi
@@ -377,6 +422,14 @@ run_scenario() {
   else
     scenario_status="$(failure_status)"
     skip_or_fail "${name}: status does not report ${expected_reason} decision"
+  fi
+  if [[ -n "$expected_max_fps" ]]; then
+    if grep -q "\"max_fps\":${expected_max_fps}" "$status_after"; then
+      pass "${name}: status reports max_fps ${expected_max_fps}"
+    else
+      scenario_status="$(failure_status)"
+      skip_or_fail "${name}: status does not report max_fps ${expected_max_fps}"
+    fi
   fi
 
   local -a sample_args
@@ -400,6 +453,9 @@ run_scenario() {
   if [[ -n "$expected_plan_kind" ]]; then
     sample_args+=(--expect-plan-kind "$expected_plan_kind")
   fi
+  if [[ -n "$expected_max_fps" ]]; then
+    sample_args+=(--expect-max-fps "$expected_max_fps")
+  fi
   if [[ "$allow_missing" -eq 1 ]]; then
     sample_args+=(--allow-missing)
   fi
@@ -417,17 +473,20 @@ run_scenario() {
   note "${name}: status after:  $status_after"
   note "${name}: performance:   $perf_dir"
   note "${name}: daemon log:    $daemon_log"
-  record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
+  record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
   stop_daemon
 }
 
-run_scenario active active interactive render static-image ac active active
-run_scenario battery throttled battery render static-image battery active active
-run_scenario unfocused throttled unfocused render static-image ac unfocused active
-run_scenario fullscreen paused fullscreen remove "" ac fullscreen active
-run_scenario hidden paused output-hidden remove "" ac hidden active
-run_scenario session-inactive paused session-inactive remove "" ac active inactive
-run_scenario session-locked paused session-locked remove "" ac active locked
+run_scenario active active interactive 60 render static-image ac active active
+run_scenario battery throttled battery 24 render static-image battery active active
+run_scenario unfocused throttled unfocused 30 render static-image ac unfocused active
+run_scenario fullscreen paused fullscreen "" remove "" ac fullscreen active
+run_scenario hidden paused output-hidden "" remove "" ac hidden active
+run_scenario session-inactive paused session-inactive "" remove "" ac active inactive
+run_scenario session-locked paused session-locked "" remove "" ac active locked
+run_scenario output-active-42fps active interactive 42 render static-image ac active active output-active-42fps
+run_scenario output-unfocused-12fps throttled unfocused 12 render static-image ac unfocused active output-unfocused-12fps
+run_scenario output-battery-pause paused battery "" remove "" battery active active output-battery-pause
 
 write_summary
 note "metadata: $metadata_path"

@@ -23,6 +23,8 @@ Options:
                      Require at least one decision with this reason
   --expect-action <action>
                      Require at least one decision with this action
+  --expect-max-fps <fps>
+                     Require at least one decision with this max_fps
   --expect-plan-kind <kind>
                      Require at least one decision with this plan kind
   --expect-render-sync-cache-hit
@@ -52,6 +54,7 @@ keep=0
 expect_mode=""
 expect_reason=""
 expect_action=""
+expect_max_fps=""
 expect_plan_kind=""
 expect_render_sync_cache_hit=0
 expect_desktop_refresh_skip=0
@@ -113,6 +116,11 @@ while [[ $# -gt 0 ]]; do
     --expect-action)
       [[ $# -ge 2 ]] || { echo "--expect-action requires a value" >&2; exit 2; }
       expect_action="$2"
+      shift 2
+      ;;
+    --expect-max-fps)
+      [[ $# -ge 2 ]] || { echo "--expect-max-fps requires a value" >&2; exit 2; }
+      expect_max_fps="$2"
       shift 2
       ;;
     --expect-plan-kind)
@@ -375,7 +383,11 @@ write_telemetry_summary() {
 }
 
 has_expectations() {
-  [[ -n "$expect_mode" || -n "$expect_reason" || -n "$expect_action" || -n "$expect_plan_kind" ]]
+  [[ -n "$expect_mode" ||
+    -n "$expect_reason" ||
+    -n "$expect_action" ||
+    -n "$expect_max_fps" ||
+    -n "$expect_plan_kind" ]]
 }
 
 summary_value() {
@@ -422,6 +434,9 @@ validate_decision_expectations() {
   fi
   if [[ -n "$expect_action" ]]; then
     expect_summary_key "action.${expect_action}" "action ${expect_action}"
+  fi
+  if [[ -n "$expect_max_fps" ]]; then
+    expect_summary_key "max_fps.${expect_max_fps}" "max_fps ${expect_max_fps}"
   fi
   if [[ -n "$expect_plan_kind" ]]; then
     expect_summary_key "plan_kind.${expect_plan_kind}" "plan kind ${expect_plan_kind}"
@@ -486,6 +501,10 @@ if ! is_positive_integer "$interval"; then
   echo "--interval must be a positive integer" >&2
   exit 2
 fi
+if [[ -n "$expect_max_fps" && ! "$expect_max_fps" =~ ^[0-9]+$ ]]; then
+  echo "--expect-max-fps must be a non-negative integer" >&2
+  exit 2
+fi
 
 essential_missing=0
 require_command ps || essential_missing=1
@@ -544,6 +563,7 @@ samples: ${samples}
 expect_mode: ${expect_mode:-none}
 expect_reason: ${expect_reason:-none}
 expect_action: ${expect_action:-none}
+expect_max_fps: ${expect_max_fps:-none}
 expect_plan_kind: ${expect_plan_kind:-none}
 expect_render_sync_cache_hit: ${expect_render_sync_cache_hit}
 expect_desktop_refresh_skip: ${expect_desktop_refresh_skip}

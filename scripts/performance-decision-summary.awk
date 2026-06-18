@@ -110,6 +110,7 @@ NR == 1 {
   }
   if (numeric(decision_fps)) {
     update_range(mode_reason, decision_fps, min_decision_fps, max_decision_fps)
+    decision_fps_count[decision_fps] += 1
   }
   if (numeric(target_fps)) {
     update_range("all", target_fps, min_target_fps, max_target_fps)
@@ -192,6 +193,16 @@ END {
   for (key in action_count) {
     if (key != "render" && key != "remove") {
       print_category("action", key, action_count)
+    }
+  }
+
+  print_category("max_fps", "60", decision_fps_count)
+  print_category("max_fps", "30", decision_fps_count)
+  print_category("max_fps", "24", decision_fps_count)
+  print_category("max_fps", "12", decision_fps_count)
+  for (key in decision_fps_count) {
+    if (key != "60" && key != "30" && key != "24" && key != "12") {
+      print_category("max_fps", key, decision_fps_count)
     }
   }
 
