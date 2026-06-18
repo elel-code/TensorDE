@@ -27,6 +27,16 @@ Options:
                      Performance sampling duration. Default: 8
   --sample-interval <sec>
                      Performance sampling interval. Default: 1
+  --expect-max-rss-kib-at-most <kib>
+                     Require sampled max RSS to be at most this KiB value
+  --expect-max-pss-kib-at-most <kib>
+                     Require sampled max PSS to be at most this KiB value
+  --expect-max-private-kib-at-most <kib>
+                     Require sampled max private memory to be at most this KiB value
+  --expect-max-uss-kib-at-most <kib>
+                     Require sampled max USS/private memory to be at most this KiB value
+  --expect-max-shared-kib-at-most <kib>
+                     Require sampled max shared memory to be at most this KiB value
   --expect-decoder-policy-status <status>
                      Require sampled video runtime to report this decoder policy status
   --expect-decoder-class <hardware|software|unknown>
@@ -75,6 +85,11 @@ sample_performance=0
 sample_paused=0
 sample_duration=8
 sample_interval=1
+expect_max_rss_kib_at_most=""
+expect_max_pss_kib_at_most=""
+expect_max_private_kib_at_most=""
+expect_max_uss_kib_at_most=""
+expect_max_shared_kib_at_most=""
 expect_decoder_policy_status=""
 expect_decoder_class=""
 expect_memory_feature=""
@@ -157,6 +172,36 @@ while [[ $# -gt 0 ]]; do
     --sample-interval)
       [[ $# -ge 2 ]] || { echo "--sample-interval requires seconds" >&2; exit 2; }
       sample_interval="$2"
+      shift 2
+      ;;
+    --expect-max-rss-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-rss-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_rss_kib_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-max-pss-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-pss-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_pss_kib_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-max-private-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-private-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_private_kib_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-max-uss-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-uss-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_uss_kib_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-max-shared-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-shared-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_shared_kib_at_most="$2"
+      sample_performance=1
       shift 2
       ;;
     --expect-decoder-policy-status)
@@ -314,6 +359,26 @@ fi
 if [[ "$measure_fullscreen_resume" -eq 1 ]]; then
   simulate_output_state="fullscreen"
 fi
+if [[ ! "$sample_duration" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--sample-duration must be a positive integer" >&2
+  exit 2
+fi
+if [[ ! "$sample_interval" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--sample-interval must be a positive integer" >&2
+  exit 2
+fi
+for memory_expectation in \
+  "$expect_max_rss_kib_at_most" \
+  "$expect_max_pss_kib_at_most" \
+  "$expect_max_private_kib_at_most" \
+  "$expect_max_uss_kib_at_most" \
+  "$expect_max_shared_kib_at_most"
+do
+  if [[ -n "$memory_expectation" && ! "$memory_expectation" =~ ^[1-9][0-9]*$ ]]; then
+    echo "memory KiB expectations must be positive integers" >&2
+    exit 2
+  fi
+done
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
@@ -544,6 +609,11 @@ expect_compositor: ${expect_compositor:-none}
 actual_compositor: ${actual_compositor}
 sample_duration: ${sample_duration}
 sample_interval: ${sample_interval}
+expect_max_rss_kib_at_most: ${expect_max_rss_kib_at_most:-none}
+expect_max_pss_kib_at_most: ${expect_max_pss_kib_at_most:-none}
+expect_max_private_kib_at_most: ${expect_max_private_kib_at_most:-none}
+expect_max_uss_kib_at_most: ${expect_max_uss_kib_at_most:-none}
+expect_max_shared_kib_at_most: ${expect_max_shared_kib_at_most:-none}
 expect_decoder_policy_status: ${expect_decoder_policy_status:-none}
 expect_decoder_class: ${expect_decoder_class:-none}
 expect_memory_feature: ${expect_memory_feature:-none}
@@ -688,6 +758,37 @@ append_video_runtime_evidence_summary() {
   ' "$summary"
 }
 
+append_process_memory_evidence_summary() {
+  local prefix="$1"
+  local summary="$2"
+  local key
+
+  if [[ ! -f "$summary" ]]; then
+    printf '%s_process_summary_present: no\n' "$prefix"
+    return
+  fi
+
+  printf '%s_process_summary_present: yes\n' "$prefix"
+  for key in \
+    samples \
+    avg_cpu_percent \
+    avg_rss_kib \
+    max_rss_kib \
+    avg_pss_kib \
+    max_pss_kib \
+    avg_private_kib \
+    max_private_kib \
+    avg_uss_kib \
+    max_uss_kib \
+    avg_shared_kib \
+    max_shared_kib \
+    avg_gpu_busy_percent \
+    max_gpu_busy_percent
+  do
+    printf '%s_%s: %s\n' "$prefix" "$key" "$(summary_value_or_none "$summary" "$key")"
+  done
+}
+
 write_validation_report() {
   local active_summary
   local active_video_runtime_summary
@@ -715,6 +816,11 @@ sample_paused: ${sample_paused}
 measure_fullscreen_resume: ${measure_fullscreen_resume}
 require_video_runtime_row: ${require_video_runtime_row}
 expect_gtk_frame_clock_phases: ${expect_gtk_frame_clock_phases[*]:-none}
+expect_max_rss_kib_at_most: ${expect_max_rss_kib_at_most:-none}
+expect_max_pss_kib_at_most: ${expect_max_pss_kib_at_most:-none}
+expect_max_private_kib_at_most: ${expect_max_private_kib_at_most:-none}
+expect_max_uss_kib_at_most: ${expect_max_uss_kib_at_most:-none}
+expect_max_shared_kib_at_most: ${expect_max_shared_kib_at_most:-none}
 zero_copy_audit_note: hardware decoder evidence alone is not zero-copy proof; prefer sink DMABuf/GLMemory caps plus compositor presentation evidence
 video_runtime_rows: $(count_csv_data_rows "$video_runtime_path")
 video_runtime_csv: ${video_runtime_path}
@@ -733,6 +839,8 @@ status_resumed: $([[ -f "$status_resumed" ]] && printf '%s' "$status_resumed" ||
 daemon_log: ${daemon_log}
 EOF
 
+  append_process_memory_evidence_summary "performance_active" "$active_summary" >> "$validation_report_path"
+  append_process_memory_evidence_summary "performance_paused" "$paused_summary" >> "$validation_report_path"
   append_video_runtime_evidence_summary "performance_active" "$active_video_runtime_summary" >> "$validation_report_path"
   append_video_runtime_evidence_summary "performance_paused" "$paused_video_runtime_summary" >> "$validation_report_path"
 
@@ -803,6 +911,25 @@ append_video_runtime_expectations() {
   fi
 }
 
+append_process_memory_expectations() {
+  local -n args_ref="$1"
+  if [[ -n "$expect_max_rss_kib_at_most" ]]; then
+    args_ref+=(--expect-max-rss-kib-at-most "$expect_max_rss_kib_at_most")
+  fi
+  if [[ -n "$expect_max_pss_kib_at_most" ]]; then
+    args_ref+=(--expect-max-pss-kib-at-most "$expect_max_pss_kib_at_most")
+  fi
+  if [[ -n "$expect_max_private_kib_at_most" ]]; then
+    args_ref+=(--expect-max-private-kib-at-most "$expect_max_private_kib_at_most")
+  fi
+  if [[ -n "$expect_max_uss_kib_at_most" ]]; then
+    args_ref+=(--expect-max-uss-kib-at-most "$expect_max_uss_kib_at_most")
+  fi
+  if [[ -n "$expect_max_shared_kib_at_most" ]]; then
+    args_ref+=(--expect-max-shared-kib-at-most "$expect_max_shared_kib_at_most")
+  fi
+}
+
 capture_performance() {
   local label="$1"
   local output_dir="$2"
@@ -826,6 +953,7 @@ capture_performance() {
     --expect-desktop-refresh-skip
     --expect-render-sync-update-queued
   )
+  append_process_memory_expectations sample_args
   if [[ -n "$expected_mode" ]]; then
     sample_args+=(--expect-mode "$expected_mode")
   fi

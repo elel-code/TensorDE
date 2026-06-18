@@ -27,6 +27,16 @@ Options:
                      Require at least one decision with this max_fps
   --expect-plan-kind <kind>
                      Require at least one decision with this plan kind
+  --expect-max-rss-kib-at-most <kib>
+                     Require sampled max RSS to be at most this KiB value
+  --expect-max-pss-kib-at-most <kib>
+                     Require sampled max PSS to be at most this KiB value
+  --expect-max-private-kib-at-most <kib>
+                     Require sampled max private memory to be at most this KiB value
+  --expect-max-uss-kib-at-most <kib>
+                     Require sampled max USS/private memory to be at most this KiB value
+  --expect-max-shared-kib-at-most <kib>
+                     Require sampled max shared memory to be at most this KiB value
   --expect-render-sync-cache-hit
                      Require render_sync cache hits to increase during sampling
   --expect-desktop-refresh-skip
@@ -84,6 +94,11 @@ expect_reason=""
 expect_action=""
 expect_max_fps=""
 expect_plan_kind=""
+expect_max_rss_kib_at_most=""
+expect_max_pss_kib_at_most=""
+expect_max_private_kib_at_most=""
+expect_max_uss_kib_at_most=""
+expect_max_shared_kib_at_most=""
 expect_render_sync_cache_hit=0
 expect_desktop_refresh_skip=0
 expect_render_sync_update_queued=0
@@ -168,6 +183,31 @@ while [[ $# -gt 0 ]]; do
     --expect-plan-kind)
       [[ $# -ge 2 ]] || { echo "--expect-plan-kind requires a value" >&2; exit 2; }
       expect_plan_kind="$2"
+      shift 2
+      ;;
+    --expect-max-rss-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-rss-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_rss_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-max-pss-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-pss-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_pss_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-max-private-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-private-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_private_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-max-uss-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-uss-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_uss_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-max-shared-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-shared-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_shared_kib_at_most="$2"
       shift 2
       ;;
     --expect-render-sync-cache-hit)
@@ -1282,6 +1322,63 @@ validate_decision_expectations() {
   fi
 }
 
+has_process_memory_expectations() {
+  [[ -n "$expect_max_rss_kib_at_most" ||
+    -n "$expect_max_pss_kib_at_most" ||
+    -n "$expect_max_private_kib_at_most" ||
+    -n "$expect_max_uss_kib_at_most" ||
+    -n "$expect_max_shared_kib_at_most" ]]
+}
+
+expect_process_summary_maximum() {
+  local key="$1"
+  local maximum="$2"
+  local description="$3"
+  local require_observed="$4"
+  local value
+
+  if value="$(summary_value "$key" "$summary_path")" && [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    if [[ "$require_observed" -eq 1 ]] && awk -v value="$value" 'BEGIN { exit (value + 0 > 0) ? 0 : 1 }'; then
+      :
+    elif [[ "$require_observed" -eq 1 ]]; then
+      skip_or_fail "process memory expectation not met: ${description} was not observed; /proc/<pid>/smaps_rollup may be unavailable"
+      return 0
+    fi
+    if awk -v value="$value" -v maximum="$maximum" 'BEGIN { exit (value + 0 <= maximum + 0) ? 0 : 1 }'; then
+      pass "process memory expectation matched ${description}: ${value} KiB"
+    else
+      skip_or_fail "process memory expectation not met: ${description} was ${value} KiB, expected at most ${maximum} KiB"
+    fi
+  else
+    skip_or_fail "process memory expectation not met: missing ${description}"
+  fi
+}
+
+validate_process_memory_expectations() {
+  has_process_memory_expectations || return 0
+  local rows
+  if ! rows="$(summary_value "samples" "$summary_path")" || [[ "$rows" == "0" ]]; then
+    skip_or_fail "cannot validate process memory expectations because no process samples were recorded"
+    return 0
+  fi
+
+  if [[ -n "$expect_max_rss_kib_at_most" ]]; then
+    expect_process_summary_maximum "max_rss_kib" "$expect_max_rss_kib_at_most" "max RSS" 0
+  fi
+  if [[ -n "$expect_max_pss_kib_at_most" ]]; then
+    expect_process_summary_maximum "max_pss_kib" "$expect_max_pss_kib_at_most" "max PSS" 1
+  fi
+  if [[ -n "$expect_max_private_kib_at_most" ]]; then
+    expect_process_summary_maximum "max_private_kib" "$expect_max_private_kib_at_most" "max private memory" 1
+  fi
+  if [[ -n "$expect_max_uss_kib_at_most" ]]; then
+    expect_process_summary_maximum "max_uss_kib" "$expect_max_uss_kib_at_most" "max USS" 1
+  fi
+  if [[ -n "$expect_max_shared_kib_at_most" ]]; then
+    expect_process_summary_maximum "max_shared_kib" "$expect_max_shared_kib_at_most" "max shared memory" 1
+  fi
+}
+
 has_telemetry_expectations() {
   [[ "$expect_render_sync_cache_hit" -eq 1 ||
     "$expect_desktop_refresh_skip" -eq 1 ||
@@ -1506,6 +1603,18 @@ if [[ -n "$expect_qos_dropped_max_at_most" && ! "$expect_qos_dropped_max_at_most
   echo "--expect-qos-dropped-max-at-most must be a non-negative integer" >&2
   exit 2
 fi
+for memory_expectation in \
+  "$expect_max_rss_kib_at_most" \
+  "$expect_max_pss_kib_at_most" \
+  "$expect_max_private_kib_at_most" \
+  "$expect_max_uss_kib_at_most" \
+  "$expect_max_shared_kib_at_most"
+do
+  if [[ -n "$memory_expectation" && ! "$memory_expectation" =~ ^[1-9][0-9]*$ ]]; then
+    echo "memory KiB expectations must be positive integers" >&2
+    exit 2
+  fi
+done
 case "$expect_decoder_policy_status" in
   ""|not-applicable|not-observed|satisfied|software-fallback|violated|unknown-decoder)
     ;;
@@ -1592,6 +1701,11 @@ expect_reason: ${expect_reason:-none}
 expect_action: ${expect_action:-none}
 expect_max_fps: ${expect_max_fps:-none}
 expect_plan_kind: ${expect_plan_kind:-none}
+expect_max_rss_kib_at_most: ${expect_max_rss_kib_at_most:-none}
+expect_max_pss_kib_at_most: ${expect_max_pss_kib_at_most:-none}
+expect_max_private_kib_at_most: ${expect_max_private_kib_at_most:-none}
+expect_max_uss_kib_at_most: ${expect_max_uss_kib_at_most:-none}
+expect_max_shared_kib_at_most: ${expect_max_shared_kib_at_most:-none}
 expect_render_sync_cache_hit: ${expect_render_sync_cache_hit}
 expect_desktop_refresh_skip: ${expect_desktop_refresh_skip}
 expect_render_sync_update_queued: ${expect_render_sync_update_queued}
@@ -1747,6 +1861,7 @@ elif [[ "$status_enabled" -eq 1 ]]; then
   note "video runtime extraction had ${video_runtime_failures} failed samples"
 fi
 validate_decision_expectations
+validate_process_memory_expectations
 validate_telemetry_expectations
 validate_video_runtime_expectations
 

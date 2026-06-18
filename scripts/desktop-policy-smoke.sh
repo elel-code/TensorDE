@@ -19,6 +19,16 @@ Options:
   --no-build            Use existing target/debug binaries
   --sample-duration <s> Performance sampling duration. Default: 2
   --sample-interval <s> Performance sampling interval. Default: 1
+  --expect-max-rss-kib-at-most <kib>
+                       Require sampled max RSS to be at most this KiB value
+  --expect-max-pss-kib-at-most <kib>
+                       Require sampled max PSS to be at most this KiB value
+  --expect-max-private-kib-at-most <kib>
+                       Require sampled max private memory to be at most this KiB value
+  --expect-max-uss-kib-at-most <kib>
+                       Require sampled max USS/private memory to be at most this KiB value
+  --expect-max-shared-kib-at-most <kib>
+                       Require sampled max shared memory to be at most this KiB value
   --keep                Keep generated smoke data and logs
   -h, --help            Show this help text
 EOF
@@ -32,6 +42,11 @@ build=1
 keep=0
 sample_duration=2
 sample_interval=1
+expect_max_rss_kib_at_most=""
+expect_max_pss_kib_at_most=""
+expect_max_private_kib_at_most=""
+expect_max_uss_kib_at_most=""
+expect_max_shared_kib_at_most=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -66,6 +81,31 @@ while [[ $# -gt 0 ]]; do
     --sample-interval)
       [[ $# -ge 2 ]] || { echo "--sample-interval requires seconds" >&2; exit 2; }
       sample_interval="$2"
+      shift 2
+      ;;
+    --expect-max-rss-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-rss-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_rss_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-max-pss-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-pss-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_pss_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-max-private-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-private-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_private_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-max-uss-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-uss-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_uss_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-max-shared-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-shared-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_shared_kib_at_most="$2"
       shift 2
       ;;
     --keep)
@@ -172,6 +212,18 @@ if [[ ! "$sample_interval" =~ ^[1-9][0-9]*$ ]]; then
   echo "--sample-interval must be a positive integer" >&2
   exit 2
 fi
+for memory_expectation in \
+  "$expect_max_rss_kib_at_most" \
+  "$expect_max_pss_kib_at_most" \
+  "$expect_max_private_kib_at_most" \
+  "$expect_max_uss_kib_at_most" \
+  "$expect_max_shared_kib_at_most"
+do
+  if [[ -n "$memory_expectation" && ! "$memory_expectation" =~ ^[1-9][0-9]*$ ]]; then
+    echo "memory KiB expectations must be positive integers" >&2
+    exit 2
+  fi
+done
 
 require_command ps || true
 require_command sed || true
@@ -223,6 +275,11 @@ cat > "$metadata_path" <<EOF
 output: ${output_name}
 sample_duration: ${sample_duration}
 sample_interval: ${sample_interval}
+expect_max_rss_kib_at_most: ${expect_max_rss_kib_at_most:-none}
+expect_max_pss_kib_at_most: ${expect_max_pss_kib_at_most:-none}
+expect_max_private_kib_at_most: ${expect_max_private_kib_at_most:-none}
+expect_max_uss_kib_at_most: ${expect_max_uss_kib_at_most:-none}
+expect_max_shared_kib_at_most: ${expect_max_shared_kib_at_most:-none}
 wallpaper: ${wallpaper_path}
 slideshow_wallpaper: ${slideshow_wallpaper_path}
 EOF
@@ -365,6 +422,25 @@ expected_adaptive_action_for_scenario() {
       printf '%s\n' "pause-dynamic"
       ;;
   esac
+}
+
+append_process_memory_expectations() {
+  local -n args_ref="$1"
+  if [[ -n "$expect_max_rss_kib_at_most" ]]; then
+    args_ref+=(--expect-max-rss-kib-at-most "$expect_max_rss_kib_at_most")
+  fi
+  if [[ -n "$expect_max_pss_kib_at_most" ]]; then
+    args_ref+=(--expect-max-pss-kib-at-most "$expect_max_pss_kib_at_most")
+  fi
+  if [[ -n "$expect_max_private_kib_at_most" ]]; then
+    args_ref+=(--expect-max-private-kib-at-most "$expect_max_private_kib_at_most")
+  fi
+  if [[ -n "$expect_max_uss_kib_at_most" ]]; then
+    args_ref+=(--expect-max-uss-kib-at-most "$expect_max_uss_kib_at_most")
+  fi
+  if [[ -n "$expect_max_shared_kib_at_most" ]]; then
+    args_ref+=(--expect-max-shared-kib-at-most "$expect_max_shared_kib_at_most")
+  fi
 }
 
 run_scenario() {
@@ -519,6 +595,7 @@ run_scenario() {
     --expect-render-sync-update-queued
     --expect-render-sync-update-skipped
   )
+  append_process_memory_expectations sample_args
   if [[ -n "$expected_plan_kind" ]]; then
     sample_args+=(--expect-plan-kind "$expected_plan_kind")
   fi
