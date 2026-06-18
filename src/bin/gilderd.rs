@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 #[cfg(feature = "gtk-renderer")]
 use std::{cell::RefCell, rc::Rc};
 
@@ -55,6 +55,7 @@ fn load_daemon_context() -> Result<DaemonContext, String> {
         config,
         state,
         desktop,
+        last_desktop_refresh: Some(Instant::now()),
         render_sync_cache: None,
     })
 }
@@ -462,6 +463,7 @@ struct DaemonContext {
     config: GilderConfig,
     state: AppState,
     desktop: gilder::desktop::DesktopSnapshot,
+    last_desktop_refresh: Option<Instant>,
     render_sync_cache: Option<RenderSyncCache>,
 }
 
@@ -563,7 +565,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
             }),
         )),
         RequestMethod::Status => {
-            refresh_desktop(context);
+            refresh_desktop_if_stale(context);
             let render_sync = current_render_sync(context);
             IpcOutcome::response(gilder::ipc::success_response(
                 &request.id,
@@ -581,7 +583,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
             ))
         }
         RequestMethod::Outputs => {
-            refresh_desktop(context);
+            refresh_desktop_if_stale(context);
             IpcOutcome::response(gilder::ipc::success_response(
                 &request.id,
                 json!({ "desktop": context.desktop, "outputs": output_reports(context) }),
@@ -767,11 +769,24 @@ fn refresh_desktop(context: &mut DaemonContext) {
             if snapshot.compositor.is_some() || !snapshot.outputs.is_empty() {
                 context.desktop = snapshot;
             }
+            context.last_desktop_refresh = Some(Instant::now());
             return;
         }
     }
 
     context.desktop = gilder::desktop::adapters::read_desktop_snapshot(&context.config.adapters);
+    context.last_desktop_refresh = Some(Instant::now());
+}
+
+fn refresh_desktop_if_stale(context: &mut DaemonContext) {
+    let interval = desktop_refresh_interval(&context.config.performance);
+    let is_stale = context
+        .last_desktop_refresh
+        .map(|last_refresh| last_refresh.elapsed() >= interval)
+        .unwrap_or(true);
+    if is_stale {
+        refresh_desktop(context);
+    }
 }
 
 fn output_reports(context: &DaemonContext) -> Vec<serde_json::Value> {
@@ -1150,6 +1165,27 @@ mod tests {
     }
 
     #[test]
+    fn read_requests_refresh_desktop_only_after_interval() {
+        let mut context = test_context();
+        context.config.adapters = gilder::config::AdapterConfig {
+            generic_wayland: false,
+            hyprland: false,
+            niri: false,
+        };
+        context.config.performance.desktop_refresh_interval_ms = 1_000;
+        context.desktop.outputs = vec![gilder::desktop::DesktopOutput::virtual_output("eDP-1")];
+        context.last_desktop_refresh = Some(Instant::now());
+
+        refresh_desktop_if_stale(&mut context);
+        assert_eq!(context.desktop.outputs.len(), 1);
+
+        context.last_desktop_refresh = Some(Instant::now() - Duration::from_millis(1_500));
+        refresh_desktop_if_stale(&mut context);
+        assert!(context.desktop.outputs.is_empty());
+        assert!(context.last_desktop_refresh.is_some());
+    }
+
+    #[test]
     fn output_reports_apply_output_performance_override() {
         let mut context = test_context();
         context.config.outputs.insert(
@@ -1275,6 +1311,7 @@ mod tests {
             config: GilderConfig::default(),
             state: AppState::default(),
             desktop: gilder::desktop::DesktopSnapshot::default(),
+            last_desktop_refresh: Some(Instant::now()),
             render_sync_cache: None,
         }
     }
