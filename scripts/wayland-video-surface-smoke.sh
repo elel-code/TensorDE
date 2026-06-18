@@ -12,6 +12,7 @@ output, and records status/log evidence.
 
 Options:
   --output <name>     Output connector name. Default: first daemon-reported output
+  --all-outputs       Apply the generated video wallpaper to every reported output
   --work-dir <dir>    Parent directory for temporary smoke data
   --report-dir <dir>  Exact evidence directory. Created and kept
   --preflight         Check session, tools, binaries, and GStreamer elements without applying wallpaper
@@ -40,6 +41,7 @@ EOF
 work_parent="${TMPDIR:-/tmp}"
 report_dir=""
 output_name=""
+all_outputs=0
 preflight=0
 allow_missing=0
 build=1
@@ -59,6 +61,10 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "--output requires a value" >&2; exit 2; }
       output_name="$2"
       shift 2
+      ;;
+    --all-outputs)
+      all_outputs=1
+      shift
       ;;
     --work-dir)
       [[ $# -ge 2 ]] || { echo "--work-dir requires a directory" >&2; exit 2; }
@@ -166,6 +172,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$all_outputs" -eq 1 && -n "$output_name" ]]; then
+  echo "--all-outputs cannot be combined with --output" >&2
+  exit 2
+fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
@@ -375,6 +386,7 @@ write_metadata() {
   cat > "$metadata_path" <<EOF
 mode: $([[ "$preflight" -eq 1 ]] && printf 'preflight' || printf 'smoke')
 output: ${output_name:-auto}
+all_outputs: ${all_outputs}
 build: ${build}
 sample_performance: ${sample_performance}
 sample_paused: ${sample_paused}
@@ -486,6 +498,24 @@ expected_mode_for_reason() {
       printf '%s\n' ""
       ;;
   esac
+}
+
+extract_desktop_output_names() {
+  local status_file="$1"
+  local desktop_outputs
+  desktop_outputs="$(sed -n 's/.*"desktop":{"compositor":"[^"]*","outputs":\[\(.*\)\],"power".*/\1/p' "$status_file")"
+  if [[ -z "$desktop_outputs" ]]; then
+    return 0
+  fi
+  printf '%s\n' "$desktop_outputs" | grep -o '"name":"[^"]*"' | cut -d '"' -f 4 || true
+}
+
+status_has_video_plan_for_output() {
+  local status_file="$1"
+  local output="$2"
+  local video_plans
+  video_plans="$(sed -n 's/.*"video_plans":\[\(.*\)\]},"renderer".*/\1/p' "$status_file")"
+  [[ -n "$video_plans" ]] && grep -Fq "\"output_name\":\"${output}\"" <<< "$video_plans"
 }
 
 printf 'kind,name,status,detail\n' > "$checks_path"
@@ -615,16 +645,29 @@ if [[ -n "$simulate_session" ]]; then
   fi
 fi
 
-if [[ -z "$output_name" ]]; then
-  output_name="$(grep -o '"name":"[^"]*"' "$status_before" | head -n 1 | cut -d '"' -f 4 || true)"
+target_outputs=()
+if [[ "$all_outputs" -eq 1 ]]; then
+  mapfile -t target_outputs < <(extract_desktop_output_names "$status_before")
+else
+  if [[ -z "$output_name" ]]; then
+    output_name="$(extract_desktop_output_names "$status_before" | head -n 1 || true)"
+  fi
+  if [[ -n "$output_name" ]]; then
+    target_outputs=("$output_name")
+  fi
 fi
-if [[ -z "$output_name" ]]; then
+if [[ "${#target_outputs[@]}" -eq 0 ]]; then
   skip_or_fail "daemon reported no output; pass --output <name> if compositor adapters are disabled"
   note "status evidence: $status_before"
   note "daemon log: $daemon_log"
   finish_with_summary
 fi
-pass "selected output $output_name"
+output_name="${target_outputs[0]}"
+if [[ "$all_outputs" -eq 1 ]]; then
+  pass "selected ${#target_outputs[@]} outputs: ${target_outputs[*]}"
+else
+  pass "selected output $output_name"
+fi
 
 if [[ -n "$simulate_output_state" ]]; then
   case "$simulate_output_state" in
@@ -656,14 +699,24 @@ if ! grep -Eq '"name":"gtk4paintablesink","available":true|"available":true,"nam
 fi
 pass "gtk4paintablesink is available"
 
-env GILDER_SOCKET="$socket" "$gilderctl" set "$wallpaper_dir" --output "$output_name" >/dev/null
+for target_output in "${target_outputs[@]}"; do
+  env GILDER_SOCKET="$socket" "$gilderctl" set "$wallpaper_dir" --output "$target_output" >/dev/null
+done
+if [[ "$all_outputs" -eq 1 ]]; then
+  pass "applied video wallpaper to ${#target_outputs[@]} outputs"
+fi
 sleep 2
 env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_after"
 
 if expects_active_video_plan; then
-  if ! grep -q '"video_plans":\[' "$status_after" || grep -q '"video_plans":\[\]' "$status_after"; then
-    skip_or_fail "status does not report an active video render plan"
-  else
+  missing_video_plan=0
+  for target_output in "${target_outputs[@]}"; do
+    if ! status_has_video_plan_for_output "$status_after" "$target_output"; then
+      missing_video_plan=1
+      skip_or_fail "status does not report an active video render plan for ${target_output}"
+    fi
+  done
+  if [[ "$missing_video_plan" -eq 0 ]]; then
     pass "status reports active video render plan"
   fi
 else
@@ -683,7 +736,11 @@ if [[ -n "$expected_reason" ]]; then
 fi
 
 if [[ "$visual_hold" -gt 0 ]]; then
-  note "visual hold: output '$output_name' should show the generated moving test video for ${visual_hold}s"
+  if [[ "$all_outputs" -eq 1 ]]; then
+    note "visual hold: outputs '${target_outputs[*]}' should show the generated moving test video for ${visual_hold}s"
+  else
+    note "visual hold: output '$output_name' should show the generated moving test video for ${visual_hold}s"
+  fi
   sleep "$visual_hold"
   pass "held video wallpaper for visual confirmation window"
 fi
@@ -772,5 +829,9 @@ if [[ "$sample_paused" -eq 1 ]]; then
   note "performance paused: $performance_paused_dir"
   note "performance paused log: $performance_paused_log"
 fi
-note "Visually confirm that output '$output_name' shows the generated moving test video."
+if [[ "$all_outputs" -eq 1 ]]; then
+  note "Visually confirm that outputs '${target_outputs[*]}' show the generated moving test video."
+else
+  note "Visually confirm that output '$output_name' shows the generated moving test video."
+fi
 finish_with_summary
