@@ -15,6 +15,7 @@ fi
   ffmpeg \
   gstreamer \
   gst-libav \
+  gst-plugin-dav1d \
   gst-plugins-bad \
   gst-plugins-base \
   gst-plugins-good \

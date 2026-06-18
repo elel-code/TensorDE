@@ -14,6 +14,7 @@ Options:
   --work-dir <dir>    Parent directory for temporary smoke data
   --report-dir <dir>  Exact evidence directory. Created and kept
   --install-missing   Install codec smoke dependencies on supported Linux hosts
+  --preflight         Check tools, encoders, demuxers, and decoders only
   --allow-missing     Report missing encoders/plugins as skips instead of failures
   --no-convert        Skip gilder-convert preview checks
   --keep              Keep generated smoke data
@@ -24,6 +25,7 @@ EOF
 work_parent="${TMPDIR:-/tmp}"
 report_dir=""
 install_missing=0
+preflight=0
 allow_missing=0
 run_convert=1
 keep=0
@@ -45,6 +47,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --install-missing)
       install_missing=1
+      shift
+      ;;
+    --preflight)
+      preflight=1
+      run_convert=0
       shift
       ;;
     --allow-missing)
@@ -293,6 +300,7 @@ rate: ${rate}
 duration_seconds: ${duration}
 allow_missing: ${allow_missing}
 run_convert: ${run_convert}
+preflight: ${preflight}
 ffmpeg: ${ffmpeg:-unavailable}
 gst_launch: ${gst_launch:-unavailable}
 gst_inspect: ${gst_inspect:-unavailable}
@@ -393,6 +401,101 @@ record_required_gst_elements() {
   esac
 }
 
+record_preflight_failure() {
+  if [[ "$allow_missing" -eq 1 ]]; then
+    record_skip "$*"
+  else
+    record_failure "$*"
+  fi
+}
+
+preflight_status() {
+  if [[ "$allow_missing" -eq 1 ]]; then
+    printf '%s\n' skip
+  else
+    printf '%s\n' fail
+  fi
+}
+
+check_preflight_encoder() {
+  local case_name="$1"
+  local encoder="$2"
+
+  if has_ffmpeg_encoder "$encoder"; then
+    record_pass "$case_name ffmpeg encoder $encoder"
+    record_result "$case_name" "ffmpeg-encoder" "pass" "$encoder is available" ""
+  else
+    local status
+    status="$(preflight_status)"
+    record_preflight_failure "$case_name ffmpeg encoder $encoder is missing"
+    record_result "$case_name" "ffmpeg-encoder" "$status" "$encoder is missing" ""
+  fi
+}
+
+check_preflight_gst_element() {
+  local case_name="$1"
+  local role="$2"
+  local element="$3"
+
+  if gst_element_available "$element"; then
+    record_pass "$case_name GStreamer $role $element"
+    record_gst_element "$case_name" "$role" "$element" "available"
+    record_result "$case_name" "gstreamer-$role" "pass" "$element is available" ""
+  else
+    local status
+    status="$(preflight_status)"
+    record_preflight_failure "$case_name GStreamer $role $element is missing"
+    record_gst_element "$case_name" "$role" "$element" "missing"
+    record_result "$case_name" "gstreamer-$role" "$status" "$element is missing" ""
+  fi
+}
+
+check_preflight_decoder_candidates() {
+  local case_name="$1"
+  shift
+  local element
+  local available=0
+
+  for element in "$@"; do
+    if gst_element_available "$element"; then
+      available=1
+      record_gst_element "$case_name" "decoder-candidate" "$element" "available"
+    else
+      record_gst_element "$case_name" "decoder-candidate" "$element" "missing"
+    fi
+  done
+
+  if [[ "$available" -eq 1 ]]; then
+    record_pass "$case_name GStreamer decoder candidate"
+    record_gst_element "$case_name" "decoder" "$*" "available"
+    record_result "$case_name" "gstreamer-decoder" "pass" "one decoder candidate is available: $*" ""
+  else
+    local status
+    status="$(preflight_status)"
+    record_preflight_failure "$case_name GStreamer decoder candidates are missing: $*"
+    record_gst_element "$case_name" "decoder" "$*" "missing"
+    record_result "$case_name" "gstreamer-decoder" "$status" "all decoder candidates are missing: $*" ""
+  fi
+}
+
+run_preflight() {
+  note "preflight"
+  check_preflight_gst_element environment "sink" fakesink
+  check_preflight_gst_element environment "playback" playbin
+
+  check_preflight_encoder mp4-h264 libx264
+  check_preflight_gst_element mp4-h264 "demuxer" qtdemux
+  check_preflight_decoder_candidates mp4-h264 avdec_h264 openh264dec
+
+  check_preflight_encoder webm-vp9 libvpx-vp9
+  check_preflight_gst_element webm-vp9 "demuxer" matroskademux
+  check_preflight_decoder_candidates webm-vp9 vp9dec avdec_vp9
+
+  check_preflight_encoder webm-av1 libaom-av1
+  check_preflight_gst_element webm-av1 "demuxer" matroskademux
+  check_preflight_decoder_candidates webm-av1 dav1ddec avdec_av1
+}
+
 run_with_timeout() {
   if command -v timeout >/dev/null 2>&1; then
     timeout 20s "$@"
@@ -450,6 +553,7 @@ convert_sample() {
   local source_dir="$work_dir/${name}-source"
   local output_dir="$work_dir/${name}.gwpdir"
 
+  rm -rf "$source_dir" "$output_dir"
   mkdir -p "$source_dir"
   cp "$sample" "$source_dir/loop.${ext}"
   cat > "$source_dir/project.json" <<EOF
@@ -522,9 +626,13 @@ run_case() {
 }
 
 note "work dir: $work_dir"
-run_case mp4-h264 mp4
-run_case webm-vp9 webm
-run_case webm-av1 webm
+if [[ "$preflight" -eq 1 ]]; then
+  run_preflight
+else
+  run_case mp4-h264 mp4
+  run_case webm-vp9 webm
+  run_case webm-av1 webm
+fi
 
 write_summary
 if [[ "$keep" -eq 1 || -n "$report_dir" ]]; then
