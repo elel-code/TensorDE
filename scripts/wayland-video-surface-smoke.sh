@@ -257,6 +257,7 @@ capture_performance() {
     --keep
     --expect-render-sync-cache-hit
     --expect-desktop-refresh-skip
+    --expect-render-sync-update-queued
   )
   if [[ -n "$expected_mode" ]]; then
     sample_args+=(--expect-mode "$expected_mode")

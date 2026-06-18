@@ -29,6 +29,10 @@ Options:
                      Require render_sync cache hits to increase during sampling
   --expect-desktop-refresh-skip
                      Require read-request desktop refresh skips to increase during sampling
+  --expect-render-sync-update-queued
+                     Require renderer sync queued count to be non-zero
+  --expect-render-sync-update-skipped
+                     Require renderer sync skipped count to be non-zero
   --allow-missing     Report missing daemon/tools as skips instead of failures
   --keep              Keep generated evidence after the script exits
   -h, --help          Show this help text
@@ -51,6 +55,8 @@ expect_action=""
 expect_plan_kind=""
 expect_render_sync_cache_hit=0
 expect_desktop_refresh_skip=0
+expect_render_sync_update_queued=0
+expect_render_sync_update_skipped=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -120,6 +126,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --expect-desktop-refresh-skip)
       expect_desktop_refresh_skip=1
+      shift
+      ;;
+    --expect-render-sync-update-queued)
+      expect_render_sync_update_queued=1
+      shift
+      ;;
+    --expect-render-sync-update-skipped)
+      expect_render_sync_update_skipped=1
       shift
       ;;
     --allow-missing)
@@ -415,7 +429,10 @@ validate_decision_expectations() {
 }
 
 has_telemetry_expectations() {
-  [[ "$expect_render_sync_cache_hit" -eq 1 || "$expect_desktop_refresh_skip" -eq 1 ]]
+  [[ "$expect_render_sync_cache_hit" -eq 1 ||
+    "$expect_desktop_refresh_skip" -eq 1 ||
+    "$expect_render_sync_update_queued" -eq 1 ||
+    "$expect_render_sync_update_skipped" -eq 1 ]]
 }
 
 expect_telemetry_minimum() {
@@ -452,6 +469,12 @@ validate_telemetry_expectations() {
   fi
   if [[ "$expect_desktop_refresh_skip" -eq 1 ]]; then
     expect_telemetry_minimum "desktop_refresh_skips_delta" 1 "desktop refresh skip delta"
+  fi
+  if [[ "$expect_render_sync_update_queued" -eq 1 ]]; then
+    expect_telemetry_minimum "render_sync_updates_queued_latest" 1 "renderer sync queued latest count"
+  fi
+  if [[ "$expect_render_sync_update_skipped" -eq 1 ]]; then
+    expect_telemetry_minimum "render_sync_updates_skipped_latest" 1 "renderer sync skipped latest count"
   fi
 }
 
@@ -524,6 +547,8 @@ expect_action: ${expect_action:-none}
 expect_plan_kind: ${expect_plan_kind:-none}
 expect_render_sync_cache_hit: ${expect_render_sync_cache_hit}
 expect_desktop_refresh_skip: ${expect_desktop_refresh_skip}
+expect_render_sync_update_queued: ${expect_render_sync_update_queued}
+expect_render_sync_update_skipped: ${expect_render_sync_update_skipped}
 EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,stat,comm,status_file,status_error_file\n' > "$csv_path"
