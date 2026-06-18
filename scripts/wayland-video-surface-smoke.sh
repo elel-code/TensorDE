@@ -67,6 +67,8 @@ Options:
                      Require GTK frame clock phase ticks. Phase: before-paint, update, layout, paint, after-paint, or all
   --expect-gtk-frame-timings
                      Require sampled completed GDK frame timings
+  --expect-renderer-video-pipeline-lifecycle
+                     Require active/resumed sampling to keep a video pipeline and paused/hidden/fullscreen sampling to release it
   --require-video-runtime-row
                      Require active video phases to record at least one video runtime row
   --visual-hold <sec>
@@ -117,6 +119,7 @@ expect_video_position_progress=0
 expect_gtk_frame_clock=0
 expect_gtk_frame_clock_phases=()
 expect_gtk_frame_timings=0
+expect_renderer_video_pipeline_lifecycle=0
 require_video_runtime_row=0
 visual_hold=0
 simulate_power=""
@@ -325,6 +328,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --expect-gtk-frame-timings)
       expect_gtk_frame_timings=1
+      sample_performance=1
+      shift
+      ;;
+    --expect-renderer-video-pipeline-lifecycle)
+      expect_renderer_video_pipeline_lifecycle=1
       sample_performance=1
       shift
       ;;
@@ -696,6 +704,7 @@ expect_video_position_progress: ${expect_video_position_progress}
 expect_gtk_frame_clock: ${expect_gtk_frame_clock}
 expect_gtk_frame_clock_phases: ${expect_gtk_frame_clock_phases[*]:-none}
 expect_gtk_frame_timings: ${expect_gtk_frame_timings}
+expect_renderer_video_pipeline_lifecycle: ${expect_renderer_video_pipeline_lifecycle}
 require_video_runtime_row: ${require_video_runtime_row}
 visual_hold: ${visual_hold}
 simulate_power: ${simulate_power:-none}
@@ -908,6 +917,7 @@ sample_performance: ${sample_performance}
 sample_paused: ${sample_paused}
 measure_fullscreen_resume: ${measure_fullscreen_resume}
 require_video_runtime_row: ${require_video_runtime_row}
+expect_renderer_video_pipeline_lifecycle: ${expect_renderer_video_pipeline_lifecycle}
 expect_gtk_frame_clock_phases: ${expect_gtk_frame_clock_phases[*]:-none}
 expect_max_rss_kib_at_most: ${expect_max_rss_kib_at_most:-none}
 expect_max_pss_kib_at_most: ${expect_max_pss_kib_at_most:-none}
@@ -1056,6 +1066,8 @@ capture_performance() {
   local expected_action="${6:-}"
   local expected_plan_kind="${7:-}"
   local include_video_runtime_expectations="${8:-0}"
+  local expected_pipeline_latest_at_least="${9:-}"
+  local expected_pipeline_latest_at_most="${10:-}"
   local -a sample_args
   sample_args=(
     --pid "$daemon_pid"
@@ -1085,6 +1097,12 @@ capture_performance() {
   fi
   if [[ "$include_video_runtime_expectations" -eq 1 ]]; then
     append_video_runtime_expectations sample_args
+  fi
+  if [[ -n "$expected_pipeline_latest_at_least" ]]; then
+    sample_args+=(--expect-renderer-video-pipelines-latest-at-least "$expected_pipeline_latest_at_least")
+  fi
+  if [[ -n "$expected_pipeline_latest_at_most" ]]; then
+    sample_args+=(--expect-renderer-video-pipelines-latest-at-most "$expected_pipeline_latest_at_most")
   fi
   if [[ "$allow_missing" -eq 1 ]]; then
     sample_args+=(--allow-missing)
@@ -1545,12 +1563,21 @@ if [[ "$sample_performance" -eq 1 ]]; then
   expected_action=""
   expected_plan_kind=""
   include_video_runtime_expectations=0
+  expected_pipeline_latest_at_least=""
+  expected_pipeline_latest_at_most=""
   if [[ -n "$expected_reason" ]]; then
     if expects_active_video_plan; then
       expected_action="render"
       expected_plan_kind="video"
     else
       expected_action="remove"
+    fi
+  fi
+  if [[ "$expect_renderer_video_pipeline_lifecycle" -eq 1 ]]; then
+    if expects_active_video_plan; then
+      expected_pipeline_latest_at_least="${#target_outputs[@]}"
+    else
+      expected_pipeline_latest_at_most=0
     fi
   fi
   if has_video_runtime_expectations; then
@@ -1568,7 +1595,9 @@ if [[ "$sample_performance" -eq 1 ]]; then
     "$expected_reason" \
     "$expected_action" \
     "$expected_plan_kind" \
-    "$include_video_runtime_expectations"; then
+    "$include_video_runtime_expectations" \
+    "$expected_pipeline_latest_at_least" \
+    "$expected_pipeline_latest_at_most"; then
     pass "captured ${performance_active_label} performance evidence"
   else
     note "performance sample log:"
@@ -1588,6 +1617,10 @@ if [[ "$sample_paused" -eq 1 ]]; then
     skip_or_fail "status does not report user-paused decision after pause"
   fi
 
+  paused_pipeline_latest_at_most=""
+  if [[ "$expect_renderer_video_pipeline_lifecycle" -eq 1 ]]; then
+    paused_pipeline_latest_at_most=0
+  fi
   if capture_performance \
     wayland-video-paused \
     "$performance_paused_dir" \
@@ -1595,7 +1628,10 @@ if [[ "$sample_paused" -eq 1 ]]; then
     paused \
     user-paused \
     remove \
-    ""; then
+    "" \
+    0 \
+    "" \
+    "$paused_pipeline_latest_at_most"; then
     pass "captured paused video performance evidence"
   else
     note "paused performance sample log:"

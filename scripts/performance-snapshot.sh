@@ -65,6 +65,12 @@ Options:
                      Require renderer sync queued count to be non-zero
   --expect-render-sync-update-skipped
                      Require renderer sync skipped count to be non-zero
+  --expect-renderer-video-pipelines-latest-at-least <count>
+                     Require latest renderer video pipeline count to be at least count
+  --expect-renderer-video-pipelines-latest-at-most <count>
+                     Require latest renderer video pipeline count to be at most count
+  --expect-renderer-video-pipelines-max-at-most <count>
+                     Require max sampled renderer video pipeline count to be at most count
   --expect-adaptive-action <type>
                      Require at least one telemetry row with this adaptive action type
   --expect-decoder-policy-status <status>
@@ -133,6 +139,9 @@ expect_render_sync_cache_hit=0
 expect_desktop_refresh_skip=0
 expect_render_sync_update_queued=0
 expect_render_sync_update_skipped=0
+expect_renderer_video_pipelines_latest_at_least=""
+expect_renderer_video_pipelines_latest_at_most=""
+expect_renderer_video_pipelines_max_at_most=""
 expect_adaptive_action=""
 expect_decoder_policy_status=""
 expect_decoder_class=""
@@ -305,6 +314,21 @@ while [[ $# -gt 0 ]]; do
     --expect-render-sync-update-skipped)
       expect_render_sync_update_skipped=1
       shift
+      ;;
+    --expect-renderer-video-pipelines-latest-at-least)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-pipelines-latest-at-least requires a value" >&2; exit 2; }
+      expect_renderer_video_pipelines_latest_at_least="$2"
+      shift 2
+      ;;
+    --expect-renderer-video-pipelines-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-pipelines-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_video_pipelines_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-video-pipelines-max-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-pipelines-max-at-most requires a value" >&2; exit 2; }
+      expect_renderer_video_pipelines_max_at_most="$2"
+      shift 2
       ;;
     --expect-adaptive-action)
       [[ $# -ge 2 ]] || { echo "--expect-adaptive-action requires a value" >&2; exit 2; }
@@ -847,6 +871,9 @@ write_telemetry_summary() {
         last_adaptive_action_max_fps = adaptive_action_max_fps
       }
       last_renderer_video_pipelines = renderer_video_pipelines
+      if (renderer_video_pipelines > max_renderer_video_pipelines) {
+        max_renderer_video_pipelines = renderer_video_pipelines
+      }
       last_renderer_video_qos_messages = renderer_video_qos_messages
       if (renderer_video_qos_messages > max_renderer_video_qos_messages) {
         max_renderer_video_qos_messages = renderer_video_qos_messages
@@ -956,6 +983,7 @@ write_telemetry_summary() {
           printf "adaptive_action.%s: 1\n", action
         }
         printf "renderer_video_pipelines_latest: %d\n", last_renderer_video_pipelines
+        printf "renderer_video_pipelines_max: %d\n", max_renderer_video_pipelines
         printf "renderer_video_qos_messages_latest: %d\n", last_renderer_video_qos_messages
         printf "renderer_video_qos_messages_max: %d\n", max_renderer_video_qos_messages
         printf "renderer_video_qos_dropped_max_latest: %s\n", last_renderer_video_qos_dropped_max
@@ -1569,6 +1597,9 @@ has_telemetry_expectations() {
     "$expect_desktop_refresh_skip" -eq 1 ||
     "$expect_render_sync_update_queued" -eq 1 ||
     "$expect_render_sync_update_skipped" -eq 1 ||
+    -n "$expect_renderer_video_pipelines_latest_at_least" ||
+    -n "$expect_renderer_video_pipelines_latest_at_most" ||
+    -n "$expect_renderer_video_pipelines_max_at_most" ||
     -n "$expect_adaptive_action" ]]
 }
 
@@ -1582,6 +1613,22 @@ expect_telemetry_minimum() {
       pass "telemetry expectation matched ${description}: ${value}"
     else
       skip_or_fail "telemetry expectation not met: ${description} was ${value}, expected at least ${minimum}"
+    fi
+  else
+    skip_or_fail "telemetry expectation not met: missing ${description}"
+  fi
+}
+
+expect_telemetry_maximum() {
+  local key="$1"
+  local maximum="$2"
+  local description="$3"
+  local value
+  if value="$(summary_value "$key" "$telemetry_summary_path")" && [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    if awk -v value="$value" -v maximum="$maximum" 'BEGIN { exit (value + 0 <= maximum + 0) ? 0 : 1 }'; then
+      pass "telemetry expectation matched ${description}: ${value}"
+    else
+      skip_or_fail "telemetry expectation not met: ${description} was ${value}, expected at most ${maximum}"
     fi
   else
     skip_or_fail "telemetry expectation not met: missing ${description}"
@@ -1612,6 +1659,15 @@ validate_telemetry_expectations() {
   fi
   if [[ "$expect_render_sync_update_skipped" -eq 1 ]]; then
     expect_telemetry_minimum "render_sync_updates_skipped_latest" 1 "renderer sync skipped latest count"
+  fi
+  if [[ -n "$expect_renderer_video_pipelines_latest_at_least" ]]; then
+    expect_telemetry_minimum "renderer_video_pipelines_latest" "$expect_renderer_video_pipelines_latest_at_least" "latest renderer video pipeline count"
+  fi
+  if [[ -n "$expect_renderer_video_pipelines_latest_at_most" ]]; then
+    expect_telemetry_maximum "renderer_video_pipelines_latest" "$expect_renderer_video_pipelines_latest_at_most" "latest renderer video pipeline count"
+  fi
+  if [[ -n "$expect_renderer_video_pipelines_max_at_most" ]]; then
+    expect_telemetry_maximum "renderer_video_pipelines_max" "$expect_renderer_video_pipelines_max_at_most" "max renderer video pipeline count"
   fi
   if [[ -n "$expect_adaptive_action" ]]; then
     expect_telemetry_minimum "adaptive_action.${expect_adaptive_action}" 1 "adaptive action ${expect_adaptive_action}"
@@ -1841,6 +1897,16 @@ case "$expect_adaptive_action" in
     exit 2
     ;;
 esac
+for renderer_pipeline_expectation in \
+  "$expect_renderer_video_pipelines_latest_at_least" \
+  "$expect_renderer_video_pipelines_latest_at_most" \
+  "$expect_renderer_video_pipelines_max_at_most"
+do
+  if [[ -n "$renderer_pipeline_expectation" && ! "$renderer_pipeline_expectation" =~ ^[0-9]+$ ]]; then
+    echo "renderer video pipeline expectations must be non-negative integers" >&2
+    exit 2
+  fi
+done
 
 essential_missing=0
 require_command ps || essential_missing=1
@@ -1922,6 +1988,9 @@ expect_render_sync_cache_hit: ${expect_render_sync_cache_hit}
 expect_desktop_refresh_skip: ${expect_desktop_refresh_skip}
 expect_render_sync_update_queued: ${expect_render_sync_update_queued}
 expect_render_sync_update_skipped: ${expect_render_sync_update_skipped}
+expect_renderer_video_pipelines_latest_at_least: ${expect_renderer_video_pipelines_latest_at_least:-none}
+expect_renderer_video_pipelines_latest_at_most: ${expect_renderer_video_pipelines_latest_at_most:-none}
+expect_renderer_video_pipelines_max_at_most: ${expect_renderer_video_pipelines_max_at_most:-none}
 expect_adaptive_action: ${expect_adaptive_action:-none}
 expect_decoder_policy_status: ${expect_decoder_policy_status:-none}
 expect_decoder_class: ${expect_decoder_class:-none}
