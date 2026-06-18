@@ -19,7 +19,7 @@ use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 #[cfg(feature = "video-renderer")]
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(feature = "video-renderer")]
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -47,8 +47,12 @@ pub struct GtkRendererResourceSnapshot {
     pub video_surfaces: usize,
     pub static_surface_resource_references: usize,
     pub static_surface_resource_bytes: u64,
+    pub static_surface_unique_resources: usize,
+    pub static_surface_unique_resource_bytes: u64,
     pub slideshow_resource_references: usize,
     pub slideshow_resource_bytes: u64,
+    pub slideshow_unique_resources: usize,
+    pub slideshow_unique_resource_bytes: u64,
 }
 
 struct RenderedOutput {
@@ -265,8 +269,12 @@ impl GtkStaticRenderer {
                 .count(),
             static_surface_resource_references: footprint.static_surface_resource_references,
             static_surface_resource_bytes: footprint.static_surface_resource_bytes,
+            static_surface_unique_resources: footprint.static_surface_unique_resources,
+            static_surface_unique_resource_bytes: footprint.static_surface_unique_resource_bytes,
             slideshow_resource_references: footprint.slideshow_resource_references,
             slideshow_resource_bytes: footprint.slideshow_resource_bytes,
+            slideshow_unique_resources: footprint.slideshow_unique_resources,
+            slideshow_unique_resource_bytes: footprint.slideshow_unique_resource_bytes,
         }
     }
 
@@ -604,24 +612,31 @@ fn static_plan_needs_update(
 struct RendererSurfaceResourceFootprint {
     static_surface_resource_references: usize,
     static_surface_resource_bytes: u64,
+    static_surface_unique_resources: usize,
+    static_surface_unique_resource_bytes: u64,
     slideshow_resource_references: usize,
     slideshow_resource_bytes: u64,
+    slideshow_unique_resources: usize,
+    slideshow_unique_resource_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct RendererSurfaceResourceSources<'a> {
     static_surface_source: Option<&'a Path>,
-    slideshow_sources: Option<&'a [std::path::PathBuf]>,
+    slideshow_sources: Option<&'a [PathBuf]>,
 }
 
 fn renderer_surface_resource_footprint<'a>(
     outputs: impl IntoIterator<Item = RendererSurfaceResourceSources<'a>>,
 ) -> RendererSurfaceResourceFootprint {
     let mut footprint = RendererSurfaceResourceFootprint::default();
+    let mut static_unique_sources = BTreeSet::new();
+    let mut slideshow_unique_sources = BTreeSet::new();
     for output in outputs {
         if let Some(source) = output.static_surface_source {
             footprint.static_surface_resource_references += 1;
             footprint.static_surface_resource_bytes += source_file_size(source);
+            static_unique_sources.insert(source.to_path_buf());
         }
         if let Some(sources) = output.slideshow_sources {
             footprint.slideshow_resource_references += sources.len();
@@ -629,8 +644,19 @@ fn renderer_surface_resource_footprint<'a>(
                 .iter()
                 .map(|source| source_file_size(source))
                 .sum::<u64>();
+            slideshow_unique_sources.extend(sources.iter().cloned());
         }
     }
+    footprint.static_surface_unique_resources = static_unique_sources.len();
+    footprint.static_surface_unique_resource_bytes = static_unique_sources
+        .iter()
+        .map(|source| source_file_size(source))
+        .sum();
+    footprint.slideshow_unique_resources = slideshow_unique_sources.len();
+    footprint.slideshow_unique_resource_bytes = slideshow_unique_sources
+        .iter()
+        .map(|source| source_file_size(source))
+        .sum();
     footprint
 }
 
@@ -1297,7 +1323,7 @@ mod tests {
         let static_source = test_dir.path().join("static.png");
         let slide_a = test_dir.path().join("slide-a.png");
         let slide_b = test_dir.path().join("slide-b.png");
-        let slideshow_sources = vec![slide_a.clone(), slide_b.clone()];
+        let slideshow_sources = vec![slide_a.clone(), slide_b.clone(), slide_a.clone()];
 
         let footprint = renderer_surface_resource_footprint([
             RendererSurfaceResourceSources {
@@ -1308,12 +1334,20 @@ mod tests {
                 static_surface_source: Some(slide_b.as_path()),
                 slideshow_sources: Some(slideshow_sources.as_slice()),
             },
+            RendererSurfaceResourceSources {
+                static_surface_source: Some(static_source.as_path()),
+                slideshow_sources: None,
+            },
         ]);
 
-        assert_eq!(footprint.static_surface_resource_references, 2);
-        assert_eq!(footprint.static_surface_resource_bytes, 10);
-        assert_eq!(footprint.slideshow_resource_references, 2);
-        assert_eq!(footprint.slideshow_resource_bytes, 5);
+        assert_eq!(footprint.static_surface_resource_references, 3);
+        assert_eq!(footprint.static_surface_resource_bytes, 16);
+        assert_eq!(footprint.static_surface_unique_resources, 2);
+        assert_eq!(footprint.static_surface_unique_resource_bytes, 10);
+        assert_eq!(footprint.slideshow_resource_references, 3);
+        assert_eq!(footprint.slideshow_resource_bytes, 6);
+        assert_eq!(footprint.slideshow_unique_resources, 2);
+        assert_eq!(footprint.slideshow_unique_resource_bytes, 5);
     }
 
     #[test]
@@ -1330,8 +1364,12 @@ mod tests {
 
         assert_eq!(footprint.static_surface_resource_references, 1);
         assert_eq!(footprint.static_surface_resource_bytes, 0);
+        assert_eq!(footprint.static_surface_unique_resources, 1);
+        assert_eq!(footprint.static_surface_unique_resource_bytes, 0);
         assert_eq!(footprint.slideshow_resource_references, 1);
         assert_eq!(footprint.slideshow_resource_bytes, 0);
+        assert_eq!(footprint.slideshow_unique_resources, 1);
+        assert_eq!(footprint.slideshow_unique_resource_bytes, 0);
     }
 
     #[cfg(feature = "video-renderer")]

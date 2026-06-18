@@ -105,10 +105,18 @@ Options:
                      Require latest renderer static surface resource references to be at most count
   --expect-renderer-static-surface-resource-bytes-latest-at-most <bytes>
                      Require latest renderer static surface resource bytes to be at most bytes
+  --expect-renderer-static-surface-unique-resources-latest-at-most <count>
+                     Require latest renderer static surface unique resources to be at most count
+  --expect-renderer-static-surface-unique-resource-bytes-latest-at-most <bytes>
+                     Require latest renderer static surface unique resource bytes to be at most bytes
   --expect-renderer-slideshow-resource-references-latest-at-most <count>
                      Require latest renderer slideshow resource references to be at most count
   --expect-renderer-slideshow-resource-bytes-latest-at-most <bytes>
                      Require latest renderer slideshow resource bytes to be at most bytes
+  --expect-renderer-slideshow-unique-resources-latest-at-most <count>
+                     Require latest renderer slideshow unique resources to be at most count
+  --expect-renderer-slideshow-unique-resource-bytes-latest-at-most <bytes>
+                     Require latest renderer slideshow unique resource bytes to be at most bytes
   --expect-renderer-video-surfaces-latest-at-least <count>
                      Require latest renderer video surface count to be at least count
   --expect-renderer-video-surfaces-latest-at-most <count>
@@ -209,8 +217,12 @@ expect_renderer_slideshow_surfaces_latest_at_most=""
 expect_renderer_slideshow_surfaces_max_at_most=""
 expect_renderer_static_surface_resource_references_latest_at_most=""
 expect_renderer_static_surface_resource_bytes_latest_at_most=""
+expect_renderer_static_surface_unique_resources_latest_at_most=""
+expect_renderer_static_surface_unique_resource_bytes_latest_at_most=""
 expect_renderer_slideshow_resource_references_latest_at_most=""
 expect_renderer_slideshow_resource_bytes_latest_at_most=""
+expect_renderer_slideshow_unique_resources_latest_at_most=""
+expect_renderer_slideshow_unique_resource_bytes_latest_at_most=""
 expect_renderer_video_surfaces_latest_at_least=""
 expect_renderer_video_surfaces_latest_at_most=""
 expect_renderer_video_surfaces_max_at_most=""
@@ -490,6 +502,16 @@ while [[ $# -gt 0 ]]; do
       expect_renderer_static_surface_resource_bytes_latest_at_most="$2"
       shift 2
       ;;
+    --expect-renderer-static-surface-unique-resources-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-static-surface-unique-resources-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_static_surface_unique_resources_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-static-surface-unique-resource-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-static-surface-unique-resource-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_static_surface_unique_resource_bytes_latest_at_most="$2"
+      shift 2
+      ;;
     --expect-renderer-slideshow-resource-references-latest-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-renderer-slideshow-resource-references-latest-at-most requires a value" >&2; exit 2; }
       expect_renderer_slideshow_resource_references_latest_at_most="$2"
@@ -498,6 +520,16 @@ while [[ $# -gt 0 ]]; do
     --expect-renderer-slideshow-resource-bytes-latest-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-renderer-slideshow-resource-bytes-latest-at-most requires a value" >&2; exit 2; }
       expect_renderer_slideshow_resource_bytes_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-slideshow-unique-resources-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-slideshow-unique-resources-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_slideshow_unique_resources_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-slideshow-unique-resource-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-slideshow-unique-resource-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_slideshow_unique_resource_bytes_latest_at_most="$2"
       shift 2
       ;;
     --expect-renderer-video-surfaces-latest-at-least)
@@ -1046,6 +1078,10 @@ write_telemetry_summary() {
       renderer_static_surface_resource_bytes = $75 + 0
       renderer_slideshow_resource_references = $76 + 0
       renderer_slideshow_resource_bytes = $77 + 0
+      renderer_static_surface_unique_resources = $78 + 0
+      renderer_static_surface_unique_resource_bytes = $79 + 0
+      renderer_slideshow_unique_resources = $80 + 0
+      renderer_slideshow_unique_resource_bytes = $81 + 0
 
       if (rows == 1) {
         first_refreshes = refreshes
@@ -1150,6 +1186,10 @@ write_telemetry_summary() {
       last_renderer_static_surface_resource_bytes = renderer_static_surface_resource_bytes
       last_renderer_slideshow_resource_references = renderer_slideshow_resource_references
       last_renderer_slideshow_resource_bytes = renderer_slideshow_resource_bytes
+      last_renderer_static_surface_unique_resources = renderer_static_surface_unique_resources
+      last_renderer_static_surface_unique_resource_bytes = renderer_static_surface_unique_resource_bytes
+      last_renderer_slideshow_unique_resources = renderer_slideshow_unique_resources
+      last_renderer_slideshow_unique_resource_bytes = renderer_slideshow_unique_resource_bytes
       last_renderer_video_surfaces = renderer_video_surfaces
       if (renderer_video_surfaces > max_renderer_video_surfaces) {
         max_renderer_video_surfaces = renderer_video_surfaces
@@ -1305,6 +1345,10 @@ write_telemetry_summary() {
         printf "renderer_static_surface_resource_bytes_latest: %d\n", last_renderer_static_surface_resource_bytes
         printf "renderer_slideshow_resource_references_latest: %d\n", last_renderer_slideshow_resource_references
         printf "renderer_slideshow_resource_bytes_latest: %d\n", last_renderer_slideshow_resource_bytes
+        printf "renderer_static_surface_unique_resources_latest: %d\n", last_renderer_static_surface_unique_resources
+        printf "renderer_static_surface_unique_resource_bytes_latest: %d\n", last_renderer_static_surface_unique_resource_bytes
+        printf "renderer_slideshow_unique_resources_latest: %d\n", last_renderer_slideshow_unique_resources
+        printf "renderer_slideshow_unique_resource_bytes_latest: %d\n", last_renderer_slideshow_unique_resource_bytes
         printf "renderer_video_surfaces_latest: %d\n", last_renderer_video_surfaces
         printf "renderer_video_surfaces_max: %d\n", max_renderer_video_surfaces
         printf "renderer_video_pipelines_latest: %d\n", last_renderer_video_pipelines
@@ -1942,8 +1986,12 @@ has_telemetry_expectations() {
     -n "$expect_renderer_slideshow_surfaces_max_at_most" ||
     -n "$expect_renderer_static_surface_resource_references_latest_at_most" ||
     -n "$expect_renderer_static_surface_resource_bytes_latest_at_most" ||
+    -n "$expect_renderer_static_surface_unique_resources_latest_at_most" ||
+    -n "$expect_renderer_static_surface_unique_resource_bytes_latest_at_most" ||
     -n "$expect_renderer_slideshow_resource_references_latest_at_most" ||
     -n "$expect_renderer_slideshow_resource_bytes_latest_at_most" ||
+    -n "$expect_renderer_slideshow_unique_resources_latest_at_most" ||
+    -n "$expect_renderer_slideshow_unique_resource_bytes_latest_at_most" ||
     -n "$expect_renderer_video_surfaces_latest_at_least" ||
     -n "$expect_renderer_video_surfaces_latest_at_most" ||
     -n "$expect_renderer_video_surfaces_max_at_most" ||
@@ -2070,11 +2118,23 @@ validate_telemetry_expectations() {
   if [[ -n "$expect_renderer_static_surface_resource_bytes_latest_at_most" ]]; then
     expect_telemetry_maximum "renderer_static_surface_resource_bytes_latest" "$expect_renderer_static_surface_resource_bytes_latest_at_most" "latest renderer static surface resource bytes"
   fi
+  if [[ -n "$expect_renderer_static_surface_unique_resources_latest_at_most" ]]; then
+    expect_telemetry_maximum "renderer_static_surface_unique_resources_latest" "$expect_renderer_static_surface_unique_resources_latest_at_most" "latest renderer static surface unique resources"
+  fi
+  if [[ -n "$expect_renderer_static_surface_unique_resource_bytes_latest_at_most" ]]; then
+    expect_telemetry_maximum "renderer_static_surface_unique_resource_bytes_latest" "$expect_renderer_static_surface_unique_resource_bytes_latest_at_most" "latest renderer static surface unique resource bytes"
+  fi
   if [[ -n "$expect_renderer_slideshow_resource_references_latest_at_most" ]]; then
     expect_telemetry_maximum "renderer_slideshow_resource_references_latest" "$expect_renderer_slideshow_resource_references_latest_at_most" "latest renderer slideshow resource references"
   fi
   if [[ -n "$expect_renderer_slideshow_resource_bytes_latest_at_most" ]]; then
     expect_telemetry_maximum "renderer_slideshow_resource_bytes_latest" "$expect_renderer_slideshow_resource_bytes_latest_at_most" "latest renderer slideshow resource bytes"
+  fi
+  if [[ -n "$expect_renderer_slideshow_unique_resources_latest_at_most" ]]; then
+    expect_telemetry_maximum "renderer_slideshow_unique_resources_latest" "$expect_renderer_slideshow_unique_resources_latest_at_most" "latest renderer slideshow unique resources"
+  fi
+  if [[ -n "$expect_renderer_slideshow_unique_resource_bytes_latest_at_most" ]]; then
+    expect_telemetry_maximum "renderer_slideshow_unique_resource_bytes_latest" "$expect_renderer_slideshow_unique_resource_bytes_latest_at_most" "latest renderer slideshow unique resource bytes"
   fi
   if [[ -n "$expect_renderer_video_surfaces_latest_at_least" ]]; then
     expect_telemetry_minimum "renderer_video_surfaces_latest" "$expect_renderer_video_surfaces_latest_at_least" "latest renderer video surface count"
@@ -2334,8 +2394,12 @@ for renderer_resource_expectation in \
   "$expect_renderer_slideshow_surfaces_max_at_most" \
   "$expect_renderer_static_surface_resource_references_latest_at_most" \
   "$expect_renderer_static_surface_resource_bytes_latest_at_most" \
+  "$expect_renderer_static_surface_unique_resources_latest_at_most" \
+  "$expect_renderer_static_surface_unique_resource_bytes_latest_at_most" \
   "$expect_renderer_slideshow_resource_references_latest_at_most" \
   "$expect_renderer_slideshow_resource_bytes_latest_at_most" \
+  "$expect_renderer_slideshow_unique_resources_latest_at_most" \
+  "$expect_renderer_slideshow_unique_resource_bytes_latest_at_most" \
   "$expect_renderer_video_surfaces_latest_at_least" \
   "$expect_renderer_video_surfaces_latest_at_most" \
   "$expect_renderer_video_surfaces_max_at_most" \
@@ -2465,8 +2529,12 @@ expect_renderer_slideshow_surfaces_latest_at_most: ${expect_renderer_slideshow_s
 expect_renderer_slideshow_surfaces_max_at_most: ${expect_renderer_slideshow_surfaces_max_at_most:-none}
 expect_renderer_static_surface_resource_references_latest_at_most: ${expect_renderer_static_surface_resource_references_latest_at_most:-none}
 expect_renderer_static_surface_resource_bytes_latest_at_most: ${expect_renderer_static_surface_resource_bytes_latest_at_most:-none}
+expect_renderer_static_surface_unique_resources_latest_at_most: ${expect_renderer_static_surface_unique_resources_latest_at_most:-none}
+expect_renderer_static_surface_unique_resource_bytes_latest_at_most: ${expect_renderer_static_surface_unique_resource_bytes_latest_at_most:-none}
 expect_renderer_slideshow_resource_references_latest_at_most: ${expect_renderer_slideshow_resource_references_latest_at_most:-none}
 expect_renderer_slideshow_resource_bytes_latest_at_most: ${expect_renderer_slideshow_resource_bytes_latest_at_most:-none}
+expect_renderer_slideshow_unique_resources_latest_at_most: ${expect_renderer_slideshow_unique_resources_latest_at_most:-none}
+expect_renderer_slideshow_unique_resource_bytes_latest_at_most: ${expect_renderer_slideshow_unique_resource_bytes_latest_at_most:-none}
 expect_renderer_video_surfaces_latest_at_least: ${expect_renderer_video_surfaces_latest_at_least:-none}
 expect_renderer_video_surfaces_latest_at_most: ${expect_renderer_video_surfaces_latest_at_most:-none}
 expect_renderer_video_surfaces_max_at_most: ${expect_renderer_video_surfaces_max_at_most:-none}
@@ -2492,7 +2560,7 @@ EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
-printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,render_sync_package_cache_entries,render_sync_package_cache_max_entries,render_sync_package_cache_hits,render_sync_package_cache_misses,render_sync_package_cache_evictions,render_sync_archive_cache_entries,render_sync_archive_cache_max_entries,render_sync_archive_cache_reuses,render_sync_archive_cache_extractions,render_sync_archive_cache_evictions,render_sync_archive_cache_evictions_latest,render_sync_archive_cache_eviction_errors,render_sync_archive_cache_eviction_errors_latest,render_sync_planned_static_image_resources,render_sync_planned_video_poster_resources,render_sync_planned_slideshow_image_resources,render_sync_planned_image_resource_references,render_sync_planned_unique_image_resources,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps,renderer_output_windows,renderer_static_surfaces,renderer_slideshow_surfaces,renderer_video_surfaces,renderer_video_pipelines,renderer_video_qos_messages,renderer_video_qos_dropped_max,renderer_video_gtk_frame_clock_ticks,renderer_video_gtk_frame_clock_interval_us_max,renderer_video_gtk_frame_clock_fps_x1000_max,renderer_video_gtk_frame_timings_complete,renderer_video_gtk_frame_timings_presentation_interval_us_max,renderer_video_gtk_frame_timings_presentation_time_us_max,renderer_video_gtk_frame_clock_before_paint_ticks,renderer_video_gtk_frame_clock_update_ticks,renderer_video_gtk_frame_clock_layout_ticks,renderer_video_gtk_frame_clock_paint_ticks,renderer_video_gtk_frame_clock_after_paint_ticks,render_sync_planned_static_image_resource_bytes,render_sync_planned_video_poster_resource_bytes,render_sync_planned_slideshow_image_resource_bytes,render_sync_planned_image_resource_reference_bytes,render_sync_planned_unique_image_resource_bytes,render_sync_package_cache_retained_resource_references,render_sync_package_cache_retained_unique_resources,render_sync_package_cache_retained_resource_bytes,render_sync_package_cache_retained_unique_resource_bytes,renderer_static_surface_resource_references,renderer_static_surface_resource_bytes,renderer_slideshow_resource_references,renderer_slideshow_resource_bytes\n' > "$telemetry_path"
+printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,render_sync_package_cache_entries,render_sync_package_cache_max_entries,render_sync_package_cache_hits,render_sync_package_cache_misses,render_sync_package_cache_evictions,render_sync_archive_cache_entries,render_sync_archive_cache_max_entries,render_sync_archive_cache_reuses,render_sync_archive_cache_extractions,render_sync_archive_cache_evictions,render_sync_archive_cache_evictions_latest,render_sync_archive_cache_eviction_errors,render_sync_archive_cache_eviction_errors_latest,render_sync_planned_static_image_resources,render_sync_planned_video_poster_resources,render_sync_planned_slideshow_image_resources,render_sync_planned_image_resource_references,render_sync_planned_unique_image_resources,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps,renderer_output_windows,renderer_static_surfaces,renderer_slideshow_surfaces,renderer_video_surfaces,renderer_video_pipelines,renderer_video_qos_messages,renderer_video_qos_dropped_max,renderer_video_gtk_frame_clock_ticks,renderer_video_gtk_frame_clock_interval_us_max,renderer_video_gtk_frame_clock_fps_x1000_max,renderer_video_gtk_frame_timings_complete,renderer_video_gtk_frame_timings_presentation_interval_us_max,renderer_video_gtk_frame_timings_presentation_time_us_max,renderer_video_gtk_frame_clock_before_paint_ticks,renderer_video_gtk_frame_clock_update_ticks,renderer_video_gtk_frame_clock_layout_ticks,renderer_video_gtk_frame_clock_paint_ticks,renderer_video_gtk_frame_clock_after_paint_ticks,render_sync_planned_static_image_resource_bytes,render_sync_planned_video_poster_resource_bytes,render_sync_planned_slideshow_image_resource_bytes,render_sync_planned_image_resource_reference_bytes,render_sync_planned_unique_image_resource_bytes,render_sync_package_cache_retained_resource_references,render_sync_package_cache_retained_unique_resources,render_sync_package_cache_retained_resource_bytes,render_sync_package_cache_retained_unique_resource_bytes,renderer_static_surface_resource_references,renderer_static_surface_resource_bytes,renderer_slideshow_resource_references,renderer_slideshow_resource_bytes,renderer_static_surface_unique_resources,renderer_static_surface_unique_resource_bytes,renderer_slideshow_unique_resources,renderer_slideshow_unique_resource_bytes\n' > "$telemetry_path"
 printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks\n' > "$video_runtime_path"
 
 status_failures=0

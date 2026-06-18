@@ -525,8 +525,12 @@ struct RendererRuntimeSnapshot {
     video_surfaces: usize,
     static_surface_resource_references: usize,
     static_surface_resource_bytes: u64,
+    static_surface_unique_resources: usize,
+    static_surface_unique_resource_bytes: u64,
     slideshow_resource_references: usize,
     slideshow_resource_bytes: u64,
+    slideshow_unique_resources: usize,
+    slideshow_unique_resource_bytes: u64,
     video_pipelines: Vec<Value>,
 }
 
@@ -542,8 +546,12 @@ impl RendererRuntimeSnapshot {
             video_surfaces: snapshot.video_surfaces,
             static_surface_resource_references: snapshot.static_surface_resource_references,
             static_surface_resource_bytes: snapshot.static_surface_resource_bytes,
+            static_surface_unique_resources: snapshot.static_surface_unique_resources,
+            static_surface_unique_resource_bytes: snapshot.static_surface_unique_resource_bytes,
             slideshow_resource_references: snapshot.slideshow_resource_references,
             slideshow_resource_bytes: snapshot.slideshow_resource_bytes,
+            slideshow_unique_resources: snapshot.slideshow_unique_resources,
+            slideshow_unique_resource_bytes: snapshot.slideshow_unique_resource_bytes,
             video_pipelines: Vec::new(),
         }
     }
@@ -559,8 +567,12 @@ impl RendererRuntimeSnapshot {
             video_surfaces: 0,
             static_surface_resource_references: 0,
             static_surface_resource_bytes: 0,
+            static_surface_unique_resources: 0,
+            static_surface_unique_resource_bytes: 0,
             slideshow_resource_references: 0,
             slideshow_resource_bytes: 0,
+            slideshow_unique_resources: 0,
+            slideshow_unique_resource_bytes: 0,
             video_pipelines: snapshots
                 .into_iter()
                 .map(|snapshot| {
@@ -604,8 +616,12 @@ fn renderer_runtime_report(snapshot: &RendererRuntimeSnapshot) -> Value {
         "video_surfaces": snapshot.video_surfaces,
         "static_surface_resource_references": snapshot.static_surface_resource_references,
         "static_surface_resource_bytes": snapshot.static_surface_resource_bytes,
+        "static_surface_unique_resources": snapshot.static_surface_unique_resources,
+        "static_surface_unique_resource_bytes": snapshot.static_surface_unique_resource_bytes,
         "slideshow_resource_references": snapshot.slideshow_resource_references,
         "slideshow_resource_bytes": snapshot.slideshow_resource_bytes,
+        "slideshow_unique_resources": snapshot.slideshow_unique_resources,
+        "slideshow_unique_resource_bytes": snapshot.slideshow_unique_resource_bytes,
         "video_pipelines": snapshot.video_pipelines,
     })
 }
@@ -685,8 +701,12 @@ fn renderer_telemetry_report(snapshot: &RendererRuntimeSnapshot) -> Value {
         "video_surfaces": snapshot.video_surfaces,
         "static_surface_resource_references": snapshot.static_surface_resource_references,
         "static_surface_resource_bytes": snapshot.static_surface_resource_bytes,
+        "static_surface_unique_resources": snapshot.static_surface_unique_resources,
+        "static_surface_unique_resource_bytes": snapshot.static_surface_unique_resource_bytes,
         "slideshow_resource_references": snapshot.slideshow_resource_references,
         "slideshow_resource_bytes": snapshot.slideshow_resource_bytes,
+        "slideshow_unique_resources": snapshot.slideshow_unique_resources,
+        "slideshow_unique_resource_bytes": snapshot.slideshow_unique_resource_bytes,
         "video_pipelines": snapshot.video_pipelines.len(),
         "video_qos_messages": video_qos_messages,
         "video_qos_dropped_max": video_qos_dropped_max,
@@ -1790,8 +1810,12 @@ mod tests {
             video_surfaces: 2,
             static_surface_resource_references: 2,
             static_surface_resource_bytes: 4096,
+            static_surface_unique_resources: 1,
+            static_surface_unique_resource_bytes: 2048,
             slideshow_resource_references: 3,
             slideshow_resource_bytes: 8192,
+            slideshow_unique_resources: 2,
+            slideshow_unique_resource_bytes: 6144,
             video_pipelines: vec![
                 json!({
                     "output_name": "eDP-1",
@@ -1932,6 +1956,14 @@ mod tests {
             json!(4096)
         );
         assert_eq!(
+            response["result"]["renderer_runtime"]["static_surface_unique_resources"],
+            json!(1)
+        );
+        assert_eq!(
+            response["result"]["renderer_runtime"]["slideshow_unique_resource_bytes"],
+            json!(6144)
+        );
+        assert_eq!(
             response["result"]["telemetry"]["renderer"]["output_windows"],
             json!(3)
         );
@@ -1956,12 +1988,28 @@ mod tests {
             json!(4096)
         );
         assert_eq!(
+            response["result"]["telemetry"]["renderer"]["static_surface_unique_resources"],
+            json!(1)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["static_surface_unique_resource_bytes"],
+            json!(2048)
+        );
+        assert_eq!(
             response["result"]["telemetry"]["renderer"]["slideshow_resource_references"],
             json!(3)
         );
         assert_eq!(
             response["result"]["telemetry"]["renderer"]["slideshow_resource_bytes"],
             json!(8192)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["slideshow_unique_resources"],
+            json!(2)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["slideshow_unique_resource_bytes"],
+            json!(6144)
         );
         assert_eq!(
             response["result"]["telemetry"]["renderer"]["video_pipelines"],
