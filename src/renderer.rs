@@ -109,6 +109,16 @@ pub struct RenderSyncCacheReport {
     pub planned_image_resource_references: usize,
     #[serde(default)]
     pub planned_unique_image_resources: usize,
+    #[serde(default)]
+    pub planned_static_image_resource_bytes: u64,
+    #[serde(default)]
+    pub planned_video_poster_resource_bytes: u64,
+    #[serde(default)]
+    pub planned_slideshow_image_resource_bytes: u64,
+    #[serde(default)]
+    pub planned_image_resource_reference_bytes: u64,
+    #[serde(default)]
+    pub planned_unique_image_resource_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -414,6 +424,21 @@ fn update_render_sync_resource_footprint(
         .iter()
         .filter(|plan| !is_video_poster_resource(plan, video_plans))
         .count();
+    let static_image_resource_bytes = plans
+        .iter()
+        .filter(|plan| !is_video_poster_resource(plan, video_plans))
+        .map(|plan| file_size(&plan.source))
+        .sum::<u64>();
+    let video_poster_resource_bytes = video_plans
+        .iter()
+        .filter_map(|plan| plan.poster.as_ref())
+        .map(|poster| file_size(poster))
+        .sum::<u64>();
+    let slideshow_image_resource_bytes = slideshow_plans
+        .iter()
+        .flat_map(|plan| plan.sources.iter())
+        .map(|source| file_size(source))
+        .sum::<u64>();
     let mut unique_image_resources = BTreeSet::new();
     unique_image_resources.extend(plans.iter().map(|plan| plan.source.clone()));
     unique_image_resources.extend(
@@ -427,6 +452,24 @@ fn update_render_sync_resource_footprint(
     report.planned_slideshow_image_resources = slideshow_image_resources;
     report.planned_image_resource_references = plans.len() + slideshow_image_resources;
     report.planned_unique_image_resources = unique_image_resources.len();
+    report.planned_static_image_resource_bytes = static_image_resource_bytes;
+    report.planned_video_poster_resource_bytes = video_poster_resource_bytes;
+    report.planned_slideshow_image_resource_bytes = slideshow_image_resource_bytes;
+    report.planned_image_resource_reference_bytes = plans
+        .iter()
+        .map(|plan| file_size(&plan.source))
+        .sum::<u64>()
+        + slideshow_image_resource_bytes;
+    report.planned_unique_image_resource_bytes = unique_image_resources
+        .iter()
+        .map(|source| file_size(source))
+        .sum::<u64>();
+}
+
+fn file_size(path: &Path) -> u64 {
+    fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
 }
 
 fn is_video_poster_resource(
@@ -2036,6 +2079,32 @@ mod tests {
         assert_eq!(sync.cache.planned_slideshow_image_resources, 2);
         assert_eq!(sync.cache.planned_image_resource_references, 4);
         assert_eq!(sync.cache.planned_unique_image_resources, 4);
+        let static_bytes = fs::metadata(static_package.join("assets/wallpaper.svg"))
+            .unwrap()
+            .len();
+        let poster_bytes = fs::metadata(video_package.join("previews/poster.jpg"))
+            .unwrap()
+            .len();
+        let slideshow_bytes = fs::metadata(slideshow_package.join("assets/a.svg"))
+            .unwrap()
+            .len()
+            + fs::metadata(slideshow_package.join("assets/b.svg"))
+                .unwrap()
+                .len();
+        assert_eq!(sync.cache.planned_static_image_resource_bytes, static_bytes);
+        assert_eq!(sync.cache.planned_video_poster_resource_bytes, poster_bytes);
+        assert_eq!(
+            sync.cache.planned_slideshow_image_resource_bytes,
+            slideshow_bytes
+        );
+        assert_eq!(
+            sync.cache.planned_image_resource_reference_bytes,
+            static_bytes + poster_bytes + slideshow_bytes
+        );
+        assert_eq!(
+            sync.cache.planned_unique_image_resource_bytes,
+            static_bytes + poster_bytes + slideshow_bytes
+        );
     }
 
     #[test]

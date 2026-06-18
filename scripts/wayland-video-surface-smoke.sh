@@ -73,6 +73,10 @@ Options:
                      Require latest planned image resource references to be at most count
   --expect-render-sync-planned-unique-image-resources-latest-at-most <count>
                      Require latest planned unique image resources to be at most count
+  --expect-render-sync-planned-image-resource-reference-bytes-latest-at-most <bytes>
+                     Require latest planned image resource reference bytes to be at most bytes
+  --expect-render-sync-planned-unique-image-resource-bytes-latest-at-most <bytes>
+                     Require latest planned unique image resource bytes to be at most bytes
   --require-video-runtime-row
                      Require active video phases to record at least one video runtime row
   --visual-hold <sec>
@@ -126,6 +130,8 @@ expect_gtk_frame_timings=0
 expect_renderer_video_pipeline_lifecycle=0
 expect_render_sync_planned_image_resource_references_latest_at_most=""
 expect_render_sync_planned_unique_image_resources_latest_at_most=""
+expect_render_sync_planned_image_resource_reference_bytes_latest_at_most=""
+expect_render_sync_planned_unique_image_resource_bytes_latest_at_most=""
 require_video_runtime_row=0
 visual_hold=0
 simulate_power=""
@@ -354,6 +360,18 @@ while [[ $# -gt 0 ]]; do
       sample_performance=1
       shift 2
       ;;
+    --expect-render-sync-planned-image-resource-reference-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-planned-image-resource-reference-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_planned_image_resource_reference_bytes_latest_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-render-sync-planned-unique-image-resource-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-planned-unique-image-resource-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_planned_unique_image_resource_bytes_latest_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
     --require-video-runtime-row)
       require_video_runtime_row=1
       shift
@@ -474,7 +492,9 @@ do
 done
 for render_sync_resource_expectation in \
   "$expect_render_sync_planned_image_resource_references_latest_at_most" \
-  "$expect_render_sync_planned_unique_image_resources_latest_at_most"
+  "$expect_render_sync_planned_unique_image_resources_latest_at_most" \
+  "$expect_render_sync_planned_image_resource_reference_bytes_latest_at_most" \
+  "$expect_render_sync_planned_unique_image_resource_bytes_latest_at_most"
 do
   if [[ -n "$render_sync_resource_expectation" && ! "$render_sync_resource_expectation" =~ ^[0-9]+$ ]]; then
     echo "render sync resource expectations must be non-negative integers" >&2
@@ -734,6 +754,8 @@ expect_gtk_frame_timings: ${expect_gtk_frame_timings}
 expect_renderer_video_pipeline_lifecycle: ${expect_renderer_video_pipeline_lifecycle}
 expect_render_sync_planned_image_resource_references_latest_at_most: ${expect_render_sync_planned_image_resource_references_latest_at_most:-none}
 expect_render_sync_planned_unique_image_resources_latest_at_most: ${expect_render_sync_planned_unique_image_resources_latest_at_most:-none}
+expect_render_sync_planned_image_resource_reference_bytes_latest_at_most: ${expect_render_sync_planned_image_resource_reference_bytes_latest_at_most:-none}
+expect_render_sync_planned_unique_image_resource_bytes_latest_at_most: ${expect_render_sync_planned_unique_image_resource_bytes_latest_at_most:-none}
 require_video_runtime_row: ${require_video_runtime_row}
 visual_hold: ${visual_hold}
 simulate_power: ${simulate_power:-none}
@@ -945,6 +967,11 @@ append_telemetry_evidence_summary() {
     render_sync_planned_slideshow_image_resources_latest \
     render_sync_planned_image_resource_references_latest \
     render_sync_planned_unique_image_resources_latest \
+    render_sync_planned_static_image_resource_bytes_latest \
+    render_sync_planned_video_poster_resource_bytes_latest \
+    render_sync_planned_slideshow_image_resource_bytes_latest \
+    render_sync_planned_image_resource_reference_bytes_latest \
+    render_sync_planned_unique_image_resource_bytes_latest \
     renderer_output_windows_latest \
     renderer_output_windows_max \
     renderer_static_surfaces_latest \
@@ -1005,6 +1032,8 @@ expect_peak_over_first_uss_kib_at_most: ${expect_peak_over_first_uss_kib_at_most
 expect_peak_over_first_pss_kib_at_most: ${expect_peak_over_first_pss_kib_at_most:-none}
 expect_render_sync_planned_image_resource_references_latest_at_most: ${expect_render_sync_planned_image_resource_references_latest_at_most:-none}
 expect_render_sync_planned_unique_image_resources_latest_at_most: ${expect_render_sync_planned_unique_image_resources_latest_at_most:-none}
+expect_render_sync_planned_image_resource_reference_bytes_latest_at_most: ${expect_render_sync_planned_image_resource_reference_bytes_latest_at_most:-none}
+expect_render_sync_planned_unique_image_resource_bytes_latest_at_most: ${expect_render_sync_planned_unique_image_resource_bytes_latest_at_most:-none}
 zero_copy_audit_note: hardware decoder evidence alone is not zero-copy proof; prefer sink DMABuf/GLMemory caps plus compositor presentation evidence
 video_runtime_rows: $(count_csv_data_rows "$video_runtime_path")
 video_runtime_csv: ${video_runtime_path}
@@ -1168,6 +1197,12 @@ append_render_sync_resource_expectations() {
   fi
   if [[ -n "$effective_unique_resources" ]]; then
     args_ref+=(--expect-render-sync-planned-unique-image-resources-latest-at-most "$effective_unique_resources")
+  fi
+  if [[ -n "$expect_render_sync_planned_image_resource_reference_bytes_latest_at_most" ]]; then
+    args_ref+=(--expect-render-sync-planned-image-resource-reference-bytes-latest-at-most "$expect_render_sync_planned_image_resource_reference_bytes_latest_at_most")
+  fi
+  if [[ -n "$expect_render_sync_planned_unique_image_resource_bytes_latest_at_most" ]]; then
+    args_ref+=(--expect-render-sync-planned-unique-image-resource-bytes-latest-at-most "$expect_render_sync_planned_unique_image_resource_bytes_latest_at_most")
   fi
 }
 

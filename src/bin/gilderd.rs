@@ -1349,6 +1349,11 @@ fn telemetry_report(
             "planned_slideshow_image_resources": render_sync_cache.planned_slideshow_image_resources,
             "planned_image_resource_references": render_sync_cache.planned_image_resource_references,
             "planned_unique_image_resources": render_sync_cache.planned_unique_image_resources,
+            "planned_static_image_resource_bytes": render_sync_cache.planned_static_image_resource_bytes,
+            "planned_video_poster_resource_bytes": render_sync_cache.planned_video_poster_resource_bytes,
+            "planned_slideshow_image_resource_bytes": render_sync_cache.planned_slideshow_image_resource_bytes,
+            "planned_image_resource_reference_bytes": render_sync_cache.planned_image_resource_reference_bytes,
+            "planned_unique_image_resource_bytes": render_sync_cache.planned_unique_image_resource_bytes,
         },
         "renderer": renderer_telemetry_report(renderer_runtime),
     })
@@ -1986,6 +1991,33 @@ mod tests {
         assert_eq!(
             response["result"]["telemetry"]["render_sync"]["planned_unique_image_resources"],
             json!(2)
+        );
+        let planned_bytes =
+            std::fs::metadata("examples/wallpapers/slideshow-demo.gwpdir/assets/slide-a.svg")
+                .unwrap()
+                .len()
+                + std::fs::metadata("examples/wallpapers/slideshow-demo.gwpdir/assets/slide-b.svg")
+                    .unwrap()
+                    .len();
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_static_image_resource_bytes"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_video_poster_resource_bytes"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_slideshow_image_resource_bytes"],
+            json!(planned_bytes)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_image_resource_reference_bytes"],
+            json!(planned_bytes)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_unique_image_resource_bytes"],
+            json!(planned_bytes)
         );
     }
 
