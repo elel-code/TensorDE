@@ -523,6 +523,10 @@ struct RendererRuntimeSnapshot {
     static_surfaces: usize,
     slideshow_surfaces: usize,
     video_surfaces: usize,
+    static_surface_resource_references: usize,
+    static_surface_resource_bytes: u64,
+    slideshow_resource_references: usize,
+    slideshow_resource_bytes: u64,
     video_pipelines: Vec<Value>,
 }
 
@@ -536,6 +540,10 @@ impl RendererRuntimeSnapshot {
             static_surfaces: snapshot.static_surfaces,
             slideshow_surfaces: snapshot.slideshow_surfaces,
             video_surfaces: snapshot.video_surfaces,
+            static_surface_resource_references: snapshot.static_surface_resource_references,
+            static_surface_resource_bytes: snapshot.static_surface_resource_bytes,
+            slideshow_resource_references: snapshot.slideshow_resource_references,
+            slideshow_resource_bytes: snapshot.slideshow_resource_bytes,
             video_pipelines: Vec::new(),
         }
     }
@@ -549,6 +557,10 @@ impl RendererRuntimeSnapshot {
             static_surfaces: 0,
             slideshow_surfaces: 0,
             video_surfaces: 0,
+            static_surface_resource_references: 0,
+            static_surface_resource_bytes: 0,
+            slideshow_resource_references: 0,
+            slideshow_resource_bytes: 0,
             video_pipelines: snapshots
                 .into_iter()
                 .map(|snapshot| {
@@ -590,6 +602,10 @@ fn renderer_runtime_report(snapshot: &RendererRuntimeSnapshot) -> Value {
         "static_surfaces": snapshot.static_surfaces,
         "slideshow_surfaces": snapshot.slideshow_surfaces,
         "video_surfaces": snapshot.video_surfaces,
+        "static_surface_resource_references": snapshot.static_surface_resource_references,
+        "static_surface_resource_bytes": snapshot.static_surface_resource_bytes,
+        "slideshow_resource_references": snapshot.slideshow_resource_references,
+        "slideshow_resource_bytes": snapshot.slideshow_resource_bytes,
         "video_pipelines": snapshot.video_pipelines,
     })
 }
@@ -667,6 +683,10 @@ fn renderer_telemetry_report(snapshot: &RendererRuntimeSnapshot) -> Value {
         "static_surfaces": snapshot.static_surfaces,
         "slideshow_surfaces": snapshot.slideshow_surfaces,
         "video_surfaces": snapshot.video_surfaces,
+        "static_surface_resource_references": snapshot.static_surface_resource_references,
+        "static_surface_resource_bytes": snapshot.static_surface_resource_bytes,
+        "slideshow_resource_references": snapshot.slideshow_resource_references,
+        "slideshow_resource_bytes": snapshot.slideshow_resource_bytes,
         "video_pipelines": snapshot.video_pipelines.len(),
         "video_qos_messages": video_qos_messages,
         "video_qos_dropped_max": video_qos_dropped_max,
@@ -1768,6 +1788,10 @@ mod tests {
             static_surfaces: 2,
             slideshow_surfaces: 1,
             video_surfaces: 2,
+            static_surface_resource_references: 2,
+            static_surface_resource_bytes: 4096,
+            slideshow_resource_references: 3,
+            slideshow_resource_bytes: 8192,
             video_pipelines: vec![
                 json!({
                     "output_name": "eDP-1",
@@ -1904,6 +1928,10 @@ mod tests {
             json!(3)
         );
         assert_eq!(
+            response["result"]["renderer_runtime"]["static_surface_resource_bytes"],
+            json!(4096)
+        );
+        assert_eq!(
             response["result"]["telemetry"]["renderer"]["output_windows"],
             json!(3)
         );
@@ -1918,6 +1946,22 @@ mod tests {
         assert_eq!(
             response["result"]["telemetry"]["renderer"]["video_surfaces"],
             json!(2)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["static_surface_resource_references"],
+            json!(2)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["static_surface_resource_bytes"],
+            json!(4096)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["slideshow_resource_references"],
+            json!(3)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["slideshow_resource_bytes"],
+            json!(8192)
         );
         assert_eq!(
             response["result"]["telemetry"]["renderer"]["video_pipelines"],

@@ -312,6 +312,10 @@ telemetry_keys=(
   renderer_static_surfaces_max
   renderer_slideshow_surfaces_latest
   renderer_slideshow_surfaces_max
+  renderer_static_surface_resource_references_latest
+  renderer_static_surface_resource_bytes_latest
+  renderer_slideshow_resource_references_latest
+  renderer_slideshow_resource_bytes_latest
   renderer_video_surfaces_latest
   renderer_video_surfaces_max
   renderer_video_pipelines_latest

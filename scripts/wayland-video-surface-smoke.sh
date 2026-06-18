@@ -69,6 +69,14 @@ Options:
                      Require sampled completed GDK frame timings
   --expect-renderer-video-pipeline-lifecycle
                      Require active/resumed sampling to keep a video pipeline and paused/hidden/fullscreen sampling to release it
+  --expect-renderer-static-surface-resource-references-latest-at-most <count>
+                     Require latest renderer static surface resource references to be at most count
+  --expect-renderer-static-surface-resource-bytes-latest-at-most <bytes>
+                     Require latest renderer static surface resource bytes to be at most bytes
+  --expect-renderer-slideshow-resource-references-latest-at-most <count>
+                     Require latest renderer slideshow resource references to be at most count
+  --expect-renderer-slideshow-resource-bytes-latest-at-most <bytes>
+                     Require latest renderer slideshow resource bytes to be at most bytes
   --expect-render-sync-package-cache-retained-resource-references-latest-at-most <count>
                      Require latest retained package-cache resource references to be at most count
   --expect-render-sync-package-cache-retained-unique-resources-latest-at-most <count>
@@ -136,6 +144,10 @@ expect_gtk_frame_clock=0
 expect_gtk_frame_clock_phases=()
 expect_gtk_frame_timings=0
 expect_renderer_video_pipeline_lifecycle=0
+expect_renderer_static_surface_resource_references_latest_at_most=""
+expect_renderer_static_surface_resource_bytes_latest_at_most=""
+expect_renderer_slideshow_resource_references_latest_at_most=""
+expect_renderer_slideshow_resource_bytes_latest_at_most=""
 expect_render_sync_package_cache_retained_resource_references_latest_at_most=""
 expect_render_sync_package_cache_retained_unique_resources_latest_at_most=""
 expect_render_sync_package_cache_retained_resource_bytes_latest_at_most=""
@@ -360,6 +372,30 @@ while [[ $# -gt 0 ]]; do
       sample_performance=1
       shift
       ;;
+    --expect-renderer-static-surface-resource-references-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-static-surface-resource-references-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_static_surface_resource_references_latest_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-renderer-static-surface-resource-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-static-surface-resource-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_static_surface_resource_bytes_latest_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-renderer-slideshow-resource-references-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-slideshow-resource-references-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_slideshow_resource_references_latest_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-renderer-slideshow-resource-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-slideshow-resource-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_slideshow_resource_bytes_latest_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
     --expect-render-sync-package-cache-retained-resource-references-latest-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-render-sync-package-cache-retained-resource-references-latest-at-most requires a value" >&2; exit 2; }
       expect_render_sync_package_cache_retained_resource_references_latest_at_most="$2"
@@ -527,6 +563,10 @@ do
   fi
 done
 for render_sync_resource_expectation in \
+  "$expect_renderer_static_surface_resource_references_latest_at_most" \
+  "$expect_renderer_static_surface_resource_bytes_latest_at_most" \
+  "$expect_renderer_slideshow_resource_references_latest_at_most" \
+  "$expect_renderer_slideshow_resource_bytes_latest_at_most" \
   "$expect_render_sync_package_cache_retained_resource_references_latest_at_most" \
   "$expect_render_sync_package_cache_retained_unique_resources_latest_at_most" \
   "$expect_render_sync_package_cache_retained_resource_bytes_latest_at_most" \
@@ -792,6 +832,10 @@ expect_gtk_frame_clock: ${expect_gtk_frame_clock}
 expect_gtk_frame_clock_phases: ${expect_gtk_frame_clock_phases[*]:-none}
 expect_gtk_frame_timings: ${expect_gtk_frame_timings}
 expect_renderer_video_pipeline_lifecycle: ${expect_renderer_video_pipeline_lifecycle}
+expect_renderer_static_surface_resource_references_latest_at_most: ${expect_renderer_static_surface_resource_references_latest_at_most:-none}
+expect_renderer_static_surface_resource_bytes_latest_at_most: ${expect_renderer_static_surface_resource_bytes_latest_at_most:-none}
+expect_renderer_slideshow_resource_references_latest_at_most: ${expect_renderer_slideshow_resource_references_latest_at_most:-none}
+expect_renderer_slideshow_resource_bytes_latest_at_most: ${expect_renderer_slideshow_resource_bytes_latest_at_most:-none}
 expect_render_sync_package_cache_retained_resource_references_latest_at_most: ${expect_render_sync_package_cache_retained_resource_references_latest_at_most:-none}
 expect_render_sync_package_cache_retained_unique_resources_latest_at_most: ${expect_render_sync_package_cache_retained_unique_resources_latest_at_most:-none}
 expect_render_sync_package_cache_retained_resource_bytes_latest_at_most: ${expect_render_sync_package_cache_retained_resource_bytes_latest_at_most:-none}
@@ -1026,6 +1070,10 @@ append_telemetry_evidence_summary() {
     renderer_static_surfaces_max \
     renderer_slideshow_surfaces_latest \
     renderer_slideshow_surfaces_max \
+    renderer_static_surface_resource_references_latest \
+    renderer_static_surface_resource_bytes_latest \
+    renderer_slideshow_resource_references_latest \
+    renderer_slideshow_resource_bytes_latest \
     renderer_video_surfaces_latest \
     renderer_video_surfaces_max \
     renderer_video_pipelines_latest \
@@ -1078,6 +1126,10 @@ expect_retained_pss_delta_kib_at_most: ${expect_retained_pss_delta_kib_at_most:-
 expect_peak_over_first_private_kib_at_most: ${expect_peak_over_first_private_kib_at_most:-none}
 expect_peak_over_first_uss_kib_at_most: ${expect_peak_over_first_uss_kib_at_most:-none}
 expect_peak_over_first_pss_kib_at_most: ${expect_peak_over_first_pss_kib_at_most:-none}
+expect_renderer_static_surface_resource_references_latest_at_most: ${expect_renderer_static_surface_resource_references_latest_at_most:-none}
+expect_renderer_static_surface_resource_bytes_latest_at_most: ${expect_renderer_static_surface_resource_bytes_latest_at_most:-none}
+expect_renderer_slideshow_resource_references_latest_at_most: ${expect_renderer_slideshow_resource_references_latest_at_most:-none}
+expect_renderer_slideshow_resource_bytes_latest_at_most: ${expect_renderer_slideshow_resource_bytes_latest_at_most:-none}
 expect_render_sync_package_cache_retained_resource_references_latest_at_most: ${expect_render_sync_package_cache_retained_resource_references_latest_at_most:-none}
 expect_render_sync_package_cache_retained_unique_resources_latest_at_most: ${expect_render_sync_package_cache_retained_unique_resources_latest_at_most:-none}
 expect_render_sync_package_cache_retained_resource_bytes_latest_at_most: ${expect_render_sync_package_cache_retained_resource_bytes_latest_at_most:-none}
@@ -1267,6 +1319,18 @@ append_render_sync_resource_expectations() {
   fi
   if [[ -n "$expect_render_sync_package_cache_retained_unique_resource_bytes_latest_at_most" ]]; then
     args_ref+=(--expect-render-sync-package-cache-retained-unique-resource-bytes-latest-at-most "$expect_render_sync_package_cache_retained_unique_resource_bytes_latest_at_most")
+  fi
+  if [[ -n "$expect_renderer_static_surface_resource_references_latest_at_most" ]]; then
+    args_ref+=(--expect-renderer-static-surface-resource-references-latest-at-most "$expect_renderer_static_surface_resource_references_latest_at_most")
+  fi
+  if [[ -n "$expect_renderer_static_surface_resource_bytes_latest_at_most" ]]; then
+    args_ref+=(--expect-renderer-static-surface-resource-bytes-latest-at-most "$expect_renderer_static_surface_resource_bytes_latest_at_most")
+  fi
+  if [[ -n "$expect_renderer_slideshow_resource_references_latest_at_most" ]]; then
+    args_ref+=(--expect-renderer-slideshow-resource-references-latest-at-most "$expect_renderer_slideshow_resource_references_latest_at_most")
+  fi
+  if [[ -n "$expect_renderer_slideshow_resource_bytes_latest_at_most" ]]; then
+    args_ref+=(--expect-renderer-slideshow-resource-bytes-latest-at-most "$expect_renderer_slideshow_resource_bytes_latest_at_most")
   fi
 }
 

@@ -19,6 +19,7 @@ use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 #[cfg(feature = "video-renderer")]
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 #[cfg(feature = "video-renderer")]
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -44,6 +45,10 @@ pub struct GtkRendererResourceSnapshot {
     pub static_surfaces: usize,
     pub slideshow_surfaces: usize,
     pub video_surfaces: usize,
+    pub static_surface_resource_references: usize,
+    pub static_surface_resource_bytes: u64,
+    pub slideshow_resource_references: usize,
+    pub slideshow_resource_bytes: u64,
 }
 
 struct RenderedOutput {
@@ -231,6 +236,27 @@ impl GtkStaticRenderer {
     }
 
     pub fn resource_snapshot(&self) -> GtkRendererResourceSnapshot {
+        let mut static_surface_resource_references = 0;
+        let mut static_surface_resource_bytes = 0;
+        let mut slideshow_resource_references = 0;
+        let mut slideshow_resource_bytes = 0;
+
+        for output in self.windows.values() {
+            if let Some(source) = output.static_surface_source() {
+                static_surface_resource_references += 1;
+                static_surface_resource_bytes += source_file_size(source);
+            }
+            if let Some(slideshow) = &output.slideshow {
+                slideshow_resource_references += slideshow.plan.sources.len();
+                slideshow_resource_bytes += slideshow
+                    .plan
+                    .sources
+                    .iter()
+                    .map(|source| source_file_size(source))
+                    .sum::<u64>();
+            }
+        }
+
         GtkRendererResourceSnapshot {
             output_windows: self.windows.len(),
             static_surfaces: self
@@ -248,6 +274,10 @@ impl GtkStaticRenderer {
                 .values()
                 .filter(|output| output.has_video_surface())
                 .count(),
+            static_surface_resource_references,
+            static_surface_resource_bytes,
+            slideshow_resource_references,
+            slideshow_resource_bytes,
         }
     }
 
@@ -379,6 +409,18 @@ impl RenderedOutput {
         if let Some(plan) = self.static_plan.clone() {
             apply_static_wallpaper(self, &plan);
         }
+    }
+
+    fn static_surface_source(&self) -> Option<&Path> {
+        self.provider.as_ref()?;
+        if let Some(slideshow) = &self.slideshow {
+            return slideshow
+                .plan
+                .sources
+                .get(slideshow.index)
+                .map(|source| source.as_path());
+        }
+        self.static_plan.as_ref().map(|plan| plan.source.as_path())
     }
 
     #[cfg(feature = "video-renderer")]
@@ -567,6 +609,15 @@ fn static_plan_needs_update(
     next: &StaticWallpaperPlan,
 ) -> bool {
     previous != Some(next)
+}
+
+fn source_file_size(path: &Path) -> u64 {
+    fs_metadata_file_len(path).unwrap_or(0)
+}
+
+fn fs_metadata_file_len(path: &Path) -> Option<u64> {
+    let metadata = std::fs::metadata(path).ok()?;
+    metadata.is_file().then_some(metadata.len())
 }
 
 fn monitor_for_output(output_name: &str) -> Option<gdk::Monitor> {
