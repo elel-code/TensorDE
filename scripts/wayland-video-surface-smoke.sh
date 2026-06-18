@@ -69,6 +69,10 @@ Options:
                      Require sampled completed GDK frame timings
   --expect-renderer-video-pipeline-lifecycle
                      Require active/resumed sampling to keep a video pipeline and paused/hidden/fullscreen sampling to release it
+  --expect-render-sync-planned-image-resource-references-latest-at-most <count>
+                     Require latest planned image resource references to be at most count
+  --expect-render-sync-planned-unique-image-resources-latest-at-most <count>
+                     Require latest planned unique image resources to be at most count
   --require-video-runtime-row
                      Require active video phases to record at least one video runtime row
   --visual-hold <sec>
@@ -120,6 +124,8 @@ expect_gtk_frame_clock=0
 expect_gtk_frame_clock_phases=()
 expect_gtk_frame_timings=0
 expect_renderer_video_pipeline_lifecycle=0
+expect_render_sync_planned_image_resource_references_latest_at_most=""
+expect_render_sync_planned_unique_image_resources_latest_at_most=""
 require_video_runtime_row=0
 visual_hold=0
 simulate_power=""
@@ -336,6 +342,18 @@ while [[ $# -gt 0 ]]; do
       sample_performance=1
       shift
       ;;
+    --expect-render-sync-planned-image-resource-references-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-planned-image-resource-references-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_planned_image_resource_references_latest_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-render-sync-planned-unique-image-resources-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-planned-unique-image-resources-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_planned_unique_image_resources_latest_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
     --require-video-runtime-row)
       require_video_runtime_row=1
       shift
@@ -451,6 +469,15 @@ for memory_delta_expectation in \
 do
   if [[ -n "$memory_delta_expectation" && ! "$memory_delta_expectation" =~ ^[0-9]+$ ]]; then
     echo "memory delta KiB expectations must be non-negative integers" >&2
+    exit 2
+  fi
+done
+for render_sync_resource_expectation in \
+  "$expect_render_sync_planned_image_resource_references_latest_at_most" \
+  "$expect_render_sync_planned_unique_image_resources_latest_at_most"
+do
+  if [[ -n "$render_sync_resource_expectation" && ! "$render_sync_resource_expectation" =~ ^[0-9]+$ ]]; then
+    echo "render sync resource expectations must be non-negative integers" >&2
     exit 2
   fi
 done
@@ -705,6 +732,8 @@ expect_gtk_frame_clock: ${expect_gtk_frame_clock}
 expect_gtk_frame_clock_phases: ${expect_gtk_frame_clock_phases[*]:-none}
 expect_gtk_frame_timings: ${expect_gtk_frame_timings}
 expect_renderer_video_pipeline_lifecycle: ${expect_renderer_video_pipeline_lifecycle}
+expect_render_sync_planned_image_resource_references_latest_at_most: ${expect_render_sync_planned_image_resource_references_latest_at_most:-none}
+expect_render_sync_planned_unique_image_resources_latest_at_most: ${expect_render_sync_planned_unique_image_resources_latest_at_most:-none}
 require_video_runtime_row: ${require_video_runtime_row}
 visual_hold: ${visual_hold}
 simulate_power: ${simulate_power:-none}
@@ -891,14 +920,58 @@ append_process_memory_evidence_summary() {
   done
 }
 
+append_telemetry_evidence_summary() {
+  local prefix="$1"
+  local summary="$2"
+  local key
+
+  if [[ ! -f "$summary" ]]; then
+    printf '%s_telemetry_summary_present: no\n' "$prefix"
+    return
+  fi
+
+  printf '%s_telemetry_summary_present: yes\n' "$prefix"
+  for key in \
+    telemetry_rows \
+    desktop_refresh_skips_delta \
+    render_sync_cache_hits_delta \
+    render_sync_cache_misses_delta \
+    render_sync_updates_queued_latest \
+    render_sync_updates_skipped_latest \
+    render_sync_package_cache_entries_latest \
+    render_sync_archive_cache_entries_latest \
+    render_sync_planned_static_image_resources_latest \
+    render_sync_planned_video_poster_resources_latest \
+    render_sync_planned_slideshow_image_resources_latest \
+    render_sync_planned_image_resource_references_latest \
+    render_sync_planned_unique_image_resources_latest \
+    renderer_output_windows_latest \
+    renderer_output_windows_max \
+    renderer_static_surfaces_latest \
+    renderer_static_surfaces_max \
+    renderer_slideshow_surfaces_latest \
+    renderer_slideshow_surfaces_max \
+    renderer_video_surfaces_latest \
+    renderer_video_surfaces_max \
+    renderer_video_pipelines_latest \
+    renderer_video_pipelines_max
+  do
+    printf '%s_%s: %s\n' "$prefix" "$key" "$(summary_value_or_none "$summary" "$key")"
+  done
+}
+
 write_validation_report() {
   local active_summary
+  local active_telemetry_summary
   local active_video_runtime_summary
   local paused_summary
+  local paused_telemetry_summary
   local paused_video_runtime_summary
   active_summary="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "summary.txt")"
+  active_telemetry_summary="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "telemetry-summary.txt")"
   active_video_runtime_summary="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "video-runtime-summary.txt")"
   paused_summary="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "summary.txt")"
+  paused_telemetry_summary="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "telemetry-summary.txt")"
   paused_video_runtime_summary="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "video-runtime-summary.txt")"
 
   cat > "$validation_report_path" <<EOF
@@ -930,12 +1003,16 @@ expect_retained_pss_delta_kib_at_most: ${expect_retained_pss_delta_kib_at_most:-
 expect_peak_over_first_private_kib_at_most: ${expect_peak_over_first_private_kib_at_most:-none}
 expect_peak_over_first_uss_kib_at_most: ${expect_peak_over_first_uss_kib_at_most:-none}
 expect_peak_over_first_pss_kib_at_most: ${expect_peak_over_first_pss_kib_at_most:-none}
+expect_render_sync_planned_image_resource_references_latest_at_most: ${expect_render_sync_planned_image_resource_references_latest_at_most:-none}
+expect_render_sync_planned_unique_image_resources_latest_at_most: ${expect_render_sync_planned_unique_image_resources_latest_at_most:-none}
 zero_copy_audit_note: hardware decoder evidence alone is not zero-copy proof; prefer sink DMABuf/GLMemory caps plus compositor presentation evidence
 video_runtime_rows: $(count_csv_data_rows "$video_runtime_path")
 video_runtime_csv: ${video_runtime_path}
 performance_active_summary: ${active_summary}
+performance_active_telemetry_summary: ${active_telemetry_summary}
 performance_active_video_runtime_summary: ${active_video_runtime_summary}
 performance_paused_summary: ${paused_summary}
+performance_paused_telemetry_summary: ${paused_telemetry_summary}
 performance_paused_video_runtime_summary: ${paused_video_runtime_summary}
 fullscreen_resume_latency: $([[ "$measure_fullscreen_resume" -eq 1 ]] && printf '%s' "$resume_latency_summary" || printf 'none')
 metadata: ${metadata_path}
@@ -950,6 +1027,8 @@ EOF
 
   append_process_memory_evidence_summary "performance_active" "$active_summary" >> "$validation_report_path"
   append_process_memory_evidence_summary "performance_paused" "$paused_summary" >> "$validation_report_path"
+  append_telemetry_evidence_summary "performance_active" "$active_telemetry_summary" >> "$validation_report_path"
+  append_telemetry_evidence_summary "performance_paused" "$paused_telemetry_summary" >> "$validation_report_path"
   append_video_runtime_evidence_summary "performance_active" "$active_video_runtime_summary" >> "$validation_report_path"
   append_video_runtime_evidence_summary "performance_paused" "$paused_video_runtime_summary" >> "$validation_report_path"
 
@@ -1057,6 +1136,41 @@ append_process_memory_expectations() {
   fi
 }
 
+minimum_optional_limit() {
+  local left="$1"
+  local right="$2"
+  if [[ -z "$left" ]]; then
+    printf '%s\n' "$right"
+  elif [[ -z "$right" ]]; then
+    printf '%s\n' "$left"
+  elif (( 10#$left < 10#$right )); then
+    printf '%s\n' "$left"
+  else
+    printf '%s\n' "$right"
+  fi
+}
+
+append_render_sync_resource_expectations() {
+  local -n args_ref="$1"
+  local expected_planned_references="$2"
+  local expected_unique_resources="$3"
+  local effective_planned_references
+  local effective_unique_resources
+  effective_planned_references="$(minimum_optional_limit \
+    "$expect_render_sync_planned_image_resource_references_latest_at_most" \
+    "$expected_planned_references")"
+  effective_unique_resources="$(minimum_optional_limit \
+    "$expect_render_sync_planned_unique_image_resources_latest_at_most" \
+    "$expected_unique_resources")"
+
+  if [[ -n "$effective_planned_references" ]]; then
+    args_ref+=(--expect-render-sync-planned-image-resource-references-latest-at-most "$effective_planned_references")
+  fi
+  if [[ -n "$effective_unique_resources" ]]; then
+    args_ref+=(--expect-render-sync-planned-unique-image-resources-latest-at-most "$effective_unique_resources")
+  fi
+}
+
 capture_performance() {
   local label="$1"
   local output_dir="$2"
@@ -1068,6 +1182,8 @@ capture_performance() {
   local include_video_runtime_expectations="${8:-0}"
   local expected_pipeline_latest_at_least="${9:-}"
   local expected_pipeline_latest_at_most="${10:-}"
+  local expected_planned_image_references="${11:-}"
+  local expected_planned_unique_resources="${12:-}"
   local -a sample_args
   sample_args=(
     --pid "$daemon_pid"
@@ -1083,6 +1199,10 @@ capture_performance() {
     --expect-render-sync-update-queued
   )
   append_process_memory_expectations sample_args
+  append_render_sync_resource_expectations \
+    sample_args \
+    "$expected_planned_image_references" \
+    "$expected_planned_unique_resources"
   if [[ -n "$expected_mode" ]]; then
     sample_args+=(--expect-mode "$expected_mode")
   fi
@@ -1577,6 +1697,8 @@ if [[ "$sample_performance" -eq 1 ]]; then
   include_video_runtime_expectations=0
   expected_pipeline_latest_at_least=""
   expected_pipeline_latest_at_most=""
+  expected_planned_image_references=""
+  expected_planned_unique_resources=""
   if [[ -n "$expected_reason" ]]; then
     if expects_active_video_plan; then
       expected_action="render"
@@ -1588,8 +1710,12 @@ if [[ "$sample_performance" -eq 1 ]]; then
   if [[ "$expect_renderer_video_pipeline_lifecycle" -eq 1 ]]; then
     if expects_active_video_plan; then
       expected_pipeline_latest_at_least="${#target_outputs[@]}"
+      expected_planned_image_references="${#target_outputs[@]}"
+      expected_planned_unique_resources=1
     else
       expected_pipeline_latest_at_most=0
+      expected_planned_image_references=0
+      expected_planned_unique_resources=0
     fi
   fi
   if has_video_runtime_expectations; then
@@ -1609,7 +1735,9 @@ if [[ "$sample_performance" -eq 1 ]]; then
     "$expected_plan_kind" \
     "$include_video_runtime_expectations" \
     "$expected_pipeline_latest_at_least" \
-    "$expected_pipeline_latest_at_most"; then
+    "$expected_pipeline_latest_at_most" \
+    "$expected_planned_image_references" \
+    "$expected_planned_unique_resources"; then
     pass "captured ${performance_active_label} performance evidence"
   else
     note "performance sample log:"
@@ -1630,8 +1758,12 @@ if [[ "$sample_paused" -eq 1 ]]; then
   fi
 
   paused_pipeline_latest_at_most=""
+  paused_planned_image_references=""
+  paused_planned_unique_resources=""
   if [[ "$expect_renderer_video_pipeline_lifecycle" -eq 1 ]]; then
     paused_pipeline_latest_at_most=0
+    paused_planned_image_references=0
+    paused_planned_unique_resources=0
   fi
   if capture_performance \
     wayland-video-paused \
@@ -1643,7 +1775,9 @@ if [[ "$sample_paused" -eq 1 ]]; then
     "" \
     0 \
     "" \
-    "$paused_pipeline_latest_at_most"; then
+    "$paused_pipeline_latest_at_most" \
+    "$paused_planned_image_references" \
+    "$paused_planned_unique_resources"; then
     pass "captured paused video performance evidence"
   else
     note "paused performance sample log:"
