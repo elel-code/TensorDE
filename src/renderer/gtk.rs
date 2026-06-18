@@ -8,7 +8,8 @@ use crate::core::FitMode;
 use crate::policy::RenderMode;
 #[cfg(feature = "video-renderer")]
 use crate::renderer::video::{
-    VideoPipelineSnapshot, actual_decoder_elements, actual_decoder_reports, video_caps_reports,
+    VideoPipelineSnapshot, actual_decoder_reports, apply_decoder_rank_policy,
+    decoder_policy_status, video_caps_reports,
 };
 use gtk::gdk;
 use gtk::gio;
@@ -216,19 +217,29 @@ impl GtkStaticRenderer {
         self.windows
             .iter()
             .filter_map(|(output_name, output)| {
-                output.video.as_ref().map(|video| VideoPipelineSnapshot {
-                    output_name: output_name.clone(),
-                    source: video.source.to_string_lossy().into_owned(),
-                    mode: video.mode,
-                    gst_state: video.gst_state.name().to_string(),
-                    loop_playback: video.loop_playback,
-                    muted: video.muted,
-                    target_max_fps: video.target_max_fps,
-                    decoder_policy: video.decoder_policy,
-                    start_offset_ms: video.start_offset_ms,
-                    actual_decoders: actual_decoder_elements(&video.element),
-                    actual_decoder_reports: actual_decoder_reports(&video.element),
-                    caps_reports: video_caps_reports(&video.element),
+                output.video.as_ref().map(|video| {
+                    let actual_decoder_reports = actual_decoder_reports(&video.element);
+                    VideoPipelineSnapshot {
+                        output_name: output_name.clone(),
+                        source: video.source.to_string_lossy().into_owned(),
+                        mode: video.mode,
+                        gst_state: video.gst_state.name().to_string(),
+                        loop_playback: video.loop_playback,
+                        muted: video.muted,
+                        target_max_fps: video.target_max_fps,
+                        decoder_policy: video.decoder_policy,
+                        decoder_policy_status: decoder_policy_status(
+                            video.decoder_policy,
+                            &actual_decoder_reports,
+                        ),
+                        start_offset_ms: video.start_offset_ms,
+                        actual_decoders: actual_decoder_reports
+                            .iter()
+                            .map(|report| report.element.clone())
+                            .collect(),
+                        actual_decoder_reports,
+                        caps_reports: video_caps_reports(&video.element),
+                    }
                 })
             })
             .collect()
@@ -771,6 +782,7 @@ fn build_gtk_video_pipeline(
 ) -> Result<BuiltGtkVideoPipeline, GtkVideoError> {
     let uri = gst::glib::filename_to_uri(&plan.source, None::<&str>)
         .map_err(|err| GtkVideoError::Uri(err.to_string()))?;
+    apply_decoder_rank_policy(plan.decoder_policy);
     let frame_limiter = Some(GtkFrameLimiter::new(plan.target_max_fps)?);
     let video_sink = gst::ElementFactory::make("gtk4paintablesink")
         .property("sync", true)

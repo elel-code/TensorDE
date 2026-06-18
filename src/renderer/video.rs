@@ -8,6 +8,7 @@ use gstreamer as gst;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::{Mutex, OnceLock};
 
 pub struct GstVideoRenderer {
     pipelines: BTreeMap<String, VideoPipeline>,
@@ -105,6 +106,14 @@ const DECODER_ELEMENT_NAMES: &[&str] = &[
     "vaapiav1dec",
     "nvav1dec",
 ];
+const DECODER_RANK_BOOST: i32 = 512;
+
+static DECODER_RANK_STATE: OnceLock<Mutex<DecoderRankState>> = OnceLock::new();
+
+#[derive(Debug, Default)]
+struct DecoderRankState {
+    original_ranks: BTreeMap<String, gst::Rank>,
+}
 
 impl GstVideoRenderer {
     pub fn new() -> Result<Self, VideoRendererError> {
@@ -213,19 +222,29 @@ impl GstVideoRenderer {
     pub fn snapshot(&self) -> Vec<VideoPipelineSnapshot> {
         self.pipelines
             .iter()
-            .map(|(output_name, pipeline)| VideoPipelineSnapshot {
-                output_name: output_name.clone(),
-                source: pipeline.source.display().to_string(),
-                mode: pipeline.mode,
-                gst_state: pipeline.gst_state.name().to_string(),
-                loop_playback: pipeline.loop_playback,
-                muted: pipeline.muted,
-                target_max_fps: pipeline.target_max_fps,
-                decoder_policy: pipeline.decoder_policy,
-                start_offset_ms: pipeline.start_offset_ms,
-                actual_decoders: actual_decoder_elements(&pipeline.element),
-                actual_decoder_reports: actual_decoder_reports(&pipeline.element),
-                caps_reports: video_caps_reports(&pipeline.element),
+            .map(|(output_name, pipeline)| {
+                let actual_decoder_reports = actual_decoder_reports(&pipeline.element);
+                VideoPipelineSnapshot {
+                    output_name: output_name.clone(),
+                    source: pipeline.source.display().to_string(),
+                    mode: pipeline.mode,
+                    gst_state: pipeline.gst_state.name().to_string(),
+                    loop_playback: pipeline.loop_playback,
+                    muted: pipeline.muted,
+                    target_max_fps: pipeline.target_max_fps,
+                    decoder_policy: pipeline.decoder_policy,
+                    decoder_policy_status: decoder_policy_status(
+                        pipeline.decoder_policy,
+                        &actual_decoder_reports,
+                    ),
+                    start_offset_ms: pipeline.start_offset_ms,
+                    actual_decoders: actual_decoder_reports
+                        .iter()
+                        .map(|report| report.element.clone())
+                        .collect(),
+                    actual_decoder_reports,
+                    caps_reports: video_caps_reports(&pipeline.element),
+                }
             })
             .collect()
     }
@@ -402,6 +421,7 @@ fn build_pipeline(
 
     let uri = gst::glib::filename_to_uri(&plan.source, None::<&str>)
         .map_err(|err| VideoRendererError::Uri(err.to_string()))?;
+    apply_decoder_rank_policy(plan.decoder_policy);
     let frame_limiter = Some(FrameLimiter::new(plan.target_max_fps)?);
     let video_sink = gst::ElementFactory::make("fakesink")
         .property("sync", true)
@@ -459,6 +479,106 @@ pub fn actual_decoder_reports(element: &gst::Element) -> Vec<VideoDecoderReport>
             element,
         })
         .collect()
+}
+
+pub fn apply_decoder_rank_policy(policy: VideoDecoderPolicy) {
+    let state = DECODER_RANK_STATE.get_or_init(|| Mutex::new(DecoderRankState::default()));
+    let Ok(mut state) = state.lock() else {
+        return;
+    };
+
+    for element in DECODER_ELEMENT_NAMES {
+        let Some(factory) = gst::ElementFactory::find(element) else {
+            continue;
+        };
+        let original_rank = *state
+            .original_ranks
+            .entry((*element).to_owned())
+            .or_insert_with(|| factory.rank());
+        factory.set_rank(decoder_policy_rank(policy, element, original_rank));
+    }
+}
+
+fn decoder_policy_rank(
+    policy: VideoDecoderPolicy,
+    element: &str,
+    original_rank: gst::Rank,
+) -> gst::Rank {
+    let is_hardware = HARDWARE_DECODER_ELEMENT_NAMES.contains(&element);
+    let is_software = SOFTWARE_DECODER_ELEMENT_NAMES.contains(&element);
+
+    match policy {
+        VideoDecoderPolicy::Auto => original_rank,
+        VideoDecoderPolicy::HardwarePreferred if is_hardware => {
+            gst::Rank::PRIMARY + DECODER_RANK_BOOST
+        }
+        VideoDecoderPolicy::HardwarePreferred if is_software => {
+            rank_at_least(original_rank, gst::Rank::SECONDARY)
+        }
+        VideoDecoderPolicy::HardwareRequired if is_hardware => {
+            gst::Rank::PRIMARY + DECODER_RANK_BOOST
+        }
+        VideoDecoderPolicy::HardwareRequired if is_software => gst::Rank::NONE,
+        VideoDecoderPolicy::Software if is_hardware => gst::Rank::NONE,
+        VideoDecoderPolicy::Software if is_software => gst::Rank::PRIMARY + DECODER_RANK_BOOST,
+        _ => original_rank,
+    }
+}
+
+fn rank_at_least(rank: gst::Rank, minimum: gst::Rank) -> gst::Rank {
+    if i32::from(rank) < i32::from(minimum) {
+        minimum
+    } else {
+        rank
+    }
+}
+
+pub fn decoder_policy_status(
+    policy: VideoDecoderPolicy,
+    reports: &[VideoDecoderReport],
+) -> VideoDecoderPolicyStatus {
+    if policy == VideoDecoderPolicy::Auto {
+        return VideoDecoderPolicyStatus::NotApplicable;
+    }
+    if reports.is_empty() {
+        return VideoDecoderPolicyStatus::NotObserved;
+    }
+
+    let has_hardware = reports
+        .iter()
+        .any(|report| report.class == VideoDecoderClass::Hardware);
+    let has_software = reports
+        .iter()
+        .any(|report| report.class == VideoDecoderClass::Software);
+    let has_unknown = reports
+        .iter()
+        .any(|report| report.class == VideoDecoderClass::Unknown);
+
+    match policy {
+        VideoDecoderPolicy::Auto => VideoDecoderPolicyStatus::NotApplicable,
+        VideoDecoderPolicy::HardwarePreferred if has_hardware => {
+            VideoDecoderPolicyStatus::Satisfied
+        }
+        VideoDecoderPolicy::HardwarePreferred if has_unknown => {
+            VideoDecoderPolicyStatus::UnknownDecoder
+        }
+        VideoDecoderPolicy::HardwarePreferred if has_software => {
+            VideoDecoderPolicyStatus::SoftwareFallback
+        }
+        VideoDecoderPolicy::HardwarePreferred => VideoDecoderPolicyStatus::NotObserved,
+        VideoDecoderPolicy::HardwareRequired if has_unknown => {
+            VideoDecoderPolicyStatus::UnknownDecoder
+        }
+        VideoDecoderPolicy::HardwareRequired if has_hardware && !has_software => {
+            VideoDecoderPolicyStatus::Satisfied
+        }
+        VideoDecoderPolicy::HardwareRequired => VideoDecoderPolicyStatus::Violated,
+        VideoDecoderPolicy::Software if has_unknown => VideoDecoderPolicyStatus::UnknownDecoder,
+        VideoDecoderPolicy::Software if has_software && !has_hardware => {
+            VideoDecoderPolicyStatus::Satisfied
+        }
+        VideoDecoderPolicy::Software => VideoDecoderPolicyStatus::Violated,
+    }
 }
 
 pub fn video_caps_reports(element: &gst::Element) -> Vec<VideoCapsReport> {
@@ -676,6 +796,7 @@ pub struct VideoPipelineSnapshot {
     pub muted: bool,
     pub target_max_fps: Option<u32>,
     pub decoder_policy: VideoDecoderPolicy,
+    pub decoder_policy_status: VideoDecoderPolicyStatus,
     pub start_offset_ms: u64,
     pub actual_decoders: Vec<String>,
     pub actual_decoder_reports: Vec<VideoDecoderReport>,
@@ -686,6 +807,17 @@ pub struct VideoPipelineSnapshot {
 pub struct VideoDecoderReport {
     pub element: String,
     pub class: VideoDecoderClass,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoDecoderPolicyStatus {
+    NotApplicable,
+    NotObserved,
+    Satisfied,
+    SoftwareFallback,
+    Violated,
+    UnknownDecoder,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -784,6 +916,10 @@ mod tests {
             snapshot[0].decoder_policy,
             crate::config::VideoDecoderPolicy::Auto
         );
+        assert_eq!(
+            snapshot[0].decoder_policy_status,
+            VideoDecoderPolicyStatus::NotApplicable
+        );
         assert_eq!(snapshot[0].start_offset_ms, 0);
         assert!(snapshot[0].actual_decoders.is_empty());
         assert!(snapshot[0].actual_decoder_reports.is_empty());
@@ -871,6 +1007,95 @@ mod tests {
         assert_eq!(decoder_class("dav1ddec"), VideoDecoderClass::Software);
         assert_eq!(decoder_class("vaav1dec"), VideoDecoderClass::Hardware);
         assert_eq!(decoder_class("customdec"), VideoDecoderClass::Unknown);
+    }
+
+    #[test]
+    fn decoder_policy_rank_rules_select_expected_decoder_class() {
+        assert_eq!(
+            decoder_policy_rank(VideoDecoderPolicy::Auto, "dav1ddec", gst::Rank::MARGINAL),
+            gst::Rank::MARGINAL
+        );
+        assert_eq!(
+            decoder_policy_rank(
+                VideoDecoderPolicy::HardwarePreferred,
+                "vaav1dec",
+                gst::Rank::NONE
+            ),
+            gst::Rank::PRIMARY + DECODER_RANK_BOOST
+        );
+        assert_eq!(
+            decoder_policy_rank(
+                VideoDecoderPolicy::HardwarePreferred,
+                "dav1ddec",
+                gst::Rank::NONE
+            ),
+            gst::Rank::SECONDARY
+        );
+        assert_eq!(
+            decoder_policy_rank(
+                VideoDecoderPolicy::HardwareRequired,
+                "dav1ddec",
+                gst::Rank::PRIMARY
+            ),
+            gst::Rank::NONE
+        );
+        assert_eq!(
+            decoder_policy_rank(VideoDecoderPolicy::Software, "vaav1dec", gst::Rank::PRIMARY),
+            gst::Rank::NONE
+        );
+        assert_eq!(
+            decoder_policy_rank(VideoDecoderPolicy::Software, "dav1ddec", gst::Rank::NONE),
+            gst::Rank::PRIMARY + DECODER_RANK_BOOST
+        );
+    }
+
+    #[test]
+    fn reports_decoder_policy_status_from_observed_decoders() {
+        let hardware = VideoDecoderReport {
+            element: "vaav1dec".to_owned(),
+            class: VideoDecoderClass::Hardware,
+        };
+        let software = VideoDecoderReport {
+            element: "dav1ddec".to_owned(),
+            class: VideoDecoderClass::Software,
+        };
+        let unknown = VideoDecoderReport {
+            element: "customdec".to_owned(),
+            class: VideoDecoderClass::Unknown,
+        };
+
+        assert_eq!(
+            decoder_policy_status(VideoDecoderPolicy::Auto, &[]),
+            VideoDecoderPolicyStatus::NotApplicable
+        );
+        assert_eq!(
+            decoder_policy_status(VideoDecoderPolicy::HardwareRequired, &[]),
+            VideoDecoderPolicyStatus::NotObserved
+        );
+        assert_eq!(
+            decoder_policy_status(VideoDecoderPolicy::HardwareRequired, &[hardware.clone()]),
+            VideoDecoderPolicyStatus::Satisfied
+        );
+        assert_eq!(
+            decoder_policy_status(VideoDecoderPolicy::HardwareRequired, &[software.clone()]),
+            VideoDecoderPolicyStatus::Violated
+        );
+        assert_eq!(
+            decoder_policy_status(VideoDecoderPolicy::HardwarePreferred, &[software.clone()]),
+            VideoDecoderPolicyStatus::SoftwareFallback
+        );
+        assert_eq!(
+            decoder_policy_status(VideoDecoderPolicy::Software, &[hardware.clone()]),
+            VideoDecoderPolicyStatus::Violated
+        );
+        assert_eq!(
+            decoder_policy_status(VideoDecoderPolicy::Software, &[software]),
+            VideoDecoderPolicyStatus::Satisfied
+        );
+        assert_eq!(
+            decoder_policy_status(VideoDecoderPolicy::HardwarePreferred, &[unknown]),
+            VideoDecoderPolicyStatus::UnknownDecoder
+        );
     }
 
     #[test]
