@@ -43,6 +43,8 @@ Options:
                      Require sampled GTK video frame clock ticks
   --expect-gtk-frame-timings
                      Require sampled completed GDK frame timings
+  --require-video-runtime-row
+                     Require active video phases to record at least one video runtime row
   --visual-hold <sec>
                      Keep the applied video wallpaper visible before sampling/cleanup
   --simulate-power <state>
@@ -79,6 +81,7 @@ expect_zero_copy_evidence=""
 expect_video_position_progress=0
 expect_gtk_frame_clock=0
 expect_gtk_frame_timings=0
+require_video_runtime_row=0
 visual_hold=0
 simulate_power=""
 simulate_output_state=""
@@ -204,6 +207,10 @@ while [[ $# -gt 0 ]]; do
     --expect-gtk-frame-timings)
       expect_gtk_frame_timings=1
       sample_performance=1
+      shift
+      ;;
+    --require-video-runtime-row)
+      require_video_runtime_row=1
       shift
       ;;
     --visual-hold)
@@ -525,6 +532,7 @@ expect_zero_copy_evidence: ${expect_zero_copy_evidence:-none}
 expect_video_position_progress: ${expect_video_position_progress}
 expect_gtk_frame_clock: ${expect_gtk_frame_clock}
 expect_gtk_frame_timings: ${expect_gtk_frame_timings}
+require_video_runtime_row: ${require_video_runtime_row}
 visual_hold: ${visual_hold}
 simulate_power: ${simulate_power:-none}
 simulate_output_state: ${simulate_output_state:-none}
@@ -616,6 +624,7 @@ expects_active_video_plan: $(active_video_plan_expectation_text)
 sample_performance: ${sample_performance}
 sample_paused: ${sample_paused}
 measure_fullscreen_resume: ${measure_fullscreen_resume}
+require_video_runtime_row: ${require_video_runtime_row}
 video_runtime_rows: $(count_csv_data_rows "$video_runtime_path")
 video_runtime_csv: ${video_runtime_path}
 performance_active_summary: ${active_summary}
@@ -895,8 +904,10 @@ measure_fullscreen_resume_latency() {
 append_video_runtime_evidence() {
   local phase="$1"
   local status_file="$2"
+  local require_row="${3:-0}"
   local temp_video_runtime="$work_dir/video-runtime-${phase}.tmp"
   local video_runtime_error_file="$work_dir/video-runtime-${phase}.err"
+  local row_count
 
   if ! "$gilderctl" status --video-runtime-csv --from-file "$status_file" > "$temp_video_runtime" 2> "$video_runtime_error_file"; then
     rm -f "$temp_video_runtime"
@@ -906,6 +917,7 @@ append_video_runtime_evidence() {
   if [[ ! -s "$video_runtime_error_file" ]]; then
     rm -f "$video_runtime_error_file"
   fi
+  row_count="$(count_csv_data_rows "$temp_video_runtime")"
 
   awk -v phase="$phase" '
     NR == 1 { next }
@@ -914,7 +926,18 @@ append_video_runtime_evidence() {
     }
   ' "$temp_video_runtime" >> "$video_runtime_path"
   rm -f "$temp_video_runtime"
-  pass "recorded video runtime evidence for ${phase}"
+  if [[ "$row_count" -gt 0 ]]; then
+    record_check "video-runtime" "$phase" "observed" "${row_count} row(s)"
+    pass "recorded video runtime evidence for ${phase} (${row_count} row(s))"
+    return 0
+  fi
+
+  record_check "video-runtime" "$phase" "missing" "0 rows"
+  if [[ "$require_row" -eq 1 ]]; then
+    skip_or_fail "video runtime evidence for ${phase} has no rows"
+    return 1
+  fi
+  note "video runtime evidence for ${phase} has no rows"
   return 0
 }
 
@@ -1117,7 +1140,11 @@ if [[ "$all_outputs" -eq 1 ]]; then
 fi
 sleep 2
 env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_after"
-append_video_runtime_evidence "after-set" "$status_after" || true
+require_after_set_runtime=0
+if [[ "$require_video_runtime_row" -eq 1 ]] && expects_active_video_plan; then
+  require_after_set_runtime=1
+fi
+append_video_runtime_evidence "after-set" "$status_after" "$require_after_set_runtime" || true
 
 if expects_active_video_plan; then
   missing_video_plan=0
@@ -1159,7 +1186,7 @@ fi
 if [[ "$measure_fullscreen_resume" -eq 1 ]]; then
   if measure_fullscreen_resume_latency; then
     pass "measured fullscreen resume latency"
-    append_video_runtime_evidence "fullscreen-resumed" "$status_resumed" || true
+    append_video_runtime_evidence "fullscreen-resumed" "$status_resumed" "$require_video_runtime_row" || true
   else
     note "resume latency summary:"
     sed -n '1,120p' "$resume_latency_summary"
@@ -1210,7 +1237,7 @@ if [[ "$sample_paused" -eq 1 ]]; then
   env GILDER_SOCKET="$socket" "$gilderctl" pause --output "$output_name" >/dev/null
   sleep 2
   env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_paused"
-  append_video_runtime_evidence "paused" "$status_paused" || true
+  append_video_runtime_evidence "paused" "$status_paused" 0 || true
   if grep -q '"reason":"user-paused"' "$status_paused"; then
     pass "status reports user-paused decision"
   else
@@ -1235,7 +1262,7 @@ if [[ "$sample_paused" -eq 1 ]]; then
   env GILDER_SOCKET="$socket" "$gilderctl" resume --output "$output_name" >/dev/null
   sleep 1
   env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_resumed"
-  append_video_runtime_evidence "resumed" "$status_resumed" || true
+  append_video_runtime_evidence "resumed" "$status_resumed" "$require_video_runtime_row" || true
   if grep -q '"reason":"user-paused"' "$status_resumed"; then
     skip_or_fail "status still reports user-paused after resume"
   else
