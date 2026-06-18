@@ -13,6 +13,8 @@ output, and records status/log evidence.
 Options:
   --output <name>     Output connector name. Default: first daemon-reported output
   --all-outputs       Apply the generated video wallpaper to every reported output
+  --expect-compositor <kind>
+                     Require desktop.compositor to be hyprland, niri, generic-wayland, or none
   --work-dir <dir>    Parent directory for temporary smoke data
   --report-dir <dir>  Exact evidence directory. Created and kept
   --preflight         Check session, tools, binaries, and GStreamer elements without applying wallpaper
@@ -44,6 +46,7 @@ work_parent="${TMPDIR:-/tmp}"
 report_dir=""
 output_name=""
 all_outputs=0
+expect_compositor=""
 preflight=0
 allow_missing=0
 build=1
@@ -68,6 +71,22 @@ while [[ $# -gt 0 ]]; do
     --all-outputs)
       all_outputs=1
       shift
+      ;;
+    --expect-compositor)
+      [[ $# -ge 2 ]] || { echo "--expect-compositor requires hyprland, niri, generic-wayland, or none" >&2; exit 2; }
+      case "$2" in
+        hyprland|niri|generic-wayland|generic|none)
+          expect_compositor="$2"
+          ;;
+        *)
+          echo "--expect-compositor requires hyprland, niri, generic-wayland, or none" >&2
+          exit 2
+          ;;
+      esac
+      if [[ "$expect_compositor" == "generic" ]]; then
+        expect_compositor="generic-wayland"
+      fi
+      shift 2
       ;;
     --work-dir)
       [[ $# -ge 2 ]] || { echo "--work-dir requires a directory" >&2; exit 2; }
@@ -251,6 +270,7 @@ if [[ "$measure_fullscreen_resume" -eq 1 ]]; then
   performance_active_label="wayland-video-resumed"
 fi
 daemon_pid=""
+actual_compositor="not-sampled"
 
 cleanup() {
   if [[ -n "$daemon_pid" ]] && kill -0 "$daemon_pid" >/dev/null 2>&1; then
@@ -414,6 +434,8 @@ build: ${build}
 sample_performance: ${sample_performance}
 sample_paused: ${sample_paused}
 measure_fullscreen_resume: ${measure_fullscreen_resume}
+expect_compositor: ${expect_compositor:-none}
+actual_compositor: ${actual_compositor}
 sample_duration: ${sample_duration}
 sample_interval: ${sample_interval}
 visual_hold: ${visual_hold}
@@ -434,6 +456,8 @@ write_summary() {
 passed: ${passes}
 skipped: ${skips}
 failed: ${failures}
+expect_compositor: ${expect_compositor:-none}
+actual_compositor: ${actual_compositor}
 metadata: ${metadata_path}
 checks: ${checks_path}
 fullscreen_resume_latency: $([[ "$measure_fullscreen_resume" -eq 1 ]] && printf '%s' "$resume_latency_summary" || printf 'none')
@@ -536,6 +560,42 @@ extract_desktop_output_names() {
     return 0
   fi
   printf '%s\n' "$desktop_outputs" | grep -o '"name":"[^"]*"' | cut -d '"' -f 4 || true
+}
+
+extract_desktop_compositor() {
+  local status_file="$1"
+  local raw
+  raw="$(grep -o '"compositor":[^,}]*' "$status_file" | head -n 1 | cut -d ':' -f 2- || true)"
+  case "$raw" in
+    \"*\")
+      raw="${raw#\"}"
+      raw="${raw%\"}"
+      ;;
+    null|"")
+      raw="none"
+      ;;
+  esac
+  printf '%s\n' "$raw"
+}
+
+check_expected_compositor() {
+  local status_file="$1"
+  actual_compositor="$(extract_desktop_compositor "$status_file")"
+  record_check "desktop-compositor" "actual" "observed" "$actual_compositor"
+  write_metadata
+
+  if [[ -z "$expect_compositor" ]]; then
+    pass "status reports compositor ${actual_compositor}"
+    return 0
+  fi
+
+  if [[ "$actual_compositor" == "$expect_compositor" ]]; then
+    record_check "desktop-compositor" "$expect_compositor" "matched" "actual ${actual_compositor}"
+    pass "status reports expected compositor ${expect_compositor}"
+  else
+    record_check "desktop-compositor" "$expect_compositor" "mismatch" "actual ${actual_compositor}"
+    skip_or_fail "status reports compositor ${actual_compositor}, expected ${expect_compositor}"
+  fi
 }
 
 status_has_video_plan_for_output() {
@@ -740,6 +800,7 @@ done
 pass "started isolated gilderd"
 
 env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_before"
+check_expected_compositor "$status_before"
 
 if [[ -n "$simulate_power" ]]; then
   if grep -q "\"power\":\"${simulate_power}\"" "$status_before"; then
