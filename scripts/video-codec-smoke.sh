@@ -89,6 +89,7 @@ failures=0
 skips=0
 passes=0
 results_path="$work_dir/results.csv"
+gst_elements_path="$work_dir/gstreamer-elements.csv"
 metadata_path="$work_dir/metadata.txt"
 summary_path="$work_dir/summary.txt"
 
@@ -153,6 +154,7 @@ passed: ${passes}
 skipped: ${skips}
 failed: ${failures}
 results: ${results_path}
+gstreamer_elements: ${gst_elements_path}
 EOF
 }
 
@@ -162,6 +164,9 @@ tool_hint() {
       printf '%s\n' "install the ffmpeg package"
       ;;
     gst-launch-1.0)
+      printf '%s\n' "install the gstreamer1.0-tools package, or run scripts/install-video-codec-smoke-deps-ubuntu.sh before this smoke on Ubuntu CI"
+      ;;
+    gst-inspect-1.0)
       printf '%s\n' "install the gstreamer1.0-tools package, or run scripts/install-video-codec-smoke-deps-ubuntu.sh before this smoke on Ubuntu CI"
       ;;
     cargo)
@@ -194,6 +199,7 @@ missing_tool() {
 refresh_tool_paths() {
   ffmpeg="$(command -v ffmpeg || true)"
   gst_launch="$(command -v gst-launch-1.0 || true)"
+  gst_inspect="$(command -v gst-inspect-1.0 || true)"
   cargo_bin="$(command -v cargo || true)"
 }
 
@@ -221,7 +227,7 @@ can_install_ubuntu_smoke_deps() {
 }
 
 maybe_auto_install_smoke_deps() {
-  [[ "$install_missing" -eq 1 || -z "$ffmpeg" || -z "$gst_launch" ]] || return 0
+  [[ "$install_missing" -eq 1 || -z "$ffmpeg" || -z "$gst_launch" || -z "$gst_inspect" ]] || return 0
   should_install_missing_smoke_deps || return 0
   can_install_ubuntu_smoke_deps || return 0
 
@@ -236,11 +242,13 @@ maybe_auto_install_smoke_deps() {
 refresh_tool_paths
 
 printf 'case,step,status,detail,artifact\n' > "$results_path"
+printf 'case,role,element,status\n' > "$gst_elements_path"
 
 maybe_auto_install_smoke_deps
 
 [[ -n "$ffmpeg" ]] || missing_tool ffmpeg
 [[ -n "$gst_launch" ]] || missing_tool gst-launch-1.0
+[[ -n "$gst_inspect" ]] || missing_tool gst-inspect-1.0
 if [[ "$run_convert" -eq 1 ]]; then
   [[ -n "$cargo_bin" ]] || missing_tool cargo
 fi
@@ -257,6 +265,7 @@ allow_missing: ${allow_missing}
 run_convert: ${run_convert}
 ffmpeg: ${ffmpeg:-unavailable}
 gst_launch: ${gst_launch:-unavailable}
+gst_inspect: ${gst_inspect:-unavailable}
 cargo: ${cargo_bin:-unavailable}
 EOF
 
@@ -265,6 +274,7 @@ if [[ -z "$ffmpeg" ]]; then
   note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
   note "metadata: $metadata_path"
   note "results:  $results_path"
+  note "gstreamer elements: $gst_elements_path"
   note "report:   $summary_path"
   exit "$([[ "$failures" -gt 0 ]] && echo 1 || echo 0)"
 fi
@@ -276,6 +286,81 @@ fi
 
 has_ffmpeg_encoder() {
   "$ffmpeg" -hide_banner -encoders 2>/dev/null | grep -Eq "[[:space:]]$1[[:space:]]"
+}
+
+gst_element_available() {
+  [[ -n "$gst_inspect" ]] && "$gst_inspect" "$1" >/dev/null 2>&1
+}
+
+record_gst_element() {
+  local case_name="$1"
+  local role="$2"
+  local element="$3"
+  local status="$4"
+
+  csv_escape "$case_name" >> "$gst_elements_path"
+  printf ',' >> "$gst_elements_path"
+  csv_escape "$role" >> "$gst_elements_path"
+  printf ',' >> "$gst_elements_path"
+  csv_escape "$element" >> "$gst_elements_path"
+  printf ',' >> "$gst_elements_path"
+  csv_escape "$status" >> "$gst_elements_path"
+  printf '\n' >> "$gst_elements_path"
+}
+
+record_decoder_candidates() {
+  local case_name="$1"
+  shift
+  local element
+  local available=0
+  for element in "$@"; do
+    if gst_element_available "$element"; then
+      available=1
+      record_gst_element "$case_name" "decoder-candidate" "$element" "available"
+    else
+      record_gst_element "$case_name" "decoder-candidate" "$element" "missing"
+    fi
+  done
+  if [[ "$available" -eq 1 ]]; then
+    record_gst_element "$case_name" "decoder" "$*" "available"
+  else
+    record_gst_element "$case_name" "decoder" "$*" "missing"
+  fi
+}
+
+record_required_gst_elements() {
+  local case_name="$1"
+  if [[ -z "$gst_inspect" ]]; then
+    record_gst_element "$case_name" "diagnostic" "gst-inspect-1.0" "missing"
+    return 0
+  fi
+
+  case "$case_name" in
+    mp4-h264)
+      if gst_element_available qtdemux; then
+        record_gst_element "$case_name" "demuxer" "qtdemux" "available"
+      else
+        record_gst_element "$case_name" "demuxer" "qtdemux" "missing"
+      fi
+      record_decoder_candidates "$case_name" avdec_h264 openh264dec
+      ;;
+    webm-vp9)
+      if gst_element_available matroskademux; then
+        record_gst_element "$case_name" "demuxer" "matroskademux" "available"
+      else
+        record_gst_element "$case_name" "demuxer" "matroskademux" "missing"
+      fi
+      record_decoder_candidates "$case_name" vp9dec avdec_vp9
+      ;;
+    webm-av1)
+      if gst_element_available matroskademux; then
+        record_gst_element "$case_name" "demuxer" "matroskademux" "available"
+      else
+        record_gst_element "$case_name" "demuxer" "matroskademux" "missing"
+      fi
+      record_decoder_candidates "$case_name" dav1ddec avdec_av1
+      ;;
+  esac
 }
 
 run_with_timeout() {
@@ -358,6 +443,7 @@ run_case() {
   local sample="$work_dir/${name}.${ext}"
 
   note "case ${name}"
+  record_required_gst_elements "$name"
   local status=0
   encode_sample "$name" "$sample" || status=$?
   if [[ "$status" -ne 0 ]]; then
@@ -418,6 +504,7 @@ else
 fi
 note "metadata: $metadata_path"
 note "results:  $results_path"
+note "gstreamer elements: $gst_elements_path"
 note "report:   $summary_path"
 note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
 if [[ "$failures" -gt 0 ]]; then
