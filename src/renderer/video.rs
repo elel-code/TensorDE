@@ -854,6 +854,21 @@ pub struct VideoFrameStats {
     pub qos_jitter_ns_abs_max: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub qos_proportion_x1000_latest: Option<u32>,
+    pub gtk_frame_clock_ticks: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk_frame_clock_counter_latest: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk_frame_clock_time_us_latest: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk_frame_clock_interval_us_latest: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk_frame_clock_interval_us_max: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk_frame_clock_fps_x1000_latest: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk_frame_clock_refresh_interval_us_latest: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk_frame_clock_predicted_presentation_time_us_latest: Option<u64>,
 }
 
 impl VideoFrameStats {
@@ -882,6 +897,38 @@ impl VideoFrameStats {
                 self.qos_proportion_x1000_latest = Some(scaled as u32);
             }
         }
+    }
+
+    #[cfg_attr(not(feature = "gtk-renderer"), allow(dead_code))]
+    pub(crate) fn record_gtk_frame_clock_tick(
+        &mut self,
+        frame_counter: i64,
+        frame_time_us: i64,
+        fps: f64,
+        refresh_interval_us: i64,
+        predicted_presentation_time_us: i64,
+    ) {
+        self.gtk_frame_clock_ticks = self.gtk_frame_clock_ticks.saturating_add(1);
+        self.gtk_frame_clock_counter_latest = non_negative_u64(frame_counter);
+        if let Some(frame_time_us) = non_negative_u64(frame_time_us) {
+            if let Some(previous_frame_time_us) = self.gtk_frame_clock_time_us_latest
+                && frame_time_us >= previous_frame_time_us
+            {
+                let interval = frame_time_us - previous_frame_time_us;
+                self.gtk_frame_clock_interval_us_latest = Some(interval);
+                update_max_u64(&mut self.gtk_frame_clock_interval_us_max, Some(interval));
+            }
+            self.gtk_frame_clock_time_us_latest = Some(frame_time_us);
+        }
+        if fps.is_finite() && fps >= 0.0 {
+            let scaled = (fps * 1000.0).round();
+            if scaled <= f64::from(u32::MAX) {
+                self.gtk_frame_clock_fps_x1000_latest = Some(scaled as u32);
+            }
+        }
+        self.gtk_frame_clock_refresh_interval_us_latest = non_negative_u64(refresh_interval_us);
+        self.gtk_frame_clock_predicted_presentation_time_us_latest =
+            non_negative_u64(predicted_presentation_time_us);
     }
 }
 
@@ -1198,6 +1245,30 @@ mod tests {
         assert_eq!(stats.qos_jitter_ns_latest, Some(2_000));
         assert_eq!(stats.qos_jitter_ns_abs_max, Some(7_000));
         assert_eq!(stats.qos_proportion_x1000_latest, Some(1_250));
+    }
+
+    #[test]
+    fn accumulates_gtk_frame_clock_stats() {
+        let mut stats = VideoFrameStats::default();
+
+        stats.record_gtk_frame_clock_tick(10, 1_000, 59.94, 16_667, 17_667);
+        stats.record_gtk_frame_clock_tick(11, 17_700, 60.0, 16_667, 34_367);
+        stats.record_gtk_frame_clock_tick(12, 34_300, 60.0, 16_667, 50_967);
+
+        assert_eq!(stats.gtk_frame_clock_ticks, 3);
+        assert_eq!(stats.gtk_frame_clock_counter_latest, Some(12));
+        assert_eq!(stats.gtk_frame_clock_time_us_latest, Some(34_300));
+        assert_eq!(stats.gtk_frame_clock_interval_us_latest, Some(16_600));
+        assert_eq!(stats.gtk_frame_clock_interval_us_max, Some(16_700));
+        assert_eq!(stats.gtk_frame_clock_fps_x1000_latest, Some(60_000));
+        assert_eq!(
+            stats.gtk_frame_clock_refresh_interval_us_latest,
+            Some(16_667)
+        );
+        assert_eq!(
+            stats.gtk_frame_clock_predicted_presentation_time_us_latest,
+            Some(50_967)
+        );
     }
 
     #[test]

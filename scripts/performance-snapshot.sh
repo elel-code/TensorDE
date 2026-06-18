@@ -53,6 +53,8 @@ Options:
                      Require at least one video runtime row with observed GStreamer QoS messages
   --expect-qos-dropped-max-at-most <count>
                      Require observed QoS dropped max to be at most count
+  --expect-gtk-frame-clock
+                     Require observed GTK frame clock ticks in video runtime rows
   --allow-missing     Report missing daemon/tools as skips instead of failures
   --keep              Keep generated evidence after the script exits
   -h, --help          Show this help text
@@ -87,6 +89,7 @@ expect_frame_limiter_enabled=0
 expect_frame_limiter_max_fps=""
 expect_video_qos=0
 expect_qos_dropped_max_at_most=""
+expect_gtk_frame_clock=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -212,6 +215,10 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "--expect-qos-dropped-max-at-most requires a value" >&2; exit 2; }
       expect_qos_dropped_max_at_most="$2"
       shift 2
+      ;;
+    --expect-gtk-frame-clock)
+      expect_gtk_frame_clock=1
+      shift
       ;;
     --allow-missing)
       allow_missing=1
@@ -673,6 +680,14 @@ write_video_runtime_summary() {
       qos_jitter = $23
       qos_jitter_abs = $24
       qos_proportion = $25
+      gtk_clock_ticks = $26
+      gtk_clock_counter = $27
+      gtk_clock_time = $28
+      gtk_clock_interval = $29
+      gtk_clock_interval_max = $30
+      gtk_clock_fps = $31
+      gtk_clock_refresh = $32
+      gtk_clock_presentation = $33
 
       if (output != "" && !(output in seen_output)) {
         seen_output[output] = 1
@@ -727,6 +742,33 @@ write_video_runtime_summary() {
       if (qos_proportion != "") {
         last_qos_proportion = qos_proportion
       }
+      if (gtk_clock_ticks != "") {
+        if (gtk_clock_ticks + 0 > 0) { gtk_clock_rows += 1 }
+        if (gtk_clock_ticks + 0 > max_gtk_clock_ticks) {
+          max_gtk_clock_ticks = gtk_clock_ticks + 0
+        }
+      }
+      if (gtk_clock_counter != "") {
+        last_gtk_clock_counter = gtk_clock_counter
+      }
+      if (gtk_clock_time != "") {
+        last_gtk_clock_time = gtk_clock_time
+      }
+      if (gtk_clock_interval != "") {
+        last_gtk_clock_interval = gtk_clock_interval
+      }
+      if (gtk_clock_interval_max != "" && gtk_clock_interval_max + 0 > max_gtk_clock_interval) {
+        max_gtk_clock_interval = gtk_clock_interval_max + 0
+      }
+      if (gtk_clock_fps != "") {
+        last_gtk_clock_fps = gtk_clock_fps
+      }
+      if (gtk_clock_refresh != "") {
+        last_gtk_clock_refresh = gtk_clock_refresh
+      }
+      if (gtk_clock_presentation != "") {
+        last_gtk_clock_presentation = gtk_clock_presentation
+      }
     }
     END {
       for (output in last_position) {
@@ -768,6 +810,27 @@ write_video_runtime_summary() {
       printf "video_qos_jitter_ns_abs_max: %d\n", max_qos_jitter_abs
       if (last_qos_proportion != "") {
         printf "video_qos_proportion_x1000_latest: %s\n", last_qos_proportion
+      }
+      printf "video_gtk_frame_clock_rows: %d\n", gtk_clock_rows
+      printf "video_gtk_frame_clock_ticks_max: %d\n", max_gtk_clock_ticks
+      if (last_gtk_clock_counter != "") {
+        printf "video_gtk_frame_clock_counter_latest: %s\n", last_gtk_clock_counter
+      }
+      if (last_gtk_clock_time != "") {
+        printf "video_gtk_frame_clock_time_us_latest: %s\n", last_gtk_clock_time
+      }
+      if (last_gtk_clock_interval != "") {
+        printf "video_gtk_frame_clock_interval_us_latest: %s\n", last_gtk_clock_interval
+      }
+      printf "video_gtk_frame_clock_interval_us_max: %d\n", max_gtk_clock_interval
+      if (last_gtk_clock_fps != "") {
+        printf "video_gtk_frame_clock_fps_x1000_latest: %s\n", last_gtk_clock_fps
+      }
+      if (last_gtk_clock_refresh != "") {
+        printf "video_gtk_frame_clock_refresh_interval_us_latest: %s\n", last_gtk_clock_refresh
+      }
+      if (last_gtk_clock_presentation != "") {
+        printf "video_gtk_frame_clock_predicted_presentation_time_us_latest: %s\n", last_gtk_clock_presentation
       }
     }
   ' "$video_runtime_csv" > "$summary"
@@ -893,7 +956,8 @@ has_video_runtime_expectations() {
     "$expect_frame_limiter_enabled" -eq 1 ||
     -n "$expect_frame_limiter_max_fps" ||
     "$expect_video_qos" -eq 1 ||
-    -n "$expect_qos_dropped_max_at_most" ]]
+    -n "$expect_qos_dropped_max_at_most" ||
+    "$expect_gtk_frame_clock" -eq 1 ]]
 }
 
 expect_video_runtime_field() {
@@ -992,6 +1056,9 @@ validate_video_runtime_expectations() {
   fi
   if [[ -n "$expect_qos_dropped_max_at_most" ]]; then
     expect_video_runtime_summary_maximum "video_qos_dropped_max" "$expect_qos_dropped_max_at_most" "QoS dropped max count"
+  fi
+  if [[ "$expect_gtk_frame_clock" -eq 1 ]]; then
+    expect_video_runtime_summary_minimum "video_gtk_frame_clock_ticks_max" 1 "GTK frame clock tick max count"
   fi
 }
 
@@ -1106,13 +1173,14 @@ expect_frame_limiter_enabled: ${expect_frame_limiter_enabled}
 expect_frame_limiter_max_fps: ${expect_frame_limiter_max_fps:-none}
 expect_video_qos: ${expect_video_qos}
 expect_qos_dropped_max_at_most: ${expect_qos_dropped_max_at_most:-none}
+expect_gtk_frame_clock: ${expect_gtk_frame_clock}
 gpu_busy_sources: drm gpu_busy_percent sysfs when readable; nvidia-smi utilization.gpu when available
 EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
 printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$telemetry_path"
-printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,source\n' > "$video_runtime_path"
+printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,source\n' > "$video_runtime_path"
 
 status_failures=0
 decision_failures=0

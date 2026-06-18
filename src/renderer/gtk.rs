@@ -16,7 +16,11 @@ use gtk::gdk;
 use gtk::gio;
 use gtk::prelude::*;
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
+#[cfg(feature = "video-renderer")]
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "video-renderer")]
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "video-renderer")]
@@ -233,7 +237,7 @@ impl GtkStaticRenderer {
                             .frame_limiter
                             .as_ref()
                             .and_then(GtkFrameLimiter::target_max_fps),
-                        frame_stats: video.frame_stats.clone(),
+                        frame_stats: video.frame_stats.borrow().clone(),
                         decoder_policy: video.decoder_policy,
                         decoder_policy_status: decoder_policy_status(
                             video.decoder_policy,
@@ -623,7 +627,8 @@ struct GtkVideoPipeline {
     target_max_fps: Option<u32>,
     decoder_policy: crate::config::VideoDecoderPolicy,
     start_offset_ms: u64,
-    frame_stats: VideoFrameStats,
+    frame_stats: Rc<RefCell<VideoFrameStats>>,
+    _frame_clock_observer: GtkFrameClockObserver,
 }
 
 #[cfg(feature = "video-renderer")]
@@ -631,6 +636,9 @@ impl GtkVideoPipeline {
     fn new(plan: &VideoWallpaperPlan) -> Result<Self, GtkVideoError> {
         gst::init().map_err(|err| GtkVideoError::Init(err.to_string()))?;
         let built = build_gtk_video_pipeline(plan)?;
+        let frame_stats = Rc::new(RefCell::new(VideoFrameStats::default()));
+        let frame_clock_observer =
+            install_frame_clock_stats(&built.picture, Rc::clone(&frame_stats));
         let mut pipeline = Self {
             element: built.element,
             picture: built.picture,
@@ -644,7 +652,8 @@ impl GtkVideoPipeline {
             target_max_fps: plan.target_max_fps,
             decoder_policy: plan.decoder_policy,
             start_offset_ms: 0,
-            frame_stats: VideoFrameStats::default(),
+            frame_stats,
+            _frame_clock_observer: frame_clock_observer,
         };
         pipeline.apply_muted(plan.muted);
         Ok(pipeline)
@@ -714,7 +723,7 @@ impl GtkVideoPipeline {
                 gst::MessageView::Qos(qos) => {
                     let (processed, dropped) = qos.stats();
                     let (jitter, proportion, _) = qos.values();
-                    self.frame_stats.record_qos_values(
+                    self.frame_stats.borrow_mut().record_qos_values(
                         processed.format().to_string(),
                         processed.value(),
                         dropped.value(),
@@ -833,6 +842,76 @@ fn build_gtk_video_pipeline(
         picture,
         frame_limiter,
     })
+}
+
+#[cfg(feature = "video-renderer")]
+fn install_frame_clock_stats(
+    picture: &gtk::Picture,
+    frame_stats: Rc<RefCell<VideoFrameStats>>,
+) -> GtkFrameClockObserver {
+    let after_paint_handler = Rc::new(RefCell::new(None));
+    let realize_stats = Rc::clone(&frame_stats);
+    let realize_after_paint_handler = Rc::clone(&after_paint_handler);
+    let realize_handler = picture.connect_realize(move |picture| {
+        attach_frame_clock_stats(
+            picture,
+            Rc::clone(&realize_stats),
+            Rc::clone(&realize_after_paint_handler),
+        );
+    });
+    attach_frame_clock_stats(picture, frame_stats, Rc::clone(&after_paint_handler));
+    GtkFrameClockObserver {
+        picture: picture.clone(),
+        realize_handler: Some(realize_handler),
+        after_paint_handler,
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+struct GtkFrameClockObserver {
+    picture: gtk::Picture,
+    realize_handler: Option<gtk::glib::SignalHandlerId>,
+    after_paint_handler: Rc<RefCell<Option<(gdk::FrameClock, gtk::glib::SignalHandlerId)>>>,
+}
+
+#[cfg(feature = "video-renderer")]
+impl Drop for GtkFrameClockObserver {
+    fn drop(&mut self) {
+        if let Some((clock, handler)) = self.after_paint_handler.borrow_mut().take() {
+            clock.disconnect(handler);
+        }
+        if let Some(handler) = self.realize_handler.take() {
+            self.picture.disconnect(handler);
+        }
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+fn attach_frame_clock_stats(
+    picture: &gtk::Picture,
+    frame_stats: Rc<RefCell<VideoFrameStats>>,
+    after_paint_handler: Rc<RefCell<Option<(gdk::FrameClock, gtk::glib::SignalHandlerId)>>>,
+) {
+    if after_paint_handler.borrow().is_some() {
+        return;
+    }
+    let Some(clock) = picture.frame_clock() else {
+        return;
+    };
+    let observed_clock = clock.clone();
+    let handler = clock.connect_after_paint(move |clock| {
+        let frame_time_us = clock.frame_time();
+        let (refresh_interval_us, predicted_presentation_time_us) =
+            clock.refresh_info(frame_time_us);
+        frame_stats.borrow_mut().record_gtk_frame_clock_tick(
+            clock.frame_counter(),
+            frame_time_us,
+            clock.fps(),
+            refresh_interval_us,
+            predicted_presentation_time_us,
+        );
+    });
+    *after_paint_handler.borrow_mut() = Some((observed_clock, handler));
 }
 
 #[cfg(feature = "video-renderer")]
