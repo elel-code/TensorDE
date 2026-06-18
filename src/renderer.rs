@@ -88,6 +88,14 @@ pub struct RenderSyncCacheReport {
     #[serde(default)]
     pub package_cache_evictions: u64,
     #[serde(default)]
+    pub package_cache_retained_resource_references: usize,
+    #[serde(default)]
+    pub package_cache_retained_unique_resources: usize,
+    #[serde(default)]
+    pub package_cache_retained_resource_bytes: u64,
+    #[serde(default)]
+    pub package_cache_retained_unique_resource_bytes: u64,
+    #[serde(default)]
     pub archive_cache_entries: usize,
     #[serde(default)]
     pub archive_cache_max_entries: usize,
@@ -477,6 +485,29 @@ fn file_size(path: &Path) -> u64 {
     fs::metadata(path)
         .map(|metadata| metadata.len())
         .unwrap_or(0)
+}
+
+fn source_tree_size(path: &Path) -> u64 {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if metadata.file_type().is_symlink() {
+        return 0;
+    }
+    if metadata.is_file() {
+        return metadata.len();
+    }
+    if !metadata.is_dir() {
+        return 0;
+    }
+
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| source_tree_size(&entry.path()))
+        .sum()
 }
 
 fn is_video_poster_resource(
@@ -987,6 +1018,7 @@ impl<'a> RenderPackageCache<'a> {
     }
 
     fn finish(mut self, cache_config: CacheConfig) -> RenderSyncCacheReport {
+        self.update_retained_resource_footprint();
         let prune = prune_render_cache(
             self.cache_dir,
             cache_config.render_cache_max_entries,
@@ -999,6 +1031,36 @@ impl<'a> RenderPackageCache<'a> {
         self.stats.archive_cache_evictions = prune.evictions;
         self.stats.archive_cache_eviction_errors = prune.errors;
         self.stats
+    }
+
+    fn update_retained_resource_footprint(&mut self) {
+        let mut resource_references = 0;
+        let mut resource_reference_bytes = 0;
+        let mut unique_resources = BTreeSet::new();
+
+        for package in self
+            .packages
+            .values()
+            .filter_map(|package| package.as_ref().ok())
+        {
+            let Ok(paths) = package.manifest.referenced_paths() else {
+                continue;
+            };
+            for package_path in paths {
+                let path = package_path.join_to(&package.root);
+                resource_references += 1;
+                resource_reference_bytes += source_tree_size(&path);
+                unique_resources.insert(path);
+            }
+        }
+
+        self.stats.package_cache_retained_resource_references = resource_references;
+        self.stats.package_cache_retained_unique_resources = unique_resources.len();
+        self.stats.package_cache_retained_resource_bytes = resource_reference_bytes;
+        self.stats.package_cache_retained_unique_resource_bytes = unique_resources
+            .iter()
+            .map(|path| source_tree_size(path))
+            .sum();
     }
 }
 
@@ -2429,6 +2491,71 @@ mod tests {
         assert_eq!(cache.stats.package_cache_hits, 0);
         assert_eq!(cache.stats.package_cache_misses, 2);
         assert_eq!(cache.stats.package_cache_evictions, 0);
+    }
+
+    #[test]
+    fn render_sync_reports_package_cache_retained_resource_footprint() {
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some("examples/wallpapers/static-demo.gwpdir".to_owned());
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_config(
+            &config,
+            &desktop,
+            &AppState::default(),
+            std::env::temp_dir(),
+        );
+
+        let retained_bytes = [
+            "previews/thumbnail.svg",
+            "previews/poster.svg",
+            "assets/wallpaper.svg",
+        ]
+        .iter()
+        .map(|path| {
+            fs::metadata(Path::new("examples/wallpapers/static-demo.gwpdir").join(path))
+                .unwrap()
+                .len()
+        })
+        .sum::<u64>();
+        assert_eq!(sync.cache.package_cache_entries, 1);
+        assert_eq!(sync.cache.package_cache_retained_resource_references, 3);
+        assert_eq!(sync.cache.package_cache_retained_unique_resources, 3);
+        assert_eq!(
+            sync.cache.package_cache_retained_resource_bytes,
+            retained_bytes
+        );
+        assert_eq!(
+            sync.cache.package_cache_retained_unique_resource_bytes,
+            retained_bytes
+        );
+    }
+
+    #[test]
+    fn zero_package_cache_limit_reports_no_retained_resource_footprint() {
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some("examples/wallpapers/static-demo.gwpdir".to_owned());
+        config.cache.package_cache_max_entries = 0;
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_config(
+            &config,
+            &desktop,
+            &AppState::default(),
+            std::env::temp_dir(),
+        );
+
+        assert_eq!(sync.cache.package_cache_entries, 0);
+        assert_eq!(sync.cache.package_cache_retained_resource_references, 0);
+        assert_eq!(sync.cache.package_cache_retained_unique_resources, 0);
+        assert_eq!(sync.cache.package_cache_retained_resource_bytes, 0);
+        assert_eq!(sync.cache.package_cache_retained_unique_resource_bytes, 0);
     }
 
     #[test]

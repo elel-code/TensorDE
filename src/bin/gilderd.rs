@@ -1338,6 +1338,10 @@ fn telemetry_report(
             "package_cache_hits": render_sync_cache.package_cache_hits,
             "package_cache_misses": render_sync_cache.package_cache_misses,
             "package_cache_evictions": render_sync_cache.package_cache_evictions,
+            "package_cache_retained_resource_references": render_sync_cache.package_cache_retained_resource_references,
+            "package_cache_retained_unique_resources": render_sync_cache.package_cache_retained_unique_resources,
+            "package_cache_retained_resource_bytes": render_sync_cache.package_cache_retained_resource_bytes,
+            "package_cache_retained_unique_resource_bytes": render_sync_cache.package_cache_retained_unique_resource_bytes,
             "archive_cache_entries": render_sync_cache.archive_cache_entries,
             "archive_cache_max_entries": render_sync_cache.archive_cache_max_entries,
             "archive_cache_reuses": render_sync_cache.archive_cache_reuses,
@@ -1839,6 +1843,22 @@ mod tests {
             json!(0)
         );
         assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["package_cache_retained_resource_references"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["package_cache_retained_unique_resources"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["package_cache_retained_resource_bytes"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["package_cache_retained_unique_resource_bytes"],
+            json!(0)
+        );
+        assert_eq!(
             response["result"]["telemetry"]["render_sync"]["archive_cache_entries"],
             json!(0)
         );
@@ -2003,6 +2023,38 @@ mod tests {
                 + std::fs::metadata("examples/wallpapers/slideshow-demo.gwpdir/assets/slide-b.svg")
                     .unwrap()
                     .len();
+        let retained_reference_bytes =
+            std::fs::metadata("examples/wallpapers/slideshow-demo.gwpdir/previews/thumbnail.svg")
+                .unwrap()
+                .len()
+                + std::fs::metadata("examples/wallpapers/slideshow-demo.gwpdir/assets/slide-a.svg")
+                    .unwrap()
+                    .len()
+                    * 2
+                + std::fs::metadata("examples/wallpapers/slideshow-demo.gwpdir/assets/slide-b.svg")
+                    .unwrap()
+                    .len();
+        let retained_unique_bytes =
+            std::fs::metadata("examples/wallpapers/slideshow-demo.gwpdir/previews/thumbnail.svg")
+                .unwrap()
+                .len()
+                + planned_bytes;
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["package_cache_retained_resource_references"],
+            json!(4)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["package_cache_retained_unique_resources"],
+            json!(3)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["package_cache_retained_resource_bytes"],
+            json!(retained_reference_bytes)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["package_cache_retained_unique_resource_bytes"],
+            json!(retained_unique_bytes)
+        );
         assert_eq!(
             response["result"]["telemetry"]["render_sync"]["planned_static_image_resource_bytes"],
             json!(0)
