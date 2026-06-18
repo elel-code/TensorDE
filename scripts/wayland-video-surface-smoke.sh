@@ -13,6 +13,8 @@ output, and records status/log evidence.
 Options:
   --output <name>     Output connector name. Default: first daemon-reported output
   --work-dir <dir>    Parent directory for temporary smoke data
+  --report-dir <dir>  Exact evidence directory. Created and kept
+  --preflight         Check session, tools, binaries, and GStreamer elements without applying wallpaper
   --allow-missing     Report missing session/tools/plugins as skips instead of failures
   --no-build          Use existing target/debug binaries
   --sample-performance
@@ -34,7 +36,9 @@ EOF
 }
 
 work_parent="${TMPDIR:-/tmp}"
+report_dir=""
 output_name=""
+preflight=0
 allow_missing=0
 build=1
 keep=0
@@ -57,6 +61,15 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "--work-dir requires a directory" >&2; exit 2; }
       work_parent="$2"
       shift 2
+      ;;
+    --report-dir)
+      [[ $# -ge 2 ]] || { echo "--report-dir requires a directory" >&2; exit 2; }
+      report_dir="$2"
+      shift 2
+      ;;
+    --preflight)
+      preflight=1
+      shift
       ;;
     --allow-missing)
       allow_missing=1
@@ -143,8 +156,13 @@ done
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-mkdir -p "$work_parent"
-work_dir="$(mktemp -d "${work_parent%/}/gilder-wayland-video.XXXXXX")"
+if [[ -n "$report_dir" ]]; then
+  work_dir="$report_dir"
+  mkdir -p "$work_dir"
+else
+  mkdir -p "$work_parent"
+  work_dir="$(mktemp -d "${work_parent%/}/gilder-wayland-video.XXXXXX")"
+fi
 socket="$work_dir/runtime/gilder.sock"
 daemon_log="$work_dir/gilderd.log"
 status_before="$work_dir/status-before.json"
@@ -157,6 +175,9 @@ performance_active_dir="$work_dir/performance-active"
 performance_active_log="$work_dir/performance-active.log"
 performance_paused_dir="$work_dir/performance-paused"
 performance_paused_log="$work_dir/performance-paused.log"
+checks_path="$work_dir/checks.csv"
+metadata_path="$work_dir/metadata.txt"
+summary_path="$work_dir/summary.txt"
 performance_active_label="wayland-video-active"
 scenario_suffix=""
 if [[ -n "$simulate_power" ]]; then
@@ -188,7 +209,7 @@ cleanup() {
     kill "$daemon_pid" >/dev/null 2>&1 || true
     wait "$daemon_pid" >/dev/null 2>&1 || true
   fi
-  if [[ "$keep" -eq 0 ]]; then
+  if [[ "$keep" -eq 0 && -z "$report_dir" ]]; then
     rm -rf "$work_dir"
   else
     printf 'kept work dir: %s\n' "$work_dir"
@@ -202,6 +223,31 @@ passes=0
 
 note() {
   printf '%s\n' "$*"
+}
+
+csv_escape() {
+  local value="$1"
+  if [[ "$value" == *","* || "$value" == *"\""* || "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    printf '"%s"' "${value//\"/\"\"}"
+  else
+    printf '%s' "$value"
+  fi
+}
+
+record_check() {
+  local kind="$1"
+  local name="$2"
+  local status="$3"
+  local detail="$4"
+
+  csv_escape "$kind" >> "$checks_path"
+  printf ',' >> "$checks_path"
+  csv_escape "$name" >> "$checks_path"
+  printf ',' >> "$checks_path"
+  csv_escape "$status" >> "$checks_path"
+  printf ',' >> "$checks_path"
+  csv_escape "$detail" >> "$checks_path"
+  printf '\n' >> "$checks_path"
 }
 
 pass() {
@@ -222,19 +268,110 @@ skip_or_fail() {
 require_command() {
   local command="$1"
   if ! command -v "$command" >/dev/null 2>&1; then
+    record_check "command" "$command" "missing" "not found in PATH"
     skip_or_fail "$command is not available"
     return 1
   fi
+  record_check "command" "$command" "available" "$(command -v "$command")"
   return 0
 }
 
 require_file() {
   local file="$1"
   if [[ ! -x "$file" ]]; then
+    record_check "file" "$file" "missing" "not executable"
     skip_or_fail "missing executable $file"
     return 1
   fi
+  record_check "file" "$file" "available" "executable"
   return 0
+}
+
+check_env_var() {
+  local name="$1"
+  local value="${!name:-}"
+  if [[ -z "$value" ]]; then
+    record_check "environment" "$name" "missing" "not set"
+    skip_or_fail "$name is not set"
+    return 1
+  fi
+  record_check "environment" "$name" "available" "$value"
+  return 0
+}
+
+gst_element_available() {
+  command -v gst-inspect-1.0 >/dev/null 2>&1 && gst-inspect-1.0 "$1" >/dev/null 2>&1
+}
+
+check_gst_element() {
+  local role="$1"
+  local element="$2"
+  if gst_element_available "$element"; then
+    record_check "gstreamer-${role}" "$element" "available" "gst-inspect-1.0 found element"
+    return 0
+  fi
+  record_check "gstreamer-${role}" "$element" "missing" "gst-inspect-1.0 did not find element"
+  skip_or_fail "GStreamer element ${element} is not available"
+  return 1
+}
+
+check_any_gst_element() {
+  local role="$1"
+  shift
+  local element
+  local available=0
+  for element in "$@"; do
+    if gst_element_available "$element"; then
+      available=1
+      record_check "gstreamer-${role}-candidate" "$element" "available" "gst-inspect-1.0 found element"
+    else
+      record_check "gstreamer-${role}-candidate" "$element" "missing" "gst-inspect-1.0 did not find element"
+    fi
+  done
+  if [[ "$available" -eq 1 ]]; then
+    record_check "gstreamer-${role}" "$*" "available" "at least one candidate is available"
+    return 0
+  fi
+  record_check "gstreamer-${role}" "$*" "missing" "no candidate element is available"
+  skip_or_fail "no GStreamer ${role} candidate is available: $*"
+  return 1
+}
+
+write_metadata() {
+  cat > "$metadata_path" <<EOF
+mode: $([[ "$preflight" -eq 1 ]] && printf 'preflight' || printf 'smoke')
+output: ${output_name:-auto}
+build: ${build}
+sample_performance: ${sample_performance}
+sample_paused: ${sample_paused}
+sample_duration: ${sample_duration}
+sample_interval: ${sample_interval}
+simulate_power: ${simulate_power:-none}
+simulate_output_state: ${simulate_output_state:-none}
+simulate_session: ${simulate_session:-none}
+wayland_display: ${WAYLAND_DISPLAY:-unset}
+xdg_runtime_dir: ${XDG_RUNTIME_DIR:-unset}
+checks: ${checks_path}
+EOF
+}
+
+write_summary() {
+  cat > "$summary_path" <<EOF
+passed: ${passes}
+skipped: ${skips}
+failed: ${failures}
+metadata: ${metadata_path}
+checks: ${checks_path}
+EOF
+}
+
+finish_with_summary() {
+  write_summary
+  note "metadata: $metadata_path"
+  note "checks:   $checks_path"
+  note "report:   $summary_path"
+  note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
+  exit "$([[ "$failures" -gt 0 ]] && echo 1 || echo 0)"
 }
 
 capture_performance() {
@@ -316,20 +453,25 @@ expected_mode_for_reason() {
   esac
 }
 
-if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
-  skip_or_fail "WAYLAND_DISPLAY is not set; run this inside niri, Hyprland, or another Wayland session"
-fi
-if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
-  skip_or_fail "XDG_RUNTIME_DIR is not set"
-fi
+printf 'kind,name,status,detail\n' > "$checks_path"
+write_metadata
+
+check_env_var WAYLAND_DISPLAY || true
+check_env_var XDG_RUNTIME_DIR || true
 require_command ffmpeg || true
+require_command gst-inspect-1.0 || true
+if command -v gst-inspect-1.0 >/dev/null 2>&1; then
+  check_gst_element "playback" playbin || true
+  check_gst_element "paintable-sink" gtk4paintablesink || true
+  check_gst_element "mp4-demuxer" qtdemux || true
+  check_any_gst_element "h264-decoder" avdec_h264 openh264dec || true
+fi
 if [[ "$build" -eq 1 ]]; then
   require_command cargo || true
 fi
 
 if [[ "$failures" -gt 0 || "$skips" -gt 0 ]]; then
-  note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
-  exit "$([[ "$failures" -gt 0 ]] && echo 1 || echo 0)"
+  finish_with_summary
 fi
 
 if [[ "$build" -eq 1 ]]; then
@@ -347,8 +489,12 @@ if [[ "$sample_performance" -eq 1 ]]; then
   require_file "$performance_snapshot" || true
 fi
 if [[ "$failures" -gt 0 || "$skips" -gt 0 ]]; then
-  note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
-  exit "$([[ "$failures" -gt 0 ]] && echo 1 || echo 0)"
+  finish_with_summary
+fi
+
+if [[ "$preflight" -eq 1 ]]; then
+  pass "preflight checks passed"
+  finish_with_summary
 fi
 
 mkdir -p "$work_dir/runtime" "$work_dir/config" "$work_dir/state" "$work_dir/cache" "$source_dir"
@@ -393,8 +539,7 @@ for _ in $(seq 1 80); do
     note "daemon log:"
     sed -n '1,120p' "$daemon_log"
     skip_or_fail "gilderd exited before creating IPC socket"
-    note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
-    exit "$([[ "$failures" -gt 0 ]] && echo 1 || echo 0)"
+    finish_with_summary
   fi
   sleep 0.1
 done
@@ -402,8 +547,7 @@ done
   note "daemon log:"
   sed -n '1,120p' "$daemon_log"
   skip_or_fail "gilderd did not create IPC socket"
-  note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
-  exit "$([[ "$failures" -gt 0 ]] && echo 1 || echo 0)"
+  finish_with_summary
 }
 pass "started isolated gilderd"
 
@@ -443,8 +587,7 @@ if [[ -z "$output_name" ]]; then
   skip_or_fail "daemon reported no output; pass --output <name> if compositor adapters are disabled"
   note "status evidence: $status_before"
   note "daemon log: $daemon_log"
-  note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
-  exit "$([[ "$failures" -gt 0 ]] && echo 1 || echo 0)"
+  finish_with_summary
 fi
 pass "selected output $output_name"
 
@@ -474,8 +617,7 @@ if ! grep -Eq '"name":"gtk4paintablesink","available":true|"available":true,"nam
   skip_or_fail "gtk4paintablesink is not available according to renderer_capabilities"
   note "status evidence: $status_before"
   note "daemon log: $daemon_log"
-  note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
-  exit "$([[ "$failures" -gt 0 ]] && echo 1 || echo 0)"
+  finish_with_summary
 fi
 pass "gtk4paintablesink is available"
 
@@ -590,7 +732,4 @@ if [[ "$sample_paused" -eq 1 ]]; then
   note "performance paused log: $performance_paused_log"
 fi
 note "Visually confirm that output '$output_name' shows the generated moving test video."
-note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
-if [[ "$failures" -gt 0 ]]; then
-  exit 1
-fi
+finish_with_summary
