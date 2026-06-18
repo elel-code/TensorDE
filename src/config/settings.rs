@@ -177,6 +177,10 @@ pub struct PerformanceConfig {
     #[serde(default)]
     pub fullscreen: ThrottlePolicy,
     #[serde(default)]
+    pub hidden: DynamicPausePolicy,
+    #[serde(default)]
+    pub session: DynamicPausePolicy,
+    #[serde(default)]
     pub unfocused: ThrottlePolicy,
     #[serde(default)]
     pub battery: PowerPolicy,
@@ -190,6 +194,8 @@ impl Default for PerformanceConfig {
             battery_max_fps: default_battery_fps(),
             desktop_refresh_interval_ms: default_desktop_refresh_interval_ms(),
             fullscreen: ThrottlePolicy::Pause,
+            hidden: DynamicPausePolicy::Pause,
+            session: DynamicPausePolicy::Pause,
             unfocused: ThrottlePolicy::Throttle,
             battery: PowerPolicy::Throttle,
         }
@@ -208,6 +214,8 @@ impl PerformanceConfig {
             battery_max_fps: overrides.battery_max_fps.unwrap_or(self.battery_max_fps),
             desktop_refresh_interval_ms: self.desktop_refresh_interval_ms,
             fullscreen: overrides.fullscreen.unwrap_or(self.fullscreen),
+            hidden: overrides.hidden.unwrap_or(self.hidden),
+            session: overrides.session.unwrap_or(self.session),
             unfocused: overrides.unfocused.unwrap_or(self.unfocused),
             battery: overrides.battery.unwrap_or(self.battery),
         }
@@ -225,6 +233,10 @@ pub struct OutputPerformanceConfig {
     #[serde(default)]
     pub fullscreen: Option<ThrottlePolicy>,
     #[serde(default)]
+    pub hidden: Option<DynamicPausePolicy>,
+    #[serde(default)]
+    pub session: Option<DynamicPausePolicy>,
+    #[serde(default)]
     pub unfocused: Option<ThrottlePolicy>,
     #[serde(default)]
     pub battery: Option<PowerPolicy>,
@@ -236,9 +248,24 @@ pub enum ThrottlePolicy {
     Continue,
     Throttle,
     Pause,
+    PauseDynamic,
 }
 
 impl Default for ThrottlePolicy {
+    fn default() -> Self {
+        Self::Pause
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DynamicPausePolicy {
+    Continue,
+    Pause,
+    PauseDynamic,
+}
+
+impl Default for DynamicPausePolicy {
     fn default() -> Self {
         Self::Pause
     }
@@ -385,8 +412,10 @@ mod tests {
             background_max_fps = 20
             battery_max_fps = 15
             desktop_refresh_interval_ms = 1000
-            fullscreen = "pause"
-            unfocused = "throttle"
+            fullscreen = "pause-dynamic"
+            hidden = "pause-dynamic"
+            session = "pause-dynamic"
+            unfocused = "pause-dynamic"
             battery = "throttle"
 
             [video]
@@ -417,6 +446,10 @@ mod tests {
 
             [outputs."HDMI-A-1".performance]
             background_max_fps = 12
+            fullscreen = "pause"
+            hidden = "pause"
+            session = "pause"
+            unfocused = "throttle"
             battery = "pause"
 
             [outputs."HDMI-A-1".adaptive]
@@ -437,6 +470,10 @@ mod tests {
         assert_eq!(config.outputs["HDMI-A-1"].fit, Some(FitMode::Contain));
         assert_eq!(config.performance.interactive_max_fps, 75);
         assert_eq!(config.performance.desktop_refresh_interval_ms, 1000);
+        assert_eq!(config.performance.fullscreen, ThrottlePolicy::PauseDynamic);
+        assert_eq!(config.performance.hidden, DynamicPausePolicy::PauseDynamic);
+        assert_eq!(config.performance.session, DynamicPausePolicy::PauseDynamic);
+        assert_eq!(config.performance.unfocused, ThrottlePolicy::PauseDynamic);
         assert_eq!(config.performance.battery, PowerPolicy::Throttle);
         assert_eq!(config.video.decoder, VideoDecoderPolicy::HardwarePreferred);
         assert_eq!(config.cache.package_cache_max_entries, 4);
@@ -463,6 +500,10 @@ mod tests {
         let hdmi_performance = config.performance_for_output("HDMI-A-1");
         assert_eq!(hdmi_performance.interactive_max_fps, 75);
         assert_eq!(hdmi_performance.background_max_fps, 12);
+        assert_eq!(hdmi_performance.fullscreen, ThrottlePolicy::Pause);
+        assert_eq!(hdmi_performance.hidden, DynamicPausePolicy::Pause);
+        assert_eq!(hdmi_performance.session, DynamicPausePolicy::Pause);
+        assert_eq!(hdmi_performance.unfocused, ThrottlePolicy::Throttle);
         assert_eq!(hdmi_performance.battery, PowerPolicy::Pause);
         assert_eq!(
             config.performance_for_output("DP-1").battery,

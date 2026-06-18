@@ -482,6 +482,27 @@ metadata_path="$work_dir/metadata.txt"
 matrix_path="$work_dir/matrix.csv"
 resource_baseline_path="$work_dir/resource-baseline.csv"
 summary_path="$work_dir/summary.txt"
+fullscreen_static_wallpaper_path="$work_dir/fullscreen-static.gwpdir"
+mkdir -p "$fullscreen_static_wallpaper_path/assets"
+printf '%s\n' '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="9"/>' > "$fullscreen_static_wallpaper_path/assets/wallpaper.svg"
+cat > "$fullscreen_static_wallpaper_path/manifest.gilder.json" <<EOF
+{
+  "format": "gilder.wallpaper",
+  "format_version": 1,
+  "id": "org.gilder.smoke.fullscreen-static",
+  "version": "1.0.0",
+  "title": "Fullscreen Static Smoke",
+  "kind": "static-image",
+  "runtime": {
+    "pause_when_fullscreen": false
+  },
+  "entry": {
+    "type": "static-image",
+    "source": "assets/wallpaper.svg",
+    "fit": "cover"
+  }
+}
+EOF
 cat > "$metadata_path" <<EOF
 output: ${output_name}
 sample_duration: ${sample_duration}
@@ -513,6 +534,7 @@ expect_renderer_video_surfaces_max_at_most: ${expect_renderer_video_surfaces_max
 expect_renderer_video_pipelines_latest_at_most: ${expect_renderer_video_pipelines_latest_at_most:-none}
 expect_renderer_video_pipelines_max_at_most: ${expect_renderer_video_pipelines_max_at_most:-none}
 wallpaper: ${wallpaper_path}
+fullscreen_static_wallpaper: ${fullscreen_static_wallpaper_path}
 slideshow_wallpaper: ${slideshow_wallpaper_path}
 EOF
 printf 'scenario,status,expected_mode,expected_reason,expected_max_fps,expected_action,expected_plan_kind,power_state,output_state,session_state,adaptive_state,config_profile,status_before,status_after,performance_dir,daemon_log\n' > "$matrix_path"
@@ -547,6 +569,31 @@ EOF
       cat > "$config_file" <<EOF
 [outputs."${output_name}".performance]
 battery = "pause-dynamic"
+EOF
+      ;;
+    output-fullscreen-pause-dynamic)
+      cat > "$config_file" <<EOF
+[outputs."${output_name}".performance]
+fullscreen = "pause-dynamic"
+EOF
+      ;;
+    output-unfocused-pause-dynamic)
+      cat > "$config_file" <<EOF
+[outputs."${output_name}".performance]
+unfocused = "pause-dynamic"
+EOF
+      ;;
+    output-hidden-pause-dynamic)
+      cat > "$config_file" <<EOF
+[outputs."${output_name}".performance]
+hidden = "pause-dynamic"
+unfocused = "continue"
+EOF
+      ;;
+    output-session-pause-dynamic)
+      cat > "$config_file" <<EOF
+[outputs."${output_name}".performance]
+session = "pause-dynamic"
 EOF
       ;;
     adaptive-throttle)
@@ -978,6 +1025,9 @@ run_scenario() {
   if [[ "$name" == *"pause-dynamic-slideshow" ]]; then
     scenario_wallpaper_path="$slideshow_wallpaper_path"
   fi
+  if [[ "$name" == "output-fullscreen-pause-dynamic-static" ]]; then
+    scenario_wallpaper_path="$fullscreen_static_wallpaper_path"
+  fi
 
   mkdir -p "$scenario_dir/runtime" "$scenario_dir/config" "$scenario_dir/state" "$scenario_dir/cache"
   chmod 700 "$scenario_dir/runtime"
@@ -1149,6 +1199,14 @@ run_scenario output-unfocused-12fps throttled unfocused 12 render static-image a
 run_scenario output-battery-pause paused battery "" remove "" battery active active output-battery-pause "" 0 0
 run_scenario output-battery-pause-dynamic-static active interactive 60 render static-image battery active active output-battery-pause-dynamic "" 1 1
 run_scenario output-battery-pause-dynamic-slideshow paused battery "" remove "" battery active active output-battery-pause-dynamic "" 0 0
+run_scenario output-fullscreen-pause-dynamic-static active interactive 60 render static-image ac fullscreen active output-fullscreen-pause-dynamic "" 1 1
+run_scenario output-fullscreen-pause-dynamic-slideshow paused fullscreen "" remove "" ac fullscreen active output-fullscreen-pause-dynamic "" 0 0
+run_scenario output-unfocused-pause-dynamic-static active interactive 60 render static-image ac unfocused active output-unfocused-pause-dynamic "" 1 1
+run_scenario output-unfocused-pause-dynamic-slideshow paused unfocused "" remove "" ac unfocused active output-unfocused-pause-dynamic "" 0 0
+run_scenario output-hidden-pause-dynamic-static active interactive 60 render static-image ac hidden active output-hidden-pause-dynamic "" 1 1
+run_scenario output-hidden-pause-dynamic-slideshow paused output-hidden "" remove "" ac hidden active output-hidden-pause-dynamic "" 0 0
+run_scenario output-session-pause-dynamic-static active interactive 60 render static-image ac active inactive output-session-pause-dynamic "" 1 1
+run_scenario output-session-pause-dynamic-slideshow paused session-inactive "" remove "" ac active inactive output-session-pause-dynamic "" 0 0
 run_scenario adaptive-throttle throttled adaptive 11 render static-image ac active active adaptive-throttle cpu-pressure 1 1
 run_scenario adaptive-gpu-throttle throttled adaptive 11 render static-image ac active active adaptive-gpu-throttle gpu-busy 1 1
 run_scenario adaptive-pause-unfocused paused adaptive "" remove "" ac unfocused active adaptive-pause-unfocused cpu-pressure 0 0

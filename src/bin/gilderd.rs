@@ -12,8 +12,8 @@ use std::time::{Duration, Instant, SystemTime};
 use std::{cell::RefCell, rc::Rc};
 
 use gilder::config::{
-    ApplicationPaths, CacheConfig, GilderConfig, OutputConfig, PerformanceConfig, PowerPolicy,
-    ThrottlePolicy, VideoDecoderPolicy,
+    ApplicationPaths, CacheConfig, DynamicPausePolicy, GilderConfig, OutputConfig,
+    PerformanceConfig, PowerPolicy, ThrottlePolicy, VideoDecoderPolicy,
 };
 use gilder::ipc::RequestMethod;
 use gilder::renderer::StaticRenderSyncPlan;
@@ -795,6 +795,8 @@ struct RenderSyncPerformanceKey {
     background_max_fps: u32,
     battery_max_fps: u32,
     fullscreen: ThrottlePolicy,
+    hidden: DynamicPausePolicy,
+    session: DynamicPausePolicy,
     unfocused: ThrottlePolicy,
     battery: PowerPolicy,
 }
@@ -1487,6 +1489,8 @@ fn render_sync_config_key(config: &GilderConfig) -> RenderSyncConfigKey {
             background_max_fps: config.performance.background_max_fps,
             battery_max_fps: config.performance.battery_max_fps,
             fullscreen: config.performance.fullscreen,
+            hidden: config.performance.hidden,
+            session: config.performance.session,
             unfocused: config.performance.unfocused,
             battery: config.performance.battery,
         },

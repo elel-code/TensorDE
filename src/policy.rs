@@ -1,7 +1,9 @@
 //! Performance policy decisions derived from desktop state.
 
 use crate::adaptive::AdaptiveSnapshot;
-use crate::config::{AdaptiveAction, PerformanceConfig, PowerPolicy, ThrottlePolicy};
+use crate::config::{
+    AdaptiveAction, DynamicPausePolicy, PerformanceConfig, PowerPolicy, ThrottlePolicy,
+};
 use crate::core::RuntimePolicy;
 use crate::desktop::{DesktopOutput, DesktopSnapshot};
 use crate::state::OutputState;
@@ -47,14 +49,35 @@ pub fn decide_performance(
         decision = select_more_conservative(decision, paused(DecisionReason::UserPaused));
     }
     if !desktop.session_active {
-        decision = select_more_conservative(decision, paused(DecisionReason::SessionInactive));
+        decision = select_more_conservative(
+            decision,
+            apply_dynamic_pause(
+                config.session,
+                config.interactive_max_fps,
+                DecisionReason::SessionInactive,
+            ),
+        );
     }
     if desktop.session_locked {
-        decision = select_more_conservative(decision, paused(DecisionReason::SessionLocked));
+        decision = select_more_conservative(
+            decision,
+            apply_dynamic_pause(
+                config.session,
+                config.interactive_max_fps,
+                DecisionReason::SessionLocked,
+            ),
+        );
     }
     if let Some(output) = output {
         if !output.visible {
-            decision = select_more_conservative(decision, paused(DecisionReason::OutputHidden));
+            decision = select_more_conservative(
+                decision,
+                apply_dynamic_pause(
+                    config.hidden,
+                    config.interactive_max_fps,
+                    DecisionReason::OutputHidden,
+                ),
+            );
         }
         if output.has_fullscreen {
             decision = select_more_conservative(
@@ -108,6 +131,47 @@ pub fn apply_power_dynamic_policy(
     }
 
     select_more_conservative(decision, paused(DecisionReason::Battery))
+}
+
+pub fn apply_desktop_dynamic_policy(
+    decision: PerformanceDecision,
+    config: &PerformanceConfig,
+    desktop: &DesktopSnapshot,
+    output: Option<&DesktopOutput>,
+    dynamic_wallpaper: bool,
+) -> PerformanceDecision {
+    if !dynamic_wallpaper {
+        return decision;
+    }
+
+    let mut dynamic_decision = decision.clone();
+    if !desktop.session_active && config.session == DynamicPausePolicy::PauseDynamic {
+        dynamic_decision =
+            select_more_conservative(dynamic_decision, paused(DecisionReason::SessionInactive));
+    }
+    if desktop.session_locked && config.session == DynamicPausePolicy::PauseDynamic {
+        dynamic_decision =
+            select_more_conservative(dynamic_decision, paused(DecisionReason::SessionLocked));
+    }
+    if output.is_some_and(|output| !output.visible)
+        && config.hidden == DynamicPausePolicy::PauseDynamic
+    {
+        dynamic_decision =
+            select_more_conservative(dynamic_decision, paused(DecisionReason::OutputHidden));
+    }
+    if output.is_some_and(|output| output.has_fullscreen)
+        && config.fullscreen == ThrottlePolicy::PauseDynamic
+    {
+        dynamic_decision =
+            select_more_conservative(dynamic_decision, paused(DecisionReason::Fullscreen));
+    }
+    if output.is_some_and(|output| !output.focused)
+        && config.unfocused == ThrottlePolicy::PauseDynamic
+    {
+        dynamic_decision =
+            select_more_conservative(dynamic_decision, paused(DecisionReason::Unfocused));
+    }
+    dynamic_decision
 }
 
 pub fn apply_runtime_policy(
@@ -201,9 +265,24 @@ fn apply_throttle(
     reason: DecisionReason,
 ) -> PerformanceDecision {
     match policy {
-        ThrottlePolicy::Continue => active(active_fps, DecisionReason::Interactive),
+        ThrottlePolicy::Continue | ThrottlePolicy::PauseDynamic => {
+            active(active_fps, DecisionReason::Interactive)
+        }
         ThrottlePolicy::Throttle => throttled(throttle_fps, reason),
         ThrottlePolicy::Pause => paused(reason),
+    }
+}
+
+fn apply_dynamic_pause(
+    policy: DynamicPausePolicy,
+    active_fps: u32,
+    reason: DecisionReason,
+) -> PerformanceDecision {
+    match policy {
+        DynamicPausePolicy::Continue | DynamicPausePolicy::PauseDynamic => {
+            active(active_fps, DecisionReason::Interactive)
+        }
+        DynamicPausePolicy::Pause => paused(reason),
     }
 }
 
@@ -420,6 +499,186 @@ mod tests {
 
         assert_eq!(decision.mode, RenderMode::Active);
         assert_eq!(decision.reason, DecisionReason::Interactive);
+    }
+
+    #[test]
+    fn hidden_pause_dynamic_waits_until_wallpaper_type_is_known() {
+        let config = PerformanceConfig {
+            hidden: DynamicPausePolicy::PauseDynamic,
+            ..PerformanceConfig::default()
+        };
+        let output = DesktopOutput {
+            visible: false,
+            ..DesktopOutput::virtual_output("eDP-1")
+        };
+
+        let decision = decide_performance(
+            &config,
+            &DesktopSnapshot::default(),
+            Some(&output),
+            &OutputState::default(),
+        );
+
+        assert_eq!(decision.mode, RenderMode::Active);
+        assert_eq!(decision.reason, DecisionReason::Interactive);
+    }
+
+    #[test]
+    fn fullscreen_pause_dynamic_waits_until_wallpaper_type_is_known() {
+        let config = PerformanceConfig {
+            fullscreen: ThrottlePolicy::PauseDynamic,
+            ..PerformanceConfig::default()
+        };
+        let output = DesktopOutput {
+            has_fullscreen: true,
+            ..DesktopOutput::virtual_output("eDP-1")
+        };
+
+        let decision = decide_performance(
+            &config,
+            &DesktopSnapshot::default(),
+            Some(&output),
+            &OutputState::default(),
+        );
+
+        assert_eq!(decision.mode, RenderMode::Active);
+        assert_eq!(decision.reason, DecisionReason::Interactive);
+    }
+
+    #[test]
+    fn fullscreen_pause_dynamic_pauses_dynamic_wallpaper_after_manifest_load() {
+        let config = PerformanceConfig {
+            fullscreen: ThrottlePolicy::PauseDynamic,
+            ..PerformanceConfig::default()
+        };
+        let output = DesktopOutput {
+            has_fullscreen: true,
+            ..DesktopOutput::virtual_output("eDP-1")
+        };
+        let base = active(60, DecisionReason::Interactive);
+
+        let decision = apply_desktop_dynamic_policy(
+            base,
+            &config,
+            &DesktopSnapshot::default(),
+            Some(&output),
+            true,
+        );
+
+        assert_eq!(decision.mode, RenderMode::Paused);
+        assert_eq!(decision.reason, DecisionReason::Fullscreen);
+    }
+
+    #[test]
+    fn unfocused_pause_dynamic_waits_until_wallpaper_type_is_known() {
+        let config = PerformanceConfig {
+            unfocused: ThrottlePolicy::PauseDynamic,
+            ..PerformanceConfig::default()
+        };
+        let output = DesktopOutput {
+            focused: false,
+            ..DesktopOutput::virtual_output("eDP-1")
+        };
+
+        let decision = decide_performance(
+            &config,
+            &DesktopSnapshot::default(),
+            Some(&output),
+            &OutputState::default(),
+        );
+
+        assert_eq!(decision.mode, RenderMode::Active);
+        assert_eq!(decision.reason, DecisionReason::Interactive);
+    }
+
+    #[test]
+    fn unfocused_pause_dynamic_pauses_dynamic_wallpaper_after_manifest_load() {
+        let config = PerformanceConfig {
+            unfocused: ThrottlePolicy::PauseDynamic,
+            ..PerformanceConfig::default()
+        };
+        let output = DesktopOutput {
+            focused: false,
+            ..DesktopOutput::virtual_output("eDP-1")
+        };
+        let base = active(60, DecisionReason::Interactive);
+
+        let decision = apply_desktop_dynamic_policy(
+            base,
+            &config,
+            &DesktopSnapshot::default(),
+            Some(&output),
+            true,
+        );
+
+        assert_eq!(decision.mode, RenderMode::Paused);
+        assert_eq!(decision.reason, DecisionReason::Unfocused);
+    }
+
+    #[test]
+    fn hidden_pause_dynamic_pauses_dynamic_wallpaper_after_manifest_load() {
+        let config = PerformanceConfig {
+            hidden: DynamicPausePolicy::PauseDynamic,
+            ..PerformanceConfig::default()
+        };
+        let output = DesktopOutput {
+            visible: false,
+            ..DesktopOutput::virtual_output("eDP-1")
+        };
+        let base = active(60, DecisionReason::Interactive);
+
+        let decision = apply_desktop_dynamic_policy(
+            base,
+            &config,
+            &DesktopSnapshot::default(),
+            Some(&output),
+            true,
+        );
+
+        assert_eq!(decision.mode, RenderMode::Paused);
+        assert_eq!(decision.reason, DecisionReason::OutputHidden);
+    }
+
+    #[test]
+    fn hidden_pause_dynamic_leaves_static_wallpaper_policy_unchanged() {
+        let config = PerformanceConfig {
+            hidden: DynamicPausePolicy::PauseDynamic,
+            ..PerformanceConfig::default()
+        };
+        let output = DesktopOutput {
+            visible: false,
+            ..DesktopOutput::virtual_output("eDP-1")
+        };
+        let base = active(60, DecisionReason::Interactive);
+
+        let decision = apply_desktop_dynamic_policy(
+            base,
+            &config,
+            &DesktopSnapshot::default(),
+            Some(&output),
+            false,
+        );
+
+        assert_eq!(decision.mode, RenderMode::Active);
+        assert_eq!(decision.reason, DecisionReason::Interactive);
+    }
+
+    #[test]
+    fn session_pause_dynamic_pauses_dynamic_wallpaper_after_manifest_load() {
+        let config = PerformanceConfig {
+            session: DynamicPausePolicy::PauseDynamic,
+            ..PerformanceConfig::default()
+        };
+        let desktop = DesktopSnapshot {
+            session_active: false,
+            ..DesktopSnapshot::default()
+        };
+        let base = active(60, DecisionReason::Interactive);
+
+        let decision = apply_desktop_dynamic_policy(base, &config, &desktop, None, true);
+
+        assert_eq!(decision.mode, RenderMode::Paused);
+        assert_eq!(decision.reason, DecisionReason::SessionInactive);
     }
 
     #[test]

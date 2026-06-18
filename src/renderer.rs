@@ -311,6 +311,13 @@ fn static_render_sync_plan_inner(
             desktop_output,
         );
         let dynamic_wallpaper = dynamic_wallpaper_entry(&package.manifest.entry);
+        performance = crate::policy::apply_desktop_dynamic_policy(
+            performance,
+            &effective_performance_config,
+            desktop,
+            desktop_output,
+            dynamic_wallpaper,
+        );
         performance = crate::policy::apply_power_dynamic_policy(
             performance,
             &effective_performance_config,
@@ -1113,8 +1120,8 @@ fn mark_archive_cache_used(extract_dir: &Path) {
 mod tests {
     use super::*;
     use crate::config::{
-        GilderConfig, OutputConfig, OutputPerformanceConfig, PerformanceConfig, PowerPolicy,
-        VideoDecoderPolicy,
+        DynamicPausePolicy, GilderConfig, OutputConfig, OutputPerformanceConfig, PerformanceConfig,
+        PowerPolicy, VideoDecoderPolicy,
     };
     use crate::core::pack_gwp;
     use crate::desktop::{DesktopOutput, PowerState};
@@ -1548,6 +1555,162 @@ mod tests {
     }
 
     #[test]
+    fn hidden_pause_dynamic_removes_slideshow_from_render_plan() {
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some("examples/wallpapers/slideshow-demo.gwpdir".to_owned());
+        config.performance.hidden = DynamicPausePolicy::PauseDynamic;
+        let state = AppState::default();
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                visible: false,
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync =
+            static_render_sync_plan_with_config(&config, &desktop, &state, std::env::temp_dir());
+
+        assert!(sync.plans.is_empty());
+        assert!(sync.video_plans.is_empty());
+        assert!(sync.slideshow_plans.is_empty());
+        assert_eq!(sync.removals, vec!["eDP-1"]);
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Paused);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            DecisionReason::OutputHidden
+        );
+    }
+
+    #[test]
+    fn hidden_pause_dynamic_keeps_static_wallpaper_renderable() {
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some("examples/wallpapers/static-demo.gwpdir".to_owned());
+        config.performance.hidden = DynamicPausePolicy::PauseDynamic;
+        let state = AppState::default();
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                visible: false,
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync =
+            static_render_sync_plan_with_config(&config, &desktop, &state, std::env::temp_dir());
+
+        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.removals.is_empty());
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Active);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            DecisionReason::Interactive
+        );
+    }
+
+    #[test]
+    fn session_pause_dynamic_removes_slideshow_from_render_plan() {
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some("examples/wallpapers/slideshow-demo.gwpdir".to_owned());
+        config.performance.session = DynamicPausePolicy::PauseDynamic;
+        let state = AppState::default();
+        let desktop = DesktopSnapshot {
+            session_active: false,
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync =
+            static_render_sync_plan_with_config(&config, &desktop, &state, std::env::temp_dir());
+
+        assert!(sync.plans.is_empty());
+        assert!(sync.slideshow_plans.is_empty());
+        assert_eq!(sync.removals, vec!["eDP-1"]);
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Paused);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            DecisionReason::SessionInactive
+        );
+    }
+
+    #[test]
+    fn session_pause_dynamic_keeps_static_wallpaper_renderable() {
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some("examples/wallpapers/static-demo.gwpdir".to_owned());
+        config.performance.session = DynamicPausePolicy::PauseDynamic;
+        let state = AppState::default();
+        let desktop = DesktopSnapshot {
+            session_locked: true,
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync =
+            static_render_sync_plan_with_config(&config, &desktop, &state, std::env::temp_dir());
+
+        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.removals.is_empty());
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Active);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            DecisionReason::Interactive
+        );
+    }
+
+    #[test]
+    fn unfocused_pause_dynamic_removes_slideshow_from_render_plan() {
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some("examples/wallpapers/slideshow-demo.gwpdir".to_owned());
+        config.performance.unfocused = crate::config::ThrottlePolicy::PauseDynamic;
+        let state = AppState::default();
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                focused: false,
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync =
+            static_render_sync_plan_with_config(&config, &desktop, &state, std::env::temp_dir());
+
+        assert!(sync.plans.is_empty());
+        assert!(sync.slideshow_plans.is_empty());
+        assert_eq!(sync.removals, vec!["eDP-1"]);
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Paused);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            DecisionReason::Unfocused
+        );
+    }
+
+    #[test]
+    fn unfocused_pause_dynamic_keeps_static_wallpaper_renderable() {
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some("examples/wallpapers/static-demo.gwpdir".to_owned());
+        config.performance.unfocused = crate::config::ThrottlePolicy::PauseDynamic;
+        let state = AppState::default();
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                focused: false,
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync =
+            static_render_sync_plan_with_config(&config, &desktop, &state, std::env::temp_dir());
+
+        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.removals.is_empty());
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Active);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            DecisionReason::Interactive
+        );
+    }
+
+    #[test]
     fn config_output_wallpaper_adds_named_output_without_state() {
         let mut config = GilderConfig::default();
         config.outputs.insert(
@@ -1631,6 +1794,70 @@ mod tests {
         assert_eq!(
             sync.decisions[0].wallpaper.as_deref(),
             Some("missing-wallpaper.gwpdir")
+        );
+    }
+
+    #[test]
+    fn fullscreen_pause_dynamic_removes_slideshow_after_manifest_load() {
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some("examples/wallpapers/slideshow-demo.gwpdir".to_owned());
+        config.performance.fullscreen = crate::config::ThrottlePolicy::PauseDynamic;
+        let state = AppState::default();
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                has_fullscreen: true,
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync =
+            static_render_sync_plan_with_config(&config, &desktop, &state, std::env::temp_dir());
+
+        assert!(sync.plans.is_empty());
+        assert!(sync.slideshow_plans.is_empty());
+        assert_eq!(sync.removals, vec!["eDP-1"]);
+        assert_eq!(sync.decisions[0].action, StaticRenderAction::Remove);
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Paused);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            DecisionReason::Fullscreen
+        );
+    }
+
+    #[test]
+    fn fullscreen_pause_dynamic_keeps_static_wallpaper_renderable() {
+        let test_dir = TestDir::new("gilder-fullscreen-pause-dynamic-static");
+        let package_dir = test_dir.path.join("static-variant.gwpdir");
+        write_minimal_static_variant_gwpdir(&package_dir);
+        set_runtime_continue_when_fullscreen(&package_dir);
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some(package_dir.display().to_string());
+        config.performance.fullscreen = crate::config::ThrottlePolicy::PauseDynamic;
+        let state = AppState::default();
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                has_fullscreen: true,
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_config(
+            &config,
+            &desktop,
+            &state,
+            test_dir.path.join("cache"),
+        );
+
+        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.slideshow_plans.is_empty());
+        assert!(sync.removals.is_empty());
+        assert_eq!(sync.decisions[0].action, StaticRenderAction::Render);
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Active);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            DecisionReason::Interactive
         );
     }
 
@@ -2539,6 +2766,16 @@ mod tests {
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
         manifest["runtime"] = json!({
             "pause_when_unfocused": true
+        });
+        fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    }
+
+    fn set_runtime_continue_when_fullscreen(path: &Path) {
+        let manifest_path = path.join(crate::core::MANIFEST_FILE);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["runtime"] = json!({
+            "pause_when_fullscreen": false
         });
         fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
     }
