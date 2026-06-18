@@ -9,7 +9,8 @@ use crate::policy::RenderMode;
 #[cfg(feature = "video-renderer")]
 use crate::renderer::video::{
     VideoPipelineSnapshot, actual_decoder_reports, apply_decoder_rank_policy,
-    decoder_policy_status, video_caps_reports,
+    decoder_policy_status, playback_duration_ms, playback_position_ms, target_max_fps_from_caps,
+    video_caps_reports,
 };
 use gtk::gdk;
 use gtk::gio;
@@ -227,12 +228,19 @@ impl GtkStaticRenderer {
                         loop_playback: video.loop_playback,
                         muted: video.muted,
                         target_max_fps: video.target_max_fps,
+                        frame_limiter_enabled: video.frame_limiter.is_some(),
+                        frame_limiter_max_fps: video
+                            .frame_limiter
+                            .as_ref()
+                            .and_then(GtkFrameLimiter::target_max_fps),
                         decoder_policy: video.decoder_policy,
                         decoder_policy_status: decoder_policy_status(
                             video.decoder_policy,
                             &actual_decoder_reports,
                         ),
                         start_offset_ms: video.start_offset_ms,
+                        position_ms: playback_position_ms(&video.element),
+                        duration_ms: playback_duration_ms(&video.element),
                         actual_decoders: actual_decoder_reports
                             .iter()
                             .map(|report| report.element.clone())
@@ -858,6 +866,10 @@ impl GtkFrameLimiter {
     fn apply_target_max_fps(&self, target_max_fps: Option<u32>) {
         self.capsfilter
             .set_property("caps", caps_for_target_max_fps(target_max_fps));
+    }
+
+    fn target_max_fps(&self) -> Option<u32> {
+        target_max_fps_from_caps(&self.capsfilter.property::<gst::Caps>("caps"))
     }
 }
 

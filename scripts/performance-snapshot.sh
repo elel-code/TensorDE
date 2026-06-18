@@ -43,6 +43,12 @@ Options:
                      Require at least one video runtime row with this caps memory feature
   --expect-sink-memory-feature <feature>
                      Require at least one video runtime row with this sink-side caps memory feature
+  --expect-video-position-progress
+                     Require sampled video position to advance on at least one output
+  --expect-frame-limiter-enabled
+                     Require at least one video runtime row with an enabled frame limiter
+  --expect-frame-limiter-max-fps <fps>
+                     Require at least one video runtime row with this frame limiter max_fps
   --allow-missing     Report missing daemon/tools as skips instead of failures
   --keep              Keep generated evidence after the script exits
   -h, --help          Show this help text
@@ -72,6 +78,9 @@ expect_decoder_policy_status=""
 expect_decoder_class=""
 expect_memory_feature=""
 expect_sink_memory_feature=""
+expect_video_position_progress=0
+expect_frame_limiter_enabled=0
+expect_frame_limiter_max_fps=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -174,6 +183,19 @@ while [[ $# -gt 0 ]]; do
     --expect-sink-memory-feature)
       [[ $# -ge 2 ]] || { echo "--expect-sink-memory-feature requires a value" >&2; exit 2; }
       expect_sink_memory_feature="$2"
+      shift 2
+      ;;
+    --expect-video-position-progress)
+      expect_video_position_progress=1
+      shift
+      ;;
+    --expect-frame-limiter-enabled)
+      expect_frame_limiter_enabled=1
+      shift
+      ;;
+    --expect-frame-limiter-max-fps)
+      [[ $# -ge 2 ]] || { echo "--expect-frame-limiter-max-fps requires a value" >&2; exit 2; }
+      expect_frame_limiter_max_fps="$2"
       shift 2
       ;;
     --allow-missing)
@@ -616,6 +638,83 @@ write_telemetry_summary() {
   ' "$telemetry_csv" > "$summary"
 }
 
+write_video_runtime_summary() {
+  local video_runtime_csv="$1"
+  local summary="$2"
+  awk -F, '
+    NR == 1 { next }
+    {
+      rows += 1
+      sample = $1
+      output = $3
+      position = $15
+      duration = $16
+      limiter_enabled = $17
+      limiter_fps = $18
+
+      if (output != "" && !(output in seen_output)) {
+        seen_output[output] = 1
+        outputs += 1
+      }
+      if (sample != "" && !(sample in seen_sample)) {
+        seen_sample[sample] = 1
+        samples += 1
+      }
+      if (position != "") {
+        position_samples += 1
+        if (!(output in first_position)) {
+          first_position[output] = position + 0
+        }
+        last_position[output] = position + 0
+      }
+      if (duration != "") {
+        duration_samples += 1
+        if (duration + 0 > max_duration) { max_duration = duration + 0 }
+      }
+      if (limiter_enabled == "true") {
+        frame_limiter_enabled_rows += 1
+      }
+      if (limiter_fps != "") {
+        limiter_fps_samples += 1
+        if (limiter_fps_samples == 1 || limiter_fps + 0 < min_limiter_fps) {
+          min_limiter_fps = limiter_fps + 0
+        }
+        if (limiter_fps + 0 > max_limiter_fps) {
+          max_limiter_fps = limiter_fps + 0
+        }
+      }
+    }
+    END {
+      for (output in last_position) {
+        delta = last_position[output] - first_position[output]
+        if (delta > 0) {
+          moving_outputs += 1
+        }
+        if (delta > max_position_delta) {
+          max_position_delta = delta
+        }
+      }
+
+      printf "video_runtime_rows: %d\n", rows
+      printf "video_runtime_samples: %d\n", samples
+      printf "video_runtime_outputs: %d\n", outputs
+      printf "video_position_samples: %d\n", position_samples
+      printf "video_position_moving_outputs: %d\n", moving_outputs
+      printf "video_position_delta_ms_max: %d\n", max_position_delta
+      printf "video_duration_samples: %d\n", duration_samples
+      if (duration_samples > 0) {
+        printf "video_duration_ms_max: %d\n", max_duration
+      }
+      printf "video_frame_limiter_enabled_rows: %d\n", frame_limiter_enabled_rows
+      printf "video_frame_limiter_fps_samples: %d\n", limiter_fps_samples
+      if (limiter_fps_samples > 0) {
+        printf "video_frame_limiter_fps_min: %d\n", min_limiter_fps
+        printf "video_frame_limiter_fps_max: %d\n", max_limiter_fps
+      }
+    }
+  ' "$video_runtime_csv" > "$summary"
+}
+
 has_expectations() {
   [[ -n "$expect_mode" ||
     -n "$expect_reason" ||
@@ -731,7 +830,10 @@ has_video_runtime_expectations() {
   [[ -n "$expect_decoder_policy_status" ||
     -n "$expect_decoder_class" ||
     -n "$expect_memory_feature" ||
-    -n "$expect_sink_memory_feature" ]]
+    -n "$expect_sink_memory_feature" ||
+    "$expect_video_position_progress" -eq 1 ||
+    "$expect_frame_limiter_enabled" -eq 1 ||
+    -n "$expect_frame_limiter_max_fps" ]]
 }
 
 expect_video_runtime_field() {
@@ -755,6 +857,22 @@ expect_video_runtime_field() {
     pass "video runtime expectation matched ${description}: ${expected}"
   else
     skip_or_fail "video runtime expectation not met: ${description} ${expected}"
+  fi
+}
+
+expect_video_runtime_summary_minimum() {
+  local key="$1"
+  local minimum="$2"
+  local description="$3"
+  local value
+  if value="$(summary_value "$key" "$video_runtime_summary_path")" && [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    if awk -v value="$value" -v minimum="$minimum" 'BEGIN { exit (value + 0 >= minimum + 0) ? 0 : 1 }'; then
+      pass "video runtime expectation matched ${description}: ${value}"
+    else
+      skip_or_fail "video runtime expectation not met: ${description} was ${value}, expected at least ${minimum}"
+    fi
+  else
+    skip_or_fail "video runtime expectation not met: missing ${description}"
   fi
 }
 
@@ -784,6 +902,15 @@ validate_video_runtime_expectations() {
   if [[ -n "$expect_sink_memory_feature" ]]; then
     expect_video_runtime_field 12 "$expect_sink_memory_feature" "sink caps memory feature"
   fi
+  if [[ "$expect_video_position_progress" -eq 1 ]]; then
+    expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "moving video output count"
+  fi
+  if [[ "$expect_frame_limiter_enabled" -eq 1 ]]; then
+    expect_video_runtime_field 17 "true" "frame limiter enabled"
+  fi
+  if [[ -n "$expect_frame_limiter_max_fps" ]]; then
+    expect_video_runtime_field 18 "$expect_frame_limiter_max_fps" "frame limiter max_fps"
+  fi
 }
 
 if ! is_positive_integer "$duration"; then
@@ -796,6 +923,10 @@ if ! is_positive_integer "$interval"; then
 fi
 if [[ -n "$expect_max_fps" && ! "$expect_max_fps" =~ ^[0-9]+$ ]]; then
   echo "--expect-max-fps must be a non-negative integer" >&2
+  exit 2
+fi
+if [[ -n "$expect_frame_limiter_max_fps" && ! "$expect_frame_limiter_max_fps" =~ ^[0-9]+$ ]]; then
+  echo "--expect-frame-limiter-max-fps must be a non-negative integer" >&2
   exit 2
 fi
 case "$expect_decoder_policy_status" in
@@ -861,6 +992,7 @@ decision_summary_path="$work_dir/decision-summary.txt"
 telemetry_path="$work_dir/telemetry.csv"
 telemetry_summary_path="$work_dir/telemetry-summary.txt"
 video_runtime_path="$work_dir/video-runtime.csv"
+video_runtime_summary_path="$work_dir/video-runtime-summary.txt"
 
 cat > "$metadata_path" <<EOF
 label: ${label}
@@ -883,13 +1015,16 @@ expect_decoder_policy_status: ${expect_decoder_policy_status:-none}
 expect_decoder_class: ${expect_decoder_class:-none}
 expect_memory_feature: ${expect_memory_feature:-none}
 expect_sink_memory_feature: ${expect_sink_memory_feature:-none}
+expect_video_position_progress: ${expect_video_position_progress}
+expect_frame_limiter_enabled: ${expect_frame_limiter_enabled}
+expect_frame_limiter_max_fps: ${expect_frame_limiter_max_fps:-none}
 gpu_busy_sources: drm gpu_busy_percent sysfs when readable; nvidia-smi utilization.gpu when available
 EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
 printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$telemetry_path"
-printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,source\n' > "$video_runtime_path"
+printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,source\n' > "$video_runtime_path"
 
 status_failures=0
 decision_failures=0
@@ -991,6 +1126,7 @@ done
 write_summary "$csv_path" "$summary_path"
 write_decision_summary "$decisions_path" "$decision_summary_path"
 write_telemetry_summary "$telemetry_path" "$telemetry_summary_path"
+write_video_runtime_summary "$video_runtime_path" "$video_runtime_summary_path"
 pass "wrote process samples to $csv_path"
 pass "wrote summary to $summary_path"
 if [[ "$status_enabled" -eq 1 && "$status_failures" -eq 0 ]]; then
@@ -1014,6 +1150,7 @@ elif [[ "$status_enabled" -eq 1 ]]; then
 fi
 if [[ "$status_enabled" -eq 1 && "$video_runtime_failures" -eq 0 ]]; then
   pass "wrote video runtime samples to $video_runtime_path"
+  pass "wrote video runtime summary to $video_runtime_summary_path"
 elif [[ "$status_enabled" -eq 1 ]]; then
   note "video runtime extraction had ${video_runtime_failures} failed samples"
 fi
@@ -1033,6 +1170,8 @@ note "decisions: $decisions_path"
 note "decision summary: $decision_summary_path"
 note "telemetry: $telemetry_path"
 note "telemetry summary: $telemetry_summary_path"
+note "video runtime: $video_runtime_path"
+note "video runtime summary: $video_runtime_summary_path"
 note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
 if [[ "$failures" -gt 0 ]]; then
   exit 1

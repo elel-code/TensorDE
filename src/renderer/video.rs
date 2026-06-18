@@ -232,12 +232,19 @@ impl GstVideoRenderer {
                     loop_playback: pipeline.loop_playback,
                     muted: pipeline.muted,
                     target_max_fps: pipeline.target_max_fps,
+                    frame_limiter_enabled: pipeline.frame_limiter.is_some(),
+                    frame_limiter_max_fps: pipeline
+                        .frame_limiter
+                        .as_ref()
+                        .and_then(FrameLimiter::target_max_fps),
                     decoder_policy: pipeline.decoder_policy,
                     decoder_policy_status: decoder_policy_status(
                         pipeline.decoder_policy,
                         &actual_decoder_reports,
                     ),
                     start_offset_ms: pipeline.start_offset_ms,
+                    position_ms: playback_position_ms(&pipeline.element),
+                    duration_ms: playback_duration_ms(&pipeline.element),
                     actual_decoders: actual_decoder_reports
                         .iter()
                         .map(|report| report.element.clone())
@@ -741,7 +748,6 @@ impl FrameLimiter {
             .set_property("caps", caps_for_target_max_fps(target_max_fps));
     }
 
-    #[cfg(test)]
     fn target_max_fps(&self) -> Option<u32> {
         target_max_fps_from_caps(&self.capsfilter.property::<gst::Caps>("caps"))
     }
@@ -773,11 +779,22 @@ fn caps_for_target_max_fps(target_max_fps: Option<u32>) -> gst::Caps {
     }
 }
 
-#[cfg(test)]
-fn target_max_fps_from_caps(caps: &gst::Caps) -> Option<u32> {
+pub(crate) fn target_max_fps_from_caps(caps: &gst::Caps) -> Option<u32> {
     let structure = caps.structure(0)?;
     let framerate = structure.get::<gst::Fraction>("framerate").ok()?;
     u32::try_from(framerate.numer()).ok()
+}
+
+pub fn playback_position_ms(element: &gst::Element) -> Option<u64> {
+    element
+        .query_position::<gst::ClockTime>()
+        .map(|position| position.mseconds())
+}
+
+pub fn playback_duration_ms(element: &gst::Element) -> Option<u64> {
+    element
+        .query_duration::<gst::ClockTime>()
+        .map(|duration| duration.mseconds())
 }
 
 impl Drop for VideoPipeline {
@@ -795,9 +812,13 @@ pub struct VideoPipelineSnapshot {
     pub loop_playback: bool,
     pub muted: bool,
     pub target_max_fps: Option<u32>,
+    pub frame_limiter_enabled: bool,
+    pub frame_limiter_max_fps: Option<u32>,
     pub decoder_policy: VideoDecoderPolicy,
     pub decoder_policy_status: VideoDecoderPolicyStatus,
     pub start_offset_ms: u64,
+    pub position_ms: Option<u64>,
+    pub duration_ms: Option<u64>,
     pub actual_decoders: Vec<String>,
     pub actual_decoder_reports: Vec<VideoDecoderReport>,
     pub caps_reports: Vec<VideoCapsReport>,
@@ -912,6 +933,8 @@ mod tests {
         assert!(snapshot[0].loop_playback);
         assert!(snapshot[0].muted);
         assert_eq!(snapshot[0].target_max_fps, Some(24));
+        assert!(!snapshot[0].frame_limiter_enabled);
+        assert_eq!(snapshot[0].frame_limiter_max_fps, None);
         assert_eq!(
             snapshot[0].decoder_policy,
             crate::config::VideoDecoderPolicy::Auto
