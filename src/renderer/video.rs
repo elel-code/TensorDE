@@ -1281,6 +1281,7 @@ mod tests {
             removals: Vec::new(),
             errors: Vec::new(),
             decisions: vec![decision("eDP-1", RenderMode::Throttled)],
+            cache: Default::default(),
         };
 
         renderer.sync_render_plan(&sync).unwrap();
@@ -1312,6 +1313,7 @@ mod tests {
             removals: vec!["eDP-1".to_owned()],
             errors: Vec::new(),
             decisions: Vec::new(),
+            cache: Default::default(),
         };
         renderer.sync_render_plan(&sync).unwrap();
         assert!(renderer.snapshot().is_empty());

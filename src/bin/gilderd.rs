@@ -12,8 +12,8 @@ use std::time::{Duration, Instant, SystemTime};
 use std::{cell::RefCell, rc::Rc};
 
 use gilder::config::{
-    ApplicationPaths, GilderConfig, OutputConfig, PerformanceConfig, PowerPolicy, ThrottlePolicy,
-    VideoDecoderPolicy,
+    ApplicationPaths, CacheConfig, GilderConfig, OutputConfig, PerformanceConfig, PowerPolicy,
+    ThrottlePolicy, VideoDecoderPolicy,
 };
 use gilder::ipc::RequestMethod;
 use gilder::renderer::StaticRenderSyncPlan;
@@ -720,6 +720,8 @@ struct DaemonTelemetry {
     adaptive_refresh_skips: u64,
     render_sync_cache_hits: u64,
     render_sync_cache_misses: u64,
+    render_archive_cache_evictions: u64,
+    render_archive_cache_eviction_errors: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -744,6 +746,7 @@ struct RenderSyncConfigKey {
     outputs: BTreeMap<String, OutputConfig>,
     adaptive: gilder::config::AdaptiveConfig,
     video_decoder: VideoDecoderPolicy,
+    cache: CacheConfig,
     performance: RenderSyncPerformanceKey,
 }
 
@@ -1249,6 +1252,11 @@ fn telemetry_report(
     runtime_telemetry: RuntimeTelemetrySnapshot,
     renderer_runtime: &RendererRuntimeSnapshot,
 ) -> Value {
+    let render_sync_cache = context
+        .render_sync_cache
+        .as_ref()
+        .map(|cache| cache.render_sync.cache)
+        .unwrap_or_default();
     json!({
         "desktop": {
             "refreshes": context.telemetry.desktop_refreshes,
@@ -1267,6 +1275,17 @@ fn telemetry_report(
             "cache_misses": context.telemetry.render_sync_cache_misses,
             "updates_queued": runtime_telemetry.render_sync_updates_queued,
             "updates_skipped": runtime_telemetry.render_sync_updates_skipped,
+            "package_cache_entries": render_sync_cache.package_cache_entries,
+            "package_cache_hits": render_sync_cache.package_cache_hits,
+            "package_cache_misses": render_sync_cache.package_cache_misses,
+            "archive_cache_entries": render_sync_cache.archive_cache_entries,
+            "archive_cache_max_entries": render_sync_cache.archive_cache_max_entries,
+            "archive_cache_reuses": render_sync_cache.archive_cache_reuses,
+            "archive_cache_extractions": render_sync_cache.archive_cache_extractions,
+            "archive_cache_evictions": context.telemetry.render_archive_cache_evictions,
+            "archive_cache_evictions_latest": render_sync_cache.archive_cache_evictions,
+            "archive_cache_eviction_errors": context.telemetry.render_archive_cache_eviction_errors,
+            "archive_cache_eviction_errors_latest": render_sync_cache.archive_cache_eviction_errors,
         },
         "renderer": renderer_telemetry_report(renderer_runtime),
     })
@@ -1367,6 +1386,9 @@ fn current_render_sync(context: &mut DaemonContext) -> StaticRenderSyncPlan {
         &context.paths.cache_dir,
         &context.adaptive_snapshot,
     );
+    context.telemetry.render_archive_cache_evictions += render_sync.cache.archive_cache_evictions;
+    context.telemetry.render_archive_cache_eviction_errors +=
+        render_sync.cache.archive_cache_eviction_errors;
     context.render_sync_cache = Some(RenderSyncCache {
         key,
         render_sync: render_sync.clone(),
@@ -1391,6 +1413,7 @@ fn render_sync_config_key(config: &GilderConfig) -> RenderSyncConfigKey {
         outputs: config.outputs.clone(),
         adaptive: config.adaptive.clone(),
         video_decoder: config.video.decoder,
+        cache: config.cache,
         performance: RenderSyncPerformanceKey {
             interactive_max_fps: config.performance.interactive_max_fps,
             background_max_fps: config.performance.background_max_fps,
@@ -1727,6 +1750,22 @@ mod tests {
             response["result"]["telemetry"]["render_sync"]["updates_queued"],
             json!(0)
         );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["package_cache_entries"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["archive_cache_entries"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["archive_cache_evictions"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["archive_cache_eviction_errors"],
+            json!(0)
+        );
         assert!(
             response["result"]["telemetry"]["desktop"]["last_refresh_age_ms"]
                 .as_u64()
@@ -1988,6 +2027,31 @@ mod tests {
         assert_eq!(updated.plans[0].fit, gilder::core::FitMode::Contain);
     }
 
+    #[test]
+    fn current_render_sync_cache_invalidates_when_cache_policy_changes() {
+        let package_dir = TestDir::new("gilder-render-sync-cache-config-package");
+        write_static_package_manifest(package_dir.path(), "#101418");
+
+        let mut context = test_context();
+        context.paths.cache_dir = package_dir.path().join("cache");
+        context.desktop.outputs = vec![gilder::desktop::DesktopOutput::virtual_output("eDP-1")];
+        context
+            .state
+            .set_wallpaper(Some("eDP-1"), package_dir.path().to_string_lossy());
+
+        let cached = StaticRenderSyncPlan {
+            removals: vec!["cached-plan".to_owned()],
+            ..empty_render_sync()
+        };
+        context.render_sync_cache = Some(RenderSyncCache {
+            key: render_sync_cache_key(&context),
+            render_sync: cached.clone(),
+        });
+
+        context.config.cache.render_cache_max_entries = 1;
+        assert_ne!(current_render_sync(&mut context), cached);
+    }
+
     fn test_context() -> DaemonContext {
         DaemonContext {
             paths: ApplicationPaths {
@@ -2084,6 +2148,7 @@ mod tests {
             removals: Vec::new(),
             errors: Vec::new(),
             decisions: Vec::new(),
+            cache: Default::default(),
         }
     }
 }

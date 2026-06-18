@@ -17,6 +17,8 @@ pub struct GilderConfig {
     #[serde(default)]
     pub video: VideoConfig,
     #[serde(default)]
+    pub cache: CacheConfig,
+    #[serde(default)]
     pub performance: PerformanceConfig,
     #[serde(default)]
     pub adapters: AdapterConfig,
@@ -29,6 +31,7 @@ impl Default for GilderConfig {
             outputs: BTreeMap::new(),
             adaptive: AdaptiveConfig::default(),
             video: VideoConfig::default(),
+            cache: CacheConfig::default(),
             performance: PerformanceConfig::default(),
             adapters: AdapterConfig::default(),
         }
@@ -95,6 +98,20 @@ impl Default for AdaptiveConfig {
 pub struct VideoConfig {
     #[serde(default)]
     pub decoder: VideoDecoderPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheConfig {
+    #[serde(default = "default_render_cache_max_entries")]
+    pub render_cache_max_entries: usize,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            render_cache_max_entries: default_render_cache_max_entries(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -292,6 +309,10 @@ fn default_desktop_refresh_interval_ms() -> u64 {
     2000
 }
 
+fn default_render_cache_max_entries() -> usize {
+    32
+}
+
 fn default_adaptive_refresh_interval_ms() -> u64 {
     2000
 }
@@ -349,6 +370,9 @@ mod tests {
             [video]
             decoder = "hardware-preferred"
 
+            [cache]
+            render_cache_max_entries = 8
+
             [adaptive]
             enabled = true
             refresh_interval_ms = 1500
@@ -387,6 +411,7 @@ mod tests {
         assert_eq!(config.performance.desktop_refresh_interval_ms, 1000);
         assert_eq!(config.performance.battery, PowerPolicy::Throttle);
         assert_eq!(config.video.decoder, VideoDecoderPolicy::HardwarePreferred);
+        assert_eq!(config.cache.render_cache_max_entries, 8);
         assert!(config.adaptive.enabled);
         assert_eq!(config.adaptive.refresh_interval_ms, 1500);
         assert_eq!(config.adaptive.cooldown_ms, 5000);

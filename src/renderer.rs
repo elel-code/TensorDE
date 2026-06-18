@@ -5,19 +5,19 @@ pub mod gtk;
 #[cfg(feature = "video-renderer")]
 pub mod video;
 
-use crate::config::{GilderConfig, PerformanceConfig, VideoDecoderPolicy};
+use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::Variant;
 use crate::core::{FitMode, PackagePath, Transition, WallpaperEntry, WallpaperPackage};
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot};
 use crate::policy::{PerformanceDecision, RenderMode};
 use crate::state::{AppState, OutputState, WallpaperAssignment};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, hash_map::DefaultHasher};
+use std::collections::{BTreeMap, BTreeSet, hash_map::DefaultHasher};
 use std::fmt;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StaticWallpaperPlan {
@@ -71,6 +71,30 @@ pub struct StaticRenderSyncPlan {
     pub errors: Vec<StaticRenderPlanFailure>,
     #[serde(default)]
     pub decisions: Vec<StaticRenderOutputDecision>,
+    #[serde(default)]
+    pub cache: RenderSyncCacheReport,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderSyncCacheReport {
+    #[serde(default)]
+    pub package_cache_entries: usize,
+    #[serde(default)]
+    pub package_cache_hits: u64,
+    #[serde(default)]
+    pub package_cache_misses: u64,
+    #[serde(default)]
+    pub archive_cache_entries: usize,
+    #[serde(default)]
+    pub archive_cache_max_entries: usize,
+    #[serde(default)]
+    pub archive_cache_reuses: u64,
+    #[serde(default)]
+    pub archive_cache_extractions: u64,
+    #[serde(default)]
+    pub archive_cache_evictions: u64,
+    #[serde(default)]
+    pub archive_cache_eviction_errors: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +159,7 @@ pub fn static_render_sync_plan_with_config_and_adaptive(
     static_render_sync_plan_inner(
         &config.performance,
         config.video.decoder,
+        config.cache,
         Some(config),
         adaptive,
         desktop,
@@ -152,6 +177,7 @@ pub fn static_render_sync_plan_with_performance(
     static_render_sync_plan_inner(
         performance_config,
         VideoDecoderPolicy::default(),
+        CacheConfig::default(),
         None,
         &crate::adaptive::AdaptiveSnapshot::default(),
         desktop,
@@ -163,6 +189,7 @@ pub fn static_render_sync_plan_with_performance(
 fn static_render_sync_plan_inner(
     performance_config: &PerformanceConfig,
     video_decoder_policy: VideoDecoderPolicy,
+    cache_config: CacheConfig,
     config: Option<&GilderConfig>,
     adaptive: &crate::adaptive::AdaptiveSnapshot,
     desktop: &DesktopSnapshot,
@@ -334,6 +361,7 @@ fn static_render_sync_plan_inner(
         }
     }
 
+    let cache = package_cache.finish(cache_config);
     StaticRenderSyncPlan {
         plans,
         video_plans,
@@ -341,6 +369,7 @@ fn static_render_sync_plan_inner(
         removals,
         errors,
         decisions,
+        cache,
     }
 }
 
@@ -728,6 +757,22 @@ fn load_assigned_package(
     assignment: &WallpaperAssignment,
     cache_dir: &Path,
 ) -> Result<WallpaperPackage, RendererPlanError> {
+    let mut stats = RenderSyncCacheReport::default();
+    let mut protected_archive_dirs = BTreeSet::new();
+    load_assigned_package_tracked(
+        assignment,
+        cache_dir,
+        &mut stats,
+        &mut protected_archive_dirs,
+    )
+}
+
+fn load_assigned_package_tracked(
+    assignment: &WallpaperAssignment,
+    cache_dir: &Path,
+    stats: &mut RenderSyncCacheReport,
+    protected_archive_dirs: &mut BTreeSet<PathBuf>,
+) -> Result<WallpaperPackage, RendererPlanError> {
     let path = Path::new(&assignment.path);
     if path.is_dir() || path.extension().and_then(|extension| extension.to_str()) == Some("gwpdir")
     {
@@ -736,20 +781,27 @@ fn load_assigned_package(
     }
     if path.extension().and_then(|extension| extension.to_str()) == Some("gwp") {
         let extract_dir = archive_extract_dir(cache_dir, path);
+        protected_archive_dirs.insert(extract_dir.clone());
         if extract_dir.join(crate::core::MANIFEST_FILE).exists()
             || extract_dir.join(crate::core::MANIFEST_TOML_FILE).exists()
         {
-            return crate::core::load_gwpdir(&extract_dir)
-                .map_err(|err| RendererPlanError::PackageLoad(err.to_string()));
+            stats.archive_cache_reuses += 1;
+            let package = crate::core::load_gwpdir(&extract_dir)
+                .map_err(|err| RendererPlanError::PackageLoad(err.to_string()))?;
+            mark_archive_cache_used(&extract_dir);
+            return Ok(package);
         }
+        stats.archive_cache_extractions += 1;
         fs::create_dir_all(
             extract_dir
                 .parent()
                 .ok_or_else(|| RendererPlanError::PackageLoad("invalid cache path".to_owned()))?,
         )
         .map_err(|err| RendererPlanError::PackageLoad(err.to_string()))?;
-        crate::core::load_gwp(path, &extract_dir)
-            .map_err(|err| RendererPlanError::PackageLoad(err.to_string()))
+        let package = crate::core::load_gwp(path, &extract_dir)
+            .map_err(|err| RendererPlanError::PackageLoad(err.to_string()))?;
+        mark_archive_cache_used(&extract_dir);
+        Ok(package)
     } else {
         Err(RendererPlanError::PackageLoad(format!(
             "unsupported wallpaper path {}",
@@ -761,6 +813,8 @@ fn load_assigned_package(
 struct RenderPackageCache<'a> {
     cache_dir: &'a Path,
     packages: BTreeMap<String, Result<WallpaperPackage, RendererPlanError>>,
+    protected_archive_dirs: BTreeSet<PathBuf>,
+    stats: RenderSyncCacheReport,
 }
 
 impl<'a> RenderPackageCache<'a> {
@@ -768,6 +822,8 @@ impl<'a> RenderPackageCache<'a> {
         Self {
             cache_dir,
             packages: BTreeMap::new(),
+            protected_archive_dirs: BTreeSet::new(),
+            stats: RenderSyncCacheReport::default(),
         }
     }
 
@@ -776,10 +832,16 @@ impl<'a> RenderPackageCache<'a> {
         assignment: &WallpaperAssignment,
     ) -> Result<&WallpaperPackage, RendererPlanError> {
         if !self.packages.contains_key(&assignment.path) {
-            self.packages.insert(
-                assignment.path.clone(),
-                load_assigned_package(assignment, self.cache_dir),
+            self.stats.package_cache_misses += 1;
+            let package = load_assigned_package_tracked(
+                assignment,
+                self.cache_dir,
+                &mut self.stats,
+                &mut self.protected_archive_dirs,
             );
+            self.packages.insert(assignment.path.clone(), package);
+        } else {
+            self.stats.package_cache_hits += 1;
         }
 
         match self
@@ -790,6 +852,20 @@ impl<'a> RenderPackageCache<'a> {
             Ok(package) => Ok(package),
             Err(err) => Err(err.clone()),
         }
+    }
+
+    fn finish(mut self, cache_config: CacheConfig) -> RenderSyncCacheReport {
+        let prune = prune_render_cache(
+            self.cache_dir,
+            cache_config.render_cache_max_entries,
+            &self.protected_archive_dirs,
+        );
+        self.stats.package_cache_entries = self.packages.len();
+        self.stats.archive_cache_entries = prune.entries_after;
+        self.stats.archive_cache_max_entries = cache_config.render_cache_max_entries;
+        self.stats.archive_cache_evictions = prune.evictions;
+        self.stats.archive_cache_eviction_errors = prune.errors;
+        self.stats
     }
 }
 
@@ -812,6 +888,99 @@ fn archive_extract_dir(cache_dir: &Path, archive_path: &Path) -> PathBuf {
     cache_dir
         .join("render-cache")
         .join(format!("{}-{:016x}.gwpdir", file_name, hasher.finish()))
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RenderCachePruneReport {
+    entries_after: usize,
+    evictions: u64,
+    errors: u64,
+}
+
+fn prune_render_cache(
+    cache_dir: &Path,
+    max_entries: usize,
+    protected_archive_dirs: &BTreeSet<PathBuf>,
+) -> RenderCachePruneReport {
+    let render_cache_dir = cache_dir.join("render-cache");
+    let Ok(mut entries) = render_cache_entries(&render_cache_dir) else {
+        return RenderCachePruneReport::default();
+    };
+    let entries_before = entries.len();
+    let remove_count = entries_before.saturating_sub(max_entries);
+    if remove_count == 0 {
+        return RenderCachePruneReport {
+            entries_after: entries_before,
+            evictions: 0,
+            errors: 0,
+        };
+    }
+
+    entries.sort_by_key(|entry| (entry.last_used, entry.path.clone()));
+    let mut evictions = 0;
+    let mut errors = 0;
+    for entry in entries
+        .iter()
+        .filter(|entry| !protected_archive_dirs.contains(&entry.path))
+        .take(remove_count)
+    {
+        match fs::remove_dir_all(&entry.path) {
+            Ok(()) => evictions += 1,
+            Err(_) => errors += 1,
+        }
+    }
+
+    let entries_after = render_cache_entries(&render_cache_dir)
+        .map(|entries| entries.len())
+        .unwrap_or_else(|_| entries_before.saturating_sub(evictions as usize));
+    RenderCachePruneReport {
+        entries_after,
+        evictions,
+        errors,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenderCacheEntry {
+    path: PathBuf,
+    last_used: SystemTime,
+}
+
+fn render_cache_entries(render_cache_dir: &Path) -> Result<Vec<RenderCacheEntry>, std::io::Error> {
+    let mut entries = Vec::new();
+    let read_dir = match fs::read_dir(render_cache_dir) {
+        Ok(read_dir) => read_dir,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(entries),
+        Err(err) => return Err(err),
+    };
+    for entry in read_dir {
+        let entry = entry?;
+        let path = entry.path();
+        if !is_archive_cache_dir(&path, &entry.file_type()?) {
+            continue;
+        }
+        entries.push(RenderCacheEntry {
+            last_used: archive_cache_last_used(&path),
+            path,
+        });
+    }
+    Ok(entries)
+}
+
+fn is_archive_cache_dir(path: &Path, file_type: &fs::FileType) -> bool {
+    file_type.is_dir()
+        && path.extension().and_then(|extension| extension.to_str()) == Some("gwpdir")
+}
+
+fn archive_cache_last_used(path: &Path) -> SystemTime {
+    fs::metadata(path.join(".gilder-cache-used"))
+        .or_else(|_| fs::metadata(path))
+        .and_then(|metadata| metadata.modified())
+        .unwrap_or(UNIX_EPOCH)
+}
+
+fn mark_archive_cache_used(extract_dir: &Path) {
+    let _ = fs::write(extract_dir.join(".gilder-cache-used"), b"");
 }
 
 #[cfg(test)]
@@ -1712,6 +1881,92 @@ mod tests {
         assert_eq!(first_id, "org.example.static-variant");
         assert_eq!(second_id, first_id);
         assert_eq!(cache.packages.len(), 1);
+        assert_eq!(cache.stats.package_cache_misses, 1);
+        assert_eq!(cache.stats.package_cache_hits, 1);
+    }
+
+    #[test]
+    fn prunes_unprotected_archive_cache_entries() {
+        let test_dir = TestDir::new("gilder-render-cache-prune");
+        let cache_dir = test_dir.path.join("cache");
+        let render_cache_dir = cache_dir.join("render-cache");
+        let old = render_cache_dir.join("a-old.gwpdir");
+        let current = render_cache_dir.join("z-current.gwpdir");
+        fs::create_dir_all(&old).unwrap();
+        fs::create_dir_all(&current).unwrap();
+        let mut protected = BTreeSet::new();
+        protected.insert(current.clone());
+
+        let report = prune_render_cache(&cache_dir, 1, &protected);
+
+        assert_eq!(report.evictions, 1);
+        assert_eq!(report.errors, 0);
+        assert_eq!(report.entries_after, 1);
+        assert!(!old.exists());
+        assert!(current.exists());
+    }
+
+    #[test]
+    fn zero_archive_cache_limit_keeps_only_protected_entries() {
+        let test_dir = TestDir::new("gilder-render-cache-zero-limit");
+        let cache_dir = test_dir.path.join("cache");
+        let render_cache_dir = cache_dir.join("render-cache");
+        let old_a = render_cache_dir.join("a-old.gwpdir");
+        let old_b = render_cache_dir.join("b-old.gwpdir");
+        let current = render_cache_dir.join("z-current.gwpdir");
+        fs::create_dir_all(&old_a).unwrap();
+        fs::create_dir_all(&old_b).unwrap();
+        fs::create_dir_all(&current).unwrap();
+        let mut protected = BTreeSet::new();
+        protected.insert(current.clone());
+
+        let report = prune_render_cache(&cache_dir, 0, &protected);
+
+        assert_eq!(report.evictions, 2);
+        assert_eq!(report.entries_after, 1);
+        assert!(!old_a.exists());
+        assert!(!old_b.exists());
+        assert!(current.exists());
+    }
+
+    #[test]
+    fn render_sync_prunes_stale_archive_cache_and_reports_stats() {
+        let test_dir = TestDir::new("gilder-render-sync-cache-prune");
+        let archive = test_dir.path.join("static-demo.gwp");
+        let cache_dir = test_dir.path.join("cache");
+        let render_cache_dir = cache_dir.join("render-cache");
+        let old_a = render_cache_dir.join("a-old.gwpdir");
+        let old_b = render_cache_dir.join("b-old.gwpdir");
+        fs::create_dir_all(&old_a).unwrap();
+        fs::create_dir_all(&old_b).unwrap();
+        pack_gwp("examples/wallpapers/static-demo.gwpdir", &archive).unwrap();
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some(archive.display().to_string());
+        config.cache.render_cache_max_entries = 1;
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_config(
+            &config,
+            &desktop,
+            &AppState::default(),
+            &cache_dir,
+        );
+
+        let extract_dir = archive_extract_dir(&cache_dir, &archive);
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.plans.len(), 1);
+        assert_eq!(sync.cache.package_cache_entries, 1);
+        assert_eq!(sync.cache.package_cache_misses, 1);
+        assert_eq!(sync.cache.archive_cache_extractions, 1);
+        assert_eq!(sync.cache.archive_cache_evictions, 2);
+        assert_eq!(sync.cache.archive_cache_entries, 1);
+        assert_eq!(sync.cache.archive_cache_max_entries, 1);
+        assert!(!old_a.exists());
+        assert!(!old_b.exists());
+        assert!(extract_dir.exists());
     }
 
     fn adaptive_cpu_pressure_snapshot() -> crate::adaptive::AdaptiveSnapshot {
