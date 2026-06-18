@@ -31,6 +31,8 @@ Options:
                      Start daemon with GILDER_POWER_STATE=ac|battery|unknown
   --simulate-output-state <state>
                      Start daemon with GILDER_OUTPUT_STATE=active|unfocused|fullscreen|hidden
+  --measure-fullscreen-resume
+                     Use a file-backed output-state override, switch fullscreen to active, and record resume latency
   --simulate-session <state>
                      Start daemon with GILDER_SESSION_STATE=active|inactive|locked
   --keep              Keep generated smoke data and logs
@@ -54,6 +56,7 @@ visual_hold=0
 simulate_power=""
 simulate_output_state=""
 simulate_session=""
+measure_fullscreen_resume=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -144,6 +147,10 @@ while [[ $# -gt 0 ]]; do
       esac
       shift 2
       ;;
+    --measure-fullscreen-resume)
+      measure_fullscreen_resume=1
+      shift
+      ;;
     --simulate-session)
       [[ $# -ge 2 ]] || { echo "--simulate-session requires active, inactive, or locked" >&2; exit 2; }
       case "$2" in
@@ -177,6 +184,13 @@ if [[ "$all_outputs" -eq 1 && -n "$output_name" ]]; then
   echo "--all-outputs cannot be combined with --output" >&2
   exit 2
 fi
+if [[ "$measure_fullscreen_resume" -eq 1 && -n "$simulate_output_state" ]]; then
+  echo "--measure-fullscreen-resume cannot be combined with --simulate-output-state" >&2
+  exit 2
+fi
+if [[ "$measure_fullscreen_resume" -eq 1 ]]; then
+  simulate_output_state="fullscreen"
+fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
@@ -196,6 +210,9 @@ status_paused="$work_dir/status-paused.json"
 status_resumed="$work_dir/status-resumed.json"
 wallpaper_dir="$work_dir/wallpaper.gwpdir"
 source_dir="$work_dir/source"
+output_state_override_file="$work_dir/output-state.override"
+resume_latency_csv="$work_dir/fullscreen-resume-latency.csv"
+resume_latency_summary="$work_dir/fullscreen-resume-latency.txt"
 performance_active_dir="$work_dir/performance-active"
 performance_active_log="$work_dir/performance-active.log"
 performance_paused_dir="$work_dir/performance-paused"
@@ -226,6 +243,11 @@ if [[ -n "$scenario_suffix" ]]; then
   performance_active_dir="$work_dir/performance-${scenario_suffix}"
   performance_active_log="$work_dir/performance-${scenario_suffix}.log"
   performance_active_label="wayland-video-${scenario_suffix}"
+fi
+if [[ "$measure_fullscreen_resume" -eq 1 ]]; then
+  performance_active_dir="$work_dir/performance-resumed"
+  performance_active_log="$work_dir/performance-resumed.log"
+  performance_active_label="wayland-video-resumed"
 fi
 daemon_pid=""
 
@@ -390,6 +412,7 @@ all_outputs: ${all_outputs}
 build: ${build}
 sample_performance: ${sample_performance}
 sample_paused: ${sample_paused}
+measure_fullscreen_resume: ${measure_fullscreen_resume}
 sample_duration: ${sample_duration}
 sample_interval: ${sample_interval}
 visual_hold: ${visual_hold}
@@ -399,6 +422,8 @@ simulate_session: ${simulate_session:-none}
 wayland_display: ${WAYLAND_DISPLAY:-unset}
 xdg_runtime_dir: ${XDG_RUNTIME_DIR:-unset}
 checks: ${checks_path}
+output_state_override_file: $([[ "$measure_fullscreen_resume" -eq 1 ]] && printf '%s' "$output_state_override_file" || printf 'none')
+resume_latency_csv: $([[ "$measure_fullscreen_resume" -eq 1 ]] && printf '%s' "$resume_latency_csv" || printf 'none')
 EOF
 }
 
@@ -409,6 +434,7 @@ skipped: ${skips}
 failed: ${failures}
 metadata: ${metadata_path}
 checks: ${checks_path}
+fullscreen_resume_latency: $([[ "$measure_fullscreen_resume" -eq 1 ]] && printf '%s' "$resume_latency_summary" || printf 'none')
 EOF
 }
 
@@ -518,6 +544,66 @@ status_has_video_plan_for_output() {
   [[ -n "$video_plans" ]] && grep -Fq "\"output_name\":\"${output}\"" <<< "$video_plans"
 }
 
+now_millis() {
+  date +%s%3N
+}
+
+write_resume_latency_summary() {
+  local status="$1"
+  local latency_ms="$2"
+  local status_file="$3"
+  cat > "$resume_latency_summary" <<EOF
+status: ${status}
+latency_ms: ${latency_ms}
+from_state: fullscreen
+to_state: active
+output: ${output_name}
+status_file: ${status_file}
+csv: ${resume_latency_csv}
+EOF
+}
+
+measure_fullscreen_resume_latency() {
+  local start_ms
+  local end_ms
+  local latency_ms
+  local attempt
+  local status_file="$status_resumed"
+
+  printf 'from_state,to_state,output,start_ms,end_ms,latency_ms,status_file\n' > "$resume_latency_csv"
+  printf 'active\n' > "$output_state_override_file"
+  start_ms="$(now_millis)"
+
+  for attempt in $(seq 1 100); do
+    env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_file"
+    if status_has_video_plan_for_output "$status_file" "$output_name" \
+      && grep -q '"reason":"interactive"' "$status_file"; then
+      end_ms="$(now_millis)"
+      latency_ms=$((end_ms - start_ms))
+      printf 'fullscreen,active,%s,%s,%s,%s,%s\n' \
+        "$output_name" \
+        "$start_ms" \
+        "$end_ms" \
+        "$latency_ms" \
+        "${status_file#$work_dir/}" >> "$resume_latency_csv"
+      write_resume_latency_summary "ok" "$latency_ms" "$status_file"
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  end_ms="$(now_millis)"
+  latency_ms=$((end_ms - start_ms))
+  printf 'fullscreen,active,%s,%s,%s,%s,%s\n' \
+    "$output_name" \
+    "$start_ms" \
+    "$end_ms" \
+    "$latency_ms" \
+    "${status_file#$work_dir/}" >> "$resume_latency_csv"
+  write_resume_latency_summary "timeout" "$latency_ms" "$status_file"
+  return 1
+}
+
 printf 'kind,name,status,detail\n' > "$checks_path"
 write_metadata
 
@@ -563,6 +649,9 @@ if [[ "$preflight" -eq 1 ]]; then
 fi
 
 mkdir -p "$work_dir/runtime" "$work_dir/config" "$work_dir/state" "$work_dir/cache" "$source_dir"
+if [[ "$measure_fullscreen_resume" -eq 1 ]]; then
+  printf 'fullscreen\n' > "$output_state_override_file"
+fi
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i testsrc2=size=128x72:rate=12:duration=2 \
   -an -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p \
@@ -588,7 +677,11 @@ if [[ -n "$simulate_power" ]]; then
   daemon_env+=(GILDER_POWER_STATE="$simulate_power")
 fi
 if [[ -n "$simulate_output_state" ]]; then
-  daemon_env+=(GILDER_OUTPUT_STATE="$simulate_output_state")
+  if [[ "$measure_fullscreen_resume" -eq 1 ]]; then
+    daemon_env+=(GILDER_OUTPUT_STATE_FILE="$output_state_override_file")
+  else
+    daemon_env+=(GILDER_OUTPUT_STATE="$simulate_output_state")
+  fi
 fi
 if [[ -n "$simulate_session" ]]; then
   daemon_env+=(GILDER_SESSION_STATE="$simulate_session")
@@ -745,6 +838,18 @@ if [[ "$visual_hold" -gt 0 ]]; then
   pass "held video wallpaper for visual confirmation window"
 fi
 
+if [[ "$measure_fullscreen_resume" -eq 1 ]]; then
+  if measure_fullscreen_resume_latency; then
+    pass "measured fullscreen resume latency"
+  else
+    note "resume latency summary:"
+    sed -n '1,120p' "$resume_latency_summary"
+    skip_or_fail "fullscreen resume latency measurement timed out"
+  fi
+  simulate_output_state=""
+  expected_reason=""
+fi
+
 if [[ "$sample_performance" -eq 1 ]]; then
   expected_mode="$(expected_mode_for_reason "$expected_reason")"
   expected_action=""
@@ -819,6 +924,10 @@ note "status after:  $status_after"
 if [[ "$sample_paused" -eq 1 ]]; then
   note "status paused: $status_paused"
   note "status resumed: $status_resumed"
+fi
+if [[ "$measure_fullscreen_resume" -eq 1 ]]; then
+  note "fullscreen resume latency: $resume_latency_summary"
+  note "fullscreen resume latency csv: $resume_latency_csv"
 fi
 note "daemon log:    $daemon_log"
 if [[ "$sample_performance" -eq 1 ]]; then

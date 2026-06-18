@@ -4,9 +4,12 @@ use super::{CompositorKind, DesktopOutput, DesktopSnapshot, PowerState};
 use crate::config::AdapterConfig;
 use serde_json::Value;
 use std::fmt;
+use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 const OUTPUT_STATE_OVERRIDE: &str = "GILDER_OUTPUT_STATE";
+const OUTPUT_STATE_OVERRIDE_FILE: &str = "GILDER_OUTPUT_STATE_FILE";
 const DESKTOP_OUTPUTS_OVERRIDE: &str = "GILDER_DESKTOP_OUTPUTS";
 
 pub fn read_desktop_snapshot(config: &AdapterConfig) -> DesktopSnapshot {
@@ -123,6 +126,15 @@ enum OutputStateOverride {
 
 fn read_output_state_override() -> Option<OutputStateOverride> {
     std::env::var(OUTPUT_STATE_OVERRIDE)
+        .ok()
+        .and_then(|value| parse_output_state_override(&value))
+        .or_else(|| {
+            std::env::var_os(OUTPUT_STATE_OVERRIDE_FILE).and_then(read_output_state_override_file)
+        })
+}
+
+fn read_output_state_override_file(path: impl AsRef<Path>) -> Option<OutputStateOverride> {
+    fs::read_to_string(path)
         .ok()
         .and_then(|value| parse_output_state_override(&value))
 }
@@ -647,6 +659,28 @@ mod tests {
         );
         assert_eq!(parse_output_state_override("auto"), None);
         assert_eq!(parse_output_state_override("invalid"), None);
+    }
+
+    #[test]
+    fn reads_output_state_override_from_file() {
+        let path = std::env::temp_dir().join(format!(
+            "gilder-output-state-override-{}",
+            std::process::id()
+        ));
+        fs::write(&path, "fullscreen\n").unwrap();
+
+        assert_eq!(
+            read_output_state_override_file(&path),
+            Some(OutputStateOverride::Fullscreen)
+        );
+
+        fs::write(&path, "active").unwrap();
+        assert_eq!(
+            read_output_state_override_file(&path),
+            Some(OutputStateOverride::Active)
+        );
+
+        let _ = fs::remove_file(path);
     }
 
     #[test]
