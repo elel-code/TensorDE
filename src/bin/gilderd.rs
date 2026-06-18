@@ -301,6 +301,7 @@ fn handle_client(mut stream: UnixStream, runtime: Arc<DaemonRuntime>) -> Result<
             handle_watch_client(stream, request.id, include_snapshot, runtime)
         }
         method => {
+            let runtime_telemetry = runtime.telemetry_snapshot();
             let outcome = {
                 let mut context = runtime.lock_context()?;
                 handle_ipc_request(
@@ -309,6 +310,7 @@ fn handle_client(mut stream: UnixStream, runtime: Arc<DaemonRuntime>) -> Result<
                         method,
                     },
                     &mut context,
+                    runtime_telemetry,
                 )
             };
             write_line(&mut stream, &outcome.response)?;
@@ -343,7 +345,7 @@ fn handle_watch_client(
     if include_snapshot {
         let event = {
             let mut context = runtime.lock_context()?;
-            snapshot_event(&mut context)
+            snapshot_event(&mut context, runtime.telemetry_snapshot())
         };
         let line = runtime.watchers.event_line("snapshot", event);
         write_line(&mut stream, &line)?;
@@ -369,6 +371,8 @@ struct DaemonRuntime {
     watchers: WatchHub,
     renderer_updates: Vec<mpsc::Sender<StaticRenderSyncPlan>>,
     last_render_sync: Mutex<Option<StaticRenderSyncPlan>>,
+    render_sync_updates_queued: AtomicU64,
+    render_sync_updates_skipped: AtomicU64,
 }
 
 impl DaemonRuntime {
@@ -381,6 +385,8 @@ impl DaemonRuntime {
             watchers: WatchHub::new(),
             renderer_updates,
             last_render_sync: Mutex::new(None),
+            render_sync_updates_queued: AtomicU64::new(0),
+            render_sync_updates_skipped: AtomicU64::new(0),
         }
     }
 
@@ -393,14 +399,20 @@ impl DaemonRuntime {
     fn queue_render_sync_if_changed(&self, render_sync: StaticRenderSyncPlan) -> bool {
         let Ok(mut last_render_sync) = self.last_render_sync.lock() else {
             eprintln!("gilderd: render sync cache lock poisoned");
+            self.render_sync_updates_queued
+                .fetch_add(1, Ordering::Relaxed);
             self.send_render_sync(render_sync);
             return true;
         };
         if last_render_sync.as_ref() == Some(&render_sync) {
+            self.render_sync_updates_skipped
+                .fetch_add(1, Ordering::Relaxed);
             return false;
         }
         *last_render_sync = Some(render_sync.clone());
         drop(last_render_sync);
+        self.render_sync_updates_queued
+            .fetch_add(1, Ordering::Relaxed);
         self.send_render_sync(render_sync);
         true
     }
@@ -421,6 +433,19 @@ impl DaemonRuntime {
             }
         }
     }
+
+    fn telemetry_snapshot(&self) -> RuntimeTelemetrySnapshot {
+        RuntimeTelemetrySnapshot {
+            render_sync_updates_queued: self.render_sync_updates_queued.load(Ordering::Relaxed),
+            render_sync_updates_skipped: self.render_sync_updates_skipped.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct RuntimeTelemetrySnapshot {
+    render_sync_updates_queued: u64,
+    render_sync_updates_skipped: u64,
 }
 
 struct WatchHub {
@@ -565,7 +590,11 @@ impl IpcOutcome {
     }
 }
 
-fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonContext) -> IpcOutcome {
+fn handle_ipc_request(
+    request: gilder::ipc::IpcRequest,
+    context: &mut DaemonContext,
+    runtime_telemetry: RuntimeTelemetrySnapshot,
+) -> IpcOutcome {
     match request.method {
         RequestMethod::Ping { protocol } => IpcOutcome::response(gilder::ipc::success_response(
             &request.id,
@@ -591,7 +620,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                     "render_sync": render_sync,
                     "renderer": renderer_name(),
                     "renderer_capabilities": renderer_capabilities(),
-                    "telemetry": telemetry_report(context),
+                    "telemetry": telemetry_report(context, runtime_telemetry),
                 }),
             ))
         }
@@ -644,8 +673,13 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                         "value": value,
                     }),
                 );
-                let event =
-                    state_changed_event("properties.set", output.as_deref(), context, &render_sync);
+                let event = state_changed_event(
+                    "properties.set",
+                    output.as_deref(),
+                    context,
+                    &render_sync,
+                    runtime_telemetry,
+                );
                 IpcOutcome::with_render_sync(response, event, render_sync)
             }
         }
@@ -671,6 +705,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                     output.as_deref(),
                     context,
                     &render_sync,
+                    runtime_telemetry,
                 );
                 IpcOutcome::with_render_sync(response, event, render_sync)
             }
@@ -700,7 +735,13 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                     }),
                     &render_sync,
                 );
-                let event = state_changed_event("set", output.as_deref(), context, &render_sync);
+                let event = state_changed_event(
+                    "set",
+                    output.as_deref(),
+                    context,
+                    &render_sync,
+                    runtime_telemetry,
+                );
                 IpcOutcome::with_render_sync(response, event, render_sync)
             }
         }
@@ -719,7 +760,13 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                     }),
                     &render_sync,
                 );
-                let event = state_changed_event("pause", output.as_deref(), context, &render_sync);
+                let event = state_changed_event(
+                    "pause",
+                    output.as_deref(),
+                    context,
+                    &render_sync,
+                    runtime_telemetry,
+                );
                 IpcOutcome::with_render_sync(response, event, render_sync)
             }
         }
@@ -738,7 +785,13 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                     }),
                     &render_sync,
                 );
-                let event = state_changed_event("resume", output.as_deref(), context, &render_sync);
+                let event = state_changed_event(
+                    "resume",
+                    output.as_deref(),
+                    context,
+                    &render_sync,
+                    runtime_telemetry,
+                );
                 IpcOutcome::with_render_sync(response, event, render_sync)
             }
         }
@@ -757,7 +810,13 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                     }),
                     &render_sync,
                 );
-                let event = state_changed_event("stop", output.as_deref(), context, &render_sync);
+                let event = state_changed_event(
+                    "stop",
+                    output.as_deref(),
+                    context,
+                    &render_sync,
+                    runtime_telemetry,
+                );
                 IpcOutcome::with_render_sync(response, event, render_sync)
             }
         }
@@ -848,7 +907,10 @@ fn output_reports(context: &DaemonContext) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn snapshot_event(context: &mut DaemonContext) -> Value {
+fn snapshot_event(
+    context: &mut DaemonContext,
+    runtime_telemetry: RuntimeTelemetrySnapshot,
+) -> Value {
     let render_sync = current_render_sync(context);
     json!({
         "desktop": context.desktop,
@@ -857,7 +919,7 @@ fn snapshot_event(context: &mut DaemonContext) -> Value {
         "render_sync": render_sync,
         "renderer": renderer_name(),
         "renderer_capabilities": renderer_capabilities(),
-        "telemetry": telemetry_report(context),
+        "telemetry": telemetry_report(context, runtime_telemetry),
     })
 }
 
@@ -866,6 +928,7 @@ fn state_changed_event(
     output: Option<&str>,
     context: &DaemonContext,
     render_sync: &StaticRenderSyncPlan,
+    runtime_telemetry: RuntimeTelemetrySnapshot,
 ) -> Value {
     json!({
         "action": action,
@@ -875,7 +938,7 @@ fn state_changed_event(
         "persisted_state": context.state,
         "render_sync": render_sync,
         "renderer_capabilities": renderer_capabilities(),
-        "telemetry": telemetry_report(context),
+        "telemetry": telemetry_report(context, runtime_telemetry),
     })
 }
 
@@ -924,7 +987,7 @@ fn renderer_capabilities() -> Value {
     })
 }
 
-fn telemetry_report(context: &DaemonContext) -> Value {
+fn telemetry_report(context: &DaemonContext, runtime_telemetry: RuntimeTelemetrySnapshot) -> Value {
     json!({
         "desktop": {
             "refreshes": context.telemetry.desktop_refreshes,
@@ -935,6 +998,8 @@ fn telemetry_report(context: &DaemonContext) -> Value {
         "render_sync": {
             "cache_hits": context.telemetry.render_sync_cache_hits,
             "cache_misses": context.telemetry.render_sync_cache_misses,
+            "updates_queued": runtime_telemetry.render_sync_updates_queued,
+            "updates_skipped": runtime_telemetry.render_sync_updates_skipped,
         },
     })
 }
@@ -1113,7 +1178,7 @@ fn refresh_runtime_desktop_if_changed(runtime: &DaemonRuntime) -> Result<(), Str
         } else {
             context.telemetry.desktop_changes += 1;
             let render_sync = current_render_sync(&mut context);
-            let event = desktop_changed_event(&context, &render_sync);
+            let event = desktop_changed_event(&context, &render_sync, runtime.telemetry_snapshot());
             Some((event, render_sync))
         }
     }) else {
@@ -1125,7 +1190,11 @@ fn refresh_runtime_desktop_if_changed(runtime: &DaemonRuntime) -> Result<(), Str
     Ok(())
 }
 
-fn desktop_changed_event(context: &DaemonContext, render_sync: &StaticRenderSyncPlan) -> Value {
+fn desktop_changed_event(
+    context: &DaemonContext,
+    render_sync: &StaticRenderSyncPlan,
+    runtime_telemetry: RuntimeTelemetrySnapshot,
+) -> Value {
     json!({
         "desktop": context.desktop,
         "outputs": output_reports(context),
@@ -1133,7 +1202,7 @@ fn desktop_changed_event(context: &DaemonContext, render_sync: &StaticRenderSync
         "render_sync": render_sync,
         "renderer": renderer_name(),
         "renderer_capabilities": renderer_capabilities(),
-        "telemetry": telemetry_report(context),
+        "telemetry": telemetry_report(context, runtime_telemetry),
     })
 }
 
@@ -1167,6 +1236,9 @@ mod tests {
         assert!(runtime.queue_render_sync_if_changed(first.clone()));
         assert!(!runtime.queue_render_sync_if_changed(first));
         assert!(runtime.queue_render_sync_if_changed(second));
+        let telemetry = runtime.telemetry_snapshot();
+        assert_eq!(telemetry.render_sync_updates_queued, 2);
+        assert_eq!(telemetry.render_sync_updates_skipped, 1);
     }
 
     #[test]
@@ -1242,7 +1314,8 @@ mod tests {
             method: RequestMethod::Status,
         };
 
-        let outcome = handle_ipc_request(request, &mut context);
+        let outcome =
+            handle_ipc_request(request, &mut context, RuntimeTelemetrySnapshot::default());
         let response: serde_json::Value =
             serde_json::from_str(&outcome.response).expect("status response should be JSON");
 
@@ -1253,6 +1326,10 @@ mod tests {
         assert_eq!(
             response["result"]["telemetry"]["render_sync"]["cache_misses"],
             json!(1)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["updates_queued"],
+            json!(0)
         );
         assert!(
             response["result"]["telemetry"]["desktop"]["last_refresh_age_ms"]

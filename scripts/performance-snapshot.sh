@@ -309,6 +309,8 @@ write_telemetry_summary() {
       age = $6 + 0
       hits = $7 + 0
       misses = $8 + 0
+      queued = $9 + 0
+      update_skips = $10 + 0
 
       if (rows == 1) {
         first_refreshes = refreshes
@@ -316,12 +318,16 @@ write_telemetry_summary() {
         first_changes = changes
         first_hits = hits
         first_misses = misses
+        first_queued = queued
+        first_update_skips = update_skips
       }
       last_refreshes = refreshes
       last_skips = skips
       last_changes = changes
       last_hits = hits
       last_misses = misses
+      last_queued = queued
+      last_update_skips = update_skips
       if (age > max_age) { max_age = age }
     }
     END {
@@ -330,6 +336,8 @@ write_telemetry_summary() {
       change_delta = last_changes - first_changes
       hit_delta = last_hits - first_hits
       miss_delta = last_misses - first_misses
+      queued_delta = last_queued - first_queued
+      update_skip_delta = last_update_skips - first_update_skips
       total_cache_delta = hit_delta + miss_delta
 
       printf "telemetry_rows: %d\n", rows
@@ -339,6 +347,10 @@ write_telemetry_summary() {
         printf "desktop_changes_delta: %d\n", change_delta
         printf "render_sync_cache_hits_delta: %d\n", hit_delta
         printf "render_sync_cache_misses_delta: %d\n", miss_delta
+        printf "render_sync_updates_queued_delta: %d\n", queued_delta
+        printf "render_sync_updates_skipped_delta: %d\n", update_skip_delta
+        printf "render_sync_updates_queued_latest: %d\n", last_queued
+        printf "render_sync_updates_skipped_latest: %d\n", last_update_skips
         if (total_cache_delta > 0) {
           printf "render_sync_cache_hit_ratio: %.4f\n", hit_delta / total_cache_delta
         }
@@ -516,7 +528,7 @@ EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,stat,comm,status_file,status_error_file\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
-printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses\n' > "$telemetry_path"
+printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped\n' > "$telemetry_path"
 
 status_failures=0
 decision_failures=0

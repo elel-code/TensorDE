@@ -206,7 +206,7 @@ fn render_telemetry_csv(response: &str) -> Result<String, String> {
 
     let telemetry = result.telemetry;
     let mut csv = String::from(
-        "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses\n",
+        "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped\n",
     );
     let row = [
         telemetry.desktop.refreshes.to_string(),
@@ -219,6 +219,8 @@ fn render_telemetry_csv(response: &str) -> Result<String, String> {
             .unwrap_or_default(),
         telemetry.render_sync.cache_hits.to_string(),
         telemetry.render_sync.cache_misses.to_string(),
+        telemetry.render_sync.updates_queued.to_string(),
+        telemetry.render_sync.updates_skipped.to_string(),
     ];
     csv.push_str(&row.join(","));
     csv.push('\n');
@@ -357,6 +359,10 @@ struct RenderSyncTelemetry {
     cache_hits: u64,
     #[serde(default)]
     cache_misses: u64,
+    #[serde(default)]
+    updates_queued: u64,
+    #[serde(default)]
+    updates_skipped: u64,
 }
 
 #[cfg(test)]
@@ -392,14 +398,14 @@ mod tests {
 
     #[test]
     fn formats_daemon_telemetry_as_csv() {
-        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[],"video_plans":[],"decisions":[]},"telemetry":{"desktop":{"refreshes":7,"refresh_skips":11,"changes":2,"last_refresh_age_ms":42},"render_sync":{"cache_hits":23,"cache_misses":5}}}}"##;
+        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[],"video_plans":[],"decisions":[]},"telemetry":{"desktop":{"refreshes":7,"refresh_skips":11,"changes":2,"last_refresh_age_ms":42},"render_sync":{"cache_hits":23,"cache_misses":5,"updates_queued":3,"updates_skipped":2}}}}"##;
 
         let csv = render_telemetry_csv(response).unwrap();
 
         assert_eq!(
             csv,
-            "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses\n\
-             7,11,2,42,23,5\n"
+            "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped\n\
+             7,11,2,42,23,5,3,2\n"
         );
     }
 
