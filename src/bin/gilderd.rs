@@ -57,6 +57,8 @@ fn load_daemon_context() -> Result<DaemonContext, String> {
         config,
         state,
         desktop,
+        adaptive_monitor: gilder::adaptive::AdaptiveMonitor::default(),
+        adaptive_snapshot: gilder::adaptive::AdaptiveSnapshot::default(),
         last_desktop_refresh: Some(Instant::now()),
         render_sync_cache: None,
         telemetry: DaemonTelemetry::default(),
@@ -605,6 +607,8 @@ struct DaemonContext {
     config: GilderConfig,
     state: AppState,
     desktop: gilder::desktop::DesktopSnapshot,
+    adaptive_monitor: gilder::adaptive::AdaptiveMonitor,
+    adaptive_snapshot: gilder::adaptive::AdaptiveSnapshot,
     last_desktop_refresh: Option<Instant>,
     render_sync_cache: Option<RenderSyncCache>,
     telemetry: DaemonTelemetry,
@@ -615,6 +619,8 @@ struct DaemonTelemetry {
     desktop_refreshes: u64,
     desktop_refresh_skips: u64,
     desktop_changes: u64,
+    adaptive_refreshes: u64,
+    adaptive_refresh_skips: u64,
     render_sync_cache_hits: u64,
     render_sync_cache_misses: u64,
 }
@@ -630,6 +636,7 @@ struct RenderSyncCacheKey {
     config: RenderSyncConfigKey,
     state: RenderSyncStateKey,
     desktop: gilder::desktop::DesktopSnapshot,
+    adaptive_affects_render_plan: bool,
     cache_dir: PathBuf,
     packages: Vec<PackageInputFingerprint>,
 }
@@ -638,6 +645,7 @@ struct RenderSyncCacheKey {
 struct RenderSyncConfigKey {
     default_wallpaper: Option<String>,
     outputs: BTreeMap<String, OutputConfig>,
+    adaptive: gilder::config::AdaptiveConfig,
     video_decoder: VideoDecoderPolicy,
     performance: RenderSyncPerformanceKey,
 }
@@ -750,6 +758,7 @@ fn handle_ipc_request(
         }
         RequestMethod::Outputs => {
             refresh_desktop_if_stale(context);
+            refresh_adaptive_if_stale(context);
             IpcOutcome::response(gilder::ipc::success_response(
                 &request.id,
                 json!({ "desktop": context.desktop, "outputs": output_reports(context) }),
@@ -993,6 +1002,16 @@ fn refresh_desktop_if_stale(context: &mut DaemonContext) {
     }
 }
 
+fn refresh_adaptive_if_stale(context: &mut DaemonContext) {
+    let interval = adaptive_refresh_interval(&context.config.adaptive);
+    if context.adaptive_monitor.should_refresh(interval) {
+        context.adaptive_snapshot = context.adaptive_monitor.refresh(&context.config);
+        context.telemetry.adaptive_refreshes += 1;
+    } else {
+        context.telemetry.adaptive_refresh_skips += 1;
+    }
+}
+
 fn mark_desktop_refreshed(context: &mut DaemonContext) {
     context.last_desktop_refresh = Some(Instant::now());
     context.telemetry.desktop_refreshes += 1;
@@ -1026,6 +1045,12 @@ fn output_reports(context: &DaemonContext) -> Vec<serde_json::Value> {
                 &context.desktop,
                 desktop_output,
                 &state,
+            );
+            let performance = gilder::policy::apply_adaptive_policy(
+                performance,
+                &context.config,
+                &name,
+                &context.adaptive_snapshot,
             );
             json!({
                 "name": name,
@@ -1129,6 +1154,12 @@ fn telemetry_report(context: &DaemonContext, runtime_telemetry: RuntimeTelemetry
             "changes": context.telemetry.desktop_changes,
             "last_refresh_age_ms": context.last_desktop_refresh.map(elapsed_millis_u64),
         },
+        "adaptive": {
+            "refreshes": context.telemetry.adaptive_refreshes,
+            "refresh_skips": context.telemetry.adaptive_refresh_skips,
+            "snapshot": context.adaptive_snapshot,
+            "action": adaptive_action_report(context),
+        },
         "render_sync": {
             "cache_hits": context.telemetry.render_sync_cache_hits,
             "cache_misses": context.telemetry.render_sync_cache_misses,
@@ -1136,6 +1167,37 @@ fn telemetry_report(context: &DaemonContext, runtime_telemetry: RuntimeTelemetry
             "updates_skipped": runtime_telemetry.render_sync_updates_skipped,
         },
     })
+}
+
+fn adaptive_action_report(context: &DaemonContext) -> Value {
+    if !context.adaptive_snapshot.affects_render_plan() {
+        return Value::Null;
+    }
+
+    let mut names: Vec<String> = context
+        .desktop
+        .outputs
+        .iter()
+        .map(|output| output.name.clone())
+        .chain(context.state.outputs.keys().cloned())
+        .chain(context.config.outputs.keys().cloned())
+        .collect();
+    names.sort();
+    names.dedup();
+
+    let actions = names
+        .into_iter()
+        .filter(|name| gilder::adaptive::output_enabled(&context.config, name))
+        .map(|name| {
+            let max_fps = gilder::adaptive::output_throttle_max_fps(&context.config, &name);
+            json!({
+                "output_name": name,
+                "type": "throttle",
+                "max_fps": max_fps,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!(actions)
 }
 
 fn elapsed_millis_u64(instant: Instant) -> u64 {
@@ -1164,6 +1226,7 @@ fn video_renderer_capabilities() -> Value {
 }
 
 fn current_render_sync(context: &mut DaemonContext) -> StaticRenderSyncPlan {
+    refresh_adaptive_if_stale(context);
     let key = render_sync_cache_key(context);
     if let Some(cache) = &context.render_sync_cache
         && cache.key == key
@@ -1173,11 +1236,12 @@ fn current_render_sync(context: &mut DaemonContext) -> StaticRenderSyncPlan {
     }
 
     context.telemetry.render_sync_cache_misses += 1;
-    let render_sync = gilder::renderer::static_render_sync_plan_with_config(
+    let render_sync = gilder::renderer::static_render_sync_plan_with_config_and_adaptive(
         &context.config,
         &context.desktop,
         &context.state,
         &context.paths.cache_dir,
+        &context.adaptive_snapshot,
     );
     context.render_sync_cache = Some(RenderSyncCache {
         key,
@@ -1191,6 +1255,7 @@ fn render_sync_cache_key(context: &DaemonContext) -> RenderSyncCacheKey {
         config: render_sync_config_key(&context.config),
         state: render_sync_state_key(&context.state),
         desktop: context.desktop.clone(),
+        adaptive_affects_render_plan: context.adaptive_snapshot.affects_render_plan(),
         cache_dir: context.paths.cache_dir.clone(),
         packages: wallpaper_package_fingerprints(context),
     }
@@ -1200,6 +1265,7 @@ fn render_sync_config_key(config: &GilderConfig) -> RenderSyncConfigKey {
     RenderSyncConfigKey {
         default_wallpaper: config.default_wallpaper.clone(),
         outputs: config.outputs.clone(),
+        adaptive: config.adaptive.clone(),
         video_decoder: config.video.decoder,
         performance: RenderSyncPerformanceKey {
             interactive_max_fps: config.performance.interactive_max_fps,
@@ -1305,33 +1371,46 @@ fn refreshed_render_sync(runtime: &DaemonRuntime) -> Result<StaticRenderSyncPlan
 }
 
 fn refresh_runtime_desktop_if_changed(runtime: &DaemonRuntime) -> Result<(), String> {
-    let Some((event, render_sync)) = ({
+    let Some((event_type, event, render_sync)) = ({
         let mut context = runtime.lock_context()?;
         let previous_desktop = context.desktop.clone();
+        let previous_adaptive_affects_render_plan = context.adaptive_snapshot.affects_render_plan();
         refresh_desktop(&mut context);
-        if context.desktop == previous_desktop {
+        refresh_adaptive_if_stale(&mut context);
+        let desktop_changed = context.desktop != previous_desktop;
+        let adaptive_affects_render_plan_changed = context.adaptive_snapshot.affects_render_plan()
+            != previous_adaptive_affects_render_plan;
+
+        if !desktop_changed && !adaptive_affects_render_plan_changed {
             None
         } else {
-            context.telemetry.desktop_changes += 1;
+            if desktop_changed {
+                context.telemetry.desktop_changes += 1;
+            }
             let render_sync = current_render_sync(&mut context);
-            let event = desktop_changed_event(
+            let event = runtime_changed_event(
                 &context,
                 &render_sync,
                 runtime.telemetry_snapshot(),
                 runtime.renderer_runtime_snapshot(),
             );
-            Some((event, render_sync))
+            let event_type = if desktop_changed {
+                "desktop.changed"
+            } else {
+                "adaptive.changed"
+            };
+            Some((event_type, event, render_sync))
         }
     }) else {
         return Ok(());
     };
 
     runtime.queue_render_sync_if_changed(render_sync);
-    runtime.watchers.broadcast("desktop.changed", event);
+    runtime.watchers.broadcast(event_type, event);
     Ok(())
 }
 
-fn desktop_changed_event(
+fn runtime_changed_event(
     context: &DaemonContext,
     render_sync: &StaticRenderSyncPlan,
     runtime_telemetry: RuntimeTelemetrySnapshot,
@@ -1357,6 +1436,10 @@ fn runtime_desktop_refresh_interval(runtime: &DaemonRuntime) -> Duration {
             desktop_refresh_interval(&PerformanceConfig::default())
         }
     }
+}
+
+fn adaptive_refresh_interval(config: &gilder::config::AdaptiveConfig) -> Duration {
+    Duration::from_millis(config.refresh_interval_ms.max(250))
 }
 
 fn desktop_refresh_interval(config: &PerformanceConfig) -> Duration {
@@ -1518,6 +1601,29 @@ mod tests {
     }
 
     #[test]
+    fn output_reports_apply_adaptive_throttle() {
+        let mut context = test_context();
+        context.desktop.outputs = vec![gilder::desktop::DesktopOutput::virtual_output("eDP-1")];
+        context.config.adaptive.enabled = true;
+        context.config.adaptive.throttle_max_fps = 15;
+        context.adaptive_snapshot = gilder::adaptive::AdaptiveSnapshot {
+            monitoring_enabled: true,
+            active_triggers: vec![gilder::adaptive::AdaptiveTrigger {
+                metric: gilder::adaptive::AdaptiveMetric::CpuPressureSomeAvg10,
+                value_x100: 9_000,
+                threshold_x100: 7_500,
+            }],
+            ..gilder::adaptive::AdaptiveSnapshot::default()
+        };
+        let reports = output_reports(&context);
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0]["performance"]["mode"], json!("throttled"));
+        assert_eq!(reports[0]["performance"]["max_fps"], json!(15));
+        assert_eq!(reports[0]["performance"]["reason"], json!("adaptive"));
+    }
+
+    #[test]
     fn current_render_sync_cache_invalidates_when_manifest_changes() {
         let package_dir = TestDir::new("gilder-render-sync-cache-package");
         write_static_package_manifest(package_dir.path(), "#101418");
@@ -1625,6 +1731,8 @@ mod tests {
             config: GilderConfig::default(),
             state: AppState::default(),
             desktop: gilder::desktop::DesktopSnapshot::default(),
+            adaptive_monitor: gilder::adaptive::AdaptiveMonitor::default(),
+            adaptive_snapshot: gilder::adaptive::AdaptiveSnapshot::default(),
             last_desktop_refresh: Some(Instant::now()),
             render_sync_cache: None,
             telemetry: DaemonTelemetry::default(),

@@ -116,10 +116,27 @@ pub fn static_render_sync_plan_with_config(
     state: &AppState,
     cache_dir: impl AsRef<Path>,
 ) -> StaticRenderSyncPlan {
+    static_render_sync_plan_with_config_and_adaptive(
+        config,
+        desktop,
+        state,
+        cache_dir,
+        &crate::adaptive::AdaptiveSnapshot::default(),
+    )
+}
+
+pub fn static_render_sync_plan_with_config_and_adaptive(
+    config: &GilderConfig,
+    desktop: &DesktopSnapshot,
+    state: &AppState,
+    cache_dir: impl AsRef<Path>,
+    adaptive: &crate::adaptive::AdaptiveSnapshot,
+) -> StaticRenderSyncPlan {
     static_render_sync_plan_inner(
         &config.performance,
         config.video.decoder,
         Some(config),
+        adaptive,
         desktop,
         state,
         cache_dir.as_ref(),
@@ -136,6 +153,7 @@ pub fn static_render_sync_plan_with_performance(
         performance_config,
         VideoDecoderPolicy::default(),
         None,
+        &crate::adaptive::AdaptiveSnapshot::default(),
         desktop,
         state,
         cache_dir.as_ref(),
@@ -146,6 +164,7 @@ fn static_render_sync_plan_inner(
     performance_config: &PerformanceConfig,
     video_decoder_policy: VideoDecoderPolicy,
     config: Option<&GilderConfig>,
+    adaptive: &crate::adaptive::AdaptiveSnapshot,
     desktop: &DesktopSnapshot,
     state: &AppState,
     cache_dir: &Path,
@@ -181,6 +200,10 @@ fn static_render_sync_plan_inner(
             desktop_output,
             &output_state,
         );
+        if let Some(config) = config {
+            performance =
+                crate::policy::apply_adaptive_policy(performance, config, &output_name, adaptive);
+        }
         let assignment = effective_wallpaper_assignment(config, state, &output_name, &output_state);
         let fit_override = output_fit_override(config, &output_name);
 
@@ -1014,6 +1037,44 @@ mod tests {
         assert_eq!(
             sync.decisions[0].wallpaper.as_deref(),
             Some("examples/wallpapers/static-demo.gwpdir")
+        );
+    }
+
+    #[test]
+    fn adaptive_snapshot_throttles_render_sync_decision() {
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some("examples/wallpapers/static-demo.gwpdir".to_owned());
+        config.adaptive.enabled = true;
+        config.adaptive.throttle_max_fps = 15;
+        let state = AppState::default();
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+        let adaptive = crate::adaptive::AdaptiveSnapshot {
+            monitoring_enabled: true,
+            active_triggers: vec![crate::adaptive::AdaptiveTrigger {
+                metric: crate::adaptive::AdaptiveMetric::CpuPressureSomeAvg10,
+                value_x100: 9_000,
+                threshold_x100: 7_500,
+            }],
+            ..crate::adaptive::AdaptiveSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_config_and_adaptive(
+            &config,
+            &desktop,
+            &state,
+            std::env::temp_dir(),
+            &adaptive,
+        );
+
+        assert_eq!(sync.plans.len(), 1);
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Throttled);
+        assert_eq!(sync.decisions[0].performance.max_fps, Some(15));
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            DecisionReason::Adaptive
         );
     }
 

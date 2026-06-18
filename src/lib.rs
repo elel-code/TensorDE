@@ -1,3 +1,4 @@
+pub mod adaptive;
 pub mod config;
 pub mod convert;
 pub mod core;

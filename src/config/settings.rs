@@ -13,6 +13,8 @@ pub struct GilderConfig {
     #[serde(default)]
     pub outputs: BTreeMap<String, OutputConfig>,
     #[serde(default)]
+    pub adaptive: AdaptiveConfig,
+    #[serde(default)]
     pub video: VideoConfig,
     #[serde(default)]
     pub performance: PerformanceConfig,
@@ -25,6 +27,7 @@ impl Default for GilderConfig {
         Self {
             default_wallpaper: None,
             outputs: BTreeMap::new(),
+            adaptive: AdaptiveConfig::default(),
             video: VideoConfig::default(),
             performance: PerformanceConfig::default(),
             adapters: AdapterConfig::default(),
@@ -47,6 +50,38 @@ impl GilderConfig {
             .get(output_name)
             .map(|output| self.performance.with_output_overrides(&output.performance))
             .unwrap_or_else(|| self.performance.clone())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdaptiveConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub kill_switch: bool,
+    #[serde(default = "default_adaptive_refresh_interval_ms")]
+    pub refresh_interval_ms: u64,
+    #[serde(default = "default_adaptive_cooldown_ms")]
+    pub cooldown_ms: u64,
+    #[serde(default = "default_adaptive_throttle_max_fps")]
+    pub throttle_max_fps: u32,
+    #[serde(default = "default_adaptive_cpu_pressure_threshold_percent")]
+    pub cpu_pressure_threshold_percent: u32,
+    #[serde(default = "default_adaptive_memory_pressure_threshold_percent")]
+    pub memory_pressure_threshold_percent: u32,
+}
+
+impl Default for AdaptiveConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            kill_switch: false,
+            refresh_interval_ms: default_adaptive_refresh_interval_ms(),
+            cooldown_ms: default_adaptive_cooldown_ms(),
+            throttle_max_fps: default_adaptive_throttle_max_fps(),
+            cpu_pressure_threshold_percent: default_adaptive_cpu_pressure_threshold_percent(),
+            memory_pressure_threshold_percent: default_adaptive_memory_pressure_threshold_percent(),
+        }
     }
 }
 
@@ -73,7 +108,17 @@ pub struct OutputConfig {
     #[serde(default)]
     pub fit: Option<FitMode>,
     #[serde(default)]
+    pub adaptive: OutputAdaptiveConfig,
+    #[serde(default)]
     pub performance: OutputPerformanceConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct OutputAdaptiveConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub throttle_max_fps: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,6 +275,26 @@ fn default_desktop_refresh_interval_ms() -> u64 {
     2000
 }
 
+fn default_adaptive_refresh_interval_ms() -> u64 {
+    2000
+}
+
+fn default_adaptive_cooldown_ms() -> u64 {
+    10_000
+}
+
+fn default_adaptive_throttle_max_fps() -> u32 {
+    15
+}
+
+fn default_adaptive_cpu_pressure_threshold_percent() -> u32 {
+    75
+}
+
+fn default_adaptive_memory_pressure_threshold_percent() -> u32 {
+    20
+}
+
 fn default_true() -> bool {
     true
 }
@@ -263,6 +328,14 @@ mod tests {
             [video]
             decoder = "hardware-preferred"
 
+            [adaptive]
+            enabled = true
+            refresh_interval_ms = 1500
+            cooldown_ms = 5000
+            throttle_max_fps = 18
+            cpu_pressure_threshold_percent = 65
+            memory_pressure_threshold_percent = 10
+
             [adapters]
             niri = false
 
@@ -273,6 +346,10 @@ mod tests {
             [outputs."HDMI-A-1".performance]
             background_max_fps = 12
             battery = "pause"
+
+            [outputs."HDMI-A-1".adaptive]
+            enabled = false
+            throttle_max_fps = 9
             "#,
         )
         .unwrap();
@@ -286,6 +363,17 @@ mod tests {
         assert_eq!(config.performance.desktop_refresh_interval_ms, 1000);
         assert_eq!(config.performance.battery, PowerPolicy::Throttle);
         assert_eq!(config.video.decoder, VideoDecoderPolicy::HardwarePreferred);
+        assert!(config.adaptive.enabled);
+        assert_eq!(config.adaptive.refresh_interval_ms, 1500);
+        assert_eq!(config.adaptive.cooldown_ms, 5000);
+        assert_eq!(config.adaptive.throttle_max_fps, 18);
+        assert_eq!(config.adaptive.cpu_pressure_threshold_percent, 65);
+        assert_eq!(config.adaptive.memory_pressure_threshold_percent, 10);
+        assert_eq!(config.outputs["HDMI-A-1"].adaptive.enabled, Some(false));
+        assert_eq!(
+            config.outputs["HDMI-A-1"].adaptive.throttle_max_fps,
+            Some(9)
+        );
         let hdmi_performance = config.performance_for_output("HDMI-A-1");
         assert_eq!(hdmi_performance.interactive_max_fps, 75);
         assert_eq!(hdmi_performance.background_max_fps, 12);

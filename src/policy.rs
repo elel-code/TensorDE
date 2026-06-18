@@ -1,5 +1,6 @@
 //! Performance policy decisions derived from desktop state.
 
+use crate::adaptive::AdaptiveSnapshot;
 use crate::config::{PerformanceConfig, PowerPolicy, ThrottlePolicy};
 use crate::core::RuntimePolicy;
 use crate::desktop::{DesktopOutput, DesktopSnapshot};
@@ -32,6 +33,7 @@ pub enum DecisionReason {
     Fullscreen,
     Unfocused,
     Battery,
+    Adaptive,
 }
 
 pub fn decide_performance(
@@ -108,6 +110,25 @@ pub fn apply_runtime_policy(
         decision = select_more_conservative(decision, paused(DecisionReason::Unfocused));
     }
     decision
+}
+
+pub fn apply_adaptive_policy(
+    decision: PerformanceDecision,
+    config: &crate::config::GilderConfig,
+    output_name: &str,
+    snapshot: &AdaptiveSnapshot,
+) -> PerformanceDecision {
+    if !snapshot.affects_render_plan() || !crate::adaptive::output_enabled(config, output_name) {
+        return decision;
+    }
+
+    select_more_conservative(
+        decision,
+        throttled(
+            crate::adaptive::output_throttle_max_fps(config, output_name),
+            DecisionReason::Adaptive,
+        ),
+    )
 }
 
 fn select_more_conservative(
@@ -372,5 +393,80 @@ mod tests {
 
         assert_eq!(decision.mode, RenderMode::Paused);
         assert_eq!(decision.reason, DecisionReason::UserPaused);
+    }
+
+    #[test]
+    fn adaptive_policy_throttles_when_enabled_and_triggered() {
+        let mut config = crate::config::GilderConfig::default();
+        config.adaptive.enabled = true;
+        config.adaptive.throttle_max_fps = 15;
+        let base = active(60, DecisionReason::Interactive);
+        let snapshot = AdaptiveSnapshot {
+            monitoring_enabled: true,
+            active_triggers: vec![crate::adaptive::AdaptiveTrigger {
+                metric: crate::adaptive::AdaptiveMetric::CpuPressureSomeAvg10,
+                value_x100: 9_000,
+                threshold_x100: 7_500,
+            }],
+            ..AdaptiveSnapshot::default()
+        };
+
+        let decision = apply_adaptive_policy(base, &config, "eDP-1", &snapshot);
+
+        assert_eq!(decision.mode, RenderMode::Throttled);
+        assert_eq!(decision.max_fps, Some(15));
+        assert_eq!(decision.reason, DecisionReason::Adaptive);
+    }
+
+    #[test]
+    fn adaptive_policy_cannot_override_stronger_pause() {
+        let mut config = crate::config::GilderConfig::default();
+        config.adaptive.enabled = true;
+        let snapshot = AdaptiveSnapshot {
+            monitoring_enabled: true,
+            active_triggers: vec![crate::adaptive::AdaptiveTrigger {
+                metric: crate::adaptive::AdaptiveMetric::MemoryPressureSomeAvg10,
+                value_x100: 2_500,
+                threshold_x100: 2_000,
+            }],
+            ..AdaptiveSnapshot::default()
+        };
+        let base = paused(DecisionReason::UserPaused);
+
+        let decision = apply_adaptive_policy(base, &config, "eDP-1", &snapshot);
+
+        assert_eq!(decision.mode, RenderMode::Paused);
+        assert_eq!(decision.reason, DecisionReason::UserPaused);
+    }
+
+    #[test]
+    fn adaptive_policy_can_be_disabled_per_output() {
+        let mut config = crate::config::GilderConfig::default();
+        config.adaptive.enabled = true;
+        config.outputs.insert(
+            "eDP-1".to_owned(),
+            crate::config::OutputConfig {
+                adaptive: crate::config::OutputAdaptiveConfig {
+                    enabled: Some(false),
+                    throttle_max_fps: None,
+                },
+                ..crate::config::OutputConfig::default()
+            },
+        );
+        let snapshot = AdaptiveSnapshot {
+            monitoring_enabled: true,
+            active_triggers: vec![crate::adaptive::AdaptiveTrigger {
+                metric: crate::adaptive::AdaptiveMetric::CpuPressureSomeAvg10,
+                value_x100: 9_000,
+                threshold_x100: 7_500,
+            }],
+            ..AdaptiveSnapshot::default()
+        };
+        let base = active(60, DecisionReason::Interactive);
+
+        let decision = apply_adaptive_policy(base, &config, "eDP-1", &snapshot);
+
+        assert_eq!(decision.mode, RenderMode::Active);
+        assert_eq!(decision.reason, DecisionReason::Interactive);
     }
 }
