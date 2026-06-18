@@ -829,11 +829,32 @@ write_video_runtime_summary() {
   local video_runtime_csv="$1"
   local summary="$2"
   awk -F, '
+    function record_pipe_values(value, counts,    item, part_count, parts, part_index) {
+      if (value == "") {
+        return
+      }
+      part_count = split(value, parts, /\|/)
+      for (part_index = 1; part_index <= part_count; part_index++) {
+        item = parts[part_index]
+        if (item != "") {
+          counts[item] += 1
+        }
+      }
+    }
     NR == 1 { next }
     {
       rows += 1
       sample = $1
       output = $3
+      mode = $4
+      gst_state = $5
+      decoder_policy = $6
+      decoder_policy_status = $7
+      actual_decoders = $8
+      decoder_classes = $9
+      caps_report_count = $10
+      memory_features = $11
+      sink_memory_features = $12
       zero_copy_level = $13
       zero_copy_notes = $14
       position = $17
@@ -878,6 +899,41 @@ write_video_runtime_summary() {
       if (sample != "" && !(sample in seen_sample)) {
         seen_sample[sample] = 1
         samples += 1
+      }
+      if (mode != "") {
+        video_modes[mode] += 1
+        last_mode = mode
+      }
+      if (gst_state != "") {
+        gst_states[gst_state] += 1
+        last_gst_state = gst_state
+      }
+      if (decoder_policy != "") {
+        decoder_policies[decoder_policy] += 1
+        last_decoder_policy = decoder_policy
+      }
+      if (decoder_policy_status != "") {
+        decoder_policy_statuses[decoder_policy_status] += 1
+        last_decoder_policy_status = decoder_policy_status
+      }
+      if (actual_decoders != "") {
+        last_actual_decoders = actual_decoders
+        record_pipe_values(actual_decoders, actual_decoder_counts)
+      }
+      if (decoder_classes != "") {
+        last_decoder_classes = decoder_classes
+        record_pipe_values(decoder_classes, decoder_class_counts)
+      }
+      if (caps_report_count != "" && caps_report_count + 0 > max_caps_report_count) {
+        max_caps_report_count = caps_report_count + 0
+      }
+      if (memory_features != "") {
+        last_memory_features = memory_features
+        record_pipe_values(memory_features, memory_feature_counts)
+      }
+      if (sink_memory_features != "") {
+        last_sink_memory_features = sink_memory_features
+        record_pipe_values(sink_memory_features, sink_memory_feature_counts)
       }
       if (zero_copy_level != "") {
         zero_copy_rows += 1
@@ -1024,6 +1080,55 @@ write_video_runtime_summary() {
       printf "video_runtime_rows: %d\n", rows
       printf "video_runtime_samples: %d\n", samples
       printf "video_runtime_outputs: %d\n", outputs
+      if (last_mode != "") {
+        printf "video_mode_latest: %s\n", last_mode
+      }
+      for (mode in video_modes) {
+        printf "video_mode.%s: %d\n", mode, video_modes[mode]
+      }
+      if (last_gst_state != "") {
+        printf "video_gst_state_latest: %s\n", last_gst_state
+      }
+      for (gst_state in gst_states) {
+        printf "video_gst_state.%s: %d\n", gst_state, gst_states[gst_state]
+      }
+      if (last_decoder_policy != "") {
+        printf "video_decoder_policy_latest: %s\n", last_decoder_policy
+      }
+      for (decoder_policy in decoder_policies) {
+        printf "video_decoder_policy.%s: %d\n", decoder_policy, decoder_policies[decoder_policy]
+      }
+      if (last_decoder_policy_status != "") {
+        printf "video_decoder_policy_status_latest: %s\n", last_decoder_policy_status
+      }
+      for (decoder_policy_status in decoder_policy_statuses) {
+        printf "video_decoder_policy_status.%s: %d\n", decoder_policy_status, decoder_policy_statuses[decoder_policy_status]
+      }
+      if (last_actual_decoders != "") {
+        printf "video_actual_decoders_latest: %s\n", last_actual_decoders
+      }
+      for (actual_decoder in actual_decoder_counts) {
+        printf "video_actual_decoder.%s: %d\n", actual_decoder, actual_decoder_counts[actual_decoder]
+      }
+      if (last_decoder_classes != "") {
+        printf "video_decoder_classes_latest: %s\n", last_decoder_classes
+      }
+      for (decoder_class in decoder_class_counts) {
+        printf "video_decoder_class.%s: %d\n", decoder_class, decoder_class_counts[decoder_class]
+      }
+      printf "video_caps_report_count_max: %d\n", max_caps_report_count
+      if (last_memory_features != "") {
+        printf "video_memory_features_latest: %s\n", last_memory_features
+      }
+      for (memory_feature in memory_feature_counts) {
+        printf "video_memory_feature.%s: %d\n", memory_feature, memory_feature_counts[memory_feature]
+      }
+      if (last_sink_memory_features != "") {
+        printf "video_sink_memory_features_latest: %s\n", last_sink_memory_features
+      }
+      for (sink_memory_feature in sink_memory_feature_counts) {
+        printf "video_sink_memory_feature.%s: %d\n", sink_memory_feature, sink_memory_feature_counts[sink_memory_feature]
+      }
       printf "video_zero_copy_evidence_rows: %d\n", zero_copy_rows
       if (last_zero_copy_level != "") {
         printf "video_zero_copy_evidence_latest: %s\n", last_zero_copy_level

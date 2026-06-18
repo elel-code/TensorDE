@@ -620,6 +620,74 @@ performance_artifact_text() {
   fi
 }
 
+summary_value_or_none() {
+  local summary="$1"
+  local key="$2"
+  if [[ ! -f "$summary" ]]; then
+    printf 'none\n'
+    return
+  fi
+  awk -v key="$key" -F': ' '$1 == key { print $2; found = 1; exit } END { exit found ? 0 : 1 }' "$summary" \
+    || printf 'none\n'
+}
+
+append_video_runtime_evidence_summary() {
+  local prefix="$1"
+  local summary="$2"
+  local key
+
+  if [[ ! -f "$summary" ]]; then
+    printf '%s_video_runtime_summary_present: no\n' "$prefix"
+    return
+  fi
+
+  printf '%s_video_runtime_summary_present: yes\n' "$prefix"
+  for key in \
+    video_runtime_rows \
+    video_runtime_samples \
+    video_runtime_outputs \
+    video_mode_latest \
+    video_gst_state_latest \
+    video_decoder_policy_latest \
+    video_decoder_policy_status_latest \
+    video_actual_decoders_latest \
+    video_decoder_classes_latest \
+    video_caps_report_count_max \
+    video_memory_features_latest \
+    video_sink_memory_features_latest \
+    video_zero_copy_evidence_latest \
+    video_zero_copy_evidence_notes_latest \
+    video_position_moving_outputs \
+    video_position_delta_ms_max \
+    video_frame_limiter_enabled_rows \
+    video_frame_limiter_fps_min \
+    video_frame_limiter_fps_max \
+    video_qos_messages_max \
+    video_qos_dropped_max \
+    video_gtk_frame_clock_ticks_max \
+    video_gtk_frame_clock_before_paint_ticks_max \
+    video_gtk_frame_clock_update_ticks_max \
+    video_gtk_frame_clock_layout_ticks_max \
+    video_gtk_frame_clock_paint_ticks_max \
+    video_gtk_frame_clock_after_paint_ticks_max \
+    video_gtk_frame_timings_complete_max \
+    video_gtk_frame_timings_presentation_interval_us_max
+  do
+    printf '%s_%s: %s\n' "$prefix" "$key" "$(summary_value_or_none "$summary" "$key")"
+  done
+
+  awk -v prefix="$prefix" -F': ' '
+    $1 ~ /^video_decoder_policy_status\./ ||
+    $1 ~ /^video_actual_decoder\./ ||
+    $1 ~ /^video_decoder_class\./ ||
+    $1 ~ /^video_memory_feature\./ ||
+    $1 ~ /^video_sink_memory_feature\./ ||
+    $1 ~ /^video_zero_copy_evidence\./ {
+      printf "%s_%s: %s\n", prefix, $1, $2
+    }
+  ' "$summary"
+}
+
 write_validation_report() {
   local active_summary
   local active_video_runtime_summary
@@ -647,6 +715,7 @@ sample_paused: ${sample_paused}
 measure_fullscreen_resume: ${measure_fullscreen_resume}
 require_video_runtime_row: ${require_video_runtime_row}
 expect_gtk_frame_clock_phases: ${expect_gtk_frame_clock_phases[*]:-none}
+zero_copy_audit_note: hardware decoder evidence alone is not zero-copy proof; prefer sink DMABuf/GLMemory caps plus compositor presentation evidence
 video_runtime_rows: $(count_csv_data_rows "$video_runtime_path")
 video_runtime_csv: ${video_runtime_path}
 performance_active_summary: ${active_summary}
@@ -663,6 +732,9 @@ status_paused: $([[ -f "$status_paused" ]] && printf '%s' "$status_paused" || pr
 status_resumed: $([[ -f "$status_resumed" ]] && printf '%s' "$status_resumed" || printf 'none')
 daemon_log: ${daemon_log}
 EOF
+
+  append_video_runtime_evidence_summary "performance_active" "$active_video_runtime_summary" >> "$validation_report_path"
+  append_video_runtime_evidence_summary "performance_paused" "$paused_video_runtime_summary" >> "$validation_report_path"
 
   if [[ -f "$video_runtime_path" ]]; then
     awk -F, '
