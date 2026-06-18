@@ -237,6 +237,7 @@ impl GstVideoRenderer {
                         .frame_limiter
                         .as_ref()
                         .and_then(FrameLimiter::target_max_fps),
+                    frame_stats: pipeline.frame_stats.clone(),
                     decoder_policy: pipeline.decoder_policy,
                     decoder_policy_status: decoder_policy_status(
                         pipeline.decoder_policy,
@@ -268,6 +269,7 @@ struct VideoPipeline {
     target_max_fps: Option<u32>,
     decoder_policy: VideoDecoderPolicy,
     start_offset_ms: u64,
+    frame_stats: VideoFrameStats,
 }
 
 impl VideoPipeline {
@@ -291,6 +293,7 @@ impl VideoPipeline {
             target_max_fps: plan.target_max_fps,
             decoder_policy: plan.decoder_policy,
             start_offset_ms: 0,
+            frame_stats: VideoFrameStats::default(),
         };
         pipeline.apply_muted(plan.muted);
         Ok(pipeline)
@@ -355,6 +358,17 @@ impl VideoPipeline {
                         err.error(),
                         err.debug().unwrap_or_default()
                     )));
+                }
+                gst::MessageView::Qos(qos) => {
+                    let (processed, dropped) = qos.stats();
+                    let (jitter, proportion, _) = qos.values();
+                    self.frame_stats.record_qos_values(
+                        processed.format().to_string(),
+                        processed.value(),
+                        dropped.value(),
+                        jitter,
+                        proportion,
+                    );
                 }
                 _ => {}
             }
@@ -814,6 +828,7 @@ pub struct VideoPipelineSnapshot {
     pub target_max_fps: Option<u32>,
     pub frame_limiter_enabled: bool,
     pub frame_limiter_max_fps: Option<u32>,
+    pub frame_stats: VideoFrameStats,
     pub decoder_policy: VideoDecoderPolicy,
     pub decoder_policy_status: VideoDecoderPolicyStatus,
     pub start_offset_ms: u64,
@@ -822,6 +837,63 @@ pub struct VideoPipelineSnapshot {
     pub actual_decoders: Vec<String>,
     pub actual_decoder_reports: Vec<VideoDecoderReport>,
     pub caps_reports: Vec<VideoCapsReport>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct VideoFrameStats {
+    pub qos_messages: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qos_stats_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qos_processed_max: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qos_dropped_max: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qos_jitter_ns_latest: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qos_jitter_ns_abs_max: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qos_proportion_x1000_latest: Option<u32>,
+}
+
+impl VideoFrameStats {
+    pub(crate) fn record_qos_values(
+        &mut self,
+        stats_format: String,
+        processed: i64,
+        dropped: i64,
+        jitter_ns: i64,
+        proportion: f64,
+    ) {
+        self.qos_messages = self.qos_messages.saturating_add(1);
+        if !stats_format.is_empty() {
+            self.qos_stats_format = Some(stats_format);
+        }
+        update_max_u64(&mut self.qos_processed_max, non_negative_u64(processed));
+        update_max_u64(&mut self.qos_dropped_max, non_negative_u64(dropped));
+        self.qos_jitter_ns_latest = Some(jitter_ns);
+        update_max_u64(
+            &mut self.qos_jitter_ns_abs_max,
+            Some(jitter_ns.unsigned_abs()),
+        );
+        if proportion.is_finite() && proportion >= 0.0 {
+            let scaled = (proportion * 1000.0).round();
+            if scaled <= f64::from(u32::MAX) {
+                self.qos_proportion_x1000_latest = Some(scaled as u32);
+            }
+        }
+    }
+}
+
+fn non_negative_u64(value: i64) -> Option<u64> {
+    u64::try_from(value).ok()
+}
+
+fn update_max_u64(slot: &mut Option<u64>, value: Option<u64>) {
+    let Some(value) = value else {
+        return;
+    };
+    *slot = Some(slot.map_or(value, |current| current.max(value)));
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1110,6 +1182,22 @@ mod tests {
             decoder_policy_status(VideoDecoderPolicy::HardwarePreferred, &[unknown]),
             VideoDecoderPolicyStatus::UnknownDecoder
         );
+    }
+
+    #[test]
+    fn accumulates_qos_frame_stats() {
+        let mut stats = VideoFrameStats::default();
+
+        stats.record_qos_values("buffers".to_owned(), 10, 2, -7_000, 0.995);
+        stats.record_qos_values("buffers".to_owned(), 15, 1, 2_000, 1.25);
+
+        assert_eq!(stats.qos_messages, 2);
+        assert_eq!(stats.qos_stats_format.as_deref(), Some("buffers"));
+        assert_eq!(stats.qos_processed_max, Some(15));
+        assert_eq!(stats.qos_dropped_max, Some(2));
+        assert_eq!(stats.qos_jitter_ns_latest, Some(2_000));
+        assert_eq!(stats.qos_jitter_ns_abs_max, Some(7_000));
+        assert_eq!(stats.qos_proportion_x1000_latest, Some(1_250));
     }
 
     #[test]

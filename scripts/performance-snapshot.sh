@@ -49,6 +49,10 @@ Options:
                      Require at least one video runtime row with an enabled frame limiter
   --expect-frame-limiter-max-fps <fps>
                      Require at least one video runtime row with this frame limiter max_fps
+  --expect-video-qos
+                     Require at least one video runtime row with observed GStreamer QoS messages
+  --expect-qos-dropped-max-at-most <count>
+                     Require observed QoS dropped max to be at most count
   --allow-missing     Report missing daemon/tools as skips instead of failures
   --keep              Keep generated evidence after the script exits
   -h, --help          Show this help text
@@ -81,6 +85,8 @@ expect_sink_memory_feature=""
 expect_video_position_progress=0
 expect_frame_limiter_enabled=0
 expect_frame_limiter_max_fps=""
+expect_video_qos=0
+expect_qos_dropped_max_at_most=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -196,6 +202,15 @@ while [[ $# -gt 0 ]]; do
     --expect-frame-limiter-max-fps)
       [[ $# -ge 2 ]] || { echo "--expect-frame-limiter-max-fps requires a value" >&2; exit 2; }
       expect_frame_limiter_max_fps="$2"
+      shift 2
+      ;;
+    --expect-video-qos)
+      expect_video_qos=1
+      shift
+      ;;
+    --expect-qos-dropped-max-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-qos-dropped-max-at-most requires a value" >&2; exit 2; }
+      expect_qos_dropped_max_at_most="$2"
       shift 2
       ;;
     --allow-missing)
@@ -651,6 +666,13 @@ write_video_runtime_summary() {
       duration = $16
       limiter_enabled = $17
       limiter_fps = $18
+      qos_messages = $19
+      qos_processed = $20
+      qos_dropped = $21
+      qos_format = $22
+      qos_jitter = $23
+      qos_jitter_abs = $24
+      qos_proportion = $25
 
       if (output != "" && !(output in seen_output)) {
         seen_output[output] = 1
@@ -683,6 +705,28 @@ write_video_runtime_summary() {
           max_limiter_fps = limiter_fps + 0
         }
       }
+      if (qos_messages != "") {
+        qos_rows += 1
+        if (qos_messages + 0 > max_qos_messages) { max_qos_messages = qos_messages + 0 }
+      }
+      if (qos_processed != "" && qos_processed + 0 > max_qos_processed) {
+        max_qos_processed = qos_processed + 0
+      }
+      if (qos_dropped != "" && qos_dropped + 0 > max_qos_dropped) {
+        max_qos_dropped = qos_dropped + 0
+      }
+      if (qos_format != "") {
+        last_qos_format = qos_format
+      }
+      if (qos_jitter != "") {
+        last_qos_jitter = qos_jitter
+      }
+      if (qos_jitter_abs != "" && qos_jitter_abs + 0 > max_qos_jitter_abs) {
+        max_qos_jitter_abs = qos_jitter_abs + 0
+      }
+      if (qos_proportion != "") {
+        last_qos_proportion = qos_proportion
+      }
     }
     END {
       for (output in last_position) {
@@ -710,6 +754,20 @@ write_video_runtime_summary() {
       if (limiter_fps_samples > 0) {
         printf "video_frame_limiter_fps_min: %d\n", min_limiter_fps
         printf "video_frame_limiter_fps_max: %d\n", max_limiter_fps
+      }
+      printf "video_qos_rows: %d\n", qos_rows
+      printf "video_qos_messages_max: %d\n", max_qos_messages
+      printf "video_qos_processed_max: %d\n", max_qos_processed
+      printf "video_qos_dropped_max: %d\n", max_qos_dropped
+      if (last_qos_format != "") {
+        printf "video_qos_stats_format_latest: %s\n", last_qos_format
+      }
+      if (last_qos_jitter != "") {
+        printf "video_qos_jitter_ns_latest: %s\n", last_qos_jitter
+      }
+      printf "video_qos_jitter_ns_abs_max: %d\n", max_qos_jitter_abs
+      if (last_qos_proportion != "") {
+        printf "video_qos_proportion_x1000_latest: %s\n", last_qos_proportion
       }
     }
   ' "$video_runtime_csv" > "$summary"
@@ -833,7 +891,9 @@ has_video_runtime_expectations() {
     -n "$expect_sink_memory_feature" ||
     "$expect_video_position_progress" -eq 1 ||
     "$expect_frame_limiter_enabled" -eq 1 ||
-    -n "$expect_frame_limiter_max_fps" ]]
+    -n "$expect_frame_limiter_max_fps" ||
+    "$expect_video_qos" -eq 1 ||
+    -n "$expect_qos_dropped_max_at_most" ]]
 }
 
 expect_video_runtime_field() {
@@ -876,6 +936,22 @@ expect_video_runtime_summary_minimum() {
   fi
 }
 
+expect_video_runtime_summary_maximum() {
+  local key="$1"
+  local maximum="$2"
+  local description="$3"
+  local value
+  if value="$(summary_value "$key" "$video_runtime_summary_path")" && [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    if awk -v value="$value" -v maximum="$maximum" 'BEGIN { exit (value + 0 <= maximum + 0) ? 0 : 1 }'; then
+      pass "video runtime expectation matched ${description}: ${value}"
+    else
+      skip_or_fail "video runtime expectation not met: ${description} was ${value}, expected at most ${maximum}"
+    fi
+  else
+    skip_or_fail "video runtime expectation not met: missing ${description}"
+  fi
+}
+
 validate_video_runtime_expectations() {
   has_video_runtime_expectations || return 0
   if [[ "$status_enabled" -ne 1 || "$video_runtime_failures" -gt 0 ]]; then
@@ -911,6 +987,12 @@ validate_video_runtime_expectations() {
   if [[ -n "$expect_frame_limiter_max_fps" ]]; then
     expect_video_runtime_field 18 "$expect_frame_limiter_max_fps" "frame limiter max_fps"
   fi
+  if [[ "$expect_video_qos" -eq 1 ]]; then
+    expect_video_runtime_summary_minimum "video_qos_messages_max" 1 "QoS message max count"
+  fi
+  if [[ -n "$expect_qos_dropped_max_at_most" ]]; then
+    expect_video_runtime_summary_maximum "video_qos_dropped_max" "$expect_qos_dropped_max_at_most" "QoS dropped max count"
+  fi
 }
 
 if ! is_positive_integer "$duration"; then
@@ -927,6 +1009,10 @@ if [[ -n "$expect_max_fps" && ! "$expect_max_fps" =~ ^[0-9]+$ ]]; then
 fi
 if [[ -n "$expect_frame_limiter_max_fps" && ! "$expect_frame_limiter_max_fps" =~ ^[0-9]+$ ]]; then
   echo "--expect-frame-limiter-max-fps must be a non-negative integer" >&2
+  exit 2
+fi
+if [[ -n "$expect_qos_dropped_max_at_most" && ! "$expect_qos_dropped_max_at_most" =~ ^[0-9]+$ ]]; then
+  echo "--expect-qos-dropped-max-at-most must be a non-negative integer" >&2
   exit 2
 fi
 case "$expect_decoder_policy_status" in
@@ -1018,13 +1104,15 @@ expect_sink_memory_feature: ${expect_sink_memory_feature:-none}
 expect_video_position_progress: ${expect_video_position_progress}
 expect_frame_limiter_enabled: ${expect_frame_limiter_enabled}
 expect_frame_limiter_max_fps: ${expect_frame_limiter_max_fps:-none}
+expect_video_qos: ${expect_video_qos}
+expect_qos_dropped_max_at_most: ${expect_qos_dropped_max_at_most:-none}
 gpu_busy_sources: drm gpu_busy_percent sysfs when readable; nvidia-smi utilization.gpu when available
 EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
 printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$telemetry_path"
-printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,source\n' > "$video_runtime_path"
+printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,source\n' > "$video_runtime_path"
 
 status_failures=0
 decision_failures=0

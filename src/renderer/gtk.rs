@@ -8,7 +8,7 @@ use crate::core::FitMode;
 use crate::policy::RenderMode;
 #[cfg(feature = "video-renderer")]
 use crate::renderer::video::{
-    VideoPipelineSnapshot, actual_decoder_reports, apply_decoder_rank_policy,
+    VideoFrameStats, VideoPipelineSnapshot, actual_decoder_reports, apply_decoder_rank_policy,
     decoder_policy_status, playback_duration_ms, playback_position_ms, target_max_fps_from_caps,
     video_caps_reports,
 };
@@ -233,6 +233,7 @@ impl GtkStaticRenderer {
                             .frame_limiter
                             .as_ref()
                             .and_then(GtkFrameLimiter::target_max_fps),
+                        frame_stats: video.frame_stats.clone(),
                         decoder_policy: video.decoder_policy,
                         decoder_policy_status: decoder_policy_status(
                             video.decoder_policy,
@@ -622,6 +623,7 @@ struct GtkVideoPipeline {
     target_max_fps: Option<u32>,
     decoder_policy: crate::config::VideoDecoderPolicy,
     start_offset_ms: u64,
+    frame_stats: VideoFrameStats,
 }
 
 #[cfg(feature = "video-renderer")]
@@ -642,6 +644,7 @@ impl GtkVideoPipeline {
             target_max_fps: plan.target_max_fps,
             decoder_policy: plan.decoder_policy,
             start_offset_ms: 0,
+            frame_stats: VideoFrameStats::default(),
         };
         pipeline.apply_muted(plan.muted);
         Ok(pipeline)
@@ -707,6 +710,17 @@ impl GtkVideoPipeline {
                         err.error(),
                         err.debug().unwrap_or_default()
                     )));
+                }
+                gst::MessageView::Qos(qos) => {
+                    let (processed, dropped) = qos.stats();
+                    let (jitter, proportion, _) = qos.values();
+                    self.frame_stats.record_qos_values(
+                        processed.format().to_string(),
+                        processed.value(),
+                        dropped.value(),
+                        jitter,
+                        proportion,
+                    );
                 }
                 _ => {}
             }

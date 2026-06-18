@@ -313,7 +313,7 @@ fn render_video_runtime_csv(response: &str) -> Result<String, String> {
         .ok_or_else(|| "status response did not contain result".to_owned())?;
 
     let mut csv = String::from(
-        "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,source\n",
+        "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,source\n",
     );
     for pipeline in &result.renderer_runtime.video_pipelines {
         let actual_decoders = if pipeline.actual_decoders.is_empty() {
@@ -359,6 +359,39 @@ fn render_video_runtime_csv(response: &str) -> Result<String, String> {
             bool_csv(pipeline.frame_limiter_enabled),
             pipeline
                 .frame_limiter_max_fps
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            pipeline.frame_stats.qos_messages.to_string(),
+            pipeline
+                .frame_stats
+                .qos_processed_max
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            pipeline
+                .frame_stats
+                .qos_dropped_max
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            csv_cell(
+                pipeline
+                    .frame_stats
+                    .qos_stats_format
+                    .as_deref()
+                    .unwrap_or_default(),
+            ),
+            pipeline
+                .frame_stats
+                .qos_jitter_ns_latest
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            pipeline
+                .frame_stats
+                .qos_jitter_ns_abs_max
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            pipeline
+                .frame_stats
+                .qos_proportion_x1000_latest
                 .map(|value| value.to_string())
                 .unwrap_or_default(),
             csv_cell(&pipeline.source),
@@ -650,6 +683,26 @@ struct VideoRuntimePipeline {
     frame_limiter_enabled: bool,
     #[serde(default)]
     frame_limiter_max_fps: Option<u32>,
+    #[serde(default)]
+    frame_stats: VideoFrameStats,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct VideoFrameStats {
+    #[serde(default)]
+    qos_messages: u64,
+    #[serde(default)]
+    qos_stats_format: Option<String>,
+    #[serde(default)]
+    qos_processed_max: Option<u64>,
+    #[serde(default)]
+    qos_dropped_max: Option<u64>,
+    #[serde(default)]
+    qos_jitter_ns_latest: Option<i64>,
+    #[serde(default)]
+    qos_jitter_ns_abs_max: Option<u64>,
+    #[serde(default)]
+    qos_proportion_x1000_latest: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -727,14 +780,14 @@ mod tests {
 
     #[test]
     fn formats_video_runtime_as_csv() {
-        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[],"video_plans":[],"decisions":[]},"renderer_runtime":{"video_pipelines":[{"output_name":"eDP-1","source":"/tmp/loop.mp4","mode":"active","gst_state":"Playing","loop_playback":true,"muted":true,"target_max_fps":24,"frame_limiter_enabled":true,"frame_limiter_max_fps":24,"position_ms":1234,"duration_ms":60000,"decoder_policy":"hardware-preferred","decoder_policy_status":"software-fallback","actual_decoders":["dav1ddec"],"actual_decoder_reports":[{"element":"dav1ddec","class":"software"}],"caps_reports":[{"element":"gtk4paintablesink0","pad":"sink","direction":"sink","caps":"video/x-raw(memory:DMABuf)","memory_features":["memory:DMABuf"],"structures":[{"media_type":"video/x-raw","features":["memory:DMABuf"]}]},{"element":"videoconvert0","pad":"src","direction":"src","caps":"video/x-raw","memory_features":[],"structures":[{"media_type":"video/x-raw","features":[]}]}]}]}}}"##;
+        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[],"video_plans":[],"decisions":[]},"renderer_runtime":{"video_pipelines":[{"output_name":"eDP-1","source":"/tmp/loop.mp4","mode":"active","gst_state":"Playing","loop_playback":true,"muted":true,"target_max_fps":24,"frame_limiter_enabled":true,"frame_limiter_max_fps":24,"position_ms":1234,"duration_ms":60000,"frame_stats":{"qos_messages":3,"qos_stats_format":"buffers","qos_processed_max":120,"qos_dropped_max":2,"qos_jitter_ns_latest":-2000,"qos_jitter_ns_abs_max":7000,"qos_proportion_x1000_latest":995},"decoder_policy":"hardware-preferred","decoder_policy_status":"software-fallback","actual_decoders":["dav1ddec"],"actual_decoder_reports":[{"element":"dav1ddec","class":"software"}],"caps_reports":[{"element":"gtk4paintablesink0","pad":"sink","direction":"sink","caps":"video/x-raw(memory:DMABuf)","memory_features":["memory:DMABuf"],"structures":[{"media_type":"video/x-raw","features":["memory:DMABuf"]}]},{"element":"videoconvert0","pad":"src","direction":"src","caps":"video/x-raw","memory_features":[],"structures":[{"media_type":"video/x-raw","features":[]}]}]}]}}}"##;
 
         let csv = render_video_runtime_csv(response).unwrap();
 
         assert_eq!(
             csv,
-            "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,source\n\
-             eDP-1,active,Playing,hardware-preferred,software-fallback,dav1ddec,software,2,memory:DMABuf,memory:DMABuf,video/x-raw,gtk4paintablesink0:sink:sink|videoconvert0:src:src,1234,60000,true,24,/tmp/loop.mp4\n"
+            "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,source\n\
+             eDP-1,active,Playing,hardware-preferred,software-fallback,dav1ddec,software,2,memory:DMABuf,memory:DMABuf,video/x-raw,gtk4paintablesink0:sink:sink|videoconvert0:src:src,1234,60000,true,24,3,120,2,buffers,-2000,7000,995,/tmp/loop.mp4\n"
         );
     }
 
