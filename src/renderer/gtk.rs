@@ -903,15 +903,40 @@ fn attach_frame_clock_stats(
         let frame_time_us = clock.frame_time();
         let (refresh_interval_us, predicted_presentation_time_us) =
             clock.refresh_info(frame_time_us);
-        frame_stats.borrow_mut().record_gtk_frame_clock_tick(
-            clock.frame_counter(),
-            frame_time_us,
-            clock.fps(),
-            refresh_interval_us,
-            predicted_presentation_time_us,
-        );
+        let frame_counter = clock.frame_counter();
+        {
+            let mut frame_stats = frame_stats.borrow_mut();
+            frame_stats.record_gtk_frame_clock_tick(
+                frame_counter,
+                frame_time_us,
+                clock.fps(),
+                refresh_interval_us,
+                predicted_presentation_time_us,
+            );
+            if let Some(timings) = clock.current_timings() {
+                record_gtk_frame_timing(&mut frame_stats, &timings);
+            }
+            let previous_frame_counter = frame_counter.saturating_sub(1);
+            if previous_frame_counter >= clock.history_start()
+                && let Some(timings) = clock.timings(previous_frame_counter)
+            {
+                record_gtk_frame_timing(&mut frame_stats, &timings);
+            }
+        }
     });
     *after_paint_handler.borrow_mut() = Some((observed_clock, handler));
+}
+
+#[cfg(feature = "video-renderer")]
+fn record_gtk_frame_timing(frame_stats: &mut VideoFrameStats, timings: &gdk::FrameTimings) {
+    frame_stats.record_gtk_frame_timing(
+        timings.frame_counter(),
+        timings.is_complete(),
+        timings.frame_time(),
+        timings.predicted_presentation_time(),
+        timings.presentation_time(),
+        timings.refresh_interval(),
+    );
 }
 
 #[cfg(feature = "video-renderer")]

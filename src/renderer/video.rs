@@ -869,6 +869,24 @@ pub struct VideoFrameStats {
     pub gtk_frame_clock_refresh_interval_us_latest: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gtk_frame_clock_predicted_presentation_time_us_latest: Option<u64>,
+    pub gtk_frame_timings_observed: u64,
+    pub gtk_frame_timings_complete: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk_frame_timings_counter_latest: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk_frame_timings_complete_counter_latest: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk_frame_timings_frame_time_us_latest: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk_frame_timings_predicted_presentation_time_us_latest: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk_frame_timings_presentation_time_us_latest: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk_frame_timings_presentation_interval_us_latest: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk_frame_timings_presentation_interval_us_max: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk_frame_timings_refresh_interval_us_latest: Option<u64>,
 }
 
 impl VideoFrameStats {
@@ -929,6 +947,59 @@ impl VideoFrameStats {
         self.gtk_frame_clock_refresh_interval_us_latest = non_negative_u64(refresh_interval_us);
         self.gtk_frame_clock_predicted_presentation_time_us_latest =
             non_negative_u64(predicted_presentation_time_us);
+    }
+
+    #[cfg_attr(not(feature = "gtk-renderer"), allow(dead_code))]
+    pub(crate) fn record_gtk_frame_timing(
+        &mut self,
+        frame_counter: i64,
+        complete: bool,
+        frame_time_us: i64,
+        predicted_presentation_time_us: i64,
+        presentation_time_us: i64,
+        refresh_interval_us: i64,
+    ) {
+        let Some(frame_counter) = non_negative_u64(frame_counter) else {
+            return;
+        };
+
+        let is_new_observed_frame = self
+            .gtk_frame_timings_counter_latest
+            .is_none_or(|counter| frame_counter > counter);
+        if is_new_observed_frame {
+            self.gtk_frame_timings_observed = self.gtk_frame_timings_observed.saturating_add(1);
+            self.gtk_frame_timings_counter_latest = Some(frame_counter);
+            self.gtk_frame_timings_frame_time_us_latest = non_negative_u64(frame_time_us);
+            self.gtk_frame_timings_predicted_presentation_time_us_latest =
+                non_negative_u64(predicted_presentation_time_us);
+            self.gtk_frame_timings_refresh_interval_us_latest =
+                non_negative_u64(refresh_interval_us);
+        }
+
+        if !complete
+            || self
+                .gtk_frame_timings_complete_counter_latest
+                .is_some_and(|counter| frame_counter <= counter)
+        {
+            return;
+        }
+
+        self.gtk_frame_timings_complete = self.gtk_frame_timings_complete.saturating_add(1);
+        self.gtk_frame_timings_complete_counter_latest = Some(frame_counter);
+        if let Some(presentation_time_us) = non_negative_u64(presentation_time_us) {
+            if let Some(previous_presentation_time_us) =
+                self.gtk_frame_timings_presentation_time_us_latest
+                && presentation_time_us >= previous_presentation_time_us
+            {
+                let interval = presentation_time_us - previous_presentation_time_us;
+                self.gtk_frame_timings_presentation_interval_us_latest = Some(interval);
+                update_max_u64(
+                    &mut self.gtk_frame_timings_presentation_interval_us_max,
+                    Some(interval),
+                );
+            }
+            self.gtk_frame_timings_presentation_time_us_latest = Some(presentation_time_us);
+        }
     }
 }
 
@@ -1268,6 +1339,42 @@ mod tests {
         assert_eq!(
             stats.gtk_frame_clock_predicted_presentation_time_us_latest,
             Some(50_967)
+        );
+    }
+
+    #[test]
+    fn accumulates_gtk_frame_timing_stats() {
+        let mut stats = VideoFrameStats::default();
+
+        stats.record_gtk_frame_timing(10, false, 1_000, 17_667, -1, 16_667);
+        stats.record_gtk_frame_timing(10, true, 1_000, 17_667, 17_700, 16_667);
+        stats.record_gtk_frame_timing(10, true, 1_000, 17_667, 17_700, 16_667);
+        stats.record_gtk_frame_timing(11, true, 17_700, 34_367, 34_400, 16_667);
+
+        assert_eq!(stats.gtk_frame_timings_observed, 2);
+        assert_eq!(stats.gtk_frame_timings_complete, 2);
+        assert_eq!(stats.gtk_frame_timings_counter_latest, Some(11));
+        assert_eq!(stats.gtk_frame_timings_complete_counter_latest, Some(11));
+        assert_eq!(stats.gtk_frame_timings_frame_time_us_latest, Some(17_700));
+        assert_eq!(
+            stats.gtk_frame_timings_predicted_presentation_time_us_latest,
+            Some(34_367)
+        );
+        assert_eq!(
+            stats.gtk_frame_timings_presentation_time_us_latest,
+            Some(34_400)
+        );
+        assert_eq!(
+            stats.gtk_frame_timings_presentation_interval_us_latest,
+            Some(16_700)
+        );
+        assert_eq!(
+            stats.gtk_frame_timings_presentation_interval_us_max,
+            Some(16_700)
+        );
+        assert_eq!(
+            stats.gtk_frame_timings_refresh_interval_us_latest,
+            Some(16_667)
         );
     }
 

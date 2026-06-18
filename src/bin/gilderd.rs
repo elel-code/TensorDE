@@ -565,6 +565,9 @@ fn renderer_telemetry_report(snapshot: &RendererRuntimeSnapshot) -> Value {
     let mut video_gtk_frame_clock_ticks = 0_u64;
     let mut video_gtk_frame_clock_interval_us_max = None;
     let mut video_gtk_frame_clock_fps_x1000_max = None;
+    let mut video_gtk_frame_timings_complete = 0_u64;
+    let mut video_gtk_frame_timings_presentation_interval_us_max = None;
+    let mut video_gtk_frame_timings_presentation_time_us_max = None;
 
     for pipeline in &snapshot.video_pipelines {
         let Some(frame_stats) = pipeline.get("frame_stats") else {
@@ -586,6 +589,20 @@ fn renderer_telemetry_report(snapshot: &RendererRuntimeSnapshot) -> Value {
             &mut video_gtk_frame_clock_fps_x1000_max,
             json_u64(frame_stats, "gtk_frame_clock_fps_x1000_latest"),
         );
+        video_gtk_frame_timings_complete = video_gtk_frame_timings_complete.saturating_add(
+            json_u64(frame_stats, "gtk_frame_timings_complete").unwrap_or_default(),
+        );
+        update_optional_max(
+            &mut video_gtk_frame_timings_presentation_interval_us_max,
+            json_u64(
+                frame_stats,
+                "gtk_frame_timings_presentation_interval_us_max",
+            ),
+        );
+        update_optional_max(
+            &mut video_gtk_frame_timings_presentation_time_us_max,
+            json_u64(frame_stats, "gtk_frame_timings_presentation_time_us_latest"),
+        );
     }
 
     json!({
@@ -595,6 +612,9 @@ fn renderer_telemetry_report(snapshot: &RendererRuntimeSnapshot) -> Value {
         "video_gtk_frame_clock_ticks": video_gtk_frame_clock_ticks,
         "video_gtk_frame_clock_interval_us_max": video_gtk_frame_clock_interval_us_max,
         "video_gtk_frame_clock_fps_x1000_max": video_gtk_frame_clock_fps_x1000_max,
+        "video_gtk_frame_timings_complete": video_gtk_frame_timings_complete,
+        "video_gtk_frame_timings_presentation_interval_us_max": video_gtk_frame_timings_presentation_interval_us_max,
+        "video_gtk_frame_timings_presentation_time_us_max": video_gtk_frame_timings_presentation_time_us_max,
     })
 }
 
@@ -1628,6 +1648,9 @@ mod tests {
                         "gtk_frame_clock_ticks": 9,
                         "gtk_frame_clock_interval_us_max": 20000,
                         "gtk_frame_clock_fps_x1000_latest": 59940,
+                        "gtk_frame_timings_complete": 5,
+                        "gtk_frame_timings_presentation_interval_us_max": 21000,
+                        "gtk_frame_timings_presentation_time_us_latest": 100000,
                     },
                 }),
                 json!({
@@ -1639,6 +1662,9 @@ mod tests {
                         "gtk_frame_clock_ticks": 31,
                         "gtk_frame_clock_interval_us_max": 18000,
                         "gtk_frame_clock_fps_x1000_latest": 60000,
+                        "gtk_frame_timings_complete": 7,
+                        "gtk_frame_timings_presentation_interval_us_max": 19000,
+                        "gtk_frame_timings_presentation_time_us_latest": 150000,
                     },
                 }),
             ],
@@ -1696,6 +1722,18 @@ mod tests {
         assert_eq!(
             response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_fps_x1000_max"],
             json!(60000)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_gtk_frame_timings_complete"],
+            json!(12)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_gtk_frame_timings_presentation_interval_us_max"],
+            json!(21000)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_gtk_frame_timings_presentation_time_us_max"],
+            json!(150000)
         );
     }
 

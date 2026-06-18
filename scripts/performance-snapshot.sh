@@ -57,6 +57,8 @@ Options:
                      Require observed QoS dropped max to be at most count
   --expect-gtk-frame-clock
                      Require observed GTK frame clock ticks in video runtime rows
+  --expect-gtk-frame-timings
+                     Require observed completed GDK frame timings in video runtime rows
   --allow-missing     Report missing daemon/tools as skips instead of failures
   --keep              Keep generated evidence after the script exits
   -h, --help          Show this help text
@@ -93,6 +95,7 @@ expect_frame_limiter_max_fps=""
 expect_video_qos=0
 expect_qos_dropped_max_at_most=""
 expect_gtk_frame_clock=0
+expect_gtk_frame_timings=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -226,6 +229,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --expect-gtk-frame-clock)
       expect_gtk_frame_clock=1
+      shift
+      ;;
+    --expect-gtk-frame-timings)
+      expect_gtk_frame_timings=1
       shift
       ;;
     --allow-missing)
@@ -587,6 +594,9 @@ write_telemetry_summary() {
       renderer_video_gtk_frame_clock_ticks = $32 + 0
       renderer_video_gtk_frame_clock_interval_us_max = $33
       renderer_video_gtk_frame_clock_fps_x1000_max = $34
+      renderer_video_gtk_frame_timings_complete = $35 + 0
+      renderer_video_gtk_frame_timings_presentation_interval_us_max = $36
+      renderer_video_gtk_frame_timings_presentation_time_us_max = $37
 
       if (rows == 1) {
         first_refreshes = refreshes
@@ -671,6 +681,18 @@ write_telemetry_summary() {
           max_renderer_video_gtk_frame_clock_fps_x1000 = renderer_video_gtk_frame_clock_fps_x1000_max + 0
         }
       }
+      last_renderer_video_gtk_frame_timings_complete = renderer_video_gtk_frame_timings_complete
+      if (renderer_video_gtk_frame_timings_complete > max_renderer_video_gtk_frame_timings_complete) {
+        max_renderer_video_gtk_frame_timings_complete = renderer_video_gtk_frame_timings_complete
+      }
+      if (renderer_video_gtk_frame_timings_presentation_interval_us_max != "") {
+        if (renderer_video_gtk_frame_timings_presentation_interval_us_max + 0 > max_renderer_video_gtk_frame_timings_presentation_interval_us) {
+          max_renderer_video_gtk_frame_timings_presentation_interval_us = renderer_video_gtk_frame_timings_presentation_interval_us_max + 0
+        }
+      }
+      if (renderer_video_gtk_frame_timings_presentation_time_us_max != "") {
+        last_renderer_video_gtk_frame_timings_presentation_time_us_max = renderer_video_gtk_frame_timings_presentation_time_us_max
+      }
     }
     END {
       refresh_delta = last_refreshes - first_refreshes
@@ -732,6 +754,10 @@ write_telemetry_summary() {
         printf "renderer_video_gtk_frame_clock_ticks_max: %d\n", max_renderer_video_gtk_frame_clock_ticks
         printf "renderer_video_gtk_frame_clock_interval_us_max: %d\n", max_renderer_video_gtk_frame_clock_interval_us
         printf "renderer_video_gtk_frame_clock_fps_x1000_max: %d\n", max_renderer_video_gtk_frame_clock_fps_x1000
+        printf "renderer_video_gtk_frame_timings_complete_latest: %d\n", last_renderer_video_gtk_frame_timings_complete
+        printf "renderer_video_gtk_frame_timings_complete_max: %d\n", max_renderer_video_gtk_frame_timings_complete
+        printf "renderer_video_gtk_frame_timings_presentation_interval_us_max: %d\n", max_renderer_video_gtk_frame_timings_presentation_interval_us
+        printf "renderer_video_gtk_frame_timings_presentation_time_us_latest: %s\n", last_renderer_video_gtk_frame_timings_presentation_time_us_max
       }
     }
   ' "$telemetry_csv" > "$summary"
@@ -765,6 +791,16 @@ write_video_runtime_summary() {
       gtk_clock_fps = $31
       gtk_clock_refresh = $32
       gtk_clock_presentation = $33
+      gtk_timings_observed = $34
+      gtk_timings_complete = $35
+      gtk_timings_counter = $36
+      gtk_timings_complete_counter = $37
+      gtk_timings_frame_time = $38
+      gtk_timings_predicted_presentation = $39
+      gtk_timings_presentation = $40
+      gtk_timings_presentation_interval = $41
+      gtk_timings_presentation_interval_max = $42
+      gtk_timings_refresh = $43
 
       if (output != "" && !(output in seen_output)) {
         seen_output[output] = 1
@@ -846,6 +882,41 @@ write_video_runtime_summary() {
       if (gtk_clock_presentation != "") {
         last_gtk_clock_presentation = gtk_clock_presentation
       }
+      if (gtk_timings_observed != "") {
+        if (gtk_timings_observed + 0 > 0) { gtk_timings_rows += 1 }
+        if (gtk_timings_observed + 0 > max_gtk_timings_observed) {
+          max_gtk_timings_observed = gtk_timings_observed + 0
+        }
+      }
+      if (gtk_timings_complete != "") {
+        if (gtk_timings_complete + 0 > max_gtk_timings_complete) {
+          max_gtk_timings_complete = gtk_timings_complete + 0
+        }
+      }
+      if (gtk_timings_counter != "") {
+        last_gtk_timings_counter = gtk_timings_counter
+      }
+      if (gtk_timings_complete_counter != "") {
+        last_gtk_timings_complete_counter = gtk_timings_complete_counter
+      }
+      if (gtk_timings_frame_time != "") {
+        last_gtk_timings_frame_time = gtk_timings_frame_time
+      }
+      if (gtk_timings_predicted_presentation != "") {
+        last_gtk_timings_predicted_presentation = gtk_timings_predicted_presentation
+      }
+      if (gtk_timings_presentation != "") {
+        last_gtk_timings_presentation = gtk_timings_presentation
+      }
+      if (gtk_timings_presentation_interval != "") {
+        last_gtk_timings_presentation_interval = gtk_timings_presentation_interval
+      }
+      if (gtk_timings_presentation_interval_max != "" && gtk_timings_presentation_interval_max + 0 > max_gtk_timings_presentation_interval) {
+        max_gtk_timings_presentation_interval = gtk_timings_presentation_interval_max + 0
+      }
+      if (gtk_timings_refresh != "") {
+        last_gtk_timings_refresh = gtk_timings_refresh
+      }
     }
     END {
       for (output in last_position) {
@@ -908,6 +979,31 @@ write_video_runtime_summary() {
       }
       if (last_gtk_clock_presentation != "") {
         printf "video_gtk_frame_clock_predicted_presentation_time_us_latest: %s\n", last_gtk_clock_presentation
+      }
+      printf "video_gtk_frame_timings_rows: %d\n", gtk_timings_rows
+      printf "video_gtk_frame_timings_observed_max: %d\n", max_gtk_timings_observed
+      printf "video_gtk_frame_timings_complete_max: %d\n", max_gtk_timings_complete
+      if (last_gtk_timings_counter != "") {
+        printf "video_gtk_frame_timings_counter_latest: %s\n", last_gtk_timings_counter
+      }
+      if (last_gtk_timings_complete_counter != "") {
+        printf "video_gtk_frame_timings_complete_counter_latest: %s\n", last_gtk_timings_complete_counter
+      }
+      if (last_gtk_timings_frame_time != "") {
+        printf "video_gtk_frame_timings_frame_time_us_latest: %s\n", last_gtk_timings_frame_time
+      }
+      if (last_gtk_timings_predicted_presentation != "") {
+        printf "video_gtk_frame_timings_predicted_presentation_time_us_latest: %s\n", last_gtk_timings_predicted_presentation
+      }
+      if (last_gtk_timings_presentation != "") {
+        printf "video_gtk_frame_timings_presentation_time_us_latest: %s\n", last_gtk_timings_presentation
+      }
+      if (last_gtk_timings_presentation_interval != "") {
+        printf "video_gtk_frame_timings_presentation_interval_us_latest: %s\n", last_gtk_timings_presentation_interval
+      }
+      printf "video_gtk_frame_timings_presentation_interval_us_max: %d\n", max_gtk_timings_presentation_interval
+      if (last_gtk_timings_refresh != "") {
+        printf "video_gtk_frame_timings_refresh_interval_us_latest: %s\n", last_gtk_timings_refresh
       }
     }
   ' "$video_runtime_csv" > "$summary"
@@ -1038,7 +1134,8 @@ has_video_runtime_expectations() {
     -n "$expect_frame_limiter_max_fps" ||
     "$expect_video_qos" -eq 1 ||
     -n "$expect_qos_dropped_max_at_most" ||
-    "$expect_gtk_frame_clock" -eq 1 ]]
+    "$expect_gtk_frame_clock" -eq 1 ||
+    "$expect_gtk_frame_timings" -eq 1 ]]
 }
 
 expect_video_runtime_field() {
@@ -1140,6 +1237,9 @@ validate_video_runtime_expectations() {
   fi
   if [[ "$expect_gtk_frame_clock" -eq 1 ]]; then
     expect_video_runtime_summary_minimum "video_gtk_frame_clock_ticks_max" 1 "GTK frame clock tick max count"
+  fi
+  if [[ "$expect_gtk_frame_timings" -eq 1 ]]; then
+    expect_video_runtime_summary_minimum "video_gtk_frame_timings_complete_max" 1 "GDK frame timings complete max count"
   fi
 }
 
@@ -1264,13 +1364,14 @@ expect_frame_limiter_max_fps: ${expect_frame_limiter_max_fps:-none}
 expect_video_qos: ${expect_video_qos}
 expect_qos_dropped_max_at_most: ${expect_qos_dropped_max_at_most:-none}
 expect_gtk_frame_clock: ${expect_gtk_frame_clock}
+expect_gtk_frame_timings: ${expect_gtk_frame_timings}
 gpu_busy_sources: drm gpu_busy_percent sysfs when readable; nvidia-smi utilization.gpu when available
 EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
-printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps,renderer_video_pipelines,renderer_video_qos_messages,renderer_video_qos_dropped_max,renderer_video_gtk_frame_clock_ticks,renderer_video_gtk_frame_clock_interval_us_max,renderer_video_gtk_frame_clock_fps_x1000_max\n' > "$telemetry_path"
-printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,source\n' > "$video_runtime_path"
+printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps,renderer_video_pipelines,renderer_video_qos_messages,renderer_video_qos_dropped_max,renderer_video_gtk_frame_clock_ticks,renderer_video_gtk_frame_clock_interval_us_max,renderer_video_gtk_frame_clock_fps_x1000_max,renderer_video_gtk_frame_timings_complete,renderer_video_gtk_frame_timings_presentation_interval_us_max,renderer_video_gtk_frame_timings_presentation_time_us_max\n' > "$telemetry_path"
+printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source\n' > "$video_runtime_path"
 
 status_failures=0
 decision_failures=0
