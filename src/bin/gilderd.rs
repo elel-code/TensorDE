@@ -1050,6 +1050,7 @@ fn output_reports(context: &DaemonContext) -> Vec<serde_json::Value> {
                 performance,
                 &context.config,
                 &name,
+                desktop_output,
                 &context.adaptive_snapshot,
             );
             json!({
@@ -1189,12 +1190,26 @@ fn adaptive_action_report(context: &DaemonContext) -> Value {
         .into_iter()
         .filter(|name| gilder::adaptive::output_enabled(&context.config, name))
         .map(|name| {
-            let max_fps = gilder::adaptive::output_throttle_max_fps(&context.config, &name);
-            json!({
-                "output_name": name,
-                "type": "throttle",
-                "max_fps": max_fps,
-            })
+            let desktop_output = context.desktop.output(&name);
+            match gilder::adaptive::output_action(&context.config, &name) {
+                gilder::config::AdaptiveAction::PauseUnfocused
+                    if desktop_output.is_some_and(|output| !output.focused) =>
+                {
+                    json!({
+                        "output_name": name,
+                        "type": "pause-unfocused",
+                    })
+                }
+                action => {
+                    let max_fps = gilder::adaptive::output_throttle_max_fps(&context.config, &name);
+                    json!({
+                        "output_name": name,
+                        "type": "throttle",
+                        "configured_action": action,
+                        "max_fps": max_fps,
+                    })
+                }
+            }
         })
         .collect::<Vec<_>>();
     json!(actions)
@@ -1621,6 +1636,35 @@ mod tests {
         assert_eq!(reports[0]["performance"]["mode"], json!("throttled"));
         assert_eq!(reports[0]["performance"]["max_fps"], json!(15));
         assert_eq!(reports[0]["performance"]["reason"], json!("adaptive"));
+    }
+
+    #[test]
+    fn output_reports_apply_adaptive_pause_unfocused() {
+        let mut context = test_context();
+        context.desktop.outputs = vec![gilder::desktop::DesktopOutput {
+            focused: false,
+            ..gilder::desktop::DesktopOutput::virtual_output("eDP-1")
+        }];
+        context.config.adaptive.enabled = true;
+        context.config.adaptive.action = gilder::config::AdaptiveAction::PauseUnfocused;
+        context.adaptive_snapshot = gilder::adaptive::AdaptiveSnapshot {
+            monitoring_enabled: true,
+            active_triggers: vec![gilder::adaptive::AdaptiveTrigger {
+                metric: gilder::adaptive::AdaptiveMetric::CpuPressureSomeAvg10,
+                value_x100: 9_000,
+                threshold_x100: 7_500,
+            }],
+            ..gilder::adaptive::AdaptiveSnapshot::default()
+        };
+        let reports = output_reports(&context);
+        let actions = adaptive_action_report(&context);
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0]["performance"]["mode"], json!("paused"));
+        assert_eq!(reports[0]["performance"]["max_fps"], Value::Null);
+        assert_eq!(reports[0]["performance"]["reason"], json!("adaptive"));
+        assert_eq!(actions[0]["type"], json!("pause-unfocused"));
+        assert_eq!(actions[0]["max_fps"], Value::Null);
     }
 
     #[test]

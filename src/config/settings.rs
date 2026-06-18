@@ -65,6 +65,8 @@ pub struct AdaptiveConfig {
     pub cooldown_ms: u64,
     #[serde(default = "default_adaptive_throttle_max_fps")]
     pub throttle_max_fps: u32,
+    #[serde(default)]
+    pub action: AdaptiveAction,
     #[serde(default = "default_adaptive_cpu_pressure_threshold_percent")]
     pub cpu_pressure_threshold_percent: u32,
     #[serde(default = "default_adaptive_memory_pressure_threshold_percent")]
@@ -81,6 +83,7 @@ impl Default for AdaptiveConfig {
             refresh_interval_ms: default_adaptive_refresh_interval_ms(),
             cooldown_ms: default_adaptive_cooldown_ms(),
             throttle_max_fps: default_adaptive_throttle_max_fps(),
+            action: AdaptiveAction::default(),
             cpu_pressure_threshold_percent: default_adaptive_cpu_pressure_threshold_percent(),
             memory_pressure_threshold_percent: default_adaptive_memory_pressure_threshold_percent(),
             temperature_threshold_celsius: default_adaptive_temperature_threshold_celsius(),
@@ -122,6 +125,16 @@ pub struct OutputAdaptiveConfig {
     pub enabled: Option<bool>,
     #[serde(default)]
     pub throttle_max_fps: Option<u32>,
+    #[serde(default)]
+    pub action: Option<AdaptiveAction>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AdaptiveAction {
+    #[default]
+    Throttle,
+    PauseUnfocused,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -340,6 +353,7 @@ mod tests {
             refresh_interval_ms = 1500
             cooldown_ms = 5000
             throttle_max_fps = 18
+            action = "pause-unfocused"
             cpu_pressure_threshold_percent = 65
             memory_pressure_threshold_percent = 10
             temperature_threshold_celsius = 80
@@ -358,6 +372,7 @@ mod tests {
             [outputs."HDMI-A-1".adaptive]
             enabled = false
             throttle_max_fps = 9
+            action = "throttle"
             "#,
         )
         .unwrap();
@@ -375,6 +390,7 @@ mod tests {
         assert_eq!(config.adaptive.refresh_interval_ms, 1500);
         assert_eq!(config.adaptive.cooldown_ms, 5000);
         assert_eq!(config.adaptive.throttle_max_fps, 18);
+        assert_eq!(config.adaptive.action, AdaptiveAction::PauseUnfocused);
         assert_eq!(config.adaptive.cpu_pressure_threshold_percent, 65);
         assert_eq!(config.adaptive.memory_pressure_threshold_percent, 10);
         assert_eq!(config.adaptive.temperature_threshold_celsius, 80);
@@ -382,6 +398,10 @@ mod tests {
         assert_eq!(
             config.outputs["HDMI-A-1"].adaptive.throttle_max_fps,
             Some(9)
+        );
+        assert_eq!(
+            config.outputs["HDMI-A-1"].adaptive.action,
+            Some(AdaptiveAction::Throttle)
         );
         let hdmi_performance = config.performance_for_output("HDMI-A-1");
         assert_eq!(hdmi_performance.interactive_max_fps, 75);

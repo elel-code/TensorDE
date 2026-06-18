@@ -172,6 +172,14 @@ pub fn output_throttle_max_fps(config: &GilderConfig, output_name: &str) -> u32 
         .max(1)
 }
 
+pub fn output_action(config: &GilderConfig, output_name: &str) -> crate::config::AdaptiveAction {
+    config
+        .outputs
+        .get(output_name)
+        .and_then(|output| output.adaptive.action)
+        .unwrap_or(config.adaptive.action)
+}
+
 fn read_system_sample() -> AdaptiveSystemSample {
     let mut sample = read_power_supply_sample(SYS_CLASS_POWER_SUPPLY).unwrap_or_default();
     sample.cpu_pressure_some_avg10_x100 = read_pressure_some_avg10_x100(PROC_PRESSURE_CPU).ok();
@@ -498,7 +506,7 @@ fn parse_percent_x100(value: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AdaptiveConfig, OutputAdaptiveConfig, OutputConfig};
+    use crate::config::{AdaptiveAction, AdaptiveConfig, OutputAdaptiveConfig, OutputConfig};
 
     #[test]
     fn parses_psi_some_avg10_as_hundredths() {
@@ -515,6 +523,7 @@ mod tests {
                 adaptive: OutputAdaptiveConfig {
                     enabled: Some(true),
                     throttle_max_fps: Some(9),
+                    action: Some(AdaptiveAction::PauseUnfocused),
                 },
                 ..OutputConfig::default()
             },
@@ -524,6 +533,11 @@ mod tests {
         assert!(output_enabled(&config, "eDP-1"));
         assert!(!output_enabled(&config, "HDMI-A-1"));
         assert_eq!(output_throttle_max_fps(&config, "eDP-1"), 9);
+        assert_eq!(
+            output_action(&config, "eDP-1"),
+            AdaptiveAction::PauseUnfocused
+        );
+        assert_eq!(output_action(&config, "HDMI-A-1"), AdaptiveAction::Throttle);
     }
 
     #[test]
@@ -542,6 +556,7 @@ mod tests {
                 adaptive: OutputAdaptiveConfig {
                     enabled: Some(true),
                     throttle_max_fps: None,
+                    action: None,
                 },
                 ..OutputConfig::default()
             },
