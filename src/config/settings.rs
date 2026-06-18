@@ -135,6 +135,7 @@ pub enum AdaptiveAction {
     #[default]
     Throttle,
     PauseUnfocused,
+    PauseDynamic,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -353,7 +354,7 @@ mod tests {
             refresh_interval_ms = 1500
             cooldown_ms = 5000
             throttle_max_fps = 18
-            action = "pause-unfocused"
+            action = "pause-dynamic"
             cpu_pressure_threshold_percent = 65
             memory_pressure_threshold_percent = 10
             temperature_threshold_celsius = 80
@@ -390,7 +391,7 @@ mod tests {
         assert_eq!(config.adaptive.refresh_interval_ms, 1500);
         assert_eq!(config.adaptive.cooldown_ms, 5000);
         assert_eq!(config.adaptive.throttle_max_fps, 18);
-        assert_eq!(config.adaptive.action, AdaptiveAction::PauseUnfocused);
+        assert_eq!(config.adaptive.action, AdaptiveAction::PauseDynamic);
         assert_eq!(config.adaptive.cpu_pressure_threshold_percent, 65);
         assert_eq!(config.adaptive.memory_pressure_threshold_percent, 10);
         assert_eq!(config.adaptive.temperature_threshold_celsius, 80);

@@ -193,12 +193,16 @@ gilderd="$repo_root/target/debug/gilderd"
 gilderctl="$repo_root/target/debug/gilderctl"
 performance_snapshot="$repo_root/scripts/performance-snapshot.sh"
 wallpaper_path="$repo_root/examples/wallpapers/static-demo.gwpdir"
+slideshow_wallpaper_path="$repo_root/examples/wallpapers/slideshow-demo.gwpdir"
 
 require_file "$gilderd" || true
 require_file "$gilderctl" || true
 require_file "$performance_snapshot" || true
 if [[ ! -d "$wallpaper_path" ]]; then
   skip_or_fail "missing example wallpaper $wallpaper_path"
+fi
+if [[ ! -d "$slideshow_wallpaper_path" ]]; then
+  skip_or_fail "missing example wallpaper $slideshow_wallpaper_path"
 fi
 if [[ "$failures" -gt 0 || "$skips" -gt 0 ]]; then
   note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
@@ -220,6 +224,7 @@ output: ${output_name}
 sample_duration: ${sample_duration}
 sample_interval: ${sample_interval}
 wallpaper: ${wallpaper_path}
+slideshow_wallpaper: ${slideshow_wallpaper_path}
 EOF
 printf 'scenario,status,expected_mode,expected_reason,expected_max_fps,expected_action,expected_plan_kind,power_state,output_state,session_state,adaptive_state,config_profile,status_before,status_after,performance_dir,daemon_log\n' > "$matrix_path"
 
@@ -266,6 +271,16 @@ refresh_interval_ms = 250
 cooldown_ms = 1000
 throttle_max_fps = 11
 action = "pause-unfocused"
+EOF
+      ;;
+    adaptive-pause-dynamic)
+      cat > "$config_file" <<EOF
+[adaptive]
+enabled = true
+refresh_interval_ms = 250
+cooldown_ms = 1000
+throttle_max_fps = 11
+action = "pause-dynamic"
 EOF
       ;;
     *)
@@ -352,7 +367,11 @@ run_scenario() {
   local status_after="$scenario_dir/status-after.json"
   local perf_dir="$scenario_dir/performance"
   local perf_log="$scenario_dir/performance.log"
+  local scenario_wallpaper_path="$wallpaper_path"
   local scenario_status="pass"
+  if [[ "$name" == "adaptive-pause-dynamic-slideshow" ]]; then
+    scenario_wallpaper_path="$slideshow_wallpaper_path"
+  fi
 
   mkdir -p "$scenario_dir/runtime" "$scenario_dir/config" "$scenario_dir/state" "$scenario_dir/cache"
   chmod 700 "$scenario_dir/runtime"
@@ -423,14 +442,14 @@ run_scenario() {
     skip_or_fail "${name}: status does not report virtual output"
   fi
 
-  if ! env GILDER_SOCKET="$socket" "$gilderctl" set "$wallpaper_path" --output "$output_name" >/dev/null; then
+  if ! env GILDER_SOCKET="$socket" "$gilderctl" set "$scenario_wallpaper_path" --output "$output_name" >/dev/null; then
     scenario_status="$(failure_status)"
     skip_or_fail "${name}: failed to set wallpaper"
     record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$adaptive_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
     stop_daemon
     return 0
   fi
-  if ! env GILDER_SOCKET="$socket" "$gilderctl" set "$wallpaper_path" --output "$output_name" >/dev/null; then
+  if ! env GILDER_SOCKET="$socket" "$gilderctl" set "$scenario_wallpaper_path" --output "$output_name" >/dev/null; then
     scenario_status="$(failure_status)"
     skip_or_fail "${name}: failed to repeat wallpaper set"
     record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$adaptive_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
@@ -517,6 +536,8 @@ run_scenario output-battery-pause paused battery "" remove "" battery active act
 run_scenario adaptive-throttle throttled adaptive 11 render static-image ac active active adaptive-throttle cpu-pressure
 run_scenario adaptive-pause-unfocused paused adaptive "" remove "" ac unfocused active adaptive-pause-unfocused cpu-pressure
 run_scenario adaptive-pause-focused-fallback throttled adaptive 11 render static-image ac active active adaptive-pause-unfocused cpu-pressure
+run_scenario adaptive-pause-dynamic-static active interactive 60 render static-image ac active active adaptive-pause-dynamic cpu-pressure
+run_scenario adaptive-pause-dynamic-slideshow paused adaptive "" remove "" ac active active adaptive-pause-dynamic cpu-pressure
 
 write_summary
 note "metadata: $metadata_path"

@@ -135,9 +135,28 @@ pub fn apply_adaptive_policy(
             crate::adaptive::output_throttle_max_fps(config, output_name),
             DecisionReason::Adaptive,
         ),
+        AdaptiveAction::PauseDynamic => decision.clone(),
     };
 
     select_more_conservative(decision, candidate)
+}
+
+pub fn apply_adaptive_dynamic_policy(
+    decision: PerformanceDecision,
+    config: &crate::config::GilderConfig,
+    output_name: &str,
+    snapshot: &AdaptiveSnapshot,
+    dynamic_wallpaper: bool,
+) -> PerformanceDecision {
+    if !dynamic_wallpaper
+        || !snapshot.affects_render_plan()
+        || !crate::adaptive::output_enabled(config, output_name)
+        || crate::adaptive::output_action(config, output_name) != AdaptiveAction::PauseDynamic
+    {
+        return decision;
+    }
+
+    select_more_conservative(decision, paused(DecisionReason::Adaptive))
 }
 
 fn select_more_conservative(
@@ -497,6 +516,72 @@ mod tests {
         assert_eq!(decision.mode, RenderMode::Throttled);
         assert_eq!(decision.max_fps, Some(12));
         assert_eq!(decision.reason, DecisionReason::Adaptive);
+    }
+
+    #[test]
+    fn adaptive_pause_dynamic_does_not_change_generic_policy_before_manifest_load() {
+        let mut config = crate::config::GilderConfig::default();
+        config.adaptive.enabled = true;
+        config.adaptive.action = AdaptiveAction::PauseDynamic;
+        let snapshot = AdaptiveSnapshot {
+            monitoring_enabled: true,
+            active_triggers: vec![crate::adaptive::AdaptiveTrigger {
+                metric: crate::adaptive::AdaptiveMetric::CpuPressureSomeAvg10,
+                value_x100: 9_000,
+                threshold_x100: 7_500,
+            }],
+            ..AdaptiveSnapshot::default()
+        };
+        let base = active(60, DecisionReason::Interactive);
+
+        let decision = apply_adaptive_policy(base, &config, "eDP-1", None, &snapshot);
+
+        assert_eq!(decision.mode, RenderMode::Active);
+        assert_eq!(decision.reason, DecisionReason::Interactive);
+    }
+
+    #[test]
+    fn adaptive_pause_dynamic_pauses_dynamic_wallpaper_after_manifest_load() {
+        let mut config = crate::config::GilderConfig::default();
+        config.adaptive.enabled = true;
+        config.adaptive.action = AdaptiveAction::PauseDynamic;
+        let snapshot = AdaptiveSnapshot {
+            monitoring_enabled: true,
+            active_triggers: vec![crate::adaptive::AdaptiveTrigger {
+                metric: crate::adaptive::AdaptiveMetric::CpuPressureSomeAvg10,
+                value_x100: 9_000,
+                threshold_x100: 7_500,
+            }],
+            ..AdaptiveSnapshot::default()
+        };
+        let base = active(60, DecisionReason::Interactive);
+
+        let decision = apply_adaptive_dynamic_policy(base, &config, "eDP-1", &snapshot, true);
+
+        assert_eq!(decision.mode, RenderMode::Paused);
+        assert_eq!(decision.reason, DecisionReason::Adaptive);
+    }
+
+    #[test]
+    fn adaptive_pause_dynamic_leaves_static_wallpaper_policy_unchanged() {
+        let mut config = crate::config::GilderConfig::default();
+        config.adaptive.enabled = true;
+        config.adaptive.action = AdaptiveAction::PauseDynamic;
+        let snapshot = AdaptiveSnapshot {
+            monitoring_enabled: true,
+            active_triggers: vec![crate::adaptive::AdaptiveTrigger {
+                metric: crate::adaptive::AdaptiveMetric::CpuPressureSomeAvg10,
+                value_x100: 9_000,
+                threshold_x100: 7_500,
+            }],
+            ..AdaptiveSnapshot::default()
+        };
+        let base = active(60, DecisionReason::Interactive);
+
+        let decision = apply_adaptive_dynamic_policy(base, &config, "eDP-1", &snapshot, false);
+
+        assert_eq!(decision.mode, RenderMode::Active);
+        assert_eq!(decision.reason, DecisionReason::Interactive);
     }
 
     #[test]

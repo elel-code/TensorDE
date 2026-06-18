@@ -1200,6 +1200,13 @@ fn adaptive_action_report(context: &DaemonContext) -> Value {
                         "type": "pause-unfocused",
                     })
                 }
+                gilder::config::AdaptiveAction::PauseDynamic => {
+                    json!({
+                        "output_name": name,
+                        "type": "pause-dynamic",
+                        "scope": "dynamic-wallpapers",
+                    })
+                }
                 action => {
                     let max_fps = gilder::adaptive::output_throttle_max_fps(&context.config, &name);
                     json!({
@@ -1664,6 +1671,29 @@ mod tests {
         assert_eq!(reports[0]["performance"]["max_fps"], Value::Null);
         assert_eq!(reports[0]["performance"]["reason"], json!("adaptive"));
         assert_eq!(actions[0]["type"], json!("pause-unfocused"));
+        assert_eq!(actions[0]["max_fps"], Value::Null);
+    }
+
+    #[test]
+    fn adaptive_action_report_reports_pause_dynamic_scope() {
+        let mut context = test_context();
+        context.desktop.outputs = vec![gilder::desktop::DesktopOutput::virtual_output("eDP-1")];
+        context.config.adaptive.enabled = true;
+        context.config.adaptive.action = gilder::config::AdaptiveAction::PauseDynamic;
+        context.adaptive_snapshot = gilder::adaptive::AdaptiveSnapshot {
+            monitoring_enabled: true,
+            active_triggers: vec![gilder::adaptive::AdaptiveTrigger {
+                metric: gilder::adaptive::AdaptiveMetric::CpuPressureSomeAvg10,
+                value_x100: 9_000,
+                threshold_x100: 7_500,
+            }],
+            ..gilder::adaptive::AdaptiveSnapshot::default()
+        };
+
+        let actions = adaptive_action_report(&context);
+
+        assert_eq!(actions[0]["type"], json!("pause-dynamic"));
+        assert_eq!(actions[0]["scope"], json!("dynamic-wallpapers"));
         assert_eq!(actions[0]["max_fps"], Value::Null);
     }
 

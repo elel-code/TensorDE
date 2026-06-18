@@ -258,6 +258,15 @@ fn static_render_sync_plan_inner(
             &package.manifest.runtime,
             desktop_output,
         );
+        if let Some(config) = config {
+            performance = crate::policy::apply_adaptive_dynamic_policy(
+                performance,
+                config,
+                &output_name,
+                adaptive,
+                adaptive_dynamic_entry(&package.manifest.entry),
+            );
+        }
 
         if performance.mode == RenderMode::Paused {
             removals.push(output_name.clone());
@@ -369,6 +378,13 @@ fn output_fit_override(config: Option<&GilderConfig>, output_name: &str) -> Opti
     config
         .and_then(|config| config.outputs.get(output_name))
         .and_then(|output| output.fit)
+}
+
+fn adaptive_dynamic_entry(entry: &WallpaperEntry) -> bool {
+    matches!(
+        entry,
+        WallpaperEntry::Video { .. } | WallpaperEntry::Slideshow { .. }
+    )
 }
 
 fn video_poster_plan(plan: &VideoWallpaperPlan) -> Option<StaticWallpaperPlan> {
@@ -1125,6 +1141,67 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_pause_dynamic_removes_slideshow_from_render_plan() {
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some("examples/wallpapers/slideshow-demo.gwpdir".to_owned());
+        config.adaptive.enabled = true;
+        config.adaptive.action = crate::config::AdaptiveAction::PauseDynamic;
+        let state = AppState::default();
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+        let adaptive = adaptive_cpu_pressure_snapshot();
+
+        let sync = static_render_sync_plan_with_config_and_adaptive(
+            &config,
+            &desktop,
+            &state,
+            std::env::temp_dir(),
+            &adaptive,
+        );
+
+        assert!(sync.plans.is_empty());
+        assert!(sync.slideshow_plans.is_empty());
+        assert_eq!(sync.removals, vec!["eDP-1"]);
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Paused);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            DecisionReason::Adaptive
+        );
+    }
+
+    #[test]
+    fn adaptive_pause_dynamic_keeps_static_wallpaper_renderable() {
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some("examples/wallpapers/static-demo.gwpdir".to_owned());
+        config.adaptive.enabled = true;
+        config.adaptive.action = crate::config::AdaptiveAction::PauseDynamic;
+        let state = AppState::default();
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+        let adaptive = adaptive_cpu_pressure_snapshot();
+
+        let sync = static_render_sync_plan_with_config_and_adaptive(
+            &config,
+            &desktop,
+            &state,
+            std::env::temp_dir(),
+            &adaptive,
+        );
+
+        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.removals.is_empty());
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Active);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            DecisionReason::Interactive
+        );
+    }
+
+    #[test]
     fn config_output_wallpaper_adds_named_output_without_state() {
         let mut config = GilderConfig::default();
         config.outputs.insert(
@@ -1635,6 +1712,18 @@ mod tests {
         assert_eq!(first_id, "org.example.static-variant");
         assert_eq!(second_id, first_id);
         assert_eq!(cache.packages.len(), 1);
+    }
+
+    fn adaptive_cpu_pressure_snapshot() -> crate::adaptive::AdaptiveSnapshot {
+        crate::adaptive::AdaptiveSnapshot {
+            monitoring_enabled: true,
+            active_triggers: vec![crate::adaptive::AdaptiveTrigger {
+                metric: crate::adaptive::AdaptiveMetric::CpuPressureSomeAvg10,
+                value_x100: 9_000,
+                threshold_x100: 7_500,
+            }],
+            ..crate::adaptive::AdaptiveSnapshot::default()
+        }
     }
 
     fn write_minimal_video_gwpdir(path: &Path) {
