@@ -11,6 +11,7 @@ const PROC_PRESSURE_CPU: &str = "/proc/pressure/cpu";
 const PROC_PRESSURE_MEMORY: &str = "/proc/pressure/memory";
 const SYS_CLASS_THERMAL: &str = "/sys/class/thermal";
 const SYS_CLASS_POWER_SUPPLY: &str = "/sys/class/power_supply";
+const SYS_CLASS_DRM: &str = "/sys/class/drm";
 
 #[derive(Debug, Clone)]
 pub struct AdaptiveMonitor {
@@ -117,6 +118,12 @@ pub struct AdaptiveSystemSample {
     pub power_battery_capacity_percent: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub power_battery_power_microwatts: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_busy_percent_avg: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_busy_percent_max: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu_busy_sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,14 +173,19 @@ pub fn output_throttle_max_fps(config: &GilderConfig, output_name: &str) -> u32 
 }
 
 fn read_system_sample() -> AdaptiveSystemSample {
-    AdaptiveSystemSample {
-        cpu_pressure_some_avg10_x100: read_pressure_some_avg10_x100(PROC_PRESSURE_CPU).ok(),
-        memory_pressure_some_avg10_x100: read_pressure_some_avg10_x100(PROC_PRESSURE_MEMORY).ok(),
-        temperature_max_millicelsius: read_temperature_max_millicelsius(SYS_CLASS_THERMAL)
-            .ok()
-            .flatten(),
-        ..read_power_supply_sample(SYS_CLASS_POWER_SUPPLY).unwrap_or_default()
+    let mut sample = read_power_supply_sample(SYS_CLASS_POWER_SUPPLY).unwrap_or_default();
+    sample.cpu_pressure_some_avg10_x100 = read_pressure_some_avg10_x100(PROC_PRESSURE_CPU).ok();
+    sample.memory_pressure_some_avg10_x100 =
+        read_pressure_some_avg10_x100(PROC_PRESSURE_MEMORY).ok();
+    sample.temperature_max_millicelsius = read_temperature_max_millicelsius(SYS_CLASS_THERMAL)
+        .ok()
+        .flatten();
+    if let Ok(Some(gpu_busy)) = read_gpu_busy_sample(SYS_CLASS_DRM) {
+        sample.gpu_busy_percent_avg = Some(gpu_busy.avg);
+        sample.gpu_busy_percent_max = Some(gpu_busy.max);
+        sample.gpu_busy_sources = gpu_busy.sources;
     }
+    sample
 }
 
 fn triggers_for_sample(
@@ -348,6 +360,48 @@ fn read_power_supply_sample(root: impl AsRef<Path>) -> io::Result<AdaptiveSystem
             Some((battery_capacity_sum / battery_capacity_count) as u32);
     }
     Ok(sample)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GpuBusySample {
+    avg: u32,
+    max: u32,
+    sources: Vec<String>,
+}
+
+fn read_gpu_busy_sample(root: impl AsRef<Path>) -> io::Result<Option<GpuBusySample>> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+
+    let mut values = Vec::new();
+    let mut sources = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !(name.starts_with("card") || name.starts_with("renderD")) {
+            continue;
+        }
+        let Some(value) = read_u32(path.join("device/gpu_busy_percent")) else {
+            continue;
+        };
+        values.push(value);
+        sources.push(name.to_owned());
+    }
+
+    if values.is_empty() {
+        return Ok(None);
+    }
+
+    let sum: u64 = values.iter().map(|value| u64::from(*value)).sum();
+    let avg = (sum / values.len() as u64) as u32;
+    let max = values.iter().copied().max().unwrap_or(0);
+    sources.sort();
+    Ok(Some(GpuBusySample { avg, max, sources }))
 }
 
 fn read_battery_capacity_percent(path: &Path) -> Option<u32> {
@@ -555,6 +609,38 @@ mod tests {
             read_temperature_max_millicelsius(root.path()).unwrap(),
             Some(73_500)
         );
+    }
+
+    #[test]
+    fn reads_gpu_busy_from_drm_nodes() {
+        let root = TempDir::new("adaptive-gpu");
+        fs::create_dir_all(root.path().join("card0/device")).unwrap();
+        fs::write(root.path().join("card0/device/gpu_busy_percent"), "30\n").unwrap();
+        fs::create_dir_all(root.path().join("renderD128/device")).unwrap();
+        fs::write(
+            root.path().join("renderD128/device/gpu_busy_percent"),
+            "70\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.path().join("version/device")).unwrap();
+        fs::write(root.path().join("version/device/gpu_busy_percent"), "99\n").unwrap();
+
+        let sample = read_gpu_busy_sample(root.path()).unwrap().unwrap();
+
+        assert_eq!(sample.avg, 50);
+        assert_eq!(sample.max, 70);
+        assert_eq!(
+            sample.sources,
+            vec!["card0".to_owned(), "renderD128".to_owned()]
+        );
+    }
+
+    #[test]
+    fn missing_gpu_busy_reports_no_sample() {
+        let root = TempDir::new("adaptive-gpu-missing");
+        fs::create_dir_all(root.path().join("card0/device")).unwrap();
+
+        assert_eq!(read_gpu_busy_sample(root.path()).unwrap(), None);
     }
 
     #[test]

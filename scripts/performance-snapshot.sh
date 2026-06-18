@@ -522,6 +522,9 @@ write_telemetry_summary() {
       battery_discharging = $19
       battery_capacity = $20 + 0
       battery_power = $21 + 0
+      daemon_gpu_avg = $22
+      daemon_gpu_max_sample = $23
+      daemon_gpu_sources = $24
 
       if (rows == 1) {
         first_refreshes = refreshes
@@ -553,6 +556,16 @@ write_telemetry_summary() {
       last_battery_discharging = battery_discharging
       last_battery_capacity = battery_capacity
       last_battery_power = battery_power
+      if (daemon_gpu_avg != "") {
+        daemon_gpu_samples += 1
+        daemon_gpu_sum += daemon_gpu_avg + 0
+      }
+      if (daemon_gpu_max_sample != "" && daemon_gpu_max_sample + 0 > max_daemon_gpu_busy) {
+        max_daemon_gpu_busy = daemon_gpu_max_sample + 0
+      }
+      if (daemon_gpu_sources != "") {
+        last_daemon_gpu_sources = daemon_gpu_sources
+      }
     }
     END {
       refresh_delta = last_refreshes - first_refreshes
@@ -592,6 +605,12 @@ write_telemetry_summary() {
         printf "power_battery_discharging_latest: %s\n", last_battery_discharging
         printf "power_battery_capacity_percent_latest: %d\n", last_battery_capacity
         printf "power_battery_power_microwatts_latest: %d\n", last_battery_power
+        printf "daemon_gpu_busy_samples: %d\n", daemon_gpu_samples
+        if (daemon_gpu_samples > 0) {
+          printf "daemon_avg_gpu_busy_percent: %.0f\n", daemon_gpu_sum / daemon_gpu_samples
+          printf "daemon_max_gpu_busy_percent: %d\n", max_daemon_gpu_busy
+          printf "daemon_gpu_busy_sources_latest: %s\n", last_daemon_gpu_sources
+        }
       }
     }
   ' "$telemetry_csv" > "$summary"
@@ -869,7 +888,7 @@ EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
-printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts\n' > "$telemetry_path"
+printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$telemetry_path"
 printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,source\n' > "$video_runtime_path"
 
 status_failures=0
