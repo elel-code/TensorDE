@@ -523,6 +523,12 @@ EOF
 battery = "pause"
 EOF
       ;;
+    output-battery-pause-dynamic)
+      cat > "$config_file" <<EOF
+[outputs."${output_name}".performance]
+battery = "pause-dynamic"
+EOF
+      ;;
     adaptive-throttle)
       cat > "$config_file" <<EOF
 [adaptive]
@@ -1110,6 +1116,8 @@ run_scenario session-locked paused session-locked "" remove "" ac active locked 
 run_scenario output-active-42fps active interactive 42 render static-image ac active active output-active-42fps "" 1 1
 run_scenario output-unfocused-12fps throttled unfocused 12 render static-image ac unfocused active output-unfocused-12fps "" 1 1
 run_scenario output-battery-pause paused battery "" remove "" battery active active output-battery-pause "" 0 0
+run_scenario output-battery-pause-dynamic-static active interactive 60 render static-image battery active active output-battery-pause-dynamic "" 1 1
+run_scenario output-battery-pause-dynamic-slideshow paused battery "" remove "" battery active active output-battery-pause-dynamic "" 0 0
 run_scenario adaptive-throttle throttled adaptive 11 render static-image ac active active adaptive-throttle cpu-pressure 1 1
 run_scenario adaptive-gpu-throttle throttled adaptive 11 render static-image ac active active adaptive-gpu-throttle gpu-busy 1 1
 run_scenario adaptive-pause-unfocused paused adaptive "" remove "" ac unfocused active adaptive-pause-unfocused cpu-pressure 0 0

@@ -300,13 +300,20 @@ fn static_render_sync_plan_inner(
             &package.manifest.runtime,
             desktop_output,
         );
+        let dynamic_wallpaper = dynamic_wallpaper_entry(&package.manifest.entry);
+        performance = crate::policy::apply_power_dynamic_policy(
+            performance,
+            &effective_performance_config,
+            desktop,
+            dynamic_wallpaper,
+        );
         if let Some(config) = config {
             performance = crate::policy::apply_adaptive_dynamic_policy(
                 performance,
                 config,
                 &output_name,
                 adaptive,
-                adaptive_dynamic_entry(&package.manifest.entry),
+                dynamic_wallpaper,
             );
         }
 
@@ -471,7 +478,7 @@ fn output_fit_override(config: Option<&GilderConfig>, output_name: &str) -> Opti
         .and_then(|output| output.fit)
 }
 
-fn adaptive_dynamic_entry(entry: &WallpaperEntry) -> bool {
+fn dynamic_wallpaper_entry(entry: &WallpaperEntry) -> bool {
     matches!(
         entry,
         WallpaperEntry::Video { .. } | WallpaperEntry::Slideshow { .. }
@@ -1063,10 +1070,11 @@ fn mark_archive_cache_used(extract_dir: &Path) {
 mod tests {
     use super::*;
     use crate::config::{
-        GilderConfig, OutputConfig, OutputPerformanceConfig, PerformanceConfig, VideoDecoderPolicy,
+        GilderConfig, OutputConfig, OutputPerformanceConfig, PerformanceConfig, PowerPolicy,
+        VideoDecoderPolicy,
     };
     use crate::core::pack_gwp;
-    use crate::desktop::DesktopOutput;
+    use crate::desktop::{DesktopOutput, PowerState};
     use crate::policy::{DecisionReason, RenderMode};
     use crate::state::{OutputState, WallpaperAssignment};
     use serde_json::json;
@@ -1436,6 +1444,56 @@ mod tests {
             std::env::temp_dir(),
             &adaptive,
         );
+
+        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.removals.is_empty());
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Active);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            DecisionReason::Interactive
+        );
+    }
+
+    #[test]
+    fn battery_pause_dynamic_removes_slideshow_from_render_plan() {
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some("examples/wallpapers/slideshow-demo.gwpdir".to_owned());
+        config.performance.battery = PowerPolicy::PauseDynamic;
+        let state = AppState::default();
+        let desktop = DesktopSnapshot {
+            power: PowerState::Battery,
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync =
+            static_render_sync_plan_with_config(&config, &desktop, &state, std::env::temp_dir());
+
+        assert!(sync.plans.is_empty());
+        assert!(sync.video_plans.is_empty());
+        assert!(sync.slideshow_plans.is_empty());
+        assert_eq!(sync.removals, vec!["eDP-1"]);
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Paused);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            DecisionReason::Battery
+        );
+    }
+
+    #[test]
+    fn battery_pause_dynamic_keeps_static_wallpaper_renderable() {
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some("examples/wallpapers/static-demo.gwpdir".to_owned());
+        config.performance.battery = PowerPolicy::PauseDynamic;
+        let state = AppState::default();
+        let desktop = DesktopSnapshot {
+            power: PowerState::Battery,
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync =
+            static_render_sync_plan_with_config(&config, &desktop, &state, std::env::temp_dir());
 
         assert_eq!(sync.plans.len(), 1);
         assert!(sync.removals.is_empty());

@@ -83,7 +83,7 @@ pub fn decide_performance(
         decision = select_more_conservative(
             decision,
             match config.battery {
-                PowerPolicy::Continue => {
+                PowerPolicy::Continue | PowerPolicy::PauseDynamic => {
                     active(config.interactive_max_fps, DecisionReason::Interactive)
                 }
                 PowerPolicy::Throttle => throttled(config.battery_max_fps, DecisionReason::Battery),
@@ -92,6 +92,22 @@ pub fn decide_performance(
         );
     }
     decision
+}
+
+pub fn apply_power_dynamic_policy(
+    decision: PerformanceDecision,
+    config: &PerformanceConfig,
+    desktop: &DesktopSnapshot,
+    dynamic_wallpaper: bool,
+) -> PerformanceDecision {
+    if !dynamic_wallpaper
+        || !desktop.power.is_battery()
+        || config.battery != PowerPolicy::PauseDynamic
+    {
+        return decision;
+    }
+
+    select_more_conservative(decision, paused(DecisionReason::Battery))
 }
 
 pub fn apply_runtime_policy(
@@ -351,6 +367,59 @@ mod tests {
 
         assert_eq!(decision.mode, RenderMode::Paused);
         assert_eq!(decision.reason, DecisionReason::Battery);
+    }
+
+    #[test]
+    fn battery_pause_dynamic_waits_until_wallpaper_type_is_known() {
+        let config = PerformanceConfig {
+            battery: PowerPolicy::PauseDynamic,
+            ..PerformanceConfig::default()
+        };
+        let desktop = DesktopSnapshot {
+            power: PowerState::Battery,
+            ..DesktopSnapshot::default()
+        };
+
+        let decision = decide_performance(&config, &desktop, None, &OutputState::default());
+
+        assert_eq!(decision.mode, RenderMode::Active);
+        assert_eq!(decision.reason, DecisionReason::Interactive);
+    }
+
+    #[test]
+    fn battery_pause_dynamic_pauses_dynamic_wallpaper_after_manifest_load() {
+        let config = PerformanceConfig {
+            battery: PowerPolicy::PauseDynamic,
+            ..PerformanceConfig::default()
+        };
+        let desktop = DesktopSnapshot {
+            power: PowerState::Battery,
+            ..DesktopSnapshot::default()
+        };
+        let base = active(60, DecisionReason::Interactive);
+
+        let decision = apply_power_dynamic_policy(base, &config, &desktop, true);
+
+        assert_eq!(decision.mode, RenderMode::Paused);
+        assert_eq!(decision.reason, DecisionReason::Battery);
+    }
+
+    #[test]
+    fn battery_pause_dynamic_leaves_static_wallpaper_policy_unchanged() {
+        let config = PerformanceConfig {
+            battery: PowerPolicy::PauseDynamic,
+            ..PerformanceConfig::default()
+        };
+        let desktop = DesktopSnapshot {
+            power: PowerState::Battery,
+            ..DesktopSnapshot::default()
+        };
+        let base = active(60, DecisionReason::Interactive);
+
+        let decision = apply_power_dynamic_policy(base, &config, &desktop, false);
+
+        assert_eq!(decision.mode, RenderMode::Active);
+        assert_eq!(decision.reason, DecisionReason::Interactive);
     }
 
     #[test]

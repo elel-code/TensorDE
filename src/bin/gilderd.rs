@@ -878,6 +878,7 @@ fn handle_ipc_request(
         RequestMethod::Status => {
             refresh_desktop_if_stale(context);
             let render_sync = current_render_sync(context);
+            let outputs = output_reports(context, Some(&render_sync));
             IpcOutcome::response(gilder::ipc::success_response(
                 &request.id,
                 json!({
@@ -885,7 +886,7 @@ fn handle_ipc_request(
                     "config_file": context.paths.config_file,
                     "state_file": context.paths.state_file,
                     "desktop": context.desktop,
-                    "outputs": output_reports(context),
+                    "outputs": outputs,
                     "persisted_state": context.state,
                     "render_sync": render_sync,
                     "renderer": renderer_name(),
@@ -898,9 +899,11 @@ fn handle_ipc_request(
         RequestMethod::Outputs => {
             refresh_desktop_if_stale(context);
             refresh_adaptive_if_stale(context);
+            let render_sync = current_render_sync(context);
+            let outputs = output_reports(context, Some(&render_sync));
             IpcOutcome::response(gilder::ipc::success_response(
                 &request.id,
-                json!({ "desktop": context.desktop, "outputs": output_reports(context) }),
+                json!({ "desktop": context.desktop, "outputs": outputs }),
             ))
         }
         RequestMethod::Watch { .. } => IpcOutcome::response(gilder::ipc::error_response(
@@ -1156,7 +1159,10 @@ fn mark_desktop_refreshed(context: &mut DaemonContext) {
     context.telemetry.desktop_refreshes += 1;
 }
 
-fn output_reports(context: &DaemonContext) -> Vec<serde_json::Value> {
+fn output_reports(
+    context: &DaemonContext,
+    render_sync: Option<&StaticRenderSyncPlan>,
+) -> Vec<serde_json::Value> {
     let mut names: Vec<String> = context
         .desktop
         .outputs
@@ -1179,19 +1185,29 @@ fn output_reports(context: &DaemonContext) -> Vec<serde_json::Value> {
                 .cloned()
                 .unwrap_or_default();
             let performance_config = context.config.performance_for_output(&name);
-            let performance = gilder::policy::decide_performance(
-                &performance_config,
-                &context.desktop,
-                desktop_output,
-                &state,
-            );
-            let performance = gilder::policy::apply_adaptive_policy(
-                performance,
-                &context.config,
-                &name,
-                desktop_output,
-                &context.adaptive_snapshot,
-            );
+            let performance = render_sync
+                .and_then(|render_sync| {
+                    render_sync
+                        .decisions
+                        .iter()
+                        .find(|decision| decision.output_name == name)
+                        .map(|decision| decision.performance.clone())
+                })
+                .unwrap_or_else(|| {
+                    let performance = gilder::policy::decide_performance(
+                        &performance_config,
+                        &context.desktop,
+                        desktop_output,
+                        &state,
+                    );
+                    gilder::policy::apply_adaptive_policy(
+                        performance,
+                        &context.config,
+                        &name,
+                        desktop_output,
+                        &context.adaptive_snapshot,
+                    )
+                });
             json!({
                 "name": name,
                 "desktop": desktop_output,
@@ -1208,9 +1224,10 @@ fn snapshot_event(
     renderer_runtime: RendererRuntimeSnapshot,
 ) -> Value {
     let render_sync = current_render_sync(context);
+    let outputs = output_reports(context, Some(&render_sync));
     json!({
         "desktop": context.desktop,
-        "outputs": output_reports(context),
+        "outputs": outputs,
         "persisted_state": context.state,
         "render_sync": render_sync,
         "renderer": renderer_name(),
@@ -1232,7 +1249,7 @@ fn state_changed_event(
         "action": action,
         "output": output,
         "desktop": context.desktop,
-        "outputs": output_reports(context),
+        "outputs": output_reports(context, Some(render_sync)),
         "persisted_state": context.state,
         "render_sync": render_sync,
         "renderer_capabilities": renderer_capabilities(),
@@ -1611,7 +1628,7 @@ fn runtime_changed_event(
 ) -> Value {
     json!({
         "desktop": context.desktop,
-        "outputs": output_reports(context),
+        "outputs": output_reports(context, Some(render_sync)),
         "persisted_state": context.state,
         "render_sync": render_sync,
         "renderer": renderer_name(),
@@ -1985,7 +2002,7 @@ mod tests {
                 ..gilder::config::OutputConfig::default()
             },
         );
-        let reports = output_reports(&context);
+        let reports = output_reports(&context, None);
 
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0]["name"], json!("eDP-1"));
@@ -2009,7 +2026,7 @@ mod tests {
             }],
             ..gilder::adaptive::AdaptiveSnapshot::default()
         };
-        let reports = output_reports(&context);
+        let reports = output_reports(&context, None);
 
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0]["performance"]["mode"], json!("throttled"));
@@ -2035,7 +2052,7 @@ mod tests {
             }],
             ..gilder::adaptive::AdaptiveSnapshot::default()
         };
-        let reports = output_reports(&context);
+        let reports = output_reports(&context, None);
         let actions = adaptive_action_report(&context);
 
         assert_eq!(reports.len(), 1);
@@ -2044,6 +2061,30 @@ mod tests {
         assert_eq!(reports[0]["performance"]["reason"], json!("adaptive"));
         assert_eq!(actions[0]["type"], json!("pause-unfocused"));
         assert_eq!(actions[0]["max_fps"], Value::Null);
+    }
+
+    #[test]
+    fn output_reports_prefer_render_sync_final_performance_decision() {
+        let test_dir = TestDir::new("gilder-output-final-performance");
+        let mut context = test_context();
+        context.paths.cache_dir = test_dir.path().join("cache");
+        context.config.default_wallpaper =
+            Some("examples/wallpapers/slideshow-demo.gwpdir".to_owned());
+        context.config.performance.battery = gilder::config::PowerPolicy::PauseDynamic;
+        context.desktop = gilder::desktop::DesktopSnapshot {
+            power: gilder::desktop::PowerState::Battery,
+            outputs: vec![gilder::desktop::DesktopOutput::virtual_output("eDP-1")],
+            ..gilder::desktop::DesktopSnapshot::default()
+        };
+
+        let render_sync = current_render_sync(&mut context);
+        let reports = output_reports(&context, Some(&render_sync));
+
+        assert_eq!(render_sync.removals, vec!["eDP-1"]);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0]["performance"]["mode"], json!("paused"));
+        assert_eq!(reports[0]["performance"]["max_fps"], Value::Null);
+        assert_eq!(reports[0]["performance"]["reason"], json!("battery"));
     }
 
     #[test]

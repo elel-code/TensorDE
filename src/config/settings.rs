@@ -250,6 +250,7 @@ pub enum PowerPolicy {
     Continue,
     Throttle,
     Pause,
+    PauseDynamic,
 }
 
 impl Default for PowerPolicy {
@@ -422,6 +423,9 @@ mod tests {
             enabled = false
             throttle_max_fps = 9
             action = "throttle"
+
+            [outputs."DP-1".performance]
+            battery = "pause-dynamic"
             "#,
         )
         .unwrap();
@@ -460,6 +464,10 @@ mod tests {
         assert_eq!(hdmi_performance.interactive_max_fps, 75);
         assert_eq!(hdmi_performance.background_max_fps, 12);
         assert_eq!(hdmi_performance.battery, PowerPolicy::Pause);
+        assert_eq!(
+            config.performance_for_output("DP-1").battery,
+            PowerPolicy::PauseDynamic
+        );
         assert_eq!(config.performance_for_output("eDP-1"), config.performance);
         assert!(!config.adapters.niri);
         assert!(config.adapters.hyprland);
