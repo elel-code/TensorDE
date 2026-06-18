@@ -236,26 +236,15 @@ impl GtkStaticRenderer {
     }
 
     pub fn resource_snapshot(&self) -> GtkRendererResourceSnapshot {
-        let mut static_surface_resource_references = 0;
-        let mut static_surface_resource_bytes = 0;
-        let mut slideshow_resource_references = 0;
-        let mut slideshow_resource_bytes = 0;
-
-        for output in self.windows.values() {
-            if let Some(source) = output.static_surface_source() {
-                static_surface_resource_references += 1;
-                static_surface_resource_bytes += source_file_size(source);
+        let footprint = renderer_surface_resource_footprint(self.windows.values().map(|output| {
+            RendererSurfaceResourceSources {
+                static_surface_source: output.static_surface_source(),
+                slideshow_sources: output
+                    .slideshow
+                    .as_ref()
+                    .map(|slideshow| slideshow.plan.sources.as_slice()),
             }
-            if let Some(slideshow) = &output.slideshow {
-                slideshow_resource_references += slideshow.plan.sources.len();
-                slideshow_resource_bytes += slideshow
-                    .plan
-                    .sources
-                    .iter()
-                    .map(|source| source_file_size(source))
-                    .sum::<u64>();
-            }
-        }
+        }));
 
         GtkRendererResourceSnapshot {
             output_windows: self.windows.len(),
@@ -274,10 +263,10 @@ impl GtkStaticRenderer {
                 .values()
                 .filter(|output| output.has_video_surface())
                 .count(),
-            static_surface_resource_references,
-            static_surface_resource_bytes,
-            slideshow_resource_references,
-            slideshow_resource_bytes,
+            static_surface_resource_references: footprint.static_surface_resource_references,
+            static_surface_resource_bytes: footprint.static_surface_resource_bytes,
+            slideshow_resource_references: footprint.slideshow_resource_references,
+            slideshow_resource_bytes: footprint.slideshow_resource_bytes,
         }
     }
 
@@ -609,6 +598,40 @@ fn static_plan_needs_update(
     next: &StaticWallpaperPlan,
 ) -> bool {
     previous != Some(next)
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RendererSurfaceResourceFootprint {
+    static_surface_resource_references: usize,
+    static_surface_resource_bytes: u64,
+    slideshow_resource_references: usize,
+    slideshow_resource_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RendererSurfaceResourceSources<'a> {
+    static_surface_source: Option<&'a Path>,
+    slideshow_sources: Option<&'a [std::path::PathBuf]>,
+}
+
+fn renderer_surface_resource_footprint<'a>(
+    outputs: impl IntoIterator<Item = RendererSurfaceResourceSources<'a>>,
+) -> RendererSurfaceResourceFootprint {
+    let mut footprint = RendererSurfaceResourceFootprint::default();
+    for output in outputs {
+        if let Some(source) = output.static_surface_source {
+            footprint.static_surface_resource_references += 1;
+            footprint.static_surface_resource_bytes += source_file_size(source);
+        }
+        if let Some(sources) = output.slideshow_sources {
+            footprint.slideshow_resource_references += sources.len();
+            footprint.slideshow_resource_bytes += sources
+                .iter()
+                .map(|source| source_file_size(source))
+                .sum::<u64>();
+        }
+    }
+    footprint
 }
 
 fn source_file_size(path: &Path) -> u64 {
@@ -1219,6 +1242,9 @@ impl std::fmt::Display for GtkVideoError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn maps_fit_modes_to_css_background_modes() {
@@ -1261,6 +1287,53 @@ mod tests {
         assert!(static_plan_needs_update(Some(&plan), &changed_background));
     }
 
+    #[test]
+    fn renderer_surface_resource_footprint_counts_static_and_slideshow_sources() {
+        let test_dir = TestDir::new("gilder-gtk-resource-footprint");
+        test_dir.write_file("static.png", b"static");
+        test_dir.write_file("slide-a.png", b"a");
+        test_dir.write_file("slide-b.png", b"bbbb");
+
+        let static_source = test_dir.path().join("static.png");
+        let slide_a = test_dir.path().join("slide-a.png");
+        let slide_b = test_dir.path().join("slide-b.png");
+        let slideshow_sources = vec![slide_a.clone(), slide_b.clone()];
+
+        let footprint = renderer_surface_resource_footprint([
+            RendererSurfaceResourceSources {
+                static_surface_source: Some(static_source.as_path()),
+                slideshow_sources: None,
+            },
+            RendererSurfaceResourceSources {
+                static_surface_source: Some(slide_b.as_path()),
+                slideshow_sources: Some(slideshow_sources.as_slice()),
+            },
+        ]);
+
+        assert_eq!(footprint.static_surface_resource_references, 2);
+        assert_eq!(footprint.static_surface_resource_bytes, 10);
+        assert_eq!(footprint.slideshow_resource_references, 2);
+        assert_eq!(footprint.slideshow_resource_bytes, 5);
+    }
+
+    #[test]
+    fn renderer_surface_resource_footprint_counts_missing_sources_as_zero_bytes() {
+        let test_dir = TestDir::new("gilder-gtk-resource-footprint-missing");
+        let missing_static = test_dir.path().join("missing-static.png");
+        let missing_slide = test_dir.path().join("missing-slide.png");
+        let slideshow_sources = vec![missing_slide];
+
+        let footprint = renderer_surface_resource_footprint([RendererSurfaceResourceSources {
+            static_surface_source: Some(missing_static.as_path()),
+            slideshow_sources: Some(slideshow_sources.as_slice()),
+        }]);
+
+        assert_eq!(footprint.static_surface_resource_references, 1);
+        assert_eq!(footprint.static_surface_resource_bytes, 0);
+        assert_eq!(footprint.slideshow_resource_references, 1);
+        assert_eq!(footprint.slideshow_resource_bytes, 0);
+    }
+
     #[cfg(feature = "video-renderer")]
     #[test]
     fn maps_video_fit_modes_to_gtk_content_fit() {
@@ -1283,5 +1356,40 @@ mod tests {
         assert_eq!(playbin_flags(true), MUTED_PLAYBIN_FLAGS);
         assert!(!playbin_flags(true).contains("audio"));
         assert!(playbin_flags(false).contains("audio"));
+    }
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(prefix: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path =
+                std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+            fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+
+        fn write_file(&self, relative_path: &str, contents: &[u8]) {
+            let path = self.path.join(relative_path);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(path, contents).unwrap();
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
     }
 }
