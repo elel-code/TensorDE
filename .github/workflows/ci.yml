@@ -52,6 +52,17 @@ jobs:
       - name: Test all renderers
         run: cargo test --features gtk-renderer,video-renderer
 
+      - name: Desktop policy smoke
+        run: scripts/desktop-policy-smoke.sh --report-dir /tmp/gilder-desktop-policy-smoke
+
+      - name: Upload desktop policy smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-policy-smoke
+          path: /tmp/gilder-desktop-policy-smoke
+          if-no-files-found: ignore
+
       - name: Video codec smoke
         run: scripts/video-codec-smoke.sh --install-missing --report-dir /tmp/gilder-video-codec-smoke
 

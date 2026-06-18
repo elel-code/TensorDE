@@ -13,6 +13,7 @@ unfocused, fullscreen, hidden, inactive, and locked scenarios.
 Options:
   --output <name>       Virtual output name. Default: HEADLESS-1
   --work-dir <dir>      Parent directory for temporary smoke data
+  --report-dir <dir>    Exact evidence directory. Created and kept
   --allow-missing       Report missing tools as skips instead of failures
   --no-build            Use existing target/debug binaries
   --sample-duration <s> Performance sampling duration. Default: 2
@@ -24,6 +25,7 @@ EOF
 
 output_name="HEADLESS-1"
 work_parent="${TMPDIR:-/tmp}"
+report_dir=""
 allow_missing=0
 build=1
 keep=0
@@ -40,6 +42,11 @@ while [[ $# -gt 0 ]]; do
     --work-dir)
       [[ $# -ge 2 ]] || { echo "--work-dir requires a directory" >&2; exit 2; }
       work_parent="$2"
+      shift 2
+      ;;
+    --report-dir)
+      [[ $# -ge 2 ]] || { echo "--report-dir requires a directory" >&2; exit 2; }
+      report_dir="$2"
       shift 2
       ;;
     --allow-missing)
@@ -131,7 +138,7 @@ stop_daemon() {
 
 cleanup() {
   stop_daemon
-  if [[ "${work_dir:-}" != "" && "$keep" -eq 0 ]]; then
+  if [[ "${work_dir:-}" != "" && "$keep" -eq 0 && -z "$report_dir" ]]; then
     rm -rf "$work_dir"
   elif [[ "${work_dir:-}" != "" ]]; then
     printf 'kept work dir: %s\n' "$work_dir"
@@ -180,8 +187,13 @@ if [[ "$failures" -gt 0 || "$skips" -gt 0 ]]; then
   exit "$([[ "$failures" -gt 0 ]] && echo 1 || echo 0)"
 fi
 
-mkdir -p "$work_parent"
-work_dir="$(mktemp -d "${work_parent%/}/gilder-desktop-policy.XXXXXX")"
+if [[ -n "$report_dir" ]]; then
+  work_dir="$report_dir"
+  mkdir -p "$work_dir"
+else
+  mkdir -p "$work_parent"
+  work_dir="$(mktemp -d "${work_parent%/}/gilder-desktop-policy.XXXXXX")"
+fi
 metadata_path="$work_dir/metadata.txt"
 cat > "$metadata_path" <<EOF
 output: ${output_name}
