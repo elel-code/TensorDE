@@ -317,6 +317,7 @@ performance_paused_log="$work_dir/performance-paused.log"
 checks_path="$work_dir/checks.csv"
 metadata_path="$work_dir/metadata.txt"
 summary_path="$work_dir/summary.txt"
+validation_report_path="$work_dir/validation-report.txt"
 performance_active_label="wayland-video-active"
 scenario_suffix=""
 if [[ -n "$simulate_power" ]]; then
@@ -348,6 +349,7 @@ if [[ "$measure_fullscreen_resume" -eq 1 ]]; then
 fi
 daemon_pid=""
 actual_compositor="not-sampled"
+target_outputs=()
 
 cleanup() {
   if [[ -n "$daemon_pid" ]] && kill -0 "$daemon_pid" >/dev/null 2>&1; then
@@ -533,6 +535,7 @@ checks: ${checks_path}
 output_state_override_file: $([[ "$measure_fullscreen_resume" -eq 1 ]] && printf '%s' "$output_state_override_file" || printf 'none')
 resume_latency_csv: $([[ "$measure_fullscreen_resume" -eq 1 ]] && printf '%s' "$resume_latency_csv" || printf 'none')
 video_runtime_csv: ${video_runtime_path}
+validation_report: ${validation_report_path}
 EOF
 }
 
@@ -545,14 +548,109 @@ expect_compositor: ${expect_compositor:-none}
 actual_compositor: ${actual_compositor}
 metadata: ${metadata_path}
 checks: ${checks_path}
+validation_report: ${validation_report_path}
 fullscreen_resume_latency: $([[ "$measure_fullscreen_resume" -eq 1 ]] && printf '%s' "$resume_latency_summary" || printf 'none')
 EOF
 }
 
+count_csv_data_rows() {
+  local file="$1"
+  if [[ ! -f "$file" ]]; then
+    printf '0\n'
+    return
+  fi
+  awk 'NR > 1 { count++ } END { print count + 0 }' "$file"
+}
+
+selected_outputs_text() {
+  if [[ "${#target_outputs[@]}" -eq 0 ]]; then
+    printf 'none\n'
+    return
+  fi
+  printf '%s\n' "${target_outputs[*]}"
+}
+
+active_video_plan_expectation_text() {
+  if [[ "$preflight" -eq 1 ]]; then
+    printf 'not-run\n'
+  elif expects_active_video_plan; then
+    printf 'yes\n'
+  else
+    printf 'no\n'
+  fi
+}
+
+performance_artifact_text() {
+  local enabled="$1"
+  local path="$2"
+  local relative_summary="$3"
+  if [[ "$enabled" -eq 1 ]]; then
+    printf '%s\n' "${path}/${relative_summary}"
+  else
+    printf 'none\n'
+  fi
+}
+
+write_validation_report() {
+  local active_summary
+  local active_video_runtime_summary
+  local paused_summary
+  local paused_video_runtime_summary
+  active_summary="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "summary.txt")"
+  active_video_runtime_summary="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "video-runtime-summary.txt")"
+  paused_summary="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "summary.txt")"
+  paused_video_runtime_summary="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "video-runtime-summary.txt")"
+
+  cat > "$validation_report_path" <<EOF
+validation: wayland-video-surface-smoke
+mode: $([[ "$preflight" -eq 1 ]] && printf 'preflight' || printf 'smoke')
+result_passed: ${passes}
+result_skipped: ${skips}
+result_failed: ${failures}
+expect_compositor: ${expect_compositor:-none}
+actual_compositor: ${actual_compositor}
+output_request: ${output_name:-auto}
+all_outputs: ${all_outputs}
+selected_outputs: $(selected_outputs_text)
+expects_active_video_plan: $(active_video_plan_expectation_text)
+sample_performance: ${sample_performance}
+sample_paused: ${sample_paused}
+measure_fullscreen_resume: ${measure_fullscreen_resume}
+video_runtime_rows: $(count_csv_data_rows "$video_runtime_path")
+video_runtime_csv: ${video_runtime_path}
+performance_active_summary: ${active_summary}
+performance_active_video_runtime_summary: ${active_video_runtime_summary}
+performance_paused_summary: ${paused_summary}
+performance_paused_video_runtime_summary: ${paused_video_runtime_summary}
+fullscreen_resume_latency: $([[ "$measure_fullscreen_resume" -eq 1 ]] && printf '%s' "$resume_latency_summary" || printf 'none')
+metadata: ${metadata_path}
+checks: ${checks_path}
+summary: ${summary_path}
+status_before: $([[ -f "$status_before" ]] && printf '%s' "$status_before" || printf 'none')
+status_after: $([[ -f "$status_after" ]] && printf '%s' "$status_after" || printf 'none')
+status_paused: $([[ -f "$status_paused" ]] && printf '%s' "$status_paused" || printf 'none')
+status_resumed: $([[ -f "$status_resumed" ]] && printf '%s' "$status_resumed" || printf 'none')
+daemon_log: ${daemon_log}
+EOF
+
+  if [[ -f "$video_runtime_path" ]]; then
+    awk -F, '
+      NR > 1 && $1 != "" { count[$1]++ }
+      END {
+        for (phase in count) {
+          printf "video_runtime_phase.%s: %d\n", phase, count[phase]
+        }
+      }
+    ' "$video_runtime_path" | sort >> "$validation_report_path"
+  fi
+}
+
 finish_with_summary() {
   write_summary
+  write_validation_report
   note "metadata: $metadata_path"
   note "checks:   $checks_path"
+  note "validation report: $validation_report_path"
   note "report:   $summary_path"
   note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
   exit "$([[ "$failures" -gt 0 ]] && echo 1 || echo 0)"
