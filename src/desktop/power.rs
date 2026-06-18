@@ -97,6 +97,7 @@ fn is_external_supply(supply_type: &str) -> bool {
         "mains"
             | "usb"
             | "usb_ac"
+            | "usb-c"
             | "usb_c"
             | "usb_dcp"
             | "usb_cdp"
@@ -168,6 +169,17 @@ mod tests {
             ],
         );
         write_supply(root.path(), "AC", &[("type", "Mains"), ("online", "1")]);
+
+        assert_eq!(
+            read_power_state_from_sysfs(root.path()).unwrap(),
+            PowerState::Ac
+        );
+    }
+
+    #[test]
+    fn reports_ac_for_usb_c_external_supply() {
+        let root = TempDir::new("usb-c-ac");
+        write_supply(root.path(), "USB-C", &[("type", "USB-C"), ("online", "1")]);
 
         assert_eq!(
             read_power_state_from_sysfs(root.path()).unwrap(),

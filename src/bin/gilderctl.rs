@@ -206,8 +206,9 @@ fn render_telemetry_csv(response: &str) -> Result<String, String> {
 
     let telemetry = result.telemetry;
     let mut csv = String::from(
-        "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius\n",
+        "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts\n",
     );
+    let adaptive_sample = telemetry.adaptive.snapshot.sample.as_ref();
     let row = [
         telemetry.desktop.refreshes.to_string(),
         telemetry.desktop.refresh_skips.to_string(),
@@ -237,20 +238,32 @@ fn render_telemetry_csv(response: &str) -> Result<String, String> {
             .and_then(|sample| sample.cpu_pressure_some_avg10_x100)
             .map(|value| value.to_string())
             .unwrap_or_default(),
-        telemetry
-            .adaptive
-            .snapshot
-            .sample
-            .as_ref()
+        adaptive_sample
             .and_then(|sample| sample.memory_pressure_some_avg10_x100)
             .map(|value| value.to_string())
             .unwrap_or_default(),
-        telemetry
-            .adaptive
-            .snapshot
-            .sample
-            .as_ref()
+        adaptive_sample
             .and_then(|sample| sample.temperature_max_millicelsius)
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        adaptive_sample
+            .and_then(|sample| sample.power_external_online)
+            .map(bool_csv)
+            .unwrap_or_default(),
+        adaptive_sample
+            .and_then(|sample| sample.power_system_battery_present)
+            .map(bool_csv)
+            .unwrap_or_default(),
+        adaptive_sample
+            .and_then(|sample| sample.power_battery_discharging)
+            .map(bool_csv)
+            .unwrap_or_default(),
+        adaptive_sample
+            .and_then(|sample| sample.power_battery_capacity_percent)
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        adaptive_sample
+            .and_then(|sample| sample.power_battery_power_microwatts)
             .map(|value| value.to_string())
             .unwrap_or_default(),
     ];
@@ -314,6 +327,14 @@ fn csv_cell(value: &str) -> String {
         format!("\"{}\"", value.replace('"', "\"\""))
     } else {
         value.to_owned()
+    }
+}
+
+fn bool_csv(value: bool) -> String {
+    if value {
+        "true".to_owned()
+    } else {
+        "false".to_owned()
     }
 }
 
@@ -448,6 +469,16 @@ struct AdaptiveSample {
     memory_pressure_some_avg10_x100: Option<u32>,
     #[serde(default)]
     temperature_max_millicelsius: Option<i32>,
+    #[serde(default)]
+    power_external_online: Option<bool>,
+    #[serde(default)]
+    power_system_battery_present: Option<bool>,
+    #[serde(default)]
+    power_battery_discharging: Option<bool>,
+    #[serde(default)]
+    power_battery_capacity_percent: Option<u32>,
+    #[serde(default)]
+    power_battery_power_microwatts: Option<u64>,
 }
 
 #[cfg(test)]
@@ -484,14 +515,14 @@ mod tests {
 
     #[test]
     fn formats_daemon_telemetry_as_csv() {
-        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[],"video_plans":[],"decisions":[]},"telemetry":{"desktop":{"refreshes":7,"refresh_skips":11,"changes":2,"last_refresh_age_ms":42},"render_sync":{"cache_hits":23,"cache_misses":5,"updates_queued":3,"updates_skipped":2},"adaptive":{"refreshes":5,"refresh_skips":6,"snapshot":{"sample":{"cpu_pressure_some_avg10_x100":123,"memory_pressure_some_avg10_x100":45,"temperature_max_millicelsius":73500},"active_triggers":[{"metric":"temperature-max-celsius","value_x100":7350,"threshold_x100":7000}]}}}}}"##;
+        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[],"video_plans":[],"decisions":[]},"telemetry":{"desktop":{"refreshes":7,"refresh_skips":11,"changes":2,"last_refresh_age_ms":42},"render_sync":{"cache_hits":23,"cache_misses":5,"updates_queued":3,"updates_skipped":2},"adaptive":{"refreshes":5,"refresh_skips":6,"snapshot":{"sample":{"cpu_pressure_some_avg10_x100":123,"memory_pressure_some_avg10_x100":45,"temperature_max_millicelsius":73500,"power_external_online":true,"power_system_battery_present":true,"power_battery_discharging":false,"power_battery_capacity_percent":88,"power_battery_power_microwatts":12000000},"active_triggers":[{"metric":"temperature-max-celsius","value_x100":7350,"threshold_x100":7000}]}}}}}"##;
 
         let csv = render_telemetry_csv(response).unwrap();
 
         assert_eq!(
             csv,
-            "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius\n\
-             7,11,2,42,23,5,3,2,5,6,1,123,45,73500\n"
+            "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts\n\
+             7,11,2,42,23,5,3,2,5,6,1,123,45,73500,true,true,false,88,12000000\n"
         );
     }
 

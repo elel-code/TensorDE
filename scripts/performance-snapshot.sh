@@ -400,6 +400,11 @@ write_telemetry_summary() {
       cpu_pressure = $14 + 0
       memory_pressure = $15 + 0
       temperature = $16 + 0
+      external_online = $17
+      battery_present = $18
+      battery_discharging = $19
+      battery_capacity = $20 + 0
+      battery_power = $21 + 0
 
       if (rows == 1) {
         first_refreshes = refreshes
@@ -426,6 +431,11 @@ write_telemetry_summary() {
       if (cpu_pressure > max_cpu_pressure) { max_cpu_pressure = cpu_pressure }
       if (memory_pressure > max_memory_pressure) { max_memory_pressure = memory_pressure }
       if (temperature > max_temperature) { max_temperature = temperature }
+      last_external_online = external_online
+      last_battery_present = battery_present
+      last_battery_discharging = battery_discharging
+      last_battery_capacity = battery_capacity
+      last_battery_power = battery_power
     }
     END {
       refresh_delta = last_refreshes - first_refreshes
@@ -460,6 +470,11 @@ write_telemetry_summary() {
         printf "cpu_pressure_some_avg10_x100_max: %d\n", max_cpu_pressure
         printf "memory_pressure_some_avg10_x100_max: %d\n", max_memory_pressure
         printf "temperature_max_millicelsius_max: %d\n", max_temperature
+        printf "power_external_online_latest: %s\n", last_external_online
+        printf "power_system_battery_present_latest: %s\n", last_battery_present
+        printf "power_battery_discharging_latest: %s\n", last_battery_discharging
+        printf "power_battery_capacity_percent_latest: %d\n", last_battery_capacity
+        printf "power_battery_power_microwatts_latest: %d\n", last_battery_power
       }
     }
   ' "$telemetry_csv" > "$summary"
@@ -656,7 +671,7 @@ EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
-printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius\n' > "$telemetry_path"
+printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts\n' > "$telemetry_path"
 
 status_failures=0
 decision_failures=0

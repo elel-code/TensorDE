@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 const PROC_PRESSURE_CPU: &str = "/proc/pressure/cpu";
 const PROC_PRESSURE_MEMORY: &str = "/proc/pressure/memory";
 const SYS_CLASS_THERMAL: &str = "/sys/class/thermal";
+const SYS_CLASS_POWER_SUPPLY: &str = "/sys/class/power_supply";
 
 #[derive(Debug, Clone)]
 pub struct AdaptiveMonitor {
@@ -106,6 +107,16 @@ pub struct AdaptiveSystemSample {
     pub memory_pressure_some_avg10_x100: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature_max_millicelsius: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power_external_online: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power_system_battery_present: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power_battery_discharging: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power_battery_capacity_percent: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power_battery_power_microwatts: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,6 +172,7 @@ fn read_system_sample() -> AdaptiveSystemSample {
         temperature_max_millicelsius: read_temperature_max_millicelsius(SYS_CLASS_THERMAL)
             .ok()
             .flatten(),
+        ..read_power_supply_sample(SYS_CLASS_POWER_SUPPLY).unwrap_or_default()
     }
 }
 
@@ -269,6 +281,141 @@ fn read_temperature_millicelsius(path: impl AsRef<Path>) -> Option<i32> {
     fs::read_to_string(path).ok()?.trim().parse::<i32>().ok()
 }
 
+fn read_power_supply_sample(root: impl AsRef<Path>) -> io::Result<AdaptiveSystemSample> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return Ok(AdaptiveSystemSample::default());
+        }
+        Err(err) => return Err(err),
+    };
+
+    let mut sample = AdaptiveSystemSample::default();
+    let mut battery_capacity_sum = 0u64;
+    let mut battery_capacity_count = 0u64;
+
+    for entry in entries {
+        let path = entry?.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let supply_type = read_trimmed(path.join("type"))
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if supply_type == "battery" {
+            if !is_system_battery(&path) {
+                continue;
+            }
+            sample.power_system_battery_present = Some(true);
+            match read_trimmed(path.join("status"))
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "discharging" => sample.power_battery_discharging = Some(true),
+                "charging" | "full" | "not charging" => {
+                    if sample.power_battery_discharging != Some(true) {
+                        sample.power_battery_discharging = Some(false);
+                    }
+                }
+                _ => {}
+            }
+            if let Some(capacity) = read_battery_capacity_percent(&path) {
+                battery_capacity_sum += u64::from(capacity);
+                battery_capacity_count += 1;
+            }
+            if sample.power_battery_power_microwatts.is_none() {
+                sample.power_battery_power_microwatts = read_power_microwatts(&path);
+            }
+        } else if is_external_supply(&supply_type) {
+            match read_bool(path.join("online")) {
+                Some(true) => sample.power_external_online = Some(true),
+                Some(false) => {
+                    if sample.power_external_online != Some(true) {
+                        sample.power_external_online = Some(false);
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+
+    if sample.power_system_battery_present.is_none() {
+        sample.power_system_battery_present = Some(false);
+    }
+    if battery_capacity_count > 0 {
+        sample.power_battery_capacity_percent =
+            Some((battery_capacity_sum / battery_capacity_count) as u32);
+    }
+    Ok(sample)
+}
+
+fn read_battery_capacity_percent(path: &Path) -> Option<u32> {
+    read_u32(path.join("capacity")).or_else(|| {
+        let now =
+            read_u64(path.join("energy_now")).or_else(|| read_u64(path.join("charge_now")))?;
+        let full =
+            read_u64(path.join("energy_full")).or_else(|| read_u64(path.join("charge_full")))?;
+        if full == 0 {
+            return None;
+        }
+        Some(((now.saturating_mul(100)) / full).min(100) as u32)
+    })
+}
+
+fn read_power_microwatts(path: &Path) -> Option<u64> {
+    read_u64(path.join("power_now")).or_else(|| {
+        let current_microamps = read_u64(path.join("current_now"))?;
+        let voltage_microvolts = read_u64(path.join("voltage_now"))?;
+        Some(current_microamps.saturating_mul(voltage_microvolts) / 1_000_000)
+    })
+}
+
+fn is_system_battery(path: &Path) -> bool {
+    read_trimmed(path.join("scope"))
+        .map(|scope| !scope.eq_ignore_ascii_case("device"))
+        .unwrap_or(true)
+}
+
+fn is_external_supply(supply_type: &str) -> bool {
+    matches!(
+        supply_type,
+        "mains"
+            | "usb"
+            | "usb_ac"
+            | "usb-c"
+            | "usb_c"
+            | "usb_dcp"
+            | "usb_cdp"
+            | "usb_aca"
+            | "usb_pd"
+            | "wireless"
+    )
+}
+
+fn read_bool(path: impl AsRef<Path>) -> Option<bool> {
+    match read_trimmed(path)?.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "online" => Some(true),
+        "0" | "false" | "no" | "offline" => Some(false),
+        _ => None,
+    }
+}
+
+fn read_u32(path: impl AsRef<Path>) -> Option<u32> {
+    read_trimmed(path)?.parse::<u32>().ok()
+}
+
+fn read_u64(path: impl AsRef<Path>) -> Option<u64> {
+    read_trimmed(path)?.parse::<u64>().ok()
+}
+
+fn read_trimmed(path: impl AsRef<Path>) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
 fn parse_pressure_some_avg10_x100(contents: &str) -> Option<u32> {
     let line = contents.lines().find(|line| line.starts_with("some "))?;
     let token = line
@@ -365,6 +512,7 @@ mod tests {
             cpu_pressure_some_avg10_x100: Some(2_001),
             memory_pressure_some_avg10_x100: Some(499),
             temperature_max_millicelsius: Some(84_000),
+            ..AdaptiveSystemSample::default()
         };
         let triggers = triggers_for_sample(&config, &sample);
 
@@ -409,6 +557,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reads_power_supply_details() {
+        let root = TempDir::new("adaptive-power");
+        write_supply(
+            root.path(),
+            "BAT0",
+            &[
+                ("type", "Battery"),
+                ("scope", "System"),
+                ("status", "Discharging"),
+                ("capacity", "72"),
+                ("power_now", "12345678"),
+            ],
+        );
+        write_supply(
+            root.path(),
+            "mouse",
+            &[
+                ("type", "Battery"),
+                ("scope", "Device"),
+                ("status", "Discharging"),
+                ("capacity", "10"),
+            ],
+        );
+        write_supply(root.path(), "AC", &[("type", "Mains"), ("online", "1")]);
+
+        let sample = read_power_supply_sample(root.path()).unwrap();
+
+        assert_eq!(sample.power_external_online, Some(true));
+        assert_eq!(sample.power_system_battery_present, Some(true));
+        assert_eq!(sample.power_battery_discharging, Some(true));
+        assert_eq!(sample.power_battery_capacity_percent, Some(72));
+        assert_eq!(sample.power_battery_power_microwatts, Some(12_345_678));
+    }
+
+    #[test]
+    fn estimates_battery_capacity_and_power_from_charge_current_voltage() {
+        let root = TempDir::new("adaptive-power-estimated");
+        write_supply(
+            root.path(),
+            "BAT0",
+            &[
+                ("type", "Battery"),
+                ("status", "Charging"),
+                ("charge_now", "40"),
+                ("charge_full", "80"),
+                ("current_now", "1500000"),
+                ("voltage_now", "12000000"),
+            ],
+        );
+        write_supply(root.path(), "AC", &[("type", "USB-C"), ("online", "0")]);
+
+        let sample = read_power_supply_sample(root.path()).unwrap();
+
+        assert_eq!(sample.power_external_online, Some(false));
+        assert_eq!(sample.power_system_battery_present, Some(true));
+        assert_eq!(sample.power_battery_discharging, Some(false));
+        assert_eq!(sample.power_battery_capacity_percent, Some(50));
+        assert_eq!(sample.power_battery_power_microwatts, Some(18_000_000));
+    }
+
     struct TempDir {
         path: std::path::PathBuf,
     }
@@ -435,6 +644,14 @@ mod tests {
     impl Drop for TempDir {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn write_supply(root: &std::path::Path, name: &str, fields: &[(&str, &str)]) {
+        let path = root.join(name);
+        fs::create_dir_all(&path).unwrap();
+        for (field, value) in fields {
+            fs::write(path.join(field), value).unwrap();
         }
     }
 }
