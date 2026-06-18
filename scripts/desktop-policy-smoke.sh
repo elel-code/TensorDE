@@ -808,12 +808,6 @@ append_process_memory_expectations() {
   if [[ -n "$expect_render_sync_package_cache_entries_latest_at_most" ]]; then
     args_ref+=(--expect-render-sync-package-cache-entries-latest-at-most "$expect_render_sync_package_cache_entries_latest_at_most")
   fi
-  if [[ -n "$expect_render_sync_planned_image_resource_references_latest_at_most" ]]; then
-    args_ref+=(--expect-render-sync-planned-image-resource-references-latest-at-most "$expect_render_sync_planned_image_resource_references_latest_at_most")
-  fi
-  if [[ -n "$expect_render_sync_planned_unique_image_resources_latest_at_most" ]]; then
-    args_ref+=(--expect-render-sync-planned-unique-image-resources-latest-at-most "$expect_render_sync_planned_unique_image_resources_latest_at_most")
-  fi
   if [[ -n "$expect_renderer_output_windows_latest_at_most" ]]; then
     args_ref+=(--expect-renderer-output-windows-latest-at-most "$expect_renderer_output_windows_latest_at_most")
   fi
@@ -846,6 +840,41 @@ append_process_memory_expectations() {
   fi
 }
 
+minimum_optional_limit() {
+  local left="$1"
+  local right="$2"
+  if [[ -z "$left" ]]; then
+    printf '%s\n' "$right"
+  elif [[ -z "$right" ]]; then
+    printf '%s\n' "$left"
+  elif (( 10#$left < 10#$right )); then
+    printf '%s\n' "$left"
+  else
+    printf '%s\n' "$right"
+  fi
+}
+
+append_render_sync_resource_expectations() {
+  local -n args_ref="$1"
+  local expected_planned_references="$2"
+  local expected_unique_resources="$3"
+  local effective_planned_references
+  local effective_unique_resources
+  effective_planned_references="$(minimum_optional_limit \
+    "$expect_render_sync_planned_image_resource_references_latest_at_most" \
+    "$expected_planned_references")"
+  effective_unique_resources="$(minimum_optional_limit \
+    "$expect_render_sync_planned_unique_image_resources_latest_at_most" \
+    "$expected_unique_resources")"
+
+  if [[ -n "$effective_planned_references" ]]; then
+    args_ref+=(--expect-render-sync-planned-image-resource-references-latest-at-most "$effective_planned_references")
+  fi
+  if [[ -n "$effective_unique_resources" ]]; then
+    args_ref+=(--expect-render-sync-planned-unique-image-resources-latest-at-most "$effective_unique_resources")
+  fi
+}
+
 run_scenario() {
   local name="$1"
   local expected_mode="$2"
@@ -858,6 +887,8 @@ run_scenario() {
   local session_state="$9"
   local config_profile="${10:-}"
   local adaptive_state="${11:-}"
+  local expected_planned_image_references="${12:-}"
+  local expected_planned_unique_resources="${13:-}"
 
   local scenario_dir="$work_dir/$name"
   local socket="$scenario_dir/runtime/gilder.sock"
@@ -999,6 +1030,10 @@ run_scenario() {
     --expect-render-sync-update-skipped
   )
   append_process_memory_expectations sample_args
+  append_render_sync_resource_expectations \
+    sample_args \
+    "$expected_planned_image_references" \
+    "$expected_planned_unique_resources"
   if [[ -n "$expected_plan_kind" ]]; then
     sample_args+=(--expect-plan-kind "$expected_plan_kind")
   fi
@@ -1029,21 +1064,21 @@ run_scenario() {
   stop_daemon
 }
 
-run_scenario active active interactive 60 render static-image ac active active
-run_scenario battery throttled battery 24 render static-image battery active active
-run_scenario unfocused throttled unfocused 30 render static-image ac unfocused active
-run_scenario fullscreen paused fullscreen "" remove "" ac fullscreen active
-run_scenario hidden paused output-hidden "" remove "" ac hidden active
-run_scenario session-inactive paused session-inactive "" remove "" ac active inactive
-run_scenario session-locked paused session-locked "" remove "" ac active locked
-run_scenario output-active-42fps active interactive 42 render static-image ac active active output-active-42fps
-run_scenario output-unfocused-12fps throttled unfocused 12 render static-image ac unfocused active output-unfocused-12fps
-run_scenario output-battery-pause paused battery "" remove "" battery active active output-battery-pause
-run_scenario adaptive-throttle throttled adaptive 11 render static-image ac active active adaptive-throttle cpu-pressure
-run_scenario adaptive-pause-unfocused paused adaptive "" remove "" ac unfocused active adaptive-pause-unfocused cpu-pressure
-run_scenario adaptive-pause-focused-fallback throttled adaptive 11 render static-image ac active active adaptive-pause-unfocused cpu-pressure
-run_scenario adaptive-pause-dynamic-static active interactive 60 render static-image ac active active adaptive-pause-dynamic cpu-pressure
-run_scenario adaptive-pause-dynamic-slideshow paused adaptive "" remove "" ac active active adaptive-pause-dynamic cpu-pressure
+run_scenario active active interactive 60 render static-image ac active active "" "" 1 1
+run_scenario battery throttled battery 24 render static-image battery active active "" "" 1 1
+run_scenario unfocused throttled unfocused 30 render static-image ac unfocused active "" "" 1 1
+run_scenario fullscreen paused fullscreen "" remove "" ac fullscreen active "" "" 0 0
+run_scenario hidden paused output-hidden "" remove "" ac hidden active "" "" 0 0
+run_scenario session-inactive paused session-inactive "" remove "" ac active inactive "" "" 0 0
+run_scenario session-locked paused session-locked "" remove "" ac active locked "" "" 0 0
+run_scenario output-active-42fps active interactive 42 render static-image ac active active output-active-42fps "" 1 1
+run_scenario output-unfocused-12fps throttled unfocused 12 render static-image ac unfocused active output-unfocused-12fps "" 1 1
+run_scenario output-battery-pause paused battery "" remove "" battery active active output-battery-pause "" 0 0
+run_scenario adaptive-throttle throttled adaptive 11 render static-image ac active active adaptive-throttle cpu-pressure 1 1
+run_scenario adaptive-pause-unfocused paused adaptive "" remove "" ac unfocused active adaptive-pause-unfocused cpu-pressure 0 0
+run_scenario adaptive-pause-focused-fallback throttled adaptive 11 render static-image ac active active adaptive-pause-unfocused cpu-pressure 1 1
+run_scenario adaptive-pause-dynamic-static active interactive 60 render static-image ac active active adaptive-pause-dynamic cpu-pressure 1 1
+run_scenario adaptive-pause-dynamic-slideshow paused adaptive "" remove "" ac active active adaptive-pause-dynamic cpu-pressure 0 0
 
 write_summary
 note "metadata: $metadata_path"
