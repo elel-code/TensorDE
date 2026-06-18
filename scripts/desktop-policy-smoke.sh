@@ -270,6 +270,7 @@ else
 fi
 metadata_path="$work_dir/metadata.txt"
 matrix_path="$work_dir/matrix.csv"
+resource_baseline_path="$work_dir/resource-baseline.csv"
 summary_path="$work_dir/summary.txt"
 cat > "$metadata_path" <<EOF
 output: ${output_name}
@@ -284,6 +285,7 @@ wallpaper: ${wallpaper_path}
 slideshow_wallpaper: ${slideshow_wallpaper_path}
 EOF
 printf 'scenario,status,expected_mode,expected_reason,expected_max_fps,expected_action,expected_plan_kind,power_state,output_state,session_state,adaptive_state,config_profile,status_before,status_after,performance_dir,daemon_log\n' > "$matrix_path"
+printf 'scenario,status,expected_mode,expected_reason,expected_max_fps,expected_action,expected_plan_kind,power_state,output_state,session_state,adaptive_state,config_profile,performance_dir,samples,avg_cpu_percent,avg_rss_kib,max_rss_kib,avg_pss_kib,max_pss_kib,avg_private_kib,max_private_kib,avg_uss_kib,max_uss_kib,avg_shared_kib,max_shared_kib,gpu_busy_samples,avg_gpu_busy_percent,max_gpu_busy_percent,decision_rows,decision_outputs,decision_samples,telemetry_rows,desktop_refreshes_delta,desktop_refresh_skips_delta,render_sync_cache_hits_delta,render_sync_cache_misses_delta,render_sync_cache_hit_ratio,render_sync_updates_queued_latest,render_sync_updates_skipped_latest,adaptive_action_types_latest,adaptive_action_max_fps_latest,renderer_video_pipelines_latest,renderer_video_qos_messages_max,renderer_video_qos_dropped_max,renderer_video_gtk_frame_clock_ticks_max\n' > "$resource_baseline_path"
 
 write_config_profile() {
   local config_file="$1"
@@ -347,6 +349,90 @@ EOF
   esac
 }
 
+summary_value_or_empty() {
+  local summary="$1"
+  local key="$2"
+  if [[ ! -f "$summary" ]]; then
+    return 0
+  fi
+  awk -v key="$key" -F': ' '$1 == key { print $2; found = 1; exit } END { exit found ? 0 : 1 }' "$summary" || true
+}
+
+record_resource_baseline() {
+  local scenario="$1"
+  local status="$2"
+  local expected_mode="$3"
+  local expected_reason="$4"
+  local expected_max_fps="$5"
+  local expected_action="$6"
+  local expected_plan_kind="$7"
+  local power_state="$8"
+  local output_state="$9"
+  local session_state="${10}"
+  local adaptive_state="${11}"
+  local config_profile="${12}"
+  local perf_dir="${13}"
+
+  local process_summary="$perf_dir/summary.txt"
+  local decision_summary="$perf_dir/decision-summary.txt"
+  local telemetry_summary="$perf_dir/telemetry-summary.txt"
+  local row=(
+    "$scenario"
+    "$status"
+    "$expected_mode"
+    "$expected_reason"
+    "$expected_max_fps"
+    "$expected_action"
+    "$expected_plan_kind"
+    "$power_state"
+    "$output_state"
+    "$session_state"
+    "$adaptive_state"
+    "$config_profile"
+    "${perf_dir#$work_dir/}"
+    "$(summary_value_or_empty "$process_summary" samples)"
+    "$(summary_value_or_empty "$process_summary" avg_cpu_percent)"
+    "$(summary_value_or_empty "$process_summary" avg_rss_kib)"
+    "$(summary_value_or_empty "$process_summary" max_rss_kib)"
+    "$(summary_value_or_empty "$process_summary" avg_pss_kib)"
+    "$(summary_value_or_empty "$process_summary" max_pss_kib)"
+    "$(summary_value_or_empty "$process_summary" avg_private_kib)"
+    "$(summary_value_or_empty "$process_summary" max_private_kib)"
+    "$(summary_value_or_empty "$process_summary" avg_uss_kib)"
+    "$(summary_value_or_empty "$process_summary" max_uss_kib)"
+    "$(summary_value_or_empty "$process_summary" avg_shared_kib)"
+    "$(summary_value_or_empty "$process_summary" max_shared_kib)"
+    "$(summary_value_or_empty "$process_summary" gpu_busy_samples)"
+    "$(summary_value_or_empty "$process_summary" avg_gpu_busy_percent)"
+    "$(summary_value_or_empty "$process_summary" max_gpu_busy_percent)"
+    "$(summary_value_or_empty "$decision_summary" decision_rows)"
+    "$(summary_value_or_empty "$decision_summary" decision_outputs)"
+    "$(summary_value_or_empty "$decision_summary" decision_samples)"
+    "$(summary_value_or_empty "$telemetry_summary" telemetry_rows)"
+    "$(summary_value_or_empty "$telemetry_summary" desktop_refreshes_delta)"
+    "$(summary_value_or_empty "$telemetry_summary" desktop_refresh_skips_delta)"
+    "$(summary_value_or_empty "$telemetry_summary" render_sync_cache_hits_delta)"
+    "$(summary_value_or_empty "$telemetry_summary" render_sync_cache_misses_delta)"
+    "$(summary_value_or_empty "$telemetry_summary" render_sync_cache_hit_ratio)"
+    "$(summary_value_or_empty "$telemetry_summary" render_sync_updates_queued_latest)"
+    "$(summary_value_or_empty "$telemetry_summary" render_sync_updates_skipped_latest)"
+    "$(summary_value_or_empty "$telemetry_summary" adaptive_action_types_latest)"
+    "$(summary_value_or_empty "$telemetry_summary" adaptive_action_max_fps_latest)"
+    "$(summary_value_or_empty "$telemetry_summary" renderer_video_pipelines_latest)"
+    "$(summary_value_or_empty "$telemetry_summary" renderer_video_qos_messages_max)"
+    "$(summary_value_or_empty "$telemetry_summary" renderer_video_qos_dropped_max)"
+    "$(summary_value_or_empty "$telemetry_summary" renderer_video_gtk_frame_clock_ticks_max)"
+  )
+  local index
+  for index in "${!row[@]}"; do
+    if [[ "$index" -gt 0 ]]; then
+      printf ',' >> "$resource_baseline_path"
+    fi
+    csv_escape "${row[$index]}" >> "$resource_baseline_path"
+  done
+  printf '\n' >> "$resource_baseline_path"
+}
+
 record_scenario() {
   local scenario="$1"
   local status="$2"
@@ -391,6 +477,7 @@ record_scenario() {
     csv_escape "${row[$index]}" >> "$matrix_path"
   done
   printf '\n' >> "$matrix_path"
+  record_resource_baseline "$scenario" "$status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$adaptive_state" "$config_profile" "$perf_dir"
 }
 
 write_summary() {
@@ -400,6 +487,7 @@ skipped: ${skips}
 failed: ${failures}
 metadata: ${metadata_path}
 matrix: ${matrix_path}
+resource_baseline: ${resource_baseline_path}
 EOF
 }
 
@@ -645,6 +733,7 @@ run_scenario adaptive-pause-dynamic-slideshow paused adaptive "" remove "" ac ac
 write_summary
 note "metadata: $metadata_path"
 note "matrix:   $matrix_path"
+note "resources: $resource_baseline_path"
 note "report:   $summary_path"
 note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
 if [[ "$failures" -gt 0 ]]; then
