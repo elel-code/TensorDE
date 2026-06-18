@@ -28,6 +28,30 @@ const STATIC_IMAGE_VARIANTS: &[StaticImageVariantSpec] = &[
         height: 2160,
         file_name: "landscape-2160p.png",
     },
+    StaticImageVariantSpec {
+        id: "ultrawide-1080p",
+        width: 2560,
+        height: 1080,
+        file_name: "ultrawide-1080p.png",
+    },
+    StaticImageVariantSpec {
+        id: "ultrawide-1440p",
+        width: 3440,
+        height: 1440,
+        file_name: "ultrawide-1440p.png",
+    },
+    StaticImageVariantSpec {
+        id: "portrait-1080p",
+        width: 1080,
+        height: 1920,
+        file_name: "portrait-1080p.png",
+    },
+    StaticImageVariantSpec {
+        id: "portrait-2160p",
+        width: 2160,
+        height: 3840,
+        file_name: "portrait-2160p.png",
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -2013,13 +2037,30 @@ exit 0
         load_gwpdir(output.path()).unwrap();
 
         let variants = manifest["variants"].as_array().unwrap();
-        assert_eq!(variants.len(), 2);
-        assert_eq!(variants[0]["id"], "landscape-1080p");
+        let ids = variants
+            .iter()
+            .map(|variant| variant["id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                "landscape-1080p",
+                "landscape-2160p",
+                "ultrawide-1080p",
+                "ultrawide-1440p",
+                "portrait-1080p",
+                "portrait-2160p",
+            ]
+        );
         assert_eq!(variants[0]["width"], 1920);
         assert_eq!(variants[0]["height"], 1080);
-        assert_eq!(variants[1]["id"], "landscape-2160p");
-        assert!(output.path().join("variants/landscape-1080p.png").exists());
-        assert!(output.path().join("variants/landscape-2160p.png").exists());
+        assert_eq!(variants[3]["width"], 3440);
+        assert_eq!(variants[3]["height"], 1440);
+        assert_eq!(variants[5]["width"], 2160);
+        assert_eq!(variants[5]["height"], 3840);
+        for id in &ids {
+            assert!(output.path().join(format!("variants/{id}.png")).exists());
+        }
         assert!(
             report
                 .generated_assets
@@ -2028,7 +2069,7 @@ exit 0
         assert!(
             report
                 .converted_features
-                .contains(&"static-image:variant:landscape-2160p".to_owned())
+                .contains(&"static-image:variant:portrait-2160p".to_owned())
         );
     }
 
