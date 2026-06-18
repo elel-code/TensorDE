@@ -8,7 +8,7 @@ use crate::core::FitMode;
 use crate::policy::RenderMode;
 #[cfg(feature = "video-renderer")]
 use crate::renderer::video::{
-    VideoPipelineSnapshot, actual_decoder_elements, actual_decoder_reports,
+    VideoPipelineSnapshot, actual_decoder_elements, actual_decoder_reports, video_caps_reports,
 };
 use gtk::gdk;
 use gtk::gio;
@@ -228,6 +228,7 @@ impl GtkStaticRenderer {
                     start_offset_ms: video.start_offset_ms,
                     actual_decoders: actual_decoder_elements(&video.element),
                     actual_decoder_reports: actual_decoder_reports(&video.element),
+                    caps_reports: video_caps_reports(&video.element),
                 })
             })
             .collect()

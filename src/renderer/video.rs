@@ -225,6 +225,7 @@ impl GstVideoRenderer {
                 start_offset_ms: pipeline.start_offset_ms,
                 actual_decoders: actual_decoder_elements(&pipeline.element),
                 actual_decoder_reports: actual_decoder_reports(&pipeline.element),
+                caps_reports: video_caps_reports(&pipeline.element),
             })
             .collect()
     }
@@ -460,6 +461,118 @@ pub fn actual_decoder_reports(element: &gst::Element) -> Vec<VideoDecoderReport>
         .collect()
 }
 
+pub fn video_caps_reports(element: &gst::Element) -> Vec<VideoCapsReport> {
+    let mut reports = Vec::new();
+    push_element_caps_reports(element, &mut reports);
+
+    if let Ok(bin) = element.clone().downcast::<gst::Bin>() {
+        let mut iterator = bin.iterate_recurse();
+        while let Ok(Some(child)) = iterator.next() {
+            push_element_caps_reports(&child, &mut reports);
+        }
+    }
+
+    reports.sort_by(|left, right| {
+        (
+            left.element.as_str(),
+            left.pad.as_str(),
+            left.direction.as_str(),
+            left.caps.as_str(),
+        )
+            .cmp(&(
+                right.element.as_str(),
+                right.pad.as_str(),
+                right.direction.as_str(),
+                right.caps.as_str(),
+            ))
+    });
+    reports.dedup();
+    reports
+}
+
+fn push_element_caps_reports(element: &gst::Element, reports: &mut Vec<VideoCapsReport>) {
+    for pad in element.pads() {
+        let Some(caps) = pad.current_caps() else {
+            continue;
+        };
+        let structures = caps_structure_reports(&caps);
+        if !caps_report_is_relevant(&structures) {
+            continue;
+        }
+        reports.push(VideoCapsReport {
+            element: element.name().to_string(),
+            pad: pad.name().to_string(),
+            direction: pad_direction_name(pad.direction()).to_owned(),
+            caps: caps.to_string(),
+            memory_features: caps_memory_features(&structures),
+            structures,
+        });
+    }
+}
+
+fn caps_structure_reports(caps: &gst::Caps) -> Vec<VideoCapsStructureReport> {
+    if caps.is_any() {
+        return vec![VideoCapsStructureReport {
+            media_type: "ANY".to_owned(),
+            features: vec!["ANY".to_owned()],
+        }];
+    }
+    if caps.is_empty() {
+        return Vec::new();
+    }
+
+    (0..caps.size())
+        .filter_map(|index| {
+            let structure = caps.structure(index)?;
+            let features = caps.features(index)?;
+            Some(VideoCapsStructureReport {
+                media_type: structure.name().to_string(),
+                features: caps_feature_strings(features),
+            })
+        })
+        .collect()
+}
+
+fn caps_feature_strings(features: &gst::CapsFeaturesRef) -> Vec<String> {
+    if features.is_any() {
+        return vec!["ANY".to_owned()];
+    }
+
+    (0..features.size())
+        .filter_map(|index| features.nth(index).map(ToString::to_string))
+        .collect()
+}
+
+fn caps_memory_features(structures: &[VideoCapsStructureReport]) -> Vec<String> {
+    let mut features = structures
+        .iter()
+        .flat_map(|structure| structure.features.iter())
+        .filter(|feature| feature.starts_with("memory:"))
+        .cloned()
+        .collect::<Vec<_>>();
+    features.sort();
+    features.dedup();
+    features
+}
+
+fn caps_report_is_relevant(structures: &[VideoCapsStructureReport]) -> bool {
+    structures.iter().any(|structure| {
+        structure.media_type.starts_with("video/")
+            || structure
+                .features
+                .iter()
+                .any(|feature| feature.starts_with("memory:"))
+    })
+}
+
+fn pad_direction_name(direction: gst::PadDirection) -> &'static str {
+    match direction {
+        gst::PadDirection::Src => "src",
+        gst::PadDirection::Sink => "sink",
+        gst::PadDirection::Unknown => "unknown",
+    }
+}
+
 fn decoder_class(element: &str) -> VideoDecoderClass {
     if HARDWARE_DECODER_ELEMENT_NAMES.contains(&element) {
         VideoDecoderClass::Hardware
@@ -566,12 +679,29 @@ pub struct VideoPipelineSnapshot {
     pub start_offset_ms: u64,
     pub actual_decoders: Vec<String>,
     pub actual_decoder_reports: Vec<VideoDecoderReport>,
+    pub caps_reports: Vec<VideoCapsReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VideoDecoderReport {
     pub element: String,
     pub class: VideoDecoderClass,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VideoCapsReport {
+    pub element: String,
+    pub pad: String,
+    pub direction: String,
+    pub caps: String,
+    pub memory_features: Vec<String>,
+    pub structures: Vec<VideoCapsStructureReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VideoCapsStructureReport {
+    pub media_type: String,
+    pub features: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -657,6 +787,15 @@ mod tests {
         assert_eq!(snapshot[0].start_offset_ms, 0);
         assert!(snapshot[0].actual_decoders.is_empty());
         assert!(snapshot[0].actual_decoder_reports.is_empty());
+        assert!(
+            snapshot[0].caps_reports.iter().any(|report| {
+                report
+                    .structures
+                    .iter()
+                    .any(|structure| structure.media_type.starts_with("video/"))
+            }),
+            "test source should negotiate video caps"
+        );
 
         let sync = StaticRenderSyncPlan {
             plans: Vec::new(),
@@ -732,6 +871,40 @@ mod tests {
         assert_eq!(decoder_class("dav1ddec"), VideoDecoderClass::Software);
         assert_eq!(decoder_class("vaav1dec"), VideoDecoderClass::Hardware);
         assert_eq!(decoder_class("customdec"), VideoDecoderClass::Unknown);
+    }
+
+    #[test]
+    fn reports_current_video_caps_memory_features() {
+        gst::init().unwrap();
+        let source = gst::ElementFactory::make("videotestsrc").build().unwrap();
+        let sink = gst::ElementFactory::make("fakesink").build().unwrap();
+        let pipeline = gst::Pipeline::new();
+        pipeline.add_many([&source, &sink]).unwrap();
+        source.link(&sink).unwrap();
+        pipeline.set_state(gst::State::Paused).unwrap();
+        let _ = pipeline.state(gst::ClockTime::from_seconds(3));
+
+        let reports = video_caps_reports(&pipeline.clone().upcast::<gst::Element>());
+        pipeline.set_state(gst::State::Null).unwrap();
+
+        assert!(reports.iter().any(|report| {
+            report
+                .structures
+                .iter()
+                .any(|structure| structure.media_type.starts_with("video/"))
+        }));
+    }
+
+    #[test]
+    fn extracts_caps_memory_features() {
+        gst::init().unwrap();
+        let caps = gst::Caps::builder_full_with_features(gst::CapsFeatures::new(["memory:DMABuf"]))
+            .structure(gst::Structure::builder("video/x-raw").build())
+            .build();
+        let structures = caps_structure_reports(&caps);
+
+        assert_eq!(caps_memory_features(&structures), vec!["memory:DMABuf"]);
+        assert!(caps_report_is_relevant(&structures));
     }
 
     #[test]
