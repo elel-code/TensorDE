@@ -41,6 +41,8 @@ Options:
                      Require sampled video position to advance
   --expect-gtk-frame-clock
                      Require sampled GTK video frame clock ticks
+  --expect-gtk-frame-clock-phase <phase>
+                     Require GTK frame clock phase ticks. Phase: before-paint, update, layout, paint, after-paint, or all
   --expect-gtk-frame-timings
                      Require sampled completed GDK frame timings
   --require-video-runtime-row
@@ -80,6 +82,7 @@ expect_sink_memory_feature=""
 expect_zero_copy_evidence=""
 expect_video_position_progress=0
 expect_gtk_frame_clock=0
+expect_gtk_frame_clock_phases=()
 expect_gtk_frame_timings=0
 require_video_runtime_row=0
 visual_hold=0
@@ -203,6 +206,23 @@ while [[ $# -gt 0 ]]; do
       expect_gtk_frame_clock=1
       sample_performance=1
       shift
+      ;;
+    --expect-gtk-frame-clock-phase)
+      [[ $# -ge 2 ]] || { echo "--expect-gtk-frame-clock-phase requires a value" >&2; exit 2; }
+      case "$2" in
+        before-paint|update|layout|paint|after-paint)
+          expect_gtk_frame_clock_phases+=("$2")
+          ;;
+        all)
+          expect_gtk_frame_clock_phases+=(before-paint update layout paint after-paint)
+          ;;
+        *)
+          echo "--expect-gtk-frame-clock-phase must be one of before-paint, update, layout, paint, after-paint, all" >&2
+          exit 2
+          ;;
+      esac
+      sample_performance=1
+      shift 2
       ;;
     --expect-gtk-frame-timings)
       expect_gtk_frame_timings=1
@@ -531,6 +551,7 @@ expect_sink_memory_feature: ${expect_sink_memory_feature:-none}
 expect_zero_copy_evidence: ${expect_zero_copy_evidence:-none}
 expect_video_position_progress: ${expect_video_position_progress}
 expect_gtk_frame_clock: ${expect_gtk_frame_clock}
+expect_gtk_frame_clock_phases: ${expect_gtk_frame_clock_phases[*]:-none}
 expect_gtk_frame_timings: ${expect_gtk_frame_timings}
 require_video_runtime_row: ${require_video_runtime_row}
 visual_hold: ${visual_hold}
@@ -625,6 +646,7 @@ sample_performance: ${sample_performance}
 sample_paused: ${sample_paused}
 measure_fullscreen_resume: ${measure_fullscreen_resume}
 require_video_runtime_row: ${require_video_runtime_row}
+expect_gtk_frame_clock_phases: ${expect_gtk_frame_clock_phases[*]:-none}
 video_runtime_rows: $(count_csv_data_rows "$video_runtime_path")
 video_runtime_csv: ${video_runtime_path}
 performance_active_summary: ${active_summary}
@@ -673,6 +695,7 @@ has_video_runtime_expectations() {
     -n "$expect_zero_copy_evidence" ||
     "$expect_video_position_progress" -eq 1 ||
     "$expect_gtk_frame_clock" -eq 1 ||
+    "${#expect_gtk_frame_clock_phases[@]}" -gt 0 ||
     "$expect_gtk_frame_timings" -eq 1 ]]
 }
 
@@ -699,6 +722,10 @@ append_video_runtime_expectations() {
   if [[ "$expect_gtk_frame_clock" -eq 1 ]]; then
     args_ref+=(--expect-gtk-frame-clock)
   fi
+  local phase
+  for phase in "${expect_gtk_frame_clock_phases[@]}"; do
+    args_ref+=(--expect-gtk-frame-clock-phase "$phase")
+  done
   if [[ "$expect_gtk_frame_timings" -eq 1 ]]; then
     args_ref+=(--expect-gtk-frame-timings)
   fi

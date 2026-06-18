@@ -59,6 +59,8 @@ Options:
                      Require observed QoS dropped max to be at most count
   --expect-gtk-frame-clock
                      Require observed GTK frame clock ticks in video runtime rows
+  --expect-gtk-frame-clock-phase <phase>
+                     Require GTK frame clock phase ticks. Phase: before-paint, update, layout, paint, after-paint, or all
   --expect-gtk-frame-timings
                      Require observed completed GDK frame timings in video runtime rows
   --allow-missing     Report missing daemon/tools as skips instead of failures
@@ -98,6 +100,7 @@ expect_frame_limiter_max_fps=""
 expect_video_qos=0
 expect_qos_dropped_max_at_most=""
 expect_gtk_frame_clock=0
+expect_gtk_frame_clock_phases=()
 expect_gtk_frame_timings=0
 
 while [[ $# -gt 0 ]]; do
@@ -238,6 +241,22 @@ while [[ $# -gt 0 ]]; do
     --expect-gtk-frame-clock)
       expect_gtk_frame_clock=1
       shift
+      ;;
+    --expect-gtk-frame-clock-phase)
+      [[ $# -ge 2 ]] || { echo "--expect-gtk-frame-clock-phase requires a value" >&2; exit 2; }
+      case "$2" in
+        before-paint|update|layout|paint|after-paint)
+          expect_gtk_frame_clock_phases+=("$2")
+          ;;
+        all)
+          expect_gtk_frame_clock_phases+=(before-paint update layout paint after-paint)
+          ;;
+        *)
+          echo "--expect-gtk-frame-clock-phase must be one of before-paint, update, layout, paint, after-paint, all" >&2
+          exit 2
+          ;;
+      esac
+      shift 2
       ;;
     --expect-gtk-frame-timings)
       expect_gtk_frame_timings=1
@@ -1224,6 +1243,7 @@ has_video_runtime_expectations() {
     "$expect_video_qos" -eq 1 ||
     -n "$expect_qos_dropped_max_at_most" ||
     "$expect_gtk_frame_clock" -eq 1 ||
+    "${#expect_gtk_frame_clock_phases[@]}" -gt 0 ||
     "$expect_gtk_frame_timings" -eq 1 ]]
 }
 
@@ -1283,6 +1303,26 @@ expect_video_runtime_summary_maximum() {
   fi
 }
 
+gtk_frame_clock_phase_summary_key() {
+  case "$1" in
+    before-paint)
+      printf '%s\n' "video_gtk_frame_clock_before_paint_ticks_max"
+      ;;
+    update)
+      printf '%s\n' "video_gtk_frame_clock_update_ticks_max"
+      ;;
+    layout)
+      printf '%s\n' "video_gtk_frame_clock_layout_ticks_max"
+      ;;
+    paint)
+      printf '%s\n' "video_gtk_frame_clock_paint_ticks_max"
+      ;;
+    after-paint)
+      printf '%s\n' "video_gtk_frame_clock_after_paint_ticks_max"
+      ;;
+  esac
+}
+
 validate_video_runtime_expectations() {
   has_video_runtime_expectations || return 0
   if [[ "$status_enabled" -ne 1 || "$video_runtime_failures" -gt 0 ]]; then
@@ -1330,6 +1370,12 @@ validate_video_runtime_expectations() {
   if [[ "$expect_gtk_frame_clock" -eq 1 ]]; then
     expect_video_runtime_summary_minimum "video_gtk_frame_clock_ticks_max" 1 "GTK frame clock tick max count"
   fi
+  local phase
+  local phase_key
+  for phase in "${expect_gtk_frame_clock_phases[@]}"; do
+    phase_key="$(gtk_frame_clock_phase_summary_key "$phase")"
+    expect_video_runtime_summary_minimum "$phase_key" 1 "GTK frame clock ${phase} phase tick max count"
+  done
   if [[ "$expect_gtk_frame_timings" -eq 1 ]]; then
     expect_video_runtime_summary_minimum "video_gtk_frame_timings_complete_max" 1 "GDK frame timings complete max count"
   fi
@@ -1457,6 +1503,7 @@ expect_frame_limiter_max_fps: ${expect_frame_limiter_max_fps:-none}
 expect_video_qos: ${expect_video_qos}
 expect_qos_dropped_max_at_most: ${expect_qos_dropped_max_at_most:-none}
 expect_gtk_frame_clock: ${expect_gtk_frame_clock}
+expect_gtk_frame_clock_phases: ${expect_gtk_frame_clock_phases[*]:-none}
 expect_gtk_frame_timings: ${expect_gtk_frame_timings}
 gpu_busy_sources: drm gpu_busy_percent sysfs when readable; nvidia-smi utilization.gpu when available
 EOF
