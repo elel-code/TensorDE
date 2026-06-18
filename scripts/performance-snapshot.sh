@@ -373,6 +373,32 @@ append_status_telemetry() {
   return 0
 }
 
+append_status_video_runtime() {
+  local sample="$1"
+  local elapsed="$2"
+  local status_file="$3"
+  local video_runtime_csv="$4"
+  local video_runtime_error_file="$5"
+  local temp_video_runtime="$work_dir/video-runtime-$(printf '%03d' "$sample").tmp"
+
+  if ! "$gilderctl" status --video-runtime-csv --from-file "$status_file" > "$temp_video_runtime" 2> "$video_runtime_error_file"; then
+    rm -f "$temp_video_runtime"
+    return 1
+  fi
+  if [[ ! -s "$video_runtime_error_file" ]]; then
+    rm -f "$video_runtime_error_file"
+  fi
+
+  awk -v sample="$sample" -v elapsed="$elapsed" '
+    NR == 1 { next }
+    {
+      print sample "," elapsed "," $0
+    }
+  ' "$temp_video_runtime" >> "$video_runtime_csv"
+  rm -f "$temp_video_runtime"
+  return 0
+}
+
 write_decision_summary() {
   local decisions_csv="$1"
   local summary="$2"
@@ -649,6 +675,7 @@ decisions_path="$work_dir/decisions.csv"
 decision_summary_path="$work_dir/decision-summary.txt"
 telemetry_path="$work_dir/telemetry.csv"
 telemetry_summary_path="$work_dir/telemetry-summary.txt"
+video_runtime_path="$work_dir/video-runtime.csv"
 
 cat > "$metadata_path" <<EOF
 label: ${label}
@@ -672,10 +699,12 @@ EOF
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
 printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts\n' > "$telemetry_path"
+printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,source\n' > "$video_runtime_path"
 
 status_failures=0
 decision_failures=0
 telemetry_failures=0
+video_runtime_failures=0
 for sample in $(seq 1 "$samples"); do
   if ! kill -0 "$pid" >/dev/null 2>&1; then
     skip_or_fail "process $pid exited during sampling"
@@ -727,6 +756,11 @@ for sample in $(seq 1 "$samples"); do
       if ! append_status_telemetry "$sample" "$elapsed" "$status_file" "$telemetry_path" "$telemetry_error_file"; then
         telemetry_failures=$((telemetry_failures + 1))
         skip_or_fail "failed to extract daemon telemetry for sample $sample"
+      fi
+      video_runtime_error_file="$work_dir/video-runtime-$(printf '%03d' "$sample").err"
+      if ! append_status_video_runtime "$sample" "$elapsed" "$status_file" "$video_runtime_path" "$video_runtime_error_file"; then
+        video_runtime_failures=$((video_runtime_failures + 1))
+        skip_or_fail "failed to extract video runtime for sample $sample"
       fi
     fi
   fi
@@ -783,6 +817,11 @@ if [[ "$status_enabled" -eq 1 && "$telemetry_failures" -eq 0 ]]; then
   pass "wrote daemon telemetry summary to $telemetry_summary_path"
 elif [[ "$status_enabled" -eq 1 ]]; then
   note "daemon telemetry extraction had ${telemetry_failures} failed samples"
+fi
+if [[ "$status_enabled" -eq 1 && "$video_runtime_failures" -eq 0 ]]; then
+  pass "wrote video runtime samples to $video_runtime_path"
+elif [[ "$status_enabled" -eq 1 ]]; then
+  note "video runtime extraction had ${video_runtime_failures} failed samples"
 fi
 validate_decision_expectations
 validate_telemetry_expectations

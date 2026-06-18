@@ -80,6 +80,7 @@ enum ResponseFormat {
     Json,
     DecisionsCsv,
     TelemetryCsv,
+    VideoRuntimeCsv,
 }
 
 fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
@@ -112,6 +113,20 @@ fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
                 response_file: Some(PathBuf::from(path)),
             })
         }
+        [cmd, format] if cmd == "status" && format == "--video-runtime-csv" => Ok(Invocation {
+            command: gilder::ipc::ClientCommand::Status,
+            format: ResponseFormat::VideoRuntimeCsv,
+            response_file: None,
+        }),
+        [cmd, format, from_file, path]
+            if cmd == "status" && format == "--video-runtime-csv" && from_file == "--from-file" =>
+        {
+            Ok(Invocation {
+                command: gilder::ipc::ClientCommand::Status,
+                format: ResponseFormat::VideoRuntimeCsv,
+                response_file: Some(PathBuf::from(path)),
+            })
+        }
         [cmd, from_file, path] if cmd == "status" && from_file == "--from-file" => Ok(Invocation {
             command: gilder::ipc::ClientCommand::Status,
             format: ResponseFormat::Json,
@@ -137,6 +152,10 @@ fn print_response(response: &str, format: ResponseFormat) -> Result<(), String> 
         }
         ResponseFormat::TelemetryCsv => {
             print!("{}", render_telemetry_csv(response)?);
+            Ok(())
+        }
+        ResponseFormat::VideoRuntimeCsv => {
+            print!("{}", render_video_runtime_csv(response)?);
             Ok(())
         }
     }
@@ -272,6 +291,90 @@ fn render_telemetry_csv(response: &str) -> Result<String, String> {
     Ok(csv)
 }
 
+fn render_video_runtime_csv(response: &str) -> Result<String, String> {
+    let response: StatusResponse =
+        serde_json::from_str(response).map_err(|err| format!("failed to parse response: {err}"))?;
+    if let Some(error) = response.error {
+        return Err(format!("daemon returned error: {error}"));
+    }
+    let result = response
+        .result
+        .ok_or_else(|| "status response did not contain result".to_owned())?;
+
+    let mut csv = String::from(
+        "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,source\n",
+    );
+    for pipeline in &result.renderer_runtime.video_pipelines {
+        let actual_decoders = if pipeline.actual_decoders.is_empty() {
+            pipeline
+                .actual_decoder_reports
+                .iter()
+                .map(|report| report.element.clone())
+                .collect()
+        } else {
+            pipeline.actual_decoders.clone()
+        };
+        let decoder_classes = pipeline
+            .actual_decoder_reports
+            .iter()
+            .map(|report| report.class.clone())
+            .collect::<Vec<_>>();
+        let memory_features = collect_memory_features(&pipeline.caps_reports, false);
+        let sink_memory_features = collect_memory_features(&pipeline.caps_reports, true);
+        let media_types = collect_media_types(&pipeline.caps_reports);
+        let caps_paths = collect_caps_paths(&pipeline.caps_reports);
+
+        let row = [
+            csv_cell(&pipeline.output_name),
+            csv_cell(&pipeline.mode),
+            csv_cell(&pipeline.gst_state),
+            csv_cell(&pipeline.decoder_policy),
+            csv_cell(&pipeline.decoder_policy_status),
+            csv_cell(&pipe_join(actual_decoders)),
+            csv_cell(&pipe_join(decoder_classes)),
+            pipeline.caps_reports.len().to_string(),
+            csv_cell(&pipe_join(memory_features)),
+            csv_cell(&pipe_join(sink_memory_features)),
+            csv_cell(&pipe_join(media_types)),
+            csv_cell(&pipe_join(caps_paths)),
+            csv_cell(&pipeline.source),
+        ];
+        csv.push_str(&row.join(","));
+        csv.push('\n');
+    }
+    Ok(csv)
+}
+
+fn collect_memory_features(caps_reports: &[VideoCapsReport], sink_only: bool) -> Vec<String> {
+    caps_reports
+        .iter()
+        .filter(|report| !sink_only || report.direction == "sink")
+        .flat_map(|report| report.memory_features.iter().cloned())
+        .collect()
+}
+
+fn collect_media_types(caps_reports: &[VideoCapsReport]) -> Vec<String> {
+    caps_reports
+        .iter()
+        .flat_map(|report| report.structures.iter())
+        .map(|structure| structure.media_type.clone())
+        .collect()
+}
+
+fn collect_caps_paths(caps_reports: &[VideoCapsReport]) -> Vec<String> {
+    caps_reports
+        .iter()
+        .map(|report| format!("{}:{}:{}", report.element, report.pad, report.direction))
+        .collect()
+}
+
+fn pipe_join(mut values: Vec<String>) -> String {
+    values.retain(|value| !value.is_empty());
+    values.sort();
+    values.dedup();
+    values.join("|")
+}
+
 fn render_plan_details(sync: &RenderSync) -> BTreeMap<&str, PlanCsvDetails<'_>> {
     let mut details = BTreeMap::new();
     for plan in &sync.plans {
@@ -351,6 +454,8 @@ struct StatusResult {
     render_sync: RenderSync,
     #[serde(default)]
     telemetry: Telemetry,
+    #[serde(default)]
+    renderer_runtime: RendererRuntime,
 }
 
 #[derive(Debug, Deserialize)]
@@ -481,6 +586,62 @@ struct AdaptiveSample {
     power_battery_power_microwatts: Option<u64>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct RendererRuntime {
+    #[serde(default)]
+    video_pipelines: Vec<VideoRuntimePipeline>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct VideoRuntimePipeline {
+    #[serde(default)]
+    output_name: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    gst_state: String,
+    #[serde(default)]
+    decoder_policy: String,
+    #[serde(default)]
+    decoder_policy_status: String,
+    #[serde(default)]
+    actual_decoders: Vec<String>,
+    #[serde(default)]
+    actual_decoder_reports: Vec<VideoDecoderReport>,
+    #[serde(default)]
+    caps_reports: Vec<VideoCapsReport>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct VideoDecoderReport {
+    #[serde(default)]
+    element: String,
+    #[serde(default)]
+    class: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct VideoCapsReport {
+    #[serde(default)]
+    element: String,
+    #[serde(default)]
+    pad: String,
+    #[serde(default)]
+    direction: String,
+    #[serde(default)]
+    memory_features: Vec<String>,
+    #[serde(default)]
+    structures: Vec<VideoCapsStructureReport>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct VideoCapsStructureReport {
+    #[serde(default)]
+    media_type: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,6 +688,19 @@ mod tests {
     }
 
     #[test]
+    fn formats_video_runtime_as_csv() {
+        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[],"video_plans":[],"decisions":[]},"renderer_runtime":{"video_pipelines":[{"output_name":"eDP-1","source":"/tmp/loop.mp4","mode":"active","gst_state":"Playing","loop_playback":true,"muted":true,"target_max_fps":24,"decoder_policy":"hardware-preferred","decoder_policy_status":"software-fallback","actual_decoders":["dav1ddec"],"actual_decoder_reports":[{"element":"dav1ddec","class":"software"}],"caps_reports":[{"element":"gtk4paintablesink0","pad":"sink","direction":"sink","caps":"video/x-raw(memory:DMABuf)","memory_features":["memory:DMABuf"],"structures":[{"media_type":"video/x-raw","features":["memory:DMABuf"]}]},{"element":"videoconvert0","pad":"src","direction":"src","caps":"video/x-raw","memory_features":[],"structures":[{"media_type":"video/x-raw","features":[]}]}]}]}}}"##;
+
+        let csv = render_video_runtime_csv(response).unwrap();
+
+        assert_eq!(
+            csv,
+            "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,source\n\
+             eDP-1,active,Playing,hardware-preferred,software-fallback,dav1ddec,software,2,memory:DMABuf,memory:DMABuf,video/x-raw,gtk4paintablesink0:sink:sink|videoconvert0:src:src,/tmp/loop.mp4\n"
+        );
+    }
+
+    #[test]
     fn parses_status_file_invocation() {
         let args = vec![
             "status".to_owned(),
@@ -540,6 +714,25 @@ mod tests {
             Invocation {
                 command: gilder::ipc::ClientCommand::Status,
                 format: ResponseFormat::DecisionsCsv,
+                response_file: Some(PathBuf::from("status.json")),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_status_video_runtime_file_invocation() {
+        let args = vec![
+            "status".to_owned(),
+            "--video-runtime-csv".to_owned(),
+            "--from-file".to_owned(),
+            "status.json".to_owned(),
+        ];
+
+        assert_eq!(
+            parse_invocation(&args).unwrap(),
+            Invocation {
+                command: gilder::ipc::ClientCommand::Status,
+                format: ResponseFormat::VideoRuntimeCsv,
                 response_file: Some(PathBuf::from("status.json")),
             }
         );

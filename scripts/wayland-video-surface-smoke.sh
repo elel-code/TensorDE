@@ -213,6 +213,7 @@ source_dir="$work_dir/source"
 output_state_override_file="$work_dir/output-state.override"
 resume_latency_csv="$work_dir/fullscreen-resume-latency.csv"
 resume_latency_summary="$work_dir/fullscreen-resume-latency.txt"
+video_runtime_path="$work_dir/video-runtime.csv"
 performance_active_dir="$work_dir/performance-active"
 performance_active_log="$work_dir/performance-active.log"
 performance_paused_dir="$work_dir/performance-paused"
@@ -424,6 +425,7 @@ xdg_runtime_dir: ${XDG_RUNTIME_DIR:-unset}
 checks: ${checks_path}
 output_state_override_file: $([[ "$measure_fullscreen_resume" -eq 1 ]] && printf '%s' "$output_state_override_file" || printf 'none')
 resume_latency_csv: $([[ "$measure_fullscreen_resume" -eq 1 ]] && printf '%s' "$resume_latency_csv" || printf 'none')
+video_runtime_csv: ${video_runtime_path}
 EOF
 }
 
@@ -604,6 +606,32 @@ measure_fullscreen_resume_latency() {
   return 1
 }
 
+append_video_runtime_evidence() {
+  local phase="$1"
+  local status_file="$2"
+  local temp_video_runtime="$work_dir/video-runtime-${phase}.tmp"
+  local video_runtime_error_file="$work_dir/video-runtime-${phase}.err"
+
+  if ! "$gilderctl" status --video-runtime-csv --from-file "$status_file" > "$temp_video_runtime" 2> "$video_runtime_error_file"; then
+    rm -f "$temp_video_runtime"
+    skip_or_fail "failed to extract video runtime evidence for ${phase}"
+    return 1
+  fi
+  if [[ ! -s "$video_runtime_error_file" ]]; then
+    rm -f "$video_runtime_error_file"
+  fi
+
+  awk -v phase="$phase" '
+    NR == 1 { next }
+    {
+      print phase "," $0
+    }
+  ' "$temp_video_runtime" >> "$video_runtime_path"
+  rm -f "$temp_video_runtime"
+  pass "recorded video runtime evidence for ${phase}"
+  return 0
+}
+
 printf 'kind,name,status,detail\n' > "$checks_path"
 write_metadata
 
@@ -647,6 +675,8 @@ if [[ "$preflight" -eq 1 ]]; then
   pass "preflight checks passed"
   finish_with_summary
 fi
+
+printf 'phase,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,source\n' > "$video_runtime_path"
 
 mkdir -p "$work_dir/runtime" "$work_dir/config" "$work_dir/state" "$work_dir/cache" "$source_dir"
 if [[ "$measure_fullscreen_resume" -eq 1 ]]; then
@@ -800,6 +830,7 @@ if [[ "$all_outputs" -eq 1 ]]; then
 fi
 sleep 2
 env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_after"
+append_video_runtime_evidence "after-set" "$status_after" || true
 
 if expects_active_video_plan; then
   missing_video_plan=0
@@ -841,6 +872,7 @@ fi
 if [[ "$measure_fullscreen_resume" -eq 1 ]]; then
   if measure_fullscreen_resume_latency; then
     pass "measured fullscreen resume latency"
+    append_video_runtime_evidence "fullscreen-resumed" "$status_resumed" || true
   else
     note "resume latency summary:"
     sed -n '1,120p' "$resume_latency_summary"
@@ -882,6 +914,7 @@ if [[ "$sample_paused" -eq 1 ]]; then
   env GILDER_SOCKET="$socket" "$gilderctl" pause --output "$output_name" >/dev/null
   sleep 2
   env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_paused"
+  append_video_runtime_evidence "paused" "$status_paused" || true
   if grep -q '"reason":"user-paused"' "$status_paused"; then
     pass "status reports user-paused decision"
   else
@@ -906,6 +939,7 @@ if [[ "$sample_paused" -eq 1 ]]; then
   env GILDER_SOCKET="$socket" "$gilderctl" resume --output "$output_name" >/dev/null
   sleep 1
   env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_resumed"
+  append_video_runtime_evidence "resumed" "$status_resumed" || true
   if grep -q '"reason":"user-paused"' "$status_resumed"; then
     skip_or_fail "status still reports user-paused after resume"
   else
@@ -921,6 +955,7 @@ fi
 
 note "status before: $status_before"
 note "status after:  $status_after"
+note "video runtime: $video_runtime_path"
 if [[ "$sample_paused" -eq 1 ]]; then
   note "status paused: $status_paused"
   note "status resumed: $status_resumed"

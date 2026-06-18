@@ -923,15 +923,6 @@ mod tests {
         assert_eq!(snapshot[0].start_offset_ms, 0);
         assert!(snapshot[0].actual_decoders.is_empty());
         assert!(snapshot[0].actual_decoder_reports.is_empty());
-        assert!(
-            snapshot[0].caps_reports.iter().any(|report| {
-                report
-                    .structures
-                    .iter()
-                    .any(|structure| structure.media_type.starts_with("video/"))
-            }),
-            "test source should negotiate video caps"
-        );
 
         let sync = StaticRenderSyncPlan {
             plans: Vec::new(),

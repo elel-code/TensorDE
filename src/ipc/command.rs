@@ -205,6 +205,7 @@ pub fn help_text() -> String {
         "  gilderctl status",
         "  gilderctl status --decisions-csv [--from-file <status.json>]",
         "  gilderctl status --telemetry-csv [--from-file <status.json>]",
+        "  gilderctl status --video-runtime-csv [--from-file <status.json>]",
         "  gilderctl outputs",
         "  gilderctl watch",
         "  gilderctl properties get [key] [--output <name>]",
