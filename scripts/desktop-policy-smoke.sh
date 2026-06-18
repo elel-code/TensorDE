@@ -29,6 +29,18 @@ Options:
                        Require sampled max USS/private memory to be at most this KiB value
   --expect-max-shared-kib-at-most <kib>
                        Require sampled max shared memory to be at most this KiB value
+  --expect-retained-private-delta-kib-at-most <kib>
+                       Require sampled last-minus-first private memory delta to be at most this KiB value
+  --expect-retained-uss-delta-kib-at-most <kib>
+                       Require sampled last-minus-first USS/private delta to be at most this KiB value
+  --expect-retained-pss-delta-kib-at-most <kib>
+                       Require sampled last-minus-first PSS delta to be at most this KiB value
+  --expect-peak-over-first-private-kib-at-most <kib>
+                       Require sampled max-minus-first private memory delta to be at most this KiB value
+  --expect-peak-over-first-uss-kib-at-most <kib>
+                       Require sampled max-minus-first USS/private delta to be at most this KiB value
+  --expect-peak-over-first-pss-kib-at-most <kib>
+                       Require sampled max-minus-first PSS delta to be at most this KiB value
   --keep                Keep generated smoke data and logs
   -h, --help            Show this help text
 EOF
@@ -47,6 +59,12 @@ expect_max_pss_kib_at_most=""
 expect_max_private_kib_at_most=""
 expect_max_uss_kib_at_most=""
 expect_max_shared_kib_at_most=""
+expect_retained_private_delta_kib_at_most=""
+expect_retained_uss_delta_kib_at_most=""
+expect_retained_pss_delta_kib_at_most=""
+expect_peak_over_first_private_kib_at_most=""
+expect_peak_over_first_uss_kib_at_most=""
+expect_peak_over_first_pss_kib_at_most=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -106,6 +124,36 @@ while [[ $# -gt 0 ]]; do
     --expect-max-shared-kib-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-max-shared-kib-at-most requires a value" >&2; exit 2; }
       expect_max_shared_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-retained-private-delta-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-retained-private-delta-kib-at-most requires a value" >&2; exit 2; }
+      expect_retained_private_delta_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-retained-uss-delta-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-retained-uss-delta-kib-at-most requires a value" >&2; exit 2; }
+      expect_retained_uss_delta_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-retained-pss-delta-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-retained-pss-delta-kib-at-most requires a value" >&2; exit 2; }
+      expect_retained_pss_delta_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-peak-over-first-private-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-peak-over-first-private-kib-at-most requires a value" >&2; exit 2; }
+      expect_peak_over_first_private_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-peak-over-first-uss-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-peak-over-first-uss-kib-at-most requires a value" >&2; exit 2; }
+      expect_peak_over_first_uss_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-peak-over-first-pss-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-peak-over-first-pss-kib-at-most requires a value" >&2; exit 2; }
+      expect_peak_over_first_pss_kib_at_most="$2"
       shift 2
       ;;
     --keep)
@@ -224,6 +272,19 @@ do
     exit 2
   fi
 done
+for memory_delta_expectation in \
+  "$expect_retained_private_delta_kib_at_most" \
+  "$expect_retained_uss_delta_kib_at_most" \
+  "$expect_retained_pss_delta_kib_at_most" \
+  "$expect_peak_over_first_private_kib_at_most" \
+  "$expect_peak_over_first_uss_kib_at_most" \
+  "$expect_peak_over_first_pss_kib_at_most"
+do
+  if [[ -n "$memory_delta_expectation" && ! "$memory_delta_expectation" =~ ^[0-9]+$ ]]; then
+    echo "memory delta KiB expectations must be non-negative integers" >&2
+    exit 2
+  fi
+done
 
 require_command ps || true
 require_command sed || true
@@ -281,6 +342,12 @@ expect_max_pss_kib_at_most: ${expect_max_pss_kib_at_most:-none}
 expect_max_private_kib_at_most: ${expect_max_private_kib_at_most:-none}
 expect_max_uss_kib_at_most: ${expect_max_uss_kib_at_most:-none}
 expect_max_shared_kib_at_most: ${expect_max_shared_kib_at_most:-none}
+expect_retained_private_delta_kib_at_most: ${expect_retained_private_delta_kib_at_most:-none}
+expect_retained_uss_delta_kib_at_most: ${expect_retained_uss_delta_kib_at_most:-none}
+expect_retained_pss_delta_kib_at_most: ${expect_retained_pss_delta_kib_at_most:-none}
+expect_peak_over_first_private_kib_at_most: ${expect_peak_over_first_private_kib_at_most:-none}
+expect_peak_over_first_uss_kib_at_most: ${expect_peak_over_first_uss_kib_at_most:-none}
+expect_peak_over_first_pss_kib_at_most: ${expect_peak_over_first_pss_kib_at_most:-none}
 wallpaper: ${wallpaper_path}
 slideshow_wallpaper: ${slideshow_wallpaper_path}
 EOF
@@ -548,6 +615,24 @@ append_process_memory_expectations() {
   fi
   if [[ -n "$expect_max_shared_kib_at_most" ]]; then
     args_ref+=(--expect-max-shared-kib-at-most "$expect_max_shared_kib_at_most")
+  fi
+  if [[ -n "$expect_retained_private_delta_kib_at_most" ]]; then
+    args_ref+=(--expect-retained-private-delta-kib-at-most "$expect_retained_private_delta_kib_at_most")
+  fi
+  if [[ -n "$expect_retained_uss_delta_kib_at_most" ]]; then
+    args_ref+=(--expect-retained-uss-delta-kib-at-most "$expect_retained_uss_delta_kib_at_most")
+  fi
+  if [[ -n "$expect_retained_pss_delta_kib_at_most" ]]; then
+    args_ref+=(--expect-retained-pss-delta-kib-at-most "$expect_retained_pss_delta_kib_at_most")
+  fi
+  if [[ -n "$expect_peak_over_first_private_kib_at_most" ]]; then
+    args_ref+=(--expect-peak-over-first-private-kib-at-most "$expect_peak_over_first_private_kib_at_most")
+  fi
+  if [[ -n "$expect_peak_over_first_uss_kib_at_most" ]]; then
+    args_ref+=(--expect-peak-over-first-uss-kib-at-most "$expect_peak_over_first_uss_kib_at_most")
+  fi
+  if [[ -n "$expect_peak_over_first_pss_kib_at_most" ]]; then
+    args_ref+=(--expect-peak-over-first-pss-kib-at-most "$expect_peak_over_first_pss_kib_at_most")
   fi
 }
 

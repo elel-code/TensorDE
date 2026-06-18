@@ -37,6 +37,26 @@ Options:
                      Require sampled max USS/private memory to be at most this KiB value
   --expect-max-shared-kib-at-most <kib>
                      Require sampled max shared memory to be at most this KiB value
+  --expect-retained-rss-delta-kib-at-most <kib>
+                     Require last-minus-first RSS delta to be at most this KiB value
+  --expect-retained-pss-delta-kib-at-most <kib>
+                     Require last-minus-first PSS delta to be at most this KiB value
+  --expect-retained-private-delta-kib-at-most <kib>
+                     Require last-minus-first private memory delta to be at most this KiB value
+  --expect-retained-uss-delta-kib-at-most <kib>
+                     Require last-minus-first USS/private delta to be at most this KiB value
+  --expect-retained-shared-delta-kib-at-most <kib>
+                     Require last-minus-first shared memory delta to be at most this KiB value
+  --expect-peak-over-first-rss-kib-at-most <kib>
+                     Require max-minus-first RSS delta to be at most this KiB value
+  --expect-peak-over-first-pss-kib-at-most <kib>
+                     Require max-minus-first PSS delta to be at most this KiB value
+  --expect-peak-over-first-private-kib-at-most <kib>
+                     Require max-minus-first private memory delta to be at most this KiB value
+  --expect-peak-over-first-uss-kib-at-most <kib>
+                     Require max-minus-first USS/private delta to be at most this KiB value
+  --expect-peak-over-first-shared-kib-at-most <kib>
+                     Require max-minus-first shared memory delta to be at most this KiB value
   --expect-render-sync-cache-hit
                      Require render_sync cache hits to increase during sampling
   --expect-desktop-refresh-skip
@@ -99,6 +119,16 @@ expect_max_pss_kib_at_most=""
 expect_max_private_kib_at_most=""
 expect_max_uss_kib_at_most=""
 expect_max_shared_kib_at_most=""
+expect_retained_rss_delta_kib_at_most=""
+expect_retained_pss_delta_kib_at_most=""
+expect_retained_private_delta_kib_at_most=""
+expect_retained_uss_delta_kib_at_most=""
+expect_retained_shared_delta_kib_at_most=""
+expect_peak_over_first_rss_kib_at_most=""
+expect_peak_over_first_pss_kib_at_most=""
+expect_peak_over_first_private_kib_at_most=""
+expect_peak_over_first_uss_kib_at_most=""
+expect_peak_over_first_shared_kib_at_most=""
 expect_render_sync_cache_hit=0
 expect_desktop_refresh_skip=0
 expect_render_sync_update_queued=0
@@ -208,6 +238,56 @@ while [[ $# -gt 0 ]]; do
     --expect-max-shared-kib-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-max-shared-kib-at-most requires a value" >&2; exit 2; }
       expect_max_shared_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-retained-rss-delta-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-retained-rss-delta-kib-at-most requires a value" >&2; exit 2; }
+      expect_retained_rss_delta_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-retained-pss-delta-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-retained-pss-delta-kib-at-most requires a value" >&2; exit 2; }
+      expect_retained_pss_delta_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-retained-private-delta-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-retained-private-delta-kib-at-most requires a value" >&2; exit 2; }
+      expect_retained_private_delta_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-retained-uss-delta-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-retained-uss-delta-kib-at-most requires a value" >&2; exit 2; }
+      expect_retained_uss_delta_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-retained-shared-delta-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-retained-shared-delta-kib-at-most requires a value" >&2; exit 2; }
+      expect_retained_shared_delta_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-peak-over-first-rss-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-peak-over-first-rss-kib-at-most requires a value" >&2; exit 2; }
+      expect_peak_over_first_rss_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-peak-over-first-pss-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-peak-over-first-pss-kib-at-most requires a value" >&2; exit 2; }
+      expect_peak_over_first_pss_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-peak-over-first-private-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-peak-over-first-private-kib-at-most requires a value" >&2; exit 2; }
+      expect_peak_over_first_private_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-peak-over-first-uss-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-peak-over-first-uss-kib-at-most requires a value" >&2; exit 2; }
+      expect_peak_over_first_uss_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-peak-over-first-shared-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-peak-over-first-shared-kib-at-most requires a value" >&2; exit 2; }
+      expect_peak_over_first_shared_kib_at_most="$2"
       shift 2
       ;;
     --expect-render-sync-cache-hit)
@@ -1365,7 +1445,17 @@ has_process_memory_expectations() {
     -n "$expect_max_pss_kib_at_most" ||
     -n "$expect_max_private_kib_at_most" ||
     -n "$expect_max_uss_kib_at_most" ||
-    -n "$expect_max_shared_kib_at_most" ]]
+    -n "$expect_max_shared_kib_at_most" ||
+    -n "$expect_retained_rss_delta_kib_at_most" ||
+    -n "$expect_retained_pss_delta_kib_at_most" ||
+    -n "$expect_retained_private_delta_kib_at_most" ||
+    -n "$expect_retained_uss_delta_kib_at_most" ||
+    -n "$expect_retained_shared_delta_kib_at_most" ||
+    -n "$expect_peak_over_first_rss_kib_at_most" ||
+    -n "$expect_peak_over_first_pss_kib_at_most" ||
+    -n "$expect_peak_over_first_private_kib_at_most" ||
+    -n "$expect_peak_over_first_uss_kib_at_most" ||
+    -n "$expect_peak_over_first_shared_kib_at_most" ]]
 }
 
 expect_process_summary_maximum() {
@@ -1381,6 +1471,33 @@ expect_process_summary_maximum() {
     elif [[ "$require_observed" -eq 1 ]]; then
       skip_or_fail "process memory expectation not met: ${description} was not observed; /proc/<pid>/smaps_rollup may be unavailable"
       return 0
+    fi
+    if awk -v value="$value" -v maximum="$maximum" 'BEGIN { exit (value + 0 <= maximum + 0) ? 0 : 1 }'; then
+      pass "process memory expectation matched ${description}: ${value} KiB"
+    else
+      skip_or_fail "process memory expectation not met: ${description} was ${value} KiB, expected at most ${maximum} KiB"
+    fi
+  else
+    skip_or_fail "process memory expectation not met: missing ${description}"
+  fi
+}
+
+expect_process_summary_delta_maximum() {
+  local key="$1"
+  local maximum="$2"
+  local description="$3"
+  local observed_key="$4"
+  local value
+  local observed
+
+  if value="$(summary_value "$key" "$summary_path")" && [[ "$value" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
+    if [[ -n "$observed_key" ]]; then
+      if observed="$(summary_value "$observed_key" "$summary_path")" && [[ "$observed" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk -v value="$observed" 'BEGIN { exit (value + 0 > 0) ? 0 : 1 }'; then
+        :
+      else
+        skip_or_fail "process memory expectation not met: ${description} base memory was not observed; /proc/<pid>/smaps_rollup may be unavailable"
+        return 0
+      fi
     fi
     if awk -v value="$value" -v maximum="$maximum" 'BEGIN { exit (value + 0 <= maximum + 0) ? 0 : 1 }'; then
       pass "process memory expectation matched ${description}: ${value} KiB"
@@ -1414,6 +1531,36 @@ validate_process_memory_expectations() {
   fi
   if [[ -n "$expect_max_shared_kib_at_most" ]]; then
     expect_process_summary_maximum "max_shared_kib" "$expect_max_shared_kib_at_most" "max shared memory" 1
+  fi
+  if [[ -n "$expect_retained_rss_delta_kib_at_most" ]]; then
+    expect_process_summary_delta_maximum "retained_rss_delta_kib" "$expect_retained_rss_delta_kib_at_most" "retained RSS delta" ""
+  fi
+  if [[ -n "$expect_retained_pss_delta_kib_at_most" ]]; then
+    expect_process_summary_delta_maximum "retained_pss_delta_kib" "$expect_retained_pss_delta_kib_at_most" "retained PSS delta" "first_pss_kib"
+  fi
+  if [[ -n "$expect_retained_private_delta_kib_at_most" ]]; then
+    expect_process_summary_delta_maximum "retained_private_delta_kib" "$expect_retained_private_delta_kib_at_most" "retained private memory delta" "first_private_kib"
+  fi
+  if [[ -n "$expect_retained_uss_delta_kib_at_most" ]]; then
+    expect_process_summary_delta_maximum "retained_uss_delta_kib" "$expect_retained_uss_delta_kib_at_most" "retained USS delta" "first_uss_kib"
+  fi
+  if [[ -n "$expect_retained_shared_delta_kib_at_most" ]]; then
+    expect_process_summary_delta_maximum "retained_shared_delta_kib" "$expect_retained_shared_delta_kib_at_most" "retained shared memory delta" "first_shared_kib"
+  fi
+  if [[ -n "$expect_peak_over_first_rss_kib_at_most" ]]; then
+    expect_process_summary_delta_maximum "peak_over_first_rss_kib" "$expect_peak_over_first_rss_kib_at_most" "peak-over-first RSS" ""
+  fi
+  if [[ -n "$expect_peak_over_first_pss_kib_at_most" ]]; then
+    expect_process_summary_delta_maximum "peak_over_first_pss_kib" "$expect_peak_over_first_pss_kib_at_most" "peak-over-first PSS" "first_pss_kib"
+  fi
+  if [[ -n "$expect_peak_over_first_private_kib_at_most" ]]; then
+    expect_process_summary_delta_maximum "peak_over_first_private_kib" "$expect_peak_over_first_private_kib_at_most" "peak-over-first private memory" "first_private_kib"
+  fi
+  if [[ -n "$expect_peak_over_first_uss_kib_at_most" ]]; then
+    expect_process_summary_delta_maximum "peak_over_first_uss_kib" "$expect_peak_over_first_uss_kib_at_most" "peak-over-first USS" "first_uss_kib"
+  fi
+  if [[ -n "$expect_peak_over_first_shared_kib_at_most" ]]; then
+    expect_process_summary_delta_maximum "peak_over_first_shared_kib" "$expect_peak_over_first_shared_kib_at_most" "peak-over-first shared memory" "first_shared_kib"
   fi
 }
 
@@ -1653,6 +1800,23 @@ do
     exit 2
   fi
 done
+for memory_delta_expectation in \
+  "$expect_retained_rss_delta_kib_at_most" \
+  "$expect_retained_pss_delta_kib_at_most" \
+  "$expect_retained_private_delta_kib_at_most" \
+  "$expect_retained_uss_delta_kib_at_most" \
+  "$expect_retained_shared_delta_kib_at_most" \
+  "$expect_peak_over_first_rss_kib_at_most" \
+  "$expect_peak_over_first_pss_kib_at_most" \
+  "$expect_peak_over_first_private_kib_at_most" \
+  "$expect_peak_over_first_uss_kib_at_most" \
+  "$expect_peak_over_first_shared_kib_at_most"
+do
+  if [[ -n "$memory_delta_expectation" && ! "$memory_delta_expectation" =~ ^[0-9]+$ ]]; then
+    echo "memory delta KiB expectations must be non-negative integers" >&2
+    exit 2
+  fi
+done
 case "$expect_decoder_policy_status" in
   ""|not-applicable|not-observed|satisfied|software-fallback|violated|unknown-decoder)
     ;;
@@ -1744,6 +1908,16 @@ expect_max_pss_kib_at_most: ${expect_max_pss_kib_at_most:-none}
 expect_max_private_kib_at_most: ${expect_max_private_kib_at_most:-none}
 expect_max_uss_kib_at_most: ${expect_max_uss_kib_at_most:-none}
 expect_max_shared_kib_at_most: ${expect_max_shared_kib_at_most:-none}
+expect_retained_rss_delta_kib_at_most: ${expect_retained_rss_delta_kib_at_most:-none}
+expect_retained_pss_delta_kib_at_most: ${expect_retained_pss_delta_kib_at_most:-none}
+expect_retained_private_delta_kib_at_most: ${expect_retained_private_delta_kib_at_most:-none}
+expect_retained_uss_delta_kib_at_most: ${expect_retained_uss_delta_kib_at_most:-none}
+expect_retained_shared_delta_kib_at_most: ${expect_retained_shared_delta_kib_at_most:-none}
+expect_peak_over_first_rss_kib_at_most: ${expect_peak_over_first_rss_kib_at_most:-none}
+expect_peak_over_first_pss_kib_at_most: ${expect_peak_over_first_pss_kib_at_most:-none}
+expect_peak_over_first_private_kib_at_most: ${expect_peak_over_first_private_kib_at_most:-none}
+expect_peak_over_first_uss_kib_at_most: ${expect_peak_over_first_uss_kib_at_most:-none}
+expect_peak_over_first_shared_kib_at_most: ${expect_peak_over_first_shared_kib_at_most:-none}
 expect_render_sync_cache_hit: ${expect_render_sync_cache_hit}
 expect_desktop_refresh_skip: ${expect_desktop_refresh_skip}
 expect_render_sync_update_queued: ${expect_render_sync_update_queued}
