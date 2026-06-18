@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900">
+  <rect width="1600" height="900" fill="#102018"/>
+  <rect x="120" y="120" width="1360" height="660" rx="32" fill="#1f5f4a"/>
+  <path d="M190 690 L590 260 L840 520 L1010 350 L1410 690 Z" fill="#d9e9df"/>
+  <circle cx="1230" cy="230" r="86" fill="#f4c95d"/>
+  <text x="120" y="835" fill="#f7faf8" font-family="sans-serif" font-size="46">Gilder slideshow demo A</text>
+</svg>

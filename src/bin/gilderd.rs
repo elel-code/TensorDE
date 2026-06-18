@@ -193,6 +193,7 @@ fn run_gtk_daemon(
                         .borrow_mut()
                         .sync_static_render_plan(&sync);
                 }
+                renderer_for_updates.borrow_mut().tick_slideshows();
                 #[cfg(feature = "video-renderer")]
                 renderer_for_updates.borrow_mut().poll_video_buses();
                 runtime_for_updates.store_renderer_runtime_snapshot(renderer_runtime_snapshot(
@@ -1700,6 +1701,7 @@ mod tests {
         StaticRenderSyncPlan {
             plans: Vec::new(),
             video_plans: Vec::new(),
+            slideshow_plans: Vec::new(),
             removals: Vec::new(),
             errors: Vec::new(),
             decisions: Vec::new(),

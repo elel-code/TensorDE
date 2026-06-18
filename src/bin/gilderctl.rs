@@ -253,6 +253,18 @@ fn render_plan_details(sync: &RenderSync) -> BTreeMap<&str, PlanCsvDetails<'_>> 
             },
         );
     }
+    for plan in &sync.slideshow_plans {
+        details.insert(
+            plan.output_name.as_str(),
+            PlanCsvDetails {
+                kind: "slideshow",
+                source: plan.sources.first().map(String::as_str).unwrap_or_default(),
+                fit: plan.fit.as_str(),
+                target_max_fps: plan.target_max_fps,
+                muted: None,
+            },
+        );
+    }
     details
 }
 
@@ -295,6 +307,8 @@ struct RenderSync {
     #[serde(default)]
     video_plans: Vec<VideoPlan>,
     #[serde(default)]
+    slideshow_plans: Vec<SlideshowPlan>,
+    #[serde(default)]
     decisions: Vec<RenderDecision>,
 }
 
@@ -313,6 +327,15 @@ struct VideoPlan {
     #[serde(default)]
     target_max_fps: Option<u32>,
     muted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct SlideshowPlan {
+    output_name: String,
+    sources: Vec<String>,
+    fit: String,
+    #[serde(default)]
+    target_max_fps: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -371,7 +394,7 @@ mod tests {
 
     #[test]
     fn formats_render_decisions_as_csv() {
-        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[{"output_name":"HDMI-A-1","source":"/tmp/poster.jpg","fit":"contain","background":"#000000"}],"video_plans":[{"output_name":"eDP-1","source":"/tmp/loop.webm","poster":"/tmp/poster.jpg","fit":"cover","loop_playback":true,"muted":true,"manifest_max_fps":60,"target_max_fps":24,"start_offset_ms":0}],"decisions":[{"output_name":"eDP-1","action":"render","performance":{"mode":"throttled","max_fps":24,"reason":"battery"},"wallpaper":"/tmp/wall.gwpdir"},{"output_name":"HDMI-A-1","action":"remove","performance":{"mode":"paused","max_fps":null,"reason":"fullscreen"},"wallpaper":null}]}}}"##;
+        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[{"output_name":"HDMI-A-1","source":"/tmp/poster.jpg","fit":"contain","background":"#000000"}],"video_plans":[{"output_name":"eDP-1","source":"/tmp/loop.webm","poster":"/tmp/poster.jpg","fit":"cover","loop_playback":true,"muted":true,"manifest_max_fps":60,"target_max_fps":24,"start_offset_ms":0}],"slideshow_plans":[{"output_name":"DP-1","sources":["/tmp/a.jpg","/tmp/b.jpg"],"interval_ms":300000,"transition":"none","fit":"cover","target_max_fps":12}],"decisions":[{"output_name":"eDP-1","action":"render","performance":{"mode":"throttled","max_fps":24,"reason":"battery"},"wallpaper":"/tmp/wall.gwpdir"},{"output_name":"HDMI-A-1","action":"remove","performance":{"mode":"paused","max_fps":null,"reason":"fullscreen"},"wallpaper":null},{"output_name":"DP-1","action":"render","performance":{"mode":"throttled","max_fps":12,"reason":"unfocused"},"wallpaper":"/tmp/slides.gwpdir"}]}}}"##;
 
         let csv = render_decisions_csv(response).unwrap();
 
@@ -379,7 +402,8 @@ mod tests {
             csv,
             "output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n\
              eDP-1,render,throttled,battery,24,/tmp/wall.gwpdir,video,/tmp/loop.webm,cover,24,true\n\
-             HDMI-A-1,remove,paused,fullscreen,,,static-image,/tmp/poster.jpg,contain,,\n"
+             HDMI-A-1,remove,paused,fullscreen,,,static-image,/tmp/poster.jpg,contain,,\n\
+             DP-1,render,throttled,unfocused,12,/tmp/slides.gwpdir,slideshow,/tmp/a.jpg,cover,12,\n"
         );
     }
 

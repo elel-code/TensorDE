@@ -2,7 +2,7 @@
 
 #[cfg(feature = "video-renderer")]
 use super::VideoWallpaperPlan;
-use super::{StaticRenderSyncPlan, StaticWallpaperPlan};
+use super::{SlideshowWallpaperPlan, StaticRenderSyncPlan, StaticWallpaperPlan};
 use crate::core::FitMode;
 #[cfg(feature = "video-renderer")]
 use crate::policy::RenderMode;
@@ -13,6 +13,7 @@ use gtk::gio;
 use gtk::prelude::*;
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "video-renderer")]
 use gst::prelude::*;
@@ -30,13 +31,13 @@ pub struct GtkStaticRenderer {
 }
 
 struct RenderedOutput {
-    #[cfg(feature = "video-renderer")]
     output_name: String,
     window: gtk::ApplicationWindow,
     #[cfg(feature = "video-renderer")]
     surface: gtk::Box,
     provider: Option<gtk::CssProvider>,
     static_plan: Option<StaticWallpaperPlan>,
+    slideshow: Option<RenderedSlideshow>,
     #[cfg(feature = "video-renderer")]
     video: Option<GtkVideoPipeline>,
     #[cfg(feature = "video-renderer")]
@@ -72,6 +73,19 @@ impl GtkStaticRenderer {
         for plan in &sync.plans {
             if self.set_static_wallpaper(plan) {
                 desired_outputs.insert(plan.output_name.clone());
+            }
+        }
+
+        let mut desired_slideshow_outputs = BTreeSet::new();
+        for plan in &sync.slideshow_plans {
+            if self.set_slideshow_wallpaper(plan) {
+                desired_outputs.insert(plan.output_name.clone());
+                desired_slideshow_outputs.insert(plan.output_name.clone());
+            }
+        }
+        for output in self.windows.values_mut() {
+            if !desired_slideshow_outputs.contains(output.output_name()) {
+                output.remove_slideshow();
             }
         }
 
@@ -121,6 +135,7 @@ impl GtkStaticRenderer {
                 build_background_output(&self.application, &plan.output_name, &monitor)
             });
         window.window.set_monitor(Some(&monitor));
+        window.remove_slideshow();
         if static_plan_needs_update(window.static_plan.as_ref(), plan) {
             apply_static_wallpaper(window, plan);
             window.static_plan = Some(plan.clone());
@@ -129,6 +144,34 @@ impl GtkStaticRenderer {
             window.window.present();
         }
         true
+    }
+
+    pub fn set_slideshow_wallpaper(&mut self, plan: &SlideshowWallpaperPlan) -> bool {
+        let Some(monitor) = monitor_for_output(&plan.output_name) else {
+            self.remove_output(&plan.output_name);
+            return false;
+        };
+        let output = self
+            .windows
+            .entry(plan.output_name.clone())
+            .or_insert_with(|| {
+                build_background_output(&self.application, &plan.output_name, &monitor)
+            });
+        output.window.set_monitor(Some(&monitor));
+        #[cfg(feature = "video-renderer")]
+        output.remove_video();
+        output.set_slideshow(plan);
+        if !output.window.is_visible() {
+            output.window.present();
+        }
+        true
+    }
+
+    pub fn tick_slideshows(&mut self) {
+        let now = Instant::now();
+        for output in self.windows.values_mut() {
+            output.tick_slideshow(now);
+        }
     }
 
     #[cfg(feature = "video-renderer")]
@@ -144,6 +187,7 @@ impl GtkStaticRenderer {
                 build_background_output(&self.application, &plan.output_name, &monitor)
             });
         output.window.set_monitor(Some(&monitor));
+        output.remove_slideshow();
 
         match output.set_video(plan, mode) {
             Ok(()) => output.video_error = None,
@@ -193,15 +237,65 @@ impl GtkStaticRenderer {
                 let display = gtk::prelude::WidgetExt::display(&output.window);
                 gtk::style_context_remove_provider_for_display(&display, &provider);
             }
+            output.remove_slideshow();
             output.window.close();
         }
     }
 }
 
 impl RenderedOutput {
-    #[cfg(feature = "video-renderer")]
     fn output_name(&self) -> &str {
         &self.output_name
+    }
+
+    fn set_slideshow(&mut self, plan: &SlideshowWallpaperPlan) {
+        let needs_update = self
+            .slideshow
+            .as_ref()
+            .map(|slideshow| slideshow.plan != *plan)
+            .unwrap_or(true);
+        if needs_update {
+            let slideshow = RenderedSlideshow {
+                plan: plan.clone(),
+                index: 0,
+                next_frame_at: Instant::now() + Duration::from_millis(plan.interval_ms),
+            };
+            self.slideshow = Some(slideshow);
+            self.apply_slideshow_frame();
+        }
+    }
+
+    fn tick_slideshow(&mut self, now: Instant) {
+        let Some(slideshow) = &mut self.slideshow else {
+            return;
+        };
+        if slideshow.plan.sources.len() < 2 || now < slideshow.next_frame_at {
+            return;
+        }
+        slideshow.index = (slideshow.index + 1) % slideshow.plan.sources.len();
+        slideshow.next_frame_at = now + Duration::from_millis(slideshow.plan.interval_ms);
+        self.apply_slideshow_frame();
+    }
+
+    fn apply_slideshow_frame(&mut self) {
+        let Some(slideshow) = &self.slideshow else {
+            return;
+        };
+        let Some(source) = slideshow.plan.sources.get(slideshow.index) else {
+            return;
+        };
+        let static_plan = StaticWallpaperPlan {
+            output_name: slideshow.plan.output_name.clone(),
+            source: source.clone(),
+            fit: slideshow.plan.fit,
+            background: Some("#000000".to_owned()),
+        };
+        apply_static_wallpaper(self, &static_plan);
+        self.static_plan = None;
+    }
+
+    fn remove_slideshow(&mut self) {
+        self.slideshow = None;
     }
 
     #[cfg(feature = "video-renderer")]
@@ -345,13 +439,13 @@ fn build_background_output(
     surface.set_widget_name(&css_widget_name(output_name));
     window.set_child(Some(&surface));
     RenderedOutput {
-        #[cfg(feature = "video-renderer")]
         output_name: output_name.to_owned(),
         window,
         #[cfg(feature = "video-renderer")]
         surface,
         provider: None,
         static_plan: None,
+        slideshow: None,
         #[cfg(feature = "video-renderer")]
         video: None,
         #[cfg(feature = "video-renderer")]
@@ -480,6 +574,13 @@ fn css_widget_name(output_name: &str) -> String {
 struct VideoErrorState {
     source: std::path::PathBuf,
     message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenderedSlideshow {
+    plan: SlideshowWallpaperPlan,
+    index: usize,
+    next_frame_at: Instant,
 }
 
 #[cfg(feature = "video-renderer")]

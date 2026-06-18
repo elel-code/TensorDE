@@ -570,6 +570,7 @@ mod tests {
         let sync = StaticRenderSyncPlan {
             plans: Vec::new(),
             video_plans: vec![plan],
+            slideshow_plans: Vec::new(),
             removals: Vec::new(),
             errors: Vec::new(),
             decisions: vec![decision("eDP-1", RenderMode::Throttled)],
@@ -589,6 +590,7 @@ mod tests {
         let sync = StaticRenderSyncPlan {
             plans: Vec::new(),
             video_plans: Vec::new(),
+            slideshow_plans: Vec::new(),
             removals: vec!["eDP-1".to_owned()],
             errors: Vec::new(),
             decisions: Vec::new(),

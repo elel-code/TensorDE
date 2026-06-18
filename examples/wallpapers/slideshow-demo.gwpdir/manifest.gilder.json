@@ -1,0 +1,36 @@
+{
+  "format": "gilder.wallpaper",
+  "format_version": 1,
+  "id": "io.github.elelcode.gilder.examples.slideshow",
+  "version": "1.0.0",
+  "title": "Slideshow Demo",
+  "authors": [
+    "Gilder"
+  ],
+  "license": "MIT",
+  "kind": "slideshow",
+  "tags": [
+    "example",
+    "slideshow"
+  ],
+  "preview": {
+    "thumbnail": "previews/thumbnail.svg",
+    "poster": "assets/slide-a.svg"
+  },
+  "entry": {
+    "type": "slideshow",
+    "sources": [
+      "assets/slide-a.svg",
+      "assets/slide-b.svg"
+    ],
+    "interval_ms": 3000,
+    "transition": "none",
+    "fit": "cover"
+  },
+  "runtime": {
+    "pause_when_fullscreen": true,
+    "pause_when_unfocused": false,
+    "allow_network": false,
+    "allow_audio": false
+  }
+}

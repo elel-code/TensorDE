@@ -7,7 +7,7 @@ pub mod video;
 
 use crate::config::{GilderConfig, PerformanceConfig};
 use crate::core::manifest::Variant;
-use crate::core::{FitMode, PackagePath, WallpaperEntry, WallpaperPackage};
+use crate::core::{FitMode, PackagePath, Transition, WallpaperEntry, WallpaperPackage};
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot};
 use crate::policy::{PerformanceDecision, RenderMode};
 use crate::state::{AppState, OutputState, WallpaperAssignment};
@@ -41,10 +41,21 @@ pub struct VideoWallpaperPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlideshowWallpaperPlan {
+    pub output_name: String,
+    pub sources: Vec<PathBuf>,
+    pub interval_ms: u64,
+    pub transition: Transition,
+    pub fit: FitMode,
+    pub target_max_fps: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum WallpaperRenderPlan {
     StaticImage(StaticWallpaperPlan),
     Video(VideoWallpaperPlan),
+    Slideshow(SlideshowWallpaperPlan),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +63,8 @@ pub struct StaticRenderSyncPlan {
     pub plans: Vec<StaticWallpaperPlan>,
     #[serde(default)]
     pub video_plans: Vec<VideoWallpaperPlan>,
+    #[serde(default)]
+    pub slideshow_plans: Vec<SlideshowWallpaperPlan>,
     pub removals: Vec<String>,
     pub errors: Vec<StaticRenderPlanFailure>,
     #[serde(default)]
@@ -140,6 +153,7 @@ fn static_render_sync_plan_inner(
 
     let mut plans = Vec::new();
     let mut video_plans = Vec::new();
+    let mut slideshow_plans = Vec::new();
     let mut removals = Vec::new();
     let mut errors = Vec::new();
     let mut decisions = Vec::new();
@@ -246,6 +260,15 @@ fn static_render_sync_plan_inner(
                 }
                 video_plans.push(plan);
             }
+            Ok(WallpaperRenderPlan::Slideshow(plan)) => {
+                decisions.push(StaticRenderOutputDecision {
+                    output_name,
+                    action: StaticRenderAction::Render,
+                    performance,
+                    wallpaper: Some(assignment.path.clone()),
+                });
+                slideshow_plans.push(plan);
+            }
             Err(err) => {
                 decisions.push(StaticRenderOutputDecision {
                     output_name: output_name.clone(),
@@ -265,6 +288,7 @@ fn static_render_sync_plan_inner(
     StaticRenderSyncPlan {
         plans,
         video_plans,
+        slideshow_plans,
         removals,
         errors,
         decisions,
@@ -434,6 +458,22 @@ fn wallpaper_plan_with_target(
                 start_offset_ms: *start_offset_ms,
             }))
         }
+        WallpaperEntry::Slideshow {
+            sources,
+            interval_ms,
+            transition,
+            fit,
+        } => Ok(WallpaperRenderPlan::Slideshow(SlideshowWallpaperPlan {
+            output_name,
+            sources: sources
+                .iter()
+                .map(|source| source.join_to(&package.root))
+                .collect(),
+            interval_ms: *interval_ms,
+            transition: *transition,
+            fit: effective_fit(*fit, fit_override),
+            target_max_fps: performance.max_fps,
+        })),
         WallpaperEntry::SceneLite { fallback, .. } => {
             let Some(fallback) = fallback else {
                 return Err(RendererPlanError::UnsupportedEntry(
@@ -741,6 +781,33 @@ mod tests {
         assert_eq!(plan.fit, FitMode::Cover);
         assert_eq!(plan.background.as_deref(), Some("#101418"));
         assert!(plan.source.ends_with("assets/wallpaper.svg"));
+    }
+
+    #[test]
+    fn builds_slideshow_plan_from_example_package() {
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: "examples/wallpapers/slideshow-demo.gwpdir".to_owned(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, std::env::temp_dir());
+
+        assert!(sync.plans.is_empty());
+        assert!(sync.video_plans.is_empty());
+        assert_eq!(sync.slideshow_plans.len(), 1);
+        assert!(sync.errors.is_empty());
+        let plan = &sync.slideshow_plans[0];
+        assert_eq!(plan.output_name, "eDP-1");
+        assert_eq!(plan.sources.len(), 2);
+        assert!(plan.sources[0].ends_with("assets/slide-a.svg"));
+        assert!(plan.sources[1].ends_with("assets/slide-b.svg"));
+        assert_eq!(plan.interval_ms, 3_000);
+        assert_eq!(plan.fit, FitMode::Cover);
     }
 
     #[test]
@@ -1358,6 +1425,50 @@ mod tests {
     }
 
     #[test]
+    fn builds_slideshow_sync_plan_with_effective_fps() {
+        let test_dir = TestDir::new("gilder-slideshow-plan");
+        let package_dir = test_dir.path.join("slideshow-demo.gwpdir");
+        write_minimal_slideshow_gwpdir(&package_dir);
+        let mut config = PerformanceConfig::default();
+        config.background_max_fps = 10;
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                focused: false,
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_performance(
+            &config,
+            &desktop,
+            &state,
+            test_dir.path.join("cache"),
+        );
+
+        assert!(sync.plans.is_empty());
+        assert!(sync.video_plans.is_empty());
+        assert_eq!(sync.slideshow_plans.len(), 1);
+        assert!(sync.errors.is_empty());
+        let plan = &sync.slideshow_plans[0];
+        assert_eq!(plan.output_name, "eDP-1");
+        assert_eq!(plan.sources.len(), 2);
+        assert!(plan.sources[0].ends_with("assets/a.svg"));
+        assert!(plan.sources[1].ends_with("assets/b.svg"));
+        assert_eq!(plan.interval_ms, 1_500);
+        assert_eq!(plan.transition, Transition::Crossfade);
+        assert_eq!(plan.fit, FitMode::Contain);
+        assert_eq!(plan.target_max_fps, Some(10));
+        assert_eq!(sync.decisions[0].action, StaticRenderAction::Render);
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Throttled);
+    }
+
+    #[test]
     fn builds_plan_from_gwp_archive() {
         let test_dir = TestDir::new("gilder-render-archive");
         let archive = test_dir.path.join("static-demo.gwp");
@@ -1460,6 +1571,32 @@ mod tests {
                     "height": 1080
                 }
             ]
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_minimal_slideshow_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(path.join("assets/a.svg"), b"<svg/>").unwrap();
+        fs::write(path.join("assets/b.svg"), b"<svg/>").unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.slideshow-demo",
+            "version": "1.0.0",
+            "title": "Slideshow Demo",
+            "kind": "slideshow",
+            "entry": {
+                "type": "slideshow",
+                "sources": ["assets/a.svg", "assets/b.svg"],
+                "interval_ms": 1500,
+                "transition": "crossfade",
+                "fit": "contain"
+            }
         });
         fs::write(
             path.join(crate::core::MANIFEST_FILE),

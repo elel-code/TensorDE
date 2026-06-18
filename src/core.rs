@@ -9,7 +9,7 @@ pub use format::{
     DIRECTORY_EXTENSION, FORMAT_NAME, FORMAT_VERSION, MANIFEST_FILE, MANIFEST_TOML_FILE,
     PACKAGE_EXTENSION, WallpaperKind,
 };
-pub use manifest::{FitMode, Manifest, ManifestError, RuntimePolicy, WallpaperEntry};
+pub use manifest::{FitMode, Manifest, ManifestError, RuntimePolicy, Transition, WallpaperEntry};
 pub use package::{
     ManifestParseError, PackageArchiveError, PackageIdentity, PackageLoadError, WallpaperPackage,
     load_gwp, load_gwpdir, pack_gwp, unpack_gwp,
