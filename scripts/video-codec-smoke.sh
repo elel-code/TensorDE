@@ -366,8 +366,52 @@ record_decoder_candidates() {
   fi
 }
 
+decoder_candidates_for_case() {
+  local case_name="$1"
+  case "$case_name" in
+    mp4-h264)
+      printf '%s\n' avdec_h264 openh264dec vah264dec vaapih264dec nvh264dec
+      ;;
+    webm-vp9)
+      printf '%s\n' vp9dec avdec_vp9 vavp9dec vaapivp9dec nvvp9dec
+      ;;
+    webm-av1)
+      printf '%s\n' dav1ddec avdec_av1 av1dec vaav1dec vaapiav1dec
+      ;;
+  esac
+}
+
+decoder_log_mentions_element() {
+  local log_file="$1"
+  local element="$2"
+  grep -Fq "/${element}:" "$log_file" || grep -Fq ":${element}" "$log_file"
+}
+
+record_actual_decoders() {
+  local case_name="$1"
+  local log_file="$2"
+  shift 2
+  local element
+  local selected=()
+
+  for element in "$@"; do
+    if decoder_log_mentions_element "$log_file" "$element"; then
+      selected+=("$element")
+      record_gst_element "$case_name" "actual-decoder" "$element" "selected"
+    fi
+  done
+
+  if [[ "${#selected[@]}" -eq 0 ]]; then
+    record_gst_element "$case_name" "actual-decoder" "unknown" "not-detected"
+    record_result "$case_name" "gstreamer-actual-decoder" "skip" "actual decoder was not detected in gst-launch verbose log" "$log_file"
+  else
+    record_result "$case_name" "gstreamer-actual-decoder" "pass" "selected decoder(s): ${selected[*]}" "$log_file"
+  fi
+}
+
 record_required_gst_elements() {
   local case_name="$1"
+  local -a candidates=()
   if [[ -z "$gst_inspect" ]]; then
     record_gst_element "$case_name" "diagnostic" "gst-inspect-1.0" "missing"
     return 0
@@ -380,7 +424,8 @@ record_required_gst_elements() {
       else
         record_gst_element "$case_name" "demuxer" "qtdemux" "missing"
       fi
-      record_decoder_candidates "$case_name" avdec_h264 openh264dec
+      mapfile -t candidates < <(decoder_candidates_for_case "$case_name")
+      record_decoder_candidates "$case_name" "${candidates[@]}"
       ;;
     webm-vp9)
       if gst_element_available matroskademux; then
@@ -388,7 +433,8 @@ record_required_gst_elements() {
       else
         record_gst_element "$case_name" "demuxer" "matroskademux" "missing"
       fi
-      record_decoder_candidates "$case_name" vp9dec avdec_vp9
+      mapfile -t candidates < <(decoder_candidates_for_case "$case_name")
+      record_decoder_candidates "$case_name" "${candidates[@]}"
       ;;
     webm-av1)
       if gst_element_available matroskademux; then
@@ -396,7 +442,8 @@ record_required_gst_elements() {
       else
         record_gst_element "$case_name" "demuxer" "matroskademux" "missing"
       fi
-      record_decoder_candidates "$case_name" dav1ddec avdec_av1
+      mapfile -t candidates < <(decoder_candidates_for_case "$case_name")
+      record_decoder_candidates "$case_name" "${candidates[@]}"
       ;;
   esac
 }
@@ -479,21 +526,26 @@ check_preflight_decoder_candidates() {
 }
 
 run_preflight() {
+  local -a candidates=()
+
   note "preflight"
   check_preflight_gst_element environment "sink" fakesink
   check_preflight_gst_element environment "playback" playbin
 
   check_preflight_encoder mp4-h264 libx264
   check_preflight_gst_element mp4-h264 "demuxer" qtdemux
-  check_preflight_decoder_candidates mp4-h264 avdec_h264 openh264dec
+  mapfile -t candidates < <(decoder_candidates_for_case mp4-h264)
+  check_preflight_decoder_candidates mp4-h264 "${candidates[@]}"
 
   check_preflight_encoder webm-vp9 libvpx-vp9
   check_preflight_gst_element webm-vp9 "demuxer" matroskademux
-  check_preflight_decoder_candidates webm-vp9 vp9dec avdec_vp9
+  mapfile -t candidates < <(decoder_candidates_for_case webm-vp9)
+  check_preflight_decoder_candidates webm-vp9 "${candidates[@]}"
 
   check_preflight_encoder webm-av1 libaom-av1
   check_preflight_gst_element webm-av1 "demuxer" matroskademux
-  check_preflight_decoder_candidates webm-av1 dav1ddec avdec_av1
+  mapfile -t candidates < <(decoder_candidates_for_case webm-av1)
+  check_preflight_decoder_candidates webm-av1 "${candidates[@]}"
 }
 
 run_with_timeout() {
@@ -540,7 +592,7 @@ encode_sample() {
 
 play_sample() {
   local sample="$1"
-  run_with_timeout "$gst_launch" -q playbin \
+  run_with_timeout "$gst_launch" -v playbin \
     uri="file://${sample}" \
     video-sink=fakesink \
     audio-sink=fakesink
@@ -575,6 +627,7 @@ run_case() {
   local name="$1"
   local ext="$2"
   local sample="$work_dir/${name}.${ext}"
+  local -a candidates=()
 
   note "case ${name}"
   record_required_gst_elements "$name"
@@ -609,6 +662,8 @@ run_case() {
   else
     record_pass "$name GStreamer decode"
     record_result "$name" "gstreamer-decode" "pass" "GStreamer playbin decoded through fakesink" "$gst_log"
+    mapfile -t candidates < <(decoder_candidates_for_case "$name")
+    record_actual_decoders "$name" "$gst_log" "${candidates[@]}"
   fi
 
   if [[ "$run_convert" -eq 1 ]]; then
