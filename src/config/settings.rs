@@ -76,6 +76,10 @@ pub struct AdaptiveConfig {
     pub memory_pressure_threshold_percent: u32,
     #[serde(default = "default_adaptive_temperature_threshold_celsius")]
     pub temperature_threshold_celsius: u32,
+    #[serde(default = "default_adaptive_gpu_busy_threshold_percent")]
+    pub gpu_busy_threshold_percent: u32,
+    #[serde(default = "default_adaptive_battery_threshold_percent")]
+    pub battery_capacity_threshold_percent: u32,
 }
 
 impl Default for AdaptiveConfig {
@@ -90,6 +94,8 @@ impl Default for AdaptiveConfig {
             cpu_pressure_threshold_percent: default_adaptive_cpu_pressure_threshold_percent(),
             memory_pressure_threshold_percent: default_adaptive_memory_pressure_threshold_percent(),
             temperature_threshold_celsius: default_adaptive_temperature_threshold_celsius(),
+            gpu_busy_threshold_percent: default_adaptive_gpu_busy_threshold_percent(),
+            battery_capacity_threshold_percent: default_adaptive_battery_threshold_percent(),
         }
     }
 }
@@ -344,6 +350,14 @@ fn default_adaptive_temperature_threshold_celsius() -> u32 {
     85
 }
 
+fn default_adaptive_gpu_busy_threshold_percent() -> u32 {
+    90
+}
+
+fn default_adaptive_battery_threshold_percent() -> u32 {
+    20
+}
+
 fn default_true() -> bool {
     true
 }
@@ -390,6 +404,8 @@ mod tests {
             cpu_pressure_threshold_percent = 65
             memory_pressure_threshold_percent = 10
             temperature_threshold_celsius = 80
+            gpu_busy_threshold_percent = 85
+            battery_capacity_threshold_percent = 25
 
             [adapters]
             niri = false
@@ -429,6 +445,8 @@ mod tests {
         assert_eq!(config.adaptive.cpu_pressure_threshold_percent, 65);
         assert_eq!(config.adaptive.memory_pressure_threshold_percent, 10);
         assert_eq!(config.adaptive.temperature_threshold_celsius, 80);
+        assert_eq!(config.adaptive.gpu_busy_threshold_percent, 85);
+        assert_eq!(config.adaptive.battery_capacity_threshold_percent, 25);
         assert_eq!(config.outputs["HDMI-A-1"].adaptive.enabled, Some(false));
         assert_eq!(
             config.outputs["HDMI-A-1"].adaptive.throttle_max_fps,

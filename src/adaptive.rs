@@ -144,6 +144,8 @@ pub enum AdaptiveMetric {
     CpuPressureSomeAvg10,
     MemoryPressureSomeAvg10,
     TemperatureMaxCelsius,
+    GpuBusyPercent,
+    BatteryCapacityPercent,
 }
 
 pub fn monitoring_enabled(config: &GilderConfig) -> bool {
@@ -251,6 +253,24 @@ fn validation_sample_override(
                 config.adaptive.temperature_threshold_celsius,
             ));
         }
+        "gpu" | "gpu-busy" => {
+            let value = percent_override_value(config.adaptive.gpu_busy_threshold_percent);
+            sample.gpu_busy_percent_avg = Some(value);
+            sample.gpu_busy_percent_max = Some(value);
+            sample.gpu_busy_sources = vec!["override".to_owned()];
+        }
+        "battery" | "low-battery" | "battery-low" => {
+            sample.power_external_online = Some(false);
+            sample.power_system_battery_present = Some(true);
+            sample.power_battery_discharging = Some(true);
+            sample.power_battery_capacity_percent = Some(
+                config
+                    .adaptive
+                    .battery_capacity_threshold_percent
+                    .max(1)
+                    .min(100),
+            );
+        }
         "all" => {
             sample.cpu_pressure_some_avg10_x100 = Some(pressure_override_value(
                 config.adaptive.cpu_pressure_threshold_percent,
@@ -261,10 +281,24 @@ fn validation_sample_override(
             sample.temperature_max_millicelsius = Some(temperature_override_millicelsius(
                 config.adaptive.temperature_threshold_celsius,
             ));
+            let gpu_busy = percent_override_value(config.adaptive.gpu_busy_threshold_percent);
+            sample.gpu_busy_percent_avg = Some(gpu_busy);
+            sample.gpu_busy_percent_max = Some(gpu_busy);
+            sample.gpu_busy_sources = vec!["override".to_owned()];
+            sample.power_external_online = Some(false);
+            sample.power_system_battery_present = Some(true);
+            sample.power_battery_discharging = Some(true);
+            sample.power_battery_capacity_percent = Some(
+                config
+                    .adaptive
+                    .battery_capacity_threshold_percent
+                    .max(1)
+                    .min(100),
+            );
         }
         _ => {
             return Err(format!(
-                "invalid {ENV_ADAPTIVE_STATE}: expected inactive, cpu-pressure, memory-pressure, temperature, or all"
+                "invalid {ENV_ADAPTIVE_STATE}: expected inactive, cpu-pressure, memory-pressure, temperature, gpu-busy, low-battery, or all"
             ));
         }
     }
@@ -273,6 +307,10 @@ fn validation_sample_override(
 
 fn pressure_override_value(threshold_percent: u32) -> u32 {
     threshold_percent.max(1).saturating_mul(100)
+}
+
+fn percent_override_value(threshold_percent: u32) -> u32 {
+    threshold_percent.max(1).min(100)
 }
 
 fn temperature_override_millicelsius(threshold_celsius: u32) -> i32 {
@@ -301,6 +339,18 @@ fn triggers_for_sample(
         &mut triggers,
         sample.temperature_max_millicelsius,
         config.adaptive.temperature_threshold_celsius,
+    );
+    push_percent_at_least_trigger(
+        &mut triggers,
+        AdaptiveMetric::GpuBusyPercent,
+        sample.gpu_busy_percent_max,
+        config.adaptive.gpu_busy_threshold_percent,
+    );
+    push_battery_capacity_trigger(
+        &mut triggers,
+        sample.power_battery_discharging,
+        sample.power_battery_capacity_percent,
+        config.adaptive.battery_capacity_threshold_percent,
     );
     triggers
 }
@@ -343,6 +393,52 @@ fn push_temperature_trigger(
     if value_x100 >= threshold_x100 {
         triggers.push(AdaptiveTrigger {
             metric: AdaptiveMetric::TemperatureMaxCelsius,
+            value_x100,
+            threshold_x100,
+        });
+    }
+}
+
+fn push_percent_at_least_trigger(
+    triggers: &mut Vec<AdaptiveTrigger>,
+    metric: AdaptiveMetric,
+    value_percent: Option<u32>,
+    threshold_percent: u32,
+) {
+    let Some(value_percent) = value_percent else {
+        return;
+    };
+    if threshold_percent == 0 {
+        return;
+    }
+    let value_x100 = value_percent.min(100).saturating_mul(100);
+    let threshold_x100 = threshold_percent.min(100).saturating_mul(100);
+    if value_x100 >= threshold_x100 {
+        triggers.push(AdaptiveTrigger {
+            metric,
+            value_x100,
+            threshold_x100,
+        });
+    }
+}
+
+fn push_battery_capacity_trigger(
+    triggers: &mut Vec<AdaptiveTrigger>,
+    discharging: Option<bool>,
+    capacity_percent: Option<u32>,
+    threshold_percent: u32,
+) {
+    if threshold_percent == 0 || discharging != Some(true) {
+        return;
+    }
+    let Some(capacity_percent) = capacity_percent else {
+        return;
+    };
+    let value_x100 = capacity_percent.min(100).saturating_mul(100);
+    let threshold_x100 = threshold_percent.min(100).saturating_mul(100);
+    if value_x100 <= threshold_x100 {
+        triggers.push(AdaptiveTrigger {
+            metric: AdaptiveMetric::BatteryCapacityPercent,
             value_x100,
             threshold_x100,
         });
@@ -730,6 +826,89 @@ mod tests {
         assert_eq!(triggers[0].metric, AdaptiveMetric::TemperatureMaxCelsius);
         assert_eq!(triggers[0].value_x100, 8_050);
         assert_eq!(triggers[0].threshold_x100, 8_000);
+    }
+
+    #[test]
+    fn gpu_busy_threshold_creates_trigger() {
+        let config = GilderConfig {
+            adaptive: AdaptiveConfig {
+                gpu_busy_threshold_percent: 80,
+                ..AdaptiveConfig::default()
+            },
+            ..GilderConfig::default()
+        };
+        let sample = AdaptiveSystemSample {
+            gpu_busy_percent_avg: Some(70),
+            gpu_busy_percent_max: Some(85),
+            ..AdaptiveSystemSample::default()
+        };
+        let triggers = triggers_for_sample(&config, &sample);
+
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].metric, AdaptiveMetric::GpuBusyPercent);
+        assert_eq!(triggers[0].value_x100, 8_500);
+        assert_eq!(triggers[0].threshold_x100, 8_000);
+    }
+
+    #[test]
+    fn low_battery_threshold_creates_trigger_only_while_discharging() {
+        let config = GilderConfig {
+            adaptive: AdaptiveConfig {
+                battery_capacity_threshold_percent: 25,
+                ..AdaptiveConfig::default()
+            },
+            ..GilderConfig::default()
+        };
+        let discharging_sample = AdaptiveSystemSample {
+            power_system_battery_present: Some(true),
+            power_battery_discharging: Some(true),
+            power_battery_capacity_percent: Some(25),
+            ..AdaptiveSystemSample::default()
+        };
+        let charging_sample = AdaptiveSystemSample {
+            power_system_battery_present: Some(true),
+            power_battery_discharging: Some(false),
+            power_battery_capacity_percent: Some(10),
+            ..AdaptiveSystemSample::default()
+        };
+
+        let triggers = triggers_for_sample(&config, &discharging_sample);
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].metric, AdaptiveMetric::BatteryCapacityPercent);
+        assert_eq!(triggers[0].value_x100, 2_500);
+        assert_eq!(triggers[0].threshold_x100, 2_500);
+        assert!(triggers_for_sample(&config, &charging_sample).is_empty());
+    }
+
+    #[test]
+    fn validation_overrides_can_create_gpu_and_low_battery_triggers() {
+        let config = GilderConfig {
+            adaptive: AdaptiveConfig {
+                gpu_busy_threshold_percent: 80,
+                battery_capacity_threshold_percent: 30,
+                ..AdaptiveConfig::default()
+            },
+            ..GilderConfig::default()
+        };
+        let gpu_sample = validation_sample_override(&config, "gpu-busy")
+            .unwrap()
+            .unwrap();
+        let battery_sample = validation_sample_override(&config, "low-battery")
+            .unwrap()
+            .unwrap();
+
+        let gpu_triggers = triggers_for_sample(&config, &gpu_sample);
+        assert_eq!(gpu_sample.gpu_busy_percent_max, Some(80));
+        assert_eq!(gpu_triggers.len(), 1);
+        assert_eq!(gpu_triggers[0].metric, AdaptiveMetric::GpuBusyPercent);
+
+        let battery_triggers = triggers_for_sample(&config, &battery_sample);
+        assert_eq!(battery_sample.power_battery_capacity_percent, Some(30));
+        assert_eq!(battery_triggers.len(), 1);
+        assert_eq!(
+            battery_triggers[0].metric,
+            AdaptiveMetric::BatteryCapacityPercent
+        );
     }
 
     #[test]

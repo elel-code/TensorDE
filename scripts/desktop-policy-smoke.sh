@@ -533,6 +533,21 @@ throttle_max_fps = 11
 action = "throttle"
 EOF
       ;;
+    adaptive-gpu-throttle)
+      cat > "$config_file" <<EOF
+[adaptive]
+enabled = true
+refresh_interval_ms = 250
+cooldown_ms = 1000
+throttle_max_fps = 11
+action = "throttle"
+cpu_pressure_threshold_percent = 0
+memory_pressure_threshold_percent = 0
+temperature_threshold_celsius = 0
+gpu_busy_threshold_percent = 50
+battery_capacity_threshold_percent = 0
+EOF
+      ;;
     adaptive-pause-unfocused)
       cat > "$config_file" <<EOF
 [adaptive]
@@ -551,6 +566,21 @@ refresh_interval_ms = 250
 cooldown_ms = 1000
 throttle_max_fps = 11
 action = "pause-dynamic"
+EOF
+      ;;
+    adaptive-low-battery-pause-dynamic)
+      cat > "$config_file" <<EOF
+[adaptive]
+enabled = true
+refresh_interval_ms = 250
+cooldown_ms = 1000
+throttle_max_fps = 11
+action = "pause-dynamic"
+cpu_pressure_threshold_percent = 0
+memory_pressure_threshold_percent = 0
+temperature_threshold_celsius = 0
+gpu_busy_threshold_percent = 0
+battery_capacity_threshold_percent = 50
 EOF
       ;;
     *)
@@ -757,6 +787,9 @@ expected_adaptive_action_for_scenario() {
     adaptive-throttle)
       printf '%s\n' "throttle"
       ;;
+    adaptive-gpu-throttle)
+      printf '%s\n' "throttle"
+      ;;
     adaptive-pause-unfocused)
       if [[ "$output_state" == "unfocused" ]]; then
         printf '%s\n' "pause-unfocused"
@@ -765,6 +798,9 @@ expected_adaptive_action_for_scenario() {
       fi
       ;;
     adaptive-pause-dynamic)
+      printf '%s\n' "pause-dynamic"
+      ;;
+    adaptive-low-battery-pause-dynamic)
       printf '%s\n' "pause-dynamic"
       ;;
   esac
@@ -902,7 +938,7 @@ run_scenario() {
   local expected_adaptive_action
   expected_adaptive_action="$(expected_adaptive_action_for_scenario "$config_profile" "$output_state")"
   local scenario_status="pass"
-  if [[ "$name" == "adaptive-pause-dynamic-slideshow" ]]; then
+  if [[ "$name" == *"pause-dynamic-slideshow" ]]; then
     scenario_wallpaper_path="$slideshow_wallpaper_path"
   fi
 
@@ -1075,10 +1111,12 @@ run_scenario output-active-42fps active interactive 42 render static-image ac ac
 run_scenario output-unfocused-12fps throttled unfocused 12 render static-image ac unfocused active output-unfocused-12fps "" 1 1
 run_scenario output-battery-pause paused battery "" remove "" battery active active output-battery-pause "" 0 0
 run_scenario adaptive-throttle throttled adaptive 11 render static-image ac active active adaptive-throttle cpu-pressure 1 1
+run_scenario adaptive-gpu-throttle throttled adaptive 11 render static-image ac active active adaptive-gpu-throttle gpu-busy 1 1
 run_scenario adaptive-pause-unfocused paused adaptive "" remove "" ac unfocused active adaptive-pause-unfocused cpu-pressure 0 0
 run_scenario adaptive-pause-focused-fallback throttled adaptive 11 render static-image ac active active adaptive-pause-unfocused cpu-pressure 1 1
 run_scenario adaptive-pause-dynamic-static active interactive 60 render static-image ac active active adaptive-pause-dynamic cpu-pressure 1 1
 run_scenario adaptive-pause-dynamic-slideshow paused adaptive "" remove "" ac active active adaptive-pause-dynamic cpu-pressure 0 0
+run_scenario adaptive-low-battery-pause-dynamic-slideshow paused adaptive "" remove "" ac active active adaptive-low-battery-pause-dynamic low-battery 0 0
 
 write_summary
 note "metadata: $metadata_path"
