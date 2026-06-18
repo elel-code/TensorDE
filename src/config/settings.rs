@@ -102,6 +102,8 @@ pub struct VideoConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CacheConfig {
+    #[serde(default = "default_package_cache_max_entries")]
+    pub package_cache_max_entries: usize,
     #[serde(default = "default_render_cache_max_entries")]
     pub render_cache_max_entries: usize,
 }
@@ -109,6 +111,7 @@ pub struct CacheConfig {
 impl Default for CacheConfig {
     fn default() -> Self {
         Self {
+            package_cache_max_entries: default_package_cache_max_entries(),
             render_cache_max_entries: default_render_cache_max_entries(),
         }
     }
@@ -313,6 +316,10 @@ fn default_render_cache_max_entries() -> usize {
     32
 }
 
+fn default_package_cache_max_entries() -> usize {
+    16
+}
+
 fn default_adaptive_refresh_interval_ms() -> u64 {
     2000
 }
@@ -371,6 +378,7 @@ mod tests {
             decoder = "hardware-preferred"
 
             [cache]
+            package_cache_max_entries = 4
             render_cache_max_entries = 8
 
             [adaptive]
@@ -411,6 +419,7 @@ mod tests {
         assert_eq!(config.performance.desktop_refresh_interval_ms, 1000);
         assert_eq!(config.performance.battery, PowerPolicy::Throttle);
         assert_eq!(config.video.decoder, VideoDecoderPolicy::HardwarePreferred);
+        assert_eq!(config.cache.package_cache_max_entries, 4);
         assert_eq!(config.cache.render_cache_max_entries, 8);
         assert!(config.adaptive.enabled);
         assert_eq!(config.adaptive.refresh_interval_ms, 1500);

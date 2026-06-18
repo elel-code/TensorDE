@@ -12,7 +12,7 @@ use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot};
 use crate::policy::{PerformanceDecision, RenderMode};
 use crate::state::{AppState, OutputState, WallpaperAssignment};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, hash_map::DefaultHasher};
+use std::collections::{BTreeMap, BTreeSet, VecDeque, hash_map::DefaultHasher};
 use std::fmt;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -80,9 +80,13 @@ pub struct RenderSyncCacheReport {
     #[serde(default)]
     pub package_cache_entries: usize,
     #[serde(default)]
+    pub package_cache_max_entries: usize,
+    #[serde(default)]
     pub package_cache_hits: u64,
     #[serde(default)]
     pub package_cache_misses: u64,
+    #[serde(default)]
+    pub package_cache_evictions: u64,
     #[serde(default)]
     pub archive_cache_entries: usize,
     #[serde(default)]
@@ -214,7 +218,8 @@ fn static_render_sync_plan_inner(
     let mut removals = Vec::new();
     let mut errors = Vec::new();
     let mut decisions = Vec::new();
-    let mut package_cache = RenderPackageCache::new(cache_dir);
+    let mut package_cache =
+        RenderPackageCache::new(cache_dir, cache_config.package_cache_max_entries);
     for output_name in output_names {
         let desktop_output = desktop.output(&output_name);
         let output_state = state.outputs.get(&output_name).cloned().unwrap_or_default();
@@ -308,7 +313,7 @@ fn static_render_sync_plan_inner(
 
         match wallpaper_plan_with_target(
             &output_name,
-            package,
+            &package,
             &performance,
             video_decoder_policy,
             fit_override,
@@ -812,16 +817,20 @@ fn load_assigned_package_tracked(
 
 struct RenderPackageCache<'a> {
     cache_dir: &'a Path,
+    max_entries: usize,
     packages: BTreeMap<String, Result<WallpaperPackage, RendererPlanError>>,
+    package_order: VecDeque<String>,
     protected_archive_dirs: BTreeSet<PathBuf>,
     stats: RenderSyncCacheReport,
 }
 
 impl<'a> RenderPackageCache<'a> {
-    fn new(cache_dir: &'a Path) -> Self {
+    fn new(cache_dir: &'a Path, max_entries: usize) -> Self {
         Self {
             cache_dir,
+            max_entries,
             packages: BTreeMap::new(),
+            package_order: VecDeque::new(),
             protected_archive_dirs: BTreeSet::new(),
             stats: RenderSyncCacheReport::default(),
         }
@@ -830,27 +839,36 @@ impl<'a> RenderPackageCache<'a> {
     fn package(
         &mut self,
         assignment: &WallpaperAssignment,
-    ) -> Result<&WallpaperPackage, RendererPlanError> {
-        if !self.packages.contains_key(&assignment.path) {
-            self.stats.package_cache_misses += 1;
-            let package = load_assigned_package_tracked(
-                assignment,
-                self.cache_dir,
-                &mut self.stats,
-                &mut self.protected_archive_dirs,
-            );
-            self.packages.insert(assignment.path.clone(), package);
-        } else {
+    ) -> Result<WallpaperPackage, RendererPlanError> {
+        if let Some(package) = self.packages.get(&assignment.path) {
             self.stats.package_cache_hits += 1;
+            return package.clone();
         }
 
-        match self
-            .packages
-            .get(&assignment.path)
-            .expect("package cache entry was inserted before lookup")
-        {
-            Ok(package) => Ok(package),
-            Err(err) => Err(err.clone()),
+        self.stats.package_cache_misses += 1;
+        let package = load_assigned_package_tracked(
+            assignment,
+            self.cache_dir,
+            &mut self.stats,
+            &mut self.protected_archive_dirs,
+        );
+        if self.max_entries > 0 {
+            self.prune_for_insert();
+            self.packages
+                .insert(assignment.path.clone(), package.clone());
+            self.package_order.push_back(assignment.path.clone());
+        }
+        package
+    }
+
+    fn prune_for_insert(&mut self) {
+        while self.packages.len() >= self.max_entries {
+            let Some(key) = self.package_order.pop_front() else {
+                break;
+            };
+            if self.packages.remove(&key).is_some() {
+                self.stats.package_cache_evictions += 1;
+            }
         }
     }
 
@@ -861,6 +879,7 @@ impl<'a> RenderPackageCache<'a> {
             &self.protected_archive_dirs,
         );
         self.stats.package_cache_entries = self.packages.len();
+        self.stats.package_cache_max_entries = cache_config.package_cache_max_entries;
         self.stats.archive_cache_entries = prune.entries_after;
         self.stats.archive_cache_max_entries = cache_config.render_cache_max_entries;
         self.stats.archive_cache_evictions = prune.evictions;
@@ -1872,7 +1891,7 @@ mod tests {
             path: package_dir.display().to_string(),
             variant: None,
         };
-        let mut cache = RenderPackageCache::new(&test_dir.path);
+        let mut cache = RenderPackageCache::new(&test_dir.path, 16);
 
         let first_id = cache.package(&assignment).unwrap().manifest.id.clone();
         fs::remove_file(package_dir.join(crate::core::MANIFEST_FILE)).unwrap();
@@ -1883,6 +1902,64 @@ mod tests {
         assert_eq!(cache.packages.len(), 1);
         assert_eq!(cache.stats.package_cache_misses, 1);
         assert_eq!(cache.stats.package_cache_hits, 1);
+    }
+
+    #[test]
+    fn render_package_cache_evicts_old_entries_at_limit() {
+        let test_dir = TestDir::new("gilder-render-package-cache-limit");
+        let package_a = test_dir.path.join("a.gwpdir");
+        let package_b = test_dir.path.join("b.gwpdir");
+        write_minimal_static_variant_gwpdir(&package_a);
+        write_minimal_static_variant_gwpdir(&package_b);
+        let assignment_a = WallpaperAssignment {
+            path: package_a.display().to_string(),
+            variant: None,
+        };
+        let assignment_b = WallpaperAssignment {
+            path: package_b.display().to_string(),
+            variant: None,
+        };
+        let mut cache = RenderPackageCache::new(&test_dir.path, 1);
+
+        cache.package(&assignment_a).unwrap();
+        cache.package(&assignment_b).unwrap();
+        fs::remove_file(package_a.join(crate::core::MANIFEST_FILE)).unwrap();
+        let err = cache.package(&assignment_a).unwrap_err();
+
+        assert!(err.to_string().contains("manifest"));
+        assert!(
+            err.to_string().contains(
+                &package_a
+                    .join(crate::core::MANIFEST_FILE)
+                    .display()
+                    .to_string()
+            )
+        );
+        assert_eq!(cache.packages.len(), 1);
+        assert_eq!(cache.stats.package_cache_hits, 0);
+        assert_eq!(cache.stats.package_cache_misses, 3);
+        assert_eq!(cache.stats.package_cache_evictions, 2);
+    }
+
+    #[test]
+    fn zero_package_cache_limit_disables_package_retention() {
+        let test_dir = TestDir::new("gilder-render-package-cache-zero-limit");
+        let package_dir = test_dir.path.join("static-variant.gwpdir");
+        write_minimal_static_variant_gwpdir(&package_dir);
+        let assignment = WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        };
+        let mut cache = RenderPackageCache::new(&test_dir.path, 0);
+
+        cache.package(&assignment).unwrap();
+        fs::remove_file(package_dir.join(crate::core::MANIFEST_FILE)).unwrap();
+        assert!(cache.package(&assignment).is_err());
+
+        assert!(cache.packages.is_empty());
+        assert_eq!(cache.stats.package_cache_hits, 0);
+        assert_eq!(cache.stats.package_cache_misses, 2);
+        assert_eq!(cache.stats.package_cache_evictions, 0);
     }
 
     #[test]
@@ -1967,6 +2044,52 @@ mod tests {
         assert!(!old_a.exists());
         assert!(!old_b.exists());
         assert!(extract_dir.exists());
+    }
+
+    #[test]
+    fn render_sync_reports_package_cache_limit_and_evictions() {
+        let test_dir = TestDir::new("gilder-render-sync-package-cache-limit");
+        let package_a = test_dir.path.join("a.gwpdir");
+        let package_b = test_dir.path.join("b.gwpdir");
+        write_minimal_static_variant_gwpdir(&package_a);
+        write_minimal_static_variant_gwpdir(&package_b);
+        let mut config = GilderConfig::default();
+        config.cache.package_cache_max_entries = 1;
+        config.outputs.insert(
+            "eDP-1".to_owned(),
+            OutputConfig {
+                wallpaper: Some(package_a.display().to_string()),
+                ..OutputConfig::default()
+            },
+        );
+        config.outputs.insert(
+            "HDMI-A-1".to_owned(),
+            OutputConfig {
+                wallpaper: Some(package_b.display().to_string()),
+                ..OutputConfig::default()
+            },
+        );
+        let desktop = DesktopSnapshot {
+            outputs: vec![
+                DesktopOutput::virtual_output("eDP-1"),
+                DesktopOutput::virtual_output("HDMI-A-1"),
+            ],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_config(
+            &config,
+            &desktop,
+            &AppState::default(),
+            test_dir.path.join("cache"),
+        );
+
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.plans.len(), 2);
+        assert_eq!(sync.cache.package_cache_entries, 1);
+        assert_eq!(sync.cache.package_cache_max_entries, 1);
+        assert_eq!(sync.cache.package_cache_misses, 2);
+        assert_eq!(sync.cache.package_cache_evictions, 1);
     }
 
     fn adaptive_cpu_pressure_snapshot() -> crate::adaptive::AdaptiveSnapshot {

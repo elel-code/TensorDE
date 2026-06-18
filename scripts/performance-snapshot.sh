@@ -65,6 +65,8 @@ Options:
                      Require renderer sync queued count to be non-zero
   --expect-render-sync-update-skipped
                      Require renderer sync skipped count to be non-zero
+  --expect-render-sync-package-cache-entries-latest-at-most <count>
+                     Require latest render_sync package cache entries to be at most count
   --expect-renderer-output-windows-latest-at-least <count>
                      Require latest renderer output window count to be at least count
   --expect-renderer-output-windows-latest-at-most <count>
@@ -163,6 +165,7 @@ expect_render_sync_cache_hit=0
 expect_desktop_refresh_skip=0
 expect_render_sync_update_queued=0
 expect_render_sync_update_skipped=0
+expect_render_sync_package_cache_entries_latest_at_most=""
 expect_renderer_output_windows_latest_at_least=""
 expect_renderer_output_windows_latest_at_most=""
 expect_renderer_output_windows_max_at_most=""
@@ -350,6 +353,11 @@ while [[ $# -gt 0 ]]; do
     --expect-render-sync-update-skipped)
       expect_render_sync_update_skipped=1
       shift
+      ;;
+    --expect-render-sync-package-cache-entries-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-package-cache-entries-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_package_cache_entries_latest_at_most="$2"
+      shift 2
       ;;
     --expect-renderer-output-windows-latest-at-least)
       [[ $# -ge 2 ]] || { echo "--expect-renderer-output-windows-latest-at-least requires a value" >&2; exit 2; }
@@ -876,52 +884,54 @@ write_telemetry_summary() {
       queued = $9 + 0
       update_skips = $10 + 0
       package_cache_entries = $11 + 0
-      package_cache_hits = $12 + 0
-      package_cache_misses = $13 + 0
-      archive_cache_entries = $14 + 0
-      archive_cache_max_entries = $15 + 0
-      archive_cache_reuses = $16 + 0
-      archive_cache_extractions = $17 + 0
-      archive_cache_evictions = $18 + 0
-      archive_cache_evictions_latest = $19 + 0
-      archive_cache_eviction_errors = $20 + 0
-      archive_cache_eviction_errors_latest = $21 + 0
-      adaptive_refreshes = $22 + 0
-      adaptive_skips = $23 + 0
-      adaptive_triggers = $24 + 0
-      cpu_pressure = $25 + 0
-      memory_pressure = $26 + 0
-      temperature = $27 + 0
-      external_online = $28
-      battery_present = $29
-      battery_discharging = $30
-      battery_capacity = $31 + 0
-      battery_power = $32 + 0
-      daemon_gpu_avg = $33
-      daemon_gpu_max_sample = $34
-      daemon_gpu_sources = $35
-      adaptive_action_types = $36
-      adaptive_action_scopes = $37
-      adaptive_action_configured_actions = $38
-      adaptive_action_max_fps = $39
-      renderer_output_windows = $40 + 0
-      renderer_static_surfaces = $41 + 0
-      renderer_slideshow_surfaces = $42 + 0
-      renderer_video_surfaces = $43 + 0
-      renderer_video_pipelines = $44 + 0
-      renderer_video_qos_messages = $45 + 0
-      renderer_video_qos_dropped_max = $46
-      renderer_video_gtk_frame_clock_ticks = $47 + 0
-      renderer_video_gtk_frame_clock_interval_us_max = $48
-      renderer_video_gtk_frame_clock_fps_x1000_max = $49
-      renderer_video_gtk_frame_timings_complete = $50 + 0
-      renderer_video_gtk_frame_timings_presentation_interval_us_max = $51
-      renderer_video_gtk_frame_timings_presentation_time_us_max = $52
-      renderer_video_gtk_frame_clock_before_paint_ticks = $53 + 0
-      renderer_video_gtk_frame_clock_update_ticks = $54 + 0
-      renderer_video_gtk_frame_clock_layout_ticks = $55 + 0
-      renderer_video_gtk_frame_clock_paint_ticks = $56 + 0
-      renderer_video_gtk_frame_clock_after_paint_ticks = $57 + 0
+      package_cache_max_entries = $12 + 0
+      package_cache_hits = $13 + 0
+      package_cache_misses = $14 + 0
+      package_cache_evictions = $15 + 0
+      archive_cache_entries = $16 + 0
+      archive_cache_max_entries = $17 + 0
+      archive_cache_reuses = $18 + 0
+      archive_cache_extractions = $19 + 0
+      archive_cache_evictions = $20 + 0
+      archive_cache_evictions_latest = $21 + 0
+      archive_cache_eviction_errors = $22 + 0
+      archive_cache_eviction_errors_latest = $23 + 0
+      adaptive_refreshes = $24 + 0
+      adaptive_skips = $25 + 0
+      adaptive_triggers = $26 + 0
+      cpu_pressure = $27 + 0
+      memory_pressure = $28 + 0
+      temperature = $29 + 0
+      external_online = $30
+      battery_present = $31
+      battery_discharging = $32
+      battery_capacity = $33 + 0
+      battery_power = $34 + 0
+      daemon_gpu_avg = $35
+      daemon_gpu_max_sample = $36
+      daemon_gpu_sources = $37
+      adaptive_action_types = $38
+      adaptive_action_scopes = $39
+      adaptive_action_configured_actions = $40
+      adaptive_action_max_fps = $41
+      renderer_output_windows = $42 + 0
+      renderer_static_surfaces = $43 + 0
+      renderer_slideshow_surfaces = $44 + 0
+      renderer_video_surfaces = $45 + 0
+      renderer_video_pipelines = $46 + 0
+      renderer_video_qos_messages = $47 + 0
+      renderer_video_qos_dropped_max = $48
+      renderer_video_gtk_frame_clock_ticks = $49 + 0
+      renderer_video_gtk_frame_clock_interval_us_max = $50
+      renderer_video_gtk_frame_clock_fps_x1000_max = $51
+      renderer_video_gtk_frame_timings_complete = $52 + 0
+      renderer_video_gtk_frame_timings_presentation_interval_us_max = $53
+      renderer_video_gtk_frame_timings_presentation_time_us_max = $54
+      renderer_video_gtk_frame_clock_before_paint_ticks = $55 + 0
+      renderer_video_gtk_frame_clock_update_ticks = $56 + 0
+      renderer_video_gtk_frame_clock_layout_ticks = $57 + 0
+      renderer_video_gtk_frame_clock_paint_ticks = $58 + 0
+      renderer_video_gtk_frame_clock_after_paint_ticks = $59 + 0
 
       if (rows == 1) {
         first_refreshes = refreshes
@@ -944,8 +954,10 @@ write_telemetry_summary() {
       last_queued = queued
       last_update_skips = update_skips
       last_package_cache_entries = package_cache_entries
+      last_package_cache_max_entries = package_cache_max_entries
       last_package_cache_hits = package_cache_hits
       last_package_cache_misses = package_cache_misses
+      last_package_cache_evictions = package_cache_evictions
       last_archive_cache_entries = archive_cache_entries
       last_archive_cache_max_entries = archive_cache_max_entries
       last_archive_cache_reuses = archive_cache_reuses
@@ -1097,8 +1109,10 @@ write_telemetry_summary() {
         printf "render_sync_updates_queued_latest: %d\n", last_queued
         printf "render_sync_updates_skipped_latest: %d\n", last_update_skips
         printf "render_sync_package_cache_entries_latest: %d\n", last_package_cache_entries
+        printf "render_sync_package_cache_max_entries_latest: %d\n", last_package_cache_max_entries
         printf "render_sync_package_cache_hits_latest: %d\n", last_package_cache_hits
         printf "render_sync_package_cache_misses_latest: %d\n", last_package_cache_misses
+        printf "render_sync_package_cache_evictions_latest: %d\n", last_package_cache_evictions
         printf "render_sync_archive_cache_entries_latest: %d\n", last_archive_cache_entries
         printf "render_sync_archive_cache_max_entries_latest: %d\n", last_archive_cache_max_entries
         printf "render_sync_archive_cache_reuses_latest: %d\n", last_archive_cache_reuses
@@ -1758,6 +1772,7 @@ has_telemetry_expectations() {
     "$expect_desktop_refresh_skip" -eq 1 ||
     "$expect_render_sync_update_queued" -eq 1 ||
     "$expect_render_sync_update_skipped" -eq 1 ||
+    -n "$expect_render_sync_package_cache_entries_latest_at_most" ||
     -n "$expect_renderer_output_windows_latest_at_least" ||
     -n "$expect_renderer_output_windows_latest_at_most" ||
     -n "$expect_renderer_output_windows_max_at_most" ||
@@ -1832,6 +1847,9 @@ validate_telemetry_expectations() {
   fi
   if [[ "$expect_render_sync_update_skipped" -eq 1 ]]; then
     expect_telemetry_minimum "render_sync_updates_skipped_latest" 1 "renderer sync skipped latest count"
+  fi
+  if [[ -n "$expect_render_sync_package_cache_entries_latest_at_most" ]]; then
+    expect_telemetry_maximum "render_sync_package_cache_entries_latest" "$expect_render_sync_package_cache_entries_latest_at_most" "latest render sync package cache entries"
   fi
   if [[ -n "$expect_renderer_output_windows_latest_at_least" ]]; then
     expect_telemetry_minimum "renderer_output_windows_latest" "$expect_renderer_output_windows_latest_at_least" "latest renderer output window count"
@@ -2128,6 +2146,10 @@ do
     exit 2
   fi
 done
+if [[ -n "$expect_render_sync_package_cache_entries_latest_at_most" && ! "$expect_render_sync_package_cache_entries_latest_at_most" =~ ^[0-9]+$ ]]; then
+  echo "render sync package cache expectations must be non-negative integers" >&2
+  exit 2
+fi
 
 essential_missing=0
 require_command ps || essential_missing=1
@@ -2209,6 +2231,7 @@ expect_render_sync_cache_hit: ${expect_render_sync_cache_hit}
 expect_desktop_refresh_skip: ${expect_desktop_refresh_skip}
 expect_render_sync_update_queued: ${expect_render_sync_update_queued}
 expect_render_sync_update_skipped: ${expect_render_sync_update_skipped}
+expect_render_sync_package_cache_entries_latest_at_most: ${expect_render_sync_package_cache_entries_latest_at_most:-none}
 expect_renderer_output_windows_latest_at_least: ${expect_renderer_output_windows_latest_at_least:-none}
 expect_renderer_output_windows_latest_at_most: ${expect_renderer_output_windows_latest_at_most:-none}
 expect_renderer_output_windows_max_at_most: ${expect_renderer_output_windows_max_at_most:-none}
@@ -2243,7 +2266,7 @@ EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
-printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,render_sync_package_cache_entries,render_sync_package_cache_hits,render_sync_package_cache_misses,render_sync_archive_cache_entries,render_sync_archive_cache_max_entries,render_sync_archive_cache_reuses,render_sync_archive_cache_extractions,render_sync_archive_cache_evictions,render_sync_archive_cache_evictions_latest,render_sync_archive_cache_eviction_errors,render_sync_archive_cache_eviction_errors_latest,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps,renderer_output_windows,renderer_static_surfaces,renderer_slideshow_surfaces,renderer_video_surfaces,renderer_video_pipelines,renderer_video_qos_messages,renderer_video_qos_dropped_max,renderer_video_gtk_frame_clock_ticks,renderer_video_gtk_frame_clock_interval_us_max,renderer_video_gtk_frame_clock_fps_x1000_max,renderer_video_gtk_frame_timings_complete,renderer_video_gtk_frame_timings_presentation_interval_us_max,renderer_video_gtk_frame_timings_presentation_time_us_max,renderer_video_gtk_frame_clock_before_paint_ticks,renderer_video_gtk_frame_clock_update_ticks,renderer_video_gtk_frame_clock_layout_ticks,renderer_video_gtk_frame_clock_paint_ticks,renderer_video_gtk_frame_clock_after_paint_ticks\n' > "$telemetry_path"
+printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,render_sync_package_cache_entries,render_sync_package_cache_max_entries,render_sync_package_cache_hits,render_sync_package_cache_misses,render_sync_package_cache_evictions,render_sync_archive_cache_entries,render_sync_archive_cache_max_entries,render_sync_archive_cache_reuses,render_sync_archive_cache_extractions,render_sync_archive_cache_evictions,render_sync_archive_cache_evictions_latest,render_sync_archive_cache_eviction_errors,render_sync_archive_cache_eviction_errors_latest,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps,renderer_output_windows,renderer_static_surfaces,renderer_slideshow_surfaces,renderer_video_surfaces,renderer_video_pipelines,renderer_video_qos_messages,renderer_video_qos_dropped_max,renderer_video_gtk_frame_clock_ticks,renderer_video_gtk_frame_clock_interval_us_max,renderer_video_gtk_frame_clock_fps_x1000_max,renderer_video_gtk_frame_timings_complete,renderer_video_gtk_frame_timings_presentation_interval_us_max,renderer_video_gtk_frame_timings_presentation_time_us_max,renderer_video_gtk_frame_clock_before_paint_ticks,renderer_video_gtk_frame_clock_update_ticks,renderer_video_gtk_frame_clock_layout_ticks,renderer_video_gtk_frame_clock_paint_ticks,renderer_video_gtk_frame_clock_after_paint_ticks\n' > "$telemetry_path"
 printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks\n' > "$video_runtime_path"
 
 status_failures=0

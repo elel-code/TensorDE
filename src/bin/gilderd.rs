@@ -1315,8 +1315,10 @@ fn telemetry_report(
             "updates_queued": runtime_telemetry.render_sync_updates_queued,
             "updates_skipped": runtime_telemetry.render_sync_updates_skipped,
             "package_cache_entries": render_sync_cache.package_cache_entries,
+            "package_cache_max_entries": render_sync_cache.package_cache_max_entries,
             "package_cache_hits": render_sync_cache.package_cache_hits,
             "package_cache_misses": render_sync_cache.package_cache_misses,
+            "package_cache_evictions": render_sync_cache.package_cache_evictions,
             "archive_cache_entries": render_sync_cache.archive_cache_entries,
             "archive_cache_max_entries": render_sync_cache.archive_cache_max_entries,
             "archive_cache_reuses": render_sync_cache.archive_cache_reuses,
@@ -1795,6 +1797,14 @@ mod tests {
         );
         assert_eq!(
             response["result"]["telemetry"]["render_sync"]["package_cache_entries"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["package_cache_max_entries"],
+            json!(16)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["package_cache_evictions"],
             json!(0)
         );
         assert_eq!(
