@@ -107,6 +107,15 @@ const DECODER_ELEMENT_NAMES: &[&str] = &[
     "nvav1dec",
 ];
 const DECODER_RANK_BOOST: i32 = 512;
+const DMABUF_MEMORY_FEATURE: &str = "memory:DMABuf";
+const GPU_MEMORY_FEATURES: &[&str] = &[
+    DMABUF_MEMORY_FEATURE,
+    "memory:GLMemory",
+    "memory:VulkanImage",
+    "memory:VaapiSurface",
+    "memory:CUDAMemory",
+    "memory:NVMM",
+];
 
 static DECODER_RANK_STATE: OnceLock<Mutex<DecoderRankState>> = OnceLock::new();
 
@@ -224,6 +233,8 @@ impl GstVideoRenderer {
             .iter()
             .map(|(output_name, pipeline)| {
                 let actual_decoder_reports = actual_decoder_reports(&pipeline.element);
+                let caps_reports = video_caps_reports(&pipeline.element);
+                let zero_copy_evidence = zero_copy_evidence(&actual_decoder_reports, &caps_reports);
                 VideoPipelineSnapshot {
                     output_name: output_name.clone(),
                     source: pipeline.source.display().to_string(),
@@ -251,7 +262,8 @@ impl GstVideoRenderer {
                         .map(|report| report.element.clone())
                         .collect(),
                     actual_decoder_reports,
-                    caps_reports: video_caps_reports(&pipeline.element),
+                    caps_reports,
+                    zero_copy_evidence,
                 }
             })
             .collect()
@@ -631,6 +643,103 @@ pub fn video_caps_reports(element: &gst::Element) -> Vec<VideoCapsReport> {
     reports
 }
 
+pub fn zero_copy_evidence(
+    decoder_reports: &[VideoDecoderReport],
+    caps_reports: &[VideoCapsReport],
+) -> VideoZeroCopyEvidence {
+    let decoder_classes = decoder_report_classes(decoder_reports);
+    let memory_features = caps_report_memory_features(caps_reports, false);
+    let sink_memory_features = caps_report_memory_features(caps_reports, true);
+    let has_hardware_decoder = decoder_classes.contains(&VideoDecoderClass::Hardware);
+    let has_software_decoder = decoder_classes.contains(&VideoDecoderClass::Software);
+    let has_dmabuf_caps = memory_features
+        .iter()
+        .any(|feature| is_dmabuf_memory_feature(feature));
+    let has_sink_dmabuf_caps = sink_memory_features
+        .iter()
+        .any(|feature| is_dmabuf_memory_feature(feature));
+    let has_gpu_memory_caps = memory_features
+        .iter()
+        .any(|feature| is_gpu_memory_feature(feature));
+    let has_sink_gpu_memory_caps = sink_memory_features
+        .iter()
+        .any(|feature| is_gpu_memory_feature(feature));
+
+    let level = if has_sink_dmabuf_caps {
+        VideoZeroCopyEvidenceLevel::SinkDmabufCaps
+    } else if has_sink_gpu_memory_caps {
+        VideoZeroCopyEvidenceLevel::SinkGpuMemoryCaps
+    } else if has_dmabuf_caps {
+        VideoZeroCopyEvidenceLevel::DmabufCaps
+    } else if has_gpu_memory_caps {
+        VideoZeroCopyEvidenceLevel::GpuMemoryCaps
+    } else if has_hardware_decoder {
+        VideoZeroCopyEvidenceLevel::HardwareDecode
+    } else if has_software_decoder {
+        VideoZeroCopyEvidenceLevel::SoftwareDecode
+    } else {
+        VideoZeroCopyEvidenceLevel::Missing
+    };
+
+    VideoZeroCopyEvidence {
+        level,
+        decoder_classes,
+        memory_features,
+        sink_memory_features,
+        notes: zero_copy_evidence_notes(level),
+    }
+}
+
+fn decoder_report_classes(reports: &[VideoDecoderReport]) -> Vec<VideoDecoderClass> {
+    let mut classes = Vec::new();
+    for class in [
+        VideoDecoderClass::Hardware,
+        VideoDecoderClass::Software,
+        VideoDecoderClass::Unknown,
+    ] {
+        if reports.iter().any(|report| report.class == class) {
+            classes.push(class);
+        }
+    }
+    classes
+}
+
+fn caps_report_memory_features(caps_reports: &[VideoCapsReport], sink_only: bool) -> Vec<String> {
+    let mut features = caps_reports
+        .iter()
+        .filter(|report| !sink_only || report.direction == "sink")
+        .flat_map(|report| report.memory_features.iter().cloned())
+        .collect::<Vec<_>>();
+    features.sort();
+    features.dedup();
+    features
+}
+
+fn is_dmabuf_memory_feature(feature: &str) -> bool {
+    feature == DMABUF_MEMORY_FEATURE
+}
+
+fn is_gpu_memory_feature(feature: &str) -> bool {
+    GPU_MEMORY_FEATURES.contains(&feature)
+}
+
+fn zero_copy_evidence_notes(level: VideoZeroCopyEvidenceLevel) -> Vec<String> {
+    let note = match level {
+        VideoZeroCopyEvidenceLevel::Missing => "no decoder or GPU memory caps observed yet",
+        VideoZeroCopyEvidenceLevel::SoftwareDecode => {
+            "software decoder observed without GPU memory caps"
+        }
+        VideoZeroCopyEvidenceLevel::HardwareDecode => {
+            "hardware decoder observed without GPU memory caps"
+        }
+        VideoZeroCopyEvidenceLevel::GpuMemoryCaps => "GPU memory caps observed before the sink",
+        VideoZeroCopyEvidenceLevel::DmabufCaps => "DMABuf caps observed before the sink",
+        VideoZeroCopyEvidenceLevel::SinkGpuMemoryCaps => "sink-side GPU memory caps observed",
+        VideoZeroCopyEvidenceLevel::SinkDmabufCaps => "sink-side DMABuf caps observed",
+    };
+    vec![note.to_owned()]
+}
+
 fn push_element_caps_reports(element: &gst::Element, reports: &mut Vec<VideoCapsReport>) {
     for pad in element.pads() {
         let Some(caps) = pad.current_caps() else {
@@ -837,6 +946,7 @@ pub struct VideoPipelineSnapshot {
     pub actual_decoders: Vec<String>,
     pub actual_decoder_reports: Vec<VideoDecoderReport>,
     pub caps_reports: Vec<VideoCapsReport>,
+    pub zero_copy_evidence: VideoZeroCopyEvidence,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -1045,6 +1155,27 @@ pub struct VideoCapsReport {
 pub struct VideoCapsStructureReport {
     pub media_type: String,
     pub features: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VideoZeroCopyEvidence {
+    pub level: VideoZeroCopyEvidenceLevel,
+    pub decoder_classes: Vec<VideoDecoderClass>,
+    pub memory_features: Vec<String>,
+    pub sink_memory_features: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoZeroCopyEvidenceLevel {
+    Missing,
+    SoftwareDecode,
+    HardwareDecode,
+    GpuMemoryCaps,
+    DmabufCaps,
+    SinkGpuMemoryCaps,
+    SinkDmabufCaps,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1300,6 +1431,92 @@ mod tests {
             decoder_policy_status(VideoDecoderPolicy::HardwarePreferred, &[unknown]),
             VideoDecoderPolicyStatus::UnknownDecoder
         );
+    }
+
+    #[test]
+    fn classifies_zero_copy_evidence_from_decoder_and_caps() {
+        let hardware = VideoDecoderReport {
+            element: "vaav1dec".to_owned(),
+            class: VideoDecoderClass::Hardware,
+        };
+        let software = VideoDecoderReport {
+            element: "dav1ddec".to_owned(),
+            class: VideoDecoderClass::Software,
+        };
+
+        assert_eq!(
+            zero_copy_evidence(&[], &[]).level,
+            VideoZeroCopyEvidenceLevel::Missing
+        );
+        assert_eq!(
+            zero_copy_evidence(std::slice::from_ref(&software), &[]).level,
+            VideoZeroCopyEvidenceLevel::SoftwareDecode
+        );
+        assert_eq!(
+            zero_copy_evidence(std::slice::from_ref(&hardware), &[]).level,
+            VideoZeroCopyEvidenceLevel::HardwareDecode
+        );
+        assert_eq!(
+            zero_copy_evidence(
+                std::slice::from_ref(&software),
+                &[caps_report("decoder", "src", "src", "memory:GLMemory")]
+            )
+            .level,
+            VideoZeroCopyEvidenceLevel::GpuMemoryCaps
+        );
+        assert_eq!(
+            zero_copy_evidence(
+                std::slice::from_ref(&hardware),
+                &[caps_report("decoder", "src", "src", "memory:DMABuf")]
+            )
+            .level,
+            VideoZeroCopyEvidenceLevel::DmabufCaps
+        );
+        assert_eq!(
+            zero_copy_evidence(
+                std::slice::from_ref(&software),
+                &[caps_report(
+                    "gtk4paintablesink0",
+                    "sink",
+                    "sink",
+                    "memory:GLMemory"
+                )]
+            )
+            .level,
+            VideoZeroCopyEvidenceLevel::SinkGpuMemoryCaps
+        );
+        assert_eq!(
+            zero_copy_evidence(
+                &[hardware],
+                &[caps_report(
+                    "gtk4paintablesink0",
+                    "sink",
+                    "sink",
+                    "memory:DMABuf"
+                )]
+            )
+            .level,
+            VideoZeroCopyEvidenceLevel::SinkDmabufCaps
+        );
+    }
+
+    fn caps_report(
+        element: &str,
+        pad: &str,
+        direction: &str,
+        memory_feature: &str,
+    ) -> VideoCapsReport {
+        VideoCapsReport {
+            element: element.to_owned(),
+            pad: pad.to_owned(),
+            direction: direction.to_owned(),
+            caps: format!("video/x-raw({memory_feature})"),
+            memory_features: vec![memory_feature.to_owned()],
+            structures: vec![VideoCapsStructureReport {
+                media_type: "video/x-raw".to_owned(),
+                features: vec![memory_feature.to_owned()],
+            }],
+        }
     }
 
     #[test]

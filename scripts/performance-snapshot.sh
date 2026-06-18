@@ -45,6 +45,8 @@ Options:
                      Require at least one video runtime row with this caps memory feature
   --expect-sink-memory-feature <feature>
                      Require at least one video runtime row with this sink-side caps memory feature
+  --expect-zero-copy-evidence <level>
+                     Require at least one video runtime row with this zero-copy evidence level
   --expect-video-position-progress
                      Require sampled video position to advance on at least one output
   --expect-frame-limiter-enabled
@@ -89,6 +91,7 @@ expect_decoder_policy_status=""
 expect_decoder_class=""
 expect_memory_feature=""
 expect_sink_memory_feature=""
+expect_zero_copy_evidence=""
 expect_video_position_progress=0
 expect_frame_limiter_enabled=0
 expect_frame_limiter_max_fps=""
@@ -203,6 +206,11 @@ while [[ $# -gt 0 ]]; do
     --expect-sink-memory-feature)
       [[ $# -ge 2 ]] || { echo "--expect-sink-memory-feature requires a value" >&2; exit 2; }
       expect_sink_memory_feature="$2"
+      shift 2
+      ;;
+    --expect-zero-copy-evidence)
+      [[ $# -ge 2 ]] || { echo "--expect-zero-copy-evidence requires a value" >&2; exit 2; }
+      expect_zero_copy_evidence="$2"
       shift 2
       ;;
     --expect-video-position-progress)
@@ -772,35 +780,37 @@ write_video_runtime_summary() {
       rows += 1
       sample = $1
       output = $3
-      position = $15
-      duration = $16
-      limiter_enabled = $17
-      limiter_fps = $18
-      qos_messages = $19
-      qos_processed = $20
-      qos_dropped = $21
-      qos_format = $22
-      qos_jitter = $23
-      qos_jitter_abs = $24
-      qos_proportion = $25
-      gtk_clock_ticks = $26
-      gtk_clock_counter = $27
-      gtk_clock_time = $28
-      gtk_clock_interval = $29
-      gtk_clock_interval_max = $30
-      gtk_clock_fps = $31
-      gtk_clock_refresh = $32
-      gtk_clock_presentation = $33
-      gtk_timings_observed = $34
-      gtk_timings_complete = $35
-      gtk_timings_counter = $36
-      gtk_timings_complete_counter = $37
-      gtk_timings_frame_time = $38
-      gtk_timings_predicted_presentation = $39
-      gtk_timings_presentation = $40
-      gtk_timings_presentation_interval = $41
-      gtk_timings_presentation_interval_max = $42
-      gtk_timings_refresh = $43
+      zero_copy_level = $13
+      zero_copy_notes = $14
+      position = $17
+      duration = $18
+      limiter_enabled = $19
+      limiter_fps = $20
+      qos_messages = $21
+      qos_processed = $22
+      qos_dropped = $23
+      qos_format = $24
+      qos_jitter = $25
+      qos_jitter_abs = $26
+      qos_proportion = $27
+      gtk_clock_ticks = $28
+      gtk_clock_counter = $29
+      gtk_clock_time = $30
+      gtk_clock_interval = $31
+      gtk_clock_interval_max = $32
+      gtk_clock_fps = $33
+      gtk_clock_refresh = $34
+      gtk_clock_presentation = $35
+      gtk_timings_observed = $36
+      gtk_timings_complete = $37
+      gtk_timings_counter = $38
+      gtk_timings_complete_counter = $39
+      gtk_timings_frame_time = $40
+      gtk_timings_predicted_presentation = $41
+      gtk_timings_presentation = $42
+      gtk_timings_presentation_interval = $43
+      gtk_timings_presentation_interval_max = $44
+      gtk_timings_refresh = $45
 
       if (output != "" && !(output in seen_output)) {
         seen_output[output] = 1
@@ -809,6 +819,14 @@ write_video_runtime_summary() {
       if (sample != "" && !(sample in seen_sample)) {
         seen_sample[sample] = 1
         samples += 1
+      }
+      if (zero_copy_level != "") {
+        zero_copy_rows += 1
+        zero_copy_levels[zero_copy_level] += 1
+        last_zero_copy_level = zero_copy_level
+      }
+      if (zero_copy_notes != "") {
+        last_zero_copy_notes = zero_copy_notes
       }
       if (position != "") {
         position_samples += 1
@@ -932,6 +950,16 @@ write_video_runtime_summary() {
       printf "video_runtime_rows: %d\n", rows
       printf "video_runtime_samples: %d\n", samples
       printf "video_runtime_outputs: %d\n", outputs
+      printf "video_zero_copy_evidence_rows: %d\n", zero_copy_rows
+      if (last_zero_copy_level != "") {
+        printf "video_zero_copy_evidence_latest: %s\n", last_zero_copy_level
+      }
+      if (last_zero_copy_notes != "") {
+        printf "video_zero_copy_evidence_notes_latest: %s\n", last_zero_copy_notes
+      }
+      for (level in zero_copy_levels) {
+        printf "video_zero_copy_evidence.%s: %d\n", level, zero_copy_levels[level]
+      }
       printf "video_position_samples: %d\n", position_samples
       printf "video_position_moving_outputs: %d\n", moving_outputs
       printf "video_position_delta_ms_max: %d\n", max_position_delta
@@ -1129,6 +1157,7 @@ has_video_runtime_expectations() {
     -n "$expect_decoder_class" ||
     -n "$expect_memory_feature" ||
     -n "$expect_sink_memory_feature" ||
+    -n "$expect_zero_copy_evidence" ||
     "$expect_video_position_progress" -eq 1 ||
     "$expect_frame_limiter_enabled" -eq 1 ||
     -n "$expect_frame_limiter_max_fps" ||
@@ -1220,14 +1249,17 @@ validate_video_runtime_expectations() {
   if [[ -n "$expect_sink_memory_feature" ]]; then
     expect_video_runtime_field 12 "$expect_sink_memory_feature" "sink caps memory feature"
   fi
+  if [[ -n "$expect_zero_copy_evidence" ]]; then
+    expect_video_runtime_field 13 "$expect_zero_copy_evidence" "zero-copy evidence level"
+  fi
   if [[ "$expect_video_position_progress" -eq 1 ]]; then
     expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "moving video output count"
   fi
   if [[ "$expect_frame_limiter_enabled" -eq 1 ]]; then
-    expect_video_runtime_field 17 "true" "frame limiter enabled"
+    expect_video_runtime_field 19 "true" "frame limiter enabled"
   fi
   if [[ -n "$expect_frame_limiter_max_fps" ]]; then
-    expect_video_runtime_field 18 "$expect_frame_limiter_max_fps" "frame limiter max_fps"
+    expect_video_runtime_field 20 "$expect_frame_limiter_max_fps" "frame limiter max_fps"
   fi
   if [[ "$expect_video_qos" -eq 1 ]]; then
     expect_video_runtime_summary_minimum "video_qos_messages_max" 1 "QoS message max count"
@@ -1358,6 +1390,7 @@ expect_decoder_policy_status: ${expect_decoder_policy_status:-none}
 expect_decoder_class: ${expect_decoder_class:-none}
 expect_memory_feature: ${expect_memory_feature:-none}
 expect_sink_memory_feature: ${expect_sink_memory_feature:-none}
+expect_zero_copy_evidence: ${expect_zero_copy_evidence:-none}
 expect_video_position_progress: ${expect_video_position_progress}
 expect_frame_limiter_enabled: ${expect_frame_limiter_enabled}
 expect_frame_limiter_max_fps: ${expect_frame_limiter_max_fps:-none}
@@ -1371,7 +1404,7 @@ EOF
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
 printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps,renderer_video_pipelines,renderer_video_qos_messages,renderer_video_qos_dropped_max,renderer_video_gtk_frame_clock_ticks,renderer_video_gtk_frame_clock_interval_us_max,renderer_video_gtk_frame_clock_fps_x1000_max,renderer_video_gtk_frame_timings_complete,renderer_video_gtk_frame_timings_presentation_interval_us_max,renderer_video_gtk_frame_timings_presentation_time_us_max\n' > "$telemetry_path"
-printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source\n' > "$video_runtime_path"
+printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source\n' > "$video_runtime_path"
 
 status_failures=0
 decision_failures=0

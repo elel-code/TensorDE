@@ -10,7 +10,7 @@ use crate::policy::RenderMode;
 use crate::renderer::video::{
     VideoFrameStats, VideoPipelineSnapshot, actual_decoder_reports, apply_decoder_rank_policy,
     decoder_policy_status, playback_duration_ms, playback_position_ms, target_max_fps_from_caps,
-    video_caps_reports,
+    video_caps_reports, zero_copy_evidence,
 };
 use gtk::gdk;
 use gtk::gio;
@@ -224,6 +224,9 @@ impl GtkStaticRenderer {
             .filter_map(|(output_name, output)| {
                 output.video.as_ref().map(|video| {
                     let actual_decoder_reports = actual_decoder_reports(&video.element);
+                    let caps_reports = video_caps_reports(&video.element);
+                    let zero_copy_evidence =
+                        zero_copy_evidence(&actual_decoder_reports, &caps_reports);
                     VideoPipelineSnapshot {
                         output_name: output_name.clone(),
                         source: video.source.to_string_lossy().into_owned(),
@@ -251,7 +254,8 @@ impl GtkStaticRenderer {
                             .map(|report| report.element.clone())
                             .collect(),
                         actual_decoder_reports,
-                        caps_reports: video_caps_reports(&video.element),
+                        caps_reports,
+                        zero_copy_evidence,
                     }
                 })
             })
