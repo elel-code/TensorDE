@@ -12,6 +12,7 @@ const PROC_PRESSURE_MEMORY: &str = "/proc/pressure/memory";
 const SYS_CLASS_THERMAL: &str = "/sys/class/thermal";
 const SYS_CLASS_POWER_SUPPLY: &str = "/sys/class/power_supply";
 const SYS_CLASS_DRM: &str = "/sys/class/drm";
+const ENV_ADAPTIVE_STATE: &str = "GILDER_ADAPTIVE_STATE";
 
 #[derive(Debug, Clone)]
 pub struct AdaptiveMonitor {
@@ -53,9 +54,13 @@ impl AdaptiveMonitor {
             };
         }
 
-        let sample = read_system_sample();
+        let (sample, last_error) = read_sample(config);
         let triggers = triggers_for_sample(config, &sample);
-        let active_triggers = if triggers.is_empty() {
+        let active_triggers = if last_error.is_some() {
+            self.active_until = None;
+            self.retained_triggers.clear();
+            Vec::new()
+        } else if triggers.is_empty() {
             if self
                 .active_until
                 .is_some_and(|active_until| active_until > now)
@@ -77,7 +82,7 @@ impl AdaptiveMonitor {
             kill_switch: false,
             sample: Some(sample),
             active_triggers,
-            last_error: None,
+            last_error,
         }
     }
 }
@@ -194,6 +199,85 @@ fn read_system_sample() -> AdaptiveSystemSample {
         sample.gpu_busy_sources = gpu_busy.sources;
     }
     sample
+}
+
+fn read_sample(config: &GilderConfig) -> (AdaptiveSystemSample, Option<String>) {
+    match std::env::var(ENV_ADAPTIVE_STATE) {
+        Ok(value) => match validation_sample_override(config, &value) {
+            Ok(Some(sample)) => (sample, None),
+            Ok(None) => (read_system_sample(), None),
+            Err(message) => (AdaptiveSystemSample::default(), Some(message)),
+        },
+        Err(std::env::VarError::NotPresent) => (read_system_sample(), None),
+        Err(err) => (
+            AdaptiveSystemSample::default(),
+            Some(format!("invalid {ENV_ADAPTIVE_STATE}: {err}")),
+        ),
+    }
+}
+
+fn validation_sample_override(
+    config: &GilderConfig,
+    value: &str,
+) -> Result<Option<AdaptiveSystemSample>, String> {
+    let value = value.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        return Ok(None);
+    }
+
+    let mut sample = AdaptiveSystemSample {
+        cpu_pressure_some_avg10_x100: Some(0),
+        memory_pressure_some_avg10_x100: Some(0),
+        temperature_max_millicelsius: Some(0),
+        power_external_online: Some(true),
+        power_system_battery_present: Some(false),
+        ..AdaptiveSystemSample::default()
+    };
+
+    match value.as_str() {
+        "inactive" | "none" | "clear" => {}
+        "cpu" | "cpu-pressure" => {
+            sample.cpu_pressure_some_avg10_x100 = Some(pressure_override_value(
+                config.adaptive.cpu_pressure_threshold_percent,
+            ));
+        }
+        "memory" | "memory-pressure" => {
+            sample.memory_pressure_some_avg10_x100 = Some(pressure_override_value(
+                config.adaptive.memory_pressure_threshold_percent,
+            ));
+        }
+        "temperature" | "thermal" => {
+            sample.temperature_max_millicelsius = Some(temperature_override_millicelsius(
+                config.adaptive.temperature_threshold_celsius,
+            ));
+        }
+        "all" => {
+            sample.cpu_pressure_some_avg10_x100 = Some(pressure_override_value(
+                config.adaptive.cpu_pressure_threshold_percent,
+            ));
+            sample.memory_pressure_some_avg10_x100 = Some(pressure_override_value(
+                config.adaptive.memory_pressure_threshold_percent,
+            ));
+            sample.temperature_max_millicelsius = Some(temperature_override_millicelsius(
+                config.adaptive.temperature_threshold_celsius,
+            ));
+        }
+        _ => {
+            return Err(format!(
+                "invalid {ENV_ADAPTIVE_STATE}: expected inactive, cpu-pressure, memory-pressure, temperature, or all"
+            ));
+        }
+    }
+    Ok(Some(sample))
+}
+
+fn pressure_override_value(threshold_percent: u32) -> u32 {
+    threshold_percent.max(1).saturating_mul(100)
+}
+
+fn temperature_override_millicelsius(threshold_celsius: u32) -> i32 {
+    let clamped_celsius = threshold_celsius.max(1).min((i32::MAX as u32) / 1_000);
+    (clamped_celsius * 1_000) as i32
 }
 
 fn triggers_for_sample(
@@ -587,6 +671,44 @@ mod tests {
 
         assert_eq!(triggers.len(), 1);
         assert_eq!(triggers[0].metric, AdaptiveMetric::CpuPressureSomeAvg10);
+    }
+
+    #[test]
+    fn validation_override_can_create_cpu_pressure_trigger() {
+        let config = GilderConfig {
+            adaptive: AdaptiveConfig {
+                cpu_pressure_threshold_percent: 20,
+                ..AdaptiveConfig::default()
+            },
+            ..GilderConfig::default()
+        };
+        let sample = validation_sample_override(&config, "cpu-pressure")
+            .unwrap()
+            .unwrap();
+        let triggers = triggers_for_sample(&config, &sample);
+
+        assert_eq!(sample.cpu_pressure_some_avg10_x100, Some(2_000));
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].metric, AdaptiveMetric::CpuPressureSomeAvg10);
+        assert_eq!(triggers[0].value_x100, 2_000);
+        assert_eq!(triggers[0].threshold_x100, 2_000);
+    }
+
+    #[test]
+    fn validation_override_inactive_does_not_trigger() {
+        let config = GilderConfig::default();
+        let sample = validation_sample_override(&config, "inactive")
+            .unwrap()
+            .unwrap();
+
+        assert!(triggers_for_sample(&config, &sample).is_empty());
+    }
+
+    #[test]
+    fn validation_override_rejects_unknown_state() {
+        let err = validation_sample_override(&GilderConfig::default(), "busy").unwrap_err();
+
+        assert!(err.contains("GILDER_ADAPTIVE_STATE"));
     }
 
     #[test]

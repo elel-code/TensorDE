@@ -8,7 +8,8 @@ usage: scripts/desktop-policy-smoke.sh [options]
 Run a headless daemon smoke matrix for desktop-state performance policy. The
 script uses validation overrides to create a virtual output, applies the static
 example wallpaper, and samples decisions/telemetry for active, battery,
-unfocused, fullscreen, hidden, inactive, locked, and output override scenarios.
+unfocused, fullscreen, hidden, inactive, locked, adaptive, and output override
+scenarios.
 
 Options:
   --output <name>       Virtual output name. Default: HEADLESS-1
@@ -220,7 +221,7 @@ sample_duration: ${sample_duration}
 sample_interval: ${sample_interval}
 wallpaper: ${wallpaper_path}
 EOF
-printf 'scenario,status,expected_mode,expected_reason,expected_max_fps,expected_action,expected_plan_kind,power_state,output_state,session_state,config_profile,status_before,status_after,performance_dir,daemon_log\n' > "$matrix_path"
+printf 'scenario,status,expected_mode,expected_reason,expected_max_fps,expected_action,expected_plan_kind,power_state,output_state,session_state,adaptive_state,config_profile,status_before,status_after,performance_dir,daemon_log\n' > "$matrix_path"
 
 write_config_profile() {
   local config_file="$1"
@@ -247,6 +248,26 @@ EOF
 battery = "pause"
 EOF
       ;;
+    adaptive-throttle)
+      cat > "$config_file" <<EOF
+[adaptive]
+enabled = true
+refresh_interval_ms = 250
+cooldown_ms = 1000
+throttle_max_fps = 11
+action = "throttle"
+EOF
+      ;;
+    adaptive-pause-unfocused)
+      cat > "$config_file" <<EOF
+[adaptive]
+enabled = true
+refresh_interval_ms = 250
+cooldown_ms = 1000
+throttle_max_fps = 11
+action = "pause-unfocused"
+EOF
+      ;;
     *)
       echo "unknown config profile: $profile" >&2
       return 2
@@ -265,11 +286,12 @@ record_scenario() {
   local power_state="$8"
   local output_state="$9"
   local session_state="${10}"
-  local config_profile="${11}"
-  local status_before="${12}"
-  local status_after="${13}"
-  local perf_dir="${14}"
-  local daemon_log="${15}"
+  local adaptive_state="${11}"
+  local config_profile="${12}"
+  local status_before="${13}"
+  local status_after="${14}"
+  local perf_dir="${15}"
+  local daemon_log="${16}"
 
   local row=(
     "$scenario"
@@ -282,6 +304,7 @@ record_scenario() {
     "$power_state"
     "$output_state"
     "$session_state"
+    "$adaptive_state"
     "$config_profile"
     "${status_before#$work_dir/}"
     "${status_after#$work_dir/}"
@@ -319,6 +342,7 @@ run_scenario() {
   local output_state="$8"
   local session_state="$9"
   local config_profile="${10:-}"
+  local adaptive_state="${11:-}"
 
   local scenario_dir="$work_dir/$name"
   local socket="$scenario_dir/runtime/gilder.sock"
@@ -335,7 +359,7 @@ run_scenario() {
   if ! write_config_profile "$config_file" "$config_profile"; then
     scenario_status="$(failure_status)"
     skip_or_fail "${name}: failed to write config profile ${config_profile}"
-    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
+    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$adaptive_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
     return 0
   fi
 
@@ -352,6 +376,9 @@ run_scenario() {
     GILDER_OUTPUT_STATE="$output_state"
     GILDER_SESSION_STATE="$session_state"
   )
+  if [[ -n "$adaptive_state" ]]; then
+    daemon_env+=(GILDER_ADAPTIVE_STATE="$adaptive_state")
+  fi
 
   "${daemon_env[@]}" "$gilderd" >"$daemon_log" 2>&1 &
   current_daemon_pid=$!
@@ -365,7 +392,7 @@ run_scenario() {
       sed -n '1,120p' "$daemon_log"
       scenario_status="$(failure_status)"
       skip_or_fail "${name}: gilderd exited before creating IPC socket"
-      record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
+      record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$adaptive_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
       stop_daemon
       return 0
     fi
@@ -376,7 +403,7 @@ run_scenario() {
     sed -n '1,120p' "$daemon_log"
     scenario_status="$(failure_status)"
     skip_or_fail "${name}: gilderd did not create IPC socket"
-    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
+    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$adaptive_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
     stop_daemon
     return 0
   fi
@@ -385,7 +412,7 @@ run_scenario() {
   if ! env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_before"; then
     scenario_status="$(failure_status)"
     skip_or_fail "${name}: failed to capture initial status"
-    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
+    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$adaptive_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
     stop_daemon
     return 0
   fi
@@ -399,21 +426,21 @@ run_scenario() {
   if ! env GILDER_SOCKET="$socket" "$gilderctl" set "$wallpaper_path" --output "$output_name" >/dev/null; then
     scenario_status="$(failure_status)"
     skip_or_fail "${name}: failed to set wallpaper"
-    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
+    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$adaptive_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
     stop_daemon
     return 0
   fi
   if ! env GILDER_SOCKET="$socket" "$gilderctl" set "$wallpaper_path" --output "$output_name" >/dev/null; then
     scenario_status="$(failure_status)"
     skip_or_fail "${name}: failed to repeat wallpaper set"
-    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
+    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$adaptive_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
     stop_daemon
     return 0
   fi
   if ! env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_after"; then
     scenario_status="$(failure_status)"
     skip_or_fail "${name}: failed to capture status after set"
-    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
+    record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$adaptive_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
     stop_daemon
     return 0
   fi
@@ -473,7 +500,7 @@ run_scenario() {
   note "${name}: status after:  $status_after"
   note "${name}: performance:   $perf_dir"
   note "${name}: daemon log:    $daemon_log"
-  record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
+  record_scenario "$name" "$scenario_status" "$expected_mode" "$expected_reason" "$expected_max_fps" "$expected_action" "$expected_plan_kind" "$power_state" "$output_state" "$session_state" "$adaptive_state" "$config_profile" "$status_before" "$status_after" "$perf_dir" "$daemon_log"
   stop_daemon
 }
 
@@ -487,6 +514,9 @@ run_scenario session-locked paused session-locked "" remove "" ac active locked
 run_scenario output-active-42fps active interactive 42 render static-image ac active active output-active-42fps
 run_scenario output-unfocused-12fps throttled unfocused 12 render static-image ac unfocused active output-unfocused-12fps
 run_scenario output-battery-pause paused battery "" remove "" battery active active output-battery-pause
+run_scenario adaptive-throttle throttled adaptive 11 render static-image ac active active adaptive-throttle cpu-pressure
+run_scenario adaptive-pause-unfocused paused adaptive "" remove "" ac unfocused active adaptive-pause-unfocused cpu-pressure
+run_scenario adaptive-pause-focused-fallback throttled adaptive 11 render static-image ac active active adaptive-pause-unfocused cpu-pressure
 
 write_summary
 note "metadata: $metadata_path"
