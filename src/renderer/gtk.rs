@@ -8,9 +8,9 @@ use crate::core::FitMode;
 use crate::policy::RenderMode;
 #[cfg(feature = "video-renderer")]
 use crate::renderer::video::{
-    VideoFrameStats, VideoPipelineSnapshot, actual_decoder_reports, apply_decoder_rank_policy,
-    decoder_policy_status, playback_duration_ms, playback_position_ms, target_max_fps_from_caps,
-    video_caps_reports, zero_copy_evidence,
+    GtkFrameClockPhase, VideoFrameStats, VideoPipelineSnapshot, actual_decoder_reports,
+    apply_decoder_rank_policy, decoder_policy_status, playback_duration_ms, playback_position_ms,
+    target_max_fps_from_caps, video_caps_reports, zero_copy_evidence,
 };
 use gtk::gdk;
 use gtk::gio;
@@ -853,21 +853,21 @@ fn install_frame_clock_stats(
     picture: &gtk::Picture,
     frame_stats: Rc<RefCell<VideoFrameStats>>,
 ) -> GtkFrameClockObserver {
-    let after_paint_handler = Rc::new(RefCell::new(None));
+    let frame_clock_handlers = Rc::new(RefCell::new(None));
     let realize_stats = Rc::clone(&frame_stats);
-    let realize_after_paint_handler = Rc::clone(&after_paint_handler);
+    let realize_frame_clock_handlers = Rc::clone(&frame_clock_handlers);
     let realize_handler = picture.connect_realize(move |picture| {
         attach_frame_clock_stats(
             picture,
             Rc::clone(&realize_stats),
-            Rc::clone(&realize_after_paint_handler),
+            Rc::clone(&realize_frame_clock_handlers),
         );
     });
-    attach_frame_clock_stats(picture, frame_stats, Rc::clone(&after_paint_handler));
+    attach_frame_clock_stats(picture, frame_stats, Rc::clone(&frame_clock_handlers));
     GtkFrameClockObserver {
         picture: picture.clone(),
         realize_handler: Some(realize_handler),
-        after_paint_handler,
+        frame_clock_handlers,
     }
 }
 
@@ -875,14 +875,22 @@ fn install_frame_clock_stats(
 struct GtkFrameClockObserver {
     picture: gtk::Picture,
     realize_handler: Option<gtk::glib::SignalHandlerId>,
-    after_paint_handler: Rc<RefCell<Option<(gdk::FrameClock, gtk::glib::SignalHandlerId)>>>,
+    frame_clock_handlers: Rc<RefCell<Option<GtkFrameClockSignalHandlers>>>,
+}
+
+#[cfg(feature = "video-renderer")]
+struct GtkFrameClockSignalHandlers {
+    clock: gdk::FrameClock,
+    handlers: Vec<gtk::glib::SignalHandlerId>,
 }
 
 #[cfg(feature = "video-renderer")]
 impl Drop for GtkFrameClockObserver {
     fn drop(&mut self) {
-        if let Some((clock, handler)) = self.after_paint_handler.borrow_mut().take() {
-            clock.disconnect(handler);
+        if let Some(handlers) = self.frame_clock_handlers.borrow_mut().take() {
+            for handler in handlers.handlers {
+                handlers.clock.disconnect(handler);
+            }
         }
         if let Some(handler) = self.realize_handler.take() {
             self.picture.disconnect(handler);
@@ -894,15 +902,40 @@ impl Drop for GtkFrameClockObserver {
 fn attach_frame_clock_stats(
     picture: &gtk::Picture,
     frame_stats: Rc<RefCell<VideoFrameStats>>,
-    after_paint_handler: Rc<RefCell<Option<(gdk::FrameClock, gtk::glib::SignalHandlerId)>>>,
+    frame_clock_handlers: Rc<RefCell<Option<GtkFrameClockSignalHandlers>>>,
 ) {
-    if after_paint_handler.borrow().is_some() {
+    if frame_clock_handlers.borrow().is_some() {
         return;
     }
     let Some(clock) = picture.frame_clock() else {
         return;
     };
     let observed_clock = clock.clone();
+    let mut handlers = Vec::new();
+    let before_paint_stats = Rc::clone(&frame_stats);
+    handlers.push(clock.connect_before_paint(move |_| {
+        before_paint_stats
+            .borrow_mut()
+            .record_gtk_frame_clock_phase(GtkFrameClockPhase::BeforePaint);
+    }));
+    let update_stats = Rc::clone(&frame_stats);
+    handlers.push(clock.connect_update(move |_| {
+        update_stats
+            .borrow_mut()
+            .record_gtk_frame_clock_phase(GtkFrameClockPhase::Update);
+    }));
+    let layout_stats = Rc::clone(&frame_stats);
+    handlers.push(clock.connect_layout(move |_| {
+        layout_stats
+            .borrow_mut()
+            .record_gtk_frame_clock_phase(GtkFrameClockPhase::Layout);
+    }));
+    let paint_stats = Rc::clone(&frame_stats);
+    handlers.push(clock.connect_paint(move |_| {
+        paint_stats
+            .borrow_mut()
+            .record_gtk_frame_clock_phase(GtkFrameClockPhase::Paint);
+    }));
     let handler = clock.connect_after_paint(move |clock| {
         let frame_time_us = clock.frame_time();
         let (refresh_interval_us, predicted_presentation_time_us) =
@@ -928,7 +961,11 @@ fn attach_frame_clock_stats(
             }
         }
     });
-    *after_paint_handler.borrow_mut() = Some((observed_clock, handler));
+    handlers.push(handler);
+    *frame_clock_handlers.borrow_mut() = Some(GtkFrameClockSignalHandlers {
+        clock: observed_clock,
+        handlers,
+    });
 }
 
 #[cfg(feature = "video-renderer")]

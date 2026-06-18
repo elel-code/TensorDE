@@ -563,6 +563,11 @@ fn renderer_telemetry_report(snapshot: &RendererRuntimeSnapshot) -> Value {
     let mut video_qos_messages = 0_u64;
     let mut video_qos_dropped_max = None;
     let mut video_gtk_frame_clock_ticks = 0_u64;
+    let mut video_gtk_frame_clock_before_paint_ticks = 0_u64;
+    let mut video_gtk_frame_clock_update_ticks = 0_u64;
+    let mut video_gtk_frame_clock_layout_ticks = 0_u64;
+    let mut video_gtk_frame_clock_paint_ticks = 0_u64;
+    let mut video_gtk_frame_clock_after_paint_ticks = 0_u64;
     let mut video_gtk_frame_clock_interval_us_max = None;
     let mut video_gtk_frame_clock_fps_x1000_max = None;
     let mut video_gtk_frame_timings_complete = 0_u64;
@@ -581,6 +586,23 @@ fn renderer_telemetry_report(snapshot: &RendererRuntimeSnapshot) -> Value {
         );
         video_gtk_frame_clock_ticks = video_gtk_frame_clock_ticks
             .saturating_add(json_u64(frame_stats, "gtk_frame_clock_ticks").unwrap_or_default());
+        video_gtk_frame_clock_before_paint_ticks = video_gtk_frame_clock_before_paint_ticks
+            .saturating_add(
+                json_u64(frame_stats, "gtk_frame_clock_before_paint_ticks").unwrap_or_default(),
+            );
+        video_gtk_frame_clock_update_ticks = video_gtk_frame_clock_update_ticks.saturating_add(
+            json_u64(frame_stats, "gtk_frame_clock_update_ticks").unwrap_or_default(),
+        );
+        video_gtk_frame_clock_layout_ticks = video_gtk_frame_clock_layout_ticks.saturating_add(
+            json_u64(frame_stats, "gtk_frame_clock_layout_ticks").unwrap_or_default(),
+        );
+        video_gtk_frame_clock_paint_ticks = video_gtk_frame_clock_paint_ticks.saturating_add(
+            json_u64(frame_stats, "gtk_frame_clock_paint_ticks").unwrap_or_default(),
+        );
+        video_gtk_frame_clock_after_paint_ticks = video_gtk_frame_clock_after_paint_ticks
+            .saturating_add(
+                json_u64(frame_stats, "gtk_frame_clock_after_paint_ticks").unwrap_or_default(),
+            );
         update_optional_max(
             &mut video_gtk_frame_clock_interval_us_max,
             json_u64(frame_stats, "gtk_frame_clock_interval_us_max"),
@@ -610,6 +632,11 @@ fn renderer_telemetry_report(snapshot: &RendererRuntimeSnapshot) -> Value {
         "video_qos_messages": video_qos_messages,
         "video_qos_dropped_max": video_qos_dropped_max,
         "video_gtk_frame_clock_ticks": video_gtk_frame_clock_ticks,
+        "video_gtk_frame_clock_before_paint_ticks": video_gtk_frame_clock_before_paint_ticks,
+        "video_gtk_frame_clock_update_ticks": video_gtk_frame_clock_update_ticks,
+        "video_gtk_frame_clock_layout_ticks": video_gtk_frame_clock_layout_ticks,
+        "video_gtk_frame_clock_paint_ticks": video_gtk_frame_clock_paint_ticks,
+        "video_gtk_frame_clock_after_paint_ticks": video_gtk_frame_clock_after_paint_ticks,
         "video_gtk_frame_clock_interval_us_max": video_gtk_frame_clock_interval_us_max,
         "video_gtk_frame_clock_fps_x1000_max": video_gtk_frame_clock_fps_x1000_max,
         "video_gtk_frame_timings_complete": video_gtk_frame_timings_complete,
@@ -1646,6 +1673,11 @@ mod tests {
                         "qos_messages": 3,
                         "qos_dropped_max": 2,
                         "gtk_frame_clock_ticks": 9,
+                        "gtk_frame_clock_before_paint_ticks": 8,
+                        "gtk_frame_clock_update_ticks": 7,
+                        "gtk_frame_clock_layout_ticks": 6,
+                        "gtk_frame_clock_paint_ticks": 5,
+                        "gtk_frame_clock_after_paint_ticks": 9,
                         "gtk_frame_clock_interval_us_max": 20000,
                         "gtk_frame_clock_fps_x1000_latest": 59940,
                         "gtk_frame_timings_complete": 5,
@@ -1660,6 +1692,11 @@ mod tests {
                         "qos_messages": 4,
                         "qos_dropped_max": 3,
                         "gtk_frame_clock_ticks": 31,
+                        "gtk_frame_clock_before_paint_ticks": 20,
+                        "gtk_frame_clock_update_ticks": 21,
+                        "gtk_frame_clock_layout_ticks": 22,
+                        "gtk_frame_clock_paint_ticks": 23,
+                        "gtk_frame_clock_after_paint_ticks": 31,
                         "gtk_frame_clock_interval_us_max": 18000,
                         "gtk_frame_clock_fps_x1000_latest": 60000,
                         "gtk_frame_timings_complete": 7,
@@ -1713,6 +1750,26 @@ mod tests {
         );
         assert_eq!(
             response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_ticks"],
+            json!(40)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_before_paint_ticks"],
+            json!(28)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_update_ticks"],
+            json!(28)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_layout_ticks"],
+            json!(28)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_paint_ticks"],
+            json!(28)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_after_paint_ticks"],
             json!(40)
         );
         assert_eq!(

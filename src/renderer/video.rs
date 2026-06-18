@@ -965,6 +965,11 @@ pub struct VideoFrameStats {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub qos_proportion_x1000_latest: Option<u32>,
     pub gtk_frame_clock_ticks: u64,
+    pub gtk_frame_clock_before_paint_ticks: u64,
+    pub gtk_frame_clock_update_ticks: u64,
+    pub gtk_frame_clock_layout_ticks: u64,
+    pub gtk_frame_clock_paint_ticks: u64,
+    pub gtk_frame_clock_after_paint_ticks: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gtk_frame_clock_counter_latest: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -997,6 +1002,14 @@ pub struct VideoFrameStats {
     pub gtk_frame_timings_presentation_interval_us_max: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gtk_frame_timings_refresh_interval_us_latest: Option<u64>,
+}
+
+#[cfg_attr(not(feature = "gtk-renderer"), allow(dead_code))]
+pub(crate) enum GtkFrameClockPhase {
+    BeforePaint,
+    Update,
+    Layout,
+    Paint,
 }
 
 impl VideoFrameStats {
@@ -1037,6 +1050,8 @@ impl VideoFrameStats {
         predicted_presentation_time_us: i64,
     ) {
         self.gtk_frame_clock_ticks = self.gtk_frame_clock_ticks.saturating_add(1);
+        self.gtk_frame_clock_after_paint_ticks =
+            self.gtk_frame_clock_after_paint_ticks.saturating_add(1);
         self.gtk_frame_clock_counter_latest = non_negative_u64(frame_counter);
         if let Some(frame_time_us) = non_negative_u64(frame_time_us) {
             if let Some(previous_frame_time_us) = self.gtk_frame_clock_time_us_latest
@@ -1057,6 +1072,28 @@ impl VideoFrameStats {
         self.gtk_frame_clock_refresh_interval_us_latest = non_negative_u64(refresh_interval_us);
         self.gtk_frame_clock_predicted_presentation_time_us_latest =
             non_negative_u64(predicted_presentation_time_us);
+    }
+
+    #[cfg_attr(not(feature = "gtk-renderer"), allow(dead_code))]
+    pub(crate) fn record_gtk_frame_clock_phase(&mut self, phase: GtkFrameClockPhase) {
+        match phase {
+            GtkFrameClockPhase::BeforePaint => {
+                self.gtk_frame_clock_before_paint_ticks =
+                    self.gtk_frame_clock_before_paint_ticks.saturating_add(1);
+            }
+            GtkFrameClockPhase::Update => {
+                self.gtk_frame_clock_update_ticks =
+                    self.gtk_frame_clock_update_ticks.saturating_add(1);
+            }
+            GtkFrameClockPhase::Layout => {
+                self.gtk_frame_clock_layout_ticks =
+                    self.gtk_frame_clock_layout_ticks.saturating_add(1);
+            }
+            GtkFrameClockPhase::Paint => {
+                self.gtk_frame_clock_paint_ticks =
+                    self.gtk_frame_clock_paint_ticks.saturating_add(1);
+            }
+        }
     }
 
     #[cfg_attr(not(feature = "gtk-renderer"), allow(dead_code))]
@@ -1540,10 +1577,19 @@ mod tests {
         let mut stats = VideoFrameStats::default();
 
         stats.record_gtk_frame_clock_tick(10, 1_000, 59.94, 16_667, 17_667);
+        stats.record_gtk_frame_clock_phase(GtkFrameClockPhase::BeforePaint);
+        stats.record_gtk_frame_clock_phase(GtkFrameClockPhase::Update);
+        stats.record_gtk_frame_clock_phase(GtkFrameClockPhase::Layout);
+        stats.record_gtk_frame_clock_phase(GtkFrameClockPhase::Paint);
         stats.record_gtk_frame_clock_tick(11, 17_700, 60.0, 16_667, 34_367);
         stats.record_gtk_frame_clock_tick(12, 34_300, 60.0, 16_667, 50_967);
 
         assert_eq!(stats.gtk_frame_clock_ticks, 3);
+        assert_eq!(stats.gtk_frame_clock_before_paint_ticks, 1);
+        assert_eq!(stats.gtk_frame_clock_update_ticks, 1);
+        assert_eq!(stats.gtk_frame_clock_layout_ticks, 1);
+        assert_eq!(stats.gtk_frame_clock_paint_ticks, 1);
+        assert_eq!(stats.gtk_frame_clock_after_paint_ticks, 3);
         assert_eq!(stats.gtk_frame_clock_counter_latest, Some(12));
         assert_eq!(stats.gtk_frame_clock_time_us_latest, Some(34_300));
         assert_eq!(stats.gtk_frame_clock_interval_us_latest, Some(16_600));
