@@ -303,6 +303,20 @@ gst_element_available() {
   command -v gst-inspect-1.0 >/dev/null 2>&1 && gst-inspect-1.0 "$1" >/dev/null 2>&1
 }
 
+gst_element_hint() {
+  case "$1" in
+    gtk4paintablesink)
+      printf '%s\n' "install gst-plugin-gtk4 on Arch-like systems; Ubuntu may need gst-plugin-gtk4 from a newer package source or source build"
+      ;;
+    qtdemux)
+      printf '%s\n' "install the GStreamer good plugins package"
+      ;;
+    playbin)
+      printf '%s\n' "install GStreamer playback plugins and tools"
+      ;;
+  esac
+}
+
 check_gst_element() {
   local role="$1"
   local element="$2"
@@ -310,8 +324,14 @@ check_gst_element() {
     record_check "gstreamer-${role}" "$element" "available" "gst-inspect-1.0 found element"
     return 0
   fi
-  record_check "gstreamer-${role}" "$element" "missing" "gst-inspect-1.0 did not find element"
-  skip_or_fail "GStreamer element ${element} is not available"
+  local detail="gst-inspect-1.0 did not find element"
+  local hint
+  hint="$(gst_element_hint "$element")"
+  if [[ -n "$hint" ]]; then
+    detail="${detail}; ${hint}"
+  fi
+  record_check "gstreamer-${role}" "$element" "missing" "$detail"
+  skip_or_fail "GStreamer element ${element} is not available${hint:+; ${hint}}"
   return 1
 }
 
