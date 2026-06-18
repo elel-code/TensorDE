@@ -7,12 +7,13 @@ usage: scripts/video-codec-smoke.sh [options]
 
 Generate small MP4/WebM samples, verify that GStreamer can decode them through
 playbin, and verify that gilder-convert can create first-frame previews.
-In GitHub Actions Ubuntu runners, strict mode auto-installs missing ffmpeg and
-GStreamer smoke dependencies through scripts/install-video-codec-smoke-deps-ubuntu.sh.
+On Ubuntu CI runners, strict mode can auto-install missing ffmpeg and GStreamer
+smoke dependencies through scripts/install-video-codec-smoke-deps-ubuntu.sh.
 
 Options:
   --work-dir <dir>    Parent directory for temporary smoke data
   --report-dir <dir>  Exact evidence directory. Created and kept
+  --install-missing   Install codec smoke dependencies on Ubuntu-like hosts
   --allow-missing     Report missing encoders/plugins as skips instead of failures
   --no-convert        Skip gilder-convert preview checks
   --keep              Keep generated smoke data
@@ -22,6 +23,7 @@ EOF
 
 work_parent="${TMPDIR:-/tmp}"
 report_dir=""
+install_missing=0
 allow_missing=0
 run_convert=1
 keep=0
@@ -40,6 +42,10 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "--report-dir requires a directory" >&2; exit 2; }
       report_dir="$2"
       shift 2
+      ;;
+    --install-missing)
+      install_missing=1
+      shift
       ;;
     --allow-missing)
       allow_missing=1
@@ -191,12 +197,15 @@ refresh_tool_paths() {
   cargo_bin="$(command -v cargo || true)"
 }
 
-can_auto_install_ubuntu_smoke_deps() {
+should_install_missing_smoke_deps() {
+  [[ "$install_missing" -eq 1 || "${GITHUB_ACTIONS:-}" == "true" || "${CI:-}" == "true" ]]
+}
+
+can_install_ubuntu_smoke_deps() {
   [[ "$allow_missing" -eq 0 ]] || return 1
-  [[ "${GITHUB_ACTIONS:-}" == "true" ]] || return 1
   [[ "${RUNNER_OS:-Linux}" == "Linux" ]] || return 1
   command -v apt-get >/dev/null 2>&1 || return 1
-  [[ -x "$repo_root/scripts/install-video-codec-smoke-deps-ubuntu.sh" ]] || return 1
+  [[ -f "$repo_root/scripts/install-video-codec-smoke-deps-ubuntu.sh" ]] || return 1
 
   if [[ -r /etc/os-release ]]; then
     local os_id=""
@@ -212,11 +221,12 @@ can_auto_install_ubuntu_smoke_deps() {
 }
 
 maybe_auto_install_smoke_deps() {
-  [[ -z "$ffmpeg" || -z "$gst_launch" ]] || return 0
-  can_auto_install_ubuntu_smoke_deps || return 0
+  [[ "$install_missing" -eq 1 || -z "$ffmpeg" || -z "$gst_launch" ]] || return 0
+  should_install_missing_smoke_deps || return 0
+  can_install_ubuntu_smoke_deps || return 0
 
-  note "missing ffmpeg or gst-launch-1.0 on GitHub Actions Ubuntu; installing codec smoke dependencies"
-  if "$repo_root/scripts/install-video-codec-smoke-deps-ubuntu.sh"; then
+  note "installing Ubuntu codec smoke dependencies"
+  if bash "$repo_root/scripts/install-video-codec-smoke-deps-ubuntu.sh"; then
     refresh_tool_paths
   else
     note "codec smoke dependency auto-install failed; continuing to dependency checks"

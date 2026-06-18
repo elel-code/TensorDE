@@ -53,7 +53,7 @@ jobs:
         run: cargo test --features gtk-renderer,video-renderer
 
       - name: Video codec smoke
-        run: scripts/video-codec-smoke.sh --report-dir /tmp/gilder-video-codec-smoke
+        run: scripts/video-codec-smoke.sh --install-missing --report-dir /tmp/gilder-video-codec-smoke
 
       - name: Upload video codec smoke report
         if: always()
