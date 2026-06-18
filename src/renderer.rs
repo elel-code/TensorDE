@@ -17,6 +17,7 @@ use std::fmt;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +108,20 @@ pub struct RenderSyncCacheReport {
     pub archive_cache_evictions: u64,
     #[serde(default)]
     pub archive_cache_eviction_errors: u64,
+    #[serde(default)]
+    pub static_image_cache_entries: usize,
+    #[serde(default)]
+    pub static_image_cache_max_entries: usize,
+    #[serde(default)]
+    pub static_image_cache_generations: u64,
+    #[serde(default)]
+    pub static_image_cache_reuses: u64,
+    #[serde(default)]
+    pub static_image_cache_generation_errors: u64,
+    #[serde(default)]
+    pub static_image_cache_evictions: u64,
+    #[serde(default)]
+    pub static_image_cache_eviction_errors: u64,
     #[serde(default)]
     pub planned_static_image_resources: usize,
     #[serde(default)]
@@ -361,6 +376,13 @@ fn static_render_sync_plan_inner(
             fit_override,
             assignment.variant.as_deref(),
             render_target,
+            Some(&mut StaticImageCacheContext {
+                cache_dir,
+                max_entries: cache_config.static_image_cache_max_entries,
+                stats: &mut package_cache.stats,
+                protected_files: &mut package_cache.protected_static_cache_files,
+                ffmpeg: None,
+            }),
         ) {
             Ok(WallpaperRenderPlan::StaticImage(plan)) => {
                 decisions.push(StaticRenderOutputDecision {
@@ -625,6 +647,7 @@ fn wallpaper_plan_for_assignment_with_target(
         fit_override,
         assignment.variant.as_deref(),
         render_target,
+        None,
     )
 }
 
@@ -643,6 +666,7 @@ pub fn wallpaper_plan(
         fit_override,
         variant_id,
         None,
+        None,
     )
 }
 
@@ -654,6 +678,7 @@ fn wallpaper_plan_with_target(
     fit_override: Option<FitMode>,
     variant_id: Option<&str>,
     render_target: Option<RenderTargetSize>,
+    static_image_cache: Option<&mut StaticImageCacheContext<'_>>,
 ) -> Result<WallpaperRenderPlan, RendererPlanError> {
     let output_name = output_name.into();
     let explicit_variant_source = explicit_variant_source(package, variant_id)?;
@@ -662,12 +687,20 @@ fn wallpaper_plan_with_target(
             source,
             fit,
             background,
+            width,
+            height,
             ..
         } => Ok(WallpaperRenderPlan::StaticImage(StaticWallpaperPlan {
             output_name,
-            source: selected_variant_source(package, explicit_variant_source, render_target)
-                .unwrap_or(source)
-                .join_to(&package.root),
+            source: static_image_source_path(
+                package,
+                source,
+                effective_fit(*fit, fit_override),
+                explicit_variant_source,
+                render_target,
+                source_dimensions(*width, *height),
+                static_image_cache,
+            ),
             fit: effective_fit(*fit, fit_override),
             background: background.clone(),
         })),
@@ -760,6 +793,232 @@ fn selected_variant_source<'a>(
     explicit_source.or_else(|| automatic_variant_source(package, render_target))
 }
 
+struct StaticImageCacheContext<'a> {
+    cache_dir: &'a Path,
+    max_entries: usize,
+    stats: &'a mut RenderSyncCacheReport,
+    protected_files: &'a mut BTreeSet<PathBuf>,
+    ffmpeg: Option<&'a Path>,
+}
+
+fn static_image_source_path(
+    package: &WallpaperPackage,
+    source: &PackagePath,
+    fit: FitMode,
+    explicit_source: Option<&PackagePath>,
+    render_target: Option<RenderTargetSize>,
+    source_dimensions: Option<RenderTargetSize>,
+    static_image_cache: Option<&mut StaticImageCacheContext<'_>>,
+) -> PathBuf {
+    if let Some(selected) = selected_variant_source(package, explicit_source, render_target) {
+        return selected.join_to(&package.root);
+    }
+
+    let source_path = source.join_to(&package.root);
+    if explicit_source.is_some() {
+        return source_path;
+    }
+
+    let Some(cache) = static_image_cache else {
+        return source_path;
+    };
+    cached_static_image_variant(&source_path, fit, render_target, source_dimensions, cache)
+        .unwrap_or(source_path)
+}
+
+fn source_dimensions(width: Option<u32>, height: Option<u32>) -> Option<RenderTargetSize> {
+    Some(RenderTargetSize {
+        width: width?,
+        height: height?,
+    })
+}
+
+fn cached_static_image_variant(
+    source_path: &Path,
+    fit: FitMode,
+    render_target: Option<RenderTargetSize>,
+    source_dimensions: Option<RenderTargetSize>,
+    context: &mut StaticImageCacheContext<'_>,
+) -> Option<PathBuf> {
+    if context.max_entries == 0 || !is_runtime_cacheable_static_image(source_path) {
+        return None;
+    }
+    let render_target = render_target?;
+    let source_dimensions = source_dimensions?;
+    if !should_generate_static_image_cache_variant(source_dimensions, render_target, fit) {
+        return None;
+    }
+
+    let cache_path = static_image_cache_path(
+        context.cache_dir,
+        source_path,
+        source_dimensions,
+        render_target,
+        fit,
+    );
+    if is_nonempty_file(&cache_path) {
+        context.stats.static_image_cache_reuses += 1;
+        context.protected_files.insert(cache_path.clone());
+        mark_static_image_cache_used(&cache_path);
+        return Some(cache_path);
+    }
+
+    if generate_static_image_cache_variant(
+        context.ffmpeg,
+        source_path,
+        &cache_path,
+        render_target,
+        fit,
+    )
+    .is_ok()
+    {
+        context.stats.static_image_cache_generations += 1;
+        context.protected_files.insert(cache_path.clone());
+        mark_static_image_cache_used(&cache_path);
+        Some(cache_path)
+    } else {
+        context.stats.static_image_cache_generation_errors += 1;
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(static_image_cache_used_marker(&cache_path));
+        None
+    }
+}
+
+fn should_generate_static_image_cache_variant(
+    source: RenderTargetSize,
+    target: RenderTargetSize,
+    fit: FitMode,
+) -> bool {
+    if matches!(fit, FitMode::Tile | FitMode::Center) || !source.covers(target) {
+        return false;
+    }
+    source.area() >= target.area().saturating_mul(2)
+}
+
+fn static_image_cache_path(
+    cache_dir: &Path,
+    source_path: &Path,
+    source_dimensions: RenderTargetSize,
+    render_target: RenderTargetSize,
+    fit: FitMode,
+) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    source_path.hash(&mut hasher);
+    source_dimensions.hash(&mut hasher);
+    render_target.hash(&mut hasher);
+    fit_cache_name(fit).hash(&mut hasher);
+    if let Ok(metadata) = fs::metadata(source_path) {
+        metadata.len().hash(&mut hasher);
+        if let Ok(modified) = metadata.modified()
+            && let Ok(duration) = modified.duration_since(UNIX_EPOCH)
+        {
+            duration.as_secs().hash(&mut hasher);
+            duration.subsec_nanos().hash(&mut hasher);
+        }
+    }
+
+    cache_dir.join("static-image-cache").join(format!(
+        "{}-{}x{}-{}.png",
+        fit_cache_name(fit),
+        render_target.width,
+        render_target.height,
+        hasher.finish()
+    ))
+}
+
+fn fit_cache_name(fit: FitMode) -> &'static str {
+    match fit {
+        FitMode::Cover => "cover",
+        FitMode::Contain => "contain",
+        FitMode::Stretch => "stretch",
+        FitMode::Tile => "tile",
+        FitMode::Center => "center",
+    }
+}
+
+fn is_runtime_cacheable_static_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "avif" | "bmp" | "jpeg" | "jpg" | "png" | "webp"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn is_nonempty_file(path: &Path) -> bool {
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.len() > 0)
+        .unwrap_or(false)
+}
+
+fn generate_static_image_cache_variant(
+    ffmpeg: Option<&Path>,
+    source_path: &Path,
+    output_path: &Path,
+    target: RenderTargetSize,
+    fit: FitMode,
+) -> Result<(), String> {
+    let Some(filter) = static_image_cache_filter(target, fit) else {
+        return Err("fit mode is not runtime-cacheable".to_owned());
+    };
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create static image cache directory: {err}"))?;
+    }
+    let temporary_path = output_path.with_extension("png.tmp");
+    let _ = fs::remove_file(&temporary_path);
+
+    let executable = ffmpeg.unwrap_or_else(|| Path::new("ffmpeg"));
+    let output = Command::new(executable)
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(source_path)
+        .args(["-frames:v", "1", "-an", "-sn", "-vf", &filter])
+        .arg(&temporary_path)
+        .output()
+        .map_err(|err| format!("failed to run {}: {err}", executable.display()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let reason = if stderr.is_empty() {
+            output.status.to_string()
+        } else {
+            format!("{}: {stderr}", output.status)
+        };
+        let _ = fs::remove_file(&temporary_path);
+        return Err(format!("{} failed: {reason}", executable.display()));
+    }
+    if !is_nonempty_file(&temporary_path) {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(format!(
+            "{} created an empty static image cache file at {}",
+            executable.display(),
+            temporary_path.display()
+        ));
+    }
+
+    fs::rename(&temporary_path, output_path)
+        .map_err(|err| format!("failed to move static image cache file into place: {err}"))?;
+    Ok(())
+}
+
+fn static_image_cache_filter(target: RenderTargetSize, fit: FitMode) -> Option<String> {
+    match fit {
+        FitMode::Cover => Some(format!(
+            "scale={}:{}:force_original_aspect_ratio=increase,crop={}:{}",
+            target.width, target.height, target.width, target.height
+        )),
+        FitMode::Contain => Some(format!(
+            "scale={}:{}:force_original_aspect_ratio=decrease",
+            target.width, target.height
+        )),
+        FitMode::Stretch => Some(format!("scale={}:{}", target.width, target.height)),
+        FitMode::Tile | FitMode::Center => None,
+    }
+}
+
 fn automatic_variant_source(
     package: &WallpaperPackage,
     render_target: Option<RenderTargetSize>,
@@ -816,7 +1075,7 @@ fn scaled_dimension(value: u32, scale: f32) -> u32 {
         .clamp(1.0, f64::from(u32::MAX))) as u32
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct RenderTargetSize {
     width: u32,
     height: u32,
@@ -966,6 +1225,7 @@ struct RenderPackageCache<'a> {
     packages: BTreeMap<String, Result<WallpaperPackage, RendererPlanError>>,
     package_order: VecDeque<String>,
     protected_archive_dirs: BTreeSet<PathBuf>,
+    protected_static_cache_files: BTreeSet<PathBuf>,
     stats: RenderSyncCacheReport,
 }
 
@@ -977,6 +1237,7 @@ impl<'a> RenderPackageCache<'a> {
             packages: BTreeMap::new(),
             package_order: VecDeque::new(),
             protected_archive_dirs: BTreeSet::new(),
+            protected_static_cache_files: BTreeSet::new(),
             stats: RenderSyncCacheReport::default(),
         }
     }
@@ -1024,12 +1285,21 @@ impl<'a> RenderPackageCache<'a> {
             cache_config.render_cache_max_entries,
             &self.protected_archive_dirs,
         );
+        let static_image_prune = prune_static_image_cache(
+            self.cache_dir,
+            cache_config.static_image_cache_max_entries,
+            &self.protected_static_cache_files,
+        );
         self.stats.package_cache_entries = self.packages.len();
         self.stats.package_cache_max_entries = cache_config.package_cache_max_entries;
         self.stats.archive_cache_entries = prune.entries_after;
         self.stats.archive_cache_max_entries = cache_config.render_cache_max_entries;
         self.stats.archive_cache_evictions = prune.evictions;
         self.stats.archive_cache_eviction_errors = prune.errors;
+        self.stats.static_image_cache_entries = static_image_prune.entries_after;
+        self.stats.static_image_cache_max_entries = cache_config.static_image_cache_max_entries;
+        self.stats.static_image_cache_evictions = static_image_prune.evictions;
+        self.stats.static_image_cache_eviction_errors = static_image_prune.errors;
         self.stats
     }
 
@@ -1178,6 +1448,95 @@ fn mark_archive_cache_used(extract_dir: &Path) {
     let _ = fs::write(extract_dir.join(".gilder-cache-used"), b"");
 }
 
+fn prune_static_image_cache(
+    cache_dir: &Path,
+    max_entries: usize,
+    protected_files: &BTreeSet<PathBuf>,
+) -> RenderCachePruneReport {
+    let static_cache_dir = cache_dir.join("static-image-cache");
+    let Ok(mut entries) = static_image_cache_entries(&static_cache_dir) else {
+        return RenderCachePruneReport::default();
+    };
+    let entries_before = entries.len();
+    let remove_count = entries_before.saturating_sub(max_entries);
+    if remove_count == 0 {
+        return RenderCachePruneReport {
+            entries_after: entries_before,
+            evictions: 0,
+            errors: 0,
+        };
+    }
+
+    entries.sort_by_key(|entry| (entry.last_used, entry.path.clone()));
+    let mut evictions = 0;
+    let mut errors = 0;
+    for entry in entries
+        .iter()
+        .filter(|entry| !protected_files.contains(&entry.path))
+        .take(remove_count)
+    {
+        let marker = static_image_cache_used_marker(&entry.path);
+        match fs::remove_file(&entry.path) {
+            Ok(()) => {
+                evictions += 1;
+                let _ = fs::remove_file(marker);
+            }
+            Err(_) => errors += 1,
+        }
+    }
+
+    let entries_after = static_image_cache_entries(&static_cache_dir)
+        .map(|entries| entries.len())
+        .unwrap_or_else(|_| entries_before.saturating_sub(evictions as usize));
+    RenderCachePruneReport {
+        entries_after,
+        evictions,
+        errors,
+    }
+}
+
+fn static_image_cache_entries(
+    static_cache_dir: &Path,
+) -> Result<Vec<RenderCacheEntry>, std::io::Error> {
+    let mut entries = Vec::new();
+    let read_dir = match fs::read_dir(static_cache_dir) {
+        Ok(read_dir) => read_dir,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(entries),
+        Err(err) => return Err(err),
+    };
+    for entry in read_dir {
+        let entry = entry?;
+        let path = entry.path();
+        if !is_static_image_cache_file(&path, &entry.file_type()?) {
+            continue;
+        }
+        entries.push(RenderCacheEntry {
+            last_used: static_image_cache_last_used(&path),
+            path,
+        });
+    }
+    Ok(entries)
+}
+
+fn is_static_image_cache_file(path: &Path, file_type: &fs::FileType) -> bool {
+    file_type.is_file() && path.extension().and_then(|extension| extension.to_str()) == Some("png")
+}
+
+fn static_image_cache_used_marker(path: &Path) -> PathBuf {
+    path.with_extension("png.used")
+}
+
+fn static_image_cache_last_used(path: &Path) -> SystemTime {
+    fs::metadata(static_image_cache_used_marker(path))
+        .or_else(|_| fs::metadata(path))
+        .and_then(|metadata| metadata.modified())
+        .unwrap_or(UNIX_EPOCH)
+}
+
+fn mark_static_image_cache_used(path: &Path) {
+    let _ = fs::write(static_image_cache_used_marker(path), b"");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1187,7 +1546,7 @@ mod tests {
     };
     use crate::core::pack_gwp;
     use crate::desktop::{DesktopOutput, PowerState};
-    use crate::policy::{DecisionReason, RenderMode};
+    use crate::policy::{DecisionReason, PerformanceDecision, RenderMode};
     use crate::state::{OutputState, WallpaperAssignment};
     use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1359,6 +1718,97 @@ mod tests {
         assert_eq!(sync.plans.len(), 1);
         assert!(sync.errors.is_empty());
         assert!(sync.plans[0].source.ends_with("assets/wallpaper.svg"));
+    }
+
+    #[test]
+    fn runtime_static_image_cache_generates_and_reuses_downscaled_source() {
+        let test_dir = TestDir::new("gilder-static-runtime-cache");
+        let package_dir = test_dir.path.join("static-large.gwpdir");
+        let cache_dir = test_dir.path.join("cache");
+        let ffmpeg = test_dir.path.join("ffmpeg");
+        write_static_large_gwpdir(&package_dir);
+        write_executable_script(
+            &ffmpeg,
+            r#"#!/bin/sh
+out=""
+for arg in "$@"; do
+  out="$arg"
+done
+printf 'cached-static' > "$out"
+exit 0
+"#,
+        );
+        let package = crate::core::load_gwpdir(&package_dir).unwrap();
+        let performance = active_performance_decision();
+        let mut stats = RenderSyncCacheReport::default();
+        let mut protected = BTreeSet::new();
+
+        let first_source = {
+            let mut context = StaticImageCacheContext {
+                cache_dir: &cache_dir,
+                max_entries: 8,
+                stats: &mut stats,
+                protected_files: &mut protected,
+                ffmpeg: Some(&ffmpeg),
+            };
+            let plan = wallpaper_plan_with_target(
+                "eDP-1",
+                &package,
+                &performance,
+                VideoDecoderPolicy::default(),
+                None,
+                None,
+                Some(RenderTargetSize {
+                    width: 1920,
+                    height: 1080,
+                }),
+                Some(&mut context),
+            )
+            .unwrap();
+            match plan {
+                WallpaperRenderPlan::StaticImage(plan) => plan.source,
+                _ => panic!("expected static image plan"),
+            }
+        };
+
+        assert!(first_source.starts_with(cache_dir.join("static-image-cache")));
+        assert_eq!(fs::read(&first_source).unwrap(), b"cached-static");
+        assert_eq!(stats.static_image_cache_generations, 1);
+        assert_eq!(stats.static_image_cache_reuses, 0);
+        assert_eq!(stats.static_image_cache_generation_errors, 0);
+
+        let second_source = {
+            let mut context = StaticImageCacheContext {
+                cache_dir: &cache_dir,
+                max_entries: 8,
+                stats: &mut stats,
+                protected_files: &mut protected,
+                ffmpeg: Some(&ffmpeg),
+            };
+            let plan = wallpaper_plan_with_target(
+                "eDP-1",
+                &package,
+                &performance,
+                VideoDecoderPolicy::default(),
+                None,
+                None,
+                Some(RenderTargetSize {
+                    width: 1920,
+                    height: 1080,
+                }),
+                Some(&mut context),
+            )
+            .unwrap();
+            match plan {
+                WallpaperRenderPlan::StaticImage(plan) => plan.source,
+                _ => panic!("expected static image plan"),
+            }
+        };
+
+        assert_eq!(second_source, first_source);
+        assert_eq!(stats.static_image_cache_generations, 1);
+        assert_eq!(stats.static_image_cache_reuses, 1);
+        assert!(protected.contains(&first_source));
     }
 
     #[test]
@@ -2846,6 +3296,31 @@ mod tests {
         .unwrap();
     }
 
+    fn write_static_large_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(path.join("assets/wallpaper.png"), b"original-large-image").unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.static-large",
+            "version": "1.0.0",
+            "title": "Static Large Demo",
+            "kind": "static-image",
+            "entry": {
+                "type": "static-image",
+                "source": "assets/wallpaper.png",
+                "fit": "cover",
+                "width": 7680,
+                "height": 4320
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
     fn write_minimal_scene_lite_gwpdir(path: &Path) {
         fs::create_dir_all(path.join("assets")).unwrap();
         fs::create_dir_all(path.join("previews")).unwrap();
@@ -2915,6 +3390,25 @@ mod tests {
             "allow_audio": true
         });
         fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    }
+
+    fn active_performance_decision() -> PerformanceDecision {
+        PerformanceDecision {
+            mode: RenderMode::Active,
+            max_fps: Some(60),
+            reason: DecisionReason::Interactive,
+        }
+    }
+
+    fn write_executable_script(path: &Path, contents: &str) {
+        fs::write(path, contents).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).unwrap();
+        }
     }
 
     struct TestDir {

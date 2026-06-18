@@ -168,25 +168,28 @@ fn convert_static_image_with_variant_tools(
         MissingPreviewFallback::StaticImage { source },
     )?;
     report.converted_features.push("static-image".to_owned());
+    let dimensions =
+        probe_static_image_dimensions_for_manifest(project, source, report, variant_tools);
     let variants = match variant_tools {
         Some(tools) => {
             generate_static_image_variants_with_tools(project, output_dir, source, report, tools)
         }
         None => generate_static_image_variants(project, output_dir, source, report),
     };
+    let mut entry = json!({
+        "type": "static-image",
+        "source": copied.package_path,
+        "fit": "cover",
+        "orientation": "from-metadata"
+    });
+    if let Some(dimensions) = dimensions
+        && let Some(object) = entry.as_object_mut()
+    {
+        object.insert("width".to_owned(), json!(dimensions.width));
+        object.insert("height".to_owned(), json!(dimensions.height));
+    }
 
-    let mut manifest = base_manifest(
-        project,
-        "static-image",
-        preview,
-        report,
-        json!({
-            "type": "static-image",
-            "source": copied.package_path,
-            "fit": "cover",
-            "orientation": "from-metadata"
-        }),
-    );
+    let mut manifest = base_manifest(project, "static-image", preview, report, entry);
     if !variants.is_empty()
         && let Some(object) = manifest.as_object_mut()
     {
@@ -653,6 +656,41 @@ fn generate_static_image_variants(
             ffprobe: &ffprobe,
         },
     )
+}
+
+fn probe_static_image_dimensions_for_manifest(
+    project: &WallpaperEngineProject,
+    source: &str,
+    report: &mut ConversionReport,
+    variant_tools: Option<StaticImageVariantTools<'_>>,
+) -> Option<ImageDimensions> {
+    if !is_raster_image_path(source) {
+        return None;
+    }
+    let ffprobe = variant_tools
+        .map(|tools| tools.ffprobe.to_path_buf())
+        .or_else(|| find_executable_on_path(FFPROBE_BINARY));
+    let Some(ffprobe) = ffprobe else {
+        return None;
+    };
+    let relative = match normalize_relative_path(source) {
+        Ok(relative) => relative,
+        Err(err) => {
+            report.warnings.push(format!(
+                "Static image source dimensions were not recorded: {err}."
+            ));
+            return None;
+        }
+    };
+    match probe_image_dimensions(&ffprobe, &project.root.join(relative)) {
+        Ok(dimensions) => Some(dimensions),
+        Err(err) => {
+            report.warnings.push(format!(
+                "Static image source dimensions were not recorded: {err}."
+            ));
+            None
+        }
+    }
 }
 
 fn generate_static_image_variants_with_tools(
@@ -2058,6 +2096,8 @@ exit 0
         load_gwpdir(output.path()).unwrap();
 
         let variants = manifest["variants"].as_array().unwrap();
+        assert_eq!(manifest["entry"]["width"], 7680);
+        assert_eq!(manifest["entry"]["height"], 4320);
         let ids = variants
             .iter()
             .map(|variant| variant["id"].as_str().unwrap().to_owned())

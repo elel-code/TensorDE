@@ -112,6 +112,8 @@ pub struct CacheConfig {
     pub package_cache_max_entries: usize,
     #[serde(default = "default_render_cache_max_entries")]
     pub render_cache_max_entries: usize,
+    #[serde(default = "default_static_image_cache_max_entries")]
+    pub static_image_cache_max_entries: usize,
 }
 
 impl Default for CacheConfig {
@@ -119,6 +121,7 @@ impl Default for CacheConfig {
         Self {
             package_cache_max_entries: default_package_cache_max_entries(),
             render_cache_max_entries: default_render_cache_max_entries(),
+            static_image_cache_max_entries: default_static_image_cache_max_entries(),
         }
     }
 }
@@ -350,6 +353,10 @@ fn default_render_cache_max_entries() -> usize {
     32
 }
 
+fn default_static_image_cache_max_entries() -> usize {
+    32
+}
+
 fn default_package_cache_max_entries() -> usize {
     16
 }
@@ -424,6 +431,7 @@ mod tests {
             [cache]
             package_cache_max_entries = 4
             render_cache_max_entries = 8
+            static_image_cache_max_entries = 6
 
             [adaptive]
             enabled = true
@@ -478,6 +486,7 @@ mod tests {
         assert_eq!(config.video.decoder, VideoDecoderPolicy::HardwarePreferred);
         assert_eq!(config.cache.package_cache_max_entries, 4);
         assert_eq!(config.cache.render_cache_max_entries, 8);
+        assert_eq!(config.cache.static_image_cache_max_entries, 6);
         assert!(config.adaptive.enabled);
         assert_eq!(config.adaptive.refresh_interval_ms, 1500);
         assert_eq!(config.adaptive.cooldown_ms, 5000);

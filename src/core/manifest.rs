@@ -100,6 +100,10 @@ pub enum WallpaperEntry {
         background: Option<String>,
         #[serde(default)]
         orientation: Orientation,
+        #[serde(default)]
+        width: Option<u32>,
+        #[serde(default)]
+        height: Option<u32>,
     },
     Video {
         source: PackagePath,
@@ -155,7 +159,7 @@ impl WallpaperEntry {
 
     fn validate(&self) -> Result<(), ManifestError> {
         match self {
-            Self::StaticImage { .. } => Ok(()),
+            Self::StaticImage { width, height, .. } => validate_entry_dimensions(*width, *height),
             Self::Video { max_fps, .. } | Self::Web { max_fps, .. } => {
                 validate_fps(*max_fps)?;
                 Ok(())
@@ -503,6 +507,16 @@ fn validate_fps(max_fps: Option<u32>) -> Result<(), ManifestError> {
     }
 }
 
+fn validate_entry_dimensions(width: Option<u32>, height: Option<u32>) -> Result<(), ManifestError> {
+    if width == Some(0) || height == Some(0) {
+        Err(ManifestError::InvalidEntry(
+            "width and height must be greater than 0".to_owned(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -566,6 +580,31 @@ mod tests {
         assert!(matches!(
             manifest.validate(),
             Err(ManifestError::KindMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_static_entry_dimensions() {
+        let json = r#"
+        {
+          "format": "gilder.wallpaper",
+          "format_version": 1,
+          "id": "org.example.bad-dimensions",
+          "version": "1.0.0",
+          "title": "Bad Dimensions",
+          "kind": "static-image",
+          "entry": {
+            "type": "static-image",
+            "source": "assets/wallpaper.png",
+            "width": 0,
+            "height": 1080
+          }
+        }
+        "#;
+        let manifest: Manifest = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            manifest.validate(),
+            Err(ManifestError::InvalidEntry(_))
         ));
     }
 
