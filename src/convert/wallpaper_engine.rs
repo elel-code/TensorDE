@@ -1,11 +1,11 @@
 use crate::core::{FORMAT_NAME, FORMAT_VERSION, MANIFEST_FILE, load_gwpdir};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -13,6 +13,7 @@ const PROJECT_FILE: &str = "project.json";
 const FFMPEG_BINARY: &str = "ffmpeg";
 const VIDEO_POSTER_WIDTH: u32 = 1920;
 const VIDEO_THUMBNAIL_WIDTH: u32 = 512;
+const FEATURE_SCAN_MAX_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ConversionSummary {
@@ -37,9 +38,7 @@ pub fn convert_project(
     fs::create_dir_all(output_dir.join("metadata")).map_err(ConversionError::CreateDir)?;
 
     let mut report = ConversionReport::new(project.source_type.as_str());
-    report
-        .detected_features
-        .extend(project.detected_features().into_iter().map(str::to_owned));
+    report.detected_features.extend(project.detected_features());
 
     let result = match project.source_type {
         SourceType::Image => convert_static_image(&project, output_dir, &mut report),
@@ -197,6 +196,7 @@ fn convert_web(
         .generated_assets
         .push("assets/web/gilder-bridge.js".to_owned());
     report.converted_features.push("web".to_owned());
+    record_web_runtime_gaps(report);
 
     let preview =
         copy_preview_or_generate(project, output_dir, report, MissingPreviewFallback::None)?;
@@ -244,11 +244,9 @@ fn convert_scene_lite(
         .unwrap_or(Value::Null);
 
     report.converted_features.push("scene-lite".to_owned());
-    report
-        .unsupported_features
-        .extend(["scenescript", "custom-shader", "complex-particles"].map(str::to_owned));
+    record_scene_lite_runtime_gaps(report);
     report.warnings.push(
-        "Converted Scene project to scene-lite metadata and fallback only; SceneScript, custom shaders, and complex effects were not executed or translated.".to_owned(),
+        "Converted Scene project to scene-lite metadata and fallback only; native scene layers, timelines, scripts, shaders, particles, and complex effects were not executed or translated.".to_owned(),
     );
 
     Ok(base_manifest(
@@ -318,6 +316,41 @@ fn runtime_allow_audio(project: &WallpaperEngineProject, report: &mut Conversion
             false
         }
         SourceType::Image | SourceType::Application | SourceType::Unknown => false,
+    }
+}
+
+fn record_web_runtime_gaps(report: &mut ConversionReport) {
+    push_unique(&mut report.unsupported_features, "web-runtime");
+    if report.detected_features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "network" | "web-audio-listener" | "media-integration"
+        )
+    }) {
+        push_unique(&mut report.unsupported_features, "web-permissions");
+        report.warnings.push(
+            "Detected Web wallpaper runtime features that need explicit sandbox, network, media, or audio permissions; the converted package keeps them disabled.".to_owned(),
+        );
+    }
+}
+
+fn record_scene_lite_runtime_gaps(report: &mut ConversionReport) {
+    push_unique(&mut report.unsupported_features, "scene-runtime");
+    for (detected, unsupported) in [
+        ("scenescript", "scenescript"),
+        ("shader", "custom-shader"),
+        ("particles", "complex-particles"),
+        ("timeline", "timeline-animation"),
+        ("parallax", "parallax"),
+        ("audio-response", "audio-runtime"),
+    ] {
+        if report
+            .detected_features
+            .iter()
+            .any(|feature| feature == detected)
+        {
+            push_unique(&mut report.unsupported_features, unsupported);
+        }
     }
 }
 
@@ -1055,20 +1088,246 @@ impl WallpaperEngineProject {
         )
     }
 
-    fn detected_features(&self) -> Vec<&'static str> {
-        let mut features = vec![self.source_type.as_str()];
+    fn detected_features(&self) -> Vec<String> {
+        let mut features = BTreeSet::new();
+        features.insert(self.source_type.as_str().to_owned());
         if self.raw.pointer("/general/properties").is_some() {
-            features.push("user-properties");
+            features.insert("user-properties".to_owned());
         }
         if self.preview_file.is_some() {
-            features.push("preview");
+            features.insert("preview".to_owned());
         }
-        features
+        collect_feature_hints_from_value(self.source_type, &self.raw, &mut features);
+        if let Some(entry_file) = &self.entry_file {
+            collect_feature_hints_from_entry(
+                self.source_type,
+                &self.root,
+                entry_file,
+                &mut features,
+            );
+        }
+        features.into_iter().collect()
     }
 
     fn audio_requested(&self) -> bool {
         explicit_audio_request(&self.raw)
     }
+}
+
+fn collect_feature_hints_from_entry(
+    source_type: SourceType,
+    root: &Path,
+    entry_file: &str,
+    features: &mut BTreeSet<String>,
+) {
+    collect_feature_hints_from_string(source_type, entry_file, features);
+    if !should_scan_entry_contents(source_type, entry_file) {
+        return;
+    }
+    let Ok(relative) = normalize_relative_path(entry_file) else {
+        return;
+    };
+    let entry_path = root.join(relative);
+    let Some(contents) = read_feature_scan_contents(&entry_path) else {
+        return;
+    };
+    if entry_file
+        .rsplit_once('.')
+        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("json"))
+    {
+        if let Ok(value) = serde_json::from_str::<Value>(&contents) {
+            collect_feature_hints_from_value(source_type, &value, features);
+            return;
+        }
+    }
+    collect_feature_hints_from_string(source_type, &contents, features);
+}
+
+fn should_scan_entry_contents(source_type: SourceType, entry_file: &str) -> bool {
+    let Some(extension) = Path::new(entry_file)
+        .extension()
+        .and_then(|extension| extension.to_str())
+    else {
+        return matches!(source_type, SourceType::Web | SourceType::Scene);
+    };
+
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "css"
+            | "cjs"
+            | "frag"
+            | "fragment"
+            | "fs"
+            | "glsl"
+            | "htm"
+            | "html"
+            | "js"
+            | "json"
+            | "mjs"
+            | "shader"
+            | "txt"
+            | "vert"
+            | "vertex"
+            | "vs"
+            | "wgsl"
+    )
+}
+
+fn read_feature_scan_contents(path: &Path) -> Option<String> {
+    let metadata = fs::metadata(path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+
+    let scan_len = metadata.len().min(FEATURE_SCAN_MAX_BYTES);
+    let mut bytes = Vec::with_capacity(scan_len as usize);
+    let mut file = fs::File::open(path).ok()?.take(FEATURE_SCAN_MAX_BYTES);
+    file.read_to_end(&mut bytes).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn collect_feature_hints_from_value(
+    source_type: SourceType,
+    value: &Value,
+    features: &mut BTreeSet<String>,
+) {
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object {
+                collect_feature_hints_from_key(source_type, key, features);
+                collect_feature_hints_from_value(source_type, value, features);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_feature_hints_from_value(source_type, value, features);
+            }
+        }
+        Value::String(value) => collect_feature_hints_from_string(source_type, value, features),
+        Value::Bool(_) | Value::Number(_) | Value::Null => {}
+    }
+}
+
+fn collect_feature_hints_from_key(
+    source_type: SourceType,
+    key: &str,
+    features: &mut BTreeSet<String>,
+) {
+    let normalized = normalize_project_key(key);
+    if source_type == SourceType::Scene {
+        if normalized.contains("script") {
+            features.insert("scenescript".to_owned());
+        }
+        if normalized == "objects" || normalized == "layers" || normalized.ends_with("layers") {
+            features.insert("scene-layers".to_owned());
+        }
+    }
+    if normalized.contains("shader")
+        || normalized.contains("fragment")
+        || normalized.contains("vertex")
+        || normalized.contains("material")
+    {
+        features.insert("shader".to_owned());
+    }
+    if normalized.contains("particle") || normalized.contains("emitter") {
+        features.insert("particles".to_owned());
+    }
+    if normalized.contains("timeline")
+        || normalized.contains("animation")
+        || normalized.contains("keyframe")
+    {
+        features.insert("timeline".to_owned());
+    }
+    if normalized.contains("parallax") || normalized.contains("mouseparallax") {
+        features.insert("parallax".to_owned());
+    }
+    if normalized.contains("playlist") || normalized.contains("collection") {
+        features.insert("playlist".to_owned());
+    }
+    if normalized.contains("media") || normalized.contains("nowplaying") {
+        features.insert("media-integration".to_owned());
+    }
+    if normalized.contains("audio")
+        || normalized.contains("sound")
+        || normalized.contains("music")
+        || normalized == "volume"
+    {
+        features.insert("audio".to_owned());
+        if source_type == SourceType::Scene {
+            features.insert("audio-response".to_owned());
+        }
+    }
+}
+
+fn collect_feature_hints_from_string(
+    source_type: SourceType,
+    value: &str,
+    features: &mut BTreeSet<String>,
+) {
+    let lowered = value.to_ascii_lowercase();
+    if lowered.contains("wallpaperpropertylistener") {
+        features.insert("web-property-listener".to_owned());
+    }
+    if lowered.contains("wallpaperregisteraudiolistener")
+        || lowered.contains("wallpaperaudiolistener")
+    {
+        features.insert("web-audio-listener".to_owned());
+        features.insert("audio-response".to_owned());
+    }
+    if lowered.contains("scenescript")
+        || (source_type == SourceType::Scene && lowered.contains("script"))
+    {
+        features.insert("scenescript".to_owned());
+    }
+    if lowered.contains("http://") || lowered.contains("https://") {
+        features.insert("network".to_owned());
+    }
+    if lowered.contains("parallax") {
+        features.insert("parallax".to_owned());
+    }
+    if lowered.contains("timeline") || lowered.contains("keyframe") {
+        features.insert("timeline".to_owned());
+    }
+    if lowered.contains("particle") || lowered.contains("emitter") {
+        features.insert("particles".to_owned());
+    }
+    if lowered.contains("shader") || has_shader_extension(value) {
+        features.insert("shader".to_owned());
+    }
+    if Path::new(value)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(is_audio_extension)
+    {
+        features.insert("audio".to_owned());
+    }
+    if source_type == SourceType::Scene && is_image_path(value) {
+        features.insert("image-layer".to_owned());
+    }
+}
+
+fn has_shader_extension(value: &str) -> bool {
+    Path::new(value)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "frag" | "fragment" | "fs" | "glsl" | "shader" | "vert" | "vertex" | "vs" | "wgsl"
+            )
+        })
+}
+
+fn is_image_path(value: &str) -> bool {
+    Path::new(value)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "avif" | "bmp" | "gif" | "jpeg" | "jpg" | "png" | "svg" | "webp"
+            )
+        })
 }
 
 fn explicit_audio_request(value: &Value) -> bool {
@@ -1573,6 +1832,44 @@ exit 0
     }
 
     #[test]
+    fn skips_binary_entry_content_when_collecting_feature_hints() {
+        let source = TestDir::new("we-feature-binary-source");
+        source.write_file(
+            "loop.mp4",
+            "https://example.invalid\nwindow.wallpaperRegisterAudioListener(() => {});",
+        );
+
+        let mut features = BTreeSet::new();
+        collect_feature_hints_from_entry(
+            SourceType::Video,
+            source.path(),
+            "loop.mp4",
+            &mut features,
+        );
+
+        assert!(!features.contains("network"));
+        assert!(!features.contains("web-audio-listener"));
+    }
+
+    #[test]
+    fn caps_large_text_entry_feature_scan() {
+        let source = TestDir::new("we-feature-large-source");
+        let mut html = "<script>window.wallpaperPropertyListener = {};</script>".to_owned();
+        html.push_str(&" ".repeat(FEATURE_SCAN_MAX_BYTES as usize + 128));
+        source.write_file("index.html", &html);
+
+        let mut features = BTreeSet::new();
+        collect_feature_hints_from_entry(
+            SourceType::Web,
+            source.path(),
+            "index.html",
+            &mut features,
+        );
+
+        assert!(features.contains("web-property-listener"));
+    }
+
+    #[test]
     fn converts_web_project() {
         let source = TestDir::new("we-web-source");
         let output = TestDir::new("we-web-output");
@@ -1608,6 +1905,59 @@ exit 0
         assert!(output.path().join("assets/web/gilder-bridge.js").exists());
         assert_eq!(manifest["properties"]["enabled"]["type"], "bool");
         assert_eq!(manifest["properties"]["speed"]["type"], "range");
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .unsupported_features
+                .contains(&"web-runtime".to_owned())
+        );
+    }
+
+    #[test]
+    fn reports_web_runtime_feature_gaps() {
+        let source = TestDir::new("we-web-runtime-source");
+        let output = TestDir::new("we-web-runtime-output");
+        output.remove();
+        source.write_file(
+            "index.html",
+            r#"<!doctype html>
+<script>
+window.wallpaperPropertyListener = {};
+window.wallpaperRegisterAudioListener(() => {});
+fetch("https://example.invalid/data.json");
+</script>"#,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "web",
+              "title": "Web Runtime Features",
+              "file": "index.html"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        for feature in ["web-property-listener", "web-audio-listener", "network"] {
+            assert!(
+                report.detected_features.contains(&feature.to_owned()),
+                "missing detected feature {feature}: {:?}",
+                report.detected_features
+            );
+        }
+        for feature in ["web-runtime", "web-permissions"] {
+            assert!(
+                report.unsupported_features.contains(&feature.to_owned()),
+                "missing unsupported feature {feature}: {:?}",
+                report.unsupported_features
+            );
+        }
     }
 
     #[test]
@@ -1680,8 +2030,80 @@ exit 0
         assert!(
             report
                 .unsupported_features
-                .contains(&"scenescript".to_owned())
+                .contains(&"scene-runtime".to_owned())
         );
+        assert!(
+            report
+                .detected_features
+                .contains(&"scene-layers".to_owned())
+        );
+        assert!(report.detected_features.contains(&"image-layer".to_owned()));
+    }
+
+    #[test]
+    fn reports_scene_runtime_feature_gaps() {
+        let source = TestDir::new("we-scene-feature-source");
+        let output = TestDir::new("we-scene-feature-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                { "type": "image", "path": "background.png" },
+                { "type": "particle", "emitter": "sparks" }
+              ],
+              "timeline": [{ "time": 0, "keyframe": true }],
+              "script": "SceneScript.Update = function() {}",
+              "shader": "effects/rain.frag",
+              "parallax": true,
+              "audio": { "response": true }
+            }"#,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Scene Runtime Features",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        for feature in [
+            "scene-layers",
+            "image-layer",
+            "particles",
+            "timeline",
+            "scenescript",
+            "shader",
+            "parallax",
+            "audio-response",
+        ] {
+            assert!(
+                report.detected_features.contains(&feature.to_owned()),
+                "missing detected feature {feature}: {:?}",
+                report.detected_features
+            );
+        }
+        for feature in [
+            "scene-runtime",
+            "complex-particles",
+            "timeline-animation",
+            "scenescript",
+            "custom-shader",
+            "parallax",
+            "audio-runtime",
+        ] {
+            assert!(
+                report.unsupported_features.contains(&feature.to_owned()),
+                "missing unsupported feature {feature}: {:?}",
+                report.unsupported_features
+            );
+        }
     }
 
     #[test]
