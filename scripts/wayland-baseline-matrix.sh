@@ -22,6 +22,7 @@ Options:
   --report-dir <dir>    Exact baseline evidence directory. Created and kept
   --sample-duration <s> Per-scenario sampling duration. Default: 30
   --sample-interval <s> Per-scenario sampling interval. Default: 1
+  --budget-csv <path>  Enforce budget rows: scenario,phase,metric,max
   --allow-missing       Forward allow-missing to scenario smoke runs
   --no-build            Use existing target/debug binaries
   --keep                Keep generated baseline data when --report-dir is not set
@@ -29,6 +30,8 @@ Options:
 
 Each scenario writes its original wayland-video-surface-smoke evidence under
 <report>/scenarios/<name>/ and the aggregate table to <report>/baseline.csv.
+Budget rows may use "*" for scenario or phase and metric names must match
+baseline.csv columns, for example: active,active,max_uss_kib,250000.
 EOF
 }
 
@@ -39,6 +42,7 @@ work_parent="${TMPDIR:-/tmp}"
 report_dir=""
 sample_duration=30
 sample_interval=1
+budget_csv=""
 allow_missing=0
 build=1
 keep=0
@@ -94,6 +98,11 @@ while [[ $# -gt 0 ]]; do
     --sample-interval)
       [[ $# -ge 2 ]] || { echo "--sample-interval requires seconds" >&2; exit 2; }
       sample_interval="$2"
+      shift 2
+      ;;
+    --budget-csv)
+      [[ $# -ge 2 ]] || { echo "--budget-csv requires a path" >&2; exit 2; }
+      budget_csv="$2"
       shift 2
       ;;
     --allow-missing)
@@ -172,6 +181,7 @@ scenario_root="$work_dir/scenarios"
 mkdir -p "$scenario_root"
 baseline_csv="$work_dir/baseline.csv"
 matrix_csv="$work_dir/matrix.csv"
+budget_results_csv="$work_dir/budget-results.csv"
 summary_path="$work_dir/summary.txt"
 metadata_path="$work_dir/metadata.txt"
 
@@ -187,6 +197,7 @@ trap cleanup EXIT
 passes=0
 skips=0
 failures=0
+budget_failures=0
 
 note() {
   printf '%s\n' "$*"
@@ -411,6 +422,8 @@ write_metadata() {
   cat > "$metadata_path" <<EOF
 sample_duration: ${sample_duration}
 sample_interval: ${sample_interval}
+budget_csv: ${budget_csv:-none}
+budget_results: ${budget_results_csv}
 output: ${output_name:-auto}
 all_outputs: ${all_outputs}
 expect_compositor: ${expect_compositor:-none}
@@ -428,11 +441,122 @@ write_summary() {
 passed: ${passes}
 skipped: ${skips}
 failed: ${failures}
+budget_failed: ${budget_failures}
 metadata: ${metadata_path}
 baseline: ${baseline_csv}
 matrix: ${matrix_csv}
+budget_results: ${budget_results_csv}
 scenario_root: ${scenario_root}
 EOF
+}
+
+validate_budgets() {
+  [[ -n "$budget_csv" ]] || return 0
+  if [[ ! -f "$budget_csv" ]]; then
+    echo "budget file does not exist: $budget_csv" >&2
+    return 1
+  fi
+
+  awk -F, -v OFS=, '
+    function trim(value) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      return value
+    }
+    function numeric(value) {
+      return value ~ /^-?[0-9]+([.][0-9]+)?$/
+    }
+    function emit(scenario, phase, metric, actual, max, status, detail) {
+      print scenario, phase, metric, actual, max, status, detail
+    }
+    BEGIN {
+      print "scenario", "phase", "metric", "actual", "max", "status", "detail"
+    }
+    NR == FNR {
+      if (FNR == 1) {
+        for (i = 1; i <= NF; i++) {
+          header[i] = trim($i)
+          header_index[header[i]] = i
+        }
+        next
+      }
+      row_count++
+      row_scenario[row_count] = trim($1)
+      row_phase[row_count] = trim($2)
+      for (i = 1; i <= NF; i++) {
+        value[row_count, header[i]] = trim($i)
+      }
+      next
+    }
+    FNR == 1 {
+      for (i = 1; i <= NF; i++) {
+        budget_header[trim($i)] = i
+      }
+      if (!("scenario" in budget_header) || !("phase" in budget_header) ||
+          !("metric" in budget_header) || !("max" in budget_header)) {
+        emit("", "", "", "", "", "fail", "budget header must include scenario,phase,metric,max")
+        failures++
+        bad_header = 1
+      }
+      next
+    }
+    bad_header {
+      next
+    }
+    /^[[:space:]]*(#|$)/ {
+      next
+    }
+    {
+      budget_count++
+      budget_scenario = trim($(budget_header["scenario"]))
+      budget_phase = trim($(budget_header["phase"]))
+      budget_metric = trim($(budget_header["metric"]))
+      budget_max = trim($(budget_header["max"]))
+      matched = 0
+      if (budget_scenario == "") {
+        budget_scenario = "*"
+      }
+      if (budget_phase == "") {
+        budget_phase = "*"
+      }
+      if (!numeric(budget_max)) {
+        emit(budget_scenario, budget_phase, budget_metric, "", budget_max, "fail", "budget max is not numeric")
+        failures++
+        next
+      }
+      if (!(budget_metric in header_index)) {
+        emit(budget_scenario, budget_phase, budget_metric, "", budget_max, "fail", "metric is not present in baseline.csv")
+        failures++
+        next
+      }
+      for (row = 1; row <= row_count; row++) {
+        if ((budget_scenario == "*" || row_scenario[row] == budget_scenario) &&
+            (budget_phase == "*" || row_phase[row] == budget_phase)) {
+          matched = 1
+          actual = value[row, budget_metric]
+          if (!numeric(actual)) {
+            emit(row_scenario[row], row_phase[row], budget_metric, actual, budget_max, "fail", "baseline value is not numeric")
+            failures++
+          } else if (actual + 0 <= budget_max + 0) {
+            emit(row_scenario[row], row_phase[row], budget_metric, actual, budget_max, "pass", "within budget")
+          } else {
+            emit(row_scenario[row], row_phase[row], budget_metric, actual, budget_max, "fail", "exceeds budget")
+            failures++
+          }
+        }
+      }
+      if (!matched) {
+        emit(budget_scenario, budget_phase, budget_metric, "", budget_max, "fail", "no matching baseline row")
+        failures++
+      }
+    }
+    END {
+      if (!bad_header && budget_count == 0) {
+        emit("", "", "", "", "", "fail", "budget file contains no budget rows")
+        failures++
+      }
+      exit failures > 0 ? 1 : 0
+    }
+  ' "$baseline_csv" "$budget_csv" > "$budget_results_csv"
 }
 
 scenario_smoke_args() {
@@ -511,6 +635,7 @@ append_rows_for_scenario() {
 write_metadata
 write_baseline_header
 write_matrix_header
+printf 'scenario,phase,metric,actual,max,status,detail\n' > "$budget_results_csv"
 
 if [[ "$build" -eq 1 ]]; then
   cargo build --features gtk-renderer,video-renderer
@@ -567,10 +692,28 @@ for scenario in "${requested_scenarios[@]}"; do
   append_rows_for_scenario "$scenario" "$status" "$scenario_dir" "$validation_report"
 done
 
+if [[ -n "$budget_csv" ]]; then
+  if validate_budgets; then
+    note "PASS: budget checks"
+  else
+    if [[ -f "$budget_results_csv" ]]; then
+      budget_failures="$(awk -F, 'NR > 1 && $6 == "fail" { failures++ } END { print failures + 0 }' "$budget_results_csv")"
+    else
+      budget_failures=1
+    fi
+    if [[ "$budget_failures" -eq 0 ]]; then
+      budget_failures=1
+    fi
+    failures=$((failures + 1))
+    note "FAIL: budget checks (${budget_failures} violation(s))"
+  fi
+fi
+
 write_summary
 note "metadata: $metadata_path"
 note "baseline: $baseline_csv"
 note "matrix:   $matrix_csv"
+note "budgets:  $budget_results_csv"
 note "report:   $summary_path"
 note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
 exit "$([[ "$failures" -gt 0 ]] && echo 1 || echo 0)"
