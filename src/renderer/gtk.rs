@@ -17,6 +17,11 @@ use gst::prelude::*;
 #[cfg(feature = "video-renderer")]
 use gstreamer as gst;
 
+#[cfg(feature = "video-renderer")]
+const MUTED_PLAYBIN_FLAGS: &str = "video+deinterlace+soft-colorbalance";
+#[cfg(feature = "video-renderer")]
+const AUDIBLE_PLAYBIN_FLAGS: &str = "video+audio+soft-volume+deinterlace+soft-colorbalance";
+
 pub struct GtkStaticRenderer {
     application: gtk::Application,
     windows: BTreeMap<String, RenderedOutput>,
@@ -646,22 +651,10 @@ fn build_gtk_video_pipeline(
     picture.set_can_shrink(false);
     picture.set_content_fit(content_fit_for_fit(plan.fit));
 
-    let audio_sink = if plan.muted {
-        Some(
-            gst::ElementFactory::make("fakesink")
-                .property("sync", false)
-                .build()
-                .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?,
-        )
-    } else {
-        None
-    };
     let mut builder = gst::ElementFactory::make("playbin")
         .property("uri", uri.as_str())
+        .property_from_str("flags", playbin_flags(plan.muted))
         .property("video-sink", &video_sink);
-    if let Some(audio_sink) = &audio_sink {
-        builder = builder.property("audio-sink", audio_sink);
-    }
     if let Some(frame_limiter) = &frame_limiter {
         builder = builder.property("video-filter", frame_limiter.element());
     }
@@ -674,6 +667,15 @@ fn build_gtk_video_pipeline(
         picture,
         frame_limiter,
     })
+}
+
+#[cfg(feature = "video-renderer")]
+fn playbin_flags(muted: bool) -> &'static str {
+    if muted {
+        MUTED_PLAYBIN_FLAGS
+    } else {
+        AUDIBLE_PLAYBIN_FLAGS
+    }
 }
 
 #[cfg(feature = "video-renderer")]
@@ -847,5 +849,13 @@ mod tests {
             gtk::ContentFit::ScaleDown
         );
         assert_eq!(content_fit_for_fit(FitMode::Tile), gtk::ContentFit::Contain);
+    }
+
+    #[cfg(feature = "video-renderer")]
+    #[test]
+    fn muted_video_playbin_flags_disable_audio_streams() {
+        assert_eq!(playbin_flags(true), MUTED_PLAYBIN_FLAGS);
+        assert!(!playbin_flags(true).contains("audio"));
+        assert!(playbin_flags(false).contains("audio"));
     }
 }

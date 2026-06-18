@@ -62,6 +62,8 @@ const VIDEO_RUNTIME_ELEMENTS: &[&str] = &[
     "capsfilter",
     "gtk4paintablesink",
 ];
+const MUTED_PLAYBIN_FLAGS: &str = "video+deinterlace+soft-colorbalance";
+const AUDIBLE_PLAYBIN_FLAGS: &str = "video+audio+soft-volume+deinterlace+soft-colorbalance";
 
 impl GstVideoRenderer {
     pub fn new() -> Result<Self, VideoRendererError> {
@@ -355,22 +357,10 @@ fn build_pipeline(
         .property("sync", true)
         .build()
         .map_err(|err| VideoRendererError::BuildElement(err.to_string()))?;
-    let audio_sink = if plan.muted {
-        Some(
-            gst::ElementFactory::make("fakesink")
-                .property("sync", false)
-                .build()
-                .map_err(|err| VideoRendererError::BuildElement(err.to_string()))?,
-        )
-    } else {
-        None
-    };
     let mut builder = gst::ElementFactory::make("playbin")
         .property("uri", uri.as_str())
+        .property_from_str("flags", playbin_flags(plan.muted))
         .property("video-sink", &video_sink);
-    if let Some(audio_sink) = &audio_sink {
-        builder = builder.property("audio-sink", audio_sink);
-    }
     if let Some(frame_limiter) = &frame_limiter {
         builder = builder.property("video-filter", frame_limiter.element());
     }
@@ -381,6 +371,14 @@ fn build_pipeline(
         element,
         frame_limiter,
     })
+}
+
+fn playbin_flags(muted: bool) -> &'static str {
+    if muted {
+        MUTED_PLAYBIN_FLAGS
+    } else {
+        AUDIBLE_PLAYBIN_FLAGS
+    }
 }
 
 struct FrameLimiter {
@@ -595,6 +593,13 @@ mod tests {
                 .and_then(FrameLimiter::target_max_fps),
             None
         );
+    }
+
+    #[test]
+    fn muted_video_playbin_flags_disable_audio_streams() {
+        assert_eq!(playbin_flags(true), MUTED_PLAYBIN_FLAGS);
+        assert!(!playbin_flags(true).contains("audio"));
+        assert!(playbin_flags(false).contains("audio"));
     }
 
     #[test]
