@@ -34,6 +34,8 @@ early feature-gated GTK/GStreamer renderer paths.
   helper for codec smoke validation.
 - `scripts/wayland-video-surface-smoke.sh`: interactive Wayland video surface
   validation helper.
+- `scripts/wayland-baseline-matrix.sh`: interactive Wayland active/paused,
+  fullscreen, hidden, battery, unfocused, and session baseline aggregator.
 - `scripts/install-wayland-video-smoke-deps-arch.sh`: Arch-like dependency
   helper for interactive video surface validation.
 - `scripts/performance-snapshot.sh`: daemon CPU/RSS/PSS/USS/status sampling

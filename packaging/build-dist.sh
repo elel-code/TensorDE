@@ -110,6 +110,7 @@ install -m 0644 packaging/systemd/gilder.service "$stage_dir/lib/systemd/user/gi
 install -m 0644 README.md docs/packaging.md docs/todo.md docs/video-validation.md "$stage_dir/share/doc/gilder/"
 install -m 0755 scripts/video-codec-smoke.sh "$stage_dir/share/doc/gilder/scripts/video-codec-smoke.sh"
 install -m 0755 scripts/wayland-video-surface-smoke.sh "$stage_dir/share/doc/gilder/scripts/wayland-video-surface-smoke.sh"
+install -m 0755 scripts/wayland-baseline-matrix.sh "$stage_dir/share/doc/gilder/scripts/wayland-baseline-matrix.sh"
 install -m 0755 scripts/performance-snapshot.sh "$stage_dir/share/doc/gilder/scripts/performance-snapshot.sh"
 install -m 0755 scripts/install-video-codec-smoke-deps-ubuntu.sh "$stage_dir/share/doc/gilder/scripts/install-video-codec-smoke-deps-ubuntu.sh"
 install -m 0755 scripts/install-video-codec-smoke-deps-arch.sh "$stage_dir/share/doc/gilder/scripts/install-video-codec-smoke-deps-arch.sh"
@@ -141,6 +142,7 @@ contents:
   share/doc/gilder/video-validation.md
   share/doc/gilder/scripts/video-codec-smoke.sh
   share/doc/gilder/scripts/wayland-video-surface-smoke.sh
+  share/doc/gilder/scripts/wayland-baseline-matrix.sh
   share/doc/gilder/scripts/performance-snapshot.sh
   share/doc/gilder/scripts/install-video-codec-smoke-deps-ubuntu.sh
   share/doc/gilder/scripts/install-video-codec-smoke-deps-arch.sh
