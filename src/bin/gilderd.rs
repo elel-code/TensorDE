@@ -57,6 +57,7 @@ fn load_daemon_context() -> Result<DaemonContext, String> {
         desktop,
         last_desktop_refresh: Some(Instant::now()),
         render_sync_cache: None,
+        telemetry: DaemonTelemetry::default(),
     })
 }
 
@@ -404,6 +405,7 @@ impl DaemonRuntime {
         true
     }
 
+    #[cfg(any(test, feature = "gtk-renderer"))]
     fn store_last_render_sync(&self, render_sync: StaticRenderSyncPlan) {
         let Ok(mut last_render_sync) = self.last_render_sync.lock() else {
             eprintln!("gilderd: render sync cache lock poisoned");
@@ -465,6 +467,16 @@ struct DaemonContext {
     desktop: gilder::desktop::DesktopSnapshot,
     last_desktop_refresh: Option<Instant>,
     render_sync_cache: Option<RenderSyncCache>,
+    telemetry: DaemonTelemetry,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DaemonTelemetry {
+    desktop_refreshes: u64,
+    desktop_refresh_skips: u64,
+    desktop_changes: u64,
+    render_sync_cache_hits: u64,
+    render_sync_cache_misses: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -579,6 +591,7 @@ fn handle_ipc_request(request: gilder::ipc::IpcRequest, context: &mut DaemonCont
                     "render_sync": render_sync,
                     "renderer": renderer_name(),
                     "renderer_capabilities": renderer_capabilities(),
+                    "telemetry": telemetry_report(context),
                 }),
             ))
         }
@@ -769,13 +782,13 @@ fn refresh_desktop(context: &mut DaemonContext) {
             if snapshot.compositor.is_some() || !snapshot.outputs.is_empty() {
                 context.desktop = snapshot;
             }
-            context.last_desktop_refresh = Some(Instant::now());
+            mark_desktop_refreshed(context);
             return;
         }
     }
 
     context.desktop = gilder::desktop::adapters::read_desktop_snapshot(&context.config.adapters);
-    context.last_desktop_refresh = Some(Instant::now());
+    mark_desktop_refreshed(context);
 }
 
 fn refresh_desktop_if_stale(context: &mut DaemonContext) {
@@ -786,7 +799,14 @@ fn refresh_desktop_if_stale(context: &mut DaemonContext) {
         .unwrap_or(true);
     if is_stale {
         refresh_desktop(context);
+    } else {
+        context.telemetry.desktop_refresh_skips += 1;
     }
+}
+
+fn mark_desktop_refreshed(context: &mut DaemonContext) {
+    context.last_desktop_refresh = Some(Instant::now());
+    context.telemetry.desktop_refreshes += 1;
 }
 
 fn output_reports(context: &DaemonContext) -> Vec<serde_json::Value> {
@@ -837,6 +857,7 @@ fn snapshot_event(context: &mut DaemonContext) -> Value {
         "render_sync": render_sync,
         "renderer": renderer_name(),
         "renderer_capabilities": renderer_capabilities(),
+        "telemetry": telemetry_report(context),
     })
 }
 
@@ -854,6 +875,7 @@ fn state_changed_event(
         "persisted_state": context.state,
         "render_sync": render_sync,
         "renderer_capabilities": renderer_capabilities(),
+        "telemetry": telemetry_report(context),
     })
 }
 
@@ -902,6 +924,25 @@ fn renderer_capabilities() -> Value {
     })
 }
 
+fn telemetry_report(context: &DaemonContext) -> Value {
+    json!({
+        "desktop": {
+            "refreshes": context.telemetry.desktop_refreshes,
+            "refresh_skips": context.telemetry.desktop_refresh_skips,
+            "changes": context.telemetry.desktop_changes,
+            "last_refresh_age_ms": context.last_desktop_refresh.map(elapsed_millis_u64),
+        },
+        "render_sync": {
+            "cache_hits": context.telemetry.render_sync_cache_hits,
+            "cache_misses": context.telemetry.render_sync_cache_misses,
+        },
+    })
+}
+
+fn elapsed_millis_u64(instant: Instant) -> u64 {
+    instant.elapsed().as_millis().min(u64::MAX as u128) as u64
+}
+
 #[cfg(feature = "video-renderer")]
 fn video_renderer_capabilities() -> Value {
     json!({
@@ -928,9 +969,11 @@ fn current_render_sync(context: &mut DaemonContext) -> StaticRenderSyncPlan {
     if let Some(cache) = &context.render_sync_cache
         && cache.key == key
     {
+        context.telemetry.render_sync_cache_hits += 1;
         return cache.render_sync.clone();
     }
 
+    context.telemetry.render_sync_cache_misses += 1;
     let render_sync = gilder::renderer::static_render_sync_plan_with_config(
         &context.config,
         &context.desktop,
@@ -1068,6 +1111,7 @@ fn refresh_runtime_desktop_if_changed(runtime: &DaemonRuntime) -> Result<(), Str
         if context.desktop == previous_desktop {
             None
         } else {
+            context.telemetry.desktop_changes += 1;
             let render_sync = current_render_sync(&mut context);
             let event = desktop_changed_event(&context, &render_sync);
             Some((event, render_sync))
@@ -1089,6 +1133,7 @@ fn desktop_changed_event(context: &DaemonContext, render_sync: &StaticRenderSync
         "render_sync": render_sync,
         "renderer": renderer_name(),
         "renderer_capabilities": renderer_capabilities(),
+        "telemetry": telemetry_report(context),
     })
 }
 
@@ -1178,11 +1223,42 @@ mod tests {
 
         refresh_desktop_if_stale(&mut context);
         assert_eq!(context.desktop.outputs.len(), 1);
+        assert_eq!(context.telemetry.desktop_refresh_skips, 1);
+        assert_eq!(context.telemetry.desktop_refreshes, 0);
 
         context.last_desktop_refresh = Some(Instant::now() - Duration::from_millis(1_500));
         refresh_desktop_if_stale(&mut context);
         assert!(context.desktop.outputs.is_empty());
         assert!(context.last_desktop_refresh.is_some());
+        assert_eq!(context.telemetry.desktop_refresh_skips, 1);
+        assert_eq!(context.telemetry.desktop_refreshes, 1);
+    }
+
+    #[test]
+    fn status_response_reports_daemon_telemetry() {
+        let mut context = test_context();
+        let request = gilder::ipc::IpcRequest {
+            id: json!(1),
+            method: RequestMethod::Status,
+        };
+
+        let outcome = handle_ipc_request(request, &mut context);
+        let response: serde_json::Value =
+            serde_json::from_str(&outcome.response).expect("status response should be JSON");
+
+        assert_eq!(
+            response["result"]["telemetry"]["desktop"]["refresh_skips"],
+            json!(1)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["cache_misses"],
+            json!(1)
+        );
+        assert!(
+            response["result"]["telemetry"]["desktop"]["last_refresh_age_ms"]
+                .as_u64()
+                .is_some()
+        );
     }
 
     #[test]
@@ -1225,10 +1301,14 @@ mod tests {
 
         let second = current_render_sync(&mut context);
         assert_eq!(second, first);
+        assert_eq!(context.telemetry.render_sync_cache_hits, 1);
+        assert_eq!(context.telemetry.render_sync_cache_misses, 1);
 
         write_static_package_manifest(package_dir.path(), "#203040ff");
         let third = current_render_sync(&mut context);
         assert_eq!(third.plans[0].background.as_deref(), Some("#203040ff"));
+        assert_eq!(context.telemetry.render_sync_cache_hits, 1);
+        assert_eq!(context.telemetry.render_sync_cache_misses, 2);
     }
 
     #[test]
@@ -1313,6 +1393,7 @@ mod tests {
             desktop: gilder::desktop::DesktopSnapshot::default(),
             last_desktop_refresh: Some(Instant::now()),
             render_sync_cache: None,
+            telemetry: DaemonTelemetry::default(),
         }
     }
 

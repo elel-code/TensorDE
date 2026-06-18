@@ -79,6 +79,7 @@ struct Invocation {
 enum ResponseFormat {
     Json,
     DecisionsCsv,
+    TelemetryCsv,
 }
 
 fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
@@ -94,6 +95,20 @@ fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
             Ok(Invocation {
                 command: gilder::ipc::ClientCommand::Status,
                 format: ResponseFormat::DecisionsCsv,
+                response_file: Some(PathBuf::from(path)),
+            })
+        }
+        [cmd, format] if cmd == "status" && format == "--telemetry-csv" => Ok(Invocation {
+            command: gilder::ipc::ClientCommand::Status,
+            format: ResponseFormat::TelemetryCsv,
+            response_file: None,
+        }),
+        [cmd, format, from_file, path]
+            if cmd == "status" && format == "--telemetry-csv" && from_file == "--from-file" =>
+        {
+            Ok(Invocation {
+                command: gilder::ipc::ClientCommand::Status,
+                format: ResponseFormat::TelemetryCsv,
                 response_file: Some(PathBuf::from(path)),
             })
         }
@@ -118,6 +133,10 @@ fn print_response(response: &str, format: ResponseFormat) -> Result<(), String> 
         }
         ResponseFormat::DecisionsCsv => {
             print!("{}", render_decisions_csv(response)?);
+            Ok(())
+        }
+        ResponseFormat::TelemetryCsv => {
+            print!("{}", render_telemetry_csv(response)?);
             Ok(())
         }
     }
@@ -172,6 +191,37 @@ fn render_decisions_csv(response: &str) -> Result<String, String> {
         csv.push_str(&row.join(","));
         csv.push('\n');
     }
+    Ok(csv)
+}
+
+fn render_telemetry_csv(response: &str) -> Result<String, String> {
+    let response: StatusResponse =
+        serde_json::from_str(response).map_err(|err| format!("failed to parse response: {err}"))?;
+    if let Some(error) = response.error {
+        return Err(format!("daemon returned error: {error}"));
+    }
+    let result = response
+        .result
+        .ok_or_else(|| "status response did not contain result".to_owned())?;
+
+    let telemetry = result.telemetry;
+    let mut csv = String::from(
+        "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses\n",
+    );
+    let row = [
+        telemetry.desktop.refreshes.to_string(),
+        telemetry.desktop.refresh_skips.to_string(),
+        telemetry.desktop.changes.to_string(),
+        telemetry
+            .desktop
+            .last_refresh_age_ms
+            .map(|age| age.to_string())
+            .unwrap_or_default(),
+        telemetry.render_sync.cache_hits.to_string(),
+        telemetry.render_sync.cache_misses.to_string(),
+    ];
+    csv.push_str(&row.join(","));
+    csv.push('\n');
     Ok(csv)
 }
 
@@ -232,6 +282,8 @@ struct StatusResponse {
 #[derive(Debug, Deserialize)]
 struct StatusResult {
     render_sync: RenderSync,
+    #[serde(default)]
+    telemetry: Telemetry,
 }
 
 #[derive(Debug, Deserialize)]
@@ -279,6 +331,34 @@ struct DecisionPerformance {
     reason: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct Telemetry {
+    #[serde(default)]
+    desktop: DesktopTelemetry,
+    #[serde(default)]
+    render_sync: RenderSyncTelemetry,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct DesktopTelemetry {
+    #[serde(default)]
+    refreshes: u64,
+    #[serde(default)]
+    refresh_skips: u64,
+    #[serde(default)]
+    changes: u64,
+    #[serde(default)]
+    last_refresh_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RenderSyncTelemetry {
+    #[serde(default)]
+    cache_hits: u64,
+    #[serde(default)]
+    cache_misses: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +391,19 @@ mod tests {
     }
 
     #[test]
+    fn formats_daemon_telemetry_as_csv() {
+        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[],"video_plans":[],"decisions":[]},"telemetry":{"desktop":{"refreshes":7,"refresh_skips":11,"changes":2,"last_refresh_age_ms":42},"render_sync":{"cache_hits":23,"cache_misses":5}}}}"##;
+
+        let csv = render_telemetry_csv(response).unwrap();
+
+        assert_eq!(
+            csv,
+            "desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses\n\
+             7,11,2,42,23,5\n"
+        );
+    }
+
+    #[test]
     fn parses_status_file_invocation() {
         let args = vec![
             "status".to_owned(),
@@ -324,6 +417,25 @@ mod tests {
             Invocation {
                 command: gilder::ipc::ClientCommand::Status,
                 format: ResponseFormat::DecisionsCsv,
+                response_file: Some(PathBuf::from("status.json")),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_status_telemetry_file_invocation() {
+        let args = vec![
+            "status".to_owned(),
+            "--telemetry-csv".to_owned(),
+            "--from-file".to_owned(),
+            "status.json".to_owned(),
+        ];
+
+        assert_eq!(
+            parse_invocation(&args).unwrap(),
+            Invocation {
+                command: gilder::ipc::ClientCommand::Status,
+                format: ResponseFormat::TelemetryCsv,
                 response_file: Some(PathBuf::from("status.json")),
             }
         );

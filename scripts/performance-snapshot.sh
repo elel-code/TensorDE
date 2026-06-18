@@ -250,10 +250,88 @@ append_status_decisions() {
   return 0
 }
 
+append_status_telemetry() {
+  local sample="$1"
+  local elapsed="$2"
+  local status_file="$3"
+  local telemetry_csv="$4"
+  local telemetry_error_file="$5"
+  local temp_telemetry="$work_dir/telemetry-$(printf '%03d' "$sample").tmp"
+
+  if ! "$gilderctl" status --telemetry-csv --from-file "$status_file" > "$temp_telemetry" 2> "$telemetry_error_file"; then
+    rm -f "$temp_telemetry"
+    return 1
+  fi
+  if [[ ! -s "$telemetry_error_file" ]]; then
+    rm -f "$telemetry_error_file"
+  fi
+
+  awk -v sample="$sample" -v elapsed="$elapsed" '
+    NR == 1 { next }
+    {
+      print sample "," elapsed "," $0
+    }
+  ' "$temp_telemetry" >> "$telemetry_csv"
+  rm -f "$temp_telemetry"
+  return 0
+}
+
 write_decision_summary() {
   local decisions_csv="$1"
   local summary="$2"
   awk -f "$decision_summary_awk" "$decisions_csv" > "$summary"
+}
+
+write_telemetry_summary() {
+  local telemetry_csv="$1"
+  local summary="$2"
+  awk -F, '
+    NR == 1 { next }
+    {
+      rows += 1
+      refreshes = $3 + 0
+      skips = $4 + 0
+      changes = $5 + 0
+      age = $6 + 0
+      hits = $7 + 0
+      misses = $8 + 0
+
+      if (rows == 1) {
+        first_refreshes = refreshes
+        first_skips = skips
+        first_changes = changes
+        first_hits = hits
+        first_misses = misses
+      }
+      last_refreshes = refreshes
+      last_skips = skips
+      last_changes = changes
+      last_hits = hits
+      last_misses = misses
+      if (age > max_age) { max_age = age }
+    }
+    END {
+      refresh_delta = last_refreshes - first_refreshes
+      skip_delta = last_skips - first_skips
+      change_delta = last_changes - first_changes
+      hit_delta = last_hits - first_hits
+      miss_delta = last_misses - first_misses
+      total_cache_delta = hit_delta + miss_delta
+
+      printf "telemetry_rows: %d\n", rows
+      if (rows > 0) {
+        printf "desktop_refreshes_delta: %d\n", refresh_delta
+        printf "desktop_refresh_skips_delta: %d\n", skip_delta
+        printf "desktop_changes_delta: %d\n", change_delta
+        printf "render_sync_cache_hits_delta: %d\n", hit_delta
+        printf "render_sync_cache_misses_delta: %d\n", miss_delta
+        if (total_cache_delta > 0) {
+          printf "render_sync_cache_hit_ratio: %.4f\n", hit_delta / total_cache_delta
+        }
+        printf "last_desktop_refresh_age_ms_max: %d\n", max_age
+      }
+    }
+  ' "$telemetry_csv" > "$summary"
 }
 
 has_expectations() {
@@ -362,6 +440,8 @@ metadata_path="$work_dir/metadata.txt"
 summary_path="$work_dir/summary.txt"
 decisions_path="$work_dir/decisions.csv"
 decision_summary_path="$work_dir/decision-summary.txt"
+telemetry_path="$work_dir/telemetry.csv"
+telemetry_summary_path="$work_dir/telemetry-summary.txt"
 
 cat > "$metadata_path" <<EOF
 label: ${label}
@@ -379,9 +459,11 @@ EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,stat,comm,status_file,status_error_file\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
+printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses\n' > "$telemetry_path"
 
 status_failures=0
 decision_failures=0
+telemetry_failures=0
 for sample in $(seq 1 "$samples"); do
   if ! kill -0 "$pid" >/dev/null 2>&1; then
     skip_or_fail "process $pid exited during sampling"
@@ -428,6 +510,11 @@ for sample in $(seq 1 "$samples"); do
         decision_failures=$((decision_failures + 1))
         skip_or_fail "failed to extract render decisions for sample $sample"
       fi
+      telemetry_error_file="$work_dir/telemetry-$(printf '%03d' "$sample").err"
+      if ! append_status_telemetry "$sample" "$elapsed" "$status_file" "$telemetry_path" "$telemetry_error_file"; then
+        telemetry_failures=$((telemetry_failures + 1))
+        skip_or_fail "failed to extract daemon telemetry for sample $sample"
+      fi
     fi
   fi
 
@@ -454,6 +541,7 @@ done
 
 write_summary "$csv_path" "$summary_path"
 write_decision_summary "$decisions_path" "$decision_summary_path"
+write_telemetry_summary "$telemetry_path" "$telemetry_summary_path"
 pass "wrote process samples to $csv_path"
 pass "wrote summary to $summary_path"
 if [[ "$status_enabled" -eq 1 && "$status_failures" -eq 0 ]]; then
@@ -469,6 +557,12 @@ if [[ "$status_enabled" -eq 1 && "$decision_failures" -eq 0 ]]; then
 elif [[ "$status_enabled" -eq 1 ]]; then
   note "render decision extraction had ${decision_failures} failed samples"
 fi
+if [[ "$status_enabled" -eq 1 && "$telemetry_failures" -eq 0 ]]; then
+  pass "wrote daemon telemetry samples to $telemetry_path"
+  pass "wrote daemon telemetry summary to $telemetry_summary_path"
+elif [[ "$status_enabled" -eq 1 ]]; then
+  note "daemon telemetry extraction had ${telemetry_failures} failed samples"
+fi
 validate_decision_expectations
 
 if [[ "$keep" -eq 1 ]]; then
@@ -481,6 +575,8 @@ note "samples:  $csv_path"
 note "sample summary: $summary_path"
 note "decisions: $decisions_path"
 note "decision summary: $decision_summary_path"
+note "telemetry: $telemetry_path"
+note "telemetry summary: $telemetry_summary_path"
 note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
 if [[ "$failures" -gt 0 ]]; then
   exit 1
