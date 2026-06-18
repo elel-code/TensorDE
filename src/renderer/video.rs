@@ -64,6 +64,23 @@ const VIDEO_RUNTIME_ELEMENTS: &[&str] = &[
 ];
 const MUTED_PLAYBIN_FLAGS: &str = "video+deinterlace+soft-colorbalance";
 const AUDIBLE_PLAYBIN_FLAGS: &str = "video+audio+soft-volume+deinterlace+soft-colorbalance";
+const DECODER_ELEMENT_NAMES: &[&str] = &[
+    "avdec_h264",
+    "openh264dec",
+    "vah264dec",
+    "vaapih264dec",
+    "nvh264dec",
+    "vp9dec",
+    "avdec_vp9",
+    "vavp9dec",
+    "vaapivp9dec",
+    "nvvp9dec",
+    "dav1ddec",
+    "avdec_av1",
+    "av1dec",
+    "vaav1dec",
+    "vaapiav1dec",
+];
 
 impl GstVideoRenderer {
     pub fn new() -> Result<Self, VideoRendererError> {
@@ -175,10 +192,12 @@ impl GstVideoRenderer {
                 output_name: output_name.clone(),
                 source: pipeline.source.display().to_string(),
                 mode: pipeline.mode,
+                gst_state: pipeline.gst_state.name().to_string(),
                 loop_playback: pipeline.loop_playback,
                 muted: pipeline.muted,
                 target_max_fps: pipeline.target_max_fps,
                 start_offset_ms: pipeline.start_offset_ms,
+                actual_decoders: actual_decoder_elements(&pipeline.element),
             })
             .collect()
     }
@@ -381,6 +400,26 @@ fn playbin_flags(muted: bool) -> &'static str {
     }
 }
 
+pub fn actual_decoder_elements(element: &gst::Element) -> Vec<String> {
+    let Ok(bin) = element.clone().downcast::<gst::Bin>() else {
+        return Vec::new();
+    };
+    let mut iterator = bin.iterate_recurse();
+    let mut decoders = Vec::new();
+    while let Ok(Some(child)) = iterator.next() {
+        let Some(factory) = child.factory() else {
+            continue;
+        };
+        let name = factory.name();
+        if DECODER_ELEMENT_NAMES.contains(&name.as_str()) {
+            decoders.push(name.to_string());
+        }
+    }
+    decoders.sort();
+    decoders.dedup();
+    decoders
+}
+
 struct FrameLimiter {
     element: gst::Element,
     capsfilter: gst::Element,
@@ -464,15 +503,17 @@ impl Drop for VideoPipeline {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VideoPipelineSnapshot {
     pub output_name: String,
     pub source: String,
     pub mode: RenderMode,
+    pub gst_state: String,
     pub loop_playback: bool,
     pub muted: bool,
     pub target_max_fps: Option<u32>,
     pub start_offset_ms: u64,
+    pub actual_decoders: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -543,6 +584,7 @@ mod tests {
         assert!(snapshot[0].muted);
         assert_eq!(snapshot[0].target_max_fps, Some(24));
         assert_eq!(snapshot[0].start_offset_ms, 0);
+        assert!(snapshot[0].actual_decoders.is_empty());
 
         let sync = StaticRenderSyncPlan {
             plans: Vec::new(),

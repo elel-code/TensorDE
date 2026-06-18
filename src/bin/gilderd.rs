@@ -29,16 +29,17 @@ fn main() {
 fn run() -> Result<(), String> {
     let context = load_daemon_context()?;
     let listener = bind_ipc_listener()?;
-    let renderer_updates = renderer_update_senders();
+    let renderer_runtime = Arc::new(Mutex::new(RendererRuntimeSnapshot::default()));
+    let renderer_updates = renderer_update_senders(Arc::clone(&renderer_runtime));
 
     #[cfg(feature = "gtk-renderer")]
     {
-        run_gtk_daemon(context, listener, renderer_updates)
+        run_gtk_daemon(context, listener, renderer_updates, renderer_runtime)
     }
 
     #[cfg(not(feature = "gtk-renderer"))]
     {
-        run_ipc_daemon(context, listener, renderer_updates);
+        run_ipc_daemon(context, listener, renderer_updates, renderer_runtime);
         Ok(())
     }
 }
@@ -91,12 +92,15 @@ fn bind_ipc_listener() -> Result<UnixListener, String> {
     Ok(listener)
 }
 
-fn renderer_update_senders() -> Vec<mpsc::Sender<StaticRenderSyncPlan>> {
+fn renderer_update_senders(
+    renderer_runtime: Arc<Mutex<RendererRuntimeSnapshot>>,
+) -> Vec<mpsc::Sender<StaticRenderSyncPlan>> {
     #[cfg(any(
         not(feature = "video-renderer"),
         all(feature = "video-renderer", feature = "gtk-renderer")
     ))]
     {
+        let _ = renderer_runtime;
         Vec::new()
     }
 
@@ -105,7 +109,7 @@ fn renderer_update_senders() -> Vec<mpsc::Sender<StaticRenderSyncPlan>> {
         let mut senders = Vec::new();
 
         let (sender, receiver) = mpsc::channel::<StaticRenderSyncPlan>();
-        spawn_video_renderer_loop(receiver);
+        spawn_video_renderer_loop(receiver, renderer_runtime);
         senders.push(sender);
 
         senders
@@ -117,8 +121,13 @@ fn run_ipc_daemon(
     context: DaemonContext,
     listener: UnixListener,
     renderer_updates: Vec<mpsc::Sender<StaticRenderSyncPlan>>,
+    renderer_runtime: Arc<Mutex<RendererRuntimeSnapshot>>,
 ) {
-    let runtime = Arc::new(DaemonRuntime::new(context, renderer_updates));
+    let runtime = Arc::new(DaemonRuntime::new(
+        context,
+        renderer_updates,
+        renderer_runtime,
+    ));
     match refreshed_render_sync(&runtime) {
         Ok(sync) => {
             runtime.queue_render_sync_if_changed(sync);
@@ -134,12 +143,17 @@ fn run_gtk_daemon(
     context: DaemonContext,
     listener: UnixListener,
     mut renderer_updates: Vec<mpsc::Sender<StaticRenderSyncPlan>>,
+    renderer_runtime: Arc<Mutex<RendererRuntimeSnapshot>>,
 ) -> Result<(), String> {
     use gtk::prelude::*;
 
     let (renderer_sender, renderer_receiver) = mpsc::channel::<StaticRenderSyncPlan>();
     renderer_updates.push(renderer_sender);
-    let runtime = Arc::new(DaemonRuntime::new(context, renderer_updates));
+    let runtime = Arc::new(DaemonRuntime::new(
+        context,
+        renderer_updates,
+        renderer_runtime,
+    ));
     spawn_accept_loop(listener, Arc::clone(&runtime));
 
     let renderer = gilder::renderer::gtk::GtkStaticRenderer::new("io.github.elelcode.Gilder");
@@ -158,6 +172,9 @@ fn run_gtk_daemon(
                 renderer_for_activate
                     .borrow_mut()
                     .sync_static_render_plan(&sync);
+                runtime_for_activate.store_renderer_runtime_snapshot(renderer_runtime_snapshot(
+                    &renderer_for_activate.borrow(),
+                ));
                 runtime_for_activate.store_last_render_sync(sync);
             }
             Err(err) => eprintln!("gilderd: failed to prepare initial render sync: {err}"),
@@ -169,6 +186,7 @@ fn run_gtk_daemon(
 
         if let Some(receiver) = receiver_for_activate.borrow_mut().take() {
             let renderer_for_updates = Rc::clone(&renderer_for_activate);
+            let runtime_for_updates = Arc::clone(&runtime_for_activate);
             gtk::glib::timeout_add_local(Duration::from_millis(50), move || {
                 while let Ok(sync) = receiver.try_recv() {
                     renderer_for_updates
@@ -177,6 +195,9 @@ fn run_gtk_daemon(
                 }
                 #[cfg(feature = "video-renderer")]
                 renderer_for_updates.borrow_mut().poll_video_buses();
+                runtime_for_updates.store_renderer_runtime_snapshot(renderer_runtime_snapshot(
+                    &renderer_for_updates.borrow(),
+                ));
                 gtk::glib::ControlFlow::Continue
             });
         }
@@ -222,7 +243,10 @@ fn spawn_desktop_refresh_loop(runtime: Arc<DaemonRuntime>) {
 }
 
 #[cfg(all(feature = "video-renderer", not(feature = "gtk-renderer")))]
-fn spawn_video_renderer_loop(receiver: mpsc::Receiver<StaticRenderSyncPlan>) {
+fn spawn_video_renderer_loop(
+    receiver: mpsc::Receiver<StaticRenderSyncPlan>,
+    renderer_runtime: Arc<Mutex<RendererRuntimeSnapshot>>,
+) {
     thread::spawn(move || {
         let mut renderer = match gilder::renderer::video::GstVideoRenderer::new() {
             Ok(renderer) => renderer,
@@ -241,6 +265,10 @@ fn spawn_video_renderer_loop(receiver: mpsc::Receiver<StaticRenderSyncPlan>) {
                     if let Err(err) = renderer.sync_render_plan(&sync) {
                         eprintln!("gilderd: failed to sync video renderer: {err}");
                     }
+                    store_renderer_runtime_snapshot(
+                        &renderer_runtime,
+                        RendererRuntimeSnapshot::from_video_pipeline_snapshots(renderer.snapshot()),
+                    );
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -249,8 +277,26 @@ fn spawn_video_renderer_loop(receiver: mpsc::Receiver<StaticRenderSyncPlan>) {
             if let Err(err) = renderer.poll_bus() {
                 eprintln!("gilderd: video renderer pipeline error: {err}");
             }
+            store_renderer_runtime_snapshot(
+                &renderer_runtime,
+                RendererRuntimeSnapshot::from_video_pipeline_snapshots(renderer.snapshot()),
+            );
         }
     });
+}
+
+#[cfg(all(feature = "gtk-renderer", feature = "video-renderer"))]
+fn renderer_runtime_snapshot(
+    renderer: &gilder::renderer::gtk::GtkStaticRenderer,
+) -> RendererRuntimeSnapshot {
+    RendererRuntimeSnapshot::from_video_pipeline_snapshots(renderer.snapshot())
+}
+
+#[cfg(all(feature = "gtk-renderer", not(feature = "video-renderer")))]
+fn renderer_runtime_snapshot(
+    _renderer: &gilder::renderer::gtk::GtkStaticRenderer,
+) -> RendererRuntimeSnapshot {
+    RendererRuntimeSnapshot::default()
 }
 
 fn accept_loop(listener: UnixListener, runtime: Arc<DaemonRuntime>) {
@@ -302,6 +348,7 @@ fn handle_client(mut stream: UnixStream, runtime: Arc<DaemonRuntime>) -> Result<
         }
         method => {
             let runtime_telemetry = runtime.telemetry_snapshot();
+            let renderer_runtime = runtime.renderer_runtime_snapshot();
             let outcome = {
                 let mut context = runtime.lock_context()?;
                 handle_ipc_request(
@@ -311,6 +358,7 @@ fn handle_client(mut stream: UnixStream, runtime: Arc<DaemonRuntime>) -> Result<
                     },
                     &mut context,
                     runtime_telemetry,
+                    renderer_runtime,
                 )
             };
             write_line(&mut stream, &outcome.response)?;
@@ -345,7 +393,11 @@ fn handle_watch_client(
     if include_snapshot {
         let event = {
             let mut context = runtime.lock_context()?;
-            snapshot_event(&mut context, runtime.telemetry_snapshot())
+            snapshot_event(
+                &mut context,
+                runtime.telemetry_snapshot(),
+                runtime.renderer_runtime_snapshot(),
+            )
         };
         let line = runtime.watchers.event_line("snapshot", event);
         write_line(&mut stream, &line)?;
@@ -370,6 +422,7 @@ struct DaemonRuntime {
     context: Mutex<DaemonContext>,
     watchers: WatchHub,
     renderer_updates: Vec<mpsc::Sender<StaticRenderSyncPlan>>,
+    renderer_runtime: Arc<Mutex<RendererRuntimeSnapshot>>,
     last_render_sync: Mutex<Option<StaticRenderSyncPlan>>,
     render_sync_updates_queued: AtomicU64,
     render_sync_updates_skipped: AtomicU64,
@@ -379,11 +432,13 @@ impl DaemonRuntime {
     fn new(
         context: DaemonContext,
         renderer_updates: Vec<mpsc::Sender<StaticRenderSyncPlan>>,
+        renderer_runtime: Arc<Mutex<RendererRuntimeSnapshot>>,
     ) -> Self {
         Self {
             context: Mutex::new(context),
             watchers: WatchHub::new(),
             renderer_updates,
+            renderer_runtime,
             last_render_sync: Mutex::new(None),
             render_sync_updates_queued: AtomicU64::new(0),
             render_sync_updates_skipped: AtomicU64::new(0),
@@ -434,12 +489,70 @@ impl DaemonRuntime {
         }
     }
 
+    #[cfg(feature = "gtk-renderer")]
+    fn store_renderer_runtime_snapshot(&self, snapshot: RendererRuntimeSnapshot) {
+        store_renderer_runtime_snapshot(&self.renderer_runtime, snapshot);
+    }
+
+    fn renderer_runtime_snapshot(&self) -> RendererRuntimeSnapshot {
+        match self.renderer_runtime.lock() {
+            Ok(snapshot) => snapshot.clone(),
+            Err(_) => {
+                eprintln!("gilderd: renderer runtime snapshot lock poisoned");
+                RendererRuntimeSnapshot::default()
+            }
+        }
+    }
+
     fn telemetry_snapshot(&self) -> RuntimeTelemetrySnapshot {
         RuntimeTelemetrySnapshot {
             render_sync_updates_queued: self.render_sync_updates_queued.load(Ordering::Relaxed),
             render_sync_updates_skipped: self.render_sync_updates_skipped.load(Ordering::Relaxed),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct RendererRuntimeSnapshot {
+    video_pipelines: Vec<Value>,
+}
+
+impl RendererRuntimeSnapshot {
+    #[cfg(feature = "video-renderer")]
+    fn from_video_pipeline_snapshots(
+        snapshots: Vec<gilder::renderer::video::VideoPipelineSnapshot>,
+    ) -> Self {
+        Self {
+            video_pipelines: snapshots
+                .into_iter()
+                .map(|snapshot| {
+                    serde_json::to_value(snapshot).unwrap_or_else(|err| {
+                        json!({
+                            "serialization_error": err.to_string(),
+                        })
+                    })
+                })
+                .collect(),
+        }
+    }
+}
+
+#[cfg(any(feature = "video-renderer", feature = "gtk-renderer"))]
+fn store_renderer_runtime_snapshot(
+    renderer_runtime: &Arc<Mutex<RendererRuntimeSnapshot>>,
+    snapshot: RendererRuntimeSnapshot,
+) {
+    let Ok(mut runtime) = renderer_runtime.lock() else {
+        eprintln!("gilderd: renderer runtime snapshot lock poisoned");
+        return;
+    };
+    *runtime = snapshot;
+}
+
+fn renderer_runtime_report(snapshot: RendererRuntimeSnapshot) -> Value {
+    json!({
+        "video_pipelines": snapshot.video_pipelines,
+    })
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -600,6 +713,7 @@ fn handle_ipc_request(
     request: gilder::ipc::IpcRequest,
     context: &mut DaemonContext,
     runtime_telemetry: RuntimeTelemetrySnapshot,
+    renderer_runtime: RendererRuntimeSnapshot,
 ) -> IpcOutcome {
     match request.method {
         RequestMethod::Ping { protocol } => IpcOutcome::response(gilder::ipc::success_response(
@@ -626,6 +740,7 @@ fn handle_ipc_request(
                     "render_sync": render_sync,
                     "renderer": renderer_name(),
                     "renderer_capabilities": renderer_capabilities(),
+                    "renderer_runtime": renderer_runtime_report(renderer_runtime),
                     "telemetry": telemetry_report(context, runtime_telemetry),
                 }),
             ))
@@ -685,6 +800,7 @@ fn handle_ipc_request(
                     context,
                     &render_sync,
                     runtime_telemetry,
+                    renderer_runtime,
                 );
                 IpcOutcome::with_render_sync(response, event, render_sync)
             }
@@ -712,6 +828,7 @@ fn handle_ipc_request(
                     context,
                     &render_sync,
                     runtime_telemetry,
+                    renderer_runtime,
                 );
                 IpcOutcome::with_render_sync(response, event, render_sync)
             }
@@ -747,6 +864,7 @@ fn handle_ipc_request(
                     context,
                     &render_sync,
                     runtime_telemetry,
+                    renderer_runtime,
                 );
                 IpcOutcome::with_render_sync(response, event, render_sync)
             }
@@ -772,6 +890,7 @@ fn handle_ipc_request(
                     context,
                     &render_sync,
                     runtime_telemetry,
+                    renderer_runtime,
                 );
                 IpcOutcome::with_render_sync(response, event, render_sync)
             }
@@ -797,6 +916,7 @@ fn handle_ipc_request(
                     context,
                     &render_sync,
                     runtime_telemetry,
+                    renderer_runtime,
                 );
                 IpcOutcome::with_render_sync(response, event, render_sync)
             }
@@ -822,6 +942,7 @@ fn handle_ipc_request(
                     context,
                     &render_sync,
                     runtime_telemetry,
+                    renderer_runtime,
                 );
                 IpcOutcome::with_render_sync(response, event, render_sync)
             }
@@ -916,6 +1037,7 @@ fn output_reports(context: &DaemonContext) -> Vec<serde_json::Value> {
 fn snapshot_event(
     context: &mut DaemonContext,
     runtime_telemetry: RuntimeTelemetrySnapshot,
+    renderer_runtime: RendererRuntimeSnapshot,
 ) -> Value {
     let render_sync = current_render_sync(context);
     json!({
@@ -925,6 +1047,7 @@ fn snapshot_event(
         "render_sync": render_sync,
         "renderer": renderer_name(),
         "renderer_capabilities": renderer_capabilities(),
+        "renderer_runtime": renderer_runtime_report(renderer_runtime),
         "telemetry": telemetry_report(context, runtime_telemetry),
     })
 }
@@ -935,6 +1058,7 @@ fn state_changed_event(
     context: &DaemonContext,
     render_sync: &StaticRenderSyncPlan,
     runtime_telemetry: RuntimeTelemetrySnapshot,
+    renderer_runtime: RendererRuntimeSnapshot,
 ) -> Value {
     json!({
         "action": action,
@@ -944,6 +1068,7 @@ fn state_changed_event(
         "persisted_state": context.state,
         "render_sync": render_sync,
         "renderer_capabilities": renderer_capabilities(),
+        "renderer_runtime": renderer_runtime_report(renderer_runtime),
         "telemetry": telemetry_report(context, runtime_telemetry),
     })
 }
@@ -1185,7 +1310,12 @@ fn refresh_runtime_desktop_if_changed(runtime: &DaemonRuntime) -> Result<(), Str
         } else {
             context.telemetry.desktop_changes += 1;
             let render_sync = current_render_sync(&mut context);
-            let event = desktop_changed_event(&context, &render_sync, runtime.telemetry_snapshot());
+            let event = desktop_changed_event(
+                &context,
+                &render_sync,
+                runtime.telemetry_snapshot(),
+                runtime.renderer_runtime_snapshot(),
+            );
             Some((event, render_sync))
         }
     }) else {
@@ -1201,6 +1331,7 @@ fn desktop_changed_event(
     context: &DaemonContext,
     render_sync: &StaticRenderSyncPlan,
     runtime_telemetry: RuntimeTelemetrySnapshot,
+    renderer_runtime: RendererRuntimeSnapshot,
 ) -> Value {
     json!({
         "desktop": context.desktop,
@@ -1209,6 +1340,7 @@ fn desktop_changed_event(
         "render_sync": render_sync,
         "renderer": renderer_name(),
         "renderer_capabilities": renderer_capabilities(),
+        "renderer_runtime": renderer_runtime_report(renderer_runtime),
         "telemetry": telemetry_report(context, runtime_telemetry),
     })
 }
@@ -1233,7 +1365,7 @@ mod tests {
 
     #[test]
     fn render_sync_dedup_tracks_last_queued_plan() {
-        let runtime = DaemonRuntime::new(test_context(), Vec::new());
+        let runtime = test_runtime(test_context(), Vec::new());
         let first = empty_render_sync();
         let second = StaticRenderSyncPlan {
             removals: vec!["eDP-1".to_owned()],
@@ -1251,7 +1383,7 @@ mod tests {
     #[test]
     fn render_sync_dedup_suppresses_repeated_renderer_updates() {
         let (sender, receiver) = mpsc::channel();
-        let runtime = DaemonRuntime::new(test_context(), vec![sender]);
+        let runtime = test_runtime(test_context(), vec![sender]);
         let first = empty_render_sync();
         let second = StaticRenderSyncPlan {
             removals: vec!["eDP-1".to_owned()],
@@ -1321,8 +1453,18 @@ mod tests {
             method: RequestMethod::Status,
         };
 
-        let outcome =
-            handle_ipc_request(request, &mut context, RuntimeTelemetrySnapshot::default());
+        let renderer_runtime = RendererRuntimeSnapshot {
+            video_pipelines: vec![json!({
+                "output_name": "eDP-1",
+                "actual_decoders": ["dav1ddec"],
+            })],
+        };
+        let outcome = handle_ipc_request(
+            request,
+            &mut context,
+            RuntimeTelemetrySnapshot::default(),
+            renderer_runtime,
+        );
         let response: serde_json::Value =
             serde_json::from_str(&outcome.response).expect("status response should be JSON");
 
@@ -1342,6 +1484,10 @@ mod tests {
             response["result"]["telemetry"]["desktop"]["last_refresh_age_ms"]
                 .as_u64()
                 .is_some()
+        );
+        assert_eq!(
+            response["result"]["renderer_runtime"]["video_pipelines"][0]["actual_decoders"],
+            json!(["dav1ddec"])
         );
     }
 
@@ -1479,6 +1625,17 @@ mod tests {
             render_sync_cache: None,
             telemetry: DaemonTelemetry::default(),
         }
+    }
+
+    fn test_runtime(
+        context: DaemonContext,
+        renderer_updates: Vec<mpsc::Sender<StaticRenderSyncPlan>>,
+    ) -> DaemonRuntime {
+        DaemonRuntime::new(
+            context,
+            renderer_updates,
+            Arc::new(Mutex::new(RendererRuntimeSnapshot::default())),
+        )
     }
 
     struct TestDir {

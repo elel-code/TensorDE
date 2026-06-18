@@ -6,6 +6,8 @@ use super::{StaticRenderSyncPlan, StaticWallpaperPlan};
 use crate::core::FitMode;
 #[cfg(feature = "video-renderer")]
 use crate::policy::RenderMode;
+#[cfg(feature = "video-renderer")]
+use crate::renderer::video::{VideoPipelineSnapshot, actual_decoder_elements};
 use gtk::gdk;
 use gtk::gio;
 use gtk::prelude::*;
@@ -161,6 +163,26 @@ impl GtkStaticRenderer {
                 output.remove_video();
             }
         }
+    }
+
+    #[cfg(feature = "video-renderer")]
+    pub fn snapshot(&self) -> Vec<VideoPipelineSnapshot> {
+        self.windows
+            .iter()
+            .filter_map(|(output_name, output)| {
+                output.video.as_ref().map(|video| VideoPipelineSnapshot {
+                    output_name: output_name.clone(),
+                    source: video.source.to_string_lossy().into_owned(),
+                    mode: video.mode,
+                    gst_state: video.gst_state.name().to_string(),
+                    loop_playback: video.loop_playback,
+                    muted: video.muted,
+                    target_max_fps: video.target_max_fps,
+                    start_offset_ms: video.start_offset_ms,
+                    actual_decoders: actual_decoder_elements(&video.element),
+                })
+            })
+            .collect()
     }
 
     pub fn remove_output(&mut self, output_name: &str) {
