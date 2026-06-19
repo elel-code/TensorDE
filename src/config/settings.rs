@@ -116,6 +116,8 @@ pub struct CacheConfig {
     pub render_cache_max_entries: usize,
     #[serde(default = "default_static_image_cache_max_entries")]
     pub static_image_cache_max_entries: usize,
+    #[serde(default = "default_static_image_cache_max_bytes")]
+    pub static_image_cache_max_bytes: u64,
 }
 
 impl Default for CacheConfig {
@@ -126,6 +128,7 @@ impl Default for CacheConfig {
                 default_package_cache_max_retained_unique_resource_bytes(),
             render_cache_max_entries: default_render_cache_max_entries(),
             static_image_cache_max_entries: default_static_image_cache_max_entries(),
+            static_image_cache_max_bytes: default_static_image_cache_max_bytes(),
         }
     }
 }
@@ -361,6 +364,10 @@ fn default_static_image_cache_max_entries() -> usize {
     32
 }
 
+fn default_static_image_cache_max_bytes() -> u64 {
+    512 * 1024 * 1024
+}
+
 fn default_package_cache_max_entries() -> usize {
     16
 }
@@ -441,6 +448,7 @@ mod tests {
             package_cache_max_retained_unique_resource_bytes = 1048576
             render_cache_max_entries = 8
             static_image_cache_max_entries = 6
+            static_image_cache_max_bytes = 2097152
 
             [adaptive]
             enabled = true
@@ -502,6 +510,7 @@ mod tests {
         );
         assert_eq!(config.cache.render_cache_max_entries, 8);
         assert_eq!(config.cache.static_image_cache_max_entries, 6);
+        assert_eq!(config.cache.static_image_cache_max_bytes, 2_097_152);
         assert!(config.adaptive.enabled);
         assert_eq!(config.adaptive.refresh_interval_ms, 1500);
         assert_eq!(config.adaptive.cooldown_ms, 5000);

@@ -300,6 +300,8 @@ telemetry_keys=(
   render_sync_package_cache_max_retained_unique_resource_bytes_latest
   render_sync_archive_cache_entries_latest
   render_sync_static_image_cache_entries_latest
+  render_sync_static_image_cache_bytes_latest
+  render_sync_static_image_cache_max_bytes_latest
   render_sync_static_image_cache_generations_latest
   render_sync_static_image_cache_reuses_latest
   render_sync_static_image_cache_generation_errors_latest

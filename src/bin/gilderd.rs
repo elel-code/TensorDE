@@ -1537,6 +1537,14 @@ fn render_sync_telemetry_report(
         render_sync_cache.static_image_cache_max_entries
     );
     insert!(
+        "static_image_cache_bytes",
+        render_sync_cache.static_image_cache_bytes
+    );
+    insert!(
+        "static_image_cache_max_bytes",
+        render_sync_cache.static_image_cache_max_bytes
+    );
+    insert!(
         "static_image_cache_generations",
         render_sync_cache.static_image_cache_generations
     );
@@ -2144,6 +2152,22 @@ mod tests {
         assert_eq!(
             response["result"]["telemetry"]["render_sync"]["archive_cache_eviction_errors"],
             json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["static_image_cache_entries"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["static_image_cache_max_entries"],
+            json!(32)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["static_image_cache_bytes"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["static_image_cache_max_bytes"],
+            json!(536_870_912)
         );
         assert_eq!(
             response["result"]["telemetry"]["render_sync"]["planned_static_image_resources"],
