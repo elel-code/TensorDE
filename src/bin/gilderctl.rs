@@ -585,7 +585,7 @@ fn render_video_runtime_csv(response: &str) -> Result<String, String> {
         .ok_or_else(|| "status response did not contain result".to_owned())?;
 
     let mut csv = String::from(
-        "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks\n",
+        "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_processing_deadline_ns\n",
     );
     for pipeline in &result.renderer_runtime.video_pipelines {
         let actual_decoders = if pipeline.actual_decoders.is_empty() {
@@ -773,6 +773,18 @@ fn render_video_runtime_csv(response: &str) -> Result<String, String> {
                 .frame_stats
                 .gtk_frame_clock_after_paint_ticks
                 .to_string(),
+            optional_bool_csv(pipeline.sink_tuning.last_sample_enabled),
+            optional_bool_csv(pipeline.sink_tuning.qos_enabled),
+            pipeline
+                .sink_tuning
+                .max_lateness_ns
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            pipeline
+                .sink_tuning
+                .processing_deadline_ns
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
         ];
         csv.push_str(&row.join(","));
         csv.push('\n');
@@ -948,6 +960,10 @@ fn bool_csv(value: bool) -> String {
     } else {
         "false".to_owned()
     }
+}
+
+fn optional_bool_csv(value: Option<bool>) -> String {
+    value.map(bool_csv).unwrap_or_default()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1363,7 +1379,21 @@ struct VideoRuntimePipeline {
     #[serde(default)]
     frame_limiter_max_fps: Option<u32>,
     #[serde(default)]
+    sink_tuning: VideoSinkTuningReport,
+    #[serde(default)]
     frame_stats: VideoFrameStats,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct VideoSinkTuningReport {
+    #[serde(default)]
+    last_sample_enabled: Option<bool>,
+    #[serde(default)]
+    qos_enabled: Option<bool>,
+    #[serde(default)]
+    max_lateness_ns: Option<i64>,
+    #[serde(default)]
+    processing_deadline_ns: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1580,14 +1610,14 @@ mod tests {
 
     #[test]
     fn formats_video_runtime_as_csv() {
-        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[],"video_plans":[],"decisions":[]},"renderer_runtime":{"video_pipelines":[{"output_name":"eDP-1","source":"/tmp/loop.mp4","mode":"active","gst_state":"Playing","loop_playback":true,"muted":true,"target_max_fps":24,"frame_limiter_enabled":true,"frame_limiter_max_fps":24,"position_ms":1234,"duration_ms":60000,"frame_stats":{"qos_messages":3,"qos_stats_format":"buffers","qos_processed_max":120,"qos_dropped_max":2,"qos_jitter_ns_latest":-2000,"qos_jitter_ns_abs_max":7000,"qos_proportion_x1000_latest":995,"gtk_frame_clock_ticks":9,"gtk_frame_clock_before_paint_ticks":8,"gtk_frame_clock_update_ticks":7,"gtk_frame_clock_layout_ticks":6,"gtk_frame_clock_paint_ticks":5,"gtk_frame_clock_after_paint_ticks":9,"gtk_frame_clock_counter_latest":300,"gtk_frame_clock_time_us_latest":5000000,"gtk_frame_clock_interval_us_latest":16667,"gtk_frame_clock_interval_us_max":20000,"gtk_frame_clock_fps_x1000_latest":59940,"gtk_frame_clock_refresh_interval_us_latest":16667,"gtk_frame_clock_predicted_presentation_time_us_latest":5016667,"gtk_frame_timings_observed":8,"gtk_frame_timings_complete":7,"gtk_frame_timings_counter_latest":300,"gtk_frame_timings_complete_counter_latest":299,"gtk_frame_timings_frame_time_us_latest":5000000,"gtk_frame_timings_predicted_presentation_time_us_latest":5016667,"gtk_frame_timings_presentation_time_us_latest":5017000,"gtk_frame_timings_presentation_interval_us_latest":16667,"gtk_frame_timings_presentation_interval_us_max":20000,"gtk_frame_timings_refresh_interval_us_latest":16667},"decoder_policy":"hardware-preferred","decoder_policy_status":"software-fallback","actual_decoders":["dav1ddec"],"actual_decoder_reports":[{"element":"dav1ddec","class":"software"}],"caps_reports":[{"element":"gtk4paintablesink0","pad":"sink","direction":"sink","caps":"video/x-raw(memory:DMABuf)","memory_features":["memory:DMABuf"],"structures":[{"media_type":"video/x-raw","features":["memory:DMABuf"]}]},{"element":"videoconvert0","pad":"src","direction":"src","caps":"video/x-raw","memory_features":[],"structures":[{"media_type":"video/x-raw","features":[]}]}],"allocation_reports":[{"element":"videoconvert0","pad":"src","direction":"src","query_scope":"peer","caps":"video/x-raw(memory:DMABuf)","need_pool":true,"pools":[{"pool":"GstVideoBufferPool","size":4096,"min_buffers":2,"max_buffers":4}],"params":[{"allocator":"dmabufallocator0","flags":"MemoryFlags(0x0)","align":0,"prefix":0,"padding":0}],"metas":["GstVideoMeta"]}],"zero_copy_evidence":{"level":"sink-dmabuf-caps","notes":["sink-side DMABuf caps observed"]},"memory_path":{"level":"sink-dmabuf","notes":["sink-side DMABuf caps observed"],"segments":[{"element":"gtk4paintablesink0","pad":"sink","direction":"sink","media_type":"video/x-raw","memory_features":["memory:DMABuf"],"memory_class":"dmabuf"}]}}]}}}"##;
+        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[],"video_plans":[],"decisions":[]},"renderer_runtime":{"video_pipelines":[{"output_name":"eDP-1","source":"/tmp/loop.mp4","mode":"active","gst_state":"Playing","loop_playback":true,"muted":true,"target_max_fps":24,"frame_limiter_enabled":true,"frame_limiter_max_fps":24,"sink_tuning":{"last_sample_enabled":false,"qos_enabled":true,"max_lateness_ns":41666666,"processing_deadline_ns":0},"position_ms":1234,"duration_ms":60000,"frame_stats":{"qos_messages":3,"qos_stats_format":"buffers","qos_processed_max":120,"qos_dropped_max":2,"qos_jitter_ns_latest":-2000,"qos_jitter_ns_abs_max":7000,"qos_proportion_x1000_latest":995,"gtk_frame_clock_ticks":9,"gtk_frame_clock_before_paint_ticks":8,"gtk_frame_clock_update_ticks":7,"gtk_frame_clock_layout_ticks":6,"gtk_frame_clock_paint_ticks":5,"gtk_frame_clock_after_paint_ticks":9,"gtk_frame_clock_counter_latest":300,"gtk_frame_clock_time_us_latest":5000000,"gtk_frame_clock_interval_us_latest":16667,"gtk_frame_clock_interval_us_max":20000,"gtk_frame_clock_fps_x1000_latest":59940,"gtk_frame_clock_refresh_interval_us_latest":16667,"gtk_frame_clock_predicted_presentation_time_us_latest":5016667,"gtk_frame_timings_observed":8,"gtk_frame_timings_complete":7,"gtk_frame_timings_counter_latest":300,"gtk_frame_timings_complete_counter_latest":299,"gtk_frame_timings_frame_time_us_latest":5000000,"gtk_frame_timings_predicted_presentation_time_us_latest":5016667,"gtk_frame_timings_presentation_time_us_latest":5017000,"gtk_frame_timings_presentation_interval_us_latest":16667,"gtk_frame_timings_presentation_interval_us_max":20000,"gtk_frame_timings_refresh_interval_us_latest":16667},"decoder_policy":"hardware-preferred","decoder_policy_status":"software-fallback","actual_decoders":["dav1ddec"],"actual_decoder_reports":[{"element":"dav1ddec","class":"software"}],"caps_reports":[{"element":"gtk4paintablesink0","pad":"sink","direction":"sink","caps":"video/x-raw(memory:DMABuf)","memory_features":["memory:DMABuf"],"structures":[{"media_type":"video/x-raw","features":["memory:DMABuf"]}]},{"element":"videoconvert0","pad":"src","direction":"src","caps":"video/x-raw","memory_features":[],"structures":[{"media_type":"video/x-raw","features":[]}]}],"allocation_reports":[{"element":"videoconvert0","pad":"src","direction":"src","query_scope":"peer","caps":"video/x-raw(memory:DMABuf)","need_pool":true,"pools":[{"pool":"GstVideoBufferPool","size":4096,"min_buffers":2,"max_buffers":4}],"params":[{"allocator":"dmabufallocator0","flags":"MemoryFlags(0x0)","align":0,"prefix":0,"padding":0}],"metas":["GstVideoMeta"]}],"zero_copy_evidence":{"level":"sink-dmabuf-caps","notes":["sink-side DMABuf caps observed"]},"memory_path":{"level":"sink-dmabuf","notes":["sink-side DMABuf caps observed"],"segments":[{"element":"gtk4paintablesink0","pad":"sink","direction":"sink","media_type":"video/x-raw","memory_features":["memory:DMABuf"],"memory_class":"dmabuf"}]}}]}}}"##;
 
         let csv = render_video_runtime_csv(response).unwrap();
 
         assert_eq!(
             csv,
-            "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks\n\
-             eDP-1,active,Playing,hardware-preferred,software-fallback,dav1ddec,software,2,memory:DMABuf,memory:DMABuf,sink-dmabuf-caps,sink-side DMABuf caps observed,sink-dmabuf,sink-side DMABuf caps observed,gtk4paintablesink0:sink:sink:video/x-raw:dmabuf:memory:DMABuf,1,videoconvert0:src:peer:GstVideoBufferPool:4096:2:4,videoconvert0:src:peer:dmabufallocator0:MemoryFlags(0x0):0:0:0,video/x-raw,gtk4paintablesink0:sink:sink|videoconvert0:src:src,1234,60000,true,24,3,120,2,buffers,-2000,7000,995,9,300,5000000,16667,20000,59940,16667,5016667,8,7,300,299,5000000,5016667,5017000,16667,20000,16667,/tmp/loop.mp4,8,7,6,5,9\n"
+            "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_processing_deadline_ns\n\
+             eDP-1,active,Playing,hardware-preferred,software-fallback,dav1ddec,software,2,memory:DMABuf,memory:DMABuf,sink-dmabuf-caps,sink-side DMABuf caps observed,sink-dmabuf,sink-side DMABuf caps observed,gtk4paintablesink0:sink:sink:video/x-raw:dmabuf:memory:DMABuf,1,videoconvert0:src:peer:GstVideoBufferPool:4096:2:4,videoconvert0:src:peer:dmabufallocator0:MemoryFlags(0x0):0:0:0,video/x-raw,gtk4paintablesink0:sink:sink|videoconvert0:src:src,1234,60000,true,24,3,120,2,buffers,-2000,7000,995,9,300,5000000,16667,20000,59940,16667,5016667,8,7,300,299,5000000,5016667,5017000,16667,20000,16667,/tmp/loop.mp4,8,7,6,5,9,false,true,41666666,0\n"
         );
     }
 

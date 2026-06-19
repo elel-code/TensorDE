@@ -104,6 +104,9 @@ const DECODER_ELEMENT_NAMES: &[&str] = &[
     "nvav1dec",
 ];
 const DECODER_RANK_BOOST: i32 = 512;
+const VIDEO_SINK_DEFAULT_MAX_LATENESS_NS: u64 = 50_000_000;
+const VIDEO_SINK_MIN_MAX_LATENESS_NS: u64 = 8_000_000;
+const VIDEO_SINK_MAX_MAX_LATENESS_NS: u64 = 50_000_000;
 const DMABUF_MEMORY_FEATURE: &str = "memory:DMABuf";
 const GPU_MEMORY_FEATURES: &[&str] = &[
     DMABUF_MEMORY_FEATURE,
@@ -250,6 +253,7 @@ impl GstVideoRenderer {
                     loop_playback: pipeline.loop_playback,
                     muted: pipeline.muted,
                     target_max_fps: pipeline.target_max_fps,
+                    sink_tuning: pipeline.sink_tuning.clone(),
                     frame_limiter_enabled: frame_limiter_max_fps.is_some(),
                     frame_limiter_max_fps,
                     frame_stats: pipeline.frame_stats.clone(),
@@ -280,6 +284,7 @@ struct VideoPipeline {
     element: gst::Element,
     frame_limiter: Option<FrameLimiter>,
     frame_limiter_required: bool,
+    sink_tuning: VideoSinkTuningReport,
     source: std::path::PathBuf,
     mode: RenderMode,
     gst_state: gst::State,
@@ -306,6 +311,7 @@ impl VideoPipeline {
             element: pipeline.element,
             frame_limiter: pipeline.frame_limiter,
             frame_limiter_required: frame_limiter_required(plan.target_max_fps),
+            sink_tuning: pipeline.sink_tuning,
             source: plan.source.clone(),
             mode: RenderMode::Paused,
             gst_state: gst::State::Null,
@@ -337,6 +343,7 @@ impl VideoPipeline {
         self.target_max_fps = target_max_fps;
         if let Some(frame_limiter) = &mut self.frame_limiter {
             frame_limiter.apply_target_max_fps(target_max_fps);
+            self.sink_tuning = frame_limiter.sink_tuning();
         }
     }
 
@@ -443,6 +450,7 @@ fn gst_state_for_mode(mode: RenderMode) -> gst::State {
 struct BuiltPipeline {
     element: gst::Element,
     frame_limiter: Option<FrameLimiter>,
+    sink_tuning: VideoSinkTuningReport,
 }
 
 fn build_pipeline(
@@ -460,6 +468,7 @@ fn build_pipeline(
         return Ok(BuiltPipeline {
             element,
             frame_limiter: None,
+            sink_tuning: VideoSinkTuningReport::default(),
         });
     }
 
@@ -471,6 +480,7 @@ fn build_pipeline(
         .property("enable-last-sample", false)
         .build()
         .map_err(|err| VideoRendererError::BuildElement(err.to_string()))?;
+    let sink_tuning = configure_video_sink_low_memory(&video_sink, plan.target_max_fps);
     let frame_limiter = plan
         .target_max_fps
         .filter(|target_max_fps| *target_max_fps > 0)
@@ -486,6 +496,7 @@ fn build_pipeline(
     Ok(BuiltPipeline {
         element,
         frame_limiter,
+        sink_tuning,
     })
 }
 
@@ -628,6 +639,93 @@ pub fn decoder_policy_status(
             VideoDecoderPolicyStatus::Satisfied
         }
         VideoDecoderPolicy::Software => VideoDecoderPolicyStatus::Violated,
+    }
+}
+
+pub(crate) fn configure_video_sink_low_memory(
+    sink: &gst::Element,
+    target_max_fps: Option<u32>,
+) -> VideoSinkTuningReport {
+    set_optional_bool_property(sink, "enable-last-sample", false);
+    set_optional_bool_property(sink, "qos", true);
+    set_optional_i64_property(
+        sink,
+        "max-lateness",
+        video_sink_max_lateness_ns(target_max_fps),
+    );
+    set_optional_u64_property(sink, "processing-deadline", 0);
+    video_sink_tuning_report(sink)
+}
+
+fn update_video_sink_max_lateness(
+    sink: &gst::Element,
+    target_max_fps: Option<u32>,
+) -> VideoSinkTuningReport {
+    set_optional_i64_property(
+        sink,
+        "max-lateness",
+        video_sink_max_lateness_ns(target_max_fps),
+    );
+    video_sink_tuning_report(sink)
+}
+
+fn video_sink_max_lateness_ns(target_max_fps: Option<u32>) -> i64 {
+    let max_lateness_ns = target_max_fps
+        .filter(|target_max_fps| *target_max_fps > 0)
+        .map(|target_max_fps| 1_000_000_000_u64 / u64::from(target_max_fps))
+        .unwrap_or(VIDEO_SINK_DEFAULT_MAX_LATENESS_NS)
+        .clamp(
+            VIDEO_SINK_MIN_MAX_LATENESS_NS,
+            VIDEO_SINK_MAX_MAX_LATENESS_NS,
+        );
+    i64::try_from(max_lateness_ns).unwrap_or(i64::MAX)
+}
+
+fn set_optional_bool_property(element: &gst::Element, name: &str, value: bool) {
+    if element.find_property(name).is_some() {
+        element.set_property(name, value);
+    }
+}
+
+fn set_optional_i64_property(element: &gst::Element, name: &str, value: i64) {
+    if element.find_property(name).is_some() {
+        element.set_property(name, value);
+    }
+}
+
+fn set_optional_u64_property(element: &gst::Element, name: &str, value: u64) {
+    if element.find_property(name).is_some() {
+        element.set_property(name, value);
+    }
+}
+
+fn optional_bool_property(element: &gst::Element, name: &str) -> Option<bool> {
+    element
+        .find_property(name)
+        .is_some()
+        .then(|| element.property::<bool>(name))
+}
+
+fn optional_i64_property(element: &gst::Element, name: &str) -> Option<i64> {
+    element
+        .find_property(name)
+        .is_some()
+        .then(|| element.property::<i64>(name))
+}
+
+fn optional_u64_property(element: &gst::Element, name: &str) -> Option<u64> {
+    element
+        .find_property(name)
+        .is_some()
+        .then(|| element.property::<u64>(name))
+}
+
+fn video_sink_tuning_report(sink: &gst::Element) -> VideoSinkTuningReport {
+    VideoSinkTuningReport {
+        last_sample_enabled: optional_bool_property(sink, "enable-last-sample"),
+        qos_enabled: optional_bool_property(sink, "qos"),
+        max_lateness_ns: optional_i64_property(sink, "max-lateness"),
+        processing_deadline_ns: optional_u64_property(sink, "processing-deadline"),
     }
 }
 
@@ -1219,6 +1317,11 @@ impl FrameLimiter {
     fn apply_sink_throttle(&self) {
         self.sink
             .set_property("throttle-time", self.throttle_time_ns());
+        update_video_sink_max_lateness(&self.sink, self.target_max_fps());
+    }
+
+    fn sink_tuning(&self) -> VideoSinkTuningReport {
+        video_sink_tuning_report(&self.sink)
     }
 }
 
@@ -1257,6 +1360,7 @@ pub struct VideoPipelineSnapshot {
     pub loop_playback: bool,
     pub muted: bool,
     pub target_max_fps: Option<u32>,
+    pub sink_tuning: VideoSinkTuningReport,
     pub frame_limiter_enabled: bool,
     pub frame_limiter_max_fps: Option<u32>,
     pub frame_stats: VideoFrameStats,
@@ -1271,6 +1375,14 @@ pub struct VideoPipelineSnapshot {
     pub allocation_reports: Vec<VideoAllocationReport>,
     pub zero_copy_evidence: VideoZeroCopyEvidence,
     pub memory_path: VideoMemoryPathReport,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct VideoSinkTuningReport {
+    pub last_sample_enabled: Option<bool>,
+    pub qos_enabled: Option<bool>,
+    pub max_lateness_ns: Option<i64>,
+    pub processing_deadline_ns: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -1720,6 +1832,12 @@ mod tests {
         let limiter = pipeline.frame_limiter.as_ref().unwrap();
         assert_eq!(limiter.target_max_fps(), Some(24));
         assert_eq!(limiter.throttle_time_ns(), 41_666_666);
+        assert_eq!(pipeline.sink_tuning.last_sample_enabled, Some(false));
+        assert_eq!(pipeline.sink_tuning.qos_enabled, Some(true));
+        assert_eq!(pipeline.sink_tuning.max_lateness_ns, Some(41_666_666));
+        if pipeline.sink_tuning.processing_deadline_ns.is_some() {
+            assert_eq!(pipeline.sink_tuning.processing_deadline_ns, Some(0));
+        }
 
         plan.target_max_fps = Some(12);
         pipeline.apply_plan(&plan).unwrap();
@@ -1727,6 +1845,7 @@ mod tests {
         let limiter = pipeline.frame_limiter.as_ref().unwrap();
         assert_eq!(limiter.target_max_fps(), Some(12));
         assert_eq!(limiter.throttle_time_ns(), 83_333_333);
+        assert_eq!(pipeline.sink_tuning.max_lateness_ns, Some(50_000_000));
 
         plan.target_max_fps = None;
         pipeline.apply_plan(&plan).unwrap();
@@ -1734,6 +1853,7 @@ mod tests {
         let limiter = pipeline.frame_limiter.as_ref().unwrap();
         assert_eq!(limiter.target_max_fps(), None);
         assert_eq!(limiter.throttle_time_ns(), 0);
+        assert_eq!(pipeline.sink_tuning.max_lateness_ns, Some(50_000_000));
 
         plan.target_max_fps = Some(0);
         pipeline.apply_plan(&plan).unwrap();
@@ -1741,6 +1861,7 @@ mod tests {
         let limiter = pipeline.frame_limiter.as_ref().unwrap();
         assert_eq!(limiter.target_max_fps(), None);
         assert_eq!(limiter.throttle_time_ns(), 0);
+        assert_eq!(pipeline.sink_tuning.max_lateness_ns, Some(50_000_000));
     }
 
     #[test]
@@ -1750,6 +1871,9 @@ mod tests {
         plan.target_max_fps = None;
         let pipeline = VideoPipeline::new(&plan, false).unwrap();
         assert!(pipeline.frame_limiter.is_none());
+        assert_eq!(pipeline.sink_tuning.last_sample_enabled, Some(false));
+        assert_eq!(pipeline.sink_tuning.qos_enabled, Some(true));
+        assert_eq!(pipeline.sink_tuning.max_lateness_ns, Some(50_000_000));
         assert_eq!(
             pipeline
                 .frame_limiter
@@ -1757,6 +1881,15 @@ mod tests {
                 .and_then(FrameLimiter::target_max_fps),
             None
         );
+    }
+
+    #[test]
+    fn bounds_video_sink_max_lateness_from_target_fps() {
+        assert_eq!(video_sink_max_lateness_ns(None), 50_000_000);
+        assert_eq!(video_sink_max_lateness_ns(Some(0)), 50_000_000);
+        assert_eq!(video_sink_max_lateness_ns(Some(24)), 41_666_666);
+        assert_eq!(video_sink_max_lateness_ns(Some(12)), 50_000_000);
+        assert_eq!(video_sink_max_lateness_ns(Some(240)), 8_000_000);
     }
 
     #[test]

@@ -12,7 +12,8 @@ use crate::policy::RenderMode;
 #[cfg(feature = "video-renderer")]
 use crate::renderer::video::{
     GtkFrameClockPhase, VideoFrameStats, VideoPipelineDiagnostics, VideoPipelineDiagnosticsCache,
-    VideoPipelineSnapshot, apply_decoder_rank_policy, decoder_policy_status, playback_duration_ms,
+    VideoPipelineSnapshot, VideoSinkTuningReport, apply_decoder_rank_policy,
+    configure_video_sink_low_memory, decoder_policy_status, playback_duration_ms,
     playback_position_ms,
 };
 use gtk::gdk;
@@ -1388,6 +1389,7 @@ struct GtkSharedVideoRuntime {
     element: gst::Element,
     paintable: gdk::Paintable,
     frame_limiter: Option<GtkFrameLimiter>,
+    sink_tuning: VideoSinkTuningReport,
     source: PathBuf,
     output_modes: BTreeMap<String, RenderMode>,
     gst_state: gst::State,
@@ -1409,6 +1411,7 @@ impl GtkSharedVideoRuntime {
             element: built.element,
             paintable: built.paintable,
             frame_limiter: built.frame_limiter,
+            sink_tuning: built.sink_tuning,
             source: plan.source.clone(),
             output_modes: BTreeMap::new(),
             gst_state: gst::State::Null,
@@ -1598,6 +1601,7 @@ impl GtkSharedVideoRuntime {
             loop_playback: self.loop_playback,
             muted: self.muted,
             target_max_fps: self.target_max_fps,
+            sink_tuning: self.sink_tuning.clone(),
             frame_limiter_enabled: frame_limiter_max_fps.is_some(),
             frame_limiter_max_fps,
             frame_stats: merge_video_frame_stats(
@@ -1688,6 +1692,7 @@ struct BuiltGtkVideoPipeline {
     element: gst::Element,
     paintable: gdk::Paintable,
     frame_limiter: Option<GtkFrameLimiter>,
+    sink_tuning: VideoSinkTuningReport,
 }
 
 #[cfg(feature = "video-renderer")]
@@ -1702,6 +1707,7 @@ fn build_gtk_video_pipeline(
         .property("enable-last-sample", false)
         .build()
         .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
+    let sink_tuning = configure_video_sink_low_memory(&video_sink, plan.target_max_fps);
     let frame_limiter = plan
         .target_max_fps
         .filter(|target_max_fps| *target_max_fps > 0)
@@ -1721,6 +1727,7 @@ fn build_gtk_video_pipeline(
         element,
         paintable,
         frame_limiter,
+        sink_tuning,
     })
 }
 
