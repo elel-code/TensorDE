@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-#[cfg(feature = "video-renderer")]
+#[cfg(all(feature = "video-renderer", not(feature = "gtk-renderer")))]
 use std::collections::BTreeSet;
 #[cfg(feature = "gtk-renderer")]
 use std::collections::VecDeque;
@@ -692,7 +692,7 @@ impl RendererRuntimeSnapshot {
         }
     }
 
-    #[cfg(feature = "video-renderer")]
+    #[cfg(all(feature = "video-renderer", not(feature = "gtk-renderer")))]
     fn from_video_pipeline_snapshots(
         snapshots: Vec<gilder::renderer::video::VideoPipelineSnapshot>,
     ) -> Self {
@@ -701,6 +701,7 @@ impl RendererRuntimeSnapshot {
                 .iter()
                 .map(|snapshot| Path::new(snapshot.source.as_str())),
         );
+        let video_pipelines = video_pipeline_snapshots_to_values(snapshots);
         Self {
             output_windows: 0,
             static_surfaces: 0,
@@ -723,16 +724,7 @@ impl RendererRuntimeSnapshot {
             video_pipeline_source_reference_bytes: footprint.reference_bytes,
             video_pipeline_unique_sources: footprint.unique_sources,
             video_pipeline_unique_source_bytes: footprint.unique_source_bytes,
-            video_pipelines: snapshots
-                .into_iter()
-                .map(|snapshot| {
-                    serde_json::to_value(snapshot).unwrap_or_else(|err| {
-                        json!({
-                            "serialization_error": err.to_string(),
-                        })
-                    })
-                })
-                .collect(),
+            video_pipelines,
         }
     }
 
@@ -741,7 +733,7 @@ impl RendererRuntimeSnapshot {
         mut self,
         snapshots: Vec<gilder::renderer::video::VideoPipelineSnapshot>,
     ) -> Self {
-        self.video_pipelines = Self::from_video_pipeline_snapshots(snapshots).video_pipelines;
+        self.video_pipelines = video_pipeline_snapshots_to_values(snapshots);
         self
     }
 
@@ -816,6 +808,22 @@ fn renderer_runtime_report(snapshot: &RendererRuntimeSnapshot) -> Value {
         "video_pipeline_unique_source_bytes": snapshot.video_pipeline_unique_source_bytes,
         "video_pipelines": snapshot.video_pipelines,
     })
+}
+
+#[cfg(feature = "video-renderer")]
+fn video_pipeline_snapshots_to_values(
+    snapshots: Vec<gilder::renderer::video::VideoPipelineSnapshot>,
+) -> Vec<Value> {
+    snapshots
+        .into_iter()
+        .map(|snapshot| {
+            serde_json::to_value(snapshot).unwrap_or_else(|err| {
+                json!({
+                    "serialization_error": err.to_string(),
+                })
+            })
+        })
+        .collect()
 }
 
 fn renderer_telemetry_report(snapshot: &RendererRuntimeSnapshot) -> Value {
@@ -937,7 +945,7 @@ fn update_optional_max(slot: &mut Option<u64>, value: Option<u64>) {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[cfg(feature = "video-renderer")]
+#[cfg(all(feature = "video-renderer", not(feature = "gtk-renderer")))]
 struct VideoPipelineSourceFootprint {
     references: usize,
     reference_bytes: u64,
@@ -945,7 +953,7 @@ struct VideoPipelineSourceFootprint {
     unique_source_bytes: u64,
 }
 
-#[cfg(feature = "video-renderer")]
+#[cfg(all(feature = "video-renderer", not(feature = "gtk-renderer")))]
 fn video_pipeline_source_footprint<'a>(
     sources: impl IntoIterator<Item = &'a Path>,
 ) -> VideoPipelineSourceFootprint {
@@ -961,7 +969,7 @@ fn video_pipeline_source_footprint<'a>(
     footprint
 }
 
-#[cfg(feature = "video-renderer")]
+#[cfg(all(feature = "video-renderer", not(feature = "gtk-renderer")))]
 fn file_size(path: &Path) -> u64 {
     fs::metadata(path)
         .map(|metadata| {

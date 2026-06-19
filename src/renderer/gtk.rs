@@ -11,8 +11,10 @@ use crate::core::{FitMode, Transition};
 use crate::policy::RenderMode;
 #[cfg(feature = "video-renderer")]
 use crate::renderer::video::{
-    GtkFrameClockPhase, VideoFrameStats, VideoPipelineDiagnostics, VideoPipelineDiagnosticsCache,
-    VideoPipelineSnapshot, VideoSinkTuningReport, apply_decoder_rank_policy,
+    GtkFrameClockPhase, VideoAllocationReport, VideoCapsReport, VideoDecoderPolicyStatus,
+    VideoDecoderReport, VideoFrameStats, VideoMemoryPathReport, VideoMemoryRetentionReport,
+    VideoPipelineDiagnostics, VideoPipelineDiagnosticsCache, VideoPipelineSnapshot,
+    VideoSinkTuningReport, VideoZeroCopyEvidence, apply_decoder_rank_policy,
     configure_video_sink_low_memory, decoder_policy_status, decoder_report_from_message,
     merge_decoder_reports, playback_duration_ms, playback_position_ms,
     video_memory_retention_report,
@@ -35,7 +37,7 @@ use gst::prelude::*;
 use gstreamer as gst;
 
 const GTK_ACTIVE_RUNTIME_TICK_INTERVAL: Duration = Duration::from_millis(50);
-const GTK_IDLE_RUNTIME_TICK_INTERVAL: Duration = Duration::from_millis(250);
+const GTK_IDLE_RUNTIME_TICK_INTERVAL: Duration = Duration::from_millis(1000);
 const GTK_VIDEO_RUNTIME_TICK_INTERVAL: Duration = Duration::from_millis(250);
 const SLIDESHOW_CROSSFADE_DURATION: Duration = Duration::from_millis(600);
 
@@ -432,12 +434,16 @@ impl GtkStaticRenderer {
 
     #[cfg(feature = "video-renderer")]
     pub fn snapshot(&self) -> Vec<VideoPipelineSnapshot> {
+        let mut runtime_snapshots = BTreeMap::new();
         self.windows
             .iter()
             .filter_map(|(output_name, output)| {
                 output.video.as_ref().and_then(|video| {
-                    self.video_runtimes
-                        .snapshot_for_attachment(output_name, video)
+                    self.video_runtimes.snapshot_for_attachment(
+                        output_name,
+                        video,
+                        &mut runtime_snapshots,
+                    )
                 })
             })
             .collect()
@@ -1147,45 +1153,57 @@ fn renderer_surface_resource_footprint<'a>(
     outputs: impl IntoIterator<Item = RendererSurfaceResourceSources<'a>>,
 ) -> RendererSurfaceResourceFootprint {
     let mut footprint = RendererSurfaceResourceFootprint::default();
+    let mut source_sizes = BTreeMap::new();
     let mut static_unique_sources = BTreeSet::new();
     let mut slideshow_unique_sources = BTreeSet::new();
     let mut video_unique_sources = BTreeSet::new();
     for output in outputs {
         if let Some(source) = output.static_surface_source {
             footprint.static_surface_resource_references += 1;
-            footprint.static_surface_resource_bytes += source_file_size(source);
+            footprint.static_surface_resource_bytes +=
+                cached_source_file_size(&mut source_sizes, source);
             static_unique_sources.insert(source.to_path_buf());
         }
         if let Some(sources) = output.slideshow_sources {
             footprint.slideshow_resource_references += sources.len();
             footprint.slideshow_resource_bytes += sources
                 .iter()
-                .map(|source| source_file_size(source))
+                .map(|source| cached_source_file_size(&mut source_sizes, source))
                 .sum::<u64>();
             slideshow_unique_sources.extend(sources.iter().cloned());
         }
         if let Some(source) = output.video_pipeline_source {
             footprint.video_pipeline_source_references += 1;
-            footprint.video_pipeline_source_reference_bytes += source_file_size(source);
+            footprint.video_pipeline_source_reference_bytes +=
+                cached_source_file_size(&mut source_sizes, source);
             video_unique_sources.insert(source.to_path_buf());
         }
     }
     footprint.static_surface_unique_resources = static_unique_sources.len();
     footprint.static_surface_unique_resource_bytes = static_unique_sources
         .iter()
-        .map(|source| source_file_size(source))
+        .map(|source| cached_source_file_size(&mut source_sizes, source))
         .sum();
     footprint.slideshow_unique_resources = slideshow_unique_sources.len();
     footprint.slideshow_unique_resource_bytes = slideshow_unique_sources
         .iter()
-        .map(|source| source_file_size(source))
+        .map(|source| cached_source_file_size(&mut source_sizes, source))
         .sum();
     footprint.video_pipeline_unique_sources = video_unique_sources.len();
     footprint.video_pipeline_unique_source_bytes = video_unique_sources
         .iter()
-        .map(|source| source_file_size(source))
+        .map(|source| cached_source_file_size(&mut source_sizes, source))
         .sum();
     footprint
+}
+
+fn cached_source_file_size(cache: &mut BTreeMap<PathBuf, u64>, path: &Path) -> u64 {
+    if let Some(size) = cache.get(path) {
+        return *size;
+    }
+    let size = source_file_size(path);
+    cache.insert(path.to_path_buf(), size);
+    size
 }
 
 fn source_file_size(path: &Path) -> u64 {
@@ -1407,10 +1425,16 @@ impl GtkVideoRuntimePool {
         &self,
         output_name: &str,
         attachment: &GtkVideoAttachment,
+        snapshots: &mut BTreeMap<GtkVideoRuntimeKey, GtkSharedVideoRuntimeSnapshot>,
     ) -> Option<VideoPipelineSnapshot> {
-        let runtime = self.runtimes.get(&attachment.key)?;
-        let runtime = runtime.borrow();
-        Some(runtime.snapshot_for_attachment(output_name, attachment))
+        if !snapshots.contains_key(&attachment.key) {
+            let runtime = self.runtimes.get(&attachment.key)?;
+            let snapshot = runtime.borrow().snapshot();
+            snapshots.insert(attachment.key.clone(), snapshot);
+        }
+        snapshots
+            .get(&attachment.key)
+            .map(|snapshot| snapshot.for_attachment(output_name, attachment))
     }
 
     fn frame_stats_for_attachment(
@@ -1694,11 +1718,7 @@ impl GtkSharedVideoRuntime {
         Ok(())
     }
 
-    fn snapshot_for_attachment(
-        &self,
-        output_name: &str,
-        attachment: &GtkVideoAttachment,
-    ) -> VideoPipelineSnapshot {
+    fn snapshot(&self) -> GtkSharedVideoRuntimeSnapshot {
         let VideoPipelineDiagnostics {
             actual_decoder_reports: current_decoder_reports,
             caps_reports,
@@ -1720,10 +1740,8 @@ impl GtkSharedVideoRuntime {
             .frame_limiter
             .as_ref()
             .and_then(GtkFrameLimiter::target_max_fps);
-        VideoPipelineSnapshot {
-            output_name: output_name.to_owned(),
+        GtkSharedVideoRuntimeSnapshot {
             source: self.source.to_string_lossy().into_owned(),
-            mode: attachment.mode,
             gst_state: self.gst_state.name().to_string(),
             loop_playback: self.loop_playback,
             muted: self.muted,
@@ -1731,10 +1749,7 @@ impl GtkSharedVideoRuntime {
             sink_tuning: self.sink_tuning.clone(),
             frame_limiter_enabled: frame_limiter_max_fps.is_some(),
             frame_limiter_max_fps,
-            frame_stats: merge_video_frame_stats(
-                self.frame_stats.borrow().clone(),
-                attachment.frame_stats.borrow().clone(),
-            ),
+            frame_stats: self.frame_stats.borrow().clone(),
             decoder_policy: self.decoder_policy,
             decoder_policy_status: decoder_policy_status(
                 self.decoder_policy,
@@ -1753,6 +1768,70 @@ impl GtkSharedVideoRuntime {
             zero_copy_evidence,
             memory_path,
             retention_report,
+        }
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+#[derive(Clone)]
+struct GtkSharedVideoRuntimeSnapshot {
+    source: String,
+    gst_state: String,
+    loop_playback: bool,
+    muted: bool,
+    target_max_fps: Option<u32>,
+    sink_tuning: VideoSinkTuningReport,
+    frame_limiter_enabled: bool,
+    frame_limiter_max_fps: Option<u32>,
+    frame_stats: VideoFrameStats,
+    decoder_policy: crate::config::VideoDecoderPolicy,
+    decoder_policy_status: VideoDecoderPolicyStatus,
+    start_offset_ms: u64,
+    position_ms: Option<u64>,
+    duration_ms: Option<u64>,
+    actual_decoders: Vec<String>,
+    actual_decoder_reports: Vec<VideoDecoderReport>,
+    caps_reports: Vec<VideoCapsReport>,
+    allocation_reports: Vec<VideoAllocationReport>,
+    zero_copy_evidence: VideoZeroCopyEvidence,
+    memory_path: VideoMemoryPathReport,
+    retention_report: VideoMemoryRetentionReport,
+}
+
+#[cfg(feature = "video-renderer")]
+impl GtkSharedVideoRuntimeSnapshot {
+    fn for_attachment(
+        &self,
+        output_name: &str,
+        attachment: &GtkVideoAttachment,
+    ) -> VideoPipelineSnapshot {
+        VideoPipelineSnapshot {
+            output_name: output_name.to_owned(),
+            source: self.source.clone(),
+            mode: attachment.mode,
+            gst_state: self.gst_state.clone(),
+            loop_playback: self.loop_playback,
+            muted: self.muted,
+            target_max_fps: self.target_max_fps,
+            sink_tuning: self.sink_tuning.clone(),
+            frame_limiter_enabled: self.frame_limiter_enabled,
+            frame_limiter_max_fps: self.frame_limiter_max_fps,
+            frame_stats: merge_video_frame_stats(
+                self.frame_stats.clone(),
+                attachment.frame_stats.borrow().clone(),
+            ),
+            decoder_policy: self.decoder_policy,
+            decoder_policy_status: self.decoder_policy_status,
+            start_offset_ms: self.start_offset_ms,
+            position_ms: self.position_ms,
+            duration_ms: self.duration_ms,
+            actual_decoders: self.actual_decoders.clone(),
+            actual_decoder_reports: self.actual_decoder_reports.clone(),
+            caps_reports: self.caps_reports.clone(),
+            allocation_reports: self.allocation_reports.clone(),
+            zero_copy_evidence: self.zero_copy_evidence.clone(),
+            memory_path: self.memory_path.clone(),
+            retention_report: self.retention_report.clone(),
         }
     }
 }
