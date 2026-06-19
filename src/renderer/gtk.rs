@@ -53,6 +53,10 @@ pub struct GtkRendererResourceSnapshot {
     pub slideshow_resource_bytes: u64,
     pub slideshow_unique_resources: usize,
     pub slideshow_unique_resource_bytes: u64,
+    pub video_pipeline_source_references: usize,
+    pub video_pipeline_source_reference_bytes: u64,
+    pub video_pipeline_unique_sources: usize,
+    pub video_pipeline_unique_source_bytes: u64,
 }
 
 struct RenderedOutput {
@@ -247,6 +251,7 @@ impl GtkStaticRenderer {
                     .slideshow
                     .as_ref()
                     .map(|slideshow| slideshow.plan.sources.as_slice()),
+                video_pipeline_source: output.video_pipeline_source(),
             }
         }));
 
@@ -275,6 +280,10 @@ impl GtkStaticRenderer {
             slideshow_resource_bytes: footprint.slideshow_resource_bytes,
             slideshow_unique_resources: footprint.slideshow_unique_resources,
             slideshow_unique_resource_bytes: footprint.slideshow_unique_resource_bytes,
+            video_pipeline_source_references: footprint.video_pipeline_source_references,
+            video_pipeline_source_reference_bytes: footprint.video_pipeline_source_reference_bytes,
+            video_pipeline_unique_sources: footprint.video_pipeline_unique_sources,
+            video_pipeline_unique_source_bytes: footprint.video_pipeline_unique_source_bytes,
         }
     }
 
@@ -418,6 +427,16 @@ impl RenderedOutput {
                 .map(|source| source.as_path());
         }
         self.static_plan.as_ref().map(|plan| plan.source.as_path())
+    }
+
+    #[cfg(feature = "video-renderer")]
+    fn video_pipeline_source(&self) -> Option<&Path> {
+        self.video.as_ref().map(|video| video.source.as_path())
+    }
+
+    #[cfg(not(feature = "video-renderer"))]
+    fn video_pipeline_source(&self) -> Option<&Path> {
+        None
     }
 
     #[cfg(feature = "video-renderer")]
@@ -618,12 +637,17 @@ struct RendererSurfaceResourceFootprint {
     slideshow_resource_bytes: u64,
     slideshow_unique_resources: usize,
     slideshow_unique_resource_bytes: u64,
+    video_pipeline_source_references: usize,
+    video_pipeline_source_reference_bytes: u64,
+    video_pipeline_unique_sources: usize,
+    video_pipeline_unique_source_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct RendererSurfaceResourceSources<'a> {
     static_surface_source: Option<&'a Path>,
     slideshow_sources: Option<&'a [PathBuf]>,
+    video_pipeline_source: Option<&'a Path>,
 }
 
 fn renderer_surface_resource_footprint<'a>(
@@ -632,6 +656,7 @@ fn renderer_surface_resource_footprint<'a>(
     let mut footprint = RendererSurfaceResourceFootprint::default();
     let mut static_unique_sources = BTreeSet::new();
     let mut slideshow_unique_sources = BTreeSet::new();
+    let mut video_unique_sources = BTreeSet::new();
     for output in outputs {
         if let Some(source) = output.static_surface_source {
             footprint.static_surface_resource_references += 1;
@@ -646,6 +671,11 @@ fn renderer_surface_resource_footprint<'a>(
                 .sum::<u64>();
             slideshow_unique_sources.extend(sources.iter().cloned());
         }
+        if let Some(source) = output.video_pipeline_source {
+            footprint.video_pipeline_source_references += 1;
+            footprint.video_pipeline_source_reference_bytes += source_file_size(source);
+            video_unique_sources.insert(source.to_path_buf());
+        }
     }
     footprint.static_surface_unique_resources = static_unique_sources.len();
     footprint.static_surface_unique_resource_bytes = static_unique_sources
@@ -654,6 +684,11 @@ fn renderer_surface_resource_footprint<'a>(
         .sum();
     footprint.slideshow_unique_resources = slideshow_unique_sources.len();
     footprint.slideshow_unique_resource_bytes = slideshow_unique_sources
+        .iter()
+        .map(|source| source_file_size(source))
+        .sum();
+    footprint.video_pipeline_unique_sources = video_unique_sources.len();
+    footprint.video_pipeline_unique_source_bytes = video_unique_sources
         .iter()
         .map(|source| source_file_size(source))
         .sum();
@@ -1319,24 +1354,29 @@ mod tests {
         test_dir.write_file("static.png", b"static");
         test_dir.write_file("slide-a.png", b"a");
         test_dir.write_file("slide-b.png", b"bbbb");
+        test_dir.write_file("loop.webm", b"video");
 
         let static_source = test_dir.path().join("static.png");
         let slide_a = test_dir.path().join("slide-a.png");
         let slide_b = test_dir.path().join("slide-b.png");
+        let video_source = test_dir.path().join("loop.webm");
         let slideshow_sources = vec![slide_a.clone(), slide_b.clone(), slide_a.clone()];
 
         let footprint = renderer_surface_resource_footprint([
             RendererSurfaceResourceSources {
                 static_surface_source: Some(static_source.as_path()),
                 slideshow_sources: None,
+                video_pipeline_source: Some(video_source.as_path()),
             },
             RendererSurfaceResourceSources {
                 static_surface_source: Some(slide_b.as_path()),
                 slideshow_sources: Some(slideshow_sources.as_slice()),
+                video_pipeline_source: Some(video_source.as_path()),
             },
             RendererSurfaceResourceSources {
                 static_surface_source: Some(static_source.as_path()),
                 slideshow_sources: None,
+                video_pipeline_source: None,
             },
         ]);
 
@@ -1348,6 +1388,10 @@ mod tests {
         assert_eq!(footprint.slideshow_resource_bytes, 6);
         assert_eq!(footprint.slideshow_unique_resources, 2);
         assert_eq!(footprint.slideshow_unique_resource_bytes, 5);
+        assert_eq!(footprint.video_pipeline_source_references, 2);
+        assert_eq!(footprint.video_pipeline_source_reference_bytes, 10);
+        assert_eq!(footprint.video_pipeline_unique_sources, 1);
+        assert_eq!(footprint.video_pipeline_unique_source_bytes, 5);
     }
 
     #[test]
@@ -1355,11 +1399,13 @@ mod tests {
         let test_dir = TestDir::new("gilder-gtk-resource-footprint-missing");
         let missing_static = test_dir.path().join("missing-static.png");
         let missing_slide = test_dir.path().join("missing-slide.png");
+        let missing_video = test_dir.path().join("missing-video.webm");
         let slideshow_sources = vec![missing_slide];
 
         let footprint = renderer_surface_resource_footprint([RendererSurfaceResourceSources {
             static_surface_source: Some(missing_static.as_path()),
             slideshow_sources: Some(slideshow_sources.as_slice()),
+            video_pipeline_source: Some(missing_video.as_path()),
         }]);
 
         assert_eq!(footprint.static_surface_resource_references, 1);
@@ -1370,6 +1416,10 @@ mod tests {
         assert_eq!(footprint.slideshow_resource_bytes, 0);
         assert_eq!(footprint.slideshow_unique_resources, 1);
         assert_eq!(footprint.slideshow_unique_resource_bytes, 0);
+        assert_eq!(footprint.video_pipeline_source_references, 1);
+        assert_eq!(footprint.video_pipeline_source_reference_bytes, 0);
+        assert_eq!(footprint.video_pipeline_unique_sources, 1);
+        assert_eq!(footprint.video_pipeline_unique_source_bytes, 0);
     }
 
     #[cfg(feature = "video-renderer")]

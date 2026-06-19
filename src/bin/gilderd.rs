@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+#[cfg(feature = "video-renderer")]
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -531,6 +533,10 @@ struct RendererRuntimeSnapshot {
     slideshow_resource_bytes: u64,
     slideshow_unique_resources: usize,
     slideshow_unique_resource_bytes: u64,
+    video_pipeline_source_references: usize,
+    video_pipeline_source_reference_bytes: u64,
+    video_pipeline_unique_sources: usize,
+    video_pipeline_unique_source_bytes: u64,
     video_pipelines: Vec<Value>,
 }
 
@@ -552,6 +558,10 @@ impl RendererRuntimeSnapshot {
             slideshow_resource_bytes: snapshot.slideshow_resource_bytes,
             slideshow_unique_resources: snapshot.slideshow_unique_resources,
             slideshow_unique_resource_bytes: snapshot.slideshow_unique_resource_bytes,
+            video_pipeline_source_references: snapshot.video_pipeline_source_references,
+            video_pipeline_source_reference_bytes: snapshot.video_pipeline_source_reference_bytes,
+            video_pipeline_unique_sources: snapshot.video_pipeline_unique_sources,
+            video_pipeline_unique_source_bytes: snapshot.video_pipeline_unique_source_bytes,
             video_pipelines: Vec::new(),
         }
     }
@@ -560,6 +570,11 @@ impl RendererRuntimeSnapshot {
     fn from_video_pipeline_snapshots(
         snapshots: Vec<gilder::renderer::video::VideoPipelineSnapshot>,
     ) -> Self {
+        let footprint = video_pipeline_source_footprint(
+            snapshots
+                .iter()
+                .map(|snapshot| Path::new(snapshot.source.as_str())),
+        );
         Self {
             output_windows: 0,
             static_surfaces: 0,
@@ -573,6 +588,10 @@ impl RendererRuntimeSnapshot {
             slideshow_resource_bytes: 0,
             slideshow_unique_resources: 0,
             slideshow_unique_resource_bytes: 0,
+            video_pipeline_source_references: footprint.references,
+            video_pipeline_source_reference_bytes: footprint.reference_bytes,
+            video_pipeline_unique_sources: footprint.unique_sources,
+            video_pipeline_unique_source_bytes: footprint.unique_source_bytes,
             video_pipelines: snapshots
                 .into_iter()
                 .map(|snapshot| {
@@ -622,6 +641,10 @@ fn renderer_runtime_report(snapshot: &RendererRuntimeSnapshot) -> Value {
         "slideshow_resource_bytes": snapshot.slideshow_resource_bytes,
         "slideshow_unique_resources": snapshot.slideshow_unique_resources,
         "slideshow_unique_resource_bytes": snapshot.slideshow_unique_resource_bytes,
+        "video_pipeline_source_references": snapshot.video_pipeline_source_references,
+        "video_pipeline_source_reference_bytes": snapshot.video_pipeline_source_reference_bytes,
+        "video_pipeline_unique_sources": snapshot.video_pipeline_unique_sources,
+        "video_pipeline_unique_source_bytes": snapshot.video_pipeline_unique_source_bytes,
         "video_pipelines": snapshot.video_pipelines,
     })
 }
@@ -707,6 +730,10 @@ fn renderer_telemetry_report(snapshot: &RendererRuntimeSnapshot) -> Value {
         "slideshow_resource_bytes": snapshot.slideshow_resource_bytes,
         "slideshow_unique_resources": snapshot.slideshow_unique_resources,
         "slideshow_unique_resource_bytes": snapshot.slideshow_unique_resource_bytes,
+        "video_pipeline_source_references": snapshot.video_pipeline_source_references,
+        "video_pipeline_source_reference_bytes": snapshot.video_pipeline_source_reference_bytes,
+        "video_pipeline_unique_sources": snapshot.video_pipeline_unique_sources,
+        "video_pipeline_unique_source_bytes": snapshot.video_pipeline_unique_source_bytes,
         "video_pipelines": snapshot.video_pipelines.len(),
         "video_qos_messages": video_qos_messages,
         "video_qos_dropped_max": video_qos_dropped_max,
@@ -733,6 +760,44 @@ fn update_optional_max(slot: &mut Option<u64>, value: Option<u64>) {
         return;
     };
     *slot = Some(slot.map_or(value, |current| current.max(value)));
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg(feature = "video-renderer")]
+struct VideoPipelineSourceFootprint {
+    references: usize,
+    reference_bytes: u64,
+    unique_sources: usize,
+    unique_source_bytes: u64,
+}
+
+#[cfg(feature = "video-renderer")]
+fn video_pipeline_source_footprint<'a>(
+    sources: impl IntoIterator<Item = &'a Path>,
+) -> VideoPipelineSourceFootprint {
+    let mut footprint = VideoPipelineSourceFootprint::default();
+    let mut unique_sources = BTreeSet::new();
+    for source in sources {
+        footprint.references += 1;
+        footprint.reference_bytes += file_size(source);
+        unique_sources.insert(source.to_path_buf());
+    }
+    footprint.unique_sources = unique_sources.len();
+    footprint.unique_source_bytes = unique_sources.iter().map(|source| file_size(source)).sum();
+    footprint
+}
+
+#[cfg(feature = "video-renderer")]
+fn file_size(path: &Path) -> u64 {
+    fs::metadata(path)
+        .map(|metadata| {
+            if metadata.is_file() {
+                metadata.len()
+            } else {
+                0
+            }
+        })
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1966,6 +2031,10 @@ mod tests {
             slideshow_resource_bytes: 8192,
             slideshow_unique_resources: 2,
             slideshow_unique_resource_bytes: 6144,
+            video_pipeline_source_references: 3,
+            video_pipeline_source_reference_bytes: 18_000,
+            video_pipeline_unique_sources: 2,
+            video_pipeline_unique_source_bytes: 12_000,
             video_pipelines: vec![
                 json!({
                     "output_name": "eDP-1",
@@ -2114,6 +2183,14 @@ mod tests {
             json!(6144)
         );
         assert_eq!(
+            response["result"]["renderer_runtime"]["video_pipeline_source_references"],
+            json!(3)
+        );
+        assert_eq!(
+            response["result"]["renderer_runtime"]["video_pipeline_unique_source_bytes"],
+            json!(12000)
+        );
+        assert_eq!(
             response["result"]["telemetry"]["renderer"]["output_windows"],
             json!(3)
         );
@@ -2160,6 +2237,22 @@ mod tests {
         assert_eq!(
             response["result"]["telemetry"]["renderer"]["slideshow_unique_resource_bytes"],
             json!(6144)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_pipeline_source_references"],
+            json!(3)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_pipeline_source_reference_bytes"],
+            json!(18000)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_pipeline_unique_sources"],
+            json!(2)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_pipeline_unique_source_bytes"],
+            json!(12000)
         );
         assert_eq!(
             response["result"]["telemetry"]["renderer"]["video_pipelines"],

@@ -336,6 +336,10 @@ telemetry_keys=(
   renderer_video_surfaces_max
   renderer_video_pipelines_latest
   renderer_video_pipelines_max
+  renderer_video_pipeline_source_references_latest
+  renderer_video_pipeline_source_reference_bytes_latest
+  renderer_video_pipeline_unique_sources_latest
+  renderer_video_pipeline_unique_source_bytes_latest
 )
 
 video_keys=(
