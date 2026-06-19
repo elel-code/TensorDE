@@ -111,6 +111,9 @@ pub struct SceneLiteLayer {
     #[serde(default)]
     pub text_align: Option<SceneLiteTextAlign>,
     #[serde(default)]
+    #[serde(rename = "path")]
+    pub path_data: Option<String>,
+    #[serde(default)]
     pub fit: FitMode,
     #[serde(default)]
     pub animations: Vec<SceneLiteAnimation>,
@@ -171,6 +174,23 @@ impl SceneLiteLayer {
                     )));
                 }
                 self.validate_text_fields()?;
+            }
+            SceneLiteLayerKind::Path => {
+                if self.path_data.as_deref().is_none_or(str::is_empty) {
+                    return Err(SceneLiteError::invalid(format!(
+                        "path layer {:?} must define path",
+                        self.id
+                    )));
+                }
+                if self.color.as_deref().is_none_or(str::is_empty)
+                    && self.stroke_color.as_deref().is_none_or(str::is_empty)
+                {
+                    return Err(SceneLiteError::invalid(format!(
+                        "path layer {:?} must define color or stroke_color",
+                        self.id
+                    )));
+                }
+                self.validate_path_fields()?;
             }
             SceneLiteLayerKind::Group => {}
         }
@@ -240,6 +260,7 @@ impl SceneLiteLayer {
                 font_family: self.font_family.clone(),
                 font_weight: self.font_weight.clone(),
                 text_align: self.text_align,
+                path_data: self.path_data.clone(),
                 fit: self.fit,
                 opacity,
                 transform,
@@ -298,6 +319,18 @@ impl SceneLiteLayer {
         }
         Ok(())
     }
+
+    fn validate_path_fields(&self) -> Result<(), SceneLiteError> {
+        if let Some(stroke_width) = self.stroke_width
+            && (!stroke_width.is_finite() || stroke_width < 0.0)
+        {
+            return Err(SceneLiteError::invalid(format!(
+                "layer {:?} stroke_width must be finite and greater than or equal to 0",
+                self.id
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -308,6 +341,7 @@ pub enum SceneLiteLayerKind {
     Rectangle,
     Ellipse,
     Text,
+    Path,
     Group,
 }
 
@@ -595,6 +629,7 @@ pub struct SceneLiteSnapshotLayer {
     pub font_family: Option<String>,
     pub font_weight: Option<String>,
     pub text_align: Option<SceneLiteTextAlign>,
+    pub path_data: Option<String>,
     pub fit: FitMode,
     pub opacity: f64,
     pub transform: SceneLiteTransform,
@@ -828,6 +863,44 @@ mod tests {
     }
 
     #[test]
+    fn parses_path_layer() {
+        let document: SceneLiteDocument = serde_json::from_str(
+            r##"
+            {
+              "layers": [
+                {
+                  "id": "wave",
+                  "type": "path",
+                  "path": "M 0 80 C 120 20 240 140 360 80",
+                  "stroke_color": "#80ffaa",
+                  "stroke_width": 4
+                },
+                {
+                  "id": "badge",
+                  "type": "path",
+                  "path": "M 0 0 L 100 0 L 50 80 Z",
+                  "color": "#102030"
+                }
+              ]
+            }
+            "##,
+        )
+        .unwrap();
+
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at(0);
+
+        assert_eq!(snapshot.layers.len(), 2);
+        assert_eq!(snapshot.layers[0].kind, SceneLiteLayerKind::Path);
+        assert_eq!(
+            snapshot.layers[0].path_data.as_deref(),
+            Some("M 0 80 C 120 20 240 140 360 80")
+        );
+        assert_eq!(snapshot.layers[0].stroke_width, Some(4.0));
+        assert_eq!(snapshot.layers[1].color.as_deref(), Some("#102030"));
+    }
+
+    #[test]
     fn rejects_missing_image_source_and_duplicate_ids() {
         let missing_source: SceneLiteDocument =
             serde_json::from_str(r#"{"layers":[{"id":"a","type":"image"}]}"#).unwrap();
@@ -855,5 +928,10 @@ mod tests {
             serde_json::from_str(r##"{"layers":[{"id":"title","type":"text","color":"#fff"}]}"##)
                 .unwrap();
         assert!(invalid_text.validate().is_err());
+
+        let invalid_path: SceneLiteDocument =
+            serde_json::from_str(r##"{"layers":[{"id":"path","type":"path","path":"M0 0"}]}"##)
+                .unwrap();
+        assert!(invalid_path.validate().is_err());
     }
 }

@@ -101,6 +101,7 @@ pub struct SceneLiteRenderLayer {
     pub font_family: Option<String>,
     pub font_weight: Option<String>,
     pub text_align: Option<SceneLiteTextAlign>,
+    pub path_data: Option<String>,
     pub fit: FitMode,
     pub opacity: f64,
     pub transform: SceneLiteTransform,
@@ -1250,6 +1251,7 @@ fn scene_lite_wallpaper_plan(
                 font_family: layer.font_family,
                 font_weight: layer.font_weight,
                 text_align: layer.text_align,
+                path_data: layer.path_data,
                 fit: layer.fit,
                 opacity: layer.opacity,
                 transform: layer.transform,
@@ -1553,6 +1555,21 @@ fn scene_lite_layer_is_snapshot_renderable(layer: &SceneLiteRenderLayer) -> bool
                     .as_deref()
                     .is_some_and(|color| !color.is_empty())
         }
+        SceneLiteLayerKind::Path => {
+            layer.opacity > 0.0
+                && layer
+                    .path_data
+                    .as_deref()
+                    .is_some_and(|path| !path.is_empty())
+                && (layer
+                    .color
+                    .as_deref()
+                    .is_some_and(|color| !color.is_empty())
+                    || layer
+                        .stroke_color
+                        .as_deref()
+                        .is_some_and(|color| !color.is_empty()))
+        }
         SceneLiteLayerKind::Group => false,
     }
 }
@@ -1748,6 +1765,20 @@ fn scene_lite_snapshot_svg(layers: &[SceneLiteRenderLayer], size: RenderTargetSi
                     font_family = scene_lite_svg_optional_attr("font-family", layer.font_family.as_deref()),
                     font_weight = scene_lite_svg_optional_attr("font-weight", layer.font_weight.as_deref()),
                     text = xml_text(text),
+                ));
+            }
+            SceneLiteLayerKind::Path => {
+                let Some(path_data) = &layer.path_data else {
+                    continue;
+                };
+                let fill = layer.color.as_deref().unwrap_or("none");
+                svg.push_str(&format!(
+                    r#"<g opacity="{opacity}" transform="{transform}"><path d="{path}" fill="{fill}"{stroke}/></g>"#,
+                    opacity = svg_number(layer.opacity),
+                    transform = xml_attr(&scene_lite_svg_transform(layer.transform, size)),
+                    path = xml_attr(path_data),
+                    fill = xml_attr(fill),
+                    stroke = scene_lite_svg_stroke(layer),
                 ));
             }
             SceneLiteLayerKind::Group => {}
@@ -4312,6 +4343,37 @@ exit 0
     }
 
     #[test]
+    fn scene_lite_path_layer_builds_snapshot() {
+        let test_dir = TestDir::new("gilder-scene-lite-path-plan");
+        let package_dir = test_dir.path.join("scene-path.gwpdir");
+        write_minimal_scene_lite_path_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.scene_lite_plans.len(), 1);
+        let plan = &sync.scene_lite_plans[0];
+        assert_eq!(plan.layers.len(), 1);
+        assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Path);
+        assert_eq!(plan.layers[0].stroke_color.as_deref(), Some("#80ffaa"));
+        let display_source = scene_lite_display_source(plan);
+        let snapshot = fs::read_to_string(display_source).unwrap();
+        assert!(snapshot.contains("<path"));
+        assert!(snapshot.contains(r##"fill="none""##));
+        assert!(snapshot.contains(r##"stroke="#80ffaa""##));
+        assert!(snapshot.contains("M 0 80 C 120 20 240 140 360 80"));
+    }
+
+    #[test]
     fn scene_lite_property_binding_applies_effective_output_property() {
         let test_dir = TestDir::new("gilder-scene-lite-property-binding");
         let package_dir = test_dir.path.join("scene-property.gwpdir");
@@ -5584,6 +5646,45 @@ exit 0
             "id": "org.example.scene-text",
             "version": "1.0.0",
             "title": "Scene Text",
+            "kind": "scene-lite",
+            "entry": {
+                "type": "scene-lite",
+                "source": "assets/scene-lite.json",
+                "max_fps": 60
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_minimal_scene_lite_path_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(
+            path.join("assets/scene-lite.json"),
+            br##"{
+              "size": { "width": 1280, "height": 720 },
+              "layers": [
+                {
+                  "id": "wave",
+                  "type": "path",
+                  "path": "M 0 80 C 120 20 240 140 360 80",
+                  "stroke_color": "#80ffaa",
+                  "stroke_width": 4,
+                  "transform": { "x": 200, "y": 160 }
+                }
+              ]
+            }"##,
+        )
+        .unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.scene-path",
+            "version": "1.0.0",
+            "title": "Scene Path",
             "kind": "scene-lite",
             "entry": {
                 "type": "scene-lite",
