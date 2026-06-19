@@ -95,6 +95,14 @@ Options:
                        Require latest renderer video pipeline count to be at most count
   --expect-renderer-video-pipelines-max-at-most <count>
                        Require max sampled renderer video pipeline count to be at most count
+  --expect-renderer-video-pipeline-source-references-latest-at-most <count>
+                       Require latest renderer video pipeline source references to be at most count
+  --expect-renderer-video-pipeline-source-reference-bytes-latest-at-most <bytes>
+                       Require latest renderer video pipeline source reference bytes to be at most bytes
+  --expect-renderer-video-pipeline-unique-sources-latest-at-most <count>
+                       Require latest renderer video pipeline unique sources to be at most count
+  --expect-renderer-video-pipeline-unique-source-bytes-latest-at-most <bytes>
+                       Require latest renderer video pipeline unique source bytes to be at most bytes
   --keep                Keep generated smoke data and logs
   -h, --help            Show this help text
 EOF
@@ -146,6 +154,10 @@ expect_renderer_video_surfaces_latest_at_most=""
 expect_renderer_video_surfaces_max_at_most=""
 expect_renderer_video_pipelines_latest_at_most=""
 expect_renderer_video_pipelines_max_at_most=""
+expect_renderer_video_pipeline_source_references_latest_at_most=""
+expect_renderer_video_pipeline_source_reference_bytes_latest_at_most=""
+expect_renderer_video_pipeline_unique_sources_latest_at_most=""
+expect_renderer_video_pipeline_unique_source_bytes_latest_at_most=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -372,6 +384,26 @@ while [[ $# -gt 0 ]]; do
       expect_renderer_video_pipelines_max_at_most="$2"
       shift 2
       ;;
+    --expect-renderer-video-pipeline-source-references-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-pipeline-source-references-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_video_pipeline_source_references_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-video-pipeline-source-reference-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-pipeline-source-reference-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_video_pipeline_source_reference_bytes_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-video-pipeline-unique-sources-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-pipeline-unique-sources-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_video_pipeline_unique_sources_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-video-pipeline-unique-source-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-pipeline-unique-source-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_video_pipeline_unique_source_bytes_latest_at_most="$2"
+      shift 2
+      ;;
     --keep)
       keep=1
       shift
@@ -535,7 +567,11 @@ for renderer_resource_expectation in \
   "$expect_renderer_video_surfaces_latest_at_most" \
   "$expect_renderer_video_surfaces_max_at_most" \
   "$expect_renderer_video_pipelines_latest_at_most" \
-  "$expect_renderer_video_pipelines_max_at_most"
+  "$expect_renderer_video_pipelines_max_at_most" \
+  "$expect_renderer_video_pipeline_source_references_latest_at_most" \
+  "$expect_renderer_video_pipeline_source_reference_bytes_latest_at_most" \
+  "$expect_renderer_video_pipeline_unique_sources_latest_at_most" \
+  "$expect_renderer_video_pipeline_unique_source_bytes_latest_at_most"
 do
   if [[ -n "$renderer_resource_expectation" && ! "$renderer_resource_expectation" =~ ^[0-9]+$ ]]; then
     echo "renderer resource expectations must be non-negative integers" >&2
@@ -653,6 +689,10 @@ expect_renderer_video_surfaces_latest_at_most: ${expect_renderer_video_surfaces_
 expect_renderer_video_surfaces_max_at_most: ${expect_renderer_video_surfaces_max_at_most:-none}
 expect_renderer_video_pipelines_latest_at_most: ${expect_renderer_video_pipelines_latest_at_most:-none}
 expect_renderer_video_pipelines_max_at_most: ${expect_renderer_video_pipelines_max_at_most:-none}
+expect_renderer_video_pipeline_source_references_latest_at_most: ${expect_renderer_video_pipeline_source_references_latest_at_most:-none}
+expect_renderer_video_pipeline_source_reference_bytes_latest_at_most: ${expect_renderer_video_pipeline_source_reference_bytes_latest_at_most:-none}
+expect_renderer_video_pipeline_unique_sources_latest_at_most: ${expect_renderer_video_pipeline_unique_sources_latest_at_most:-none}
+expect_renderer_video_pipeline_unique_source_bytes_latest_at_most: ${expect_renderer_video_pipeline_unique_source_bytes_latest_at_most:-none}
 wallpaper: ${wallpaper_path}
 fullscreen_static_wallpaper: ${fullscreen_static_wallpaper_path}
 slideshow_wallpaper: ${slideshow_wallpaper_path}
@@ -1124,6 +1164,18 @@ append_process_memory_expectations() {
   fi
   if [[ -n "$expect_renderer_video_pipelines_max_at_most" ]]; then
     args_ref+=(--expect-renderer-video-pipelines-max-at-most "$expect_renderer_video_pipelines_max_at_most")
+  fi
+  if [[ -n "$expect_renderer_video_pipeline_source_references_latest_at_most" ]]; then
+    args_ref+=(--expect-renderer-video-pipeline-source-references-latest-at-most "$expect_renderer_video_pipeline_source_references_latest_at_most")
+  fi
+  if [[ -n "$expect_renderer_video_pipeline_source_reference_bytes_latest_at_most" ]]; then
+    args_ref+=(--expect-renderer-video-pipeline-source-reference-bytes-latest-at-most "$expect_renderer_video_pipeline_source_reference_bytes_latest_at_most")
+  fi
+  if [[ -n "$expect_renderer_video_pipeline_unique_sources_latest_at_most" ]]; then
+    args_ref+=(--expect-renderer-video-pipeline-unique-sources-latest-at-most "$expect_renderer_video_pipeline_unique_sources_latest_at_most")
+  fi
+  if [[ -n "$expect_renderer_video_pipeline_unique_source_bytes_latest_at_most" ]]; then
+    args_ref+=(--expect-renderer-video-pipeline-unique-source-bytes-latest-at-most "$expect_renderer_video_pipeline_unique_source_bytes_latest_at_most")
   fi
 }
 

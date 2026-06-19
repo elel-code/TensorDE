@@ -129,6 +129,14 @@ Options:
                      Require latest renderer video pipeline count to be at most count
   --expect-renderer-video-pipelines-max-at-most <count>
                      Require max sampled renderer video pipeline count to be at most count
+  --expect-renderer-video-pipeline-source-references-latest-at-most <count>
+                     Require latest renderer video pipeline source references to be at most count
+  --expect-renderer-video-pipeline-source-reference-bytes-latest-at-most <bytes>
+                     Require latest renderer video pipeline source reference bytes to be at most bytes
+  --expect-renderer-video-pipeline-unique-sources-latest-at-most <count>
+                     Require latest renderer video pipeline unique sources to be at most count
+  --expect-renderer-video-pipeline-unique-source-bytes-latest-at-most <bytes>
+                     Require latest renderer video pipeline unique source bytes to be at most bytes
   --expect-adaptive-action <type>
                      Require at least one telemetry row with this adaptive action type
   --expect-decoder-policy-status <status>
@@ -229,6 +237,10 @@ expect_renderer_video_surfaces_max_at_most=""
 expect_renderer_video_pipelines_latest_at_least=""
 expect_renderer_video_pipelines_latest_at_most=""
 expect_renderer_video_pipelines_max_at_most=""
+expect_renderer_video_pipeline_source_references_latest_at_most=""
+expect_renderer_video_pipeline_source_reference_bytes_latest_at_most=""
+expect_renderer_video_pipeline_unique_sources_latest_at_most=""
+expect_renderer_video_pipeline_unique_source_bytes_latest_at_most=""
 expect_adaptive_action=""
 expect_decoder_policy_status=""
 expect_decoder_class=""
@@ -560,6 +572,26 @@ while [[ $# -gt 0 ]]; do
     --expect-renderer-video-pipelines-max-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-renderer-video-pipelines-max-at-most requires a value" >&2; exit 2; }
       expect_renderer_video_pipelines_max_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-video-pipeline-source-references-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-pipeline-source-references-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_video_pipeline_source_references_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-video-pipeline-source-reference-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-pipeline-source-reference-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_video_pipeline_source_reference_bytes_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-video-pipeline-unique-sources-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-pipeline-unique-sources-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_video_pipeline_unique_sources_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-renderer-video-pipeline-unique-source-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-pipeline-unique-source-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_video_pipeline_unique_source_bytes_latest_at_most="$2"
       shift 2
       ;;
     --expect-adaptive-action)
@@ -2049,6 +2081,10 @@ has_telemetry_expectations() {
     -n "$expect_renderer_video_pipelines_latest_at_least" ||
     -n "$expect_renderer_video_pipelines_latest_at_most" ||
     -n "$expect_renderer_video_pipelines_max_at_most" ||
+    -n "$expect_renderer_video_pipeline_source_references_latest_at_most" ||
+    -n "$expect_renderer_video_pipeline_source_reference_bytes_latest_at_most" ||
+    -n "$expect_renderer_video_pipeline_unique_sources_latest_at_most" ||
+    -n "$expect_renderer_video_pipeline_unique_source_bytes_latest_at_most" ||
     -n "$expect_adaptive_action" ]]
 }
 
@@ -2204,6 +2240,18 @@ validate_telemetry_expectations() {
   fi
   if [[ -n "$expect_renderer_video_pipelines_max_at_most" ]]; then
     expect_telemetry_maximum "renderer_video_pipelines_max" "$expect_renderer_video_pipelines_max_at_most" "max renderer video pipeline count"
+  fi
+  if [[ -n "$expect_renderer_video_pipeline_source_references_latest_at_most" ]]; then
+    expect_telemetry_maximum "renderer_video_pipeline_source_references_latest" "$expect_renderer_video_pipeline_source_references_latest_at_most" "latest renderer video pipeline source references"
+  fi
+  if [[ -n "$expect_renderer_video_pipeline_source_reference_bytes_latest_at_most" ]]; then
+    expect_telemetry_maximum "renderer_video_pipeline_source_reference_bytes_latest" "$expect_renderer_video_pipeline_source_reference_bytes_latest_at_most" "latest renderer video pipeline source reference bytes"
+  fi
+  if [[ -n "$expect_renderer_video_pipeline_unique_sources_latest_at_most" ]]; then
+    expect_telemetry_maximum "renderer_video_pipeline_unique_sources_latest" "$expect_renderer_video_pipeline_unique_sources_latest_at_most" "latest renderer video pipeline unique sources"
+  fi
+  if [[ -n "$expect_renderer_video_pipeline_unique_source_bytes_latest_at_most" ]]; then
+    expect_telemetry_maximum "renderer_video_pipeline_unique_source_bytes_latest" "$expect_renderer_video_pipeline_unique_source_bytes_latest_at_most" "latest renderer video pipeline unique source bytes"
   fi
   if [[ -n "$expect_adaptive_action" ]]; then
     expect_telemetry_minimum "adaptive_action.${expect_adaptive_action}" 1 "adaptive action ${expect_adaptive_action}"
@@ -2456,7 +2504,11 @@ for renderer_resource_expectation in \
   "$expect_renderer_video_surfaces_max_at_most" \
   "$expect_renderer_video_pipelines_latest_at_least" \
   "$expect_renderer_video_pipelines_latest_at_most" \
-  "$expect_renderer_video_pipelines_max_at_most"
+  "$expect_renderer_video_pipelines_max_at_most" \
+  "$expect_renderer_video_pipeline_source_references_latest_at_most" \
+  "$expect_renderer_video_pipeline_source_reference_bytes_latest_at_most" \
+  "$expect_renderer_video_pipeline_unique_sources_latest_at_most" \
+  "$expect_renderer_video_pipeline_unique_source_bytes_latest_at_most"
 do
   if [[ -n "$renderer_resource_expectation" && ! "$renderer_resource_expectation" =~ ^[0-9]+$ ]]; then
     echo "renderer resource expectations must be non-negative integers" >&2
@@ -2592,6 +2644,10 @@ expect_renderer_video_surfaces_max_at_most: ${expect_renderer_video_surfaces_max
 expect_renderer_video_pipelines_latest_at_least: ${expect_renderer_video_pipelines_latest_at_least:-none}
 expect_renderer_video_pipelines_latest_at_most: ${expect_renderer_video_pipelines_latest_at_most:-none}
 expect_renderer_video_pipelines_max_at_most: ${expect_renderer_video_pipelines_max_at_most:-none}
+expect_renderer_video_pipeline_source_references_latest_at_most: ${expect_renderer_video_pipeline_source_references_latest_at_most:-none}
+expect_renderer_video_pipeline_source_reference_bytes_latest_at_most: ${expect_renderer_video_pipeline_source_reference_bytes_latest_at_most:-none}
+expect_renderer_video_pipeline_unique_sources_latest_at_most: ${expect_renderer_video_pipeline_unique_sources_latest_at_most:-none}
+expect_renderer_video_pipeline_unique_source_bytes_latest_at_most: ${expect_renderer_video_pipeline_unique_source_bytes_latest_at_most:-none}
 expect_adaptive_action: ${expect_adaptive_action:-none}
 expect_decoder_policy_status: ${expect_decoder_policy_status:-none}
 expect_decoder_class: ${expect_decoder_class:-none}
