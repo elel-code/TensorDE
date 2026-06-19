@@ -2072,10 +2072,56 @@ fn should_generate_static_image_cache_variant(
     target: RenderTargetSize,
     fit: FitMode,
 ) -> bool {
-    if matches!(fit, FitMode::Tile | FitMode::Center) || !source.covers(target) {
+    let Some(cache_target) = static_image_cache_target_size(source, target, fit) else {
         return false;
+    };
+    source.area() >= cache_target.area().saturating_mul(2)
+}
+
+fn static_image_cache_target_size(
+    source: RenderTargetSize,
+    target: RenderTargetSize,
+    fit: FitMode,
+) -> Option<RenderTargetSize> {
+    match fit {
+        FitMode::Cover => source.covers(target).then_some(target),
+        FitMode::Contain => contain_downscaled_size(source, target),
+        FitMode::Stretch => Some(target),
+        FitMode::Tile | FitMode::Center => None,
     }
-    source.area() >= target.area().saturating_mul(2)
+}
+
+fn contain_downscaled_size(
+    source: RenderTargetSize,
+    target: RenderTargetSize,
+) -> Option<RenderTargetSize> {
+    if source.width == 0 || source.height == 0 || target.width == 0 || target.height == 0 {
+        return None;
+    }
+
+    let source_width = u64::from(source.width);
+    let source_height = u64::from(source.height);
+    let target_width = u64::from(target.width);
+    let target_height = u64::from(target.height);
+
+    let (scale_num, scale_den) = if target_width.saturating_mul(source_height)
+        <= target_height.saturating_mul(source_width)
+    {
+        (target_width, source_width)
+    } else {
+        (target_height, source_height)
+    };
+    if scale_num >= scale_den {
+        return None;
+    }
+
+    let width = ((source_width.saturating_mul(scale_num)) / scale_den)
+        .max(1)
+        .min(u64::from(u32::MAX)) as u32;
+    let height = ((source_height.saturating_mul(scale_num)) / scale_den)
+        .max(1)
+        .min(u64::from(u32::MAX)) as u32;
+    Some(RenderTargetSize { width, height })
 }
 
 fn static_image_cache_path(
@@ -3375,6 +3421,51 @@ exit 0
         assert_eq!(stats.static_image_cache_generations, 1);
         assert_eq!(stats.static_image_cache_reuses, 1);
         assert!(protected.contains(&first_source));
+    }
+
+    #[test]
+    fn static_image_cache_accepts_tall_contain_sources() {
+        assert!(should_generate_static_image_cache_variant(
+            RenderTargetSize {
+                width: 1200,
+                height: 8000,
+            },
+            RenderTargetSize {
+                width: 1920,
+                height: 1080,
+            },
+            FitMode::Contain,
+        ));
+    }
+
+    #[test]
+    fn static_image_cache_does_not_upscale_small_contain_sources() {
+        assert!(!should_generate_static_image_cache_variant(
+            RenderTargetSize {
+                width: 800,
+                height: 600,
+            },
+            RenderTargetSize {
+                width: 1920,
+                height: 1080,
+            },
+            FitMode::Contain,
+        ));
+    }
+
+    #[test]
+    fn static_image_cache_accepts_stretch_when_area_shrinks() {
+        assert!(should_generate_static_image_cache_variant(
+            RenderTargetSize {
+                width: 9000,
+                height: 500,
+            },
+            RenderTargetSize {
+                width: 1920,
+                height: 1080,
+            },
+            FitMode::Stretch,
+        ));
     }
 
     #[test]
