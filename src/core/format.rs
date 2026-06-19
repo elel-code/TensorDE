@@ -15,6 +15,7 @@ pub enum WallpaperKind {
     Slideshow,
     Web,
     SceneLite,
+    Playlist,
 }
 
 impl WallpaperKind {
@@ -25,6 +26,7 @@ impl WallpaperKind {
             Self::Slideshow => "slideshow",
             Self::Web => "web",
             Self::SceneLite => "scene-lite",
+            Self::Playlist => "playlist",
         }
     }
 }
@@ -40,5 +42,6 @@ mod tests {
         assert_eq!(WallpaperKind::Slideshow.as_str(), "slideshow");
         assert_eq!(WallpaperKind::Web.as_str(), "web");
         assert_eq!(WallpaperKind::SceneLite.as_str(), "scene-lite");
+        assert_eq!(WallpaperKind::Playlist.as_str(), "playlist");
     }
 }

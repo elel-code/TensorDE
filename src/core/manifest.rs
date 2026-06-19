@@ -144,6 +144,11 @@ pub enum WallpaperEntry {
         #[serde(default)]
         max_fps: Option<u32>,
     },
+    Playlist {
+        items: Vec<PlaylistItem>,
+        #[serde(default)]
+        selection: PlaylistSelection,
+    },
 }
 
 impl WallpaperEntry {
@@ -154,6 +159,7 @@ impl WallpaperEntry {
             Self::Slideshow { .. } => WallpaperKind::Slideshow,
             Self::Web { .. } => WallpaperKind::Web,
             Self::SceneLite { .. } => WallpaperKind::SceneLite,
+            Self::Playlist { .. } => WallpaperKind::Playlist,
         }
     }
 
@@ -183,6 +189,24 @@ impl WallpaperEntry {
             }
             Self::SceneLite { max_fps, .. } => {
                 validate_fps(*max_fps)?;
+                Ok(())
+            }
+            Self::Playlist { items, .. } => {
+                if items.is_empty() {
+                    return Err(ManifestError::InvalidEntry(
+                        "playlist must contain at least one item".to_owned(),
+                    ));
+                }
+                let mut item_ids = BTreeMap::new();
+                for (index, item) in items.iter().enumerate() {
+                    item.validate(index)?;
+                    if item_ids.insert(item.id.clone(), index).is_some() {
+                        return Err(ManifestError::InvalidEntry(format!(
+                            "duplicate playlist item id {:?}",
+                            item.id
+                        )));
+                    }
+                }
                 Ok(())
             }
         }
@@ -222,9 +246,82 @@ impl WallpaperEntry {
                     paths.push(path.clone());
                 }
             }
+            Self::Playlist { items, .. } => {
+                for item in items {
+                    item.entry.push_referenced_paths(paths)?;
+                }
+            }
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlaylistItem {
+    pub id: String,
+    pub entry: Box<WallpaperEntry>,
+    #[serde(default)]
+    pub conditions: PlaylistConditions,
+}
+
+impl PlaylistItem {
+    fn validate(&self, index: usize) -> Result<(), ManifestError> {
+        validate_required_text("playlist item id", &self.id)?;
+        if matches!(self.entry.as_ref(), WallpaperEntry::Playlist { .. }) {
+            return Err(ManifestError::InvalidEntry(format!(
+                "playlist item {:?} must not contain a nested playlist",
+                self.id
+            )));
+        }
+        self.conditions.validate(&self.id)?;
+        self.entry
+            .validate()
+            .map_err(|err| ManifestError::InvalidEntry(format!("playlist item {index}: {err}")))
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaylistConditions {
+    #[serde(default)]
+    pub outputs: Vec<String>,
+    #[serde(default)]
+    pub power: Option<PlaylistPowerCondition>,
+    #[serde(default)]
+    pub focused: Option<bool>,
+    #[serde(default)]
+    pub visible: Option<bool>,
+    #[serde(default)]
+    pub fullscreen: Option<bool>,
+    #[serde(default)]
+    pub session_active: Option<bool>,
+    #[serde(default)]
+    pub session_locked: Option<bool>,
+}
+
+impl PlaylistConditions {
+    fn validate(&self, item_id: &str) -> Result<(), ManifestError> {
+        if self.outputs.iter().any(|output| output.trim().is_empty()) {
+            return Err(ManifestError::InvalidEntry(format!(
+                "playlist item {item_id:?} output condition must not contain empty names"
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlaylistPowerCondition {
+    Unknown,
+    Ac,
+    Battery,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlaylistSelection {
+    #[default]
+    FirstMatch,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -598,6 +695,69 @@ mod tests {
             "source": "assets/wallpaper.png",
             "width": 0,
             "height": 1080
+          }
+        }
+        "#;
+        let manifest: Manifest = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            manifest.validate(),
+            Err(ManifestError::InvalidEntry(_))
+        ));
+    }
+
+    #[test]
+    fn parses_and_validates_playlist_manifest() {
+        let json = r#"
+        {
+          "format": "gilder.wallpaper",
+          "format_version": 1,
+          "id": "org.example.playlist",
+          "version": "1.0.0",
+          "title": "Playlist",
+          "kind": "playlist",
+          "entry": {
+            "type": "playlist",
+            "items": [
+              {
+                "id": "battery-static",
+                "conditions": { "power": "battery" },
+                "entry": {
+                  "type": "static-image",
+                  "source": "assets/battery.png"
+                }
+              },
+              {
+                "id": "default-video",
+                "entry": {
+                  "type": "video",
+                  "source": "assets/loop.webm"
+                }
+              }
+            ]
+          }
+        }
+        "#;
+
+        let manifest: Manifest = serde_json::from_str(json).unwrap();
+        manifest.validate().unwrap();
+
+        assert_eq!(manifest.kind, WallpaperKind::Playlist);
+        assert_eq!(manifest.referenced_paths().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn rejects_empty_playlist_manifest() {
+        let json = r#"
+        {
+          "format": "gilder.wallpaper",
+          "format_version": 1,
+          "id": "org.example.empty-playlist",
+          "version": "1.0.0",
+          "title": "Empty Playlist",
+          "kind": "playlist",
+          "entry": {
+            "type": "playlist",
+            "items": []
           }
         }
         "#;

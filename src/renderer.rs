@@ -8,11 +8,11 @@ pub mod video;
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, PropertySpec, Variant};
 use crate::core::{
-    FitMode, PackagePath, SceneLiteAnimatedProperty, SceneLiteDocument, SceneLiteLayer,
-    SceneLiteLayerKind, SceneLitePropertyBinding, SceneLiteTransform, Transition, WallpaperEntry,
-    WallpaperPackage,
+    FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, SceneLiteAnimatedProperty,
+    SceneLiteDocument, SceneLiteLayer, SceneLiteLayerKind, SceneLitePropertyBinding,
+    SceneLiteTransform, Transition, WallpaperEntry, WallpaperPackage,
 };
-use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot};
+use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot, PowerState};
 use crate::policy::{PerformanceDecision, RenderMode};
 use crate::state::{AppState, OutputState, WallpaperAssignment};
 use serde::{Deserialize, Serialize};
@@ -446,7 +446,13 @@ fn static_render_sync_plan_inner(
             &package.manifest.runtime,
             desktop_output,
         );
-        let dynamic_wallpaper = dynamic_wallpaper_entry(&package.manifest.entry);
+        let playlist_context = PlaylistRenderContext {
+            desktop,
+            output_name: &output_name,
+            output: desktop_output,
+        };
+        let dynamic_wallpaper =
+            effective_dynamic_wallpaper_entry(&package.manifest.entry, &playlist_context);
         performance = crate::policy::apply_desktop_dynamic_policy(
             performance,
             &effective_performance_config,
@@ -481,7 +487,10 @@ fn static_render_sync_plan_inner(
             continue;
         }
 
-        let plan_result = match &package.manifest.entry {
+        let render_entry =
+            effective_render_wallpaper_entry(&package.manifest.entry, &playlist_context)
+                .unwrap_or(&package.manifest.entry);
+        let plan_result = match render_entry {
             WallpaperEntry::StaticImage { .. } => {
                 let mut static_image_cache = StaticImageCacheContext {
                     cache_dir,
@@ -498,6 +507,7 @@ fn static_render_sync_plan_inner(
                     fit_override,
                     assignment.variant.as_deref(),
                     render_target,
+                    Some(&playlist_context),
                     None,
                     Some(&mut static_image_cache),
                     None,
@@ -519,6 +529,7 @@ fn static_render_sync_plan_inner(
                     fit_override,
                     assignment.variant.as_deref(),
                     render_target,
+                    Some(&playlist_context),
                     Some(&render_properties),
                     None,
                     Some(&mut scene_lite_snapshot_cache),
@@ -532,6 +543,7 @@ fn static_render_sync_plan_inner(
                 fit_override,
                 assignment.variant.as_deref(),
                 render_target,
+                Some(&playlist_context),
                 None,
                 None,
                 None,
@@ -806,14 +818,128 @@ fn effective_output_render_properties(
     properties
 }
 
-fn dynamic_wallpaper_entry(entry: &WallpaperEntry) -> bool {
+#[derive(Debug, Clone, Copy)]
+struct PlaylistRenderContext<'a> {
+    desktop: &'a DesktopSnapshot,
+    output_name: &'a str,
+    output: Option<&'a DesktopOutput>,
+}
+
+fn select_playlist_item<'a>(
+    items: &'a [PlaylistItem],
+    context: Option<&PlaylistRenderContext<'_>>,
+) -> Option<&'a PlaylistItem> {
+    items
+        .iter()
+        .find(|item| playlist_item_matches(item, context))
+}
+
+fn playlist_item_matches(item: &PlaylistItem, context: Option<&PlaylistRenderContext<'_>>) -> bool {
+    let conditions = &item.conditions;
+    if !conditions.outputs.is_empty() {
+        let Some(context) = context else {
+            return false;
+        };
+        if !conditions
+            .outputs
+            .iter()
+            .any(|output| output == context.output_name)
+        {
+            return false;
+        }
+    }
+    if let Some(power) = conditions.power {
+        let Some(context) = context else {
+            return false;
+        };
+        if !playlist_power_matches(power, context.desktop.power) {
+            return false;
+        }
+    }
+    if let Some(expected) = conditions.focused {
+        let Some(output) = context.and_then(|context| context.output) else {
+            return false;
+        };
+        if output.focused != expected {
+            return false;
+        }
+    }
+    if let Some(expected) = conditions.visible {
+        let Some(output) = context.and_then(|context| context.output) else {
+            return false;
+        };
+        if output.visible != expected {
+            return false;
+        }
+    }
+    if let Some(expected) = conditions.fullscreen {
+        let Some(output) = context.and_then(|context| context.output) else {
+            return false;
+        };
+        if output.has_fullscreen != expected {
+            return false;
+        }
+    }
+    if let Some(expected) = conditions.session_active {
+        let Some(context) = context else {
+            return false;
+        };
+        if context.desktop.session_active != expected {
+            return false;
+        }
+    }
+    if let Some(expected) = conditions.session_locked {
+        let Some(context) = context else {
+            return false;
+        };
+        if context.desktop.session_locked != expected {
+            return false;
+        }
+    }
+    true
+}
+
+fn playlist_power_matches(condition: PlaylistPowerCondition, power: PowerState) -> bool {
     matches!(
-        entry,
-        WallpaperEntry::Video { .. }
-            | WallpaperEntry::Slideshow { .. }
-            | WallpaperEntry::Web { .. }
-            | WallpaperEntry::SceneLite { .. }
+        (condition, power),
+        (PlaylistPowerCondition::Unknown, PowerState::Unknown)
+            | (PlaylistPowerCondition::Ac, PowerState::Ac)
+            | (PlaylistPowerCondition::Battery, PowerState::Battery)
     )
+}
+
+fn effective_dynamic_wallpaper_entry(
+    entry: &WallpaperEntry,
+    playlist_context: &PlaylistRenderContext<'_>,
+) -> bool {
+    effective_render_wallpaper_entry(entry, playlist_context)
+        .map(dynamic_wallpaper_entry)
+        .unwrap_or(false)
+}
+
+fn effective_render_wallpaper_entry<'a>(
+    entry: &'a WallpaperEntry,
+    playlist_context: &PlaylistRenderContext<'_>,
+) -> Option<&'a WallpaperEntry> {
+    match entry {
+        WallpaperEntry::Playlist { items, .. } => {
+            select_playlist_item(items, Some(playlist_context)).map(|item| item.entry.as_ref())
+        }
+        _ => Some(entry),
+    }
+}
+
+fn dynamic_wallpaper_entry(entry: &WallpaperEntry) -> bool {
+    match entry {
+        WallpaperEntry::Video { .. }
+        | WallpaperEntry::Slideshow { .. }
+        | WallpaperEntry::Web { .. }
+        | WallpaperEntry::SceneLite { .. } => true,
+        WallpaperEntry::StaticImage { .. } => false,
+        WallpaperEntry::Playlist { items, .. } => items
+            .iter()
+            .any(|item| dynamic_wallpaper_entry(item.entry.as_ref())),
+    }
 }
 
 fn video_poster_plan(plan: &VideoWallpaperPlan) -> Option<StaticWallpaperPlan> {
@@ -878,6 +1004,7 @@ fn wallpaper_plan_for_assignment_with_target(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -899,6 +1026,7 @@ pub fn wallpaper_plan(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -910,13 +1038,47 @@ fn wallpaper_plan_with_target(
     fit_override: Option<FitMode>,
     variant_id: Option<&str>,
     render_target: Option<RenderTargetSize>,
+    playlist_context: Option<&PlaylistRenderContext<'_>>,
     render_properties: Option<&BTreeMap<String, Value>>,
     static_image_cache: Option<&mut StaticImageCacheContext<'_>>,
     scene_lite_snapshot_cache: Option<&mut SceneLiteSnapshotCacheContext<'_>>,
 ) -> Result<WallpaperRenderPlan, RendererPlanError> {
     let output_name = output_name.into();
     let explicit_variant_source = explicit_variant_source(package, variant_id)?;
-    match &package.manifest.entry {
+    wallpaper_entry_plan_with_target(
+        &output_name,
+        package,
+        &package.manifest.entry,
+        performance,
+        video_decoder_policy,
+        fit_override,
+        explicit_variant_source,
+        true,
+        render_target,
+        playlist_context,
+        render_properties,
+        static_image_cache,
+        scene_lite_snapshot_cache,
+    )
+}
+
+fn wallpaper_entry_plan_with_target(
+    output_name: &str,
+    package: &WallpaperPackage,
+    entry: &WallpaperEntry,
+    performance: &PerformanceDecision,
+    video_decoder_policy: VideoDecoderPolicy,
+    fit_override: Option<FitMode>,
+    explicit_variant_source: Option<&PackagePath>,
+    allow_automatic_variants: bool,
+    render_target: Option<RenderTargetSize>,
+    playlist_context: Option<&PlaylistRenderContext<'_>>,
+    render_properties: Option<&BTreeMap<String, Value>>,
+    static_image_cache: Option<&mut StaticImageCacheContext<'_>>,
+    scene_lite_snapshot_cache: Option<&mut SceneLiteSnapshotCacheContext<'_>>,
+) -> Result<WallpaperRenderPlan, RendererPlanError> {
+    let variant_render_target = allow_automatic_variants.then_some(render_target).flatten();
+    match entry {
         WallpaperEntry::StaticImage {
             source,
             fit,
@@ -925,13 +1087,13 @@ fn wallpaper_plan_with_target(
             height,
             ..
         } => Ok(WallpaperRenderPlan::StaticImage(StaticWallpaperPlan {
-            output_name,
+            output_name: output_name.to_owned(),
             source: static_image_source_path(
                 package,
                 source,
                 effective_fit(*fit, fit_override),
                 explicit_variant_source,
-                render_target,
+                variant_render_target,
                 source_dimensions(*width, *height),
                 static_image_cache,
             ),
@@ -952,10 +1114,14 @@ fn wallpaper_plan_with_target(
                 .or(package.manifest.preview.poster.as_ref())
                 .map(|poster| poster.join_to(&package.root));
             Ok(WallpaperRenderPlan::Video(VideoWallpaperPlan {
-                output_name,
-                source: selected_variant_source(package, explicit_variant_source, render_target)
-                    .unwrap_or(source)
-                    .join_to(&package.root),
+                output_name: output_name.to_owned(),
+                source: selected_variant_source(
+                    package,
+                    explicit_variant_source,
+                    variant_render_target,
+                )
+                .unwrap_or(source)
+                .join_to(&package.root),
                 poster,
                 fit: effective_fit(*fit, fit_override),
                 loop_playback: *loop_playback,
@@ -972,7 +1138,7 @@ fn wallpaper_plan_with_target(
             transition,
             fit,
         } => Ok(WallpaperRenderPlan::Slideshow(SlideshowWallpaperPlan {
-            output_name,
+            output_name: output_name.to_owned(),
             sources: sources
                 .iter()
                 .map(|source| source.join_to(&package.root))
@@ -984,12 +1150,10 @@ fn wallpaper_plan_with_target(
         })),
         WallpaperEntry::Web { fallback, .. } => {
             let Some(fallback) = fallback else {
-                return Err(RendererPlanError::UnsupportedEntry(
-                    package.manifest.entry.kind().as_str(),
-                ));
+                return Err(RendererPlanError::UnsupportedEntry(entry.kind().as_str()));
             };
             Ok(WallpaperRenderPlan::StaticImage(StaticWallpaperPlan {
-                output_name,
+                output_name: output_name.to_owned(),
                 source: fallback.join_to(&package.root),
                 fit: effective_fit(FitMode::Cover, fit_override),
                 background: Some("#000000".to_owned()),
@@ -1000,7 +1164,7 @@ fn wallpaper_plan_with_target(
             fallback,
             max_fps,
         } => Ok(WallpaperRenderPlan::SceneLite(scene_lite_wallpaper_plan(
-            output_name,
+            output_name.to_owned(),
             package,
             source.as_ref(),
             fallback.as_ref(),
@@ -1011,6 +1175,25 @@ fn wallpaper_plan_with_target(
             render_properties,
             scene_lite_snapshot_cache,
         )?)),
+        WallpaperEntry::Playlist { items, .. } => {
+            let item = select_playlist_item(items, playlist_context)
+                .ok_or(RendererPlanError::PlaylistNoMatch)?;
+            wallpaper_entry_plan_with_target(
+                output_name,
+                package,
+                item.entry.as_ref(),
+                performance,
+                video_decoder_policy,
+                fit_override,
+                None,
+                false,
+                render_target,
+                playlist_context,
+                render_properties,
+                static_image_cache,
+                scene_lite_snapshot_cache,
+            )
+        }
     }
 }
 
@@ -1953,6 +2136,7 @@ pub enum RendererPlanError {
     UnsupportedEntry(&'static str),
     MissingAssignment,
     MissingVariant(String),
+    PlaylistNoMatch,
     PackageLoad(String),
 }
 
@@ -1964,6 +2148,7 @@ impl fmt::Display for RendererPlanError {
             Self::MissingVariant(variant) => {
                 write!(f, "wallpaper variant {variant:?} was not found")
             }
+            Self::PlaylistNoMatch => f.write_str("playlist did not match any item"),
             Self::PackageLoad(message) => f.write_str(message),
         }
     }
@@ -2620,6 +2805,105 @@ mod tests {
     }
 
     #[test]
+    fn playlist_selects_wallpaper_from_power_condition() {
+        let test_dir = TestDir::new("gilder-playlist-power-plan");
+        let package_dir = test_dir.path.join("playlist-demo.gwpdir");
+        write_minimal_playlist_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+
+        let battery_sync = static_render_sync_plan(
+            &DesktopSnapshot {
+                power: PowerState::Battery,
+                outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+                ..DesktopSnapshot::default()
+            },
+            &state,
+            test_dir.path.join("cache"),
+        );
+
+        assert!(battery_sync.errors.is_empty());
+        assert_eq!(battery_sync.plans.len(), 1);
+        assert!(battery_sync.video_plans.is_empty());
+        assert!(battery_sync.plans[0].source.ends_with("assets/battery.svg"));
+
+        let ac_sync = static_render_sync_plan(
+            &DesktopSnapshot {
+                power: PowerState::Ac,
+                outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+                ..DesktopSnapshot::default()
+            },
+            &state,
+            test_dir.path.join("cache"),
+        );
+
+        assert!(ac_sync.errors.is_empty());
+        assert!(ac_sync.plans.is_empty());
+        assert_eq!(ac_sync.video_plans.len(), 1);
+        assert!(ac_sync.video_plans[0].source.ends_with("assets/loop.webm"));
+    }
+
+    #[test]
+    fn playlist_static_selection_survives_battery_pause_dynamic_policy() {
+        let test_dir = TestDir::new("gilder-playlist-battery-static");
+        let package_dir = test_dir.path.join("playlist-demo.gwpdir");
+        write_minimal_playlist_gwpdir(&package_dir);
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some(package_dir.display().to_string());
+        config.performance.battery = PowerPolicy::PauseDynamic;
+        let desktop = DesktopSnapshot {
+            power: PowerState::Battery,
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_config(
+            &config,
+            &desktop,
+            &AppState::default(),
+            test_dir.path.join("cache"),
+        );
+
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.removals.is_empty());
+        assert!(sync.plans[0].source.ends_with("assets/battery.svg"));
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Active);
+    }
+
+    #[test]
+    fn playlist_no_match_reports_error_under_pause_dynamic_policy() {
+        let test_dir = TestDir::new("gilder-playlist-no-match");
+        let package_dir = test_dir.path.join("playlist-demo.gwpdir");
+        write_playlist_no_match_gwpdir(&package_dir);
+        let mut config = GilderConfig::default();
+        config.default_wallpaper = Some(package_dir.display().to_string());
+        config.performance.battery = PowerPolicy::PauseDynamic;
+        let desktop = DesktopSnapshot {
+            power: PowerState::Battery,
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_config(
+            &config,
+            &desktop,
+            &AppState::default(),
+            test_dir.path.join("cache"),
+        );
+
+        assert!(sync.plans.is_empty());
+        assert!(sync.video_plans.is_empty());
+        assert!(sync.removals.is_empty());
+        assert_eq!(sync.errors.len(), 1);
+        assert_eq!(sync.errors[0].message, "playlist did not match any item");
+        assert_eq!(sync.decisions[0].action, StaticRenderAction::Error);
+    }
+
+    #[test]
     fn static_wallpaper_plan_uses_requested_variant_source() {
         let test_dir = TestDir::new("gilder-static-variant-plan");
         let package_dir = test_dir.path.join("static-variant.gwpdir");
@@ -2784,6 +3068,7 @@ exit 0
                     height: 1080,
                 }),
                 None,
+                None,
                 Some(&mut context),
                 None,
             )
@@ -2819,6 +3104,7 @@ exit 0
                     width: 1920,
                     height: 1080,
                 }),
+                None,
                 None,
                 Some(&mut context),
                 None,
@@ -4741,6 +5027,88 @@ exit 0
                 "interval_ms": 1500,
                 "transition": "crossfade",
                 "fit": "contain"
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_minimal_playlist_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(path.join("assets/battery.svg"), b"<svg/>").unwrap();
+        fs::write(path.join("assets/loop.webm"), b"not a real video").unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.playlist-demo",
+            "version": "1.0.0",
+            "title": "Playlist Demo",
+            "kind": "playlist",
+            "entry": {
+                "type": "playlist",
+                "items": [
+                    {
+                        "id": "battery-static",
+                        "conditions": {
+                            "power": "battery"
+                        },
+                        "entry": {
+                            "type": "static-image",
+                            "source": "assets/battery.svg",
+                            "fit": "cover"
+                        }
+                    },
+                    {
+                        "id": "default-video",
+                        "entry": {
+                            "type": "video",
+                            "source": "assets/loop.webm",
+                            "loop": true,
+                            "muted": true,
+                            "fit": "cover",
+                            "max_fps": 60
+                        }
+                    }
+                ]
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_playlist_no_match_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(path.join("assets/loop.webm"), b"not a real video").unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.playlist-no-match",
+            "version": "1.0.0",
+            "title": "Playlist No Match",
+            "kind": "playlist",
+            "entry": {
+                "type": "playlist",
+                "items": [
+                    {
+                        "id": "dp-only-video",
+                        "conditions": {
+                            "outputs": ["DP-1"]
+                        },
+                        "entry": {
+                            "type": "video",
+                            "source": "assets/loop.webm",
+                            "loop": true,
+                            "muted": true,
+                            "fit": "cover"
+                        }
+                    }
+                ]
             }
         });
         fs::write(
