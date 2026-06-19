@@ -18,6 +18,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1259,7 +1260,7 @@ fn load_assigned_package_tracked(
 struct RenderPackageCache<'a> {
     cache_dir: &'a Path,
     max_entries: usize,
-    packages: BTreeMap<String, Result<WallpaperPackage, RendererPlanError>>,
+    packages: BTreeMap<String, Result<Rc<WallpaperPackage>, RendererPlanError>>,
     package_order: VecDeque<String>,
     protected_archive_dirs: BTreeSet<PathBuf>,
     protected_static_cache_files: BTreeSet<PathBuf>,
@@ -1282,7 +1283,7 @@ impl<'a> RenderPackageCache<'a> {
     fn package(
         &mut self,
         assignment: &WallpaperAssignment,
-    ) -> Result<WallpaperPackage, RendererPlanError> {
+    ) -> Result<Rc<WallpaperPackage>, RendererPlanError> {
         if let Some(package) = self.packages.get(&assignment.path) {
             self.stats.package_cache_hits += 1;
             return package.clone();
@@ -1294,7 +1295,8 @@ impl<'a> RenderPackageCache<'a> {
             self.cache_dir,
             &mut self.stats,
             &mut self.protected_archive_dirs,
-        );
+        )
+        .map(Rc::new);
         if self.max_entries > 0 {
             self.prune_for_insert();
             self.packages
@@ -2957,12 +2959,15 @@ exit 0
         };
         let mut cache = RenderPackageCache::new(&test_dir.path, 16);
 
-        let first_id = cache.package(&assignment).unwrap().manifest.id.clone();
+        let first = cache.package(&assignment).unwrap();
+        let first_id = first.manifest.id.clone();
         fs::remove_file(package_dir.join(crate::core::MANIFEST_FILE)).unwrap();
-        let second_id = cache.package(&assignment).unwrap().manifest.id.clone();
+        let second = cache.package(&assignment).unwrap();
+        let second_id = second.manifest.id.clone();
 
         assert_eq!(first_id, "org.example.static-variant");
         assert_eq!(second_id, first_id);
+        assert!(Rc::ptr_eq(&first, &second));
         assert_eq!(cache.packages.len(), 1);
         assert_eq!(cache.stats.package_cache_misses, 1);
         assert_eq!(cache.stats.package_cache_hits, 1);
