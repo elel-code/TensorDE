@@ -59,6 +59,8 @@ Options:
                      Require sampled video runtime to report this sink-side caps memory feature
   --expect-zero-copy-evidence <level>
                      Require sampled video runtime to report this zero-copy evidence level
+  --expect-zero-copy-evidence-at-least <level>
+                     Require sampled video runtime to report this zero-copy evidence level or stronger
   --expect-video-position-progress
                      Require sampled video position to advance
   --expect-gtk-frame-clock
@@ -157,6 +159,7 @@ expect_decoder_class=""
 expect_memory_feature=""
 expect_sink_memory_feature=""
 expect_zero_copy_evidence=""
+expect_zero_copy_evidence_at_least=""
 expect_video_position_progress=0
 expect_gtk_frame_clock=0
 expect_gtk_frame_clock_phases=()
@@ -359,6 +362,12 @@ while [[ $# -gt 0 ]]; do
     --expect-zero-copy-evidence)
       [[ $# -ge 2 ]] || { echo "--expect-zero-copy-evidence requires a value" >&2; exit 2; }
       expect_zero_copy_evidence="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-zero-copy-evidence-at-least)
+      [[ $# -ge 2 ]] || { echo "--expect-zero-copy-evidence-at-least requires a value" >&2; exit 2; }
+      expect_zero_copy_evidence_at_least="$2"
       sample_performance=1
       shift 2
       ;;
@@ -643,6 +652,22 @@ do
     exit 2
   fi
 done
+case "$expect_zero_copy_evidence" in
+  ""|missing|software-decode|hardware-decode|gpu-memory-caps|dmabuf-caps|sink-gpu-memory-caps|sink-dmabuf-caps)
+    ;;
+  *)
+    echo "--expect-zero-copy-evidence must be one of missing, software-decode, hardware-decode, gpu-memory-caps, dmabuf-caps, sink-gpu-memory-caps, sink-dmabuf-caps" >&2
+    exit 2
+    ;;
+esac
+case "$expect_zero_copy_evidence_at_least" in
+  ""|missing|software-decode|hardware-decode|gpu-memory-caps|dmabuf-caps|sink-gpu-memory-caps|sink-dmabuf-caps)
+    ;;
+  *)
+    echo "--expect-zero-copy-evidence-at-least must be one of missing, software-decode, hardware-decode, gpu-memory-caps, dmabuf-caps, sink-gpu-memory-caps, sink-dmabuf-caps" >&2
+    exit 2
+    ;;
+esac
 for render_sync_resource_expectation in \
   "$expect_renderer_video_pipeline_source_references_latest_at_most" \
   "$expect_renderer_video_pipeline_source_reference_bytes_latest_at_most" \
@@ -918,6 +943,7 @@ expect_decoder_class: ${expect_decoder_class:-none}
 expect_memory_feature: ${expect_memory_feature:-none}
 expect_sink_memory_feature: ${expect_sink_memory_feature:-none}
 expect_zero_copy_evidence: ${expect_zero_copy_evidence:-none}
+expect_zero_copy_evidence_at_least: ${expect_zero_copy_evidence_at_least:-none}
 expect_video_position_progress: ${expect_video_position_progress}
 expect_gtk_frame_clock: ${expect_gtk_frame_clock}
 expect_gtk_frame_clock_phases: ${expect_gtk_frame_clock_phases[*]:-none}
@@ -1307,6 +1333,7 @@ has_video_runtime_expectations() {
     -n "$expect_memory_feature" ||
     -n "$expect_sink_memory_feature" ||
     -n "$expect_zero_copy_evidence" ||
+    -n "$expect_zero_copy_evidence_at_least" ||
     "$expect_video_position_progress" -eq 1 ||
     "$expect_gtk_frame_clock" -eq 1 ||
     "${#expect_gtk_frame_clock_phases[@]}" -gt 0 ||
@@ -1329,6 +1356,9 @@ append_video_runtime_expectations() {
   fi
   if [[ -n "$expect_zero_copy_evidence" ]]; then
     args_ref+=(--expect-zero-copy-evidence "$expect_zero_copy_evidence")
+  fi
+  if [[ -n "$expect_zero_copy_evidence_at_least" ]]; then
+    args_ref+=(--expect-zero-copy-evidence-at-least "$expect_zero_copy_evidence_at_least")
   fi
   if [[ "$expect_video_position_progress" -eq 1 ]]; then
     args_ref+=(--expect-video-position-progress)

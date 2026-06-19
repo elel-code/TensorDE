@@ -151,6 +151,8 @@ Options:
                      Require at least one video runtime row with this sink-side caps memory feature
   --expect-zero-copy-evidence <level>
                      Require at least one video runtime row with this zero-copy evidence level
+  --expect-zero-copy-evidence-at-least <level>
+                     Require at least one video runtime row at this zero-copy evidence level or stronger
   --expect-video-position-progress
                      Require sampled video position to advance on at least one output
   --expect-frame-limiter-enabled
@@ -250,6 +252,7 @@ expect_decoder_class=""
 expect_memory_feature=""
 expect_sink_memory_feature=""
 expect_zero_copy_evidence=""
+expect_zero_copy_evidence_at_least=""
 expect_video_position_progress=0
 expect_frame_limiter_enabled=0
 expect_frame_limiter_max_fps=""
@@ -630,6 +633,11 @@ while [[ $# -gt 0 ]]; do
     --expect-zero-copy-evidence)
       [[ $# -ge 2 ]] || { echo "--expect-zero-copy-evidence requires a value" >&2; exit 2; }
       expect_zero_copy_evidence="$2"
+      shift 2
+      ;;
+    --expect-zero-copy-evidence-at-least)
+      [[ $# -ge 2 ]] || { echo "--expect-zero-copy-evidence-at-least requires a value" >&2; exit 2; }
+      expect_zero_copy_evidence_at_least="$2"
       shift 2
       ;;
     --expect-video-position-progress)
@@ -2285,6 +2293,7 @@ has_video_runtime_expectations() {
     -n "$expect_memory_feature" ||
     -n "$expect_sink_memory_feature" ||
     -n "$expect_zero_copy_evidence" ||
+    -n "$expect_zero_copy_evidence_at_least" ||
     "$expect_video_position_progress" -eq 1 ||
     "$expect_frame_limiter_enabled" -eq 1 ||
     -n "$expect_frame_limiter_max_fps" ||
@@ -2316,6 +2325,44 @@ expect_video_runtime_field() {
     pass "video runtime expectation matched ${description}: ${expected}"
   else
     skip_or_fail "video runtime expectation not met: ${description} ${expected}"
+  fi
+}
+
+expect_zero_copy_evidence_minimum() {
+  local minimum="$1"
+  local matched
+
+  if matched="$(awk -F, -v minimum="$minimum" '
+    function rank(level) {
+      if (level == "missing") { return 0 }
+      if (level == "software-decode") { return 1 }
+      if (level == "hardware-decode") { return 2 }
+      if (level == "gpu-memory-caps") { return 3 }
+      if (level == "dmabuf-caps") { return 4 }
+      if (level == "sink-gpu-memory-caps") { return 5 }
+      if (level == "sink-dmabuf-caps") { return 6 }
+      return -1
+    }
+    BEGIN {
+      minimum_rank = rank(minimum)
+    }
+    NR == 1 { next }
+    {
+      count = split($13, values, /\|/)
+      for (i = 1; i <= count; i += 1) {
+        value_rank = rank(values[i])
+        if (value_rank >= minimum_rank) {
+          print values[i]
+          found = 1
+          exit
+        }
+      }
+    }
+    END { exit found ? 0 : 1 }
+  ' "$video_runtime_path")"; then
+    pass "video runtime expectation matched zero-copy evidence at least ${minimum}: ${matched}"
+  else
+    skip_or_fail "video runtime expectation not met: zero-copy evidence at least ${minimum}"
   fi
 }
 
@@ -2399,6 +2446,9 @@ validate_video_runtime_expectations() {
   fi
   if [[ -n "$expect_zero_copy_evidence" ]]; then
     expect_video_runtime_field 13 "$expect_zero_copy_evidence" "zero-copy evidence level"
+  fi
+  if [[ -n "$expect_zero_copy_evidence_at_least" ]]; then
+    expect_zero_copy_evidence_minimum "$expect_zero_copy_evidence_at_least"
   fi
   if [[ "$expect_video_position_progress" -eq 1 ]]; then
     expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "moving video output count"
@@ -2491,6 +2541,22 @@ case "$expect_decoder_class" in
     ;;
   *)
     echo "--expect-decoder-class must be one of hardware, software, unknown" >&2
+    exit 2
+    ;;
+esac
+case "$expect_zero_copy_evidence" in
+  ""|missing|software-decode|hardware-decode|gpu-memory-caps|dmabuf-caps|sink-gpu-memory-caps|sink-dmabuf-caps)
+    ;;
+  *)
+    echo "--expect-zero-copy-evidence must be one of missing, software-decode, hardware-decode, gpu-memory-caps, dmabuf-caps, sink-gpu-memory-caps, sink-dmabuf-caps" >&2
+    exit 2
+    ;;
+esac
+case "$expect_zero_copy_evidence_at_least" in
+  ""|missing|software-decode|hardware-decode|gpu-memory-caps|dmabuf-caps|sink-gpu-memory-caps|sink-dmabuf-caps)
+    ;;
+  *)
+    echo "--expect-zero-copy-evidence-at-least must be one of missing, software-decode, hardware-decode, gpu-memory-caps, dmabuf-caps, sink-gpu-memory-caps, sink-dmabuf-caps" >&2
     exit 2
     ;;
 esac
@@ -2677,6 +2743,7 @@ expect_decoder_class: ${expect_decoder_class:-none}
 expect_memory_feature: ${expect_memory_feature:-none}
 expect_sink_memory_feature: ${expect_sink_memory_feature:-none}
 expect_zero_copy_evidence: ${expect_zero_copy_evidence:-none}
+expect_zero_copy_evidence_at_least: ${expect_zero_copy_evidence_at_least:-none}
 expect_video_position_progress: ${expect_video_position_progress}
 expect_frame_limiter_enabled: ${expect_frame_limiter_enabled}
 expect_frame_limiter_max_fps: ${expect_frame_limiter_max_fps:-none}
