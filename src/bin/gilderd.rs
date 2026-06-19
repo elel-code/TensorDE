@@ -540,12 +540,16 @@ impl DaemonRuntime {
 struct RendererRuntimeSnapshot {
     output_windows: usize,
     static_surfaces: usize,
+    static_picture_surfaces: usize,
+    static_css_surfaces: usize,
+    static_color_surfaces: usize,
     slideshow_surfaces: usize,
     video_surfaces: usize,
     static_surface_resource_references: usize,
     static_surface_resource_bytes: u64,
     static_surface_unique_resources: usize,
     static_surface_unique_resource_bytes: u64,
+    static_surface_estimated_decoded_bytes: u64,
     slideshow_resource_references: usize,
     slideshow_resource_bytes: u64,
     slideshow_unique_resources: usize,
@@ -566,12 +570,16 @@ impl RendererRuntimeSnapshot {
         Self {
             output_windows: snapshot.output_windows,
             static_surfaces: snapshot.static_surfaces,
+            static_picture_surfaces: snapshot.static_picture_surfaces,
+            static_css_surfaces: snapshot.static_css_surfaces,
+            static_color_surfaces: snapshot.static_color_surfaces,
             slideshow_surfaces: snapshot.slideshow_surfaces,
             video_surfaces: snapshot.video_surfaces,
             static_surface_resource_references: snapshot.static_surface_resource_references,
             static_surface_resource_bytes: snapshot.static_surface_resource_bytes,
             static_surface_unique_resources: snapshot.static_surface_unique_resources,
             static_surface_unique_resource_bytes: snapshot.static_surface_unique_resource_bytes,
+            static_surface_estimated_decoded_bytes: snapshot.static_surface_estimated_decoded_bytes,
             slideshow_resource_references: snapshot.slideshow_resource_references,
             slideshow_resource_bytes: snapshot.slideshow_resource_bytes,
             slideshow_unique_resources: snapshot.slideshow_unique_resources,
@@ -597,12 +605,16 @@ impl RendererRuntimeSnapshot {
         Self {
             output_windows: 0,
             static_surfaces: 0,
+            static_picture_surfaces: 0,
+            static_css_surfaces: 0,
+            static_color_surfaces: 0,
             slideshow_surfaces: 0,
             video_surfaces: 0,
             static_surface_resource_references: 0,
             static_surface_resource_bytes: 0,
             static_surface_unique_resources: 0,
             static_surface_unique_resource_bytes: 0,
+            static_surface_estimated_decoded_bytes: 0,
             slideshow_resource_references: 0,
             slideshow_resource_bytes: 0,
             slideshow_unique_resources: 0,
@@ -651,12 +663,16 @@ fn renderer_runtime_report(snapshot: &RendererRuntimeSnapshot) -> Value {
     json!({
         "output_windows": snapshot.output_windows,
         "static_surfaces": snapshot.static_surfaces,
+        "static_picture_surfaces": snapshot.static_picture_surfaces,
+        "static_css_surfaces": snapshot.static_css_surfaces,
+        "static_color_surfaces": snapshot.static_color_surfaces,
         "slideshow_surfaces": snapshot.slideshow_surfaces,
         "video_surfaces": snapshot.video_surfaces,
         "static_surface_resource_references": snapshot.static_surface_resource_references,
         "static_surface_resource_bytes": snapshot.static_surface_resource_bytes,
         "static_surface_unique_resources": snapshot.static_surface_unique_resources,
         "static_surface_unique_resource_bytes": snapshot.static_surface_unique_resource_bytes,
+        "static_surface_estimated_decoded_bytes": snapshot.static_surface_estimated_decoded_bytes,
         "slideshow_resource_references": snapshot.slideshow_resource_references,
         "slideshow_resource_bytes": snapshot.slideshow_resource_bytes,
         "slideshow_unique_resources": snapshot.slideshow_unique_resources,
@@ -741,12 +757,16 @@ fn renderer_telemetry_report(snapshot: &RendererRuntimeSnapshot) -> Value {
     json!({
         "output_windows": snapshot.output_windows,
         "static_surfaces": snapshot.static_surfaces,
+        "static_picture_surfaces": snapshot.static_picture_surfaces,
+        "static_css_surfaces": snapshot.static_css_surfaces,
+        "static_color_surfaces": snapshot.static_color_surfaces,
         "slideshow_surfaces": snapshot.slideshow_surfaces,
         "video_surfaces": snapshot.video_surfaces,
         "static_surface_resource_references": snapshot.static_surface_resource_references,
         "static_surface_resource_bytes": snapshot.static_surface_resource_bytes,
         "static_surface_unique_resources": snapshot.static_surface_unique_resources,
         "static_surface_unique_resource_bytes": snapshot.static_surface_unique_resource_bytes,
+        "static_surface_estimated_decoded_bytes": snapshot.static_surface_estimated_decoded_bytes,
         "slideshow_resource_references": snapshot.slideshow_resource_references,
         "slideshow_resource_bytes": snapshot.slideshow_resource_bytes,
         "slideshow_unique_resources": snapshot.slideshow_unique_resources,
@@ -2176,12 +2196,16 @@ mod tests {
         let renderer_runtime = RendererRuntimeSnapshot {
             output_windows: 3,
             static_surfaces: 2,
+            static_picture_surfaces: 1,
+            static_css_surfaces: 1,
+            static_color_surfaces: 0,
             slideshow_surfaces: 1,
             video_surfaces: 2,
             static_surface_resource_references: 2,
             static_surface_resource_bytes: 4096,
             static_surface_unique_resources: 1,
             static_surface_unique_resource_bytes: 2048,
+            static_surface_estimated_decoded_bytes: 8_294_400,
             slideshow_resource_references: 3,
             slideshow_resource_bytes: 8192,
             slideshow_unique_resources: 2,
@@ -2387,8 +2411,24 @@ mod tests {
             json!(3)
         );
         assert_eq!(
+            response["result"]["renderer_runtime"]["static_picture_surfaces"],
+            json!(1)
+        );
+        assert_eq!(
+            response["result"]["renderer_runtime"]["static_css_surfaces"],
+            json!(1)
+        );
+        assert_eq!(
+            response["result"]["renderer_runtime"]["static_color_surfaces"],
+            json!(0)
+        );
+        assert_eq!(
             response["result"]["renderer_runtime"]["static_surface_resource_bytes"],
             json!(4096)
+        );
+        assert_eq!(
+            response["result"]["renderer_runtime"]["static_surface_estimated_decoded_bytes"],
+            json!(8294400)
         );
         assert_eq!(
             response["result"]["renderer_runtime"]["static_surface_unique_resources"],
@@ -2419,6 +2459,18 @@ mod tests {
             json!(2)
         );
         assert_eq!(
+            response["result"]["telemetry"]["renderer"]["static_picture_surfaces"],
+            json!(1)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["static_css_surfaces"],
+            json!(1)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["static_color_surfaces"],
+            json!(0)
+        );
+        assert_eq!(
             response["result"]["telemetry"]["renderer"]["slideshow_surfaces"],
             json!(1)
         );
@@ -2445,6 +2497,10 @@ mod tests {
         assert_eq!(
             response["result"]["telemetry"]["renderer"]["static_surface_unique_resource_bytes"],
             json!(2048)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["static_surface_estimated_decoded_bytes"],
+            json!(8294400)
         );
         assert_eq!(
             response["result"]["telemetry"]["renderer"]["slideshow_resource_references"],

@@ -51,12 +51,16 @@ pub struct GtkStaticRenderer {
 pub struct GtkRendererResourceSnapshot {
     pub output_windows: usize,
     pub static_surfaces: usize,
+    pub static_picture_surfaces: usize,
+    pub static_css_surfaces: usize,
+    pub static_color_surfaces: usize,
     pub slideshow_surfaces: usize,
     pub video_surfaces: usize,
     pub static_surface_resource_references: usize,
     pub static_surface_resource_bytes: u64,
     pub static_surface_unique_resources: usize,
     pub static_surface_unique_resource_bytes: u64,
+    pub static_surface_estimated_decoded_bytes: u64,
     pub slideshow_resource_references: usize,
     pub slideshow_resource_bytes: u64,
     pub slideshow_unique_resources: usize,
@@ -348,6 +352,21 @@ impl GtkStaticRenderer {
                 .values()
                 .filter(|output| output.static_surface.is_some())
                 .count(),
+            static_picture_surfaces: self
+                .windows
+                .values()
+                .filter(|output| output.static_surface_is_picture())
+                .count(),
+            static_css_surfaces: self
+                .windows
+                .values()
+                .filter(|output| output.static_surface_is_css_image())
+                .count(),
+            static_color_surfaces: self
+                .windows
+                .values()
+                .filter(|output| output.static_surface_is_color())
+                .count(),
             slideshow_surfaces: self
                 .windows
                 .values()
@@ -362,6 +381,11 @@ impl GtkStaticRenderer {
             static_surface_resource_bytes: footprint.static_surface_resource_bytes,
             static_surface_unique_resources: footprint.static_surface_unique_resources,
             static_surface_unique_resource_bytes: footprint.static_surface_unique_resource_bytes,
+            static_surface_estimated_decoded_bytes: self
+                .windows
+                .values()
+                .map(RenderedOutput::static_surface_estimated_decoded_bytes)
+                .sum(),
             slideshow_resource_references: footprint.slideshow_resource_references,
             slideshow_resource_bytes: footprint.slideshow_resource_bytes,
             slideshow_unique_resources: footprint.slideshow_unique_resources,
@@ -569,6 +593,34 @@ impl RenderedOutput {
         }
     }
 
+    fn static_surface_is_picture(&self) -> bool {
+        matches!(
+            self.static_surface.as_ref(),
+            Some(RenderedStaticSurface::Picture { .. })
+        )
+    }
+
+    fn static_surface_is_css_image(&self) -> bool {
+        matches!(
+            self.static_surface.as_ref(),
+            Some(RenderedStaticSurface::CssImage { .. })
+        )
+    }
+
+    fn static_surface_is_color(&self) -> bool {
+        matches!(
+            self.static_surface.as_ref(),
+            Some(RenderedStaticSurface::Color)
+        )
+    }
+
+    fn static_surface_estimated_decoded_bytes(&self) -> u64 {
+        self.static_surface
+            .as_ref()
+            .map(RenderedStaticSurface::estimated_decoded_bytes)
+            .unwrap_or(0)
+    }
+
     #[cfg(feature = "video-renderer")]
     fn video_pipeline_source(&self) -> Option<&Path> {
         self.video.as_ref().map(|video| video.source.as_path())
@@ -657,6 +709,19 @@ impl RenderedOutput {
             );
         }
         self.video_error = Some(error);
+    }
+}
+
+impl RenderedStaticSurface {
+    fn estimated_decoded_bytes(&self) -> u64 {
+        match self {
+            Self::Picture { widget, .. } => widget
+                .paintable()
+                .as_ref()
+                .map(paintable_estimated_decoded_bytes)
+                .unwrap_or(0),
+            Self::CssImage { .. } | Self::Color => 0,
+        }
     }
 }
 
@@ -975,6 +1040,19 @@ fn css_widget_name(output_name: &str) -> String {
         }
     }
     name
+}
+
+fn paintable_estimated_decoded_bytes(paintable: &gdk::Paintable) -> u64 {
+    estimated_rgba_decoded_bytes(paintable.intrinsic_width(), paintable.intrinsic_height())
+}
+
+fn estimated_rgba_decoded_bytes(width: i32, height: i32) -> u64 {
+    if width <= 0 || height <= 0 {
+        return 0;
+    }
+    (width as u64)
+        .saturating_mul(height as u64)
+        .saturating_mul(4)
 }
 
 #[cfg(feature = "video-renderer")]
@@ -1854,6 +1932,13 @@ mod tests {
         assert!(use_picture_static_surface(FitMode::Stretch));
         assert!(use_picture_static_surface(FitMode::Center));
         assert!(!use_picture_static_surface(FitMode::Tile));
+    }
+
+    #[test]
+    fn estimates_rgba_decoded_bytes_from_intrinsic_size() {
+        assert_eq!(estimated_rgba_decoded_bytes(1920, 1080), 8_294_400);
+        assert_eq!(estimated_rgba_decoded_bytes(0, 1080), 0);
+        assert_eq!(estimated_rgba_decoded_bytes(-1, 1080), 0);
     }
 
     #[cfg(feature = "video-renderer")]
