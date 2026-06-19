@@ -1608,8 +1608,15 @@ write_video_runtime_summary() {
       }
       if (position != "") {
         position_samples += 1
-        if (!(output in first_position)) {
-          first_position[output] = position + 0
+        if (!(output in min_position)) {
+          min_position[output] = position + 0
+          max_position[output] = position + 0
+        }
+        if (position + 0 < min_position[output]) {
+          min_position[output] = position + 0
+        }
+        if (position + 0 > max_position[output]) {
+          max_position[output] = position + 0
         }
         last_position[output] = position + 0
       }
@@ -1731,7 +1738,7 @@ write_video_runtime_summary() {
     }
     END {
       for (output in last_position) {
-        delta = last_position[output] - first_position[output]
+        delta = max_position[output] - min_position[output]
         if (delta > 0) {
           moving_outputs += 1
         }

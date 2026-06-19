@@ -30,9 +30,9 @@ use gst::prelude::*;
 use gstreamer as gst;
 
 #[cfg(feature = "video-renderer")]
-const MUTED_PLAYBIN_FLAGS: &str = "video+deinterlace+soft-colorbalance";
+const MUTED_PLAYBIN_FLAGS: &str = "video";
 #[cfg(feature = "video-renderer")]
-const AUDIBLE_PLAYBIN_FLAGS: &str = "video+audio+soft-volume+deinterlace+soft-colorbalance";
+const AUDIBLE_PLAYBIN_FLAGS: &str = "video+audio";
 
 pub struct GtkStaticRenderer {
     application: gtk::Application,
@@ -1449,8 +1449,13 @@ mod tests {
     #[test]
     fn muted_video_playbin_flags_disable_audio_streams() {
         assert_eq!(playbin_flags(true), MUTED_PLAYBIN_FLAGS);
+        assert_eq!(playbin_flags(true), "video");
         assert!(!playbin_flags(true).contains("audio"));
+        assert_eq!(playbin_flags(false), "video+audio");
         assert!(playbin_flags(false).contains("audio"));
+        assert!(!playbin_flags(false).contains("deinterlace"));
+        assert!(!playbin_flags(false).contains("soft-colorbalance"));
+        assert!(!playbin_flags(false).contains("soft-volume"));
     }
 
     struct TestDir {
