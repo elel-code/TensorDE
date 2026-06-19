@@ -61,6 +61,10 @@ Options:
                      Require sampled video runtime to report this zero-copy evidence level
   --expect-zero-copy-evidence-at-least <level>
                      Require sampled video runtime to report this zero-copy evidence level or stronger
+  --expect-zero-copy-profile <profile>
+                     Require grouped zero-copy evidence profile:
+                     hardware-decode, runtime-gpu-path, runtime-dmabuf-path,
+                     gtk-gpu-surface, gtk-dmabuf-surface, gtk-timed-gpu-surface
   --expect-video-position-progress
                      Require sampled video position to advance
   --expect-gtk-frame-clock
@@ -160,6 +164,7 @@ expect_memory_feature=""
 expect_sink_memory_feature=""
 expect_zero_copy_evidence=""
 expect_zero_copy_evidence_at_least=""
+expect_zero_copy_profile=""
 expect_video_position_progress=0
 expect_gtk_frame_clock=0
 expect_gtk_frame_clock_phases=()
@@ -368,6 +373,12 @@ while [[ $# -gt 0 ]]; do
     --expect-zero-copy-evidence-at-least)
       [[ $# -ge 2 ]] || { echo "--expect-zero-copy-evidence-at-least requires a value" >&2; exit 2; }
       expect_zero_copy_evidence_at_least="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-zero-copy-profile)
+      [[ $# -ge 2 ]] || { echo "--expect-zero-copy-profile requires a value" >&2; exit 2; }
+      expect_zero_copy_profile="$2"
       sample_performance=1
       shift 2
       ;;
@@ -668,6 +679,14 @@ case "$expect_zero_copy_evidence_at_least" in
     exit 2
     ;;
 esac
+case "$expect_zero_copy_profile" in
+  ""|hardware-decode|runtime-gpu-path|runtime-dmabuf-path|gtk-gpu-surface|gtk-dmabuf-surface|gtk-timed-gpu-surface)
+    ;;
+  *)
+    echo "--expect-zero-copy-profile must be one of hardware-decode, runtime-gpu-path, runtime-dmabuf-path, gtk-gpu-surface, gtk-dmabuf-surface, gtk-timed-gpu-surface" >&2
+    exit 2
+    ;;
+esac
 for render_sync_resource_expectation in \
   "$expect_renderer_video_pipeline_source_references_latest_at_most" \
   "$expect_renderer_video_pipeline_source_reference_bytes_latest_at_most" \
@@ -944,6 +963,7 @@ expect_memory_feature: ${expect_memory_feature:-none}
 expect_sink_memory_feature: ${expect_sink_memory_feature:-none}
 expect_zero_copy_evidence: ${expect_zero_copy_evidence:-none}
 expect_zero_copy_evidence_at_least: ${expect_zero_copy_evidence_at_least:-none}
+expect_zero_copy_profile: ${expect_zero_copy_profile:-none}
 expect_video_position_progress: ${expect_video_position_progress}
 expect_gtk_frame_clock: ${expect_gtk_frame_clock}
 expect_gtk_frame_clock_phases: ${expect_gtk_frame_clock_phases[*]:-none}
@@ -1249,6 +1269,7 @@ measure_fullscreen_resume: ${measure_fullscreen_resume}
 require_video_runtime_row: ${require_video_runtime_row}
 expect_renderer_video_pipeline_lifecycle: ${expect_renderer_video_pipeline_lifecycle}
 expect_gtk_frame_clock_phases: ${expect_gtk_frame_clock_phases[*]:-none}
+expect_zero_copy_profile: ${expect_zero_copy_profile:-none}
 expect_max_rss_kib_at_most: ${expect_max_rss_kib_at_most:-none}
 expect_max_pss_kib_at_most: ${expect_max_pss_kib_at_most:-none}
 expect_max_private_kib_at_most: ${expect_max_private_kib_at_most:-none}
@@ -1340,6 +1361,7 @@ has_video_runtime_expectations() {
     -n "$expect_sink_memory_feature" ||
     -n "$expect_zero_copy_evidence" ||
     -n "$expect_zero_copy_evidence_at_least" ||
+    -n "$expect_zero_copy_profile" ||
     "$expect_video_position_progress" -eq 1 ||
     "$expect_gtk_frame_clock" -eq 1 ||
     "${#expect_gtk_frame_clock_phases[@]}" -gt 0 ||
@@ -1365,6 +1387,9 @@ append_video_runtime_expectations() {
   fi
   if [[ -n "$expect_zero_copy_evidence_at_least" ]]; then
     args_ref+=(--expect-zero-copy-evidence-at-least "$expect_zero_copy_evidence_at_least")
+  fi
+  if [[ -n "$expect_zero_copy_profile" ]]; then
+    args_ref+=(--expect-zero-copy-profile "$expect_zero_copy_profile")
   fi
   if [[ "$expect_video_position_progress" -eq 1 ]]; then
     args_ref+=(--expect-video-position-progress)

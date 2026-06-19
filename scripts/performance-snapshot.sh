@@ -153,6 +153,10 @@ Options:
                      Require at least one video runtime row with this zero-copy evidence level
   --expect-zero-copy-evidence-at-least <level>
                      Require at least one video runtime row at this zero-copy evidence level or stronger
+  --expect-zero-copy-profile <profile>
+                     Require a grouped zero-copy evidence profile:
+                     hardware-decode, runtime-gpu-path, runtime-dmabuf-path,
+                     gtk-gpu-surface, gtk-dmabuf-surface, gtk-timed-gpu-surface
   --expect-video-position-progress
                      Require sampled video position to advance on at least one output
   --expect-frame-limiter-enabled
@@ -253,6 +257,7 @@ expect_memory_feature=""
 expect_sink_memory_feature=""
 expect_zero_copy_evidence=""
 expect_zero_copy_evidence_at_least=""
+expect_zero_copy_profile=""
 expect_video_position_progress=0
 expect_frame_limiter_enabled=0
 expect_frame_limiter_max_fps=""
@@ -638,6 +643,11 @@ while [[ $# -gt 0 ]]; do
     --expect-zero-copy-evidence-at-least)
       [[ $# -ge 2 ]] || { echo "--expect-zero-copy-evidence-at-least requires a value" >&2; exit 2; }
       expect_zero_copy_evidence_at_least="$2"
+      shift 2
+      ;;
+    --expect-zero-copy-profile)
+      [[ $# -ge 2 ]] || { echo "--expect-zero-copy-profile requires a value" >&2; exit 2; }
+      expect_zero_copy_profile="$2"
       shift 2
       ;;
     --expect-video-position-progress)
@@ -2441,6 +2451,7 @@ has_video_runtime_expectations() {
     -n "$expect_sink_memory_feature" ||
     -n "$expect_zero_copy_evidence" ||
     -n "$expect_zero_copy_evidence_at_least" ||
+    -n "$expect_zero_copy_profile" ||
     "$expect_video_position_progress" -eq 1 ||
     "$expect_frame_limiter_enabled" -eq 1 ||
     -n "$expect_frame_limiter_max_fps" ||
@@ -2545,6 +2556,86 @@ expect_video_runtime_summary_maximum() {
   fi
 }
 
+expect_zero_copy_profile_runtime_row() {
+  local minimum="$1"
+  local profile="$2"
+  local matched
+
+  if matched="$(awk -F, -v minimum="$minimum" '
+    function rank(level) {
+      if (level == "missing") { return 0 }
+      if (level == "software-decode") { return 1 }
+      if (level == "hardware-decode") { return 2 }
+      if (level == "gpu-memory-caps") { return 3 }
+      if (level == "dmabuf-caps") { return 4 }
+      if (level == "sink-gpu-memory-caps") { return 5 }
+      if (level == "sink-dmabuf-caps") { return 6 }
+      return -1
+    }
+    function pipe_contains(value, expected,    count, values, index) {
+      count = split(value, values, /\|/)
+      for (index = 1; index <= count; index += 1) {
+        if (values[index] == expected) {
+          return 1
+        }
+      }
+      return 0
+    }
+    BEGIN {
+      minimum_rank = rank(minimum)
+    }
+    NR == 1 { next }
+    pipe_contains($9, "hardware") && rank($13) >= minimum_rank {
+      print $3 ":" $8 ":" $13
+      found = 1
+      exit
+    }
+    END { exit found ? 0 : 1 }
+  ' "$video_runtime_path")"; then
+    pass "video runtime expectation matched zero-copy profile ${profile} runtime row: ${matched}"
+  else
+    skip_or_fail "video runtime expectation not met: zero-copy profile ${profile} requires hardware decoder and ${minimum} or stronger on the same runtime row"
+  fi
+}
+
+expect_zero_copy_profile_evidence() {
+  local profile="$1"
+
+  case "$profile" in
+    hardware-decode)
+      expect_zero_copy_profile_runtime_row "hardware-decode" "$profile"
+      expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "zero-copy profile ${profile} moving video output count"
+      ;;
+    runtime-gpu-path)
+      expect_zero_copy_profile_runtime_row "sink-gpu-memory-caps" "$profile"
+      expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "zero-copy profile ${profile} moving video output count"
+      ;;
+    runtime-dmabuf-path)
+      expect_zero_copy_profile_runtime_row "sink-dmabuf-caps" "$profile"
+      expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "zero-copy profile ${profile} moving video output count"
+      ;;
+    gtk-gpu-surface)
+      expect_zero_copy_profile_runtime_row "sink-gpu-memory-caps" "$profile"
+      expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "zero-copy profile ${profile} moving video output count"
+      expect_video_runtime_summary_minimum "video_gtk_frame_clock_ticks_max" 1 "zero-copy profile ${profile} GTK frame clock tick max count"
+      expect_video_runtime_summary_minimum "video_gtk_frame_clock_after_paint_ticks_max" 1 "zero-copy profile ${profile} GTK after-paint tick max count"
+      ;;
+    gtk-dmabuf-surface)
+      expect_zero_copy_profile_runtime_row "sink-dmabuf-caps" "$profile"
+      expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "zero-copy profile ${profile} moving video output count"
+      expect_video_runtime_summary_minimum "video_gtk_frame_clock_ticks_max" 1 "zero-copy profile ${profile} GTK frame clock tick max count"
+      expect_video_runtime_summary_minimum "video_gtk_frame_clock_after_paint_ticks_max" 1 "zero-copy profile ${profile} GTK after-paint tick max count"
+      ;;
+    gtk-timed-gpu-surface)
+      expect_zero_copy_profile_runtime_row "sink-gpu-memory-caps" "$profile"
+      expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "zero-copy profile ${profile} moving video output count"
+      expect_video_runtime_summary_minimum "video_gtk_frame_clock_ticks_max" 1 "zero-copy profile ${profile} GTK frame clock tick max count"
+      expect_video_runtime_summary_minimum "video_gtk_frame_clock_after_paint_ticks_max" 1 "zero-copy profile ${profile} GTK after-paint tick max count"
+      expect_video_runtime_summary_minimum "video_gtk_frame_timings_complete_max" 1 "zero-copy profile ${profile} GDK frame timings complete max count"
+      ;;
+  esac
+}
+
 gtk_frame_clock_phase_summary_key() {
   case "$1" in
     before-paint)
@@ -2596,6 +2687,9 @@ validate_video_runtime_expectations() {
   fi
   if [[ -n "$expect_zero_copy_evidence_at_least" ]]; then
     expect_zero_copy_evidence_minimum "$expect_zero_copy_evidence_at_least"
+  fi
+  if [[ -n "$expect_zero_copy_profile" ]]; then
+    expect_zero_copy_profile_evidence "$expect_zero_copy_profile"
   fi
   if [[ "$expect_video_position_progress" -eq 1 ]]; then
     expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "moving video output count"
@@ -2704,6 +2798,14 @@ case "$expect_zero_copy_evidence_at_least" in
     ;;
   *)
     echo "--expect-zero-copy-evidence-at-least must be one of missing, software-decode, hardware-decode, gpu-memory-caps, dmabuf-caps, sink-gpu-memory-caps, sink-dmabuf-caps" >&2
+    exit 2
+    ;;
+esac
+case "$expect_zero_copy_profile" in
+  ""|hardware-decode|runtime-gpu-path|runtime-dmabuf-path|gtk-gpu-surface|gtk-dmabuf-surface|gtk-timed-gpu-surface)
+    ;;
+  *)
+    echo "--expect-zero-copy-profile must be one of hardware-decode, runtime-gpu-path, runtime-dmabuf-path, gtk-gpu-surface, gtk-dmabuf-surface, gtk-timed-gpu-surface" >&2
     exit 2
     ;;
 esac
@@ -2892,6 +2994,7 @@ expect_memory_feature: ${expect_memory_feature:-none}
 expect_sink_memory_feature: ${expect_sink_memory_feature:-none}
 expect_zero_copy_evidence: ${expect_zero_copy_evidence:-none}
 expect_zero_copy_evidence_at_least: ${expect_zero_copy_evidence_at_least:-none}
+expect_zero_copy_profile: ${expect_zero_copy_profile:-none}
 expect_video_position_progress: ${expect_video_position_progress}
 expect_frame_limiter_enabled: ${expect_frame_limiter_enabled}
 expect_frame_limiter_max_fps: ${expect_frame_limiter_max_fps:-none}
