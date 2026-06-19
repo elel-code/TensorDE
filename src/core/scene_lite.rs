@@ -101,6 +101,16 @@ pub struct SceneLiteLayer {
     #[serde(default)]
     pub height: Option<f64>,
     #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub font_size: Option<f64>,
+    #[serde(default)]
+    pub font_family: Option<String>,
+    #[serde(default)]
+    pub font_weight: Option<String>,
+    #[serde(default)]
+    pub text_align: Option<SceneLiteTextAlign>,
+    #[serde(default)]
     pub fit: FitMode,
     #[serde(default)]
     pub animations: Vec<SceneLiteAnimation>,
@@ -146,6 +156,21 @@ impl SceneLiteLayer {
                     )));
                 }
                 self.validate_shape_fields()?;
+            }
+            SceneLiteLayerKind::Text => {
+                if self.text.as_deref().is_none_or(str::is_empty) {
+                    return Err(SceneLiteError::invalid(format!(
+                        "text layer {:?} must define text",
+                        self.id
+                    )));
+                }
+                if self.color.as_deref().is_none_or(str::is_empty) {
+                    return Err(SceneLiteError::invalid(format!(
+                        "text layer {:?} must define color",
+                        self.id
+                    )));
+                }
+                self.validate_text_fields()?;
             }
             SceneLiteLayerKind::Group => {}
         }
@@ -210,6 +235,11 @@ impl SceneLiteLayer {
                 corner_radius: self.corner_radius,
                 width: self.width,
                 height: self.height,
+                text: self.text.clone(),
+                font_size: self.font_size,
+                font_family: self.font_family.clone(),
+                font_weight: self.font_weight.clone(),
+                text_align: self.text_align,
                 fit: self.fit,
                 opacity,
                 transform,
@@ -246,6 +276,28 @@ impl SceneLiteLayer {
         }
         Ok(())
     }
+
+    fn validate_text_fields(&self) -> Result<(), SceneLiteError> {
+        if let Some(font_size) = self.font_size
+            && (!font_size.is_finite() || font_size <= 0.0)
+        {
+            return Err(SceneLiteError::invalid(format!(
+                "layer {:?} font_size must be finite and greater than 0",
+                self.id
+            )));
+        }
+        for (field, value) in [("width", self.width), ("height", self.height)] {
+            if let Some(value) = value
+                && (!value.is_finite() || value <= 0.0)
+            {
+                return Err(SceneLiteError::invalid(format!(
+                    "layer {:?} {field} must be finite and greater than 0",
+                    self.id
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -255,7 +307,17 @@ pub enum SceneLiteLayerKind {
     Color,
     Rectangle,
     Ellipse,
+    Text,
     Group,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneLiteTextAlign {
+    #[default]
+    Start,
+    Middle,
+    End,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -528,6 +590,11 @@ pub struct SceneLiteSnapshotLayer {
     pub corner_radius: Option<f64>,
     pub width: Option<f64>,
     pub height: Option<f64>,
+    pub text: Option<String>,
+    pub font_size: Option<f64>,
+    pub font_family: Option<String>,
+    pub font_weight: Option<String>,
+    pub text_align: Option<SceneLiteTextAlign>,
     pub fit: FitMode,
     pub opacity: f64,
     pub transform: SceneLiteTransform,
@@ -723,6 +790,44 @@ mod tests {
     }
 
     #[test]
+    fn parses_text_layer() {
+        let document: SceneLiteDocument = serde_json::from_str(
+            r##"
+            {
+              "layers": [
+                {
+                  "id": "title",
+                  "type": "text",
+                  "text": "Gilder",
+                  "color": "#f0f4ff",
+                  "font_size": 48,
+                  "font_family": "Inter",
+                  "font_weight": "700",
+                  "text_align": "middle",
+                  "width": 640
+                }
+              ]
+            }
+            "##,
+        )
+        .unwrap();
+
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at(0);
+
+        assert_eq!(snapshot.layers.len(), 1);
+        assert_eq!(snapshot.layers[0].kind, SceneLiteLayerKind::Text);
+        assert_eq!(snapshot.layers[0].text.as_deref(), Some("Gilder"));
+        assert_eq!(snapshot.layers[0].font_size, Some(48.0));
+        assert_eq!(snapshot.layers[0].font_family.as_deref(), Some("Inter"));
+        assert_eq!(snapshot.layers[0].font_weight.as_deref(), Some("700"));
+        assert_eq!(
+            snapshot.layers[0].text_align,
+            Some(SceneLiteTextAlign::Middle)
+        );
+    }
+
+    #[test]
     fn rejects_missing_image_source_and_duplicate_ids() {
         let missing_source: SceneLiteDocument =
             serde_json::from_str(r#"{"layers":[{"id":"a","type":"image"}]}"#).unwrap();
@@ -745,5 +850,10 @@ mod tests {
             serde_json::from_str(r#"{"layers":[{"id":"panel","type":"rectangle","width":0}]}"#)
                 .unwrap();
         assert!(invalid_shape.validate().is_err());
+
+        let invalid_text: SceneLiteDocument =
+            serde_json::from_str(r##"{"layers":[{"id":"title","type":"text","color":"#fff"}]}"##)
+                .unwrap();
+        assert!(invalid_text.validate().is_err());
     }
 }

@@ -10,7 +10,7 @@ use crate::core::manifest::{Manifest, PropertySpec, Variant};
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, SceneLiteAnimatedProperty,
     SceneLiteDocument, SceneLiteLayer, SceneLiteLayerKind, SceneLitePropertyBinding,
-    SceneLiteTransform, Transition, WallpaperEntry, WallpaperPackage,
+    SceneLiteTextAlign, SceneLiteTransform, Transition, WallpaperEntry, WallpaperPackage,
 };
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot, PowerState};
 use crate::policy::{PerformanceDecision, RenderMode};
@@ -96,6 +96,11 @@ pub struct SceneLiteRenderLayer {
     pub corner_radius: Option<f64>,
     pub width: Option<f64>,
     pub height: Option<f64>,
+    pub text: Option<String>,
+    pub font_size: Option<f64>,
+    pub font_family: Option<String>,
+    pub font_weight: Option<String>,
+    pub text_align: Option<SceneLiteTextAlign>,
     pub fit: FitMode,
     pub opacity: f64,
     pub transform: SceneLiteTransform,
@@ -1240,6 +1245,11 @@ fn scene_lite_wallpaper_plan(
                 corner_radius: layer.corner_radius,
                 width: layer.width,
                 height: layer.height,
+                text: layer.text,
+                font_size: layer.font_size,
+                font_family: layer.font_family,
+                font_weight: layer.font_weight,
+                text_align: layer.text_align,
                 fit: layer.fit,
                 opacity: layer.opacity,
                 transform: layer.transform,
@@ -1535,6 +1545,14 @@ fn scene_lite_layer_is_snapshot_renderable(layer: &SceneLiteRenderLayer) -> bool
                     .as_deref()
                     .is_some_and(|color| !color.is_empty())
         }
+        SceneLiteLayerKind::Text => {
+            layer.opacity > 0.0
+                && layer.text.as_deref().is_some_and(|text| !text.is_empty())
+                && layer
+                    .color
+                    .as_deref()
+                    .is_some_and(|color| !color.is_empty())
+        }
         SceneLiteLayerKind::Group => false,
     }
 }
@@ -1710,11 +1728,51 @@ fn scene_lite_snapshot_svg(layers: &[SceneLiteRenderLayer], size: RenderTargetSi
                     stroke = scene_lite_svg_stroke(layer),
                 ));
             }
+            SceneLiteLayerKind::Text => {
+                let (Some(text), Some(color)) = (&layer.text, &layer.color) else {
+                    continue;
+                };
+                let font_size = layer.font_size.unwrap_or(32.0);
+                let width = layer.width.unwrap_or(f64::from(size.width));
+                let align = layer.text_align.unwrap_or_default();
+                let (x, anchor) = scene_lite_text_anchor(align, width);
+                svg.push_str(&format!(
+                    r#"<g opacity="{opacity}" transform="{transform}"><text x="{x}" y="{y}" fill="{color}" font-size="{font_size}" text-anchor="{anchor}"{font_family}{font_weight}>{text}</text></g>"#,
+                    opacity = svg_number(layer.opacity),
+                    transform = xml_attr(&scene_lite_svg_transform(layer.transform, size)),
+                    x = svg_number(x),
+                    y = svg_number(font_size),
+                    color = xml_attr(color),
+                    font_size = svg_number(font_size),
+                    anchor = anchor,
+                    font_family = scene_lite_svg_optional_attr("font-family", layer.font_family.as_deref()),
+                    font_weight = scene_lite_svg_optional_attr("font-weight", layer.font_weight.as_deref()),
+                    text = xml_text(text),
+                ));
+            }
             SceneLiteLayerKind::Group => {}
         }
     }
     svg.push_str("</svg>");
     svg
+}
+
+fn scene_lite_text_anchor(align: SceneLiteTextAlign, width: f64) -> (f64, &'static str) {
+    match align {
+        SceneLiteTextAlign::Start => (0.0, "start"),
+        SceneLiteTextAlign::Middle => (width / 2.0, "middle"),
+        SceneLiteTextAlign::End => (width, "end"),
+    }
+}
+
+fn scene_lite_svg_optional_attr(name: &str, value: Option<&str>) -> String {
+    let Some(value) = value else {
+        return String::new();
+    };
+    if value.is_empty() {
+        return String::new();
+    }
+    format!(r#" {name}="{}""#, xml_attr(value))
 }
 
 fn scene_lite_svg_stroke(layer: &SceneLiteRenderLayer) -> String {
@@ -1799,6 +1857,13 @@ fn xml_attr(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn xml_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
@@ -4215,6 +4280,38 @@ exit 0
     }
 
     #[test]
+    fn scene_lite_text_layer_builds_snapshot() {
+        let test_dir = TestDir::new("gilder-scene-lite-text-plan");
+        let package_dir = test_dir.path.join("scene-text.gwpdir");
+        write_minimal_scene_lite_text_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.scene_lite_plans.len(), 1);
+        let plan = &sync.scene_lite_plans[0];
+        assert_eq!(plan.layers.len(), 1);
+        assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Text);
+        assert_eq!(plan.layers[0].text_align, Some(SceneLiteTextAlign::Middle));
+        let display_source = scene_lite_display_source(plan);
+        let snapshot = fs::read_to_string(display_source).unwrap();
+        assert!(snapshot.contains("<text"));
+        assert!(snapshot.contains(r##"font-family="Inter""##));
+        assert!(snapshot.contains(r##"font-weight="700""##));
+        assert!(snapshot.contains(r##"text-anchor="middle""##));
+        assert!(snapshot.contains("Gilder &amp; Wayland"));
+    }
+
+    #[test]
     fn scene_lite_property_binding_applies_effective_output_property() {
         let test_dir = TestDir::new("gilder-scene-lite-property-binding");
         let package_dir = test_dir.path.join("scene-property.gwpdir");
@@ -5444,6 +5541,49 @@ exit 0
             "id": "org.example.scene-shapes",
             "version": "1.0.0",
             "title": "Scene Shapes",
+            "kind": "scene-lite",
+            "entry": {
+                "type": "scene-lite",
+                "source": "assets/scene-lite.json",
+                "max_fps": 60
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_minimal_scene_lite_text_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(
+            path.join("assets/scene-lite.json"),
+            br##"{
+              "size": { "width": 1280, "height": 720 },
+              "layers": [
+                {
+                  "id": "title",
+                  "type": "text",
+                  "text": "Gilder & Wayland",
+                  "color": "#f0f4ff",
+                  "font_size": 48,
+                  "font_family": "Inter",
+                  "font_weight": "700",
+                  "text_align": "middle",
+                  "width": 1280,
+                  "transform": { "x": 0, "y": 96 }
+                }
+              ]
+            }"##,
+        )
+        .unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.scene-text",
+            "version": "1.0.0",
+            "title": "Scene Text",
             "kind": "scene-lite",
             "entry": {
                 "type": "scene-lite",

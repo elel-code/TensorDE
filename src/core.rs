@@ -22,5 +22,6 @@ pub use path::{PackagePath, PackagePathError};
 pub use scene_lite::{
     SceneLiteAnimatedProperty, SceneLiteAnimation, SceneLiteCurve, SceneLiteDocument,
     SceneLiteError, SceneLiteKeyframe, SceneLiteLayer, SceneLiteLayerKind,
-    SceneLitePropertyBinding, SceneLiteSnapshot, SceneLiteSnapshotLayer, SceneLiteTransform,
+    SceneLitePropertyBinding, SceneLiteSnapshot, SceneLiteSnapshotLayer, SceneLiteTextAlign,
+    SceneLiteTransform,
 };
