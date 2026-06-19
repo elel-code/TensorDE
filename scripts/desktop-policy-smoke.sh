@@ -59,6 +59,18 @@ Options:
                        Require latest planned image resource reference bytes to be at most bytes
   --expect-render-sync-planned-unique-image-resource-bytes-latest-at-most <bytes>
                        Require latest planned unique image resource bytes to be at most bytes
+  --expect-render-sync-planned-video-source-references-latest-at-most <count>
+                       Require latest planned video source references to be at most count
+  --expect-render-sync-planned-unique-video-sources-latest-at-most <count>
+                       Require latest planned unique video sources to be at most count
+  --expect-render-sync-planned-duplicate-video-source-references-latest-at-most <count>
+                       Require latest planned duplicate video source references to be at most count
+  --expect-render-sync-planned-max-video-source-outputs-latest-at-most <count>
+                       Require latest planned max same-source video output fanout to be at most count
+  --expect-render-sync-planned-video-source-reference-bytes-latest-at-most <bytes>
+                       Require latest planned video source reference bytes to be at most bytes
+  --expect-render-sync-planned-unique-video-source-bytes-latest-at-most <bytes>
+                       Require latest planned unique video source bytes to be at most bytes
   --expect-render-sync-static-image-cache-bytes-latest-at-most <bytes>
                        Require latest runtime static image cache bytes to be at most bytes
   --expect-renderer-output-windows-latest-at-most <count>
@@ -138,6 +150,12 @@ expect_render_sync_planned_image_resource_references_latest_at_most=""
 expect_render_sync_planned_unique_image_resources_latest_at_most=""
 expect_render_sync_planned_image_resource_reference_bytes_latest_at_most=""
 expect_render_sync_planned_unique_image_resource_bytes_latest_at_most=""
+expect_render_sync_planned_video_source_references_latest_at_most=""
+expect_render_sync_planned_unique_video_sources_latest_at_most=""
+expect_render_sync_planned_duplicate_video_source_references_latest_at_most=""
+expect_render_sync_planned_max_video_source_outputs_latest_at_most=""
+expect_render_sync_planned_video_source_reference_bytes_latest_at_most=""
+expect_render_sync_planned_unique_video_source_bytes_latest_at_most=""
 expect_render_sync_static_image_cache_bytes_latest_at_most=""
 expect_renderer_output_windows_latest_at_most=""
 expect_renderer_output_windows_max_at_most=""
@@ -295,6 +313,36 @@ while [[ $# -gt 0 ]]; do
     --expect-render-sync-planned-unique-image-resource-bytes-latest-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-render-sync-planned-unique-image-resource-bytes-latest-at-most requires a value" >&2; exit 2; }
       expect_render_sync_planned_unique_image_resource_bytes_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-render-sync-planned-video-source-references-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-planned-video-source-references-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_planned_video_source_references_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-render-sync-planned-unique-video-sources-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-planned-unique-video-sources-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_planned_unique_video_sources_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-render-sync-planned-duplicate-video-source-references-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-planned-duplicate-video-source-references-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_planned_duplicate_video_source_references_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-render-sync-planned-max-video-source-outputs-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-planned-max-video-source-outputs-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_planned_max_video_source_outputs_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-render-sync-planned-video-source-reference-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-planned-video-source-reference-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_planned_video_source_reference_bytes_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-render-sync-planned-unique-video-source-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-planned-unique-video-source-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_planned_unique_video_source_bytes_latest_at_most="$2"
       shift 2
       ;;
     --expect-render-sync-static-image-cache-bytes-latest-at-most)
@@ -551,6 +599,12 @@ for render_sync_resource_expectation in \
   "$expect_render_sync_planned_unique_image_resources_latest_at_most" \
   "$expect_render_sync_planned_image_resource_reference_bytes_latest_at_most" \
   "$expect_render_sync_planned_unique_image_resource_bytes_latest_at_most" \
+  "$expect_render_sync_planned_video_source_references_latest_at_most" \
+  "$expect_render_sync_planned_unique_video_sources_latest_at_most" \
+  "$expect_render_sync_planned_duplicate_video_source_references_latest_at_most" \
+  "$expect_render_sync_planned_max_video_source_outputs_latest_at_most" \
+  "$expect_render_sync_planned_video_source_reference_bytes_latest_at_most" \
+  "$expect_render_sync_planned_unique_video_source_bytes_latest_at_most" \
   "$expect_render_sync_static_image_cache_bytes_latest_at_most"
 do
   if [[ -n "$render_sync_resource_expectation" && ! "$render_sync_resource_expectation" =~ ^[0-9]+$ ]]; then
@@ -680,6 +734,12 @@ expect_render_sync_planned_image_resource_references_latest_at_most: ${expect_re
 expect_render_sync_planned_unique_image_resources_latest_at_most: ${expect_render_sync_planned_unique_image_resources_latest_at_most:-none}
 expect_render_sync_planned_image_resource_reference_bytes_latest_at_most: ${expect_render_sync_planned_image_resource_reference_bytes_latest_at_most:-none}
 expect_render_sync_planned_unique_image_resource_bytes_latest_at_most: ${expect_render_sync_planned_unique_image_resource_bytes_latest_at_most:-none}
+expect_render_sync_planned_video_source_references_latest_at_most: ${expect_render_sync_planned_video_source_references_latest_at_most:-none}
+expect_render_sync_planned_unique_video_sources_latest_at_most: ${expect_render_sync_planned_unique_video_sources_latest_at_most:-none}
+expect_render_sync_planned_duplicate_video_source_references_latest_at_most: ${expect_render_sync_planned_duplicate_video_source_references_latest_at_most:-none}
+expect_render_sync_planned_max_video_source_outputs_latest_at_most: ${expect_render_sync_planned_max_video_source_outputs_latest_at_most:-none}
+expect_render_sync_planned_video_source_reference_bytes_latest_at_most: ${expect_render_sync_planned_video_source_reference_bytes_latest_at_most:-none}
+expect_render_sync_planned_unique_video_source_bytes_latest_at_most: ${expect_render_sync_planned_unique_video_source_bytes_latest_at_most:-none}
 expect_render_sync_static_image_cache_bytes_latest_at_most: ${expect_render_sync_static_image_cache_bytes_latest_at_most:-none}
 expect_renderer_output_windows_latest_at_most: ${expect_renderer_output_windows_latest_at_most:-none}
 expect_renderer_output_windows_max_at_most: ${expect_renderer_output_windows_max_at_most:-none}
@@ -1230,6 +1290,24 @@ append_render_sync_resource_expectations() {
   fi
   if [[ -n "$expect_render_sync_planned_unique_image_resource_bytes_latest_at_most" ]]; then
     args_ref+=(--expect-render-sync-planned-unique-image-resource-bytes-latest-at-most "$expect_render_sync_planned_unique_image_resource_bytes_latest_at_most")
+  fi
+  if [[ -n "$expect_render_sync_planned_video_source_references_latest_at_most" ]]; then
+    args_ref+=(--expect-render-sync-planned-video-source-references-latest-at-most "$expect_render_sync_planned_video_source_references_latest_at_most")
+  fi
+  if [[ -n "$expect_render_sync_planned_unique_video_sources_latest_at_most" ]]; then
+    args_ref+=(--expect-render-sync-planned-unique-video-sources-latest-at-most "$expect_render_sync_planned_unique_video_sources_latest_at_most")
+  fi
+  if [[ -n "$expect_render_sync_planned_duplicate_video_source_references_latest_at_most" ]]; then
+    args_ref+=(--expect-render-sync-planned-duplicate-video-source-references-latest-at-most "$expect_render_sync_planned_duplicate_video_source_references_latest_at_most")
+  fi
+  if [[ -n "$expect_render_sync_planned_max_video_source_outputs_latest_at_most" ]]; then
+    args_ref+=(--expect-render-sync-planned-max-video-source-outputs-latest-at-most "$expect_render_sync_planned_max_video_source_outputs_latest_at_most")
+  fi
+  if [[ -n "$expect_render_sync_planned_video_source_reference_bytes_latest_at_most" ]]; then
+    args_ref+=(--expect-render-sync-planned-video-source-reference-bytes-latest-at-most "$expect_render_sync_planned_video_source_reference_bytes_latest_at_most")
+  fi
+  if [[ -n "$expect_render_sync_planned_unique_video_source_bytes_latest_at_most" ]]; then
+    args_ref+=(--expect-render-sync-planned-unique-video-source-bytes-latest-at-most "$expect_render_sync_planned_unique_video_source_bytes_latest_at_most")
   fi
   if [[ -n "$expect_render_sync_static_image_cache_bytes_latest_at_most" ]]; then
     args_ref+=(--expect-render-sync-static-image-cache-bytes-latest-at-most "$expect_render_sync_static_image_cache_bytes_latest_at_most")
