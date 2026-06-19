@@ -94,6 +94,7 @@ pub fn convert_project(
         SourceType::Video => convert_video(&project, output_dir, &mut report),
         SourceType::Web => convert_web(&project, output_dir, &mut report),
         SourceType::Scene => convert_scene_lite(&project, output_dir, &mut report),
+        SourceType::Playlist => convert_playlist(&project, output_dir, &mut report),
         SourceType::Application => {
             report
                 .unsupported_features
@@ -339,6 +340,243 @@ fn convert_scene_lite(
     ))
 }
 
+fn convert_playlist(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    report: &mut ConversionReport,
+) -> Result<Value, ConversionError> {
+    let object = project.raw.as_object().ok_or_else(|| {
+        ConversionError::InvalidProject("playlist project must be an object".to_owned())
+    })?;
+    let source_items = playlist_items_from_project(object).ok_or_else(|| {
+        ConversionError::MissingEntry("playlist project does not define an item array".to_owned())
+    })?;
+    let mut items = Vec::new();
+    for (index, item) in source_items.iter().enumerate() {
+        match convert_playlist_item(project, output_dir, index, item, report) {
+            Ok(Some(item)) => items.push(item),
+            Ok(None) => {}
+            Err(err) => {
+                report
+                    .warnings
+                    .push(format!("Skipped playlist item {index}: {err}."));
+            }
+        }
+    }
+
+    if items.is_empty() {
+        report
+            .errors
+            .push("Playlist did not contain convertible image or video items.".to_owned());
+        return Err(ConversionError::MissingEntry(
+            "playlist project did not contain convertible image or video items".to_owned(),
+        ));
+    }
+
+    let preview =
+        copy_preview_or_generate(project, output_dir, report, MissingPreviewFallback::None)?;
+    push_unique(&mut report.converted_features, "playlist");
+    Ok(base_manifest(
+        project,
+        "playlist",
+        preview,
+        report,
+        json!({
+            "type": "playlist",
+            "selection": "first-match",
+            "items": items,
+        }),
+    ))
+}
+
+fn convert_playlist_item(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    index: usize,
+    value: &Value,
+    report: &mut ConversionReport,
+) -> Result<Option<Value>, ConversionError> {
+    let Some(object) = value.as_object() else {
+        report
+            .warnings
+            .push(format!("Skipped playlist item {index}: expected object."));
+        return Ok(None);
+    };
+    let Some(source) = playlist_item_source(object) else {
+        push_unique(
+            &mut report.unsupported_features,
+            "playlist-item:missing-source",
+        );
+        report.warnings.push(format!(
+            "Skipped playlist item {index}: no source file was found."
+        ));
+        return Ok(None);
+    };
+    let source_type = playlist_item_source_type(object, &source);
+    let id = playlist_item_id(object, index);
+    let weight = playlist_item_weight(object).unwrap_or(1);
+    let entry = match source_type {
+        SourceType::Image => {
+            let copied = copy_project_file(
+                &project.root,
+                &source,
+                output_dir.join("assets"),
+                &format!("playlist-{index}"),
+                report,
+            )?;
+            push_unique(&mut report.converted_features, "playlist-item:image");
+            json!({
+                "type": "static-image",
+                "source": copied.package_path,
+                "fit": "cover",
+                "orientation": "from-metadata"
+            })
+        }
+        SourceType::Video => {
+            let copied = copy_project_file(
+                &project.root,
+                &source,
+                output_dir.join("assets"),
+                &format!("playlist-{index}"),
+                report,
+            )?;
+            push_unique(&mut report.converted_features, "playlist-item:video");
+            json!({
+                "type": "video",
+                "source": copied.package_path,
+                "loop": true,
+                "muted": true,
+                "fit": "cover",
+                "max_fps": 60
+            })
+        }
+        SourceType::Web | SourceType::Scene => {
+            let feature = format!("playlist-item:{}", source_type.as_str());
+            push_unique(&mut report.unsupported_features, &feature);
+            report.warnings.push(format!(
+                "Skipped playlist item {id:?}: {} sub-items are not converted inside Wallpaper Engine playlists yet.",
+                source_type.as_str()
+            ));
+            return Ok(None);
+        }
+        SourceType::Playlist | SourceType::Application | SourceType::Unknown => {
+            let feature = format!("playlist-item:{}", source_type.as_str());
+            push_unique(&mut report.unsupported_features, &feature);
+            report.warnings.push(format!(
+                "Skipped playlist item {id:?}: unsupported source type {}.",
+                source_type.as_str()
+            ));
+            return Ok(None);
+        }
+    };
+
+    let mut item = json!({
+        "id": id,
+        "entry": entry,
+    });
+    if weight != 1
+        && let Some(object) = item.as_object_mut()
+    {
+        object.insert("weight".to_owned(), json!(weight));
+    }
+    Ok(Some(item))
+}
+
+fn playlist_items_from_project(object: &Map<String, Value>) -> Option<&Vec<Value>> {
+    for key in ["items", "playlist", "wallpapers", "entries", "children"] {
+        if let Some(items) = object
+            .get(key)
+            .and_then(Value::as_array)
+            .filter(|items| items.iter().any(playlist_item_value_has_source))
+        {
+            return Some(items);
+        }
+    }
+    object
+        .get("collection")
+        .and_then(Value::as_object)
+        .and_then(playlist_items_from_project)
+}
+
+fn playlist_item_value_has_source(value: &Value) -> bool {
+    value.as_object().and_then(playlist_item_source).is_some()
+}
+
+fn playlist_item_source(object: &Map<String, Value>) -> Option<String> {
+    string_field(
+        object,
+        &[
+            "file", "source", "path", "entry", "main", "index", "content",
+        ],
+    )
+}
+
+fn playlist_item_source_type(object: &Map<String, Value>, source: &str) -> SourceType {
+    let source_type = string_field(object, &["type", "wallpaperType", "contentType"])
+        .map(|value| {
+            let lowered = value.to_ascii_lowercase();
+            if lowered.contains("application") || lowered.contains("exe") {
+                SourceType::Application
+            } else if lowered.contains("playlist") || lowered.contains("collection") {
+                SourceType::Playlist
+            } else if lowered.contains("video") {
+                SourceType::Video
+            } else if lowered.contains("web") {
+                SourceType::Web
+            } else if lowered.contains("scene") {
+                SourceType::Scene
+            } else if lowered.contains("image") {
+                SourceType::Image
+            } else {
+                SourceType::Unknown
+            }
+        })
+        .unwrap_or(SourceType::Unknown);
+    if source_type != SourceType::Unknown {
+        source_type
+    } else {
+        Path::new(source)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(SourceType::from_extension)
+            .unwrap_or(SourceType::Unknown)
+    }
+}
+
+fn playlist_item_id(object: &Map<String, Value>, index: usize) -> String {
+    string_field(object, &["id", "title", "name"])
+        .map(|value| slug_id(&value))
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("item-{index}-{value}"))
+        .unwrap_or_else(|| format!("item-{index}"))
+}
+
+fn playlist_item_weight(object: &Map<String, Value>) -> Option<u32> {
+    let weight = number_field(object, &["weight", "probability", "chance"])?;
+    if !weight.is_finite() || weight <= 0.0 {
+        return None;
+    }
+    let rounded = weight.round().clamp(1.0, u32::MAX as f64);
+    Some(rounded as u32)
+}
+
+fn slug_id(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
 fn write_scene_lite_fallback_document(
     output_dir: &Path,
     fallback: Option<&str>,
@@ -421,6 +659,13 @@ fn runtime_allow_audio(project: &WallpaperEngineProject, report: &mut Conversion
             push_unique(&mut report.unsupported_features, "audio-runtime");
             report.warnings.push(
                 "Detected Wallpaper Engine audio features, but audio runtime integration is not available for this converted wallpaper type.".to_owned(),
+            );
+            false
+        }
+        SourceType::Playlist => {
+            push_unique(&mut report.unsupported_features, "playlist-audio-runtime");
+            report.warnings.push(
+                "Detected audio intent in a Wallpaper Engine playlist; converted playlist items stay muted until per-item audio policy is implemented.".to_owned(),
             );
             false
         }
@@ -1804,6 +2049,9 @@ fn detect_source_type(object: &Map<String, Value>, entry_file: Option<&str>) -> 
         if kind.contains("application") || kind.contains("exe") {
             return SourceType::Application;
         }
+        if kind.contains("playlist") || kind.contains("collection") {
+            return SourceType::Playlist;
+        }
         if kind.contains("video") {
             return SourceType::Video;
         }
@@ -1816,6 +2064,10 @@ fn detect_source_type(object: &Map<String, Value>, entry_file: Option<&str>) -> 
         if kind.contains("image") {
             return SourceType::Image;
         }
+    }
+
+    if playlist_items_from_project(object).is_some() {
+        return SourceType::Playlist;
     }
 
     entry_file
@@ -1834,6 +2086,7 @@ enum SourceType {
     Video,
     Web,
     Scene,
+    Playlist,
     Application,
     Unknown,
 }
@@ -1845,6 +2098,7 @@ impl SourceType {
             Self::Video => "video",
             Self::Web => "web",
             Self::Scene => "scene",
+            Self::Playlist => "playlist",
             Self::Application => "application",
             Self::Unknown => "unknown",
         }
@@ -2590,6 +2844,113 @@ fetch("https://example.invalid/data.json");
                 report.unsupported_features
             );
         }
+    }
+
+    #[test]
+    fn converts_playlist_project_with_image_and_video_items() {
+        let source = TestDir::new("we-playlist-source");
+        let output = TestDir::new("we-playlist-output");
+        output.remove();
+        source.write_file("day.jpg", "not real jpg");
+        source.write_file("night.mp4", "not real mp4");
+        source.write_file("preview.jpg", "not real preview");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "playlist",
+              "title": "Playlist Example",
+              "preview": "preview.jpg",
+              "items": [
+                {
+                  "title": "Day Image",
+                  "type": "image",
+                  "file": "day.jpg",
+                  "weight": 3
+                },
+                {
+                  "title": "Night Video",
+                  "type": "video",
+                  "file": "night.mp4"
+                }
+              ]
+            }"#,
+        );
+
+        let summary = convert_project(source.path(), output.path()).unwrap();
+        assert_eq!(summary.source_type, "playlist");
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(output.path().join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(manifest["kind"], "playlist");
+        assert_eq!(manifest["entry"]["type"], "playlist");
+        assert_eq!(manifest["entry"]["selection"], "first-match");
+        let items = manifest["entry"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["id"], "item-0-day-image");
+        assert_eq!(items[0]["weight"], 3);
+        assert_eq!(items[0]["entry"]["type"], "static-image");
+        assert_eq!(items[0]["entry"]["source"], "assets/playlist-0.jpg");
+        assert_eq!(items[1]["id"], "item-1-night-video");
+        assert_eq!(items[1]["entry"]["type"], "video");
+        assert_eq!(items[1]["entry"]["source"], "assets/playlist-1.mp4");
+        assert_eq!(items[1]["entry"]["muted"], true);
+        assert!(output.path().join("assets/playlist-0.jpg").exists());
+        assert!(output.path().join("assets/playlist-1.mp4").exists());
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(report.detected_features.contains(&"playlist".to_owned()));
+        assert!(report.converted_features.contains(&"playlist".to_owned()));
+        assert!(
+            report
+                .converted_features
+                .contains(&"playlist-item:image".to_owned())
+        );
+        assert!(
+            report
+                .converted_features
+                .contains(&"playlist-item:video".to_owned())
+        );
+    }
+
+    #[test]
+    fn reports_unsupported_playlist_items_when_none_can_convert() {
+        let source = TestDir::new("we-playlist-unsupported-source");
+        let output = TestDir::new("we-playlist-unsupported-output");
+        output.remove();
+        source.write_file("index.html", "<!doctype html>");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "playlist",
+              "title": "Web Playlist",
+              "items": [
+                {
+                  "title": "Web Item",
+                  "type": "web",
+                  "file": "index.html"
+                }
+              ]
+            }"#,
+        );
+
+        let error = convert_project(source.path(), output.path()).unwrap_err();
+        assert!(matches!(error, ConversionError::MissingEntry(_)));
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .unsupported_features
+                .contains(&"playlist-item:web".to_owned())
+        );
+        assert!(
+            report
+                .errors
+                .contains(&"Playlist did not contain convertible image or video items.".to_owned())
+        );
     }
 
     #[test]
