@@ -296,7 +296,7 @@ fn schedule_gtk_renderer_render_sync_wakeup(wakeup_scheduled: &Arc<AtomicBool>) 
     }
 
     let wakeup_scheduled = Arc::clone(wakeup_scheduled);
-    gtk::glib::idle_add_once(move || {
+    gtk::glib::MainContext::default().invoke(move || {
         wakeup_scheduled.store(false, Ordering::Release);
         process_gtk_renderer_render_sync_wakeup();
     });

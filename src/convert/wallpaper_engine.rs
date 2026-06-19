@@ -351,9 +351,14 @@ fn convert_playlist(
     let source_items = playlist_items_from_project(object).ok_or_else(|| {
         ConversionError::MissingEntry("playlist project does not define an item array".to_owned())
     })?;
+    let preview =
+        copy_preview_or_generate(project, output_dir, report, MissingPreviewFallback::None)?;
     let mut items = Vec::new();
     for (index, item) in source_items.iter().enumerate() {
-        match convert_playlist_item(project, output_dir, index, item, report) {
+        let playlist_fallback = preview
+            .as_ref()
+            .and_then(|preview| preview.poster.as_deref());
+        match convert_playlist_item(project, output_dir, index, item, playlist_fallback, report) {
             Ok(Some(item)) => items.push(item),
             Ok(None) => {}
             Err(err) => {
@@ -367,14 +372,12 @@ fn convert_playlist(
     if items.is_empty() {
         report
             .errors
-            .push("Playlist did not contain convertible image or video items.".to_owned());
+            .push("Playlist did not contain convertible items.".to_owned());
         return Err(ConversionError::MissingEntry(
-            "playlist project did not contain convertible image or video items".to_owned(),
+            "playlist project did not contain convertible items".to_owned(),
         ));
     }
 
-    let preview =
-        copy_preview_or_generate(project, output_dir, report, MissingPreviewFallback::None)?;
     push_unique(&mut report.converted_features, "playlist");
     Ok(base_manifest(
         project,
@@ -394,6 +397,7 @@ fn convert_playlist_item(
     output_dir: &Path,
     index: usize,
     value: &Value,
+    playlist_fallback: Option<&str>,
     report: &mut ConversionReport,
 ) -> Result<Option<Value>, ConversionError> {
     let Some(object) = value.as_object() else {
@@ -413,6 +417,7 @@ fn convert_playlist_item(
         return Ok(None);
     };
     let source_type = playlist_item_source_type(object, &source);
+    record_playlist_item_detected_features(project, source_type, &source, report);
     let id = playlist_item_id(object, index);
     let weight = playlist_item_weight(object).unwrap_or(1);
     let entry = match source_type {
@@ -450,14 +455,36 @@ fn convert_playlist_item(
                 "max_fps": 60
             })
         }
-        SourceType::Web | SourceType::Scene => {
-            let feature = format!("playlist-item:{}", source_type.as_str());
-            push_unique(&mut report.unsupported_features, &feature);
-            report.warnings.push(format!(
-                "Skipped playlist item {id:?}: {} sub-items are not converted inside Wallpaper Engine playlists yet.",
-                source_type.as_str()
-            ));
-            return Ok(None);
+        SourceType::Web => {
+            let index_path =
+                convert_playlist_web_item(project, output_dir, index, &source, report)?;
+            push_unique(&mut report.converted_features, "playlist-item:web");
+            record_web_runtime_gaps(report);
+            json!({
+                "type": "web",
+                "root": format!("assets/playlist-{index}-web"),
+                "index": index_path,
+                "fallback": playlist_fallback.map(|path| Value::String(path.to_owned())).unwrap_or(Value::Null),
+                "max_fps": 30
+            })
+        }
+        SourceType::Scene => {
+            let scene_lite_source = convert_playlist_scene_item(
+                project,
+                output_dir,
+                index,
+                &source,
+                playlist_fallback,
+                report,
+            )?;
+            push_unique(&mut report.converted_features, "playlist-item:scene-lite");
+            record_scene_lite_runtime_gaps(report);
+            json!({
+                "type": "scene-lite",
+                "source": scene_lite_source,
+                "fallback": playlist_fallback.map(|path| Value::String(path.to_owned())).unwrap_or(Value::Null),
+                "max_fps": 60
+            })
         }
         SourceType::Playlist | SourceType::Application | SourceType::Unknown => {
             let feature = format!("playlist-item:{}", source_type.as_str());
@@ -480,6 +507,80 @@ fn convert_playlist_item(
         object.insert("weight".to_owned(), json!(weight));
     }
     Ok(Some(item))
+}
+
+fn convert_playlist_web_item(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    index: usize,
+    source: &str,
+    report: &mut ConversionReport,
+) -> Result<String, ConversionError> {
+    let index_path = normalize_relative_path(source)?;
+    let source_path = project.root.join(&index_path);
+    if !source_path.is_file() {
+        return Err(ConversionError::MissingFile(source_path));
+    }
+    let web_root = output_dir.join(format!("assets/playlist-{index}-web"));
+    fs::create_dir_all(&web_root).map_err(ConversionError::CreateDir)?;
+    copy_dir_recursive(
+        &project.root,
+        &web_root,
+        output_dir,
+        &[PROJECT_FILE],
+        report,
+    )?;
+    let bridge_path = web_root.join("gilder-bridge.js");
+    fs::write(&bridge_path, WEB_BRIDGE).map_err(ConversionError::WriteFile)?;
+    report
+        .generated_assets
+        .push(format!("assets/playlist-{index}-web/gilder-bridge.js"));
+    Ok(path_to_package_string(&index_path))
+}
+
+fn convert_playlist_scene_item(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    index: usize,
+    source: &str,
+    fallback: Option<&str>,
+    report: &mut ConversionReport,
+) -> Result<String, ConversionError> {
+    let original_scene = copy_project_file(
+        &project.root,
+        source,
+        output_dir.join("metadata"),
+        &format!("playlist-{index}-source-scene"),
+        report,
+    )?;
+    let scene_lite_source = write_scene_lite_fallback_document_to(
+        output_dir,
+        &format!("assets/playlist-{index}-scene-lite.json"),
+        fallback,
+        report,
+    )?;
+    report.warnings.push(format!(
+        "Converted playlist Scene item {index} to a scene-lite fallback graph; original scene metadata was preserved at {}.",
+        original_scene.package_path
+    ));
+    Ok(scene_lite_source)
+}
+
+fn record_playlist_item_detected_features(
+    project: &WallpaperEngineProject,
+    source_type: SourceType,
+    source: &str,
+    report: &mut ConversionReport,
+) {
+    push_unique(
+        &mut report.detected_features,
+        &format!("playlist-item:{}", source_type.as_str()),
+    );
+    let mut features = BTreeSet::new();
+    collect_feature_hints_from_entry(source_type, &project.root, source, &mut features);
+    for feature in features {
+        push_unique(&mut report.detected_features, &feature);
+    }
 }
 
 fn playlist_items_from_project(object: &Map<String, Value>) -> Option<&Vec<Value>> {
@@ -582,7 +683,16 @@ fn write_scene_lite_fallback_document(
     fallback: Option<&str>,
     report: &mut ConversionReport,
 ) -> Result<String, ConversionError> {
-    let scene_lite_path = output_dir.join("assets/scene-lite.json");
+    write_scene_lite_fallback_document_to(output_dir, "assets/scene-lite.json", fallback, report)
+}
+
+fn write_scene_lite_fallback_document_to(
+    output_dir: &Path,
+    package_path: &str,
+    fallback: Option<&str>,
+    report: &mut ConversionReport,
+) -> Result<String, ConversionError> {
+    let scene_lite_path = output_dir.join(package_path);
     if let Some(parent) = scene_lite_path.parent() {
         fs::create_dir_all(parent).map_err(ConversionError::CreateDir)?;
     }
@@ -605,7 +715,7 @@ fn write_scene_lite_fallback_document(
         serde_json::to_vec_pretty(&document).map_err(ConversionError::Serialize)?,
     )
     .map_err(ConversionError::WriteFile)?;
-    let package_path = "assets/scene-lite.json".to_owned();
+    let package_path = path_to_package_string(Path::new(package_path));
     report.generated_assets.push(package_path.clone());
     Ok(package_path)
 }
@@ -2915,21 +3025,124 @@ fetch("https://example.invalid/data.json");
     }
 
     #[test]
-    fn reports_unsupported_playlist_items_when_none_can_convert() {
-        let source = TestDir::new("we-playlist-unsupported-source");
-        let output = TestDir::new("we-playlist-unsupported-output");
+    fn converts_playlist_project_with_web_and_scene_items() {
+        let source = TestDir::new("we-playlist-web-scene-source");
+        let output = TestDir::new("we-playlist-web-scene-output");
         output.remove();
-        source.write_file("index.html", "<!doctype html>");
+        source.write_file(
+            "web/index.html",
+            "<!doctype html><script src=\"app.js\"></script>",
+        );
+        source.write_file("web/app.js", "window.wallpaperPropertyListener = {};");
+        source.write_file(
+            "scene.json",
+            r#"{"objects":[{"type":"image","path":"background.png"}]}"#,
+        );
+        source.write_file("preview.jpg", "not real preview");
         source.write_file(
             PROJECT_FILE,
             r#"{
               "type": "playlist",
-              "title": "Web Playlist",
+              "title": "Mixed Playlist",
+              "preview": "preview.jpg",
               "items": [
                 {
                   "title": "Web Item",
                   "type": "web",
-                  "file": "index.html"
+                  "file": "web/index.html"
+                },
+                {
+                  "title": "Scene Item",
+                  "type": "scene",
+                  "file": "scene.json"
+                }
+              ]
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(output.path().join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        let items = manifest["entry"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["id"], "item-0-web-item");
+        assert_eq!(items[0]["entry"]["type"], "web");
+        assert_eq!(items[0]["entry"]["root"], "assets/playlist-0-web");
+        assert_eq!(items[0]["entry"]["index"], "web/index.html");
+        assert_eq!(items[0]["entry"]["fallback"], "previews/poster.jpg");
+        assert_eq!(items[1]["id"], "item-1-scene-item");
+        assert_eq!(items[1]["entry"]["type"], "scene-lite");
+        assert_eq!(
+            items[1]["entry"]["source"],
+            "assets/playlist-1-scene-lite.json"
+        );
+        assert_eq!(items[1]["entry"]["fallback"], "previews/poster.jpg");
+        assert!(
+            output
+                .path()
+                .join("assets/playlist-0-web/web/index.html")
+                .exists()
+        );
+        assert!(
+            output
+                .path()
+                .join("assets/playlist-0-web/gilder-bridge.js")
+                .exists()
+        );
+        assert!(
+            output
+                .path()
+                .join("metadata/playlist-1-source-scene.json")
+                .exists()
+        );
+        let scene_lite: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/playlist-1-scene-lite.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene_lite["layers"][0]["source"], "previews/poster.jpg");
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"playlist-item:web".to_owned())
+        );
+        assert!(
+            report
+                .converted_features
+                .contains(&"playlist-item:scene-lite".to_owned())
+        );
+        assert!(
+            report
+                .unsupported_features
+                .contains(&"web-runtime".to_owned())
+        );
+        assert!(
+            report
+                .unsupported_features
+                .contains(&"scene-runtime".to_owned())
+        );
+    }
+
+    #[test]
+    fn reports_unsupported_playlist_items_when_none_can_convert() {
+        let source = TestDir::new("we-playlist-unsupported-source");
+        let output = TestDir::new("we-playlist-unsupported-output");
+        output.remove();
+        source.write_file("app.exe", "");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "playlist",
+              "title": "Executable Playlist",
+              "items": [
+                {
+                  "title": "Executable Item",
+                  "type": "application",
+                  "file": "app.exe"
                 }
               ]
             }"#,
@@ -2944,12 +3157,12 @@ fetch("https://example.invalid/data.json");
         assert!(
             report
                 .unsupported_features
-                .contains(&"playlist-item:web".to_owned())
+                .contains(&"playlist-item:application".to_owned())
         );
         assert!(
             report
                 .errors
-                .contains(&"Playlist did not contain convertible image or video items.".to_owned())
+                .contains(&"Playlist did not contain convertible items.".to_owned())
         );
     }
 

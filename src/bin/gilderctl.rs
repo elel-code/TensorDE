@@ -585,7 +585,7 @@ fn render_video_runtime_csv(response: &str) -> Result<String, String> {
         .ok_or_else(|| "status response did not contain result".to_owned())?;
 
     let mut csv = String::from(
-        "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled,memory_retention_level,memory_retention_notes,memory_retention_estimated_min_pool_bytes,memory_retention_estimated_max_pool_bytes,memory_retention_pool_reports,memory_retention_system_memory_pool_reports,memory_retention_gpu_memory_pool_reports,memory_retention_dmabuf_pool_reports,memory_retention_other_memory_pool_reports,memory_retention_sink_frame_retention,queue_report_count,queue_elements,queue_max_size_buffers,queue_max_size_bytes,queue_max_size_time_ns,queue_current_level_buffers,queue_current_level_bytes,queue_current_level_time_ns\n",
+        "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled,memory_retention_level,memory_retention_notes,memory_retention_estimated_min_pool_bytes,memory_retention_estimated_max_pool_bytes,memory_retention_pool_reports,memory_retention_system_memory_pool_reports,memory_retention_gpu_memory_pool_reports,memory_retention_dmabuf_pool_reports,memory_retention_other_memory_pool_reports,memory_retention_sink_frame_retention,queue_report_count,queue_elements,queue_max_size_buffers,queue_max_size_bytes,queue_max_size_time_ns,queue_current_level_buffers,queue_current_level_bytes,queue_current_level_time_ns,formats,sink_formats,format_paths,frame_sizes,caps_sources\n",
     );
     for pipeline in &result.renderer_runtime.video_pipelines {
         let actual_decoders = if pipeline.actual_decoders.is_empty() {
@@ -604,8 +604,13 @@ fn render_video_runtime_csv(response: &str) -> Result<String, String> {
             .collect::<Vec<_>>();
         let memory_features = collect_memory_features(&pipeline.caps_reports, false);
         let sink_memory_features = collect_memory_features(&pipeline.caps_reports, true);
+        let formats = collect_caps_formats(&pipeline.caps_reports, false);
+        let sink_formats = collect_caps_formats(&pipeline.caps_reports, true);
         let media_types = collect_media_types(&pipeline.caps_reports);
         let caps_paths = collect_caps_paths(&pipeline.caps_reports);
+        let format_paths = collect_caps_format_paths(&pipeline.caps_reports);
+        let frame_sizes = collect_caps_frame_sizes(&pipeline.caps_reports);
+        let caps_sources = collect_caps_sources(&pipeline.caps_reports);
         let memory_path_segments = collect_memory_path_segments(&pipeline.memory_path);
         let allocation_pools = collect_allocation_pools(&pipeline.allocation_reports);
         let allocation_allocators = collect_allocation_allocators(&pipeline.allocation_reports);
@@ -871,6 +876,11 @@ fn render_video_runtime_csv(response: &str) -> Result<String, String> {
             csv_cell(&pipe_join(queue_current_level_buffers)),
             csv_cell(&pipe_join(queue_current_level_bytes)),
             csv_cell(&pipe_join(queue_current_level_time_ns)),
+            csv_cell(&pipe_join(formats)),
+            csv_cell(&pipe_join(sink_formats)),
+            csv_cell(&pipe_join(format_paths)),
+            csv_cell(&pipe_join(frame_sizes)),
+            csv_cell(&pipe_join(caps_sources)),
         ];
         csv.push_str(&row.join(","));
         csv.push('\n');
@@ -883,6 +893,16 @@ fn collect_memory_features(caps_reports: &[VideoCapsReport], sink_only: bool) ->
         .iter()
         .filter(|report| !sink_only || report.direction == "sink")
         .flat_map(|report| report.memory_features.iter().cloned())
+        .collect()
+}
+
+fn collect_caps_formats(caps_reports: &[VideoCapsReport], sink_only: bool) -> Vec<String> {
+    caps_reports
+        .iter()
+        .filter(|report| !sink_only || report.direction == "sink")
+        .flat_map(|report| report.structures.iter())
+        .filter(|structure| structure.media_type.starts_with("video/"))
+        .filter_map(|structure| structure.format.clone())
         .collect()
 }
 
@@ -899,6 +919,63 @@ fn collect_caps_paths(caps_reports: &[VideoCapsReport]) -> Vec<String> {
         .iter()
         .map(|report| format!("{}:{}:{}", report.element, report.pad, report.direction))
         .collect()
+}
+
+fn collect_caps_sources(caps_reports: &[VideoCapsReport]) -> Vec<String> {
+    caps_reports
+        .iter()
+        .map(|report| report.source.clone())
+        .collect()
+}
+
+fn collect_caps_format_paths(caps_reports: &[VideoCapsReport]) -> Vec<String> {
+    caps_reports
+        .iter()
+        .flat_map(|report| {
+            report
+                .structures
+                .iter()
+                .filter(|structure| structure.media_type.starts_with("video/"))
+                .filter_map(|structure| {
+                    let format = structure.format.as_deref()?;
+                    let mut value = format!(
+                        "{}:{}:{}:{}:{}",
+                        report.element, report.pad, report.direction, structure.media_type, format
+                    );
+                    if let Some(size) = caps_structure_size(structure) {
+                        value.push(':');
+                        value.push_str(&size);
+                    }
+                    Some(value)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn collect_caps_frame_sizes(caps_reports: &[VideoCapsReport]) -> Vec<String> {
+    caps_reports
+        .iter()
+        .flat_map(|report| {
+            report
+                .structures
+                .iter()
+                .filter_map(|structure| {
+                    Some(format!(
+                        "{}:{}:{}:{}",
+                        report.element,
+                        report.pad,
+                        report.direction,
+                        caps_structure_size(structure)?
+                    ))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn caps_structure_size(structure: &VideoCapsStructureReport) -> Option<String> {
+    Some(format!("{}x{}", structure.width?, structure.height?))
 }
 
 fn collect_memory_path_segments(path: &VideoMemoryPathReport) -> Vec<String> {
@@ -1585,6 +1662,8 @@ struct VideoCapsReport {
     #[serde(default)]
     direction: String,
     #[serde(default)]
+    source: String,
+    #[serde(default)]
     memory_features: Vec<String>,
     #[serde(default)]
     structures: Vec<VideoCapsStructureReport>,
@@ -1594,6 +1673,12 @@ struct VideoCapsReport {
 struct VideoCapsStructureReport {
     #[serde(default)]
     media_type: String,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default)]
+    width: Option<i32>,
+    #[serde(default)]
+    height: Option<i32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1760,14 +1845,14 @@ mod tests {
 
     #[test]
     fn formats_video_runtime_as_csv() {
-        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[],"video_plans":[],"decisions":[]},"renderer_runtime":{"video_pipelines":[{"output_name":"eDP-1","source":"/tmp/loop.mp4","mode":"active","gst_state":"Playing","loop_playback":true,"muted":true,"target_max_fps":24,"frame_limiter_enabled":true,"frame_limiter_max_fps":24,"sink_tuning":{"sink_element":"glsinkbin+gtk4paintablesink","async_enabled":false,"last_sample_enabled":false,"qos_enabled":true,"max_lateness_ns":41666666,"render_delay_ns":0,"processing_deadline_ns":0,"preroll_frame_enabled":false},"position_ms":1234,"duration_ms":60000,"frame_stats":{"qos_messages":3,"qos_stats_format":"buffers","qos_processed_max":120,"qos_dropped_max":2,"qos_jitter_ns_latest":-2000,"qos_jitter_ns_abs_max":7000,"qos_proportion_x1000_latest":995,"gtk_frame_clock_ticks":9,"gtk_frame_clock_before_paint_ticks":8,"gtk_frame_clock_update_ticks":7,"gtk_frame_clock_layout_ticks":6,"gtk_frame_clock_paint_ticks":5,"gtk_frame_clock_after_paint_ticks":9,"gtk_frame_clock_counter_latest":300,"gtk_frame_clock_time_us_latest":5000000,"gtk_frame_clock_interval_us_latest":16667,"gtk_frame_clock_interval_us_max":20000,"gtk_frame_clock_fps_x1000_latest":59940,"gtk_frame_clock_refresh_interval_us_latest":16667,"gtk_frame_clock_predicted_presentation_time_us_latest":5016667,"gtk_frame_timings_observed":8,"gtk_frame_timings_complete":7,"gtk_frame_timings_counter_latest":300,"gtk_frame_timings_complete_counter_latest":299,"gtk_frame_timings_frame_time_us_latest":5000000,"gtk_frame_timings_predicted_presentation_time_us_latest":5016667,"gtk_frame_timings_presentation_time_us_latest":5017000,"gtk_frame_timings_presentation_interval_us_latest":16667,"gtk_frame_timings_presentation_interval_us_max":20000,"gtk_frame_timings_refresh_interval_us_latest":16667},"decoder_policy":"hardware-preferred","decoder_policy_status":"software-fallback","actual_decoders":["dav1ddec"],"actual_decoder_reports":[{"element":"dav1ddec","class":"software"}],"caps_reports":[{"element":"gtk4paintablesink0","pad":"sink","direction":"sink","caps":"video/x-raw(memory:DMABuf)","memory_features":["memory:DMABuf"],"structures":[{"media_type":"video/x-raw","features":["memory:DMABuf"]}]},{"element":"videoconvert0","pad":"src","direction":"src","caps":"video/x-raw","memory_features":[],"structures":[{"media_type":"video/x-raw","features":[]}]}],"allocation_reports":[{"element":"videoconvert0","pad":"src","direction":"src","query_scope":"peer","caps":"video/x-raw(memory:DMABuf)","need_pool":true,"pools":[{"pool":"GstVideoBufferPool","size":4096,"min_buffers":2,"max_buffers":4}],"params":[{"allocator":"dmabufallocator0","flags":"MemoryFlags(0x0)","align":0,"prefix":0,"padding":0}],"metas":["GstVideoMeta"]}],"zero_copy_evidence":{"level":"sink-dmabuf-caps","notes":["sink-side DMABuf caps observed"]},"memory_path":{"level":"sink-dmabuf","notes":["sink-side DMABuf caps observed"],"segments":[{"element":"gtk4paintablesink0","pad":"sink","direction":"sink","media_type":"video/x-raw","memory_features":["memory:DMABuf"],"memory_class":"dmabuf"}]},"retention_report":{"level":"medium","estimated_min_pool_bytes":8192,"estimated_max_pool_bytes":16384,"pool_reports":1,"system_memory_pool_reports":0,"gpu_memory_pool_reports":0,"dmabuf_pool_reports":1,"other_memory_pool_reports":0,"sink_frame_retention":"disabled","notes":["sink last-sample and preroll frame retention are disabled","allocation pools report at least 8192 bytes of minimum buffer capacity"]}}]}}}"##;
+        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[],"video_plans":[],"decisions":[]},"renderer_runtime":{"video_pipelines":[{"output_name":"eDP-1","source":"/tmp/loop.mp4","mode":"active","gst_state":"Playing","loop_playback":true,"muted":true,"target_max_fps":24,"frame_limiter_enabled":true,"frame_limiter_max_fps":24,"sink_tuning":{"sink_element":"glsinkbin+gtk4paintablesink","async_enabled":false,"last_sample_enabled":false,"qos_enabled":true,"max_lateness_ns":41666666,"render_delay_ns":0,"processing_deadline_ns":0,"preroll_frame_enabled":false},"position_ms":1234,"duration_ms":60000,"frame_stats":{"qos_messages":3,"qos_stats_format":"buffers","qos_processed_max":120,"qos_dropped_max":2,"qos_jitter_ns_latest":-2000,"qos_jitter_ns_abs_max":7000,"qos_proportion_x1000_latest":995,"gtk_frame_clock_ticks":9,"gtk_frame_clock_before_paint_ticks":8,"gtk_frame_clock_update_ticks":7,"gtk_frame_clock_layout_ticks":6,"gtk_frame_clock_paint_ticks":5,"gtk_frame_clock_after_paint_ticks":9,"gtk_frame_clock_counter_latest":300,"gtk_frame_clock_time_us_latest":5000000,"gtk_frame_clock_interval_us_latest":16667,"gtk_frame_clock_interval_us_max":20000,"gtk_frame_clock_fps_x1000_latest":59940,"gtk_frame_clock_refresh_interval_us_latest":16667,"gtk_frame_clock_predicted_presentation_time_us_latest":5016667,"gtk_frame_timings_observed":8,"gtk_frame_timings_complete":7,"gtk_frame_timings_counter_latest":300,"gtk_frame_timings_complete_counter_latest":299,"gtk_frame_timings_frame_time_us_latest":5000000,"gtk_frame_timings_predicted_presentation_time_us_latest":5016667,"gtk_frame_timings_presentation_time_us_latest":5017000,"gtk_frame_timings_presentation_interval_us_latest":16667,"gtk_frame_timings_presentation_interval_us_max":20000,"gtk_frame_timings_refresh_interval_us_latest":16667},"decoder_policy":"hardware-preferred","decoder_policy_status":"software-fallback","actual_decoders":["dav1ddec"],"actual_decoder_reports":[{"element":"dav1ddec","class":"software"}],"caps_reports":[{"element":"gtk4paintablesink0","pad":"sink","direction":"sink","source":"current","caps":"video/x-raw(memory:DMABuf), format=(string)NV12, width=(int)3840, height=(int)2160","memory_features":["memory:DMABuf"],"structures":[{"media_type":"video/x-raw","features":["memory:DMABuf"],"format":"NV12","width":3840,"height":2160}]},{"element":"videoconvert0","pad":"src","direction":"src","source":"current","caps":"video/x-raw, format=(string)RGBA, width=(int)3840, height=(int)2160","memory_features":[],"structures":[{"media_type":"video/x-raw","features":[],"format":"RGBA","width":3840,"height":2160}]}],"allocation_reports":[{"element":"videoconvert0","pad":"src","direction":"src","query_scope":"peer","caps":"video/x-raw(memory:DMABuf)","need_pool":true,"pools":[{"pool":"GstVideoBufferPool","size":4096,"min_buffers":2,"max_buffers":4}],"params":[{"allocator":"dmabufallocator0","flags":"MemoryFlags(0x0)","align":0,"prefix":0,"padding":0}],"metas":["GstVideoMeta"]}],"zero_copy_evidence":{"level":"sink-dmabuf-caps","notes":["sink-side DMABuf caps observed"]},"memory_path":{"level":"sink-dmabuf","notes":["sink-side DMABuf caps observed"],"segments":[{"element":"gtk4paintablesink0","pad":"sink","direction":"sink","media_type":"video/x-raw","memory_features":["memory:DMABuf"],"memory_class":"dmabuf"}]},"retention_report":{"level":"medium","estimated_min_pool_bytes":8192,"estimated_max_pool_bytes":16384,"pool_reports":1,"system_memory_pool_reports":0,"gpu_memory_pool_reports":0,"dmabuf_pool_reports":1,"other_memory_pool_reports":0,"sink_frame_retention":"disabled","notes":["sink last-sample and preroll frame retention are disabled","allocation pools report at least 8192 bytes of minimum buffer capacity"]}}]}}}"##;
 
         let csv = render_video_runtime_csv(response).unwrap();
 
         assert_eq!(
             csv,
-            "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled,memory_retention_level,memory_retention_notes,memory_retention_estimated_min_pool_bytes,memory_retention_estimated_max_pool_bytes,memory_retention_pool_reports,memory_retention_system_memory_pool_reports,memory_retention_gpu_memory_pool_reports,memory_retention_dmabuf_pool_reports,memory_retention_other_memory_pool_reports,memory_retention_sink_frame_retention,queue_report_count,queue_elements,queue_max_size_buffers,queue_max_size_bytes,queue_max_size_time_ns,queue_current_level_buffers,queue_current_level_bytes,queue_current_level_time_ns\n\
-             eDP-1,active,Playing,hardware-preferred,software-fallback,dav1ddec,software,2,memory:DMABuf,memory:DMABuf,sink-dmabuf-caps,sink-side DMABuf caps observed,sink-dmabuf,sink-side DMABuf caps observed,gtk4paintablesink0:sink:sink:video/x-raw:dmabuf:memory:DMABuf,1,videoconvert0:src:peer:GstVideoBufferPool:4096:2:4,videoconvert0:src:peer:dmabufallocator0:MemoryFlags(0x0):0:0:0,video/x-raw,gtk4paintablesink0:sink:sink|videoconvert0:src:src,1234,60000,true,24,3,120,2,buffers,-2000,7000,995,9,300,5000000,16667,20000,59940,16667,5016667,8,7,300,299,5000000,5016667,5017000,16667,20000,16667,/tmp/loop.mp4,8,7,6,5,9,glsinkbin+gtk4paintablesink,false,false,true,41666666,0,0,false,medium,allocation pools report at least 8192 bytes of minimum buffer capacity|sink last-sample and preroll frame retention are disabled,8192,16384,1,0,0,1,0,disabled,0,,,,,,,\n"
+            "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled,memory_retention_level,memory_retention_notes,memory_retention_estimated_min_pool_bytes,memory_retention_estimated_max_pool_bytes,memory_retention_pool_reports,memory_retention_system_memory_pool_reports,memory_retention_gpu_memory_pool_reports,memory_retention_dmabuf_pool_reports,memory_retention_other_memory_pool_reports,memory_retention_sink_frame_retention,queue_report_count,queue_elements,queue_max_size_buffers,queue_max_size_bytes,queue_max_size_time_ns,queue_current_level_buffers,queue_current_level_bytes,queue_current_level_time_ns,formats,sink_formats,format_paths,frame_sizes,caps_sources\n\
+             eDP-1,active,Playing,hardware-preferred,software-fallback,dav1ddec,software,2,memory:DMABuf,memory:DMABuf,sink-dmabuf-caps,sink-side DMABuf caps observed,sink-dmabuf,sink-side DMABuf caps observed,gtk4paintablesink0:sink:sink:video/x-raw:dmabuf:memory:DMABuf,1,videoconvert0:src:peer:GstVideoBufferPool:4096:2:4,videoconvert0:src:peer:dmabufallocator0:MemoryFlags(0x0):0:0:0,video/x-raw,gtk4paintablesink0:sink:sink|videoconvert0:src:src,1234,60000,true,24,3,120,2,buffers,-2000,7000,995,9,300,5000000,16667,20000,59940,16667,5016667,8,7,300,299,5000000,5016667,5017000,16667,20000,16667,/tmp/loop.mp4,8,7,6,5,9,glsinkbin+gtk4paintablesink,false,false,true,41666666,0,0,false,medium,allocation pools report at least 8192 bytes of minimum buffer capacity|sink last-sample and preroll frame retention are disabled,8192,16384,1,0,0,1,0,disabled,0,,,,,,,,NV12|RGBA,NV12,gtk4paintablesink0:sink:sink:video/x-raw:NV12:3840x2160|videoconvert0:src:src:video/x-raw:RGBA:3840x2160,gtk4paintablesink0:sink:sink:3840x2160|videoconvert0:src:src:3840x2160,current\n"
         );
     }
 

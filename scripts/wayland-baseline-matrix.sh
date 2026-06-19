@@ -22,6 +22,15 @@ Options:
   --report-dir <dir>    Exact baseline evidence directory. Created and kept
   --sample-duration <s> Per-scenario sampling duration. Default: 30
   --sample-interval <s> Per-scenario sampling interval. Default: 1
+  --video-size <WxH>   Generated test video size passed to smoke. Default: 128x72
+  --video-rate <fps>   Generated test video frame rate passed to smoke. Default: 12
+  --video-duration <s> Generated test video duration passed to smoke. Default: 2
+  --video-queue-max-size-buffers <count>
+                       Set GILDER_VIDEO_QUEUE_MAX_SIZE_BUFFERS for scenario smoke runs
+  --video-queue-max-size-time-ms <ms>
+                       Set GILDER_VIDEO_QUEUE_MAX_SIZE_TIME_MS for scenario smoke runs
+  --video-queue-max-size-bytes <bytes>
+                       Set GILDER_VIDEO_QUEUE_MAX_SIZE_BYTES for scenario smoke runs
   --budget-csv <path>  Enforce budget rows: scenario,phase,metric,max
   --allow-missing       Forward allow-missing to scenario smoke runs
   --no-build            Use existing target/debug binaries
@@ -42,6 +51,12 @@ work_parent="${TMPDIR:-/tmp}"
 report_dir=""
 sample_duration=30
 sample_interval=1
+video_size="128x72"
+video_rate=12
+video_duration=2
+video_queue_max_size_buffers=""
+video_queue_max_size_time_ms=""
+video_queue_max_size_bytes=""
 budget_csv=""
 allow_missing=0
 build=1
@@ -100,6 +115,36 @@ while [[ $# -gt 0 ]]; do
       sample_interval="$2"
       shift 2
       ;;
+    --video-size)
+      [[ $# -ge 2 ]] || { echo "--video-size requires WxH" >&2; exit 2; }
+      video_size="$2"
+      shift 2
+      ;;
+    --video-rate)
+      [[ $# -ge 2 ]] || { echo "--video-rate requires fps" >&2; exit 2; }
+      video_rate="$2"
+      shift 2
+      ;;
+    --video-duration)
+      [[ $# -ge 2 ]] || { echo "--video-duration requires seconds" >&2; exit 2; }
+      video_duration="$2"
+      shift 2
+      ;;
+    --video-queue-max-size-buffers)
+      [[ $# -ge 2 ]] || { echo "--video-queue-max-size-buffers requires count" >&2; exit 2; }
+      video_queue_max_size_buffers="$2"
+      shift 2
+      ;;
+    --video-queue-max-size-time-ms)
+      [[ $# -ge 2 ]] || { echo "--video-queue-max-size-time-ms requires milliseconds" >&2; exit 2; }
+      video_queue_max_size_time_ms="$2"
+      shift 2
+      ;;
+    --video-queue-max-size-bytes)
+      [[ $# -ge 2 ]] || { echo "--video-queue-max-size-bytes requires bytes" >&2; exit 2; }
+      video_queue_max_size_bytes="$2"
+      shift 2
+      ;;
     --budget-csv)
       [[ $# -ge 2 ]] || { echo "--budget-csv requires a path" >&2; exit 2; }
       budget_csv="$2"
@@ -135,6 +180,30 @@ if [[ ! "$sample_duration" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if [[ ! "$sample_interval" =~ ^[1-9][0-9]*$ ]]; then
   echo "--sample-interval must be a positive integer" >&2
+  exit 2
+fi
+if [[ ! "$video_size" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]]; then
+  echo "--video-size must be WxH with positive integers" >&2
+  exit 2
+fi
+if [[ ! "$video_rate" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--video-rate must be a positive integer" >&2
+  exit 2
+fi
+if [[ ! "$video_duration" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--video-duration must be a positive integer" >&2
+  exit 2
+fi
+if [[ -n "$video_queue_max_size_buffers" && ! "$video_queue_max_size_buffers" =~ ^[0-9]+$ ]]; then
+  echo "--video-queue-max-size-buffers must be a non-negative integer" >&2
+  exit 2
+fi
+if [[ -n "$video_queue_max_size_time_ms" && ! "$video_queue_max_size_time_ms" =~ ^[0-9]+$ ]]; then
+  echo "--video-queue-max-size-time-ms must be a non-negative integer" >&2
+  exit 2
+fi
+if [[ -n "$video_queue_max_size_bytes" && ! "$video_queue_max_size_bytes" =~ ^[0-9]+$ ]]; then
+  echo "--video-queue-max-size-bytes must be a non-negative integer" >&2
   exit 2
 fi
 
@@ -268,6 +337,18 @@ process_keys=(
   last_pss_kib
   retained_pss_delta_kib
   peak_over_first_pss_kib
+  avg_private_clean_kib
+  max_private_clean_kib
+  first_private_clean_kib
+  last_private_clean_kib
+  retained_private_clean_delta_kib
+  peak_over_first_private_clean_kib
+  avg_private_dirty_kib
+  max_private_dirty_kib
+  first_private_dirty_kib
+  last_private_dirty_kib
+  retained_private_dirty_delta_kib
+  peak_over_first_private_dirty_kib
   avg_private_kib
   max_private_kib
   first_private_kib
@@ -288,6 +369,11 @@ process_keys=(
   peak_over_first_shared_kib
   avg_gpu_busy_percent
   max_gpu_busy_percent
+  nvidia_process_gpu_memory_samples
+  first_nvidia_process_gpu_memory_mib
+  avg_nvidia_process_gpu_memory_mib
+  last_nvidia_process_gpu_memory_mib
+  max_nvidia_process_gpu_memory_mib
 )
 
 telemetry_keys=(
@@ -368,6 +454,11 @@ video_keys=(
   video_decoder_classes_latest
   video_memory_features_latest
   video_sink_memory_features_latest
+  video_formats_latest
+  video_sink_formats_latest
+  video_format_paths_latest
+  video_frame_sizes_latest
+  video_caps_sources_latest
   video_zero_copy_evidence_latest
   video_memory_retention_level_latest
   video_memory_retention_estimated_min_pool_bytes_max
@@ -473,6 +564,12 @@ write_metadata() {
   cat > "$metadata_path" <<EOF
 sample_duration: ${sample_duration}
 sample_interval: ${sample_interval}
+video_size: ${video_size}
+video_rate: ${video_rate}
+video_duration: ${video_duration}
+video_queue_max_size_buffers: ${video_queue_max_size_buffers:-default}
+video_queue_max_size_time_ms: ${video_queue_max_size_time_ms:-default}
+video_queue_max_size_bytes: ${video_queue_max_size_bytes:-default}
 budget_csv: ${budget_csv:-none}
 budget_results: ${budget_results_csv}
 output: ${output_name:-auto}
@@ -704,8 +801,20 @@ for scenario in "${requested_scenarios[@]}"; do
     --report-dir "$scenario_dir"
     --sample-duration "$sample_duration"
     --sample-interval "$sample_interval"
+    --video-size "$video_size"
+    --video-rate "$video_rate"
+    --video-duration "$video_duration"
     --no-build
   )
+  if [[ -n "$video_queue_max_size_buffers" ]]; then
+    command+=(--video-queue-max-size-buffers "$video_queue_max_size_buffers")
+  fi
+  if [[ -n "$video_queue_max_size_time_ms" ]]; then
+    command+=(--video-queue-max-size-time-ms "$video_queue_max_size_time_ms")
+  fi
+  if [[ -n "$video_queue_max_size_bytes" ]]; then
+    command+=(--video-queue-max-size-bytes "$video_queue_max_size_bytes")
+  fi
   if [[ -n "$output_name" ]]; then
     command+=(--output "$output_name")
   fi

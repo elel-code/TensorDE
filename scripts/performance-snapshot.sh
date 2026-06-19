@@ -33,10 +33,14 @@ Options:
                      Require sampled max PSS to be at most this KiB value
   --expect-max-private-kib-at-most <kib>
                      Require sampled max private memory to be at most this KiB value
+  --expect-max-private-dirty-kib-at-most <kib>
+                     Require sampled max Private_Dirty to be at most this KiB value
   --expect-max-uss-kib-at-most <kib>
                      Require sampled max USS/private memory to be at most this KiB value
   --expect-max-shared-kib-at-most <kib>
                      Require sampled max shared memory to be at most this KiB value
+  --expect-max-nvidia-process-gpu-memory-mib-at-most <mib>
+                     Require sampled max nvidia-smi process GPU memory to be at most this MiB value
   --expect-retained-rss-delta-kib-at-most <kib>
                      Require last-minus-first RSS delta to be at most this KiB value
   --expect-retained-pss-delta-kib-at-most <kib>
@@ -243,8 +247,10 @@ expect_plan_kind=""
 expect_max_rss_kib_at_most=""
 expect_max_pss_kib_at_most=""
 expect_max_private_kib_at_most=""
+expect_max_private_dirty_kib_at_most=""
 expect_max_uss_kib_at_most=""
 expect_max_shared_kib_at_most=""
+expect_max_nvidia_process_gpu_memory_mib_at_most=""
 expect_retained_rss_delta_kib_at_most=""
 expect_retained_pss_delta_kib_at_most=""
 expect_retained_private_delta_kib_at_most=""
@@ -417,6 +423,11 @@ while [[ $# -gt 0 ]]; do
       expect_max_private_kib_at_most="$2"
       shift 2
       ;;
+    --expect-max-private-dirty-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-private-dirty-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_private_dirty_kib_at_most="$2"
+      shift 2
+      ;;
     --expect-max-uss-kib-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-max-uss-kib-at-most requires a value" >&2; exit 2; }
       expect_max_uss_kib_at_most="$2"
@@ -425,6 +436,11 @@ while [[ $# -gt 0 ]]; do
     --expect-max-shared-kib-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-max-shared-kib-at-most requires a value" >&2; exit 2; }
       expect_max_shared_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-max-nvidia-process-gpu-memory-mib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-nvidia-process-gpu-memory-mib-at-most requires a value" >&2; exit 2; }
+      expect_max_nvidia_process_gpu_memory_mib_at_most="$2"
       shift 2
       ;;
     --expect-retained-rss-delta-kib-at-most)
@@ -991,6 +1007,121 @@ sample_smaps_rollup() {
   ' "$rollup"
 }
 
+write_smaps_mapping_summary() {
+  local target_pid="$1"
+  local report="$2"
+  local smaps="/proc/${target_pid}/smaps"
+  local mappings_tmp="${report}.mappings.tmp"
+  local categories_tmp="${report}.categories.tmp"
+
+  if [[ ! -r "$smaps" ]]; then
+    {
+      printf 'report: process-memory-mappings\n'
+      printf 'pid: %s\n' "$target_pid"
+      printf 'source: %s\n' "$smaps"
+      printf 'status: unavailable\n'
+    } > "$report"
+    return 0
+  fi
+
+  : > "$mappings_tmp"
+  : > "$categories_tmp"
+  awk -v mappings="$mappings_tmp" -v categories="$categories_tmp" '
+    function reset_current() {
+      rss = 0
+      pss = 0
+      private_clean = 0
+      private_dirty = 0
+      shared_clean = 0
+      shared_dirty = 0
+    }
+    function category_for(mapping) {
+      if (mapping ~ /^\/dev\/nvidia/) { return "nvidia-device" }
+      if (mapping ~ /^\/dev\/dri/) { return "dri-device" }
+      if (mapping == "[heap]") { return "heap" }
+      if (mapping ~ /^\[stack/) { return "stack" }
+      if (mapping ~ /^\[anon/) { return "anonymous" }
+      if (mapping ~ /^\/dev\/zero/) { return "shared-memory" }
+      if (mapping ~ /\/libnvidia/ || mapping ~ /\/libcuda/ || mapping ~ /\/libnvcuvid/) {
+        return "nvidia-library"
+      }
+      if (mapping ~ /\/gstreamer-1\.0\// || mapping ~ /\/libgst/) { return "gstreamer-library" }
+      if (mapping ~ /\/libgtk/ || mapping ~ /\/libgdk/) { return "gtk-library" }
+      if (mapping ~ /\/target\/(debug|release)\/gilderd$/) { return "gilder-binary" }
+      if (mapping ~ /^\/usr\/lib/) { return "system-library" }
+      if (mapping ~ /^\//) { return "file-mapping" }
+      return "other"
+    }
+    function emit_current() {
+      if (!have_mapping) { return }
+      shared = shared_clean + shared_dirty
+      printf "%d %d %d %d %d %s\n", pss, rss, private_clean, private_dirty, shared, key >> mappings
+      category = category_for(key)
+      category_pss[category] += pss
+      category_rss[category] += rss
+      category_private_clean[category] += private_clean
+      category_private_dirty[category] += private_dirty
+      category_shared[category] += shared
+      mapping_count += 1
+    }
+    /^[0-9a-fA-F]+-[0-9a-fA-F]+/ {
+      emit_current()
+      have_mapping = 1
+      reset_current()
+      key = "[anon]"
+      if (NF >= 6) {
+        key = $6
+        for (i = 7; i <= NF; i++) {
+          key = key " " $i
+        }
+      }
+      next
+    }
+    /^Rss:/ { rss = $2 + 0; next }
+    /^Pss:/ { pss = $2 + 0; next }
+    /^Private_Clean:/ { private_clean = $2 + 0; next }
+    /^Private_Dirty:/ { private_dirty = $2 + 0; next }
+    /^Shared_Clean:/ { shared_clean = $2 + 0; next }
+    /^Shared_Dirty:/ { shared_dirty = $2 + 0; next }
+    END {
+      emit_current()
+      for (category in category_pss) {
+        printf "%d %d %d %d %d %s\n",
+          category_pss[category],
+          category_rss[category],
+          category_private_clean[category],
+          category_private_dirty[category],
+          category_shared[category],
+          category >> categories
+      }
+      printf "%d\n", mapping_count > (categories ".count")
+    }
+  ' "$smaps"
+
+  {
+    printf 'report: process-memory-mappings\n'
+    printf 'pid: %s\n' "$target_pid"
+    printf 'source: %s\n' "$smaps"
+    printf 'status: available\n'
+    printf 'mapping_count: '
+    sed -n '1p' "${categories_tmp}.count" 2>/dev/null || printf '0\n'
+    printf 'top_mappings_by_pss:\n'
+    printf 'pss_kib rss_kib private_clean_kib private_dirty_kib shared_kib mapping\n'
+    sort -k1,1nr "$mappings_tmp" 2>/dev/null | sed -n '1,30p'
+    printf 'top_mappings_by_private_dirty:\n'
+    printf 'pss_kib rss_kib private_clean_kib private_dirty_kib shared_kib mapping\n'
+    sort -k4,4nr "$mappings_tmp" 2>/dev/null | sed -n '1,30p'
+    printf 'category_summary_by_pss:\n'
+    printf 'pss_kib rss_kib private_clean_kib private_dirty_kib shared_kib category\n'
+    sort -k1,1nr "$categories_tmp" 2>/dev/null
+    printf 'category_summary_by_private_dirty:\n'
+    printf 'pss_kib rss_kib private_clean_kib private_dirty_kib shared_kib category\n'
+    sort -k4,4nr "$categories_tmp" 2>/dev/null
+  } > "$report"
+
+  rm -f "$mappings_tmp" "$categories_tmp" "${categories_tmp}.count"
+}
+
 sample_gpu_busy() {
   local values=()
   local sources=()
@@ -1038,6 +1169,32 @@ sample_gpu_busy() {
   printf '%s|%s|%s\n' "$avg" "$max" "$joined_sources"
 }
 
+sample_nvidia_process_gpu_memory_mib() {
+  local target_pid="$1"
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    printf '\n'
+    return 0
+  fi
+
+  nvidia-smi 2>/dev/null | awk -v pid="$target_pid" '
+    index($0, pid) && $0 ~ /MiB/ {
+      value = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^[0-9]+MiB$/) {
+          value = $i
+        }
+      }
+      if (value != "") {
+        sub(/MiB$/, "", value)
+        print value
+        found = 1
+        exit
+      }
+    }
+    END { exit found ? 0 : 1 }
+  ' || true
+}
+
 write_summary() {
   local csv="$1"
   local summary="$2"
@@ -1049,15 +1206,20 @@ write_summary() {
       rss = $5 + 0
       vsz = $6 + 0
       pss = $7 + 0
+      private_clean = $8 + 0
+      private_dirty = $9 + 0
       private = $10 + 0
       uss = $11 + 0
       shared = $14 + 0
       gpu_avg = $19
       gpu_max_sample = $20
+      nvidia_memory = $22
       if (samples == 1) {
         first_rss = rss
         first_vsz = vsz
         first_pss = pss
+        first_private_clean = private_clean
+        first_private_dirty = private_dirty
         first_private = private
         first_uss = uss
         first_shared = shared
@@ -1065,12 +1227,19 @@ write_summary() {
       last_rss = rss
       last_vsz = vsz
       last_pss = pss
+      last_private_clean = private_clean
+      last_private_dirty = private_dirty
       last_private = private
       last_uss = uss
       last_shared = shared
+      if (nvidia_memory != "") {
+        last_nvidia_process_gpu_memory = nvidia_memory
+      }
       rss_sum += rss
       vsz_sum += vsz
       pss_sum += pss
+      private_clean_sum += private_clean
+      private_dirty_sum += private_dirty
       private_sum += private
       uss_sum += uss
       shared_sum += shared
@@ -1078,15 +1247,29 @@ write_summary() {
         gpu_samples += 1
         gpu_sum += gpu_avg + 0
       }
+      if (nvidia_memory != "") {
+        nvidia_process_gpu_memory_samples += 1
+        if (nvidia_process_gpu_memory_samples == 1) {
+          first_nvidia_process_gpu_memory = nvidia_memory
+        }
+        nvidia_process_gpu_memory_sum += nvidia_memory + 0
+        if (nvidia_process_gpu_memory_samples == 1 || nvidia_memory + 0 > max_nvidia_process_gpu_memory) {
+          max_nvidia_process_gpu_memory = nvidia_memory + 0
+        }
+      }
       if (samples == 1 || rss < min_rss) { min_rss = rss }
       if (samples == 1 || vsz < min_vsz) { min_vsz = vsz }
       if (samples == 1 || pss < min_pss) { min_pss = pss }
+      if (samples == 1 || private_clean < min_private_clean) { min_private_clean = private_clean }
+      if (samples == 1 || private_dirty < min_private_dirty) { min_private_dirty = private_dirty }
       if (samples == 1 || private < min_private) { min_private = private }
       if (samples == 1 || uss < min_uss) { min_uss = uss }
       if (samples == 1 || shared < min_shared) { min_shared = shared }
       if ($5 + 0 > max_rss) { max_rss = $5 + 0 }
       if ($6 + 0 > max_vsz) { max_vsz = $6 + 0 }
       if (pss > max_pss) { max_pss = pss }
+      if (private_clean > max_private_clean) { max_private_clean = private_clean }
+      if (private_dirty > max_private_dirty) { max_private_dirty = private_dirty }
       if (private > max_private) { max_private = private }
       if (uss > max_uss) { max_uss = uss }
       if (shared > max_shared) { max_shared = shared }
@@ -1117,6 +1300,20 @@ write_summary() {
         printf "max_pss_kib: %d\n", max_pss
         printf "retained_pss_delta_kib: %d\n", last_pss - first_pss
         printf "peak_over_first_pss_kib: %d\n", max_pss - first_pss
+        printf "min_private_clean_kib: %d\n", min_private_clean
+        printf "first_private_clean_kib: %d\n", first_private_clean
+        printf "avg_private_clean_kib: %.0f\n", private_clean_sum / samples
+        printf "last_private_clean_kib: %d\n", last_private_clean
+        printf "max_private_clean_kib: %d\n", max_private_clean
+        printf "retained_private_clean_delta_kib: %d\n", last_private_clean - first_private_clean
+        printf "peak_over_first_private_clean_kib: %d\n", max_private_clean - first_private_clean
+        printf "min_private_dirty_kib: %d\n", min_private_dirty
+        printf "first_private_dirty_kib: %d\n", first_private_dirty
+        printf "avg_private_dirty_kib: %.0f\n", private_dirty_sum / samples
+        printf "last_private_dirty_kib: %d\n", last_private_dirty
+        printf "max_private_dirty_kib: %d\n", max_private_dirty
+        printf "retained_private_dirty_delta_kib: %d\n", last_private_dirty - first_private_dirty
+        printf "peak_over_first_private_dirty_kib: %d\n", max_private_dirty - first_private_dirty
         printf "min_private_kib: %d\n", min_private
         printf "first_private_kib: %d\n", first_private
         printf "avg_private_kib: %.0f\n", private_sum / samples
@@ -1142,6 +1339,13 @@ write_summary() {
         if (gpu_samples > 0) {
           printf "avg_gpu_busy_percent: %.0f\n", gpu_sum / gpu_samples
           printf "max_gpu_busy_percent: %d\n", max_gpu_busy
+        }
+        printf "nvidia_process_gpu_memory_samples: %d\n", nvidia_process_gpu_memory_samples
+        if (nvidia_process_gpu_memory_samples > 0) {
+          printf "first_nvidia_process_gpu_memory_mib: %s\n", first_nvidia_process_gpu_memory
+          printf "avg_nvidia_process_gpu_memory_mib: %.0f\n", nvidia_process_gpu_memory_sum / nvidia_process_gpu_memory_samples
+          printf "last_nvidia_process_gpu_memory_mib: %s\n", last_nvidia_process_gpu_memory
+          printf "max_nvidia_process_gpu_memory_mib: %d\n", max_nvidia_process_gpu_memory
         }
       }
     }
@@ -1839,6 +2043,11 @@ write_video_runtime_summary() {
       queue_current_level_buffers = $81
       queue_current_level_bytes = $82
       queue_current_level_time = $83
+      formats = $84
+      sink_formats = $85
+      format_paths = $86
+      frame_sizes = $87
+      caps_sources = $88
 
       if (output != "" && !(output in seen_output)) {
         seen_output[output] = 1
@@ -1882,6 +2091,26 @@ write_video_runtime_summary() {
       if (sink_memory_features != "") {
         last_sink_memory_features = sink_memory_features
         record_pipe_values(sink_memory_features, sink_memory_feature_counts)
+      }
+      if (formats != "") {
+        last_formats = formats
+        record_pipe_values(formats, format_counts)
+      }
+      if (sink_formats != "") {
+        last_sink_formats = sink_formats
+        record_pipe_values(sink_formats, sink_format_counts)
+      }
+      if (format_paths != "") {
+        last_format_paths = format_paths
+        record_pipe_values(format_paths, format_path_counts)
+      }
+      if (frame_sizes != "") {
+        last_frame_sizes = frame_sizes
+        record_pipe_values(frame_sizes, frame_size_counts)
+      }
+      if (caps_sources != "") {
+        last_caps_sources = caps_sources
+        record_pipe_values(caps_sources, caps_source_counts)
       }
       if (zero_copy_level != "") {
         zero_copy_rows += 1
@@ -2196,6 +2425,36 @@ write_video_runtime_summary() {
       for (sink_memory_feature in sink_memory_feature_counts) {
         printf "video_sink_memory_feature.%s: %d\n", sink_memory_feature, sink_memory_feature_counts[sink_memory_feature]
       }
+      if (last_formats != "") {
+        printf "video_formats_latest: %s\n", last_formats
+      }
+      for (format in format_counts) {
+        printf "video_format.%s: %d\n", format, format_counts[format]
+      }
+      if (last_sink_formats != "") {
+        printf "video_sink_formats_latest: %s\n", last_sink_formats
+      }
+      for (sink_format in sink_format_counts) {
+        printf "video_sink_format.%s: %d\n", sink_format, sink_format_counts[sink_format]
+      }
+      if (last_format_paths != "") {
+        printf "video_format_paths_latest: %s\n", last_format_paths
+      }
+      for (format_path in format_path_counts) {
+        printf "video_format_path.%s: %d\n", format_path, format_path_counts[format_path]
+      }
+      if (last_frame_sizes != "") {
+        printf "video_frame_sizes_latest: %s\n", last_frame_sizes
+      }
+      for (frame_size in frame_size_counts) {
+        printf "video_frame_size.%s: %d\n", frame_size, frame_size_counts[frame_size]
+      }
+      if (last_caps_sources != "") {
+        printf "video_caps_sources_latest: %s\n", last_caps_sources
+      }
+      for (caps_source in caps_source_counts) {
+        printf "video_caps_source.%s: %d\n", caps_source, caps_source_counts[caps_source]
+      }
       printf "video_zero_copy_evidence_rows: %d\n", zero_copy_rows
       if (last_zero_copy_level != "") {
         printf "video_zero_copy_evidence_latest: %s\n", last_zero_copy_level
@@ -2463,6 +2722,7 @@ read_sysfs_value_or_unknown() {
 
 write_gpu_driver_report() {
   local report="$1"
+  local target_pid="${2:-}"
   local index=0
   local device_dir
   local card
@@ -2498,6 +2758,24 @@ write_gpu_driver_report() {
       done <<< "$nvidia_output"
     fi
     printf 'nvidia_smi.gpu.count: %d\n' "$nvidia_index" >> "$report"
+    if [[ -n "$target_pid" ]]; then
+      local process_row=""
+      process_row="$(nvidia-smi 2>/dev/null | awk -v pid="$target_pid" '
+        index($0, pid) && $0 ~ /MiB/ {
+          gsub(/^[|[:space:]]+/, "", $0)
+          gsub(/[|[:space:]]+$/, "", $0)
+          print
+          found = 1
+          exit
+        }
+        END { exit found ? 0 : 1 }
+      ' || true)"
+      if [[ -n "$process_row" ]]; then
+        printf 'nvidia_smi.process.%s: %s\n' "$target_pid" "$process_row" >> "$report"
+      else
+        printf 'nvidia_smi.process.%s: not-listed\n' "$target_pid" >> "$report"
+      fi
+    fi
   else
     printf 'nvidia_smi: unavailable\n' >> "$report"
   fi
@@ -2508,14 +2786,18 @@ write_video_hardware_report() {
   local video_runtime_summary="$2"
   local video_runtime_csv="$3"
   local report="$4"
+  local target_pid="${5:-}"
 
   {
     printf 'report: video-hardware\n'
     printf 'process.avg_cpu_percent: %s\n' "$(summary_value_or_none "$process_summary" avg_cpu_percent)"
     printf 'process.avg_gpu_busy_percent: %s\n' "$(summary_value_or_none "$process_summary" avg_gpu_busy_percent)"
     printf 'process.max_gpu_busy_percent: %s\n' "$(summary_value_or_none "$process_summary" max_gpu_busy_percent)"
+    printf 'process.max_nvidia_process_gpu_memory_mib: %s\n' "$(summary_value_or_none "$process_summary" max_nvidia_process_gpu_memory_mib)"
     printf 'process.max_rss_kib: %s\n' "$(summary_value_or_none "$process_summary" max_rss_kib)"
     printf 'process.max_pss_kib: %s\n' "$(summary_value_or_none "$process_summary" max_pss_kib)"
+    printf 'process.max_private_clean_kib: %s\n' "$(summary_value_or_none "$process_summary" max_private_clean_kib)"
+    printf 'process.max_private_dirty_kib: %s\n' "$(summary_value_or_none "$process_summary" max_private_dirty_kib)"
     printf 'process.max_private_kib: %s\n' "$(summary_value_or_none "$process_summary" max_private_kib)"
     printf 'process.max_uss_kib: %s\n' "$(summary_value_or_none "$process_summary" max_uss_kib)"
     printf 'video.decoder_policy_status_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_decoder_policy_status_latest)"
@@ -2524,6 +2806,11 @@ write_video_hardware_report() {
     printf 'video.caps_report_count_max: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_caps_report_count_max)"
     printf 'video.memory_features_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_memory_features_latest)"
     printf 'video.sink_memory_features_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_sink_memory_features_latest)"
+    printf 'video.formats_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_formats_latest)"
+    printf 'video.sink_formats_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_sink_formats_latest)"
+    printf 'video.format_paths_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_format_paths_latest)"
+    printf 'video.frame_sizes_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_frame_sizes_latest)"
+    printf 'video.caps_sources_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_caps_sources_latest)"
     printf 'video.sink_element_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_sink_element_latest)"
     printf 'video.sink_async_enabled_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_sink_async_enabled_latest)"
     printf 'video.sink_last_sample_enabled_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_sink_last_sample_enabled_latest)"
@@ -2541,7 +2828,7 @@ write_video_hardware_report() {
   } > "$report"
 
   write_video_source_codec_report "$video_runtime_csv" "$report"
-  write_gpu_driver_report "$report"
+  write_gpu_driver_report "$report" "$target_pid"
 }
 
 has_expectations() {
@@ -2609,8 +2896,10 @@ has_process_memory_expectations() {
   [[ -n "$expect_max_rss_kib_at_most" ||
     -n "$expect_max_pss_kib_at_most" ||
     -n "$expect_max_private_kib_at_most" ||
+    -n "$expect_max_private_dirty_kib_at_most" ||
     -n "$expect_max_uss_kib_at_most" ||
     -n "$expect_max_shared_kib_at_most" ||
+    -n "$expect_max_nvidia_process_gpu_memory_mib_at_most" ||
     -n "$expect_retained_rss_delta_kib_at_most" ||
     -n "$expect_retained_pss_delta_kib_at_most" ||
     -n "$expect_retained_private_delta_kib_at_most" ||
@@ -2628,6 +2917,7 @@ expect_process_summary_maximum() {
   local maximum="$2"
   local description="$3"
   local require_observed="$4"
+  local unit="${5:-KiB}"
   local value
 
   if value="$(summary_value "$key" "$summary_path")" && [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
@@ -2638,9 +2928,9 @@ expect_process_summary_maximum() {
       return 0
     fi
     if awk -v value="$value" -v maximum="$maximum" 'BEGIN { exit (value + 0 <= maximum + 0) ? 0 : 1 }'; then
-      pass "process memory expectation matched ${description}: ${value} KiB"
+      pass "process memory expectation matched ${description}: ${value} ${unit}"
     else
-      skip_or_fail "process memory expectation not met: ${description} was ${value} KiB, expected at most ${maximum} KiB"
+      skip_or_fail "process memory expectation not met: ${description} was ${value} ${unit}, expected at most ${maximum} ${unit}"
     fi
   else
     skip_or_fail "process memory expectation not met: missing ${description}"
@@ -2691,11 +2981,17 @@ validate_process_memory_expectations() {
   if [[ -n "$expect_max_private_kib_at_most" ]]; then
     expect_process_summary_maximum "max_private_kib" "$expect_max_private_kib_at_most" "max private memory" 1
   fi
+  if [[ -n "$expect_max_private_dirty_kib_at_most" ]]; then
+    expect_process_summary_maximum "max_private_dirty_kib" "$expect_max_private_dirty_kib_at_most" "max Private_Dirty" 1
+  fi
   if [[ -n "$expect_max_uss_kib_at_most" ]]; then
     expect_process_summary_maximum "max_uss_kib" "$expect_max_uss_kib_at_most" "max USS" 1
   fi
   if [[ -n "$expect_max_shared_kib_at_most" ]]; then
     expect_process_summary_maximum "max_shared_kib" "$expect_max_shared_kib_at_most" "max shared memory" 1
+  fi
+  if [[ -n "$expect_max_nvidia_process_gpu_memory_mib_at_most" ]]; then
+    expect_process_summary_maximum "max_nvidia_process_gpu_memory_mib" "$expect_max_nvidia_process_gpu_memory_mib_at_most" "max NVIDIA process GPU memory" 1 "MiB"
   fi
   if [[ -n "$expect_retained_rss_delta_kib_at_most" ]]; then
     expect_process_summary_delta_maximum "retained_rss_delta_kib" "$expect_retained_rss_delta_kib_at_most" "retained RSS delta" ""
@@ -3388,6 +3684,7 @@ for memory_expectation in \
   "$expect_max_rss_kib_at_most" \
   "$expect_max_pss_kib_at_most" \
   "$expect_max_private_kib_at_most" \
+  "$expect_max_private_dirty_kib_at_most" \
   "$expect_max_uss_kib_at_most" \
   "$expect_max_shared_kib_at_most"
 do
@@ -3396,6 +3693,10 @@ do
     exit 2
   fi
 done
+if [[ -n "$expect_max_nvidia_process_gpu_memory_mib_at_most" && ! "$expect_max_nvidia_process_gpu_memory_mib_at_most" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--expect-max-nvidia-process-gpu-memory-mib-at-most must be a positive integer" >&2
+  exit 2
+fi
 for memory_delta_expectation in \
   "$expect_retained_rss_delta_kib_at_most" \
   "$expect_retained_pss_delta_kib_at_most" \
@@ -3595,6 +3896,7 @@ telemetry_summary_path="$work_dir/telemetry-summary.txt"
 video_runtime_path="$work_dir/video-runtime.csv"
 video_runtime_summary_path="$work_dir/video-runtime-summary.txt"
 video_hardware_report_path="$work_dir/video-hardware-report.txt"
+memory_mapping_summary_path="$work_dir/memory-mapping-summary.txt"
 
 cat > "$metadata_path" <<EOF
 label: ${label}
@@ -3612,8 +3914,10 @@ expect_plan_kind: ${expect_plan_kind:-none}
 expect_max_rss_kib_at_most: ${expect_max_rss_kib_at_most:-none}
 expect_max_pss_kib_at_most: ${expect_max_pss_kib_at_most:-none}
 expect_max_private_kib_at_most: ${expect_max_private_kib_at_most:-none}
+expect_max_private_dirty_kib_at_most: ${expect_max_private_dirty_kib_at_most:-none}
 expect_max_uss_kib_at_most: ${expect_max_uss_kib_at_most:-none}
 expect_max_shared_kib_at_most: ${expect_max_shared_kib_at_most:-none}
+expect_max_nvidia_process_gpu_memory_mib_at_most: ${expect_max_nvidia_process_gpu_memory_mib_at_most:-none}
 expect_retained_rss_delta_kib_at_most: ${expect_retained_rss_delta_kib_at_most:-none}
 expect_retained_pss_delta_kib_at_most: ${expect_retained_pss_delta_kib_at_most:-none}
 expect_retained_private_delta_kib_at_most: ${expect_retained_private_delta_kib_at_most:-none}
@@ -3700,10 +4004,10 @@ expect_gtk_frame_timings: ${expect_gtk_frame_timings}
 gpu_busy_sources: drm gpu_busy_percent sysfs when readable; nvidia-smi utilization.gpu when available
 EOF
 
-printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$csv_path"
+printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,nvidia_process_gpu_memory_mib\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
 printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,render_sync_package_cache_entries,render_sync_package_cache_max_entries,render_sync_package_cache_hits,render_sync_package_cache_misses,render_sync_package_cache_evictions,render_sync_archive_cache_entries,render_sync_archive_cache_max_entries,render_sync_archive_cache_reuses,render_sync_archive_cache_extractions,render_sync_archive_cache_evictions,render_sync_archive_cache_evictions_latest,render_sync_archive_cache_eviction_errors,render_sync_archive_cache_eviction_errors_latest,render_sync_planned_static_image_resources,render_sync_planned_video_poster_resources,render_sync_planned_slideshow_image_resources,render_sync_planned_image_resource_references,render_sync_planned_unique_image_resources,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps,renderer_output_windows,renderer_static_surfaces,renderer_static_picture_surfaces,renderer_static_css_surfaces,renderer_static_color_surfaces,renderer_slideshow_surfaces,renderer_video_surfaces,renderer_video_shared_runtimes,renderer_video_pipelines,renderer_video_qos_messages,renderer_video_qos_dropped_max,renderer_video_gtk_frame_clock_ticks,renderer_video_gtk_frame_clock_interval_us_max,renderer_video_gtk_frame_clock_fps_x1000_max,renderer_video_gtk_frame_timings_complete,renderer_video_gtk_frame_timings_presentation_interval_us_max,renderer_video_gtk_frame_timings_presentation_time_us_max,renderer_video_gtk_frame_clock_before_paint_ticks,renderer_video_gtk_frame_clock_update_ticks,renderer_video_gtk_frame_clock_layout_ticks,renderer_video_gtk_frame_clock_paint_ticks,renderer_video_gtk_frame_clock_after_paint_ticks,render_sync_planned_static_image_resource_bytes,render_sync_planned_video_poster_resource_bytes,render_sync_planned_slideshow_image_resource_bytes,render_sync_planned_image_resource_reference_bytes,render_sync_planned_unique_image_resource_bytes,render_sync_package_cache_retained_resource_references,render_sync_package_cache_retained_unique_resources,render_sync_package_cache_retained_resource_bytes,render_sync_package_cache_retained_unique_resource_bytes,renderer_static_surface_resource_references,renderer_static_surface_resource_bytes,renderer_slideshow_resource_references,renderer_slideshow_resource_bytes,renderer_static_surface_unique_resources,renderer_static_surface_unique_resource_bytes,renderer_static_surface_estimated_decoded_bytes,renderer_slideshow_unique_resources,renderer_slideshow_unique_resource_bytes,render_sync_static_image_cache_entries,render_sync_static_image_cache_max_entries,render_sync_static_image_cache_generations,render_sync_static_image_cache_reuses,render_sync_static_image_cache_generation_errors,render_sync_static_image_cache_evictions,render_sync_static_image_cache_eviction_errors,render_sync_planned_video_source_references,render_sync_planned_unique_video_sources,render_sync_planned_duplicate_video_source_references,render_sync_planned_max_video_source_outputs,render_sync_planned_video_source_reference_bytes,render_sync_planned_unique_video_source_bytes,renderer_video_pipeline_source_references,renderer_video_pipeline_source_reference_bytes,renderer_video_pipeline_unique_sources,renderer_video_pipeline_unique_source_bytes,render_sync_package_cache_max_retained_unique_resource_bytes,render_sync_static_image_cache_bytes,render_sync_static_image_cache_max_bytes,render_sync_package_cache_retained_preview_resource_references,render_sync_package_cache_retained_unique_preview_resources,render_sync_package_cache_retained_preview_resource_bytes,render_sync_package_cache_retained_unique_preview_resource_bytes\n' > "$telemetry_path"
-printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled,memory_retention_level,memory_retention_notes,memory_retention_estimated_min_pool_bytes,memory_retention_estimated_max_pool_bytes,memory_retention_pool_reports,memory_retention_system_memory_pool_reports,memory_retention_gpu_memory_pool_reports,memory_retention_dmabuf_pool_reports,memory_retention_other_memory_pool_reports,memory_retention_sink_frame_retention,queue_report_count,queue_elements,queue_max_size_buffers,queue_max_size_bytes,queue_max_size_time_ns,queue_current_level_buffers,queue_current_level_bytes,queue_current_level_time_ns\n' > "$video_runtime_path"
+printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled,memory_retention_level,memory_retention_notes,memory_retention_estimated_min_pool_bytes,memory_retention_estimated_max_pool_bytes,memory_retention_pool_reports,memory_retention_system_memory_pool_reports,memory_retention_gpu_memory_pool_reports,memory_retention_dmabuf_pool_reports,memory_retention_other_memory_pool_reports,memory_retention_sink_frame_retention,queue_report_count,queue_elements,queue_max_size_buffers,queue_max_size_bytes,queue_max_size_time_ns,queue_current_level_buffers,queue_current_level_bytes,queue_current_level_time_ns,formats,sink_formats,format_paths,frame_sizes,caps_sources\n' > "$video_runtime_path"
 
 status_failures=0
 decision_failures=0
@@ -3724,6 +4028,7 @@ for sample in $(seq 1 "$samples"); do
   read -r sample_pid cpu_percent rss_kib vsz_kib stat comm <<< "$ps_line"
   read -r pss_kib private_clean_kib private_dirty_kib private_kib uss_kib shared_clean_kib shared_dirty_kib shared_kib < <(sample_smaps_rollup "$pid")
   IFS='|' read -r gpu_busy_percent_avg gpu_busy_percent_max gpu_busy_sources < <(sample_gpu_busy)
+  nvidia_process_gpu_memory_mib="$(sample_nvidia_process_gpu_memory_mib "$pid")"
 
   status_file=""
   status_error_file=""
@@ -3774,7 +4079,7 @@ for sample in $(seq 1 "$samples"); do
     break
   fi
 
-  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "$sample" \
     "$elapsed" \
     "$sample_pid" \
@@ -3795,7 +4100,8 @@ for sample in $(seq 1 "$samples"); do
     "${status_error_file#$work_dir/}" \
     "$gpu_busy_percent_avg" \
     "$gpu_busy_percent_max" \
-    "$gpu_busy_sources" >> "$csv_path"
+    "$gpu_busy_sources" \
+    "$nvidia_process_gpu_memory_mib" >> "$csv_path"
 
   if [[ "$sample" -lt "$samples" ]]; then
     sleep "$interval"
@@ -3806,9 +4112,11 @@ write_summary "$csv_path" "$summary_path"
 write_decision_summary "$decisions_path" "$decision_summary_path"
 write_telemetry_summary "$telemetry_path" "$telemetry_summary_path"
 write_video_runtime_summary "$video_runtime_path" "$video_runtime_summary_path"
-write_video_hardware_report "$summary_path" "$video_runtime_summary_path" "$video_runtime_path" "$video_hardware_report_path"
+write_smaps_mapping_summary "$pid" "$memory_mapping_summary_path"
+write_video_hardware_report "$summary_path" "$video_runtime_summary_path" "$video_runtime_path" "$video_hardware_report_path" "$pid"
 pass "wrote process samples to $csv_path"
 pass "wrote summary to $summary_path"
+pass "wrote process memory mapping summary to $memory_mapping_summary_path"
 if [[ "$status_enabled" -eq 1 && "$status_failures" -eq 0 ]]; then
   pass "wrote status snapshots under $work_dir"
 elif [[ "$status_enabled" -eq 1 ]]; then
@@ -3848,6 +4156,7 @@ fi
 note "metadata: $metadata_path"
 note "samples:  $csv_path"
 note "sample summary: $summary_path"
+note "memory mapping summary: $memory_mapping_summary_path"
 note "decisions: $decisions_path"
 note "decision summary: $decision_summary_path"
 note "telemetry: $telemetry_path"

@@ -27,16 +27,30 @@ Options:
                      Performance sampling duration. Default: 8
   --sample-interval <sec>
                      Performance sampling interval. Default: 1
+  --video-size <WxH> Generated test video size. Default: 128x72
+  --video-rate <fps> Generated test video frame rate. Default: 12
+  --video-duration <sec>
+                     Generated test video duration. Default: 2
+  --video-queue-max-size-buffers <count>
+                     Set GILDER_VIDEO_QUEUE_MAX_SIZE_BUFFERS for the isolated daemon
+  --video-queue-max-size-time-ms <ms>
+                     Set GILDER_VIDEO_QUEUE_MAX_SIZE_TIME_MS for the isolated daemon
+  --video-queue-max-size-bytes <bytes>
+                     Set GILDER_VIDEO_QUEUE_MAX_SIZE_BYTES for the isolated daemon
   --expect-max-rss-kib-at-most <kib>
                      Require sampled max RSS to be at most this KiB value
   --expect-max-pss-kib-at-most <kib>
                      Require sampled max PSS to be at most this KiB value
   --expect-max-private-kib-at-most <kib>
                      Require sampled max private memory to be at most this KiB value
+  --expect-max-private-dirty-kib-at-most <kib>
+                     Require sampled max Private_Dirty to be at most this KiB value
   --expect-max-uss-kib-at-most <kib>
                      Require sampled max USS/private memory to be at most this KiB value
   --expect-max-shared-kib-at-most <kib>
                      Require sampled max shared memory to be at most this KiB value
+  --expect-max-nvidia-process-gpu-memory-mib-at-most <mib>
+                     Require sampled max nvidia-smi process GPU memory to be at most this MiB value
   --expect-retained-private-delta-kib-at-most <kib>
                      Require sampled last-minus-first private memory delta to be at most this KiB value
   --expect-retained-uss-delta-kib-at-most <kib>
@@ -177,11 +191,19 @@ sample_performance=0
 sample_paused=0
 sample_duration=8
 sample_interval=1
+video_size="128x72"
+video_rate=12
+video_duration=2
+video_queue_max_size_buffers=""
+video_queue_max_size_time_ms=""
+video_queue_max_size_bytes=""
 expect_max_rss_kib_at_most=""
 expect_max_pss_kib_at_most=""
 expect_max_private_kib_at_most=""
+expect_max_private_dirty_kib_at_most=""
 expect_max_uss_kib_at_most=""
 expect_max_shared_kib_at_most=""
+expect_max_nvidia_process_gpu_memory_mib_at_most=""
 expect_retained_private_delta_kib_at_most=""
 expect_retained_uss_delta_kib_at_most=""
 expect_retained_pss_delta_kib_at_most=""
@@ -310,6 +332,36 @@ while [[ $# -gt 0 ]]; do
       sample_interval="$2"
       shift 2
       ;;
+    --video-size)
+      [[ $# -ge 2 ]] || { echo "--video-size requires WxH" >&2; exit 2; }
+      video_size="$2"
+      shift 2
+      ;;
+    --video-rate)
+      [[ $# -ge 2 ]] || { echo "--video-rate requires fps" >&2; exit 2; }
+      video_rate="$2"
+      shift 2
+      ;;
+    --video-duration)
+      [[ $# -ge 2 ]] || { echo "--video-duration requires seconds" >&2; exit 2; }
+      video_duration="$2"
+      shift 2
+      ;;
+    --video-queue-max-size-buffers)
+      [[ $# -ge 2 ]] || { echo "--video-queue-max-size-buffers requires count" >&2; exit 2; }
+      video_queue_max_size_buffers="$2"
+      shift 2
+      ;;
+    --video-queue-max-size-time-ms)
+      [[ $# -ge 2 ]] || { echo "--video-queue-max-size-time-ms requires milliseconds" >&2; exit 2; }
+      video_queue_max_size_time_ms="$2"
+      shift 2
+      ;;
+    --video-queue-max-size-bytes)
+      [[ $# -ge 2 ]] || { echo "--video-queue-max-size-bytes requires bytes" >&2; exit 2; }
+      video_queue_max_size_bytes="$2"
+      shift 2
+      ;;
     --expect-max-rss-kib-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-max-rss-kib-at-most requires a value" >&2; exit 2; }
       expect_max_rss_kib_at_most="$2"
@@ -328,6 +380,12 @@ while [[ $# -gt 0 ]]; do
       sample_performance=1
       shift 2
       ;;
+    --expect-max-private-dirty-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-private-dirty-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_private_dirty_kib_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
     --expect-max-uss-kib-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-max-uss-kib-at-most requires a value" >&2; exit 2; }
       expect_max_uss_kib_at_most="$2"
@@ -337,6 +395,12 @@ while [[ $# -gt 0 ]]; do
     --expect-max-shared-kib-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-max-shared-kib-at-most requires a value" >&2; exit 2; }
       expect_max_shared_kib_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-max-nvidia-process-gpu-memory-mib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-nvidia-process-gpu-memory-mib-at-most requires a value" >&2; exit 2; }
+      expect_max_nvidia_process_gpu_memory_mib_at_most="$2"
       sample_performance=1
       shift 2
       ;;
@@ -766,10 +830,35 @@ if [[ ! "$sample_interval" =~ ^[1-9][0-9]*$ ]]; then
   echo "--sample-interval must be a positive integer" >&2
   exit 2
 fi
+if [[ ! "$video_size" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]]; then
+  echo "--video-size must be WxH with positive integers" >&2
+  exit 2
+fi
+if [[ ! "$video_rate" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--video-rate must be a positive integer" >&2
+  exit 2
+fi
+if [[ ! "$video_duration" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--video-duration must be a positive integer" >&2
+  exit 2
+fi
+if [[ -n "$video_queue_max_size_buffers" && ! "$video_queue_max_size_buffers" =~ ^[0-9]+$ ]]; then
+  echo "--video-queue-max-size-buffers must be a non-negative integer" >&2
+  exit 2
+fi
+if [[ -n "$video_queue_max_size_time_ms" && ! "$video_queue_max_size_time_ms" =~ ^[0-9]+$ ]]; then
+  echo "--video-queue-max-size-time-ms must be a non-negative integer" >&2
+  exit 2
+fi
+if [[ -n "$video_queue_max_size_bytes" && ! "$video_queue_max_size_bytes" =~ ^[0-9]+$ ]]; then
+  echo "--video-queue-max-size-bytes must be a non-negative integer" >&2
+  exit 2
+fi
 for memory_expectation in \
   "$expect_max_rss_kib_at_most" \
   "$expect_max_pss_kib_at_most" \
   "$expect_max_private_kib_at_most" \
+  "$expect_max_private_dirty_kib_at_most" \
   "$expect_max_uss_kib_at_most" \
   "$expect_max_shared_kib_at_most"
 do
@@ -778,6 +867,10 @@ do
     exit 2
   fi
 done
+if [[ -n "$expect_max_nvidia_process_gpu_memory_mib_at_most" && ! "$expect_max_nvidia_process_gpu_memory_mib_at_most" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--expect-max-nvidia-process-gpu-memory-mib-at-most must be a positive integer" >&2
+  exit 2
+fi
 for memory_delta_expectation in \
   "$expect_retained_private_delta_kib_at_most" \
   "$expect_retained_uss_delta_kib_at_most" \
@@ -1109,11 +1202,19 @@ expect_compositor: ${expect_compositor:-none}
 actual_compositor: ${actual_compositor}
 sample_duration: ${sample_duration}
 sample_interval: ${sample_interval}
+video_size: ${video_size}
+video_rate: ${video_rate}
+video_duration: ${video_duration}
+video_queue_max_size_buffers: ${video_queue_max_size_buffers:-default}
+video_queue_max_size_time_ms: ${video_queue_max_size_time_ms:-default}
+video_queue_max_size_bytes: ${video_queue_max_size_bytes:-default}
 expect_max_rss_kib_at_most: ${expect_max_rss_kib_at_most:-none}
 expect_max_pss_kib_at_most: ${expect_max_pss_kib_at_most:-none}
 expect_max_private_kib_at_most: ${expect_max_private_kib_at_most:-none}
+expect_max_private_dirty_kib_at_most: ${expect_max_private_dirty_kib_at_most:-none}
 expect_max_uss_kib_at_most: ${expect_max_uss_kib_at_most:-none}
 expect_max_shared_kib_at_most: ${expect_max_shared_kib_at_most:-none}
+expect_max_nvidia_process_gpu_memory_mib_at_most: ${expect_max_nvidia_process_gpu_memory_mib_at_most:-none}
 expect_retained_private_delta_kib_at_most: ${expect_retained_private_delta_kib_at_most:-none}
 expect_retained_uss_delta_kib_at_most: ${expect_retained_uss_delta_kib_at_most:-none}
 expect_retained_pss_delta_kib_at_most: ${expect_retained_pss_delta_kib_at_most:-none}
@@ -1269,6 +1370,11 @@ append_video_runtime_evidence_summary() {
     video_caps_report_count_max \
     video_memory_features_latest \
     video_sink_memory_features_latest \
+    video_formats_latest \
+    video_sink_formats_latest \
+    video_format_paths_latest \
+    video_frame_sizes_latest \
+    video_caps_sources_latest \
     video_zero_copy_evidence_latest \
     video_zero_copy_evidence_notes_latest \
     video_memory_path_latest \
@@ -1312,6 +1418,11 @@ append_video_runtime_evidence_summary() {
     $1 ~ /^video_decoder_class\./ ||
     $1 ~ /^video_memory_feature\./ ||
     $1 ~ /^video_sink_memory_feature\./ ||
+    $1 ~ /^video_format\./ ||
+    $1 ~ /^video_sink_format\./ ||
+    $1 ~ /^video_format_path\./ ||
+    $1 ~ /^video_frame_size\./ ||
+    $1 ~ /^video_caps_source\./ ||
     $1 ~ /^video_zero_copy_evidence\./ ||
     $1 ~ /^video_memory_path\./ ||
     $1 ~ /^video_memory_path_segment\./ ||
@@ -1350,6 +1461,18 @@ append_process_memory_evidence_summary() {
     last_pss_kib \
     retained_pss_delta_kib \
     peak_over_first_pss_kib \
+    avg_private_clean_kib \
+    max_private_clean_kib \
+    first_private_clean_kib \
+    last_private_clean_kib \
+    retained_private_clean_delta_kib \
+    peak_over_first_private_clean_kib \
+    avg_private_dirty_kib \
+    max_private_dirty_kib \
+    first_private_dirty_kib \
+    last_private_dirty_kib \
+    retained_private_dirty_delta_kib \
+    peak_over_first_private_dirty_kib \
     avg_private_kib \
     max_private_kib \
     first_private_kib \
@@ -1369,7 +1492,12 @@ append_process_memory_evidence_summary() {
     retained_shared_delta_kib \
     peak_over_first_shared_kib \
     avg_gpu_busy_percent \
-    max_gpu_busy_percent
+    max_gpu_busy_percent \
+    nvidia_process_gpu_memory_samples \
+    first_nvidia_process_gpu_memory_mib \
+    avg_nvidia_process_gpu_memory_mib \
+    last_nvidia_process_gpu_memory_mib \
+    max_nvidia_process_gpu_memory_mib
   do
     printf '%s_%s: %s\n' "$prefix" "$key" "$(summary_value_or_none "$summary" "$key")"
   done
@@ -1394,7 +1522,22 @@ append_telemetry_evidence_summary() {
     render_sync_updates_queued_latest \
     render_sync_updates_skipped_latest \
     render_sync_package_cache_entries_latest \
+    render_sync_package_cache_max_retained_unique_resource_bytes_latest \
     render_sync_archive_cache_entries_latest \
+    render_sync_static_image_cache_entries_latest \
+    render_sync_static_image_cache_bytes_latest \
+    render_sync_static_image_cache_max_bytes_latest \
+    render_sync_static_image_cache_generations_latest \
+    render_sync_static_image_cache_reuses_latest \
+    render_sync_static_image_cache_generation_errors_latest \
+    render_sync_static_image_cache_evictions_latest \
+    render_sync_static_image_cache_eviction_errors_latest \
+    render_sync_planned_video_source_references_latest \
+    render_sync_planned_unique_video_sources_latest \
+    render_sync_planned_duplicate_video_source_references_latest \
+    render_sync_planned_max_video_source_outputs_latest \
+    render_sync_planned_video_source_reference_bytes_latest \
+    render_sync_planned_unique_video_source_bytes_latest \
     render_sync_planned_static_image_resources_latest \
     render_sync_planned_video_poster_resources_latest \
     render_sync_planned_slideshow_image_resources_latest \
@@ -1437,8 +1580,14 @@ append_telemetry_evidence_summary() {
     renderer_slideshow_unique_resource_bytes_latest \
     renderer_video_surfaces_latest \
     renderer_video_surfaces_max \
+    renderer_video_shared_runtimes_latest \
+    renderer_video_shared_runtimes_max \
     renderer_video_pipelines_latest \
-    renderer_video_pipelines_max
+    renderer_video_pipelines_max \
+    renderer_video_pipeline_source_references_latest \
+    renderer_video_pipeline_source_reference_bytes_latest \
+    renderer_video_pipeline_unique_sources_latest \
+    renderer_video_pipeline_unique_source_bytes_latest
   do
     printf '%s_%s: %s\n' "$prefix" "$key" "$(summary_value_or_none "$summary" "$key")"
   done
@@ -1449,18 +1598,22 @@ write_validation_report() {
   local active_telemetry_summary
   local active_video_runtime_summary
   local active_video_hardware_report
+  local active_memory_mapping_summary
   local paused_summary
   local paused_telemetry_summary
   local paused_video_runtime_summary
   local paused_video_hardware_report
+  local paused_memory_mapping_summary
   active_summary="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "summary.txt")"
   active_telemetry_summary="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "telemetry-summary.txt")"
   active_video_runtime_summary="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "video-runtime-summary.txt")"
   active_video_hardware_report="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "video-hardware-report.txt")"
+  active_memory_mapping_summary="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "memory-mapping-summary.txt")"
   paused_summary="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "summary.txt")"
   paused_telemetry_summary="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "telemetry-summary.txt")"
   paused_video_runtime_summary="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "video-runtime-summary.txt")"
   paused_video_hardware_report="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "video-hardware-report.txt")"
+  paused_memory_mapping_summary="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "memory-mapping-summary.txt")"
 
   cat > "$validation_report_path" <<EOF
 validation: wayland-video-surface-smoke
@@ -1488,8 +1641,10 @@ expect_memory_retention_sink_frame_retention: ${expect_memory_retention_sink_fra
 expect_max_rss_kib_at_most: ${expect_max_rss_kib_at_most:-none}
 expect_max_pss_kib_at_most: ${expect_max_pss_kib_at_most:-none}
 expect_max_private_kib_at_most: ${expect_max_private_kib_at_most:-none}
+expect_max_private_dirty_kib_at_most: ${expect_max_private_dirty_kib_at_most:-none}
 expect_max_uss_kib_at_most: ${expect_max_uss_kib_at_most:-none}
 expect_max_shared_kib_at_most: ${expect_max_shared_kib_at_most:-none}
+expect_max_nvidia_process_gpu_memory_mib_at_most: ${expect_max_nvidia_process_gpu_memory_mib_at_most:-none}
 expect_retained_private_delta_kib_at_most: ${expect_retained_private_delta_kib_at_most:-none}
 expect_retained_uss_delta_kib_at_most: ${expect_retained_uss_delta_kib_at_most:-none}
 expect_retained_pss_delta_kib_at_most: ${expect_retained_pss_delta_kib_at_most:-none}
@@ -1534,10 +1689,12 @@ performance_active_summary: ${active_summary}
 performance_active_telemetry_summary: ${active_telemetry_summary}
 performance_active_video_runtime_summary: ${active_video_runtime_summary}
 performance_active_video_hardware_report: ${active_video_hardware_report}
+performance_active_memory_mapping_summary: ${active_memory_mapping_summary}
 performance_paused_summary: ${paused_summary}
 performance_paused_telemetry_summary: ${paused_telemetry_summary}
 performance_paused_video_runtime_summary: ${paused_video_runtime_summary}
 performance_paused_video_hardware_report: ${paused_video_hardware_report}
+performance_paused_memory_mapping_summary: ${paused_memory_mapping_summary}
 fullscreen_resume_latency: $([[ "$measure_fullscreen_resume" -eq 1 ]] && printf '%s' "$resume_latency_summary" || printf 'none')
 metadata: ${metadata_path}
 checks: ${checks_path}
@@ -1658,11 +1815,17 @@ append_process_memory_expectations() {
   if [[ -n "$expect_max_private_kib_at_most" ]]; then
     args_ref+=(--expect-max-private-kib-at-most "$expect_max_private_kib_at_most")
   fi
+  if [[ -n "$expect_max_private_dirty_kib_at_most" ]]; then
+    args_ref+=(--expect-max-private-dirty-kib-at-most "$expect_max_private_dirty_kib_at_most")
+  fi
   if [[ -n "$expect_max_uss_kib_at_most" ]]; then
     args_ref+=(--expect-max-uss-kib-at-most "$expect_max_uss_kib_at_most")
   fi
   if [[ -n "$expect_max_shared_kib_at_most" ]]; then
     args_ref+=(--expect-max-shared-kib-at-most "$expect_max_shared_kib_at_most")
+  fi
+  if [[ -n "$expect_max_nvidia_process_gpu_memory_mib_at_most" ]]; then
+    args_ref+=(--expect-max-nvidia-process-gpu-memory-mib-at-most "$expect_max_nvidia_process_gpu_memory_mib_at_most")
   fi
   if [[ -n "$expect_retained_private_delta_kib_at_most" ]]; then
     args_ref+=(--expect-retained-private-delta-kib-at-most "$expect_retained_private_delta_kib_at_most")
@@ -2160,6 +2323,47 @@ append_video_runtime_evidence() {
   return 0
 }
 
+status_video_runtime_row_count() {
+  local status_file="$1"
+  local temp_video_runtime="$work_dir/video-runtime-check.tmp"
+  local video_runtime_error_file="$work_dir/video-runtime-check.err"
+  local row_count=0
+
+  if "$gilderctl" status --video-runtime-csv --from-file "$status_file" > "$temp_video_runtime" 2> "$video_runtime_error_file"; then
+    row_count="$(count_csv_data_rows "$temp_video_runtime")"
+  fi
+  rm -f "$temp_video_runtime"
+  if [[ ! -s "$video_runtime_error_file" ]]; then
+    rm -f "$video_runtime_error_file"
+  fi
+  printf '%s\n' "$row_count"
+}
+
+wait_for_resumed_status() {
+  local attempt
+  local row_count
+  for attempt in $(seq 1 50); do
+    env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_resumed"
+    if grep -q '"reason":"user-paused"' "$status_resumed"; then
+      sleep 0.1
+      continue
+    fi
+    if ! status_has_video_plan_for_output "$status_resumed" "$output_name"; then
+      sleep 0.1
+      continue
+    fi
+    if [[ "$require_video_runtime_row" -eq 1 ]]; then
+      row_count="$(status_video_runtime_row_count "$status_resumed")"
+      if [[ "$row_count" -eq 0 ]]; then
+        sleep 0.1
+        continue
+      fi
+    fi
+    return 0
+  done
+  return 1
+}
+
 printf 'kind,name,status,detail\n' > "$checks_path"
 write_metadata
 
@@ -2205,14 +2409,14 @@ if [[ "$preflight" -eq 1 ]]; then
   finish_with_summary
 fi
 
-printf 'phase,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled,memory_retention_level,memory_retention_notes,memory_retention_estimated_min_pool_bytes,memory_retention_estimated_max_pool_bytes,memory_retention_pool_reports,memory_retention_system_memory_pool_reports,memory_retention_gpu_memory_pool_reports,memory_retention_dmabuf_pool_reports,memory_retention_other_memory_pool_reports,memory_retention_sink_frame_retention\n' > "$video_runtime_path"
+printf 'phase,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled,memory_retention_level,memory_retention_notes,memory_retention_estimated_min_pool_bytes,memory_retention_estimated_max_pool_bytes,memory_retention_pool_reports,memory_retention_system_memory_pool_reports,memory_retention_gpu_memory_pool_reports,memory_retention_dmabuf_pool_reports,memory_retention_other_memory_pool_reports,memory_retention_sink_frame_retention,queue_report_count,queue_elements,queue_max_size_buffers,queue_max_size_bytes,queue_max_size_time_ns,queue_current_level_buffers,queue_current_level_bytes,queue_current_level_time_ns,formats,sink_formats,format_paths,frame_sizes,caps_sources\n' > "$video_runtime_path"
 
 mkdir -p "$work_dir/runtime" "$work_dir/config" "$work_dir/state" "$work_dir/cache" "$source_dir"
 if [[ "$measure_fullscreen_resume" -eq 1 ]]; then
   printf 'fullscreen\n' > "$output_state_override_file"
 fi
 ffmpeg -hide_banner -loglevel error -y \
-  -f lavfi -i testsrc2=size=128x72:rate=12:duration=2 \
+  -f lavfi -i "testsrc2=size=${video_size}:rate=${video_rate}:duration=${video_duration}" \
   -an -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p \
   "$video_source_path"
 video_source_bytes="$(wc -c < "$video_source_path")"
@@ -2236,6 +2440,15 @@ daemon_env=(
 )
 if [[ -n "$simulate_power" ]]; then
   daemon_env+=(GILDER_POWER_STATE="$simulate_power")
+fi
+if [[ -n "$video_queue_max_size_buffers" ]]; then
+  daemon_env+=(GILDER_VIDEO_QUEUE_MAX_SIZE_BUFFERS="$video_queue_max_size_buffers")
+fi
+if [[ -n "$video_queue_max_size_time_ms" ]]; then
+  daemon_env+=(GILDER_VIDEO_QUEUE_MAX_SIZE_TIME_MS="$video_queue_max_size_time_ms")
+fi
+if [[ -n "$video_queue_max_size_bytes" ]]; then
+  daemon_env+=(GILDER_VIDEO_QUEUE_MAX_SIZE_BYTES="$video_queue_max_size_bytes")
 fi
 if [[ -n "$simulate_output_state" ]]; then
   if [[ "$measure_fullscreen_resume" -eq 1 ]]; then
@@ -2547,8 +2760,11 @@ if [[ "$sample_paused" -eq 1 ]]; then
   fi
 
   env GILDER_SOCKET="$socket" "$gilderctl" resume --output "$output_name" >/dev/null
-  sleep 1
-  env GILDER_SOCKET="$socket" "$gilderctl" status > "$status_resumed"
+  if wait_for_resumed_status; then
+    pass "resumed output reports active video runtime state"
+  else
+    skip_or_fail "resumed output did not report active video runtime state"
+  fi
   append_video_runtime_evidence "resumed" "$status_resumed" "$require_video_runtime_row" || true
   if grep -q '"reason":"user-paused"' "$status_resumed"; then
     skip_or_fail "status still reports user-paused after resume"

@@ -11,13 +11,16 @@ use crate::core::{FitMode, Transition};
 use crate::policy::RenderMode;
 #[cfg(feature = "video-renderer")]
 use crate::renderer::video::{
-    GtkFrameClockPhase, VideoAllocationReport, VideoCapsReport, VideoDecoderPolicyStatus,
-    VideoDecoderReport, VideoFrameStats, VideoMemoryPathReport, VideoMemoryRetentionReport,
-    VideoPipelineDiagnostics, VideoPipelineDiagnosticsCache, VideoPipelineSnapshot,
-    VideoQueueReport, VideoSinkTuningReport, VideoZeroCopyEvidence, apply_decoder_rank_policy,
-    configure_video_pipeline_low_memory, configure_video_sink_low_memory, decoder_policy_status,
-    decoder_report_from_message, merge_decoder_reports, playback_duration_ms, playback_position_ms,
-    video_memory_retention_report,
+    GtkFrameClockPhase, VideoAllocationReport, VideoCapsReport, VideoCapsReportStore,
+    VideoDecoderPolicyStatus, VideoDecoderReport, VideoFrameStats, VideoMemoryPathReport,
+    VideoMemoryRetentionReport, VideoPipelineDiagnostics, VideoPipelineDiagnosticsCache,
+    VideoPipelineSnapshot, VideoQueueElementStore, VideoQueueReport, VideoSinkTuningReport,
+    VideoZeroCopyEvidence, apply_decoder_rank_policy, configure_video_pipeline_low_memory,
+    configure_video_sink_low_memory, decoder_policy_status, decoder_report_from_message,
+    install_video_caps_observers, install_video_queue_observers, merge_caps_reports,
+    merge_decoder_reports, merge_queue_reports, observed_video_caps_reports,
+    observed_video_queue_reports, playback_duration_ms, playback_position_ms,
+    video_caps_report_store, video_memory_retention_report, video_queue_element_store,
 };
 use gtk::gdk;
 use gtk::gio;
@@ -1530,6 +1533,8 @@ struct GtkSharedVideoRuntime {
     frame_stats: Rc<RefCell<VideoFrameStats>>,
     diagnostics: VideoPipelineDiagnosticsCache,
     observed_decoder_reports: BTreeMap<String, crate::renderer::video::VideoDecoderReport>,
+    observed_caps_reports: VideoCapsReportStore,
+    observed_queue_elements: VideoQueueElementStore,
 }
 
 #[cfg(feature = "video-renderer")]
@@ -1537,6 +1542,10 @@ impl GtkSharedVideoRuntime {
     fn new(plan: &VideoWallpaperPlan) -> Result<Self, GtkVideoError> {
         gst::init().map_err(|err| GtkVideoError::Init(err.to_string()))?;
         let built = build_gtk_video_pipeline(plan)?;
+        let observed_caps_reports = video_caps_report_store();
+        let observed_queue_elements = video_queue_element_store();
+        install_video_caps_observers(&built.element, &observed_caps_reports);
+        install_video_queue_observers(&built.element, &observed_queue_elements);
         let mut runtime = Self {
             element: built.element,
             paintable: built.paintable,
@@ -1553,6 +1562,8 @@ impl GtkSharedVideoRuntime {
             frame_stats: Rc::new(RefCell::new(VideoFrameStats::default())),
             diagnostics: VideoPipelineDiagnosticsCache::default(),
             observed_decoder_reports: BTreeMap::new(),
+            observed_caps_reports,
+            observed_queue_elements,
         };
         runtime.apply_muted(plan.muted);
         runtime.apply_start_offset(plan.start_offset_ms)?;
@@ -1725,15 +1736,23 @@ impl GtkSharedVideoRuntime {
     fn snapshot(&self) -> GtkSharedVideoRuntimeSnapshot {
         let VideoPipelineDiagnostics {
             actual_decoder_reports: current_decoder_reports,
-            caps_reports,
+            caps_reports: current_caps_reports,
             allocation_reports,
-            queue_reports,
+            queue_reports: current_queue_reports,
             zero_copy_evidence: _,
             memory_path: _,
         } = self.diagnostics.snapshot(&self.element);
         let actual_decoder_reports = merge_decoder_reports(
             current_decoder_reports,
             self.observed_decoder_reports.values().cloned(),
+        );
+        let caps_reports = merge_caps_reports(
+            current_caps_reports,
+            observed_video_caps_reports(&self.observed_caps_reports),
+        );
+        let queue_reports = merge_queue_reports(
+            current_queue_reports,
+            observed_video_queue_reports(&self.observed_queue_elements),
         );
         let zero_copy_evidence =
             crate::renderer::video::zero_copy_evidence(&actual_decoder_reports, &caps_reports);

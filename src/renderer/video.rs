@@ -9,7 +9,7 @@ use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub struct GstVideoRenderer {
@@ -17,6 +17,9 @@ pub struct GstVideoRenderer {
     #[cfg(test)]
     test_source: bool,
 }
+
+pub(crate) type VideoCapsReportStore = Arc<Mutex<BTreeMap<String, VideoCapsReport>>>;
+pub(crate) type VideoQueueElementStore = Arc<Mutex<BTreeMap<String, gst::Element>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VideoRuntimeCapabilities {
@@ -107,9 +110,12 @@ const DECODER_RANK_BOOST: i32 = 512;
 const VIDEO_SINK_DEFAULT_MAX_LATENESS_NS: u64 = 50_000_000;
 const VIDEO_SINK_MIN_MAX_LATENESS_NS: u64 = 8_000_000;
 const VIDEO_SINK_MAX_MAX_LATENESS_NS: u64 = 50_000_000;
-const VIDEO_QUEUE_MAX_SIZE_BUFFERS: u32 = 8;
+const VIDEO_QUEUE_MAX_SIZE_BUFFERS: u32 = 4;
 const VIDEO_QUEUE_MAX_SIZE_BYTES: u32 = 0;
-const VIDEO_QUEUE_MAX_SIZE_TIME_NS: u64 = 50_000_000;
+const VIDEO_QUEUE_MAX_SIZE_TIME_NS: u64 = 25_000_000;
+const VIDEO_QUEUE_MAX_SIZE_BUFFERS_ENV: &str = "GILDER_VIDEO_QUEUE_MAX_SIZE_BUFFERS";
+const VIDEO_QUEUE_MAX_SIZE_BYTES_ENV: &str = "GILDER_VIDEO_QUEUE_MAX_SIZE_BYTES";
+const VIDEO_QUEUE_MAX_SIZE_TIME_MS_ENV: &str = "GILDER_VIDEO_QUEUE_MAX_SIZE_TIME_MS";
 const DMABUF_MEMORY_FEATURE: &str = "memory:DMABuf";
 const GPU_MEMORY_FEATURES: &[&str] = &[
     DMABUF_MEMORY_FEATURE,
@@ -239,7 +245,7 @@ impl GstVideoRenderer {
             .map(|(output_name, pipeline)| {
                 let VideoPipelineDiagnostics {
                     actual_decoder_reports: current_decoder_reports,
-                    caps_reports,
+                    caps_reports: current_caps_reports,
                     allocation_reports,
                     queue_reports,
                     zero_copy_evidence: _,
@@ -248,6 +254,14 @@ impl GstVideoRenderer {
                 let actual_decoder_reports = merge_decoder_reports(
                     current_decoder_reports,
                     pipeline.observed_decoder_reports.values().cloned(),
+                );
+                let caps_reports = merge_caps_reports(
+                    current_caps_reports,
+                    observed_video_caps_reports(&pipeline.observed_caps_reports),
+                );
+                let queue_reports = merge_queue_reports(
+                    queue_reports,
+                    observed_video_queue_reports(&pipeline.observed_queue_elements),
                 );
                 let zero_copy_evidence = zero_copy_evidence(&actual_decoder_reports, &caps_reports);
                 let memory_path = video_memory_path(&actual_decoder_reports, &caps_reports);
@@ -313,6 +327,8 @@ struct VideoPipeline {
     frame_stats: VideoFrameStats,
     diagnostics: VideoPipelineDiagnosticsCache,
     observed_decoder_reports: BTreeMap<String, VideoDecoderReport>,
+    observed_caps_reports: VideoCapsReportStore,
+    observed_queue_elements: VideoQueueElementStore,
 }
 
 impl VideoPipeline {
@@ -325,6 +341,10 @@ impl VideoPipeline {
             #[cfg(test)]
             test_source,
         )?;
+        let observed_caps_reports = video_caps_report_store();
+        let observed_queue_elements = video_queue_element_store();
+        install_video_caps_observers(&pipeline.element, &observed_caps_reports);
+        install_video_queue_observers(&pipeline.element, &observed_queue_elements);
         let mut pipeline = Self {
             element: pipeline.element,
             frame_limiter: pipeline.frame_limiter,
@@ -341,6 +361,8 @@ impl VideoPipeline {
             frame_stats: VideoFrameStats::default(),
             diagnostics: VideoPipelineDiagnosticsCache::default(),
             observed_decoder_reports: BTreeMap::new(),
+            observed_caps_reports,
+            observed_queue_elements,
         };
         pipeline.apply_muted(plan.muted);
         Ok(pipeline)
@@ -538,20 +560,16 @@ fn frame_limiter_required(target_max_fps: Option<u32>) -> bool {
 }
 
 pub fn actual_decoder_elements(element: &gst::Element) -> Vec<String> {
-    let Ok(bin) = element.clone().downcast::<gst::Bin>() else {
-        return Vec::new();
-    };
-    let mut iterator = bin.iterate_recurse();
     let mut decoders = Vec::new();
-    while let Ok(Some(child)) = iterator.next() {
+    for_each_child_element(element, |child| {
         let Some(factory) = child.factory() else {
-            continue;
+            return;
         };
         let name = factory.name();
         if DECODER_ELEMENT_NAMES.contains(&name.as_str()) {
             decoders.push(name.to_string());
         }
-    }
+    });
     decoders.sort();
     decoders.dedup();
     decoders
@@ -724,40 +742,74 @@ pub(crate) fn configure_video_sink_low_memory(
 
 pub(crate) fn configure_video_pipeline_low_memory(element: &gst::Element) {
     configure_existing_video_queues(element);
-    let _ = element.connect("element-setup", false, |values| {
-        if let Some(child) = values
-            .get(1)
-            .and_then(|value| value.get::<gst::Element>().ok())
-        {
-            configure_video_queue_low_memory(&child);
-        }
-        None
-    });
+    if let Ok(bin) = element.clone().downcast::<gst::Bin>() {
+        let _ = bin.connect_deep_element_added(|_, _, child| {
+            configure_video_queue_low_memory(child);
+        });
+    }
 }
 
 fn configure_existing_video_queues(element: &gst::Element) {
     configure_video_queue_low_memory(element);
-    if let Ok(bin) = element.clone().downcast::<gst::Bin>() {
-        let mut iterator = bin.iterate_recurse();
-        while let Ok(Some(child)) = iterator.next() {
-            configure_video_queue_low_memory(&child);
-        }
-    }
+    for_each_child_element(element, |child| configure_video_queue_low_memory(&child));
 }
 
 fn configure_video_queue_low_memory(element: &gst::Element) {
     if !is_video_queue_element(element) {
         return;
     }
-    set_optional_u32_property(element, "max-size-buffers", VIDEO_QUEUE_MAX_SIZE_BUFFERS);
-    set_optional_u32_property(element, "max-size-bytes", VIDEO_QUEUE_MAX_SIZE_BYTES);
-    set_optional_u64_property(element, "max-size-time", VIDEO_QUEUE_MAX_SIZE_TIME_NS);
+    let tuning = video_queue_tuning_from_env();
+    set_optional_u32_property(element, "max-size-buffers", tuning.max_size_buffers);
+    set_optional_u32_property(element, "max-size-bytes", tuning.max_size_bytes);
+    set_optional_u64_property(element, "max-size-time", tuning.max_size_time_ns);
 }
 
 fn is_video_queue_element(element: &gst::Element) -> bool {
-    element.find_property("current-level-buffers").is_some()
-        && element.find_property("max-size-buffers").is_some()
-        && element.find_property("max-size-time").is_some()
+    let has_limits = element.find_property("max-size-buffers").is_some()
+        && element.find_property("max-size-time").is_some();
+    has_limits
+        && (element.find_property("current-level-buffers").is_some()
+            || element.find_property("stats").is_some()
+            || queue_factory_name(element).is_some())
+}
+
+fn queue_factory_name(element: &gst::Element) -> Option<String> {
+    let name = element.factory()?.name();
+    matches!(name.as_str(), "queue" | "queue2" | "multiqueue").then(|| name.to_string())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VideoQueueTuning {
+    max_size_buffers: u32,
+    max_size_bytes: u32,
+    max_size_time_ns: u64,
+}
+
+fn video_queue_tuning_from_env() -> VideoQueueTuning {
+    let max_size_time_ns = std::env::var(VIDEO_QUEUE_MAX_SIZE_TIME_MS_ENV)
+        .ok()
+        .and_then(|value| parse_env_u64(&value))
+        .map(|value| value.saturating_mul(1_000_000))
+        .unwrap_or(VIDEO_QUEUE_MAX_SIZE_TIME_NS);
+    VideoQueueTuning {
+        max_size_buffers: std::env::var(VIDEO_QUEUE_MAX_SIZE_BUFFERS_ENV)
+            .ok()
+            .and_then(|value| parse_env_u32(&value))
+            .unwrap_or(VIDEO_QUEUE_MAX_SIZE_BUFFERS),
+        max_size_bytes: std::env::var(VIDEO_QUEUE_MAX_SIZE_BYTES_ENV)
+            .ok()
+            .and_then(|value| parse_env_u32(&value))
+            .unwrap_or(VIDEO_QUEUE_MAX_SIZE_BYTES),
+        max_size_time_ns,
+    }
+}
+
+fn parse_env_u32(value: &str) -> Option<u32> {
+    value.trim().parse::<u32>().ok()
+}
+
+fn parse_env_u64(value: &str) -> Option<u64> {
+    value.trim().parse::<u64>().ok()
 }
 
 fn update_video_sink_max_lateness(
@@ -862,42 +914,20 @@ fn video_sink_tuning_report(sink: &gst::Element) -> VideoSinkTuningReport {
 pub fn video_caps_reports(element: &gst::Element) -> Vec<VideoCapsReport> {
     let mut reports = Vec::new();
     push_element_caps_reports(element, &mut reports);
-
-    if let Ok(bin) = element.clone().downcast::<gst::Bin>() {
-        let mut iterator = bin.iterate_recurse();
-        while let Ok(Some(child)) = iterator.next() {
-            push_element_caps_reports(&child, &mut reports);
-        }
-    }
-
-    reports.sort_by(|left, right| {
-        (
-            left.element.as_str(),
-            left.pad.as_str(),
-            left.direction.as_str(),
-            left.caps.as_str(),
-        )
-            .cmp(&(
-                right.element.as_str(),
-                right.pad.as_str(),
-                right.direction.as_str(),
-                right.caps.as_str(),
-            ))
+    for_each_child_element(element, |child| {
+        push_element_caps_reports(&child, &mut reports)
     });
-    reports.dedup();
+
+    sort_video_caps_reports(&mut reports);
     reports
 }
 
 pub fn video_allocation_reports(element: &gst::Element) -> Vec<VideoAllocationReport> {
     let mut reports = Vec::new();
     push_element_allocation_reports(element, &mut reports);
-
-    if let Ok(bin) = element.clone().downcast::<gst::Bin>() {
-        let mut iterator = bin.iterate_recurse();
-        while let Ok(Some(child)) = iterator.next() {
-            push_element_allocation_reports(&child, &mut reports);
-        }
-    }
+    for_each_child_element(element, |child| {
+        push_element_allocation_reports(&child, &mut reports)
+    });
 
     reports.sort_by(|left, right| {
         (
@@ -922,17 +952,225 @@ pub fn video_allocation_reports(element: &gst::Element) -> Vec<VideoAllocationRe
 pub fn video_queue_reports(element: &gst::Element) -> Vec<VideoQueueReport> {
     let mut reports = Vec::new();
     push_element_queue_report(element, &mut reports);
+    for_each_child_element(element, |child| {
+        push_element_queue_report(&child, &mut reports)
+    });
 
-    if let Ok(bin) = element.clone().downcast::<gst::Bin>() {
-        let mut iterator = bin.iterate_recurse();
-        while let Ok(Some(child)) = iterator.next() {
-            push_element_queue_report(&child, &mut reports);
+    sort_video_queue_reports(&mut reports);
+    reports
+}
+
+pub(crate) fn video_queue_element_store() -> VideoQueueElementStore {
+    Arc::new(Mutex::new(BTreeMap::new()))
+}
+
+pub(crate) fn observed_video_queue_reports(
+    store: &VideoQueueElementStore,
+) -> Vec<VideoQueueReport> {
+    let mut reports = Vec::new();
+    if let Ok(elements) = store.lock() {
+        for element in elements.values() {
+            configure_video_queue_low_memory(element);
+            push_element_queue_report(element, &mut reports);
         }
     }
+    sort_video_queue_reports(&mut reports);
+    reports
+}
 
+pub(crate) fn merge_queue_reports<I>(
+    current: Vec<VideoQueueReport>,
+    observed: I,
+) -> Vec<VideoQueueReport>
+where
+    I: IntoIterator<Item = VideoQueueReport>,
+{
+    let mut by_element = BTreeMap::new();
+    for report in current {
+        by_element.insert(report.element.clone(), report);
+    }
+    for report in observed {
+        by_element.insert(report.element.clone(), report);
+    }
+    let mut reports = by_element.into_values().collect::<Vec<_>>();
+    sort_video_queue_reports(&mut reports);
+    reports
+}
+
+pub(crate) fn install_video_queue_observers(
+    element: &gst::Element,
+    store: &VideoQueueElementStore,
+) {
+    record_queue_element(element, store);
+    for_each_child_element(element, |child| record_queue_element(&child, store));
+
+    if let Ok(bin) = element.clone().downcast::<gst::Bin>() {
+        let store = Arc::clone(store);
+        let _ = bin.connect_deep_element_added(move |_, _, child| {
+            record_queue_element(child, &store);
+        });
+    }
+}
+
+fn record_queue_element(element: &gst::Element, store: &VideoQueueElementStore) {
+    if !is_video_queue_element(element) {
+        return;
+    }
+    configure_video_queue_low_memory(element);
+    if let Ok(mut elements) = store.lock() {
+        elements.insert(element.name().to_string(), element.clone());
+    }
+}
+
+pub(crate) fn video_caps_report_store() -> VideoCapsReportStore {
+    Arc::new(Mutex::new(BTreeMap::new()))
+}
+
+pub(crate) fn observed_video_caps_reports(store: &VideoCapsReportStore) -> Vec<VideoCapsReport> {
+    store
+        .lock()
+        .map(|reports| reports.values().cloned().collect::<Vec<_>>())
+        .unwrap_or_default()
+}
+
+pub(crate) fn merge_caps_reports<I>(
+    mut current: Vec<VideoCapsReport>,
+    observed: I,
+) -> Vec<VideoCapsReport>
+where
+    I: IntoIterator<Item = VideoCapsReport>,
+{
+    current.extend(observed);
+    sort_video_caps_reports(&mut current);
+    current
+}
+
+pub(crate) fn install_video_caps_observers(element: &gst::Element, store: &VideoCapsReportStore) {
+    install_element_caps_observer(element, store);
+    for_each_child_element(element, |child| {
+        install_element_caps_observer(&child, store)
+    });
+
+    if let Ok(bin) = element.clone().downcast::<gst::Bin>() {
+        let store = Arc::clone(store);
+        let _ = bin.connect_deep_element_added(move |_, _, child| {
+            install_element_caps_observer(child, &store);
+        });
+    }
+}
+
+fn for_each_child_element(element: &gst::Element, mut visit: impl FnMut(gst::Element)) {
+    let Ok(bin) = element.clone().downcast::<gst::Bin>() else {
+        return;
+    };
+    let mut iterator = bin.iterate_recurse();
+    loop {
+        match iterator.next() {
+            Ok(Some(child)) => visit(child),
+            Ok(None) => break,
+            Err(gst::IteratorError::Resync) => iterator.resync(),
+            Err(_) => break,
+        }
+    }
+}
+
+fn sort_video_caps_reports(reports: &mut Vec<VideoCapsReport>) {
+    reports.sort_by(|left, right| {
+        (
+            left.element.as_str(),
+            left.pad.as_str(),
+            left.direction.as_str(),
+            left.source.as_str(),
+            left.caps.as_str(),
+        )
+            .cmp(&(
+                right.element.as_str(),
+                right.pad.as_str(),
+                right.direction.as_str(),
+                right.source.as_str(),
+                right.caps.as_str(),
+            ))
+    });
+    reports.dedup();
+}
+
+fn sort_video_queue_reports(reports: &mut Vec<VideoQueueReport>) {
     reports.sort_by(|left, right| left.element.cmp(&right.element));
     reports.dedup();
-    reports
+}
+
+fn install_element_caps_observer(element: &gst::Element, store: &VideoCapsReportStore) {
+    for pad in element.pads() {
+        install_pad_caps_observer(element, &pad, store);
+    }
+
+    let store = Arc::clone(store);
+    let _ = element.connect_pad_added(move |element, pad| {
+        install_pad_caps_observer(element, pad, &store);
+    });
+}
+
+fn install_pad_caps_observer(element: &gst::Element, pad: &gst::Pad, store: &VideoCapsReportStore) {
+    record_pad_caps_report(element, pad, "observer-initial", store);
+
+    let element_name = element.name().to_string();
+    let store = Arc::clone(store);
+    let _ = pad.add_probe(
+        gst::PadProbeType::EVENT_DOWNSTREAM | gst::PadProbeType::EVENT_UPSTREAM,
+        move |pad, info| {
+            let Some(gst::PadProbeData::Event(event)) = &info.data else {
+                return gst::PadProbeReturn::Ok;
+            };
+            let gst::EventView::Caps(caps_event) = event.view() else {
+                return gst::PadProbeReturn::Ok;
+            };
+            record_caps_report(&element_name, pad, caps_event.caps(), "caps-event", &store);
+            gst::PadProbeReturn::Ok
+        },
+    );
+}
+
+fn record_pad_caps_report(
+    element: &gst::Element,
+    pad: &gst::Pad,
+    source: &str,
+    store: &VideoCapsReportStore,
+) {
+    if let Some(caps) = pad.current_caps() {
+        record_caps_report(&element.name(), pad, caps.as_ref(), source, store);
+    }
+    if let Some(caps_event) = pad.sticky_event::<gst::event::Caps>(0) {
+        record_caps_report(&element.name(), pad, caps_event.caps(), "sticky", store);
+    }
+}
+
+fn record_caps_report(
+    element_name: &str,
+    pad: &gst::Pad,
+    caps: &gst::CapsRef,
+    source: &str,
+    store: &VideoCapsReportStore,
+) {
+    let structures = caps_structure_reports(caps);
+    if !caps_report_is_relevant(&structures) {
+        return;
+    }
+    let report = VideoCapsReport {
+        element: element_name.to_owned(),
+        pad: pad.name().to_string(),
+        direction: pad_direction_name(pad.direction()).to_owned(),
+        caps: caps.to_string(),
+        source: source.to_owned(),
+        memory_features: caps_memory_features(&structures),
+        structures,
+    };
+    let key = format!(
+        "{}:{}:{}:{}:{}",
+        report.element, report.pad, report.direction, report.source, report.caps
+    );
+    if let Ok(mut reports) = store.lock() {
+        reports.insert(key, report);
+    }
 }
 
 #[derive(Debug)]
@@ -1509,8 +1747,14 @@ fn video_memory_path_notes(level: VideoMemoryPathLevel) -> Vec<String> {
 
 fn push_element_caps_reports(element: &gst::Element, reports: &mut Vec<VideoCapsReport>) {
     for pad in element.pads() {
-        let Some(caps) = pad.current_caps() else {
-            continue;
+        let (caps, source) = match pad.current_caps() {
+            Some(caps) => (caps, "current"),
+            None => {
+                let Some(caps_event) = pad.sticky_event::<gst::event::Caps>(0) else {
+                    continue;
+                };
+                (caps_event.caps().to_owned(), "sticky")
+            }
         };
         let structures = caps_structure_reports(&caps);
         if !caps_report_is_relevant(&structures) {
@@ -1521,6 +1765,7 @@ fn push_element_caps_reports(element: &gst::Element, reports: &mut Vec<VideoCaps
             pad: pad.name().to_string(),
             direction: pad_direction_name(pad.direction()).to_owned(),
             caps: caps.to_string(),
+            source: source.to_owned(),
             memory_features: caps_memory_features(&structures),
             structures,
         });
@@ -1562,10 +1807,31 @@ fn push_element_queue_report(element: &gst::Element, reports: &mut Vec<VideoQueu
         max_size_buffers: optional_u32_property(element, "max-size-buffers"),
         max_size_bytes: optional_u32_property(element, "max-size-bytes"),
         max_size_time_ns: optional_u64_property(element, "max-size-time"),
-        current_level_buffers: optional_u32_property(element, "current-level-buffers"),
-        current_level_bytes: optional_u32_property(element, "current-level-bytes"),
-        current_level_time_ns: optional_u64_property(element, "current-level-time"),
+        current_level_buffers: optional_u32_property(element, "current-level-buffers")
+            .or_else(|| max_pad_u32_property(element, "current-level-buffers")),
+        current_level_bytes: optional_u32_property(element, "current-level-bytes")
+            .or_else(|| max_pad_u32_property(element, "current-level-bytes")),
+        current_level_time_ns: optional_u64_property(element, "current-level-time")
+            .or_else(|| max_pad_u64_property(element, "current-level-time")),
     });
+}
+
+fn max_pad_u32_property(element: &gst::Element, name: &str) -> Option<u32> {
+    element
+        .pads()
+        .into_iter()
+        .filter(|pad| pad.find_property(name).is_some())
+        .map(|pad| pad.property::<u32>(name))
+        .max()
+}
+
+fn max_pad_u64_property(element: &gst::Element, name: &str) -> Option<u64> {
+    element
+        .pads()
+        .into_iter()
+        .filter(|pad| pad.find_property(name).is_some())
+        .map(|pad| pad.property::<u64>(name))
+        .max()
 }
 
 fn query_pad_allocation(pad: &gst::Pad, caps: &gst::Caps) -> Option<VideoAllocationReport> {
@@ -1622,11 +1888,14 @@ fn query_pad_allocation(pad: &gst::Pad, caps: &gst::Caps) -> Option<VideoAllocat
     })
 }
 
-fn caps_structure_reports(caps: &gst::Caps) -> Vec<VideoCapsStructureReport> {
+fn caps_structure_reports(caps: &gst::CapsRef) -> Vec<VideoCapsStructureReport> {
     if caps.is_any() {
         return vec![VideoCapsStructureReport {
             media_type: "ANY".to_owned(),
             features: vec!["ANY".to_owned()],
+            format: None,
+            width: None,
+            height: None,
         }];
     }
     if caps.is_empty() {
@@ -1640,6 +1909,9 @@ fn caps_structure_reports(caps: &gst::Caps) -> Vec<VideoCapsStructureReport> {
             Some(VideoCapsStructureReport {
                 media_type: structure.name().to_string(),
                 features: caps_feature_strings(features),
+                format: structure.get::<String>("format").ok(),
+                width: structure.get::<i32>("width").ok(),
+                height: structure.get::<i32>("height").ok(),
             })
         })
         .collect()
@@ -2053,6 +2325,7 @@ pub struct VideoCapsReport {
     pub pad: String,
     pub direction: String,
     pub caps: String,
+    pub source: String,
     pub memory_features: Vec<String>,
     pub structures: Vec<VideoCapsStructureReport>,
 }
@@ -2061,6 +2334,12 @@ pub struct VideoCapsReport {
 pub struct VideoCapsStructureReport {
     pub media_type: String,
     pub features: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2398,13 +2677,30 @@ mod tests {
         configure_video_queue_low_memory(&queue);
         let reports = video_queue_reports(&queue);
 
-        assert_eq!(queue.property::<u32>("max-size-buffers"), 8);
+        assert_eq!(queue.property::<u32>("max-size-buffers"), 4);
         assert_eq!(queue.property::<u32>("max-size-bytes"), 0);
-        assert_eq!(queue.property::<u64>("max-size-time"), 50_000_000);
+        assert_eq!(queue.property::<u64>("max-size-time"), 25_000_000);
         assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].max_size_buffers, Some(8));
+        assert_eq!(reports[0].max_size_buffers, Some(4));
         assert_eq!(reports[0].max_size_bytes, Some(0));
-        assert_eq!(reports[0].max_size_time_ns, Some(50_000_000));
+        assert_eq!(reports[0].max_size_time_ns, Some(25_000_000));
+    }
+
+    #[test]
+    fn reports_multiqueue_low_latency_memory_bounds() {
+        gst::init().unwrap();
+        let queue = gst::ElementFactory::make("multiqueue").build().unwrap();
+
+        configure_video_queue_low_memory(&queue);
+        let reports = video_queue_reports(&queue);
+
+        assert_eq!(queue.property::<u32>("max-size-buffers"), 4);
+        assert_eq!(queue.property::<u32>("max-size-bytes"), 0);
+        assert_eq!(queue.property::<u64>("max-size-time"), 25_000_000);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].max_size_buffers, Some(4));
+        assert_eq!(reports[0].max_size_bytes, Some(0));
+        assert_eq!(reports[0].max_size_time_ns, Some(25_000_000));
     }
 
     #[test]
@@ -2908,10 +3204,14 @@ mod tests {
             pad: pad.to_owned(),
             direction: direction.to_owned(),
             caps,
+            source: "current".to_owned(),
             memory_features: memory_features.clone(),
             structures: vec![VideoCapsStructureReport {
                 media_type: "video/x-raw".to_owned(),
                 features: memory_features,
+                format: None,
+                width: None,
+                height: None,
             }],
         }
     }
@@ -3103,11 +3403,20 @@ mod tests {
     fn extracts_caps_memory_features() {
         gst::init().unwrap();
         let caps = gst::Caps::builder_full_with_features(gst::CapsFeatures::new(["memory:DMABuf"]))
-            .structure(gst::Structure::builder("video/x-raw").build())
+            .structure(
+                gst::Structure::builder("video/x-raw")
+                    .field("format", "NV12")
+                    .field("width", 3840i32)
+                    .field("height", 2160i32)
+                    .build(),
+            )
             .build();
         let structures = caps_structure_reports(&caps);
 
         assert_eq!(caps_memory_features(&structures), vec!["memory:DMABuf"]);
+        assert_eq!(structures[0].format.as_deref(), Some("NV12"));
+        assert_eq!(structures[0].width, Some(3840));
+        assert_eq!(structures[0].height, Some(2160));
         assert!(caps_report_is_relevant(&structures));
     }
 
