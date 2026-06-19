@@ -8,7 +8,7 @@ pub mod video;
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, PropertySpec, Variant};
 use crate::core::{
-    FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection,
+    FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
     SceneLiteAnimatedProperty, SceneLiteDocument, SceneLiteLayer, SceneLiteLayerKind,
     SceneLitePropertyBinding, SceneLiteTextAlign, SceneLiteTransform, Transition, WallpaperEntry,
     WallpaperPackage,
@@ -146,7 +146,41 @@ pub struct StaticRenderSyncPlan {
     #[serde(default)]
     pub decisions: Vec<StaticRenderOutputDecision>,
     #[serde(default)]
+    pub playlist_clock_dependency: PlaylistClockDependency,
+    #[serde(default)]
     pub cache: RenderSyncCacheReport,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlaylistClockDependency {
+    #[default]
+    None,
+    Minute,
+    Weekday,
+    MinuteAndWeekday,
+}
+
+impl PlaylistClockDependency {
+    fn merge(self, other: Self) -> Self {
+        match (
+            self.uses_minute() || other.uses_minute(),
+            self.uses_weekday() || other.uses_weekday(),
+        ) {
+            (false, false) => Self::None,
+            (true, false) => Self::Minute,
+            (false, true) => Self::Weekday,
+            (true, true) => Self::MinuteAndWeekday,
+        }
+    }
+
+    fn uses_minute(self) -> bool {
+        matches!(self, Self::Minute | Self::MinuteAndWeekday)
+    }
+
+    fn uses_weekday(self) -> bool {
+        matches!(self, Self::Weekday | Self::MinuteAndWeekday)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -383,12 +417,13 @@ fn static_render_sync_plan_inner(
     let mut removals = Vec::new();
     let mut errors = Vec::new();
     let mut decisions = Vec::new();
+    let mut playlist_clock_dependency = PlaylistClockDependency::None;
     let mut package_cache = RenderPackageCache::new(
         cache_dir,
         cache_config.package_cache_max_entries,
         cache_config.package_cache_max_retained_unique_resource_bytes,
     );
-    let playlist_local_minute_of_day = current_playlist_local_minute_of_day();
+    let playlist_clock = current_playlist_clock_key();
     for output_name in output_names {
         let desktop_output = desktop.output(&output_name);
         let output_state = state.outputs.get(&output_name).cloned().unwrap_or_default();
@@ -454,6 +489,8 @@ fn static_render_sync_plan_inner(
                 continue;
             }
         };
+        playlist_clock_dependency = playlist_clock_dependency
+            .merge(playlist_entry_clock_dependency(&package.manifest.entry));
         performance = crate::policy::apply_runtime_policy(
             performance,
             &package.manifest.runtime,
@@ -463,7 +500,7 @@ fn static_render_sync_plan_inner(
             desktop,
             output_name: &output_name,
             output: desktop_output,
-            local_minute_of_day: playlist_local_minute_of_day,
+            local_clock: playlist_clock,
         };
         let dynamic_wallpaper =
             effective_dynamic_wallpaper_entry(&package.manifest.entry, &playlist_context);
@@ -636,6 +673,7 @@ fn static_render_sync_plan_inner(
         removals,
         errors,
         decisions,
+        playlist_clock_dependency,
         cache,
     }
 }
@@ -837,7 +875,19 @@ struct PlaylistRenderContext<'a> {
     desktop: &'a DesktopSnapshot,
     output_name: &'a str,
     output: Option<&'a DesktopOutput>,
-    local_minute_of_day: u16,
+    local_clock: PlaylistClockKey,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaylistClockKey {
+    pub local_minute_of_day: u16,
+    pub local_weekday: PlaylistWeekday,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaylistClockCacheKey {
+    pub local_minute_of_day: Option<u16>,
+    pub local_weekday: Option<PlaylistWeekday>,
 }
 
 fn select_playlist_item<'a>(
@@ -888,7 +938,8 @@ fn playlist_weighted_selection_seed(
     "gilder-playlist-weighted-random-v1".hash(&mut hasher);
     if let Some(context) = context {
         context.output_name.hash(&mut hasher);
-        context.local_minute_of_day.hash(&mut hasher);
+        context.local_clock.local_minute_of_day.hash(&mut hasher);
+        playlist_weekday_seed(context.local_clock.local_weekday).hash(&mut hasher);
         playlist_power_seed(context.desktop.power).hash(&mut hasher);
         context.desktop.session_active.hash(&mut hasher);
         context.desktop.session_locked.hash(&mut hasher);
@@ -911,6 +962,18 @@ fn playlist_power_seed(power: PowerState) -> u8 {
         PowerState::Unknown => 0,
         PowerState::Ac => 1,
         PowerState::Battery => 2,
+    }
+}
+
+fn playlist_weekday_seed(weekday: PlaylistWeekday) -> u8 {
+    match weekday {
+        PlaylistWeekday::Monday => 1,
+        PlaylistWeekday::Tuesday => 2,
+        PlaylistWeekday::Wednesday => 3,
+        PlaylistWeekday::Thursday => 4,
+        PlaylistWeekday::Friday => 5,
+        PlaylistWeekday::Saturday => 6,
+        PlaylistWeekday::Sunday => 7,
     }
 }
 
@@ -940,7 +1003,18 @@ fn playlist_item_matches(item: &PlaylistItem, context: Option<&PlaylistRenderCon
         let Some(context) = context else {
             return false;
         };
-        if !local_time.contains_minute_of_day(context.local_minute_of_day) {
+        if !local_time.contains_minute_of_day(context.local_clock.local_minute_of_day) {
+            return false;
+        }
+    }
+    if !conditions.weekdays.is_empty() {
+        let Some(context) = context else {
+            return false;
+        };
+        if !conditions
+            .weekdays
+            .contains(&context.local_clock.local_weekday)
+        {
             return false;
         }
     }
@@ -996,8 +1070,34 @@ fn playlist_power_matches(condition: PlaylistPowerCondition, power: PowerState) 
     )
 }
 
-fn current_playlist_local_minute_of_day() -> u16 {
-    playlist_local_time_override().unwrap_or_else(|| zoned_minute_of_day(jiff::Zoned::now()))
+pub fn current_playlist_clock_key() -> PlaylistClockKey {
+    let now = jiff::Zoned::now();
+    PlaylistClockKey {
+        local_minute_of_day: playlist_local_time_override()
+            .unwrap_or_else(|| zoned_minute_of_day(now.clone())),
+        local_weekday: playlist_local_weekday_override().unwrap_or_else(|| zoned_weekday(now)),
+    }
+}
+
+pub fn current_playlist_clock_cache_key(
+    dependency: PlaylistClockDependency,
+) -> Option<PlaylistClockCacheKey> {
+    playlist_clock_cache_key(dependency, current_playlist_clock_key())
+}
+
+fn playlist_clock_cache_key(
+    dependency: PlaylistClockDependency,
+    clock: PlaylistClockKey,
+) -> Option<PlaylistClockCacheKey> {
+    if dependency == PlaylistClockDependency::None {
+        return None;
+    }
+    Some(PlaylistClockCacheKey {
+        local_minute_of_day: dependency
+            .uses_minute()
+            .then_some(clock.local_minute_of_day),
+        local_weekday: dependency.uses_weekday().then_some(clock.local_weekday),
+    })
 }
 
 fn playlist_local_time_override() -> Option<u16> {
@@ -1007,10 +1107,56 @@ fn playlist_local_time_override() -> Option<u16> {
         .and_then(crate::core::manifest::parse_playlist_local_time_minute)
 }
 
+fn playlist_local_weekday_override() -> Option<PlaylistWeekday> {
+    std::env::var("GILDER_PLAYLIST_LOCAL_WEEKDAY")
+        .ok()
+        .as_deref()
+        .and_then(parse_playlist_weekday_name)
+}
+
+fn parse_playlist_weekday_name(value: &str) -> Option<PlaylistWeekday> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "monday" | "mon" => Some(PlaylistWeekday::Monday),
+        "tuesday" | "tue" => Some(PlaylistWeekday::Tuesday),
+        "wednesday" | "wed" => Some(PlaylistWeekday::Wednesday),
+        "thursday" | "thu" => Some(PlaylistWeekday::Thursday),
+        "friday" | "fri" => Some(PlaylistWeekday::Friday),
+        "saturday" | "sat" => Some(PlaylistWeekday::Saturday),
+        "sunday" | "sun" => Some(PlaylistWeekday::Sunday),
+        _ => None,
+    }
+}
+
 fn zoned_minute_of_day(now: jiff::Zoned) -> u16 {
     let hour = u16::try_from(now.hour()).unwrap_or(0);
     let minute = u16::try_from(now.minute()).unwrap_or(0);
     hour * 60 + minute
+}
+
+fn zoned_weekday(now: jiff::Zoned) -> PlaylistWeekday {
+    gregorian_weekday(now.year().into(), now.month().into(), now.day().into())
+}
+
+fn gregorian_weekday(year: i32, month: i32, day: i32) -> PlaylistWeekday {
+    const MONTH_OFFSETS: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    let mut adjusted_year = year;
+    if month < 3 {
+        adjusted_year -= 1;
+    }
+    let sunday_zero = (adjusted_year + adjusted_year / 4 - adjusted_year / 100
+        + adjusted_year / 400
+        + MONTH_OFFSETS[(month.clamp(1, 12) - 1) as usize]
+        + day)
+        .rem_euclid(7);
+    match sunday_zero {
+        0 => PlaylistWeekday::Sunday,
+        1 => PlaylistWeekday::Monday,
+        2 => PlaylistWeekday::Tuesday,
+        3 => PlaylistWeekday::Wednesday,
+        4 => PlaylistWeekday::Thursday,
+        5 => PlaylistWeekday::Friday,
+        _ => PlaylistWeekday::Saturday,
+    }
 }
 
 fn effective_dynamic_wallpaper_entry(
@@ -1033,6 +1179,26 @@ fn effective_render_wallpaper_entry<'a>(
         }
         _ => Some(entry),
     }
+}
+
+fn playlist_entry_clock_dependency(entry: &WallpaperEntry) -> PlaylistClockDependency {
+    let WallpaperEntry::Playlist { items, selection } = entry else {
+        return PlaylistClockDependency::None;
+    };
+    let mut dependency = if *selection == PlaylistSelection::WeightedRandom {
+        PlaylistClockDependency::MinuteAndWeekday
+    } else {
+        PlaylistClockDependency::None
+    };
+    for item in items {
+        if item.conditions.local_time.is_some() {
+            dependency = dependency.merge(PlaylistClockDependency::Minute);
+        }
+        if !item.conditions.weekdays.is_empty() {
+            dependency = dependency.merge(PlaylistClockDependency::Weekday);
+        }
+    }
+    dependency
 }
 
 fn dynamic_wallpaper_entry(entry: &WallpaperEntry) -> bool {
@@ -3061,6 +3227,16 @@ mod tests {
 
     static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+    fn playlist_test_clock(
+        local_minute_of_day: u16,
+        local_weekday: PlaylistWeekday,
+    ) -> PlaylistClockKey {
+        PlaylistClockKey {
+            local_minute_of_day,
+            local_weekday,
+        }
+    }
+
     #[test]
     fn builds_static_wallpaper_plan_from_package() {
         let package = crate::core::load_gwpdir("examples/wallpapers/static-demo.gwpdir").unwrap();
@@ -3197,7 +3373,7 @@ mod tests {
             desktop: &desktop,
             output_name: "eDP-1",
             output,
-            local_minute_of_day: 10 * 60 + 30,
+            local_clock: playlist_test_clock(10 * 60 + 30, PlaylistWeekday::Monday),
         };
         assert_eq!(
             select_playlist_item(items, PlaylistSelection::FirstMatch, Some(&day_context))
@@ -3206,7 +3382,7 @@ mod tests {
         );
 
         let night_context = PlaylistRenderContext {
-            local_minute_of_day: 22 * 60 + 30,
+            local_clock: playlist_test_clock(22 * 60 + 30, PlaylistWeekday::Monday),
             ..day_context
         };
         assert_eq!(
@@ -3214,6 +3390,72 @@ mod tests {
                 .map(|item| item.id.as_str()),
             Some("night")
         );
+    }
+
+    #[test]
+    fn playlist_selects_wallpaper_from_weekday_condition() {
+        let entry: WallpaperEntry = serde_json::from_value(json!({
+            "type": "playlist",
+            "items": [
+                {
+                    "id": "workday",
+                    "conditions": {
+                        "weekdays": ["monday", "tuesday", "wednesday", "thursday", "friday"]
+                    },
+                    "entry": {
+                        "type": "static-image",
+                        "source": "assets/workday.svg"
+                    }
+                },
+                {
+                    "id": "weekend",
+                    "conditions": {
+                        "weekdays": ["sat", "sun"]
+                    },
+                    "entry": {
+                        "type": "static-image",
+                        "source": "assets/weekend.svg"
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+        let WallpaperEntry::Playlist { items, .. } = &entry else {
+            panic!("expected playlist entry");
+        };
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+        let output = desktop.output("eDP-1");
+        let monday_context = PlaylistRenderContext {
+            desktop: &desktop,
+            output_name: "eDP-1",
+            output,
+            local_clock: playlist_test_clock(10 * 60, PlaylistWeekday::Monday),
+        };
+        assert_eq!(
+            select_playlist_item(items, PlaylistSelection::FirstMatch, Some(&monday_context))
+                .map(|item| item.id.as_str()),
+            Some("workday")
+        );
+
+        let sunday_context = PlaylistRenderContext {
+            local_clock: playlist_test_clock(10 * 60, PlaylistWeekday::Sunday),
+            ..monday_context
+        };
+        assert_eq!(
+            select_playlist_item(items, PlaylistSelection::FirstMatch, Some(&sunday_context))
+                .map(|item| item.id.as_str()),
+            Some("weekend")
+        );
+    }
+
+    #[test]
+    fn computes_gregorian_weekdays_for_playlist_clock() {
+        assert_eq!(gregorian_weekday(2026, 6, 19), PlaylistWeekday::Friday);
+        assert_eq!(gregorian_weekday(2024, 2, 29), PlaylistWeekday::Thursday);
+        assert_eq!(gregorian_weekday(1970, 1, 1), PlaylistWeekday::Thursday);
     }
 
     #[test]
@@ -3255,7 +3497,7 @@ mod tests {
             desktop: &desktop,
             output_name: "eDP-1",
             output,
-            local_minute_of_day: 11 * 60 + 7,
+            local_clock: playlist_test_clock(11 * 60 + 7, PlaylistWeekday::Monday),
         };
         let first =
             select_playlist_item(items, *selection, Some(&context)).map(|item| item.id.as_str());
@@ -3267,7 +3509,7 @@ mod tests {
         let mut common_count = 0;
         for local_minute_of_day in 0..(24 * 60) {
             let context = PlaylistRenderContext {
-                local_minute_of_day,
+                local_clock: playlist_test_clock(local_minute_of_day, PlaylistWeekday::Monday),
                 ..context
             };
             match select_playlist_item(items, *selection, Some(&context))
@@ -3280,6 +3522,118 @@ mod tests {
         }
 
         assert!(common_count > rare_count * 3);
+    }
+
+    #[test]
+    fn playlist_clock_dependency_tracks_time_sensitive_selection() {
+        let power_only: WallpaperEntry = serde_json::from_value(json!({
+            "type": "playlist",
+            "items": [
+                {
+                    "id": "battery",
+                    "conditions": { "power": "battery" },
+                    "entry": {
+                        "type": "static-image",
+                        "source": "assets/battery.svg"
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            playlist_entry_clock_dependency(&power_only),
+            PlaylistClockDependency::None
+        );
+
+        let local_time: WallpaperEntry = serde_json::from_value(json!({
+            "type": "playlist",
+            "items": [
+                {
+                    "id": "day",
+                    "conditions": {
+                        "local_time": { "start": "08:00", "end": "18:00" }
+                    },
+                    "entry": {
+                        "type": "static-image",
+                        "source": "assets/day.svg"
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            playlist_entry_clock_dependency(&local_time),
+            PlaylistClockDependency::Minute
+        );
+
+        let weekdays: WallpaperEntry = serde_json::from_value(json!({
+            "type": "playlist",
+            "items": [
+                {
+                    "id": "weekday",
+                    "conditions": { "weekdays": ["monday"] },
+                    "entry": {
+                        "type": "static-image",
+                        "source": "assets/weekday.svg"
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            playlist_entry_clock_dependency(&weekdays),
+            PlaylistClockDependency::Weekday
+        );
+
+        let weighted: WallpaperEntry = serde_json::from_value(json!({
+            "type": "playlist",
+            "selection": "weighted-random",
+            "items": [
+                {
+                    "id": "weighted",
+                    "entry": {
+                        "type": "static-image",
+                        "source": "assets/weighted.svg"
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            playlist_entry_clock_dependency(&weighted),
+            PlaylistClockDependency::MinuteAndWeekday
+        );
+    }
+
+    #[test]
+    fn playlist_clock_cache_key_uses_only_required_fields() {
+        let clock = playlist_test_clock(11 * 60 + 7, PlaylistWeekday::Friday);
+
+        assert_eq!(
+            playlist_clock_cache_key(PlaylistClockDependency::None, clock),
+            None
+        );
+        assert_eq!(
+            playlist_clock_cache_key(PlaylistClockDependency::Minute, clock),
+            Some(PlaylistClockCacheKey {
+                local_minute_of_day: Some(11 * 60 + 7),
+                local_weekday: None,
+            })
+        );
+        assert_eq!(
+            playlist_clock_cache_key(PlaylistClockDependency::Weekday, clock),
+            Some(PlaylistClockCacheKey {
+                local_minute_of_day: None,
+                local_weekday: Some(PlaylistWeekday::Friday),
+            })
+        );
+        assert_eq!(
+            playlist_clock_cache_key(PlaylistClockDependency::MinuteAndWeekday, clock),
+            Some(PlaylistClockCacheKey {
+                local_minute_of_day: Some(11 * 60 + 7),
+                local_weekday: Some(PlaylistWeekday::Friday),
+            })
+        );
     }
 
     #[test]

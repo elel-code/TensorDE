@@ -12,7 +12,8 @@ pub use format::{
 };
 pub use manifest::{
     FitMode, Manifest, ManifestError, PlaylistConditions, PlaylistItem, PlaylistLocalTimeCondition,
-    PlaylistPowerCondition, PlaylistSelection, RuntimePolicy, Transition, WallpaperEntry,
+    PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday, RuntimePolicy, Transition,
+    WallpaperEntry,
 };
 pub use package::{
     ManifestParseError, PackageArchiveError, PackageIdentity, PackageLoadError, WallpaperPackage,

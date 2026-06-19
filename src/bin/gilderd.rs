@@ -922,6 +922,7 @@ struct RenderSyncCacheKey {
     state: RenderSyncStateKey,
     desktop: gilder::desktop::DesktopSnapshot,
     adaptive_affects_render_plan: bool,
+    playlist_clock: Option<gilder::renderer::PlaylistClockCacheKey>,
     cache_dir: PathBuf,
     packages: Vec<PackageInputFingerprint>,
     bound_properties: Vec<RenderSyncBoundPropertyKey>,
@@ -1867,6 +1868,11 @@ fn render_sync_cache_key_for_plan(
         state: render_sync_state_key(&context.state),
         desktop: context.desktop.clone(),
         adaptive_affects_render_plan: context.adaptive_snapshot.affects_render_plan(),
+        playlist_clock: render_sync.and_then(|render_sync| {
+            gilder::renderer::current_playlist_clock_cache_key(
+                render_sync.playlist_clock_dependency,
+            )
+        }),
         cache_dir: context.paths.cache_dir.clone(),
         packages: wallpaper_package_fingerprints(context),
         bound_properties: render_sync_bound_property_key(&context.state, render_sync),
@@ -3145,6 +3151,7 @@ mod tests {
             removals: Vec::new(),
             errors: Vec::new(),
             decisions: Vec::new(),
+            playlist_clock_dependency: gilder::renderer::PlaylistClockDependency::None,
             cache: Default::default(),
         }
     }

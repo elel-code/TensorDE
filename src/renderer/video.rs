@@ -1769,7 +1769,8 @@ mod tests {
     use crate::core::FitMode;
     use crate::policy::PerformanceDecision;
     use crate::renderer::{
-        StaticRenderAction, StaticRenderOutputDecision, StaticRenderSyncPlan, VideoWallpaperPlan,
+        PlaylistClockDependency, StaticRenderAction, StaticRenderOutputDecision,
+        StaticRenderSyncPlan, VideoWallpaperPlan,
     };
     use std::path::PathBuf;
 
@@ -1785,6 +1786,7 @@ mod tests {
             removals: Vec::new(),
             errors: Vec::new(),
             decisions: vec![decision("eDP-1", RenderMode::Throttled)],
+            playlist_clock_dependency: PlaylistClockDependency::None,
             cache: Default::default(),
         };
 
@@ -1818,6 +1820,7 @@ mod tests {
             removals: vec!["eDP-1".to_owned()],
             errors: Vec::new(),
             decisions: Vec::new(),
+            playlist_clock_dependency: PlaylistClockDependency::None,
             cache: Default::default(),
         };
         renderer.sync_render_plan(&sync).unwrap();

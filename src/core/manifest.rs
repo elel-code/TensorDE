@@ -1,7 +1,7 @@
 use super::format::{FORMAT_NAME, FORMAT_VERSION, WallpaperKind};
 use super::path::PackagePath;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -301,6 +301,8 @@ pub struct PlaylistConditions {
     #[serde(default)]
     pub local_time: Option<PlaylistLocalTimeCondition>,
     #[serde(default)]
+    pub weekdays: Vec<PlaylistWeekday>,
+    #[serde(default)]
     pub focused: Option<bool>,
     #[serde(default)]
     pub visible: Option<bool>,
@@ -321,6 +323,12 @@ impl PlaylistConditions {
         }
         if let Some(local_time) = &self.local_time {
             local_time.validate(item_id)?;
+        }
+        let unique_weekdays = self.weekdays.iter().collect::<BTreeSet<_>>();
+        if unique_weekdays.len() != self.weekdays.len() {
+            return Err(ManifestError::InvalidEntry(format!(
+                "playlist item {item_id:?} weekdays condition must not contain duplicates"
+            )));
         }
         Ok(())
     }
@@ -386,6 +394,25 @@ pub enum PlaylistPowerCondition {
     Unknown,
     Ac,
     Battery,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlaylistWeekday {
+    #[serde(alias = "mon")]
+    Monday,
+    #[serde(alias = "tue")]
+    Tuesday,
+    #[serde(alias = "wed")]
+    Wednesday,
+    #[serde(alias = "thu")]
+    Thursday,
+    #[serde(alias = "fri")]
+    Friday,
+    #[serde(alias = "sat")]
+    Saturday,
+    #[serde(alias = "sun")]
+    Sunday,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -940,6 +967,84 @@ mod tests {
         let local_time = items[0].conditions.local_time.as_ref().unwrap();
         assert!(local_time.contains_minute_of_day(9 * 60));
         assert!(!local_time.contains_minute_of_day(18 * 60));
+    }
+
+    #[test]
+    fn parses_and_validates_playlist_weekday_condition() {
+        let json = r#"
+        {
+          "format": "gilder.wallpaper",
+          "format_version": 1,
+          "id": "org.example.playlist-weekday",
+          "version": "1.0.0",
+          "title": "Playlist Weekday",
+          "kind": "playlist",
+          "entry": {
+            "type": "playlist",
+            "items": [
+              {
+                "id": "workday",
+                "conditions": {
+                  "weekdays": ["monday", "tue", "friday"]
+                },
+                "entry": {
+                  "type": "static-image",
+                  "source": "assets/workday.png"
+                }
+              }
+            ]
+          }
+        }
+        "#;
+
+        let manifest: Manifest = serde_json::from_str(json).unwrap();
+        manifest.validate().unwrap();
+        let WallpaperEntry::Playlist { items, .. } = &manifest.entry else {
+            panic!("expected playlist entry");
+        };
+        assert_eq!(
+            items[0].conditions.weekdays,
+            vec![
+                PlaylistWeekday::Monday,
+                PlaylistWeekday::Tuesday,
+                PlaylistWeekday::Friday
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_playlist_weekday_condition() {
+        let json = r#"
+        {
+          "format": "gilder.wallpaper",
+          "format_version": 1,
+          "id": "org.example.bad-playlist-weekday",
+          "version": "1.0.0",
+          "title": "Bad Playlist Weekday",
+          "kind": "playlist",
+          "entry": {
+            "type": "playlist",
+            "items": [
+              {
+                "id": "duplicate",
+                "conditions": {
+                  "weekdays": ["monday", "mon"]
+                },
+                "entry": {
+                  "type": "static-image",
+                  "source": "assets/day.png"
+                }
+              }
+            ]
+          }
+        }
+        "#;
+
+        let manifest: Manifest = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            manifest.validate(),
+            Err(ManifestError::InvalidEntry(_))
+        ));
     }
 
     #[test]
