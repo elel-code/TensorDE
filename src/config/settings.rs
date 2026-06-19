@@ -110,6 +110,8 @@ pub struct VideoConfig {
 pub struct CacheConfig {
     #[serde(default = "default_package_cache_max_entries")]
     pub package_cache_max_entries: usize,
+    #[serde(default = "default_package_cache_max_retained_unique_resource_bytes")]
+    pub package_cache_max_retained_unique_resource_bytes: u64,
     #[serde(default = "default_render_cache_max_entries")]
     pub render_cache_max_entries: usize,
     #[serde(default = "default_static_image_cache_max_entries")]
@@ -120,6 +122,8 @@ impl Default for CacheConfig {
     fn default() -> Self {
         Self {
             package_cache_max_entries: default_package_cache_max_entries(),
+            package_cache_max_retained_unique_resource_bytes:
+                default_package_cache_max_retained_unique_resource_bytes(),
             render_cache_max_entries: default_render_cache_max_entries(),
             static_image_cache_max_entries: default_static_image_cache_max_entries(),
         }
@@ -361,6 +365,10 @@ fn default_package_cache_max_entries() -> usize {
     16
 }
 
+fn default_package_cache_max_retained_unique_resource_bytes() -> u64 {
+    512 * 1024 * 1024
+}
+
 fn default_adaptive_refresh_interval_ms() -> u64 {
     2000
 }
@@ -430,6 +438,7 @@ mod tests {
 
             [cache]
             package_cache_max_entries = 4
+            package_cache_max_retained_unique_resource_bytes = 1048576
             render_cache_max_entries = 8
             static_image_cache_max_entries = 6
 
@@ -485,6 +494,12 @@ mod tests {
         assert_eq!(config.performance.battery, PowerPolicy::Throttle);
         assert_eq!(config.video.decoder, VideoDecoderPolicy::HardwarePreferred);
         assert_eq!(config.cache.package_cache_max_entries, 4);
+        assert_eq!(
+            config
+                .cache
+                .package_cache_max_retained_unique_resource_bytes,
+            1_048_576
+        );
         assert_eq!(config.cache.render_cache_max_entries, 8);
         assert_eq!(config.cache.static_image_cache_max_entries, 6);
         assert!(config.adaptive.enabled);

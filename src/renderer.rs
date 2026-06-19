@@ -84,6 +84,8 @@ pub struct RenderSyncCacheReport {
     #[serde(default)]
     pub package_cache_max_entries: usize,
     #[serde(default)]
+    pub package_cache_max_retained_unique_resource_bytes: u64,
+    #[serde(default)]
     pub package_cache_hits: u64,
     #[serde(default)]
     pub package_cache_misses: u64,
@@ -274,8 +276,11 @@ fn static_render_sync_plan_inner(
     let mut removals = Vec::new();
     let mut errors = Vec::new();
     let mut decisions = Vec::new();
-    let mut package_cache =
-        RenderPackageCache::new(cache_dir, cache_config.package_cache_max_entries);
+    let mut package_cache = RenderPackageCache::new(
+        cache_dir,
+        cache_config.package_cache_max_entries,
+        cache_config.package_cache_max_retained_unique_resource_bytes,
+    );
     for output_name in output_names {
         let desktop_output = desktop.output(&output_name);
         let output_state = state.outputs.get(&output_name).cloned().unwrap_or_default();
@@ -1260,6 +1265,7 @@ fn load_assigned_package_tracked(
 struct RenderPackageCache<'a> {
     cache_dir: &'a Path,
     max_entries: usize,
+    max_retained_unique_resource_bytes: u64,
     packages: BTreeMap<String, Result<Rc<WallpaperPackage>, RendererPlanError>>,
     package_order: VecDeque<String>,
     protected_archive_dirs: BTreeSet<PathBuf>,
@@ -1268,10 +1274,15 @@ struct RenderPackageCache<'a> {
 }
 
 impl<'a> RenderPackageCache<'a> {
-    fn new(cache_dir: &'a Path, max_entries: usize) -> Self {
+    fn new(
+        cache_dir: &'a Path,
+        max_entries: usize,
+        max_retained_unique_resource_bytes: u64,
+    ) -> Self {
         Self {
             cache_dir,
             max_entries,
+            max_retained_unique_resource_bytes,
             packages: BTreeMap::new(),
             package_order: VecDeque::new(),
             protected_archive_dirs: BTreeSet::new(),
@@ -1297,13 +1308,18 @@ impl<'a> RenderPackageCache<'a> {
             &mut self.protected_archive_dirs,
         )
         .map(Rc::new);
-        if self.max_entries > 0 {
+        if self.should_retain_packages() {
             self.prune_for_insert();
             self.packages
                 .insert(assignment.path.clone(), package.clone());
             self.package_order.push_back(assignment.path.clone());
+            self.prune_to_resource_limit();
         }
         package
+    }
+
+    fn should_retain_packages(&self) -> bool {
+        self.max_entries > 0 && self.max_retained_unique_resource_bytes > 0
     }
 
     fn prune_for_insert(&mut self) {
@@ -1313,6 +1329,21 @@ impl<'a> RenderPackageCache<'a> {
             };
             if self.packages.remove(&key).is_some() {
                 self.stats.package_cache_evictions += 1;
+            }
+        }
+    }
+
+    fn prune_to_resource_limit(&mut self) {
+        self.update_retained_resource_footprint();
+        while self.stats.package_cache_retained_unique_resource_bytes
+            > self.max_retained_unique_resource_bytes
+        {
+            let Some(key) = self.package_order.pop_front() else {
+                break;
+            };
+            if self.packages.remove(&key).is_some() {
+                self.stats.package_cache_evictions += 1;
+                self.update_retained_resource_footprint();
             }
         }
     }
@@ -1331,6 +1362,8 @@ impl<'a> RenderPackageCache<'a> {
         );
         self.stats.package_cache_entries = self.packages.len();
         self.stats.package_cache_max_entries = cache_config.package_cache_max_entries;
+        self.stats.package_cache_max_retained_unique_resource_bytes =
+            cache_config.package_cache_max_retained_unique_resource_bytes;
         self.stats.archive_cache_entries = prune.entries_after;
         self.stats.archive_cache_max_entries = cache_config.render_cache_max_entries;
         self.stats.archive_cache_evictions = prune.evictions;
@@ -2957,7 +2990,7 @@ exit 0
             path: package_dir.display().to_string(),
             variant: None,
         };
-        let mut cache = RenderPackageCache::new(&test_dir.path, 16);
+        let mut cache = RenderPackageCache::new(&test_dir.path, 16, u64::MAX);
 
         let first = cache.package(&assignment).unwrap();
         let first_id = first.manifest.id.clone();
@@ -2988,7 +3021,7 @@ exit 0
             path: package_b.display().to_string(),
             variant: None,
         };
-        let mut cache = RenderPackageCache::new(&test_dir.path, 1);
+        let mut cache = RenderPackageCache::new(&test_dir.path, 1, u64::MAX);
 
         cache.package(&assignment_a).unwrap();
         cache.package(&assignment_b).unwrap();
@@ -3019,7 +3052,7 @@ exit 0
             path: package_dir.display().to_string(),
             variant: None,
         };
-        let mut cache = RenderPackageCache::new(&test_dir.path, 0);
+        let mut cache = RenderPackageCache::new(&test_dir.path, 0, u64::MAX);
 
         cache.package(&assignment).unwrap();
         fs::remove_file(package_dir.join(crate::core::MANIFEST_FILE)).unwrap();
@@ -3029,6 +3062,38 @@ exit 0
         assert_eq!(cache.stats.package_cache_hits, 0);
         assert_eq!(cache.stats.package_cache_misses, 2);
         assert_eq!(cache.stats.package_cache_evictions, 0);
+    }
+
+    #[test]
+    fn render_package_cache_evicts_old_entries_at_retained_resource_byte_limit() {
+        let test_dir = TestDir::new("gilder-render-package-cache-byte-limit");
+        let package_a = test_dir.path.join("a.gwpdir");
+        let package_b = test_dir.path.join("b.gwpdir");
+        write_minimal_static_variant_gwpdir(&package_a);
+        write_minimal_static_variant_gwpdir(&package_b);
+        let assignment_a = WallpaperAssignment {
+            path: package_a.display().to_string(),
+            variant: None,
+        };
+        let assignment_b = WallpaperAssignment {
+            path: package_b.display().to_string(),
+            variant: None,
+        };
+        let package_resource_bytes = source_tree_size(&package_a.join("assets/wallpaper.svg"))
+            + source_tree_size(&package_a.join("assets/wide.svg"));
+        let mut cache = RenderPackageCache::new(&test_dir.path, 16, package_resource_bytes);
+
+        cache.package(&assignment_a).unwrap();
+        cache.package(&assignment_b).unwrap();
+        cache.update_retained_resource_footprint();
+
+        assert_eq!(cache.packages.len(), 1);
+        assert!(cache.packages.contains_key(&assignment_b.path));
+        assert_eq!(cache.stats.package_cache_evictions, 1);
+        assert_eq!(
+            cache.stats.package_cache_retained_unique_resource_bytes,
+            package_resource_bytes
+        );
     }
 
     #[test]

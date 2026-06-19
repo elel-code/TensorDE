@@ -1467,6 +1467,10 @@ fn render_sync_telemetry_report(
         "package_cache_max_entries",
         render_sync_cache.package_cache_max_entries
     );
+    insert!(
+        "package_cache_max_retained_unique_resource_bytes",
+        render_sync_cache.package_cache_max_retained_unique_resource_bytes
+    );
     insert!("package_cache_hits", render_sync_cache.package_cache_hits);
     insert!(
         "package_cache_misses",
@@ -2104,6 +2108,10 @@ mod tests {
         assert_eq!(
             response["result"]["telemetry"]["render_sync"]["package_cache_max_entries"],
             json!(16)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["package_cache_max_retained_unique_resource_bytes"],
+            json!(536_870_912)
         );
         assert_eq!(
             response["result"]["telemetry"]["render_sync"]["package_cache_evictions"],
