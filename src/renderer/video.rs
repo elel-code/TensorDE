@@ -57,13 +57,7 @@ pub fn runtime_capabilities() -> VideoRuntimeCapabilities {
     }
 }
 
-const VIDEO_RUNTIME_ELEMENTS: &[&str] = &[
-    "playbin",
-    "fakesink",
-    "videorate",
-    "capsfilter",
-    "gtk4paintablesink",
-];
+const VIDEO_RUNTIME_ELEMENTS: &[&str] = &["playbin", "fakesink", "gtk4paintablesink"];
 const MUTED_PLAYBIN_FLAGS: &str = "video";
 const AUDIBLE_PLAYBIN_FLAGS: &str = "video+audio";
 const SOFTWARE_DECODER_ELEMENT_NAMES: &[&str] = &[
@@ -237,6 +231,10 @@ impl GstVideoRenderer {
                 let actual_decoder_reports = actual_decoder_reports(&pipeline.element);
                 let caps_reports = video_caps_reports(&pipeline.element);
                 let zero_copy_evidence = zero_copy_evidence(&actual_decoder_reports, &caps_reports);
+                let frame_limiter_max_fps = pipeline
+                    .frame_limiter
+                    .as_ref()
+                    .and_then(FrameLimiter::target_max_fps);
                 VideoPipelineSnapshot {
                     output_name: output_name.clone(),
                     source: pipeline.source.display().to_string(),
@@ -245,11 +243,8 @@ impl GstVideoRenderer {
                     loop_playback: pipeline.loop_playback,
                     muted: pipeline.muted,
                     target_max_fps: pipeline.target_max_fps,
-                    frame_limiter_enabled: pipeline.frame_limiter.is_some(),
-                    frame_limiter_max_fps: pipeline
-                        .frame_limiter
-                        .as_ref()
-                        .and_then(FrameLimiter::target_max_fps),
+                    frame_limiter_enabled: frame_limiter_max_fps.is_some(),
+                    frame_limiter_max_fps,
                     frame_stats: pipeline.frame_stats.clone(),
                     decoder_policy: pipeline.decoder_policy,
                     decoder_policy_status: decoder_policy_status(
@@ -329,10 +324,8 @@ impl VideoPipeline {
             return;
         }
         self.target_max_fps = target_max_fps;
-        if let Some(frame_limiter) = &self.frame_limiter {
-            if let Some(target_max_fps) = target_max_fps {
-                frame_limiter.apply_target_max_fps(target_max_fps);
-            }
+        if let Some(frame_limiter) = &mut self.frame_limiter {
+            frame_limiter.apply_target_max_fps(target_max_fps);
         }
     }
 
@@ -461,18 +454,20 @@ fn build_pipeline(
     let uri = gst::glib::filename_to_uri(&plan.source, None::<&str>)
         .map_err(|err| VideoRendererError::Uri(err.to_string()))?;
     apply_decoder_rank_policy(plan.decoder_policy);
-    let frame_limiter = plan.target_max_fps.map(FrameLimiter::new).transpose()?;
     let video_sink = gst::ElementFactory::make("fakesink")
         .property("sync", true)
+        .property("enable-last-sample", false)
         .build()
         .map_err(|err| VideoRendererError::BuildElement(err.to_string()))?;
-    let mut builder = gst::ElementFactory::make("playbin")
+    let frame_limiter = plan
+        .target_max_fps
+        .filter(|target_max_fps| *target_max_fps > 0)
+        .map(|target_max_fps| FrameLimiter::new(&video_sink, target_max_fps))
+        .transpose()?;
+    let builder = gst::ElementFactory::make("playbin")
         .property("uri", uri.as_str())
         .property_from_str("flags", playbin_flags(plan.muted))
         .property("video-sink", &video_sink);
-    if let Some(frame_limiter) = &frame_limiter {
-        builder = builder.property("video-filter", frame_limiter.element());
-    }
     let element = builder
         .build()
         .map_err(|err| VideoRendererError::BuildElement(err.to_string()))?;
@@ -491,7 +486,7 @@ fn playbin_flags(muted: bool) -> &'static str {
 }
 
 fn frame_limiter_required(target_max_fps: Option<u32>) -> bool {
-    target_max_fps.is_some()
+    target_max_fps.is_some_and(|target_max_fps| target_max_fps > 0)
 }
 
 pub fn actual_decoder_elements(element: &gst::Element) -> Vec<String> {
@@ -844,75 +839,53 @@ fn decoder_class(element: &str) -> VideoDecoderClass {
 }
 
 struct FrameLimiter {
-    element: gst::Element,
-    capsfilter: gst::Element,
+    sink: gst::Element,
+    target_max_fps: u32,
 }
 
 impl FrameLimiter {
-    fn new(target_max_fps: u32) -> Result<Self, VideoRendererError> {
-        let bin = gst::Bin::new();
-        let videorate = gst::ElementFactory::make("videorate")
-            .build()
-            .map_err(|err| VideoRendererError::BuildElement(err.to_string()))?;
-        let capsfilter = gst::ElementFactory::make("capsfilter")
-            .property("caps", caps_for_target_max_fps(target_max_fps))
-            .build()
-            .map_err(|err| VideoRendererError::BuildElement(err.to_string()))?;
-        bin.add_many([&videorate, &capsfilter])
-            .map_err(|err| VideoRendererError::BuildElement(err.to_string()))?;
-        gst::Element::link_many([&videorate, &capsfilter])
-            .map_err(|err| VideoRendererError::LinkElement(err.to_string()))?;
-
-        add_ghost_pad(&bin, &videorate, "sink")?;
-        add_ghost_pad(&bin, &capsfilter, "src")?;
-
-        Ok(Self {
-            element: bin.upcast(),
-            capsfilter,
-        })
+    fn new(sink: &gst::Element, target_max_fps: u32) -> Result<Self, VideoRendererError> {
+        if sink.find_property("throttle-time").is_none() {
+            return Err(VideoRendererError::BuildElement(format!(
+                "{} does not support throttle-time",
+                sink.name()
+            )));
+        }
+        let limiter = Self {
+            sink: sink.clone(),
+            target_max_fps,
+        };
+        limiter.apply_sink_throttle();
+        Ok(limiter)
     }
 
-    fn element(&self) -> &gst::Element {
-        &self.element
-    }
-
-    fn apply_target_max_fps(&self, target_max_fps: u32) {
-        self.capsfilter
-            .set_property("caps", caps_for_target_max_fps(target_max_fps));
+    fn apply_target_max_fps(&mut self, target_max_fps: Option<u32>) {
+        self.target_max_fps = target_max_fps
+            .filter(|target_max_fps| *target_max_fps > 0)
+            .unwrap_or(0);
+        self.apply_sink_throttle();
     }
 
     fn target_max_fps(&self) -> Option<u32> {
-        target_max_fps_from_caps(&self.capsfilter.property::<gst::Caps>("caps"))
+        (self.target_max_fps > 0).then_some(self.target_max_fps)
+    }
+
+    fn throttle_time_ns(&self) -> u64 {
+        frame_throttle_time_ns(self.target_max_fps)
+    }
+
+    fn apply_sink_throttle(&self) {
+        self.sink
+            .set_property("throttle-time", self.throttle_time_ns());
     }
 }
 
-fn add_ghost_pad(
-    bin: &gst::Bin,
-    element: &gst::Element,
-    pad_name: &str,
-) -> Result<(), VideoRendererError> {
-    let pad = element
-        .static_pad(pad_name)
-        .ok_or_else(|| VideoRendererError::MissingPad(pad_name.to_owned()))?;
-    let ghost_pad = gst::GhostPad::with_target(&pad)
-        .map_err(|err| VideoRendererError::BuildElement(err.to_string()))?;
-    ghost_pad
-        .set_active(true)
-        .map_err(|err| VideoRendererError::BuildElement(err.to_string()))?;
-    bin.add_pad(&ghost_pad)
-        .map_err(|err| VideoRendererError::BuildElement(err.to_string()))
-}
-
-fn caps_for_target_max_fps(target_max_fps: u32) -> gst::Caps {
-    gst::Caps::builder("video/x-raw")
-        .field("framerate", gst::Fraction::new(target_max_fps as i32, 1))
-        .build()
-}
-
-pub(crate) fn target_max_fps_from_caps(caps: &gst::Caps) -> Option<u32> {
-    let structure = caps.structure(0)?;
-    let framerate = structure.get::<gst::Fraction>("framerate").ok()?;
-    u32::try_from(framerate.numer()).ok()
+fn frame_throttle_time_ns(target_max_fps: u32) -> u64 {
+    if target_max_fps == 0 {
+        0
+    } else {
+        1_000_000_000_u64 / u64::from(target_max_fps)
+    }
 }
 
 pub fn playback_position_ms(element: &gst::Element) -> Option<u64> {
@@ -1235,8 +1208,6 @@ pub enum VideoRendererError {
     Init(String),
     Uri(String),
     BuildElement(String),
-    LinkElement(String),
-    MissingPad(String),
     MissingPipeline(String),
     SetState(String),
     Seek(String),
@@ -1251,8 +1222,6 @@ impl fmt::Display for VideoRendererError {
             Self::BuildElement(message) => {
                 write!(f, "failed to build GStreamer element: {message}")
             }
-            Self::LinkElement(message) => write!(f, "failed to link GStreamer elements: {message}"),
-            Self::MissingPad(pad) => write!(f, "GStreamer element is missing {pad} pad"),
             Self::MissingPipeline(output) => {
                 write!(f, "video pipeline for output {output} is missing")
             }
@@ -1327,28 +1296,34 @@ mod tests {
     }
 
     #[test]
-    fn builds_and_updates_frame_limiter_caps() {
+    fn builds_and_updates_sink_frame_limiter() {
         gst::init().unwrap();
         let mut plan = video_plan("eDP-1", true, true);
         let mut pipeline = VideoPipeline::new(&plan, false).unwrap();
-        assert_eq!(
-            pipeline
-                .frame_limiter
-                .as_ref()
-                .and_then(FrameLimiter::target_max_fps),
-            Some(24)
-        );
+        let limiter = pipeline.frame_limiter.as_ref().unwrap();
+        assert_eq!(limiter.target_max_fps(), Some(24));
+        assert_eq!(limiter.throttle_time_ns(), 41_666_666);
 
         plan.target_max_fps = Some(12);
         pipeline.apply_plan(&plan).unwrap();
         assert_eq!(pipeline.target_max_fps, Some(12));
-        assert_eq!(
-            pipeline
-                .frame_limiter
-                .as_ref()
-                .and_then(FrameLimiter::target_max_fps),
-            Some(12)
-        );
+        let limiter = pipeline.frame_limiter.as_ref().unwrap();
+        assert_eq!(limiter.target_max_fps(), Some(12));
+        assert_eq!(limiter.throttle_time_ns(), 83_333_333);
+
+        plan.target_max_fps = None;
+        pipeline.apply_plan(&plan).unwrap();
+        assert_eq!(pipeline.target_max_fps, None);
+        let limiter = pipeline.frame_limiter.as_ref().unwrap();
+        assert_eq!(limiter.target_max_fps(), None);
+        assert_eq!(limiter.throttle_time_ns(), 0);
+
+        plan.target_max_fps = Some(0);
+        pipeline.apply_plan(&plan).unwrap();
+        assert_eq!(pipeline.target_max_fps, Some(0));
+        let limiter = pipeline.frame_limiter.as_ref().unwrap();
+        assert_eq!(limiter.target_max_fps(), None);
+        assert_eq!(limiter.throttle_time_ns(), 0);
     }
 
     #[test]
@@ -1699,13 +1674,7 @@ mod tests {
             .map(|element| element.name.as_str())
             .collect::<Vec<_>>();
 
-        for expected in [
-            "playbin",
-            "fakesink",
-            "videorate",
-            "capsfilter",
-            "gtk4paintablesink",
-        ] {
+        for expected in ["playbin", "fakesink", "gtk4paintablesink"] {
             assert!(element_names.contains(&expected));
         }
     }

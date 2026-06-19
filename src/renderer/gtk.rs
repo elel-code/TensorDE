@@ -10,7 +10,7 @@ use crate::policy::RenderMode;
 use crate::renderer::video::{
     GtkFrameClockPhase, VideoFrameStats, VideoPipelineSnapshot, actual_decoder_reports,
     apply_decoder_rank_policy, decoder_policy_status, playback_duration_ms, playback_position_ms,
-    target_max_fps_from_caps, video_caps_reports, zero_copy_evidence,
+    video_caps_reports, zero_copy_evidence,
 };
 use gtk::gdk;
 use gtk::gio;
@@ -297,6 +297,10 @@ impl GtkStaticRenderer {
                     let caps_reports = video_caps_reports(&video.element);
                     let zero_copy_evidence =
                         zero_copy_evidence(&actual_decoder_reports, &caps_reports);
+                    let frame_limiter_max_fps = video
+                        .frame_limiter
+                        .as_ref()
+                        .and_then(GtkFrameLimiter::target_max_fps);
                     VideoPipelineSnapshot {
                         output_name: output_name.clone(),
                         source: video.source.to_string_lossy().into_owned(),
@@ -305,11 +309,8 @@ impl GtkStaticRenderer {
                         loop_playback: video.loop_playback,
                         muted: video.muted,
                         target_max_fps: video.target_max_fps,
-                        frame_limiter_enabled: video.frame_limiter.is_some(),
-                        frame_limiter_max_fps: video
-                            .frame_limiter
-                            .as_ref()
-                            .and_then(GtkFrameLimiter::target_max_fps),
+                        frame_limiter_enabled: frame_limiter_max_fps.is_some(),
+                        frame_limiter_max_fps,
                         frame_stats: video.frame_stats.borrow().clone(),
                         decoder_policy: video.decoder_policy,
                         decoder_policy_status: decoder_policy_status(
@@ -880,10 +881,8 @@ impl GtkVideoPipeline {
             return;
         }
         self.target_max_fps = target_max_fps;
-        if let Some(frame_limiter) = &self.frame_limiter {
-            if let Some(target_max_fps) = target_max_fps {
-                frame_limiter.apply_target_max_fps(target_max_fps);
-            }
+        if let Some(frame_limiter) = &mut self.frame_limiter {
+            frame_limiter.apply_target_max_fps(target_max_fps);
         }
     }
 
@@ -1018,11 +1017,16 @@ fn build_gtk_video_pipeline(
     let uri = gst::glib::filename_to_uri(&plan.source, None::<&str>)
         .map_err(|err| GtkVideoError::Uri(err.to_string()))?;
     apply_decoder_rank_policy(plan.decoder_policy);
-    let frame_limiter = plan.target_max_fps.map(GtkFrameLimiter::new).transpose()?;
     let video_sink = gst::ElementFactory::make("gtk4paintablesink")
         .property("sync", true)
+        .property("enable-last-sample", false)
         .build()
         .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
+    let frame_limiter = plan
+        .target_max_fps
+        .filter(|target_max_fps| *target_max_fps > 0)
+        .map(|target_max_fps| GtkFrameLimiter::new(&video_sink, target_max_fps))
+        .transpose()?;
     let paintable = video_sink.property::<gdk::Paintable>("paintable");
     let picture = gtk::Picture::for_paintable(&paintable);
     picture.set_hexpand(true);
@@ -1030,13 +1034,10 @@ fn build_gtk_video_pipeline(
     picture.set_can_shrink(false);
     picture.set_content_fit(content_fit_for_fit(plan.fit));
 
-    let mut builder = gst::ElementFactory::make("playbin")
+    let builder = gst::ElementFactory::make("playbin")
         .property("uri", uri.as_str())
         .property_from_str("flags", playbin_flags(plan.muted))
         .property("video-sink", &video_sink);
-    if let Some(frame_limiter) = &frame_limiter {
-        builder = builder.property("video-filter", frame_limiter.element());
-    }
     let element = builder
         .build()
         .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
@@ -1191,75 +1192,60 @@ fn playbin_flags(muted: bool) -> &'static str {
 
 #[cfg(feature = "video-renderer")]
 fn frame_limiter_required(target_max_fps: Option<u32>) -> bool {
-    target_max_fps.is_some()
+    target_max_fps.is_some_and(|target_max_fps| target_max_fps > 0)
 }
 
 #[cfg(feature = "video-renderer")]
 struct GtkFrameLimiter {
-    element: gst::Element,
-    capsfilter: gst::Element,
+    sink: gst::Element,
+    target_max_fps: u32,
 }
 
 #[cfg(feature = "video-renderer")]
 impl GtkFrameLimiter {
-    fn new(target_max_fps: u32) -> Result<Self, GtkVideoError> {
-        let bin = gst::Bin::new();
-        let videorate = gst::ElementFactory::make("videorate")
-            .build()
-            .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
-        let capsfilter = gst::ElementFactory::make("capsfilter")
-            .property("caps", caps_for_target_max_fps(target_max_fps))
-            .build()
-            .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
-        bin.add_many([&videorate, &capsfilter])
-            .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
-        gst::Element::link_many([&videorate, &capsfilter])
-            .map_err(|err| GtkVideoError::LinkElement(err.to_string()))?;
-        add_ghost_pad(&bin, &videorate, "sink")?;
-        add_ghost_pad(&bin, &capsfilter, "src")?;
-        Ok(Self {
-            element: bin.upcast(),
-            capsfilter,
-        })
+    fn new(sink: &gst::Element, target_max_fps: u32) -> Result<Self, GtkVideoError> {
+        if sink.find_property("throttle-time").is_none() {
+            return Err(GtkVideoError::BuildElement(format!(
+                "{} does not support throttle-time",
+                sink.name()
+            )));
+        }
+        let limiter = Self {
+            sink: sink.clone(),
+            target_max_fps,
+        };
+        limiter.apply_sink_throttle();
+        Ok(limiter)
     }
 
-    fn element(&self) -> &gst::Element {
-        &self.element
-    }
-
-    fn apply_target_max_fps(&self, target_max_fps: u32) {
-        self.capsfilter
-            .set_property("caps", caps_for_target_max_fps(target_max_fps));
+    fn apply_target_max_fps(&mut self, target_max_fps: Option<u32>) {
+        self.target_max_fps = target_max_fps
+            .filter(|target_max_fps| *target_max_fps > 0)
+            .unwrap_or(0);
+        self.apply_sink_throttle();
     }
 
     fn target_max_fps(&self) -> Option<u32> {
-        target_max_fps_from_caps(&self.capsfilter.property::<gst::Caps>("caps"))
+        (self.target_max_fps > 0).then_some(self.target_max_fps)
+    }
+
+    fn throttle_time_ns(&self) -> u64 {
+        frame_throttle_time_ns(self.target_max_fps)
+    }
+
+    fn apply_sink_throttle(&self) {
+        self.sink
+            .set_property("throttle-time", self.throttle_time_ns());
     }
 }
 
 #[cfg(feature = "video-renderer")]
-fn add_ghost_pad(
-    bin: &gst::Bin,
-    element: &gst::Element,
-    pad_name: &str,
-) -> Result<(), GtkVideoError> {
-    let pad = element
-        .static_pad(pad_name)
-        .ok_or_else(|| GtkVideoError::MissingPad(pad_name.to_owned()))?;
-    let ghost_pad = gst::GhostPad::with_target(&pad)
-        .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
-    ghost_pad
-        .set_active(true)
-        .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
-    bin.add_pad(&ghost_pad)
-        .map_err(|err| GtkVideoError::BuildElement(err.to_string()))
-}
-
-#[cfg(feature = "video-renderer")]
-fn caps_for_target_max_fps(target_max_fps: u32) -> gst::Caps {
-    gst::Caps::builder("video/x-raw")
-        .field("framerate", gst::Fraction::new(target_max_fps as i32, 1))
-        .build()
+fn frame_throttle_time_ns(target_max_fps: u32) -> u64 {
+    if target_max_fps == 0 {
+        0
+    } else {
+        1_000_000_000_u64 / u64::from(target_max_fps)
+    }
 }
 
 #[cfg(feature = "video-renderer")]
@@ -1278,8 +1264,6 @@ enum GtkVideoError {
     Init(String),
     Uri(String),
     BuildElement(String),
-    LinkElement(String),
-    MissingPad(String),
     MissingPipeline,
     SetState(String),
     Seek(String),
@@ -1295,8 +1279,6 @@ impl std::fmt::Display for GtkVideoError {
             Self::BuildElement(message) => {
                 write!(f, "failed to build GStreamer element: {message}")
             }
-            Self::LinkElement(message) => write!(f, "failed to link GStreamer elements: {message}"),
-            Self::MissingPad(pad) => write!(f, "GStreamer element is missing {pad} pad"),
             Self::MissingPipeline => f.write_str("GTK video pipeline is missing"),
             Self::SetState(message) => {
                 write!(f, "failed to set GStreamer pipeline state: {message}")
