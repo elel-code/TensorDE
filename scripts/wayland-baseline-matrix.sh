@@ -38,7 +38,9 @@ Options:
   -h, --help            Show this help text
 
 Each scenario writes its original wayland-video-surface-smoke evidence under
-<report>/scenarios/<name>/ and the aggregate table to <report>/baseline.csv.
+<report>/scenarios/<name>/, the aggregate table to <report>/baseline.csv, and
+active-relative Private_Dirty category comparisons to
+<report>/memory-category-deltas.csv.
 Budget rows may use "*" for scenario or phase and metric names must match
 baseline.csv columns, for example: active,active,max_uss_kib,250000.
 EOF
@@ -251,6 +253,7 @@ mkdir -p "$scenario_root"
 baseline_csv="$work_dir/baseline.csv"
 matrix_csv="$work_dir/matrix.csv"
 budget_results_csv="$work_dir/budget-results.csv"
+memory_category_deltas_csv="$work_dir/memory-category-deltas.csv"
 summary_path="$work_dir/summary.txt"
 metadata_path="$work_dir/metadata.txt"
 
@@ -592,6 +595,7 @@ build: ${build}
 scenarios: ${requested_scenarios[*]}
 baseline_csv: ${baseline_csv}
 matrix_csv: ${matrix_csv}
+memory_category_deltas_csv: ${memory_category_deltas_csv}
 scenario_root: ${scenario_root}
 EOF
 }
@@ -605,9 +609,109 @@ budget_failed: ${budget_failures}
 metadata: ${metadata_path}
 baseline: ${baseline_csv}
 matrix: ${matrix_csv}
+memory_category_deltas: ${memory_category_deltas_csv}
 budget_results: ${budget_results_csv}
 scenario_root: ${scenario_root}
 EOF
+}
+
+write_memory_category_delta_report() {
+  local metrics
+  metrics="$(
+    printf '%s\n' \
+      memory_category_anonymous_private_dirty_kib \
+      memory_category_heap_private_dirty_kib \
+      memory_category_dri_device_private_dirty_kib \
+      memory_category_nvidia_device_private_dirty_kib \
+      memory_category_nvidia_library_private_dirty_kib \
+      memory_category_shared_memory_private_dirty_kib \
+      memory_category_gstreamer_library_private_dirty_kib \
+      memory_category_gtk_library_private_dirty_kib \
+      memory_category_system_library_private_dirty_kib \
+      memory_category_file_mapping_private_dirty_kib \
+      memory_category_other_private_dirty_kib
+  )"
+
+  awk -F, -v OFS=, -v metrics="$metrics" '
+    function trim(value) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      return value
+    }
+    function numeric(value) {
+      return value ~ /^-?[0-9]+([.][0-9]+)?$/
+    }
+    function emit(scenario, phase, metric, active_value, phase_value, delta, release, status, detail) {
+      print scenario, phase, metric, active_value, phase_value, delta, release, status, detail
+    }
+    BEGIN {
+      print "scenario", "phase", "metric", "active_private_dirty_kib", "phase_private_dirty_kib", "delta_from_active_kib", "release_from_active_kib", "status", "detail"
+      metric_count = split(metrics, metric_list, "\n")
+    }
+    NR == 1 {
+      for (i = 1; i <= NF; i++) {
+        header[trim($i)] = i
+      }
+      next
+    }
+    {
+      row_count++
+      row_scenario[row_count] = trim($1)
+      row_phase[row_count] = trim($2)
+      if (row_scenario[row_count] == "active" && row_phase[row_count] == "active") {
+        active_row = row_count
+      }
+      for (metric_index = 1; metric_index <= metric_count; metric_index++) {
+        metric = metric_list[metric_index]
+        if (metric == "") {
+          continue
+        }
+        if (metric in header) {
+          row_value[row_count, metric] = trim($(header[metric]))
+        } else {
+          row_value[row_count, metric] = "none"
+        }
+      }
+    }
+    END {
+      if (row_count == 0) {
+        emit("", "", "", "", "", "", "", "missing-baseline", "baseline.csv has no data rows")
+      } else if (active_row == 0) {
+        for (row = 1; row <= row_count; row++) {
+          for (metric_index = 1; metric_index <= metric_count; metric_index++) {
+            metric = metric_list[metric_index]
+            if (metric != "") {
+              emit(row_scenario[row], row_phase[row], metric, "", row_value[row, metric], "", "", "missing-active", "no active/active baseline row")
+            }
+          }
+        }
+      } else {
+        for (row = 1; row <= row_count; row++) {
+          for (metric_index = 1; metric_index <= metric_count; metric_index++) {
+            metric = metric_list[metric_index]
+            if (metric == "") {
+              continue
+            }
+            active_value = row_value[active_row, metric]
+            phase_value = row_value[row, metric]
+            if (!numeric(active_value) || !numeric(phase_value)) {
+              emit(row_scenario[row], row_phase[row], metric, active_value, phase_value, "", "", "missing-value", "metric was not numeric in active or phase row")
+              continue
+            }
+            delta = phase_value - active_value
+            release = active_value - phase_value
+            if (delta < 0) {
+              status = "released"
+            } else if (delta == 0) {
+              status = "unchanged"
+            } else {
+              status = "increased"
+            }
+            emit(row_scenario[row], row_phase[row], metric, active_value, phase_value, delta, release, status, "phase minus active")
+          }
+        }
+      }
+    }
+  ' "$baseline_csv" > "$memory_category_deltas_csv"
 }
 
 validate_budgets() {
@@ -864,6 +968,8 @@ for scenario in "${requested_scenarios[@]}"; do
   append_rows_for_scenario "$scenario" "$status" "$scenario_dir" "$validation_report"
 done
 
+write_memory_category_delta_report
+
 if [[ -n "$budget_csv" ]]; then
   if validate_budgets; then
     note "PASS: budget checks"
@@ -885,6 +991,7 @@ write_summary
 note "metadata: $metadata_path"
 note "baseline: $baseline_csv"
 note "matrix:   $matrix_csv"
+note "memory category deltas: $memory_category_deltas_csv"
 note "budgets:  $budget_results_csv"
 note "report:   $summary_path"
 note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
