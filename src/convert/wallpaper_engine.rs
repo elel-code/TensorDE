@@ -94,6 +94,7 @@ pub fn convert_project(
         SourceType::Video => convert_video(&project, output_dir, &mut report),
         SourceType::Web => convert_web(&project, output_dir, &mut report),
         SourceType::Scene => convert_scene_lite(&project, output_dir, &mut report),
+        SourceType::Shader => convert_shader(&project, output_dir, &mut report),
         SourceType::Playlist => convert_playlist(&project, output_dir, &mut report),
         SourceType::Application => {
             report
@@ -340,6 +341,55 @@ fn convert_scene_lite(
     ))
 }
 
+fn convert_shader(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    report: &mut ConversionReport,
+) -> Result<Value, ConversionError> {
+    let source = project.entry_file.as_ref().ok_or_else(|| {
+        ConversionError::MissingEntry("shader project does not define an entry file".to_owned())
+    })?;
+    let copied = copy_project_file(
+        &project.root,
+        source,
+        output_dir.join("shaders"),
+        "main",
+        report,
+    )?;
+    let preview = copy_preview_or_generate(
+        project,
+        output_dir,
+        report,
+        MissingPreviewFallback::Shader { source },
+    )?;
+    let fallback = preview
+        .as_ref()
+        .and_then(|preview| preview.poster.clone())
+        .map(Value::String)
+        .unwrap_or(Value::Null);
+
+    push_unique(&mut report.converted_features, "shader");
+    record_shader_runtime_gap(report);
+    report.warnings.push(
+        "Converted Shader project to a native shader manifest with fallback; GPU shader execution is not implemented yet, so current renderers display the fallback poster.".to_owned(),
+    );
+
+    Ok(base_manifest(
+        project,
+        "shader",
+        preview,
+        report,
+        json!({
+            "type": "shader",
+            "source": copied.package_path,
+            "fallback": fallback,
+            "language": shader_language_for_source(source),
+            "max_fps": 60,
+            "uniforms": shader_uniforms(project)
+        }),
+    ))
+}
+
 fn convert_playlist(
     project: &WallpaperEngineProject,
     output_dir: &Path,
@@ -486,6 +536,25 @@ fn convert_playlist_item(
                 "max_fps": 60
             })
         }
+        SourceType::Shader => {
+            let copied = copy_project_file(
+                &project.root,
+                &source,
+                output_dir.join("shaders"),
+                &format!("playlist-{index}"),
+                report,
+            )?;
+            push_unique(&mut report.converted_features, "playlist-item:shader");
+            record_shader_runtime_gap(report);
+            json!({
+                "type": "shader",
+                "source": copied.package_path,
+                "fallback": playlist_fallback.map(|path| Value::String(path.to_owned())).unwrap_or(Value::Null),
+                "language": shader_language_for_source(&source),
+                "max_fps": 60,
+                "uniforms": shader_uniforms(project)
+            })
+        }
         SourceType::Playlist | SourceType::Application | SourceType::Unknown => {
             let feature = format!("playlist-item:{}", source_type.as_str());
             push_unique(&mut report.unsupported_features, &feature);
@@ -624,6 +693,8 @@ fn playlist_item_source_type(object: &Map<String, Value>, source: &str) -> Sourc
                 SourceType::Video
             } else if lowered.contains("web") {
                 SourceType::Web
+            } else if lowered.contains("shader") {
+                SourceType::Shader
             } else if lowered.contains("scene") {
                 SourceType::Scene
             } else if lowered.contains("image") {
@@ -765,7 +836,7 @@ fn runtime_allow_audio(project: &WallpaperEngineProject, report: &mut Conversion
             push_unique(&mut report.converted_features, "audio-policy");
             true
         }
-        SourceType::Web | SourceType::Scene => {
+        SourceType::Web | SourceType::Scene | SourceType::Shader => {
             push_unique(&mut report.unsupported_features, "audio-runtime");
             report.warnings.push(
                 "Detected Wallpaper Engine audio features, but audio runtime integration is not available for this converted wallpaper type.".to_owned(),
@@ -815,6 +886,105 @@ fn record_scene_lite_runtime_gaps(report: &mut ConversionReport) {
         {
             push_unique(&mut report.unsupported_features, unsupported);
         }
+    }
+}
+
+fn record_shader_runtime_gap(report: &mut ConversionReport) {
+    push_unique(&mut report.unsupported_features, "shader-runtime");
+}
+
+fn shader_language_for_source(source: &str) -> &'static str {
+    match Path::new(source)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("wgsl") => "wgsl",
+        Some("frag" | "fragment" | "fs" | "glsl" | "shader" | "vert" | "vertex" | "vs") => "glsl",
+        _ => "auto",
+    }
+}
+
+fn shader_uniforms(project: &WallpaperEngineProject) -> Vec<Value> {
+    let mut uniforms = vec![
+        json!({ "name": "u_time", "source": "time" }),
+        json!({ "name": "u_resolution", "source": "resolution" }),
+        json!({ "name": "u_mouse", "source": "mouse" }),
+    ];
+    let mut names = BTreeSet::from([
+        "u_time".to_owned(),
+        "u_resolution".to_owned(),
+        "u_mouse".to_owned(),
+    ]);
+
+    let Some(properties) = project
+        .raw
+        .pointer("/general/properties")
+        .and_then(Value::as_object)
+    else {
+        return uniforms;
+    };
+
+    for (property, spec) in properties {
+        let Some(spec) = spec.as_object() else {
+            continue;
+        };
+        if !shader_property_uniform_supported(spec) {
+            continue;
+        }
+        let uniform_name = unique_shader_uniform_name(property, &mut names);
+        uniforms.push(json!({
+            "name": uniform_name,
+            "source": "property",
+            "property": property
+        }));
+    }
+
+    uniforms
+}
+
+fn shader_property_uniform_supported(spec: &Map<String, Value>) -> bool {
+    matches!(
+        string_field(spec, &["type"])
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "bool" | "slider" | "combo" | "color" | "textinput" | "text"
+    )
+}
+
+fn unique_shader_uniform_name(property: &str, names: &mut BTreeSet<String>) -> String {
+    let base = shader_uniform_name(property);
+    if names.insert(base.clone()) {
+        return base;
+    }
+
+    for suffix in 2.. {
+        let candidate = format!("{base}_{suffix}");
+        if names.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    unreachable!("unbounded suffix search must eventually find a shader uniform name")
+}
+
+fn shader_uniform_name(property: &str) -> String {
+    let mut normalized = String::from("u_");
+    for character in property.chars() {
+        if character.is_ascii_alphanumeric() {
+            normalized.push(character.to_ascii_lowercase());
+        } else if !normalized.ends_with('_') {
+            normalized.push('_');
+        }
+    }
+    while normalized.ends_with('_') {
+        normalized.pop();
+    }
+    if normalized == "u" {
+        "u_property".to_owned()
+    } else {
+        normalized
     }
 }
 
@@ -983,6 +1153,19 @@ fn copy_preview_or_generate(
             );
             Ok(Some(preview))
         }
+        MissingPreviewFallback::Shader { source } => {
+            let preview = generate_svg_placeholder_preview(
+                project,
+                output_dir,
+                source,
+                PlaceholderKind::Shader,
+                report,
+            )?;
+            report.warnings.push(
+                "No preview image found; generated metadata-based shader fallback poster and thumbnail.".to_owned(),
+            );
+            Ok(Some(preview))
+        }
         MissingPreviewFallback::None => {
             report.warnings.push(
                 "No preview image found; poster and thumbnail were not generated.".to_owned(),
@@ -997,6 +1180,7 @@ enum MissingPreviewFallback<'a> {
     StaticImage { source: &'a str },
     Video { source: &'a str },
     Scene { source: &'a str },
+    Shader { source: &'a str },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1453,6 +1637,7 @@ fn is_executable_file(path: &Path) -> bool {
 enum PlaceholderKind {
     Video,
     Scene,
+    Shader,
 }
 
 impl PlaceholderKind {
@@ -1460,6 +1645,7 @@ impl PlaceholderKind {
         match self {
             Self::Video => "Video",
             Self::Scene => "Scene",
+            Self::Shader => "Shader",
         }
     }
 }
@@ -1883,7 +2069,10 @@ fn should_scan_entry_contents(source_type: SourceType, entry_file: &str) -> bool
         .extension()
         .and_then(|extension| extension.to_str())
     else {
-        return matches!(source_type, SourceType::Web | SourceType::Scene);
+        return matches!(
+            source_type,
+            SourceType::Web | SourceType::Scene | SourceType::Shader
+        );
     };
 
     matches!(
@@ -2168,6 +2357,9 @@ fn detect_source_type(object: &Map<String, Value>, entry_file: Option<&str>) -> 
         if kind.contains("web") {
             return SourceType::Web;
         }
+        if kind.contains("shader") {
+            return SourceType::Shader;
+        }
         if kind.contains("scene") {
             return SourceType::Scene;
         }
@@ -2196,6 +2388,7 @@ enum SourceType {
     Video,
     Web,
     Scene,
+    Shader,
     Playlist,
     Application,
     Unknown,
@@ -2208,6 +2401,7 @@ impl SourceType {
             Self::Video => "video",
             Self::Web => "web",
             Self::Scene => "scene",
+            Self::Shader => "shader",
             Self::Playlist => "playlist",
             Self::Application => "application",
             Self::Unknown => "unknown",
@@ -2219,6 +2413,9 @@ impl SourceType {
             "jpg" | "jpeg" | "png" | "webp" | "avif" | "bmp" | "gif" | "svg" => Self::Image,
             "mp4" | "m4v" | "webm" | "mkv" | "mov" | "avi" => Self::Video,
             "html" | "htm" => Self::Web,
+            "frag" | "fragment" | "fs" | "glsl" | "shader" | "vert" | "vertex" | "vs" | "wgsl" => {
+                Self::Shader
+            }
             "json" => Self::Scene,
             "exe" | "bat" | "cmd" | "com" | "scr" => Self::Application,
             _ => Self::Unknown,
@@ -2837,6 +3034,87 @@ fetch("https://example.invalid/data.json");
     }
 
     #[test]
+    fn converts_shader_project_with_fallback_manifest() {
+        let source = TestDir::new("we-shader-source");
+        let output = TestDir::new("we-shader-output");
+        output.remove();
+        source.write_file(
+            "main.frag",
+            r#"
+uniform float u_time;
+uniform vec2 u_resolution;
+uniform float u_intensity;
+void main() {}
+"#,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r##"{
+              "type": "shader",
+              "title": "Shader Example",
+              "file": "main.frag",
+              "general": {
+                "properties": {
+                  "Intensity": { "type": "slider", "min": 0, "max": 1, "value": 0.5 }
+                }
+              }
+            }"##,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(output.path().join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(manifest["kind"], "shader");
+        assert_eq!(manifest["entry"]["type"], "shader");
+        assert_eq!(manifest["entry"]["source"], "shaders/main.frag");
+        assert_eq!(manifest["entry"]["fallback"], "previews/poster.svg");
+        assert_eq!(manifest["entry"]["language"], "glsl");
+        assert_eq!(manifest["entry"]["max_fps"], 60);
+        assert_eq!(manifest["properties"]["Intensity"]["type"], "range");
+        let uniforms = manifest["entry"]["uniforms"].as_array().unwrap();
+        assert!(
+            uniforms
+                .iter()
+                .any(|uniform| { uniform["name"] == "u_time" && uniform["source"] == "time" })
+        );
+        assert!(uniforms.iter().any(|uniform| {
+            uniform["name"] == "u_resolution" && uniform["source"] == "resolution"
+        }));
+        assert!(
+            uniforms
+                .iter()
+                .any(|uniform| { uniform["name"] == "u_mouse" && uniform["source"] == "mouse" })
+        );
+        assert!(uniforms.iter().any(|uniform| {
+            uniform["name"] == "u_intensity"
+                && uniform["source"] == "property"
+                && uniform["property"] == "Intensity"
+        }));
+        assert!(output.path().join("shaders/main.frag").exists());
+        assert!(output.path().join("previews/poster.svg").exists());
+
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report.source_type, "shader");
+        assert!(report.detected_features.contains(&"shader".to_owned()));
+        assert!(report.converted_features.contains(&"shader".to_owned()));
+        assert!(
+            report
+                .unsupported_features
+                .contains(&"shader-runtime".to_owned())
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("fallback poster"))
+        );
+    }
+
+    #[test]
     fn converts_scene_project_to_scene_lite_with_fallback() {
         let source = TestDir::new("we-scene-source");
         let output = TestDir::new("we-scene-output");
@@ -3124,6 +3402,63 @@ fetch("https://example.invalid/data.json");
             report
                 .unsupported_features
                 .contains(&"scene-runtime".to_owned())
+        );
+    }
+
+    #[test]
+    fn converts_playlist_project_with_shader_item() {
+        let source = TestDir::new("we-playlist-shader-source");
+        let output = TestDir::new("we-playlist-shader-output");
+        output.remove();
+        source.write_file("waves.wgsl", "@fragment fn main() {}");
+        source.write_file("preview.jpg", "not real preview");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "playlist",
+              "title": "Shader Playlist",
+              "preview": "preview.jpg",
+              "items": [
+                {
+                  "title": "Waves",
+                  "type": "shader",
+                  "file": "waves.wgsl"
+                }
+              ]
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(output.path().join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        let items = manifest["entry"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["id"], "item-0-waves");
+        assert_eq!(items[0]["entry"]["type"], "shader");
+        assert_eq!(items[0]["entry"]["source"], "shaders/playlist-0.wgsl");
+        assert_eq!(items[0]["entry"]["fallback"], "previews/poster.jpg");
+        assert_eq!(items[0]["entry"]["language"], "wgsl");
+        assert!(output.path().join("shaders/playlist-0.wgsl").exists());
+
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .detected_features
+                .contains(&"playlist-item:shader".to_owned())
+        );
+        assert!(
+            report
+                .converted_features
+                .contains(&"playlist-item:shader".to_owned())
+        );
+        assert!(
+            report
+                .unsupported_features
+                .contains(&"shader-runtime".to_owned())
         );
     }
 
