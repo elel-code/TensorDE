@@ -71,9 +71,9 @@ pub struct GtkRendererResourceSnapshot {
 struct RenderedOutput {
     output_name: String,
     window: gtk::ApplicationWindow,
-    #[cfg(feature = "video-renderer")]
     surface: gtk::Box,
-    provider: Option<gtk::CssProvider>,
+    background_provider: Option<gtk::CssProvider>,
+    static_surface: Option<RenderedStaticSurface>,
     static_plan: Option<StaticWallpaperPlan>,
     slideshow: Option<RenderedSlideshow>,
     scene_lite_plan: Option<SceneLiteWallpaperPlan>,
@@ -81,6 +81,17 @@ struct RenderedOutput {
     video: Option<GtkVideoAttachment>,
     #[cfg(feature = "video-renderer")]
     video_error: Option<VideoErrorState>,
+}
+
+enum RenderedStaticSurface {
+    Picture {
+        widget: gtk::Picture,
+        source: PathBuf,
+    },
+    CssImage {
+        source: PathBuf,
+    },
+    Color,
 }
 
 impl GtkStaticRenderer {
@@ -184,7 +195,8 @@ impl GtkStaticRenderer {
         window.window.set_monitor(Some(&monitor));
         window.remove_slideshow();
         window.scene_lite_plan = None;
-        if window.provider.is_none() || static_plan_needs_update(window.static_plan.as_ref(), plan)
+        if window.static_surface.is_none()
+            || static_plan_needs_update(window.static_plan.as_ref(), plan)
         {
             apply_static_wallpaper(window, plan);
             window.static_plan = Some(plan.clone());
@@ -334,7 +346,7 @@ impl GtkStaticRenderer {
             static_surfaces: self
                 .windows
                 .values()
-                .filter(|output| output.provider.is_some())
+                .filter(|output| output.static_surface.is_some())
                 .count(),
             slideshow_surfaces: self
                 .windows
@@ -511,7 +523,15 @@ impl RenderedOutput {
     }
 
     fn release_static_surface(&mut self) {
-        let Some(provider) = self.provider.take() else {
+        if let Some(RenderedStaticSurface::Picture { widget, .. }) = self.static_surface.take() {
+            self.surface.remove(&widget);
+        }
+        self.static_surface = None;
+        self.clear_background_provider();
+    }
+
+    fn clear_background_provider(&mut self) {
+        let Some(provider) = self.background_provider.take() else {
             return;
         };
         let display = gtk::prelude::WidgetExt::display(&self.window);
@@ -520,7 +540,7 @@ impl RenderedOutput {
 
     #[cfg(feature = "video-renderer")]
     fn restore_static_surface(&mut self) {
-        if self.provider.is_some() {
+        if self.static_surface.is_some() {
             return;
         }
         if let Some(plan) = self.static_plan.clone() {
@@ -529,7 +549,7 @@ impl RenderedOutput {
     }
 
     fn static_surface_source(&self) -> Option<&Path> {
-        self.provider.as_ref()?;
+        self.static_surface.as_ref()?;
         if let Some(slideshow) = &self.slideshow {
             return slideshow
                 .plan
@@ -542,7 +562,11 @@ impl RenderedOutput {
         {
             return Some(source.as_path());
         }
-        self.static_plan.as_ref().map(|plan| plan.source.as_path())
+        match self.static_surface.as_ref()? {
+            RenderedStaticSurface::Picture { source, .. }
+            | RenderedStaticSurface::CssImage { source } => Some(source.as_path()),
+            RenderedStaticSurface::Color => None,
+        }
     }
 
     #[cfg(feature = "video-renderer")]
@@ -704,9 +728,9 @@ fn build_background_output(
     RenderedOutput {
         output_name: output_name.to_owned(),
         window,
-        #[cfg(feature = "video-renderer")]
         surface,
-        provider: None,
+        background_provider: None,
+        static_surface: None,
         static_plan: None,
         slideshow: None,
         scene_lite_plan: None,
@@ -718,18 +742,43 @@ fn build_background_output(
 }
 
 fn apply_static_wallpaper(output: &mut RenderedOutput, plan: &StaticWallpaperPlan) {
-    apply_wallpaper_css(output, &static_wallpaper_css(plan));
+    output.release_static_surface();
+    if use_picture_static_surface(plan.fit) {
+        apply_wallpaper_css(
+            output,
+            &color_wallpaper_css(
+                &plan.output_name,
+                plan.background.as_deref().unwrap_or("#000000"),
+            ),
+        );
+        let file = gio::File::for_path(&plan.source);
+        let picture = gtk::Picture::for_file(&file);
+        picture.set_hexpand(true);
+        picture.set_vexpand(true);
+        picture.set_can_shrink(false);
+        picture.set_content_fit(content_fit_for_fit(plan.fit));
+        output.surface.append(&picture);
+        output.static_surface = Some(RenderedStaticSurface::Picture {
+            widget: picture,
+            source: plan.source.clone(),
+        });
+    } else {
+        apply_wallpaper_css(output, &static_wallpaper_css(plan));
+        output.static_surface = Some(RenderedStaticSurface::CssImage {
+            source: plan.source.clone(),
+        });
+    }
 }
 
 fn apply_color_wallpaper(output: &mut RenderedOutput, output_name: &str, color: &str) {
+    output.release_static_surface();
     apply_wallpaper_css(output, &color_wallpaper_css(output_name, color));
+    output.static_surface = Some(RenderedStaticSurface::Color);
 }
 
 fn apply_wallpaper_css(output: &mut RenderedOutput, css: &str) {
     let display = gtk::prelude::WidgetExt::display(&output.window);
-    if let Some(provider) = output.provider.take() {
-        gtk::style_context_remove_provider_for_display(&display, &provider);
-    }
+    output.clear_background_provider();
     let provider = gtk::CssProvider::new();
     provider.load_from_data(css);
     gtk::style_context_add_provider_for_display(
@@ -737,7 +786,7 @@ fn apply_wallpaper_css(output: &mut RenderedOutput, css: &str) {
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
-    output.provider = Some(provider);
+    output.background_provider = Some(provider);
 }
 
 fn static_plan_needs_update(
@@ -1617,7 +1666,6 @@ fn frame_throttle_time_ns(target_max_fps: u32) -> u64 {
     }
 }
 
-#[cfg(feature = "video-renderer")]
 fn content_fit_for_fit(fit: FitMode) -> gtk::ContentFit {
     match fit {
         FitMode::Cover => gtk::ContentFit::Cover,
@@ -1625,6 +1673,10 @@ fn content_fit_for_fit(fit: FitMode) -> gtk::ContentFit {
         FitMode::Stretch => gtk::ContentFit::Fill,
         FitMode::Center => gtk::ContentFit::ScaleDown,
     }
+}
+
+fn use_picture_static_surface(fit: FitMode) -> bool {
+    fit != FitMode::Tile
 }
 
 #[cfg(feature = "video-renderer")]
@@ -1780,9 +1832,8 @@ mod tests {
         assert_eq!(footprint.video_pipeline_unique_source_bytes, 0);
     }
 
-    #[cfg(feature = "video-renderer")]
     #[test]
-    fn maps_video_fit_modes_to_gtk_content_fit() {
+    fn maps_fit_modes_to_gtk_content_fit() {
         assert_eq!(content_fit_for_fit(FitMode::Cover), gtk::ContentFit::Cover);
         assert_eq!(
             content_fit_for_fit(FitMode::Contain),
@@ -1794,6 +1845,15 @@ mod tests {
             gtk::ContentFit::ScaleDown
         );
         assert_eq!(content_fit_for_fit(FitMode::Tile), gtk::ContentFit::Contain);
+    }
+
+    #[test]
+    fn uses_picture_static_surface_except_tile_fallback() {
+        assert!(use_picture_static_surface(FitMode::Cover));
+        assert!(use_picture_static_surface(FitMode::Contain));
+        assert!(use_picture_static_surface(FitMode::Stretch));
+        assert!(use_picture_static_surface(FitMode::Center));
+        assert!(!use_picture_static_surface(FitMode::Tile));
     }
 
     #[cfg(feature = "video-renderer")]
