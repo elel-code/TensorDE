@@ -262,11 +262,19 @@ pub struct PlaylistItem {
     pub entry: Box<WallpaperEntry>,
     #[serde(default)]
     pub conditions: PlaylistConditions,
+    #[serde(default = "default_playlist_item_weight")]
+    pub weight: u32,
 }
 
 impl PlaylistItem {
     fn validate(&self, index: usize) -> Result<(), ManifestError> {
         validate_required_text("playlist item id", &self.id)?;
+        if self.weight == 0 {
+            return Err(ManifestError::InvalidEntry(format!(
+                "playlist item {:?} weight must be greater than 0",
+                self.id
+            )));
+        }
         if matches!(self.entry.as_ref(), WallpaperEntry::Playlist { .. }) {
             return Err(ManifestError::InvalidEntry(format!(
                 "playlist item {:?} must not contain a nested playlist",
@@ -278,6 +286,10 @@ impl PlaylistItem {
             .validate()
             .map_err(|err| ManifestError::InvalidEntry(format!("playlist item {index}: {err}")))
     }
+}
+
+fn default_playlist_item_weight() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -381,6 +393,7 @@ pub enum PlaylistPowerCondition {
 pub enum PlaylistSelection {
     #[default]
     FirstMatch,
+    WeightedRandom,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -801,7 +814,91 @@ mod tests {
         manifest.validate().unwrap();
 
         assert_eq!(manifest.kind, WallpaperKind::Playlist);
+        let WallpaperEntry::Playlist { items, selection } = &manifest.entry else {
+            panic!("expected playlist entry");
+        };
+        assert_eq!(*selection, PlaylistSelection::FirstMatch);
+        assert_eq!(items[0].weight, 1);
         assert_eq!(manifest.referenced_paths().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn parses_and_validates_weighted_playlist_manifest() {
+        let json = r#"
+        {
+          "format": "gilder.wallpaper",
+          "format_version": 1,
+          "id": "org.example.weighted-playlist",
+          "version": "1.0.0",
+          "title": "Weighted Playlist",
+          "kind": "playlist",
+          "entry": {
+            "type": "playlist",
+            "selection": "weighted-random",
+            "items": [
+              {
+                "id": "rare",
+                "weight": 1,
+                "entry": {
+                  "type": "static-image",
+                  "source": "assets/rare.png"
+                }
+              },
+              {
+                "id": "common",
+                "weight": 9,
+                "entry": {
+                  "type": "static-image",
+                  "source": "assets/common.png"
+                }
+              }
+            ]
+          }
+        }
+        "#;
+
+        let manifest: Manifest = serde_json::from_str(json).unwrap();
+        manifest.validate().unwrap();
+        let WallpaperEntry::Playlist { items, selection } = &manifest.entry else {
+            panic!("expected playlist entry");
+        };
+        assert_eq!(*selection, PlaylistSelection::WeightedRandom);
+        assert_eq!(items[0].weight, 1);
+        assert_eq!(items[1].weight, 9);
+    }
+
+    #[test]
+    fn rejects_zero_weight_playlist_item() {
+        let json = r#"
+        {
+          "format": "gilder.wallpaper",
+          "format_version": 1,
+          "id": "org.example.bad-playlist-weight",
+          "version": "1.0.0",
+          "title": "Bad Playlist Weight",
+          "kind": "playlist",
+          "entry": {
+            "type": "playlist",
+            "selection": "weighted-random",
+            "items": [
+              {
+                "id": "disabled",
+                "weight": 0,
+                "entry": {
+                  "type": "static-image",
+                  "source": "assets/disabled.png"
+                }
+              }
+            ]
+          }
+        }
+        "#;
+
+        let manifest: Manifest = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            manifest.validate(),
+            Err(ManifestError::InvalidEntry(_))
+        ));
     }
 
     #[test]

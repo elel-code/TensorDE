@@ -8,9 +8,10 @@ pub mod video;
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, PropertySpec, Variant};
 use crate::core::{
-    FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, SceneLiteAnimatedProperty,
-    SceneLiteDocument, SceneLiteLayer, SceneLiteLayerKind, SceneLitePropertyBinding,
-    SceneLiteTextAlign, SceneLiteTransform, Transition, WallpaperEntry, WallpaperPackage,
+    FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection,
+    SceneLiteAnimatedProperty, SceneLiteDocument, SceneLiteLayer, SceneLiteLayerKind,
+    SceneLitePropertyBinding, SceneLiteTextAlign, SceneLiteTransform, Transition, WallpaperEntry,
+    WallpaperPackage,
 };
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot, PowerState};
 use crate::policy::{PerformanceDecision, RenderMode};
@@ -841,11 +842,76 @@ struct PlaylistRenderContext<'a> {
 
 fn select_playlist_item<'a>(
     items: &'a [PlaylistItem],
+    selection: PlaylistSelection,
     context: Option<&PlaylistRenderContext<'_>>,
 ) -> Option<&'a PlaylistItem> {
-    items
+    match selection {
+        PlaylistSelection::FirstMatch => items
+            .iter()
+            .find(|item| playlist_item_matches(item, context)),
+        PlaylistSelection::WeightedRandom => select_weighted_playlist_item(items, context),
+    }
+}
+
+fn select_weighted_playlist_item<'a>(
+    items: &'a [PlaylistItem],
+    context: Option<&PlaylistRenderContext<'_>>,
+) -> Option<&'a PlaylistItem> {
+    let candidates = items
         .iter()
-        .find(|item| playlist_item_matches(item, context))
+        .filter(|item| playlist_item_matches(item, context))
+        .collect::<Vec<_>>();
+    let total_weight = candidates
+        .iter()
+        .map(|item| u64::from(item.weight))
+        .sum::<u64>();
+    if total_weight == 0 {
+        return None;
+    }
+
+    let mut selected_weight = playlist_weighted_selection_seed(&candidates, context) % total_weight;
+    for item in candidates {
+        let item_weight = u64::from(item.weight);
+        if selected_weight < item_weight {
+            return Some(item);
+        }
+        selected_weight -= item_weight;
+    }
+    None
+}
+
+fn playlist_weighted_selection_seed(
+    candidates: &[&PlaylistItem],
+    context: Option<&PlaylistRenderContext<'_>>,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    "gilder-playlist-weighted-random-v1".hash(&mut hasher);
+    if let Some(context) = context {
+        context.output_name.hash(&mut hasher);
+        context.local_minute_of_day.hash(&mut hasher);
+        playlist_power_seed(context.desktop.power).hash(&mut hasher);
+        context.desktop.session_active.hash(&mut hasher);
+        context.desktop.session_locked.hash(&mut hasher);
+        if let Some(output) = context.output {
+            output.name.hash(&mut hasher);
+            output.focused.hash(&mut hasher);
+            output.visible.hash(&mut hasher);
+            output.has_fullscreen.hash(&mut hasher);
+        }
+    }
+    for item in candidates {
+        item.id.hash(&mut hasher);
+        item.weight.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn playlist_power_seed(power: PowerState) -> u8 {
+    match power {
+        PowerState::Unknown => 0,
+        PowerState::Ac => 1,
+        PowerState::Battery => 2,
+    }
 }
 
 fn playlist_item_matches(item: &PlaylistItem, context: Option<&PlaylistRenderContext<'_>>) -> bool {
@@ -961,8 +1027,9 @@ fn effective_render_wallpaper_entry<'a>(
     playlist_context: &PlaylistRenderContext<'_>,
 ) -> Option<&'a WallpaperEntry> {
     match entry {
-        WallpaperEntry::Playlist { items, .. } => {
-            select_playlist_item(items, Some(playlist_context)).map(|item| item.entry.as_ref())
+        WallpaperEntry::Playlist { items, selection } => {
+            select_playlist_item(items, *selection, Some(playlist_context))
+                .map(|item| item.entry.as_ref())
         }
         _ => Some(entry),
     }
@@ -1214,8 +1281,8 @@ fn wallpaper_entry_plan_with_target(
             render_properties,
             scene_lite_snapshot_cache,
         )?)),
-        WallpaperEntry::Playlist { items, .. } => {
-            let item = select_playlist_item(items, playlist_context)
+        WallpaperEntry::Playlist { items, selection } => {
+            let item = select_playlist_item(items, *selection, playlist_context)
                 .ok_or(RendererPlanError::PlaylistNoMatch)?;
             wallpaper_entry_plan_with_target(
                 output_name,
@@ -3133,7 +3200,8 @@ mod tests {
             local_minute_of_day: 10 * 60 + 30,
         };
         assert_eq!(
-            select_playlist_item(items, Some(&day_context)).map(|item| item.id.as_str()),
+            select_playlist_item(items, PlaylistSelection::FirstMatch, Some(&day_context))
+                .map(|item| item.id.as_str()),
             Some("day")
         );
 
@@ -3142,9 +3210,76 @@ mod tests {
             ..day_context
         };
         assert_eq!(
-            select_playlist_item(items, Some(&night_context)).map(|item| item.id.as_str()),
+            select_playlist_item(items, PlaylistSelection::FirstMatch, Some(&night_context))
+                .map(|item| item.id.as_str()),
             Some("night")
         );
+    }
+
+    #[test]
+    fn playlist_weighted_random_selection_is_stable_and_weighted() {
+        let entry: WallpaperEntry = serde_json::from_value(json!({
+            "type": "playlist",
+            "selection": "weighted-random",
+            "items": [
+                {
+                    "id": "rare",
+                    "weight": 1,
+                    "entry": {
+                        "type": "static-image",
+                        "source": "assets/rare.svg"
+                    }
+                },
+                {
+                    "id": "common",
+                    "weight": 9,
+                    "entry": {
+                        "type": "static-image",
+                        "source": "assets/common.svg"
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+        let WallpaperEntry::Playlist { items, selection } = &entry else {
+            panic!("expected playlist entry");
+        };
+        assert_eq!(*selection, PlaylistSelection::WeightedRandom);
+
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+        let output = desktop.output("eDP-1");
+        let context = PlaylistRenderContext {
+            desktop: &desktop,
+            output_name: "eDP-1",
+            output,
+            local_minute_of_day: 11 * 60 + 7,
+        };
+        let first =
+            select_playlist_item(items, *selection, Some(&context)).map(|item| item.id.as_str());
+        let second =
+            select_playlist_item(items, *selection, Some(&context)).map(|item| item.id.as_str());
+        assert_eq!(first, second);
+
+        let mut rare_count = 0;
+        let mut common_count = 0;
+        for local_minute_of_day in 0..(24 * 60) {
+            let context = PlaylistRenderContext {
+                local_minute_of_day,
+                ..context
+            };
+            match select_playlist_item(items, *selection, Some(&context))
+                .map(|item| item.id.as_str())
+            {
+                Some("rare") => rare_count += 1,
+                Some("common") => common_count += 1,
+                other => panic!("unexpected weighted playlist item {other:?}"),
+            }
+        }
+
+        assert!(common_count > rare_count * 3);
     }
 
     #[test]
