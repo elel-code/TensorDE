@@ -7,7 +7,10 @@ pub mod video;
 
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, Variant};
-use crate::core::{FitMode, PackagePath, Transition, WallpaperEntry, WallpaperPackage};
+use crate::core::{
+    FitMode, PackagePath, SceneLiteDocument, SceneLiteLayerKind, SceneLiteTransform, Transition,
+    WallpaperEntry, WallpaperPackage,
+};
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot};
 use crate::policy::{PerformanceDecision, RenderMode};
 use crate::state::{AppState, OutputState, WallpaperAssignment};
@@ -54,21 +57,74 @@ pub struct SlideshowWallpaperPlan {
     pub target_max_fps: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneLiteWallpaperPlan {
+    pub output_name: String,
+    pub source: Option<PathBuf>,
+    pub fallback: Option<PathBuf>,
+    pub manifest_max_fps: Option<u32>,
+    pub target_max_fps: Option<u32>,
+    pub display: Option<SceneLiteDisplayPlan>,
+    pub layers: Vec<SceneLiteRenderLayer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum SceneLiteDisplayPlan {
+    Image {
+        source: PathBuf,
+        fit: FitMode,
+        background: Option<String>,
+    },
+    Color {
+        color: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneLiteRenderLayer {
+    pub id: String,
+    pub kind: SceneLiteLayerKind,
+    pub source: Option<PathBuf>,
+    pub color: Option<String>,
+    pub fit: FitMode,
+    pub opacity: f64,
+    pub transform: SceneLiteTransform,
+}
+
+impl SceneLiteWallpaperPlan {
+    fn image_sources(&self) -> Vec<&Path> {
+        let mut sources = Vec::new();
+        if let Some(SceneLiteDisplayPlan::Image { source, .. }) = &self.display {
+            sources.push(source.as_path());
+        }
+        sources.extend(
+            self.layers
+                .iter()
+                .filter_map(|layer| layer.source.as_deref()),
+        );
+        sources
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum WallpaperRenderPlan {
     StaticImage(StaticWallpaperPlan),
     Video(VideoWallpaperPlan),
     Slideshow(SlideshowWallpaperPlan),
+    SceneLite(SceneLiteWallpaperPlan),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StaticRenderSyncPlan {
     pub plans: Vec<StaticWallpaperPlan>,
     #[serde(default)]
     pub video_plans: Vec<VideoWallpaperPlan>,
     #[serde(default)]
     pub slideshow_plans: Vec<SlideshowWallpaperPlan>,
+    #[serde(default)]
+    pub scene_lite_plans: Vec<SceneLiteWallpaperPlan>,
     pub removals: Vec<String>,
     pub errors: Vec<StaticRenderPlanFailure>,
     #[serde(default)]
@@ -156,6 +212,8 @@ pub struct RenderSyncCacheReport {
     #[serde(default)]
     pub planned_slideshow_image_resources: usize,
     #[serde(default)]
+    pub planned_scene_lite_image_resources: usize,
+    #[serde(default)]
     pub planned_image_resource_references: usize,
     #[serde(default)]
     pub planned_unique_image_resources: usize,
@@ -165,6 +223,8 @@ pub struct RenderSyncCacheReport {
     pub planned_video_poster_resource_bytes: u64,
     #[serde(default)]
     pub planned_slideshow_image_resource_bytes: u64,
+    #[serde(default)]
+    pub planned_scene_lite_image_resource_bytes: u64,
     #[serde(default)]
     pub planned_image_resource_reference_bytes: u64,
     #[serde(default)]
@@ -285,6 +345,7 @@ fn static_render_sync_plan_inner(
     let mut plans = Vec::new();
     let mut video_plans = Vec::new();
     let mut slideshow_plans = Vec::new();
+    let mut scene_lite_plans = Vec::new();
     let mut removals = Vec::new();
     let mut errors = Vec::new();
     let mut decisions = Vec::new();
@@ -444,6 +505,15 @@ fn static_render_sync_plan_inner(
                 });
                 slideshow_plans.push(plan);
             }
+            Ok(WallpaperRenderPlan::SceneLite(plan)) => {
+                decisions.push(StaticRenderOutputDecision {
+                    output_name,
+                    action: StaticRenderAction::Render,
+                    performance,
+                    wallpaper: Some(assignment.path.clone()),
+                });
+                scene_lite_plans.push(plan);
+            }
             Err(err) => {
                 decisions.push(StaticRenderOutputDecision {
                     output_name: output_name.clone(),
@@ -461,11 +531,18 @@ fn static_render_sync_plan_inner(
     }
 
     let mut cache = package_cache.finish(cache_config);
-    update_render_sync_resource_footprint(&mut cache, &plans, &video_plans, &slideshow_plans);
+    update_render_sync_resource_footprint(
+        &mut cache,
+        &plans,
+        &video_plans,
+        &slideshow_plans,
+        &scene_lite_plans,
+    );
     StaticRenderSyncPlan {
         plans,
         video_plans,
         slideshow_plans,
+        scene_lite_plans,
         removals,
         errors,
         decisions,
@@ -478,6 +555,7 @@ fn update_render_sync_resource_footprint(
     plans: &[StaticWallpaperPlan],
     video_plans: &[VideoWallpaperPlan],
     slideshow_plans: &[SlideshowWallpaperPlan],
+    scene_lite_plans: &[SceneLiteWallpaperPlan],
 ) {
     let video_poster_resources = video_plans
         .iter()
@@ -506,12 +584,27 @@ fn update_render_sync_resource_footprint(
         .flat_map(|plan| plan.sources.iter())
         .map(|source| file_size(source))
         .sum::<u64>();
+    let scene_lite_image_resources = scene_lite_plans
+        .iter()
+        .map(|plan| plan.image_sources().len())
+        .sum::<usize>();
+    let scene_lite_image_resource_bytes = scene_lite_plans
+        .iter()
+        .flat_map(SceneLiteWallpaperPlan::image_sources)
+        .map(file_size)
+        .sum::<u64>();
     let mut unique_image_resources = BTreeSet::new();
     unique_image_resources.extend(plans.iter().map(|plan| plan.source.clone()));
     unique_image_resources.extend(
         slideshow_plans
             .iter()
             .flat_map(|plan| plan.sources.iter().cloned()),
+    );
+    unique_image_resources.extend(
+        scene_lite_plans
+            .iter()
+            .flat_map(SceneLiteWallpaperPlan::image_sources)
+            .map(Path::to_path_buf),
     );
     let mut video_source_counts = BTreeMap::new();
     for plan in video_plans {
@@ -531,16 +624,20 @@ fn update_render_sync_resource_footprint(
     report.planned_static_image_resources = static_image_resources;
     report.planned_video_poster_resources = video_poster_resources;
     report.planned_slideshow_image_resources = slideshow_image_resources;
-    report.planned_image_resource_references = plans.len() + slideshow_image_resources;
+    report.planned_scene_lite_image_resources = scene_lite_image_resources;
+    report.planned_image_resource_references =
+        plans.len() + slideshow_image_resources + scene_lite_image_resources;
     report.planned_unique_image_resources = unique_image_resources.len();
     report.planned_static_image_resource_bytes = static_image_resource_bytes;
     report.planned_video_poster_resource_bytes = video_poster_resource_bytes;
     report.planned_slideshow_image_resource_bytes = slideshow_image_resource_bytes;
+    report.planned_scene_lite_image_resource_bytes = scene_lite_image_resource_bytes;
     report.planned_image_resource_reference_bytes = plans
         .iter()
         .map(|plan| file_size(&plan.source))
         .sum::<u64>()
-        + slideshow_image_resource_bytes;
+        + slideshow_image_resource_bytes
+        + scene_lite_image_resource_bytes;
     report.planned_unique_image_resource_bytes = unique_image_resources
         .iter()
         .map(|source| file_size(source))
@@ -642,6 +739,7 @@ fn dynamic_wallpaper_entry(entry: &WallpaperEntry) -> bool {
         WallpaperEntry::Video { .. }
             | WallpaperEntry::Slideshow { .. }
             | WallpaperEntry::Web { .. }
+            | WallpaperEntry::SceneLite { .. }
     )
 }
 
@@ -818,20 +916,125 @@ fn wallpaper_plan_with_target(
                 background: Some("#000000".to_owned()),
             }))
         }
-        WallpaperEntry::SceneLite { fallback, .. } => {
-            let Some(fallback) = fallback else {
-                return Err(RendererPlanError::UnsupportedEntry(
-                    package.manifest.entry.kind().as_str(),
-                ));
-            };
-            Ok(WallpaperRenderPlan::StaticImage(StaticWallpaperPlan {
-                output_name,
-                source: fallback.join_to(&package.root),
-                fit: effective_fit(FitMode::Cover, fit_override),
-                background: Some("#000000".to_owned()),
-            }))
-        }
+        WallpaperEntry::SceneLite {
+            source,
+            fallback,
+            max_fps,
+        } => Ok(WallpaperRenderPlan::SceneLite(scene_lite_wallpaper_plan(
+            output_name,
+            package,
+            source.as_ref(),
+            fallback.as_ref(),
+            *max_fps,
+            performance,
+            fit_override,
+        )?)),
     }
+}
+
+fn scene_lite_wallpaper_plan(
+    output_name: String,
+    package: &WallpaperPackage,
+    source: Option<&PackagePath>,
+    fallback: Option<&PackagePath>,
+    manifest_max_fps: Option<u32>,
+    performance: &PerformanceDecision,
+    fit_override: Option<FitMode>,
+) -> Result<SceneLiteWallpaperPlan, RendererPlanError> {
+    let source_path = source.map(|source| source.join_to(&package.root));
+    let document = match source_path.as_ref() {
+        Some(path) => load_scene_lite_document(path)?,
+        None => SceneLiteDocument {
+            version: 1,
+            size: None,
+            layers: Vec::new(),
+            property_bindings: Vec::new(),
+        },
+    };
+    let snapshot = document.snapshot_at(0);
+    let layers = snapshot
+        .layers
+        .into_iter()
+        .map(|layer| SceneLiteRenderLayer {
+            id: layer.id,
+            kind: layer.kind,
+            source: layer.source.map(|source| source.join_to(&package.root)),
+            color: layer.color,
+            fit: layer.fit,
+            opacity: layer.opacity,
+            transform: layer.transform,
+        })
+        .collect::<Vec<_>>();
+    let fallback = fallback.map(|fallback| fallback.join_to(&package.root));
+    let display = scene_lite_display_plan(fallback.as_ref(), &layers, fit_override);
+
+    Ok(SceneLiteWallpaperPlan {
+        output_name,
+        source: source_path,
+        fallback,
+        manifest_max_fps,
+        target_max_fps: effective_max_fps(manifest_max_fps, performance.max_fps),
+        display,
+        layers,
+    })
+}
+
+fn load_scene_lite_document(path: &Path) -> Result<SceneLiteDocument, RendererPlanError> {
+    let contents = fs::read_to_string(path).map_err(|err| {
+        RendererPlanError::PackageLoad(format!(
+            "failed to read scene-lite document {}: {err}",
+            path.display()
+        ))
+    })?;
+    let document: SceneLiteDocument = serde_json::from_str(&contents).map_err(|err| {
+        RendererPlanError::PackageLoad(format!(
+            "failed to parse scene-lite document {}: {err}",
+            path.display()
+        ))
+    })?;
+    document.validate().map_err(|err| {
+        RendererPlanError::PackageLoad(format!(
+            "invalid scene-lite document {}: {err}",
+            path.display()
+        ))
+    })?;
+    Ok(document)
+}
+
+fn scene_lite_display_plan(
+    fallback: Option<&PathBuf>,
+    layers: &[SceneLiteRenderLayer],
+    fit_override: Option<FitMode>,
+) -> Option<SceneLiteDisplayPlan> {
+    if let Some(fallback) = fallback {
+        return Some(SceneLiteDisplayPlan::Image {
+            source: fallback.clone(),
+            fit: effective_fit(FitMode::Cover, fit_override),
+            background: scene_lite_background_color(layers).or_else(|| Some("#000000".to_owned())),
+        });
+    }
+    if let Some(layer) = layers.iter().find(|layer| layer.source.is_some()) {
+        return Some(SceneLiteDisplayPlan::Image {
+            source: layer.source.clone()?,
+            fit: effective_fit(layer.fit, fit_override),
+            background: scene_lite_background_color(layers).or_else(|| Some("#000000".to_owned())),
+        });
+    }
+    scene_lite_background_color(layers).map(|color| SceneLiteDisplayPlan::Color { color })
+}
+
+fn scene_lite_background_color(layers: &[SceneLiteRenderLayer]) -> Option<String> {
+    layers
+        .iter()
+        .find(|layer| {
+            layer.kind == SceneLiteLayerKind::Color
+                && layer.opacity > 0.0
+                && layer
+                    .color
+                    .as_deref()
+                    .is_some_and(|color| !color.is_empty())
+        })
+        .and_then(|layer| layer.color.clone())
 }
 
 fn effective_fit(manifest_fit: FitMode, output_fit: Option<FitMode>) -> FitMode {
@@ -1423,10 +1626,7 @@ impl<'a> RenderPackageCache<'a> {
                 preview_resource_reference_bytes += source_tree_size(&path);
                 unique_preview_resources.insert(path);
             }
-            let Ok(paths) = package.manifest.referenced_paths() else {
-                continue;
-            };
-            for package_path in paths {
+            for package_path in package_resource_paths(package) {
                 let path = package_path.join_to(&package.root);
                 resource_references += 1;
                 resource_reference_bytes += source_tree_size(&path);
@@ -1460,6 +1660,26 @@ fn manifest_preview_paths(manifest: &Manifest) -> Vec<PackagePath> {
     }
     if let Some(path) = &manifest.preview.poster {
         paths.push(path.clone());
+    }
+    paths
+}
+
+fn package_resource_paths(package: &WallpaperPackage) -> Vec<PackagePath> {
+    let Ok(mut paths) = package.manifest.referenced_paths() else {
+        return Vec::new();
+    };
+    if let WallpaperEntry::SceneLite {
+        source: Some(source),
+        ..
+    } = &package.manifest.entry
+    {
+        let path = source.join_to(&package.root);
+        if let Ok(contents) = fs::read_to_string(&path)
+            && let Ok(document) = serde_json::from_str::<SceneLiteDocument>(&contents)
+            && document.validate().is_ok()
+        {
+            paths.extend(document.referenced_paths());
+        }
     }
     paths
 }
@@ -2843,7 +3063,7 @@ exit 0
     }
 
     #[test]
-    fn scene_lite_fallback_builds_static_plan() {
+    fn scene_lite_fallback_builds_scene_plan() {
         let test_dir = TestDir::new("gilder-scene-lite-plan");
         let package_dir = test_dir.path.join("scene-demo.gwpdir");
         write_minimal_scene_lite_gwpdir(&package_dir);
@@ -2859,12 +3079,41 @@ exit 0
 
         let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
 
-        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.plans.is_empty());
         assert!(sync.video_plans.is_empty());
+        assert!(sync.slideshow_plans.is_empty());
+        assert_eq!(sync.scene_lite_plans.len(), 1);
         assert!(sync.errors.is_empty());
-        assert!(sync.plans[0].source.ends_with("previews/poster.svg"));
-        assert_eq!(sync.plans[0].fit, FitMode::Cover);
-        assert_eq!(sync.plans[0].background.as_deref(), Some("#000000"));
+        let plan = &sync.scene_lite_plans[0];
+        assert!(
+            plan.source
+                .as_ref()
+                .unwrap()
+                .ends_with("assets/scene-lite.json")
+        );
+        assert!(
+            plan.fallback
+                .as_ref()
+                .unwrap()
+                .ends_with("previews/poster.svg")
+        );
+        assert_eq!(plan.layers.len(), 1);
+        assert!(
+            plan.layers[0]
+                .source
+                .as_ref()
+                .unwrap()
+                .ends_with("assets/background.svg")
+        );
+        assert!(matches!(
+            &plan.display,
+            Some(SceneLiteDisplayPlan::Image { source, fit, background })
+                if source.ends_with("previews/poster.svg")
+                    && *fit == FitMode::Cover
+                    && background.as_deref() == Some("#000000")
+        ));
+        assert_eq!(sync.cache.planned_scene_lite_image_resources, 2);
+        assert_eq!(sync.cache.planned_image_resource_references, 2);
     }
 
     #[test]
@@ -2956,6 +3205,43 @@ exit 0
     }
 
     #[test]
+    fn pause_dynamic_releases_scene_lite_wallpaper_after_manifest_load() {
+        let test_dir = TestDir::new("gilder-scene-lite-pause-dynamic");
+        let package_dir = test_dir.path.join("scene-demo.gwpdir");
+        write_minimal_scene_lite_gwpdir(&package_dir);
+        let mut config = GilderConfig::default();
+        config.performance.hidden = DynamicPausePolicy::PauseDynamic;
+        config.default_wallpaper = Some(package_dir.display().to_string());
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                visible: false,
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_config(
+            &config,
+            &desktop,
+            &AppState::default(),
+            test_dir.path.join("cache"),
+        );
+
+        assert!(sync.plans.is_empty());
+        assert!(sync.video_plans.is_empty());
+        assert!(sync.slideshow_plans.is_empty());
+        assert!(sync.scene_lite_plans.is_empty());
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.removals, vec!["eDP-1"]);
+        assert_eq!(sync.decisions[0].action, StaticRenderAction::Remove);
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Paused);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            crate::policy::DecisionReason::OutputHidden
+        );
+    }
+
+    #[test]
     fn builds_slideshow_sync_plan_with_effective_fps() {
         let test_dir = TestDir::new("gilder-slideshow-plan");
         let package_dir = test_dir.path.join("slideshow-demo.gwpdir");
@@ -3005,9 +3291,11 @@ exit 0
         let static_package = test_dir.path.join("static-demo.gwpdir");
         let video_package = test_dir.path.join("video-demo.gwpdir");
         let slideshow_package = test_dir.path.join("slideshow-demo.gwpdir");
+        let scene_package = test_dir.path.join("scene-demo.gwpdir");
         write_minimal_static_variant_gwpdir(&static_package);
         write_minimal_video_gwpdir(&video_package);
         write_minimal_slideshow_gwpdir(&slideshow_package);
+        write_minimal_scene_lite_gwpdir(&scene_package);
         let mut config = GilderConfig::default();
         config.outputs.insert(
             "eDP-1".to_owned(),
@@ -3030,11 +3318,19 @@ exit 0
                 ..OutputConfig::default()
             },
         );
+        config.outputs.insert(
+            "DP-2".to_owned(),
+            OutputConfig {
+                wallpaper: Some(scene_package.display().to_string()),
+                ..OutputConfig::default()
+            },
+        );
         let desktop = DesktopSnapshot {
             outputs: vec![
                 DesktopOutput::virtual_output("eDP-1"),
                 DesktopOutput::virtual_output("HDMI-A-1"),
                 DesktopOutput::virtual_output("DP-1"),
+                DesktopOutput::virtual_output("DP-2"),
             ],
             ..DesktopSnapshot::default()
         };
@@ -3050,11 +3346,13 @@ exit 0
         assert_eq!(sync.plans.len(), 2);
         assert_eq!(sync.video_plans.len(), 1);
         assert_eq!(sync.slideshow_plans.len(), 1);
+        assert_eq!(sync.scene_lite_plans.len(), 1);
         assert_eq!(sync.cache.planned_static_image_resources, 1);
         assert_eq!(sync.cache.planned_video_poster_resources, 1);
         assert_eq!(sync.cache.planned_slideshow_image_resources, 2);
-        assert_eq!(sync.cache.planned_image_resource_references, 4);
-        assert_eq!(sync.cache.planned_unique_image_resources, 4);
+        assert_eq!(sync.cache.planned_scene_lite_image_resources, 2);
+        assert_eq!(sync.cache.planned_image_resource_references, 6);
+        assert_eq!(sync.cache.planned_unique_image_resources, 6);
         let static_bytes = fs::metadata(static_package.join("assets/wallpaper.svg"))
             .unwrap()
             .len();
@@ -3067,6 +3365,12 @@ exit 0
             + fs::metadata(slideshow_package.join("assets/b.svg"))
                 .unwrap()
                 .len();
+        let scene_bytes = fs::metadata(scene_package.join("previews/poster.svg"))
+            .unwrap()
+            .len()
+            + fs::metadata(scene_package.join("assets/background.svg"))
+                .unwrap()
+                .len();
         assert_eq!(sync.cache.planned_static_image_resource_bytes, static_bytes);
         assert_eq!(sync.cache.planned_video_poster_resource_bytes, poster_bytes);
         assert_eq!(
@@ -3074,12 +3378,16 @@ exit 0
             slideshow_bytes
         );
         assert_eq!(
+            sync.cache.planned_scene_lite_image_resource_bytes,
+            scene_bytes
+        );
+        assert_eq!(
             sync.cache.planned_image_resource_reference_bytes,
-            static_bytes + poster_bytes + slideshow_bytes
+            static_bytes + poster_bytes + slideshow_bytes + scene_bytes
         );
         assert_eq!(
             sync.cache.planned_unique_image_resource_bytes,
-            static_bytes + poster_bytes + slideshow_bytes
+            static_bytes + poster_bytes + slideshow_bytes + scene_bytes
         );
     }
 
@@ -3795,7 +4103,21 @@ exit 0
     fn write_minimal_scene_lite_gwpdir(path: &Path) {
         fs::create_dir_all(path.join("assets")).unwrap();
         fs::create_dir_all(path.join("previews")).unwrap();
-        fs::write(path.join("assets/scene-lite.json"), b"{\"layers\":[]}").unwrap();
+        fs::write(
+            path.join("assets/scene-lite.json"),
+            br##"{
+              "layers": [
+                {
+                  "id": "background",
+                  "type": "image",
+                  "source": "assets/background.svg",
+                  "fit": "cover"
+                }
+              ]
+            }"##,
+        )
+        .unwrap();
+        fs::write(path.join("assets/background.svg"), b"<svg/>").unwrap();
         fs::write(path.join("previews/poster.svg"), b"<svg/>").unwrap();
         let manifest = json!({
             "format": crate::core::FORMAT_NAME,

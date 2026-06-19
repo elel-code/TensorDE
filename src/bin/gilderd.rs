@@ -1617,6 +1617,10 @@ fn render_sync_telemetry_report(
         render_sync_cache.planned_slideshow_image_resources
     );
     insert!(
+        "planned_scene_lite_image_resources",
+        render_sync_cache.planned_scene_lite_image_resources
+    );
+    insert!(
         "planned_image_resource_references",
         render_sync_cache.planned_image_resource_references
     );
@@ -1635,6 +1639,10 @@ fn render_sync_telemetry_report(
     insert!(
         "planned_slideshow_image_resource_bytes",
         render_sync_cache.planned_slideshow_image_resource_bytes
+    );
+    insert!(
+        "planned_scene_lite_image_resource_bytes",
+        render_sync_cache.planned_scene_lite_image_resource_bytes
     );
     insert!(
         "planned_image_resource_reference_bytes",
@@ -2198,6 +2206,10 @@ mod tests {
             json!(0)
         );
         assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_scene_lite_image_resources"],
+            json!(0)
+        );
+        assert_eq!(
             response["result"]["telemetry"]["render_sync"]["planned_image_resource_references"],
             json!(0)
         );
@@ -2392,6 +2404,10 @@ mod tests {
             json!(2)
         );
         assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_scene_lite_image_resources"],
+            json!(0)
+        );
+        assert_eq!(
             response["result"]["telemetry"]["render_sync"]["planned_image_resource_references"],
             json!(2)
         );
@@ -2472,6 +2488,10 @@ mod tests {
         assert_eq!(
             response["result"]["telemetry"]["render_sync"]["planned_slideshow_image_resource_bytes"],
             json!(planned_bytes)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["planned_scene_lite_image_resource_bytes"],
+            json!(0)
         );
         assert_eq!(
             response["result"]["telemetry"]["render_sync"]["planned_image_resource_reference_bytes"],
@@ -2819,6 +2839,7 @@ mod tests {
             plans: Vec::new(),
             video_plans: Vec::new(),
             slideshow_plans: Vec::new(),
+            scene_lite_plans: Vec::new(),
             removals: Vec::new(),
             errors: Vec::new(),
             decisions: Vec::new(),

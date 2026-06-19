@@ -2,7 +2,10 @@
 
 #[cfg(feature = "video-renderer")]
 use super::VideoWallpaperPlan;
-use super::{SlideshowWallpaperPlan, StaticRenderSyncPlan, StaticWallpaperPlan};
+use super::{
+    SceneLiteDisplayPlan, SceneLiteWallpaperPlan, SlideshowWallpaperPlan, StaticRenderSyncPlan,
+    StaticWallpaperPlan,
+};
 use crate::core::FitMode;
 #[cfg(feature = "video-renderer")]
 use crate::policy::RenderMode;
@@ -67,6 +70,7 @@ struct RenderedOutput {
     provider: Option<gtk::CssProvider>,
     static_plan: Option<StaticWallpaperPlan>,
     slideshow: Option<RenderedSlideshow>,
+    scene_lite_plan: Option<SceneLiteWallpaperPlan>,
     #[cfg(feature = "video-renderer")]
     video: Option<GtkVideoPipeline>,
     #[cfg(feature = "video-renderer")]
@@ -118,6 +122,12 @@ impl GtkStaticRenderer {
             }
         }
 
+        for plan in &sync.scene_lite_plans {
+            if self.set_scene_lite_wallpaper(plan) {
+                desired_outputs.insert(plan.output_name.clone());
+            }
+        }
+
         #[cfg(feature = "video-renderer")]
         {
             let mut desired_video_outputs = BTreeSet::new();
@@ -165,6 +175,7 @@ impl GtkStaticRenderer {
             });
         window.window.set_monitor(Some(&monitor));
         window.remove_slideshow();
+        window.scene_lite_plan = None;
         if window.provider.is_none() || static_plan_needs_update(window.static_plan.as_ref(), plan)
         {
             apply_static_wallpaper(window, plan);
@@ -190,6 +201,7 @@ impl GtkStaticRenderer {
         output.window.set_monitor(Some(&monitor));
         #[cfg(feature = "video-renderer")]
         output.remove_video();
+        output.scene_lite_plan = None;
         output.set_slideshow(plan);
         if !output.window.is_visible() {
             output.window.present();
@@ -202,6 +214,28 @@ impl GtkStaticRenderer {
         for output in self.windows.values_mut() {
             output.tick_slideshow(now);
         }
+    }
+
+    pub fn set_scene_lite_wallpaper(&mut self, plan: &SceneLiteWallpaperPlan) -> bool {
+        let Some(monitor) = monitor_for_output(&plan.output_name) else {
+            self.remove_output(&plan.output_name);
+            return false;
+        };
+        let output = self
+            .windows
+            .entry(plan.output_name.clone())
+            .or_insert_with(|| {
+                build_background_output(&self.application, &plan.output_name, &monitor)
+            });
+        output.window.set_monitor(Some(&monitor));
+        output.remove_slideshow();
+        #[cfg(feature = "video-renderer")]
+        output.remove_video();
+        output.set_scene_lite(plan);
+        if !output.window.is_visible() {
+            output.window.present();
+        }
+        true
     }
 
     #[cfg(feature = "video-renderer")]
@@ -218,6 +252,7 @@ impl GtkStaticRenderer {
             });
         output.window.set_monitor(Some(&monitor));
         output.remove_slideshow();
+        output.scene_lite_plan = None;
 
         match output.set_video(plan, mode) {
             Ok(()) => {
@@ -340,6 +375,7 @@ impl GtkStaticRenderer {
             output.release_static_surface();
             output.static_plan = None;
             output.remove_slideshow();
+            output.scene_lite_plan = None;
             output.window.close();
         }
     }
@@ -400,6 +436,35 @@ impl RenderedOutput {
         self.slideshow = None;
     }
 
+    fn set_scene_lite(&mut self, plan: &SceneLiteWallpaperPlan) {
+        if self.scene_lite_plan.as_ref() == Some(plan) {
+            return;
+        }
+        match &plan.display {
+            Some(SceneLiteDisplayPlan::Image {
+                source,
+                fit,
+                background,
+            }) => {
+                let static_plan = StaticWallpaperPlan {
+                    output_name: plan.output_name.clone(),
+                    source: source.clone(),
+                    fit: *fit,
+                    background: background.clone(),
+                };
+                apply_static_wallpaper(self, &static_plan);
+            }
+            Some(SceneLiteDisplayPlan::Color { color }) => {
+                apply_color_wallpaper(self, &plan.output_name, color);
+            }
+            None => {
+                apply_color_wallpaper(self, &plan.output_name, "#000000");
+            }
+        }
+        self.static_plan = None;
+        self.scene_lite_plan = Some(plan.clone());
+    }
+
     fn release_static_surface(&mut self) {
         let Some(provider) = self.provider.take() else {
             return;
@@ -426,6 +491,11 @@ impl RenderedOutput {
                 .sources
                 .get(slideshow.index)
                 .map(|source| source.as_path());
+        }
+        if let Some(scene_lite) = &self.scene_lite_plan
+            && let Some(SceneLiteDisplayPlan::Image { source, .. }) = &scene_lite.display
+        {
+            return Some(source.as_path());
         }
         self.static_plan.as_ref().map(|plan| plan.source.as_path())
     }
@@ -600,6 +670,7 @@ fn build_background_output(
         provider: None,
         static_plan: None,
         slideshow: None,
+        scene_lite_plan: None,
         #[cfg(feature = "video-renderer")]
         video: None,
         #[cfg(feature = "video-renderer")]
@@ -608,12 +679,20 @@ fn build_background_output(
 }
 
 fn apply_static_wallpaper(output: &mut RenderedOutput, plan: &StaticWallpaperPlan) {
+    apply_wallpaper_css(output, &static_wallpaper_css(plan));
+}
+
+fn apply_color_wallpaper(output: &mut RenderedOutput, output_name: &str, color: &str) {
+    apply_wallpaper_css(output, &color_wallpaper_css(output_name, color));
+}
+
+fn apply_wallpaper_css(output: &mut RenderedOutput, css: &str) {
     let display = gtk::prelude::WidgetExt::display(&output.window);
     if let Some(provider) = output.provider.take() {
         gtk::style_context_remove_provider_for_display(&display, &provider);
     }
     let provider = gtk::CssProvider::new();
-    provider.load_from_data(&static_wallpaper_css(plan));
+    provider.load_from_data(css);
     gtk::style_context_add_provider_for_display(
         &display,
         &provider,
@@ -748,6 +827,16 @@ fn static_wallpaper_css(plan: &StaticWallpaperPlan) -> String {
         position = mode.position,
         repeat = mode.repeat,
         size = mode.size,
+    )
+}
+
+fn color_wallpaper_css(output_name: &str, color: &str) -> String {
+    format!(
+        "#{widget} {{
+            background-color: {color};
+            background-image: none;
+        }}",
+        widget = css_widget_name(output_name),
     )
 }
 
