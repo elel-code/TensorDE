@@ -341,6 +341,8 @@ telemetry_keys=(
   renderer_slideshow_unique_resource_bytes_latest
   renderer_video_surfaces_latest
   renderer_video_surfaces_max
+  renderer_video_shared_runtimes_latest
+  renderer_video_shared_runtimes_max
   renderer_video_pipelines_latest
   renderer_video_pipelines_max
   renderer_video_pipeline_source_references_latest

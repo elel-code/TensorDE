@@ -533,6 +533,7 @@ struct RendererRuntimeSnapshot {
     slideshow_resource_bytes: u64,
     slideshow_unique_resources: usize,
     slideshow_unique_resource_bytes: u64,
+    video_shared_runtimes: usize,
     video_pipeline_source_references: usize,
     video_pipeline_source_reference_bytes: u64,
     video_pipeline_unique_sources: usize,
@@ -558,6 +559,7 @@ impl RendererRuntimeSnapshot {
             slideshow_resource_bytes: snapshot.slideshow_resource_bytes,
             slideshow_unique_resources: snapshot.slideshow_unique_resources,
             slideshow_unique_resource_bytes: snapshot.slideshow_unique_resource_bytes,
+            video_shared_runtimes: snapshot.video_shared_runtimes,
             video_pipeline_source_references: snapshot.video_pipeline_source_references,
             video_pipeline_source_reference_bytes: snapshot.video_pipeline_source_reference_bytes,
             video_pipeline_unique_sources: snapshot.video_pipeline_unique_sources,
@@ -588,6 +590,7 @@ impl RendererRuntimeSnapshot {
             slideshow_resource_bytes: 0,
             slideshow_unique_resources: 0,
             slideshow_unique_resource_bytes: 0,
+            video_shared_runtimes: 0,
             video_pipeline_source_references: footprint.references,
             video_pipeline_source_reference_bytes: footprint.reference_bytes,
             video_pipeline_unique_sources: footprint.unique_sources,
@@ -641,6 +644,7 @@ fn renderer_runtime_report(snapshot: &RendererRuntimeSnapshot) -> Value {
         "slideshow_resource_bytes": snapshot.slideshow_resource_bytes,
         "slideshow_unique_resources": snapshot.slideshow_unique_resources,
         "slideshow_unique_resource_bytes": snapshot.slideshow_unique_resource_bytes,
+        "video_shared_runtimes": snapshot.video_shared_runtimes,
         "video_pipeline_source_references": snapshot.video_pipeline_source_references,
         "video_pipeline_source_reference_bytes": snapshot.video_pipeline_source_reference_bytes,
         "video_pipeline_unique_sources": snapshot.video_pipeline_unique_sources,
@@ -730,6 +734,7 @@ fn renderer_telemetry_report(snapshot: &RendererRuntimeSnapshot) -> Value {
         "slideshow_resource_bytes": snapshot.slideshow_resource_bytes,
         "slideshow_unique_resources": snapshot.slideshow_unique_resources,
         "slideshow_unique_resource_bytes": snapshot.slideshow_unique_resource_bytes,
+        "video_shared_runtimes": snapshot.video_shared_runtimes,
         "video_pipeline_source_references": snapshot.video_pipeline_source_references,
         "video_pipeline_source_reference_bytes": snapshot.video_pipeline_source_reference_bytes,
         "video_pipeline_unique_sources": snapshot.video_pipeline_unique_sources,
@@ -2164,6 +2169,7 @@ mod tests {
             slideshow_resource_bytes: 8192,
             slideshow_unique_resources: 2,
             slideshow_unique_resource_bytes: 6144,
+            video_shared_runtimes: 1,
             video_pipeline_source_references: 3,
             video_pipeline_source_reference_bytes: 18_000,
             video_pipeline_unique_sources: 2,
@@ -2376,6 +2382,10 @@ mod tests {
             json!(6144)
         );
         assert_eq!(
+            response["result"]["renderer_runtime"]["video_shared_runtimes"],
+            json!(1)
+        );
+        assert_eq!(
             response["result"]["renderer_runtime"]["video_pipeline_source_references"],
             json!(3)
         );
@@ -2398,6 +2408,10 @@ mod tests {
         assert_eq!(
             response["result"]["telemetry"]["renderer"]["video_surfaces"],
             json!(2)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["renderer"]["video_shared_runtimes"],
+            json!(1)
         );
         assert_eq!(
             response["result"]["telemetry"]["renderer"]["static_surface_resource_references"],

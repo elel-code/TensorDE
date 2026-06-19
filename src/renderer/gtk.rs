@@ -40,6 +40,8 @@ const AUDIBLE_PLAYBIN_FLAGS: &str = "video+audio";
 pub struct GtkStaticRenderer {
     application: gtk::Application,
     windows: BTreeMap<String, RenderedOutput>,
+    #[cfg(feature = "video-renderer")]
+    video_runtimes: GtkVideoRuntimePool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -56,6 +58,7 @@ pub struct GtkRendererResourceSnapshot {
     pub slideshow_resource_bytes: u64,
     pub slideshow_unique_resources: usize,
     pub slideshow_unique_resource_bytes: u64,
+    pub video_shared_runtimes: usize,
     pub video_pipeline_source_references: usize,
     pub video_pipeline_source_reference_bytes: u64,
     pub video_pipeline_unique_sources: usize,
@@ -72,7 +75,7 @@ struct RenderedOutput {
     slideshow: Option<RenderedSlideshow>,
     scene_lite_plan: Option<SceneLiteWallpaperPlan>,
     #[cfg(feature = "video-renderer")]
-    video: Option<GtkVideoPipeline>,
+    video: Option<GtkVideoAttachment>,
     #[cfg(feature = "video-renderer")]
     video_error: Option<VideoErrorState>,
 }
@@ -85,6 +88,8 @@ impl GtkStaticRenderer {
         Self {
             application,
             windows: BTreeMap::new(),
+            #[cfg(feature = "video-renderer")]
+            video_runtimes: GtkVideoRuntimePool::default(),
         }
     }
 
@@ -146,7 +151,7 @@ impl GtkStaticRenderer {
 
             for output in self.windows.values_mut() {
                 if !desired_video_outputs.contains(output.output_name()) {
-                    output.remove_video();
+                    output.remove_video(&mut self.video_runtimes);
                 }
             }
         }
@@ -200,7 +205,7 @@ impl GtkStaticRenderer {
             });
         output.window.set_monitor(Some(&monitor));
         #[cfg(feature = "video-renderer")]
-        output.remove_video();
+        output.remove_video(&mut self.video_runtimes);
         output.scene_lite_plan = None;
         output.set_slideshow(plan);
         if !output.window.is_visible() {
@@ -230,7 +235,7 @@ impl GtkStaticRenderer {
         output.window.set_monitor(Some(&monitor));
         output.remove_slideshow();
         #[cfg(feature = "video-renderer")]
-        output.remove_video();
+        output.remove_video(&mut self.video_runtimes);
         output.set_scene_lite(plan);
         if !output.window.is_visible() {
             output.window.present();
@@ -254,7 +259,7 @@ impl GtkStaticRenderer {
         output.remove_slideshow();
         output.scene_lite_plan = None;
 
-        match output.set_video(plan, mode) {
+        match output.set_video(plan, mode, &mut self.video_runtimes) {
             Ok(()) => {
                 output.video_error = None;
                 output.release_static_surface();
@@ -267,13 +272,25 @@ impl GtkStaticRenderer {
 
     #[cfg(feature = "video-renderer")]
     pub fn poll_video_buses(&mut self) {
-        for output in self.windows.values_mut() {
-            if let Some(video) = &mut output.video
-                && let Err(err) = video.poll_bus()
-            {
-                output.note_video_error_for_current_source(err);
-                output.remove_video();
-                output.restore_static_surface();
+        let errors = self.video_runtimes.poll_buses();
+        for (key, err) in errors {
+            let output_names = self
+                .windows
+                .iter()
+                .filter_map(|(output_name, output)| {
+                    output
+                        .video
+                        .as_ref()
+                        .filter(|video| video.key == key)
+                        .map(|_| output_name.clone())
+                })
+                .collect::<Vec<_>>();
+            for output_name in output_names {
+                if let Some(output) = self.windows.get_mut(&output_name) {
+                    output.note_video_error_for_current_source(err.clone());
+                    output.remove_video(&mut self.video_runtimes);
+                    output.restore_static_surface();
+                }
             }
         }
     }
@@ -315,6 +332,7 @@ impl GtkStaticRenderer {
             slideshow_resource_bytes: footprint.slideshow_resource_bytes,
             slideshow_unique_resources: footprint.slideshow_unique_resources,
             slideshow_unique_resource_bytes: footprint.slideshow_unique_resource_bytes,
+            video_shared_runtimes: self.video_shared_runtime_count(),
             video_pipeline_source_references: footprint.video_pipeline_source_references,
             video_pipeline_source_reference_bytes: footprint.video_pipeline_source_reference_bytes,
             video_pipeline_unique_sources: footprint.video_pipeline_unique_sources,
@@ -327,42 +345,9 @@ impl GtkStaticRenderer {
         self.windows
             .iter()
             .filter_map(|(output_name, output)| {
-                output.video.as_ref().map(|video| {
-                    let actual_decoder_reports = actual_decoder_reports(&video.element);
-                    let caps_reports = video_caps_reports(&video.element);
-                    let zero_copy_evidence =
-                        zero_copy_evidence(&actual_decoder_reports, &caps_reports);
-                    let frame_limiter_max_fps = video
-                        .frame_limiter
-                        .as_ref()
-                        .and_then(GtkFrameLimiter::target_max_fps);
-                    VideoPipelineSnapshot {
-                        output_name: output_name.clone(),
-                        source: video.source.to_string_lossy().into_owned(),
-                        mode: video.mode,
-                        gst_state: video.gst_state.name().to_string(),
-                        loop_playback: video.loop_playback,
-                        muted: video.muted,
-                        target_max_fps: video.target_max_fps,
-                        frame_limiter_enabled: frame_limiter_max_fps.is_some(),
-                        frame_limiter_max_fps,
-                        frame_stats: video.frame_stats.borrow().clone(),
-                        decoder_policy: video.decoder_policy,
-                        decoder_policy_status: decoder_policy_status(
-                            video.decoder_policy,
-                            &actual_decoder_reports,
-                        ),
-                        start_offset_ms: video.start_offset_ms,
-                        position_ms: playback_position_ms(&video.element),
-                        duration_ms: playback_duration_ms(&video.element),
-                        actual_decoders: actual_decoder_reports
-                            .iter()
-                            .map(|report| report.element.clone())
-                            .collect(),
-                        actual_decoder_reports,
-                        caps_reports,
-                        zero_copy_evidence,
-                    }
+                output.video.as_ref().and_then(|video| {
+                    self.video_runtimes
+                        .snapshot_for_attachment(output_name, video)
                 })
             })
             .collect()
@@ -371,13 +356,27 @@ impl GtkStaticRenderer {
     pub fn remove_output(&mut self, output_name: &str) {
         if let Some(mut output) = self.windows.remove(output_name) {
             #[cfg(feature = "video-renderer")]
-            output.remove_video();
+            output.remove_video(&mut self.video_runtimes);
             output.release_static_surface();
             output.static_plan = None;
             output.remove_slideshow();
             output.scene_lite_plan = None;
             output.window.close();
         }
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+impl GtkStaticRenderer {
+    fn video_shared_runtime_count(&self) -> usize {
+        self.video_runtimes.len()
+    }
+}
+
+#[cfg(not(feature = "video-renderer"))]
+impl GtkStaticRenderer {
+    fn video_shared_runtime_count(&self) -> usize {
+        0
     }
 }
 
@@ -525,21 +524,14 @@ impl RenderedOutput {
         &mut self,
         plan: &VideoWallpaperPlan,
         mode: RenderMode,
+        runtimes: &mut GtkVideoRuntimePool,
     ) -> Result<(), GtkVideoError> {
-        let restart = self
-            .video
-            .as_ref()
-            .map(|video| {
-                video.source != plan.source
-                    || video.loop_playback != plan.loop_playback
-                    || video.muted != plan.muted
-                    || video.decoder_policy != plan.decoder_policy
-                    || video.frame_limiter_required != frame_limiter_required(plan.target_max_fps)
-            })
-            .unwrap_or(true);
+        let output_name = self.output_name.clone();
+        let key = GtkVideoRuntimeKey::from_plan(plan);
+        let restart = self.video.as_ref().is_none_or(|video| video.key != key);
         if restart {
-            self.remove_video();
-            let video = GtkVideoPipeline::new(plan)?;
+            self.remove_video(runtimes);
+            let video = runtimes.attach_output(&output_name, plan, mode)?;
             self.surface.append(video.widget());
             self.video = Some(video);
         }
@@ -547,16 +539,17 @@ impl RenderedOutput {
         let Some(video) = &mut self.video else {
             return Err(GtkVideoError::MissingPipeline);
         };
-        video.apply_plan(plan)?;
-        video.apply_mode(mode)?;
+        video.apply_plan(plan);
+        video.mode = mode;
+        runtimes.apply_output_mode(&key, &output_name, mode)?;
         Ok(())
     }
 
     #[cfg(feature = "video-renderer")]
-    fn remove_video(&mut self) {
+    fn remove_video(&mut self, runtimes: &mut GtkVideoRuntimePool) {
         if let Some(video) = self.video.take() {
             self.surface.remove(video.widget());
-            video.stop();
+            runtimes.detach_output(&video.key, &video.output_name);
         }
     }
 
@@ -904,84 +897,254 @@ struct RenderedSlideshow {
 }
 
 #[cfg(feature = "video-renderer")]
-struct GtkVideoPipeline {
-    element: gst::Element,
-    picture: gtk::Picture,
-    frame_limiter: Option<GtkFrameLimiter>,
-    frame_limiter_required: bool,
-    source: std::path::PathBuf,
-    mode: RenderMode,
-    gst_state: gst::State,
+#[derive(Default)]
+struct GtkVideoRuntimePool {
+    runtimes: BTreeMap<GtkVideoRuntimeKey, Rc<RefCell<GtkSharedVideoRuntime>>>,
+}
+
+#[cfg(feature = "video-renderer")]
+impl GtkVideoRuntimePool {
+    fn len(&self) -> usize {
+        self.runtimes.len()
+    }
+
+    fn attach_output(
+        &mut self,
+        output_name: &str,
+        plan: &VideoWallpaperPlan,
+        mode: RenderMode,
+    ) -> Result<GtkVideoAttachment, GtkVideoError> {
+        let key = GtkVideoRuntimeKey::from_plan(plan);
+        if !self.runtimes.contains_key(&key) {
+            let runtime = GtkSharedVideoRuntime::new(plan)?;
+            self.runtimes
+                .insert(key.clone(), Rc::new(RefCell::new(runtime)));
+        }
+        let runtime = self
+            .runtimes
+            .get(&key)
+            .ok_or(GtkVideoError::MissingPipeline)?;
+        let mut runtime = runtime.borrow_mut();
+        let attachment = runtime.attach_output(output_name, plan.fit, mode);
+        runtime.apply_output_mode(output_name, mode)?;
+        Ok(attachment)
+    }
+
+    fn apply_output_mode(
+        &mut self,
+        key: &GtkVideoRuntimeKey,
+        output_name: &str,
+        mode: RenderMode,
+    ) -> Result<(), GtkVideoError> {
+        let runtime = self
+            .runtimes
+            .get(key)
+            .ok_or(GtkVideoError::MissingPipeline)?;
+        runtime.borrow_mut().apply_output_mode(output_name, mode)
+    }
+
+    fn detach_output(&mut self, key: &GtkVideoRuntimeKey, output_name: &str) {
+        let remove_runtime = self
+            .runtimes
+            .get(key)
+            .map(|runtime| {
+                let mut runtime = runtime.borrow_mut();
+                runtime.detach_output(output_name);
+                runtime.is_unused()
+            })
+            .unwrap_or(false);
+        if remove_runtime {
+            self.runtimes.remove(key);
+        }
+    }
+
+    fn poll_buses(&mut self) -> Vec<(GtkVideoRuntimeKey, GtkVideoError)> {
+        self.runtimes
+            .iter()
+            .filter_map(|(key, runtime)| {
+                runtime
+                    .borrow_mut()
+                    .poll_bus()
+                    .err()
+                    .map(|err| (key.clone(), err))
+            })
+            .collect()
+    }
+
+    fn snapshot_for_attachment(
+        &self,
+        output_name: &str,
+        attachment: &GtkVideoAttachment,
+    ) -> Option<VideoPipelineSnapshot> {
+        let runtime = self.runtimes.get(&attachment.key)?;
+        let runtime = runtime.borrow();
+        Some(runtime.snapshot_for_attachment(output_name, attachment))
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct GtkVideoRuntimeKey {
+    source: PathBuf,
     loop_playback: bool,
     muted: bool,
-    fit: FitMode,
-    target_max_fps: Option<u32>,
-    decoder_policy: crate::config::VideoDecoderPolicy,
+    decoder_policy: u8,
     start_offset_ms: u64,
+    target_max_fps: Option<u32>,
+}
+
+#[cfg(feature = "video-renderer")]
+impl GtkVideoRuntimeKey {
+    fn from_plan(plan: &VideoWallpaperPlan) -> Self {
+        Self {
+            source: plan.source.clone(),
+            loop_playback: plan.loop_playback,
+            muted: plan.muted,
+            decoder_policy: decoder_policy_key(plan.decoder_policy),
+            start_offset_ms: plan.start_offset_ms,
+            target_max_fps: plan.target_max_fps,
+        }
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+fn decoder_policy_key(policy: crate::config::VideoDecoderPolicy) -> u8 {
+    match policy {
+        crate::config::VideoDecoderPolicy::Auto => 0,
+        crate::config::VideoDecoderPolicy::HardwarePreferred => 1,
+        crate::config::VideoDecoderPolicy::HardwareRequired => 2,
+        crate::config::VideoDecoderPolicy::Software => 3,
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+struct GtkVideoAttachment {
+    key: GtkVideoRuntimeKey,
+    output_name: String,
+    picture: gtk::Picture,
+    source: PathBuf,
+    mode: RenderMode,
+    fit: FitMode,
     frame_stats: Rc<RefCell<VideoFrameStats>>,
     _frame_clock_observer: GtkFrameClockObserver,
 }
 
 #[cfg(feature = "video-renderer")]
-impl GtkVideoPipeline {
-    fn new(plan: &VideoWallpaperPlan) -> Result<Self, GtkVideoError> {
-        gst::init().map_err(|err| GtkVideoError::Init(err.to_string()))?;
-        let built = build_gtk_video_pipeline(plan)?;
-        let frame_stats = Rc::new(RefCell::new(VideoFrameStats::default()));
-        let frame_clock_observer =
-            install_frame_clock_stats(&built.picture, Rc::clone(&frame_stats));
-        let mut pipeline = Self {
-            element: built.element,
-            picture: built.picture,
-            frame_limiter: built.frame_limiter,
-            frame_limiter_required: frame_limiter_required(plan.target_max_fps),
-            source: plan.source.clone(),
-            mode: RenderMode::Paused,
-            gst_state: gst::State::Null,
-            loop_playback: plan.loop_playback,
-            muted: !plan.muted,
-            fit: plan.fit,
-            target_max_fps: plan.target_max_fps,
-            decoder_policy: plan.decoder_policy,
-            start_offset_ms: 0,
-            frame_stats,
-            _frame_clock_observer: frame_clock_observer,
-        };
-        pipeline.apply_muted(plan.muted);
-        Ok(pipeline)
-    }
-
+impl GtkVideoAttachment {
     fn widget(&self) -> &gtk::Picture {
         &self.picture
     }
 
-    fn apply_plan(&mut self, plan: &VideoWallpaperPlan) -> Result<(), GtkVideoError> {
-        self.loop_playback = plan.loop_playback;
-        self.apply_target_max_fps(plan.target_max_fps);
-        self.decoder_policy = plan.decoder_policy;
-        self.apply_muted(plan.muted);
-        self.apply_fit(plan.fit);
-        self.apply_start_offset(plan.start_offset_ms)?;
-        Ok(())
-    }
-
-    fn apply_target_max_fps(&mut self, target_max_fps: Option<u32>) {
-        if self.target_max_fps == target_max_fps {
-            return;
-        }
-        self.target_max_fps = target_max_fps;
-        if let Some(frame_limiter) = &mut self.frame_limiter {
-            frame_limiter.apply_target_max_fps(target_max_fps);
+    fn apply_plan(&mut self, plan: &VideoWallpaperPlan) {
+        if self.fit != plan.fit {
+            self.picture.set_content_fit(content_fit_for_fit(plan.fit));
+            self.fit = plan.fit;
         }
     }
+}
 
-    fn apply_mode(&mut self, mode: RenderMode) -> Result<(), GtkVideoError> {
-        let state = gst_state_for_mode(mode);
-        if self.mode == mode && self.gst_state == state {
-            return Ok(());
+#[cfg(feature = "video-renderer")]
+struct GtkSharedVideoRuntime {
+    element: gst::Element,
+    paintable: gdk::Paintable,
+    frame_limiter: Option<GtkFrameLimiter>,
+    source: PathBuf,
+    output_modes: BTreeMap<String, RenderMode>,
+    gst_state: gst::State,
+    loop_playback: bool,
+    muted: bool,
+    target_max_fps: Option<u32>,
+    decoder_policy: crate::config::VideoDecoderPolicy,
+    start_offset_ms: u64,
+    frame_stats: Rc<RefCell<VideoFrameStats>>,
+}
+
+#[cfg(feature = "video-renderer")]
+impl GtkSharedVideoRuntime {
+    fn new(plan: &VideoWallpaperPlan) -> Result<Self, GtkVideoError> {
+        gst::init().map_err(|err| GtkVideoError::Init(err.to_string()))?;
+        let built = build_gtk_video_pipeline(plan)?;
+        let mut runtime = Self {
+            element: built.element,
+            paintable: built.paintable,
+            frame_limiter: built.frame_limiter,
+            source: plan.source.clone(),
+            output_modes: BTreeMap::new(),
+            gst_state: gst::State::Null,
+            loop_playback: plan.loop_playback,
+            muted: !plan.muted,
+            target_max_fps: plan.target_max_fps,
+            decoder_policy: plan.decoder_policy,
+            start_offset_ms: 0,
+            frame_stats: Rc::new(RefCell::new(VideoFrameStats::default())),
+        };
+        runtime.apply_muted(plan.muted);
+        runtime.apply_start_offset(plan.start_offset_ms)?;
+        Ok(runtime)
+    }
+
+    fn attach_output(
+        &mut self,
+        output_name: &str,
+        fit: FitMode,
+        mode: RenderMode,
+    ) -> GtkVideoAttachment {
+        let picture = gtk::Picture::for_paintable(&self.paintable);
+        picture.set_hexpand(true);
+        picture.set_vexpand(true);
+        picture.set_can_shrink(false);
+        picture.set_content_fit(content_fit_for_fit(fit));
+        let frame_stats = Rc::new(RefCell::new(VideoFrameStats::default()));
+        let frame_clock_observer = install_frame_clock_stats(&picture, Rc::clone(&frame_stats));
+        self.output_modes.insert(output_name.to_owned(), mode);
+        GtkVideoAttachment {
+            key: GtkVideoRuntimeKey {
+                source: self.source.clone(),
+                loop_playback: self.loop_playback,
+                muted: self.muted,
+                decoder_policy: decoder_policy_key(self.decoder_policy),
+                start_offset_ms: self.start_offset_ms,
+                target_max_fps: self.target_max_fps,
+            },
+            output_name: output_name.to_owned(),
+            picture,
+            source: self.source.clone(),
+            mode,
+            fit,
+            frame_stats,
+            _frame_clock_observer: frame_clock_observer,
         }
-        self.mode = mode;
-        self.set_state(state)
+    }
+
+    fn detach_output(&mut self, output_name: &str) {
+        self.output_modes.remove(output_name);
+        let _ = self.apply_aggregate_state();
+    }
+
+    fn is_unused(&self) -> bool {
+        self.output_modes.is_empty()
+    }
+
+    fn apply_output_mode(
+        &mut self,
+        output_name: &str,
+        mode: RenderMode,
+    ) -> Result<(), GtkVideoError> {
+        self.output_modes.insert(output_name.to_owned(), mode);
+        self.apply_aggregate_state()
+    }
+
+    fn apply_aggregate_state(&mut self) -> Result<(), GtkVideoError> {
+        let mode = if self
+            .output_modes
+            .values()
+            .any(|mode| *mode != RenderMode::Paused)
+        {
+            RenderMode::Active
+        } else {
+            RenderMode::Paused
+        };
+        self.set_state(gst_state_for_mode(mode))
     }
 
     fn poll_bus(&mut self) -> Result<(), GtkVideoError> {
@@ -998,7 +1161,11 @@ impl GtkVideoPipeline {
                                 gst::ClockTime::ZERO,
                             )
                             .map_err(|err| GtkVideoError::Seek(err.to_string()))?;
-                        if self.mode != RenderMode::Paused {
+                        if self
+                            .output_modes
+                            .values()
+                            .any(|mode| *mode != RenderMode::Paused)
+                        {
                             self.set_state(gst::State::Playing)?;
                         }
                     } else {
@@ -1029,10 +1196,6 @@ impl GtkVideoPipeline {
         Ok(())
     }
 
-    fn stop(mut self) {
-        let _ = self.set_state(gst::State::Null);
-    }
-
     fn set_state(&mut self, state: gst::State) -> Result<(), GtkVideoError> {
         if self.gst_state == state {
             return Ok(());
@@ -1054,14 +1217,6 @@ impl GtkVideoPipeline {
         }
     }
 
-    fn apply_fit(&mut self, fit: FitMode) {
-        if self.fit == fit {
-            return;
-        }
-        self.picture.set_content_fit(content_fit_for_fit(fit));
-        self.fit = fit;
-    }
-
     fn apply_start_offset(&mut self, start_offset_ms: u64) -> Result<(), GtkVideoError> {
         if self.start_offset_ms == start_offset_ms {
             return Ok(());
@@ -1075,6 +1230,93 @@ impl GtkVideoPipeline {
         self.start_offset_ms = start_offset_ms;
         Ok(())
     }
+
+    fn snapshot_for_attachment(
+        &self,
+        output_name: &str,
+        attachment: &GtkVideoAttachment,
+    ) -> VideoPipelineSnapshot {
+        let actual_decoder_reports = actual_decoder_reports(&self.element);
+        let caps_reports = video_caps_reports(&self.element);
+        let zero_copy_evidence = zero_copy_evidence(&actual_decoder_reports, &caps_reports);
+        let frame_limiter_max_fps = self
+            .frame_limiter
+            .as_ref()
+            .and_then(GtkFrameLimiter::target_max_fps);
+        VideoPipelineSnapshot {
+            output_name: output_name.to_owned(),
+            source: self.source.to_string_lossy().into_owned(),
+            mode: attachment.mode,
+            gst_state: self.gst_state.name().to_string(),
+            loop_playback: self.loop_playback,
+            muted: self.muted,
+            target_max_fps: self.target_max_fps,
+            frame_limiter_enabled: frame_limiter_max_fps.is_some(),
+            frame_limiter_max_fps,
+            frame_stats: merge_video_frame_stats(
+                self.frame_stats.borrow().clone(),
+                attachment.frame_stats.borrow().clone(),
+            ),
+            decoder_policy: self.decoder_policy,
+            decoder_policy_status: decoder_policy_status(
+                self.decoder_policy,
+                &actual_decoder_reports,
+            ),
+            start_offset_ms: self.start_offset_ms,
+            position_ms: playback_position_ms(&self.element),
+            duration_ms: playback_duration_ms(&self.element),
+            actual_decoders: actual_decoder_reports
+                .iter()
+                .map(|report| report.element.clone())
+                .collect(),
+            actual_decoder_reports,
+            caps_reports,
+            zero_copy_evidence,
+        }
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+fn merge_video_frame_stats(
+    mut pipeline_stats: VideoFrameStats,
+    output_stats: VideoFrameStats,
+) -> VideoFrameStats {
+    pipeline_stats.gtk_frame_clock_ticks = output_stats.gtk_frame_clock_ticks;
+    pipeline_stats.gtk_frame_clock_before_paint_ticks =
+        output_stats.gtk_frame_clock_before_paint_ticks;
+    pipeline_stats.gtk_frame_clock_update_ticks = output_stats.gtk_frame_clock_update_ticks;
+    pipeline_stats.gtk_frame_clock_layout_ticks = output_stats.gtk_frame_clock_layout_ticks;
+    pipeline_stats.gtk_frame_clock_paint_ticks = output_stats.gtk_frame_clock_paint_ticks;
+    pipeline_stats.gtk_frame_clock_after_paint_ticks =
+        output_stats.gtk_frame_clock_after_paint_ticks;
+    pipeline_stats.gtk_frame_clock_counter_latest = output_stats.gtk_frame_clock_counter_latest;
+    pipeline_stats.gtk_frame_clock_time_us_latest = output_stats.gtk_frame_clock_time_us_latest;
+    pipeline_stats.gtk_frame_clock_interval_us_latest =
+        output_stats.gtk_frame_clock_interval_us_latest;
+    pipeline_stats.gtk_frame_clock_interval_us_max = output_stats.gtk_frame_clock_interval_us_max;
+    pipeline_stats.gtk_frame_clock_fps_x1000_latest = output_stats.gtk_frame_clock_fps_x1000_latest;
+    pipeline_stats.gtk_frame_clock_refresh_interval_us_latest =
+        output_stats.gtk_frame_clock_refresh_interval_us_latest;
+    pipeline_stats.gtk_frame_clock_predicted_presentation_time_us_latest =
+        output_stats.gtk_frame_clock_predicted_presentation_time_us_latest;
+    pipeline_stats.gtk_frame_timings_observed = output_stats.gtk_frame_timings_observed;
+    pipeline_stats.gtk_frame_timings_complete = output_stats.gtk_frame_timings_complete;
+    pipeline_stats.gtk_frame_timings_counter_latest = output_stats.gtk_frame_timings_counter_latest;
+    pipeline_stats.gtk_frame_timings_complete_counter_latest =
+        output_stats.gtk_frame_timings_complete_counter_latest;
+    pipeline_stats.gtk_frame_timings_frame_time_us_latest =
+        output_stats.gtk_frame_timings_frame_time_us_latest;
+    pipeline_stats.gtk_frame_timings_predicted_presentation_time_us_latest =
+        output_stats.gtk_frame_timings_predicted_presentation_time_us_latest;
+    pipeline_stats.gtk_frame_timings_presentation_time_us_latest =
+        output_stats.gtk_frame_timings_presentation_time_us_latest;
+    pipeline_stats.gtk_frame_timings_presentation_interval_us_latest =
+        output_stats.gtk_frame_timings_presentation_interval_us_latest;
+    pipeline_stats.gtk_frame_timings_presentation_interval_us_max =
+        output_stats.gtk_frame_timings_presentation_interval_us_max;
+    pipeline_stats.gtk_frame_timings_refresh_interval_us_latest =
+        output_stats.gtk_frame_timings_refresh_interval_us_latest;
+    pipeline_stats
 }
 
 #[cfg(feature = "video-renderer")]
@@ -1086,7 +1328,7 @@ fn gst_state_for_mode(mode: RenderMode) -> gst::State {
 }
 
 #[cfg(feature = "video-renderer")]
-impl Drop for GtkVideoPipeline {
+impl Drop for GtkSharedVideoRuntime {
     fn drop(&mut self) {
         let _ = self.element.set_state(gst::State::Null);
     }
@@ -1095,7 +1337,7 @@ impl Drop for GtkVideoPipeline {
 #[cfg(feature = "video-renderer")]
 struct BuiltGtkVideoPipeline {
     element: gst::Element,
-    picture: gtk::Picture,
+    paintable: gdk::Paintable,
     frame_limiter: Option<GtkFrameLimiter>,
 }
 
@@ -1117,11 +1359,6 @@ fn build_gtk_video_pipeline(
         .map(|target_max_fps| GtkFrameLimiter::new(&video_sink, target_max_fps))
         .transpose()?;
     let paintable = video_sink.property::<gdk::Paintable>("paintable");
-    let picture = gtk::Picture::for_paintable(&paintable);
-    picture.set_hexpand(true);
-    picture.set_vexpand(true);
-    picture.set_can_shrink(false);
-    picture.set_content_fit(content_fit_for_fit(plan.fit));
 
     let builder = gst::ElementFactory::make("playbin")
         .property("uri", uri.as_str())
@@ -1133,7 +1370,7 @@ fn build_gtk_video_pipeline(
 
     Ok(BuiltGtkVideoPipeline {
         element,
-        picture,
+        paintable,
         frame_limiter,
     })
 }
@@ -1280,11 +1517,6 @@ fn playbin_flags(muted: bool) -> &'static str {
 }
 
 #[cfg(feature = "video-renderer")]
-fn frame_limiter_required(target_max_fps: Option<u32>) -> bool {
-    target_max_fps.is_some_and(|target_max_fps| target_max_fps > 0)
-}
-
-#[cfg(feature = "video-renderer")]
 struct GtkFrameLimiter {
     sink: gst::Element,
     target_max_fps: u32,
@@ -1305,13 +1537,6 @@ impl GtkFrameLimiter {
         };
         limiter.apply_sink_throttle();
         Ok(limiter)
-    }
-
-    fn apply_target_max_fps(&mut self, target_max_fps: Option<u32>) {
-        self.target_max_fps = target_max_fps
-            .filter(|target_max_fps| *target_max_fps > 0)
-            .unwrap_or(0);
-        self.apply_sink_throttle();
     }
 
     fn target_max_fps(&self) -> Option<u32> {
@@ -1527,6 +1752,77 @@ mod tests {
         assert!(!playbin_flags(false).contains("deinterlace"));
         assert!(!playbin_flags(false).contains("soft-colorbalance"));
         assert!(!playbin_flags(false).contains("soft-volume"));
+    }
+
+    #[cfg(feature = "video-renderer")]
+    #[test]
+    fn gtk_video_runtime_key_shares_compatible_outputs() {
+        let source = PathBuf::from("/tmp/gilder-shared-video.webm");
+        let first = video_plan_for_key("eDP-1", source.clone(), FitMode::Cover, Some(30));
+        let second = video_plan_for_key("HDMI-A-1", source.clone(), FitMode::Contain, Some(30));
+        let different_fps = video_plan_for_key("DP-1", source.clone(), FitMode::Cover, Some(24));
+        let different_source = video_plan_for_key(
+            "eDP-1",
+            PathBuf::from("/tmp/other.webm"),
+            FitMode::Cover,
+            Some(30),
+        );
+
+        assert_eq!(
+            GtkVideoRuntimeKey::from_plan(&first),
+            GtkVideoRuntimeKey::from_plan(&second)
+        );
+        assert_ne!(
+            GtkVideoRuntimeKey::from_plan(&first),
+            GtkVideoRuntimeKey::from_plan(&different_fps)
+        );
+        assert_ne!(
+            GtkVideoRuntimeKey::from_plan(&first),
+            GtkVideoRuntimeKey::from_plan(&different_source)
+        );
+    }
+
+    #[cfg(feature = "video-renderer")]
+    #[test]
+    fn video_frame_stats_merge_keeps_pipeline_qos_and_output_frame_clock() {
+        let mut pipeline = VideoFrameStats::default();
+        pipeline.record_qos_values("buffers".to_owned(), 120, 3, -7000, 0.95);
+
+        let mut output = VideoFrameStats::default();
+        output.record_gtk_frame_clock_phase(GtkFrameClockPhase::BeforePaint);
+        output.record_gtk_frame_clock_phase(GtkFrameClockPhase::Update);
+        output.record_gtk_frame_clock_tick(5, 100_000, 60.0, 16_667, 116_667);
+
+        let merged = merge_video_frame_stats(pipeline, output);
+
+        assert_eq!(merged.qos_messages, 1);
+        assert_eq!(merged.qos_processed_max, Some(120));
+        assert_eq!(merged.qos_dropped_max, Some(3));
+        assert_eq!(merged.gtk_frame_clock_ticks, 1);
+        assert_eq!(merged.gtk_frame_clock_before_paint_ticks, 1);
+        assert_eq!(merged.gtk_frame_clock_update_ticks, 1);
+        assert_eq!(merged.gtk_frame_clock_counter_latest, Some(5));
+    }
+
+    #[cfg(feature = "video-renderer")]
+    fn video_plan_for_key(
+        output_name: &str,
+        source: PathBuf,
+        fit: FitMode,
+        target_max_fps: Option<u32>,
+    ) -> VideoWallpaperPlan {
+        VideoWallpaperPlan {
+            output_name: output_name.to_owned(),
+            source,
+            poster: None,
+            loop_playback: true,
+            muted: true,
+            fit,
+            manifest_max_fps: None,
+            start_offset_ms: 0,
+            target_max_fps,
+            decoder_policy: crate::config::VideoDecoderPolicy::HardwarePreferred,
+        }
     }
 
     struct TestDir {
