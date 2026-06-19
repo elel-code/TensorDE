@@ -107,6 +107,9 @@ const DECODER_RANK_BOOST: i32 = 512;
 const VIDEO_SINK_DEFAULT_MAX_LATENESS_NS: u64 = 50_000_000;
 const VIDEO_SINK_MIN_MAX_LATENESS_NS: u64 = 8_000_000;
 const VIDEO_SINK_MAX_MAX_LATENESS_NS: u64 = 50_000_000;
+const VIDEO_QUEUE_MAX_SIZE_BUFFERS: u32 = 8;
+const VIDEO_QUEUE_MAX_SIZE_BYTES: u32 = 0;
+const VIDEO_QUEUE_MAX_SIZE_TIME_NS: u64 = 50_000_000;
 const DMABUF_MEMORY_FEATURE: &str = "memory:DMABuf";
 const GPU_MEMORY_FEATURES: &[&str] = &[
     DMABUF_MEMORY_FEATURE,
@@ -238,6 +241,7 @@ impl GstVideoRenderer {
                     actual_decoder_reports: current_decoder_reports,
                     caps_reports,
                     allocation_reports,
+                    queue_reports,
                     zero_copy_evidence: _,
                     memory_path: _,
                 } = pipeline.diagnostics.snapshot(&pipeline.element);
@@ -283,6 +287,7 @@ impl GstVideoRenderer {
                     actual_decoder_reports,
                     caps_reports,
                     allocation_reports,
+                    queue_reports,
                     zero_copy_evidence,
                     memory_path,
                     retention_report,
@@ -512,6 +517,7 @@ fn build_pipeline(
     let element = builder
         .build()
         .map_err(|err| VideoRendererError::BuildElement(err.to_string()))?;
+    configure_video_pipeline_low_memory(&element);
     Ok(BuiltPipeline {
         element,
         frame_limiter,
@@ -716,6 +722,44 @@ pub(crate) fn configure_video_sink_low_memory(
     video_sink_tuning_report(sink)
 }
 
+pub(crate) fn configure_video_pipeline_low_memory(element: &gst::Element) {
+    configure_existing_video_queues(element);
+    let _ = element.connect("element-setup", false, |values| {
+        if let Some(child) = values
+            .get(1)
+            .and_then(|value| value.get::<gst::Element>().ok())
+        {
+            configure_video_queue_low_memory(&child);
+        }
+        None
+    });
+}
+
+fn configure_existing_video_queues(element: &gst::Element) {
+    configure_video_queue_low_memory(element);
+    if let Ok(bin) = element.clone().downcast::<gst::Bin>() {
+        let mut iterator = bin.iterate_recurse();
+        while let Ok(Some(child)) = iterator.next() {
+            configure_video_queue_low_memory(&child);
+        }
+    }
+}
+
+fn configure_video_queue_low_memory(element: &gst::Element) {
+    if !is_video_queue_element(element) {
+        return;
+    }
+    set_optional_u32_property(element, "max-size-buffers", VIDEO_QUEUE_MAX_SIZE_BUFFERS);
+    set_optional_u32_property(element, "max-size-bytes", VIDEO_QUEUE_MAX_SIZE_BYTES);
+    set_optional_u64_property(element, "max-size-time", VIDEO_QUEUE_MAX_SIZE_TIME_NS);
+}
+
+fn is_video_queue_element(element: &gst::Element) -> bool {
+    element.find_property("current-level-buffers").is_some()
+        && element.find_property("max-size-buffers").is_some()
+        && element.find_property("max-size-time").is_some()
+}
+
 fn update_video_sink_max_lateness(
     sink: &gst::Element,
     target_max_fps: Option<u32>,
@@ -752,6 +796,12 @@ fn set_optional_i64_property(element: &gst::Element, name: &str, value: i64) {
     }
 }
 
+fn set_optional_u32_property(element: &gst::Element, name: &str, value: u32) {
+    if element.find_property(name).is_some() {
+        element.set_property(name, value);
+    }
+}
+
 fn set_optional_u64_property(element: &gst::Element, name: &str, value: u64) {
     if element.find_property(name).is_some() {
         element.set_property(name, value);
@@ -776,6 +826,13 @@ fn optional_i64_property(element: &gst::Element, name: &str) -> Option<i64> {
         .find_property(name)
         .is_some()
         .then(|| element.property::<i64>(name))
+}
+
+fn optional_u32_property(element: &gst::Element, name: &str) -> Option<u32> {
+    element
+        .find_property(name)
+        .is_some()
+        .then(|| element.property::<u32>(name))
 }
 
 fn optional_u64_property(element: &gst::Element, name: &str) -> Option<u64> {
@@ -862,6 +919,22 @@ pub fn video_allocation_reports(element: &gst::Element) -> Vec<VideoAllocationRe
     reports
 }
 
+pub fn video_queue_reports(element: &gst::Element) -> Vec<VideoQueueReport> {
+    let mut reports = Vec::new();
+    push_element_queue_report(element, &mut reports);
+
+    if let Ok(bin) = element.clone().downcast::<gst::Bin>() {
+        let mut iterator = bin.iterate_recurse();
+        while let Ok(Some(child)) = iterator.next() {
+            push_element_queue_report(&child, &mut reports);
+        }
+    }
+
+    reports.sort_by(|left, right| left.element.cmp(&right.element));
+    reports.dedup();
+    reports
+}
+
 #[derive(Debug)]
 pub(crate) struct VideoPipelineDiagnosticsCache {
     refresh_interval: Duration,
@@ -918,6 +991,7 @@ pub(crate) struct VideoPipelineDiagnostics {
     pub(crate) actual_decoder_reports: Vec<VideoDecoderReport>,
     pub(crate) caps_reports: Vec<VideoCapsReport>,
     pub(crate) allocation_reports: Vec<VideoAllocationReport>,
+    pub(crate) queue_reports: Vec<VideoQueueReport>,
     pub(crate) zero_copy_evidence: VideoZeroCopyEvidence,
     pub(crate) memory_path: VideoMemoryPathReport,
 }
@@ -926,12 +1000,14 @@ fn collect_video_pipeline_diagnostics(element: &gst::Element) -> VideoPipelineDi
     let actual_decoder_reports = actual_decoder_reports(element);
     let caps_reports = video_caps_reports(element);
     let allocation_reports = video_allocation_reports(element);
+    let queue_reports = video_queue_reports(element);
     let zero_copy_evidence = zero_copy_evidence(&actual_decoder_reports, &caps_reports);
     let memory_path = video_memory_path(&actual_decoder_reports, &caps_reports);
     VideoPipelineDiagnostics {
         actual_decoder_reports,
         caps_reports,
         allocation_reports,
+        queue_reports,
         zero_copy_evidence,
         memory_path,
     }
@@ -1477,6 +1553,21 @@ fn push_element_allocation_reports(
     }
 }
 
+fn push_element_queue_report(element: &gst::Element, reports: &mut Vec<VideoQueueReport>) {
+    if !is_video_queue_element(element) {
+        return;
+    }
+    reports.push(VideoQueueReport {
+        element: element.name().to_string(),
+        max_size_buffers: optional_u32_property(element, "max-size-buffers"),
+        max_size_bytes: optional_u32_property(element, "max-size-bytes"),
+        max_size_time_ns: optional_u64_property(element, "max-size-time"),
+        current_level_buffers: optional_u32_property(element, "current-level-buffers"),
+        current_level_bytes: optional_u32_property(element, "current-level-bytes"),
+        current_level_time_ns: optional_u64_property(element, "current-level-time"),
+    });
+}
+
 fn query_pad_allocation(pad: &gst::Pad, caps: &gst::Caps) -> Option<VideoAllocationReport> {
     let mut query = gst::query::Allocation::new(Some(caps), true);
     if !pad.peer_query(query.query_mut()) {
@@ -1699,6 +1790,7 @@ pub struct VideoPipelineSnapshot {
     pub actual_decoder_reports: Vec<VideoDecoderReport>,
     pub caps_reports: Vec<VideoCapsReport>,
     pub allocation_reports: Vec<VideoAllocationReport>,
+    pub queue_reports: Vec<VideoQueueReport>,
     pub zero_copy_evidence: VideoZeroCopyEvidence,
     pub memory_path: VideoMemoryPathReport,
     pub retention_report: VideoMemoryRetentionReport,
@@ -2002,6 +2094,23 @@ pub struct VideoAllocationParamReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VideoQueueReport {
+    pub element: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_size_buffers: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_size_bytes: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_size_time_ns: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_level_buffers: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_level_bytes: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_level_time_ns: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VideoZeroCopyEvidence {
     pub level: VideoZeroCopyEvidenceLevel,
     pub decoder_classes: Vec<VideoDecoderClass>,
@@ -2279,6 +2388,23 @@ mod tests {
         assert_eq!(video_sink_max_lateness_ns(Some(24)), 41_666_666);
         assert_eq!(video_sink_max_lateness_ns(Some(12)), 50_000_000);
         assert_eq!(video_sink_max_lateness_ns(Some(240)), 8_000_000);
+    }
+
+    #[test]
+    fn configures_video_queues_for_low_latency_memory_bounds() {
+        gst::init().unwrap();
+        let queue = gst::ElementFactory::make("queue").build().unwrap();
+
+        configure_video_queue_low_memory(&queue);
+        let reports = video_queue_reports(&queue);
+
+        assert_eq!(queue.property::<u32>("max-size-buffers"), 8);
+        assert_eq!(queue.property::<u32>("max-size-bytes"), 0);
+        assert_eq!(queue.property::<u64>("max-size-time"), 50_000_000);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].max_size_buffers, Some(8));
+        assert_eq!(reports[0].max_size_bytes, Some(0));
+        assert_eq!(reports[0].max_size_time_ns, Some(50_000_000));
     }
 
     #[test]

@@ -1739,6 +1739,24 @@ write_video_runtime_summary() {
         }
       }
     }
+    function pipe_numeric_max(value,    current, field_count, fields, item, part_count, parts, part_index) {
+      current = 0
+      if (value == "") {
+        return current
+      }
+      part_count = split(value, parts, /\|/)
+      for (part_index = 1; part_index <= part_count; part_index++) {
+        item = parts[part_index]
+        if (item == "") {
+          continue
+        }
+        field_count = split(item, fields, /:/)
+        if (field_count > 0 && fields[field_count] ~ /^[0-9]+$/ && fields[field_count] + 0 > current) {
+          current = fields[field_count] + 0
+        }
+      }
+      return current
+    }
     NR == 1 { next }
     {
       rows += 1
@@ -1813,6 +1831,14 @@ write_video_runtime_summary() {
       memory_retention_dmabuf_pool_reports = $73
       memory_retention_other_memory_pool_reports = $74
       memory_retention_sink_frame_retention = $75
+      queue_report_count = $76
+      queue_elements = $77
+      queue_max_size_buffers = $78
+      queue_max_size_bytes = $79
+      queue_max_size_time = $80
+      queue_current_level_buffers = $81
+      queue_current_level_bytes = $82
+      queue_current_level_time = $83
 
       if (output != "" && !(output in seen_output)) {
         seen_output[output] = 1
@@ -2079,6 +2105,33 @@ write_video_runtime_summary() {
         last_memory_retention_sink_frame_retention = memory_retention_sink_frame_retention
         memory_retention_sink_frame_retention_values[memory_retention_sink_frame_retention] += 1
       }
+      if (queue_report_count != "" && queue_report_count + 0 > max_queue_report_count) {
+        max_queue_report_count = queue_report_count + 0
+      }
+      if (queue_elements != "") {
+        last_queue_elements = queue_elements
+      }
+      if (queue_max_size_buffers != "") {
+        last_queue_max_size_buffers = queue_max_size_buffers
+      }
+      if (queue_max_size_bytes != "") {
+        last_queue_max_size_bytes = queue_max_size_bytes
+      }
+      if (queue_max_size_time != "") {
+        last_queue_max_size_time = queue_max_size_time
+      }
+      current_queue_level_buffers = pipe_numeric_max(queue_current_level_buffers)
+      if (current_queue_level_buffers > max_queue_current_level_buffers) {
+        max_queue_current_level_buffers = current_queue_level_buffers
+      }
+      current_queue_level_bytes = pipe_numeric_max(queue_current_level_bytes)
+      if (current_queue_level_bytes > max_queue_current_level_bytes) {
+        max_queue_current_level_bytes = current_queue_level_bytes
+      }
+      current_queue_level_time = pipe_numeric_max(queue_current_level_time)
+      if (current_queue_level_time > max_queue_current_level_time) {
+        max_queue_current_level_time = current_queue_level_time
+      }
     }
     END {
       for (output in last_position) {
@@ -2322,6 +2375,22 @@ write_video_runtime_summary() {
       for (memory_retention_sink_frame_retention in memory_retention_sink_frame_retention_values) {
         printf "video_memory_retention_sink_frame_retention.%s: %d\n", memory_retention_sink_frame_retention, memory_retention_sink_frame_retention_values[memory_retention_sink_frame_retention]
       }
+      printf "video_queue_report_count_max: %d\n", max_queue_report_count
+      if (last_queue_elements != "") {
+        printf "video_queue_elements_latest: %s\n", last_queue_elements
+      }
+      if (last_queue_max_size_buffers != "") {
+        printf "video_queue_max_size_buffers_latest: %s\n", last_queue_max_size_buffers
+      }
+      if (last_queue_max_size_bytes != "") {
+        printf "video_queue_max_size_bytes_latest: %s\n", last_queue_max_size_bytes
+      }
+      if (last_queue_max_size_time != "") {
+        printf "video_queue_max_size_time_ns_latest: %s\n", last_queue_max_size_time
+      }
+      printf "video_queue_current_level_buffers_max: %d\n", max_queue_current_level_buffers
+      printf "video_queue_current_level_bytes_max: %d\n", max_queue_current_level_bytes
+      printf "video_queue_current_level_time_ns_max: %d\n", max_queue_current_level_time
     }
   ' "$video_runtime_csv" > "$summary"
 }
@@ -3634,7 +3703,7 @@ EOF
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
 printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,render_sync_package_cache_entries,render_sync_package_cache_max_entries,render_sync_package_cache_hits,render_sync_package_cache_misses,render_sync_package_cache_evictions,render_sync_archive_cache_entries,render_sync_archive_cache_max_entries,render_sync_archive_cache_reuses,render_sync_archive_cache_extractions,render_sync_archive_cache_evictions,render_sync_archive_cache_evictions_latest,render_sync_archive_cache_eviction_errors,render_sync_archive_cache_eviction_errors_latest,render_sync_planned_static_image_resources,render_sync_planned_video_poster_resources,render_sync_planned_slideshow_image_resources,render_sync_planned_image_resource_references,render_sync_planned_unique_image_resources,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps,renderer_output_windows,renderer_static_surfaces,renderer_static_picture_surfaces,renderer_static_css_surfaces,renderer_static_color_surfaces,renderer_slideshow_surfaces,renderer_video_surfaces,renderer_video_shared_runtimes,renderer_video_pipelines,renderer_video_qos_messages,renderer_video_qos_dropped_max,renderer_video_gtk_frame_clock_ticks,renderer_video_gtk_frame_clock_interval_us_max,renderer_video_gtk_frame_clock_fps_x1000_max,renderer_video_gtk_frame_timings_complete,renderer_video_gtk_frame_timings_presentation_interval_us_max,renderer_video_gtk_frame_timings_presentation_time_us_max,renderer_video_gtk_frame_clock_before_paint_ticks,renderer_video_gtk_frame_clock_update_ticks,renderer_video_gtk_frame_clock_layout_ticks,renderer_video_gtk_frame_clock_paint_ticks,renderer_video_gtk_frame_clock_after_paint_ticks,render_sync_planned_static_image_resource_bytes,render_sync_planned_video_poster_resource_bytes,render_sync_planned_slideshow_image_resource_bytes,render_sync_planned_image_resource_reference_bytes,render_sync_planned_unique_image_resource_bytes,render_sync_package_cache_retained_resource_references,render_sync_package_cache_retained_unique_resources,render_sync_package_cache_retained_resource_bytes,render_sync_package_cache_retained_unique_resource_bytes,renderer_static_surface_resource_references,renderer_static_surface_resource_bytes,renderer_slideshow_resource_references,renderer_slideshow_resource_bytes,renderer_static_surface_unique_resources,renderer_static_surface_unique_resource_bytes,renderer_static_surface_estimated_decoded_bytes,renderer_slideshow_unique_resources,renderer_slideshow_unique_resource_bytes,render_sync_static_image_cache_entries,render_sync_static_image_cache_max_entries,render_sync_static_image_cache_generations,render_sync_static_image_cache_reuses,render_sync_static_image_cache_generation_errors,render_sync_static_image_cache_evictions,render_sync_static_image_cache_eviction_errors,render_sync_planned_video_source_references,render_sync_planned_unique_video_sources,render_sync_planned_duplicate_video_source_references,render_sync_planned_max_video_source_outputs,render_sync_planned_video_source_reference_bytes,render_sync_planned_unique_video_source_bytes,renderer_video_pipeline_source_references,renderer_video_pipeline_source_reference_bytes,renderer_video_pipeline_unique_sources,renderer_video_pipeline_unique_source_bytes,render_sync_package_cache_max_retained_unique_resource_bytes,render_sync_static_image_cache_bytes,render_sync_static_image_cache_max_bytes,render_sync_package_cache_retained_preview_resource_references,render_sync_package_cache_retained_unique_preview_resources,render_sync_package_cache_retained_preview_resource_bytes,render_sync_package_cache_retained_unique_preview_resource_bytes\n' > "$telemetry_path"
-printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled,memory_retention_level,memory_retention_notes,memory_retention_estimated_min_pool_bytes,memory_retention_estimated_max_pool_bytes,memory_retention_pool_reports,memory_retention_system_memory_pool_reports,memory_retention_gpu_memory_pool_reports,memory_retention_dmabuf_pool_reports,memory_retention_other_memory_pool_reports,memory_retention_sink_frame_retention\n' > "$video_runtime_path"
+printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled,memory_retention_level,memory_retention_notes,memory_retention_estimated_min_pool_bytes,memory_retention_estimated_max_pool_bytes,memory_retention_pool_reports,memory_retention_system_memory_pool_reports,memory_retention_gpu_memory_pool_reports,memory_retention_dmabuf_pool_reports,memory_retention_other_memory_pool_reports,memory_retention_sink_frame_retention,queue_report_count,queue_elements,queue_max_size_buffers,queue_max_size_bytes,queue_max_size_time_ns,queue_current_level_buffers,queue_current_level_bytes,queue_current_level_time_ns\n' > "$video_runtime_path"
 
 status_failures=0
 decision_failures=0

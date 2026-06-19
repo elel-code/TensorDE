@@ -585,7 +585,7 @@ fn render_video_runtime_csv(response: &str) -> Result<String, String> {
         .ok_or_else(|| "status response did not contain result".to_owned())?;
 
     let mut csv = String::from(
-        "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled,memory_retention_level,memory_retention_notes,memory_retention_estimated_min_pool_bytes,memory_retention_estimated_max_pool_bytes,memory_retention_pool_reports,memory_retention_system_memory_pool_reports,memory_retention_gpu_memory_pool_reports,memory_retention_dmabuf_pool_reports,memory_retention_other_memory_pool_reports,memory_retention_sink_frame_retention\n",
+        "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled,memory_retention_level,memory_retention_notes,memory_retention_estimated_min_pool_bytes,memory_retention_estimated_max_pool_bytes,memory_retention_pool_reports,memory_retention_system_memory_pool_reports,memory_retention_gpu_memory_pool_reports,memory_retention_dmabuf_pool_reports,memory_retention_other_memory_pool_reports,memory_retention_sink_frame_retention,queue_report_count,queue_elements,queue_max_size_buffers,queue_max_size_bytes,queue_max_size_time_ns,queue_current_level_buffers,queue_current_level_bytes,queue_current_level_time_ns\n",
     );
     for pipeline in &result.renderer_runtime.video_pipelines {
         let actual_decoders = if pipeline.actual_decoders.is_empty() {
@@ -609,6 +609,44 @@ fn render_video_runtime_csv(response: &str) -> Result<String, String> {
         let memory_path_segments = collect_memory_path_segments(&pipeline.memory_path);
         let allocation_pools = collect_allocation_pools(&pipeline.allocation_reports);
         let allocation_allocators = collect_allocation_allocators(&pipeline.allocation_reports);
+        let queue_elements = collect_queue_report_values(&pipeline.queue_reports, |report| {
+            Some(report.element.clone())
+        });
+        let queue_max_size_buffers =
+            collect_queue_report_values(&pipeline.queue_reports, |report| {
+                report
+                    .max_size_buffers
+                    .map(|value| format!("{}:{value}", report.element))
+            });
+        let queue_max_size_bytes = collect_queue_report_values(&pipeline.queue_reports, |report| {
+            report
+                .max_size_bytes
+                .map(|value| format!("{}:{value}", report.element))
+        });
+        let queue_max_size_time_ns =
+            collect_queue_report_values(&pipeline.queue_reports, |report| {
+                report
+                    .max_size_time_ns
+                    .map(|value| format!("{}:{value}", report.element))
+            });
+        let queue_current_level_buffers =
+            collect_queue_report_values(&pipeline.queue_reports, |report| {
+                report
+                    .current_level_buffers
+                    .map(|value| format!("{}:{value}", report.element))
+            });
+        let queue_current_level_bytes =
+            collect_queue_report_values(&pipeline.queue_reports, |report| {
+                report
+                    .current_level_bytes
+                    .map(|value| format!("{}:{value}", report.element))
+            });
+        let queue_current_level_time_ns =
+            collect_queue_report_values(&pipeline.queue_reports, |report| {
+                report
+                    .current_level_time_ns
+                    .map(|value| format!("{}:{value}", report.element))
+            });
 
         let row = [
             csv_cell(&pipeline.output_name),
@@ -825,6 +863,14 @@ fn render_video_runtime_csv(response: &str) -> Result<String, String> {
                 .other_memory_pool_reports
                 .to_string(),
             csv_cell(&pipeline.retention_report.sink_frame_retention),
+            pipeline.queue_reports.len().to_string(),
+            csv_cell(&pipe_join(queue_elements)),
+            csv_cell(&pipe_join(queue_max_size_buffers)),
+            csv_cell(&pipe_join(queue_max_size_bytes)),
+            csv_cell(&pipe_join(queue_max_size_time_ns)),
+            csv_cell(&pipe_join(queue_current_level_buffers)),
+            csv_cell(&pipe_join(queue_current_level_bytes)),
+            csv_cell(&pipe_join(queue_current_level_time_ns)),
         ];
         csv.push_str(&row.join(","));
         csv.push('\n');
@@ -873,6 +919,16 @@ fn collect_memory_path_segments(path: &VideoMemoryPathReport) -> Vec<String> {
             }
             value
         })
+        .collect()
+}
+
+fn collect_queue_report_values<F>(queue_reports: &[VideoQueueReport], mut value: F) -> Vec<String>
+where
+    F: FnMut(&VideoQueueReport) -> Option<String>,
+{
+    queue_reports
+        .iter()
+        .filter_map(|report| value(report))
         .collect()
 }
 
@@ -1407,6 +1463,8 @@ struct VideoRuntimePipeline {
     #[serde(default)]
     allocation_reports: Vec<VideoAllocationReport>,
     #[serde(default)]
+    queue_reports: Vec<VideoQueueReport>,
+    #[serde(default)]
     zero_copy_evidence: VideoZeroCopyEvidence,
     #[serde(default)]
     memory_path: VideoMemoryPathReport,
@@ -1587,6 +1645,24 @@ struct VideoAllocationParamReport {
 }
 
 #[derive(Debug, Default, Deserialize)]
+struct VideoQueueReport {
+    #[serde(default)]
+    element: String,
+    #[serde(default)]
+    max_size_buffers: Option<u32>,
+    #[serde(default)]
+    max_size_bytes: Option<u32>,
+    #[serde(default)]
+    max_size_time_ns: Option<u64>,
+    #[serde(default)]
+    current_level_buffers: Option<u32>,
+    #[serde(default)]
+    current_level_bytes: Option<u32>,
+    #[serde(default)]
+    current_level_time_ns: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
 struct VideoMemoryPathReport {
     #[serde(default)]
     level: String,
@@ -1690,8 +1766,8 @@ mod tests {
 
         assert_eq!(
             csv,
-            "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled,memory_retention_level,memory_retention_notes,memory_retention_estimated_min_pool_bytes,memory_retention_estimated_max_pool_bytes,memory_retention_pool_reports,memory_retention_system_memory_pool_reports,memory_retention_gpu_memory_pool_reports,memory_retention_dmabuf_pool_reports,memory_retention_other_memory_pool_reports,memory_retention_sink_frame_retention\n\
-             eDP-1,active,Playing,hardware-preferred,software-fallback,dav1ddec,software,2,memory:DMABuf,memory:DMABuf,sink-dmabuf-caps,sink-side DMABuf caps observed,sink-dmabuf,sink-side DMABuf caps observed,gtk4paintablesink0:sink:sink:video/x-raw:dmabuf:memory:DMABuf,1,videoconvert0:src:peer:GstVideoBufferPool:4096:2:4,videoconvert0:src:peer:dmabufallocator0:MemoryFlags(0x0):0:0:0,video/x-raw,gtk4paintablesink0:sink:sink|videoconvert0:src:src,1234,60000,true,24,3,120,2,buffers,-2000,7000,995,9,300,5000000,16667,20000,59940,16667,5016667,8,7,300,299,5000000,5016667,5017000,16667,20000,16667,/tmp/loop.mp4,8,7,6,5,9,glsinkbin+gtk4paintablesink,false,false,true,41666666,0,0,false,medium,allocation pools report at least 8192 bytes of minimum buffer capacity|sink last-sample and preroll frame retention are disabled,8192,16384,1,0,0,1,0,disabled\n"
+            "output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled,memory_retention_level,memory_retention_notes,memory_retention_estimated_min_pool_bytes,memory_retention_estimated_max_pool_bytes,memory_retention_pool_reports,memory_retention_system_memory_pool_reports,memory_retention_gpu_memory_pool_reports,memory_retention_dmabuf_pool_reports,memory_retention_other_memory_pool_reports,memory_retention_sink_frame_retention,queue_report_count,queue_elements,queue_max_size_buffers,queue_max_size_bytes,queue_max_size_time_ns,queue_current_level_buffers,queue_current_level_bytes,queue_current_level_time_ns\n\
+             eDP-1,active,Playing,hardware-preferred,software-fallback,dav1ddec,software,2,memory:DMABuf,memory:DMABuf,sink-dmabuf-caps,sink-side DMABuf caps observed,sink-dmabuf,sink-side DMABuf caps observed,gtk4paintablesink0:sink:sink:video/x-raw:dmabuf:memory:DMABuf,1,videoconvert0:src:peer:GstVideoBufferPool:4096:2:4,videoconvert0:src:peer:dmabufallocator0:MemoryFlags(0x0):0:0:0,video/x-raw,gtk4paintablesink0:sink:sink|videoconvert0:src:src,1234,60000,true,24,3,120,2,buffers,-2000,7000,995,9,300,5000000,16667,20000,59940,16667,5016667,8,7,300,299,5000000,5016667,5017000,16667,20000,16667,/tmp/loop.mp4,8,7,6,5,9,glsinkbin+gtk4paintablesink,false,false,true,41666666,0,0,false,medium,allocation pools report at least 8192 bytes of minimum buffer capacity|sink last-sample and preroll frame retention are disabled,8192,16384,1,0,0,1,0,disabled,0,,,,,,,\n"
         );
     }
 

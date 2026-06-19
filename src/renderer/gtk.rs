@@ -14,9 +14,9 @@ use crate::renderer::video::{
     GtkFrameClockPhase, VideoAllocationReport, VideoCapsReport, VideoDecoderPolicyStatus,
     VideoDecoderReport, VideoFrameStats, VideoMemoryPathReport, VideoMemoryRetentionReport,
     VideoPipelineDiagnostics, VideoPipelineDiagnosticsCache, VideoPipelineSnapshot,
-    VideoSinkTuningReport, VideoZeroCopyEvidence, apply_decoder_rank_policy,
-    configure_video_sink_low_memory, decoder_policy_status, decoder_report_from_message,
-    merge_decoder_reports, playback_duration_ms, playback_position_ms,
+    VideoQueueReport, VideoSinkTuningReport, VideoZeroCopyEvidence, apply_decoder_rank_policy,
+    configure_video_pipeline_low_memory, configure_video_sink_low_memory, decoder_policy_status,
+    decoder_report_from_message, merge_decoder_reports, playback_duration_ms, playback_position_ms,
     video_memory_retention_report,
 };
 use gtk::gdk;
@@ -46,6 +46,8 @@ const MUTED_PLAYBIN_FLAGS: &str = "video";
 const AUDIBLE_PLAYBIN_FLAGS: &str = "video+audio";
 #[cfg(feature = "video-renderer")]
 const GTK_VIDEO_FRAME_STATS_ENV: &str = "GILDER_GTK_VIDEO_FRAME_STATS";
+#[cfg(feature = "video-renderer")]
+const GTK_VIDEO_SINK_CHAIN_ENV: &str = "GILDER_GTK_VIDEO_SINK_CHAIN";
 
 pub struct GtkStaticRenderer {
     application: gtk::Application,
@@ -1725,6 +1727,7 @@ impl GtkSharedVideoRuntime {
             actual_decoder_reports: current_decoder_reports,
             caps_reports,
             allocation_reports,
+            queue_reports,
             zero_copy_evidence: _,
             memory_path: _,
         } = self.diagnostics.snapshot(&self.element);
@@ -1767,6 +1770,7 @@ impl GtkSharedVideoRuntime {
             actual_decoder_reports,
             caps_reports,
             allocation_reports,
+            queue_reports,
             zero_copy_evidence,
             memory_path,
             retention_report,
@@ -1795,6 +1799,7 @@ struct GtkSharedVideoRuntimeSnapshot {
     actual_decoder_reports: Vec<VideoDecoderReport>,
     caps_reports: Vec<VideoCapsReport>,
     allocation_reports: Vec<VideoAllocationReport>,
+    queue_reports: Vec<VideoQueueReport>,
     zero_copy_evidence: VideoZeroCopyEvidence,
     memory_path: VideoMemoryPathReport,
     retention_report: VideoMemoryRetentionReport,
@@ -1831,6 +1836,7 @@ impl GtkSharedVideoRuntimeSnapshot {
             actual_decoder_reports: self.actual_decoder_reports.clone(),
             caps_reports: self.caps_reports.clone(),
             allocation_reports: self.allocation_reports.clone(),
+            queue_reports: self.queue_reports.clone(),
             zero_copy_evidence: self.zero_copy_evidence.clone(),
             memory_path: self.memory_path.clone(),
             retention_report: self.retention_report.clone(),
@@ -1932,6 +1938,7 @@ fn build_gtk_video_pipeline(
     let element = builder
         .build()
         .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
+    configure_video_pipeline_low_memory(&element);
 
     Ok(BuiltGtkVideoPipeline {
         element,
@@ -2116,9 +2123,50 @@ fn gtk_video_sink_chain(
     gtk_sink: &gst::Element,
     target_max_fps: Option<u32>,
 ) -> (gst::Element, VideoSinkTuningReport) {
-    if let Some((sink, tuning)) = gl_wrapped_gtk_video_sink(gtk_sink, target_max_fps) {
-        return (sink, tuning);
+    match gtk_video_sink_chain_mode() {
+        GtkVideoSinkChainMode::DirectGtk => direct_gtk_video_sink(gtk_sink, target_max_fps),
+        GtkVideoSinkChainMode::GlSinkBin => gl_wrapped_gtk_video_sink(gtk_sink, target_max_fps)
+            .unwrap_or_else(|| direct_gtk_video_sink(gtk_sink, target_max_fps)),
+        GtkVideoSinkChainMode::Auto => gl_wrapped_gtk_video_sink(gtk_sink, target_max_fps)
+            .unwrap_or_else(|| direct_gtk_video_sink(gtk_sink, target_max_fps)),
     }
+}
+
+#[cfg(feature = "video-renderer")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GtkVideoSinkChainMode {
+    Auto,
+    DirectGtk,
+    GlSinkBin,
+}
+
+#[cfg(feature = "video-renderer")]
+fn gtk_video_sink_chain_mode() -> GtkVideoSinkChainMode {
+    std::env::var(GTK_VIDEO_SINK_CHAIN_ENV)
+        .ok()
+        .as_deref()
+        .map(parse_gtk_video_sink_chain_mode)
+        .unwrap_or(GtkVideoSinkChainMode::Auto)
+}
+
+#[cfg(feature = "video-renderer")]
+fn parse_gtk_video_sink_chain_mode(value: &str) -> GtkVideoSinkChainMode {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "gtk" | "gtk4" | "direct" | "direct-gtk" | "gtk4paintablesink" => {
+            GtkVideoSinkChainMode::DirectGtk
+        }
+        "gl" | "glsinkbin" | "glsinkbin+gtk4" | "glsinkbin+gtk4paintablesink" => {
+            GtkVideoSinkChainMode::GlSinkBin
+        }
+        _ => GtkVideoSinkChainMode::Auto,
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+fn direct_gtk_video_sink(
+    gtk_sink: &gst::Element,
+    target_max_fps: Option<u32>,
+) -> (gst::Element, VideoSinkTuningReport) {
     let mut tuning = configure_video_sink_low_memory(gtk_sink, target_max_fps);
     tuning.sink_element = Some("gtk4paintablesink".to_owned());
     (gtk_sink.clone(), tuning)
@@ -2561,6 +2609,27 @@ mod tests {
         assert_eq!(
             parse_gtk_frame_clock_stats_mode("0"),
             GtkFrameClockStatsMode::Off
+        );
+    }
+
+    #[cfg(feature = "video-renderer")]
+    #[test]
+    fn gtk_video_sink_chain_mode_parses_direct_gl_and_auto_values() {
+        assert_eq!(
+            parse_gtk_video_sink_chain_mode("gtk4"),
+            GtkVideoSinkChainMode::DirectGtk
+        );
+        assert_eq!(
+            parse_gtk_video_sink_chain_mode("direct"),
+            GtkVideoSinkChainMode::DirectGtk
+        );
+        assert_eq!(
+            parse_gtk_video_sink_chain_mode("glsinkbin"),
+            GtkVideoSinkChainMode::GlSinkBin
+        );
+        assert_eq!(
+            parse_gtk_video_sink_chain_mode("unexpected"),
+            GtkVideoSinkChainMode::Auto
         );
     }
 
