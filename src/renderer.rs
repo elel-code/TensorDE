@@ -123,6 +123,18 @@ pub struct RenderSyncCacheReport {
     #[serde(default)]
     pub static_image_cache_eviction_errors: u64,
     #[serde(default)]
+    pub planned_video_source_references: usize,
+    #[serde(default)]
+    pub planned_unique_video_sources: usize,
+    #[serde(default)]
+    pub planned_duplicate_video_source_references: usize,
+    #[serde(default)]
+    pub planned_max_video_source_outputs: usize,
+    #[serde(default)]
+    pub planned_video_source_reference_bytes: u64,
+    #[serde(default)]
+    pub planned_unique_video_source_bytes: u64,
+    #[serde(default)]
     pub planned_static_image_resources: usize,
     #[serde(default)]
     pub planned_video_poster_resources: usize,
@@ -483,6 +495,20 @@ fn update_render_sync_resource_footprint(
             .iter()
             .flat_map(|plan| plan.sources.iter().cloned()),
     );
+    let mut video_source_counts = BTreeMap::new();
+    for plan in video_plans {
+        *video_source_counts
+            .entry(plan.source.clone())
+            .or_insert(0_usize) += 1;
+    }
+    let planned_video_source_reference_bytes = video_plans
+        .iter()
+        .map(|plan| file_size(&plan.source))
+        .sum::<u64>();
+    let planned_unique_video_source_bytes = video_source_counts
+        .keys()
+        .map(|source| file_size(source))
+        .sum::<u64>();
 
     report.planned_static_image_resources = static_image_resources;
     report.planned_video_poster_resources = video_poster_resources;
@@ -501,6 +527,17 @@ fn update_render_sync_resource_footprint(
         .iter()
         .map(|source| file_size(source))
         .sum::<u64>();
+    report.planned_video_source_references = video_plans.len();
+    report.planned_unique_video_sources = video_source_counts.len();
+    report.planned_duplicate_video_source_references =
+        video_plans.len().saturating_sub(video_source_counts.len());
+    report.planned_max_video_source_outputs = video_source_counts
+        .values()
+        .copied()
+        .max()
+        .unwrap_or_default();
+    report.planned_video_source_reference_bytes = planned_video_source_reference_bytes;
+    report.planned_unique_video_source_bytes = planned_unique_video_source_bytes;
 }
 
 fn file_size(path: &Path) -> u64 {
@@ -2844,6 +2881,52 @@ exit 0
             sync.cache.planned_unique_image_resource_bytes,
             static_bytes + poster_bytes + slideshow_bytes
         );
+    }
+
+    #[test]
+    fn render_sync_reports_duplicate_video_source_candidates() {
+        let test_dir = TestDir::new("gilder-video-source-sharing");
+        let video_package = test_dir.path.join("video-demo.gwpdir");
+        write_minimal_video_gwpdir(&video_package);
+        let mut config = GilderConfig::default();
+        for output_name in ["eDP-1", "HDMI-A-1"] {
+            config.outputs.insert(
+                output_name.to_owned(),
+                OutputConfig {
+                    wallpaper: Some(video_package.display().to_string()),
+                    ..OutputConfig::default()
+                },
+            );
+        }
+        let desktop = DesktopSnapshot {
+            outputs: vec![
+                DesktopOutput::virtual_output("eDP-1"),
+                DesktopOutput::virtual_output("HDMI-A-1"),
+            ],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_config(
+            &config,
+            &desktop,
+            &AppState::default(),
+            test_dir.path.join("cache"),
+        );
+
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.video_plans.len(), 2);
+        assert_eq!(sync.cache.planned_video_source_references, 2);
+        assert_eq!(sync.cache.planned_unique_video_sources, 1);
+        assert_eq!(sync.cache.planned_duplicate_video_source_references, 1);
+        assert_eq!(sync.cache.planned_max_video_source_outputs, 2);
+        let video_bytes = fs::metadata(video_package.join("assets/loop.webm"))
+            .unwrap()
+            .len();
+        assert_eq!(
+            sync.cache.planned_video_source_reference_bytes,
+            video_bytes * 2
+        );
+        assert_eq!(sync.cache.planned_unique_video_source_bytes, video_bytes);
     }
 
     #[test]

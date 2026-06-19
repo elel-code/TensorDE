@@ -18,7 +18,7 @@ use gilder::config::{
 use gilder::ipc::RequestMethod;
 use gilder::renderer::StaticRenderSyncPlan;
 use gilder::state::{AppState, WallpaperAssignment};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 fn main() {
     if let Err(err) = run() {
@@ -1350,11 +1350,6 @@ fn telemetry_report(
     runtime_telemetry: RuntimeTelemetrySnapshot,
     renderer_runtime: &RendererRuntimeSnapshot,
 ) -> Value {
-    let render_sync_cache = context
-        .render_sync_cache
-        .as_ref()
-        .map(|cache| cache.render_sync.cache)
-        .unwrap_or_default();
     json!({
         "desktop": {
             "refreshes": context.telemetry.desktop_refreshes,
@@ -1368,48 +1363,196 @@ fn telemetry_report(
             "snapshot": context.adaptive_snapshot,
             "action": adaptive_action_report(context),
         },
-        "render_sync": {
-            "cache_hits": context.telemetry.render_sync_cache_hits,
-            "cache_misses": context.telemetry.render_sync_cache_misses,
-            "updates_queued": runtime_telemetry.render_sync_updates_queued,
-            "updates_skipped": runtime_telemetry.render_sync_updates_skipped,
-            "package_cache_entries": render_sync_cache.package_cache_entries,
-            "package_cache_max_entries": render_sync_cache.package_cache_max_entries,
-            "package_cache_hits": render_sync_cache.package_cache_hits,
-            "package_cache_misses": render_sync_cache.package_cache_misses,
-            "package_cache_evictions": render_sync_cache.package_cache_evictions,
-            "package_cache_retained_resource_references": render_sync_cache.package_cache_retained_resource_references,
-            "package_cache_retained_unique_resources": render_sync_cache.package_cache_retained_unique_resources,
-            "package_cache_retained_resource_bytes": render_sync_cache.package_cache_retained_resource_bytes,
-            "package_cache_retained_unique_resource_bytes": render_sync_cache.package_cache_retained_unique_resource_bytes,
-            "archive_cache_entries": render_sync_cache.archive_cache_entries,
-            "archive_cache_max_entries": render_sync_cache.archive_cache_max_entries,
-            "archive_cache_reuses": render_sync_cache.archive_cache_reuses,
-            "archive_cache_extractions": render_sync_cache.archive_cache_extractions,
-            "archive_cache_evictions": context.telemetry.render_archive_cache_evictions,
-            "archive_cache_evictions_latest": render_sync_cache.archive_cache_evictions,
-            "archive_cache_eviction_errors": context.telemetry.render_archive_cache_eviction_errors,
-            "archive_cache_eviction_errors_latest": render_sync_cache.archive_cache_eviction_errors,
-            "static_image_cache_entries": render_sync_cache.static_image_cache_entries,
-            "static_image_cache_max_entries": render_sync_cache.static_image_cache_max_entries,
-            "static_image_cache_generations": render_sync_cache.static_image_cache_generations,
-            "static_image_cache_reuses": render_sync_cache.static_image_cache_reuses,
-            "static_image_cache_generation_errors": render_sync_cache.static_image_cache_generation_errors,
-            "static_image_cache_evictions": render_sync_cache.static_image_cache_evictions,
-            "static_image_cache_eviction_errors": render_sync_cache.static_image_cache_eviction_errors,
-            "planned_static_image_resources": render_sync_cache.planned_static_image_resources,
-            "planned_video_poster_resources": render_sync_cache.planned_video_poster_resources,
-            "planned_slideshow_image_resources": render_sync_cache.planned_slideshow_image_resources,
-            "planned_image_resource_references": render_sync_cache.planned_image_resource_references,
-            "planned_unique_image_resources": render_sync_cache.planned_unique_image_resources,
-            "planned_static_image_resource_bytes": render_sync_cache.planned_static_image_resource_bytes,
-            "planned_video_poster_resource_bytes": render_sync_cache.planned_video_poster_resource_bytes,
-            "planned_slideshow_image_resource_bytes": render_sync_cache.planned_slideshow_image_resource_bytes,
-            "planned_image_resource_reference_bytes": render_sync_cache.planned_image_resource_reference_bytes,
-            "planned_unique_image_resource_bytes": render_sync_cache.planned_unique_image_resource_bytes,
-        },
+        "render_sync": render_sync_telemetry_report(context, runtime_telemetry),
         "renderer": renderer_telemetry_report(renderer_runtime),
     })
+}
+
+fn render_sync_telemetry_report(
+    context: &DaemonContext,
+    runtime_telemetry: RuntimeTelemetrySnapshot,
+) -> Value {
+    let render_sync_cache = context
+        .render_sync_cache
+        .as_ref()
+        .map(|cache| cache.render_sync.cache)
+        .unwrap_or_default();
+    let mut object = Map::new();
+    macro_rules! insert {
+        ($key:literal, $value:expr) => {
+            object.insert($key.to_owned(), json!($value));
+        };
+    }
+
+    insert!("cache_hits", context.telemetry.render_sync_cache_hits);
+    insert!("cache_misses", context.telemetry.render_sync_cache_misses);
+    insert!(
+        "updates_queued",
+        runtime_telemetry.render_sync_updates_queued
+    );
+    insert!(
+        "updates_skipped",
+        runtime_telemetry.render_sync_updates_skipped
+    );
+    insert!(
+        "package_cache_entries",
+        render_sync_cache.package_cache_entries
+    );
+    insert!(
+        "package_cache_max_entries",
+        render_sync_cache.package_cache_max_entries
+    );
+    insert!("package_cache_hits", render_sync_cache.package_cache_hits);
+    insert!(
+        "package_cache_misses",
+        render_sync_cache.package_cache_misses
+    );
+    insert!(
+        "package_cache_evictions",
+        render_sync_cache.package_cache_evictions
+    );
+    insert!(
+        "package_cache_retained_resource_references",
+        render_sync_cache.package_cache_retained_resource_references
+    );
+    insert!(
+        "package_cache_retained_unique_resources",
+        render_sync_cache.package_cache_retained_unique_resources
+    );
+    insert!(
+        "package_cache_retained_resource_bytes",
+        render_sync_cache.package_cache_retained_resource_bytes
+    );
+    insert!(
+        "package_cache_retained_unique_resource_bytes",
+        render_sync_cache.package_cache_retained_unique_resource_bytes
+    );
+    insert!(
+        "archive_cache_entries",
+        render_sync_cache.archive_cache_entries
+    );
+    insert!(
+        "archive_cache_max_entries",
+        render_sync_cache.archive_cache_max_entries
+    );
+    insert!(
+        "archive_cache_reuses",
+        render_sync_cache.archive_cache_reuses
+    );
+    insert!(
+        "archive_cache_extractions",
+        render_sync_cache.archive_cache_extractions
+    );
+    insert!(
+        "archive_cache_evictions",
+        context.telemetry.render_archive_cache_evictions
+    );
+    insert!(
+        "archive_cache_evictions_latest",
+        render_sync_cache.archive_cache_evictions
+    );
+    insert!(
+        "archive_cache_eviction_errors",
+        context.telemetry.render_archive_cache_eviction_errors
+    );
+    insert!(
+        "archive_cache_eviction_errors_latest",
+        render_sync_cache.archive_cache_eviction_errors
+    );
+    insert!(
+        "static_image_cache_entries",
+        render_sync_cache.static_image_cache_entries
+    );
+    insert!(
+        "static_image_cache_max_entries",
+        render_sync_cache.static_image_cache_max_entries
+    );
+    insert!(
+        "static_image_cache_generations",
+        render_sync_cache.static_image_cache_generations
+    );
+    insert!(
+        "static_image_cache_reuses",
+        render_sync_cache.static_image_cache_reuses
+    );
+    insert!(
+        "static_image_cache_generation_errors",
+        render_sync_cache.static_image_cache_generation_errors
+    );
+    insert!(
+        "static_image_cache_evictions",
+        render_sync_cache.static_image_cache_evictions
+    );
+    insert!(
+        "static_image_cache_eviction_errors",
+        render_sync_cache.static_image_cache_eviction_errors
+    );
+    insert!(
+        "planned_video_source_references",
+        render_sync_cache.planned_video_source_references
+    );
+    insert!(
+        "planned_unique_video_sources",
+        render_sync_cache.planned_unique_video_sources
+    );
+    insert!(
+        "planned_duplicate_video_source_references",
+        render_sync_cache.planned_duplicate_video_source_references
+    );
+    insert!(
+        "planned_max_video_source_outputs",
+        render_sync_cache.planned_max_video_source_outputs
+    );
+    insert!(
+        "planned_video_source_reference_bytes",
+        render_sync_cache.planned_video_source_reference_bytes
+    );
+    insert!(
+        "planned_unique_video_source_bytes",
+        render_sync_cache.planned_unique_video_source_bytes
+    );
+    insert!(
+        "planned_static_image_resources",
+        render_sync_cache.planned_static_image_resources
+    );
+    insert!(
+        "planned_video_poster_resources",
+        render_sync_cache.planned_video_poster_resources
+    );
+    insert!(
+        "planned_slideshow_image_resources",
+        render_sync_cache.planned_slideshow_image_resources
+    );
+    insert!(
+        "planned_image_resource_references",
+        render_sync_cache.planned_image_resource_references
+    );
+    insert!(
+        "planned_unique_image_resources",
+        render_sync_cache.planned_unique_image_resources
+    );
+    insert!(
+        "planned_static_image_resource_bytes",
+        render_sync_cache.planned_static_image_resource_bytes
+    );
+    insert!(
+        "planned_video_poster_resource_bytes",
+        render_sync_cache.planned_video_poster_resource_bytes
+    );
+    insert!(
+        "planned_slideshow_image_resource_bytes",
+        render_sync_cache.planned_slideshow_image_resource_bytes
+    );
+    insert!(
+        "planned_image_resource_reference_bytes",
+        render_sync_cache.planned_image_resource_reference_bytes
+    );
+    insert!(
+        "planned_unique_image_resource_bytes",
+        render_sync_cache.planned_unique_image_resource_bytes
+    );
+
+    Value::Object(object)
 }
 
 fn adaptive_action_report(context: &DaemonContext) -> Value {
