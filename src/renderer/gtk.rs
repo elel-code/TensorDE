@@ -2127,8 +2127,7 @@ fn gtk_video_sink_chain(
         GtkVideoSinkChainMode::DirectGtk => direct_gtk_video_sink(gtk_sink, target_max_fps),
         GtkVideoSinkChainMode::GlSinkBin => gl_wrapped_gtk_video_sink(gtk_sink, target_max_fps)
             .unwrap_or_else(|| direct_gtk_video_sink(gtk_sink, target_max_fps)),
-        GtkVideoSinkChainMode::Auto => gl_wrapped_gtk_video_sink(gtk_sink, target_max_fps)
-            .unwrap_or_else(|| direct_gtk_video_sink(gtk_sink, target_max_fps)),
+        GtkVideoSinkChainMode::Auto => direct_gtk_video_sink(gtk_sink, target_max_fps),
     }
 }
 
