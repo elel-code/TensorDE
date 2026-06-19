@@ -6,7 +6,7 @@ pub mod gtk;
 pub mod video;
 
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
-use crate::core::manifest::Variant;
+use crate::core::manifest::{Manifest, Variant};
 use crate::core::{FitMode, PackagePath, Transition, WallpaperEntry, WallpaperPackage};
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot};
 use crate::policy::{PerformanceDecision, RenderMode};
@@ -99,6 +99,14 @@ pub struct RenderSyncCacheReport {
     pub package_cache_retained_resource_bytes: u64,
     #[serde(default)]
     pub package_cache_retained_unique_resource_bytes: u64,
+    #[serde(default)]
+    pub package_cache_retained_preview_resource_references: usize,
+    #[serde(default)]
+    pub package_cache_retained_unique_preview_resources: usize,
+    #[serde(default)]
+    pub package_cache_retained_preview_resource_bytes: u64,
+    #[serde(default)]
+    pub package_cache_retained_unique_preview_resource_bytes: u64,
     #[serde(default)]
     pub archive_cache_entries: usize,
     #[serde(default)]
@@ -631,7 +639,9 @@ fn output_fit_override(config: Option<&GilderConfig>, output_name: &str) -> Opti
 fn dynamic_wallpaper_entry(entry: &WallpaperEntry) -> bool {
     matches!(
         entry,
-        WallpaperEntry::Video { .. } | WallpaperEntry::Slideshow { .. }
+        WallpaperEntry::Video { .. }
+            | WallpaperEntry::Slideshow { .. }
+            | WallpaperEntry::Web { .. }
     )
 }
 
@@ -795,6 +805,19 @@ fn wallpaper_plan_with_target(
             fit: effective_fit(*fit, fit_override),
             target_max_fps: performance.max_fps,
         })),
+        WallpaperEntry::Web { fallback, .. } => {
+            let Some(fallback) = fallback else {
+                return Err(RendererPlanError::UnsupportedEntry(
+                    package.manifest.entry.kind().as_str(),
+                ));
+            };
+            Ok(WallpaperRenderPlan::StaticImage(StaticWallpaperPlan {
+                output_name,
+                source: fallback.join_to(&package.root),
+                fit: effective_fit(FitMode::Cover, fit_override),
+                background: Some("#000000".to_owned()),
+            }))
+        }
         WallpaperEntry::SceneLite { fallback, .. } => {
             let Some(fallback) = fallback else {
                 return Err(RendererPlanError::UnsupportedEntry(
@@ -808,7 +831,6 @@ fn wallpaper_plan_with_target(
                 background: Some("#000000".to_owned()),
             }))
         }
-        other => Err(RendererPlanError::UnsupportedEntry(other.kind().as_str())),
     }
 }
 
@@ -1386,12 +1408,21 @@ impl<'a> RenderPackageCache<'a> {
         let mut resource_references = 0;
         let mut resource_reference_bytes = 0;
         let mut unique_resources = BTreeSet::new();
+        let mut preview_resource_references = 0;
+        let mut preview_resource_reference_bytes = 0;
+        let mut unique_preview_resources = BTreeSet::new();
 
         for package in self
             .packages
             .values()
             .filter_map(|package| package.as_ref().ok())
         {
+            for package_path in manifest_preview_paths(&package.manifest) {
+                let path = package_path.join_to(&package.root);
+                preview_resource_references += 1;
+                preview_resource_reference_bytes += source_tree_size(&path);
+                unique_preview_resources.insert(path);
+            }
             let Ok(paths) = package.manifest.referenced_paths() else {
                 continue;
             };
@@ -1410,7 +1441,27 @@ impl<'a> RenderPackageCache<'a> {
             .iter()
             .map(|path| source_tree_size(path))
             .sum();
+        self.stats
+            .package_cache_retained_preview_resource_references = preview_resource_references;
+        self.stats.package_cache_retained_unique_preview_resources = unique_preview_resources.len();
+        self.stats.package_cache_retained_preview_resource_bytes = preview_resource_reference_bytes;
+        self.stats
+            .package_cache_retained_unique_preview_resource_bytes = unique_preview_resources
+            .iter()
+            .map(|path| source_tree_size(path))
+            .sum();
     }
+}
+
+fn manifest_preview_paths(manifest: &Manifest) -> Vec<PackagePath> {
+    let mut paths = Vec::new();
+    if let Some(path) = &manifest.preview.thumbnail {
+        paths.push(path.clone());
+    }
+    if let Some(path) = &manifest.preview.poster {
+        paths.push(path.clone());
+    }
+    paths
 }
 
 fn archive_extract_dir(cache_dir: &Path, archive_path: &Path) -> PathBuf {
@@ -2817,6 +2868,94 @@ exit 0
     }
 
     #[test]
+    fn web_fallback_builds_static_plan() {
+        let test_dir = TestDir::new("gilder-web-fallback-plan");
+        let package_dir = test_dir.path.join("web-demo.gwpdir");
+        write_minimal_web_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.video_plans.is_empty());
+        assert!(sync.slideshow_plans.is_empty());
+        assert!(sync.errors.is_empty());
+        assert!(sync.plans[0].source.ends_with("previews/poster.svg"));
+        assert_eq!(sync.plans[0].fit, FitMode::Cover);
+        assert_eq!(sync.plans[0].background.as_deref(), Some("#000000"));
+        assert_eq!(sync.cache.planned_static_image_resources, 1);
+        assert_eq!(sync.cache.planned_image_resource_references, 1);
+    }
+
+    #[test]
+    fn web_without_fallback_reports_unsupported_entry() {
+        let test_dir = TestDir::new("gilder-web-without-fallback-plan");
+        let package_dir = test_dir.path.join("web-demo.gwpdir");
+        write_minimal_web_gwpdir(&package_dir);
+        remove_entry_fallback(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert!(sync.plans.is_empty());
+        assert_eq!(sync.errors.len(), 1);
+        assert_eq!(sync.errors[0].message, "web entries are not supported here");
+        assert_eq!(sync.decisions[0].action, StaticRenderAction::Error);
+    }
+
+    #[test]
+    fn pause_dynamic_releases_web_wallpaper_after_manifest_load() {
+        let test_dir = TestDir::new("gilder-web-pause-dynamic");
+        let package_dir = test_dir.path.join("web-demo.gwpdir");
+        write_minimal_web_gwpdir(&package_dir);
+        let mut config = GilderConfig::default();
+        config.performance.hidden = DynamicPausePolicy::PauseDynamic;
+        config.default_wallpaper = Some(package_dir.display().to_string());
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                visible: false,
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_config(
+            &config,
+            &desktop,
+            &AppState::default(),
+            test_dir.path.join("cache"),
+        );
+
+        assert!(sync.plans.is_empty());
+        assert!(sync.video_plans.is_empty());
+        assert!(sync.slideshow_plans.is_empty());
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.removals, vec!["eDP-1"]);
+        assert_eq!(sync.decisions[0].action, StaticRenderAction::Remove);
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Paused);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            crate::policy::DecisionReason::OutputHidden
+        );
+    }
+
+    #[test]
     fn builds_slideshow_sync_plan_with_effective_fps() {
         let test_dir = TestDir::new("gilder-slideshow-plan");
         let package_dir = test_dir.path.join("slideshow-demo.gwpdir");
@@ -3150,6 +3289,14 @@ exit 0
                 .len()
         })
         .sum::<u64>();
+        let retained_preview_bytes = ["previews/thumbnail.svg", "previews/poster.svg"]
+            .iter()
+            .map(|path| {
+                fs::metadata(Path::new("examples/wallpapers/static-demo.gwpdir").join(path))
+                    .unwrap()
+                    .len()
+            })
+            .sum::<u64>();
         assert_eq!(sync.cache.package_cache_entries, 1);
         assert_eq!(sync.cache.package_cache_retained_resource_references, 3);
         assert_eq!(sync.cache.package_cache_retained_unique_resources, 3);
@@ -3160,6 +3307,24 @@ exit 0
         assert_eq!(
             sync.cache.package_cache_retained_unique_resource_bytes,
             retained_bytes
+        );
+        assert_eq!(
+            sync.cache
+                .package_cache_retained_preview_resource_references,
+            2
+        );
+        assert_eq!(
+            sync.cache.package_cache_retained_unique_preview_resources,
+            2
+        );
+        assert_eq!(
+            sync.cache.package_cache_retained_preview_resource_bytes,
+            retained_preview_bytes
+        );
+        assert_eq!(
+            sync.cache
+                .package_cache_retained_unique_preview_resource_bytes,
+            retained_preview_bytes
         );
     }
 
@@ -3185,6 +3350,21 @@ exit 0
         assert_eq!(sync.cache.package_cache_retained_unique_resources, 0);
         assert_eq!(sync.cache.package_cache_retained_resource_bytes, 0);
         assert_eq!(sync.cache.package_cache_retained_unique_resource_bytes, 0);
+        assert_eq!(
+            sync.cache
+                .package_cache_retained_preview_resource_references,
+            0
+        );
+        assert_eq!(
+            sync.cache.package_cache_retained_unique_preview_resources,
+            0
+        );
+        assert_eq!(sync.cache.package_cache_retained_preview_resource_bytes, 0);
+        assert_eq!(
+            sync.cache
+                .package_cache_retained_unique_preview_resource_bytes,
+            0
+        );
     }
 
     #[test]
@@ -3573,6 +3753,45 @@ exit 0
         .unwrap();
     }
 
+    fn write_minimal_web_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets/web")).unwrap();
+        fs::create_dir_all(path.join("previews")).unwrap();
+        fs::write(
+            path.join("assets/web/index.html"),
+            b"<main>web wallpaper</main>",
+        )
+        .unwrap();
+        fs::write(
+            path.join("assets/web/gilder-bridge.js"),
+            b"window.gilder = {};",
+        )
+        .unwrap();
+        fs::write(path.join("previews/poster.svg"), b"<svg/>").unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.web-demo",
+            "version": "1.0.0",
+            "title": "Web Demo",
+            "kind": "web",
+            "preview": {
+                "poster": "previews/poster.svg"
+            },
+            "entry": {
+                "type": "web",
+                "root": "assets/web",
+                "index": "index.html",
+                "fallback": "previews/poster.svg",
+                "max_fps": 30
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
     fn write_minimal_scene_lite_gwpdir(path: &Path) {
         fs::create_dir_all(path.join("assets")).unwrap();
         fs::create_dir_all(path.join("previews")).unwrap();
@@ -3611,6 +3830,18 @@ exit 0
             .and_then(|entry| entry.as_object_mut())
             .unwrap()
             .remove("poster");
+        fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    }
+
+    fn remove_entry_fallback(path: &Path) {
+        let manifest_path = path.join(crate::core::MANIFEST_FILE);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest
+            .get_mut("entry")
+            .and_then(|entry| entry.as_object_mut())
+            .unwrap()
+            .remove("fallback");
         fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
     }
 

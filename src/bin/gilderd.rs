@@ -1497,6 +1497,22 @@ fn render_sync_telemetry_report(
         render_sync_cache.package_cache_retained_unique_resource_bytes
     );
     insert!(
+        "package_cache_retained_preview_resource_references",
+        render_sync_cache.package_cache_retained_preview_resource_references
+    );
+    insert!(
+        "package_cache_retained_unique_preview_resources",
+        render_sync_cache.package_cache_retained_unique_preview_resources
+    );
+    insert!(
+        "package_cache_retained_preview_resource_bytes",
+        render_sync_cache.package_cache_retained_preview_resource_bytes
+    );
+    insert!(
+        "package_cache_retained_unique_preview_resource_bytes",
+        render_sync_cache.package_cache_retained_unique_preview_resource_bytes
+    );
+    insert!(
         "archive_cache_entries",
         render_sync_cache.archive_cache_entries
     );
@@ -2421,6 +2437,29 @@ mod tests {
         assert_eq!(
             response["result"]["telemetry"]["render_sync"]["package_cache_retained_unique_resource_bytes"],
             json!(retained_unique_bytes)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["package_cache_retained_preview_resource_references"],
+            json!(2)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["package_cache_retained_unique_preview_resources"],
+            json!(2)
+        );
+        let retained_preview_bytes =
+            std::fs::metadata("examples/wallpapers/slideshow-demo.gwpdir/previews/thumbnail.svg")
+                .unwrap()
+                .len()
+                + std::fs::metadata("examples/wallpapers/slideshow-demo.gwpdir/assets/slide-a.svg")
+                    .unwrap()
+                    .len();
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["package_cache_retained_preview_resource_bytes"],
+            json!(retained_preview_bytes)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["package_cache_retained_unique_preview_resource_bytes"],
+            json!(retained_preview_bytes)
         );
         assert_eq!(
             response["result"]["telemetry"]["render_sync"]["planned_static_image_resource_bytes"],

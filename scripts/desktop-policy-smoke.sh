@@ -51,6 +51,14 @@ Options:
                        Require latest retained package-cache resource reference bytes to be at most bytes
   --expect-render-sync-package-cache-retained-unique-resource-bytes-latest-at-most <bytes>
                        Require latest retained package-cache unique resource bytes to be at most bytes
+  --expect-render-sync-package-cache-retained-preview-resource-references-latest-at-most <count>
+                       Require latest retained package-cache preview resource references to be at most count
+  --expect-render-sync-package-cache-retained-unique-preview-resources-latest-at-most <count>
+                       Require latest retained package-cache unique preview resources to be at most count
+  --expect-render-sync-package-cache-retained-preview-resource-bytes-latest-at-most <bytes>
+                       Require latest retained package-cache preview resource reference bytes to be at most bytes
+  --expect-render-sync-package-cache-retained-unique-preview-resource-bytes-latest-at-most <bytes>
+                       Require latest retained package-cache unique preview resource bytes to be at most bytes
   --expect-render-sync-planned-image-resource-references-latest-at-most <count>
                        Require latest planned image resource references to be at most count
   --expect-render-sync-planned-unique-image-resources-latest-at-most <count>
@@ -146,6 +154,10 @@ expect_render_sync_package_cache_retained_resource_references_latest_at_most=""
 expect_render_sync_package_cache_retained_unique_resources_latest_at_most=""
 expect_render_sync_package_cache_retained_resource_bytes_latest_at_most=""
 expect_render_sync_package_cache_retained_unique_resource_bytes_latest_at_most=""
+expect_render_sync_package_cache_retained_preview_resource_references_latest_at_most=""
+expect_render_sync_package_cache_retained_unique_preview_resources_latest_at_most=""
+expect_render_sync_package_cache_retained_preview_resource_bytes_latest_at_most=""
+expect_render_sync_package_cache_retained_unique_preview_resource_bytes_latest_at_most=""
 expect_render_sync_planned_image_resource_references_latest_at_most=""
 expect_render_sync_planned_unique_image_resources_latest_at_most=""
 expect_render_sync_planned_image_resource_reference_bytes_latest_at_most=""
@@ -293,6 +305,26 @@ while [[ $# -gt 0 ]]; do
     --expect-render-sync-package-cache-retained-unique-resource-bytes-latest-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-render-sync-package-cache-retained-unique-resource-bytes-latest-at-most requires a value" >&2; exit 2; }
       expect_render_sync_package_cache_retained_unique_resource_bytes_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-render-sync-package-cache-retained-preview-resource-references-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-package-cache-retained-preview-resource-references-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_package_cache_retained_preview_resource_references_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-render-sync-package-cache-retained-unique-preview-resources-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-package-cache-retained-unique-preview-resources-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_package_cache_retained_unique_preview_resources_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-render-sync-package-cache-retained-preview-resource-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-package-cache-retained-preview-resource-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_package_cache_retained_preview_resource_bytes_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-render-sync-package-cache-retained-unique-preview-resource-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-package-cache-retained-unique-preview-resource-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_package_cache_retained_unique_preview_resource_bytes_latest_at_most="$2"
       shift 2
       ;;
     --expect-render-sync-planned-image-resource-references-latest-at-most)
@@ -595,6 +627,10 @@ for render_sync_resource_expectation in \
   "$expect_render_sync_package_cache_retained_unique_resources_latest_at_most" \
   "$expect_render_sync_package_cache_retained_resource_bytes_latest_at_most" \
   "$expect_render_sync_package_cache_retained_unique_resource_bytes_latest_at_most" \
+  "$expect_render_sync_package_cache_retained_preview_resource_references_latest_at_most" \
+  "$expect_render_sync_package_cache_retained_unique_preview_resources_latest_at_most" \
+  "$expect_render_sync_package_cache_retained_preview_resource_bytes_latest_at_most" \
+  "$expect_render_sync_package_cache_retained_unique_preview_resource_bytes_latest_at_most" \
   "$expect_render_sync_planned_image_resource_references_latest_at_most" \
   "$expect_render_sync_planned_unique_image_resources_latest_at_most" \
   "$expect_render_sync_planned_image_resource_reference_bytes_latest_at_most" \
@@ -730,6 +766,10 @@ expect_render_sync_package_cache_retained_resource_references_latest_at_most: ${
 expect_render_sync_package_cache_retained_unique_resources_latest_at_most: ${expect_render_sync_package_cache_retained_unique_resources_latest_at_most:-none}
 expect_render_sync_package_cache_retained_resource_bytes_latest_at_most: ${expect_render_sync_package_cache_retained_resource_bytes_latest_at_most:-none}
 expect_render_sync_package_cache_retained_unique_resource_bytes_latest_at_most: ${expect_render_sync_package_cache_retained_unique_resource_bytes_latest_at_most:-none}
+expect_render_sync_package_cache_retained_preview_resource_references_latest_at_most: ${expect_render_sync_package_cache_retained_preview_resource_references_latest_at_most:-none}
+expect_render_sync_package_cache_retained_unique_preview_resources_latest_at_most: ${expect_render_sync_package_cache_retained_unique_preview_resources_latest_at_most:-none}
+expect_render_sync_package_cache_retained_preview_resource_bytes_latest_at_most: ${expect_render_sync_package_cache_retained_preview_resource_bytes_latest_at_most:-none}
+expect_render_sync_package_cache_retained_unique_preview_resource_bytes_latest_at_most: ${expect_render_sync_package_cache_retained_unique_preview_resource_bytes_latest_at_most:-none}
 expect_render_sync_planned_image_resource_references_latest_at_most: ${expect_render_sync_planned_image_resource_references_latest_at_most:-none}
 expect_render_sync_planned_unique_image_resources_latest_at_most: ${expect_render_sync_planned_unique_image_resources_latest_at_most:-none}
 expect_render_sync_planned_image_resource_reference_bytes_latest_at_most: ${expect_render_sync_planned_image_resource_reference_bytes_latest_at_most:-none}
@@ -768,7 +808,7 @@ fullscreen_static_wallpaper: ${fullscreen_static_wallpaper_path}
 slideshow_wallpaper: ${slideshow_wallpaper_path}
 EOF
 printf 'scenario,status,expected_mode,expected_reason,expected_max_fps,expected_action,expected_plan_kind,power_state,output_state,session_state,adaptive_state,config_profile,status_before,status_after,performance_dir,daemon_log\n' > "$matrix_path"
-printf 'scenario,status,expected_mode,expected_reason,expected_max_fps,expected_action,expected_plan_kind,power_state,output_state,session_state,adaptive_state,config_profile,performance_dir,samples,avg_cpu_percent,avg_rss_kib,max_rss_kib,first_rss_kib,last_rss_kib,retained_rss_delta_kib,peak_over_first_rss_kib,avg_pss_kib,max_pss_kib,first_pss_kib,last_pss_kib,retained_pss_delta_kib,peak_over_first_pss_kib,avg_private_kib,max_private_kib,first_private_kib,last_private_kib,retained_private_delta_kib,peak_over_first_private_kib,avg_uss_kib,max_uss_kib,first_uss_kib,last_uss_kib,retained_uss_delta_kib,peak_over_first_uss_kib,avg_shared_kib,max_shared_kib,first_shared_kib,last_shared_kib,retained_shared_delta_kib,peak_over_first_shared_kib,gpu_busy_samples,avg_gpu_busy_percent,max_gpu_busy_percent,decision_rows,decision_outputs,decision_samples,telemetry_rows,desktop_refreshes_delta,desktop_refresh_skips_delta,render_sync_cache_hits_delta,render_sync_cache_misses_delta,render_sync_cache_hit_ratio,render_sync_updates_queued_latest,render_sync_updates_skipped_latest,render_sync_package_cache_entries_latest,render_sync_package_cache_max_entries_latest,render_sync_package_cache_hits_latest,render_sync_package_cache_misses_latest,render_sync_package_cache_evictions_latest,render_sync_archive_cache_entries_latest,render_sync_archive_cache_max_entries_latest,render_sync_archive_cache_reuses_latest,render_sync_archive_cache_extractions_latest,render_sync_archive_cache_evictions_delta,render_sync_archive_cache_evictions_latest,render_sync_archive_cache_eviction_errors_delta,render_sync_archive_cache_eviction_errors_latest,render_sync_static_image_cache_entries_latest,render_sync_static_image_cache_max_entries_latest,render_sync_static_image_cache_generations_latest,render_sync_static_image_cache_reuses_latest,render_sync_static_image_cache_generation_errors_latest,render_sync_static_image_cache_evictions_latest,render_sync_static_image_cache_eviction_errors_latest,render_sync_planned_video_source_references_latest,render_sync_planned_unique_video_sources_latest,render_sync_planned_duplicate_video_source_references_latest,render_sync_planned_max_video_source_outputs_latest,render_sync_planned_video_source_reference_bytes_latest,render_sync_planned_unique_video_source_bytes_latest,render_sync_planned_static_image_resources_latest,render_sync_planned_video_poster_resources_latest,render_sync_planned_slideshow_image_resources_latest,render_sync_planned_image_resource_references_latest,render_sync_planned_unique_image_resources_latest,render_sync_planned_static_image_resource_bytes_latest,render_sync_planned_video_poster_resource_bytes_latest,render_sync_planned_slideshow_image_resource_bytes_latest,render_sync_planned_image_resource_reference_bytes_latest,render_sync_planned_unique_image_resource_bytes_latest,render_sync_package_cache_retained_resource_references_latest,render_sync_package_cache_retained_unique_resources_latest,render_sync_package_cache_retained_resource_bytes_latest,render_sync_package_cache_retained_unique_resource_bytes_latest,adaptive_action_types_latest,adaptive_action_max_fps_latest,renderer_output_windows_latest,renderer_output_windows_max,renderer_static_surfaces_latest,renderer_static_surfaces_max,renderer_slideshow_surfaces_latest,renderer_slideshow_surfaces_max,renderer_static_surface_resource_references_latest,renderer_static_surface_resource_bytes_latest,renderer_slideshow_resource_references_latest,renderer_slideshow_resource_bytes_latest,renderer_static_surface_unique_resources_latest,renderer_static_surface_unique_resource_bytes_latest,renderer_slideshow_unique_resources_latest,renderer_slideshow_unique_resource_bytes_latest,renderer_video_surfaces_latest,renderer_video_surfaces_max,renderer_video_pipelines_latest,renderer_video_pipelines_max,renderer_video_pipeline_source_references_latest,renderer_video_pipeline_source_reference_bytes_latest,renderer_video_pipeline_unique_sources_latest,renderer_video_pipeline_unique_source_bytes_latest,renderer_video_qos_messages_max,renderer_video_qos_dropped_max,renderer_video_gtk_frame_clock_ticks_max,render_sync_package_cache_max_retained_unique_resource_bytes_latest,render_sync_static_image_cache_bytes_latest,render_sync_static_image_cache_max_bytes_latest\n' > "$resource_baseline_path"
+printf 'scenario,status,expected_mode,expected_reason,expected_max_fps,expected_action,expected_plan_kind,power_state,output_state,session_state,adaptive_state,config_profile,performance_dir,samples,avg_cpu_percent,avg_rss_kib,max_rss_kib,first_rss_kib,last_rss_kib,retained_rss_delta_kib,peak_over_first_rss_kib,avg_pss_kib,max_pss_kib,first_pss_kib,last_pss_kib,retained_pss_delta_kib,peak_over_first_pss_kib,avg_private_kib,max_private_kib,first_private_kib,last_private_kib,retained_private_delta_kib,peak_over_first_private_kib,avg_uss_kib,max_uss_kib,first_uss_kib,last_uss_kib,retained_uss_delta_kib,peak_over_first_uss_kib,avg_shared_kib,max_shared_kib,first_shared_kib,last_shared_kib,retained_shared_delta_kib,peak_over_first_shared_kib,gpu_busy_samples,avg_gpu_busy_percent,max_gpu_busy_percent,decision_rows,decision_outputs,decision_samples,telemetry_rows,desktop_refreshes_delta,desktop_refresh_skips_delta,render_sync_cache_hits_delta,render_sync_cache_misses_delta,render_sync_cache_hit_ratio,render_sync_updates_queued_latest,render_sync_updates_skipped_latest,render_sync_package_cache_entries_latest,render_sync_package_cache_max_entries_latest,render_sync_package_cache_hits_latest,render_sync_package_cache_misses_latest,render_sync_package_cache_evictions_latest,render_sync_archive_cache_entries_latest,render_sync_archive_cache_max_entries_latest,render_sync_archive_cache_reuses_latest,render_sync_archive_cache_extractions_latest,render_sync_archive_cache_evictions_delta,render_sync_archive_cache_evictions_latest,render_sync_archive_cache_eviction_errors_delta,render_sync_archive_cache_eviction_errors_latest,render_sync_static_image_cache_entries_latest,render_sync_static_image_cache_max_entries_latest,render_sync_static_image_cache_generations_latest,render_sync_static_image_cache_reuses_latest,render_sync_static_image_cache_generation_errors_latest,render_sync_static_image_cache_evictions_latest,render_sync_static_image_cache_eviction_errors_latest,render_sync_planned_video_source_references_latest,render_sync_planned_unique_video_sources_latest,render_sync_planned_duplicate_video_source_references_latest,render_sync_planned_max_video_source_outputs_latest,render_sync_planned_video_source_reference_bytes_latest,render_sync_planned_unique_video_source_bytes_latest,render_sync_planned_static_image_resources_latest,render_sync_planned_video_poster_resources_latest,render_sync_planned_slideshow_image_resources_latest,render_sync_planned_image_resource_references_latest,render_sync_planned_unique_image_resources_latest,render_sync_planned_static_image_resource_bytes_latest,render_sync_planned_video_poster_resource_bytes_latest,render_sync_planned_slideshow_image_resource_bytes_latest,render_sync_planned_image_resource_reference_bytes_latest,render_sync_planned_unique_image_resource_bytes_latest,render_sync_package_cache_retained_resource_references_latest,render_sync_package_cache_retained_unique_resources_latest,render_sync_package_cache_retained_resource_bytes_latest,render_sync_package_cache_retained_unique_resource_bytes_latest,adaptive_action_types_latest,adaptive_action_max_fps_latest,renderer_output_windows_latest,renderer_output_windows_max,renderer_static_surfaces_latest,renderer_static_surfaces_max,renderer_slideshow_surfaces_latest,renderer_slideshow_surfaces_max,renderer_static_surface_resource_references_latest,renderer_static_surface_resource_bytes_latest,renderer_slideshow_resource_references_latest,renderer_slideshow_resource_bytes_latest,renderer_static_surface_unique_resources_latest,renderer_static_surface_unique_resource_bytes_latest,renderer_slideshow_unique_resources_latest,renderer_slideshow_unique_resource_bytes_latest,renderer_video_surfaces_latest,renderer_video_surfaces_max,renderer_video_pipelines_latest,renderer_video_pipelines_max,renderer_video_pipeline_source_references_latest,renderer_video_pipeline_source_reference_bytes_latest,renderer_video_pipeline_unique_sources_latest,renderer_video_pipeline_unique_source_bytes_latest,renderer_video_qos_messages_max,renderer_video_qos_dropped_max,renderer_video_gtk_frame_clock_ticks_max,render_sync_package_cache_max_retained_unique_resource_bytes_latest,render_sync_static_image_cache_bytes_latest,render_sync_static_image_cache_max_bytes_latest,render_sync_package_cache_retained_preview_resource_references_latest,render_sync_package_cache_retained_unique_preview_resources_latest,render_sync_package_cache_retained_preview_resource_bytes_latest,render_sync_package_cache_retained_unique_preview_resource_bytes_latest\n' > "$resource_baseline_path"
 
 write_config_profile() {
   local config_file="$1"
@@ -1050,6 +1090,10 @@ record_resource_baseline() {
     "$(summary_value_or_empty "$telemetry_summary" render_sync_package_cache_max_retained_unique_resource_bytes_latest)"
     "$(summary_value_or_empty "$telemetry_summary" render_sync_static_image_cache_bytes_latest)"
     "$(summary_value_or_empty "$telemetry_summary" render_sync_static_image_cache_max_bytes_latest)"
+    "$(summary_value_or_empty "$telemetry_summary" render_sync_package_cache_retained_preview_resource_references_latest)"
+    "$(summary_value_or_empty "$telemetry_summary" render_sync_package_cache_retained_unique_preview_resources_latest)"
+    "$(summary_value_or_empty "$telemetry_summary" render_sync_package_cache_retained_preview_resource_bytes_latest)"
+    "$(summary_value_or_empty "$telemetry_summary" render_sync_package_cache_retained_unique_preview_resource_bytes_latest)"
   )
   local index
   for index in "${!row[@]}"; do
@@ -1323,6 +1367,18 @@ append_render_sync_resource_expectations() {
   fi
   if [[ -n "$expect_render_sync_package_cache_retained_unique_resource_bytes_latest_at_most" ]]; then
     args_ref+=(--expect-render-sync-package-cache-retained-unique-resource-bytes-latest-at-most "$expect_render_sync_package_cache_retained_unique_resource_bytes_latest_at_most")
+  fi
+  if [[ -n "$expect_render_sync_package_cache_retained_preview_resource_references_latest_at_most" ]]; then
+    args_ref+=(--expect-render-sync-package-cache-retained-preview-resource-references-latest-at-most "$expect_render_sync_package_cache_retained_preview_resource_references_latest_at_most")
+  fi
+  if [[ -n "$expect_render_sync_package_cache_retained_unique_preview_resources_latest_at_most" ]]; then
+    args_ref+=(--expect-render-sync-package-cache-retained-unique-preview-resources-latest-at-most "$expect_render_sync_package_cache_retained_unique_preview_resources_latest_at_most")
+  fi
+  if [[ -n "$expect_render_sync_package_cache_retained_preview_resource_bytes_latest_at_most" ]]; then
+    args_ref+=(--expect-render-sync-package-cache-retained-preview-resource-bytes-latest-at-most "$expect_render_sync_package_cache_retained_preview_resource_bytes_latest_at_most")
+  fi
+  if [[ -n "$expect_render_sync_package_cache_retained_unique_preview_resource_bytes_latest_at_most" ]]; then
+    args_ref+=(--expect-render-sync-package-cache-retained-unique-preview-resource-bytes-latest-at-most "$expect_render_sync_package_cache_retained_unique_preview_resource_bytes_latest_at_most")
   fi
 }
 

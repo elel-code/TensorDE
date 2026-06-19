@@ -107,6 +107,14 @@ Options:
                      Require latest retained package-cache resource reference bytes to be at most bytes
   --expect-render-sync-package-cache-retained-unique-resource-bytes-latest-at-most <bytes>
                      Require latest retained package-cache unique resource bytes to be at most bytes
+  --expect-render-sync-package-cache-retained-preview-resource-references-latest-at-most <count>
+                     Require latest retained package-cache preview resource references to be at most count
+  --expect-render-sync-package-cache-retained-unique-preview-resources-latest-at-most <count>
+                     Require latest retained package-cache unique preview resources to be at most count
+  --expect-render-sync-package-cache-retained-preview-resource-bytes-latest-at-most <bytes>
+                     Require latest retained package-cache preview resource reference bytes to be at most bytes
+  --expect-render-sync-package-cache-retained-unique-preview-resource-bytes-latest-at-most <bytes>
+                     Require latest retained package-cache unique preview resource bytes to be at most bytes
   --expect-render-sync-planned-image-resource-references-latest-at-most <count>
                      Require latest planned image resource references to be at most count
   --expect-render-sync-planned-unique-image-resources-latest-at-most <count>
@@ -198,6 +206,10 @@ expect_render_sync_package_cache_retained_resource_references_latest_at_most=""
 expect_render_sync_package_cache_retained_unique_resources_latest_at_most=""
 expect_render_sync_package_cache_retained_resource_bytes_latest_at_most=""
 expect_render_sync_package_cache_retained_unique_resource_bytes_latest_at_most=""
+expect_render_sync_package_cache_retained_preview_resource_references_latest_at_most=""
+expect_render_sync_package_cache_retained_unique_preview_resources_latest_at_most=""
+expect_render_sync_package_cache_retained_preview_resource_bytes_latest_at_most=""
+expect_render_sync_package_cache_retained_unique_preview_resource_bytes_latest_at_most=""
 expect_render_sync_planned_image_resource_references_latest_at_most=""
 expect_render_sync_planned_unique_image_resources_latest_at_most=""
 expect_render_sync_planned_image_resource_reference_bytes_latest_at_most=""
@@ -533,6 +545,30 @@ while [[ $# -gt 0 ]]; do
       sample_performance=1
       shift 2
       ;;
+    --expect-render-sync-package-cache-retained-preview-resource-references-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-package-cache-retained-preview-resource-references-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_package_cache_retained_preview_resource_references_latest_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-render-sync-package-cache-retained-unique-preview-resources-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-package-cache-retained-unique-preview-resources-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_package_cache_retained_unique_preview_resources_latest_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-render-sync-package-cache-retained-preview-resource-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-package-cache-retained-preview-resource-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_package_cache_retained_preview_resource_bytes_latest_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-render-sync-package-cache-retained-unique-preview-resource-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-package-cache-retained-unique-preview-resource-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_package_cache_retained_unique_preview_resource_bytes_latest_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
     --expect-render-sync-planned-image-resource-references-latest-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-render-sync-planned-image-resource-references-latest-at-most requires a value" >&2; exit 2; }
       expect_render_sync_planned_image_resource_references_latest_at_most="$2"
@@ -758,6 +794,10 @@ for render_sync_resource_expectation in \
   "$expect_render_sync_package_cache_retained_unique_resources_latest_at_most" \
   "$expect_render_sync_package_cache_retained_resource_bytes_latest_at_most" \
   "$expect_render_sync_package_cache_retained_unique_resource_bytes_latest_at_most" \
+  "$expect_render_sync_package_cache_retained_preview_resource_references_latest_at_most" \
+  "$expect_render_sync_package_cache_retained_unique_preview_resources_latest_at_most" \
+  "$expect_render_sync_package_cache_retained_preview_resource_bytes_latest_at_most" \
+  "$expect_render_sync_package_cache_retained_unique_preview_resource_bytes_latest_at_most" \
   "$expect_render_sync_planned_image_resource_references_latest_at_most" \
   "$expect_render_sync_planned_unique_image_resources_latest_at_most" \
   "$expect_render_sync_planned_image_resource_reference_bytes_latest_at_most" \
@@ -1045,6 +1085,10 @@ expect_render_sync_package_cache_retained_resource_references_latest_at_most: ${
 expect_render_sync_package_cache_retained_unique_resources_latest_at_most: ${expect_render_sync_package_cache_retained_unique_resources_latest_at_most:-none}
 expect_render_sync_package_cache_retained_resource_bytes_latest_at_most: ${expect_render_sync_package_cache_retained_resource_bytes_latest_at_most:-none}
 expect_render_sync_package_cache_retained_unique_resource_bytes_latest_at_most: ${expect_render_sync_package_cache_retained_unique_resource_bytes_latest_at_most:-none}
+expect_render_sync_package_cache_retained_preview_resource_references_latest_at_most: ${expect_render_sync_package_cache_retained_preview_resource_references_latest_at_most:-none}
+expect_render_sync_package_cache_retained_unique_preview_resources_latest_at_most: ${expect_render_sync_package_cache_retained_unique_preview_resources_latest_at_most:-none}
+expect_render_sync_package_cache_retained_preview_resource_bytes_latest_at_most: ${expect_render_sync_package_cache_retained_preview_resource_bytes_latest_at_most:-none}
+expect_render_sync_package_cache_retained_unique_preview_resource_bytes_latest_at_most: ${expect_render_sync_package_cache_retained_unique_preview_resource_bytes_latest_at_most:-none}
 expect_render_sync_planned_image_resource_references_latest_at_most: ${expect_render_sync_planned_image_resource_references_latest_at_most:-none}
 expect_render_sync_planned_unique_image_resources_latest_at_most: ${expect_render_sync_planned_unique_image_resources_latest_at_most:-none}
 expect_render_sync_planned_image_resource_reference_bytes_latest_at_most: ${expect_render_sync_planned_image_resource_reference_bytes_latest_at_most:-none}
@@ -1276,6 +1320,10 @@ append_telemetry_evidence_summary() {
     render_sync_package_cache_retained_unique_resources_latest \
     render_sync_package_cache_retained_resource_bytes_latest \
     render_sync_package_cache_retained_unique_resource_bytes_latest \
+    render_sync_package_cache_retained_preview_resource_references_latest \
+    render_sync_package_cache_retained_unique_preview_resources_latest \
+    render_sync_package_cache_retained_preview_resource_bytes_latest \
+    render_sync_package_cache_retained_unique_preview_resource_bytes_latest \
     renderer_output_windows_latest \
     renderer_output_windows_max \
     renderer_static_surfaces_latest \
@@ -1363,6 +1411,10 @@ expect_render_sync_package_cache_retained_resource_references_latest_at_most: ${
 expect_render_sync_package_cache_retained_unique_resources_latest_at_most: ${expect_render_sync_package_cache_retained_unique_resources_latest_at_most:-none}
 expect_render_sync_package_cache_retained_resource_bytes_latest_at_most: ${expect_render_sync_package_cache_retained_resource_bytes_latest_at_most:-none}
 expect_render_sync_package_cache_retained_unique_resource_bytes_latest_at_most: ${expect_render_sync_package_cache_retained_unique_resource_bytes_latest_at_most:-none}
+expect_render_sync_package_cache_retained_preview_resource_references_latest_at_most: ${expect_render_sync_package_cache_retained_preview_resource_references_latest_at_most:-none}
+expect_render_sync_package_cache_retained_unique_preview_resources_latest_at_most: ${expect_render_sync_package_cache_retained_unique_preview_resources_latest_at_most:-none}
+expect_render_sync_package_cache_retained_preview_resource_bytes_latest_at_most: ${expect_render_sync_package_cache_retained_preview_resource_bytes_latest_at_most:-none}
+expect_render_sync_package_cache_retained_unique_preview_resource_bytes_latest_at_most: ${expect_render_sync_package_cache_retained_unique_preview_resource_bytes_latest_at_most:-none}
 expect_render_sync_planned_image_resource_references_latest_at_most: ${expect_render_sync_planned_image_resource_references_latest_at_most:-none}
 expect_render_sync_planned_unique_image_resources_latest_at_most: ${expect_render_sync_planned_unique_image_resources_latest_at_most:-none}
 expect_render_sync_planned_image_resource_reference_bytes_latest_at_most: ${expect_render_sync_planned_image_resource_reference_bytes_latest_at_most:-none}
@@ -1568,6 +1620,18 @@ append_render_sync_resource_expectations() {
   fi
   if [[ -n "$expect_render_sync_package_cache_retained_unique_resource_bytes_latest_at_most" ]]; then
     args_ref+=(--expect-render-sync-package-cache-retained-unique-resource-bytes-latest-at-most "$expect_render_sync_package_cache_retained_unique_resource_bytes_latest_at_most")
+  fi
+  if [[ -n "$expect_render_sync_package_cache_retained_preview_resource_references_latest_at_most" ]]; then
+    args_ref+=(--expect-render-sync-package-cache-retained-preview-resource-references-latest-at-most "$expect_render_sync_package_cache_retained_preview_resource_references_latest_at_most")
+  fi
+  if [[ -n "$expect_render_sync_package_cache_retained_unique_preview_resources_latest_at_most" ]]; then
+    args_ref+=(--expect-render-sync-package-cache-retained-unique-preview-resources-latest-at-most "$expect_render_sync_package_cache_retained_unique_preview_resources_latest_at_most")
+  fi
+  if [[ -n "$expect_render_sync_package_cache_retained_preview_resource_bytes_latest_at_most" ]]; then
+    args_ref+=(--expect-render-sync-package-cache-retained-preview-resource-bytes-latest-at-most "$expect_render_sync_package_cache_retained_preview_resource_bytes_latest_at_most")
+  fi
+  if [[ -n "$expect_render_sync_package_cache_retained_unique_preview_resource_bytes_latest_at_most" ]]; then
+    args_ref+=(--expect-render-sync-package-cache-retained-unique-preview-resource-bytes-latest-at-most "$expect_render_sync_package_cache_retained_unique_preview_resource_bytes_latest_at_most")
   fi
   if [[ -n "$expect_renderer_static_surface_resource_references_latest_at_most" ]]; then
     args_ref+=(--expect-renderer-static-surface-resource-references-latest-at-most "$expect_renderer_static_surface_resource_references_latest_at_most")
