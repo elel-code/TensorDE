@@ -369,6 +369,12 @@ video_keys=(
   video_memory_features_latest
   video_sink_memory_features_latest
   video_zero_copy_evidence_latest
+  video_memory_retention_level_latest
+  video_memory_retention_estimated_min_pool_bytes_max
+  video_memory_retention_estimated_max_pool_bytes_max
+  video_memory_retention_system_memory_pool_reports_max
+  video_memory_retention_dmabuf_pool_reports_max
+  video_memory_retention_sink_frame_retention_latest
   video_position_delta_ms_max
   video_qos_messages_max
   video_qos_dropped_max

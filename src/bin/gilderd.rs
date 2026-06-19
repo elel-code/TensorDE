@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 #[cfg(feature = "video-renderer")]
 use std::collections::BTreeSet;
+#[cfg(feature = "gtk-renderer")]
+use std::collections::VecDeque;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -11,7 +13,10 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 #[cfg(feature = "gtk-renderer")]
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use gilder::config::{
     ApplicationPaths, CacheConfig, DynamicPausePolicy, GilderConfig, OutputConfig,
@@ -21,6 +26,9 @@ use gilder::ipc::RequestMethod;
 use gilder::renderer::StaticRenderSyncPlan;
 use gilder::state::{AppState, WallpaperAssignment};
 use serde_json::{Map, Value, json};
+
+#[cfg(all(feature = "gtk-renderer", feature = "video-renderer"))]
+const GTK_VIDEO_FRAME_STATS_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(500);
 
 fn main() {
     if let Err(err) = run() {
@@ -153,6 +161,8 @@ fn run_gtk_daemon(
     use gtk::prelude::*;
 
     let (renderer_sender, renderer_receiver) = mpsc::channel::<StaticRenderSyncPlan>();
+    let renderer_sync_queue = Arc::new(Mutex::new(VecDeque::<StaticRenderSyncPlan>::new()));
+    spawn_gtk_render_sync_bridge(renderer_receiver, Arc::clone(&renderer_sync_queue));
     renderer_updates.push(renderer_sender);
     let runtime = Arc::new(DaemonRuntime::new(
         context,
@@ -164,13 +174,14 @@ fn run_gtk_daemon(
     let renderer = gilder::renderer::gtk::GtkStaticRenderer::new("io.github.elelcode.Gilder");
     let application = renderer.application().clone();
     let renderer = Rc::new(RefCell::new(renderer));
-    let receiver = Rc::new(RefCell::new(Some(renderer_receiver)));
-    let timers_installed = Rc::new(std::cell::Cell::new(false));
+    let timers_installed = Rc::new(Cell::new(false));
+    let last_video_snapshot = Rc::new(Cell::new(None));
 
     let runtime_for_activate = Arc::clone(&runtime);
     let renderer_for_activate = Rc::clone(&renderer);
-    let receiver_for_activate = Rc::clone(&receiver);
+    let queue_for_activate = Arc::clone(&renderer_sync_queue);
     let timers_for_activate = Rc::clone(&timers_installed);
+    let last_video_snapshot_for_activate = Rc::clone(&last_video_snapshot);
     application.connect_activate(move |_| {
         match refreshed_render_sync(&runtime_for_activate) {
             Ok(sync) => {
@@ -189,13 +200,12 @@ fn run_gtk_daemon(
             return;
         }
 
-        if let Some(receiver) = receiver_for_activate.borrow_mut().take() {
-            schedule_gtk_renderer_tick(
-                Rc::clone(&renderer_for_activate),
-                Rc::new(RefCell::new(receiver)),
-                Arc::clone(&runtime_for_activate),
-            );
-        }
+        schedule_gtk_renderer_tick(
+            Rc::clone(&renderer_for_activate),
+            Arc::clone(&queue_for_activate),
+            Arc::clone(&runtime_for_activate),
+            Rc::clone(&last_video_snapshot_for_activate),
+        );
 
         let runtime_for_refresh = Arc::clone(&runtime_for_activate);
         let refresh_interval = runtime_desktop_refresh_interval(&runtime_for_activate);
@@ -221,31 +231,104 @@ fn run_gtk_daemon(
 }
 
 #[cfg(feature = "gtk-renderer")]
+fn spawn_gtk_render_sync_bridge(
+    receiver: mpsc::Receiver<StaticRenderSyncPlan>,
+    queue: Arc<Mutex<VecDeque<StaticRenderSyncPlan>>>,
+) {
+    thread::spawn(move || {
+        while let Ok(sync) = receiver.recv() {
+            match queue.lock() {
+                Ok(mut queue) => queue.push_back(sync),
+                Err(_) => {
+                    eprintln!("gilderd: GTK renderer update queue lock poisoned");
+                    break;
+                }
+            }
+        }
+    });
+}
+
+#[cfg(feature = "gtk-renderer")]
+fn apply_gtk_render_sync_queue(
+    renderer: &Rc<RefCell<gilder::renderer::gtk::GtkStaticRenderer>>,
+    queue: &Arc<Mutex<VecDeque<StaticRenderSyncPlan>>>,
+    runtime: &DaemonRuntime,
+) -> bool {
+    let mut applied = false;
+    loop {
+        let sync = match queue.lock() {
+            Ok(mut queue) => queue.pop_front(),
+            Err(_) => {
+                eprintln!("gilderd: GTK renderer update queue lock poisoned");
+                return applied;
+            }
+        };
+        let Some(sync) = sync else {
+            return applied;
+        };
+        {
+            renderer.borrow_mut().sync_static_render_plan(&sync);
+        }
+        applied = true;
+        runtime.store_renderer_runtime_snapshot(renderer_runtime_snapshot(&renderer.borrow()));
+    }
+}
+
+#[cfg(feature = "gtk-renderer")]
 fn schedule_gtk_renderer_tick(
     renderer: Rc<RefCell<gilder::renderer::gtk::GtkStaticRenderer>>,
-    receiver: Rc<RefCell<mpsc::Receiver<StaticRenderSyncPlan>>>,
+    queue: Arc<Mutex<VecDeque<StaticRenderSyncPlan>>>,
     runtime: Arc<DaemonRuntime>,
+    last_video_snapshot: Rc<Cell<Option<Instant>>>,
 ) {
     let interval = renderer.borrow().next_runtime_tick_interval();
     gtk::glib::timeout_add_local_once(interval, move || {
-        let mut should_store_snapshot = false;
-        {
+        let applied_render_sync = apply_gtk_render_sync_queue(&renderer, &queue, &runtime);
+        if applied_render_sync {
+            last_video_snapshot.set(Some(Instant::now()));
+        }
+        let should_store_snapshot = {
             let mut renderer = renderer.borrow_mut();
-            while let Ok(sync) = receiver.borrow().try_recv() {
-                renderer.sync_static_render_plan(&sync);
-                should_store_snapshot = true;
-            }
-            should_store_snapshot |= renderer.tick_slideshows();
+            let slideshow_changed = renderer.tick_slideshows();
             #[cfg(feature = "video-renderer")]
             {
-                should_store_snapshot |= renderer.poll_video_buses();
+                slideshow_changed || renderer.poll_video_buses()
             }
-        }
+            #[cfg(not(feature = "video-renderer"))]
+            {
+                slideshow_changed
+            }
+        };
         if should_store_snapshot {
             runtime.store_renderer_runtime_snapshot(renderer_runtime_snapshot(&renderer.borrow()));
+        } else {
+            #[cfg(feature = "video-renderer")]
+            {
+                let frame_stats_snapshot_due =
+                    gtk_video_frame_stats_snapshot_due(&renderer, last_video_snapshot.get());
+                if frame_stats_snapshot_due {
+                    runtime.update_renderer_video_frame_stats(
+                        renderer.borrow().video_frame_stats_snapshot(),
+                    );
+                    last_video_snapshot.set(Some(Instant::now()));
+                }
+            }
         }
-        schedule_gtk_renderer_tick(renderer, receiver, runtime);
+        schedule_gtk_renderer_tick(renderer, queue, runtime, last_video_snapshot);
     });
+}
+
+#[cfg(all(feature = "gtk-renderer", feature = "video-renderer"))]
+fn gtk_video_frame_stats_snapshot_due(
+    renderer: &Rc<RefCell<gilder::renderer::gtk::GtkStaticRenderer>>,
+    last_snapshot_at: Option<Instant>,
+) -> bool {
+    if renderer.borrow().resource_snapshot().video_shared_runtimes == 0 {
+        return false;
+    }
+    last_snapshot_at.is_none_or(|last_snapshot_at| {
+        Instant::now().duration_since(last_snapshot_at) >= GTK_VIDEO_FRAME_STATS_SNAPSHOT_INTERVAL
+    })
 }
 
 #[cfg(feature = "gtk-renderer")]
@@ -518,6 +601,20 @@ impl DaemonRuntime {
         store_renderer_runtime_snapshot(&self.renderer_runtime, snapshot);
     }
 
+    #[cfg(all(feature = "gtk-renderer", feature = "video-renderer"))]
+    fn update_renderer_video_frame_stats(
+        &self,
+        snapshots: Vec<gilder::renderer::gtk::GtkVideoFrameStatsSnapshot>,
+    ) {
+        if snapshots.is_empty() {
+            return;
+        }
+        match self.renderer_runtime.lock() {
+            Ok(mut snapshot) => snapshot.update_video_frame_stats(snapshots),
+            Err(_) => eprintln!("gilderd: renderer runtime snapshot lock poisoned"),
+        }
+    }
+
     fn renderer_runtime_snapshot(&self) -> RendererRuntimeSnapshot {
         match self.renderer_runtime.lock() {
             Ok(snapshot) => snapshot.clone(),
@@ -644,6 +741,39 @@ impl RendererRuntimeSnapshot {
     ) -> Self {
         self.video_pipelines = Self::from_video_pipeline_snapshots(snapshots).video_pipelines;
         self
+    }
+
+    #[cfg(all(feature = "gtk-renderer", feature = "video-renderer"))]
+    fn update_video_frame_stats(
+        &mut self,
+        snapshots: Vec<gilder::renderer::gtk::GtkVideoFrameStatsSnapshot>,
+    ) {
+        let frame_stats_by_output = snapshots
+            .into_iter()
+            .filter_map(|snapshot| {
+                serde_json::to_value(snapshot.frame_stats)
+                    .ok()
+                    .map(|frame_stats| (snapshot.output_name, frame_stats))
+            })
+            .collect::<BTreeMap<_, _>>();
+        if frame_stats_by_output.is_empty() {
+            return;
+        }
+        for pipeline in &mut self.video_pipelines {
+            let Some(output_name) = pipeline
+                .get("output_name")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let Some(frame_stats) = frame_stats_by_output.get(output_name) else {
+                continue;
+            };
+            let Some(pipeline) = pipeline.as_object_mut() else {
+                continue;
+            };
+            pipeline.insert("frame_stats".to_owned(), frame_stats.clone());
+        }
     }
 }
 

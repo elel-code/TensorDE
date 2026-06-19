@@ -13,8 +13,9 @@ use crate::policy::RenderMode;
 use crate::renderer::video::{
     GtkFrameClockPhase, VideoFrameStats, VideoPipelineDiagnostics, VideoPipelineDiagnosticsCache,
     VideoPipelineSnapshot, VideoSinkTuningReport, apply_decoder_rank_policy,
-    configure_video_sink_low_memory, decoder_policy_status, playback_duration_ms,
-    playback_position_ms,
+    configure_video_sink_low_memory, decoder_policy_status, decoder_report_from_message,
+    merge_decoder_reports, playback_duration_ms, playback_position_ms,
+    video_memory_retention_report,
 };
 use gtk::gdk;
 use gtk::gio;
@@ -72,6 +73,13 @@ pub struct GtkRendererResourceSnapshot {
     pub video_pipeline_source_reference_bytes: u64,
     pub video_pipeline_unique_sources: usize,
     pub video_pipeline_unique_source_bytes: u64,
+}
+
+#[cfg(feature = "video-renderer")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GtkVideoFrameStatsSnapshot {
+    pub output_name: String,
+    pub frame_stats: VideoFrameStats,
 }
 
 struct RenderedOutput {
@@ -323,8 +331,7 @@ impl GtkStaticRenderer {
 
     #[cfg(feature = "video-renderer")]
     pub fn poll_video_buses(&mut self) -> bool {
-        let had_runtimes = self.video_runtimes.len() > 0;
-        let errors = self.video_runtimes.poll_buses();
+        let (observed_decoder_changed, errors) = self.video_runtimes.poll_buses();
         let had_errors = !errors.is_empty();
         for (key, err) in errors {
             let output_names = self
@@ -358,7 +365,7 @@ impl GtkStaticRenderer {
                 }
             }
         }
-        had_runtimes || had_errors
+        observed_decoder_changed || had_errors
     }
 
     pub fn resource_snapshot(&self) -> GtkRendererResourceSnapshot {
@@ -434,6 +441,23 @@ impl GtkStaticRenderer {
                 output.video.as_ref().and_then(|video| {
                     self.video_runtimes
                         .snapshot_for_attachment(output_name, video)
+                })
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "video-renderer")]
+    pub fn video_frame_stats_snapshot(&self) -> Vec<GtkVideoFrameStatsSnapshot> {
+        self.windows
+            .iter()
+            .filter_map(|(output_name, output)| {
+                output.video.as_ref().and_then(|video| {
+                    self.video_runtimes
+                        .frame_stats_for_attachment(video)
+                        .map(|frame_stats| GtkVideoFrameStatsSnapshot {
+                            output_name: output_name.clone(),
+                            frame_stats,
+                        })
                 })
             })
             .collect()
@@ -1357,17 +1381,16 @@ impl GtkVideoRuntimePool {
         }
     }
 
-    fn poll_buses(&mut self) -> Vec<(GtkVideoRuntimeKey, GtkVideoError)> {
-        self.runtimes
-            .iter()
-            .filter_map(|(key, runtime)| {
-                runtime
-                    .borrow_mut()
-                    .poll_bus()
-                    .err()
-                    .map(|err| (key.clone(), err))
-            })
-            .collect()
+    fn poll_buses(&mut self) -> (bool, Vec<(GtkVideoRuntimeKey, GtkVideoError)>) {
+        let mut observed_decoder_changed = false;
+        let mut errors = Vec::new();
+        for (key, runtime) in &self.runtimes {
+            match runtime.borrow_mut().poll_bus() {
+                Ok(changed) => observed_decoder_changed |= changed,
+                Err(err) => errors.push((key.clone(), err)),
+            }
+        }
+        (observed_decoder_changed, errors)
     }
 
     fn snapshot_for_attachment(
@@ -1378,6 +1401,18 @@ impl GtkVideoRuntimePool {
         let runtime = self.runtimes.get(&attachment.key)?;
         let runtime = runtime.borrow();
         Some(runtime.snapshot_for_attachment(output_name, attachment))
+    }
+
+    fn frame_stats_for_attachment(
+        &self,
+        attachment: &GtkVideoAttachment,
+    ) -> Option<VideoFrameStats> {
+        let runtime = self.runtimes.get(&attachment.key)?;
+        let runtime = runtime.borrow();
+        Some(merge_video_frame_stats(
+            runtime.frame_stats.borrow().clone(),
+            attachment.frame_stats.borrow().clone(),
+        ))
     }
 }
 
@@ -1460,6 +1495,7 @@ struct GtkSharedVideoRuntime {
     start_offset_ms: u64,
     frame_stats: Rc<RefCell<VideoFrameStats>>,
     diagnostics: VideoPipelineDiagnosticsCache,
+    observed_decoder_reports: BTreeMap<String, crate::renderer::video::VideoDecoderReport>,
 }
 
 #[cfg(feature = "video-renderer")]
@@ -1482,6 +1518,7 @@ impl GtkSharedVideoRuntime {
             start_offset_ms: 0,
             frame_stats: Rc::new(RefCell::new(VideoFrameStats::default())),
             diagnostics: VideoPipelineDiagnosticsCache::default(),
+            observed_decoder_reports: BTreeMap::new(),
         };
         runtime.apply_muted(plan.muted);
         runtime.apply_start_offset(plan.start_offset_ms)?;
@@ -1554,11 +1591,19 @@ impl GtkSharedVideoRuntime {
         self.set_state(gst_state_for_mode(mode))
     }
 
-    fn poll_bus(&mut self) -> Result<(), GtkVideoError> {
+    fn poll_bus(&mut self) -> Result<bool, GtkVideoError> {
+        let mut observed_decoder_changed = false;
         let Some(bus) = self.element.bus() else {
-            return Ok(());
+            return Ok(false);
         };
         while let Some(message) = bus.pop() {
+            if let Some(report) = decoder_report_from_message(&message) {
+                if !self.observed_decoder_reports.contains_key(&report.element) {
+                    self.observed_decoder_reports
+                        .insert(report.element.clone(), report);
+                    observed_decoder_changed = true;
+                }
+            }
             match message.view() {
                 gst::MessageView::Eos(_) => {
                     if self.loop_playback {
@@ -1600,7 +1645,7 @@ impl GtkSharedVideoRuntime {
                 _ => {}
             }
         }
-        Ok(())
+        Ok(observed_decoder_changed)
     }
 
     fn set_state(&mut self, state: gst::State) -> Result<(), GtkVideoError> {
@@ -1645,12 +1690,22 @@ impl GtkSharedVideoRuntime {
         attachment: &GtkVideoAttachment,
     ) -> VideoPipelineSnapshot {
         let VideoPipelineDiagnostics {
-            actual_decoder_reports,
+            actual_decoder_reports: current_decoder_reports,
             caps_reports,
             allocation_reports,
-            zero_copy_evidence,
-            memory_path,
+            zero_copy_evidence: _,
+            memory_path: _,
         } = self.diagnostics.snapshot(&self.element);
+        let actual_decoder_reports = merge_decoder_reports(
+            current_decoder_reports,
+            self.observed_decoder_reports.values().cloned(),
+        );
+        let zero_copy_evidence =
+            crate::renderer::video::zero_copy_evidence(&actual_decoder_reports, &caps_reports);
+        let memory_path =
+            crate::renderer::video::video_memory_path(&actual_decoder_reports, &caps_reports);
+        let retention_report =
+            video_memory_retention_report(&memory_path, &allocation_reports, &self.sink_tuning);
         let frame_limiter_max_fps = self
             .frame_limiter
             .as_ref()
@@ -1687,6 +1742,7 @@ impl GtkSharedVideoRuntime {
             allocation_reports,
             zero_copy_evidence,
             memory_path,
+            retention_report,
         }
     }
 }

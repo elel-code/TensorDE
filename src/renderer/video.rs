@@ -235,12 +235,23 @@ impl GstVideoRenderer {
             .iter()
             .map(|(output_name, pipeline)| {
                 let VideoPipelineDiagnostics {
-                    actual_decoder_reports,
+                    actual_decoder_reports: current_decoder_reports,
                     caps_reports,
                     allocation_reports,
-                    zero_copy_evidence,
-                    memory_path,
+                    zero_copy_evidence: _,
+                    memory_path: _,
                 } = pipeline.diagnostics.snapshot(&pipeline.element);
+                let actual_decoder_reports = merge_decoder_reports(
+                    current_decoder_reports,
+                    pipeline.observed_decoder_reports.values().cloned(),
+                );
+                let zero_copy_evidence = zero_copy_evidence(&actual_decoder_reports, &caps_reports);
+                let memory_path = video_memory_path(&actual_decoder_reports, &caps_reports);
+                let retention_report = video_memory_retention_report(
+                    &memory_path,
+                    &allocation_reports,
+                    &pipeline.sink_tuning,
+                );
                 let frame_limiter_max_fps = pipeline
                     .frame_limiter
                     .as_ref()
@@ -274,6 +285,7 @@ impl GstVideoRenderer {
                     allocation_reports,
                     zero_copy_evidence,
                     memory_path,
+                    retention_report,
                 }
             })
             .collect()
@@ -295,6 +307,7 @@ struct VideoPipeline {
     start_offset_ms: u64,
     frame_stats: VideoFrameStats,
     diagnostics: VideoPipelineDiagnosticsCache,
+    observed_decoder_reports: BTreeMap<String, VideoDecoderReport>,
 }
 
 impl VideoPipeline {
@@ -322,6 +335,7 @@ impl VideoPipeline {
             start_offset_ms: 0,
             frame_stats: VideoFrameStats::default(),
             diagnostics: VideoPipelineDiagnosticsCache::default(),
+            observed_decoder_reports: BTreeMap::new(),
         };
         pipeline.apply_muted(plan.muted);
         Ok(pipeline)
@@ -365,6 +379,11 @@ impl VideoPipeline {
             return Ok(());
         };
         while let Some(message) = bus.pop() {
+            if let Some(report) = decoder_report_from_message(&message) {
+                self.observed_decoder_reports
+                    .entry(report.element.clone())
+                    .or_insert(report);
+            }
             match message.view() {
                 gst::MessageView::Eos(_) => {
                     if self.loop_playback {
@@ -540,6 +559,42 @@ pub fn actual_decoder_reports(element: &gst::Element) -> Vec<VideoDecoderReport>
             element,
         })
         .collect()
+}
+
+pub(crate) fn decoder_report_from_message(message: &gst::Message) -> Option<VideoDecoderReport> {
+    let src = message.src()?;
+    let element = src.downcast_ref::<gst::Element>()?;
+    decoder_report_for_element(element)
+}
+
+fn decoder_report_for_element(element: &gst::Element) -> Option<VideoDecoderReport> {
+    let factory = element.factory()?;
+    let element = factory.name().to_string();
+    DECODER_ELEMENT_NAMES
+        .contains(&element.as_str())
+        .then(|| VideoDecoderReport {
+            class: decoder_class(&element),
+            element,
+        })
+}
+
+pub(crate) fn merge_decoder_reports<I>(
+    mut current: Vec<VideoDecoderReport>,
+    observed: I,
+) -> Vec<VideoDecoderReport>
+where
+    I: IntoIterator<Item = VideoDecoderReport>,
+{
+    for report in observed {
+        if !current
+            .iter()
+            .any(|current| current.element == report.element)
+        {
+            current.push(report);
+        }
+    }
+    current.sort_by(|left, right| left.element.cmp(&right.element));
+    current
 }
 
 pub fn apply_decoder_rank_policy(policy: VideoDecoderPolicy) {
@@ -998,6 +1053,259 @@ pub fn video_memory_path(
     }
 }
 
+pub fn video_memory_retention_report(
+    memory_path: &VideoMemoryPathReport,
+    allocation_reports: &[VideoAllocationReport],
+    sink_tuning: &VideoSinkTuningReport,
+) -> VideoMemoryRetentionReport {
+    let pool_stats = video_allocation_pool_stats(allocation_reports);
+    let sink_frame_retention = sink_frame_retention(sink_tuning);
+    let has_retained_sink_frame = matches!(
+        sink_frame_retention,
+        VideoSinkFrameRetention::LastSample
+            | VideoSinkFrameRetention::PrerollFrame
+            | VideoSinkFrameRetention::LastSampleAndPrerollFrame
+    );
+    let has_cpu_raw_path = matches!(
+        memory_path.level,
+        VideoMemoryPathLevel::CpuRawCaps
+            | VideoMemoryPathLevel::SoftwareDecodeCpuRaw
+            | VideoMemoryPathLevel::HardwareDecodeCpuRaw
+    );
+    let has_decoder_only_gpu_path = matches!(
+        memory_path.level,
+        VideoMemoryPathLevel::DecoderGpuMemory | VideoMemoryPathLevel::DecoderDmabuf
+    );
+    let has_pool_capacity = pool_stats.estimated_min_pool_bytes > 0;
+    let has_unbounded_pool = pool_stats.estimated_max_pool_bytes.is_none();
+
+    let level =
+        if has_retained_sink_frame || has_cpu_raw_path || pool_stats.system_memory_pool_reports > 0
+        {
+            VideoMemoryRetentionLevel::High
+        } else if has_decoder_only_gpu_path || has_pool_capacity || has_unbounded_pool {
+            VideoMemoryRetentionLevel::Medium
+        } else if memory_path.level == VideoMemoryPathLevel::Unknown
+            && pool_stats.pool_reports == 0
+            && sink_frame_retention == VideoSinkFrameRetention::Unknown
+        {
+            VideoMemoryRetentionLevel::Unknown
+        } else {
+            VideoMemoryRetentionLevel::Low
+        };
+
+    VideoMemoryRetentionReport {
+        level,
+        estimated_min_pool_bytes: pool_stats.estimated_min_pool_bytes,
+        estimated_max_pool_bytes: pool_stats.estimated_max_pool_bytes,
+        pool_reports: pool_stats.pool_reports,
+        system_memory_pool_reports: pool_stats.system_memory_pool_reports,
+        gpu_memory_pool_reports: pool_stats.gpu_memory_pool_reports,
+        dmabuf_pool_reports: pool_stats.dmabuf_pool_reports,
+        other_memory_pool_reports: pool_stats.other_memory_pool_reports,
+        sink_frame_retention,
+        notes: video_memory_retention_notes(level, memory_path, sink_frame_retention, &pool_stats),
+    }
+}
+
+#[derive(Debug, Default)]
+struct VideoAllocationPoolStats {
+    estimated_min_pool_bytes: u64,
+    estimated_max_pool_bytes: Option<u64>,
+    pool_reports: usize,
+    system_memory_pool_reports: usize,
+    gpu_memory_pool_reports: usize,
+    dmabuf_pool_reports: usize,
+    other_memory_pool_reports: usize,
+}
+
+fn video_allocation_pool_stats(
+    allocation_reports: &[VideoAllocationReport],
+) -> VideoAllocationPoolStats {
+    let mut stats = VideoAllocationPoolStats {
+        estimated_max_pool_bytes: Some(0),
+        ..VideoAllocationPoolStats::default()
+    };
+
+    for report in allocation_reports {
+        if report.pools.is_empty() {
+            continue;
+        }
+
+        let report_memory_class = allocation_report_memory_class(report);
+        for pool in &report.pools {
+            stats.pool_reports += 1;
+            match allocation_pool_memory_class(pool).unwrap_or(report_memory_class) {
+                VideoMemoryClass::SystemMemory => stats.system_memory_pool_reports += 1,
+                VideoMemoryClass::GpuMemory => stats.gpu_memory_pool_reports += 1,
+                VideoMemoryClass::Dmabuf => stats.dmabuf_pool_reports += 1,
+                VideoMemoryClass::OtherMemoryFeature => stats.other_memory_pool_reports += 1,
+            }
+            stats.estimated_min_pool_bytes = stats
+                .estimated_min_pool_bytes
+                .saturating_add(pool_buffer_bytes(pool.size, pool.min_buffers));
+            if pool.max_buffers == 0 {
+                stats.estimated_max_pool_bytes = None;
+            } else if let Some(max_bytes) = stats.estimated_max_pool_bytes.as_mut() {
+                *max_bytes =
+                    max_bytes.saturating_add(pool_buffer_bytes(pool.size, pool.max_buffers));
+            }
+        }
+    }
+
+    stats
+}
+
+fn allocation_pool_memory_class(pool: &VideoAllocationPoolReport) -> Option<VideoMemoryClass> {
+    if contains_dmabuf_memory_hint(&pool.pool) {
+        Some(VideoMemoryClass::Dmabuf)
+    } else if contains_gpu_memory_hint(&pool.pool) {
+        Some(VideoMemoryClass::GpuMemory)
+    } else {
+        None
+    }
+}
+
+fn allocation_report_memory_class(report: &VideoAllocationReport) -> VideoMemoryClass {
+    if contains_dmabuf_memory_hint(&report.caps)
+        || report
+            .params
+            .iter()
+            .any(|param| contains_dmabuf_memory_hint(&param.allocator))
+    {
+        return VideoMemoryClass::Dmabuf;
+    }
+    if contains_gpu_memory_hint(&report.caps)
+        || report
+            .params
+            .iter()
+            .any(|param| contains_gpu_memory_hint(&param.allocator))
+    {
+        return VideoMemoryClass::GpuMemory;
+    }
+    if report.caps.contains("video/") {
+        VideoMemoryClass::SystemMemory
+    } else {
+        VideoMemoryClass::OtherMemoryFeature
+    }
+}
+
+fn contains_dmabuf_memory_hint(value: &str) -> bool {
+    value.contains(DMABUF_MEMORY_FEATURE) || value.to_ascii_lowercase().contains("dmabuf")
+}
+
+fn contains_gpu_memory_hint(value: &str) -> bool {
+    GPU_MEMORY_FEATURES
+        .iter()
+        .any(|feature| value.contains(feature))
+        || {
+            let lower = value.to_ascii_lowercase();
+            lower.contains("glmemory")
+                || lower.contains("glbuffer")
+                || lower.contains("vulkan")
+                || lower.contains("vaapi")
+                || lower.contains("cuda")
+                || lower.contains("nvmm")
+        }
+}
+
+fn pool_buffer_bytes(size: u32, buffers: u32) -> u64 {
+    u64::from(size).saturating_mul(u64::from(buffers))
+}
+
+fn sink_frame_retention(sink_tuning: &VideoSinkTuningReport) -> VideoSinkFrameRetention {
+    let last_sample = sink_tuning.last_sample_enabled;
+    let preroll_frame = sink_tuning.preroll_frame_enabled;
+    match (last_sample, preroll_frame) {
+        (Some(true), Some(true)) => VideoSinkFrameRetention::LastSampleAndPrerollFrame,
+        (Some(true), _) => VideoSinkFrameRetention::LastSample,
+        (_, Some(true)) => VideoSinkFrameRetention::PrerollFrame,
+        (Some(false), _) | (_, Some(false)) => VideoSinkFrameRetention::Disabled,
+        _ => VideoSinkFrameRetention::Unknown,
+    }
+}
+
+fn video_memory_retention_notes(
+    level: VideoMemoryRetentionLevel,
+    memory_path: &VideoMemoryPathReport,
+    sink_frame_retention: VideoSinkFrameRetention,
+    pool_stats: &VideoAllocationPoolStats,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+
+    match sink_frame_retention {
+        VideoSinkFrameRetention::LastSample => {
+            notes.push("sink last-sample can retain the most recent frame".to_owned());
+        }
+        VideoSinkFrameRetention::PrerollFrame => {
+            notes.push("sink preroll frame can retain a decoded frame while paused".to_owned());
+        }
+        VideoSinkFrameRetention::LastSampleAndPrerollFrame => {
+            notes.push("sink last-sample and preroll frame retention are enabled".to_owned());
+        }
+        VideoSinkFrameRetention::Disabled => {
+            notes.push("sink last-sample and preroll frame retention are disabled".to_owned());
+        }
+        VideoSinkFrameRetention::Unknown => {
+            notes.push("sink frame retention properties were not observed".to_owned());
+        }
+    }
+
+    if matches!(
+        memory_path.level,
+        VideoMemoryPathLevel::CpuRawCaps
+            | VideoMemoryPathLevel::SoftwareDecodeCpuRaw
+            | VideoMemoryPathLevel::HardwareDecodeCpuRaw
+    ) {
+        notes.push("system-memory raw video caps can retain CPU-side frames".to_owned());
+    }
+    if matches!(
+        memory_path.level,
+        VideoMemoryPathLevel::DecoderGpuMemory | VideoMemoryPathLevel::DecoderDmabuf
+    ) {
+        notes.push(
+            "GPU/DMABuf caps are only observed before the sink; an implicit copy is still possible"
+                .to_owned(),
+        );
+    }
+    if pool_stats.estimated_min_pool_bytes > 0 {
+        notes.push(format!(
+            "allocation pools report at least {} bytes of minimum buffer capacity",
+            pool_stats.estimated_min_pool_bytes
+        ));
+    }
+    if pool_stats.estimated_max_pool_bytes.is_none() {
+        notes.push(
+            "at least one allocation pool reports an unbounded or unknown max_buffers value"
+                .to_owned(),
+        );
+    }
+    if pool_stats.system_memory_pool_reports > 0 {
+        notes.push("allocation query reports system-memory video buffer pools".to_owned());
+    }
+    if notes.is_empty() {
+        notes.push(
+            match level {
+                VideoMemoryRetentionLevel::Unknown => {
+                    "no negotiated caps, allocation pools, or sink retention properties observed"
+                }
+                VideoMemoryRetentionLevel::Low => {
+                    "no CPU-side frame retention risk observed in current runtime evidence"
+                }
+                VideoMemoryRetentionLevel::Medium => {
+                    "buffer-pool or decoder-side GPU evidence needs real PSS/USS correlation"
+                }
+                VideoMemoryRetentionLevel::High => {
+                    "CPU-side frame retention risk observed in current runtime evidence"
+                }
+            }
+            .to_owned(),
+        );
+    }
+
+    notes
+}
+
 fn video_memory_path_segments(caps_reports: &[VideoCapsReport]) -> Vec<VideoMemoryPathSegment> {
     caps_reports
         .iter()
@@ -1393,6 +1701,7 @@ pub struct VideoPipelineSnapshot {
     pub allocation_reports: Vec<VideoAllocationReport>,
     pub zero_copy_evidence: VideoZeroCopyEvidence,
     pub memory_path: VideoMemoryPathReport,
+    pub retention_report: VideoMemoryRetentionReport,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -1709,6 +2018,20 @@ pub struct VideoMemoryPathSegment {
     pub memory_class: VideoMemoryClass,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VideoMemoryRetentionReport {
+    pub level: VideoMemoryRetentionLevel,
+    pub estimated_min_pool_bytes: u64,
+    pub estimated_max_pool_bytes: Option<u64>,
+    pub pool_reports: usize,
+    pub system_memory_pool_reports: usize,
+    pub gpu_memory_pool_reports: usize,
+    pub dmabuf_pool_reports: usize,
+    pub other_memory_pool_reports: usize,
+    pub sink_frame_retention: VideoSinkFrameRetention,
+    pub notes: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum VideoMemoryPathLevel {
@@ -1731,6 +2054,25 @@ pub enum VideoMemoryClass {
     GpuMemory,
     Dmabuf,
     OtherMemoryFeature,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoMemoryRetentionLevel {
+    Unknown,
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoSinkFrameRetention {
+    Unknown,
+    Disabled,
+    LastSample,
+    PrerollFrame,
+    LastSampleAndPrerollFrame,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1957,6 +2299,35 @@ mod tests {
         assert_eq!(decoder_class("dav1ddec"), VideoDecoderClass::Software);
         assert_eq!(decoder_class("vaav1dec"), VideoDecoderClass::Hardware);
         assert_eq!(decoder_class("customdec"), VideoDecoderClass::Unknown);
+    }
+
+    #[test]
+    fn merges_transient_observed_decoder_reports() {
+        let current = Vec::new();
+        let observed = vec![
+            VideoDecoderReport {
+                element: "nvh264dec".to_owned(),
+                class: VideoDecoderClass::Hardware,
+            },
+            VideoDecoderReport {
+                element: "nvh264dec".to_owned(),
+                class: VideoDecoderClass::Hardware,
+            },
+        ];
+
+        let reports = merge_decoder_reports(current, observed);
+
+        assert_eq!(
+            reports,
+            vec![VideoDecoderReport {
+                element: "nvh264dec".to_owned(),
+                class: VideoDecoderClass::Hardware,
+            },]
+        );
+        assert_eq!(
+            decoder_policy_status(VideoDecoderPolicy::HardwareRequired, &reports),
+            VideoDecoderPolicyStatus::Satisfied
+        );
     }
 
     #[test]
@@ -2199,6 +2570,188 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reports_low_video_memory_retention_for_sink_dmabuf_without_frame_retention() {
+        let hardware = VideoDecoderReport {
+            element: "vaav1dec".to_owned(),
+            class: VideoDecoderClass::Hardware,
+        };
+        let memory_path = video_memory_path(
+            &[hardware],
+            &[caps_report(
+                "gtk4paintablesink0",
+                "sink",
+                "sink",
+                "memory:DMABuf",
+            )],
+        );
+        let sink_tuning = VideoSinkTuningReport {
+            last_sample_enabled: Some(false),
+            preroll_frame_enabled: Some(false),
+            ..VideoSinkTuningReport::default()
+        };
+
+        let report = video_memory_retention_report(&memory_path, &[], &sink_tuning);
+
+        assert_eq!(report.level, VideoMemoryRetentionLevel::Low);
+        assert_eq!(
+            report.sink_frame_retention,
+            VideoSinkFrameRetention::Disabled
+        );
+        assert_eq!(report.estimated_min_pool_bytes, 0);
+        assert_eq!(report.estimated_max_pool_bytes, Some(0));
+
+        let partial_sink_tuning = VideoSinkTuningReport {
+            last_sample_enabled: Some(false),
+            ..VideoSinkTuningReport::default()
+        };
+        let report = video_memory_retention_report(&memory_path, &[], &partial_sink_tuning);
+        assert_eq!(
+            report.sink_frame_retention,
+            VideoSinkFrameRetention::Disabled
+        );
+    }
+
+    #[test]
+    fn reports_high_video_memory_retention_for_cpu_raw_pools_or_retained_sink_frame() {
+        let hardware = VideoDecoderReport {
+            element: "vaav1dec".to_owned(),
+            class: VideoDecoderClass::Hardware,
+        };
+        let memory_path = video_memory_path(
+            &[hardware],
+            &[caps_report("videoconvert0", "src", "src", "")],
+        );
+        let allocation = allocation_report(
+            "videoconvert0",
+            "src",
+            "video/x-raw",
+            "GstVideoBufferPool",
+            4096,
+            2,
+            4,
+            "systemmemoryallocator0",
+        );
+        let sink_tuning = VideoSinkTuningReport {
+            last_sample_enabled: Some(true),
+            preroll_frame_enabled: Some(false),
+            ..VideoSinkTuningReport::default()
+        };
+
+        let report = video_memory_retention_report(&memory_path, &[allocation], &sink_tuning);
+
+        assert_eq!(report.level, VideoMemoryRetentionLevel::High);
+        assert_eq!(
+            report.sink_frame_retention,
+            VideoSinkFrameRetention::LastSample
+        );
+        assert_eq!(report.estimated_min_pool_bytes, 8192);
+        assert_eq!(report.estimated_max_pool_bytes, Some(16384));
+        assert_eq!(report.system_memory_pool_reports, 1);
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("system-memory raw video caps"))
+        );
+    }
+
+    #[test]
+    fn reports_medium_video_memory_retention_for_decoder_only_gpu_path() {
+        let hardware = VideoDecoderReport {
+            element: "vaav1dec".to_owned(),
+            class: VideoDecoderClass::Hardware,
+        };
+        let memory_path = video_memory_path(
+            &[hardware],
+            &[caps_report("vaav1dec0", "src", "src", "memory:GLMemory")],
+        );
+        let allocation = allocation_report(
+            "vaav1dec0",
+            "src",
+            "video/x-raw(memory:GLMemory)",
+            "GstGLBufferPool",
+            4096,
+            2,
+            0,
+            "glmemoryallocator0",
+        );
+        let sink_tuning = VideoSinkTuningReport {
+            last_sample_enabled: Some(false),
+            preroll_frame_enabled: Some(false),
+            ..VideoSinkTuningReport::default()
+        };
+
+        let report = video_memory_retention_report(&memory_path, &[allocation], &sink_tuning);
+
+        assert_eq!(report.level, VideoMemoryRetentionLevel::Medium);
+        assert_eq!(report.estimated_min_pool_bytes, 8192);
+        assert_eq!(report.estimated_max_pool_bytes, None);
+        assert_eq!(report.gpu_memory_pool_reports, 1);
+    }
+
+    #[test]
+    fn classifies_retention_pools_from_gl_and_dmabuf_pool_names() {
+        let hardware = VideoDecoderReport {
+            element: "nvh264dec".to_owned(),
+            class: VideoDecoderClass::Hardware,
+        };
+        let memory_path = video_memory_path(
+            &[hardware],
+            &[caps_report(
+                "gtk4paintablesink0",
+                "sink",
+                "sink",
+                "memory:GLMemory",
+            )],
+        );
+        let allocation = VideoAllocationReport {
+            element: "nvh264dec0".to_owned(),
+            pad: "src".to_owned(),
+            direction: "src".to_owned(),
+            query_scope: "peer".to_owned(),
+            caps: "video/x-raw, format=(string)NV12".to_owned(),
+            need_pool: true,
+            pools: vec![
+                VideoAllocationPoolReport {
+                    pool: "videodmabufpool12".to_owned(),
+                    size: 13_824,
+                    min_buffers: 1,
+                    max_buffers: 0,
+                },
+                VideoAllocationPoolReport {
+                    pool: "glbufferpool13".to_owned(),
+                    size: 13_824,
+                    min_buffers: 1,
+                    max_buffers: 0,
+                },
+            ],
+            params: vec![VideoAllocationParamReport {
+                allocator: "none".to_owned(),
+                flags: "MemoryFlags(0x0)".to_owned(),
+                align: 0,
+                prefix: 0,
+                padding: 0,
+            }],
+            metas: Vec::new(),
+        };
+        let sink_tuning = VideoSinkTuningReport {
+            last_sample_enabled: Some(false),
+            preroll_frame_enabled: Some(false),
+            ..VideoSinkTuningReport::default()
+        };
+
+        let report = video_memory_retention_report(&memory_path, &[allocation], &sink_tuning);
+
+        assert_eq!(report.level, VideoMemoryRetentionLevel::Medium);
+        assert_eq!(report.pool_reports, 2);
+        assert_eq!(report.system_memory_pool_reports, 0);
+        assert_eq!(report.dmabuf_pool_reports, 1);
+        assert_eq!(report.gpu_memory_pool_reports, 1);
+        assert_eq!(report.estimated_min_pool_bytes, 27_648);
+        assert_eq!(report.estimated_max_pool_bytes, None);
+    }
+
     fn caps_report(
         element: &str,
         pad: &str,
@@ -2225,6 +2778,40 @@ mod tests {
                 media_type: "video/x-raw".to_owned(),
                 features: memory_features,
             }],
+        }
+    }
+
+    fn allocation_report(
+        element: &str,
+        pad: &str,
+        caps: &str,
+        pool: &str,
+        size: u32,
+        min_buffers: u32,
+        max_buffers: u32,
+        allocator: &str,
+    ) -> VideoAllocationReport {
+        VideoAllocationReport {
+            element: element.to_owned(),
+            pad: pad.to_owned(),
+            direction: "src".to_owned(),
+            query_scope: "peer".to_owned(),
+            caps: caps.to_owned(),
+            need_pool: true,
+            pools: vec![VideoAllocationPoolReport {
+                pool: pool.to_owned(),
+                size,
+                min_buffers,
+                max_buffers,
+            }],
+            params: vec![VideoAllocationParamReport {
+                allocator: allocator.to_owned(),
+                flags: "MemoryFlags(0x0)".to_owned(),
+                align: 0,
+                prefix: 0,
+                padding: 0,
+            }],
+            metas: Vec::new(),
         }
     }
 

@@ -1210,6 +1210,15 @@ append_video_runtime_evidence_summary() {
     video_allocation_report_count_max \
     video_allocation_pools_latest \
     video_allocation_allocators_latest \
+    video_memory_retention_level_latest \
+    video_memory_retention_notes_latest \
+    video_memory_retention_estimated_min_pool_bytes_max \
+    video_memory_retention_estimated_max_pool_bytes_max \
+    video_memory_retention_pool_reports_max \
+    video_memory_retention_system_memory_pool_reports_max \
+    video_memory_retention_gpu_memory_pool_reports_max \
+    video_memory_retention_dmabuf_pool_reports_max \
+    video_memory_retention_sink_frame_retention_latest \
     video_position_moving_outputs \
     video_position_delta_ms_max \
     video_frame_limiter_enabled_rows \
@@ -1239,7 +1248,9 @@ append_video_runtime_evidence_summary() {
     $1 ~ /^video_memory_path\./ ||
     $1 ~ /^video_memory_path_segment\./ ||
     $1 ~ /^video_allocation_pool\./ ||
-    $1 ~ /^video_allocation_allocator\./ {
+    $1 ~ /^video_allocation_allocator\./ ||
+    $1 ~ /^video_memory_retention_level\./ ||
+    $1 ~ /^video_memory_retention_sink_frame_retention\./ {
       printf "%s_%s: %s\n", prefix, $1, $2
     }
   ' "$summary"
@@ -2106,7 +2117,7 @@ if [[ "$preflight" -eq 1 ]]; then
   finish_with_summary
 fi
 
-printf 'phase,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled\n' > "$video_runtime_path"
+printf 'phase,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled,memory_retention_level,memory_retention_notes,memory_retention_estimated_min_pool_bytes,memory_retention_estimated_max_pool_bytes,memory_retention_pool_reports,memory_retention_system_memory_pool_reports,memory_retention_gpu_memory_pool_reports,memory_retention_dmabuf_pool_reports,memory_retention_other_memory_pool_reports,memory_retention_sink_frame_retention\n' > "$video_runtime_path"
 
 mkdir -p "$work_dir/runtime" "$work_dir/config" "$work_dir/state" "$work_dir/cache" "$source_dir"
 if [[ "$measure_fullscreen_resume" -eq 1 ]]; then
