@@ -329,6 +329,12 @@ telemetry_keys=(
   renderer_output_windows_max
   renderer_static_surfaces_latest
   renderer_static_surfaces_max
+  renderer_static_picture_surfaces_latest
+  renderer_static_picture_surfaces_max
+  renderer_static_css_surfaces_latest
+  renderer_static_css_surfaces_max
+  renderer_static_color_surfaces_latest
+  renderer_static_color_surfaces_max
   renderer_slideshow_surfaces_latest
   renderer_slideshow_surfaces_max
   renderer_static_surface_resource_references_latest
@@ -337,6 +343,8 @@ telemetry_keys=(
   renderer_slideshow_resource_bytes_latest
   renderer_static_surface_unique_resources_latest
   renderer_static_surface_unique_resource_bytes_latest
+  renderer_static_surface_estimated_decoded_bytes_latest
+  renderer_static_surface_estimated_decoded_bytes_max
   renderer_slideshow_unique_resources_latest
   renderer_slideshow_unique_resource_bytes_latest
   renderer_video_surfaces_latest
