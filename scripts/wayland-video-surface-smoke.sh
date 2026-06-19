@@ -1497,7 +1497,19 @@ append_process_memory_evidence_summary() {
     first_nvidia_process_gpu_memory_mib \
     avg_nvidia_process_gpu_memory_mib \
     last_nvidia_process_gpu_memory_mib \
-    max_nvidia_process_gpu_memory_mib
+    max_nvidia_process_gpu_memory_mib \
+    memory_mapping_category_rows \
+    memory_category_anonymous_private_dirty_kib \
+    memory_category_heap_private_dirty_kib \
+    memory_category_dri_device_private_dirty_kib \
+    memory_category_nvidia_device_private_dirty_kib \
+    memory_category_nvidia_library_private_dirty_kib \
+    memory_category_shared_memory_private_dirty_kib \
+    memory_category_gstreamer_library_private_dirty_kib \
+    memory_category_gtk_library_private_dirty_kib \
+    memory_category_system_library_private_dirty_kib \
+    memory_category_file_mapping_private_dirty_kib \
+    memory_category_other_private_dirty_kib
   do
     printf '%s_%s: %s\n' "$prefix" "$key" "$(summary_value_or_none "$summary" "$key")"
   done
@@ -1599,21 +1611,25 @@ write_validation_report() {
   local active_video_runtime_summary
   local active_video_hardware_report
   local active_memory_mapping_summary
+  local active_memory_mapping_categories
   local paused_summary
   local paused_telemetry_summary
   local paused_video_runtime_summary
   local paused_video_hardware_report
   local paused_memory_mapping_summary
+  local paused_memory_mapping_categories
   active_summary="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "summary.txt")"
   active_telemetry_summary="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "telemetry-summary.txt")"
   active_video_runtime_summary="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "video-runtime-summary.txt")"
   active_video_hardware_report="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "video-hardware-report.txt")"
   active_memory_mapping_summary="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "memory-mapping-summary.txt")"
+  active_memory_mapping_categories="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "memory-mapping-categories.csv")"
   paused_summary="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "summary.txt")"
   paused_telemetry_summary="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "telemetry-summary.txt")"
   paused_video_runtime_summary="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "video-runtime-summary.txt")"
   paused_video_hardware_report="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "video-hardware-report.txt")"
   paused_memory_mapping_summary="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "memory-mapping-summary.txt")"
+  paused_memory_mapping_categories="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "memory-mapping-categories.csv")"
 
   cat > "$validation_report_path" <<EOF
 validation: wayland-video-surface-smoke
@@ -1690,11 +1706,13 @@ performance_active_telemetry_summary: ${active_telemetry_summary}
 performance_active_video_runtime_summary: ${active_video_runtime_summary}
 performance_active_video_hardware_report: ${active_video_hardware_report}
 performance_active_memory_mapping_summary: ${active_memory_mapping_summary}
+performance_active_memory_mapping_categories: ${active_memory_mapping_categories}
 performance_paused_summary: ${paused_summary}
 performance_paused_telemetry_summary: ${paused_telemetry_summary}
 performance_paused_video_runtime_summary: ${paused_video_runtime_summary}
 performance_paused_video_hardware_report: ${paused_video_hardware_report}
 performance_paused_memory_mapping_summary: ${paused_memory_mapping_summary}
+performance_paused_memory_mapping_categories: ${paused_memory_mapping_categories}
 fullscreen_resume_latency: $([[ "$measure_fullscreen_resume" -eq 1 ]] && printf '%s' "$resume_latency_summary" || printf 'none')
 metadata: ${metadata_path}
 checks: ${checks_path}

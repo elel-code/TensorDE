@@ -1010,11 +1010,15 @@ sample_smaps_rollup() {
 write_smaps_mapping_summary() {
   local target_pid="$1"
   local report="$2"
+  local categories_csv="${3:-}"
   local smaps="/proc/${target_pid}/smaps"
   local mappings_tmp="${report}.mappings.tmp"
   local categories_tmp="${report}.categories.tmp"
 
   if [[ ! -r "$smaps" ]]; then
+    if [[ -n "$categories_csv" ]]; then
+      printf 'category,pss_kib,rss_kib,private_clean_kib,private_dirty_kib,shared_kib\n' > "$categories_csv"
+    fi
     {
       printf 'report: process-memory-mappings\n'
       printf 'pid: %s\n' "$target_pid"
@@ -1119,7 +1123,70 @@ write_smaps_mapping_summary() {
     sort -k4,4nr "$categories_tmp" 2>/dev/null
   } > "$report"
 
+  if [[ -n "$categories_csv" ]]; then
+    {
+      printf 'category,pss_kib,rss_kib,private_clean_kib,private_dirty_kib,shared_kib\n'
+      sort -k6,6 "$categories_tmp" 2>/dev/null | awk '
+        {
+          printf "%s,%d,%d,%d,%d,%d\n", $6, $1, $2, $3, $4, $5
+        }
+      '
+    } > "$categories_csv"
+  fi
+
   rm -f "$mappings_tmp" "$categories_tmp" "${categories_tmp}.count"
+}
+
+append_smaps_mapping_category_summary() {
+  local categories_csv="$1"
+  local summary="$2"
+
+  if [[ ! -r "$categories_csv" ]]; then
+    printf 'memory_mapping_category_rows: 0\n' >> "$summary"
+    return 0
+  fi
+
+  awk -F, '
+    function sanitize(value) {
+      gsub(/[^A-Za-z0-9]+/, "_", value)
+      gsub(/^_+|_+$/, "", value)
+      return tolower(value)
+    }
+    BEGIN {
+      known_count = split("nvidia-device dri-device heap stack anonymous shared-memory nvidia-library gstreamer-library gtk-library gilder-binary system-library file-mapping other", known_categories, " ")
+      for (known_index = 1; known_index <= known_count; known_index++) {
+        category = known_categories[known_index]
+        known[category] = 1
+        category_order[known_index] = category
+      }
+    }
+    NR == 1 { next }
+    {
+      category = $1
+      if (category == "") { next }
+      if (!(category in known)) {
+        known[category] = 1
+        category_order[++known_count] = category
+      }
+      pss[category] = $2 + 0
+      rss[category] = $3 + 0
+      private_clean[category] = $4 + 0
+      private_dirty[category] = $5 + 0
+      shared[category] = $6 + 0
+      rows += 1
+    }
+    END {
+      printf "memory_mapping_category_rows: %d\n", rows
+      for (i = 1; i <= known_count; i++) {
+        category = category_order[i]
+        key = sanitize(category)
+        printf "memory_category_%s_pss_kib: %d\n", key, pss[category] + 0
+        printf "memory_category_%s_private_clean_kib: %d\n", key, private_clean[category] + 0
+        printf "memory_category_%s_private_dirty_kib: %d\n", key, private_dirty[category] + 0
+        printf "memory_category_%s_shared_kib: %d\n", key, shared[category] + 0
+      }
+    }
+  ' "$categories_csv" >> "$summary"
 }
 
 sample_gpu_busy() {
@@ -3897,6 +3964,7 @@ video_runtime_path="$work_dir/video-runtime.csv"
 video_runtime_summary_path="$work_dir/video-runtime-summary.txt"
 video_hardware_report_path="$work_dir/video-hardware-report.txt"
 memory_mapping_summary_path="$work_dir/memory-mapping-summary.txt"
+memory_mapping_categories_path="$work_dir/memory-mapping-categories.csv"
 
 cat > "$metadata_path" <<EOF
 label: ${label}
@@ -4112,11 +4180,13 @@ write_summary "$csv_path" "$summary_path"
 write_decision_summary "$decisions_path" "$decision_summary_path"
 write_telemetry_summary "$telemetry_path" "$telemetry_summary_path"
 write_video_runtime_summary "$video_runtime_path" "$video_runtime_summary_path"
-write_smaps_mapping_summary "$pid" "$memory_mapping_summary_path"
+write_smaps_mapping_summary "$pid" "$memory_mapping_summary_path" "$memory_mapping_categories_path"
+append_smaps_mapping_category_summary "$memory_mapping_categories_path" "$summary_path"
 write_video_hardware_report "$summary_path" "$video_runtime_summary_path" "$video_runtime_path" "$video_hardware_report_path" "$pid"
 pass "wrote process samples to $csv_path"
 pass "wrote summary to $summary_path"
 pass "wrote process memory mapping summary to $memory_mapping_summary_path"
+pass "wrote process memory mapping categories to $memory_mapping_categories_path"
 if [[ "$status_enabled" -eq 1 && "$status_failures" -eq 0 ]]; then
   pass "wrote status snapshots under $work_dir"
 elif [[ "$status_enabled" -eq 1 ]]; then
@@ -4157,6 +4227,7 @@ note "metadata: $metadata_path"
 note "samples:  $csv_path"
 note "sample summary: $summary_path"
 note "memory mapping summary: $memory_mapping_summary_path"
+note "memory mapping categories: $memory_mapping_categories_path"
 note "decisions: $decisions_path"
 note "decision summary: $decision_summary_path"
 note "telemetry: $telemetry_path"

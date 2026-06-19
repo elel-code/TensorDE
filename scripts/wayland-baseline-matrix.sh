@@ -374,6 +374,18 @@ process_keys=(
   avg_nvidia_process_gpu_memory_mib
   last_nvidia_process_gpu_memory_mib
   max_nvidia_process_gpu_memory_mib
+  memory_mapping_category_rows
+  memory_category_anonymous_private_dirty_kib
+  memory_category_heap_private_dirty_kib
+  memory_category_dri_device_private_dirty_kib
+  memory_category_nvidia_device_private_dirty_kib
+  memory_category_nvidia_library_private_dirty_kib
+  memory_category_shared_memory_private_dirty_kib
+  memory_category_gstreamer_library_private_dirty_kib
+  memory_category_gtk_library_private_dirty_kib
+  memory_category_system_library_private_dirty_kib
+  memory_category_file_mapping_private_dirty_kib
+  memory_category_other_private_dirty_kib
 )
 
 telemetry_keys=(
