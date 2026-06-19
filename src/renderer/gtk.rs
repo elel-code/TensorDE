@@ -463,6 +463,7 @@ impl RenderedOutput {
                     || video.loop_playback != plan.loop_playback
                     || video.muted != plan.muted
                     || video.decoder_policy != plan.decoder_policy
+                    || video.frame_limiter_required != frame_limiter_required(plan.target_max_fps)
             })
             .unwrap_or(true);
         if restart {
@@ -817,6 +818,7 @@ struct GtkVideoPipeline {
     element: gst::Element,
     picture: gtk::Picture,
     frame_limiter: Option<GtkFrameLimiter>,
+    frame_limiter_required: bool,
     source: std::path::PathBuf,
     mode: RenderMode,
     gst_state: gst::State,
@@ -842,6 +844,7 @@ impl GtkVideoPipeline {
             element: built.element,
             picture: built.picture,
             frame_limiter: built.frame_limiter,
+            frame_limiter_required: frame_limiter_required(plan.target_max_fps),
             source: plan.source.clone(),
             mode: RenderMode::Paused,
             gst_state: gst::State::Null,
@@ -878,7 +881,9 @@ impl GtkVideoPipeline {
         }
         self.target_max_fps = target_max_fps;
         if let Some(frame_limiter) = &self.frame_limiter {
-            frame_limiter.apply_target_max_fps(target_max_fps);
+            if let Some(target_max_fps) = target_max_fps {
+                frame_limiter.apply_target_max_fps(target_max_fps);
+            }
         }
     }
 
@@ -1013,7 +1018,7 @@ fn build_gtk_video_pipeline(
     let uri = gst::glib::filename_to_uri(&plan.source, None::<&str>)
         .map_err(|err| GtkVideoError::Uri(err.to_string()))?;
     apply_decoder_rank_policy(plan.decoder_policy);
-    let frame_limiter = Some(GtkFrameLimiter::new(plan.target_max_fps)?);
+    let frame_limiter = plan.target_max_fps.map(GtkFrameLimiter::new).transpose()?;
     let video_sink = gst::ElementFactory::make("gtk4paintablesink")
         .property("sync", true)
         .build()
@@ -1185,6 +1190,11 @@ fn playbin_flags(muted: bool) -> &'static str {
 }
 
 #[cfg(feature = "video-renderer")]
+fn frame_limiter_required(target_max_fps: Option<u32>) -> bool {
+    target_max_fps.is_some()
+}
+
+#[cfg(feature = "video-renderer")]
 struct GtkFrameLimiter {
     element: gst::Element,
     capsfilter: gst::Element,
@@ -1192,7 +1202,7 @@ struct GtkFrameLimiter {
 
 #[cfg(feature = "video-renderer")]
 impl GtkFrameLimiter {
-    fn new(target_max_fps: Option<u32>) -> Result<Self, GtkVideoError> {
+    fn new(target_max_fps: u32) -> Result<Self, GtkVideoError> {
         let bin = gst::Bin::new();
         let videorate = gst::ElementFactory::make("videorate")
             .build()
@@ -1217,7 +1227,7 @@ impl GtkFrameLimiter {
         &self.element
     }
 
-    fn apply_target_max_fps(&self, target_max_fps: Option<u32>) {
+    fn apply_target_max_fps(&self, target_max_fps: u32) {
         self.capsfilter
             .set_property("caps", caps_for_target_max_fps(target_max_fps));
     }
@@ -1246,13 +1256,10 @@ fn add_ghost_pad(
 }
 
 #[cfg(feature = "video-renderer")]
-fn caps_for_target_max_fps(target_max_fps: Option<u32>) -> gst::Caps {
-    match target_max_fps {
-        Some(max_fps) => gst::Caps::builder("video/x-raw")
-            .field("framerate", gst::Fraction::new(max_fps as i32, 1))
-            .build(),
-        None => gst::Caps::new_any(),
-    }
+fn caps_for_target_max_fps(target_max_fps: u32) -> gst::Caps {
+    gst::Caps::builder("video/x-raw")
+        .field("framerate", gst::Fraction::new(target_max_fps as i32, 1))
+        .build()
 }
 
 #[cfg(feature = "video-renderer")]

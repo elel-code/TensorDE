@@ -297,6 +297,7 @@ telemetry_keys=(
   render_sync_updates_queued_latest
   render_sync_updates_skipped_latest
   render_sync_package_cache_entries_latest
+  render_sync_package_cache_max_retained_unique_resource_bytes_latest
   render_sync_archive_cache_entries_latest
   render_sync_static_image_cache_entries_latest
   render_sync_static_image_cache_generations_latest
