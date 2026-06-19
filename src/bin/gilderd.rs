@@ -882,6 +882,7 @@ struct RenderSyncCacheKey {
     adaptive_affects_render_plan: bool,
     cache_dir: PathBuf,
     packages: Vec<PackageInputFingerprint>,
+    bound_properties: Vec<RenderSyncBoundPropertyKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -916,6 +917,13 @@ struct RenderSyncStateKey {
 struct OutputRenderStateKey {
     wallpaper: Option<WallpaperAssignment>,
     paused: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct RenderSyncBoundPropertyKey {
+    output_name: String,
+    property: String,
+    value: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1790,6 +1798,7 @@ fn current_render_sync(context: &mut DaemonContext) -> StaticRenderSyncPlan {
     context.telemetry.render_archive_cache_evictions += render_sync.cache.archive_cache_evictions;
     context.telemetry.render_archive_cache_eviction_errors +=
         render_sync.cache.archive_cache_eviction_errors;
+    let key = render_sync_cache_key_for_plan(context, Some(&render_sync));
     context.render_sync_cache = Some(RenderSyncCache {
         key,
         render_sync: render_sync.clone(),
@@ -1798,6 +1807,19 @@ fn current_render_sync(context: &mut DaemonContext) -> StaticRenderSyncPlan {
 }
 
 fn render_sync_cache_key(context: &DaemonContext) -> RenderSyncCacheKey {
+    render_sync_cache_key_for_plan(
+        context,
+        context
+            .render_sync_cache
+            .as_ref()
+            .map(|cache| &cache.render_sync),
+    )
+}
+
+fn render_sync_cache_key_for_plan(
+    context: &DaemonContext,
+    render_sync: Option<&StaticRenderSyncPlan>,
+) -> RenderSyncCacheKey {
     RenderSyncCacheKey {
         config: render_sync_config_key(&context.config),
         state: render_sync_state_key(&context.state),
@@ -1805,6 +1827,7 @@ fn render_sync_cache_key(context: &DaemonContext) -> RenderSyncCacheKey {
         adaptive_affects_render_plan: context.adaptive_snapshot.affects_render_plan(),
         cache_dir: context.paths.cache_dir.clone(),
         packages: wallpaper_package_fingerprints(context),
+        bound_properties: render_sync_bound_property_key(&context.state, render_sync),
     }
 }
 
@@ -1845,6 +1868,44 @@ fn render_sync_state_key(state: &AppState) -> RenderSyncStateKey {
             })
             .collect(),
     }
+}
+
+fn render_sync_bound_property_key(
+    state: &AppState,
+    render_sync: Option<&StaticRenderSyncPlan>,
+) -> Vec<RenderSyncBoundPropertyKey> {
+    let Some(render_sync) = render_sync else {
+        return Vec::new();
+    };
+    let mut properties = render_sync
+        .scene_lite_plans
+        .iter()
+        .flat_map(|plan| {
+            plan.bound_properties
+                .iter()
+                .map(|property| RenderSyncBoundPropertyKey {
+                    output_name: plan.output_name.clone(),
+                    property: property.clone(),
+                    value: effective_render_property_key_value(state, &plan.output_name, property),
+                })
+        })
+        .collect::<Vec<_>>();
+    properties.sort();
+    properties.dedup();
+    properties
+}
+
+fn effective_render_property_key_value(
+    state: &AppState,
+    output_name: &str,
+    property: &str,
+) -> Option<String> {
+    let value = state
+        .outputs
+        .get(output_name)
+        .and_then(|output| output.properties.get(property))
+        .or_else(|| state.properties.get(property))?;
+    serde_json::to_string(value).ok()
 }
 
 fn wallpaper_package_fingerprints(context: &DaemonContext) -> Vec<PackageInputFingerprint> {
@@ -2757,6 +2818,44 @@ mod tests {
     }
 
     #[test]
+    fn current_render_sync_cache_invalidates_scene_lite_bound_properties() {
+        let package_dir = TestDir::new("gilder-render-sync-scene-property-cache");
+        write_scene_lite_property_package(package_dir.path());
+
+        let mut context = test_context();
+        context.paths.cache_dir = package_dir.path().join("cache");
+        context.desktop.outputs = vec![gilder::desktop::DesktopOutput::virtual_output("eDP-1")];
+        context
+            .state
+            .set_wallpaper(Some("eDP-1"), package_dir.path().to_string_lossy());
+
+        let first = current_render_sync(&mut context);
+        assert_eq!(first.scene_lite_plans.len(), 1);
+        assert_eq!(
+            first.scene_lite_plans[0].bound_properties,
+            vec!["scene_opacity"]
+        );
+        assert!((first.scene_lite_plans[0].layers[0].opacity - 1.0).abs() < f64::EPSILON);
+
+        context
+            .state
+            .set_property(Some("eDP-1"), "scene_opacity", json!(0.25));
+        let second = current_render_sync(&mut context);
+        assert_eq!(second.scene_lite_plans.len(), 1);
+        assert!((second.scene_lite_plans[0].layers[0].opacity - 0.25).abs() < f64::EPSILON);
+        assert_ne!(second, first);
+
+        let third = current_render_sync(&mut context);
+        assert_eq!(third, second);
+
+        context
+            .state
+            .set_property(Some("eDP-1"), "unused", json!(123));
+        let fourth = current_render_sync(&mut context);
+        assert_eq!(fourth, second);
+    }
+
+    #[test]
     fn current_render_sync_cache_ignores_non_render_config() {
         let package_dir = TestDir::new("gilder-render-sync-config-cache-package");
         write_static_package_manifest(package_dir.path(), "#101418");
@@ -2904,6 +3003,50 @@ mod tests {
             ),
         )
         .expect("failed to write package manifest");
+    }
+
+    fn write_scene_lite_property_package(root: &Path) {
+        let assets = root.join("assets");
+        std::fs::create_dir_all(&assets).expect("failed to create scene package assets");
+        std::fs::write(
+            assets.join("scene-lite.json"),
+            r##"{
+  "layers": [
+    {
+      "id": "background",
+      "type": "color",
+      "color": "#101418"
+    }
+  ],
+  "property_bindings": [
+    {
+      "property": "scene_opacity",
+      "target": "opacity",
+      "layer": "background"
+    }
+  ]
+}
+"##,
+        )
+        .expect("failed to write scene-lite document");
+        std::fs::write(
+            root.join(gilder::core::MANIFEST_FILE),
+            r#"{
+  "format": "gilder.wallpaper",
+  "format_version": 1,
+  "id": "io.github.elelcode.gilder.scene-property-cache-test",
+  "version": "0.1.0",
+  "title": "Scene Property Cache Test",
+  "kind": "scene-lite",
+  "entry": {
+    "type": "scene-lite",
+    "source": "assets/scene-lite.json",
+    "max_fps": 60
+  }
+}
+"#,
+        )
+        .expect("failed to write scene package manifest");
     }
 
     fn empty_render_sync() -> StaticRenderSyncPlan {

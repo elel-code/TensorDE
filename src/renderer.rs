@@ -6,15 +6,17 @@ pub mod gtk;
 pub mod video;
 
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
-use crate::core::manifest::{Manifest, Variant};
+use crate::core::manifest::{Manifest, PropertySpec, Variant};
 use crate::core::{
-    FitMode, PackagePath, SceneLiteDocument, SceneLiteLayerKind, SceneLiteTransform, Transition,
-    WallpaperEntry, WallpaperPackage,
+    FitMode, PackagePath, SceneLiteAnimatedProperty, SceneLiteDocument, SceneLiteLayer,
+    SceneLiteLayerKind, SceneLitePropertyBinding, SceneLiteTransform, Transition, WallpaperEntry,
+    WallpaperPackage,
 };
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot};
 use crate::policy::{PerformanceDecision, RenderMode};
 use crate::state::{AppState, OutputState, WallpaperAssignment};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque, hash_map::DefaultHasher};
 use std::fmt;
 use std::fs;
@@ -64,6 +66,8 @@ pub struct SceneLiteWallpaperPlan {
     pub fallback: Option<PathBuf>,
     pub manifest_max_fps: Option<u32>,
     pub target_max_fps: Option<u32>,
+    #[serde(default)]
+    pub bound_properties: Vec<String>,
     pub display: Option<SceneLiteDisplayPlan>,
     pub layers: Vec<SceneLiteRenderLayer>,
 }
@@ -494,11 +498,13 @@ fn static_render_sync_plan_inner(
                     fit_override,
                     assignment.variant.as_deref(),
                     render_target,
+                    None,
                     Some(&mut static_image_cache),
                     None,
                 )
             }
             WallpaperEntry::SceneLite { .. } => {
+                let render_properties = effective_output_render_properties(state, &output_state);
                 let mut scene_lite_snapshot_cache = SceneLiteSnapshotCacheContext {
                     cache_dir,
                     max_entries: cache_config.static_image_cache_max_entries,
@@ -513,6 +519,7 @@ fn static_render_sync_plan_inner(
                     fit_override,
                     assignment.variant.as_deref(),
                     render_target,
+                    Some(&render_properties),
                     None,
                     Some(&mut scene_lite_snapshot_cache),
                 )
@@ -525,6 +532,7 @@ fn static_render_sync_plan_inner(
                 fit_override,
                 assignment.variant.as_deref(),
                 render_target,
+                None,
                 None,
                 None,
             ),
@@ -789,6 +797,15 @@ fn output_fit_override(config: Option<&GilderConfig>, output_name: &str) -> Opti
         .and_then(|output| output.fit)
 }
 
+fn effective_output_render_properties(
+    state: &AppState,
+    output_state: &OutputState,
+) -> BTreeMap<String, Value> {
+    let mut properties = state.properties.clone();
+    properties.extend(output_state.properties.clone());
+    properties
+}
+
 fn dynamic_wallpaper_entry(entry: &WallpaperEntry) -> bool {
     matches!(
         entry,
@@ -860,6 +877,7 @@ fn wallpaper_plan_for_assignment_with_target(
         render_target,
         None,
         None,
+        None,
     )
 }
 
@@ -880,6 +898,7 @@ pub fn wallpaper_plan(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -891,6 +910,7 @@ fn wallpaper_plan_with_target(
     fit_override: Option<FitMode>,
     variant_id: Option<&str>,
     render_target: Option<RenderTargetSize>,
+    render_properties: Option<&BTreeMap<String, Value>>,
     static_image_cache: Option<&mut StaticImageCacheContext<'_>>,
     scene_lite_snapshot_cache: Option<&mut SceneLiteSnapshotCacheContext<'_>>,
 ) -> Result<WallpaperRenderPlan, RendererPlanError> {
@@ -988,6 +1008,7 @@ fn wallpaper_plan_with_target(
             performance,
             fit_override,
             render_target,
+            render_properties,
             scene_lite_snapshot_cache,
         )?)),
     }
@@ -1002,6 +1023,7 @@ fn scene_lite_wallpaper_plan(
     performance: &PerformanceDecision,
     fit_override: Option<FitMode>,
     render_target: Option<RenderTargetSize>,
+    render_properties: Option<&BTreeMap<String, Value>>,
     scene_lite_snapshot_cache: Option<&mut SceneLiteSnapshotCacheContext<'_>>,
 ) -> Result<SceneLiteWallpaperPlan, RendererPlanError> {
     let source_path = source.map(|source| source.join_to(&package.root));
@@ -1015,17 +1037,29 @@ fn scene_lite_wallpaper_plan(
         },
     };
     let snapshot = document.snapshot_at(0);
+    let layer_property_bindings = scene_lite_layer_property_bindings(&document);
     let layers = snapshot
         .layers
         .into_iter()
-        .map(|layer| SceneLiteRenderLayer {
-            id: layer.id,
-            kind: layer.kind,
-            source: layer.source.map(|source| source.join_to(&package.root)),
-            color: layer.color,
-            fit: layer.fit,
-            opacity: layer.opacity,
-            transform: layer.transform,
+        .map(|layer| {
+            let mut render_layer = SceneLiteRenderLayer {
+                id: layer.id,
+                kind: layer.kind,
+                source: layer.source.map(|source| source.join_to(&package.root)),
+                color: layer.color,
+                fit: layer.fit,
+                opacity: layer.opacity,
+                transform: layer.transform,
+            };
+            let layer_id = render_layer.id.clone();
+            apply_scene_lite_property_bindings(
+                &mut render_layer,
+                &document.property_bindings,
+                layer_property_bindings.get(&layer_id),
+                render_properties,
+                &package.manifest.properties,
+            );
+            render_layer
         })
         .collect::<Vec<_>>();
     let fallback = fallback.map(|fallback| fallback.join_to(&package.root));
@@ -1045,9 +1079,173 @@ fn scene_lite_wallpaper_plan(
         fallback,
         manifest_max_fps,
         target_max_fps: effective_max_fps(manifest_max_fps, performance.max_fps),
+        bound_properties: scene_lite_bound_properties(&document),
         display,
         layers,
     })
+}
+
+fn scene_lite_bound_properties(document: &SceneLiteDocument) -> Vec<String> {
+    let mut properties = BTreeSet::new();
+    properties.extend(
+        document
+            .property_bindings
+            .iter()
+            .map(|binding| binding.property.clone()),
+    );
+    for layer in &document.layers {
+        collect_scene_lite_bound_properties(layer, &mut properties);
+    }
+    properties.into_iter().collect()
+}
+
+fn collect_scene_lite_bound_properties(layer: &SceneLiteLayer, properties: &mut BTreeSet<String>) {
+    properties.extend(
+        layer
+            .property_bindings
+            .iter()
+            .map(|binding| binding.property.clone()),
+    );
+    for child in &layer.layers {
+        collect_scene_lite_bound_properties(child, properties);
+    }
+}
+
+fn scene_lite_layer_property_bindings(
+    document: &SceneLiteDocument,
+) -> BTreeMap<String, Vec<&SceneLitePropertyBinding>> {
+    let mut bindings = BTreeMap::new();
+    for layer in &document.layers {
+        collect_scene_lite_layer_property_bindings(layer, &mut bindings);
+    }
+    bindings
+}
+
+fn collect_scene_lite_layer_property_bindings<'a>(
+    layer: &'a SceneLiteLayer,
+    bindings: &mut BTreeMap<String, Vec<&'a SceneLitePropertyBinding>>,
+) {
+    if !layer.property_bindings.is_empty() {
+        bindings
+            .entry(layer.id.clone())
+            .or_default()
+            .extend(layer.property_bindings.iter());
+    }
+    for child in &layer.layers {
+        collect_scene_lite_layer_property_bindings(child, bindings);
+    }
+}
+
+fn apply_scene_lite_property_bindings(
+    layer: &mut SceneLiteRenderLayer,
+    document_bindings: &[SceneLitePropertyBinding],
+    layer_bindings: Option<&Vec<&SceneLitePropertyBinding>>,
+    render_properties: Option<&BTreeMap<String, Value>>,
+    manifest_properties: &BTreeMap<String, PropertySpec>,
+) {
+    let layer_id = layer.id.clone();
+    for binding in document_bindings {
+        if scene_lite_binding_targets_layer(binding, &layer_id) {
+            apply_scene_lite_property_binding(
+                layer,
+                binding,
+                render_properties,
+                manifest_properties,
+            );
+        }
+    }
+    if let Some(layer_bindings) = layer_bindings {
+        for binding in layer_bindings {
+            if scene_lite_binding_targets_layer(binding, &layer_id) {
+                apply_scene_lite_property_binding(
+                    layer,
+                    binding,
+                    render_properties,
+                    manifest_properties,
+                );
+            }
+        }
+    }
+}
+
+fn scene_lite_binding_targets_layer(binding: &SceneLitePropertyBinding, layer_id: &str) -> bool {
+    binding
+        .layer
+        .as_deref()
+        .is_none_or(|target| target == layer_id)
+}
+
+fn apply_scene_lite_property_binding(
+    layer: &mut SceneLiteRenderLayer,
+    binding: &SceneLitePropertyBinding,
+    render_properties: Option<&BTreeMap<String, Value>>,
+    manifest_properties: &BTreeMap<String, PropertySpec>,
+) {
+    let Some(value) =
+        scene_lite_property_binding_value(binding, render_properties, manifest_properties)
+    else {
+        return;
+    };
+    match binding.target {
+        SceneLiteAnimatedProperty::Opacity => layer.opacity = value.clamp(0.0, 1.0),
+        SceneLiteAnimatedProperty::X => layer.transform.x = value,
+        SceneLiteAnimatedProperty::Y => layer.transform.y = value,
+        SceneLiteAnimatedProperty::ScaleX if value > 0.0 => layer.transform.scale_x = value,
+        SceneLiteAnimatedProperty::ScaleY if value > 0.0 => layer.transform.scale_y = value,
+        SceneLiteAnimatedProperty::ScaleX | SceneLiteAnimatedProperty::ScaleY => {}
+        SceneLiteAnimatedProperty::RotationDeg => layer.transform.rotation_deg = value,
+    }
+}
+
+fn scene_lite_property_binding_value(
+    binding: &SceneLitePropertyBinding,
+    render_properties: Option<&BTreeMap<String, Value>>,
+    manifest_properties: &BTreeMap<String, PropertySpec>,
+) -> Option<f64> {
+    let raw_value = render_properties
+        .and_then(|properties| properties.get(&binding.property))
+        .and_then(scene_lite_json_property_number)
+        .or_else(|| {
+            manifest_properties
+                .get(&binding.property)
+                .and_then(scene_lite_manifest_property_default_number)
+        })?;
+    let value = raw_value * binding.scale.unwrap_or(1.0) + binding.offset.unwrap_or(0.0);
+    value.is_finite().then_some(value)
+}
+
+fn scene_lite_json_property_number(value: &Value) -> Option<f64> {
+    let number = match value {
+        Value::Bool(value) => {
+            if *value {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        Value::Number(value) => value.as_f64()?,
+        Value::String(value) => value.parse::<f64>().ok()?,
+        _ => return None,
+    };
+    number.is_finite().then_some(number)
+}
+
+fn scene_lite_manifest_property_default_number(property: &PropertySpec) -> Option<f64> {
+    let number = match property {
+        PropertySpec::Bool { default } => {
+            if (*default)? {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        PropertySpec::Number { default } | PropertySpec::Range { default, .. } => (*default)?,
+        PropertySpec::Choice { .. }
+        | PropertySpec::Color { .. }
+        | PropertySpec::Text { .. }
+        | PropertySpec::File { .. } => return None,
+    };
+    number.is_finite().then_some(number)
 }
 
 fn load_scene_lite_document(path: &Path) -> Result<SceneLiteDocument, RendererPlanError> {
@@ -1168,7 +1366,8 @@ fn cached_scene_lite_snapshot(
     if context.max_entries == 0 {
         return None;
     }
-    let cache_path = scene_lite_snapshot_cache_path(context.cache_dir, source_path, document, size);
+    let cache_path =
+        scene_lite_snapshot_cache_path(context.cache_dir, source_path, document, layers, size);
     if is_nonempty_file(&cache_path) {
         context.stats.scene_lite_snapshot_cache_reuses += 1;
         context.protected_files.insert(cache_path.clone());
@@ -1194,12 +1393,16 @@ fn scene_lite_snapshot_cache_path(
     cache_dir: &Path,
     source_path: Option<&Path>,
     document: &SceneLiteDocument,
+    layers: &[SceneLiteRenderLayer],
     size: RenderTargetSize,
 ) -> PathBuf {
     let mut hasher = DefaultHasher::new();
     source_path.hash(&mut hasher);
     size.hash(&mut hasher);
     if let Ok(serialized) = serde_json::to_string(document) {
+        serialized.hash(&mut hasher);
+    }
+    if let Ok(serialized) = serde_json::to_string(layers) {
         serialized.hash(&mut hasher);
     }
     if let Some(source_path) = source_path
@@ -2580,6 +2783,7 @@ exit 0
                     width: 1920,
                     height: 1080,
                 }),
+                None,
                 Some(&mut context),
                 None,
             )
@@ -2615,6 +2819,7 @@ exit 0
                     width: 1920,
                     height: 1080,
                 }),
+                None,
                 Some(&mut context),
                 None,
             )
@@ -3620,6 +3825,53 @@ exit 0
         assert!(snapshot.contains("#203040"));
         assert_eq!(sync.cache.scene_lite_snapshot_cache_generations, 1);
         assert_eq!(sync.cache.planned_scene_lite_image_resources, 1);
+    }
+
+    #[test]
+    fn scene_lite_property_binding_applies_effective_output_property() {
+        let test_dir = TestDir::new("gilder-scene-lite-property-binding");
+        let package_dir = test_dir.path.join("scene-property.gwpdir");
+        let cache_dir = test_dir.path.join("cache");
+        write_scene_lite_property_binding_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let default_sync = static_render_sync_plan(&desktop, &state, &cache_dir);
+
+        assert!(default_sync.errors.is_empty());
+        assert_eq!(default_sync.scene_lite_plans.len(), 1);
+        let default_plan = &default_sync.scene_lite_plans[0];
+        assert_eq!(default_plan.bound_properties, vec!["scene_opacity"]);
+        assert!((default_plan.layers[0].opacity - 0.6).abs() < f64::EPSILON);
+        let default_snapshot = scene_lite_display_source(default_plan);
+        assert!(
+            fs::read_to_string(default_snapshot)
+                .unwrap()
+                .contains(r#"opacity="0.6""#)
+        );
+
+        state.set_property(None, "scene_opacity", json!(0.75));
+        state.set_property(Some("eDP-1"), "scene_opacity", json!(0.25));
+        let override_sync = static_render_sync_plan(&desktop, &state, &cache_dir);
+
+        assert!(override_sync.errors.is_empty());
+        assert_eq!(override_sync.scene_lite_plans.len(), 1);
+        let override_plan = &override_sync.scene_lite_plans[0];
+        assert!((override_plan.layers[0].opacity - 0.25).abs() < f64::EPSILON);
+        let override_snapshot = scene_lite_display_source(override_plan);
+        assert_ne!(override_snapshot, default_snapshot);
+        assert!(
+            fs::read_to_string(override_snapshot)
+                .unwrap()
+                .contains(r#"opacity="0.25""#)
+        );
     }
 
     #[test]
@@ -4684,6 +4936,63 @@ exit 0
             serde_json::to_vec_pretty(&manifest).unwrap(),
         )
         .unwrap();
+    }
+
+    fn write_scene_lite_property_binding_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(
+            path.join("assets/scene-lite.json"),
+            br##"{
+              "layers": [
+                {
+                  "id": "background",
+                  "type": "color",
+                  "color": "#203040"
+                }
+              ],
+              "property_bindings": [
+                {
+                  "property": "scene_opacity",
+                  "target": "opacity",
+                  "layer": "background"
+                }
+              ]
+            }"##,
+        )
+        .unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.scene-property",
+            "version": "1.0.0",
+            "title": "Scene Property",
+            "kind": "scene-lite",
+            "properties": {
+                "scene_opacity": {
+                    "type": "range",
+                    "min": 0.0,
+                    "max": 1.0,
+                    "default": 0.6
+                }
+            },
+            "entry": {
+                "type": "scene-lite",
+                "source": "assets/scene-lite.json",
+                "max_fps": 60
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn scene_lite_display_source(plan: &SceneLiteWallpaperPlan) -> &Path {
+        match &plan.display {
+            Some(SceneLiteDisplayPlan::Image { source, .. }) => source,
+            _ => panic!("expected scene-lite image display"),
+        }
     }
 
     fn remove_entry_poster(path: &Path) {
