@@ -1764,18 +1764,19 @@ fn build_gtk_video_pipeline(
     let uri = gst::glib::filename_to_uri(&plan.source, None::<&str>)
         .map_err(|err| GtkVideoError::Uri(err.to_string()))?;
     apply_decoder_rank_policy(plan.decoder_policy);
-    let video_sink = gst::ElementFactory::make("gtk4paintablesink")
+    let gtk_sink = gst::ElementFactory::make("gtk4paintablesink")
         .property("sync", true)
         .property("enable-last-sample", false)
         .build()
         .map_err(|err| GtkVideoError::BuildElement(err.to_string()))?;
-    let sink_tuning = configure_video_sink_low_memory(&video_sink, plan.target_max_fps);
+    configure_video_sink_low_memory(&gtk_sink, plan.target_max_fps);
+    let paintable = gtk_sink.property::<gdk::Paintable>("paintable");
+    let (video_sink, sink_tuning) = gtk_video_sink_chain(&gtk_sink, plan.target_max_fps);
     let frame_limiter = plan
         .target_max_fps
         .filter(|target_max_fps| *target_max_fps > 0)
         .map(|target_max_fps| GtkFrameLimiter::new(&video_sink, target_max_fps))
         .transpose()?;
-    let paintable = video_sink.property::<gdk::Paintable>("paintable");
 
     let builder = gst::ElementFactory::make("playbin")
         .property("uri", uri.as_str())
@@ -1923,6 +1924,36 @@ fn record_gtk_frame_timing(frame_stats: &mut VideoFrameStats, timings: &gdk::Fra
         timings.presentation_time(),
         timings.refresh_interval(),
     );
+}
+
+#[cfg(feature = "video-renderer")]
+fn gtk_video_sink_chain(
+    gtk_sink: &gst::Element,
+    target_max_fps: Option<u32>,
+) -> (gst::Element, VideoSinkTuningReport) {
+    if let Some((sink, tuning)) = gl_wrapped_gtk_video_sink(gtk_sink, target_max_fps) {
+        return (sink, tuning);
+    }
+    let mut tuning = configure_video_sink_low_memory(gtk_sink, target_max_fps);
+    tuning.sink_element = Some("gtk4paintablesink".to_owned());
+    (gtk_sink.clone(), tuning)
+}
+
+#[cfg(feature = "video-renderer")]
+fn gl_wrapped_gtk_video_sink(
+    gtk_sink: &gst::Element,
+    target_max_fps: Option<u32>,
+) -> Option<(gst::Element, VideoSinkTuningReport)> {
+    gst::ElementFactory::find("glsinkbin")?;
+    let sink = gst::ElementFactory::make("glsinkbin")
+        .property("sink", gtk_sink)
+        .property("sync", true)
+        .property("enable-last-sample", false)
+        .build()
+        .ok()?;
+    let mut tuning = configure_video_sink_low_memory(&sink, target_max_fps);
+    tuning.sink_element = Some("glsinkbin+gtk4paintablesink".to_owned());
+    Some((sink, tuning))
 }
 
 #[cfg(feature = "video-renderer")]

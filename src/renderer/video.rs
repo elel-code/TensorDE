@@ -59,7 +59,7 @@ pub fn runtime_capabilities() -> VideoRuntimeCapabilities {
     }
 }
 
-const VIDEO_RUNTIME_ELEMENTS: &[&str] = &["playbin", "fakesink", "gtk4paintablesink"];
+const VIDEO_RUNTIME_ELEMENTS: &[&str] = &["playbin", "fakesink", "gtk4paintablesink", "glsinkbin"];
 const MUTED_PLAYBIN_FLAGS: &str = "video";
 const AUDIBLE_PLAYBIN_FLAGS: &str = "video+audio";
 const VIDEO_DIAGNOSTICS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
@@ -646,6 +646,7 @@ pub(crate) fn configure_video_sink_low_memory(
     sink: &gst::Element,
     target_max_fps: Option<u32>,
 ) -> VideoSinkTuningReport {
+    set_optional_bool_property(sink, "async", false);
     set_optional_bool_property(sink, "enable-last-sample", false);
     set_optional_bool_property(sink, "qos", true);
     set_optional_i64_property(
@@ -653,7 +654,10 @@ pub(crate) fn configure_video_sink_low_memory(
         "max-lateness",
         video_sink_max_lateness_ns(target_max_fps),
     );
+    set_optional_u64_property(sink, "render-delay", 0);
     set_optional_u64_property(sink, "processing-deadline", 0);
+    set_optional_bool_property(sink, "show-preroll-frame", false);
+    set_optional_enum_property_from_str(sink, "reconfigure-on-window-resize", "never");
     video_sink_tuning_report(sink)
 }
 
@@ -699,6 +703,12 @@ fn set_optional_u64_property(element: &gst::Element, name: &str, value: u64) {
     }
 }
 
+fn set_optional_enum_property_from_str(element: &gst::Element, name: &str, value: &str) {
+    if element.find_property(name).is_some() {
+        element.set_property_from_str(name, value);
+    }
+}
+
 fn optional_bool_property(element: &gst::Element, name: &str) -> Option<bool> {
     element
         .find_property(name)
@@ -722,10 +732,18 @@ fn optional_u64_property(element: &gst::Element, name: &str) -> Option<u64> {
 
 fn video_sink_tuning_report(sink: &gst::Element) -> VideoSinkTuningReport {
     VideoSinkTuningReport {
+        sink_element: Some(
+            sink.factory()
+                .map(|factory| factory.name().to_string())
+                .unwrap_or_else(|| sink.name().to_string()),
+        ),
+        async_enabled: optional_bool_property(sink, "async"),
         last_sample_enabled: optional_bool_property(sink, "enable-last-sample"),
         qos_enabled: optional_bool_property(sink, "qos"),
         max_lateness_ns: optional_i64_property(sink, "max-lateness"),
+        render_delay_ns: optional_u64_property(sink, "render-delay"),
         processing_deadline_ns: optional_u64_property(sink, "processing-deadline"),
+        preroll_frame_enabled: optional_bool_property(sink, "show-preroll-frame"),
     }
 }
 
@@ -1379,10 +1397,15 @@ pub struct VideoPipelineSnapshot {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct VideoSinkTuningReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sink_element: Option<String>,
+    pub async_enabled: Option<bool>,
     pub last_sample_enabled: Option<bool>,
     pub qos_enabled: Option<bool>,
     pub max_lateness_ns: Option<i64>,
+    pub render_delay_ns: Option<u64>,
     pub processing_deadline_ns: Option<u64>,
+    pub preroll_frame_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -1835,9 +1858,15 @@ mod tests {
         let limiter = pipeline.frame_limiter.as_ref().unwrap();
         assert_eq!(limiter.target_max_fps(), Some(24));
         assert_eq!(limiter.throttle_time_ns(), 41_666_666);
+        assert_eq!(
+            pipeline.sink_tuning.sink_element.as_deref(),
+            Some("fakesink")
+        );
+        assert_eq!(pipeline.sink_tuning.async_enabled, Some(false));
         assert_eq!(pipeline.sink_tuning.last_sample_enabled, Some(false));
         assert_eq!(pipeline.sink_tuning.qos_enabled, Some(true));
         assert_eq!(pipeline.sink_tuning.max_lateness_ns, Some(41_666_666));
+        assert_eq!(pipeline.sink_tuning.render_delay_ns, Some(0));
         if pipeline.sink_tuning.processing_deadline_ns.is_some() {
             assert_eq!(pipeline.sink_tuning.processing_deadline_ns, Some(0));
         }
@@ -1874,9 +1903,15 @@ mod tests {
         plan.target_max_fps = None;
         let pipeline = VideoPipeline::new(&plan, false).unwrap();
         assert!(pipeline.frame_limiter.is_none());
+        assert_eq!(
+            pipeline.sink_tuning.sink_element.as_deref(),
+            Some("fakesink")
+        );
+        assert_eq!(pipeline.sink_tuning.async_enabled, Some(false));
         assert_eq!(pipeline.sink_tuning.last_sample_enabled, Some(false));
         assert_eq!(pipeline.sink_tuning.qos_enabled, Some(true));
         assert_eq!(pipeline.sink_tuning.max_lateness_ns, Some(50_000_000));
+        assert_eq!(pipeline.sink_tuning.render_delay_ns, Some(0));
         assert_eq!(
             pipeline
                 .frame_limiter
@@ -2342,7 +2377,7 @@ mod tests {
             .map(|element| element.name.as_str())
             .collect::<Vec<_>>();
 
-        for expected in ["playbin", "fakesink", "gtk4paintablesink"] {
+        for expected in ["playbin", "fakesink", "gtk4paintablesink", "glsinkbin"] {
             assert!(element_names.contains(&expected));
         }
     }
