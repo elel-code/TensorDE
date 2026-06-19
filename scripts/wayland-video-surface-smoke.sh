@@ -109,6 +109,8 @@ Options:
                      Require latest planned image resource reference bytes to be at most bytes
   --expect-render-sync-planned-unique-image-resource-bytes-latest-at-most <bytes>
                      Require latest planned unique image resource bytes to be at most bytes
+  --expect-render-sync-static-image-cache-bytes-latest-at-most <bytes>
+                     Require latest runtime static image cache bytes to be at most bytes
   --require-video-runtime-row
                      Require active video phases to record at least one video runtime row
   --visual-hold <sec>
@@ -180,6 +182,7 @@ expect_render_sync_planned_image_resource_references_latest_at_most=""
 expect_render_sync_planned_unique_image_resources_latest_at_most=""
 expect_render_sync_planned_image_resource_reference_bytes_latest_at_most=""
 expect_render_sync_planned_unique_image_resource_bytes_latest_at_most=""
+expect_render_sync_static_image_cache_bytes_latest_at_most=""
 require_video_runtime_row=0
 visual_hold=0
 simulate_power=""
@@ -516,6 +519,12 @@ while [[ $# -gt 0 ]]; do
       sample_performance=1
       shift 2
       ;;
+    --expect-render-sync-static-image-cache-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-static-image-cache-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_static_image_cache_bytes_latest_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
     --require-video-runtime-row)
       require_video_runtime_row=1
       shift
@@ -654,7 +663,8 @@ for render_sync_resource_expectation in \
   "$expect_render_sync_planned_image_resource_references_latest_at_most" \
   "$expect_render_sync_planned_unique_image_resources_latest_at_most" \
   "$expect_render_sync_planned_image_resource_reference_bytes_latest_at_most" \
-  "$expect_render_sync_planned_unique_image_resource_bytes_latest_at_most"
+  "$expect_render_sync_planned_unique_image_resource_bytes_latest_at_most" \
+  "$expect_render_sync_static_image_cache_bytes_latest_at_most"
 do
   if [[ -n "$render_sync_resource_expectation" && ! "$render_sync_resource_expectation" =~ ^[0-9]+$ ]]; then
     echo "render sync resource expectations must be non-negative integers" >&2
@@ -933,6 +943,7 @@ expect_render_sync_planned_image_resource_references_latest_at_most: ${expect_re
 expect_render_sync_planned_unique_image_resources_latest_at_most: ${expect_render_sync_planned_unique_image_resources_latest_at_most:-none}
 expect_render_sync_planned_image_resource_reference_bytes_latest_at_most: ${expect_render_sync_planned_image_resource_reference_bytes_latest_at_most:-none}
 expect_render_sync_planned_unique_image_resource_bytes_latest_at_most: ${expect_render_sync_planned_unique_image_resource_bytes_latest_at_most:-none}
+expect_render_sync_static_image_cache_bytes_latest_at_most: ${expect_render_sync_static_image_cache_bytes_latest_at_most:-none}
 require_video_runtime_row: ${require_video_runtime_row}
 visual_hold: ${visual_hold}
 simulate_power: ${simulate_power:-none}
@@ -1239,6 +1250,7 @@ expect_render_sync_planned_image_resource_references_latest_at_most: ${expect_re
 expect_render_sync_planned_unique_image_resources_latest_at_most: ${expect_render_sync_planned_unique_image_resources_latest_at_most:-none}
 expect_render_sync_planned_image_resource_reference_bytes_latest_at_most: ${expect_render_sync_planned_image_resource_reference_bytes_latest_at_most:-none}
 expect_render_sync_planned_unique_image_resource_bytes_latest_at_most: ${expect_render_sync_planned_unique_image_resource_bytes_latest_at_most:-none}
+expect_render_sync_static_image_cache_bytes_latest_at_most: ${expect_render_sync_static_image_cache_bytes_latest_at_most:-none}
 zero_copy_audit_note: hardware decoder evidence alone is not zero-copy proof; prefer sink DMABuf/GLMemory caps plus compositor presentation evidence
 video_runtime_rows: $(count_csv_data_rows "$video_runtime_path")
 video_runtime_csv: ${video_runtime_path}
@@ -1408,6 +1420,9 @@ append_render_sync_resource_expectations() {
   fi
   if [[ -n "$expect_render_sync_planned_unique_image_resource_bytes_latest_at_most" ]]; then
     args_ref+=(--expect-render-sync-planned-unique-image-resource-bytes-latest-at-most "$expect_render_sync_planned_unique_image_resource_bytes_latest_at_most")
+  fi
+  if [[ -n "$expect_render_sync_static_image_cache_bytes_latest_at_most" ]]; then
+    args_ref+=(--expect-render-sync-static-image-cache-bytes-latest-at-most "$expect_render_sync_static_image_cache_bytes_latest_at_most")
   fi
   if [[ -n "$expect_render_sync_package_cache_retained_resource_references_latest_at_most" ]]; then
     args_ref+=(--expect-render-sync-package-cache-retained-resource-references-latest-at-most "$expect_render_sync_package_cache_retained_resource_references_latest_at_most")

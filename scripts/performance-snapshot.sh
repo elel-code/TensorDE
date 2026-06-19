@@ -83,6 +83,8 @@ Options:
                      Require latest planned image resource reference bytes to be at most bytes
   --expect-render-sync-planned-unique-image-resource-bytes-latest-at-most <bytes>
                      Require latest planned unique image resource bytes to be at most bytes
+  --expect-render-sync-static-image-cache-bytes-latest-at-most <bytes>
+                     Require latest runtime static image cache bytes to be at most bytes
   --expect-renderer-output-windows-latest-at-least <count>
                      Require latest renderer output window count to be at least count
   --expect-renderer-output-windows-latest-at-most <count>
@@ -214,6 +216,7 @@ expect_render_sync_planned_image_resource_references_latest_at_most=""
 expect_render_sync_planned_unique_image_resources_latest_at_most=""
 expect_render_sync_planned_image_resource_reference_bytes_latest_at_most=""
 expect_render_sync_planned_unique_image_resource_bytes_latest_at_most=""
+expect_render_sync_static_image_cache_bytes_latest_at_most=""
 expect_renderer_output_windows_latest_at_least=""
 expect_renderer_output_windows_latest_at_most=""
 expect_renderer_output_windows_max_at_most=""
@@ -457,6 +460,11 @@ while [[ $# -gt 0 ]]; do
     --expect-render-sync-planned-unique-image-resource-bytes-latest-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-render-sync-planned-unique-image-resource-bytes-latest-at-most requires a value" >&2; exit 2; }
       expect_render_sync_planned_unique_image_resource_bytes_latest_at_most="$2"
+      shift 2
+      ;;
+    --expect-render-sync-static-image-cache-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-render-sync-static-image-cache-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_render_sync_static_image_cache_bytes_latest_at_most="$2"
       shift 2
       ;;
     --expect-renderer-output-windows-latest-at-least)
@@ -2067,6 +2075,7 @@ has_telemetry_expectations() {
     -n "$expect_render_sync_planned_unique_image_resources_latest_at_most" ||
     -n "$expect_render_sync_planned_image_resource_reference_bytes_latest_at_most" ||
     -n "$expect_render_sync_planned_unique_image_resource_bytes_latest_at_most" ||
+    -n "$expect_render_sync_static_image_cache_bytes_latest_at_most" ||
     -n "$expect_renderer_output_windows_latest_at_least" ||
     -n "$expect_renderer_output_windows_latest_at_most" ||
     -n "$expect_renderer_output_windows_max_at_most" ||
@@ -2180,6 +2189,9 @@ validate_telemetry_expectations() {
   fi
   if [[ -n "$expect_render_sync_planned_unique_image_resource_bytes_latest_at_most" ]]; then
     expect_telemetry_maximum "render_sync_planned_unique_image_resource_bytes_latest" "$expect_render_sync_planned_unique_image_resource_bytes_latest_at_most" "latest planned unique image resource bytes"
+  fi
+  if [[ -n "$expect_render_sync_static_image_cache_bytes_latest_at_most" ]]; then
+    expect_telemetry_maximum "render_sync_static_image_cache_bytes_latest" "$expect_render_sync_static_image_cache_bytes_latest_at_most" "latest runtime static image cache bytes"
   fi
   if [[ -n "$expect_renderer_output_windows_latest_at_least" ]]; then
     expect_telemetry_minimum "renderer_output_windows_latest" "$expect_renderer_output_windows_latest_at_least" "latest renderer output window count"
@@ -2533,7 +2545,8 @@ for render_sync_resource_expectation in \
   "$expect_render_sync_planned_image_resource_references_latest_at_most" \
   "$expect_render_sync_planned_unique_image_resources_latest_at_most" \
   "$expect_render_sync_planned_image_resource_reference_bytes_latest_at_most" \
-  "$expect_render_sync_planned_unique_image_resource_bytes_latest_at_most"
+  "$expect_render_sync_planned_unique_image_resource_bytes_latest_at_most" \
+  "$expect_render_sync_static_image_cache_bytes_latest_at_most"
 do
   if [[ -n "$render_sync_resource_expectation" && ! "$render_sync_resource_expectation" =~ ^[0-9]+$ ]]; then
     echo "render sync resource expectations must be non-negative integers" >&2
@@ -2630,6 +2643,7 @@ expect_render_sync_planned_image_resource_references_latest_at_most: ${expect_re
 expect_render_sync_planned_unique_image_resources_latest_at_most: ${expect_render_sync_planned_unique_image_resources_latest_at_most:-none}
 expect_render_sync_planned_image_resource_reference_bytes_latest_at_most: ${expect_render_sync_planned_image_resource_reference_bytes_latest_at_most:-none}
 expect_render_sync_planned_unique_image_resource_bytes_latest_at_most: ${expect_render_sync_planned_unique_image_resource_bytes_latest_at_most:-none}
+expect_render_sync_static_image_cache_bytes_latest_at_most: ${expect_render_sync_static_image_cache_bytes_latest_at_most:-none}
 expect_renderer_output_windows_latest_at_least: ${expect_renderer_output_windows_latest_at_least:-none}
 expect_renderer_output_windows_latest_at_most: ${expect_renderer_output_windows_latest_at_most:-none}
 expect_renderer_output_windows_max_at_most: ${expect_renderer_output_windows_max_at_most:-none}
