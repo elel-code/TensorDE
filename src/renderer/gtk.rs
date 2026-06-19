@@ -44,6 +44,8 @@ const SLIDESHOW_CROSSFADE_DURATION: Duration = Duration::from_millis(600);
 const MUTED_PLAYBIN_FLAGS: &str = "video";
 #[cfg(feature = "video-renderer")]
 const AUDIBLE_PLAYBIN_FLAGS: &str = "video+audio";
+#[cfg(feature = "video-renderer")]
+const GTK_VIDEO_FRAME_STATS_ENV: &str = "GILDER_GTK_VIDEO_FRAME_STATS";
 
 pub struct GtkStaticRenderer {
     application: gtk::Application,
@@ -1491,7 +1493,7 @@ struct GtkVideoAttachment {
     mode: RenderMode,
     fit: FitMode,
     frame_stats: Rc<RefCell<VideoFrameStats>>,
-    _frame_clock_observer: GtkFrameClockObserver,
+    _frame_clock_observer: Option<GtkFrameClockObserver>,
 }
 
 #[cfg(feature = "video-renderer")]
@@ -1568,7 +1570,11 @@ impl GtkSharedVideoRuntime {
         picture.set_can_shrink(false);
         picture.set_content_fit(content_fit_for_fit(fit));
         let frame_stats = Rc::new(RefCell::new(VideoFrameStats::default()));
-        let frame_clock_observer = install_frame_clock_stats(&picture, Rc::clone(&frame_stats));
+        let frame_clock_observer = install_frame_clock_stats(
+            &picture,
+            Rc::clone(&frame_stats),
+            gtk_frame_clock_stats_mode(),
+        );
         self.output_modes.insert(output_name.to_owned(), mode);
         GtkVideoAttachment {
             key: GtkVideoRuntimeKey {
@@ -1936,10 +1942,42 @@ fn build_gtk_video_pipeline(
 }
 
 #[cfg(feature = "video-renderer")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GtkFrameClockStatsMode {
+    Off,
+    Lightweight,
+    Full,
+}
+
+#[cfg(feature = "video-renderer")]
+fn gtk_frame_clock_stats_mode() -> GtkFrameClockStatsMode {
+    std::env::var(GTK_VIDEO_FRAME_STATS_ENV)
+        .ok()
+        .as_deref()
+        .map(parse_gtk_frame_clock_stats_mode)
+        .unwrap_or(GtkFrameClockStatsMode::Lightweight)
+}
+
+#[cfg(feature = "video-renderer")]
+fn parse_gtk_frame_clock_stats_mode(value: &str) -> GtkFrameClockStatsMode {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "0" | "false" | "off" | "none" | "disabled" => GtkFrameClockStatsMode::Off,
+        "full" | "phase" | "phases" | "timing" | "timings" | "detailed" => {
+            GtkFrameClockStatsMode::Full
+        }
+        _ => GtkFrameClockStatsMode::Lightweight,
+    }
+}
+
+#[cfg(feature = "video-renderer")]
 fn install_frame_clock_stats(
     picture: &gtk::Picture,
     frame_stats: Rc<RefCell<VideoFrameStats>>,
-) -> GtkFrameClockObserver {
+    mode: GtkFrameClockStatsMode,
+) -> Option<GtkFrameClockObserver> {
+    if mode == GtkFrameClockStatsMode::Off {
+        return None;
+    }
     let frame_clock_handlers = Rc::new(RefCell::new(None));
     let realize_stats = Rc::clone(&frame_stats);
     let realize_frame_clock_handlers = Rc::clone(&frame_clock_handlers);
@@ -1948,14 +1986,15 @@ fn install_frame_clock_stats(
             picture,
             Rc::clone(&realize_stats),
             Rc::clone(&realize_frame_clock_handlers),
+            mode,
         );
     });
-    attach_frame_clock_stats(picture, frame_stats, Rc::clone(&frame_clock_handlers));
-    GtkFrameClockObserver {
+    attach_frame_clock_stats(picture, frame_stats, Rc::clone(&frame_clock_handlers), mode);
+    Some(GtkFrameClockObserver {
         picture: picture.clone(),
         realize_handler: Some(realize_handler),
         frame_clock_handlers,
-    }
+    })
 }
 
 #[cfg(feature = "video-renderer")]
@@ -1990,6 +2029,7 @@ fn attach_frame_clock_stats(
     picture: &gtk::Picture,
     frame_stats: Rc<RefCell<VideoFrameStats>>,
     frame_clock_handlers: Rc<RefCell<Option<GtkFrameClockSignalHandlers>>>,
+    mode: GtkFrameClockStatsMode,
 ) {
     if frame_clock_handlers.borrow().is_some() {
         return;
@@ -1999,37 +2039,39 @@ fn attach_frame_clock_stats(
     };
     let observed_clock = clock.clone();
     let mut handlers = Vec::new();
-    let before_paint_stats = Rc::clone(&frame_stats);
-    handlers.push(clock.connect_before_paint(move |_| {
-        before_paint_stats
-            .borrow_mut()
-            .record_gtk_frame_clock_phase(GtkFrameClockPhase::BeforePaint);
-    }));
-    let update_stats = Rc::clone(&frame_stats);
-    handlers.push(clock.connect_update(move |_| {
-        update_stats
-            .borrow_mut()
-            .record_gtk_frame_clock_phase(GtkFrameClockPhase::Update);
-    }));
-    let layout_stats = Rc::clone(&frame_stats);
-    handlers.push(clock.connect_layout(move |_| {
-        layout_stats
-            .borrow_mut()
-            .record_gtk_frame_clock_phase(GtkFrameClockPhase::Layout);
-    }));
-    let paint_stats = Rc::clone(&frame_stats);
-    handlers.push(clock.connect_paint(move |_| {
-        paint_stats
-            .borrow_mut()
-            .record_gtk_frame_clock_phase(GtkFrameClockPhase::Paint);
-    }));
+    if mode == GtkFrameClockStatsMode::Full {
+        let before_paint_stats = Rc::clone(&frame_stats);
+        handlers.push(clock.connect_before_paint(move |_| {
+            before_paint_stats
+                .borrow_mut()
+                .record_gtk_frame_clock_phase(GtkFrameClockPhase::BeforePaint);
+        }));
+        let update_stats = Rc::clone(&frame_stats);
+        handlers.push(clock.connect_update(move |_| {
+            update_stats
+                .borrow_mut()
+                .record_gtk_frame_clock_phase(GtkFrameClockPhase::Update);
+        }));
+        let layout_stats = Rc::clone(&frame_stats);
+        handlers.push(clock.connect_layout(move |_| {
+            layout_stats
+                .borrow_mut()
+                .record_gtk_frame_clock_phase(GtkFrameClockPhase::Layout);
+        }));
+        let paint_stats = Rc::clone(&frame_stats);
+        handlers.push(clock.connect_paint(move |_| {
+            paint_stats
+                .borrow_mut()
+                .record_gtk_frame_clock_phase(GtkFrameClockPhase::Paint);
+        }));
+    }
     let handler = clock.connect_after_paint(move |clock| {
         let frame_time_us = clock.frame_time();
-        let (refresh_interval_us, predicted_presentation_time_us) =
-            clock.refresh_info(frame_time_us);
         let frame_counter = clock.frame_counter();
-        {
-            let mut frame_stats = frame_stats.borrow_mut();
+        let mut frame_stats = frame_stats.borrow_mut();
+        if mode == GtkFrameClockStatsMode::Full {
+            let (refresh_interval_us, predicted_presentation_time_us) =
+                clock.refresh_info(frame_time_us);
             frame_stats.record_gtk_frame_clock_tick(
                 frame_counter,
                 frame_time_us,
@@ -2046,6 +2088,8 @@ fn attach_frame_clock_stats(
             {
                 record_gtk_frame_timing(&mut frame_stats, &timings);
             }
+        } else {
+            frame_stats.record_gtk_frame_clock_tick_minimal(frame_counter, frame_time_us);
         }
     });
     handlers.push(handler);
@@ -2480,6 +2524,44 @@ mod tests {
         assert_eq!(merged.gtk_frame_clock_before_paint_ticks, 1);
         assert_eq!(merged.gtk_frame_clock_update_ticks, 1);
         assert_eq!(merged.gtk_frame_clock_counter_latest, Some(5));
+    }
+
+    #[cfg(feature = "video-renderer")]
+    #[test]
+    fn gtk_frame_clock_stats_mode_defaults_to_lightweight_for_unknown_values() {
+        assert_eq!(
+            parse_gtk_frame_clock_stats_mode(""),
+            GtkFrameClockStatsMode::Lightweight
+        );
+        assert_eq!(
+            parse_gtk_frame_clock_stats_mode("lightweight"),
+            GtkFrameClockStatsMode::Lightweight
+        );
+        assert_eq!(
+            parse_gtk_frame_clock_stats_mode("unexpected"),
+            GtkFrameClockStatsMode::Lightweight
+        );
+    }
+
+    #[cfg(feature = "video-renderer")]
+    #[test]
+    fn gtk_frame_clock_stats_mode_parses_full_and_off_values() {
+        assert_eq!(
+            parse_gtk_frame_clock_stats_mode("full"),
+            GtkFrameClockStatsMode::Full
+        );
+        assert_eq!(
+            parse_gtk_frame_clock_stats_mode("timings"),
+            GtkFrameClockStatsMode::Full
+        );
+        assert_eq!(
+            parse_gtk_frame_clock_stats_mode("off"),
+            GtkFrameClockStatsMode::Off
+        );
+        assert_eq!(
+            parse_gtk_frame_clock_stats_mode("0"),
+            GtkFrameClockStatsMode::Off
+        );
     }
 
     #[test]

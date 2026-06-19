@@ -1809,13 +1809,10 @@ impl VideoFrameStats {
     }
 
     #[cfg_attr(not(feature = "gtk-renderer"), allow(dead_code))]
-    pub(crate) fn record_gtk_frame_clock_tick(
+    pub(crate) fn record_gtk_frame_clock_tick_minimal(
         &mut self,
         frame_counter: i64,
         frame_time_us: i64,
-        fps: f64,
-        refresh_interval_us: i64,
-        predicted_presentation_time_us: i64,
     ) {
         self.gtk_frame_clock_ticks = self.gtk_frame_clock_ticks.saturating_add(1);
         self.gtk_frame_clock_after_paint_ticks =
@@ -1831,6 +1828,18 @@ impl VideoFrameStats {
             }
             self.gtk_frame_clock_time_us_latest = Some(frame_time_us);
         }
+    }
+
+    #[cfg_attr(not(feature = "gtk-renderer"), allow(dead_code))]
+    pub(crate) fn record_gtk_frame_clock_tick(
+        &mut self,
+        frame_counter: i64,
+        frame_time_us: i64,
+        fps: f64,
+        refresh_interval_us: i64,
+        predicted_presentation_time_us: i64,
+    ) {
+        self.record_gtk_frame_clock_tick_minimal(frame_counter, frame_time_us);
         if fps.is_finite() && fps >= 0.0 {
             let scaled = (fps * 1000.0).round();
             if scaled <= f64::from(u32::MAX) {
@@ -2861,6 +2870,27 @@ mod tests {
         assert_eq!(
             stats.gtk_frame_clock_predicted_presentation_time_us_latest,
             Some(50_967)
+        );
+    }
+
+    #[test]
+    fn accumulates_minimal_gtk_frame_clock_stats_without_expensive_fields() {
+        let mut stats = VideoFrameStats::default();
+
+        stats.record_gtk_frame_clock_tick_minimal(10, 1_000);
+        stats.record_gtk_frame_clock_tick_minimal(11, 17_700);
+
+        assert_eq!(stats.gtk_frame_clock_ticks, 2);
+        assert_eq!(stats.gtk_frame_clock_after_paint_ticks, 2);
+        assert_eq!(stats.gtk_frame_clock_counter_latest, Some(11));
+        assert_eq!(stats.gtk_frame_clock_time_us_latest, Some(17_700));
+        assert_eq!(stats.gtk_frame_clock_interval_us_latest, Some(16_700));
+        assert_eq!(stats.gtk_frame_clock_interval_us_max, Some(16_700));
+        assert_eq!(stats.gtk_frame_clock_fps_x1000_latest, None);
+        assert_eq!(stats.gtk_frame_clock_refresh_interval_us_latest, None);
+        assert_eq!(
+            stats.gtk_frame_clock_predicted_presentation_time_us_latest,
+            None
         );
     }
 

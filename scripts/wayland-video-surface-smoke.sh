@@ -64,7 +64,8 @@ Options:
   --expect-zero-copy-profile <profile>
                      Require grouped zero-copy evidence profile:
                      hardware-decode, runtime-gpu-path, runtime-dmabuf-path,
-                     gtk-gpu-surface, gtk-dmabuf-surface, gtk-timed-gpu-surface
+                     gtk-gpu-surface, gtk-dmabuf-surface, gtk-timed-gpu-surface.
+                     gtk-timed-gpu-surface starts the isolated daemon with GILDER_GTK_VIDEO_FRAME_STATS=full.
   --expect-memory-retention-level-at-most <level>
                      Require sampled video memory-retention risk to be at most unknown, low, medium, or high
   --expect-memory-retention-system-pools-at-most <count>
@@ -78,9 +79,10 @@ Options:
   --expect-gtk-frame-clock
                      Require sampled GTK video frame clock ticks
   --expect-gtk-frame-clock-phase <phase>
-                     Require GTK frame clock phase ticks. Phase: before-paint, update, layout, paint, after-paint, or all
+                     Require GTK frame clock phase ticks. Starts the isolated daemon with GILDER_GTK_VIDEO_FRAME_STATS=full.
+                     Phase: before-paint, update, layout, paint, after-paint, or all
   --expect-gtk-frame-timings
-                     Require sampled completed GDK frame timings
+                     Require sampled completed GDK frame timings. Starts the isolated daemon with GILDER_GTK_VIDEO_FRAME_STATS=full.
   --expect-renderer-video-pipeline-lifecycle
                      Require active/resumed sampling to keep a video pipeline and paused/hidden/fullscreen sampling to release it
   --expect-renderer-video-pipeline-source-references-latest-at-most <count>
@@ -2244,6 +2246,11 @@ if [[ -n "$simulate_output_state" ]]; then
 fi
 if [[ -n "$simulate_session" ]]; then
   daemon_env+=(GILDER_SESSION_STATE="$simulate_session")
+fi
+if [[ "${#expect_gtk_frame_clock_phases[@]}" -gt 0 ||
+  "$expect_gtk_frame_timings" -eq 1 ||
+  "$expect_zero_copy_profile" == "gtk-timed-gpu-surface" ]]; then
+  daemon_env+=(GILDER_GTK_VIDEO_FRAME_STATS=full)
 fi
 "${daemon_env[@]}" "$gilderd" >"$daemon_log" 2>&1 &
 daemon_pid=$!

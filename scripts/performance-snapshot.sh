@@ -192,7 +192,8 @@ Options:
   --expect-zero-copy-profile <profile>
                      Require a grouped zero-copy evidence profile:
                      hardware-decode, runtime-gpu-path, runtime-dmabuf-path,
-                     gtk-gpu-surface, gtk-dmabuf-surface, gtk-timed-gpu-surface
+                     gtk-gpu-surface, gtk-dmabuf-surface, gtk-timed-gpu-surface.
+                     gtk-timed-gpu-surface requires a daemon started with GILDER_GTK_VIDEO_FRAME_STATS=full.
   --expect-memory-retention-level-at-most <level>
                      Require sampled video memory-retention risk to be at most unknown, low, medium, or high
   --expect-memory-retention-system-pools-at-most <count>
@@ -214,9 +215,10 @@ Options:
   --expect-gtk-frame-clock
                      Require observed GTK frame clock ticks in video runtime rows
   --expect-gtk-frame-clock-phase <phase>
-                     Require GTK frame clock phase ticks. Phase: before-paint, update, layout, paint, after-paint, or all
+                     Require GTK frame clock phase ticks. The sampled daemon must have GILDER_GTK_VIDEO_FRAME_STATS=full.
+                     Phase: before-paint, update, layout, paint, after-paint, or all
   --expect-gtk-frame-timings
-                     Require observed completed GDK frame timings in video runtime rows
+                     Require observed completed GDK frame timings in video runtime rows. The sampled daemon must have GILDER_GTK_VIDEO_FRAME_STATS=full.
   --allow-missing     Report missing daemon/tools as skips instead of failures
   --keep              Keep generated evidence after the script exits
   -h, --help          Show this help text
