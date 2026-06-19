@@ -36,6 +36,7 @@ use gstreamer as gst;
 
 const GTK_ACTIVE_RUNTIME_TICK_INTERVAL: Duration = Duration::from_millis(50);
 const GTK_IDLE_RUNTIME_TICK_INTERVAL: Duration = Duration::from_millis(250);
+const GTK_VIDEO_RUNTIME_TICK_INTERVAL: Duration = Duration::from_millis(250);
 const SLIDESHOW_CROSSFADE_DURATION: Duration = Duration::from_millis(600);
 
 #[cfg(feature = "video-renderer")]
@@ -264,17 +265,13 @@ impl GtkStaticRenderer {
     }
 
     pub fn next_runtime_tick_interval(&self) -> Duration {
-        if self.has_video_runtimes() {
-            return GTK_ACTIVE_RUNTIME_TICK_INTERVAL;
-        }
-
         let now = Instant::now();
-        self.windows
+        let next_slideshow_delay = self
+            .windows
             .values()
             .filter_map(|output| output.next_slideshow_tick_delay(now))
-            .min()
-            .map(clamp_runtime_tick_interval)
-            .unwrap_or(GTK_IDLE_RUNTIME_TICK_INTERVAL)
+            .min();
+        runtime_tick_interval(self.has_video_runtimes(), next_slideshow_delay)
     }
 
     pub fn set_scene_lite_wallpaper(&mut self, plan: &SceneLiteWallpaperPlan) -> bool {
@@ -482,7 +479,7 @@ impl GtkStaticRenderer {
         self.video_runtimes.len()
     }
 
-    fn has_video_runtimes(&self) -> bool {
+    pub fn has_video_runtimes(&self) -> bool {
         self.video_runtimes.len() > 0
     }
 }
@@ -493,7 +490,7 @@ impl GtkStaticRenderer {
         0
     }
 
-    fn has_video_runtimes(&self) -> bool {
+    pub fn has_video_runtimes(&self) -> bool {
         false
     }
 }
@@ -503,6 +500,19 @@ fn clamp_runtime_tick_interval(delay: Duration) -> Duration {
         GTK_ACTIVE_RUNTIME_TICK_INTERVAL,
         GTK_IDLE_RUNTIME_TICK_INTERVAL,
     )
+}
+
+fn runtime_tick_interval(
+    has_video_runtimes: bool,
+    next_slideshow_delay: Option<Duration>,
+) -> Duration {
+    let slideshow_interval = next_slideshow_delay.map(clamp_runtime_tick_interval);
+    match (has_video_runtimes, slideshow_interval) {
+        (true, Some(slideshow_interval)) => slideshow_interval.min(GTK_VIDEO_RUNTIME_TICK_INTERVAL),
+        (true, None) => GTK_VIDEO_RUNTIME_TICK_INTERVAL,
+        (false, Some(slideshow_interval)) => slideshow_interval,
+        (false, None) => GTK_IDLE_RUNTIME_TICK_INTERVAL,
+    }
 }
 
 impl RenderedOutput {
@@ -2409,6 +2419,34 @@ mod tests {
         );
         assert_eq!(
             clamp_runtime_tick_interval(Duration::from_secs(10)),
+            GTK_IDLE_RUNTIME_TICK_INTERVAL
+        );
+    }
+
+    #[test]
+    fn runtime_tick_interval_uses_idle_cadence_for_video_only() {
+        assert_eq!(
+            runtime_tick_interval(true, None),
+            GTK_VIDEO_RUNTIME_TICK_INTERVAL
+        );
+    }
+
+    #[test]
+    fn runtime_tick_interval_keeps_short_slideshow_ticks_with_video() {
+        assert_eq!(
+            runtime_tick_interval(true, Some(Duration::from_millis(1))),
+            GTK_ACTIVE_RUNTIME_TICK_INTERVAL
+        );
+        assert_eq!(
+            runtime_tick_interval(true, Some(Duration::from_millis(120))),
+            Duration::from_millis(120)
+        );
+    }
+
+    #[test]
+    fn runtime_tick_interval_uses_idle_cadence_without_work() {
+        assert_eq!(
+            runtime_tick_interval(false, None),
             GTK_IDLE_RUNTIME_TICK_INTERVAL
         );
     }

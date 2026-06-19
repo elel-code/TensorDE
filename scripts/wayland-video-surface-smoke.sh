@@ -65,6 +65,14 @@ Options:
                      Require grouped zero-copy evidence profile:
                      hardware-decode, runtime-gpu-path, runtime-dmabuf-path,
                      gtk-gpu-surface, gtk-dmabuf-surface, gtk-timed-gpu-surface
+  --expect-memory-retention-level-at-most <level>
+                     Require sampled video memory-retention risk to be at most unknown, low, medium, or high
+  --expect-memory-retention-system-pools-at-most <count>
+                     Require sampled system-memory allocation pool reports to be at most count
+  --expect-memory-retention-min-pool-bytes-at-most <bytes>
+                     Require sampled minimum allocation pool capacity to be at most bytes
+  --expect-memory-retention-sink-frame-retention <state>
+                     Require sampled sink frame retention state: unknown, disabled, last-sample, preroll-frame, or last-sample-and-preroll-frame
   --expect-video-position-progress
                      Require sampled video position to advance
   --expect-gtk-frame-clock
@@ -185,6 +193,10 @@ expect_sink_memory_feature=""
 expect_zero_copy_evidence=""
 expect_zero_copy_evidence_at_least=""
 expect_zero_copy_profile=""
+expect_memory_retention_level_at_most=""
+expect_memory_retention_system_pools_at_most=""
+expect_memory_retention_min_pool_bytes_at_most=""
+expect_memory_retention_sink_frame_retention=""
 expect_video_position_progress=0
 expect_gtk_frame_clock=0
 expect_gtk_frame_clock_phases=()
@@ -409,6 +421,30 @@ while [[ $# -gt 0 ]]; do
     --expect-zero-copy-profile)
       [[ $# -ge 2 ]] || { echo "--expect-zero-copy-profile requires a value" >&2; exit 2; }
       expect_zero_copy_profile="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-memory-retention-level-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-memory-retention-level-at-most requires a value" >&2; exit 2; }
+      expect_memory_retention_level_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-memory-retention-system-pools-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-memory-retention-system-pools-at-most requires a value" >&2; exit 2; }
+      expect_memory_retention_system_pools_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-memory-retention-min-pool-bytes-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-memory-retention-min-pool-bytes-at-most requires a value" >&2; exit 2; }
+      expect_memory_retention_min_pool_bytes_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-memory-retention-sink-frame-retention)
+      [[ $# -ge 2 ]] || { echo "--expect-memory-retention-sink-frame-retention requires a value" >&2; exit 2; }
+      expect_memory_retention_sink_frame_retention="$2"
       sample_performance=1
       shift 2
       ;;
@@ -777,6 +813,31 @@ case "$expect_zero_copy_profile" in
     exit 2
     ;;
 esac
+for memory_retention_expectation in \
+  "$expect_memory_retention_system_pools_at_most" \
+  "$expect_memory_retention_min_pool_bytes_at_most"
+do
+  if [[ -n "$memory_retention_expectation" && ! "$memory_retention_expectation" =~ ^[0-9]+$ ]]; then
+    echo "memory retention numeric expectations must be non-negative integers" >&2
+    exit 2
+  fi
+done
+case "$expect_memory_retention_level_at_most" in
+  ""|unknown|low|medium|high)
+    ;;
+  *)
+    echo "--expect-memory-retention-level-at-most must be one of unknown, low, medium, high" >&2
+    exit 2
+    ;;
+esac
+case "$expect_memory_retention_sink_frame_retention" in
+  ""|unknown|disabled|last-sample|preroll-frame|last-sample-and-preroll-frame)
+    ;;
+  *)
+    echo "--expect-memory-retention-sink-frame-retention must be one of unknown, disabled, last-sample, preroll-frame, last-sample-and-preroll-frame" >&2
+    exit 2
+    ;;
+esac
 for render_sync_resource_expectation in \
   "$expect_renderer_video_pipeline_source_references_latest_at_most" \
   "$expect_renderer_video_pipeline_source_reference_bytes_latest_at_most" \
@@ -1064,6 +1125,10 @@ expect_sink_memory_feature: ${expect_sink_memory_feature:-none}
 expect_zero_copy_evidence: ${expect_zero_copy_evidence:-none}
 expect_zero_copy_evidence_at_least: ${expect_zero_copy_evidence_at_least:-none}
 expect_zero_copy_profile: ${expect_zero_copy_profile:-none}
+expect_memory_retention_level_at_most: ${expect_memory_retention_level_at_most:-none}
+expect_memory_retention_system_pools_at_most: ${expect_memory_retention_system_pools_at_most:-none}
+expect_memory_retention_min_pool_bytes_at_most: ${expect_memory_retention_min_pool_bytes_at_most:-none}
+expect_memory_retention_sink_frame_retention: ${expect_memory_retention_sink_frame_retention:-none}
 expect_video_position_progress: ${expect_video_position_progress}
 expect_gtk_frame_clock: ${expect_gtk_frame_clock}
 expect_gtk_frame_clock_phases: ${expect_gtk_frame_clock_phases[*]:-none}
@@ -1210,6 +1275,7 @@ append_video_runtime_evidence_summary() {
     video_allocation_report_count_max \
     video_allocation_pools_latest \
     video_allocation_allocators_latest \
+    video_memory_retention_rows \
     video_memory_retention_level_latest \
     video_memory_retention_notes_latest \
     video_memory_retention_estimated_min_pool_bytes_max \
@@ -1413,6 +1479,10 @@ require_video_runtime_row: ${require_video_runtime_row}
 expect_renderer_video_pipeline_lifecycle: ${expect_renderer_video_pipeline_lifecycle}
 expect_gtk_frame_clock_phases: ${expect_gtk_frame_clock_phases[*]:-none}
 expect_zero_copy_profile: ${expect_zero_copy_profile:-none}
+expect_memory_retention_level_at_most: ${expect_memory_retention_level_at_most:-none}
+expect_memory_retention_system_pools_at_most: ${expect_memory_retention_system_pools_at_most:-none}
+expect_memory_retention_min_pool_bytes_at_most: ${expect_memory_retention_min_pool_bytes_at_most:-none}
+expect_memory_retention_sink_frame_retention: ${expect_memory_retention_sink_frame_retention:-none}
 expect_max_rss_kib_at_most: ${expect_max_rss_kib_at_most:-none}
 expect_max_pss_kib_at_most: ${expect_max_pss_kib_at_most:-none}
 expect_max_private_kib_at_most: ${expect_max_private_kib_at_most:-none}
@@ -1515,6 +1585,10 @@ has_video_runtime_expectations() {
     -n "$expect_zero_copy_evidence" ||
     -n "$expect_zero_copy_evidence_at_least" ||
     -n "$expect_zero_copy_profile" ||
+    -n "$expect_memory_retention_level_at_most" ||
+    -n "$expect_memory_retention_system_pools_at_most" ||
+    -n "$expect_memory_retention_min_pool_bytes_at_most" ||
+    -n "$expect_memory_retention_sink_frame_retention" ||
     "$expect_video_position_progress" -eq 1 ||
     "$expect_gtk_frame_clock" -eq 1 ||
     "${#expect_gtk_frame_clock_phases[@]}" -gt 0 ||
@@ -1543,6 +1617,18 @@ append_video_runtime_expectations() {
   fi
   if [[ -n "$expect_zero_copy_profile" ]]; then
     args_ref+=(--expect-zero-copy-profile "$expect_zero_copy_profile")
+  fi
+  if [[ -n "$expect_memory_retention_level_at_most" ]]; then
+    args_ref+=(--expect-memory-retention-level-at-most "$expect_memory_retention_level_at_most")
+  fi
+  if [[ -n "$expect_memory_retention_system_pools_at_most" ]]; then
+    args_ref+=(--expect-memory-retention-system-pools-at-most "$expect_memory_retention_system_pools_at_most")
+  fi
+  if [[ -n "$expect_memory_retention_min_pool_bytes_at_most" ]]; then
+    args_ref+=(--expect-memory-retention-min-pool-bytes-at-most "$expect_memory_retention_min_pool_bytes_at_most")
+  fi
+  if [[ -n "$expect_memory_retention_sink_frame_retention" ]]; then
+    args_ref+=(--expect-memory-retention-sink-frame-retention "$expect_memory_retention_sink_frame_retention")
   fi
   if [[ "$expect_video_position_progress" -eq 1 ]]; then
     args_ref+=(--expect-video-position-progress)

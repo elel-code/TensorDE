@@ -323,7 +323,7 @@ fn gtk_video_frame_stats_snapshot_due(
     renderer: &Rc<RefCell<gilder::renderer::gtk::GtkStaticRenderer>>,
     last_snapshot_at: Option<Instant>,
 ) -> bool {
-    if renderer.borrow().resource_snapshot().video_shared_runtimes == 0 {
+    if !renderer.borrow().has_video_runtimes() {
         return false;
     }
     last_snapshot_at.is_none_or(|last_snapshot_at| {
