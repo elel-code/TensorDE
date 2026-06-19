@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="288" viewBox="0 0 512 288">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="0.58" stop-color="#214f74"/>
+      <stop offset="1" stop-color="#0f1f2b"/>
+    </linearGradient>
+    <radialGradient id="pulse" cx="58%" cy="42%" r="48%">
+      <stop offset="0" stop-color="#f2c75c" stop-opacity="0.9"/>
+      <stop offset="0.42" stop-color="#d98c3a" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#d98c3a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="288" fill="url(#bg)"/>
+  <rect width="512" height="288" fill="url(#pulse)"/>
+  <path d="M0 200 C 70 163, 115 248, 184 211 S 299 139, 371 176 459 256, 512 211 L 512 288 L 0 288 Z" fill="#122737" opacity="0.72"/>
+  <path d="M0 125 C 56 99, 104 139, 160 112 S 256 59, 323 85 416 163, 512 115" fill="none" stroke="#f0d37a" stroke-width="4" stroke-opacity="0.68"/>
+  <path d="M0 139 C 69 120, 128 171, 197 149 S 304 83, 379 115 456 173, 512 144" fill="none" stroke="#8fd5e8" stroke-width="3" stroke-opacity="0.54"/>
+  <circle cx="301" cy="117" r="25" fill="#fff2bd" opacity="0.18"/>
+  <circle cx="301" cy="117" r="6" fill="#fff7d7" opacity="0.8"/>
+  <text x="26" y="258" fill="#e8eef2" font-family="sans-serif" font-size="22" font-weight="700">Shader Demo</text>
+</svg>

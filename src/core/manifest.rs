@@ -144,6 +144,17 @@ pub enum WallpaperEntry {
         #[serde(default)]
         max_fps: Option<u32>,
     },
+    Shader {
+        source: PackagePath,
+        #[serde(default)]
+        fallback: Option<PackagePath>,
+        #[serde(default)]
+        language: ShaderLanguage,
+        #[serde(default)]
+        max_fps: Option<u32>,
+        #[serde(default)]
+        uniforms: Vec<ShaderUniform>,
+    },
     Playlist {
         items: Vec<PlaylistItem>,
         #[serde(default)]
@@ -159,6 +170,7 @@ impl WallpaperEntry {
             Self::Slideshow { .. } => WallpaperKind::Slideshow,
             Self::Web { .. } => WallpaperKind::Web,
             Self::SceneLite { .. } => WallpaperKind::SceneLite,
+            Self::Shader { .. } => WallpaperKind::Shader,
             Self::Playlist { .. } => WallpaperKind::Playlist,
         }
     }
@@ -189,6 +201,22 @@ impl WallpaperEntry {
             }
             Self::SceneLite { max_fps, .. } => {
                 validate_fps(*max_fps)?;
+                Ok(())
+            }
+            Self::Shader {
+                max_fps, uniforms, ..
+            } => {
+                validate_fps(*max_fps)?;
+                let mut uniform_names = BTreeSet::new();
+                for uniform in uniforms {
+                    uniform.validate()?;
+                    if !uniform_names.insert(uniform.name.clone()) {
+                        return Err(ManifestError::InvalidEntry(format!(
+                            "duplicate shader uniform name {:?}",
+                            uniform.name
+                        )));
+                    }
+                }
                 Ok(())
             }
             Self::Playlist { items, .. } => {
@@ -246,6 +274,14 @@ impl WallpaperEntry {
                     paths.push(path.clone());
                 }
             }
+            Self::Shader {
+                source, fallback, ..
+            } => {
+                paths.push(source.clone());
+                if let Some(path) = fallback {
+                    paths.push(path.clone());
+                }
+            }
             Self::Playlist { items, .. } => {
                 for item in items {
                     item.entry.push_referenced_paths(paths)?;
@@ -254,6 +290,62 @@ impl WallpaperEntry {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ShaderLanguage {
+    #[default]
+    Auto,
+    Glsl,
+    Wgsl,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShaderUniform {
+    pub name: String,
+    #[serde(default)]
+    pub source: ShaderUniformSource,
+    #[serde(default)]
+    pub property: Option<String>,
+}
+
+impl ShaderUniform {
+    fn validate(&self) -> Result<(), ManifestError> {
+        validate_required_text("shader uniform name", &self.name)?;
+        match self.source {
+            ShaderUniformSource::Property => {
+                let Some(property) = self.property.as_ref() else {
+                    return Err(ManifestError::InvalidEntry(format!(
+                        "shader uniform {:?} with source property requires property",
+                        self.name
+                    )));
+                };
+                validate_required_text("shader uniform property", property)?;
+            }
+            ShaderUniformSource::Time
+            | ShaderUniformSource::Resolution
+            | ShaderUniformSource::Mouse => {
+                if self.property.is_some() {
+                    return Err(ManifestError::InvalidEntry(format!(
+                        "shader uniform {:?} must not set property unless source is property",
+                        self.name
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ShaderUniformSource {
+    Time,
+    Resolution,
+    Mouse,
+    #[default]
+    Property,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -754,6 +846,107 @@ mod tests {
         manifest.validate().unwrap();
         assert_eq!(manifest.kind, WallpaperKind::StaticImage);
         assert_eq!(manifest.referenced_paths().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn parses_and_validates_shader_manifest() {
+        let json = r##"
+        {
+          "format": "gilder.wallpaper",
+          "format_version": 1,
+          "id": "org.example.shader",
+          "version": "1.0.0",
+          "title": "Example Shader",
+          "kind": "shader",
+          "entry": {
+            "type": "shader",
+            "source": "shaders/main.frag",
+            "fallback": "previews/poster.svg",
+            "language": "glsl",
+            "max_fps": 60,
+            "uniforms": [
+              { "name": "u_time", "source": "time" },
+              { "name": "u_resolution", "source": "resolution" },
+              { "name": "u_mouse", "source": "mouse" },
+              { "name": "u_intensity", "source": "property", "property": "intensity" }
+            ]
+          },
+          "properties": {
+            "intensity": {
+              "type": "range",
+              "min": 0.0,
+              "max": 1.0,
+              "default": 0.5
+            }
+          }
+        }
+        "##;
+        let manifest: Manifest = serde_json::from_str(json).unwrap();
+        manifest.validate().unwrap();
+        assert_eq!(manifest.kind, WallpaperKind::Shader);
+        let WallpaperEntry::Shader {
+            language, uniforms, ..
+        } = &manifest.entry
+        else {
+            panic!("expected shader entry");
+        };
+        assert_eq!(*language, ShaderLanguage::Glsl);
+        assert_eq!(uniforms.len(), 4);
+        assert_eq!(manifest.referenced_paths().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn rejects_invalid_shader_uniforms() {
+        let json = r##"
+        {
+          "format": "gilder.wallpaper",
+          "format_version": 1,
+          "id": "org.example.bad-shader",
+          "version": "1.0.0",
+          "title": "Bad Shader",
+          "kind": "shader",
+          "entry": {
+            "type": "shader",
+            "source": "shaders/main.wgsl",
+            "uniforms": [
+              { "name": "u_value", "source": "property" }
+            ]
+          }
+        }
+        "##;
+        let manifest: Manifest = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            manifest.validate(),
+            Err(ManifestError::InvalidEntry(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_duplicate_shader_uniform_names() {
+        let json = r##"
+        {
+          "format": "gilder.wallpaper",
+          "format_version": 1,
+          "id": "org.example.duplicate-shader-uniform",
+          "version": "1.0.0",
+          "title": "Duplicate Shader Uniform",
+          "kind": "shader",
+          "entry": {
+            "type": "shader",
+            "source": "shaders/main.frag",
+            "fallback": "previews/poster.svg",
+            "uniforms": [
+              { "name": "u_time", "source": "time" },
+              { "name": "u_time", "source": "resolution" }
+            ]
+          }
+        }
+        "##;
+        let manifest: Manifest = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            manifest.validate(),
+            Err(ManifestError::InvalidEntry(_))
+        ));
     }
 
     #[test]

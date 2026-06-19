@@ -1208,6 +1208,7 @@ fn dynamic_wallpaper_entry(entry: &WallpaperEntry) -> bool {
         WallpaperEntry::Video { .. }
         | WallpaperEntry::Slideshow { .. }
         | WallpaperEntry::Web { .. }
+        | WallpaperEntry::Shader { .. }
         | WallpaperEntry::SceneLite { .. } => true,
         WallpaperEntry::StaticImage { .. } => false,
         WallpaperEntry::Playlist { items, .. } => items
@@ -1423,6 +1424,17 @@ fn wallpaper_entry_plan_with_target(
             target_max_fps: performance.max_fps,
         })),
         WallpaperEntry::Web { fallback, .. } => {
+            let Some(fallback) = fallback else {
+                return Err(RendererPlanError::UnsupportedEntry(entry.kind().as_str()));
+            };
+            Ok(WallpaperRenderPlan::StaticImage(StaticWallpaperPlan {
+                output_name: output_name.to_owned(),
+                source: fallback.join_to(&package.root),
+                fit: effective_fit(FitMode::Cover, fit_override),
+                background: Some("#000000".to_owned()),
+            }))
+        }
+        WallpaperEntry::Shader { fallback, .. } => {
             let Some(fallback) = fallback else {
                 return Err(RendererPlanError::UnsupportedEntry(entry.kind().as_str()));
             };
@@ -5161,6 +5173,99 @@ exit 0
     }
 
     #[test]
+    fn shader_fallback_builds_static_plan() {
+        let test_dir = TestDir::new("gilder-shader-fallback-plan");
+        let package_dir = test_dir.path.join("shader-demo.gwpdir");
+        write_minimal_shader_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert_eq!(sync.plans.len(), 1);
+        assert!(sync.video_plans.is_empty());
+        assert!(sync.slideshow_plans.is_empty());
+        assert!(sync.scene_lite_plans.is_empty());
+        assert!(sync.errors.is_empty());
+        assert!(sync.plans[0].source.ends_with("previews/poster.svg"));
+        assert_eq!(sync.plans[0].fit, FitMode::Cover);
+        assert_eq!(sync.plans[0].background.as_deref(), Some("#000000"));
+        assert_eq!(sync.cache.planned_static_image_resources, 1);
+        assert_eq!(sync.cache.planned_image_resource_references, 1);
+    }
+
+    #[test]
+    fn shader_without_fallback_reports_unsupported_entry() {
+        let test_dir = TestDir::new("gilder-shader-without-fallback-plan");
+        let package_dir = test_dir.path.join("shader-demo.gwpdir");
+        write_minimal_shader_gwpdir(&package_dir);
+        remove_entry_fallback(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert!(sync.plans.is_empty());
+        assert_eq!(sync.errors.len(), 1);
+        assert_eq!(
+            sync.errors[0].message,
+            "shader entries are not supported here"
+        );
+        assert_eq!(sync.decisions[0].action, StaticRenderAction::Error);
+    }
+
+    #[test]
+    fn pause_dynamic_releases_shader_wallpaper_after_manifest_load() {
+        let test_dir = TestDir::new("gilder-shader-pause-dynamic");
+        let package_dir = test_dir.path.join("shader-demo.gwpdir");
+        write_minimal_shader_gwpdir(&package_dir);
+        let mut config = GilderConfig::default();
+        config.performance.hidden = DynamicPausePolicy::PauseDynamic;
+        config.default_wallpaper = Some(package_dir.display().to_string());
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                visible: false,
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_config(
+            &config,
+            &desktop,
+            &AppState::default(),
+            test_dir.path.join("cache"),
+        );
+
+        assert!(sync.plans.is_empty());
+        assert!(sync.video_plans.is_empty());
+        assert!(sync.slideshow_plans.is_empty());
+        assert!(sync.scene_lite_plans.is_empty());
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.removals, vec!["eDP-1"]);
+        assert_eq!(sync.decisions[0].action, StaticRenderAction::Remove);
+        assert_eq!(sync.decisions[0].performance.mode, RenderMode::Paused);
+        assert_eq!(
+            sync.decisions[0].performance.reason,
+            crate::policy::DecisionReason::OutputHidden
+        );
+    }
+
+    #[test]
     fn pause_dynamic_releases_web_wallpaper_after_manifest_load() {
         let test_dir = TestDir::new("gilder-web-pause-dynamic");
         let package_dir = test_dir.path.join("web-demo.gwpdir");
@@ -6185,6 +6290,58 @@ exit 0
                 "index": "index.html",
                 "fallback": "previews/poster.svg",
                 "max_fps": 30
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_minimal_shader_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("shaders")).unwrap();
+        fs::create_dir_all(path.join("previews")).unwrap();
+        fs::write(
+            path.join("shaders/main.frag"),
+            br##"
+uniform float u_time;
+uniform vec2 u_resolution;
+uniform float u_intensity;
+void main() {}
+"##,
+        )
+        .unwrap();
+        fs::write(path.join("previews/poster.svg"), b"<svg/>").unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.shader-demo",
+            "version": "1.0.0",
+            "title": "Shader Demo",
+            "kind": "shader",
+            "preview": {
+                "poster": "previews/poster.svg"
+            },
+            "entry": {
+                "type": "shader",
+                "source": "shaders/main.frag",
+                "fallback": "previews/poster.svg",
+                "language": "glsl",
+                "max_fps": 60,
+                "uniforms": [
+                    { "name": "u_time", "source": "time" },
+                    { "name": "u_resolution", "source": "resolution" },
+                    { "name": "u_intensity", "source": "property", "property": "intensity" }
+                ]
+            },
+            "properties": {
+                "intensity": {
+                    "type": "range",
+                    "min": 0.0,
+                    "max": 1.0,
+                    "default": 0.5
+                }
             }
         });
         fs::write(
