@@ -190,29 +190,11 @@ fn run_gtk_daemon(
         }
 
         if let Some(receiver) = receiver_for_activate.borrow_mut().take() {
-            let renderer_for_updates = Rc::clone(&renderer_for_activate);
-            let runtime_for_updates = Arc::clone(&runtime_for_activate);
-            gtk::glib::timeout_add_local(Duration::from_millis(50), move || {
-                let mut should_store_snapshot = false;
-                {
-                    let mut renderer = renderer_for_updates.borrow_mut();
-                    while let Ok(sync) = receiver.try_recv() {
-                        renderer.sync_static_render_plan(&sync);
-                        should_store_snapshot = true;
-                    }
-                    should_store_snapshot |= renderer.tick_slideshows();
-                    #[cfg(feature = "video-renderer")]
-                    {
-                        should_store_snapshot |= renderer.poll_video_buses();
-                    }
-                }
-                if should_store_snapshot {
-                    runtime_for_updates.store_renderer_runtime_snapshot(renderer_runtime_snapshot(
-                        &renderer_for_updates.borrow(),
-                    ));
-                }
-                gtk::glib::ControlFlow::Continue
-            });
+            schedule_gtk_renderer_tick(
+                Rc::clone(&renderer_for_activate),
+                Rc::new(RefCell::new(receiver)),
+                Arc::clone(&runtime_for_activate),
+            );
         }
 
         let runtime_for_refresh = Arc::clone(&runtime_for_activate);
@@ -236,6 +218,34 @@ fn run_gtk_daemon(
             exit_code.get()
         ))
     }
+}
+
+#[cfg(feature = "gtk-renderer")]
+fn schedule_gtk_renderer_tick(
+    renderer: Rc<RefCell<gilder::renderer::gtk::GtkStaticRenderer>>,
+    receiver: Rc<RefCell<mpsc::Receiver<StaticRenderSyncPlan>>>,
+    runtime: Arc<DaemonRuntime>,
+) {
+    let interval = renderer.borrow().next_runtime_tick_interval();
+    gtk::glib::timeout_add_local_once(interval, move || {
+        let mut should_store_snapshot = false;
+        {
+            let mut renderer = renderer.borrow_mut();
+            while let Ok(sync) = receiver.borrow().try_recv() {
+                renderer.sync_static_render_plan(&sync);
+                should_store_snapshot = true;
+            }
+            should_store_snapshot |= renderer.tick_slideshows();
+            #[cfg(feature = "video-renderer")]
+            {
+                should_store_snapshot |= renderer.poll_video_buses();
+            }
+        }
+        if should_store_snapshot {
+            runtime.store_renderer_runtime_snapshot(renderer_runtime_snapshot(&renderer.borrow()));
+        }
+        schedule_gtk_renderer_tick(renderer, receiver, runtime);
+    });
 }
 
 #[cfg(feature = "gtk-renderer")]

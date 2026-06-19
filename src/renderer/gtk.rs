@@ -32,6 +32,9 @@ use gst::prelude::*;
 #[cfg(feature = "video-renderer")]
 use gstreamer as gst;
 
+const GTK_ACTIVE_RUNTIME_TICK_INTERVAL: Duration = Duration::from_millis(50);
+const GTK_IDLE_RUNTIME_TICK_INTERVAL: Duration = Duration::from_millis(250);
+
 #[cfg(feature = "video-renderer")]
 const MUTED_PLAYBIN_FLAGS: &str = "video";
 #[cfg(feature = "video-renderer")]
@@ -223,6 +226,20 @@ impl GtkStaticRenderer {
         changed
     }
 
+    pub fn next_runtime_tick_interval(&self) -> Duration {
+        if self.has_video_runtimes() {
+            return GTK_ACTIVE_RUNTIME_TICK_INTERVAL;
+        }
+
+        let now = Instant::now();
+        self.windows
+            .values()
+            .filter_map(|output| output.next_slideshow_tick_delay(now))
+            .min()
+            .map(clamp_runtime_tick_interval)
+            .unwrap_or(GTK_IDLE_RUNTIME_TICK_INTERVAL)
+    }
+
     pub fn set_scene_lite_wallpaper(&mut self, plan: &SceneLiteWallpaperPlan) -> bool {
         let Some(monitor) = monitor_for_output(&plan.output_name) else {
             self.remove_output(&plan.output_name);
@@ -376,6 +393,10 @@ impl GtkStaticRenderer {
     fn video_shared_runtime_count(&self) -> usize {
         self.video_runtimes.len()
     }
+
+    fn has_video_runtimes(&self) -> bool {
+        self.video_runtimes.len() > 0
+    }
 }
 
 #[cfg(not(feature = "video-renderer"))]
@@ -383,6 +404,17 @@ impl GtkStaticRenderer {
     fn video_shared_runtime_count(&self) -> usize {
         0
     }
+
+    fn has_video_runtimes(&self) -> bool {
+        false
+    }
+}
+
+fn clamp_runtime_tick_interval(delay: Duration) -> Duration {
+    delay.clamp(
+        GTK_ACTIVE_RUNTIME_TICK_INTERVAL,
+        GTK_IDLE_RUNTIME_TICK_INTERVAL,
+    )
 }
 
 impl RenderedOutput {
@@ -418,6 +450,14 @@ impl RenderedOutput {
         slideshow.next_frame_at = now + Duration::from_millis(slideshow.plan.interval_ms);
         self.apply_slideshow_frame();
         true
+    }
+
+    fn next_slideshow_tick_delay(&self, now: Instant) -> Option<Duration> {
+        let slideshow = self.slideshow.as_ref()?;
+        if slideshow.plan.sources.len() < 2 {
+            return None;
+        }
+        Some(slideshow.next_frame_at.saturating_duration_since(now))
     }
 
     fn apply_slideshow_frame(&mut self) {
@@ -1817,6 +1857,22 @@ mod tests {
         assert_eq!(merged.gtk_frame_clock_before_paint_ticks, 1);
         assert_eq!(merged.gtk_frame_clock_update_ticks, 1);
         assert_eq!(merged.gtk_frame_clock_counter_latest, Some(5));
+    }
+
+    #[test]
+    fn clamps_runtime_tick_interval_between_active_and_idle_bounds() {
+        assert_eq!(
+            clamp_runtime_tick_interval(Duration::from_millis(1)),
+            GTK_ACTIVE_RUNTIME_TICK_INTERVAL
+        );
+        assert_eq!(
+            clamp_runtime_tick_interval(Duration::from_millis(100)),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            clamp_runtime_tick_interval(Duration::from_secs(10)),
+            GTK_IDLE_RUNTIME_TICK_INTERVAL
+        );
     }
 
     #[cfg(feature = "video-renderer")]
