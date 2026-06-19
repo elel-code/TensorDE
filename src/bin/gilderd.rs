@@ -193,17 +193,24 @@ fn run_gtk_daemon(
             let renderer_for_updates = Rc::clone(&renderer_for_activate);
             let runtime_for_updates = Arc::clone(&runtime_for_activate);
             gtk::glib::timeout_add_local(Duration::from_millis(50), move || {
-                while let Ok(sync) = receiver.try_recv() {
-                    renderer_for_updates
-                        .borrow_mut()
-                        .sync_static_render_plan(&sync);
+                let mut should_store_snapshot = false;
+                {
+                    let mut renderer = renderer_for_updates.borrow_mut();
+                    while let Ok(sync) = receiver.try_recv() {
+                        renderer.sync_static_render_plan(&sync);
+                        should_store_snapshot = true;
+                    }
+                    should_store_snapshot |= renderer.tick_slideshows();
+                    #[cfg(feature = "video-renderer")]
+                    {
+                        should_store_snapshot |= renderer.poll_video_buses();
+                    }
                 }
-                renderer_for_updates.borrow_mut().tick_slideshows();
-                #[cfg(feature = "video-renderer")]
-                renderer_for_updates.borrow_mut().poll_video_buses();
-                runtime_for_updates.store_renderer_runtime_snapshot(renderer_runtime_snapshot(
-                    &renderer_for_updates.borrow(),
-                ));
+                if should_store_snapshot {
+                    runtime_for_updates.store_renderer_runtime_snapshot(renderer_runtime_snapshot(
+                        &renderer_for_updates.borrow(),
+                    ));
+                }
                 gtk::glib::ControlFlow::Continue
             });
         }

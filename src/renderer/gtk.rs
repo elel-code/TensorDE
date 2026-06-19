@@ -214,11 +214,13 @@ impl GtkStaticRenderer {
         true
     }
 
-    pub fn tick_slideshows(&mut self) {
+    pub fn tick_slideshows(&mut self) -> bool {
         let now = Instant::now();
+        let mut changed = false;
         for output in self.windows.values_mut() {
-            output.tick_slideshow(now);
+            changed |= output.tick_slideshow(now);
         }
+        changed
     }
 
     pub fn set_scene_lite_wallpaper(&mut self, plan: &SceneLiteWallpaperPlan) -> bool {
@@ -271,8 +273,10 @@ impl GtkStaticRenderer {
     }
 
     #[cfg(feature = "video-renderer")]
-    pub fn poll_video_buses(&mut self) {
+    pub fn poll_video_buses(&mut self) -> bool {
+        let had_runtimes = self.video_runtimes.len() > 0;
         let errors = self.video_runtimes.poll_buses();
+        let had_errors = !errors.is_empty();
         for (key, err) in errors {
             let output_names = self
                 .windows
@@ -293,6 +297,7 @@ impl GtkStaticRenderer {
                 }
             }
         }
+        had_runtimes || had_errors
     }
 
     pub fn resource_snapshot(&self) -> GtkRendererResourceSnapshot {
@@ -402,16 +407,17 @@ impl RenderedOutput {
         }
     }
 
-    fn tick_slideshow(&mut self, now: Instant) {
+    fn tick_slideshow(&mut self, now: Instant) -> bool {
         let Some(slideshow) = &mut self.slideshow else {
-            return;
+            return false;
         };
         if slideshow.plan.sources.len() < 2 || now < slideshow.next_frame_at {
-            return;
+            return false;
         }
         slideshow.index = (slideshow.index + 1) % slideshow.plan.sources.len();
         slideshow.next_frame_at = now + Duration::from_millis(slideshow.plan.interval_ms);
         self.apply_slideshow_frame();
+        true
     }
 
     fn apply_slideshow_frame(&mut self) {
