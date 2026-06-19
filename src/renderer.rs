@@ -194,6 +194,24 @@ pub struct RenderSyncCacheReport {
     #[serde(default)]
     pub static_image_cache_eviction_errors: u64,
     #[serde(default)]
+    pub scene_lite_snapshot_cache_entries: usize,
+    #[serde(default)]
+    pub scene_lite_snapshot_cache_max_entries: usize,
+    #[serde(default)]
+    pub scene_lite_snapshot_cache_bytes: u64,
+    #[serde(default)]
+    pub scene_lite_snapshot_cache_max_bytes: u64,
+    #[serde(default)]
+    pub scene_lite_snapshot_cache_generations: u64,
+    #[serde(default)]
+    pub scene_lite_snapshot_cache_reuses: u64,
+    #[serde(default)]
+    pub scene_lite_snapshot_cache_generation_errors: u64,
+    #[serde(default)]
+    pub scene_lite_snapshot_cache_evictions: u64,
+    #[serde(default)]
+    pub scene_lite_snapshot_cache_eviction_errors: u64,
+    #[serde(default)]
     pub planned_video_source_references: usize,
     #[serde(default)]
     pub planned_unique_video_sources: usize,
@@ -459,22 +477,60 @@ fn static_render_sync_plan_inner(
             continue;
         }
 
-        match wallpaper_plan_with_target(
-            &output_name,
-            &package,
-            &performance,
-            video_decoder_policy,
-            fit_override,
-            assignment.variant.as_deref(),
-            render_target,
-            Some(&mut StaticImageCacheContext {
-                cache_dir,
-                max_entries: cache_config.static_image_cache_max_entries,
-                stats: &mut package_cache.stats,
-                protected_files: &mut package_cache.protected_static_cache_files,
-                ffmpeg: None,
-            }),
-        ) {
+        let plan_result = match &package.manifest.entry {
+            WallpaperEntry::StaticImage { .. } => {
+                let mut static_image_cache = StaticImageCacheContext {
+                    cache_dir,
+                    max_entries: cache_config.static_image_cache_max_entries,
+                    stats: &mut package_cache.stats,
+                    protected_files: &mut package_cache.protected_static_cache_files,
+                    ffmpeg: None,
+                };
+                wallpaper_plan_with_target(
+                    &output_name,
+                    &package,
+                    &performance,
+                    video_decoder_policy,
+                    fit_override,
+                    assignment.variant.as_deref(),
+                    render_target,
+                    Some(&mut static_image_cache),
+                    None,
+                )
+            }
+            WallpaperEntry::SceneLite { .. } => {
+                let mut scene_lite_snapshot_cache = SceneLiteSnapshotCacheContext {
+                    cache_dir,
+                    max_entries: cache_config.static_image_cache_max_entries,
+                    stats: &mut package_cache.stats,
+                    protected_files: &mut package_cache.protected_scene_lite_snapshot_files,
+                };
+                wallpaper_plan_with_target(
+                    &output_name,
+                    &package,
+                    &performance,
+                    video_decoder_policy,
+                    fit_override,
+                    assignment.variant.as_deref(),
+                    render_target,
+                    None,
+                    Some(&mut scene_lite_snapshot_cache),
+                )
+            }
+            _ => wallpaper_plan_with_target(
+                &output_name,
+                &package,
+                &performance,
+                video_decoder_policy,
+                fit_override,
+                assignment.variant.as_deref(),
+                render_target,
+                None,
+                None,
+            ),
+        };
+
+        match plan_result {
             Ok(WallpaperRenderPlan::StaticImage(plan)) => {
                 decisions.push(StaticRenderOutputDecision {
                     output_name,
@@ -803,6 +859,7 @@ fn wallpaper_plan_for_assignment_with_target(
         assignment.variant.as_deref(),
         render_target,
         None,
+        None,
     )
 }
 
@@ -822,6 +879,7 @@ pub fn wallpaper_plan(
         variant_id,
         None,
         None,
+        None,
     )
 }
 
@@ -834,6 +892,7 @@ fn wallpaper_plan_with_target(
     variant_id: Option<&str>,
     render_target: Option<RenderTargetSize>,
     static_image_cache: Option<&mut StaticImageCacheContext<'_>>,
+    scene_lite_snapshot_cache: Option<&mut SceneLiteSnapshotCacheContext<'_>>,
 ) -> Result<WallpaperRenderPlan, RendererPlanError> {
     let output_name = output_name.into();
     let explicit_variant_source = explicit_variant_source(package, variant_id)?;
@@ -928,6 +987,8 @@ fn wallpaper_plan_with_target(
             *max_fps,
             performance,
             fit_override,
+            render_target,
+            scene_lite_snapshot_cache,
         )?)),
     }
 }
@@ -940,6 +1001,8 @@ fn scene_lite_wallpaper_plan(
     manifest_max_fps: Option<u32>,
     performance: &PerformanceDecision,
     fit_override: Option<FitMode>,
+    render_target: Option<RenderTargetSize>,
+    scene_lite_snapshot_cache: Option<&mut SceneLiteSnapshotCacheContext<'_>>,
 ) -> Result<SceneLiteWallpaperPlan, RendererPlanError> {
     let source_path = source.map(|source| source.join_to(&package.root));
     let document = match source_path.as_ref() {
@@ -966,7 +1029,15 @@ fn scene_lite_wallpaper_plan(
         })
         .collect::<Vec<_>>();
     let fallback = fallback.map(|fallback| fallback.join_to(&package.root));
-    let display = scene_lite_display_plan(fallback.as_ref(), &layers, fit_override);
+    let display = scene_lite_display_plan(
+        source_path.as_deref(),
+        &document,
+        fallback.as_ref(),
+        &layers,
+        fit_override,
+        render_target,
+        scene_lite_snapshot_cache,
+    );
 
     Ok(SceneLiteWallpaperPlan {
         output_name,
@@ -1002,10 +1073,23 @@ fn load_scene_lite_document(path: &Path) -> Result<SceneLiteDocument, RendererPl
 }
 
 fn scene_lite_display_plan(
+    source_path: Option<&Path>,
+    document: &SceneLiteDocument,
     fallback: Option<&PathBuf>,
     layers: &[SceneLiteRenderLayer],
     fit_override: Option<FitMode>,
+    render_target: Option<RenderTargetSize>,
+    scene_lite_snapshot_cache: Option<&mut SceneLiteSnapshotCacheContext<'_>>,
 ) -> Option<SceneLiteDisplayPlan> {
+    if let Some(snapshot) = scene_lite_snapshot_display(
+        source_path,
+        document,
+        layers,
+        render_target,
+        scene_lite_snapshot_cache,
+    ) {
+        return Some(snapshot);
+    }
     if let Some(fallback) = fallback {
         return Some(SceneLiteDisplayPlan::Image {
             source: fallback.clone(),
@@ -1021,6 +1105,249 @@ fn scene_lite_display_plan(
         });
     }
     scene_lite_background_color(layers).map(|color| SceneLiteDisplayPlan::Color { color })
+}
+
+fn scene_lite_snapshot_display(
+    source_path: Option<&Path>,
+    document: &SceneLiteDocument,
+    layers: &[SceneLiteRenderLayer],
+    render_target: Option<RenderTargetSize>,
+    scene_lite_snapshot_cache: Option<&mut SceneLiteSnapshotCacheContext<'_>>,
+) -> Option<SceneLiteDisplayPlan> {
+    if !layers.iter().any(scene_lite_layer_is_snapshot_renderable) {
+        return None;
+    }
+    let context = scene_lite_snapshot_cache?;
+    let size = scene_lite_snapshot_size(document, render_target);
+    let source = cached_scene_lite_snapshot(source_path, document, layers, size, context)?;
+    Some(SceneLiteDisplayPlan::Image {
+        source,
+        fit: FitMode::Cover,
+        background: scene_lite_background_color(layers).or_else(|| Some("#000000".to_owned())),
+    })
+}
+
+fn scene_lite_layer_is_snapshot_renderable(layer: &SceneLiteRenderLayer) -> bool {
+    match layer.kind {
+        SceneLiteLayerKind::Image => layer.source.is_some() && layer.opacity > 0.0,
+        SceneLiteLayerKind::Color => {
+            layer.opacity > 0.0
+                && layer
+                    .color
+                    .as_deref()
+                    .is_some_and(|color| !color.is_empty())
+        }
+        SceneLiteLayerKind::Group => false,
+    }
+}
+
+fn scene_lite_snapshot_size(
+    document: &SceneLiteDocument,
+    render_target: Option<RenderTargetSize>,
+) -> RenderTargetSize {
+    render_target
+        .or_else(|| {
+            document.size.map(|size| RenderTargetSize {
+                width: size.width,
+                height: size.height,
+            })
+        })
+        .unwrap_or(RenderTargetSize {
+            width: 1920,
+            height: 1080,
+        })
+}
+
+fn cached_scene_lite_snapshot(
+    source_path: Option<&Path>,
+    document: &SceneLiteDocument,
+    layers: &[SceneLiteRenderLayer],
+    size: RenderTargetSize,
+    context: &mut SceneLiteSnapshotCacheContext<'_>,
+) -> Option<PathBuf> {
+    if context.max_entries == 0 {
+        return None;
+    }
+    let cache_path = scene_lite_snapshot_cache_path(context.cache_dir, source_path, document, size);
+    if is_nonempty_file(&cache_path) {
+        context.stats.scene_lite_snapshot_cache_reuses += 1;
+        context.protected_files.insert(cache_path.clone());
+        mark_scene_lite_snapshot_cache_used(&cache_path);
+        return Some(cache_path);
+    }
+
+    let svg = scene_lite_snapshot_svg(layers, size);
+    if write_scene_lite_snapshot_svg(&cache_path, &svg).is_ok() {
+        context.stats.scene_lite_snapshot_cache_generations += 1;
+        context.protected_files.insert(cache_path.clone());
+        mark_scene_lite_snapshot_cache_used(&cache_path);
+        Some(cache_path)
+    } else {
+        context.stats.scene_lite_snapshot_cache_generation_errors += 1;
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(scene_lite_snapshot_cache_used_marker(&cache_path));
+        None
+    }
+}
+
+fn scene_lite_snapshot_cache_path(
+    cache_dir: &Path,
+    source_path: Option<&Path>,
+    document: &SceneLiteDocument,
+    size: RenderTargetSize,
+) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    source_path.hash(&mut hasher);
+    size.hash(&mut hasher);
+    if let Ok(serialized) = serde_json::to_string(document) {
+        serialized.hash(&mut hasher);
+    }
+    if let Some(source_path) = source_path
+        && let Ok(metadata) = fs::metadata(source_path)
+    {
+        metadata.len().hash(&mut hasher);
+        if let Ok(modified) = metadata.modified()
+            && let Ok(duration) = modified.duration_since(UNIX_EPOCH)
+        {
+            duration.as_secs().hash(&mut hasher);
+            duration.subsec_nanos().hash(&mut hasher);
+        }
+    }
+
+    cache_dir.join("scene-lite-cache").join(format!(
+        "{}x{}-{:016x}.svg",
+        size.width,
+        size.height,
+        hasher.finish()
+    ))
+}
+
+fn write_scene_lite_snapshot_svg(path: &Path, svg: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!("failed to create scene-lite snapshot cache directory: {err}")
+        })?;
+    }
+    let temporary_path = path.with_extension("svg.tmp");
+    let _ = fs::remove_file(&temporary_path);
+    fs::write(&temporary_path, svg)
+        .map_err(|err| format!("failed to write scene-lite snapshot: {err}"))?;
+    fs::rename(&temporary_path, path)
+        .map_err(|err| format!("failed to move scene-lite snapshot into place: {err}"))?;
+    Ok(())
+}
+
+fn scene_lite_snapshot_svg(layers: &[SceneLiteRenderLayer], size: RenderTargetSize) -> String {
+    let mut svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{width}" height="{height}" viewBox="0 0 {width} {height}">"#,
+        width = size.width,
+        height = size.height,
+    );
+    for layer in layers.iter().filter(|layer| layer.opacity > 0.0) {
+        match layer.kind {
+            SceneLiteLayerKind::Image => {
+                let Some(source) = &layer.source else {
+                    continue;
+                };
+                svg.push_str(&format!(
+                    r#"<g opacity="{opacity}" transform="{transform}"><image href="{href}" xlink:href="{href}" x="0" y="0" width="{width}" height="{height}" preserveAspectRatio="{aspect}"/></g>"#,
+                    opacity = svg_number(layer.opacity),
+                    transform = xml_attr(&scene_lite_svg_transform(layer.transform, size)),
+                    href = xml_attr(&file_uri_for_path(source)),
+                    width = size.width,
+                    height = size.height,
+                    aspect = scene_lite_svg_aspect(layer.fit),
+                ));
+            }
+            SceneLiteLayerKind::Color => {
+                let Some(color) = &layer.color else {
+                    continue;
+                };
+                svg.push_str(&format!(
+                    r#"<g opacity="{opacity}" transform="{transform}"><rect x="0" y="0" width="{width}" height="{height}" fill="{color}"/></g>"#,
+                    opacity = svg_number(layer.opacity),
+                    transform = xml_attr(&scene_lite_svg_transform(layer.transform, size)),
+                    width = size.width,
+                    height = size.height,
+                    color = xml_attr(color),
+                ));
+            }
+            SceneLiteLayerKind::Group => {}
+        }
+    }
+    svg.push_str("</svg>");
+    svg
+}
+
+fn scene_lite_svg_transform(transform: SceneLiteTransform, size: RenderTargetSize) -> String {
+    let anchor_x = transform.anchor_x * f64::from(size.width);
+    let anchor_y = transform.anchor_y * f64::from(size.height);
+    format!(
+        "translate({} {}) translate({} {}) rotate({}) scale({} {}) translate({} {})",
+        svg_number(transform.x),
+        svg_number(transform.y),
+        svg_number(anchor_x),
+        svg_number(anchor_y),
+        svg_number(transform.rotation_deg),
+        svg_number(transform.scale_x),
+        svg_number(transform.scale_y),
+        svg_number(-anchor_x),
+        svg_number(-anchor_y)
+    )
+}
+
+fn scene_lite_svg_aspect(fit: FitMode) -> &'static str {
+    match fit {
+        FitMode::Cover => "xMidYMid slice",
+        FitMode::Contain | FitMode::Center | FitMode::Tile => "xMidYMid meet",
+        FitMode::Stretch => "none",
+    }
+}
+
+fn file_uri_for_path(path: &Path) -> String {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    format!(
+        "file://{}",
+        percent_encode_file_uri_path(&absolute.to_string_lossy())
+    )
+}
+
+fn percent_encode_file_uri_path(path: &str) -> String {
+    let mut encoded = String::new();
+    for &byte in path.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(char::from(byte))
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+fn svg_number(value: f64) -> String {
+    let mut formatted = format!("{value:.6}");
+    while formatted.contains('.') && formatted.ends_with('0') {
+        formatted.pop();
+    }
+    if formatted.ends_with('.') {
+        formatted.pop();
+    }
+    formatted
+}
+
+fn xml_attr(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn scene_lite_background_color(layers: &[SceneLiteRenderLayer]) -> Option<String> {
@@ -1071,6 +1398,13 @@ struct StaticImageCacheContext<'a> {
     stats: &'a mut RenderSyncCacheReport,
     protected_files: &'a mut BTreeSet<PathBuf>,
     ffmpeg: Option<&'a Path>,
+}
+
+struct SceneLiteSnapshotCacheContext<'a> {
+    cache_dir: &'a Path,
+    max_entries: usize,
+    stats: &'a mut RenderSyncCacheReport,
+    protected_files: &'a mut BTreeSet<PathBuf>,
 }
 
 fn static_image_source_path(
@@ -1499,6 +1833,7 @@ struct RenderPackageCache<'a> {
     package_order: VecDeque<String>,
     protected_archive_dirs: BTreeSet<PathBuf>,
     protected_static_cache_files: BTreeSet<PathBuf>,
+    protected_scene_lite_snapshot_files: BTreeSet<PathBuf>,
     stats: RenderSyncCacheReport,
 }
 
@@ -1516,6 +1851,7 @@ impl<'a> RenderPackageCache<'a> {
             package_order: VecDeque::new(),
             protected_archive_dirs: BTreeSet::new(),
             protected_static_cache_files: BTreeSet::new(),
+            protected_scene_lite_snapshot_files: BTreeSet::new(),
             stats: RenderSyncCacheReport::default(),
         }
     }
@@ -1590,6 +1926,12 @@ impl<'a> RenderPackageCache<'a> {
             cache_config.static_image_cache_max_bytes,
             &self.protected_static_cache_files,
         );
+        let scene_lite_snapshot_prune = prune_scene_lite_snapshot_cache(
+            self.cache_dir,
+            cache_config.static_image_cache_max_entries,
+            cache_config.static_image_cache_max_bytes,
+            &self.protected_scene_lite_snapshot_files,
+        );
         self.stats.package_cache_entries = self.packages.len();
         self.stats.package_cache_max_entries = cache_config.package_cache_max_entries;
         self.stats.package_cache_max_retained_unique_resource_bytes =
@@ -1604,6 +1946,13 @@ impl<'a> RenderPackageCache<'a> {
         self.stats.static_image_cache_max_bytes = cache_config.static_image_cache_max_bytes;
         self.stats.static_image_cache_evictions = static_image_prune.evictions;
         self.stats.static_image_cache_eviction_errors = static_image_prune.errors;
+        self.stats.scene_lite_snapshot_cache_entries = scene_lite_snapshot_prune.entries_after;
+        self.stats.scene_lite_snapshot_cache_max_entries =
+            cache_config.static_image_cache_max_entries;
+        self.stats.scene_lite_snapshot_cache_bytes = scene_lite_snapshot_prune.bytes_after;
+        self.stats.scene_lite_snapshot_cache_max_bytes = cache_config.static_image_cache_max_bytes;
+        self.stats.scene_lite_snapshot_cache_evictions = scene_lite_snapshot_prune.evictions;
+        self.stats.scene_lite_snapshot_cache_eviction_errors = scene_lite_snapshot_prune.errors;
         self.stats
     }
 
@@ -1903,6 +2252,106 @@ fn mark_static_image_cache_used(path: &Path) {
     let _ = fs::write(static_image_cache_used_marker(path), b"");
 }
 
+fn prune_scene_lite_snapshot_cache(
+    cache_dir: &Path,
+    max_entries: usize,
+    max_bytes: u64,
+    protected_files: &BTreeSet<PathBuf>,
+) -> RenderCachePruneReport {
+    let snapshot_cache_dir = cache_dir.join("scene-lite-cache");
+    let Ok(mut entries) = scene_lite_snapshot_cache_entries(&snapshot_cache_dir) else {
+        return RenderCachePruneReport::default();
+    };
+    entries.sort_by_key(|entry| (entry.last_used, entry.path.clone()));
+    let mut evictions = 0;
+    let mut errors = 0;
+    let mut retained_entries = entries.len();
+    let mut retained_bytes = entries.iter().map(|entry| entry.size_bytes).sum::<u64>();
+    let mut removable_index = 0;
+    while retained_entries > max_entries || (max_bytes > 0 && retained_bytes > max_bytes) {
+        let Some(entry) = entries
+            .iter()
+            .skip(removable_index)
+            .find(|entry| !protected_files.contains(&entry.path))
+        else {
+            break;
+        };
+        removable_index = entries
+            .iter()
+            .position(|candidate| candidate.path == entry.path)
+            .map(|index| index + 1)
+            .unwrap_or(entries.len());
+        let marker = scene_lite_snapshot_cache_used_marker(&entry.path);
+        match fs::remove_file(&entry.path) {
+            Ok(()) => {
+                evictions += 1;
+                retained_entries = retained_entries.saturating_sub(1);
+                retained_bytes = retained_bytes.saturating_sub(entry.size_bytes);
+                let _ = fs::remove_file(marker);
+            }
+            Err(_) => errors += 1,
+        }
+    }
+
+    let (entries_after, bytes_after) = scene_lite_snapshot_cache_entries(&snapshot_cache_dir)
+        .map(|entries| {
+            (
+                entries.len(),
+                entries.iter().map(|entry| entry.size_bytes).sum::<u64>(),
+            )
+        })
+        .unwrap_or((retained_entries, retained_bytes));
+    RenderCachePruneReport {
+        entries_after,
+        bytes_after,
+        evictions,
+        errors,
+    }
+}
+
+fn scene_lite_snapshot_cache_entries(
+    snapshot_cache_dir: &Path,
+) -> Result<Vec<RenderCacheEntry>, std::io::Error> {
+    let mut entries = Vec::new();
+    let read_dir = match fs::read_dir(snapshot_cache_dir) {
+        Ok(read_dir) => read_dir,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(entries),
+        Err(err) => return Err(err),
+    };
+    for entry in read_dir {
+        let entry = entry?;
+        let path = entry.path();
+        if !is_scene_lite_snapshot_cache_file(&path, &entry.file_type()?) {
+            continue;
+        }
+        entries.push(RenderCacheEntry {
+            last_used: scene_lite_snapshot_cache_last_used(&path),
+            size_bytes: entry.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+            path,
+        });
+    }
+    Ok(entries)
+}
+
+fn is_scene_lite_snapshot_cache_file(path: &Path, file_type: &fs::FileType) -> bool {
+    file_type.is_file() && path.extension().and_then(|extension| extension.to_str()) == Some("svg")
+}
+
+fn scene_lite_snapshot_cache_used_marker(path: &Path) -> PathBuf {
+    path.with_extension("svg.used")
+}
+
+fn scene_lite_snapshot_cache_last_used(path: &Path) -> SystemTime {
+    fs::metadata(scene_lite_snapshot_cache_used_marker(path))
+        .or_else(|_| fs::metadata(path))
+        .and_then(|metadata| metadata.modified())
+        .unwrap_or(UNIX_EPOCH)
+}
+
+fn mark_scene_lite_snapshot_cache_used(path: &Path) {
+    let _ = fs::write(scene_lite_snapshot_cache_used_marker(path), b"");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2132,6 +2581,7 @@ exit 0
                     height: 1080,
                 }),
                 Some(&mut context),
+                None,
             )
             .unwrap();
             match plan {
@@ -2166,6 +2616,7 @@ exit 0
                     height: 1080,
                 }),
                 Some(&mut context),
+                None,
             )
             .unwrap();
             match plan {
@@ -3108,12 +3559,67 @@ exit 0
         assert!(matches!(
             &plan.display,
             Some(SceneLiteDisplayPlan::Image { source, fit, background })
-                if source.ends_with("previews/poster.svg")
+                if source.starts_with(test_dir.path.join("cache/scene-lite-cache"))
+                    && source.extension().and_then(|extension| extension.to_str()) == Some("svg")
+                    && source.is_file()
                     && *fit == FitMode::Cover
                     && background.as_deref() == Some("#000000")
         ));
+        let display_source = match &plan.display {
+            Some(SceneLiteDisplayPlan::Image { source, .. }) => source,
+            _ => panic!("expected scene-lite snapshot image display"),
+        };
+        let snapshot = fs::read_to_string(display_source).unwrap();
+        assert!(snapshot.contains("<image"));
+        assert!(snapshot.contains("background.svg"));
+        assert_eq!(sync.cache.scene_lite_snapshot_cache_entries, 1);
+        assert_eq!(sync.cache.scene_lite_snapshot_cache_generations, 1);
+        assert_eq!(sync.cache.scene_lite_snapshot_cache_reuses, 0);
+        assert!(sync.cache.scene_lite_snapshot_cache_bytes > 0);
         assert_eq!(sync.cache.planned_scene_lite_image_resources, 2);
         assert_eq!(sync.cache.planned_image_resource_references, 2);
+
+        let sync_again = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert_eq!(sync_again.cache.scene_lite_snapshot_cache_generations, 0);
+        assert_eq!(sync_again.cache.scene_lite_snapshot_cache_reuses, 1);
+    }
+
+    #[test]
+    fn scene_lite_color_layer_builds_snapshot_without_fallback() {
+        let test_dir = TestDir::new("gilder-scene-lite-color-plan");
+        let package_dir = test_dir.path.join("scene-color.gwpdir");
+        write_minimal_scene_lite_color_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.scene_lite_plans.len(), 1);
+        let plan = &sync.scene_lite_plans[0];
+        assert!(plan.fallback.is_none());
+        let display_source = match &plan.display {
+            Some(SceneLiteDisplayPlan::Image {
+                source, background, ..
+            }) => {
+                assert_eq!(background.as_deref(), Some("#203040"));
+                source
+            }
+            _ => panic!("expected scene-lite color snapshot image display"),
+        };
+        let snapshot = fs::read_to_string(display_source).unwrap();
+        assert!(snapshot.contains("<rect"));
+        assert!(snapshot.contains("#203040"));
+        assert_eq!(sync.cache.scene_lite_snapshot_cache_generations, 1);
+        assert_eq!(sync.cache.planned_scene_lite_image_resources, 1);
     }
 
     #[test]
@@ -3365,9 +3871,11 @@ exit 0
             + fs::metadata(slideshow_package.join("assets/b.svg"))
                 .unwrap()
                 .len();
-        let scene_bytes = fs::metadata(scene_package.join("previews/poster.svg"))
-            .unwrap()
-            .len()
+        let scene_snapshot_bytes = match &sync.scene_lite_plans[0].display {
+            Some(SceneLiteDisplayPlan::Image { source, .. }) => fs::metadata(source).unwrap().len(),
+            _ => panic!("expected scene-lite snapshot image display"),
+        };
+        let scene_bytes = scene_snapshot_bytes
             + fs::metadata(scene_package.join("assets/background.svg"))
                 .unwrap()
                 .len();
@@ -4133,6 +4641,41 @@ exit 0
                 "type": "scene-lite",
                 "source": "assets/scene-lite.json",
                 "fallback": "previews/poster.svg",
+                "max_fps": 60
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_minimal_scene_lite_color_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(
+            path.join("assets/scene-lite.json"),
+            br##"{
+              "layers": [
+                {
+                  "id": "background",
+                  "type": "color",
+                  "color": "#203040"
+                }
+              ]
+            }"##,
+        )
+        .unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.scene-color",
+            "version": "1.0.0",
+            "title": "Scene Color",
+            "kind": "scene-lite",
+            "entry": {
+                "type": "scene-lite",
+                "source": "assets/scene-lite.json",
                 "max_fps": 60
             }
         });

@@ -1581,6 +1581,42 @@ fn render_sync_telemetry_report(
         render_sync_cache.static_image_cache_eviction_errors
     );
     insert!(
+        "scene_lite_snapshot_cache_entries",
+        render_sync_cache.scene_lite_snapshot_cache_entries
+    );
+    insert!(
+        "scene_lite_snapshot_cache_max_entries",
+        render_sync_cache.scene_lite_snapshot_cache_max_entries
+    );
+    insert!(
+        "scene_lite_snapshot_cache_bytes",
+        render_sync_cache.scene_lite_snapshot_cache_bytes
+    );
+    insert!(
+        "scene_lite_snapshot_cache_max_bytes",
+        render_sync_cache.scene_lite_snapshot_cache_max_bytes
+    );
+    insert!(
+        "scene_lite_snapshot_cache_generations",
+        render_sync_cache.scene_lite_snapshot_cache_generations
+    );
+    insert!(
+        "scene_lite_snapshot_cache_reuses",
+        render_sync_cache.scene_lite_snapshot_cache_reuses
+    );
+    insert!(
+        "scene_lite_snapshot_cache_generation_errors",
+        render_sync_cache.scene_lite_snapshot_cache_generation_errors
+    );
+    insert!(
+        "scene_lite_snapshot_cache_evictions",
+        render_sync_cache.scene_lite_snapshot_cache_evictions
+    );
+    insert!(
+        "scene_lite_snapshot_cache_eviction_errors",
+        render_sync_cache.scene_lite_snapshot_cache_eviction_errors
+    );
+    insert!(
         "planned_video_source_references",
         render_sync_cache.planned_video_source_references
     );
@@ -2192,6 +2228,42 @@ mod tests {
         assert_eq!(
             response["result"]["telemetry"]["render_sync"]["static_image_cache_max_bytes"],
             json!(536_870_912)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_entries"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_max_entries"],
+            json!(32)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_bytes"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_max_bytes"],
+            json!(536_870_912)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_generations"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_reuses"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_generation_errors"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_evictions"],
+            json!(0)
+        );
+        assert_eq!(
+            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_eviction_errors"],
+            json!(0)
         );
         assert_eq!(
             response["result"]["telemetry"]["render_sync"]["planned_static_image_resources"],
