@@ -6,7 +6,7 @@ use super::{
     SceneLiteDisplayPlan, SceneLiteWallpaperPlan, SlideshowWallpaperPlan, StaticRenderSyncPlan,
     StaticWallpaperPlan,
 };
-use crate::core::FitMode;
+use crate::core::{FitMode, Transition};
 #[cfg(feature = "video-renderer")]
 use crate::policy::RenderMode;
 #[cfg(feature = "video-renderer")]
@@ -34,6 +34,7 @@ use gstreamer as gst;
 
 const GTK_ACTIVE_RUNTIME_TICK_INTERVAL: Duration = Duration::from_millis(50);
 const GTK_IDLE_RUNTIME_TICK_INTERVAL: Duration = Duration::from_millis(250);
+const SLIDESHOW_CROSSFADE_DURATION: Duration = Duration::from_millis(600);
 
 #[cfg(feature = "video-renderer")]
 const MUTED_PLAYBIN_FLAGS: &str = "video";
@@ -91,6 +92,13 @@ enum RenderedStaticSurface {
     Picture {
         widget: gtk::Picture,
         source: PathBuf,
+    },
+    Crossfade {
+        stack: gtk::Stack,
+        current: gtk::Picture,
+        previous: Option<gtk::Picture>,
+        source: PathBuf,
+        fit: FitMode,
     },
     CssImage {
         source: PathBuf,
@@ -469,23 +477,26 @@ impl RenderedOutput {
                 plan: plan.clone(),
                 index: 0,
                 next_frame_at: Instant::now() + Duration::from_millis(plan.interval_ms),
+                transition_cleanup_at: None,
             };
             self.slideshow = Some(slideshow);
-            self.apply_slideshow_frame();
+            self.apply_slideshow_frame(false);
         }
     }
 
     fn tick_slideshow(&mut self, now: Instant) -> bool {
+        let mut changed = self.cleanup_slideshow_transition(now);
         let Some(slideshow) = &mut self.slideshow else {
             return false;
         };
         if slideshow.plan.sources.len() < 2 || now < slideshow.next_frame_at {
-            return false;
+            return changed;
         }
         slideshow.index = (slideshow.index + 1) % slideshow.plan.sources.len();
         slideshow.next_frame_at = now + Duration::from_millis(slideshow.plan.interval_ms);
-        self.apply_slideshow_frame();
-        true
+        self.apply_slideshow_frame(true);
+        changed = true;
+        changed
     }
 
     fn next_slideshow_tick_delay(&self, now: Instant) -> Option<Duration> {
@@ -493,28 +504,67 @@ impl RenderedOutput {
         if slideshow.plan.sources.len() < 2 {
             return None;
         }
-        Some(slideshow.next_frame_at.saturating_duration_since(now))
+        let frame_delay = slideshow.next_frame_at.saturating_duration_since(now);
+        let cleanup_delay = slideshow
+            .transition_cleanup_at
+            .map(|cleanup_at| cleanup_at.saturating_duration_since(now));
+        Some(
+            cleanup_delay
+                .map(|delay| delay.min(frame_delay))
+                .unwrap_or(frame_delay),
+        )
     }
 
-    fn apply_slideshow_frame(&mut self) {
-        let Some(slideshow) = &self.slideshow else {
-            return;
-        };
-        let Some(source) = slideshow.plan.sources.get(slideshow.index) else {
+    fn apply_slideshow_frame(&mut self, animate_transition: bool) {
+        let Some((output_name, source, fit, transition)) =
+            self.slideshow.as_ref().and_then(|slideshow| {
+                slideshow.plan.sources.get(slideshow.index).map(|source| {
+                    (
+                        slideshow.plan.output_name.clone(),
+                        source.clone(),
+                        slideshow.plan.fit,
+                        slideshow.plan.transition,
+                    )
+                })
+            })
+        else {
             return;
         };
         let static_plan = StaticWallpaperPlan {
-            output_name: slideshow.plan.output_name.clone(),
-            source: source.clone(),
-            fit: slideshow.plan.fit,
+            output_name,
+            source,
+            fit,
             background: Some("#000000".to_owned()),
         };
-        apply_static_wallpaper(self, &static_plan);
+        let cleanup_at = if slideshow_uses_crossfade(transition, fit) {
+            apply_slideshow_crossfade_wallpaper(self, &static_plan, animate_transition)
+        } else {
+            apply_static_wallpaper(self, &static_plan);
+            None
+        };
+        if let Some(slideshow) = &mut self.slideshow {
+            slideshow.transition_cleanup_at = cleanup_at;
+        }
         self.static_plan = None;
     }
 
     fn remove_slideshow(&mut self) {
         self.slideshow = None;
+    }
+
+    fn cleanup_slideshow_transition(&mut self, now: Instant) -> bool {
+        let cleanup_due = self
+            .slideshow
+            .as_ref()
+            .and_then(|slideshow| slideshow.transition_cleanup_at)
+            .is_some_and(|cleanup_at| now >= cleanup_at);
+        if !cleanup_due {
+            return false;
+        }
+        if let Some(slideshow) = &mut self.slideshow {
+            slideshow.transition_cleanup_at = None;
+        }
+        clear_crossfade_previous(&mut self.static_surface)
     }
 
     fn set_scene_lite(&mut self, plan: &SceneLiteWallpaperPlan) {
@@ -547,8 +597,14 @@ impl RenderedOutput {
     }
 
     fn release_static_surface(&mut self) {
-        if let Some(RenderedStaticSurface::Picture { widget, .. }) = self.static_surface.take() {
-            self.surface.remove(&widget);
+        match self.static_surface.take() {
+            Some(RenderedStaticSurface::Picture { widget, .. }) => {
+                self.surface.remove(&widget);
+            }
+            Some(RenderedStaticSurface::Crossfade { stack, .. }) => {
+                self.surface.remove(&stack);
+            }
+            Some(RenderedStaticSurface::CssImage { .. } | RenderedStaticSurface::Color) | None => {}
         }
         self.static_surface = None;
         self.clear_background_provider();
@@ -588,6 +644,7 @@ impl RenderedOutput {
         }
         match self.static_surface.as_ref()? {
             RenderedStaticSurface::Picture { source, .. }
+            | RenderedStaticSurface::Crossfade { source, .. }
             | RenderedStaticSurface::CssImage { source } => Some(source.as_path()),
             RenderedStaticSurface::Color => None,
         }
@@ -596,7 +653,7 @@ impl RenderedOutput {
     fn static_surface_is_picture(&self) -> bool {
         matches!(
             self.static_surface.as_ref(),
-            Some(RenderedStaticSurface::Picture { .. })
+            Some(RenderedStaticSurface::Picture { .. } | RenderedStaticSurface::Crossfade { .. })
         )
     }
 
@@ -720,6 +777,22 @@ impl RenderedStaticSurface {
                 .as_ref()
                 .map(paintable_estimated_decoded_bytes)
                 .unwrap_or(0),
+            Self::Crossfade {
+                current, previous, ..
+            } => {
+                let current_bytes = current
+                    .paintable()
+                    .as_ref()
+                    .map(paintable_estimated_decoded_bytes)
+                    .unwrap_or(0);
+                let previous_bytes = previous
+                    .as_ref()
+                    .and_then(gtk::Picture::paintable)
+                    .as_ref()
+                    .map(paintable_estimated_decoded_bytes)
+                    .unwrap_or(0);
+                current_bytes.saturating_add(previous_bytes)
+            }
             Self::CssImage { .. } | Self::Color => 0,
         }
     }
@@ -816,12 +889,7 @@ fn apply_static_wallpaper(output: &mut RenderedOutput, plan: &StaticWallpaperPla
                 plan.background.as_deref().unwrap_or("#000000"),
             ),
         );
-        let file = gio::File::for_path(&plan.source);
-        let picture = gtk::Picture::for_file(&file);
-        picture.set_hexpand(true);
-        picture.set_vexpand(true);
-        picture.set_can_shrink(false);
-        picture.set_content_fit(content_fit_for_fit(plan.fit));
+        let picture = wallpaper_picture(&plan.source, plan.fit);
         output.surface.append(&picture);
         output.static_surface = Some(RenderedStaticSurface::Picture {
             widget: picture,
@@ -833,6 +901,104 @@ fn apply_static_wallpaper(output: &mut RenderedOutput, plan: &StaticWallpaperPla
             source: plan.source.clone(),
         });
     }
+}
+
+fn apply_slideshow_crossfade_wallpaper(
+    output: &mut RenderedOutput,
+    plan: &StaticWallpaperPlan,
+    animate_transition: bool,
+) -> Option<Instant> {
+    apply_wallpaper_css(
+        output,
+        &color_wallpaper_css(
+            &plan.output_name,
+            plan.background.as_deref().unwrap_or("#000000"),
+        ),
+    );
+
+    match output.static_surface.as_mut() {
+        Some(RenderedStaticSurface::Crossfade {
+            stack,
+            current,
+            previous,
+            source,
+            fit,
+        }) => {
+            if *source == plan.source {
+                current.set_content_fit(content_fit_for_fit(plan.fit));
+                *fit = plan.fit;
+                if let Some(previous_picture) = previous.take() {
+                    stack.remove(&previous_picture);
+                }
+                return None;
+            }
+            if let Some(previous_picture) = previous.take() {
+                stack.remove(&previous_picture);
+            }
+            let next = wallpaper_picture(&plan.source, plan.fit);
+            stack.add_child(&next);
+            stack.set_transition_type(if animate_transition {
+                gtk::StackTransitionType::Crossfade
+            } else {
+                gtk::StackTransitionType::None
+            });
+            stack.set_transition_duration(SLIDESHOW_CROSSFADE_DURATION.as_millis() as u32);
+            stack.set_visible_child(&next);
+            let old_current = std::mem::replace(current, next);
+            *previous = Some(old_current);
+            *source = plan.source.clone();
+            *fit = plan.fit;
+            animate_transition.then(|| Instant::now() + SLIDESHOW_CROSSFADE_DURATION)
+        }
+        _ => {
+            output.release_static_surface();
+            let stack = gtk::Stack::new();
+            stack.set_hexpand(true);
+            stack.set_vexpand(true);
+            stack.set_transition_type(gtk::StackTransitionType::None);
+            stack.set_transition_duration(SLIDESHOW_CROSSFADE_DURATION.as_millis() as u32);
+            let current = wallpaper_picture(&plan.source, plan.fit);
+            stack.add_child(&current);
+            stack.set_visible_child(&current);
+            output.surface.append(&stack);
+            output.static_surface = Some(RenderedStaticSurface::Crossfade {
+                stack,
+                current,
+                previous: None,
+                source: plan.source.clone(),
+                fit: plan.fit,
+            });
+            None
+        }
+    }
+}
+
+fn wallpaper_picture(source: &Path, fit: FitMode) -> gtk::Picture {
+    let file = gio::File::for_path(source);
+    let picture = gtk::Picture::for_file(&file);
+    picture.set_hexpand(true);
+    picture.set_vexpand(true);
+    picture.set_can_shrink(false);
+    picture.set_content_fit(content_fit_for_fit(fit));
+    picture
+}
+
+fn clear_crossfade_previous(surface: &mut Option<RenderedStaticSurface>) -> bool {
+    let Some(RenderedStaticSurface::Crossfade {
+        stack, previous, ..
+    }) = surface.as_mut()
+    else {
+        return false;
+    };
+    let Some(previous_picture) = previous.take() else {
+        return false;
+    };
+    stack.remove(&previous_picture);
+    true
+}
+
+fn slideshow_uses_crossfade(transition: Transition, fit: FitMode) -> bool {
+    transition == Transition::Crossfade && use_picture_static_surface(fit)
 }
 
 fn apply_color_wallpaper(output: &mut RenderedOutput, output_name: &str, color: &str) {
@@ -1067,6 +1233,7 @@ struct RenderedSlideshow {
     plan: SlideshowWallpaperPlan,
     index: usize,
     next_frame_at: Instant,
+    transition_cleanup_at: Option<Instant>,
 }
 
 #[cfg(feature = "video-renderer")]
@@ -1923,6 +2090,31 @@ mod tests {
             gtk::ContentFit::ScaleDown
         );
         assert_eq!(content_fit_for_fit(FitMode::Tile), gtk::ContentFit::Contain);
+    }
+
+    #[test]
+    fn slideshow_crossfade_uses_picture_surface_modes_only() {
+        assert!(slideshow_uses_crossfade(
+            Transition::Crossfade,
+            FitMode::Cover
+        ));
+        assert!(slideshow_uses_crossfade(
+            Transition::Crossfade,
+            FitMode::Contain
+        ));
+        assert!(slideshow_uses_crossfade(
+            Transition::Crossfade,
+            FitMode::Stretch
+        ));
+        assert!(slideshow_uses_crossfade(
+            Transition::Crossfade,
+            FitMode::Center
+        ));
+        assert!(!slideshow_uses_crossfade(
+            Transition::Crossfade,
+            FitMode::Tile
+        ));
+        assert!(!slideshow_uses_crossfade(Transition::None, FitMode::Cover));
     }
 
     #[test]
