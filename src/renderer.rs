@@ -618,7 +618,9 @@ fn static_render_sync_plan_inner(
                     performance,
                     wallpaper: Some(assignment.path.clone()),
                 });
-                if let Some(poster_plan) = video_poster_plan(&plan) {
+                if !cfg!(feature = "video-renderer")
+                    && let Some(poster_plan) = video_poster_plan(&plan)
+                {
                     plans.push(poster_plan);
                 }
                 video_plans.push(plan);
@@ -3237,6 +3239,14 @@ mod tests {
         }
     }
 
+    fn expected_video_poster_static_plan_count() -> usize {
+        if cfg!(feature = "video-renderer") {
+            0
+        } else {
+            1
+        }
+    }
+
     #[test]
     fn builds_static_wallpaper_plan_from_package() {
         let package = crate::core::load_gwpdir("examples/wallpapers/static-demo.gwpdir").unwrap();
@@ -4612,15 +4622,17 @@ exit 0
             test_dir.path.join("cache"),
         );
 
-        assert_eq!(sync.plans.len(), 1);
+        assert_eq!(sync.plans.len(), expected_video_poster_static_plan_count());
         assert_eq!(sync.video_plans.len(), 1);
         assert!(sync.removals.is_empty());
         assert!(sync.errors.is_empty());
-        let poster_plan = &sync.plans[0];
-        assert_eq!(poster_plan.output_name, "eDP-1");
-        assert!(poster_plan.source.ends_with("previews/poster.jpg"));
-        assert_eq!(poster_plan.fit, FitMode::Contain);
-        assert_eq!(poster_plan.background.as_deref(), Some("#000000"));
+        if !cfg!(feature = "video-renderer") {
+            let poster_plan = &sync.plans[0];
+            assert_eq!(poster_plan.output_name, "eDP-1");
+            assert!(poster_plan.source.ends_with("previews/poster.jpg"));
+            assert_eq!(poster_plan.fit, FitMode::Contain);
+            assert_eq!(poster_plan.background.as_deref(), Some("#000000"));
+        }
         let plan = &sync.video_plans[0];
         assert_eq!(plan.output_name, "eDP-1");
         assert!(plan.source.ends_with("assets/loop.webm"));
@@ -4744,9 +4756,11 @@ exit 0
             test_dir.path.join("cache"),
         );
 
-        assert_eq!(sync.plans.len(), 1);
+        assert_eq!(sync.plans.len(), expected_video_poster_static_plan_count());
         assert_eq!(sync.video_plans.len(), 1);
-        assert_eq!(sync.plans[0].fit, FitMode::Stretch);
+        if !cfg!(feature = "video-renderer") {
+            assert_eq!(sync.plans[0].fit, FitMode::Stretch);
+        }
         assert_eq!(sync.video_plans[0].fit, FitMode::Stretch);
     }
 
@@ -4828,7 +4842,7 @@ exit 0
         let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
 
         assert_eq!(sync.video_plans.len(), 1);
-        assert_eq!(sync.plans.len(), 1);
+        assert_eq!(sync.plans.len(), expected_video_poster_static_plan_count());
         assert!(
             sync.video_plans[0]
                 .poster
@@ -4836,7 +4850,9 @@ exit 0
                 .unwrap()
                 .ends_with("previews/poster.jpg")
         );
-        assert!(sync.plans[0].source.ends_with("previews/poster.jpg"));
+        if !cfg!(feature = "video-renderer") {
+            assert!(sync.plans[0].source.ends_with("previews/poster.jpg"));
+        }
     }
 
     #[test]
@@ -5319,7 +5335,10 @@ exit 0
         );
 
         assert!(sync.errors.is_empty());
-        assert_eq!(sync.plans.len(), 2);
+        assert_eq!(
+            sync.plans.len(),
+            1 + expected_video_poster_static_plan_count()
+        );
         assert_eq!(sync.video_plans.len(), 1);
         assert_eq!(sync.slideshow_plans.len(), 1);
         assert_eq!(sync.scene_lite_plans.len(), 1);
@@ -5327,8 +5346,15 @@ exit 0
         assert_eq!(sync.cache.planned_video_poster_resources, 1);
         assert_eq!(sync.cache.planned_slideshow_image_resources, 2);
         assert_eq!(sync.cache.planned_scene_lite_image_resources, 2);
-        assert_eq!(sync.cache.planned_image_resource_references, 6);
-        assert_eq!(sync.cache.planned_unique_image_resources, 6);
+        let expected_image_resource_count = 5 + expected_video_poster_static_plan_count();
+        assert_eq!(
+            sync.cache.planned_image_resource_references,
+            expected_image_resource_count
+        );
+        assert_eq!(
+            sync.cache.planned_unique_image_resources,
+            expected_image_resource_count
+        );
         let static_bytes = fs::metadata(static_package.join("assets/wallpaper.svg"))
             .unwrap()
             .len();
@@ -5359,13 +5385,21 @@ exit 0
             sync.cache.planned_scene_lite_image_resource_bytes,
             scene_bytes
         );
+        let expected_image_resource_bytes = static_bytes
+            + slideshow_bytes
+            + scene_bytes
+            + if cfg!(feature = "video-renderer") {
+                0
+            } else {
+                poster_bytes
+            };
         assert_eq!(
             sync.cache.planned_image_resource_reference_bytes,
-            static_bytes + poster_bytes + slideshow_bytes + scene_bytes
+            expected_image_resource_bytes
         );
         assert_eq!(
             sync.cache.planned_unique_image_resource_bytes,
-            static_bytes + poster_bytes + slideshow_bytes + scene_bytes
+            expected_image_resource_bytes
         );
     }
 

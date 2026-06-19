@@ -136,6 +136,10 @@ impl GtkStaticRenderer {
         }
 
         for plan in &sync.plans {
+            #[cfg(feature = "video-renderer")]
+            if static_plan_is_video_poster_fallback(plan, &sync.video_plans) {
+                continue;
+            }
             if self.set_static_wallpaper(plan) {
                 desired_outputs.insert(plan.output_name.clone());
             }
@@ -308,7 +312,10 @@ impl GtkStaticRenderer {
                 output.video_error = None;
                 output.release_static_surface();
             }
-            Err(err) => output.note_video_error(plan, err),
+            Err(err) => {
+                output.note_video_error(plan, err);
+                output.apply_video_poster_fallback(plan);
+            }
         }
         output.window.present();
         true
@@ -333,9 +340,21 @@ impl GtkStaticRenderer {
                 .collect::<Vec<_>>();
             for output_name in output_names {
                 if let Some(output) = self.windows.get_mut(&output_name) {
+                    let fallback = output.video.as_ref().and_then(|video| {
+                        video.poster.as_ref().map(|poster| StaticWallpaperPlan {
+                            output_name: output.output_name.clone(),
+                            source: poster.clone(),
+                            fit: video.fit,
+                            background: Some("#000000".to_owned()),
+                        })
+                    });
                     output.note_video_error_for_current_source(err.clone());
                     output.remove_video(&mut self.video_runtimes);
-                    output.restore_static_surface();
+                    if let Some(fallback) = fallback {
+                        output.apply_static_fallback(&fallback);
+                    } else {
+                        output.restore_static_surface();
+                    }
                 }
             }
         }
@@ -626,6 +645,31 @@ impl RenderedOutput {
         }
         if let Some(plan) = self.static_plan.clone() {
             apply_static_wallpaper(self, &plan);
+        }
+    }
+
+    #[cfg(feature = "video-renderer")]
+    fn apply_video_poster_fallback(&mut self, plan: &VideoWallpaperPlan) {
+        let Some(poster) = &plan.poster else {
+            self.restore_static_surface();
+            return;
+        };
+        let fallback = StaticWallpaperPlan {
+            output_name: plan.output_name.clone(),
+            source: poster.clone(),
+            fit: plan.fit,
+            background: Some("#000000".to_owned()),
+        };
+        self.apply_static_fallback(&fallback);
+    }
+
+    #[cfg(feature = "video-renderer")]
+    fn apply_static_fallback(&mut self, plan: &StaticWallpaperPlan) {
+        if self.static_surface.is_none()
+            || static_plan_needs_update(self.static_plan.as_ref(), plan)
+        {
+            apply_static_wallpaper(self, plan);
+            self.static_plan = Some(plan.clone());
         }
     }
 
@@ -1028,6 +1072,20 @@ fn static_plan_needs_update(
     previous != Some(next)
 }
 
+#[cfg(feature = "video-renderer")]
+fn static_plan_is_video_poster_fallback(
+    plan: &StaticWallpaperPlan,
+    video_plans: &[VideoWallpaperPlan],
+) -> bool {
+    video_plans.iter().any(|video| {
+        video.output_name == plan.output_name
+            && video
+                .poster
+                .as_ref()
+                .is_some_and(|poster| poster == &plan.source)
+    })
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct RendererSurfaceResourceFootprint {
     static_surface_resource_references: usize,
@@ -1266,7 +1324,7 @@ impl GtkVideoRuntimePool {
             .get(&key)
             .ok_or(GtkVideoError::MissingPipeline)?;
         let mut runtime = runtime.borrow_mut();
-        let attachment = runtime.attach_output(output_name, plan.fit, mode);
+        let attachment = runtime.attach_output(output_name, plan.fit, plan.poster.clone(), mode);
         runtime.apply_output_mode(output_name, mode)?;
         Ok(attachment)
     }
@@ -1364,6 +1422,7 @@ struct GtkVideoAttachment {
     output_name: String,
     picture: gtk::Picture,
     source: PathBuf,
+    poster: Option<PathBuf>,
     mode: RenderMode,
     fit: FitMode,
     frame_stats: Rc<RefCell<VideoFrameStats>>,
@@ -1381,6 +1440,7 @@ impl GtkVideoAttachment {
             self.picture.set_content_fit(content_fit_for_fit(plan.fit));
             self.fit = plan.fit;
         }
+        self.poster = plan.poster.clone();
     }
 }
 
@@ -1432,6 +1492,7 @@ impl GtkSharedVideoRuntime {
         &mut self,
         output_name: &str,
         fit: FitMode,
+        poster: Option<PathBuf>,
         mode: RenderMode,
     ) -> GtkVideoAttachment {
         let picture = gtk::Picture::for_paintable(&self.paintable);
@@ -1454,6 +1515,7 @@ impl GtkSharedVideoRuntime {
             output_name: output_name.to_owned(),
             picture,
             source: self.source.clone(),
+            poster,
             mode,
             fit,
             frame_stats,
@@ -2179,6 +2241,51 @@ mod tests {
             GtkVideoRuntimeKey::from_plan(&first),
             GtkVideoRuntimeKey::from_plan(&different_source)
         );
+    }
+
+    #[cfg(feature = "video-renderer")]
+    #[test]
+    fn identifies_video_poster_fallback_static_plan() {
+        let poster = PathBuf::from("/tmp/gilder-poster.jpg");
+        let mut video = video_plan_for_key(
+            "eDP-1",
+            PathBuf::from("/tmp/gilder-video.webm"),
+            FitMode::Cover,
+            Some(30),
+        );
+        video.poster = Some(poster.clone());
+
+        let poster_plan = StaticWallpaperPlan {
+            output_name: "eDP-1".to_owned(),
+            source: poster.clone(),
+            fit: FitMode::Cover,
+            background: Some("#000000".to_owned()),
+        };
+        let real_static_plan = StaticWallpaperPlan {
+            output_name: "eDP-1".to_owned(),
+            source: PathBuf::from("/tmp/gilder-static.jpg"),
+            fit: FitMode::Cover,
+            background: Some("#000000".to_owned()),
+        };
+        let other_output_poster = StaticWallpaperPlan {
+            output_name: "HDMI-A-1".to_owned(),
+            source: poster,
+            fit: FitMode::Cover,
+            background: Some("#000000".to_owned()),
+        };
+
+        assert!(static_plan_is_video_poster_fallback(
+            &poster_plan,
+            &[video.clone()]
+        ));
+        assert!(!static_plan_is_video_poster_fallback(
+            &real_static_plan,
+            &[video.clone()]
+        ));
+        assert!(!static_plan_is_video_poster_fallback(
+            &other_output_poster,
+            &[video]
+        ));
     }
 
     #[cfg(feature = "video-renderer")]
