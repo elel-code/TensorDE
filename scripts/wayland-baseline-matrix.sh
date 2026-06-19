@@ -31,7 +31,8 @@ Options:
                        Set GILDER_VIDEO_QUEUE_MAX_SIZE_TIME_MS for scenario smoke runs
   --video-queue-max-size-bytes <bytes>
                        Set GILDER_VIDEO_QUEUE_MAX_SIZE_BYTES for scenario smoke runs
-  --budget-csv <path>  Enforce budget rows: scenario,phase,metric,max
+  --budget-csv <path>  Enforce budget rows:
+                       scenario,phase,metric,max[,min_release_from_active_kib]
   --allow-missing       Forward allow-missing to scenario smoke runs
   --no-build            Use existing target/debug binaries
   --keep                Keep generated baseline data when --report-dir is not set
@@ -41,8 +42,10 @@ Each scenario writes its original wayland-video-surface-smoke evidence under
 <report>/scenarios/<name>/, the aggregate table to <report>/baseline.csv, and
 active-relative Private_Dirty category comparisons to
 <report>/memory-category-deltas.csv.
-Budget rows may use "*" for scenario or phase and metric names must match
-baseline.csv columns, for example: active,active,max_uss_kib,250000.
+Budget rows may use "*" for scenario or phase. The max column caps baseline.csv
+columns, for example: active,active,max_uss_kib,250000. The optional
+min_release_from_active_kib column checks memory-category-deltas.csv release
+values for memory_category_*_private_dirty_kib metrics.
 EOF
 }
 
@@ -729,13 +732,25 @@ validate_budgets() {
     function numeric(value) {
       return value ~ /^-?[0-9]+([.][0-9]+)?$/
     }
-    function emit(scenario, phase, metric, actual, max, status, detail) {
-      print scenario, phase, metric, actual, max, status, detail
+    function field(column_index) {
+      if (column_index > 0) {
+        return trim($column_index)
+      }
+      return ""
+    }
+    function budget_field(name) {
+      return field(budget_header[name])
+    }
+    function emit(scenario, phase, metric, actual, limit, status, detail, check) {
+      print scenario, phase, metric, actual, limit, status, detail, check
     }
     BEGIN {
-      print "scenario", "phase", "metric", "actual", "max", "status", "detail"
+      print "scenario", "phase", "metric", "actual", "limit", "status", "detail", "check"
     }
-    NR == FNR {
+    FNR == 1 {
+      file_index++
+    }
+    file_index == 1 {
       if (FNR == 1) {
         for (i = 1; i <= NF; i++) {
           header[i] = trim($i)
@@ -751,76 +766,133 @@ validate_budgets() {
       }
       next
     }
-    FNR == 1 {
+    file_index == 2 {
+      if (FNR == 1) {
+        for (i = 1; i <= NF; i++) {
+          delta_header[trim($i)] = i
+        }
+        next
+      }
+      delta_count++
+      delta_scenario[delta_count] = field(delta_header["scenario"])
+      delta_phase[delta_count] = field(delta_header["phase"])
+      delta_metric[delta_count] = field(delta_header["metric"])
+      delta_release[delta_count] = field(delta_header["release_from_active_kib"])
+      delta_metric_seen[delta_metric[delta_count]] = 1
+      next
+    }
+    file_index == 3 && FNR == 1 {
       for (i = 1; i <= NF; i++) {
         budget_header[trim($i)] = i
       }
-      if (!("scenario" in budget_header) || !("phase" in budget_header) ||
-          !("metric" in budget_header) || !("max" in budget_header)) {
-        emit("", "", "", "", "", "fail", "budget header must include scenario,phase,metric,max")
+      budget_has_max = ("max" in budget_header)
+      budget_has_min_release = ("min_release_from_active_kib" in budget_header)
+      if (!("scenario" in budget_header) || !("phase" in budget_header) || !("metric" in budget_header) ||
+          (!budget_has_max && !budget_has_min_release)) {
+        emit("", "", "", "", "", "fail", "budget header must include scenario,phase,metric and max or min_release_from_active_kib", "header")
         failures++
         bad_header = 1
       }
       next
     }
-    bad_header {
+    file_index == 3 && bad_header {
       next
     }
-    /^[[:space:]]*(#|$)/ {
+    file_index == 3 && /^[[:space:]]*(#|$)/ {
       next
     }
-    {
+    file_index == 3 {
       budget_count++
-      budget_scenario = trim($(budget_header["scenario"]))
-      budget_phase = trim($(budget_header["phase"]))
-      budget_metric = trim($(budget_header["metric"]))
-      budget_max = trim($(budget_header["max"]))
-      matched = 0
+      budget_scenario = budget_field("scenario")
+      budget_phase = budget_field("phase")
+      budget_metric = budget_field("metric")
+      budget_max = budget_has_max ? budget_field("max") : ""
+      budget_min_release = budget_has_min_release ? budget_field("min_release_from_active_kib") : ""
+      max_requested = budget_max != ""
+      release_requested = budget_min_release != ""
       if (budget_scenario == "") {
         budget_scenario = "*"
       }
       if (budget_phase == "") {
         budget_phase = "*"
       }
-      if (!numeric(budget_max)) {
-        emit(budget_scenario, budget_phase, budget_metric, "", budget_max, "fail", "budget max is not numeric")
+      if (!max_requested && !release_requested) {
+        emit(budget_scenario, budget_phase, budget_metric, "", "", "fail", "budget row must set max or min_release_from_active_kib", "row")
         failures++
         next
       }
-      if (!(budget_metric in header_index)) {
-        emit(budget_scenario, budget_phase, budget_metric, "", budget_max, "fail", "metric is not present in baseline.csv")
-        failures++
-        next
-      }
-      for (row = 1; row <= row_count; row++) {
-        if ((budget_scenario == "*" || row_scenario[row] == budget_scenario) &&
-            (budget_phase == "*" || row_phase[row] == budget_phase)) {
-          matched = 1
-          actual = value[row, budget_metric]
-          if (!numeric(actual)) {
-            emit(row_scenario[row], row_phase[row], budget_metric, actual, budget_max, "fail", "baseline value is not numeric")
-            failures++
-          } else if (actual + 0 <= budget_max + 0) {
-            emit(row_scenario[row], row_phase[row], budget_metric, actual, budget_max, "pass", "within budget")
-          } else {
-            emit(row_scenario[row], row_phase[row], budget_metric, actual, budget_max, "fail", "exceeds budget")
+      if (max_requested) {
+        matched = 0
+        if (!numeric(budget_max)) {
+          emit(budget_scenario, budget_phase, budget_metric, "", budget_max, "fail", "budget max is not numeric", "max")
+          failures++
+        } else if (!(budget_metric in header_index)) {
+          emit(budget_scenario, budget_phase, budget_metric, "", budget_max, "fail", "metric is not present in baseline.csv", "max")
+          failures++
+        } else {
+          for (row = 1; row <= row_count; row++) {
+            if ((budget_scenario == "*" || row_scenario[row] == budget_scenario) &&
+                (budget_phase == "*" || row_phase[row] == budget_phase)) {
+              matched = 1
+              actual = value[row, budget_metric]
+              if (!numeric(actual)) {
+                emit(row_scenario[row], row_phase[row], budget_metric, actual, budget_max, "fail", "baseline value is not numeric", "max")
+                failures++
+              } else if (actual + 0 <= budget_max + 0) {
+                emit(row_scenario[row], row_phase[row], budget_metric, actual, budget_max, "pass", "within budget", "max")
+              } else {
+                emit(row_scenario[row], row_phase[row], budget_metric, actual, budget_max, "fail", "exceeds budget", "max")
+                failures++
+              }
+            }
+          }
+          if (!matched) {
+            emit(budget_scenario, budget_phase, budget_metric, "", budget_max, "fail", "no matching baseline row", "max")
             failures++
           }
         }
       }
-      if (!matched) {
-        emit(budget_scenario, budget_phase, budget_metric, "", budget_max, "fail", "no matching baseline row")
-        failures++
+      if (release_requested) {
+        matched = 0
+        if (!numeric(budget_min_release)) {
+          emit(budget_scenario, budget_phase, budget_metric, "", budget_min_release, "fail", "min_release_from_active_kib is not numeric", "min_release_from_active_kib")
+          failures++
+        } else if (!(budget_metric in delta_metric_seen)) {
+          emit(budget_scenario, budget_phase, budget_metric, "", budget_min_release, "fail", "metric is not present in memory-category-deltas.csv", "min_release_from_active_kib")
+          failures++
+        } else {
+          for (delta = 1; delta <= delta_count; delta++) {
+            if (delta_metric[delta] == budget_metric &&
+                (budget_scenario == "*" || delta_scenario[delta] == budget_scenario) &&
+                (budget_phase == "*" || delta_phase[delta] == budget_phase)) {
+              matched = 1
+              actual = delta_release[delta]
+              if (!numeric(actual)) {
+                emit(delta_scenario[delta], delta_phase[delta], budget_metric, actual, budget_min_release, "fail", "release_from_active_kib is not numeric", "min_release_from_active_kib")
+                failures++
+              } else if (actual + 0 >= budget_min_release + 0) {
+                emit(delta_scenario[delta], delta_phase[delta], budget_metric, actual, budget_min_release, "pass", "release meets minimum", "min_release_from_active_kib")
+              } else {
+                emit(delta_scenario[delta], delta_phase[delta], budget_metric, actual, budget_min_release, "fail", "release is below minimum", "min_release_from_active_kib")
+                failures++
+              }
+            }
+          }
+          if (!matched) {
+            emit(budget_scenario, budget_phase, budget_metric, "", budget_min_release, "fail", "no matching memory-category delta row", "min_release_from_active_kib")
+            failures++
+          }
+        }
       }
     }
     END {
       if (!bad_header && budget_count == 0) {
-        emit("", "", "", "", "", "fail", "budget file contains no budget rows")
+        emit("", "", "", "", "", "fail", "budget file contains no budget rows", "row")
         failures++
       }
       exit failures > 0 ? 1 : 0
     }
-  ' "$baseline_csv" "$budget_csv" > "$budget_results_csv"
+  ' "$baseline_csv" "$memory_category_deltas_csv" "$budget_csv" > "$budget_results_csv"
 }
 
 scenario_smoke_args() {
@@ -899,7 +971,7 @@ append_rows_for_scenario() {
 write_metadata
 write_baseline_header
 write_matrix_header
-printf 'scenario,phase,metric,actual,max,status,detail\n' > "$budget_results_csv"
+printf 'scenario,phase,metric,actual,limit,status,detail,check\n' > "$budget_results_csv"
 
 if [[ "$build" -eq 1 ]]; then
   cargo build --features gtk-renderer,video-renderer
@@ -910,6 +982,7 @@ for scenario in "${requested_scenarios[@]}"; do
   scenario_dir="$scenario_root/$scenario"
   scenario_log="$work_dir/${scenario}.log"
   validation_report="$scenario_dir/validation-report.txt"
+  rm -rf "$scenario_dir"
   mkdir -p "$scenario_dir"
 
   command=(

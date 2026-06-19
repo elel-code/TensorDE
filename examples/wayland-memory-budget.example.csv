@@ -1,4 +1,4 @@
-scenario,phase,metric,max
+scenario,phase,metric,max,min_release_from_active_kib
 active,active,max_uss_kib,280000
 active,active,max_private_kib,280000
 active,active,max_private_dirty_kib,163840
@@ -47,3 +47,9 @@ session-locked,session-locked,renderer_video_pipelines_latest,0
 # active,active,memory_category_nvidia_library_private_dirty_kib,16384
 # fullscreen,fullscreen,memory_category_nvidia_device_private_dirty_kib,8192
 # fullscreen,fullscreen,memory_category_anonymous_private_dirty_kib,32768
+# Release guardrails use memory-category-deltas.csv and require the lifecycle
+# phase to release at least the configured KiB from the active,active baseline.
+# Enable only after accepting a host-specific release baseline:
+# active,user-paused,memory_category_nvidia_device_private_dirty_kib,,8192
+# fullscreen,fullscreen,memory_category_nvidia_device_private_dirty_kib,,8192
+# hidden,hidden,memory_category_anonymous_private_dirty_kib,,16384
