@@ -11,9 +11,9 @@ use crate::core::FitMode;
 use crate::policy::RenderMode;
 #[cfg(feature = "video-renderer")]
 use crate::renderer::video::{
-    GtkFrameClockPhase, VideoFrameStats, VideoPipelineSnapshot, actual_decoder_reports,
-    apply_decoder_rank_policy, decoder_policy_status, playback_duration_ms, playback_position_ms,
-    video_caps_reports, zero_copy_evidence,
+    GtkFrameClockPhase, VideoFrameStats, VideoPipelineDiagnostics, VideoPipelineDiagnosticsCache,
+    VideoPipelineSnapshot, apply_decoder_rank_policy, decoder_policy_status, playback_duration_ms,
+    playback_position_ms,
 };
 use gtk::gdk;
 use gtk::gio;
@@ -1057,6 +1057,7 @@ struct GtkSharedVideoRuntime {
     decoder_policy: crate::config::VideoDecoderPolicy,
     start_offset_ms: u64,
     frame_stats: Rc<RefCell<VideoFrameStats>>,
+    diagnostics: VideoPipelineDiagnosticsCache,
 }
 
 #[cfg(feature = "video-renderer")]
@@ -1077,6 +1078,7 @@ impl GtkSharedVideoRuntime {
             decoder_policy: plan.decoder_policy,
             start_offset_ms: 0,
             frame_stats: Rc::new(RefCell::new(VideoFrameStats::default())),
+            diagnostics: VideoPipelineDiagnosticsCache::default(),
         };
         runtime.apply_muted(plan.muted);
         runtime.apply_start_offset(plan.start_offset_ms)?;
@@ -1204,6 +1206,7 @@ impl GtkSharedVideoRuntime {
             .set_state(state)
             .map_err(|err| GtkVideoError::SetState(err.to_string()))?;
         self.gst_state = state;
+        self.diagnostics.invalidate();
         Ok(())
     }
 
@@ -1236,12 +1239,13 @@ impl GtkSharedVideoRuntime {
         output_name: &str,
         attachment: &GtkVideoAttachment,
     ) -> VideoPipelineSnapshot {
-        let actual_decoder_reports = actual_decoder_reports(&self.element);
-        let caps_reports = video_caps_reports(&self.element);
-        let allocation_reports = crate::renderer::video::video_allocation_reports(&self.element);
-        let zero_copy_evidence = zero_copy_evidence(&actual_decoder_reports, &caps_reports);
-        let memory_path =
-            crate::renderer::video::video_memory_path(&actual_decoder_reports, &caps_reports);
+        let VideoPipelineDiagnostics {
+            actual_decoder_reports,
+            caps_reports,
+            allocation_reports,
+            zero_copy_evidence,
+            memory_path,
+        } = self.diagnostics.snapshot(&self.element);
         let frame_limiter_max_fps = self
             .frame_limiter
             .as_ref()

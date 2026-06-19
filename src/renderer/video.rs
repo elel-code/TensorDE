@@ -6,9 +6,11 @@ use crate::policy::RenderMode;
 use gst::prelude::*;
 use gstreamer as gst;
 use serde::Serialize;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 pub struct GstVideoRenderer {
     pipelines: BTreeMap<String, VideoPipeline>,
@@ -60,6 +62,7 @@ pub fn runtime_capabilities() -> VideoRuntimeCapabilities {
 const VIDEO_RUNTIME_ELEMENTS: &[&str] = &["playbin", "fakesink", "gtk4paintablesink"];
 const MUTED_PLAYBIN_FLAGS: &str = "video";
 const AUDIBLE_PLAYBIN_FLAGS: &str = "video+audio";
+const VIDEO_DIAGNOSTICS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const SOFTWARE_DECODER_ELEMENT_NAMES: &[&str] = &[
     "avdec_h264",
     "openh264dec",
@@ -228,11 +231,13 @@ impl GstVideoRenderer {
         self.pipelines
             .iter()
             .map(|(output_name, pipeline)| {
-                let actual_decoder_reports = actual_decoder_reports(&pipeline.element);
-                let caps_reports = video_caps_reports(&pipeline.element);
-                let allocation_reports = video_allocation_reports(&pipeline.element);
-                let zero_copy_evidence = zero_copy_evidence(&actual_decoder_reports, &caps_reports);
-                let memory_path = video_memory_path(&actual_decoder_reports, &caps_reports);
+                let VideoPipelineDiagnostics {
+                    actual_decoder_reports,
+                    caps_reports,
+                    allocation_reports,
+                    zero_copy_evidence,
+                    memory_path,
+                } = pipeline.diagnostics.snapshot(&pipeline.element);
                 let frame_limiter_max_fps = pipeline
                     .frame_limiter
                     .as_ref()
@@ -284,6 +289,7 @@ struct VideoPipeline {
     decoder_policy: VideoDecoderPolicy,
     start_offset_ms: u64,
     frame_stats: VideoFrameStats,
+    diagnostics: VideoPipelineDiagnosticsCache,
 }
 
 impl VideoPipeline {
@@ -309,6 +315,7 @@ impl VideoPipeline {
             decoder_policy: plan.decoder_policy,
             start_offset_ms: 0,
             frame_stats: VideoFrameStats::default(),
+            diagnostics: VideoPipelineDiagnosticsCache::default(),
         };
         pipeline.apply_muted(plan.muted);
         Ok(pipeline)
@@ -399,6 +406,7 @@ impl VideoPipeline {
             .set_state(state)
             .map_err(|err| VideoRendererError::SetState(err.to_string()))?;
         self.gst_state = state;
+        self.diagnostics.invalidate();
         Ok(())
     }
 
@@ -681,6 +689,81 @@ pub fn video_allocation_reports(element: &gst::Element) -> Vec<VideoAllocationRe
     });
     reports.dedup();
     reports
+}
+
+#[derive(Debug)]
+pub(crate) struct VideoPipelineDiagnosticsCache {
+    refresh_interval: Duration,
+    state: RefCell<Option<CachedVideoPipelineDiagnostics>>,
+}
+
+impl Default for VideoPipelineDiagnosticsCache {
+    fn default() -> Self {
+        Self {
+            refresh_interval: VIDEO_DIAGNOSTICS_REFRESH_INTERVAL,
+            state: RefCell::new(None),
+        }
+    }
+}
+
+impl VideoPipelineDiagnosticsCache {
+    #[cfg(test)]
+    fn with_refresh_interval(refresh_interval: Duration) -> Self {
+        Self {
+            refresh_interval,
+            state: RefCell::new(None),
+        }
+    }
+
+    pub(crate) fn snapshot(&self, element: &gst::Element) -> VideoPipelineDiagnostics {
+        let now = Instant::now();
+        if let Some(cached) = self.state.borrow().as_ref()
+            && now.duration_since(cached.sampled_at) < self.refresh_interval
+        {
+            return cached.diagnostics.clone();
+        }
+
+        let diagnostics = collect_video_pipeline_diagnostics(element);
+        *self.state.borrow_mut() = Some(CachedVideoPipelineDiagnostics {
+            sampled_at: now,
+            diagnostics: diagnostics.clone(),
+        });
+        diagnostics
+    }
+
+    pub(crate) fn invalidate(&self) {
+        *self.state.borrow_mut() = None;
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CachedVideoPipelineDiagnostics {
+    sampled_at: Instant,
+    diagnostics: VideoPipelineDiagnostics,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VideoPipelineDiagnostics {
+    pub(crate) actual_decoder_reports: Vec<VideoDecoderReport>,
+    pub(crate) caps_reports: Vec<VideoCapsReport>,
+    pub(crate) allocation_reports: Vec<VideoAllocationReport>,
+    pub(crate) zero_copy_evidence: VideoZeroCopyEvidence,
+    pub(crate) memory_path: VideoMemoryPathReport,
+}
+
+fn collect_video_pipeline_diagnostics(element: &gst::Element) -> VideoPipelineDiagnostics {
+    let actual_decoder_reports = actual_decoder_reports(element);
+    let caps_reports = video_caps_reports(element);
+    let allocation_reports = video_allocation_reports(element);
+    let zero_copy_evidence = zero_copy_evidence(&actual_decoder_reports, &caps_reports);
+    let memory_path = video_memory_path(&actual_decoder_reports, &caps_reports);
+    VideoPipelineDiagnostics {
+        actual_decoder_reports,
+        caps_reports,
+        allocation_reports,
+        zero_copy_evidence,
+        memory_path,
+    }
 }
 
 pub fn zero_copy_evidence(
@@ -2079,6 +2162,27 @@ mod tests {
                 .iter()
                 .any(|structure| structure.media_type.starts_with("video/"))
         }));
+    }
+
+    #[test]
+    fn caches_video_pipeline_diagnostics_until_invalidated() {
+        gst::init().unwrap();
+        let pipeline = gst::Pipeline::new();
+        let element = pipeline.clone().upcast::<gst::Element>();
+        let cache = VideoPipelineDiagnosticsCache::with_refresh_interval(Duration::from_secs(60));
+
+        let first = cache.snapshot(&element);
+        let first_sampled_at = cache.state.borrow().as_ref().unwrap().sampled_at;
+        let second = cache.snapshot(&element);
+        let second_sampled_at = cache.state.borrow().as_ref().unwrap().sampled_at;
+
+        assert_eq!(first, second);
+        assert_eq!(first_sampled_at, second_sampled_at);
+
+        cache.invalidate();
+        assert!(cache.state.borrow().is_none());
+        assert_eq!(cache.snapshot(&element), first);
+        assert!(cache.state.borrow().is_some());
     }
 
     #[test]
