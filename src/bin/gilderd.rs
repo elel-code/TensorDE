@@ -254,24 +254,22 @@ fn apply_gtk_render_sync_queue(
     queue: &Arc<Mutex<VecDeque<StaticRenderSyncPlan>>>,
     runtime: &DaemonRuntime,
 ) -> bool {
-    let mut applied = false;
-    loop {
-        let sync = match queue.lock() {
-            Ok(mut queue) => queue.pop_front(),
-            Err(_) => {
-                eprintln!("gilderd: GTK renderer update queue lock poisoned");
-                return applied;
-            }
-        };
-        let Some(sync) = sync else {
-            return applied;
-        };
-        {
-            renderer.borrow_mut().sync_static_render_plan(&sync);
+    let sync = match queue.lock() {
+        // Render sync plans describe the full desired renderer state, so only
+        // the newest queued plan needs to reach GTK/GStreamer.
+        Ok(mut queue) => queue.drain(..).last(),
+        Err(_) => {
+            eprintln!("gilderd: GTK renderer update queue lock poisoned");
+            return false;
         }
-        applied = true;
-        runtime.store_renderer_runtime_snapshot(renderer_runtime_snapshot(&renderer.borrow()));
-    }
+    };
+    let Some(sync) = sync else {
+        return false;
+    };
+
+    renderer.borrow_mut().sync_static_render_plan(&sync);
+    runtime.store_renderer_runtime_snapshot(renderer_runtime_snapshot(&renderer.borrow()));
+    true
 }
 
 #[cfg(feature = "gtk-renderer")]
@@ -292,7 +290,11 @@ fn schedule_gtk_renderer_tick(
             let slideshow_changed = renderer.tick_slideshows();
             #[cfg(feature = "video-renderer")]
             {
-                slideshow_changed || renderer.poll_video_buses()
+                if renderer.has_video_runtimes() {
+                    slideshow_changed || renderer.poll_video_buses()
+                } else {
+                    slideshow_changed
+                }
             }
             #[cfg(not(feature = "video-renderer"))]
             {
