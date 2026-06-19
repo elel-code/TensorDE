@@ -230,7 +230,9 @@ impl GstVideoRenderer {
             .map(|(output_name, pipeline)| {
                 let actual_decoder_reports = actual_decoder_reports(&pipeline.element);
                 let caps_reports = video_caps_reports(&pipeline.element);
+                let allocation_reports = video_allocation_reports(&pipeline.element);
                 let zero_copy_evidence = zero_copy_evidence(&actual_decoder_reports, &caps_reports);
+                let memory_path = video_memory_path(&actual_decoder_reports, &caps_reports);
                 let frame_limiter_max_fps = pipeline
                     .frame_limiter
                     .as_ref()
@@ -260,7 +262,9 @@ impl GstVideoRenderer {
                         .collect(),
                     actual_decoder_reports,
                     caps_reports,
+                    allocation_reports,
                     zero_copy_evidence,
+                    memory_path,
                 }
             })
             .collect()
@@ -648,6 +652,37 @@ pub fn video_caps_reports(element: &gst::Element) -> Vec<VideoCapsReport> {
     reports
 }
 
+pub fn video_allocation_reports(element: &gst::Element) -> Vec<VideoAllocationReport> {
+    let mut reports = Vec::new();
+    push_element_allocation_reports(element, &mut reports);
+
+    if let Ok(bin) = element.clone().downcast::<gst::Bin>() {
+        let mut iterator = bin.iterate_recurse();
+        while let Ok(Some(child)) = iterator.next() {
+            push_element_allocation_reports(&child, &mut reports);
+        }
+    }
+
+    reports.sort_by(|left, right| {
+        (
+            left.element.as_str(),
+            left.pad.as_str(),
+            left.direction.as_str(),
+            left.query_scope.as_str(),
+            left.caps.as_str(),
+        )
+            .cmp(&(
+                right.element.as_str(),
+                right.pad.as_str(),
+                right.direction.as_str(),
+                right.query_scope.as_str(),
+                right.caps.as_str(),
+            ))
+    });
+    reports.dedup();
+    reports
+}
+
 pub fn zero_copy_evidence(
     decoder_reports: &[VideoDecoderReport],
     caps_reports: &[VideoCapsReport],
@@ -695,6 +730,101 @@ pub fn zero_copy_evidence(
     }
 }
 
+pub fn video_memory_path(
+    decoder_reports: &[VideoDecoderReport],
+    caps_reports: &[VideoCapsReport],
+) -> VideoMemoryPathReport {
+    let decoder_classes = decoder_report_classes(decoder_reports);
+    let has_hardware_decoder = decoder_classes.contains(&VideoDecoderClass::Hardware);
+    let has_software_decoder = decoder_classes.contains(&VideoDecoderClass::Software);
+    let segments = video_memory_path_segments(caps_reports);
+    let has_cpu_raw_caps = segments
+        .iter()
+        .any(|segment| segment.memory_class == VideoMemoryClass::SystemMemory);
+    let has_decoder_gpu_caps = caps_reports.iter().any(|report| {
+        report.direction == "src"
+            && report
+                .memory_features
+                .iter()
+                .any(|feature| is_gpu_memory_feature(feature))
+    });
+    let has_decoder_dmabuf_caps = caps_reports.iter().any(|report| {
+        report.direction == "src"
+            && report
+                .memory_features
+                .iter()
+                .any(|feature| is_dmabuf_memory_feature(feature))
+    });
+    let has_sink_gpu_caps = caps_reports.iter().any(|report| {
+        report.direction == "sink"
+            && report
+                .memory_features
+                .iter()
+                .any(|feature| is_gpu_memory_feature(feature))
+    });
+    let has_sink_dmabuf_caps = caps_reports.iter().any(|report| {
+        report.direction == "sink"
+            && report
+                .memory_features
+                .iter()
+                .any(|feature| is_dmabuf_memory_feature(feature))
+    });
+
+    let level = if has_sink_dmabuf_caps {
+        VideoMemoryPathLevel::SinkDmabuf
+    } else if has_sink_gpu_caps {
+        VideoMemoryPathLevel::SinkGpuMemory
+    } else if has_decoder_dmabuf_caps {
+        VideoMemoryPathLevel::DecoderDmabuf
+    } else if has_decoder_gpu_caps {
+        VideoMemoryPathLevel::DecoderGpuMemory
+    } else if has_hardware_decoder && has_cpu_raw_caps {
+        VideoMemoryPathLevel::HardwareDecodeCpuRaw
+    } else if has_software_decoder && has_cpu_raw_caps {
+        VideoMemoryPathLevel::SoftwareDecodeCpuRaw
+    } else if has_cpu_raw_caps {
+        VideoMemoryPathLevel::CpuRawCaps
+    } else if has_hardware_decoder {
+        VideoMemoryPathLevel::HardwareDecodeNoCaps
+    } else if has_software_decoder {
+        VideoMemoryPathLevel::SoftwareDecodeNoCaps
+    } else {
+        VideoMemoryPathLevel::Unknown
+    };
+
+    VideoMemoryPathReport {
+        level,
+        segments,
+        notes: video_memory_path_notes(level),
+    }
+}
+
+fn video_memory_path_segments(caps_reports: &[VideoCapsReport]) -> Vec<VideoMemoryPathSegment> {
+    caps_reports
+        .iter()
+        .flat_map(|report| {
+            report
+                .structures
+                .iter()
+                .filter(|structure| structure.media_type.starts_with("video/"))
+                .map(|structure| VideoMemoryPathSegment {
+                    element: report.element.clone(),
+                    pad: report.pad.clone(),
+                    direction: report.direction.clone(),
+                    media_type: structure.media_type.clone(),
+                    memory_features: structure
+                        .features
+                        .iter()
+                        .filter(|feature| feature.starts_with("memory:"))
+                        .cloned()
+                        .collect(),
+                    memory_class: memory_features_class(&structure.features),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 fn decoder_report_classes(reports: &[VideoDecoderReport]) -> Vec<VideoDecoderClass> {
     let mut classes = Vec::new();
     for class in [
@@ -728,6 +858,27 @@ fn is_gpu_memory_feature(feature: &str) -> bool {
     GPU_MEMORY_FEATURES.contains(&feature)
 }
 
+fn memory_features_class(features: &[String]) -> VideoMemoryClass {
+    if features
+        .iter()
+        .any(|feature| is_dmabuf_memory_feature(feature))
+    {
+        VideoMemoryClass::Dmabuf
+    } else if features
+        .iter()
+        .any(|feature| is_gpu_memory_feature(feature))
+    {
+        VideoMemoryClass::GpuMemory
+    } else if features
+        .iter()
+        .any(|feature| feature.starts_with("memory:"))
+    {
+        VideoMemoryClass::OtherMemoryFeature
+    } else {
+        VideoMemoryClass::SystemMemory
+    }
+}
+
 fn zero_copy_evidence_notes(level: VideoZeroCopyEvidenceLevel) -> Vec<String> {
     let note = match level {
         VideoZeroCopyEvidenceLevel::Missing => "no decoder or GPU memory caps observed yet",
@@ -741,6 +892,34 @@ fn zero_copy_evidence_notes(level: VideoZeroCopyEvidenceLevel) -> Vec<String> {
         VideoZeroCopyEvidenceLevel::DmabufCaps => "DMABuf caps observed before the sink",
         VideoZeroCopyEvidenceLevel::SinkGpuMemoryCaps => "sink-side GPU memory caps observed",
         VideoZeroCopyEvidenceLevel::SinkDmabufCaps => "sink-side DMABuf caps observed",
+    };
+    vec![note.to_owned()]
+}
+
+fn video_memory_path_notes(level: VideoMemoryPathLevel) -> Vec<String> {
+    let note = match level {
+        VideoMemoryPathLevel::Unknown => "no negotiated video caps observed yet",
+        VideoMemoryPathLevel::CpuRawCaps => "system-memory video caps observed",
+        VideoMemoryPathLevel::SoftwareDecodeNoCaps => {
+            "software decoder observed before video caps negotiation"
+        }
+        VideoMemoryPathLevel::SoftwareDecodeCpuRaw => {
+            "software decoder with system-memory raw video caps observed"
+        }
+        VideoMemoryPathLevel::HardwareDecodeNoCaps => {
+            "hardware decoder observed before video caps negotiation"
+        }
+        VideoMemoryPathLevel::HardwareDecodeCpuRaw => {
+            "hardware decoder observed but negotiated caps expose system-memory raw frames"
+        }
+        VideoMemoryPathLevel::DecoderGpuMemory => {
+            "GPU memory caps observed before the sink; sink-side GPU memory caps are not observed"
+        }
+        VideoMemoryPathLevel::DecoderDmabuf => {
+            "DMABuf caps observed before the sink; sink-side DMABuf caps are not observed"
+        }
+        VideoMemoryPathLevel::SinkGpuMemory => "sink-side GPU memory caps observed",
+        VideoMemoryPathLevel::SinkDmabuf => "sink-side DMABuf caps observed",
     };
     vec![note.to_owned()]
 }
@@ -763,6 +942,86 @@ fn push_element_caps_reports(element: &gst::Element, reports: &mut Vec<VideoCaps
             structures,
         });
     }
+}
+
+fn push_element_allocation_reports(
+    element: &gst::Element,
+    reports: &mut Vec<VideoAllocationReport>,
+) {
+    for pad in element.pads() {
+        if pad.direction() != gst::PadDirection::Src {
+            continue;
+        }
+        let Some(caps) = pad.current_caps() else {
+            continue;
+        };
+        let structures = caps_structure_reports(&caps);
+        if !caps_report_is_relevant(&structures) {
+            continue;
+        }
+        let Some(mut report) = query_pad_allocation(&pad, &caps) else {
+            continue;
+        };
+        report.element = element.name().to_string();
+        report.pad = pad.name().to_string();
+        report.direction = pad_direction_name(pad.direction()).to_owned();
+        report.query_scope = "peer".to_owned();
+        reports.push(report);
+    }
+}
+
+fn query_pad_allocation(pad: &gst::Pad, caps: &gst::Caps) -> Option<VideoAllocationReport> {
+    let mut query = gst::query::Allocation::new(Some(caps), true);
+    if !pad.peer_query(query.query_mut()) {
+        return None;
+    }
+    let (query_caps, need_pool) = query.get_owned();
+    Some(VideoAllocationReport {
+        element: String::new(),
+        pad: String::new(),
+        direction: String::new(),
+        query_scope: String::new(),
+        caps: query_caps
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| caps.to_string()),
+        need_pool,
+        pools: query
+            .allocation_pools()
+            .map(
+                |(pool, size, min_buffers, max_buffers)| VideoAllocationPoolReport {
+                    pool: pool
+                        .as_ref()
+                        .map(|pool| pool.name().to_string())
+                        .unwrap_or_else(|| "none".to_owned()),
+                    size,
+                    min_buffers,
+                    max_buffers,
+                },
+            )
+            .collect(),
+        params: query
+            .allocation_params()
+            .map(|(allocator, params)| VideoAllocationParamReport {
+                allocator: allocator
+                    .as_ref()
+                    .map(|allocator| allocator.name().to_string())
+                    .unwrap_or_else(|| "none".to_owned()),
+                flags: format!("{:?}", params.flags()),
+                align: params.align() as u64,
+                prefix: params.prefix() as u64,
+                padding: params.padding() as u64,
+            })
+            .collect(),
+        metas: query
+            .allocation_metas()
+            .map(|(api, structure)| {
+                structure
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| api.name().to_owned())
+            })
+            .collect(),
+    })
 }
 
 fn caps_structure_reports(caps: &gst::Caps) -> Vec<VideoCapsStructureReport> {
@@ -926,7 +1185,9 @@ pub struct VideoPipelineSnapshot {
     pub actual_decoders: Vec<String>,
     pub actual_decoder_reports: Vec<VideoDecoderReport>,
     pub caps_reports: Vec<VideoCapsReport>,
+    pub allocation_reports: Vec<VideoAllocationReport>,
     pub zero_copy_evidence: VideoZeroCopyEvidence,
+    pub memory_path: VideoMemoryPathReport,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -1175,12 +1436,83 @@ pub struct VideoCapsStructureReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VideoAllocationReport {
+    pub element: String,
+    pub pad: String,
+    pub direction: String,
+    pub query_scope: String,
+    pub caps: String,
+    pub need_pool: bool,
+    pub pools: Vec<VideoAllocationPoolReport>,
+    pub params: Vec<VideoAllocationParamReport>,
+    pub metas: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VideoAllocationPoolReport {
+    pub pool: String,
+    pub size: u32,
+    pub min_buffers: u32,
+    pub max_buffers: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VideoAllocationParamReport {
+    pub allocator: String,
+    pub flags: String,
+    pub align: u64,
+    pub prefix: u64,
+    pub padding: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VideoZeroCopyEvidence {
     pub level: VideoZeroCopyEvidenceLevel,
     pub decoder_classes: Vec<VideoDecoderClass>,
     pub memory_features: Vec<String>,
     pub sink_memory_features: Vec<String>,
     pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VideoMemoryPathReport {
+    pub level: VideoMemoryPathLevel,
+    pub segments: Vec<VideoMemoryPathSegment>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VideoMemoryPathSegment {
+    pub element: String,
+    pub pad: String,
+    pub direction: String,
+    pub media_type: String,
+    pub memory_features: Vec<String>,
+    pub memory_class: VideoMemoryClass,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoMemoryPathLevel {
+    Unknown,
+    CpuRawCaps,
+    SoftwareDecodeNoCaps,
+    SoftwareDecodeCpuRaw,
+    HardwareDecodeNoCaps,
+    HardwareDecodeCpuRaw,
+    DecoderGpuMemory,
+    DecoderDmabuf,
+    SinkGpuMemory,
+    SinkDmabuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoMemoryClass {
+    SystemMemory,
+    GpuMemory,
+    Dmabuf,
+    OtherMemoryFeature,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1529,21 +1861,115 @@ mod tests {
         );
     }
 
+    #[test]
+    fn classifies_video_memory_path_from_decoder_and_caps() {
+        let hardware = VideoDecoderReport {
+            element: "vaav1dec".to_owned(),
+            class: VideoDecoderClass::Hardware,
+        };
+        let software = VideoDecoderReport {
+            element: "dav1ddec".to_owned(),
+            class: VideoDecoderClass::Software,
+        };
+        let cpu_raw = caps_report("videoconvert0", "src", "src", "");
+
+        assert_eq!(
+            video_memory_path(&[], &[]).level,
+            VideoMemoryPathLevel::Unknown
+        );
+        assert_eq!(
+            video_memory_path(std::slice::from_ref(&software), &[]).level,
+            VideoMemoryPathLevel::SoftwareDecodeNoCaps
+        );
+        assert_eq!(
+            video_memory_path(&[], std::slice::from_ref(&cpu_raw)).level,
+            VideoMemoryPathLevel::CpuRawCaps
+        );
+        assert_eq!(
+            video_memory_path(
+                std::slice::from_ref(&software),
+                std::slice::from_ref(&cpu_raw)
+            )
+            .level,
+            VideoMemoryPathLevel::SoftwareDecodeCpuRaw
+        );
+        assert_eq!(
+            video_memory_path(
+                std::slice::from_ref(&hardware),
+                std::slice::from_ref(&cpu_raw)
+            )
+            .level,
+            VideoMemoryPathLevel::HardwareDecodeCpuRaw
+        );
+        assert_eq!(
+            video_memory_path(
+                std::slice::from_ref(&hardware),
+                &[caps_report("vaav1dec0", "src", "src", "memory:GLMemory")]
+            )
+            .level,
+            VideoMemoryPathLevel::DecoderGpuMemory
+        );
+        assert_eq!(
+            video_memory_path(
+                std::slice::from_ref(&hardware),
+                &[caps_report("vaav1dec0", "src", "src", "memory:DMABuf")]
+            )
+            .level,
+            VideoMemoryPathLevel::DecoderDmabuf
+        );
+        assert_eq!(
+            video_memory_path(
+                std::slice::from_ref(&software),
+                &[caps_report(
+                    "gtk4paintablesink0",
+                    "sink",
+                    "sink",
+                    "memory:GLMemory"
+                )]
+            )
+            .level,
+            VideoMemoryPathLevel::SinkGpuMemory
+        );
+        assert_eq!(
+            video_memory_path(
+                &[hardware],
+                &[caps_report(
+                    "gtk4paintablesink0",
+                    "sink",
+                    "sink",
+                    "memory:DMABuf"
+                )]
+            )
+            .level,
+            VideoMemoryPathLevel::SinkDmabuf
+        );
+    }
+
     fn caps_report(
         element: &str,
         pad: &str,
         direction: &str,
         memory_feature: &str,
     ) -> VideoCapsReport {
+        let memory_features = if memory_feature.is_empty() {
+            Vec::new()
+        } else {
+            vec![memory_feature.to_owned()]
+        };
+        let caps = if memory_feature.is_empty() {
+            "video/x-raw".to_owned()
+        } else {
+            format!("video/x-raw({memory_feature})")
+        };
         VideoCapsReport {
             element: element.to_owned(),
             pad: pad.to_owned(),
             direction: direction.to_owned(),
-            caps: format!("video/x-raw({memory_feature})"),
-            memory_features: vec![memory_feature.to_owned()],
+            caps,
+            memory_features: memory_features.clone(),
             structures: vec![VideoCapsStructureReport {
                 media_type: "video/x-raw".to_owned(),
-                features: vec![memory_feature.to_owned()],
+                features: memory_features,
             }],
         }
     }

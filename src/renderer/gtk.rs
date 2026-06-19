@@ -1238,7 +1238,10 @@ impl GtkSharedVideoRuntime {
     ) -> VideoPipelineSnapshot {
         let actual_decoder_reports = actual_decoder_reports(&self.element);
         let caps_reports = video_caps_reports(&self.element);
+        let allocation_reports = crate::renderer::video::video_allocation_reports(&self.element);
         let zero_copy_evidence = zero_copy_evidence(&actual_decoder_reports, &caps_reports);
+        let memory_path =
+            crate::renderer::video::video_memory_path(&actual_decoder_reports, &caps_reports);
         let frame_limiter_max_fps = self
             .frame_limiter
             .as_ref()
@@ -1271,7 +1274,9 @@ impl GtkSharedVideoRuntime {
                 .collect(),
             actual_decoder_reports,
             caps_reports,
+            allocation_reports,
             zero_copy_evidence,
+            memory_path,
         }
     }
 }

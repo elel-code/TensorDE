@@ -1629,40 +1629,46 @@ write_video_runtime_summary() {
       sink_memory_features = $12
       zero_copy_level = $13
       zero_copy_notes = $14
-      position = $17
-      duration = $18
-      limiter_enabled = $19
-      limiter_fps = $20
-      qos_messages = $21
-      qos_processed = $22
-      qos_dropped = $23
-      qos_format = $24
-      qos_jitter = $25
-      qos_jitter_abs = $26
-      qos_proportion = $27
-      gtk_clock_ticks = $28
-      gtk_clock_counter = $29
-      gtk_clock_time = $30
-      gtk_clock_interval = $31
-      gtk_clock_interval_max = $32
-      gtk_clock_fps = $33
-      gtk_clock_refresh = $34
-      gtk_clock_presentation = $35
-      gtk_timings_observed = $36
-      gtk_timings_complete = $37
-      gtk_timings_counter = $38
-      gtk_timings_complete_counter = $39
-      gtk_timings_frame_time = $40
-      gtk_timings_predicted_presentation = $41
-      gtk_timings_presentation = $42
-      gtk_timings_presentation_interval = $43
-      gtk_timings_presentation_interval_max = $44
-      gtk_timings_refresh = $45
-      gtk_clock_before_paint_ticks = $47
-      gtk_clock_update_ticks = $48
-      gtk_clock_layout_ticks = $49
-      gtk_clock_paint_ticks = $50
-      gtk_clock_after_paint_ticks = $51
+      memory_path_level = $15
+      memory_path_notes = $16
+      memory_path_segments = $17
+      allocation_report_count = $18
+      allocation_pools = $19
+      allocation_allocators = $20
+      position = $23
+      duration = $24
+      limiter_enabled = $25
+      limiter_fps = $26
+      qos_messages = $27
+      qos_processed = $28
+      qos_dropped = $29
+      qos_format = $30
+      qos_jitter = $31
+      qos_jitter_abs = $32
+      qos_proportion = $33
+      gtk_clock_ticks = $34
+      gtk_clock_counter = $35
+      gtk_clock_time = $36
+      gtk_clock_interval = $37
+      gtk_clock_interval_max = $38
+      gtk_clock_fps = $39
+      gtk_clock_refresh = $40
+      gtk_clock_presentation = $41
+      gtk_timings_observed = $42
+      gtk_timings_complete = $43
+      gtk_timings_counter = $44
+      gtk_timings_complete_counter = $45
+      gtk_timings_frame_time = $46
+      gtk_timings_predicted_presentation = $47
+      gtk_timings_presentation = $48
+      gtk_timings_presentation_interval = $49
+      gtk_timings_presentation_interval_max = $50
+      gtk_timings_refresh = $51
+      gtk_clock_before_paint_ticks = $53
+      gtk_clock_update_ticks = $54
+      gtk_clock_layout_ticks = $55
+      gtk_clock_paint_ticks = $56
+      gtk_clock_after_paint_ticks = $57
 
       if (output != "" && !(output in seen_output)) {
         seen_output[output] = 1
@@ -1714,6 +1720,29 @@ write_video_runtime_summary() {
       }
       if (zero_copy_notes != "") {
         last_zero_copy_notes = zero_copy_notes
+      }
+      if (memory_path_level != "") {
+        memory_path_rows += 1
+        memory_path_levels[memory_path_level] += 1
+        last_memory_path_level = memory_path_level
+      }
+      if (memory_path_notes != "") {
+        last_memory_path_notes = memory_path_notes
+      }
+      if (memory_path_segments != "") {
+        last_memory_path_segments = memory_path_segments
+        record_pipe_values(memory_path_segments, memory_path_segment_counts)
+      }
+      if (allocation_report_count != "" && allocation_report_count + 0 > max_allocation_report_count) {
+        max_allocation_report_count = allocation_report_count + 0
+      }
+      if (allocation_pools != "") {
+        last_allocation_pools = allocation_pools
+        record_pipe_values(allocation_pools, allocation_pool_counts)
+      }
+      if (allocation_allocators != "") {
+        last_allocation_allocators = allocation_allocators
+        record_pipe_values(allocation_allocators, allocation_allocator_counts)
       }
       if (position != "") {
         position_samples += 1
@@ -1918,6 +1947,35 @@ write_video_runtime_summary() {
       for (level in zero_copy_levels) {
         printf "video_zero_copy_evidence.%s: %d\n", level, zero_copy_levels[level]
       }
+      printf "video_memory_path_rows: %d\n", memory_path_rows
+      if (last_memory_path_level != "") {
+        printf "video_memory_path_latest: %s\n", last_memory_path_level
+      }
+      if (last_memory_path_notes != "") {
+        printf "video_memory_path_notes_latest: %s\n", last_memory_path_notes
+      }
+      if (last_memory_path_segments != "") {
+        printf "video_memory_path_segments_latest: %s\n", last_memory_path_segments
+      }
+      for (memory_path_level in memory_path_levels) {
+        printf "video_memory_path.%s: %d\n", memory_path_level, memory_path_levels[memory_path_level]
+      }
+      for (memory_path_segment in memory_path_segment_counts) {
+        printf "video_memory_path_segment.%s: %d\n", memory_path_segment, memory_path_segment_counts[memory_path_segment]
+      }
+      printf "video_allocation_report_count_max: %d\n", max_allocation_report_count
+      if (last_allocation_pools != "") {
+        printf "video_allocation_pools_latest: %s\n", last_allocation_pools
+      }
+      if (last_allocation_allocators != "") {
+        printf "video_allocation_allocators_latest: %s\n", last_allocation_allocators
+      }
+      for (allocation_pool in allocation_pool_counts) {
+        printf "video_allocation_pool.%s: %d\n", allocation_pool, allocation_pool_counts[allocation_pool]
+      }
+      for (allocation_allocator in allocation_allocator_counts) {
+        printf "video_allocation_allocator.%s: %d\n", allocation_allocator, allocation_allocator_counts[allocation_allocator]
+      }
       printf "video_position_samples: %d\n", position_samples
       printf "video_position_moving_outputs: %d\n", moving_outputs
       printf "video_position_delta_ms_max: %d\n", max_position_delta
@@ -2046,7 +2104,7 @@ write_video_source_codec_report() {
     if [[ "$probed" -eq 0 ]]; then
       printf 'source.%d.ffprobe: no-video-stream\n' "$source_index" >> "$report"
     fi
-  done < <(awk -F, 'NR > 1 && $46 != "" && !seen[$46]++ { print $46 }' "$video_runtime_csv")
+  done < <(awk -F, 'NR > 1 && $52 != "" && !seen[$52]++ { print $52 }' "$video_runtime_csv")
 
   if [[ "$source_index" -eq 0 ]]; then
     printf 'source.count: 0\n' >> "$report"
@@ -2828,10 +2886,10 @@ validate_video_runtime_expectations() {
     expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "moving video output count"
   fi
   if [[ "$expect_frame_limiter_enabled" -eq 1 ]]; then
-    expect_video_runtime_field 19 "true" "frame limiter enabled"
+    expect_video_runtime_field 25 "true" "frame limiter enabled"
   fi
   if [[ -n "$expect_frame_limiter_max_fps" ]]; then
-    expect_video_runtime_field 20 "$expect_frame_limiter_max_fps" "frame limiter max_fps"
+    expect_video_runtime_field 26 "$expect_frame_limiter_max_fps" "frame limiter max_fps"
   fi
   if [[ "$expect_video_qos" -eq 1 ]]; then
     expect_video_runtime_summary_minimum "video_qos_messages_max" 1 "QoS message max count"
@@ -3156,7 +3214,7 @@ EOF
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
 printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,render_sync_package_cache_entries,render_sync_package_cache_max_entries,render_sync_package_cache_hits,render_sync_package_cache_misses,render_sync_package_cache_evictions,render_sync_archive_cache_entries,render_sync_archive_cache_max_entries,render_sync_archive_cache_reuses,render_sync_archive_cache_extractions,render_sync_archive_cache_evictions,render_sync_archive_cache_evictions_latest,render_sync_archive_cache_eviction_errors,render_sync_archive_cache_eviction_errors_latest,render_sync_planned_static_image_resources,render_sync_planned_video_poster_resources,render_sync_planned_slideshow_image_resources,render_sync_planned_image_resource_references,render_sync_planned_unique_image_resources,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps,renderer_output_windows,renderer_static_surfaces,renderer_slideshow_surfaces,renderer_video_surfaces,renderer_video_shared_runtimes,renderer_video_pipelines,renderer_video_qos_messages,renderer_video_qos_dropped_max,renderer_video_gtk_frame_clock_ticks,renderer_video_gtk_frame_clock_interval_us_max,renderer_video_gtk_frame_clock_fps_x1000_max,renderer_video_gtk_frame_timings_complete,renderer_video_gtk_frame_timings_presentation_interval_us_max,renderer_video_gtk_frame_timings_presentation_time_us_max,renderer_video_gtk_frame_clock_before_paint_ticks,renderer_video_gtk_frame_clock_update_ticks,renderer_video_gtk_frame_clock_layout_ticks,renderer_video_gtk_frame_clock_paint_ticks,renderer_video_gtk_frame_clock_after_paint_ticks,render_sync_planned_static_image_resource_bytes,render_sync_planned_video_poster_resource_bytes,render_sync_planned_slideshow_image_resource_bytes,render_sync_planned_image_resource_reference_bytes,render_sync_planned_unique_image_resource_bytes,render_sync_package_cache_retained_resource_references,render_sync_package_cache_retained_unique_resources,render_sync_package_cache_retained_resource_bytes,render_sync_package_cache_retained_unique_resource_bytes,renderer_static_surface_resource_references,renderer_static_surface_resource_bytes,renderer_slideshow_resource_references,renderer_slideshow_resource_bytes,renderer_static_surface_unique_resources,renderer_static_surface_unique_resource_bytes,renderer_slideshow_unique_resources,renderer_slideshow_unique_resource_bytes,render_sync_static_image_cache_entries,render_sync_static_image_cache_max_entries,render_sync_static_image_cache_generations,render_sync_static_image_cache_reuses,render_sync_static_image_cache_generation_errors,render_sync_static_image_cache_evictions,render_sync_static_image_cache_eviction_errors,render_sync_planned_video_source_references,render_sync_planned_unique_video_sources,render_sync_planned_duplicate_video_source_references,render_sync_planned_max_video_source_outputs,render_sync_planned_video_source_reference_bytes,render_sync_planned_unique_video_source_bytes,renderer_video_pipeline_source_references,renderer_video_pipeline_source_reference_bytes,renderer_video_pipeline_unique_sources,renderer_video_pipeline_unique_source_bytes,render_sync_package_cache_max_retained_unique_resource_bytes,render_sync_static_image_cache_bytes,render_sync_static_image_cache_max_bytes,render_sync_package_cache_retained_preview_resource_references,render_sync_package_cache_retained_unique_preview_resources,render_sync_package_cache_retained_preview_resource_bytes,render_sync_package_cache_retained_unique_preview_resource_bytes\n' > "$telemetry_path"
-printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks\n' > "$video_runtime_path"
+printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks\n' > "$video_runtime_path"
 
 status_failures=0
 decision_failures=0
