@@ -11,8 +11,8 @@ pub use format::{
     PACKAGE_EXTENSION, WallpaperKind,
 };
 pub use manifest::{
-    FitMode, Manifest, ManifestError, PlaylistConditions, PlaylistItem, PlaylistPowerCondition,
-    PlaylistSelection, RuntimePolicy, Transition, WallpaperEntry,
+    FitMode, Manifest, ManifestError, PlaylistConditions, PlaylistItem, PlaylistLocalTimeCondition,
+    PlaylistPowerCondition, PlaylistSelection, RuntimePolicy, Transition, WallpaperEntry,
 };
 pub use package::{
     ManifestParseError, PackageArchiveError, PackageIdentity, PackageLoadError, WallpaperPackage,

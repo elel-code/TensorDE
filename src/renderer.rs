@@ -387,6 +387,7 @@ fn static_render_sync_plan_inner(
         cache_config.package_cache_max_entries,
         cache_config.package_cache_max_retained_unique_resource_bytes,
     );
+    let playlist_local_minute_of_day = current_playlist_local_minute_of_day();
     for output_name in output_names {
         let desktop_output = desktop.output(&output_name);
         let output_state = state.outputs.get(&output_name).cloned().unwrap_or_default();
@@ -461,6 +462,7 @@ fn static_render_sync_plan_inner(
             desktop,
             output_name: &output_name,
             output: desktop_output,
+            local_minute_of_day: playlist_local_minute_of_day,
         };
         let dynamic_wallpaper =
             effective_dynamic_wallpaper_entry(&package.manifest.entry, &playlist_context);
@@ -834,6 +836,7 @@ struct PlaylistRenderContext<'a> {
     desktop: &'a DesktopSnapshot,
     output_name: &'a str,
     output: Option<&'a DesktopOutput>,
+    local_minute_of_day: u16,
 }
 
 fn select_playlist_item<'a>(
@@ -864,6 +867,14 @@ fn playlist_item_matches(item: &PlaylistItem, context: Option<&PlaylistRenderCon
             return false;
         };
         if !playlist_power_matches(power, context.desktop.power) {
+            return false;
+        }
+    }
+    if let Some(local_time) = &conditions.local_time {
+        let Some(context) = context else {
+            return false;
+        };
+        if !local_time.contains_minute_of_day(context.local_minute_of_day) {
             return false;
         }
     }
@@ -917,6 +928,23 @@ fn playlist_power_matches(condition: PlaylistPowerCondition, power: PowerState) 
             | (PlaylistPowerCondition::Ac, PowerState::Ac)
             | (PlaylistPowerCondition::Battery, PowerState::Battery)
     )
+}
+
+fn current_playlist_local_minute_of_day() -> u16 {
+    playlist_local_time_override().unwrap_or_else(|| zoned_minute_of_day(jiff::Zoned::now()))
+}
+
+fn playlist_local_time_override() -> Option<u16> {
+    std::env::var("GILDER_PLAYLIST_LOCAL_TIME")
+        .ok()
+        .as_deref()
+        .and_then(crate::core::manifest::parse_playlist_local_time_minute)
+}
+
+fn zoned_minute_of_day(now: jiff::Zoned) -> u16 {
+    let hour = u16::try_from(now.hour()).unwrap_or(0);
+    let minute = u16::try_from(now.minute()).unwrap_or(0);
+    hour * 60 + minute
 }
 
 fn effective_dynamic_wallpaper_entry(
@@ -3007,6 +3035,70 @@ mod tests {
         assert!(ac_sync.plans.is_empty());
         assert_eq!(ac_sync.video_plans.len(), 1);
         assert!(ac_sync.video_plans[0].source.ends_with("assets/loop.webm"));
+    }
+
+    #[test]
+    fn playlist_selects_wallpaper_from_local_time_condition() {
+        let entry: WallpaperEntry = serde_json::from_value(json!({
+            "type": "playlist",
+            "items": [
+                {
+                    "id": "day",
+                    "conditions": {
+                        "local_time": {
+                            "start": "08:00",
+                            "end": "18:00"
+                        }
+                    },
+                    "entry": {
+                        "type": "static-image",
+                        "source": "assets/day.svg"
+                    }
+                },
+                {
+                    "id": "night",
+                    "conditions": {
+                        "local_time": {
+                            "start": "18:00",
+                            "end": "08:00"
+                        }
+                    },
+                    "entry": {
+                        "type": "static-image",
+                        "source": "assets/night.svg"
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+        let WallpaperEntry::Playlist { items, .. } = &entry else {
+            panic!("expected playlist entry");
+        };
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+        let output = desktop.output("eDP-1");
+
+        let day_context = PlaylistRenderContext {
+            desktop: &desktop,
+            output_name: "eDP-1",
+            output,
+            local_minute_of_day: 10 * 60 + 30,
+        };
+        assert_eq!(
+            select_playlist_item(items, Some(&day_context)).map(|item| item.id.as_str()),
+            Some("day")
+        );
+
+        let night_context = PlaylistRenderContext {
+            local_minute_of_day: 22 * 60 + 30,
+            ..day_context
+        };
+        assert_eq!(
+            select_playlist_item(items, Some(&night_context)).map(|item| item.id.as_str()),
+            Some("night")
+        );
     }
 
     #[test]

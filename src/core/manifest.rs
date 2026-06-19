@@ -287,6 +287,8 @@ pub struct PlaylistConditions {
     #[serde(default)]
     pub power: Option<PlaylistPowerCondition>,
     #[serde(default)]
+    pub local_time: Option<PlaylistLocalTimeCondition>,
+    #[serde(default)]
     pub focused: Option<bool>,
     #[serde(default)]
     pub visible: Option<bool>,
@@ -305,8 +307,65 @@ impl PlaylistConditions {
                 "playlist item {item_id:?} output condition must not contain empty names"
             )));
         }
+        if let Some(local_time) = &self.local_time {
+            local_time.validate(item_id)?;
+        }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaylistLocalTimeCondition {
+    pub start: String,
+    pub end: String,
+}
+
+impl PlaylistLocalTimeCondition {
+    fn validate(&self, item_id: &str) -> Result<(), ManifestError> {
+        let Some(start) = parse_playlist_local_time_minute(&self.start) else {
+            return Err(ManifestError::InvalidEntry(format!(
+                "playlist item {item_id:?} local_time.start must use HH:MM"
+            )));
+        };
+        let Some(end) = parse_playlist_local_time_minute(&self.end) else {
+            return Err(ManifestError::InvalidEntry(format!(
+                "playlist item {item_id:?} local_time.end must use HH:MM"
+            )));
+        };
+        if start == end {
+            return Err(ManifestError::InvalidEntry(format!(
+                "playlist item {item_id:?} local_time start and end must differ"
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn contains_minute_of_day(&self, minute: u16) -> bool {
+        let Some(start) = parse_playlist_local_time_minute(&self.start) else {
+            return false;
+        };
+        let Some(end) = parse_playlist_local_time_minute(&self.end) else {
+            return false;
+        };
+        if start < end {
+            start <= minute && minute < end
+        } else {
+            minute >= start || minute < end
+        }
+    }
+}
+
+pub(crate) fn parse_playlist_local_time_minute(value: &str) -> Option<u16> {
+    let (hour, minute) = value.split_once(':')?;
+    if hour.len() != 2 || minute.len() != 2 {
+        return None;
+    }
+    let hour = hour.parse::<u16>().ok()?;
+    let minute = minute.parse::<u16>().ok()?;
+    if hour >= 24 || minute >= 60 {
+        return None;
+    }
+    Some(hour * 60 + minute)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -743,6 +802,85 @@ mod tests {
 
         assert_eq!(manifest.kind, WallpaperKind::Playlist);
         assert_eq!(manifest.referenced_paths().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn parses_and_validates_playlist_local_time_condition() {
+        let json = r#"
+        {
+          "format": "gilder.wallpaper",
+          "format_version": 1,
+          "id": "org.example.playlist-time",
+          "version": "1.0.0",
+          "title": "Playlist Time",
+          "kind": "playlist",
+          "entry": {
+            "type": "playlist",
+            "items": [
+              {
+                "id": "day",
+                "conditions": {
+                  "local_time": {
+                    "start": "08:30",
+                    "end": "18:00"
+                  }
+                },
+                "entry": {
+                  "type": "static-image",
+                  "source": "assets/day.png"
+                }
+              }
+            ]
+          }
+        }
+        "#;
+
+        let manifest: Manifest = serde_json::from_str(json).unwrap();
+        manifest.validate().unwrap();
+        let WallpaperEntry::Playlist { items, .. } = &manifest.entry else {
+            panic!("expected playlist entry");
+        };
+        let local_time = items[0].conditions.local_time.as_ref().unwrap();
+        assert!(local_time.contains_minute_of_day(9 * 60));
+        assert!(!local_time.contains_minute_of_day(18 * 60));
+    }
+
+    #[test]
+    fn rejects_invalid_playlist_local_time_condition() {
+        let json = r#"
+        {
+          "format": "gilder.wallpaper",
+          "format_version": 1,
+          "id": "org.example.bad-playlist-time",
+          "version": "1.0.0",
+          "title": "Bad Playlist Time",
+          "kind": "playlist",
+          "entry": {
+            "type": "playlist",
+            "items": [
+              {
+                "id": "bad",
+                "conditions": {
+                  "local_time": {
+                    "start": "24:00",
+                    "end": "18:00"
+                  }
+                },
+                "entry": {
+                  "type": "static-image",
+                  "source": "assets/day.png"
+                }
+              }
+            ]
+          }
+        }
+        "#;
+
+        let manifest: Manifest = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            manifest.validate(),
+            Err(ManifestError::InvalidEntry(_))
+        ));
     }
 
     #[test]
