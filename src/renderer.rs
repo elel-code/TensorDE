@@ -91,6 +91,11 @@ pub struct SceneLiteRenderLayer {
     pub kind: SceneLiteLayerKind,
     pub source: Option<PathBuf>,
     pub color: Option<String>,
+    pub stroke_color: Option<String>,
+    pub stroke_width: Option<f64>,
+    pub corner_radius: Option<f64>,
+    pub width: Option<f64>,
+    pub height: Option<f64>,
     pub fit: FitMode,
     pub opacity: f64,
     pub transform: SceneLiteTransform,
@@ -1230,6 +1235,11 @@ fn scene_lite_wallpaper_plan(
                 kind: layer.kind,
                 source: layer.source.map(|source| source.join_to(&package.root)),
                 color: layer.color,
+                stroke_color: layer.stroke_color,
+                stroke_width: layer.stroke_width,
+                corner_radius: layer.corner_radius,
+                width: layer.width,
+                height: layer.height,
                 fit: layer.fit,
                 opacity: layer.opacity,
                 transform: layer.transform,
@@ -1518,6 +1528,13 @@ fn scene_lite_layer_is_snapshot_renderable(layer: &SceneLiteRenderLayer) -> bool
                     .as_deref()
                     .is_some_and(|color| !color.is_empty())
         }
+        SceneLiteLayerKind::Rectangle | SceneLiteLayerKind::Ellipse => {
+            layer.opacity > 0.0
+                && layer
+                    .color
+                    .as_deref()
+                    .is_some_and(|color| !color.is_empty())
+        }
         SceneLiteLayerKind::Group => false,
     }
 }
@@ -1658,11 +1675,61 @@ fn scene_lite_snapshot_svg(layers: &[SceneLiteRenderLayer], size: RenderTargetSi
                     color = xml_attr(color),
                 ));
             }
+            SceneLiteLayerKind::Rectangle => {
+                let Some(color) = &layer.color else {
+                    continue;
+                };
+                let width = layer.width.unwrap_or(f64::from(size.width));
+                let height = layer.height.unwrap_or(f64::from(size.height));
+                svg.push_str(&format!(
+                    r#"<g opacity="{opacity}" transform="{transform}"><rect x="0" y="0" width="{width}" height="{height}" rx="{radius}" ry="{radius}" fill="{color}"{stroke}/></g>"#,
+                    opacity = svg_number(layer.opacity),
+                    transform = xml_attr(&scene_lite_svg_transform(layer.transform, size)),
+                    width = svg_number(width),
+                    height = svg_number(height),
+                    radius = svg_number(layer.corner_radius.unwrap_or(0.0)),
+                    color = xml_attr(color),
+                    stroke = scene_lite_svg_stroke(layer),
+                ));
+            }
+            SceneLiteLayerKind::Ellipse => {
+                let Some(color) = &layer.color else {
+                    continue;
+                };
+                let width = layer.width.unwrap_or(f64::from(size.width));
+                let height = layer.height.unwrap_or(f64::from(size.height));
+                svg.push_str(&format!(
+                    r#"<g opacity="{opacity}" transform="{transform}"><ellipse cx="{cx}" cy="{cy}" rx="{rx}" ry="{ry}" fill="{color}"{stroke}/></g>"#,
+                    opacity = svg_number(layer.opacity),
+                    transform = xml_attr(&scene_lite_svg_transform(layer.transform, size)),
+                    cx = svg_number(width / 2.0),
+                    cy = svg_number(height / 2.0),
+                    rx = svg_number(width / 2.0),
+                    ry = svg_number(height / 2.0),
+                    color = xml_attr(color),
+                    stroke = scene_lite_svg_stroke(layer),
+                ));
+            }
             SceneLiteLayerKind::Group => {}
         }
     }
     svg.push_str("</svg>");
     svg
+}
+
+fn scene_lite_svg_stroke(layer: &SceneLiteRenderLayer) -> String {
+    let Some(color) = layer.stroke_color.as_deref() else {
+        return String::new();
+    };
+    let width = layer.stroke_width.unwrap_or(1.0);
+    if color.is_empty() || !width.is_finite() || width <= 0.0 {
+        return String::new();
+    }
+    format!(
+        r#" stroke="{}" stroke-width="{}""#,
+        xml_attr(color),
+        svg_number(width)
+    )
 }
 
 fn scene_lite_svg_transform(transform: SceneLiteTransform, size: RenderTargetSize) -> String {
@@ -4114,6 +4181,40 @@ exit 0
     }
 
     #[test]
+    fn scene_lite_shape_layers_build_snapshot() {
+        let test_dir = TestDir::new("gilder-scene-lite-shape-plan");
+        let package_dir = test_dir.path.join("scene-shapes.gwpdir");
+        write_minimal_scene_lite_shape_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.scene_lite_plans.len(), 1);
+        let plan = &sync.scene_lite_plans[0];
+        assert_eq!(plan.layers.len(), 2);
+        assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Rectangle);
+        assert_eq!(plan.layers[0].stroke_color.as_deref(), Some("#ffffff"));
+        assert_eq!(plan.layers[1].kind, SceneLiteLayerKind::Ellipse);
+        let display_source = scene_lite_display_source(plan);
+        let snapshot = fs::read_to_string(display_source).unwrap();
+        assert!(snapshot.contains("<rect"));
+        assert!(snapshot.contains(r##"rx="16""##));
+        assert!(snapshot.contains(r##"stroke="#ffffff""##));
+        assert!(snapshot.contains("<ellipse"));
+        assert!(snapshot.contains(r##"fill="#80ffaa""##));
+        assert_eq!(sync.cache.scene_lite_snapshot_cache_generations, 1);
+    }
+
+    #[test]
     fn scene_lite_property_binding_applies_effective_output_property() {
         let test_dir = TestDir::new("gilder-scene-lite-property-binding");
         let package_dir = test_dir.path.join("scene-property.gwpdir");
@@ -5292,6 +5393,57 @@ exit 0
             "id": "org.example.scene-color",
             "version": "1.0.0",
             "title": "Scene Color",
+            "kind": "scene-lite",
+            "entry": {
+                "type": "scene-lite",
+                "source": "assets/scene-lite.json",
+                "max_fps": 60
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_minimal_scene_lite_shape_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(
+            path.join("assets/scene-lite.json"),
+            br##"{
+              "size": { "width": 1280, "height": 720 },
+              "layers": [
+                {
+                  "id": "panel",
+                  "type": "rectangle",
+                  "color": "#102030",
+                  "stroke_color": "#ffffff",
+                  "stroke_width": 2,
+                  "corner_radius": 16,
+                  "width": 640,
+                  "height": 360,
+                  "transform": { "x": 100, "y": 80 }
+                },
+                {
+                  "id": "glow",
+                  "type": "ellipse",
+                  "color": "#80ffaa",
+                  "width": 240,
+                  "height": 160,
+                  "opacity": 0.5,
+                  "transform": { "x": 420, "y": 260 }
+                }
+              ]
+            }"##,
+        )
+        .unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.scene-shapes",
+            "version": "1.0.0",
+            "title": "Scene Shapes",
             "kind": "scene-lite",
             "entry": {
                 "type": "scene-lite",

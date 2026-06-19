@@ -91,6 +91,16 @@ pub struct SceneLiteLayer {
     #[serde(default)]
     pub color: Option<String>,
     #[serde(default)]
+    pub stroke_color: Option<String>,
+    #[serde(default)]
+    pub stroke_width: Option<f64>,
+    #[serde(default)]
+    pub corner_radius: Option<f64>,
+    #[serde(default)]
+    pub width: Option<f64>,
+    #[serde(default)]
+    pub height: Option<f64>,
+    #[serde(default)]
     pub fit: FitMode,
     #[serde(default)]
     pub animations: Vec<SceneLiteAnimation>,
@@ -127,6 +137,15 @@ impl SceneLiteLayer {
                         self.id
                     )));
                 }
+            }
+            SceneLiteLayerKind::Rectangle | SceneLiteLayerKind::Ellipse => {
+                if self.color.as_deref().is_none_or(str::is_empty) {
+                    return Err(SceneLiteError::invalid(format!(
+                        "{:?} layer {:?} must define color",
+                        self.kind, self.id
+                    )));
+                }
+                self.validate_shape_fields()?;
             }
             SceneLiteLayerKind::Group => {}
         }
@@ -186,6 +205,11 @@ impl SceneLiteLayer {
                 kind: self.kind,
                 source: self.source.clone(),
                 color: self.color.clone(),
+                stroke_color: self.stroke_color.clone(),
+                stroke_width: self.stroke_width,
+                corner_radius: self.corner_radius,
+                width: self.width,
+                height: self.height,
                 fit: self.fit,
                 opacity,
                 transform,
@@ -195,6 +219,33 @@ impl SceneLiteLayer {
             layer.push_snapshot_layers(time_ms, transform, opacity, output);
         }
     }
+
+    fn validate_shape_fields(&self) -> Result<(), SceneLiteError> {
+        for (field, value) in [
+            ("stroke_width", self.stroke_width),
+            ("corner_radius", self.corner_radius),
+        ] {
+            if let Some(value) = value
+                && (!value.is_finite() || value < 0.0)
+            {
+                return Err(SceneLiteError::invalid(format!(
+                    "layer {:?} {field} must be finite and greater than or equal to 0",
+                    self.id
+                )));
+            }
+        }
+        for (field, value) in [("width", self.width), ("height", self.height)] {
+            if let Some(value) = value
+                && (!value.is_finite() || value <= 0.0)
+            {
+                return Err(SceneLiteError::invalid(format!(
+                    "layer {:?} {field} must be finite and greater than 0",
+                    self.id
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,6 +253,8 @@ impl SceneLiteLayer {
 pub enum SceneLiteLayerKind {
     Image,
     Color,
+    Rectangle,
+    Ellipse,
     Group,
 }
 
@@ -470,6 +523,11 @@ pub struct SceneLiteSnapshotLayer {
     pub kind: SceneLiteLayerKind,
     pub source: Option<PackagePath>,
     pub color: Option<String>,
+    pub stroke_color: Option<String>,
+    pub stroke_width: Option<f64>,
+    pub corner_radius: Option<f64>,
+    pub width: Option<f64>,
+    pub height: Option<f64>,
     pub fit: FitMode,
     pub opacity: f64,
     pub transform: SceneLiteTransform,
@@ -621,6 +679,50 @@ mod tests {
     }
 
     #[test]
+    fn parses_shape_layers() {
+        let document: SceneLiteDocument = serde_json::from_str(
+            r##"
+            {
+              "layers": [
+                {
+                  "id": "panel",
+                  "type": "rectangle",
+                  "color": "#102030",
+                  "stroke_color": "#ffffff",
+                  "stroke_width": 2,
+                  "corner_radius": 12,
+                  "width": 640,
+                  "height": 360
+                },
+                {
+                  "id": "glow",
+                  "type": "ellipse",
+                  "color": "#80ffaa",
+                  "width": 240,
+                  "height": 160,
+                  "opacity": 0.5
+                }
+              ]
+            }
+            "##,
+        )
+        .unwrap();
+
+        document.validate().unwrap();
+        assert!(document.referenced_paths().is_empty());
+        let snapshot = document.snapshot_at(0);
+
+        assert_eq!(snapshot.layers.len(), 2);
+        assert_eq!(snapshot.layers[0].kind, SceneLiteLayerKind::Rectangle);
+        assert_eq!(snapshot.layers[0].stroke_color.as_deref(), Some("#ffffff"));
+        assert_eq!(snapshot.layers[0].corner_radius, Some(12.0));
+        assert_eq!(snapshot.layers[0].width, Some(640.0));
+        assert_eq!(snapshot.layers[1].kind, SceneLiteLayerKind::Ellipse);
+        assert_eq!(snapshot.layers[1].height, Some(160.0));
+        assert_eq!(snapshot.layers[1].opacity, 0.5);
+    }
+
+    #[test]
     fn rejects_missing_image_source_and_duplicate_ids() {
         let missing_source: SceneLiteDocument =
             serde_json::from_str(r#"{"layers":[{"id":"a","type":"image"}]}"#).unwrap();
@@ -638,5 +740,10 @@ mod tests {
         )
         .unwrap();
         assert!(duplicate_ids.validate().is_err());
+
+        let invalid_shape: SceneLiteDocument =
+            serde_json::from_str(r#"{"layers":[{"id":"panel","type":"rectangle","width":0}]}"#)
+                .unwrap();
+        assert!(invalid_shape.validate().is_err());
     }
 }
