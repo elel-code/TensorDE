@@ -69,6 +69,14 @@ Options:
                      Require sampled completed GDK frame timings
   --expect-renderer-video-pipeline-lifecycle
                      Require active/resumed sampling to keep a video pipeline and paused/hidden/fullscreen sampling to release it
+  --expect-renderer-video-pipeline-source-references-latest-at-most <count>
+                     Require latest renderer video pipeline source references to be at most count
+  --expect-renderer-video-pipeline-source-reference-bytes-latest-at-most <bytes>
+                     Require latest renderer video pipeline source reference bytes to be at most bytes
+  --expect-renderer-video-pipeline-unique-sources-latest-at-most <count>
+                     Require latest renderer video pipeline unique sources to be at most count
+  --expect-renderer-video-pipeline-unique-source-bytes-latest-at-most <bytes>
+                     Require latest renderer video pipeline unique source bytes to be at most bytes
   --expect-renderer-static-surface-resource-references-latest-at-most <count>
                      Require latest renderer static surface resource references to be at most count
   --expect-renderer-static-surface-resource-bytes-latest-at-most <bytes>
@@ -152,6 +160,10 @@ expect_gtk_frame_clock=0
 expect_gtk_frame_clock_phases=()
 expect_gtk_frame_timings=0
 expect_renderer_video_pipeline_lifecycle=0
+expect_renderer_video_pipeline_source_references_latest_at_most=""
+expect_renderer_video_pipeline_source_reference_bytes_latest_at_most=""
+expect_renderer_video_pipeline_unique_sources_latest_at_most=""
+expect_renderer_video_pipeline_unique_source_bytes_latest_at_most=""
 expect_renderer_static_surface_resource_references_latest_at_most=""
 expect_renderer_static_surface_resource_bytes_latest_at_most=""
 expect_renderer_static_surface_unique_resources_latest_at_most=""
@@ -384,6 +396,30 @@ while [[ $# -gt 0 ]]; do
       sample_performance=1
       shift
       ;;
+    --expect-renderer-video-pipeline-source-references-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-pipeline-source-references-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_video_pipeline_source_references_latest_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-renderer-video-pipeline-source-reference-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-pipeline-source-reference-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_video_pipeline_source_reference_bytes_latest_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-renderer-video-pipeline-unique-sources-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-pipeline-unique-sources-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_video_pipeline_unique_sources_latest_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
+    --expect-renderer-video-pipeline-unique-source-bytes-latest-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-renderer-video-pipeline-unique-source-bytes-latest-at-most requires a value" >&2; exit 2; }
+      expect_renderer_video_pipeline_unique_source_bytes_latest_at_most="$2"
+      sample_performance=1
+      shift 2
+      ;;
     --expect-renderer-static-surface-resource-references-latest-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-renderer-static-surface-resource-references-latest-at-most requires a value" >&2; exit 2; }
       expect_renderer_static_surface_resource_references_latest_at_most="$2"
@@ -599,6 +635,10 @@ do
   fi
 done
 for render_sync_resource_expectation in \
+  "$expect_renderer_video_pipeline_source_references_latest_at_most" \
+  "$expect_renderer_video_pipeline_source_reference_bytes_latest_at_most" \
+  "$expect_renderer_video_pipeline_unique_sources_latest_at_most" \
+  "$expect_renderer_video_pipeline_unique_source_bytes_latest_at_most" \
   "$expect_renderer_static_surface_resource_references_latest_at_most" \
   "$expect_renderer_static_surface_resource_bytes_latest_at_most" \
   "$expect_renderer_static_surface_unique_resources_latest_at_most" \
@@ -640,6 +680,7 @@ status_paused="$work_dir/status-paused.json"
 status_resumed="$work_dir/status-resumed.json"
 wallpaper_dir="$work_dir/wallpaper.gwpdir"
 source_dir="$work_dir/source"
+video_source_path="$source_dir/loop.mp4"
 output_state_override_file="$work_dir/output-state.override"
 resume_latency_csv="$work_dir/fullscreen-resume-latency.csv"
 resume_latency_summary="$work_dir/fullscreen-resume-latency.txt"
@@ -872,6 +913,10 @@ expect_gtk_frame_clock: ${expect_gtk_frame_clock}
 expect_gtk_frame_clock_phases: ${expect_gtk_frame_clock_phases[*]:-none}
 expect_gtk_frame_timings: ${expect_gtk_frame_timings}
 expect_renderer_video_pipeline_lifecycle: ${expect_renderer_video_pipeline_lifecycle}
+expect_renderer_video_pipeline_source_references_latest_at_most: ${expect_renderer_video_pipeline_source_references_latest_at_most:-none}
+expect_renderer_video_pipeline_source_reference_bytes_latest_at_most: ${expect_renderer_video_pipeline_source_reference_bytes_latest_at_most:-none}
+expect_renderer_video_pipeline_unique_sources_latest_at_most: ${expect_renderer_video_pipeline_unique_sources_latest_at_most:-none}
+expect_renderer_video_pipeline_unique_source_bytes_latest_at_most: ${expect_renderer_video_pipeline_unique_source_bytes_latest_at_most:-none}
 expect_renderer_static_surface_resource_references_latest_at_most: ${expect_renderer_static_surface_resource_references_latest_at_most:-none}
 expect_renderer_static_surface_resource_bytes_latest_at_most: ${expect_renderer_static_surface_resource_bytes_latest_at_most:-none}
 expect_renderer_static_surface_unique_resources_latest_at_most: ${expect_renderer_static_surface_unique_resources_latest_at_most:-none}
@@ -1174,6 +1219,10 @@ expect_retained_pss_delta_kib_at_most: ${expect_retained_pss_delta_kib_at_most:-
 expect_peak_over_first_private_kib_at_most: ${expect_peak_over_first_private_kib_at_most:-none}
 expect_peak_over_first_uss_kib_at_most: ${expect_peak_over_first_uss_kib_at_most:-none}
 expect_peak_over_first_pss_kib_at_most: ${expect_peak_over_first_pss_kib_at_most:-none}
+expect_renderer_video_pipeline_source_references_latest_at_most: ${expect_renderer_video_pipeline_source_references_latest_at_most:-none}
+expect_renderer_video_pipeline_source_reference_bytes_latest_at_most: ${expect_renderer_video_pipeline_source_reference_bytes_latest_at_most:-none}
+expect_renderer_video_pipeline_unique_sources_latest_at_most: ${expect_renderer_video_pipeline_unique_sources_latest_at_most:-none}
+expect_renderer_video_pipeline_unique_source_bytes_latest_at_most: ${expect_renderer_video_pipeline_unique_source_bytes_latest_at_most:-none}
 expect_renderer_static_surface_resource_references_latest_at_most: ${expect_renderer_static_surface_resource_references_latest_at_most:-none}
 expect_renderer_static_surface_resource_bytes_latest_at_most: ${expect_renderer_static_surface_resource_bytes_latest_at_most:-none}
 expect_renderer_static_surface_unique_resources_latest_at_most: ${expect_renderer_static_surface_unique_resources_latest_at_most:-none}
@@ -1398,6 +1447,43 @@ append_render_sync_resource_expectations() {
   fi
 }
 
+append_renderer_video_source_expectations() {
+  local -n args_ref="$1"
+  local expected_source_references="$2"
+  local expected_unique_sources="$3"
+  local expected_source_reference_bytes="$4"
+  local expected_unique_source_bytes="$5"
+  local effective_source_references
+  local effective_unique_sources
+  local effective_source_reference_bytes
+  local effective_unique_source_bytes
+  effective_source_references="$(minimum_optional_limit \
+    "$expect_renderer_video_pipeline_source_references_latest_at_most" \
+    "$expected_source_references")"
+  effective_unique_sources="$(minimum_optional_limit \
+    "$expect_renderer_video_pipeline_unique_sources_latest_at_most" \
+    "$expected_unique_sources")"
+  effective_source_reference_bytes="$(minimum_optional_limit \
+    "$expect_renderer_video_pipeline_source_reference_bytes_latest_at_most" \
+    "$expected_source_reference_bytes")"
+  effective_unique_source_bytes="$(minimum_optional_limit \
+    "$expect_renderer_video_pipeline_unique_source_bytes_latest_at_most" \
+    "$expected_unique_source_bytes")"
+
+  if [[ -n "$effective_source_references" ]]; then
+    args_ref+=(--expect-renderer-video-pipeline-source-references-latest-at-most "$effective_source_references")
+  fi
+  if [[ -n "$effective_source_reference_bytes" ]]; then
+    args_ref+=(--expect-renderer-video-pipeline-source-reference-bytes-latest-at-most "$effective_source_reference_bytes")
+  fi
+  if [[ -n "$effective_unique_sources" ]]; then
+    args_ref+=(--expect-renderer-video-pipeline-unique-sources-latest-at-most "$effective_unique_sources")
+  fi
+  if [[ -n "$effective_unique_source_bytes" ]]; then
+    args_ref+=(--expect-renderer-video-pipeline-unique-source-bytes-latest-at-most "$effective_unique_source_bytes")
+  fi
+}
+
 capture_performance() {
   local label="$1"
   local output_dir="$2"
@@ -1411,6 +1497,10 @@ capture_performance() {
   local expected_pipeline_latest_at_most="${10:-}"
   local expected_planned_image_references="${11:-}"
   local expected_planned_unique_resources="${12:-}"
+  local expected_video_source_references="${13:-}"
+  local expected_video_unique_sources="${14:-}"
+  local expected_video_source_reference_bytes="${15:-}"
+  local expected_video_unique_source_bytes="${16:-}"
   local -a sample_args
   sample_args=(
     --pid "$daemon_pid"
@@ -1430,6 +1520,12 @@ capture_performance() {
     sample_args \
     "$expected_planned_image_references" \
     "$expected_planned_unique_resources"
+  append_renderer_video_source_expectations \
+    sample_args \
+    "$expected_video_source_references" \
+    "$expected_video_unique_sources" \
+    "$expected_video_source_reference_bytes" \
+    "$expected_video_unique_source_bytes"
   if [[ -n "$expected_mode" ]]; then
     sample_args+=(--expect-mode "$expected_mode")
   fi
@@ -1671,6 +1767,7 @@ check_env_var WAYLAND_DISPLAY || true
 check_env_var XDG_RUNTIME_DIR || true
 require_command ffmpeg || true
 require_command gst-inspect-1.0 || true
+require_command wc || true
 if command -v gst-inspect-1.0 >/dev/null 2>&1; then
   check_gst_element "playback" playbin || true
   check_gst_element "paintable-sink" gtk4paintablesink || true
@@ -1717,7 +1814,9 @@ fi
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i testsrc2=size=128x72:rate=12:duration=2 \
   -an -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p \
-  "$source_dir/loop.mp4"
+  "$video_source_path"
+video_source_bytes="$(wc -c < "$video_source_path")"
+video_source_bytes="${video_source_bytes//[[:space:]]/}"
 cat > "$source_dir/project.json" <<'EOF'
 {
   "type": "video",
@@ -1928,6 +2027,10 @@ if [[ "$sample_performance" -eq 1 ]]; then
   expected_pipeline_latest_at_most=""
   expected_planned_image_references=""
   expected_planned_unique_resources=""
+  expected_video_source_references=""
+  expected_video_unique_sources=""
+  expected_video_source_reference_bytes=""
+  expected_video_unique_source_bytes=""
   if [[ -n "$expected_reason" ]]; then
     if expects_active_video_plan; then
       expected_action="render"
@@ -1941,10 +2044,18 @@ if [[ "$sample_performance" -eq 1 ]]; then
       expected_pipeline_latest_at_least="${#target_outputs[@]}"
       expected_planned_image_references="${#target_outputs[@]}"
       expected_planned_unique_resources=1
+      expected_video_source_references="${#target_outputs[@]}"
+      expected_video_unique_sources=1
+      expected_video_source_reference_bytes="$(( video_source_bytes * ${#target_outputs[@]} ))"
+      expected_video_unique_source_bytes="$video_source_bytes"
     else
       expected_pipeline_latest_at_most=0
       expected_planned_image_references=0
       expected_planned_unique_resources=0
+      expected_video_source_references=0
+      expected_video_unique_sources=0
+      expected_video_source_reference_bytes=0
+      expected_video_unique_source_bytes=0
     fi
   fi
   if has_video_runtime_expectations; then
@@ -1966,7 +2077,11 @@ if [[ "$sample_performance" -eq 1 ]]; then
     "$expected_pipeline_latest_at_least" \
     "$expected_pipeline_latest_at_most" \
     "$expected_planned_image_references" \
-    "$expected_planned_unique_resources"; then
+    "$expected_planned_unique_resources" \
+    "$expected_video_source_references" \
+    "$expected_video_unique_sources" \
+    "$expected_video_source_reference_bytes" \
+    "$expected_video_unique_source_bytes"; then
     pass "captured ${performance_active_label} performance evidence"
   else
     note "performance sample log:"
@@ -1989,10 +2104,18 @@ if [[ "$sample_paused" -eq 1 ]]; then
   paused_pipeline_latest_at_most=""
   paused_planned_image_references=""
   paused_planned_unique_resources=""
+  paused_video_source_references=""
+  paused_video_unique_sources=""
+  paused_video_source_reference_bytes=""
+  paused_video_unique_source_bytes=""
   if [[ "$expect_renderer_video_pipeline_lifecycle" -eq 1 ]]; then
     paused_pipeline_latest_at_most=0
     paused_planned_image_references=0
     paused_planned_unique_resources=0
+    paused_video_source_references=0
+    paused_video_unique_sources=0
+    paused_video_source_reference_bytes=0
+    paused_video_unique_source_bytes=0
   fi
   if capture_performance \
     wayland-video-paused \
@@ -2006,7 +2129,11 @@ if [[ "$sample_paused" -eq 1 ]]; then
     "" \
     "$paused_pipeline_latest_at_most" \
     "$paused_planned_image_references" \
-    "$paused_planned_unique_resources"; then
+    "$paused_planned_unique_resources" \
+    "$paused_video_source_references" \
+    "$paused_video_unique_sources" \
+    "$paused_video_source_reference_bytes" \
+    "$paused_video_unique_source_bytes"; then
     pass "captured paused video performance evidence"
   else
     note "paused performance sample log:"
