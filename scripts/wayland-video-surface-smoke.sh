@@ -1217,15 +1217,19 @@ write_validation_report() {
   local active_summary
   local active_telemetry_summary
   local active_video_runtime_summary
+  local active_video_hardware_report
   local paused_summary
   local paused_telemetry_summary
   local paused_video_runtime_summary
+  local paused_video_hardware_report
   active_summary="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "summary.txt")"
   active_telemetry_summary="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "telemetry-summary.txt")"
   active_video_runtime_summary="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "video-runtime-summary.txt")"
+  active_video_hardware_report="$(performance_artifact_text "$sample_performance" "$performance_active_dir" "video-hardware-report.txt")"
   paused_summary="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "summary.txt")"
   paused_telemetry_summary="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "telemetry-summary.txt")"
   paused_video_runtime_summary="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "video-runtime-summary.txt")"
+  paused_video_hardware_report="$(performance_artifact_text "$sample_paused" "$performance_paused_dir" "video-hardware-report.txt")"
 
   cat > "$validation_report_path" <<EOF
 validation: wayland-video-surface-smoke
@@ -1283,9 +1287,11 @@ video_runtime_csv: ${video_runtime_path}
 performance_active_summary: ${active_summary}
 performance_active_telemetry_summary: ${active_telemetry_summary}
 performance_active_video_runtime_summary: ${active_video_runtime_summary}
+performance_active_video_hardware_report: ${active_video_hardware_report}
 performance_paused_summary: ${paused_summary}
 performance_paused_telemetry_summary: ${paused_telemetry_summary}
 performance_paused_video_runtime_summary: ${paused_video_runtime_summary}
+performance_paused_video_hardware_report: ${paused_video_hardware_report}
 fullscreen_resume_latency: $([[ "$measure_fullscreen_resume" -eq 1 ]] && printf '%s' "$resume_latency_summary" || printf 'none')
 metadata: ${metadata_path}
 checks: ${checks_path}

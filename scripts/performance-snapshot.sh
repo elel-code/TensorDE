@@ -1891,6 +1891,146 @@ write_video_runtime_summary() {
   ' "$video_runtime_csv" > "$summary"
 }
 
+summary_value_or_none() {
+  local summary="$1"
+  local key="$2"
+  if [[ ! -f "$summary" ]]; then
+    printf 'none\n'
+    return 0
+  fi
+  awk -v key="$key" -F': ' '$1 == key { print $2; found = 1; exit } END { exit found ? 0 : 1 }' "$summary" \
+    || printf 'none\n'
+}
+
+write_video_source_codec_report() {
+  local video_runtime_csv="$1"
+  local report="$2"
+  local source
+  local source_index=0
+
+  while IFS= read -r source; do
+    source_index=$((source_index + 1))
+    printf 'source.%d.path: %s\n' "$source_index" "$source" >> "$report"
+    if [[ ! -r "$source" ]]; then
+      printf 'source.%d.readable: no\n' "$source_index" >> "$report"
+      continue
+    fi
+    printf 'source.%d.readable: yes\n' "$source_index" >> "$report"
+    if ! command -v ffprobe >/dev/null 2>&1; then
+      printf 'source.%d.ffprobe: unavailable\n' "$source_index" >> "$report"
+      continue
+    fi
+    local probed=0
+    while IFS= read -r line; do
+      [[ -n "$line" && "$line" == *=* ]] || continue
+      local key="${line%%=*}"
+      local value="${line#*=}"
+      printf 'source.%d.%s: %s\n' "$source_index" "$key" "$value" >> "$report"
+      probed=1
+    done < <(
+      ffprobe -v error \
+        -select_streams v:0 \
+        -show_entries stream=codec_name,codec_long_name,profile,width,height,pix_fmt,r_frame_rate,avg_frame_rate \
+        -of default=noprint_wrappers=1 \
+        "$source" 2>/dev/null || true
+    )
+    if [[ "$probed" -eq 0 ]]; then
+      printf 'source.%d.ffprobe: no-video-stream\n' "$source_index" >> "$report"
+    fi
+  done < <(awk -F, 'NR > 1 && $46 != "" && !seen[$46]++ { print $46 }' "$video_runtime_csv")
+
+  if [[ "$source_index" -eq 0 ]]; then
+    printf 'source.count: 0\n' >> "$report"
+  else
+    printf 'source.count: %d\n' "$source_index" >> "$report"
+  fi
+}
+
+read_sysfs_value_or_unknown() {
+  local path="$1"
+  local value
+  if [[ -r "$path" && ! -d "$path" ]]; then
+    read -r value < "$path" || value=""
+    printf '%s\n' "${value:-unknown}"
+  else
+    printf 'unknown\n'
+  fi
+}
+
+write_gpu_driver_report() {
+  local report="$1"
+  local index=0
+  local device_dir
+  local card
+  local driver
+
+  for device_dir in /sys/class/drm/card*/device; do
+    [[ -e "$device_dir" ]] || continue
+    card="$(basename "$(dirname "$device_dir")")"
+    [[ "$card" =~ ^card[0-9]+$ ]] || continue
+    index=$((index + 1))
+    driver="unknown"
+    if [[ -L "$device_dir/driver" ]]; then
+      driver="$(basename "$(readlink "$device_dir/driver")")"
+    fi
+    printf 'gpu.%d.card: %s\n' "$index" "$card" >> "$report"
+    printf 'gpu.%d.vendor: %s\n' "$index" "$(read_sysfs_value_or_unknown "$device_dir/vendor")" >> "$report"
+    printf 'gpu.%d.device: %s\n' "$index" "$(read_sysfs_value_or_unknown "$device_dir/device")" >> "$report"
+    printf 'gpu.%d.subsystem_vendor: %s\n' "$index" "$(read_sysfs_value_or_unknown "$device_dir/subsystem_vendor")" >> "$report"
+    printf 'gpu.%d.subsystem_device: %s\n' "$index" "$(read_sysfs_value_or_unknown "$device_dir/subsystem_device")" >> "$report"
+    printf 'gpu.%d.driver: %s\n' "$index" "$driver" >> "$report"
+  done
+
+  printf 'gpu.count: %d\n' "$index" >> "$report"
+
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    local nvidia_index=0
+    local nvidia_output=""
+    if nvidia_output="$(nvidia-smi --query-gpu=name,driver_version,pci.bus_id --format=csv,noheader 2>/dev/null)"; then
+      while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        nvidia_index=$((nvidia_index + 1))
+        printf 'nvidia_smi.gpu.%d: %s\n' "$nvidia_index" "$line" >> "$report"
+      done <<< "$nvidia_output"
+    fi
+    printf 'nvidia_smi.gpu.count: %d\n' "$nvidia_index" >> "$report"
+  else
+    printf 'nvidia_smi: unavailable\n' >> "$report"
+  fi
+}
+
+write_video_hardware_report() {
+  local process_summary="$1"
+  local video_runtime_summary="$2"
+  local video_runtime_csv="$3"
+  local report="$4"
+
+  {
+    printf 'report: video-hardware\n'
+    printf 'process.avg_cpu_percent: %s\n' "$(summary_value_or_none "$process_summary" avg_cpu_percent)"
+    printf 'process.avg_gpu_busy_percent: %s\n' "$(summary_value_or_none "$process_summary" avg_gpu_busy_percent)"
+    printf 'process.max_gpu_busy_percent: %s\n' "$(summary_value_or_none "$process_summary" max_gpu_busy_percent)"
+    printf 'process.max_rss_kib: %s\n' "$(summary_value_or_none "$process_summary" max_rss_kib)"
+    printf 'process.max_pss_kib: %s\n' "$(summary_value_or_none "$process_summary" max_pss_kib)"
+    printf 'process.max_private_kib: %s\n' "$(summary_value_or_none "$process_summary" max_private_kib)"
+    printf 'process.max_uss_kib: %s\n' "$(summary_value_or_none "$process_summary" max_uss_kib)"
+    printf 'video.decoder_policy_status_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_decoder_policy_status_latest)"
+    printf 'video.actual_decoders_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_actual_decoders_latest)"
+    printf 'video.decoder_classes_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_decoder_classes_latest)"
+    printf 'video.caps_report_count_max: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_caps_report_count_max)"
+    printf 'video.memory_features_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_memory_features_latest)"
+    printf 'video.sink_memory_features_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_sink_memory_features_latest)"
+    printf 'video.zero_copy_evidence_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_zero_copy_evidence_latest)"
+    printf 'video.zero_copy_evidence_notes_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_zero_copy_evidence_notes_latest)"
+    printf 'video.position_delta_ms_max: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_position_delta_ms_max)"
+    printf 'video.qos_messages_max: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_qos_messages_max)"
+    printf 'video.qos_dropped_max: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_qos_dropped_max)"
+  } > "$report"
+
+  write_video_source_codec_report "$video_runtime_csv" "$report"
+  write_gpu_driver_report "$report"
+}
+
 has_expectations() {
   [[ -n "$expect_mode" ||
     -n "$expect_reason" ||
@@ -2674,6 +2814,7 @@ telemetry_path="$work_dir/telemetry.csv"
 telemetry_summary_path="$work_dir/telemetry-summary.txt"
 video_runtime_path="$work_dir/video-runtime.csv"
 video_runtime_summary_path="$work_dir/video-runtime-summary.txt"
+video_hardware_report_path="$work_dir/video-hardware-report.txt"
 
 cat > "$metadata_path" <<EOF
 label: ${label}
@@ -2868,6 +3009,7 @@ write_summary "$csv_path" "$summary_path"
 write_decision_summary "$decisions_path" "$decision_summary_path"
 write_telemetry_summary "$telemetry_path" "$telemetry_summary_path"
 write_video_runtime_summary "$video_runtime_path" "$video_runtime_summary_path"
+write_video_hardware_report "$summary_path" "$video_runtime_summary_path" "$video_runtime_path" "$video_hardware_report_path"
 pass "wrote process samples to $csv_path"
 pass "wrote summary to $summary_path"
 if [[ "$status_enabled" -eq 1 && "$status_failures" -eq 0 ]]; then
@@ -2892,6 +3034,7 @@ fi
 if [[ "$status_enabled" -eq 1 && "$video_runtime_failures" -eq 0 ]]; then
   pass "wrote video runtime samples to $video_runtime_path"
   pass "wrote video runtime summary to $video_runtime_summary_path"
+  pass "wrote video hardware report to $video_hardware_report_path"
 elif [[ "$status_enabled" -eq 1 ]]; then
   note "video runtime extraction had ${video_runtime_failures} failed samples"
 fi
@@ -2914,6 +3057,7 @@ note "telemetry: $telemetry_path"
 note "telemetry summary: $telemetry_summary_path"
 note "video runtime: $video_runtime_path"
 note "video runtime summary: $video_runtime_summary_path"
+note "video hardware report: $video_hardware_report_path"
 note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
 if [[ "$failures" -gt 0 ]]; then
   exit 1
