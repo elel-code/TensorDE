@@ -3795,7 +3795,7 @@ exit 0
     fn write_minimal_scene_lite_gwpdir(path: &Path) {
         fs::create_dir_all(path.join("assets")).unwrap();
         fs::create_dir_all(path.join("previews")).unwrap();
-        fs::write(path.join("assets/scene.json"), b"{\"layers\":[]}").unwrap();
+        fs::write(path.join("assets/scene-lite.json"), b"{\"layers\":[]}").unwrap();
         fs::write(path.join("previews/poster.svg"), b"<svg/>").unwrap();
         let manifest = json!({
             "format": crate::core::FORMAT_NAME,
@@ -3809,7 +3809,7 @@ exit 0
             },
             "entry": {
                 "type": "scene-lite",
-                "source": "assets/scene.json",
+                "source": "assets/scene-lite.json",
                 "fallback": "previews/poster.svg",
                 "max_fps": 60
             }

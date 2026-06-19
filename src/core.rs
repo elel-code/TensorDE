@@ -4,6 +4,7 @@ pub mod format;
 pub mod manifest;
 pub mod package;
 pub mod path;
+pub mod scene_lite;
 
 pub use format::{
     DIRECTORY_EXTENSION, FORMAT_NAME, FORMAT_VERSION, MANIFEST_FILE, MANIFEST_TOML_FILE,
@@ -15,3 +16,8 @@ pub use package::{
     load_gwp, load_gwpdir, pack_gwp, unpack_gwp,
 };
 pub use path::{PackagePath, PackagePathError};
+pub use scene_lite::{
+    SceneLiteAnimatedProperty, SceneLiteAnimation, SceneLiteCurve, SceneLiteDocument,
+    SceneLiteError, SceneLiteKeyframe, SceneLiteLayer, SceneLiteLayerKind,
+    SceneLitePropertyBinding, SceneLiteSnapshot, SceneLiteSnapshotLayer, SceneLiteTransform,
+};

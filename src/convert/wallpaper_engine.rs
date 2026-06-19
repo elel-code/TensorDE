@@ -297,11 +297,11 @@ fn convert_scene_lite(
     let source = project.entry_file.as_ref().ok_or_else(|| {
         ConversionError::MissingEntry("scene project does not define an entry file".to_owned())
     })?;
-    let copied = copy_project_file(
+    let original_scene = copy_project_file(
         &project.root,
         source,
-        output_dir.join("assets"),
-        "scene",
+        output_dir.join("metadata"),
+        "source-scene",
         report,
     )?;
     let preview = copy_preview_or_generate(
@@ -315,12 +315,15 @@ fn convert_scene_lite(
         .and_then(|preview| preview.poster.clone())
         .map(Value::String)
         .unwrap_or(Value::Null);
+    let scene_lite_source =
+        write_scene_lite_fallback_document(output_dir, fallback.as_str(), report)?;
 
     report.converted_features.push("scene-lite".to_owned());
     record_scene_lite_runtime_gaps(report);
-    report.warnings.push(
-        "Converted Scene project to scene-lite metadata and fallback only; native scene layers, timelines, scripts, shaders, particles, and complex effects were not executed or translated.".to_owned(),
-    );
+    report.warnings.push(format!(
+        "Converted Scene project to a scene-lite fallback graph; original scene metadata was preserved at {}. Native SceneScript, shaders, particles, parallax, audio response, and complex effects were not executed or translated.",
+        original_scene.package_path
+    ));
 
     Ok(base_manifest(
         project,
@@ -329,11 +332,44 @@ fn convert_scene_lite(
         report,
         json!({
             "type": "scene-lite",
-            "source": copied.package_path,
+            "source": scene_lite_source,
             "fallback": fallback,
             "max_fps": 60
         }),
     ))
+}
+
+fn write_scene_lite_fallback_document(
+    output_dir: &Path,
+    fallback: Option<&str>,
+    report: &mut ConversionReport,
+) -> Result<String, ConversionError> {
+    let scene_lite_path = output_dir.join("assets/scene-lite.json");
+    if let Some(parent) = scene_lite_path.parent() {
+        fs::create_dir_all(parent).map_err(ConversionError::CreateDir)?;
+    }
+    let layers = fallback
+        .map(|source| {
+            vec![json!({
+                "id": "fallback",
+                "type": "image",
+                "source": source,
+                "fit": "cover"
+            })]
+        })
+        .unwrap_or_default();
+    let document = json!({
+        "version": 1,
+        "layers": layers
+    });
+    fs::write(
+        &scene_lite_path,
+        serde_json::to_vec_pretty(&document).map_err(ConversionError::Serialize)?,
+    )
+    .map_err(ConversionError::WriteFile)?;
+    let package_path = "assets/scene-lite.json".to_owned();
+    report.generated_assets.push(package_path.clone());
+    Ok(package_path)
 }
 
 fn base_manifest(
@@ -2460,8 +2496,16 @@ fetch("https://example.invalid/data.json");
                 .unwrap();
         assert_eq!(manifest["kind"], "scene-lite");
         assert_eq!(manifest["entry"]["type"], "scene-lite");
-        assert_eq!(manifest["entry"]["source"], "assets/scene.json");
+        assert_eq!(manifest["entry"]["source"], "assets/scene-lite.json");
         assert_eq!(manifest["entry"]["fallback"], "previews/poster.svg");
+        assert!(output.path().join("metadata/source-scene.json").exists());
+        let scene_lite: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene-lite.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene_lite["version"], 1);
+        assert_eq!(scene_lite["layers"][0]["type"], "image");
+        assert_eq!(scene_lite["layers"][0]["source"], "previews/poster.svg");
         assert!(output.path().join("previews/poster.svg").exists());
         assert!(output.path().join("previews/thumbnail.svg").exists());
         let report: ConversionReport = serde_json::from_str(
