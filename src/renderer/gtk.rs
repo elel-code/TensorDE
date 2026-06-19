@@ -662,9 +662,19 @@ impl RenderedOutput {
     fn release_static_surface(&mut self) {
         match self.static_surface.take() {
             Some(RenderedStaticSurface::Picture { widget, .. }) => {
+                clear_picture_media_refs(&widget);
                 self.surface.remove(&widget);
             }
-            Some(RenderedStaticSurface::Crossfade { stack, .. }) => {
+            Some(RenderedStaticSurface::Crossfade {
+                stack,
+                current,
+                previous,
+                ..
+            }) => {
+                clear_picture_media_refs(&current);
+                if let Some(previous_picture) = previous {
+                    clear_picture_media_refs(&previous_picture);
+                }
                 self.surface.remove(&stack);
             }
             Some(RenderedStaticSurface::CssImage { .. } | RenderedStaticSurface::Color) | None => {}
@@ -815,6 +825,7 @@ impl RenderedOutput {
     #[cfg(feature = "video-renderer")]
     fn remove_video(&mut self, runtimes: &mut GtkVideoRuntimePool) {
         if let Some(video) = self.video.take() {
+            video.release_picture_media_refs();
             self.surface.remove(video.widget());
             runtimes.detach_output(&video.key, &video.output_name);
         }
@@ -1016,11 +1027,13 @@ fn apply_slideshow_crossfade_wallpaper(
                 current.set_content_fit(content_fit_for_fit(plan.fit));
                 *fit = plan.fit;
                 if let Some(previous_picture) = previous.take() {
+                    clear_picture_media_refs(&previous_picture);
                     stack.remove(&previous_picture);
                 }
                 return None;
             }
             if let Some(previous_picture) = previous.take() {
+                clear_picture_media_refs(&previous_picture);
                 stack.remove(&previous_picture);
             }
             let next = wallpaper_picture(&plan.source, plan.fit);
@@ -1033,10 +1046,16 @@ fn apply_slideshow_crossfade_wallpaper(
             stack.set_transition_duration(SLIDESHOW_CROSSFADE_DURATION.as_millis() as u32);
             stack.set_visible_child(&next);
             let old_current = std::mem::replace(current, next);
-            *previous = Some(old_current);
             *source = plan.source.clone();
             *fit = plan.fit;
-            animate_transition.then(|| Instant::now() + SLIDESHOW_CROSSFADE_DURATION)
+            if animate_transition {
+                *previous = Some(old_current);
+                Some(Instant::now() + SLIDESHOW_CROSSFADE_DURATION)
+            } else {
+                clear_picture_media_refs(&old_current);
+                stack.remove(&old_current);
+                None
+            }
         }
         _ => {
             output.release_static_surface();
@@ -1081,8 +1100,14 @@ fn clear_crossfade_previous(surface: &mut Option<RenderedStaticSurface>) -> bool
     let Some(previous_picture) = previous.take() else {
         return false;
     };
+    clear_picture_media_refs(&previous_picture);
     stack.remove(&previous_picture);
     true
+}
+
+fn clear_picture_media_refs(picture: &gtk::Picture) {
+    picture.set_file(None::<&gio::File>);
+    picture.set_paintable(None::<&gdk::Paintable>);
 }
 
 fn slideshow_uses_crossfade(transition: Transition, fit: FitMode) -> bool {
@@ -1505,6 +1530,10 @@ struct GtkVideoAttachment {
 impl GtkVideoAttachment {
     fn widget(&self) -> &gtk::Picture {
         &self.picture
+    }
+
+    fn release_picture_media_refs(&self) {
+        clear_picture_media_refs(&self.picture);
     }
 
     fn apply_plan(&mut self, plan: &VideoWallpaperPlan) {
