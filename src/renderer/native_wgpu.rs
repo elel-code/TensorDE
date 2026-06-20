@@ -14,6 +14,7 @@ use raw_window_handle::{
 use serde::Serialize;
 use std::{
     fmt,
+    str::FromStr,
     time::{Duration, Instant},
 };
 
@@ -23,6 +24,7 @@ pub struct NativeWgpuOptions {
     pub layer: NativeWaylandLayer,
     pub output_name: Option<String>,
     pub initial_color: NativeWgpuColor,
+    pub render_mode: NativeWgpuRenderMode,
 }
 
 impl Default for NativeWgpuOptions {
@@ -32,11 +34,12 @@ impl Default for NativeWgpuOptions {
             layer: NativeWaylandLayer::Bottom,
             output_name: None,
             initial_color: NativeWgpuColor::default(),
+            render_mode: NativeWgpuRenderMode::Solid,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct NativeWgpuColor {
     pub red: f64,
     pub green: f64,
@@ -62,6 +65,44 @@ impl NativeWgpuColor {
             g: self.green,
             b: self.blue,
             a: self.alpha,
+        }
+    }
+
+    fn blend(self, other: Self, amount: f64) -> Self {
+        let amount = amount.clamp(0.0, 1.0);
+        Self {
+            red: blend_channel(self.red, other.red, amount),
+            green: blend_channel(self.green, other.green, amount),
+            blue: blend_channel(self.blue, other.blue, amount),
+            alpha: blend_channel(self.alpha, other.alpha, amount),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeWgpuRenderMode {
+    Solid,
+    Pulse,
+}
+
+impl NativeWgpuRenderMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Solid => "solid",
+            Self::Pulse => "pulse",
+        }
+    }
+}
+
+impl FromStr for NativeWgpuRenderMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "solid" => Ok(Self::Solid),
+            "pulse" => Ok(Self::Pulse),
+            other => Err(format!("unsupported native wgpu render mode: {other}")),
         }
     }
 }
@@ -96,6 +137,7 @@ pub struct NativeWgpuRuntimeSnapshot {
     pub runtime_elapsed_ms: u64,
     pub configured: bool,
     pub layer: NativeWaylandLayer,
+    pub render_mode: NativeWgpuRenderMode,
     pub requested_output_name: Option<String>,
     pub selected_output: Option<NativeWaylandOutputSnapshot>,
     pub known_outputs: Vec<NativeWaylandOutputSnapshot>,
@@ -176,6 +218,7 @@ impl NativeWgpuSession {
             raw_window_handle,
             handles.logical_size,
             options.initial_color,
+            options.render_mode,
         ))?;
 
         Ok(Self {
@@ -228,6 +271,7 @@ impl NativeWgpuSession {
             runtime_elapsed_ms: elapsed_ms,
             configured: surface.configured,
             layer: self.layer,
+            render_mode: self.renderer.render_mode,
             requested_output_name: self.requested_output_name.clone(),
             selected_output: surface.selected_output,
             known_outputs: surface.known_outputs,
@@ -259,6 +303,8 @@ struct NativeWgpuSurfaceRenderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     color: NativeWgpuColor,
+    render_mode: NativeWgpuRenderMode,
+    started: Instant,
     render_calls: u64,
     frames_rendered: u64,
     frames_skipped: u64,
@@ -281,6 +327,7 @@ impl NativeWgpuSurfaceRenderer {
         raw_window_handle: RawWindowHandle,
         size: (u32, u32),
         color: NativeWgpuColor,
+        render_mode: NativeWgpuRenderMode,
     ) -> Result<Self, NativeWgpuError> {
         let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         instance_descriptor.backends = wgpu::Backends::VULKAN;
@@ -350,6 +397,8 @@ impl NativeWgpuSurfaceRenderer {
             queue,
             config,
             color,
+            render_mode,
+            started: Instant::now(),
             render_calls: 0,
             frames_rendered: 0,
             frames_skipped: 0,
@@ -430,7 +479,7 @@ impl NativeWgpuSurfaceRenderer {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(self.color.as_wgpu()),
+                        load: wgpu::LoadOp::Clear(self.clear_color().as_wgpu()),
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
@@ -480,6 +529,29 @@ impl NativeWgpuSurfaceRenderer {
     fn render_duration_us_max(&self) -> Option<u64> {
         (self.render_calls > 0).then_some(self.render_duration_us_max)
     }
+
+    fn clear_color(&self) -> NativeWgpuColor {
+        match self.render_mode {
+            NativeWgpuRenderMode::Solid => self.color,
+            NativeWgpuRenderMode::Pulse => self.pulse_color(),
+        }
+    }
+
+    fn pulse_color(&self) -> NativeWgpuColor {
+        let elapsed = self.started.elapsed().as_secs_f64();
+        let phase = (elapsed * std::f64::consts::TAU * 0.75).sin() * 0.5 + 0.5;
+        let accent = NativeWgpuColor {
+            red: 0.02,
+            green: 0.95,
+            blue: 0.62,
+            alpha: self.color.alpha,
+        };
+        self.color.blend(accent, phase)
+    }
+}
+
+fn blend_channel(from: f64, to: f64, amount: f64) -> f64 {
+    (from + (to - from) * amount).clamp(0.0, 1.0)
 }
 
 fn average_fps(frames: u64, elapsed: Duration) -> f64 {

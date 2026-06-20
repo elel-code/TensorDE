@@ -18,7 +18,9 @@ fn main() {
 #[cfg(feature = "native-wgpu-renderer")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::native_wayland::NativeWaylandLayer;
-    use gilder::renderer::native_wgpu::{NativeWgpuColor, NativeWgpuOptions, NativeWgpuSession};
+    use gilder::renderer::native_wgpu::{
+        NativeWgpuColor, NativeWgpuOptions, NativeWgpuRenderMode, NativeWgpuSession,
+    };
     use std::time::Duration;
 
     let mut duration = Duration::from_secs(5);
@@ -27,6 +29,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut allow_foreground_layer = false;
     let mut output_name = None::<String>;
     let mut color = NativeWgpuColor::default();
+    let mut render_mode = NativeWgpuRenderMode::Solid;
     let mut runtime_json = None::<std::path::PathBuf>;
     let mut runtime_jsonl = None::<std::path::PathBuf>;
     let mut runtime_interval = Duration::from_secs(1);
@@ -58,6 +61,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let value = args.next().ok_or("--color requires #rrggbb or r,g,b")?;
                 color = parse_color(&value)?;
             }
+            "--render-mode" => {
+                let value = args.next().ok_or("--render-mode requires solid or pulse")?;
+                render_mode = value.parse::<NativeWgpuRenderMode>()?;
+            }
+            "--animate-color" => render_mode = NativeWgpuRenderMode::Pulse,
             "--runtime-json" => {
                 runtime_json = Some(args.next().ok_or("--runtime-json requires a path")?.into());
             }
@@ -95,6 +103,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         layer,
         output_name,
         initial_color: color,
+        render_mode,
     })?;
     let runtime_interval = runtime_interval.max(Duration::from_millis(100));
     let mut runtime_jsonl = runtime_jsonl
@@ -212,6 +221,6 @@ fn rgb_u8(red: u8, green: u8, blue: u8) -> gilder::renderer::native_wgpu::Native
 #[cfg(feature = "native-wgpu-renderer")]
 fn print_usage() {
     println!(
-        "usage: gilder-native-wgpu [--duration <seconds>] [--target-fps <fps>|--no-fps-limit] [--layer background|bottom|top|overlay] [--allow-foreground-layer] [--output-name <name>] [--color #rrggbb|r,g,b] [--runtime-json <path>] [--runtime-jsonl <path>] [--runtime-interval-ms <ms>]"
+        "usage: gilder-native-wgpu [--duration <seconds>] [--target-fps <fps>|--no-fps-limit] [--layer background|bottom|top|overlay] [--allow-foreground-layer] [--output-name <name>] [--color #rrggbb|r,g,b] [--render-mode solid|pulse] [--animate-color] [--runtime-json <path>] [--runtime-jsonl <path>] [--runtime-interval-ms <ms>]"
     );
 }

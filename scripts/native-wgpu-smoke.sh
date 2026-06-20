@@ -28,6 +28,8 @@ Options:
   --allow-compositor-output
                         Permit compositor-selected output for high-fps smoke.
   --color <value>       #rrggbb or r,g,b clear color. Default: #0b5cff.
+  --render-mode <name>  solid or pulse. Default: solid.
+  --animate-color       Alias for --render-mode pulse.
   --no-build            Reuse existing target/release/gilder-native-wgpu.
   -h, --help            Show this help text.
 EOF
@@ -46,6 +48,7 @@ allow_foreground_layer=0
 output_name=""
 allow_compositor_output=0
 color="#0b5cff"
+render_mode="solid"
 no_build=0
 
 while [[ $# -gt 0 ]]; do
@@ -113,6 +116,15 @@ while [[ $# -gt 0 ]]; do
       color="$2"
       shift 2
       ;;
+    --render-mode)
+      [[ $# -ge 2 ]] || { echo "--render-mode requires a value" >&2; exit 2; }
+      render_mode="$2"
+      shift 2
+      ;;
+    --animate-color)
+      render_mode="pulse"
+      shift
+      ;;
     --no-build)
       no_build=1
       shift
@@ -151,6 +163,10 @@ fi
 case "$layer" in
   background|bottom|top|overlay) ;;
   *) echo "--layer must be background, bottom, top, or overlay" >&2; exit 2 ;;
+esac
+case "$render_mode" in
+  solid|pulse) ;;
+  *) echo "--render-mode must be solid or pulse" >&2; exit 2 ;;
 esac
 if [[ "$allow_foreground_layer" -eq 0 ]]; then
   case "$layer" in
@@ -195,6 +211,7 @@ native_args=(
   --duration "$sample_duration"
   --layer "$layer"
   --color "$color"
+  --render-mode "$render_mode"
   --runtime-json "$runtime_json"
   --runtime-jsonl "$runtime_jsonl"
   --runtime-interval-ms "$runtime_interval_ms"
@@ -220,6 +237,7 @@ target_fps: $([[ "$fps_limit" -eq 1 ]] && printf '%s' "$target_fps" || printf un
 layer: ${layer}
 output_name: ${output_name:-compositor-selected}
 color: ${color}
+render_mode: ${render_mode}
 manual_linux_dmabuf_attach: no
 legacy_waylandsink: no
 EOF
@@ -301,6 +319,7 @@ if [[ -s "$runtime_json" ]]; then
       return line
     }
     /"runtime_elapsed_ms":/ { print "runtime_elapsed_ms: " value() }
+    /"render_mode":/ { print "render_mode: " value() }
     /"render_calls":/ { print "render_calls: " value() }
     /"frames_rendered":/ { print "frames_rendered: " value() }
     /"frames_skipped":/ { print "frames_skipped: " value() }
