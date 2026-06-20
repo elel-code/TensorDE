@@ -1440,6 +1440,65 @@ pub struct NativeVulkanRuntimeSnapshot {
     pub last_render_error: Option<String>,
 }
 
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanDirectH265FirstFrameRuntimeSnapshot {
+    pub runtime_elapsed_ms: u64,
+    pub frames_rendered: u64,
+    pub average_render_fps: f64,
+    pub configured: bool,
+    pub source: PathBuf,
+    pub source_extent: (u32, u32),
+    pub fit: FitMode,
+    pub target_max_fps: Option<u32>,
+    pub wayland_surface_logical_size: (u32, u32),
+    pub wayland_surface_buffer_size: (u32, u32),
+    pub selected_physical_device_name: String,
+    pub selected_physical_device_type: &'static str,
+    pub present_queue_family_index: u32,
+    pub present_queue_flags: Vec<&'static str>,
+    pub video_decode_queue_family_index: u32,
+    pub video_decode_queue_flags: Vec<&'static str>,
+    pub video_decode_queue_codec_operations: Vec<String>,
+    pub cross_queue_sync_strategy: &'static str,
+    pub swapchain_extent: (u32, u32),
+    pub swapchain_image_count: usize,
+    pub swapchain_format: String,
+    pub present_mode: &'static str,
+    pub video_resource_memory_bytes: u64,
+    pub session_memory_bytes: u64,
+    pub bitstream_buffer_bytes: u64,
+    pub decode: NativeVulkanDirectH265FirstFrameDecodeSnapshot,
+    pub last_render_error: Option<String>,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanDirectH265FirstFrameDecodeSnapshot {
+    pub completed: bool,
+    pub queue_family_index: u32,
+    pub source_layout: &'static str,
+    pub decoded_layout: &'static str,
+    pub src_buffer_offset: u64,
+    pub src_buffer_range: u64,
+    pub dst_base_array_layer: u32,
+    pub setup_slot_index: i32,
+    pub begin_reference_slot_count: u32,
+    pub decode_reference_slot_count: u32,
+    pub reset_control_recorded: bool,
+    pub slice_segment_count: u32,
+    pub slice_segment_offsets: Vec<u32>,
+    pub nal_type: u8,
+    pub nal_type_label: &'static str,
+    pub first_slice_segment_in_pic_flag: bool,
+    pub slice_type: u32,
+    pub pps_id: u32,
+    pub pic_order_cnt_val: i32,
+    pub idr: bool,
+    pub irap: bool,
+    pub decode_elapsed_us: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVideoRuntimeSnapshot {
     pub source: PathBuf,
@@ -2343,6 +2402,638 @@ pub fn run_video(
     let item = native_vulkan_video_item(&plan);
     let mut session = NativeVulkanSession::connect_with_render_item(options, item)?;
     session.run_for(duration, target_max_fps)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+pub fn run_h265_first_frame_video(
+    options: NativeVulkanOptions,
+    duration: Duration,
+    source: PathBuf,
+    width: u32,
+    height: u32,
+    fit: FitMode,
+    bitstream_samples: u32,
+) -> Result<NativeVulkanDirectH265FirstFrameRuntimeSnapshot, NativeVulkanError> {
+    if width == 0 || height == 0 {
+        return Err(NativeVulkanError::Video(
+            "direct H.265 first-frame video requires a non-zero source extent".to_owned(),
+        ));
+    }
+    let target_max_fps = options.target_max_fps;
+    let mut probe = NativeVulkanSurfaceProbe::connect(NativeVulkanSurfaceProbeOptions {
+        host: options.host,
+        wait_configure_roundtrips: options.wait_configure_roundtrips,
+    })?;
+    probe.pump_events()?;
+    let surface_snapshot = probe.snapshot();
+    let present_query =
+        select_native_vulkan_present_queue(&probe.instance, &probe.surface_loader, probe.surface)?;
+    let present_selection = present_query.selection;
+    let present_queue_family_index = present_selection.queue_family_index;
+    let present_queue_families = unsafe {
+        probe
+            .instance
+            .get_physical_device_queue_family_properties(present_selection.physical_device)
+    };
+    let present_queue_flags = present_queue_families
+        .get(present_queue_family_index as usize)
+        .map(|queue| queue.queue_flags)
+        .unwrap_or_default();
+    let video_queue_family = native_vulkan_video_decode_queue_family_infos(
+        &probe.instance,
+        present_selection.physical_device,
+    )
+    .into_iter()
+    .find(|queue_family| {
+        queue_family.queue_count > 0
+            && queue_family
+                .queue_flags
+                .contains(vk::QueueFlags::VIDEO_DECODE_KHR)
+            && queue_family
+                .video_codec_operations
+                .contains(vk::VideoCodecOperationFlagsKHR::DECODE_H265)
+    })
+    .ok_or_else(|| {
+        NativeVulkanError::Video(format!(
+            "selected present device {} has no same-device H.265 Vulkan Video decode queue",
+            present_selection.physical_device_name
+        ))
+    })?;
+
+    ensure_native_vulkan_device_extension(
+        &probe.instance,
+        present_selection.physical_device,
+        ash::khr::swapchain::NAME,
+    )?;
+    for extension in native_vulkan_video_session_required_device_extensions(
+        NativeVulkanVideoSessionCodec::H265Main8,
+    ) {
+        ensure_native_vulkan_device_extension(
+            &probe.instance,
+            present_selection.physical_device,
+            extension,
+        )?;
+    }
+
+    let mut h265_profile_info = vk::VideoDecodeH265ProfileInfoKHR::default()
+        .std_profile_idc(vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN);
+    let profile_info = vk::VideoProfileInfoKHR::default()
+        .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_H265)
+        .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420)
+        .luma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
+        .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
+        .push_next(&mut h265_profile_info);
+    let video_queue_loader = ash::khr::video_queue::Instance::new(&probe._entry, &probe.instance);
+    let capabilities = native_vulkan_video_session_h265_capabilities(
+        &video_queue_loader,
+        present_selection.physical_device,
+        &profile_info,
+    )?;
+    let source_extent = vk::Extent2D { width, height };
+    if !native_vulkan_video_session_extent_supported(source_extent, &capabilities) {
+        return Err(NativeVulkanError::Video(format!(
+            "direct H.265 source extent {width}x{height} is outside {:?}..{:?} or not aligned to {:?}",
+            (
+                capabilities.min_coded_extent.width,
+                capabilities.min_coded_extent.height
+            ),
+            (
+                capabilities.max_coded_extent.width,
+                capabilities.max_coded_extent.height
+            ),
+            (
+                capabilities.picture_access_granularity.width,
+                capabilities.picture_access_granularity.height
+            )
+        )));
+    }
+    let format_probe = native_vulkan_video_decode_format_probe(
+        &video_queue_loader,
+        present_selection.physical_device,
+        &profile_info,
+        capabilities.decode_capability_flags,
+    );
+    if !format_probe.nv12_dpb_supported
+        || !format_probe.nv12_output_supported
+        || !format_probe.nv12_sampled_output_supported
+    {
+        return Err(NativeVulkanError::Video(format!(
+            "direct H.265 first-frame video requires NV12 decode+sampled support{}",
+            format_probe
+                .query_error
+                .as_ref()
+                .map(|err| format!(": {err}"))
+                .unwrap_or_default()
+        )));
+    }
+
+    let mut device_queue_family_indices = vec![present_queue_family_index];
+    if !device_queue_family_indices.contains(&video_queue_family.queue_family_index) {
+        device_queue_family_indices.push(video_queue_family.queue_family_index);
+    }
+    let priorities = [1.0_f32];
+    let queue_create_infos = device_queue_family_indices
+        .iter()
+        .copied()
+        .map(|queue_family_index| {
+            vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(queue_family_index)
+                .queue_priorities(&priorities)
+        })
+        .collect::<Vec<_>>();
+    let mut enabled_extensions = vec![ash::khr::swapchain::NAME.as_ptr()];
+    enabled_extensions.extend(
+        native_vulkan_video_session_required_device_extensions(
+            NativeVulkanVideoSessionCodec::H265Main8,
+        )
+        .iter()
+        .map(|extension| extension.as_ptr()),
+    );
+    let mut synchronization2_features =
+        vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
+    let device_create_info = vk::DeviceCreateInfo::default()
+        .queue_create_infos(&queue_create_infos)
+        .enabled_extension_names(&enabled_extensions)
+        .push_next(&mut synchronization2_features);
+    let device = unsafe {
+        probe
+            .instance
+            .create_device(present_selection.physical_device, &device_create_info, None)
+    }
+    .map_err(|result| NativeVulkanError::Vulkan {
+        operation: "vkCreateDevice(direct h265 first-frame video)",
+        result,
+    })?;
+
+    let mut swapchain_loader = None::<ash::khr::swapchain::Device>;
+    let mut swapchain = vk::SwapchainKHR::null();
+    let mut swapchain_image_views = Vec::<vk::ImageView>::new();
+    let mut command_pool = vk::CommandPool::null();
+    let mut command_buffers = Vec::<vk::CommandBuffer>::new();
+    let mut image_available = vk::Semaphore::null();
+    let mut render_finished = vk::Semaphore::null();
+    let mut in_flight = vk::Fence::null();
+    let mut renderer = None::<NativeVulkanVideoRenderer>;
+    let mut texture = None::<NativeVulkanVideoTexture>;
+    let mut video_session = vk::VideoSessionKHR::null();
+    let mut video_session_parameters = vk::VideoSessionParametersKHR::null();
+    let mut session_memories = Vec::<vk::DeviceMemory>::new();
+    let mut resource_image = None::<NativeVulkanVideoResourceImage>;
+    let mut bitstream_buffer = None::<NativeVulkanVideoBitstreamBuffer>;
+
+    let result =
+        (|| -> Result<NativeVulkanDirectH265FirstFrameRuntimeSnapshot, NativeVulkanError> {
+            let present_queue = unsafe { device.get_device_queue(present_queue_family_index, 0) };
+            let video_queue_device = ash::khr::video_queue::Device::new(&probe.instance, &device);
+            let video_decode_queue_device =
+                ash::khr::video_decode_queue::Device::new(&probe.instance, &device);
+            let memory_properties = unsafe {
+                probe
+                    .instance
+                    .get_physical_device_memory_properties(present_selection.physical_device)
+            };
+
+            swapchain_loader = Some(ash::khr::swapchain::Device::new(&probe.instance, &device));
+            let swapchain_loader_ref = swapchain_loader
+                .as_ref()
+                .expect("swapchain loader was just created");
+            let swapchain_plan = create_native_vulkan_swapchain_plan(
+                &probe.surface_loader,
+                present_selection.physical_device,
+                probe.surface,
+                surface_snapshot.wayland_surface_logical_size,
+                surface_snapshot.wayland_surface_buffer_size,
+            )?;
+            swapchain =
+                unsafe { swapchain_loader_ref.create_swapchain(&swapchain_plan.create_info, None) }
+                    .map_err(|result| NativeVulkanError::Vulkan {
+                        operation: "vkCreateSwapchainKHR(direct h265 first-frame video)",
+                        result,
+                    })?;
+            let swapchain_images = unsafe { swapchain_loader_ref.get_swapchain_images(swapchain) }
+                .map_err(|result| NativeVulkanError::Vulkan {
+                    operation: "vkGetSwapchainImagesKHR(direct h265 first-frame video)",
+                    result,
+                })?;
+            swapchain_image_views = create_native_vulkan_swapchain_image_views(
+                &device,
+                &swapchain_images,
+                swapchain_plan.format.format,
+            )?;
+            let command_pool_info = vk::CommandPoolCreateInfo::default()
+                .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+                .queue_family_index(present_queue_family_index);
+            command_pool = unsafe { device.create_command_pool(&command_pool_info, None) }
+                .map_err(|result| NativeVulkanError::Vulkan {
+                    operation: "vkCreateCommandPool(direct h265 first-frame present)",
+                    result,
+                })?;
+            let command_buffer_info = vk::CommandBufferAllocateInfo::default()
+                .command_pool(command_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(swapchain_images.len() as u32);
+            command_buffers = unsafe { device.allocate_command_buffers(&command_buffer_info) }
+                .map_err(|result| NativeVulkanError::Vulkan {
+                    operation: "vkAllocateCommandBuffers(direct h265 first-frame present)",
+                    result,
+                })?;
+            let semaphore_create_info = vk::SemaphoreCreateInfo::default();
+            image_available = unsafe { device.create_semaphore(&semaphore_create_info, None) }
+                .map_err(|result| NativeVulkanError::Vulkan {
+                    operation: "vkCreateSemaphore(direct h265 image_available)",
+                    result,
+                })?;
+            render_finished = unsafe { device.create_semaphore(&semaphore_create_info, None) }
+                .map_err(|result| NativeVulkanError::Vulkan {
+                    operation: "vkCreateSemaphore(direct h265 render_finished)",
+                    result,
+                })?;
+            let fence_create_info =
+                vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+            in_flight =
+                unsafe { device.create_fence(&fence_create_info, None) }.map_err(|result| {
+                    NativeVulkanError::Vulkan {
+                        operation: "vkCreateFence(direct h265 first-frame)",
+                        result,
+                    }
+                })?;
+
+            let session_max_dpb_slots =
+                native_vulkan_video_session_max_dpb_slots(capabilities.max_dpb_slots);
+            let session_max_active_reference_pictures =
+                native_vulkan_video_session_max_active_reference_pictures(
+                    capabilities.max_active_reference_pictures,
+                    session_max_dpb_slots,
+                );
+            let picture_format = vk::Format::G8_B8R8_2PLANE_420_UNORM;
+            let create_info = vk::VideoSessionCreateInfoKHR::default()
+                .queue_family_index(video_queue_family.queue_family_index)
+                .video_profile(&profile_info)
+                .picture_format(picture_format)
+                .reference_picture_format(picture_format)
+                .max_coded_extent(source_extent)
+                .max_dpb_slots(session_max_dpb_slots)
+                .max_active_reference_pictures(session_max_active_reference_pictures)
+                .std_header_version(&capabilities.std_header_version);
+            video_session = native_vulkan_create_video_session(&video_queue_device, &create_info)?;
+
+            let memory_requirements = native_vulkan_video_session_memory_requirements(
+                &video_queue_device,
+                video_session,
+            )?;
+            let mut bind_infos = Vec::with_capacity(memory_requirements.len());
+            let mut session_memory_bytes = 0u64;
+            for requirement in memory_requirements.iter() {
+                if requirement.memory_requirements.size == 0 {
+                    return Err(NativeVulkanError::Video(format!(
+                        "direct H.265 session memory bind {} reported zero size",
+                        requirement.memory_bind_index
+                    )));
+                }
+                let memory_type_index = native_vulkan_memory_type_index(
+                    &memory_properties,
+                    requirement.memory_requirements.memory_type_bits,
+                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                )
+                .or_else(|| {
+                    native_vulkan_memory_type_index(
+                        &memory_properties,
+                        requirement.memory_requirements.memory_type_bits,
+                        vk::MemoryPropertyFlags::empty(),
+                    )
+                })
+                .ok_or(NativeVulkanError::MissingMemoryType(
+                    "direct H.265 video session memory",
+                ))?;
+                let allocation_info = vk::MemoryAllocateInfo::default()
+                    .allocation_size(requirement.memory_requirements.size)
+                    .memory_type_index(memory_type_index);
+                let memory = unsafe { device.allocate_memory(&allocation_info, None) }.map_err(
+                    |result| NativeVulkanError::Vulkan {
+                        operation: "vkAllocateMemory(direct h265 video session)",
+                        result,
+                    },
+                )?;
+                session_memories.push(memory);
+                bind_infos.push(
+                    vk::BindVideoSessionMemoryInfoKHR::default()
+                        .memory_bind_index(requirement.memory_bind_index)
+                        .memory(memory)
+                        .memory_offset(0)
+                        .memory_size(requirement.memory_requirements.size),
+                );
+                session_memory_bytes =
+                    session_memory_bytes.saturating_add(requirement.memory_requirements.size);
+            }
+            native_vulkan_bind_video_session_memory(
+                &video_queue_device,
+                video_session,
+                &bind_infos,
+            )?;
+
+            resource_image = Some(native_vulkan_create_video_session_resource_image(
+                &video_queue_loader,
+                &device,
+                &memory_properties,
+                present_selection.physical_device,
+                &profile_info,
+                source_extent,
+                session_max_dpb_slots.max(1),
+                capabilities.decode_capability_flags,
+                vk::ImageUsageFlags::empty(),
+                &device_queue_family_indices,
+            )?);
+
+            let mut extract_options = NativeVulkanVideoSessionSmokeOptions::default();
+            extract_options.codec = NativeVulkanVideoSessionCodec::H265Main8;
+            extract_options.width = width;
+            extract_options.height = height;
+            extract_options.extract_bitstream = true;
+            extract_options.bitstream_source = Some(source.clone());
+            extract_options.bitstream_extract_max_samples = bitstream_samples.max(1);
+            let extract = native_vulkan_extract_video_bitstream(&extract_options)?;
+            let parameter_sets =
+                extract
+                    .snapshot
+                    .h265_parameter_sets
+                    .as_ref()
+                    .ok_or_else(|| {
+                        NativeVulkanError::Video(
+                            "direct H.265 first-frame video requires parsed H.265 parameter sets"
+                                .to_owned(),
+                        )
+                    })?;
+            let bitstream_payload = extract.selected_access_unit.as_slice();
+            let requested_bitstream_size = native_vulkan_align_up(
+                bitstream_payload.len() as u64,
+                capabilities.min_bitstream_buffer_size_alignment.max(1),
+            );
+            bitstream_buffer = Some(native_vulkan_create_video_session_bitstream_buffer(
+                &device,
+                &memory_properties,
+                &profile_info,
+                requested_bitstream_size,
+                capabilities.min_bitstream_buffer_size_alignment,
+                Some(bitstream_payload),
+            )?);
+            let parameters = native_vulkan_create_h265_video_session_parameters(
+                &video_queue_device,
+                video_session,
+                parameter_sets,
+            )?;
+            video_session_parameters = parameters.parameters;
+            let image = resource_image
+                .as_ref()
+                .expect("video resource image was just created");
+            let buffer = bitstream_buffer
+                .as_ref()
+                .expect("bitstream buffer was just created");
+            let decode = native_vulkan_decode_h265_first_frame_to_image(
+                &device,
+                &video_queue_device,
+                &video_decode_queue_device,
+                video_queue_family.queue_family_index,
+                video_session,
+                video_session_parameters,
+                source_extent,
+                capabilities.min_bitstream_buffer_size_alignment,
+                image,
+                buffer,
+                &extract,
+                parameter_sets,
+            )?;
+
+            renderer = Some(NativeVulkanVideoRenderer::new(
+                &device,
+                swapchain_plan.format.format,
+                swapchain_plan.extent,
+                &swapchain_image_views,
+            )?);
+            texture = Some(NativeVulkanVideoTexture::Decoded(
+                NativeVulkanDecodedVideoTexture::new(
+                    &device,
+                    image.image,
+                    width,
+                    height,
+                    0,
+                    vk::ImageLayout::VIDEO_DECODE_DPB_KHR,
+                    vk::AccessFlags::MEMORY_WRITE,
+                )?,
+            ));
+            let renderer_ref = renderer.as_mut().expect("video renderer was just created");
+            renderer_ref.update_descriptors(
+                &device,
+                texture.as_ref().expect("decoded texture was just created"),
+            );
+
+            let started_at = Instant::now();
+            let deadline = started_at + duration;
+            let frame_interval = target_max_fps
+                .filter(|fps| *fps > 0)
+                .map(|fps| Duration::from_secs_f64(1.0 / fps as f64));
+            let mut next_frame = Instant::now();
+            let mut frames_rendered = 0u64;
+            let mut swapchain_image_layouts =
+                vec![vk::ImageLayout::UNDEFINED; swapchain_images.len()];
+
+            while Instant::now() < deadline && !probe.host.is_closed() {
+                probe.host.pump_events()?;
+                let fences = [in_flight];
+                unsafe {
+                    device
+                        .wait_for_fences(&fences, true, u64::MAX)
+                        .map_err(|result| NativeVulkanError::Vulkan {
+                            operation: "vkWaitForFences(direct h265 first-frame)",
+                            result,
+                        })?;
+                    device
+                        .reset_fences(&fences)
+                        .map_err(|result| NativeVulkanError::Vulkan {
+                            operation: "vkResetFences(direct h265 first-frame)",
+                            result,
+                        })?;
+                }
+                let (image_index, _) = unsafe {
+                    swapchain_loader_ref.acquire_next_image(
+                        swapchain,
+                        u64::MAX,
+                        image_available,
+                        vk::Fence::null(),
+                    )
+                }
+                .map_err(|result| NativeVulkanError::Vulkan {
+                    operation: "vkAcquireNextImageKHR(direct h265 first-frame)",
+                    result,
+                })?;
+                let image_index = image_index as usize;
+                renderer_ref.record_frame(
+                    &device,
+                    command_buffers[image_index],
+                    image_index,
+                    swapchain_images[image_index],
+                    swapchain_image_layouts[image_index],
+                    texture
+                        .as_ref()
+                        .expect("decoded texture exists during render"),
+                    fit,
+                )?;
+                swapchain_image_layouts[image_index] = renderer_ref.target_final_layout();
+                let wait_semaphores = [image_available];
+                let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+                let command_buffers_for_submit = [command_buffers[image_index]];
+                let signal_semaphores = [render_finished];
+                let submit_info = vk::SubmitInfo::default()
+                    .wait_semaphores(&wait_semaphores)
+                    .wait_dst_stage_mask(&wait_stages)
+                    .command_buffers(&command_buffers_for_submit)
+                    .signal_semaphores(&signal_semaphores);
+                unsafe {
+                    device
+                        .queue_submit(present_queue, &[submit_info], in_flight)
+                        .map_err(|result| NativeVulkanError::Vulkan {
+                            operation: "vkQueueSubmit(direct h265 first-frame present)",
+                            result,
+                        })?;
+                }
+                let swapchains = [swapchain];
+                let image_indices = [image_index as u32];
+                let present_info = vk::PresentInfoKHR::default()
+                    .wait_semaphores(&signal_semaphores)
+                    .swapchains(&swapchains)
+                    .image_indices(&image_indices);
+                unsafe {
+                    swapchain_loader_ref
+                        .queue_present(present_queue, &present_info)
+                        .map_err(|result| NativeVulkanError::Vulkan {
+                            operation: "vkQueuePresentKHR(direct h265 first-frame)",
+                            result,
+                        })?;
+                }
+                frames_rendered = frames_rendered.saturating_add(1);
+                if let Some(NativeVulkanVideoTexture::Decoded(texture)) = texture.as_mut() {
+                    texture.source_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+                    texture.source_access = vk::AccessFlags::SHADER_READ;
+                }
+
+                if let Some(interval) = frame_interval {
+                    next_frame += interval;
+                    let now = Instant::now();
+                    if next_frame > now {
+                        thread::sleep(next_frame - now);
+                    } else {
+                        next_frame = now;
+                    }
+                }
+            }
+            unsafe {
+                device
+                    .wait_for_fences(&[in_flight], true, u64::MAX)
+                    .map_err(|result| NativeVulkanError::Vulkan {
+                        operation: "vkWaitForFences(direct h265 first-frame final)",
+                        result,
+                    })?;
+            }
+
+            let elapsed = started_at.elapsed();
+            Ok(NativeVulkanDirectH265FirstFrameRuntimeSnapshot {
+                runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
+                frames_rendered,
+                average_render_fps: if elapsed.is_zero() {
+                    0.0
+                } else {
+                    frames_rendered as f64 / elapsed.as_secs_f64()
+                },
+                configured: probe.host.snapshot().configured,
+                source,
+                source_extent: (width, height),
+                fit,
+                target_max_fps,
+                wayland_surface_logical_size: surface_snapshot.wayland_surface_logical_size,
+                wayland_surface_buffer_size: surface_snapshot.wayland_surface_buffer_size,
+                selected_physical_device_name: present_selection.physical_device_name,
+                selected_physical_device_type: present_selection.physical_device_type,
+                present_queue_family_index,
+                present_queue_flags: native_vulkan_queue_flag_labels(present_queue_flags),
+                video_decode_queue_family_index: video_queue_family.queue_family_index,
+                video_decode_queue_flags: native_vulkan_queue_flag_labels(
+                    video_queue_family.queue_flags,
+                ),
+                video_decode_queue_codec_operations: native_vulkan_video_codec_operation_labels(
+                    video_queue_family.video_codec_operations,
+                ),
+                cross_queue_sync_strategy: "decode-queue-wait-idle-then-present-queue-sampled-render",
+                swapchain_extent: (swapchain_plan.extent.width, swapchain_plan.extent.height),
+                swapchain_image_count: swapchain_images.len(),
+                swapchain_format: native_vulkan_format_label(swapchain_plan.format.format)
+                    .to_owned(),
+                present_mode: native_vulkan_present_mode_label(swapchain_plan.present_mode),
+                video_resource_memory_bytes: image.snapshot.memory_size,
+                session_memory_bytes,
+                bitstream_buffer_bytes: buffer.snapshot.size,
+                decode,
+                last_render_error: None,
+            })
+        })();
+
+    unsafe {
+        let _ = device.device_wait_idle();
+        if let Some(texture) = texture.take() {
+            texture.destroy(&device);
+        }
+        if let Some(renderer) = renderer.take() {
+            renderer.destroy(&device);
+        }
+        if image_available != vk::Semaphore::null() {
+            device.destroy_semaphore(image_available, None);
+        }
+        if render_finished != vk::Semaphore::null() {
+            device.destroy_semaphore(render_finished, None);
+        }
+        if in_flight != vk::Fence::null() {
+            device.destroy_fence(in_flight, None);
+        }
+        if command_pool != vk::CommandPool::null() {
+            device.destroy_command_pool(command_pool, None);
+        }
+        if let Some(buffer) = bitstream_buffer.take() {
+            device.destroy_buffer(buffer.buffer, None);
+            device.free_memory(buffer.memory, None);
+        }
+        let video_queue_device = ash::khr::video_queue::Device::new(&probe.instance, &device);
+        if video_session_parameters != vk::VideoSessionParametersKHR::null() {
+            (video_queue_device.fp().destroy_video_session_parameters_khr)(
+                video_queue_device.device(),
+                video_session_parameters,
+                ptr::null(),
+            );
+        }
+        if let Some(image) = resource_image.take() {
+            device.destroy_image_view(image.view, None);
+            device.destroy_image(image.image, None);
+            device.free_memory(image.memory, None);
+        }
+        if video_session != vk::VideoSessionKHR::null() {
+            (video_queue_device.fp().destroy_video_session_khr)(
+                video_queue_device.device(),
+                video_session,
+                ptr::null(),
+            );
+        }
+        for memory in session_memories {
+            device.free_memory(memory, None);
+        }
+        for view in swapchain_image_views {
+            device.destroy_image_view(view, None);
+        }
+        if swapchain != vk::SwapchainKHR::null()
+            && let Some(loader) = swapchain_loader.as_ref()
+        {
+            loader.destroy_swapchain(swapchain, None);
+        }
+        device.destroy_device(None);
+    }
+
+    result
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -6275,6 +6966,7 @@ fn select_native_vulkan_video_decode_queue(
     })
 }
 
+#[derive(Clone, Copy)]
 struct NativeVulkanVideoDecodeQueueFamilyInfo {
     queue_family_index: u32,
     queue_count: u32,
@@ -8254,6 +8946,240 @@ fn native_vulkan_decode_h265_first_frame_smoke(
         if let Some(command_pool) = sampling_command_pool {
             device.destroy_command_pool(command_pool, None);
         }
+        device.destroy_command_pool(command_pool, None);
+    }
+
+    result
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[allow(clippy::too_many_arguments)]
+fn native_vulkan_decode_h265_first_frame_to_image(
+    device: &ash::Device,
+    video_queue_device: &ash::khr::video_queue::Device,
+    video_decode_queue_device: &ash::khr::video_decode_queue::Device,
+    queue_family_index: u32,
+    session: vk::VideoSessionKHR,
+    session_parameters: vk::VideoSessionParametersKHR,
+    extent: vk::Extent2D,
+    min_bitstream_buffer_size_alignment: u64,
+    image: &NativeVulkanVideoResourceImage,
+    buffer: &NativeVulkanVideoBitstreamBuffer,
+    extract: &NativeVulkanVideoBitstreamExtract,
+    parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
+) -> Result<NativeVulkanDirectH265FirstFrameDecodeSnapshot, NativeVulkanError> {
+    if session_parameters == vk::VideoSessionParametersKHR::null() {
+        return Err(NativeVulkanError::Video(
+            "direct H.265 first-frame decode requires VkVideoSessionParametersKHR".to_owned(),
+        ));
+    }
+    if image.snapshot.array_layers == 0 {
+        return Err(NativeVulkanError::Video(
+            "direct H.265 first-frame decode requires at least one DPB/output image layer"
+                .to_owned(),
+        ));
+    }
+    let first_slice =
+        native_vulkan_h265_first_slice_decode_info(&extract.selected_access_unit, parameter_sets)
+            .map_err(NativeVulkanError::Video)?;
+    if !first_slice.idr {
+        return Err(NativeVulkanError::Video(format!(
+            "direct H.265 first-frame decode currently supports IDR only, got {}",
+            first_slice.nal_type_label
+        )));
+    }
+
+    let src_buffer_range = native_vulkan_align_up(
+        extract.selected_access_unit.len() as u64,
+        min_bitstream_buffer_size_alignment.max(1),
+    );
+    if src_buffer_range > buffer.snapshot.size {
+        return Err(NativeVulkanError::Video(format!(
+            "direct H.265 first-frame decode needs {src_buffer_range} bytes but bitstream buffer has {} bytes",
+            buffer.snapshot.size
+        )));
+    }
+
+    let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
+    let command_pool_info = vk::CommandPoolCreateInfo::default()
+        .flags(
+            vk::CommandPoolCreateFlags::TRANSIENT
+                | vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+        )
+        .queue_family_index(queue_family_index);
+    let command_pool =
+        unsafe { device.create_command_pool(&command_pool_info, None) }.map_err(|result| {
+            NativeVulkanError::Vulkan {
+                operation: "vkCreateCommandPool(direct h265 first-frame decode)",
+                result,
+            }
+        })?;
+
+    let result =
+        (|| -> Result<NativeVulkanDirectH265FirstFrameDecodeSnapshot, NativeVulkanError> {
+            let command_buffer_info = vk::CommandBufferAllocateInfo::default()
+                .command_pool(command_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1);
+            let command_buffer = unsafe { device.allocate_command_buffers(&command_buffer_info) }
+                .map_err(|result| NativeVulkanError::Vulkan {
+                operation: "vkAllocateCommandBuffers(direct h265 first-frame decode)",
+                result,
+            })?[0];
+
+            let begin_resources = (0..image.snapshot.array_layers)
+                .map(|layer| native_vulkan_video_picture_resource_info(image.view, extent, layer))
+                .collect::<Vec<_>>();
+            let begin_reference_slots = begin_resources
+                .iter()
+                .map(|resource| {
+                    vk::VideoReferenceSlotInfoKHR::default()
+                        .picture_resource(resource)
+                        .slot_index(-1)
+                })
+                .collect::<Vec<_>>();
+            let dst_picture_resource =
+                native_vulkan_video_picture_resource_info(image.view, extent, 0);
+            let std_reference_info = vk::native::StdVideoDecodeH265ReferenceInfo {
+                flags: vk::native::StdVideoDecodeH265ReferenceInfoFlags {
+                    _bitfield_align_1: [],
+                    _bitfield_1: vk::native::StdVideoDecodeH265ReferenceInfoFlags::new_bitfield_1(
+                        0, 0,
+                    ),
+                    __bindgen_padding_0: [0; 3],
+                },
+                PicOrderCntVal: first_slice.pic_order_cnt_val,
+            };
+            let mut setup_h265_slot_info = vk::VideoDecodeH265DpbSlotInfoKHR::default()
+                .std_reference_info(&std_reference_info);
+            let setup_reference_slot = vk::VideoReferenceSlotInfoKHR::default()
+                .picture_resource(&dst_picture_resource)
+                .slot_index(0)
+                .push_next(&mut setup_h265_slot_info);
+            let std_picture_info = vk::native::StdVideoDecodeH265PictureInfo {
+                flags: vk::native::StdVideoDecodeH265PictureInfoFlags {
+                    _bitfield_align_1: [],
+                    _bitfield_1: vk::native::StdVideoDecodeH265PictureInfoFlags::new_bitfield_1(
+                        native_vulkan_bool_u32(first_slice.irap),
+                        native_vulkan_bool_u32(first_slice.idr),
+                        1,
+                        0,
+                    ),
+                    __bindgen_padding_0: [0; 3],
+                },
+                sps_video_parameter_set_id: parameter_sets.sps.vps_id,
+                pps_seq_parameter_set_id: native_vulkan_h265_u8(
+                    parameter_sets.pps.sps_id,
+                    "pps_seq_parameter_set_id",
+                )
+                .map_err(NativeVulkanError::Video)?,
+                pps_pic_parameter_set_id: native_vulkan_h265_u8(
+                    parameter_sets.pps.id,
+                    "pps_pic_parameter_set_id",
+                )
+                .map_err(NativeVulkanError::Video)?,
+                NumDeltaPocsOfRefRpsIdx: 0,
+                PicOrderCntVal: first_slice.pic_order_cnt_val,
+                NumBitsForSTRefPicSetInSlice: 0,
+                reserved: 0,
+                RefPicSetStCurrBefore: [0xff; 8],
+                RefPicSetStCurrAfter: [0xff; 8],
+                RefPicSetLtCurr: [0xff; 8],
+            };
+            let slice_segment_offsets = vec![first_slice.slice_segment_offset];
+            let mut h265_picture_info = vk::VideoDecodeH265PictureInfoKHR::default()
+                .std_picture_info(&std_picture_info)
+                .slice_segment_offsets(&slice_segment_offsets);
+            let begin_info = vk::VideoBeginCodingInfoKHR::default()
+                .video_session(session)
+                .video_session_parameters(session_parameters)
+                .reference_slots(&begin_reference_slots);
+            let control_info = vk::VideoCodingControlInfoKHR::default()
+                .flags(vk::VideoCodingControlFlagsKHR::RESET);
+            let decode_info = vk::VideoDecodeInfoKHR::default()
+                .src_buffer(buffer.buffer)
+                .src_buffer_offset(0)
+                .src_buffer_range(src_buffer_range)
+                .dst_picture_resource(dst_picture_resource)
+                .setup_reference_slot(&setup_reference_slot)
+                .push_next(&mut h265_picture_info);
+
+            let started_at = Instant::now();
+            unsafe {
+                let command_begin_info = vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+                device
+                    .begin_command_buffer(command_buffer, &command_begin_info)
+                    .map_err(|result| NativeVulkanError::Vulkan {
+                        operation: "vkBeginCommandBuffer(direct h265 first-frame decode)",
+                        result,
+                    })?;
+                native_vulkan_video_first_frame_decode_barriers(
+                    device,
+                    command_buffer,
+                    image.image,
+                    buffer.buffer,
+                    src_buffer_range,
+                );
+                (video_queue_device.fp().cmd_begin_video_coding_khr)(command_buffer, &begin_info);
+                (video_queue_device.fp().cmd_control_video_coding_khr)(
+                    command_buffer,
+                    &control_info,
+                );
+                (video_decode_queue_device.fp().cmd_decode_video_khr)(command_buffer, &decode_info);
+                (video_queue_device.fp().cmd_end_video_coding_khr)(
+                    command_buffer,
+                    &vk::VideoEndCodingInfoKHR::default(),
+                );
+                device
+                    .end_command_buffer(command_buffer)
+                    .map_err(|result| NativeVulkanError::Vulkan {
+                        operation: "vkEndCommandBuffer(direct h265 first-frame decode)",
+                        result,
+                    })?;
+                let command_buffers = [command_buffer];
+                let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
+                device
+                    .queue_submit(queue, &[submit_info], vk::Fence::null())
+                    .map_err(|result| NativeVulkanError::Vulkan {
+                        operation: "vkQueueSubmit(direct h265 first-frame decode)",
+                        result,
+                    })?;
+                device
+                    .queue_wait_idle(queue)
+                    .map_err(|result| NativeVulkanError::Vulkan {
+                        operation: "vkQueueWaitIdle(direct h265 first-frame decode)",
+                        result,
+                    })?;
+            }
+
+            Ok(NativeVulkanDirectH265FirstFrameDecodeSnapshot {
+                completed: true,
+                queue_family_index,
+                source_layout: "undefined",
+                decoded_layout: "video-decode-dpb",
+                src_buffer_offset: 0,
+                src_buffer_range,
+                dst_base_array_layer: 0,
+                setup_slot_index: 0,
+                begin_reference_slot_count: begin_reference_slots.len() as u32,
+                decode_reference_slot_count: 0,
+                reset_control_recorded: true,
+                slice_segment_count: slice_segment_offsets.len() as u32,
+                slice_segment_offsets,
+                nal_type: first_slice.nal_type,
+                nal_type_label: first_slice.nal_type_label,
+                first_slice_segment_in_pic_flag: first_slice.first_slice_segment_in_pic_flag,
+                slice_type: first_slice.slice_type,
+                pps_id: first_slice.pps_id,
+                pic_order_cnt_val: first_slice.pic_order_cnt_val,
+                idr: first_slice.idr,
+                irap: first_slice.irap,
+                decode_elapsed_us: native_vulkan_elapsed_us(started_at.elapsed()),
+            })
+        })();
+
+    unsafe {
         device.destroy_command_pool(command_pool, None);
     }
 

@@ -17,6 +17,8 @@ fn main() {
 
 #[cfg(feature = "native-vulkan-renderer")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "native-vulkan-gst-video")]
+    use gilder::renderer::native_vulkan::run_h265_first_frame_video;
     use gilder::renderer::native_vulkan::{
         NativeVulkanOptions, NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionSmokeOptions,
         backend_contract, capabilities, probe_vulkan_video_decode, probe_vulkan_video_session,
@@ -51,6 +53,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--probe-surface" => mode = NativeVulkanCliMode::ProbeSurface,
             "--probe-video" => mode = NativeVulkanCliMode::ProbeVideo,
             "--probe-video-session" => mode = NativeVulkanCliMode::ProbeVideoSession,
+            "--run-h265-first-frame-video" => mode = NativeVulkanCliMode::RunH265FirstFrameVideo,
             "--allocate-video-images" => video_session_options.allocate_video_images = true,
             "--allocate-bitstream-buffer" => video_session_options.allocate_bitstream_buffer = true,
             "--extract-bitstream" => {
@@ -309,6 +312,38 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 },
             )?)
         }
+        NativeVulkanCliMode::RunH265FirstFrameVideo => {
+            let source = source.ok_or("--run-h265-first-frame-video requires --source")?;
+            if !source.is_file() {
+                return Err(format!("video source does not exist: {}", source.display()).into());
+            }
+            #[cfg(feature = "native-vulkan-gst-video")]
+            {
+                json!(run_h265_first_frame_video(
+                    options,
+                    duration,
+                    source,
+                    video_session_options.width,
+                    video_session_options.height,
+                    fit,
+                    video_session_options.bitstream_extract_max_samples,
+                )?)
+            }
+            #[cfg(not(feature = "native-vulkan-gst-video"))]
+            {
+                let _ = (
+                    options,
+                    duration,
+                    source,
+                    video_session_options.width,
+                    video_session_options.height,
+                    fit,
+                );
+                return Err(
+                    "--run-h265-first-frame-video requires native-vulkan-gst-video feature".into(),
+                );
+            }
+        }
     };
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
@@ -389,12 +424,13 @@ enum NativeVulkanCliMode {
     RunClear,
     RunStatic,
     RunVideo,
+    RunH265FirstFrameVideo,
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-video-session|--run-clear|--run-static|--run-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-video-session|--run-clear|--run-static|--run-video|--run-h265-first-frame-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
@@ -411,6 +447,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --run-clear creates a Vulkan device/swapchain, clears frames, presents, then prints runtime JSON.\n\
 --run-static decodes --source, fits it to the swapchain, copies it through Vulkan, presents, then prints runtime JSON.\n\
 --run-video accepts a video wallpaper plan, presents a poster/clear placeholder through native Vulkan, then prints video handoff telemetry.\n\
+--run-h265-first-frame-video decodes the first H.265 IDR with Vulkan Video and samples the decoded NV12 image to the swapchain.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
