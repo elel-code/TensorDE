@@ -1469,8 +1469,8 @@ fn native_wgpu_gst_dmabuf_queue_frames() -> u32 {
     std::env::var("GILDER_WGPU_GST_DMABUF_QUEUE_FRAMES")
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
-        .map(|value| value.clamp(2, 16))
-        .unwrap_or(2)
+        .map(|value| value.clamp(1, 16))
+        .unwrap_or(1)
 }
 
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
