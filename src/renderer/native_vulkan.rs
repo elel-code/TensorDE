@@ -15,6 +15,7 @@ use std::ptr;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::config::VideoDecoderPolicy;
 use crate::core::{FitMode, Transition};
 use crate::renderer::native_wayland::{
     NativeWaylandError, NativeWaylandHost, NativeWaylandHostOptions, NativeWaylandSurfaceHandles,
@@ -416,8 +417,31 @@ pub struct NativeVulkanRuntimeSnapshot {
     pub present_mode: &'static str,
     pub clear_color: NativeVulkanClearColor,
     pub static_upload_bytes: Option<u64>,
+    pub video_runtime: Option<NativeVulkanVideoRuntimeSnapshot>,
     pub render_item: NativeVulkanRenderItem,
     pub last_render_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVideoRuntimeSnapshot {
+    pub source: PathBuf,
+    pub poster: Option<PathBuf>,
+    pub fit: FitMode,
+    pub loop_playback: bool,
+    pub muted: bool,
+    pub manifest_max_fps: Option<u32>,
+    pub target_max_fps: Option<u32>,
+    pub decoder_policy: VideoDecoderPolicy,
+    pub start_offset_ms: u64,
+    pub frontend: &'static str,
+    pub frontend_status: &'static str,
+    pub handoff_status: &'static str,
+    pub texture_import_status: &'static str,
+    pub audio_status: &'static str,
+    pub frames_received: u64,
+    pub frames_imported: u64,
+    pub rendered_placeholder_frames: u64,
+    pub poster_upload_bytes: Option<u64>,
 }
 
 pub struct NativeVulkanSession {
@@ -587,6 +611,20 @@ impl NativeVulkanSession {
                 swapchain_plan.format.format,
                 swapchain_plan.extent,
             )?),
+            NativeVulkanRenderItem::Video {
+                poster: Some(poster),
+                fit,
+                ..
+            } => Some(NativeVulkanStaticImageUpload::new(
+                &instance,
+                selection.physical_device,
+                &device,
+                poster,
+                *fit,
+                None,
+                swapchain_plan.format.format,
+                swapchain_plan.extent,
+            )?),
             _ => None,
         };
 
@@ -685,6 +723,13 @@ impl NativeVulkanSession {
                 .static_upload
                 .as_ref()
                 .map(|upload| upload.size_bytes.min(u64::MAX as vk::DeviceSize) as u64),
+            video_runtime: native_vulkan_video_runtime_snapshot(
+                &self.render_item,
+                self.frames_rendered,
+                self.static_upload
+                    .as_ref()
+                    .map(|upload| upload.size_bytes.min(u64::MAX as vk::DeviceSize) as u64),
+            ),
             render_item: self.render_item.clone(),
             last_render_error: self.last_render_error.clone(),
         }
@@ -890,6 +935,17 @@ pub fn run_static_image(
 ) -> Result<NativeVulkanRuntimeSnapshot, NativeVulkanError> {
     let target_max_fps = options.target_max_fps;
     let item = native_vulkan_static_item(&plan);
+    let mut session = NativeVulkanSession::connect_with_render_item(options, item)?;
+    session.run_for(duration, target_max_fps)
+}
+
+pub fn run_video(
+    options: NativeVulkanOptions,
+    duration: Duration,
+    plan: VideoWallpaperPlan,
+) -> Result<NativeVulkanRuntimeSnapshot, NativeVulkanError> {
+    let target_max_fps = options.target_max_fps;
+    let item = native_vulkan_video_item(&plan);
     let mut session = NativeVulkanSession::connect_with_render_item(options, item)?;
     session.run_for(duration, target_max_fps)
 }
@@ -1488,7 +1544,7 @@ pub fn wallpaper_type_support_matrix() -> Vec<NativeVulkanWallpaperTypeSupport> 
         NativeVulkanWallpaperTypeSupport {
             wallpaper_type: NativeVulkanWallpaperType::Video,
             current_vulkan_item: true,
-            current_renderer_status: "render item mapped; video texture import still experimental",
+            current_renderer_status: "video render item can run through native Vulkan lifecycle with poster/clear placeholder; texture import still experimental",
             target_vulkan_path: "GStreamer decode -> importable DMABuf/EGLImage/Vulkan image -> YUV sampling",
         },
         NativeVulkanWallpaperTypeSupport {
@@ -1538,7 +1594,10 @@ pub enum NativeVulkanRenderItem {
         fit: FitMode,
         loop_playback: bool,
         muted: bool,
+        manifest_max_fps: Option<u32>,
         target_max_fps: Option<u32>,
+        decoder_policy: VideoDecoderPolicy,
+        start_offset_ms: u64,
         renderer_status: &'static str,
     },
     Slideshow {
@@ -1608,9 +1667,63 @@ fn native_vulkan_video_item(plan: &VideoWallpaperPlan) -> NativeVulkanRenderItem
         fit: plan.fit,
         loop_playback: plan.loop_playback,
         muted: plan.muted,
+        manifest_max_fps: plan.manifest_max_fps,
         target_max_fps: plan.target_max_fps,
-        renderer_status: "planned-video-dmabuf-yuv-sampling",
+        decoder_policy: plan.decoder_policy,
+        start_offset_ms: plan.start_offset_ms,
+        renderer_status: "vulkan-lifecycle-video-placeholder",
     }
+}
+
+fn native_vulkan_video_runtime_snapshot(
+    item: &NativeVulkanRenderItem,
+    rendered_frames: u64,
+    poster_upload_bytes: Option<u64>,
+) -> Option<NativeVulkanVideoRuntimeSnapshot> {
+    let NativeVulkanRenderItem::Video {
+        source,
+        poster,
+        fit,
+        loop_playback,
+        muted,
+        manifest_max_fps,
+        target_max_fps,
+        decoder_policy,
+        start_offset_ms,
+        ..
+    } = item
+    else {
+        return None;
+    };
+
+    Some(NativeVulkanVideoRuntimeSnapshot {
+        source: source.clone(),
+        poster: poster.clone(),
+        fit: *fit,
+        loop_playback: *loop_playback,
+        muted: *muted,
+        manifest_max_fps: *manifest_max_fps,
+        target_max_fps: *target_max_fps,
+        decoder_policy: *decoder_policy,
+        start_offset_ms: *start_offset_ms,
+        frontend: "gstreamer-planned",
+        frontend_status: if poster.is_some() {
+            "not-started-poster-placeholder"
+        } else {
+            "not-started-clear-placeholder"
+        },
+        handoff_status: "pending-appsink-dmabuf-or-gpu-memory-handoff",
+        texture_import_status: "not-importing-yet",
+        audio_status: if *muted {
+            "muted-no-audio-pipeline"
+        } else {
+            "planned-separate-audio-pipeline"
+        },
+        frames_received: 0,
+        frames_imported: 0,
+        rendered_placeholder_frames: rendered_frames,
+        poster_upload_bytes,
+    })
 }
 
 fn native_vulkan_slideshow_item(plan: &SlideshowWallpaperPlan) -> NativeVulkanRenderItem {
@@ -1856,6 +1969,56 @@ mod tests {
         ));
         assert!(matches!(items[1], NativeVulkanRenderItem::Video { .. }));
         assert_eq!(items[1].wallpaper_type(), NativeVulkanWallpaperType::Video);
+        let NativeVulkanRenderItem::Video {
+            target_max_fps,
+            decoder_policy,
+            start_offset_ms,
+            renderer_status,
+            ..
+        } = &items[1]
+        else {
+            unreachable!("item already matched as video");
+        };
+        assert_eq!(*target_max_fps, Some(240));
+        assert_eq!(
+            *decoder_policy,
+            crate::config::VideoDecoderPolicy::HardwarePreferred
+        );
+        assert_eq!(*start_offset_ms, 0);
+        assert_eq!(*renderer_status, "vulkan-lifecycle-video-placeholder");
+    }
+
+    #[test]
+    fn video_runtime_snapshot_reports_pending_gstreamer_handoff() {
+        let item = NativeVulkanRenderItem::Video {
+            output_name: "HDMI-A-1".to_owned(),
+            source: PathBuf::from("/tmp/video.mp4"),
+            poster: Some(PathBuf::from("/tmp/poster.png")),
+            fit: FitMode::Contain,
+            loop_playback: true,
+            muted: false,
+            manifest_max_fps: Some(240),
+            target_max_fps: Some(120),
+            decoder_policy: crate::config::VideoDecoderPolicy::HardwareRequired,
+            start_offset_ms: 1500,
+            renderer_status: "vulkan-lifecycle-video-placeholder",
+        };
+
+        let snapshot =
+            native_vulkan_video_runtime_snapshot(&item, 9, Some(1024)).expect("video snapshot");
+
+        assert_eq!(snapshot.frontend, "gstreamer-planned");
+        assert_eq!(snapshot.frontend_status, "not-started-poster-placeholder");
+        assert_eq!(
+            snapshot.handoff_status,
+            "pending-appsink-dmabuf-or-gpu-memory-handoff"
+        );
+        assert_eq!(snapshot.audio_status, "planned-separate-audio-pipeline");
+        assert_eq!(snapshot.frames_received, 0);
+        assert_eq!(snapshot.frames_imported, 0);
+        assert_eq!(snapshot.rendered_placeholder_frames, 9);
+        assert_eq!(snapshot.poster_upload_bytes, Some(1024));
+        assert_eq!(snapshot.start_offset_ms, 1500);
     }
 
     #[test]

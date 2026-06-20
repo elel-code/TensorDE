@@ -17,12 +17,13 @@ fn main() {
 
 #[cfg(feature = "native-vulkan-renderer")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    use gilder::renderer::StaticWallpaperPlan;
     use gilder::renderer::native_vulkan::{
         NativeVulkanOptions, NativeVulkanSurfaceProbeOptions, backend_contract, capabilities,
-        probe_wayland_surface, run_clear, run_static_image, wallpaper_type_support_matrix,
+        probe_wayland_surface, run_clear, run_static_image, run_video,
+        wallpaper_type_support_matrix,
     };
     use gilder::renderer::native_wayland::NativeWaylandLayer;
+    use gilder::renderer::{StaticWallpaperPlan, VideoWallpaperPlan};
     use serde_json::json;
     use std::path::PathBuf;
     use std::time::Duration;
@@ -31,8 +32,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut options = NativeVulkanOptions::default();
     let mut duration = Duration::from_secs(5);
     let mut source = None::<PathBuf>;
+    let mut poster = None::<PathBuf>;
     let mut fit = gilder::core::FitMode::Cover;
     let mut background = None::<String>;
+    let mut loop_playback = true;
+    let mut muted = true;
+    let mut decoder_policy = gilder::config::VideoDecoderPolicy::HardwarePreferred;
+    let mut start_offset_ms = 0u64;
     let mut allow_foreground_layer = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -43,6 +49,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--probe-surface" => mode = NativeVulkanCliMode::ProbeSurface,
             "--run-clear" => mode = NativeVulkanCliMode::RunClear,
             "--run-static" => mode = NativeVulkanCliMode::RunStatic,
+            "--run-video" => mode = NativeVulkanCliMode::RunVideo,
             "--json" => mode = NativeVulkanCliMode::All,
             "--output-name" => {
                 options.host.output_name =
@@ -80,12 +87,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--source" => {
                 source = Some(args.next().ok_or("--source requires a path")?.into());
             }
+            "--poster" => {
+                poster = Some(args.next().ok_or("--poster requires a path")?.into());
+            }
             "--fit" => {
                 let value = args.next().ok_or("--fit requires a value")?;
                 fit = parse_fit_mode(&value)?;
             }
             "--background" => {
                 background = Some(args.next().ok_or("--background requires #rrggbb")?);
+            }
+            "--loop" => loop_playback = true,
+            "--no-loop" => loop_playback = false,
+            "--muted" => muted = true,
+            "--unmuted" => muted = false,
+            "--decoder" => {
+                let value = args.next().ok_or("--decoder requires a value")?;
+                decoder_policy = parse_decoder_policy(&value)?;
+            }
+            "--start-offset-ms" => {
+                start_offset_ms = args
+                    .next()
+                    .map(|value| value.parse::<u64>())
+                    .transpose()?
+                    .ok_or("--start-offset-ms requires milliseconds")?;
             }
             "-h" | "--help" => {
                 print_usage();
@@ -140,6 +165,39 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 },
             )?)
         }
+        NativeVulkanCliMode::RunVideo => {
+            let source = source.ok_or("--run-video requires --source")?;
+            if !source.is_file() {
+                return Err(format!("video source does not exist: {}", source.display()).into());
+            }
+            if let Some(poster) = poster.as_ref()
+                && !poster.is_file()
+            {
+                return Err(format!("video poster does not exist: {}", poster.display()).into());
+            }
+            let output_name = options
+                .host
+                .output_name
+                .clone()
+                .unwrap_or_else(|| "native-vulkan".to_owned());
+            let target_max_fps = options.target_max_fps;
+            json!(run_video(
+                options,
+                duration,
+                VideoWallpaperPlan {
+                    output_name,
+                    source,
+                    poster,
+                    fit,
+                    loop_playback,
+                    muted,
+                    manifest_max_fps: None,
+                    target_max_fps,
+                    decoder_policy,
+                    start_offset_ms,
+                },
+            )?)
+        }
     };
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
@@ -191,6 +249,23 @@ fn parse_fit_mode(value: &str) -> Result<gilder::core::FitMode, String> {
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
+fn parse_decoder_policy(
+    value: &str,
+) -> Result<gilder::config::VideoDecoderPolicy, Box<dyn std::error::Error>> {
+    match value {
+        "auto" => Ok(gilder::config::VideoDecoderPolicy::Auto),
+        "hardware-preferred" | "hw-preferred" => {
+            Ok(gilder::config::VideoDecoderPolicy::HardwarePreferred)
+        }
+        "hardware-required" | "hw-required" => {
+            Ok(gilder::config::VideoDecoderPolicy::HardwareRequired)
+        }
+        "software" => Ok(gilder::config::VideoDecoderPolicy::Software),
+        other => Err(format!("unsupported decoder policy: {other}").into()),
+    }
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeVulkanCliMode {
     All,
@@ -200,19 +275,23 @@ enum NativeVulkanCliMode {
     ProbeSurface,
     RunClear,
     RunStatic,
+    RunVideo,
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--run-clear|--run-static]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--run-clear|--run-static|--run-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
 --run-clear creates a Vulkan device/swapchain, clears frames, presents, then prints runtime JSON.\n\
 --run-static decodes --source, fits it to the swapchain, copies it through Vulkan, presents, then prints runtime JSON.\n\
+--run-video accepts a video wallpaper plan, presents a poster/clear placeholder through native Vulkan, then prints video handoff telemetry.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
-         [--source PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]"
+         [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
+         [--loop|--no-loop] [--muted|--unmuted] [--decoder auto|hardware-preferred|hardware-required|software]\n\
+         [--start-offset-ms MS]"
     );
 }
