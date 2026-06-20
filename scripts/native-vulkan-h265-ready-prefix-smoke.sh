@@ -17,6 +17,9 @@ Options:
   --samples <count>     AU samples to collect. Default: 8.
   --required-ready-prefix <count>
                         Required continuous ready AU prefix. Default: 8.
+  --decode-prefix <count>
+                        Also decode this many ready-prefix AUs and read back the final decoded
+                        frame. Default: 0.
   --width <px>          Generated/probed width. Default: 3840.
   --height <px>         Generated/probed height. Default: 2160.
   --rate <fps>          Generated frame rate. Default: 240.
@@ -32,6 +35,7 @@ report_dir=""
 work_parent="${TMPDIR:-/tmp}"
 samples=8
 required_ready_prefix=8
+decode_prefix=0
 width=3840
 height=2160
 rate=240
@@ -62,6 +66,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --required-ready-prefix)
       required_ready_prefix="${2:-}"
+      shift 2
+      ;;
+    --decode-prefix)
+      decode_prefix="${2:-}"
       shift 2
       ;;
     --width)
@@ -108,8 +116,8 @@ for tool in ffmpeg jq; do
   fi
 done
 
-if [[ "$samples" -lt 1 || "$required_ready_prefix" -lt 1 ]]; then
-  printf 'FAIL: --samples and --required-ready-prefix must be positive\n' >&2
+if [[ "$samples" -lt 1 || "$required_ready_prefix" -lt 1 || "$decode_prefix" -lt 0 ]]; then
+  printf 'FAIL: --samples and --required-ready-prefix must be positive, --decode-prefix must be non-negative\n' >&2
   exit 1
 fi
 
@@ -147,6 +155,10 @@ fi
 probe_json="$report_dir/probe.json"
 probe_stderr="$report_dir/probe.stderr"
 summary="$report_dir/summary.txt"
+decode_args=()
+if [[ "$decode_prefix" -gt 0 ]]; then
+  decode_args=(--decode-h265-ready-prefix "$decode_prefix")
+fi
 
 set +e
 env WAYLAND_DISPLAY="$display" \
@@ -158,6 +170,7 @@ env WAYLAND_DISPLAY="$display" \
   --extract-bitstream \
   --source "$source" \
   --bitstream-samples "$samples" \
+  "${decode_args[@]}" \
   --require-h265-ready-prefix "$required_ready_prefix" \
   >"$probe_json" 2>"$probe_stderr"
 probe_status=$?
@@ -171,6 +184,23 @@ if [[ "$probe_status" -ne 0 ]]; then
   exit "$probe_status"
 fi
 
+if [[ "$decode_prefix" -gt 0 ]]; then
+  decoded_frames="$(jq -r '.h265_ready_prefix_decode.decoded_frame_count // 0' "$probe_json")"
+  y_unique="$(jq -r '.h265_ready_prefix_decode.output_readback.y_plane_unique_values // 0' "$probe_json")"
+  uv_unique="$(jq -r '.h265_ready_prefix_decode.output_readback.uv_plane_unique_values // 0' "$probe_json")"
+  if [[ "$decoded_frames" -ne "$decode_prefix" || "$y_unique" -le 1 || "$uv_unique" -le 1 ]]; then
+    {
+      printf 'FAIL: native Vulkan H.265 decode-prefix output was not valid\n'
+      printf 'decoded_frames: %s\n' "$decoded_frames"
+      printf 'requested_decode_prefix: %s\n' "$decode_prefix"
+      printf 'y_unique: %s\n' "$y_unique"
+      printf 'uv_unique: %s\n' "$uv_unique"
+      printf 'probe JSON: %s\n' "$probe_json"
+    } | tee "$summary"
+    exit 1
+  fi
+fi
+
 {
   printf 'result: %s\n' "$(jq -r '.result' "$probe_json")"
   printf 'source: %s\n' "$source"
@@ -178,6 +208,13 @@ fi
   printf 'required_ready_prefix: %s\n' "$required_ready_prefix"
   printf 'h265_decode_ready_prefix_count: %s\n' "$(jq -r '.bitstream_extract.h265_decode_ready_prefix_count' "$probe_json")"
   printf 'h265_decode_ready_count: %s\n' "$(jq -r '.bitstream_extract.h265_decode_ready_count' "$probe_json")"
+  printf 'decode_prefix_requested: %s\n' "$decode_prefix"
+  printf 'decode_prefix_completed: %s\n' "$(jq -r '.h265_ready_prefix_decode.completed // false' "$probe_json")"
+  printf 'decode_prefix_decoded_frames: %s\n' "$(jq -r '.h265_ready_prefix_decode.decoded_frame_count // 0' "$probe_json")"
+  printf 'decode_prefix_readback_au: %s\n' "$(jq -r '.h265_ready_prefix_decode.readback_access_unit_index // "none"' "$probe_json")"
+  printf 'decode_prefix_readback_layer: %s\n' "$(jq -r '.h265_ready_prefix_decode.readback_base_array_layer // "none"' "$probe_json")"
+  printf 'decode_prefix_readback_y_unique: %s\n' "$(jq -r '.h265_ready_prefix_decode.output_readback.y_plane_unique_values // "none"' "$probe_json")"
+  printf 'decode_prefix_readback_uv_unique: %s\n' "$(jq -r '.h265_ready_prefix_decode.output_readback.uv_plane_unique_values // "none"' "$probe_json")"
   printf 'session_parameters_created: %s\n' "$(jq -r '.session_parameters_created' "$probe_json")"
   printf 'session_parameters_error: %s\n' "$(jq -r '.session_parameters_error // "none"' "$probe_json")"
   printf 'profile: %s\n' "$(jq -r '.bitstream_extract.h265_parameter_sets.sps.profile_label' "$probe_json")"

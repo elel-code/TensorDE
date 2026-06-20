@@ -70,6 +70,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 video_session_options.allocate_bitstream_buffer = true;
                 video_session_options.allocate_video_images = true;
             }
+            "--decode-h265-ready-prefix" => {
+                let count = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()?
+                    .ok_or("--decode-h265-ready-prefix requires a count")?;
+                video_session_options.decode_h265_ready_prefix_frames = count;
+                video_session_options.h265_required_ready_prefix_access_units = count;
+                video_session_options.extract_bitstream = true;
+                video_session_options.allocate_bitstream_buffer = true;
+                video_session_options.allocate_video_images = true;
+            }
             "--run-clear" => mode = NativeVulkanCliMode::RunClear,
             "--run-static" => mode = NativeVulkanCliMode::RunStatic,
             "--run-video" => mode = NativeVulkanCliMode::RunVideo,
@@ -373,6 +385,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --extract-bitstream extends --probe-video-session with qtdemux+h265parse encoded AU extraction and writes the selected AU to the bitstream buffer.\n\
 --decode-first-frame extends --probe-video-session with a real H.265 IDR Vulkan Video command buffer submit.\n\
 --sample-decoded-first-frame extends --decode-first-frame with NV12 shader sampling into an offscreen Vulkan color target.\n\
+--decode-h265-ready-prefix N extends --probe-video-session with N ready H.265 AU Vulkan Video decode submits and final-frame readback.\n\
 --run-clear creates a Vulkan device/swapchain, clears frames, presents, then prints runtime JSON.\n\
 --run-static decodes --source, fits it to the swapchain, copies it through Vulkan, presents, then prints runtime JSON.\n\
 --run-video accepts a video wallpaper plan, presents a poster/clear placeholder through native Vulkan, then prints video handoff telemetry.\n\
@@ -383,6 +396,7 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--video-codec h265|av1] [--width PX] [--height PX]\n\
          [--allocate-video-images] [--allocate-bitstream-buffer] [--bitstream-buffer-size BYTES]\n\
          [--extract-bitstream] [--decode-first-frame] [--sample-decoded-first-frame] [--bitstream-samples N]\n\
+         [--decode-h265-ready-prefix N]\n\
          [--require-h265-ready-prefix N]\n\
          [--start-offset-ms MS]"
     );
