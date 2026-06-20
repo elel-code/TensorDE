@@ -57,6 +57,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 video_session_options.extract_bitstream = true;
                 video_session_options.allocate_bitstream_buffer = true;
             }
+            "--decode-first-frame" => {
+                video_session_options.decode_first_frame = true;
+                video_session_options.extract_bitstream = true;
+                video_session_options.allocate_bitstream_buffer = true;
+                video_session_options.allocate_video_images = true;
+            }
             "--run-clear" => mode = NativeVulkanCliMode::RunClear,
             "--run-static" => mode = NativeVulkanCliMode::RunStatic,
             "--run-video" => mode = NativeVulkanCliMode::RunVideo,
@@ -349,6 +355,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --allocate-video-images extends --probe-video-session with NV12 DPB/output sampled image allocation.\n\
 --allocate-bitstream-buffer extends --probe-video-session with a mapped VIDEO_DECODE_SRC bitstream buffer.\n\
 --extract-bitstream extends --probe-video-session with qtdemux+h265parse encoded AU extraction and writes the selected AU to the bitstream buffer.\n\
+--decode-first-frame extends --probe-video-session with a real H.265 IDR Vulkan Video command buffer submit.\n\
 --run-clear creates a Vulkan device/swapchain, clears frames, presents, then prints runtime JSON.\n\
 --run-static decodes --source, fits it to the swapchain, copies it through Vulkan, presents, then prints runtime JSON.\n\
 --run-video accepts a video wallpaper plan, presents a poster/clear placeholder through native Vulkan, then prints video handoff telemetry.\n\
@@ -358,7 +365,7 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--loop|--no-loop] [--muted|--unmuted] [--decoder auto|hardware-preferred|hardware-required|software]\n\
          [--video-codec h265|av1] [--width PX] [--height PX]\n\
          [--allocate-video-images] [--allocate-bitstream-buffer] [--bitstream-buffer-size BYTES]\n\
-         [--extract-bitstream] [--bitstream-samples N]\n\
+         [--extract-bitstream] [--decode-first-frame] [--bitstream-samples N]\n\
          [--start-offset-ms MS]"
     );
 }
