@@ -22,6 +22,7 @@ native-wgpu-renderer = [
     "dep:raw-window-handle",
     "dep:wgpu",
 ]
+native-vulkan-renderer = ["native-wayland-renderer", "dep:ash"]
 native-wgpu-gpu-video = ["native-wgpu-renderer", "dep:gpu-video"]
 native-wgpu-gst-gpu-video = ["native-wgpu-gpu-video", "video-renderer"]
 native-wgpu-gst-dmabuf = ["native-wgpu-renderer", "video-renderer", "dep:ash"]
@@ -48,6 +49,11 @@ required-features = ["native-wayland-renderer", "video-renderer"]
 name = "gilder-native-wgpu"
 path = "src/bin/gilder-native-wgpu.rs"
 required-features = ["native-wgpu-renderer"]
+
+[[bin]]
+name = "gilder-native-vulkan"
+path = "src/bin/gilder-native-vulkan.rs"
+required-features = ["native-vulkan-renderer"]
 
 [dependencies]
 ash = { version = "0.38", optional = true }

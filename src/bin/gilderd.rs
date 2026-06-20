@@ -1709,6 +1709,7 @@ fn renderer_capabilities() -> Value {
             "layer_shell_background_windows": cfg!(feature = "gtk-renderer"),
         },
         "native_wayland": native_wayland_renderer_capabilities(),
+        "native_vulkan": native_vulkan_renderer_capabilities(),
         "native_wgpu": native_wgpu_renderer_capabilities(),
         "video": video_renderer_capabilities(),
     })
@@ -2086,6 +2087,36 @@ fn native_wayland_renderer_capabilities() -> Value {
 #[cfg(feature = "native-wgpu-renderer")]
 fn native_wgpu_renderer_capabilities() -> Value {
     json!(gilder::renderer::native_wgpu::capabilities())
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+fn native_vulkan_renderer_capabilities() -> Value {
+    json!({
+        "capabilities": gilder::renderer::native_vulkan::capabilities(),
+        "backend_contract": gilder::renderer::native_vulkan::backend_contract(),
+    })
+}
+
+#[cfg(not(feature = "native-vulkan-renderer"))]
+fn native_vulkan_renderer_capabilities() -> Value {
+    json!({
+        "capabilities": {
+            "built": false,
+            "experimental": false,
+            "default_enabled": false,
+            "reuses_native_wayland_host": false,
+            "owns_layer_shell_surface_now": false,
+            "owns_vulkan_instance_now": false,
+            "owns_vulkan_device_now": false,
+            "owns_wayland_vulkan_surface_now": false,
+            "owns_swapchain_now": false,
+            "renders_frames_now": false,
+            "consumes_render_sync": false,
+            "direct_video_memory_status": "not built",
+            "unsafe_policy": "unsafe is not used by this build",
+        },
+        "backend_contract": null,
+    })
 }
 
 #[cfg(not(feature = "native-wgpu-renderer"))]
