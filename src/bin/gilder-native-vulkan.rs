@@ -17,13 +17,15 @@ fn main() {
 
 #[cfg(feature = "native-vulkan-renderer")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(feature = "native-vulkan-gst-video")]
-    use gilder::renderer::native_vulkan::run_h265_first_frame_video;
     use gilder::renderer::native_vulkan::{
         NativeVulkanOptions, NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionSmokeOptions,
         backend_contract, capabilities, probe_vulkan_video_decode, probe_vulkan_video_session,
         probe_wayland_surface, run_clear, run_static_image, run_video,
         wallpaper_type_support_matrix,
+    };
+    #[cfg(feature = "native-vulkan-gst-video")]
+    use gilder::renderer::native_vulkan::{
+        run_h265_first_frame_video, run_h265_ready_prefix_video,
     };
     use gilder::renderer::native_wayland::NativeWaylandLayer;
     use gilder::renderer::{StaticWallpaperPlan, VideoWallpaperPlan};
@@ -54,6 +56,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--probe-video" => mode = NativeVulkanCliMode::ProbeVideo,
             "--probe-video-session" => mode = NativeVulkanCliMode::ProbeVideoSession,
             "--run-h265-first-frame-video" => mode = NativeVulkanCliMode::RunH265FirstFrameVideo,
+            "--run-h265-ready-prefix-video" => mode = NativeVulkanCliMode::RunH265ReadyPrefixVideo,
             "--allocate-video-images" => video_session_options.allocate_video_images = true,
             "--allocate-bitstream-buffer" => video_session_options.allocate_bitstream_buffer = true,
             "--extract-bitstream" => {
@@ -344,6 +347,44 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        NativeVulkanCliMode::RunH265ReadyPrefixVideo => {
+            let source = source.ok_or("--run-h265-ready-prefix-video requires --source")?;
+            if !source.is_file() {
+                return Err(format!("video source does not exist: {}", source.display()).into());
+            }
+            if video_session_options.decode_h265_ready_prefix_frames == 0 {
+                return Err(
+                    "--run-h265-ready-prefix-video requires --decode-h265-ready-prefix N".into(),
+                );
+            }
+            #[cfg(feature = "native-vulkan-gst-video")]
+            {
+                json!(run_h265_ready_prefix_video(
+                    options,
+                    source,
+                    video_session_options.width,
+                    video_session_options.height,
+                    fit,
+                    video_session_options.bitstream_extract_max_samples,
+                    video_session_options.decode_h265_ready_prefix_frames,
+                )?)
+            }
+            #[cfg(not(feature = "native-vulkan-gst-video"))]
+            {
+                let _ = (
+                    options,
+                    source,
+                    video_session_options.width,
+                    video_session_options.height,
+                    fit,
+                    video_session_options.bitstream_extract_max_samples,
+                    video_session_options.decode_h265_ready_prefix_frames,
+                );
+                return Err(
+                    "--run-h265-ready-prefix-video requires native-vulkan-gst-video feature".into(),
+                );
+            }
+        }
     };
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
@@ -425,12 +466,13 @@ enum NativeVulkanCliMode {
     RunStatic,
     RunVideo,
     RunH265FirstFrameVideo,
+    RunH265ReadyPrefixVideo,
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-video-session|--run-clear|--run-static|--run-video|--run-h265-first-frame-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-video-session|--run-clear|--run-static|--run-video|--run-h265-first-frame-video|--run-h265-ready-prefix-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
@@ -448,6 +490,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --run-static decodes --source, fits it to the swapchain, copies it through Vulkan, presents, then prints runtime JSON.\n\
 --run-video accepts a video wallpaper plan, presents a poster/clear placeholder through native Vulkan, then prints video handoff telemetry.\n\
 --run-h265-first-frame-video decodes the first H.265 IDR with Vulkan Video and samples the decoded NV12 image to the swapchain.\n\
+--run-h265-ready-prefix-video decodes a ready H.265 AU prefix with Vulkan Video and samples each decoded NV12 layer to the swapchain.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
