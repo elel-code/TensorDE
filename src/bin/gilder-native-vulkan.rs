@@ -160,6 +160,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .transpose()?
                     .ok_or("--bitstream-samples requires a count")?;
             }
+            "--require-h265-ready-prefix" => {
+                video_session_options.h265_required_ready_prefix_access_units = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()?
+                    .ok_or("--require-h265-ready-prefix requires a count")?;
+                video_session_options.extract_bitstream = true;
+                video_session_options.allocate_bitstream_buffer = true;
+            }
             "--start-offset-ms" => {
                 start_offset_ms = args
                     .next()
@@ -374,6 +383,7 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--video-codec h265|av1] [--width PX] [--height PX]\n\
          [--allocate-video-images] [--allocate-bitstream-buffer] [--bitstream-buffer-size BYTES]\n\
          [--extract-bitstream] [--decode-first-frame] [--sample-decoded-first-frame] [--bitstream-samples N]\n\
+         [--require-h265-ready-prefix N]\n\
          [--start-offset-ms MS]"
     );
 }

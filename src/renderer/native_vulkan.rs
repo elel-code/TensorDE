@@ -380,6 +380,7 @@ pub struct NativeVulkanVideoSessionSmokeOptions {
     pub sample_decoded_first_frame: bool,
     pub bitstream_source: Option<PathBuf>,
     pub bitstream_extract_max_samples: u32,
+    pub h265_required_ready_prefix_access_units: u32,
 }
 
 impl Default for NativeVulkanVideoSessionSmokeOptions {
@@ -396,6 +397,7 @@ impl Default for NativeVulkanVideoSessionSmokeOptions {
             sample_decoded_first_frame: false,
             bitstream_source: None,
             bitstream_extract_max_samples: 8,
+            h265_required_ready_prefix_access_units: 0,
         }
     }
 }
@@ -452,6 +454,7 @@ pub struct NativeVulkanVideoSessionSmokeSnapshot {
     pub bitstream_extract: Option<NativeVulkanVideoBitstreamExtractSnapshot>,
     pub session_parameters_requested: bool,
     pub session_parameters_created: bool,
+    pub session_parameters_error: Option<String>,
     pub session_parameters: Option<NativeVulkanVideoSessionParametersSnapshot>,
     pub first_frame_decode_requested: bool,
     pub first_frame_decode: Option<NativeVulkanVideoFirstFrameDecodeSnapshot>,
@@ -642,6 +645,10 @@ pub struct NativeVulkanVideoBitstreamExtractSnapshot {
     pub h265_nal_units: Vec<NativeVulkanH265NalUnitSnapshot>,
     pub h265_access_units: Vec<NativeVulkanH265AccessUnitSnapshot>,
     pub h265_reference_plan_dpb_slots: u32,
+    pub h265_decode_ready_count: u32,
+    pub h265_decode_ready_prefix_count: u32,
+    pub h265_decode_first_unready_access_unit_index: Option<u32>,
+    pub h265_decode_first_unready_missing_reference_pocs: Vec<i32>,
     pub h265_decode_reference_plan: Vec<NativeVulkanH265DecodeReferencePlanEntrySnapshot>,
 }
 
@@ -808,6 +815,7 @@ pub struct NativeVulkanH265SpsSnapshot {
     pub pcm_enabled_flag: bool,
     pub pcm_loop_filter_disabled_flag: bool,
     pub num_short_term_ref_pic_sets: u32,
+    pub short_term_ref_pic_sets: Vec<NativeVulkanH265ShortTermRefPicSetSnapshot>,
     pub long_term_ref_pics_present_flag: bool,
     pub temporal_mvp_enabled_flag: bool,
     pub strong_intra_smoothing_enabled_flag: bool,
@@ -6442,9 +6450,15 @@ fn native_vulkan_video_session_create_and_bind(
                 bitstream_payload,
             )?);
         }
+        let session_parameters_requested =
+            matches!(options.codec, NativeVulkanVideoSessionCodec::H265Main8)
+                && bitstream_extract
+                    .as_ref()
+                    .is_some_and(|extract| extract.snapshot.h265_parameter_sets.is_some());
+        let mut session_parameters_error = None::<String>;
         let session_parameters =
             if matches!(options.codec, NativeVulkanVideoSessionCodec::H265Main8) {
-                bitstream_extract
+                match bitstream_extract
                     .as_ref()
                     .and_then(|extract| extract.snapshot.h265_parameter_sets.as_ref())
                     .map(|parameter_sets| {
@@ -6453,8 +6467,15 @@ fn native_vulkan_video_session_create_and_bind(
                             session,
                             parameter_sets,
                         )
-                    })
-                    .transpose()?
+                    }) {
+                    Some(Ok(parameters)) => Some(parameters),
+                    Some(Err(err)) if options.decode_first_frame => return Err(err),
+                    Some(Err(err)) => {
+                        session_parameters_error = Some(err.to_string());
+                        None
+                    }
+                    None => None,
+                }
             } else {
                 None
             };
@@ -6603,13 +6624,9 @@ fn native_vulkan_video_session_create_and_bind(
             bitstream_buffer: bitstream_buffer_snapshot,
             bitstream_extract_requested: options.extract_bitstream,
             bitstream_extract: bitstream_extract_snapshot,
-            session_parameters_requested: matches!(
-                options.codec,
-                NativeVulkanVideoSessionCodec::H265Main8
-            ) && bitstream_extract
-                .as_ref()
-                .is_some_and(|extract| extract.snapshot.h265_parameter_sets.is_some()),
+            session_parameters_requested,
             session_parameters_created: session_parameters_snapshot.is_some(),
+            session_parameters_error,
             session_parameters: session_parameters_snapshot,
             first_frame_decode_requested: options.decode_first_frame,
             first_frame_decode,
@@ -8205,10 +8222,17 @@ fn native_vulkan_extract_video_bitstream(
         )));
     }
     match options.codec {
-        NativeVulkanVideoSessionCodec::H265Main8 => native_vulkan_extract_h265_bitstream(
-            source,
-            options.bitstream_extract_max_samples.max(1),
-        ),
+        NativeVulkanVideoSessionCodec::H265Main8 => {
+            let extract = native_vulkan_extract_h265_bitstream(
+                source,
+                options.bitstream_extract_max_samples.max(1),
+            )?;
+            native_vulkan_validate_h265_ready_prefix(
+                &extract.snapshot,
+                options.h265_required_ready_prefix_access_units,
+            )?;
+            Ok(extract)
+        }
         NativeVulkanVideoSessionCodec::Av1Main8 => Err(NativeVulkanError::Video(
             "AV1 bitstream extraction is not implemented yet; use H.265 for the first Vulkan Video decode path".to_owned(),
         )),
@@ -8248,6 +8272,26 @@ fn native_vulkan_extract_h265_bitstream(
     let _ = pipeline.set_state(gst::State::Null);
     let _ = pipeline.state(gst::ClockTime::from_mseconds(500));
     result
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_validate_h265_ready_prefix(
+    snapshot: &NativeVulkanVideoBitstreamExtractSnapshot,
+    required_ready_prefix_access_units: u32,
+) -> Result<(), NativeVulkanError> {
+    if required_ready_prefix_access_units == 0
+        || snapshot.h265_decode_ready_prefix_count >= required_ready_prefix_access_units
+    {
+        return Ok(());
+    }
+
+    Err(NativeVulkanError::Video(format!(
+        "H.265 decode ready prefix has {} access units but {} required; first unready AU {:?} is missing reference POCs {:?}",
+        snapshot.h265_decode_ready_prefix_count,
+        required_ready_prefix_access_units,
+        snapshot.h265_decode_first_unready_access_unit_index,
+        snapshot.h265_decode_first_unready_missing_reference_pocs,
+    )))
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -8428,6 +8472,22 @@ fn native_vulkan_collect_h265_bitstream_samples(
     let h265_reference_plan_dpb_slots = NATIVE_VULKAN_H265_REFERENCE_PLAN_DPB_SLOTS;
     let h265_decode_reference_plan =
         native_vulkan_h265_decode_reference_plan(&h265_access_units, h265_reference_plan_dpb_slots);
+    let h265_decode_ready_count = h265_decode_reference_plan
+        .iter()
+        .filter(|entry| entry.ready_for_decode_submit)
+        .count() as u32;
+    let h265_decode_ready_prefix_count = h265_decode_reference_plan
+        .iter()
+        .take_while(|entry| entry.ready_for_decode_submit)
+        .count() as u32;
+    let h265_decode_first_unready = h265_decode_reference_plan
+        .iter()
+        .find(|entry| !entry.ready_for_decode_submit);
+    let h265_decode_first_unready_access_unit_index =
+        h265_decode_first_unready.map(|entry| entry.access_unit_index);
+    let h265_decode_first_unready_missing_reference_pocs = h265_decode_first_unready
+        .map(|entry| entry.missing_reference_pocs.clone())
+        .unwrap_or_default();
 
     Ok(NativeVulkanVideoBitstreamExtract {
         selected_access_unit: selected.bytes.clone(),
@@ -8458,6 +8518,10 @@ fn native_vulkan_collect_h265_bitstream_samples(
             h265_nal_units: selected.stats.nal_units.clone(),
             h265_access_units,
             h265_reference_plan_dpb_slots,
+            h265_decode_ready_count,
+            h265_decode_ready_prefix_count,
+            h265_decode_first_unready_access_unit_index,
+            h265_decode_first_unready_missing_reference_pocs,
             h265_decode_reference_plan,
         },
     })
@@ -8561,6 +8625,22 @@ fn native_vulkan_h265_access_unit_snapshot(
         first_slice,
         first_slice_parse_error,
     }
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h265_sps_short_term_ref_pic_sets_supported(
+    ref_pic_sets: &[NativeVulkanH265ShortTermRefPicSetSnapshot],
+) -> bool {
+    ref_pic_sets.iter().all(|ref_pic_set| {
+        !ref_pic_set.inter_ref_pic_set_prediction_flag
+            && ref_pic_set.num_negative_pics <= 16
+            && ref_pic_set.num_positive_pics <= 16
+            && ref_pic_set
+                .negative_delta_pocs
+                .iter()
+                .chain(ref_pic_set.positive_delta_pocs.iter())
+                .all(|delta_poc| delta_poc.unsigned_abs() <= u16::MAX as u32)
+    })
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -8783,7 +8863,7 @@ fn native_vulkan_parse_h265_parameter_sets(
     let vulkan_std_session_parameters_ready = requested_profile_compatible
         && vps.id == sps.vps_id
         && sps.id == pps.sps_id
-        && sps.num_short_term_ref_pic_sets == 0
+        && native_vulkan_h265_sps_short_term_ref_pic_sets_supported(&sps.short_term_ref_pic_sets)
         && !sps.long_term_ref_pics_present_flag
         && !sps.scaling_list_enabled_flag
         && !sps.sps_scaling_list_data_present_flag
@@ -8869,6 +8949,7 @@ fn native_vulkan_parse_h265_parameter_sets(
             pcm_enabled_flag: sps.pcm_enabled_flag,
             pcm_loop_filter_disabled_flag: sps.pcm_loop_filter_disabled_flag,
             num_short_term_ref_pic_sets: sps.num_short_term_ref_pic_sets,
+            short_term_ref_pic_sets: sps.short_term_ref_pic_sets.clone(),
             long_term_ref_pics_present_flag: sps.long_term_ref_pics_present_flag,
             temporal_mvp_enabled_flag: sps.temporal_mvp_enabled_flag,
             strong_intra_smoothing_enabled_flag: sps.strong_intra_smoothing_enabled_flag,
@@ -9146,6 +9227,7 @@ struct NativeVulkanH265ParsedSps {
     pcm_enabled_flag: bool,
     pcm_loop_filter_disabled_flag: bool,
     num_short_term_ref_pic_sets: u32,
+    short_term_ref_pic_sets: Vec<NativeVulkanH265ShortTermRefPicSetSnapshot>,
     long_term_ref_pics_present_flag: bool,
     temporal_mvp_enabled_flag: bool,
     strong_intra_smoothing_enabled_flag: bool,
@@ -9425,15 +9507,15 @@ fn native_vulkan_parse_h265_sps(payload: &[u8]) -> Result<NativeVulkanH265Parsed
         pcm_loop_filter_disabled_flag = bits.read_bool("pcm_loop_filter_disabled_flag")?;
     }
     let num_short_term_ref_pic_sets = bits.read_ue("num_short_term_ref_pic_sets")?;
-    let mut short_term_delta_pocs = Vec::new();
+    let mut short_term_ref_pic_sets = Vec::with_capacity(num_short_term_ref_pic_sets as usize);
     for st_rps_idx in 0..num_short_term_ref_pic_sets {
-        let num_delta_pocs = native_vulkan_h265_skip_short_term_ref_pic_set(
+        let short_term_ref_pic_set = native_vulkan_h265_read_short_term_ref_pic_set(
             &mut bits,
             st_rps_idx,
             num_short_term_ref_pic_sets,
-            &short_term_delta_pocs,
+            &short_term_ref_pic_sets,
         )?;
-        short_term_delta_pocs.push(num_delta_pocs);
+        short_term_ref_pic_sets.push(short_term_ref_pic_set);
     }
     let long_term_ref_pics_present_flag = bits.read_bool("long_term_ref_pics_present_flag")?;
     if long_term_ref_pics_present_flag {
@@ -9492,6 +9574,7 @@ fn native_vulkan_parse_h265_sps(payload: &[u8]) -> Result<NativeVulkanH265Parsed
         pcm_enabled_flag,
         pcm_loop_filter_disabled_flag,
         num_short_term_ref_pic_sets,
+        short_term_ref_pic_sets,
         long_term_ref_pics_present_flag,
         temporal_mvp_enabled_flag,
         strong_intra_smoothing_enabled_flag,
@@ -9978,57 +10061,11 @@ fn native_vulkan_h265_skip_scaling_list_data(
 }
 
 #[cfg(any(feature = "native-vulkan-gst-video", test))]
-fn native_vulkan_h265_skip_short_term_ref_pic_set(
-    bits: &mut NativeVulkanH265BitReader<'_>,
-    st_rps_idx: u32,
-    num_short_term_ref_pic_sets: u32,
-    previous_num_delta_pocs: &[u32],
-) -> Result<u32, String> {
-    let inter_ref_pic_set_prediction_flag =
-        st_rps_idx != 0 && bits.read_bool("inter_ref_pic_set_prediction_flag")?;
-    if inter_ref_pic_set_prediction_flag {
-        let delta_idx_minus1 = if st_rps_idx == num_short_term_ref_pic_sets {
-            bits.read_ue("delta_idx_minus1")?
-        } else {
-            0
-        };
-        bits.read_bool("delta_rps_sign")?;
-        bits.read_ue("abs_delta_rps_minus1")?;
-        let ref_idx = st_rps_idx
-            .checked_sub(delta_idx_minus1 + 1)
-            .ok_or_else(|| "invalid short-term RPS delta_idx_minus1".to_owned())?;
-        let ref_num_delta_pocs = previous_num_delta_pocs
-            .get(ref_idx as usize)
-            .copied()
-            .unwrap_or(0);
-        for _ in 0..=ref_num_delta_pocs {
-            let used_by_curr_pic_flag = bits.read_bool("used_by_curr_pic_flag")?;
-            if !used_by_curr_pic_flag {
-                bits.read_bool("use_delta_flag")?;
-            }
-        }
-        return Ok(ref_num_delta_pocs);
-    }
-
-    let num_negative_pics = bits.read_ue("num_negative_pics")?;
-    let num_positive_pics = bits.read_ue("num_positive_pics")?;
-    for _ in 0..num_negative_pics {
-        bits.read_ue("delta_poc_s0_minus1")?;
-        bits.read_bool("used_by_curr_pic_s0_flag")?;
-    }
-    for _ in 0..num_positive_pics {
-        bits.read_ue("delta_poc_s1_minus1")?;
-        bits.read_bool("used_by_curr_pic_s1_flag")?;
-    }
-    Ok(num_negative_pics.saturating_add(num_positive_pics))
-}
-
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
 fn native_vulkan_h265_read_short_term_ref_pic_set(
     bits: &mut NativeVulkanH265BitReader<'_>,
     st_rps_idx: u32,
     _num_short_term_ref_pic_sets: u32,
-    _previous_num_delta_pocs: &[u32],
+    _previous_ref_pic_sets: &[NativeVulkanH265ShortTermRefPicSetSnapshot],
 ) -> Result<NativeVulkanH265ShortTermRefPicSetSnapshot, String> {
     let inter_ref_pic_set_prediction_flag =
         st_rps_idx != 0 && bits.read_bool("inter_ref_pic_set_prediction_flag")?;
@@ -10114,7 +10151,6 @@ fn native_vulkan_h265_i8(value: i32, label: &'static str) -> Result<i8, String> 
     i8::try_from(value).map_err(|_| format!("{label}={value} exceeds i8 range"))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
 fn native_vulkan_h265_u16(value: u32, label: &'static str) -> Result<u16, String> {
     u16::try_from(value).map_err(|_| format!("{label}={value} exceeds u16 range"))
 }
@@ -10578,6 +10614,14 @@ fn native_vulkan_create_h265_video_session_parameters(
         .as_ref()
         .map(|vui| vui as *const vk::native::StdVideoH265SequenceParameterSetVui)
         .unwrap_or_else(ptr::null);
+    let sps_short_term_ref_pic_sets =
+        native_vulkan_h265_std_short_term_ref_pic_sets(&parameter_sets.sps.short_term_ref_pic_sets)
+            .map_err(NativeVulkanError::Video)?;
+    let sps_short_term_ref_pic_sets_ptr = if sps_short_term_ref_pic_sets.is_empty() {
+        ptr::null()
+    } else {
+        sps_short_term_ref_pic_sets.as_ptr()
+    };
 
     let vps = [vk::native::StdVideoH265VideoParameterSet {
         flags: vk::native::StdVideoH265VpsFlags {
@@ -10724,7 +10768,7 @@ fn native_vulkan_create_h265_video_session_parameters(
         pProfileTierLevel: &sps_profile_tier_level,
         pDecPicBufMgr: &sps_dec_pic_buf_mgr,
         pScalingLists: ptr::null(),
-        pShortTermRefPicSet: ptr::null(),
+        pShortTermRefPicSet: sps_short_term_ref_pic_sets_ptr,
         pLongTermRefPicsSps: ptr::null(),
         pSequenceParameterSetVui: sps_vui_ptr,
         pPredictorPaletteEntries: ptr::null(),
@@ -10962,6 +11006,109 @@ fn native_vulkan_h265_std_dec_pic_buf_mgr(
         max_dec_pic_buffering_minus1: snapshot.max_dec_pic_buffering_minus1,
         max_num_reorder_pics: snapshot.max_num_reorder_pics,
     }
+}
+
+fn native_vulkan_h265_std_short_term_ref_pic_sets(
+    ref_pic_sets: &[NativeVulkanH265ShortTermRefPicSetSnapshot],
+) -> Result<Vec<vk::native::StdVideoH265ShortTermRefPicSet>, String> {
+    ref_pic_sets
+        .iter()
+        .map(native_vulkan_h265_std_short_term_ref_pic_set)
+        .collect()
+}
+
+fn native_vulkan_h265_std_short_term_ref_pic_set(
+    ref_pic_set: &NativeVulkanH265ShortTermRefPicSetSnapshot,
+) -> Result<vk::native::StdVideoH265ShortTermRefPicSet, String> {
+    if ref_pic_set.inter_ref_pic_set_prediction_flag {
+        return Err(
+            "predicted H.265 SPS short-term reference picture sets are not in the Vulkan STD subset yet"
+                .to_owned(),
+        );
+    }
+    let num_negative_pics = native_vulkan_h265_u8(
+        ref_pic_set.num_negative_pics,
+        "short_term_ref_pic_set.num_negative_pics",
+    )?;
+    let num_positive_pics = native_vulkan_h265_u8(
+        ref_pic_set.num_positive_pics,
+        "short_term_ref_pic_set.num_positive_pics",
+    )?;
+    if num_negative_pics as usize > 16 || num_positive_pics as usize > 16 {
+        return Err("H.265 short-term reference picture set exceeds 16 refs".to_owned());
+    }
+
+    let mut delta_poc_s0_minus1 = [0u16; 16];
+    let mut previous_delta_poc = 0i32;
+    for (index, delta_poc) in ref_pic_set.negative_delta_pocs.iter().copied().enumerate() {
+        let encoded_delta = previous_delta_poc
+            .checked_sub(delta_poc)
+            .and_then(|value| value.checked_sub(1))
+            .ok_or_else(|| "negative short-term delta POC encode underflow".to_owned())?;
+        delta_poc_s0_minus1[index] = native_vulkan_h265_u16(
+            u32::try_from(encoded_delta)
+                .map_err(|_| "negative short-term delta POC is not encodable".to_owned())?,
+            "delta_poc_s0_minus1",
+        )?;
+        previous_delta_poc = delta_poc;
+    }
+
+    let mut delta_poc_s1_minus1 = [0u16; 16];
+    let mut previous_delta_poc = 0i32;
+    for (index, delta_poc) in ref_pic_set.positive_delta_pocs.iter().copied().enumerate() {
+        let encoded_delta = delta_poc
+            .checked_sub(previous_delta_poc)
+            .and_then(|value| value.checked_sub(1))
+            .ok_or_else(|| "positive short-term delta POC encode underflow".to_owned())?;
+        delta_poc_s1_minus1[index] = native_vulkan_h265_u16(
+            u32::try_from(encoded_delta)
+                .map_err(|_| "positive short-term delta POC is not encodable".to_owned())?,
+            "delta_poc_s1_minus1",
+        )?;
+        previous_delta_poc = delta_poc;
+    }
+
+    let used_by_curr_pic_s0_flag =
+        native_vulkan_h265_used_by_current_mask(&ref_pic_set.negative_used_by_curr_pic)?;
+    let used_by_curr_pic_s1_flag =
+        native_vulkan_h265_used_by_current_mask(&ref_pic_set.positive_used_by_curr_pic)?;
+
+    Ok(vk::native::StdVideoH265ShortTermRefPicSet {
+        flags: vk::native::StdVideoH265ShortTermRefPicSetFlags {
+            _bitfield_align_1: [],
+            _bitfield_1: vk::native::StdVideoH265ShortTermRefPicSetFlags::new_bitfield_1(0, 0),
+            __bindgen_padding_0: [0; 3],
+        },
+        delta_idx_minus1: 0,
+        use_delta_flag: 0,
+        abs_delta_rps_minus1: 0,
+        used_by_curr_pic_flag: 0,
+        used_by_curr_pic_s0_flag,
+        used_by_curr_pic_s1_flag,
+        reserved1: 0,
+        reserved2: 0,
+        reserved3: 0,
+        num_negative_pics,
+        num_positive_pics,
+        delta_poc_s0_minus1,
+        delta_poc_s1_minus1,
+    })
+}
+
+fn native_vulkan_h265_used_by_current_mask(flags: &[bool]) -> Result<u16, String> {
+    if flags.len() > 16 {
+        return Err("H.265 short-term reference picture set has more than 16 flags".to_owned());
+    }
+    Ok(flags
+        .iter()
+        .copied()
+        .enumerate()
+        .fold(
+            0u16,
+            |mask, (index, used)| {
+                if used { mask | (1u16 << index) } else { mask }
+            },
+        ))
 }
 
 fn native_vulkan_h265_std_vui(
