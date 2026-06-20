@@ -169,6 +169,7 @@ pub fn capabilities() -> NativeWaylandCapabilities {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeWaylandSurfaceSnapshot {
     pub logical_size: Option<(u32, u32)>,
+    pub buffer_size: Option<(u32, u32)>,
     pub scale_num: u32,
     pub scale_den: u32,
     pub configured: bool,
@@ -269,6 +270,7 @@ pub struct NativeWaylandSurfaceHandles {
     pub display: NonNull<c_void>,
     pub surface: NonNull<c_void>,
     pub logical_size: (u32, u32),
+    pub buffer_size: (u32, u32),
     pub dmabuf_main_device: Option<u64>,
 }
 
@@ -522,6 +524,7 @@ impl NativeWaylandHost {
             display,
             surface,
             logical_size,
+            buffer_size: self.state.scale.buffer_size(logical_size),
             dmabuf_main_device: self
                 .state
                 .dmabuf_runtime
@@ -4014,6 +4017,9 @@ impl NativeWaylandState {
             .and_then(|id| known_outputs.iter().find(|output| output.id == id).cloned());
         NativeWaylandSurfaceSnapshot {
             logical_size: self.logical_size,
+            buffer_size: self
+                .logical_size
+                .map(|logical_size| self.scale.buffer_size(logical_size)),
             scale_num: self.scale.num,
             scale_den: NativeScaleState::DENOMINATOR,
             configured: self.configured,
@@ -4881,6 +4887,23 @@ impl NativeScaleState {
         self.received = true;
         true
     }
+
+    fn buffer_size(&self, logical_size: (u32, u32)) -> (u32, u32) {
+        (
+            native_scaled_buffer_dimension(logical_size.0, self.num, Self::DENOMINATOR),
+            native_scaled_buffer_dimension(logical_size.1, self.num, Self::DENOMINATOR),
+        )
+    }
+}
+
+fn native_scaled_buffer_dimension(value: u32, scale_num: u32, scale_den: u32) -> u32 {
+    if value == 0 || scale_num == 0 || scale_den == 0 {
+        return value.max(1);
+    }
+    let scaled = u64::from(value)
+        .saturating_mul(u64::from(scale_num))
+        .div_ceil(u64::from(scale_den));
+    scaled.min(u64::from(u32::MAX)).max(1) as u32
 }
 
 #[cfg(test)]
