@@ -3942,6 +3942,7 @@ fn native_wgpu_align_u32(value: u32, alignment: u32) -> Option<u32> {
 
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
 struct NativeWgpuCudaVulkanStagingBuffer {
+    cuda_stream: NativeWgpuCudaStream,
     cuda_external_memory: NativeWgpuCudaExternalMemory,
     buffer: wgpu::Buffer,
     cuda_context: *mut NativeWgpuGstCudaContext,
@@ -4043,10 +4044,24 @@ impl NativeWgpuCudaVulkanStagingBuffer {
             }
         };
 
-        let cuda_external_memory = {
+        let (cuda_stream, cuda_external_memory) = {
             let _guard = NativeWgpuGstCudaContextPushGuard::new(cuda_context)?;
-            match NativeWgpuCudaExternalMemory::import_opaque_fd(fd, requirements.size, layout.size)
-            {
+            let cuda_stream = match NativeWgpuCudaStream::new() {
+                Ok(stream) => stream,
+                Err(err) => {
+                    unsafe {
+                        drop(OwnedFd::from_raw_fd(fd));
+                        raw_device.destroy_buffer(vk_buffer, None);
+                        raw_device.free_memory(vk_memory, None);
+                    }
+                    return Err(err);
+                }
+            };
+            let cuda_external_memory = match NativeWgpuCudaExternalMemory::import_opaque_fd(
+                fd,
+                requirements.size,
+                layout.size,
+            ) {
                 Ok(memory) => memory,
                 Err(err) => {
                     unsafe {
@@ -4056,7 +4071,8 @@ impl NativeWgpuCudaVulkanStagingBuffer {
                     }
                     return Err(err);
                 }
-            }
+            };
+            (cuda_stream, cuda_external_memory)
         };
 
         let hal_buffer = unsafe {
@@ -4075,6 +4091,7 @@ impl NativeWgpuCudaVulkanStagingBuffer {
         };
 
         Ok(Self {
+            cuda_stream,
             cuda_external_memory,
             buffer,
             cuda_context,
@@ -4196,6 +4213,37 @@ impl Drop for NativeWgpuCudaExternalMemory {
 }
 
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
+struct NativeWgpuCudaStream {
+    handle: NativeWgpuCudaStreamHandle,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+impl NativeWgpuCudaStream {
+    fn new() -> Result<Self, NativeWgpuError> {
+        let mut handle = ptr::null_mut();
+        native_wgpu_cuda_result(
+            unsafe { CuStreamCreate(&mut handle, CUDA_STREAM_NON_BLOCKING) },
+            "cuda-direct create copy stream",
+        )?;
+        if handle.is_null() {
+            return Err(NativeWgpuError::Video(
+                "cuda-direct copy stream is null".to_owned(),
+            ));
+        }
+        Ok(Self { handle })
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+impl Drop for NativeWgpuCudaStream {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            let _ = unsafe { CuStreamDestroy(self.handle) };
+        }
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
 struct NativeWgpuGstCudaContextPushGuard;
 
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
@@ -4221,6 +4269,18 @@ impl Drop for NativeWgpuGstCudaContextPushGuard {
     fn drop(&mut self) {
         let mut context = ptr::null_mut();
         let _ = unsafe { gst_cuda_context_pop(&mut context) };
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+impl Drop for NativeWgpuCudaVulkanStagingBuffer {
+    fn drop(&mut self) {
+        if self.cuda_context.is_null() || self.cuda_stream.handle.is_null() {
+            return;
+        }
+        if let Ok(_guard) = NativeWgpuGstCudaContextPushGuard::new(self.cuda_context) {
+            let _ = unsafe { CuStreamSynchronize(self.cuda_stream.handle) };
+        }
     }
 }
 
@@ -4712,7 +4772,7 @@ fn native_wgpu_copy_gst_cuda_sample_to_vulkan_staging(
         )));
     }
     let _guard = NativeWgpuGstCudaContextPushGuard::new(staging.cuda_context)?;
-    native_wgpu_copy_gst_cuda_plane_to_staging(
+    let y_map = native_wgpu_copy_gst_cuda_plane_to_staging(
         buffer,
         0,
         meta.y.offset,
@@ -4720,11 +4780,12 @@ fn native_wgpu_copy_gst_cuda_sample_to_vulkan_staging(
         meta.y.row_bytes,
         meta.y.height,
         staging.cuda_context,
+        staging.cuda_stream.handle,
         staging.cuda_external_memory.mapped_ptr + staging.layout.y_offset,
         staging.layout.y_stride,
         "y",
     )?;
-    native_wgpu_copy_gst_cuda_plane_to_staging(
+    let uv_map = match native_wgpu_copy_gst_cuda_plane_to_staging(
         buffer,
         1,
         meta.uv.offset,
@@ -4732,14 +4793,29 @@ fn native_wgpu_copy_gst_cuda_sample_to_vulkan_staging(
         meta.uv.row_bytes,
         meta.uv.height,
         staging.cuda_context,
+        staging.cuda_stream.handle,
         staging.cuda_external_memory.mapped_ptr + staging.layout.uv_offset,
         staging.layout.uv_stride,
         "uv",
-    )?;
-    native_wgpu_cuda_result(
-        unsafe { CuCtxSynchronize() },
-        "cuda-direct synchronize copy",
-    )?;
+    ) {
+        Ok(map) => map,
+        Err(err) => {
+            let sync_result = native_wgpu_cuda_result(
+                unsafe { CuStreamSynchronize(staging.cuda_stream.handle) },
+                "cuda-direct synchronize copy stream after failed uv copy",
+            );
+            drop(y_map);
+            sync_result?;
+            return Err(err);
+        }
+    };
+    let sync_result = native_wgpu_cuda_result(
+        unsafe { CuStreamSynchronize(staging.cuda_stream.handle) },
+        "cuda-direct synchronize copy stream",
+    );
+    drop(uv_map);
+    drop(y_map);
+    sync_result?;
     Ok(())
 }
 
@@ -4753,10 +4829,11 @@ fn native_wgpu_copy_gst_cuda_plane_to_staging(
     row_bytes: u32,
     height: u32,
     expected_context: *mut NativeWgpuGstCudaContext,
+    stream: NativeWgpuCudaStreamHandle,
     destination: NativeWgpuCudaDevicePtr,
     destination_stride: u32,
     label: &str,
-) -> Result<(), NativeWgpuError> {
+) -> Result<NativeWgpuCudaMemoryMap, NativeWgpuError> {
     let plane_end = plane_offset
         .checked_add(1)
         .ok_or_else(|| NativeWgpuError::Video(format!("cuda-direct {label} offset overflow")))?;
@@ -4822,9 +4899,10 @@ fn native_wgpu_copy_gst_cuda_plane_to_staging(
             .map_err(|_| NativeWgpuError::Video(format!("cuda-direct {label} height too large")))?,
     };
     native_wgpu_cuda_result(
-        unsafe { CuMemcpy2D(&copy) },
+        unsafe { CuMemcpy2DAsync(&copy, stream) },
         &format!("cuda-direct copy {label} plane {plane_index}"),
-    )
+    )?;
+    Ok(map)
 }
 
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
@@ -5691,6 +5769,8 @@ const CUDA_SUCCESS: i32 = 0;
 const CUDA_MEMORYTYPE_DEVICE: u32 = 2;
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
 const CUDA_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD: u32 = 1;
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+const CUDA_STREAM_NON_BLOCKING: u32 = 1;
 
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
 type NativeWgpuCudaDevicePtr = u64;
@@ -5698,6 +5778,8 @@ type NativeWgpuCudaDevicePtr = u64;
 type NativeWgpuCudaExternalMemoryHandle = *mut c_void;
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
 type NativeWgpuCudaArrayHandle = *mut c_void;
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+type NativeWgpuCudaStreamHandle = *mut c_void;
 
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
 #[repr(C)]
@@ -5760,8 +5842,13 @@ struct NativeWgpuCudaMemcpy2D {
 unsafe extern "C" {
     fn CuGetErrorName(error: i32, p_str: *mut *const c_char) -> i32;
     fn CuGetErrorString(error: i32, p_str: *mut *const c_char) -> i32;
-    fn CuCtxSynchronize() -> i32;
-    fn CuMemcpy2D(copy: *const NativeWgpuCudaMemcpy2D) -> i32;
+    fn CuMemcpy2DAsync(
+        copy: *const NativeWgpuCudaMemcpy2D,
+        stream: NativeWgpuCudaStreamHandle,
+    ) -> i32;
+    fn CuStreamCreate(stream_out: *mut NativeWgpuCudaStreamHandle, flags: u32) -> i32;
+    fn CuStreamDestroy(stream: NativeWgpuCudaStreamHandle) -> i32;
+    fn CuStreamSynchronize(stream: NativeWgpuCudaStreamHandle) -> i32;
     fn CuImportExternalMemory(
         ext_mem_out: *mut NativeWgpuCudaExternalMemoryHandle,
         mem_handle_desc: *const NativeWgpuCudaExternalMemoryHandleDesc,
