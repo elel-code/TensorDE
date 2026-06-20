@@ -581,6 +581,7 @@ pub struct NativeVulkanH265ReadyPrefixDecodeSnapshot {
     pub command_buffer_recorded: bool,
     pub begin_reference_slot_count: u32,
     pub reset_control_recorded: bool,
+    pub reset_control_count: u32,
     pub src_buffer_total_bytes: u64,
     pub readback_access_unit_index: u32,
     pub readback_base_array_layer: u32,
@@ -598,6 +599,7 @@ pub struct NativeVulkanH265DecodedFrameSnapshot {
     pub pic_order_cnt_val: i32,
     pub idr: bool,
     pub irap: bool,
+    pub reset_before_decode: bool,
     pub src_buffer_offset: u64,
     pub src_buffer_range: u64,
     pub dst_base_array_layer: u32,
@@ -8195,6 +8197,7 @@ fn native_vulkan_decode_h265_ready_prefix_smoke(
             vk::VideoCodingControlInfoKHR::default().flags(vk::VideoCodingControlFlagsKHR::RESET);
 
         let mut frame_snapshots = Vec::with_capacity(frame_count as usize);
+        let mut reset_control_count = 0u32;
         unsafe {
             let command_begin_info = vk::CommandBufferBeginInfo::default()
                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
@@ -8213,6 +8216,7 @@ fn native_vulkan_decode_h265_ready_prefix_smoke(
             );
             (video_queue_device.fp().cmd_begin_video_coding_khr)(command_buffer, &begin_info);
             (video_queue_device.fp().cmd_control_video_coding_khr)(command_buffer, &control_info);
+            reset_control_count = reset_control_count.saturating_add(1);
 
             for ((entry, access_unit), span) in plan
                 .iter()
@@ -8230,6 +8234,14 @@ fn native_vulkan_decode_h265_ready_prefix_smoke(
                         "H.265 AU {} first slice parse failed",
                         access_unit.index
                     )));
+                }
+                let reset_before_decode = first_slice.idr && !frame_snapshots.is_empty();
+                if reset_before_decode {
+                    (video_queue_device.fp().cmd_control_video_coding_khr)(
+                        command_buffer,
+                        &control_info,
+                    );
+                    reset_control_count = reset_control_count.saturating_add(1);
                 }
                 let current_poc = entry.current_poc.ok_or_else(|| {
                     NativeVulkanError::Video(format!(
@@ -8403,6 +8415,7 @@ fn native_vulkan_decode_h265_ready_prefix_smoke(
                     pic_order_cnt_val: current_poc,
                     idr: first_slice.idr,
                     irap: first_slice.irap,
+                    reset_before_decode,
                     src_buffer_offset: span.offset,
                     src_buffer_range: span.range,
                     dst_base_array_layer: entry.planned_output_slot,
@@ -8468,6 +8481,7 @@ fn native_vulkan_decode_h265_ready_prefix_smoke(
             command_buffer_recorded: true,
             begin_reference_slot_count: begin_reference_slots.len() as u32,
             reset_control_recorded: true,
+            reset_control_count,
             src_buffer_total_bytes: payload.bytes.len() as u64,
             readback_access_unit_index: last_frame.access_unit_index,
             readback_base_array_layer: last_frame.dst_base_array_layer,
@@ -9276,6 +9290,7 @@ fn native_vulkan_h265_decode_reference_plan(
     let dpb_slots = dpb_slots.max(1);
     let mut poc_to_decoded_slot = BTreeMap::<i32, (u32, u32)>::new();
     let mut slot_to_poc = vec![None::<i32>; dpb_slots as usize];
+    let mut next_output_slot = 0u32;
     let mut plan = Vec::with_capacity(access_units.len());
 
     for access_unit in access_units {
@@ -9284,6 +9299,7 @@ fn native_vulkan_h265_decode_reference_plan(
         if idr {
             poc_to_decoded_slot.clear();
             slot_to_poc.fill(None);
+            next_output_slot = 0;
         }
         let current_poc = first_slice.and_then(|slice| {
             if slice.idr {
@@ -9292,7 +9308,10 @@ fn native_vulkan_h265_decode_reference_plan(
                 slice.pic_order_cnt_lsb.map(|poc| poc as i32)
             }
         });
-        let planned_output_slot = access_unit.index % dpb_slots;
+        let planned_output_slot = next_output_slot % dpb_slots;
+        if current_poc.is_some() {
+            next_output_slot = next_output_slot.saturating_add(1);
+        }
         let evicted_poc = slot_to_poc
             .get(planned_output_slot as usize)
             .copied()
