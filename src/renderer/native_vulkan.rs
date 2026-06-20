@@ -595,6 +595,9 @@ pub struct NativeVulkanH265ReadyPrefixDecodeSnapshot {
     pub output_sampling_sequence: Vec<NativeVulkanH265ReadyPrefixSampledFrameSnapshot>,
     pub output_sampling_sequence_timing:
         Option<NativeVulkanH265ReadyPrefixSamplingSequenceTimingSnapshot>,
+    pub output_render_sequence: Vec<NativeVulkanH265ReadyPrefixRenderedFrameSnapshot>,
+    pub output_render_sequence_timing:
+        Option<NativeVulkanH265ReadyPrefixRenderSequenceTimingSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -625,6 +628,25 @@ pub struct NativeVulkanH265ReadyPrefixSamplingSequenceTimingSnapshot {
     pub max_decode_submit_wait_elapsed_us: u64,
     pub max_readback_elapsed_us: u64,
     pub max_sampling_elapsed_us: u64,
+    pub pts_delta_min_ms: Option<u64>,
+    pub pts_delta_max_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanH265ReadyPrefixRenderedFrameSnapshot {
+    pub access_unit_index: u32,
+    pub pts_ms: Option<u64>,
+    pub pts_delta_ms: Option<u64>,
+    pub source_base_array_layer: u32,
+    pub render_elapsed_us: u64,
+    pub target_layout: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanH265ReadyPrefixRenderSequenceTimingSnapshot {
+    pub frame_count: u32,
+    pub average_render_elapsed_us: u64,
+    pub max_render_elapsed_us: u64,
     pub pts_delta_min_ms: Option<u64>,
     pub pts_delta_max_ms: Option<u64>,
 }
@@ -7641,6 +7663,7 @@ fn native_vulkan_submit_command_buffer_and_wait(
                 operation: match label {
                     "decoded sampling render" => "vkQueueSubmit(decoded sampling render)",
                     "decoded sampling readback" => "vkQueueSubmit(decoded sampling readback)",
+                    "decoded render-only sequence" => "vkQueueSubmit(decoded render-only sequence)",
                     _ => "vkQueueSubmit(decoded sampling)",
                 },
                 result,
@@ -7651,6 +7674,9 @@ fn native_vulkan_submit_command_buffer_and_wait(
                 operation: match label {
                     "decoded sampling render" => "vkQueueWaitIdle(decoded sampling render)",
                     "decoded sampling readback" => "vkQueueWaitIdle(decoded sampling readback)",
+                    "decoded render-only sequence" => {
+                        "vkQueueWaitIdle(decoded render-only sequence)"
+                    }
                     _ => "vkQueueWaitIdle(decoded sampling)",
                 },
                 result,
@@ -8619,6 +8645,8 @@ fn native_vulkan_decode_h265_ready_prefix_smoke(
             output_sampling,
             output_sampling_sequence: Vec::new(),
             output_sampling_sequence_timing: None,
+            output_render_sequence: Vec::new(),
+            output_render_sequence_timing: None,
         })
     })();
 
@@ -8696,6 +8724,9 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
             }
         };
     let mut readback_buffer = None::<NativeVulkanVideoDecodeReadbackBuffer>;
+    let mut render_target = None::<NativeVulkanDecodedSamplingTarget>;
+    let mut render_renderer = None::<NativeVulkanVideoRenderer>;
+    let mut render_command_buffer = None::<vk::CommandBuffer>;
 
     let result = (|| -> Result<NativeVulkanH265ReadyPrefixDecodeSnapshot, NativeVulkanError> {
         readback_buffer = Some(native_vulkan_create_video_decode_readback_buffer(
@@ -8703,6 +8734,33 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
             memory_properties,
             extent,
         )?);
+        render_target = Some(NativeVulkanDecodedSamplingTarget::new(
+            device,
+            memory_properties,
+            extent,
+        )?);
+        let render_target_ref = render_target
+            .as_ref()
+            .expect("render target was just created");
+        render_renderer = Some(NativeVulkanVideoRenderer::new_with_target_final_layout(
+            device,
+            render_target_ref.format,
+            extent,
+            &[render_target_ref.view],
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        )?);
+        let render_command_buffer_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(sampling_command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        render_command_buffer = Some(
+            unsafe { device.allocate_command_buffers(&render_command_buffer_info) }.map_err(
+                |result| NativeVulkanError::Vulkan {
+                    operation: "vkAllocateCommandBuffers(h265 ready-prefix render sequence)",
+                    result,
+                },
+            )?[0],
+        );
         let readback = readback_buffer
             .as_ref()
             .expect("readback buffer was just created");
@@ -8738,11 +8796,13 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
 
         let mut frame_snapshots = Vec::with_capacity(frame_count as usize);
         let mut sampled_frames = Vec::with_capacity(frame_count as usize);
+        let mut rendered_frames = Vec::with_capacity(frame_count as usize);
         let mut reset_control_count = 0u32;
         let mut last_readback = None::<NativeVulkanVideoDecodeOutputReadbackSnapshot>;
         let mut last_sampling = None::<NativeVulkanVideoDecodeOutputSamplingSnapshot>;
         let sequence_started_at = Instant::now();
         let mut previous_pts_ms = None::<u64>;
+        let mut render_target_layout = vk::ImageLayout::UNDEFINED;
 
         for ((entry, access_unit), span) in plan
             .iter()
@@ -9002,6 +9062,24 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
             image_layer_layouts[entry.planned_output_slot as usize] =
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
             let frame_elapsed_us = native_vulkan_elapsed_us(frame_started_at.elapsed());
+            let render_target_ref = render_target
+                .as_ref()
+                .expect("render target exists during sequence");
+            let render_renderer_ref = render_renderer
+                .as_mut()
+                .expect("render renderer exists during sequence");
+            let rendered_frame = native_vulkan_render_decoded_video_output(
+                device,
+                sampling_queue,
+                render_command_buffer.expect("render command buffer exists during sequence"),
+                render_renderer_ref,
+                render_target_ref,
+                image.image,
+                entry.planned_output_slot,
+                &mut render_target_layout,
+                pts_delta_ms,
+                access_unit,
+            )?;
 
             let reference_snapshots = available_references
                 .iter()
@@ -9050,6 +9128,7 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
             ));
             previous_pts_ms = access_unit.pts_ms;
             frame_snapshots.push(frame_snapshot);
+            rendered_frames.push(rendered_frame);
             last_readback = Some(output_readback);
             last_sampling = Some(output_sampling);
         }
@@ -9061,6 +9140,8 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
             &sampled_frames,
             sequence_started_at.elapsed(),
         );
+        let render_sequence_timing =
+            native_vulkan_h265_ready_prefix_render_sequence_timing(&rendered_frames);
         Ok(NativeVulkanH265ReadyPrefixDecodeSnapshot {
             codec: "h265-main-8",
             requested_frame_count: frame_count,
@@ -9082,10 +9163,21 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
             output_sampling: last_sampling,
             output_sampling_sequence: sampled_frames,
             output_sampling_sequence_timing: Some(sequence_timing),
+            output_render_sequence: rendered_frames,
+            output_render_sequence_timing: Some(render_sequence_timing),
         })
     })();
 
     unsafe {
+        if let Some(command_buffer) = render_command_buffer {
+            device.free_command_buffers(sampling_command_pool, &[command_buffer]);
+        }
+        if let Some(renderer) = render_renderer.take() {
+            renderer.destroy(device);
+        }
+        if let Some(target) = render_target.take() {
+            target.destroy(device);
+        }
         if let Some(readback) = readback_buffer.as_ref() {
             device.destroy_buffer(readback.buffer, None);
             device.free_memory(readback.memory, None);
@@ -9168,6 +9260,88 @@ fn native_vulkan_h265_ready_prefix_sampling_sequence_timing(
             .unwrap_or(0),
         pts_delta_min_ms,
         pts_delta_max_ms,
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[allow(clippy::too_many_arguments)]
+fn native_vulkan_render_decoded_video_output(
+    device: &ash::Device,
+    queue: vk::Queue,
+    command_buffer: vk::CommandBuffer,
+    renderer: &mut NativeVulkanVideoRenderer,
+    target: &NativeVulkanDecodedSamplingTarget,
+    decoded_image: vk::Image,
+    decoded_base_array_layer: u32,
+    target_layout: &mut vk::ImageLayout,
+    pts_delta_ms: Option<u64>,
+    access_unit: &NativeVulkanH265AccessUnitSnapshot,
+) -> Result<NativeVulkanH265ReadyPrefixRenderedFrameSnapshot, NativeVulkanError> {
+    let started_at = Instant::now();
+    let texture = NativeVulkanVideoTexture::Decoded(NativeVulkanDecodedVideoTexture::new(
+        device,
+        decoded_image,
+        target.extent.width,
+        target.extent.height,
+        decoded_base_array_layer,
+        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        vk::AccessFlags::SHADER_READ,
+    )?);
+    renderer.update_descriptors(device, &texture);
+    let render_result = renderer.record_frame(
+        device,
+        command_buffer,
+        0,
+        target.image,
+        *target_layout,
+        &texture,
+        FitMode::Stretch,
+    );
+    let submit_result = match render_result {
+        Ok(()) => native_vulkan_submit_command_buffer_and_wait(
+            device,
+            queue,
+            command_buffer,
+            "decoded render-only sequence",
+            None,
+        ),
+        Err(err) => Err(err),
+    };
+    texture.destroy(device);
+    submit_result?;
+    *target_layout = renderer.target_final_layout();
+    Ok(NativeVulkanH265ReadyPrefixRenderedFrameSnapshot {
+        access_unit_index: access_unit.index,
+        pts_ms: access_unit.pts_ms,
+        pts_delta_ms,
+        source_base_array_layer: decoded_base_array_layer,
+        render_elapsed_us: native_vulkan_elapsed_us(started_at.elapsed()),
+        target_layout: native_vulkan_image_layout_label(*target_layout),
+    })
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_ready_prefix_render_sequence_timing(
+    frames: &[NativeVulkanH265ReadyPrefixRenderedFrameSnapshot],
+) -> NativeVulkanH265ReadyPrefixRenderSequenceTimingSnapshot {
+    let frame_count = frames.len() as u32;
+    let total_render_elapsed_us = frames.iter().fold(0u64, |total, frame| {
+        total.saturating_add(frame.render_elapsed_us)
+    });
+    NativeVulkanH265ReadyPrefixRenderSequenceTimingSnapshot {
+        frame_count,
+        average_render_elapsed_us: if frame_count == 0 {
+            0
+        } else {
+            total_render_elapsed_us / u64::from(frame_count)
+        },
+        max_render_elapsed_us: frames
+            .iter()
+            .map(|frame| frame.render_elapsed_us)
+            .max()
+            .unwrap_or(0),
+        pts_delta_min_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).min(),
+        pts_delta_max_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).max(),
     }
 }
 
@@ -13648,6 +13822,21 @@ fn native_vulkan_h264_picture_layout_label(
         "interlaced-separate-planes"
     } else {
         "unknown"
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_image_layout_label(layout: vk::ImageLayout) -> &'static str {
+    match layout {
+        vk::ImageLayout::UNDEFINED => "undefined",
+        vk::ImageLayout::GENERAL => "general",
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL => "color-attachment-optimal",
+        vk::ImageLayout::TRANSFER_SRC_OPTIMAL => "transfer-src-optimal",
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL => "transfer-dst-optimal",
+        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => "shader-read-only-optimal",
+        vk::ImageLayout::PRESENT_SRC_KHR => "present-src",
+        vk::ImageLayout::VIDEO_DECODE_DPB_KHR => "video-decode-dpb",
+        _ => "other",
     }
 }
 
