@@ -82,6 +82,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 video_session_options.allocate_bitstream_buffer = true;
                 video_session_options.allocate_video_images = true;
             }
+            "--sample-h265-ready-prefix" => {
+                video_session_options.sample_h265_ready_prefix_output = true;
+                video_session_options.extract_bitstream = true;
+                video_session_options.allocate_bitstream_buffer = true;
+                video_session_options.allocate_video_images = true;
+            }
             "--run-clear" => mode = NativeVulkanCliMode::RunClear,
             "--run-static" => mode = NativeVulkanCliMode::RunStatic,
             "--run-video" => mode = NativeVulkanCliMode::RunVideo,
@@ -224,6 +230,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         NativeVulkanCliMode::ProbeVideo => json!(probe_vulkan_video_decode()?),
         NativeVulkanCliMode::ProbeVideoSession => {
+            if video_session_options.sample_h265_ready_prefix_output
+                && video_session_options.decode_h265_ready_prefix_frames == 0
+            {
+                return Err(
+                    "--sample-h265-ready-prefix requires --decode-h265-ready-prefix N".into(),
+                );
+            }
             if video_session_options.extract_bitstream {
                 let source = source
                     .clone()
@@ -386,6 +399,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --decode-first-frame extends --probe-video-session with a real H.265 IDR Vulkan Video command buffer submit.\n\
 --sample-decoded-first-frame extends --decode-first-frame with NV12 shader sampling into an offscreen Vulkan color target.\n\
 --decode-h265-ready-prefix N extends --probe-video-session with N ready H.265 AU Vulkan Video decode submits and final-frame readback.\n\
+--sample-h265-ready-prefix extends --decode-h265-ready-prefix with final-frame NV12 shader sampling into an offscreen RGBA target.\n\
 --run-clear creates a Vulkan device/swapchain, clears frames, presents, then prints runtime JSON.\n\
 --run-static decodes --source, fits it to the swapchain, copies it through Vulkan, presents, then prints runtime JSON.\n\
 --run-video accepts a video wallpaper plan, presents a poster/clear placeholder through native Vulkan, then prints video handoff telemetry.\n\
@@ -396,7 +410,7 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--video-codec h265|av1] [--width PX] [--height PX]\n\
          [--allocate-video-images] [--allocate-bitstream-buffer] [--bitstream-buffer-size BYTES]\n\
          [--extract-bitstream] [--decode-first-frame] [--sample-decoded-first-frame] [--bitstream-samples N]\n\
-         [--decode-h265-ready-prefix N]\n\
+         [--decode-h265-ready-prefix N] [--sample-h265-ready-prefix]\n\
          [--require-h265-ready-prefix N]\n\
          [--start-offset-ms MS]"
     );
