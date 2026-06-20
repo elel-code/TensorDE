@@ -70,5 +70,8 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"], option
 wgpu = { version = "29", default-features = false, features = ["std", "vulkan", "wgsl"], optional = true }
 zip = { version = "4", default-features = false, features = ["deflate"] }
 
+[patch.crates-io]
+wgpu-hal = { path = "vendor/wgpu-hal-29.0.3" }
+
 [lints.rust]
 unsafe_code = "warn"

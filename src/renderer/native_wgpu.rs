@@ -19,6 +19,9 @@ use std::{
 };
 
 #[cfg(any(feature = "native-wgpu-gst-dmabuf", feature = "native-wgpu-gpu-video"))]
+use std::collections::VecDeque;
+
+#[cfg(any(feature = "native-wgpu-gst-dmabuf", feature = "native-wgpu-gpu-video"))]
 use std::sync::Arc;
 
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
@@ -34,7 +37,6 @@ use std::{
 
 #[cfg(feature = "native-wgpu-gpu-video")]
 use std::{
-    collections::VecDeque,
     fs::File,
     io::{Read, Seek, SeekFrom},
     sync::{
@@ -323,7 +325,7 @@ impl NativeWgpuSession {
             render_calls: self.renderer.render_calls,
             frames_rendered: self.renderer.frames_rendered,
             frames_skipped: self.renderer.frames_skipped,
-            average_render_fps: average_fps(self.renderer.frames_rendered, self.started.elapsed()),
+            average_render_fps: self.renderer.average_render_fps(),
             render_duration_us_avg: self.renderer.render_duration_us_avg(),
             render_duration_us_max: self.renderer.render_duration_us_max(),
             last_render_duration_us: self.renderer.last_render_duration_us,
@@ -520,10 +522,7 @@ impl NativeWgpuGpuVideoSession {
                 render_calls: self.renderer.render_calls,
                 frames_rendered: self.renderer.frames_rendered,
                 frames_skipped: self.renderer.frames_skipped,
-                average_render_fps: average_fps(
-                    self.renderer.frames_rendered,
-                    self.started.elapsed(),
-                ),
+                average_render_fps: self.renderer.average_render_fps(),
                 render_duration_us_avg: self.renderer.render_duration_us_avg(),
                 render_duration_us_max: self.renderer.render_duration_us_max(),
                 last_render_duration_us: self.renderer.last_render_duration_us,
@@ -751,6 +750,7 @@ struct NativeWgpuGstDmabufPlayer {
     last_plane_offsets: Vec<u32>,
     last_plane_strides: Vec<u32>,
     last_fd_count: Option<usize>,
+    last_cuda_direct_pending_copies: Option<usize>,
     last_error: Option<String>,
     pipeline_kind: NativeWgpuGstDmabufPipelineKind,
     _cuda_context: Option<Arc<NativeWgpuCudaContextHandle>>,
@@ -778,6 +778,7 @@ pub struct NativeWgpuGstDmabufPlayerSnapshot {
     pub last_plane_offsets: Vec<u32>,
     pub last_plane_strides: Vec<u32>,
     pub last_fd_count: Option<usize>,
+    pub last_cuda_direct_pending_copies: Option<usize>,
     pub last_error: Option<String>,
 }
 
@@ -861,6 +862,7 @@ impl NativeWgpuGstDmabufPlayer {
             last_plane_offsets: Vec::new(),
             last_plane_strides: Vec::new(),
             last_fd_count: None,
+            last_cuda_direct_pending_copies: None,
             last_error: None,
             pipeline_kind,
             _cuda_context: cuda_context,
@@ -1016,6 +1018,7 @@ impl NativeWgpuGstDmabufPlayer {
         self.last_plane_offsets = frame.planes.iter().map(|plane| plane.offset).collect();
         self.last_plane_strides = frame.planes.iter().map(|plane| plane.stride).collect();
         self.last_fd_count = Some(frame.fds.len());
+        self.last_cuda_direct_pending_copies = None;
         self.last_error = None;
     }
 
@@ -1027,11 +1030,19 @@ impl NativeWgpuGstDmabufPlayer {
         self.exported_frames = self.exported_frames.saturating_add(1);
         self.import_attempts = self.import_attempts.saturating_add(1);
         self.imported_frames = report.imported_frames;
-        if let Some(buffer) = sample.buffer() {
+        let frame_size = Some((report.width, report.height));
+        let metadata_stale = self.last_frame_size != frame_size
+            || self.last_frame_format.as_deref() != Some(report.format.as_str())
+            || self.last_memory_types.is_empty()
+            || self.last_plane_offsets.is_empty()
+            || self.last_plane_strides.is_empty();
+        self.last_frame_size = frame_size;
+        if self.last_frame_format.as_deref() != Some(report.format.as_str()) {
+            self.last_frame_format = Some(report.format.clone());
+        }
+        if metadata_stale && let Some(buffer) = sample.buffer() {
             self.last_memory_types = native_wgpu_gst_memory_types(buffer);
             if let Ok(meta) = native_wgpu_gst_dmabuf_meta(sample.caps(), buffer) {
-                self.last_frame_size = Some((meta.width, meta.height));
-                self.last_frame_format = Some(meta.caps_format);
                 self.last_drm_fourcc = meta.drm_fourcc;
                 self.last_drm_modifier = meta.drm_modifier;
                 self.last_plane_offsets = meta
@@ -1048,8 +1059,11 @@ impl NativeWgpuGstDmabufPlayer {
                     .collect();
             }
         }
-        self.last_export_source = Some("system-nv12-upload".to_owned());
+        if self.last_export_source.as_deref() != Some("system-nv12-upload") {
+            self.last_export_source = Some("system-nv12-upload".to_owned());
+        }
         self.last_fd_count = Some(0);
+        self.last_cuda_direct_pending_copies = None;
         self.last_error = None;
     }
 
@@ -1061,11 +1075,19 @@ impl NativeWgpuGstDmabufPlayer {
         self.exported_frames = self.exported_frames.saturating_add(1);
         self.import_attempts = self.import_attempts.saturating_add(1);
         self.imported_frames = report.imported_frames;
-        if let Some(buffer) = sample.buffer() {
+        let frame_size = Some((report.width, report.height));
+        let metadata_stale = self.last_frame_size != frame_size
+            || self.last_frame_format.as_deref() != Some(report.format.as_str())
+            || self.last_memory_types.is_empty()
+            || self.last_plane_offsets.is_empty()
+            || self.last_plane_strides.is_empty();
+        self.last_frame_size = frame_size;
+        if self.last_frame_format.as_deref() != Some(report.format.as_str()) {
+            self.last_frame_format = Some(report.format.clone());
+        }
+        if metadata_stale && let Some(buffer) = sample.buffer() {
             self.last_memory_types = native_wgpu_gst_memory_types(buffer);
             if let Ok(meta) = native_wgpu_gst_dmabuf_meta(sample.caps(), buffer) {
-                self.last_frame_size = Some((meta.width, meta.height));
-                self.last_frame_format = Some(meta.caps_format);
                 self.last_drm_fourcc = meta.drm_fourcc;
                 self.last_drm_modifier = meta.drm_modifier;
                 self.last_plane_offsets = meta
@@ -1082,8 +1104,20 @@ impl NativeWgpuGstDmabufPlayer {
                     .collect();
             }
         }
-        self.last_export_source = Some("cuda-direct-vulkan-staging".to_owned());
-        self.last_fd_count = Some(1);
+        let (export_source, fd_count) = if native_wgpu_cuda_direct_image_enabled()
+            && native_wgpu_cuda_timeline_sync_enabled()
+        {
+            ("cuda-direct-vulkan-images-timeline", 3)
+        } else if native_wgpu_cuda_direct_image_enabled() {
+            ("cuda-direct-vulkan-images", 2)
+        } else {
+            ("cuda-direct-vulkan-staging", 1)
+        };
+        if self.last_export_source.as_deref() != Some(export_source) {
+            self.last_export_source = Some(export_source.to_owned());
+        }
+        self.last_fd_count = Some(fd_count);
+        self.last_cuda_direct_pending_copies = report.cuda_direct_pending_copies;
         self.last_error = None;
     }
 
@@ -1126,6 +1160,7 @@ impl NativeWgpuGstDmabufPlayer {
             last_plane_offsets: self.last_plane_offsets.clone(),
             last_plane_strides: self.last_plane_strides.clone(),
             last_fd_count: self.last_fd_count,
+            last_cuda_direct_pending_copies: self.last_cuda_direct_pending_copies,
             last_error: self.last_error.clone(),
         }
     }
@@ -1474,6 +1509,55 @@ fn native_wgpu_gst_dmabuf_queue_frames() -> u32 {
 }
 
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gst_nvdec_output_surfaces() -> u32 {
+    std::env::var("GILDER_WGPU_GST_NVDEC_OUTPUT_SURFACES")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .map(|value| value.min(64))
+        .unwrap_or(1)
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_configure_nvdec_low_memory(decoder: &gst::Element) {
+    if decoder.find_property("qos").is_some() {
+        decoder.set_property("qos", false);
+    }
+    if decoder.find_property("max-display-delay").is_some() {
+        decoder.set_property("max-display-delay", 0i32);
+    }
+    if decoder.find_property("num-output-surfaces").is_some() {
+        decoder.set_property(
+            "num-output-surfaces",
+            native_wgpu_gst_nvdec_output_surfaces(),
+        );
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_cuda_direct_image_enabled() -> bool {
+    matches!(
+        std::env::var("GILDER_WGPU_GST_CUDA_DIRECT_IMAGE")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_cuda_timeline_sync_enabled() -> bool {
+    matches!(
+        std::env::var("GILDER_WGPU_GST_CUDA_TIMELINE_SYNC")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
 fn native_wgpu_gst_dmabuf_appsink(
     target_max_fps: Option<u32>,
     cuda_context: Arc<NativeWgpuCudaContextHandle>,
@@ -1681,12 +1765,7 @@ fn native_wgpu_gst_gl_dmabuf_pipeline(
         h264parse.set_property("config-interval", -1i32);
     }
     let decoder = native_wgpu_gst_element("nvh264dec")?;
-    if decoder.find_property("qos").is_some() {
-        decoder.set_property("qos", false);
-    }
-    if decoder.find_property("num-output-surfaces").is_some() {
-        decoder.set_property("num-output-surfaces", 4u32);
-    }
+    native_wgpu_configure_nvdec_low_memory(&decoder);
     let gl_nv12_capsfilter = native_wgpu_gst_element("capsfilter")?;
     let gl_nv12_caps = "video/x-raw(memory:GLMemory),format=NV12"
         .parse::<gst::Caps>()
@@ -1766,12 +1845,7 @@ fn native_wgpu_gst_decoder_glmemory_pipeline(
         h264parse.set_property("config-interval", -1i32);
     }
     let decoder = native_wgpu_gst_element("nvh264dec")?;
-    if decoder.find_property("qos").is_some() {
-        decoder.set_property("qos", false);
-    }
-    if decoder.find_property("num-output-surfaces").is_some() {
-        decoder.set_property("num-output-surfaces", 4u32);
-    }
+    native_wgpu_configure_nvdec_low_memory(&decoder);
     let gl_nv12_capsfilter = native_wgpu_gst_element("capsfilter")?;
     let gl_nv12_caps = "video/x-raw(memory:GLMemory),format=NV12"
         .parse::<gst::Caps>()
@@ -1832,12 +1906,7 @@ fn native_wgpu_gst_cuda_direct_pipeline(
         h264parse.set_property("config-interval", -1i32);
     }
     let decoder = native_wgpu_gst_element("nvh264dec")?;
-    if decoder.find_property("qos").is_some() {
-        decoder.set_property("qos", false);
-    }
-    if decoder.find_property("num-output-surfaces").is_some() {
-        decoder.set_property("num-output-surfaces", 4u32);
-    }
+    native_wgpu_configure_nvdec_low_memory(&decoder);
     let cuda_capsfilter = native_wgpu_gst_element("capsfilter")?;
     let cuda_caps = "video/x-raw(memory:CUDAMemory),format=NV12"
         .parse::<gst::Caps>()
@@ -1898,12 +1967,7 @@ fn native_wgpu_gst_cuda_nv12_upload_pipeline(
         h264parse.set_property("config-interval", -1i32);
     }
     let decoder = native_wgpu_gst_element("nvh264dec")?;
-    if decoder.find_property("qos").is_some() {
-        decoder.set_property("qos", false);
-    }
-    if decoder.find_property("num-output-surfaces").is_some() {
-        decoder.set_property("num-output-surfaces", 4u32);
-    }
+    native_wgpu_configure_nvdec_low_memory(&decoder);
     let cudadownload = native_wgpu_gst_element("cudadownload")?;
     let capsfilter = native_wgpu_gst_element("capsfilter")?;
     let caps = "video/x-raw,format=NV12"
@@ -2663,6 +2727,7 @@ struct NativeWgpuSurfaceRenderer {
     color: NativeWgpuColor,
     render_mode: NativeWgpuRenderMode,
     started: Instant,
+    first_rendered_at: Option<Instant>,
     #[cfg(feature = "video-renderer")]
     video: Option<NativeWgpuVideoRenderer>,
     #[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
@@ -2775,6 +2840,7 @@ impl NativeWgpuSurfaceRenderer {
             color,
             render_mode,
             started: Instant::now(),
+            first_rendered_at: None,
             #[cfg(feature = "video-renderer")]
             video: None,
             #[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
@@ -2863,6 +2929,7 @@ impl NativeWgpuSurfaceRenderer {
         self.encode_frame(&mut encoder, &view)?;
         self.queue.submit(Some(encoder.finish()));
         frame.present();
+        self.first_rendered_at.get_or_insert_with(Instant::now);
         self.frames_rendered = self.frames_rendered.saturating_add(1);
         self.record_render_duration(render_started);
         if suboptimal {
@@ -2895,6 +2962,16 @@ impl NativeWgpuSurfaceRenderer {
             return None;
         }
         Some((self.render_duration_us_total / u128::from(self.render_calls)) as u64)
+    }
+
+    fn average_render_fps(&self) -> f64 {
+        let Some(first_rendered_at) = self.first_rendered_at else {
+            return 0.0;
+        };
+        average_fps(
+            self.frames_rendered.saturating_sub(1),
+            first_rendered_at.elapsed(),
+        )
     }
 
     fn render_duration_us_max(&self) -> Option<u64> {
@@ -3027,6 +3104,10 @@ impl NativeWgpuSurfaceRenderer {
         )?;
         Ok(NativeWgpuGstDmabufImportReport {
             imported_frames: report.presented_frames,
+            cuda_direct_pending_copies: report.cuda_direct_pending_copies,
+            width: report.width,
+            height: report.height,
+            format: report.format,
         })
     }
 
@@ -3048,6 +3129,10 @@ impl NativeWgpuSurfaceRenderer {
         )?;
         Ok(NativeWgpuGstDmabufImportReport {
             imported_frames: report.presented_frames,
+            cuda_direct_pending_copies: report.cuda_direct_pending_copies,
+            width: report.width,
+            height: report.height,
+            format: report.format,
         })
     }
 
@@ -3069,6 +3154,10 @@ impl NativeWgpuSurfaceRenderer {
         )?;
         Ok(NativeWgpuGstDmabufImportReport {
             imported_frames: report.presented_frames,
+            cuda_direct_pending_copies: report.cuda_direct_pending_copies,
+            width: report.width,
+            height: report.height,
+            format: report.format,
         })
     }
 }
@@ -3402,6 +3491,8 @@ struct NativeWgpuNv12VideoRenderer {
     #[cfg(feature = "native-wgpu-gst-dmabuf")]
     cuda_direct_staging: Option<NativeWgpuCudaVulkanStagingBuffer>,
     #[cfg(feature = "native-wgpu-gst-dmabuf")]
+    cuda_direct_images: Option<NativeWgpuCudaVulkanImagePlanes>,
+    #[cfg(feature = "native-wgpu-gst-dmabuf")]
     cuda_direct_staging_pending: bool,
     fit: crate::core::FitMode,
     presented_frames: u64,
@@ -3414,6 +3505,7 @@ struct NativeWgpuNv12PresentReport {
     height: u32,
     format: String,
     presented_frames: u64,
+    cuda_direct_pending_copies: Option<usize>,
 }
 
 #[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
@@ -3526,6 +3618,8 @@ impl NativeWgpuNv12VideoRenderer {
             #[cfg(feature = "native-wgpu-gst-dmabuf")]
             cuda_direct_staging: None,
             #[cfg(feature = "native-wgpu-gst-dmabuf")]
+            cuda_direct_images: None,
+            #[cfg(feature = "native-wgpu-gst-dmabuf")]
             cuda_direct_staging_pending: false,
             fit,
             presented_frames: 0,
@@ -3601,6 +3695,7 @@ impl NativeWgpuNv12VideoRenderer {
         #[cfg(feature = "native-wgpu-gst-dmabuf")]
         {
             self.cuda_direct_staging_pending = false;
+            self.cuda_direct_images = None;
         }
         self.fit = fit;
         self.update_fit_uniform(queue, surface_size);
@@ -3611,6 +3706,7 @@ impl NativeWgpuNv12VideoRenderer {
             height,
             format: "NV12".to_owned(),
             presented_frames: self.presented_frames,
+            cuda_direct_pending_copies: None,
         })
     }
 
@@ -3673,6 +3769,7 @@ impl NativeWgpuNv12VideoRenderer {
             height: meta.height,
             format: "NV12".to_owned(),
             presented_frames: self.presented_frames,
+            cuda_direct_pending_copies: None,
         })
     }
 
@@ -3695,6 +3792,29 @@ impl NativeWgpuNv12VideoRenderer {
                 "cuda-direct expected CUDAMemory, got {}",
                 native_wgpu_gst_memory_types(buffer).join("|")
             )));
+        }
+
+        if native_wgpu_cuda_direct_image_enabled() {
+            let cuda_context = native_wgpu_gst_cuda_context_from_buffer(buffer)?;
+            self.ensure_cuda_direct_images(device, cuda_context, meta.width, meta.height)?;
+            let images = self
+                .cuda_direct_images
+                .as_mut()
+                .expect("cuda-direct images must exist after ensure");
+            native_wgpu_copy_gst_cuda_sample_to_vulkan_images(buffer, &meta, images)?;
+            let pending_copies = images.pending_copies.len();
+            self.cuda_direct_staging_pending = false;
+            self.fit = fit;
+            self.update_fit_uniform(queue, surface_size);
+            self.presented_frames = self.presented_frames.saturating_add(1);
+
+            return Ok(NativeWgpuNv12PresentReport {
+                width: meta.width,
+                height: meta.height,
+                format: "NV12".to_owned(),
+                presented_frames: self.presented_frames,
+                cuda_direct_pending_copies: Some(pending_copies),
+            });
         }
 
         self.ensure_system_nv12_texture(device, meta.width, meta.height)?;
@@ -3731,7 +3851,67 @@ impl NativeWgpuNv12VideoRenderer {
             height: meta.height,
             format: "NV12".to_owned(),
             presented_frames: self.presented_frames,
+            cuda_direct_pending_copies: Some(0),
         })
+    }
+
+    #[cfg(feature = "native-wgpu-gst-dmabuf")]
+    fn ensure_cuda_direct_images(
+        &mut self,
+        device: &wgpu::Device,
+        cuda_context: *mut NativeWgpuGstCudaContext,
+        width: u32,
+        height: u32,
+    ) -> Result<(), NativeWgpuError> {
+        let recreate_images = self
+            .cuda_direct_images
+            .as_ref()
+            .map(|images| !images.matches(cuda_context, width, height))
+            .unwrap_or(true);
+        if !recreate_images {
+            return Ok(());
+        }
+
+        let images = NativeWgpuCudaVulkanImagePlanes::new(device, cuda_context, width, height)?;
+        let y_view = images.y.texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("gilder-native-wgpu-cuda-direct-image-y-view"),
+            ..Default::default()
+        });
+        let uv_view = images.uv.texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("gilder-native-wgpu-cuda-direct-image-uv-view"),
+            ..Default::default()
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gilder-native-wgpu-cuda-direct-image-bind-group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&y_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&uv_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.fit_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        self.texture = None;
+        self.bind_group = Some(bind_group);
+        self.source_size = Some((width, height));
+        self.texture_copy_dst = false;
+        self.cuda_direct_staging_pending = false;
+        self.cuda_direct_staging = None;
+        self.cuda_direct_images = Some(images);
+        Ok(())
     }
 
     #[cfg(feature = "native-wgpu-gst-dmabuf")]
@@ -3801,6 +3981,7 @@ impl NativeWgpuNv12VideoRenderer {
         self.source_size = Some((width, height));
         self.texture_copy_dst = true;
         self.cuda_direct_staging_pending = false;
+        self.cuda_direct_images = None;
         Ok(())
     }
 
@@ -3904,6 +4085,10 @@ struct NativeWgpuGstDmabufExport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeWgpuGstDmabufImportReport {
     imported_frames: u64,
+    cuda_direct_pending_copies: Option<usize>,
+    width: u32,
+    height: u32,
+    format: String,
 }
 
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
@@ -4146,6 +4331,518 @@ impl NativeWgpuCudaVulkanStagingBuffer {
 }
 
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
+struct NativeWgpuCudaVulkanImagePlanes {
+    cuda_stream: NativeWgpuCudaStream,
+    cuda_context: *mut NativeWgpuGstCudaContext,
+    width: u32,
+    height: u32,
+    timeline_sync: Option<NativeWgpuCudaVulkanTimelineSync>,
+    pending_copies: VecDeque<NativeWgpuCudaDirectImagePendingCopy>,
+    y: NativeWgpuCudaVulkanImagePlane,
+    uv: NativeWgpuCudaVulkanImagePlane,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+impl NativeWgpuCudaVulkanImagePlanes {
+    fn new(
+        device: &wgpu::Device,
+        cuda_context: *mut NativeWgpuGstCudaContext,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, NativeWgpuError> {
+        if width == 0 || height == 0 {
+            return Err(NativeWgpuError::Video(
+                "cuda-direct-image NV12 frame has zero dimension".to_owned(),
+            ));
+        }
+        if width % 2 != 0 || height % 2 != 0 {
+            return Err(NativeWgpuError::Video(format!(
+                "cuda-direct-image NV12 dimensions must be even, got {width}x{height}"
+            )));
+        }
+        if cuda_context.is_null() {
+            return Err(NativeWgpuError::Video(
+                "cuda-direct-image sample has null GstCudaContext".to_owned(),
+            ));
+        }
+        let _guard = NativeWgpuGstCudaContextPushGuard::new(cuda_context)?;
+        let cuda_stream = NativeWgpuCudaStream::new()?;
+        let timeline_sync = if native_wgpu_cuda_timeline_sync_enabled() {
+            Some(NativeWgpuCudaVulkanTimelineSync::new(device, cuda_context)?)
+        } else {
+            None
+        };
+        let y = NativeWgpuCudaVulkanImagePlane::new(
+            device,
+            width,
+            height,
+            ash::vk::Format::R8_UNORM,
+            wgpu::TextureFormat::R8Unorm,
+            1,
+            "y",
+        )?;
+        let uv = NativeWgpuCudaVulkanImagePlane::new(
+            device,
+            width / 2,
+            height / 2,
+            ash::vk::Format::R8G8_UNORM,
+            wgpu::TextureFormat::Rg8Unorm,
+            2,
+            "uv",
+        )?;
+        Ok(Self {
+            cuda_stream,
+            cuda_context,
+            width,
+            height,
+            timeline_sync,
+            pending_copies: VecDeque::new(),
+            y,
+            uv,
+        })
+    }
+
+    fn matches(
+        &self,
+        cuda_context: *mut NativeWgpuGstCudaContext,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        self.cuda_context == cuda_context && self.width == width && self.height == height
+    }
+
+    fn retire_completed_copies(&mut self) -> Result<(), NativeWgpuError> {
+        let Some(timeline_sync) = self.timeline_sync.as_ref() else {
+            return Ok(());
+        };
+        let completed_value = timeline_sync.completed_value()?;
+        while self
+            .pending_copies
+            .front()
+            .map(|copy| copy.signal_value <= completed_value)
+            .unwrap_or(false)
+        {
+            self.pending_copies.pop_front();
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+impl Drop for NativeWgpuCudaVulkanImagePlanes {
+    fn drop(&mut self) {
+        if let Some(timeline_sync) = self.timeline_sync.as_ref() {
+            let _ = timeline_sync.wait_idle();
+        }
+        if self.cuda_context.is_null() || self.cuda_stream.handle.is_null() {
+            return;
+        }
+        if let Ok(_guard) = NativeWgpuGstCudaContextPushGuard::new(self.cuda_context) {
+            let _ = unsafe { CuStreamSynchronize(self.cuda_stream.handle) };
+        }
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+struct NativeWgpuCudaDirectImagePendingCopy {
+    signal_value: u64,
+    _y_map: NativeWgpuCudaMemoryMap,
+    _uv_map: NativeWgpuCudaMemoryMap,
+    _buffer: gst::Buffer,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+struct NativeWgpuCudaVulkanImagePlane {
+    cuda_external_memory: NativeWgpuCudaExternalImageMemory,
+    texture: wgpu::Texture,
+    width: u32,
+    height: u32,
+    channels: u32,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+impl NativeWgpuCudaVulkanImagePlane {
+    fn new(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        vk_format: ash::vk::Format,
+        wgpu_format: wgpu::TextureFormat,
+        channels: u32,
+        label: &'static str,
+    ) -> Result<Self, NativeWgpuError> {
+        if width == 0 || height == 0 {
+            return Err(NativeWgpuError::Video(format!(
+                "cuda-direct-image {label} plane has zero dimension"
+            )));
+        }
+        let hal_device = unsafe { device.as_hal::<wgpu::hal::api::Vulkan>() }.ok_or_else(|| {
+            NativeWgpuError::Video("cuda-direct-image requires Vulkan wgpu device".to_owned())
+        })?;
+        let raw_device = hal_device.raw_device().clone();
+        let handle_type = ash::vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD;
+        let mut external_image_info =
+            ash::vk::ExternalMemoryImageCreateInfo::default().handle_types(handle_type);
+        let image_info = ash::vk::ImageCreateInfo::default()
+            .image_type(ash::vk::ImageType::TYPE_2D)
+            .format(vk_format)
+            .extent(ash::vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(ash::vk::SampleCountFlags::TYPE_1)
+            .tiling(ash::vk::ImageTiling::OPTIMAL)
+            .usage(ash::vk::ImageUsageFlags::SAMPLED | ash::vk::ImageUsageFlags::TRANSFER_SRC)
+            .sharing_mode(ash::vk::SharingMode::EXCLUSIVE)
+            .initial_layout(ash::vk::ImageLayout::UNDEFINED)
+            .push_next(&mut external_image_info);
+        let vk_image = unsafe { raw_device.create_image(&image_info, None) }.map_err(|err| {
+            NativeWgpuError::Video(format!(
+                "cuda-direct-image create {label} Vulkan image failed: {err:?}"
+            ))
+        })?;
+
+        let requirements = unsafe { raw_device.get_image_memory_requirements(vk_image) };
+        let memory_type_index = native_wgpu_vulkan_memory_type_index(
+            hal_device.shared_instance().raw_instance(),
+            hal_device.raw_physical_device(),
+            requirements.memory_type_bits,
+            ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            ash::vk::MemoryPropertyFlags::empty(),
+        )
+        .ok_or_else(|| {
+            unsafe {
+                raw_device.destroy_image(vk_image, None);
+            }
+            NativeWgpuError::Video(format!(
+                "cuda-direct-image no Vulkan memory type for {label} image: bits={:#x}",
+                requirements.memory_type_bits
+            ))
+        })?;
+        let mut export_info =
+            ash::vk::ExportMemoryAllocateInfo::default().handle_types(handle_type);
+        let mut dedicated_info = ash::vk::MemoryDedicatedAllocateInfo::default().image(vk_image);
+        let allocate_info = ash::vk::MemoryAllocateInfo::default()
+            .allocation_size(requirements.size)
+            .memory_type_index(memory_type_index)
+            .push_next(&mut dedicated_info)
+            .push_next(&mut export_info);
+        let vk_memory = match unsafe { raw_device.allocate_memory(&allocate_info, None) } {
+            Ok(memory) => memory,
+            Err(err) => {
+                unsafe {
+                    raw_device.destroy_image(vk_image, None);
+                }
+                return Err(NativeWgpuError::Video(format!(
+                    "cuda-direct-image allocate {label} Vulkan image memory failed: {err:?}:size={}:type={memory_type_index}",
+                    requirements.size
+                )));
+            }
+        };
+        if let Err(err) = unsafe { raw_device.bind_image_memory(vk_image, vk_memory, 0) } {
+            unsafe {
+                raw_device.destroy_image(vk_image, None);
+                raw_device.free_memory(vk_memory, None);
+            }
+            return Err(NativeWgpuError::Video(format!(
+                "cuda-direct-image bind {label} Vulkan image memory failed: {err:?}"
+            )));
+        }
+
+        let external_memory_fd = ash::khr::external_memory_fd::Device::new(
+            hal_device.shared_instance().raw_instance(),
+            &raw_device,
+        );
+        let fd_info = ash::vk::MemoryGetFdInfoKHR::default()
+            .memory(vk_memory)
+            .handle_type(handle_type);
+        let fd = match unsafe { external_memory_fd.get_memory_fd(&fd_info) } {
+            Ok(fd) => fd,
+            Err(err) => {
+                unsafe {
+                    raw_device.destroy_image(vk_image, None);
+                    raw_device.free_memory(vk_memory, None);
+                }
+                return Err(NativeWgpuError::Video(format!(
+                    "cuda-direct-image export {label} Vulkan image fd failed: {err:?}"
+                )));
+            }
+        };
+        let cuda_external_memory = match NativeWgpuCudaExternalImageMemory::import_opaque_fd(
+            fd,
+            requirements.size,
+            width,
+            height,
+            channels,
+            label,
+        ) {
+            Ok(memory) => memory,
+            Err(err) => {
+                unsafe {
+                    raw_device.destroy_image(vk_image, None);
+                    raw_device.free_memory(vk_memory, None);
+                }
+                return Err(err);
+            }
+        };
+
+        let drop_device = raw_device.clone();
+        let drop_callback: wgpu::hal::DropCallback = Box::new(move || unsafe {
+            drop_device.destroy_image(vk_image, None);
+            drop_device.free_memory(vk_memory, None);
+        });
+        let hal_texture = unsafe {
+            hal_device.texture_from_raw(
+                vk_image,
+                &wgpu::hal::TextureDescriptor {
+                    label: Some(match label {
+                        "y" => "gilder-native-wgpu-cuda-direct-image-y",
+                        _ => "gilder-native-wgpu-cuda-direct-image-uv",
+                    }),
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu_format,
+                    usage: wgpu::TextureUses::RESOURCE | wgpu::TextureUses::COPY_SRC,
+                    memory_flags: wgpu::hal::MemoryFlags::empty(),
+                    view_formats: Vec::new(),
+                },
+                Some(drop_callback),
+                wgpu::hal::vulkan::TextureMemory::External,
+            )
+        };
+        let texture = unsafe {
+            device.create_texture_from_hal::<wgpu::hal::api::Vulkan>(
+                hal_texture,
+                &wgpu::TextureDescriptor {
+                    label: Some(match label {
+                        "y" => "gilder-native-wgpu-cuda-direct-image-y",
+                        _ => "gilder-native-wgpu-cuda-direct-image-uv",
+                    }),
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu_format,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                },
+            )
+        };
+
+        Ok(Self {
+            cuda_external_memory,
+            texture,
+            width,
+            height,
+            channels,
+        })
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+struct NativeWgpuCudaVulkanTimelineSync {
+    raw_device: ash::Device,
+    raw_queue: ash::vk::Queue,
+    semaphore: ash::vk::Semaphore,
+    cuda_external_semaphore: Option<NativeWgpuCudaExternalSemaphore>,
+    next_signal_value: u64,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+impl NativeWgpuCudaVulkanTimelineSync {
+    fn new(
+        device: &wgpu::Device,
+        cuda_context: *mut NativeWgpuGstCudaContext,
+    ) -> Result<Self, NativeWgpuError> {
+        let hal_device = unsafe { device.as_hal::<wgpu::hal::api::Vulkan>() }.ok_or_else(|| {
+            NativeWgpuError::Video(
+                "cuda-direct timeline sync requires Vulkan wgpu device".to_owned(),
+            )
+        })?;
+        let external_semaphore_fd_enabled = hal_device
+            .enabled_device_extensions()
+            .iter()
+            .any(|name| *name == ash::khr::external_semaphore_fd::NAME);
+        if !external_semaphore_fd_enabled {
+            return Err(NativeWgpuError::Video(
+                "cuda-direct timeline sync requires wgpu Vulkan device extension VK_KHR_external_semaphore_fd".to_owned(),
+            ));
+        }
+
+        let raw_device = hal_device.raw_device().clone();
+        let raw_queue = hal_device.raw_queue();
+        let handle_type = ash::vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_FD;
+        native_wgpu_vulkan_timeline_semaphore_exportable(
+            hal_device.shared_instance().raw_instance(),
+            hal_device.raw_physical_device(),
+            handle_type,
+        )?;
+
+        let mut semaphore_type_info = ash::vk::SemaphoreTypeCreateInfo::default()
+            .semaphore_type(ash::vk::SemaphoreType::TIMELINE)
+            .initial_value(0);
+        let mut export_info =
+            ash::vk::ExportSemaphoreCreateInfo::default().handle_types(handle_type);
+        let semaphore_info = ash::vk::SemaphoreCreateInfo::default()
+            .push_next(&mut semaphore_type_info)
+            .push_next(&mut export_info);
+        let semaphore =
+            unsafe { raw_device.create_semaphore(&semaphore_info, None) }.map_err(|err| {
+                NativeWgpuError::Video(format!(
+                    "cuda-direct timeline sync create Vulkan semaphore failed: {err:?}"
+                ))
+            })?;
+
+        let external_semaphore_fd = ash::khr::external_semaphore_fd::Device::new(
+            hal_device.shared_instance().raw_instance(),
+            &raw_device,
+        );
+        let fd_info = ash::vk::SemaphoreGetFdInfoKHR::default()
+            .semaphore(semaphore)
+            .handle_type(handle_type);
+        let fd = match unsafe { external_semaphore_fd.get_semaphore_fd(&fd_info) } {
+            Ok(fd) => fd,
+            Err(err) => {
+                unsafe {
+                    raw_device.destroy_semaphore(semaphore, None);
+                }
+                return Err(NativeWgpuError::Video(format!(
+                    "cuda-direct timeline sync export semaphore fd failed: {err:?}"
+                )));
+            }
+        };
+
+        let _guard = NativeWgpuGstCudaContextPushGuard::new(cuda_context)?;
+        let cuda_external_semaphore = match NativeWgpuCudaExternalSemaphore::import_timeline_fd(fd)
+        {
+            Ok(semaphore) => semaphore,
+            Err(err) => {
+                unsafe {
+                    raw_device.destroy_semaphore(semaphore, None);
+                }
+                return Err(err);
+            }
+        };
+
+        Ok(Self {
+            raw_device,
+            raw_queue,
+            semaphore,
+            cuda_external_semaphore: Some(cuda_external_semaphore),
+            next_signal_value: 1,
+        })
+    }
+
+    fn signal_cuda_stream(
+        &mut self,
+        stream: NativeWgpuCudaStreamHandle,
+    ) -> Result<u64, NativeWgpuError> {
+        let signal_value = self.next_signal_value;
+        self.next_signal_value = self.next_signal_value.saturating_add(1);
+        self.cuda_external_semaphore
+            .as_ref()
+            .ok_or_else(|| {
+                NativeWgpuError::Video(
+                    "cuda-direct timeline sync semaphore already destroyed".to_owned(),
+                )
+            })?
+            .signal_timeline_value(signal_value, stream)?;
+        Ok(signal_value)
+    }
+
+    fn submit_vulkan_wait(&self, signal_value: u64) -> Result<(), NativeWgpuError> {
+        let wait_semaphores = [self.semaphore];
+        let wait_values = [signal_value];
+        let wait_stages = [ash::vk::PipelineStageFlags::TOP_OF_PIPE];
+        let mut timeline_info =
+            ash::vk::TimelineSemaphoreSubmitInfo::default().wait_semaphore_values(&wait_values);
+        let submit_info = ash::vk::SubmitInfo::default()
+            .wait_semaphores(&wait_semaphores)
+            .wait_dst_stage_mask(&wait_stages)
+            .push_next(&mut timeline_info);
+        unsafe {
+            self.raw_device
+                .queue_submit(self.raw_queue, &[submit_info], ash::vk::Fence::null())
+        }
+        .map_err(|err| {
+            NativeWgpuError::Video(format!(
+                "cuda-direct timeline sync submit Vulkan wait failed: {err:?}"
+            ))
+        })
+    }
+
+    fn completed_value(&self) -> Result<u64, NativeWgpuError> {
+        unsafe { self.raw_device.get_semaphore_counter_value(self.semaphore) }.map_err(|err| {
+            NativeWgpuError::Video(format!(
+                "cuda-direct timeline sync query semaphore counter failed: {err:?}"
+            ))
+        })
+    }
+
+    fn wait_idle(&self) -> Result<(), NativeWgpuError> {
+        unsafe { self.raw_device.device_wait_idle() }.map_err(|err| {
+            NativeWgpuError::Video(format!(
+                "cuda-direct timeline sync wait device idle failed: {err:?}"
+            ))
+        })
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+impl Drop for NativeWgpuCudaVulkanTimelineSync {
+    fn drop(&mut self) {
+        drop(self.cuda_external_semaphore.take());
+        unsafe {
+            self.raw_device.destroy_semaphore(self.semaphore, None);
+        }
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_vulkan_timeline_semaphore_exportable(
+    instance: &ash::Instance,
+    physical_device: ash::vk::PhysicalDevice,
+    handle_type: ash::vk::ExternalSemaphoreHandleTypeFlags,
+) -> Result<(), NativeWgpuError> {
+    let mut semaphore_type_info = ash::vk::SemaphoreTypeCreateInfo::default()
+        .semaphore_type(ash::vk::SemaphoreType::TIMELINE);
+    let external_info = ash::vk::PhysicalDeviceExternalSemaphoreInfo::default()
+        .handle_type(handle_type)
+        .push_next(&mut semaphore_type_info);
+    let mut properties = ash::vk::ExternalSemaphoreProperties::default();
+    unsafe {
+        instance.get_physical_device_external_semaphore_properties(
+            physical_device,
+            &external_info,
+            &mut properties,
+        );
+    }
+    if properties
+        .external_semaphore_features
+        .contains(ash::vk::ExternalSemaphoreFeatureFlags::EXPORTABLE)
+    {
+        return Ok(());
+    }
+    Err(NativeWgpuError::Video(format!(
+        "cuda-direct timeline sync Vulkan timeline semaphore is not exportable as {handle_type:?}: features={:?}",
+        properties.external_semaphore_features
+    )))
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
 fn native_wgpu_vulkan_memory_type_index(
     instance: &ash::Instance,
     physical_device: ash::vk::PhysicalDevice,
@@ -4242,6 +4939,182 @@ impl Drop for NativeWgpuCudaExternalMemory {
     fn drop(&mut self) {
         if !self.handle.is_null() {
             let _ = unsafe { CuDestroyExternalMemory(self.handle) };
+        }
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+struct NativeWgpuCudaExternalImageMemory {
+    handle: NativeWgpuCudaExternalMemoryHandle,
+    _mipmapped_array: NativeWgpuCudaMipmappedArrayHandle,
+    array: NativeWgpuCudaArrayHandle,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+impl NativeWgpuCudaExternalImageMemory {
+    fn import_opaque_fd(
+        fd: i32,
+        allocation_size: u64,
+        width: u32,
+        height: u32,
+        channels: u32,
+        label: &str,
+    ) -> Result<Self, NativeWgpuError> {
+        let mut external_memory = ptr::null_mut();
+        let desc = NativeWgpuCudaExternalMemoryHandleDesc {
+            type_: CUDA_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD,
+            handle: NativeWgpuCudaExternalMemoryHandleUnion { fd },
+            size: allocation_size,
+            flags: 0,
+            reserved: [0; 16],
+        };
+        if let Err(err) = native_wgpu_cuda_result(
+            unsafe { CuImportExternalMemory(&mut external_memory, &desc) },
+            &format!("cuda-direct-image import {label} Vulkan image external memory"),
+        ) {
+            unsafe {
+                drop(OwnedFd::from_raw_fd(fd));
+            }
+            return Err(err);
+        }
+        if external_memory.is_null() {
+            return Err(NativeWgpuError::Video(format!(
+                "cuda-direct-image imported {label} external memory is null"
+            )));
+        }
+
+        let mut mipmapped_array = ptr::null_mut();
+        let mipmapped_desc = NativeWgpuCudaExternalMemoryMipmappedArrayDesc {
+            offset: 0,
+            array_desc: NativeWgpuCudaArray3dDesc {
+                width: usize::try_from(width).map_err(|_| {
+                    NativeWgpuError::Video(format!("cuda-direct-image {label} width too large"))
+                })?,
+                height: usize::try_from(height).map_err(|_| {
+                    NativeWgpuError::Video(format!("cuda-direct-image {label} height too large"))
+                })?,
+                depth: 0,
+                format: CUDA_ARRAY_FORMAT_UNSIGNED_INT8,
+                num_channels: channels,
+                flags: 0,
+            },
+            num_levels: 1,
+            reserved: [0; 16],
+        };
+        if let Err(err) = native_wgpu_cuda_result(
+            unsafe {
+                CuExternalMemoryGetMappedMipmappedArray(
+                    &mut mipmapped_array,
+                    external_memory,
+                    &mipmapped_desc,
+                )
+            },
+            &format!("cuda-direct-image map {label} Vulkan image mipmapped array"),
+        ) {
+            let _ = unsafe { CuDestroyExternalMemory(external_memory) };
+            return Err(err);
+        }
+        if mipmapped_array.is_null() {
+            let _ = unsafe { CuDestroyExternalMemory(external_memory) };
+            return Err(NativeWgpuError::Video(format!(
+                "cuda-direct-image mapped {label} mipmapped array is null"
+            )));
+        }
+
+        let mut array = ptr::null_mut();
+        if let Err(err) = native_wgpu_cuda_result(
+            unsafe { cuMipmappedArrayGetLevel(&mut array, mipmapped_array, 0) },
+            &format!("cuda-direct-image get {label} mipmapped array level 0"),
+        ) {
+            let _ = unsafe { CuDestroyExternalMemory(external_memory) };
+            return Err(err);
+        }
+        if array.is_null() {
+            let _ = unsafe { CuDestroyExternalMemory(external_memory) };
+            return Err(NativeWgpuError::Video(format!(
+                "cuda-direct-image {label} CUDA array level is null"
+            )));
+        }
+
+        Ok(Self {
+            handle: external_memory,
+            _mipmapped_array: mipmapped_array,
+            array,
+        })
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+impl Drop for NativeWgpuCudaExternalImageMemory {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            let _ = unsafe { CuDestroyExternalMemory(self.handle) };
+        }
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+struct NativeWgpuCudaExternalSemaphore {
+    handle: NativeWgpuCudaExternalSemaphoreHandle,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+impl NativeWgpuCudaExternalSemaphore {
+    fn import_timeline_fd(fd: i32) -> Result<Self, NativeWgpuError> {
+        let mut external_semaphore = ptr::null_mut();
+        let desc = NativeWgpuCudaExternalSemaphoreHandleDesc {
+            type_: CUDA_EXTERNAL_SEMAPHORE_HANDLE_TYPE_TIMELINE_SEMAPHORE_FD,
+            handle: NativeWgpuCudaExternalMemoryHandleUnion { fd },
+            flags: 0,
+            reserved: [0; 16],
+        };
+        if let Err(err) = native_wgpu_cuda_result(
+            unsafe { CuImportExternalSemaphore(&mut external_semaphore, &desc) },
+            "cuda-direct timeline sync import Vulkan semaphore fd",
+        ) {
+            unsafe {
+                drop(OwnedFd::from_raw_fd(fd));
+            }
+            return Err(err);
+        }
+        if external_semaphore.is_null() {
+            return Err(NativeWgpuError::Video(
+                "cuda-direct timeline sync imported semaphore is null".to_owned(),
+            ));
+        }
+        Ok(Self {
+            handle: external_semaphore,
+        })
+    }
+
+    fn signal_timeline_value(
+        &self,
+        value: u64,
+        stream: NativeWgpuCudaStreamHandle,
+    ) -> Result<(), NativeWgpuError> {
+        let semaphore = self.handle;
+        let params = NativeWgpuCudaExternalSemaphoreSignalParams {
+            params: NativeWgpuCudaExternalSemaphoreSignalParamsInner {
+                fence: NativeWgpuCudaExternalSemaphoreFenceParams { value },
+                nv_sci_sync: NativeWgpuCudaExternalSemaphoreNvSciSyncParams { reserved: 0 },
+                keyed_mutex: NativeWgpuCudaExternalSemaphoreSignalKeyedMutexParams { key: 0 },
+                reserved: [0; 12],
+            },
+            flags: 0,
+            reserved: [0; 16],
+        };
+        native_wgpu_cuda_result(
+            unsafe { CuSignalExternalSemaphoresAsync(&semaphore, &params, 1, stream) },
+            "cuda-direct timeline sync signal CUDA semaphore",
+        )
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+impl Drop for NativeWgpuCudaExternalSemaphore {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            let _ = unsafe { CuDestroyExternalSemaphore(self.handle) };
         }
     }
 }
@@ -4851,6 +5724,202 @@ fn native_wgpu_copy_gst_cuda_sample_to_vulkan_staging(
     drop(y_map);
     sync_result?;
     Ok(())
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_copy_gst_cuda_sample_to_vulkan_images(
+    buffer: &gst::BufferRef,
+    meta: &NativeWgpuGstSystemNv12Meta,
+    images: &mut NativeWgpuCudaVulkanImagePlanes,
+) -> Result<(), NativeWgpuError> {
+    images.retire_completed_copies()?;
+    let _guard = NativeWgpuGstCudaContextPushGuard::new(images.cuda_context)?;
+    let y_map = native_wgpu_copy_gst_cuda_plane_to_vulkan_image(
+        buffer,
+        0,
+        meta.y.offset,
+        meta.y.stride,
+        meta.y.row_bytes,
+        meta.y.height,
+        images.cuda_context,
+        images.cuda_stream.handle,
+        &images.y,
+        "y",
+    )?;
+    let uv_map = match native_wgpu_copy_gst_cuda_plane_to_vulkan_image(
+        buffer,
+        1,
+        meta.uv.offset,
+        meta.uv.stride,
+        meta.uv.row_bytes,
+        meta.uv.height,
+        images.cuda_context,
+        images.cuda_stream.handle,
+        &images.uv,
+        "uv",
+    ) {
+        Ok(map) => map,
+        Err(err) => {
+            let sync_result = native_wgpu_cuda_result(
+                unsafe { CuStreamSynchronize(images.cuda_stream.handle) },
+                "cuda-direct-image synchronize copy stream after failed uv copy",
+            );
+            drop(y_map);
+            sync_result?;
+            return Err(err);
+        }
+    };
+
+    if images.timeline_sync.is_some() {
+        let signal_result = images
+            .timeline_sync
+            .as_mut()
+            .expect("timeline sync checked above")
+            .signal_cuda_stream(images.cuda_stream.handle);
+        let signal_value = match signal_result {
+            Ok(signal_value) => signal_value,
+            Err(err) => {
+                let sync_result = native_wgpu_cuda_result(
+                    unsafe { CuStreamSynchronize(images.cuda_stream.handle) },
+                    "cuda-direct-image synchronize copy stream after failed timeline signal",
+                );
+                drop(uv_map);
+                drop(y_map);
+                sync_result?;
+                return Err(err);
+            }
+        };
+        if let Err(err) = images
+            .timeline_sync
+            .as_ref()
+            .expect("timeline sync checked above")
+            .submit_vulkan_wait(signal_value)
+        {
+            let sync_result = native_wgpu_cuda_result(
+                unsafe { CuStreamSynchronize(images.cuda_stream.handle) },
+                "cuda-direct-image synchronize copy stream after failed timeline wait submit",
+            );
+            drop(uv_map);
+            drop(y_map);
+            sync_result?;
+            return Err(err);
+        }
+        images
+            .pending_copies
+            .push_back(NativeWgpuCudaDirectImagePendingCopy {
+                signal_value,
+                _y_map: y_map,
+                _uv_map: uv_map,
+                _buffer: buffer.to_owned(),
+            });
+        images.retire_completed_copies()?;
+        return Ok(());
+    }
+
+    let sync_result = native_wgpu_cuda_result(
+        unsafe { CuStreamSynchronize(images.cuda_stream.handle) },
+        "cuda-direct-image synchronize copy stream",
+    );
+    drop(uv_map);
+    drop(y_map);
+    sync_result?;
+    Ok(())
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[allow(clippy::too_many_arguments)]
+fn native_wgpu_copy_gst_cuda_plane_to_vulkan_image(
+    buffer: &gst::BufferRef,
+    plane_index: usize,
+    plane_offset: usize,
+    source_stride: u32,
+    row_bytes: u32,
+    height: u32,
+    expected_context: *mut NativeWgpuGstCudaContext,
+    stream: NativeWgpuCudaStreamHandle,
+    image: &NativeWgpuCudaVulkanImagePlane,
+    label: &str,
+) -> Result<NativeWgpuCudaMemoryMap, NativeWgpuError> {
+    let expected_row_bytes = image.width.checked_mul(image.channels).ok_or_else(|| {
+        NativeWgpuError::Video(format!("cuda-direct-image {label} row byte overflow"))
+    })?;
+    if row_bytes != expected_row_bytes || height != image.height {
+        return Err(NativeWgpuError::Video(format!(
+            "cuda-direct-image {label} plane shape mismatch: source={}x{} row_bytes={} image={}x{} channels={}",
+            row_bytes, height, row_bytes, image.width, image.height, image.channels
+        )));
+    }
+
+    let plane_end = plane_offset.checked_add(1).ok_or_else(|| {
+        NativeWgpuError::Video(format!("cuda-direct-image {label} offset overflow"))
+    })?;
+    let (memory_range, memory_skip) =
+        buffer.find_memory(plane_offset..plane_end).ok_or_else(|| {
+            NativeWgpuError::Video(format!("cuda-direct-image {label} plane has no memory"))
+        })?;
+    let memory_index = memory_range.start;
+    if memory_index >= buffer.n_memory() {
+        return Err(NativeWgpuError::Video(format!(
+            "cuda-direct-image {label} memory index out of range"
+        )));
+    }
+    let memory = buffer.peek_memory(memory_index);
+    if !native_wgpu_is_cuda_memory(memory) {
+        return Err(NativeWgpuError::Video(format!(
+            "cuda-direct-image {label} plane memory is not CUDAMemory: {}",
+            native_wgpu_gst_memory_type(memory)
+        )));
+    }
+    let cuda_memory = memory.as_ptr().cast_mut().cast::<NativeWgpuGstCudaMemory>();
+    let context = unsafe { (*cuda_memory).context };
+    if context != expected_context {
+        return Err(NativeWgpuError::Video(format!(
+            "cuda-direct-image {label} plane context changed"
+        )));
+    }
+    unsafe {
+        gst_cuda_memory_sync(cuda_memory);
+    }
+    let map = NativeWgpuCudaMemoryMap::new(memory).map_err(|err| {
+        NativeWgpuError::Video(format!("cuda-direct-image {label} CUDA map failed: {err}"))
+    })?;
+    let source = map
+        .device_ptr()
+        .checked_add(u64::try_from(memory_skip).map_err(|_| {
+            NativeWgpuError::Video(format!("cuda-direct-image {label} memory skip too large"))
+        })?)
+        .ok_or_else(|| {
+            NativeWgpuError::Video(format!("cuda-direct-image {label} source overflow"))
+        })?;
+    let copy = NativeWgpuCudaMemcpy2D {
+        src_x_in_bytes: 0,
+        src_y: 0,
+        src_memory_type: CUDA_MEMORYTYPE_DEVICE,
+        src_host: ptr::null(),
+        src_device: source,
+        src_array: ptr::null_mut(),
+        src_pitch: usize::try_from(source_stride).map_err(|_| {
+            NativeWgpuError::Video(format!("cuda-direct-image {label} source stride too large"))
+        })?,
+        dst_x_in_bytes: 0,
+        dst_y: 0,
+        dst_memory_type: CUDA_MEMORYTYPE_ARRAY,
+        dst_host: ptr::null_mut(),
+        dst_device: 0,
+        dst_array: image.cuda_external_memory.array,
+        dst_pitch: 0,
+        width_in_bytes: usize::try_from(row_bytes).map_err(|_| {
+            NativeWgpuError::Video(format!("cuda-direct-image {label} row bytes too large"))
+        })?,
+        height: usize::try_from(height).map_err(|_| {
+            NativeWgpuError::Video(format!("cuda-direct-image {label} height too large"))
+        })?,
+    };
+    native_wgpu_cuda_result(
+        unsafe { CuMemcpy2DAsync(&copy, stream) },
+        &format!("cuda-direct-image copy {label} plane {plane_index}"),
+    )?;
+    Ok(map)
 }
 
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
@@ -5802,16 +6871,26 @@ const CUDA_SUCCESS: i32 = 0;
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
 const CUDA_MEMORYTYPE_DEVICE: u32 = 2;
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
+const CUDA_MEMORYTYPE_ARRAY: u32 = 3;
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
 const CUDA_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD: u32 = 1;
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
+const CUDA_EXTERNAL_SEMAPHORE_HANDLE_TYPE_TIMELINE_SEMAPHORE_FD: u32 = 9;
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
 const CUDA_STREAM_NON_BLOCKING: u32 = 1;
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+const CUDA_ARRAY_FORMAT_UNSIGNED_INT8: u32 = 1;
 
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
 type NativeWgpuCudaDevicePtr = u64;
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
 type NativeWgpuCudaExternalMemoryHandle = *mut c_void;
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
+type NativeWgpuCudaExternalSemaphoreHandle = *mut c_void;
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
 type NativeWgpuCudaArrayHandle = *mut c_void;
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+type NativeWgpuCudaMipmappedArrayHandle = *mut c_void;
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
 type NativeWgpuCudaStreamHandle = *mut c_void;
 
@@ -5845,6 +6924,71 @@ struct NativeWgpuCudaExternalMemoryHandleDesc {
 struct NativeWgpuCudaExternalMemoryBufferDesc {
     offset: u64,
     size: u64,
+    flags: u32,
+    reserved: [u32; 16],
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[repr(C)]
+struct NativeWgpuCudaArray3dDesc {
+    width: usize,
+    height: usize,
+    depth: usize,
+    format: u32,
+    num_channels: u32,
+    flags: u32,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[repr(C)]
+struct NativeWgpuCudaExternalMemoryMipmappedArrayDesc {
+    offset: u64,
+    array_desc: NativeWgpuCudaArray3dDesc,
+    num_levels: u32,
+    reserved: [u32; 16],
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[repr(C)]
+struct NativeWgpuCudaExternalSemaphoreHandleDesc {
+    type_: u32,
+    handle: NativeWgpuCudaExternalMemoryHandleUnion,
+    flags: u32,
+    reserved: [u32; 16],
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[repr(C)]
+struct NativeWgpuCudaExternalSemaphoreFenceParams {
+    value: u64,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[repr(C)]
+union NativeWgpuCudaExternalSemaphoreNvSciSyncParams {
+    fence: *mut c_void,
+    reserved: u64,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[repr(C)]
+struct NativeWgpuCudaExternalSemaphoreSignalKeyedMutexParams {
+    key: u64,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[repr(C)]
+struct NativeWgpuCudaExternalSemaphoreSignalParamsInner {
+    fence: NativeWgpuCudaExternalSemaphoreFenceParams,
+    nv_sci_sync: NativeWgpuCudaExternalSemaphoreNvSciSyncParams,
+    keyed_mutex: NativeWgpuCudaExternalSemaphoreSignalKeyedMutexParams,
+    reserved: [u32; 12],
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[repr(C)]
+struct NativeWgpuCudaExternalSemaphoreSignalParams {
+    params: NativeWgpuCudaExternalSemaphoreSignalParamsInner,
     flags: u32,
     reserved: [u32; 16],
 }
@@ -5892,7 +7036,23 @@ unsafe extern "C" {
         ext_mem: NativeWgpuCudaExternalMemoryHandle,
         buffer_desc: *const NativeWgpuCudaExternalMemoryBufferDesc,
     ) -> i32;
+    fn CuExternalMemoryGetMappedMipmappedArray(
+        mipmap: *mut NativeWgpuCudaMipmappedArrayHandle,
+        ext_mem: NativeWgpuCudaExternalMemoryHandle,
+        mipmap_desc: *const NativeWgpuCudaExternalMemoryMipmappedArrayDesc,
+    ) -> i32;
     fn CuDestroyExternalMemory(ext_mem: NativeWgpuCudaExternalMemoryHandle) -> i32;
+    fn CuImportExternalSemaphore(
+        ext_sem_out: *mut NativeWgpuCudaExternalSemaphoreHandle,
+        sem_handle_desc: *const NativeWgpuCudaExternalSemaphoreHandleDesc,
+    ) -> i32;
+    fn CuSignalExternalSemaphoresAsync(
+        ext_sem_array: *const NativeWgpuCudaExternalSemaphoreHandle,
+        params_array: *const NativeWgpuCudaExternalSemaphoreSignalParams,
+        num_ext_sems: u32,
+        stream: NativeWgpuCudaStreamHandle,
+    ) -> i32;
+    fn CuDestroyExternalSemaphore(ext_sem: NativeWgpuCudaExternalSemaphoreHandle) -> i32;
     fn gst_cuda_load_library() -> gst::glib::ffi::gboolean;
     fn gst_cuda_context_new(device_id: u32) -> *mut NativeWgpuGstCudaContext;
     fn gst_cuda_context_push(ctx: *mut NativeWgpuGstCudaContext) -> gst::glib::ffi::gboolean;
@@ -5911,6 +7071,16 @@ unsafe extern "C" {
     fn gst_cuda_memory_sync(mem: *mut NativeWgpuGstCudaMemory);
     fn gst_cuda_memory_get_alloc_method(mem: *mut NativeWgpuGstCudaMemory) -> i32;
     fn gst_cuda_memory_export(mem: *mut NativeWgpuGstCudaMemory, os_handle: *mut c_void) -> i32;
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[link(name = "cuda")]
+unsafe extern "C" {
+    fn cuMipmappedArrayGetLevel(
+        level_array: *mut NativeWgpuCudaArrayHandle,
+        mipmapped_array: NativeWgpuCudaMipmappedArrayHandle,
+        level: u32,
+    ) -> i32;
 }
 
 #[cfg(feature = "video-renderer")]
