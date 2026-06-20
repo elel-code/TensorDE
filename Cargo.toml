@@ -23,6 +23,7 @@ native-wgpu-renderer = [
     "dep:wgpu",
 ]
 native-vulkan-renderer = ["native-wayland-renderer", "dep:ash", "dep:image"]
+native-vulkan-gst-video = ["native-vulkan-renderer", "video-renderer"]
 native-wgpu-gst-dmabuf = ["native-wgpu-renderer", "video-renderer", "dep:ash"]
 video-renderer = ["dep:gstreamer", "dep:gstreamer-video", "dep:libc"]
 

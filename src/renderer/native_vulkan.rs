@@ -20,11 +20,19 @@ use crate::core::{FitMode, Transition};
 use crate::renderer::native_wayland::{
     NativeWaylandError, NativeWaylandHost, NativeWaylandHostOptions, NativeWaylandSurfaceHandles,
 };
+#[cfg(feature = "native-vulkan-gst-video")]
+use crate::renderer::video::{
+    actual_decoder_reports, apply_decoder_rank_policy, decoder_policy_status, video_caps_reports,
+};
 use crate::renderer::{
     SceneLiteDisplayPlan, SceneLiteWallpaperPlan, SlideshowWallpaperPlan, StaticRenderSyncPlan,
     StaticWallpaperPlan, VideoWallpaperPlan,
 };
 use ash::vk;
+#[cfg(feature = "native-vulkan-gst-video")]
+use gst::prelude::*;
+#[cfg(feature = "native-vulkan-gst-video")]
+use gstreamer as gst;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanCapabilities {
@@ -75,6 +83,7 @@ pub enum NativeVulkanError {
     UnsupportedSwapchainUsage(&'static str),
     InvalidSwapchainExtent,
     StaticImage(String),
+    Video(String),
     MissingMemoryType(&'static str),
 }
 
@@ -99,6 +108,7 @@ impl fmt::Display for NativeVulkanError {
             }
             Self::InvalidSwapchainExtent => write!(f, "invalid Vulkan swapchain extent"),
             Self::StaticImage(err) => write!(f, "static image error: {err}"),
+            Self::Video(err) => write!(f, "video error: {err}"),
             Self::MissingMemoryType(label) => write!(f, "missing Vulkan memory type for {label}"),
         }
     }
@@ -438,10 +448,49 @@ pub struct NativeVulkanVideoRuntimeSnapshot {
     pub handoff_status: &'static str,
     pub texture_import_status: &'static str,
     pub audio_status: &'static str,
+    pub gst_state: Option<String>,
+    pub eos_messages: u64,
     pub frames_received: u64,
     pub frames_imported: u64,
     pub rendered_placeholder_frames: u64,
     pub poster_upload_bytes: Option<u64>,
+    pub last_sample_caps: Option<String>,
+    pub last_sample_format: Option<String>,
+    pub last_sample_size: Option<(u32, u32)>,
+    pub last_sample_memory_types: Vec<String>,
+    pub actual_decoders: Vec<String>,
+    pub decoder_policy_status: Option<String>,
+    pub caps_report_count: usize,
+    pub caps_memory_features: Vec<String>,
+    pub caps_reports: Vec<NativeVulkanVideoCapsSnapshot>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVideoCapsSnapshot {
+    pub element: String,
+    pub pad: String,
+    pub direction: String,
+    pub caps: String,
+    pub source: String,
+    pub memory_features: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeVulkanGstVideoFrontendSnapshot {
+    gst_state: Option<String>,
+    eos_messages: u64,
+    frames_received: u64,
+    last_sample_caps: Option<String>,
+    last_sample_format: Option<String>,
+    last_sample_size: Option<(u32, u32)>,
+    last_sample_memory_types: Vec<String>,
+    actual_decoders: Vec<String>,
+    decoder_policy_status: Option<String>,
+    caps_report_count: usize,
+    caps_memory_features: Vec<String>,
+    caps_reports: Vec<NativeVulkanVideoCapsSnapshot>,
+    last_error: Option<String>,
 }
 
 pub struct NativeVulkanSession {
@@ -469,6 +518,8 @@ pub struct NativeVulkanSession {
     render_finished: vk::Semaphore,
     in_flight: vk::Fence,
     static_upload: Option<NativeVulkanStaticImageUpload>,
+    #[cfg(feature = "native-vulkan-gst-video")]
+    video_frontend: Option<NativeVulkanGstVideoFrontend>,
     clear_color: NativeVulkanClearColor,
     render_item: NativeVulkanRenderItem,
     started_at: Instant,
@@ -627,6 +678,13 @@ impl NativeVulkanSession {
             )?),
             _ => None,
         };
+        #[cfg(feature = "native-vulkan-gst-video")]
+        let video_frontend = match &render_item {
+            NativeVulkanRenderItem::Video { .. } => {
+                Some(NativeVulkanGstVideoFrontend::new(&render_item)?)
+            }
+            _ => None,
+        };
 
         Ok(Self {
             host,
@@ -653,6 +711,8 @@ impl NativeVulkanSession {
             render_finished,
             in_flight,
             static_upload,
+            #[cfg(feature = "native-vulkan-gst-video")]
+            video_frontend,
             clear_color: options.clear_color,
             render_item,
             started_at: Instant::now(),
@@ -674,6 +734,7 @@ impl NativeVulkanSession {
 
         while Instant::now() < deadline && !self.host.is_closed() {
             self.host.pump_events()?;
+            self.poll_video_frontend()?;
             match self.render_frame() {
                 Ok(()) => {}
                 Err(err) => {
@@ -725,6 +786,7 @@ impl NativeVulkanSession {
                 .map(|upload| upload.size_bytes.min(u64::MAX as vk::DeviceSize) as u64),
             video_runtime: native_vulkan_video_runtime_snapshot(
                 &self.render_item,
+                self.video_frontend_snapshot(),
                 self.frames_rendered,
                 self.static_upload
                     .as_ref()
@@ -897,6 +959,26 @@ impl NativeVulkanSession {
         }
         Ok(())
     }
+
+    fn poll_video_frontend(&mut self) -> Result<(), NativeVulkanError> {
+        #[cfg(feature = "native-vulkan-gst-video")]
+        if let Some(frontend) = self.video_frontend.as_mut() {
+            frontend.poll()?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    fn video_frontend_snapshot(&self) -> Option<NativeVulkanGstVideoFrontendSnapshot> {
+        self.video_frontend
+            .as_ref()
+            .map(NativeVulkanGstVideoFrontend::snapshot)
+    }
+
+    #[cfg(not(feature = "native-vulkan-gst-video"))]
+    fn video_frontend_snapshot(&self) -> Option<NativeVulkanGstVideoFrontendSnapshot> {
+        None
+    }
 }
 
 impl Drop for NativeVulkanSession {
@@ -948,6 +1030,335 @@ pub fn run_video(
     let item = native_vulkan_video_item(&plan);
     let mut session = NativeVulkanSession::connect_with_render_item(options, item)?;
     session.run_for(duration, target_max_fps)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+struct NativeVulkanGstVideoFrontend {
+    pipeline: gst::Element,
+    sink: gst::Element,
+    bus: gst::Bus,
+    loop_playback: bool,
+    decoder_policy: VideoDecoderPolicy,
+    eos_messages: u64,
+    frames_received: u64,
+    last_sample_caps: Option<String>,
+    last_sample_format: Option<String>,
+    last_sample_size: Option<(u32, u32)>,
+    last_sample_memory_types: Vec<String>,
+    last_error: Option<String>,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanGstVideoFrontend {
+    fn new(item: &NativeVulkanRenderItem) -> Result<Self, NativeVulkanError> {
+        let NativeVulkanRenderItem::Video {
+            source,
+            loop_playback,
+            decoder_policy,
+            start_offset_ms,
+            ..
+        } = item
+        else {
+            return Err(NativeVulkanError::Video(
+                "GStreamer frontend requires a video render item".to_owned(),
+            ));
+        };
+
+        gst::init().map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+        apply_decoder_rank_policy(*decoder_policy);
+        let pipeline = native_vulkan_gst_video_pipeline(source)?;
+        let sink = pipeline
+            .by_name("gilder-native-vulkan-video-appsink")
+            .ok_or_else(|| NativeVulkanError::Video("video appsink not found".to_owned()))?;
+        let bus = pipeline
+            .bus()
+            .ok_or_else(|| NativeVulkanError::Video("video pipeline has no bus".to_owned()))?;
+        pipeline
+            .set_state(gst::State::Playing)
+            .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+        if *start_offset_ms > 0 {
+            pipeline
+                .seek_simple(
+                    gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                    gst::ClockTime::from_mseconds(*start_offset_ms),
+                )
+                .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+        }
+
+        Ok(Self {
+            pipeline: pipeline.upcast::<gst::Element>(),
+            sink,
+            bus,
+            loop_playback: *loop_playback,
+            decoder_policy: *decoder_policy,
+            eos_messages: 0,
+            frames_received: 0,
+            last_sample_caps: None,
+            last_sample_format: None,
+            last_sample_size: None,
+            last_sample_memory_types: Vec::new(),
+            last_error: None,
+        })
+    }
+
+    fn poll(&mut self) -> Result<(), NativeVulkanError> {
+        self.poll_bus()?;
+        self.pull_available_samples();
+        Ok(())
+    }
+
+    fn poll_bus(&mut self) -> Result<(), NativeVulkanError> {
+        while let Some(message) = self.bus.pop() {
+            match message.view() {
+                gst::MessageView::Eos(_) => {
+                    self.eos_messages = self.eos_messages.saturating_add(1);
+                    if self.loop_playback {
+                        self.pipeline
+                            .seek_simple(gst::SeekFlags::FLUSH, gst::ClockTime::ZERO)
+                            .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+                        self.pipeline
+                            .set_state(gst::State::Playing)
+                            .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+                    } else {
+                        self.pipeline
+                            .set_state(gst::State::Paused)
+                            .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+                    }
+                }
+                gst::MessageView::Error(err) => {
+                    let mut message = format!(
+                        "{}: {}",
+                        err.src()
+                            .map(|src| src.path_string())
+                            .unwrap_or_else(|| "gstreamer".into()),
+                        err.error()
+                    );
+                    if let Some(debug) = err.debug() {
+                        message.push_str(": ");
+                        message.push_str(&debug);
+                    }
+                    self.last_error = Some(message.clone());
+                    return Err(NativeVulkanError::Video(message));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn pull_available_samples(&mut self) {
+        for _ in 0..4 {
+            let sample = self
+                .sink
+                .emit_by_name::<Option<gst::Sample>>("try-pull-sample", &[&0u64]);
+            let Some(sample) = sample else {
+                break;
+            };
+            self.record_sample(&sample);
+        }
+    }
+
+    fn record_sample(&mut self, sample: &gst::Sample) {
+        self.frames_received = self.frames_received.saturating_add(1);
+        self.last_sample_caps = sample.caps().map(|caps| caps.to_string());
+        if let Some(caps) = sample.caps()
+            && let Some(structure) = caps.structure(0)
+        {
+            self.last_sample_format = structure.get::<String>("format").ok();
+            let width = structure.get::<i32>("width").ok();
+            let height = structure.get::<i32>("height").ok();
+            self.last_sample_size = width.zip(height).and_then(|(width, height)| {
+                Some((u32::try_from(width).ok()?, u32::try_from(height).ok()?))
+            });
+        }
+        self.last_sample_memory_types = sample
+            .buffer()
+            .map(native_vulkan_gst_memory_types)
+            .unwrap_or_default();
+        self.last_error = None;
+    }
+
+    fn snapshot(&self) -> NativeVulkanGstVideoFrontendSnapshot {
+        let gst_state = Some(
+            self.pipeline
+                .state(gst::ClockTime::ZERO)
+                .1
+                .name()
+                .to_string(),
+        );
+        let decoder_reports = actual_decoder_reports(&self.pipeline);
+        let actual_decoders = decoder_reports
+            .iter()
+            .map(|report| report.element.clone())
+            .collect::<Vec<_>>();
+        let decoder_policy_status = Some(format!(
+            "{:?}",
+            decoder_policy_status(self.decoder_policy, &decoder_reports)
+        ));
+        let caps_reports = video_caps_reports(&self.pipeline);
+        let mut caps_memory_features = caps_reports
+            .iter()
+            .flat_map(|report| report.memory_features.iter().cloned())
+            .collect::<Vec<_>>();
+        caps_memory_features.sort();
+        caps_memory_features.dedup();
+        let caps_report_count = caps_reports.len();
+        let caps_reports = caps_reports
+            .into_iter()
+            .map(|report| NativeVulkanVideoCapsSnapshot {
+                element: report.element,
+                pad: report.pad,
+                direction: report.direction,
+                caps: report.caps,
+                source: report.source,
+                memory_features: report.memory_features,
+            })
+            .collect();
+
+        NativeVulkanGstVideoFrontendSnapshot {
+            gst_state,
+            eos_messages: self.eos_messages,
+            frames_received: self.frames_received,
+            last_sample_caps: self.last_sample_caps.clone(),
+            last_sample_format: self.last_sample_format.clone(),
+            last_sample_size: self.last_sample_size,
+            last_sample_memory_types: self.last_sample_memory_types.clone(),
+            actual_decoders,
+            decoder_policy_status,
+            caps_report_count,
+            caps_memory_features,
+            caps_reports,
+            last_error: self.last_error.clone(),
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl Drop for NativeVulkanGstVideoFrontend {
+    fn drop(&mut self) {
+        let _ = self.pipeline.set_state(gst::State::Null);
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_gst_video_pipeline(source: &PathBuf) -> Result<gst::Pipeline, NativeVulkanError> {
+    let pipeline = gst::Pipeline::new();
+    let filesrc = native_vulkan_gst_element("filesrc")?;
+    filesrc.set_property("location", source.to_string_lossy().as_ref());
+    let decodebin = native_vulkan_gst_element("decodebin")?;
+    let queue = native_vulkan_gst_element("queue")?;
+    native_vulkan_configure_queue(&queue);
+    let sink = native_vulkan_gst_element("appsink")?;
+    sink.set_property("name", "gilder-native-vulkan-video-appsink");
+    native_vulkan_configure_appsink(&sink);
+
+    pipeline
+        .add_many([&filesrc, &decodebin, &queue, &sink])
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    filesrc
+        .link(&decodebin)
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    queue
+        .link(&sink)
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+
+    let queue_sink = queue
+        .static_pad("sink")
+        .ok_or_else(|| NativeVulkanError::Video("queue has no sink pad".to_owned()))?;
+    decodebin.connect_pad_added(move |_, pad| {
+        if queue_sink.is_linked() {
+            return;
+        }
+        let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
+        let is_video = caps
+            .structure(0)
+            .map(|structure| structure.name().starts_with("video/"))
+            .unwrap_or(false);
+        if is_video {
+            let _ = pad.link(&queue_sink);
+        }
+    });
+
+    Ok(pipeline)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_gst_element(name: &str) -> Result<gst::Element, NativeVulkanError> {
+    gst::ElementFactory::make(name)
+        .build()
+        .map_err(|err| NativeVulkanError::Video(format!("create {name}: {err}")))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_configure_queue(queue: &gst::Element) {
+    if queue.find_property("max-size-buffers").is_some() {
+        queue.set_property("max-size-buffers", 4u32);
+    }
+    if queue.find_property("max-size-bytes").is_some() {
+        queue.set_property("max-size-bytes", 0u32);
+    }
+    if queue.find_property("max-size-time").is_some() {
+        queue.set_property("max-size-time", 25_000_000u64);
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_configure_appsink(sink: &gst::Element) {
+    if sink.find_property("sync").is_some() {
+        sink.set_property("sync", true);
+    }
+    if sink.find_property("async").is_some() {
+        sink.set_property("async", false);
+    }
+    if sink.find_property("emit-signals").is_some() {
+        sink.set_property("emit-signals", false);
+    }
+    if sink.find_property("enable-last-sample").is_some() {
+        sink.set_property("enable-last-sample", false);
+    }
+    if sink.find_property("wait-on-eos").is_some() {
+        sink.set_property("wait-on-eos", false);
+    }
+    if sink.find_property("max-buffers").is_some() {
+        sink.set_property("max-buffers", 2u32);
+    }
+    if sink.find_property("drop").is_some() {
+        sink.set_property("drop", true);
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_gst_memory_types(buffer: &gst::BufferRef) -> Vec<String> {
+    (0..buffer.n_memory())
+        .map(|index| native_vulkan_gst_memory_type(buffer.peek_memory(index)))
+        .collect()
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_gst_memory_type(memory: &gst::MemoryRef) -> String {
+    for memory_type in ["CUDAMemory", "GLMemory", "DMABuf", "SystemMemory"] {
+        if memory.is_type(memory_type) {
+            return memory_type.to_owned();
+        }
+    }
+    let Some(memory_type) = memory
+        .allocator()
+        .map(|allocator| allocator.memory_type().to_string())
+    else {
+        return "unknown".to_owned();
+    };
+    let lower = memory_type.to_ascii_lowercase();
+    if lower.contains("cuda") {
+        "CUDAMemory".to_owned()
+    } else if lower.contains("gl") {
+        "GLMemory".to_owned()
+    } else if lower.contains("dmabuf") || lower.contains("dma-buf") {
+        "DMABuf".to_owned()
+    } else if lower.contains("system") {
+        "SystemMemory".to_owned()
+    } else {
+        memory_type
+    }
 }
 
 struct NativeVulkanStaticImageUpload {
@@ -1544,7 +1955,7 @@ pub fn wallpaper_type_support_matrix() -> Vec<NativeVulkanWallpaperTypeSupport> 
         NativeVulkanWallpaperTypeSupport {
             wallpaper_type: NativeVulkanWallpaperType::Video,
             current_vulkan_item: true,
-            current_renderer_status: "video render item can run through native Vulkan lifecycle with poster/clear placeholder; texture import still experimental",
+            current_renderer_status: "video render item runs through native Vulkan lifecycle; optional GStreamer appsink frontend records GPU-memory sample handoff; texture import still experimental",
             target_vulkan_path: "GStreamer decode -> importable DMABuf/EGLImage/Vulkan image -> YUV sampling",
         },
         NativeVulkanWallpaperTypeSupport {
@@ -1677,6 +2088,7 @@ fn native_vulkan_video_item(plan: &VideoWallpaperPlan) -> NativeVulkanRenderItem
 
 fn native_vulkan_video_runtime_snapshot(
     item: &NativeVulkanRenderItem,
+    frontend: Option<NativeVulkanGstVideoFrontendSnapshot>,
     rendered_frames: u64,
     poster_upload_bytes: Option<u64>,
 ) -> Option<NativeVulkanVideoRuntimeSnapshot> {
@@ -1696,6 +2108,23 @@ fn native_vulkan_video_runtime_snapshot(
         return None;
     };
 
+    let frontend_status = match frontend.as_ref() {
+        Some(frontend) if frontend.frames_received > 0 => "appsink-receiving-samples",
+        Some(_) => "appsink-started-waiting-for-samples",
+        None if poster.is_some() => "not-started-poster-placeholder",
+        None => "not-started-clear-placeholder",
+    };
+    let handoff_status = match frontend.as_ref() {
+        Some(frontend) if frontend.frames_received > 0 => "appsink-sample-handoff-active",
+        Some(_) => "appsink-started-no-sample-yet",
+        None => "pending-appsink-dmabuf-or-gpu-memory-handoff",
+    };
+    let frames_received = frontend
+        .as_ref()
+        .map(|frontend| frontend.frames_received)
+        .unwrap_or(0);
+    let received_placeholder_frames = rendered_frames.saturating_sub(frames_received);
+
     Some(NativeVulkanVideoRuntimeSnapshot {
         source: source.clone(),
         poster: poster.clone(),
@@ -1706,23 +2135,65 @@ fn native_vulkan_video_runtime_snapshot(
         target_max_fps: *target_max_fps,
         decoder_policy: *decoder_policy,
         start_offset_ms: *start_offset_ms,
-        frontend: "gstreamer-planned",
-        frontend_status: if poster.is_some() {
-            "not-started-poster-placeholder"
+        frontend: if frontend.is_some() {
+            "gstreamer-appsink"
         } else {
-            "not-started-clear-placeholder"
+            "gstreamer-planned"
         },
-        handoff_status: "pending-appsink-dmabuf-or-gpu-memory-handoff",
+        frontend_status,
+        handoff_status,
         texture_import_status: "not-importing-yet",
         audio_status: if *muted {
             "muted-no-audio-pipeline"
         } else {
             "planned-separate-audio-pipeline"
         },
-        frames_received: 0,
+        gst_state: frontend
+            .as_ref()
+            .and_then(|frontend| frontend.gst_state.clone()),
+        eos_messages: frontend
+            .as_ref()
+            .map(|frontend| frontend.eos_messages)
+            .unwrap_or(0),
+        frames_received,
         frames_imported: 0,
-        rendered_placeholder_frames: rendered_frames,
+        rendered_placeholder_frames: received_placeholder_frames,
         poster_upload_bytes,
+        last_sample_caps: frontend
+            .as_ref()
+            .and_then(|frontend| frontend.last_sample_caps.clone()),
+        last_sample_format: frontend
+            .as_ref()
+            .and_then(|frontend| frontend.last_sample_format.clone()),
+        last_sample_size: frontend
+            .as_ref()
+            .and_then(|frontend| frontend.last_sample_size),
+        last_sample_memory_types: frontend
+            .as_ref()
+            .map(|frontend| frontend.last_sample_memory_types.clone())
+            .unwrap_or_default(),
+        actual_decoders: frontend
+            .as_ref()
+            .map(|frontend| frontend.actual_decoders.clone())
+            .unwrap_or_default(),
+        decoder_policy_status: frontend
+            .as_ref()
+            .and_then(|frontend| frontend.decoder_policy_status.clone()),
+        caps_report_count: frontend
+            .as_ref()
+            .map(|frontend| frontend.caps_report_count)
+            .unwrap_or(0),
+        caps_memory_features: frontend
+            .as_ref()
+            .map(|frontend| frontend.caps_memory_features.clone())
+            .unwrap_or_default(),
+        caps_reports: frontend
+            .as_ref()
+            .map(|frontend| frontend.caps_reports.clone())
+            .unwrap_or_default(),
+        last_error: frontend
+            .as_ref()
+            .and_then(|frontend| frontend.last_error.clone()),
     })
 }
 
@@ -2004,8 +2475,8 @@ mod tests {
             renderer_status: "vulkan-lifecycle-video-placeholder",
         };
 
-        let snapshot =
-            native_vulkan_video_runtime_snapshot(&item, 9, Some(1024)).expect("video snapshot");
+        let snapshot = native_vulkan_video_runtime_snapshot(&item, None, 9, Some(1024))
+            .expect("video snapshot");
 
         assert_eq!(snapshot.frontend, "gstreamer-planned");
         assert_eq!(snapshot.frontend_status, "not-started-poster-placeholder");
@@ -2019,6 +2490,62 @@ mod tests {
         assert_eq!(snapshot.rendered_placeholder_frames, 9);
         assert_eq!(snapshot.poster_upload_bytes, Some(1024));
         assert_eq!(snapshot.start_offset_ms, 1500);
+        assert_eq!(snapshot.gst_state, None);
+        assert_eq!(snapshot.decoder_policy_status, None);
+        assert_eq!(snapshot.caps_report_count, 0);
+    }
+
+    #[test]
+    fn video_runtime_snapshot_reports_active_appsink_frontend() {
+        let item = NativeVulkanRenderItem::Video {
+            output_name: "HDMI-A-1".to_owned(),
+            source: PathBuf::from("/tmp/video.mp4"),
+            poster: None,
+            fit: FitMode::Cover,
+            loop_playback: true,
+            muted: true,
+            manifest_max_fps: None,
+            target_max_fps: Some(240),
+            decoder_policy: crate::config::VideoDecoderPolicy::HardwarePreferred,
+            start_offset_ms: 0,
+            renderer_status: "vulkan-lifecycle-video-placeholder",
+        };
+        let frontend = NativeVulkanGstVideoFrontendSnapshot {
+            gst_state: Some("Playing".to_owned()),
+            eos_messages: 0,
+            frames_received: 3,
+            last_sample_caps: Some("video/x-raw, format=(string)NV12".to_owned()),
+            last_sample_format: Some("NV12".to_owned()),
+            last_sample_size: Some((3840, 2160)),
+            last_sample_memory_types: vec!["CUDAMemory".to_owned()],
+            actual_decoders: vec!["nvh264dec".to_owned()],
+            decoder_policy_status: Some("Satisfied".to_owned()),
+            caps_report_count: 1,
+            caps_memory_features: vec!["memory:CUDAMemory".to_owned()],
+            caps_reports: vec![NativeVulkanVideoCapsSnapshot {
+                element: "appsink0".to_owned(),
+                pad: "sink".to_owned(),
+                direction: "sink".to_owned(),
+                caps: "video/x-raw(memory:CUDAMemory)".to_owned(),
+                source: "current".to_owned(),
+                memory_features: vec!["memory:CUDAMemory".to_owned()],
+            }],
+            last_error: None,
+        };
+
+        let snapshot =
+            native_vulkan_video_runtime_snapshot(&item, Some(frontend), 12, None).unwrap();
+
+        assert_eq!(snapshot.frontend, "gstreamer-appsink");
+        assert_eq!(snapshot.frontend_status, "appsink-receiving-samples");
+        assert_eq!(snapshot.handoff_status, "appsink-sample-handoff-active");
+        assert_eq!(snapshot.frames_received, 3);
+        assert_eq!(snapshot.rendered_placeholder_frames, 9);
+        assert_eq!(snapshot.last_sample_format.as_deref(), Some("NV12"));
+        assert_eq!(snapshot.last_sample_memory_types, vec!["CUDAMemory"]);
+        assert_eq!(snapshot.actual_decoders, vec!["nvh264dec"]);
+        assert_eq!(snapshot.decoder_policy_status.as_deref(), Some("Satisfied"));
+        assert_eq!(snapshot.caps_memory_features, vec!["memory:CUDAMemory"]);
     }
 
     #[test]
