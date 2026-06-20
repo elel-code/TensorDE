@@ -53,6 +53,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--probe-video-session" => mode = NativeVulkanCliMode::ProbeVideoSession,
             "--allocate-video-images" => video_session_options.allocate_video_images = true,
             "--allocate-bitstream-buffer" => video_session_options.allocate_bitstream_buffer = true,
+            "--extract-bitstream" => {
+                video_session_options.extract_bitstream = true;
+                video_session_options.allocate_bitstream_buffer = true;
+            }
             "--run-clear" => mode = NativeVulkanCliMode::RunClear,
             "--run-static" => mode = NativeVulkanCliMode::RunStatic,
             "--run-video" => mode = NativeVulkanCliMode::RunVideo,
@@ -136,6 +140,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .transpose()?
                     .ok_or("--bitstream-buffer-size requires bytes")?;
             }
+            "--bitstream-samples" => {
+                video_session_options.bitstream_extract_max_samples = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()?
+                    .ok_or("--bitstream-samples requires a count")?;
+            }
             "--start-offset-ms" => {
                 start_offset_ms = args
                     .next()
@@ -179,6 +190,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         NativeVulkanCliMode::ProbeVideo => json!(probe_vulkan_video_decode()?),
         NativeVulkanCliMode::ProbeVideoSession => {
+            if video_session_options.extract_bitstream {
+                let source = source
+                    .clone()
+                    .ok_or("--extract-bitstream requires --source")?;
+                if !source.is_file() {
+                    return Err(
+                        format!("bitstream source does not exist: {}", source.display()).into(),
+                    );
+                }
+                video_session_options.bitstream_source = Some(source);
+            }
             json!(probe_vulkan_video_session(video_session_options)?)
         }
         NativeVulkanCliMode::RunClear => json!(run_clear(options, duration)?),
@@ -326,6 +348,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --probe-video-session creates and binds a Vulkan Video H.265/AV1 decode session, then exits.\n\
 --allocate-video-images extends --probe-video-session with NV12 DPB/output sampled image allocation.\n\
 --allocate-bitstream-buffer extends --probe-video-session with a mapped VIDEO_DECODE_SRC bitstream buffer.\n\
+--extract-bitstream extends --probe-video-session with qtdemux+h265parse encoded AU extraction and writes the selected AU to the bitstream buffer.\n\
 --run-clear creates a Vulkan device/swapchain, clears frames, presents, then prints runtime JSON.\n\
 --run-static decodes --source, fits it to the swapchain, copies it through Vulkan, presents, then prints runtime JSON.\n\
 --run-video accepts a video wallpaper plan, presents a poster/clear placeholder through native Vulkan, then prints video handoff telemetry.\n\
@@ -335,6 +358,7 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--loop|--no-loop] [--muted|--unmuted] [--decoder auto|hardware-preferred|hardware-required|software]\n\
          [--video-codec h265|av1] [--width PX] [--height PX]\n\
          [--allocate-video-images] [--allocate-bitstream-buffer] [--bitstream-buffer-size BYTES]\n\
+         [--extract-bitstream] [--bitstream-samples N]\n\
          [--start-offset-ms MS]"
     );
 }

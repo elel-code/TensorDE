@@ -16,6 +16,8 @@ use std::fmt;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 #[cfg(feature = "native-vulkan-gst-video")]
 use std::os::raw::c_char;
+#[cfg(feature = "native-vulkan-gst-video")]
+use std::path::Path;
 use std::path::PathBuf;
 use std::ptr;
 use std::thread;
@@ -361,7 +363,7 @@ impl std::str::FromStr for NativeVulkanVideoSessionCodec {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanVideoSessionSmokeOptions {
     pub codec: NativeVulkanVideoSessionCodec,
     pub width: u32,
@@ -369,6 +371,9 @@ pub struct NativeVulkanVideoSessionSmokeOptions {
     pub allocate_video_images: bool,
     pub allocate_bitstream_buffer: bool,
     pub bitstream_buffer_size: u64,
+    pub extract_bitstream: bool,
+    pub bitstream_source: Option<PathBuf>,
+    pub bitstream_extract_max_samples: u32,
 }
 
 impl Default for NativeVulkanVideoSessionSmokeOptions {
@@ -380,6 +385,9 @@ impl Default for NativeVulkanVideoSessionSmokeOptions {
             allocate_video_images: false,
             allocate_bitstream_buffer: false,
             bitstream_buffer_size: 8 * 1024 * 1024,
+            extract_bitstream: false,
+            bitstream_source: None,
+            bitstream_extract_max_samples: 8,
         }
     }
 }
@@ -432,6 +440,8 @@ pub struct NativeVulkanVideoSessionSmokeSnapshot {
     pub video_images: Vec<NativeVulkanVideoSessionResourceImageSnapshot>,
     pub bitstream_buffer_requested: bool,
     pub bitstream_buffer: Option<NativeVulkanVideoSessionBitstreamBufferSnapshot>,
+    pub bitstream_extract_requested: bool,
+    pub bitstream_extract: Option<NativeVulkanVideoBitstreamExtractSnapshot>,
     pub session_created: bool,
     pub session_memory_bound: bool,
 }
@@ -477,8 +487,44 @@ pub struct NativeVulkanVideoSessionBitstreamBufferSnapshot {
     pub selected_memory_type_index: u32,
     pub selected_memory_property_flags: Vec<&'static str>,
     pub mapped_write_bytes: u64,
+    pub mapped_write_source: &'static str,
+    pub mapped_write_hash: Option<u64>,
     pub host_visible: bool,
     pub host_coherent: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVideoBitstreamExtractSnapshot {
+    pub source: String,
+    pub frontend: &'static str,
+    pub requested_max_samples: u32,
+    pub samples: u32,
+    pub total_bytes: u64,
+    pub selected_access_unit_bytes: u64,
+    pub selected_access_unit_pts_ms: Option<u64>,
+    pub selected_access_unit_duration_ms: Option<u64>,
+    pub caps: Option<String>,
+    pub stream_format: Option<String>,
+    pub alignment: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub framerate: Option<String>,
+    pub has_annex_b_start_codes: bool,
+    pub h265_vps_count: u32,
+    pub h265_sps_count: u32,
+    pub h265_pps_count: u32,
+    pub h265_idr_count: u32,
+    pub h265_slice_count: u32,
+    pub h265_parameter_sets_present: bool,
+    pub h265_nal_units: Vec<NativeVulkanH265NalUnitSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanH265NalUnitSnapshot {
+    pub offset: u64,
+    pub size: u64,
+    pub nal_type: u8,
+    pub nal_type_label: &'static str,
 }
 
 struct NativeVulkanVideoDecodeFormatProbe {
@@ -5279,6 +5325,11 @@ struct NativeVulkanVideoBitstreamBuffer {
     snapshot: NativeVulkanVideoSessionBitstreamBufferSnapshot,
 }
 
+struct NativeVulkanVideoBitstreamExtract {
+    selected_access_unit: Vec<u8>,
+    snapshot: NativeVulkanVideoBitstreamExtractSnapshot,
+}
+
 fn native_vulkan_video_session_smoke_inner(
     entry: &ash::Entry,
     instance: &ash::Instance,
@@ -5643,8 +5694,13 @@ fn native_vulkan_video_session_create_and_bind(
     let mut allocated_memories = Vec::<vk::DeviceMemory>::new();
     let mut resource_images = Vec::<NativeVulkanVideoResourceImage>::new();
     let mut bitstream_buffer = None::<NativeVulkanVideoBitstreamBuffer>;
+    let mut bitstream_extract = None::<NativeVulkanVideoBitstreamExtract>;
 
     let result = (|| -> Result<NativeVulkanVideoSessionSmokeSnapshot, NativeVulkanError> {
+        if options.extract_bitstream {
+            bitstream_extract = Some(native_vulkan_extract_video_bitstream(&options)?);
+        }
+
         let session_max_dpb_slots =
             native_vulkan_video_session_max_dpb_slots(capabilities.max_dpb_slots);
         let session_max_active_reference_pictures =
@@ -5738,12 +5794,19 @@ fn native_vulkan_video_session_create_and_bind(
             resource_images.push(image);
         }
         if options.allocate_bitstream_buffer {
+            let bitstream_payload = bitstream_extract
+                .as_ref()
+                .map(|extract| extract.selected_access_unit.as_slice());
+            let bitstream_buffer_size = bitstream_payload
+                .map(|payload| options.bitstream_buffer_size.max(payload.len() as u64))
+                .unwrap_or(options.bitstream_buffer_size);
             bitstream_buffer = Some(native_vulkan_create_video_session_bitstream_buffer(
                 &device,
                 &memory_properties,
                 profile_info,
-                options.bitstream_buffer_size,
+                bitstream_buffer_size,
                 capabilities.min_bitstream_buffer_size_alignment,
+                bitstream_payload,
             )?);
         }
         let video_image_snapshots = resource_images
@@ -5757,6 +5820,9 @@ fn native_vulkan_video_session_create_and_bind(
         let bitstream_buffer_snapshot = bitstream_buffer
             .as_ref()
             .map(|buffer| buffer.snapshot.clone());
+        let bitstream_extract_snapshot = bitstream_extract
+            .as_ref()
+            .map(|extract| extract.snapshot.clone());
 
         Ok(NativeVulkanVideoSessionSmokeSnapshot {
             result: native_vulkan_video_session_smoke_result(&options),
@@ -5828,6 +5894,8 @@ fn native_vulkan_video_session_create_and_bind(
             video_images: video_image_snapshots,
             bitstream_buffer_requested: options.allocate_bitstream_buffer,
             bitstream_buffer: bitstream_buffer_snapshot,
+            bitstream_extract_requested: options.extract_bitstream,
+            bitstream_extract: bitstream_extract_snapshot,
             session_created: true,
             session_memory_bound: true,
         })
@@ -6050,6 +6118,7 @@ fn native_vulkan_create_video_session_bitstream_buffer(
     profile_info: &vk::VideoProfileInfoKHR<'_>,
     requested_size: u64,
     min_size_alignment: u64,
+    write_payload: Option<&[u8]>,
 ) -> Result<NativeVulkanVideoBitstreamBuffer, NativeVulkanError> {
     let size = native_vulkan_align_up(requested_size.max(1), min_size_alignment.max(1));
     let usage = vk::BufferUsageFlags::VIDEO_DECODE_SRC_KHR;
@@ -6109,7 +6178,9 @@ fn native_vulkan_create_video_session_bitstream_buffer(
             });
         }
 
-        let mapped_write_bytes = size.min(256);
+        let mapped_write_bytes = write_payload
+            .map(|payload| payload.len() as u64)
+            .unwrap_or_else(|| size.min(256));
         let map_result = unsafe {
             device.map_memory(memory, 0, mapped_write_bytes, vk::MemoryMapFlags::empty())
         };
@@ -6127,8 +6198,14 @@ fn native_vulkan_create_video_session_bitstream_buffer(
                 });
             }
         };
-        unsafe {
-            ptr::write_bytes(map.cast::<u8>(), 0, mapped_write_bytes as usize);
+        if let Some(payload) = write_payload {
+            unsafe {
+                ptr::copy_nonoverlapping(payload.as_ptr(), map.cast::<u8>(), payload.len());
+            }
+        } else {
+            unsafe {
+                ptr::write_bytes(map.cast::<u8>(), 0, mapped_write_bytes as usize);
+            }
         }
         if !memory_type
             .property_flags
@@ -6171,6 +6248,12 @@ fn native_vulkan_create_video_session_bitstream_buffer(
                     memory_type.property_flags,
                 ),
                 mapped_write_bytes,
+                mapped_write_source: if write_payload.is_some() {
+                    "extracted-h265-access-unit"
+                } else {
+                    "zero-fill-smoke-pattern"
+                },
+                mapped_write_hash: write_payload.map(native_vulkan_stable_byte_hash),
                 host_visible: memory_type
                     .property_flags
                     .contains(vk::MemoryPropertyFlags::HOST_VISIBLE),
@@ -6187,6 +6270,436 @@ fn native_vulkan_create_video_session_bitstream_buffer(
         }
     }
     result
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_extract_video_bitstream(
+    options: &NativeVulkanVideoSessionSmokeOptions,
+) -> Result<NativeVulkanVideoBitstreamExtract, NativeVulkanError> {
+    let source = options.bitstream_source.as_deref().ok_or_else(|| {
+        NativeVulkanError::Video("--extract-bitstream requires --source".to_owned())
+    })?;
+    if !source.is_file() {
+        return Err(NativeVulkanError::Video(format!(
+            "bitstream source does not exist: {}",
+            source.display()
+        )));
+    }
+    match options.codec {
+        NativeVulkanVideoSessionCodec::H265Main8 => native_vulkan_extract_h265_bitstream(
+            source,
+            options.bitstream_extract_max_samples.max(1),
+        ),
+        NativeVulkanVideoSessionCodec::Av1Main8 => Err(NativeVulkanError::Video(
+            "AV1 bitstream extraction is not implemented yet; use H.265 for the first Vulkan Video decode path".to_owned(),
+        )),
+    }
+}
+
+#[cfg(not(feature = "native-vulkan-gst-video"))]
+fn native_vulkan_extract_video_bitstream(
+    _options: &NativeVulkanVideoSessionSmokeOptions,
+) -> Result<NativeVulkanVideoBitstreamExtract, NativeVulkanError> {
+    Err(NativeVulkanError::Video(
+        "--extract-bitstream requires the native-vulkan-gst-video feature".to_owned(),
+    ))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_extract_h265_bitstream(
+    source: &Path,
+    max_samples: u32,
+) -> Result<NativeVulkanVideoBitstreamExtract, NativeVulkanError> {
+    gst::init().map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    let pipeline = native_vulkan_h265_bitstream_pipeline(source)?;
+    let sink = pipeline
+        .by_name("gilder-native-vulkan-h265-bitstream-appsink")
+        .ok_or_else(|| NativeVulkanError::Video("H.265 bitstream appsink not found".to_owned()))?;
+    let bus = pipeline.bus().ok_or_else(|| {
+        NativeVulkanError::Video("H.265 bitstream pipeline has no bus".to_owned())
+    })?;
+
+    let result = (|| -> Result<NativeVulkanVideoBitstreamExtract, NativeVulkanError> {
+        pipeline
+            .set_state(gst::State::Playing)
+            .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+        native_vulkan_collect_h265_bitstream_samples(source, &sink, &bus, max_samples)
+    })();
+
+    let _ = pipeline.set_state(gst::State::Null);
+    let _ = pipeline.state(gst::ClockTime::from_mseconds(500));
+    result
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_bitstream_pipeline(
+    source: &Path,
+) -> Result<gst::Pipeline, NativeVulkanError> {
+    let pipeline = gst::Pipeline::new();
+    let filesrc = native_vulkan_gst_element("filesrc")?;
+    filesrc.set_property("location", source.to_string_lossy().as_ref());
+    let demux = native_vulkan_gst_element("qtdemux")?;
+    let queue = native_vulkan_gst_element("queue")?;
+    native_vulkan_configure_queue(&queue);
+    let parser = native_vulkan_gst_element("h265parse")?;
+    if parser.find_property("config-interval").is_some() {
+        parser.set_property("config-interval", -1i32);
+    }
+    if parser.find_property("disable-passthrough").is_some() {
+        parser.set_property("disable-passthrough", true);
+    }
+    let capsfilter = native_vulkan_gst_element("capsfilter")?;
+    let caps = "video/x-h265,stream-format=byte-stream,alignment=au"
+        .parse::<gst::Caps>()
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    capsfilter.set_property("caps", &caps);
+    let sink = native_vulkan_gst_element("appsink")?;
+    sink.set_property("name", "gilder-native-vulkan-h265-bitstream-appsink");
+    native_vulkan_configure_bitstream_appsink(&sink);
+
+    pipeline
+        .add_many([&filesrc, &demux, &queue, &parser, &capsfilter, &sink])
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    filesrc
+        .link(&demux)
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    gst::Element::link_many([&queue, &parser, &capsfilter, &sink])
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+
+    let queue_sink = queue.static_pad("sink").ok_or_else(|| {
+        NativeVulkanError::Video("H.265 bitstream queue has no sink pad".to_owned())
+    })?;
+    demux.connect_pad_added(move |_, pad| {
+        if queue_sink.is_linked() || !native_vulkan_gst_pad_is_h265(pad) {
+            return;
+        }
+        let _ = pad.link(&queue_sink);
+    });
+
+    Ok(pipeline)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_configure_bitstream_appsink(sink: &gst::Element) {
+    if sink.find_property("sync").is_some() {
+        sink.set_property("sync", false);
+    }
+    if sink.find_property("async").is_some() {
+        sink.set_property("async", false);
+    }
+    if sink.find_property("emit-signals").is_some() {
+        sink.set_property("emit-signals", false);
+    }
+    if sink.find_property("enable-last-sample").is_some() {
+        sink.set_property("enable-last-sample", false);
+    }
+    if sink.find_property("wait-on-eos").is_some() {
+        sink.set_property("wait-on-eos", false);
+    }
+    if sink.find_property("max-buffers").is_some() {
+        sink.set_property("max-buffers", 1u32);
+    }
+    if sink.find_property("drop").is_some() {
+        sink.set_property("drop", false);
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_gst_pad_is_h265(pad: &gst::Pad) -> bool {
+    pad.current_caps()
+        .or_else(|| Some(pad.query_caps(None)))
+        .and_then(|caps| {
+            caps.structure(0)
+                .map(|structure| structure.name() == "video/x-h265")
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_collect_h265_bitstream_samples(
+    source: &Path,
+    sink: &gst::Element,
+    bus: &gst::Bus,
+    max_samples: u32,
+) -> Result<NativeVulkanVideoBitstreamExtract, NativeVulkanError> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut sample_count = 0u32;
+    let mut total_bytes = 0u64;
+    let mut selected = None::<NativeVulkanH265AccessUnitExtract>;
+    let mut last_error = None::<String>;
+
+    while sample_count < max_samples && Instant::now() < deadline {
+        while let Some(message) = bus.pop() {
+            match message.view() {
+                gst::MessageView::Error(err) => {
+                    let mut message = format!(
+                        "{}: {}",
+                        err.src()
+                            .map(|src| src.path_string())
+                            .unwrap_or_else(|| "gstreamer".into()),
+                        err.error()
+                    );
+                    if let Some(debug) = err.debug() {
+                        message.push_str(": ");
+                        message.push_str(&debug);
+                    }
+                    return Err(NativeVulkanError::Video(message));
+                }
+                gst::MessageView::Eos(_) => {
+                    last_error = Some("H.265 bitstream pipeline reached EOS".to_owned());
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        let timeout_ns = 50_000_000u64;
+        let sample = sink.emit_by_name::<Option<gst::Sample>>("try-pull-sample", &[&timeout_ns]);
+        let Some(sample) = sample else {
+            continue;
+        };
+        sample_count = sample_count.saturating_add(1);
+        let access_unit = native_vulkan_h265_access_unit_from_sample(&sample)?;
+        total_bytes = total_bytes.saturating_add(access_unit.bytes.len() as u64);
+        if selected
+            .as_ref()
+            .map(|current| {
+                !current.stats.parameter_sets_present()
+                    && access_unit.stats.parameter_sets_present()
+            })
+            .unwrap_or(true)
+        {
+            selected = Some(access_unit);
+        }
+        if selected
+            .as_ref()
+            .is_some_and(|access_unit| access_unit.stats.parameter_sets_present())
+        {
+            break;
+        }
+    }
+
+    let selected = selected.ok_or_else(|| {
+        NativeVulkanError::Video(
+            last_error.unwrap_or_else(|| "H.265 bitstream probe produced no samples".to_owned()),
+        )
+    })?;
+    if !selected.stats.parameter_sets_present() {
+        return Err(NativeVulkanError::Video(format!(
+            "H.265 bitstream probe did not find VPS/SPS/PPS in {sample_count} samples"
+        )));
+    }
+
+    Ok(NativeVulkanVideoBitstreamExtract {
+        selected_access_unit: selected.bytes,
+        snapshot: NativeVulkanVideoBitstreamExtractSnapshot {
+            source: source.display().to_string(),
+            frontend: "gstreamer-qtdemux-h265parse-appsink",
+            requested_max_samples: max_samples,
+            samples: sample_count,
+            total_bytes,
+            selected_access_unit_bytes: selected.stats.bytes,
+            selected_access_unit_pts_ms: selected.pts_ms,
+            selected_access_unit_duration_ms: selected.duration_ms,
+            caps: selected.caps,
+            stream_format: selected.stream_format,
+            alignment: selected.alignment,
+            width: selected.width,
+            height: selected.height,
+            framerate: selected.framerate,
+            has_annex_b_start_codes: selected.stats.has_annex_b_start_codes,
+            h265_vps_count: selected.stats.vps_count,
+            h265_sps_count: selected.stats.sps_count,
+            h265_pps_count: selected.stats.pps_count,
+            h265_idr_count: selected.stats.idr_count,
+            h265_slice_count: selected.stats.slice_count,
+            h265_parameter_sets_present: selected.stats.parameter_sets_present(),
+            h265_nal_units: selected.stats.nal_units,
+        },
+    })
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+struct NativeVulkanH265AccessUnitExtract {
+    bytes: Vec<u8>,
+    pts_ms: Option<u64>,
+    duration_ms: Option<u64>,
+    caps: Option<String>,
+    stream_format: Option<String>,
+    alignment: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    framerate: Option<String>,
+    stats: NativeVulkanH265NalStats,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_access_unit_from_sample(
+    sample: &gst::Sample,
+) -> Result<NativeVulkanH265AccessUnitExtract, NativeVulkanError> {
+    let buffer = sample.buffer().ok_or_else(|| {
+        NativeVulkanError::Video("H.265 bitstream sample has no buffer".to_owned())
+    })?;
+    let map = buffer.map_readable().map_err(|_| {
+        NativeVulkanError::Video("H.265 bitstream buffer map_readable failed".to_owned())
+    })?;
+    let bytes = map.as_slice().to_vec();
+    if bytes.is_empty() {
+        return Err(NativeVulkanError::Video(
+            "H.265 bitstream sample is empty".to_owned(),
+        ));
+    }
+    let stats = native_vulkan_h265_nal_stats(&bytes);
+    let mut stream_format = None;
+    let mut alignment = None;
+    let mut width = None;
+    let mut height = None;
+    let mut framerate = None;
+    let caps = sample.caps().map(|caps| {
+        if let Some(structure) = caps.structure(0) {
+            stream_format = structure.get::<String>("stream-format").ok();
+            alignment = structure.get::<String>("alignment").ok();
+            width = structure
+                .get::<i32>("width")
+                .ok()
+                .and_then(|width| u32::try_from(width).ok());
+            height = structure
+                .get::<i32>("height")
+                .ok()
+                .and_then(|height| u32::try_from(height).ok());
+            framerate = structure
+                .get::<gst::Fraction>("framerate")
+                .ok()
+                .map(|value| value.to_string());
+        }
+        caps.to_string()
+    });
+
+    Ok(NativeVulkanH265AccessUnitExtract {
+        bytes,
+        pts_ms: native_vulkan_clock_time_ms(buffer.pts()),
+        duration_ms: native_vulkan_clock_time_ms(buffer.duration()),
+        caps,
+        stream_format,
+        alignment,
+        width,
+        height,
+        framerate,
+        stats,
+    })
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct NativeVulkanH265NalStats {
+    bytes: u64,
+    has_annex_b_start_codes: bool,
+    vps_count: u32,
+    sps_count: u32,
+    pps_count: u32,
+    idr_count: u32,
+    slice_count: u32,
+    nal_units: Vec<NativeVulkanH265NalUnitSnapshot>,
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+impl NativeVulkanH265NalStats {
+    fn parameter_sets_present(&self) -> bool {
+        self.vps_count > 0 && self.sps_count > 0 && self.pps_count > 0
+    }
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h265_nal_stats(bytes: &[u8]) -> NativeVulkanH265NalStats {
+    let mut stats = NativeVulkanH265NalStats {
+        bytes: bytes.len() as u64,
+        ..Default::default()
+    };
+    let mut offset = 0usize;
+    while let Some((start_code_offset, payload_offset)) =
+        native_vulkan_next_annex_b_start_code(bytes, offset)
+    {
+        stats.has_annex_b_start_codes = true;
+        let next_search_offset = payload_offset;
+        let next_start = native_vulkan_next_annex_b_start_code(bytes, next_search_offset)
+            .map(|(next_start, _)| next_start)
+            .unwrap_or(bytes.len());
+        if payload_offset < next_start {
+            let nal_size = next_start - payload_offset;
+            if let Some(nal_type) = bytes.get(payload_offset).map(|header| (header >> 1) & 0x3f) {
+                match nal_type {
+                    32 => stats.vps_count = stats.vps_count.saturating_add(1),
+                    33 => stats.sps_count = stats.sps_count.saturating_add(1),
+                    34 => stats.pps_count = stats.pps_count.saturating_add(1),
+                    19 | 20 => {
+                        stats.idr_count = stats.idr_count.saturating_add(1);
+                        stats.slice_count = stats.slice_count.saturating_add(1);
+                    }
+                    0..=31 => stats.slice_count = stats.slice_count.saturating_add(1),
+                    _ => {}
+                }
+                if stats.nal_units.len() < 32 {
+                    stats.nal_units.push(NativeVulkanH265NalUnitSnapshot {
+                        offset: start_code_offset as u64,
+                        size: nal_size as u64,
+                        nal_type,
+                        nal_type_label: native_vulkan_h265_nal_type_label(nal_type),
+                    });
+                }
+            }
+        }
+        offset = next_start;
+    }
+    stats
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_next_annex_b_start_code(bytes: &[u8], from: usize) -> Option<(usize, usize)> {
+    let mut index = from;
+    while index + 3 <= bytes.len() {
+        if bytes[index] == 0 && bytes[index + 1] == 0 {
+            if bytes[index + 2] == 1 {
+                return Some((index, index + 3));
+            }
+            if index + 4 <= bytes.len() && bytes[index + 2] == 0 && bytes[index + 3] == 1 {
+                return Some((index, index + 4));
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h265_nal_type_label(nal_type: u8) -> &'static str {
+    match nal_type {
+        0 => "trail-n",
+        1 => "trail-r",
+        16 => "bla-w-lp",
+        17 => "bla-w-radl",
+        18 => "bla-n-lp",
+        19 => "idr-w-radl",
+        20 => "idr-n-lp",
+        21 => "cra-nut",
+        32 => "vps",
+        33 => "sps",
+        34 => "pps",
+        35 => "aud",
+        36 => "eos",
+        37 => "eob",
+        38 => "fd",
+        39 => "prefix-sei",
+        40 => "suffix-sei",
+        41..=47 => "reserved",
+        48..=63 => "unspecified",
+        _ => "slice-or-extension",
+    }
+}
+
+fn native_vulkan_stable_byte_hash(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 fn native_vulkan_video_session_smoke_result(
@@ -8521,6 +9034,34 @@ mod tests {
         assert_eq!(
             native_vulkan_format_label(vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16),
             "G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16"
+        );
+    }
+
+    #[test]
+    fn scans_h265_annex_b_parameter_sets_and_idr() {
+        let bytes = [
+            0, 0, 0, 1, 0x40, 0x01, 0xaa, 0xbb, // VPS, type 32
+            0, 0, 1, 0x42, 0x01, 0xcc, // SPS, type 33
+            0, 0, 0, 1, 0x44, 0x01, 0xdd, // PPS, type 34
+            0, 0, 1, 0x26, 0x01, 0xee, // IDR_W_RADL, type 19
+        ];
+
+        let stats = native_vulkan_h265_nal_stats(&bytes);
+
+        assert!(stats.has_annex_b_start_codes);
+        assert!(stats.parameter_sets_present());
+        assert_eq!(stats.vps_count, 1);
+        assert_eq!(stats.sps_count, 1);
+        assert_eq!(stats.pps_count, 1);
+        assert_eq!(stats.idr_count, 1);
+        assert_eq!(stats.slice_count, 1);
+        assert_eq!(
+            stats
+                .nal_units
+                .iter()
+                .map(|unit| unit.nal_type_label)
+                .collect::<Vec<_>>(),
+            vec!["vps", "sps", "pps", "idr-w-radl"]
         );
     }
 
