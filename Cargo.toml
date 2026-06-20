@@ -22,6 +22,7 @@ native-wgpu-renderer = [
     "dep:raw-window-handle",
     "dep:wgpu",
 ]
+native-wgpu-gpu-video = ["native-wgpu-renderer", "dep:gpu-video"]
 video-renderer = ["dep:gstreamer", "dep:gstreamer-video", "dep:libc"]
 
 [[bin]]
@@ -51,6 +52,7 @@ gtk = { package = "gtk4", version = "0.11", features = ["v4_8"], optional = true
 gtk4-layer-shell = { version = "0.8", features = ["v1_3"], optional = true }
 gstreamer = { version = "0.25", optional = true }
 gstreamer-video = { version = "0.25", optional = true }
+gpu-video = { version = "0.4", optional = true }
 jiff = "0.2"
 libc = { version = "0.2", optional = true }
 pollster = { version = "0.4", optional = true }

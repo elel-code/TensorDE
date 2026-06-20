@@ -18,6 +18,9 @@ Options:
   --runtime-interval-ms <ms>
                         Native runtime JSONL sample interval. Default: 1000.
   --source <path>       Existing video source. When set, run wgpu video mode.
+  --video-backend <name>
+                        auto, cpu-upload, or gpu-video. Default: auto.
+                        gpu-video expects Annex-B H.264 (.h264/.264).
   --fit <name>          cover, contain, stretch, or center. Default: cover.
   --decoder <policy>    auto, hardware-preferred, hardware-required, software.
                         Default: hardware-preferred.
@@ -48,6 +51,7 @@ sample_duration=5
 sample_interval=1
 runtime_interval_ms=1000
 source=""
+video_backend="auto"
 fit="cover"
 decoder="hardware-preferred"
 loop_playback=1
@@ -102,6 +106,11 @@ while [[ $# -gt 0 ]]; do
     --source)
       [[ $# -ge 2 ]] || { echo "--source requires a path" >&2; exit 2; }
       source="$2"
+      shift 2
+      ;;
+    --video-backend)
+      [[ $# -ge 2 ]] || { echo "--video-backend requires a value" >&2; exit 2; }
+      video_backend="$2"
       shift 2
       ;;
     --fit)
@@ -205,6 +214,10 @@ case "$fit" in
   cover|contain|stretch|center) ;;
   *) echo "--fit must be cover, contain, stretch, or center" >&2; exit 2 ;;
 esac
+case "$video_backend" in
+  auto|cpu-upload|cpu|appsink|gpu-video|gpu|vulkan-video) ;;
+  *) echo "--video-backend must be auto, cpu-upload, or gpu-video" >&2; exit 2 ;;
+esac
 case "$decoder" in
   auto|hardware-preferred|hw-preferred|hardware-required|hw-required|software) ;;
   *) echo "--decoder must be auto, hardware-preferred, hardware-required, or software" >&2; exit 2 ;;
@@ -237,7 +250,21 @@ fi
 exe="target/release/gilder-native-wgpu"
 if [[ "$no_build" -eq 0 ]]; then
   if [[ -n "$source" ]]; then
-    cargo build --release --features native-wgpu-renderer,video-renderer --bin gilder-native-wgpu
+    build_backend="$video_backend"
+    if [[ "$build_backend" == "auto" ]]; then
+      case "${source##*.}" in
+        h264|H264|264) build_backend="gpu-video" ;;
+        *) build_backend="cpu-upload" ;;
+      esac
+    fi
+    case "$build_backend" in
+      gpu-video|gpu|vulkan-video)
+        cargo build --release --features native-wgpu-renderer,native-wgpu-gpu-video --bin gilder-native-wgpu
+        ;;
+      *)
+        cargo build --release --features native-wgpu-renderer,video-renderer --bin gilder-native-wgpu
+        ;;
+    esac
   else
     cargo build --release --features native-wgpu-renderer --bin gilder-native-wgpu
   fi
@@ -266,7 +293,7 @@ native_args=(
   --runtime-interval-ms "$runtime_interval_ms"
 )
 if [[ -n "$source" ]]; then
-  native_args+=(--source "$source" --fit "$fit" --decoder "$decoder")
+  native_args+=(--source "$source" --video-backend "$video_backend" --fit "$fit" --decoder "$decoder")
   if [[ "$loop_playback" -eq 1 ]]; then
     native_args+=(--loop)
   else
@@ -292,6 +319,7 @@ sample_interval: ${sample_interval}
 runtime_interval_ms: ${runtime_interval_ms}
 mode: $([[ -n "$source" ]] && printf video || printf clear)
 source: ${source:-none}
+video_backend: ${video_backend}
 fit: ${fit}
 decoder: ${decoder}
 loop_playback: $([[ "$loop_playback" -eq 1 ]] && printf yes || printf no)
@@ -394,14 +422,20 @@ if [[ -s "$runtime_json" ]]; then
       "present_mode: \(renderer.present_mode)",
       "last_render_error: \(renderer.last_render_error)",
       if .video then
-        "video_gst_state: \(.video.gst_state)",
-        "video_pulled_samples: \(.video.pulled_samples)",
-        "video_uploaded_frames: \(.video.uploaded_frames)",
+        "video_backend: \(.video.backend // "cpu-upload")",
+        "video_state: \(.video.state // .video.gst_state // null)",
+        "video_pulled_samples: \(.video.pulled_samples // null)",
+        "video_uploaded_frames: \(.video.uploaded_frames // null)",
+        "video_decoded_frames: \(.video.decoded_frames // null)",
+        "video_presented_frames: \(.video.presented_frames // null)",
+        "video_pending_frames: \(.video.pending_frames // null)",
+        "video_bytes_read: \(.video.bytes_read // null)",
         "video_eos_messages: \(.video.eos_messages)",
+        "video_decoder_resets: \(.video.decoder_resets // null)",
         "video_last_frame_size: \(.video.last_frame_size | if . == null then null else "\(.[0])x\(.[1])" end)",
         "video_last_frame_format: \(.video.last_frame_format)",
-        "video_last_source_stride: \(.video.last_source_stride)",
-        "video_last_upload_stride: \(.video.last_upload_stride)",
+        "video_last_source_stride: \(.video.last_source_stride // null)",
+        "video_last_upload_stride: \(.video.last_upload_stride // null)",
         "video_last_error: \(.video.last_error)"
       else empty end
     ' "$runtime_json" >"$runtime_summary_txt"
@@ -432,10 +466,17 @@ if [[ -s "$runtime_json" ]]; then
     /"surface_format":/ { print "surface_format: " value() }
     /"present_mode":/ { print "present_mode: " value() }
     /"last_render_error":/ { print "last_render_error: " value() }
+    /"backend":/ { print "video_backend: " value() }
+    /"state":/ { print "video_state: " value() }
     /"gst_state":/ { print "video_gst_state: " value() }
     /"pulled_samples":/ { print "video_pulled_samples: " value() }
     /"uploaded_frames":/ { print "video_uploaded_frames: " value() }
+    /"decoded_frames":/ { print "video_decoded_frames: " value() }
+    /"presented_frames":/ { print "video_presented_frames: " value() }
+    /"pending_frames":/ { print "video_pending_frames: " value() }
+    /"bytes_read":/ { print "video_bytes_read: " value() }
     /"eos_messages":/ { print "video_eos_messages: " value() }
+    /"decoder_resets":/ { print "video_decoder_resets: " value() }
     /"last_frame_size":/ { print "video_last_frame_size: " value() }
     /"last_frame_format":/ { print "video_last_frame_format: " value() }
     /"last_source_stride":/ { print "video_last_source_stride: " value() }
