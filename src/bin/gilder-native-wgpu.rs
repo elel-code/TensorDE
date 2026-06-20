@@ -510,9 +510,10 @@ fn run_video_session(
     let started = std::time::Instant::now();
     let mut last_runtime_sample = std::time::Instant::now();
     let mut runtime_jsonl = runtime_jsonl;
-    let frame_interval = target_fps
-        .filter(|fps| *fps > 0)
-        .map(|fps| std::time::Duration::from_secs_f64(1.0 / f64::from(fps)));
+    let frame_interval = frame_interval_for_target(
+        target_fps,
+        session.snapshot().renderer.selected_output.as_ref(),
+    );
 
     write_video_runtime_sample(session, &mut runtime_jsonl)?;
     while started.elapsed() < duration && !session.is_closed() {
@@ -557,9 +558,10 @@ fn run_gst_dmabuf_video_session(
     let started = std::time::Instant::now();
     let mut last_runtime_sample = std::time::Instant::now();
     let mut runtime_jsonl = runtime_jsonl;
-    let frame_interval = target_fps
-        .filter(|fps| *fps > 0)
-        .map(|fps| std::time::Duration::from_secs_f64(1.0 / f64::from(fps)));
+    let frame_interval = frame_interval_for_target(
+        target_fps,
+        session.snapshot().renderer.selected_output.as_ref(),
+    );
 
     write_gst_dmabuf_video_runtime_sample(session, &mut runtime_jsonl)?;
     while started.elapsed() < duration && !session.is_closed() {
@@ -604,9 +606,10 @@ fn run_gpu_video_session(
     let started = std::time::Instant::now();
     let mut last_runtime_sample = std::time::Instant::now();
     let mut runtime_jsonl = runtime_jsonl;
-    let frame_interval = target_fps
-        .filter(|fps| *fps > 0)
-        .map(|fps| std::time::Duration::from_secs_f64(1.0 / f64::from(fps)));
+    let frame_interval = frame_interval_for_target(
+        target_fps,
+        session.snapshot().renderer.selected_output.as_ref(),
+    );
 
     write_gpu_video_runtime_sample(session, &mut runtime_jsonl)?;
     while started.elapsed() < duration && !session.is_closed() {
@@ -651,9 +654,8 @@ fn run_session(
     let started = std::time::Instant::now();
     let mut last_runtime_sample = std::time::Instant::now();
     let mut runtime_jsonl = runtime_jsonl;
-    let frame_interval = target_fps
-        .filter(|fps| *fps > 0)
-        .map(|fps| std::time::Duration::from_secs_f64(1.0 / f64::from(fps)));
+    let frame_interval =
+        frame_interval_for_target(target_fps, session.snapshot().selected_output.as_ref());
 
     write_runtime_sample(session, &mut runtime_jsonl)?;
     while started.elapsed() < duration && !session.is_closed() {
@@ -685,6 +687,70 @@ fn write_runtime_sample(
     writer.write_all(b"\n")?;
     writer.flush()?;
     Ok(())
+}
+
+#[cfg(feature = "native-wgpu-renderer")]
+fn frame_interval_for_target(
+    target_fps: Option<u32>,
+    selected_output: Option<&gilder::renderer::native_wayland::NativeWaylandOutputSnapshot>,
+) -> Option<std::time::Duration> {
+    let fps = target_fps.filter(|fps| *fps > 0)?;
+    if let Some(refresh_millihertz) = selected_output
+        .and_then(|output| output.current_mode)
+        .and_then(|mode| u32::try_from(mode.refresh_millihertz).ok())
+        .filter(|refresh| *refresh > 0)
+    {
+        let target_millihertz = fps.saturating_mul(1000);
+        if target_millihertz >= refresh_millihertz {
+            return None;
+        }
+    }
+    Some(std::time::Duration::from_secs_f64(1.0 / f64::from(fps)))
+}
+
+#[cfg(all(test, feature = "native-wgpu-renderer"))]
+mod tests {
+    use super::frame_interval_for_target;
+    use gilder::renderer::native_wayland::{
+        NativeWaylandOutputModeSnapshot, NativeWaylandOutputSnapshot,
+    };
+
+    fn output_with_refresh(refresh_millihertz: i32) -> NativeWaylandOutputSnapshot {
+        NativeWaylandOutputSnapshot {
+            id: 1,
+            name: Some("HDMI-A-1".to_owned()),
+            description: None,
+            make: "test".to_owned(),
+            model: "test".to_owned(),
+            logical_position: None,
+            logical_size: None,
+            scale_factor: 1,
+            current_mode: Some(NativeWaylandOutputModeSnapshot {
+                width: 2560,
+                height: 1600,
+                refresh_millihertz,
+            }),
+        }
+    }
+
+    #[test]
+    fn target_at_output_refresh_uses_vblank_pacing() {
+        let output = output_with_refresh(239_999);
+
+        assert_eq!(frame_interval_for_target(Some(240), Some(&output)), None);
+    }
+
+    #[test]
+    fn target_below_output_refresh_keeps_sleep_limiter() {
+        let output = output_with_refresh(239_999);
+
+        assert!(frame_interval_for_target(Some(120), Some(&output)).is_some());
+    }
+
+    #[test]
+    fn target_without_output_keeps_sleep_limiter() {
+        assert!(frame_interval_for_target(Some(240), None).is_some());
+    }
 }
 
 #[cfg(feature = "native-wgpu-renderer")]
