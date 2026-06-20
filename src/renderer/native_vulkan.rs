@@ -674,8 +674,23 @@ pub struct NativeVulkanH265AccessUnitSliceSnapshot {
     pub slice_type: u32,
     pub pps_id: u32,
     pub pic_order_cnt_lsb: Option<u32>,
+    pub short_term_ref_pic_set: Option<NativeVulkanH265ShortTermRefPicSetSnapshot>,
     pub idr: bool,
     pub irap: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanH265ShortTermRefPicSetSnapshot {
+    pub inter_ref_pic_set_prediction_flag: bool,
+    pub num_negative_pics: u32,
+    pub num_positive_pics: u32,
+    pub negative_delta_pocs: Vec<i32>,
+    pub negative_used_by_curr_pic: Vec<bool>,
+    pub used_negative_delta_pocs: Vec<i32>,
+    pub positive_delta_pocs: Vec<i32>,
+    pub positive_used_by_curr_pic: Vec<bool>,
+    pub used_positive_delta_pocs: Vec<i32>,
+    pub used_by_current_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -8556,13 +8571,35 @@ fn native_vulkan_h265_first_slice_probe_snapshot(
     if parameter_sets.sps.separate_colour_plane_flag {
         bits.skip_bits(2, "colour_plane_id")?;
     }
-    let pic_order_cnt_lsb = if idr {
-        None
+    let (pic_order_cnt_lsb, short_term_ref_pic_set) = if idr {
+        (None, None)
     } else {
-        Some(bits.read_bits(
+        let pic_order_cnt_lsb = bits.read_bits(
             parameter_sets.sps.log2_max_pic_order_cnt_lsb_minus4 + 4,
             "slice_pic_order_cnt_lsb",
-        )?)
+        )?;
+        let short_term_ref_pic_set = if parameter_sets.sps.num_short_term_ref_pic_sets == 0 {
+            Some(native_vulkan_h265_read_short_term_ref_pic_set(
+                &mut bits,
+                0,
+                0,
+                &[],
+            )?)
+        } else {
+            let short_term_ref_pic_set_sps_flag =
+                bits.read_bool("short_term_ref_pic_set_sps_flag")?;
+            if short_term_ref_pic_set_sps_flag {
+                None
+            } else {
+                Some(native_vulkan_h265_read_short_term_ref_pic_set(
+                    &mut bits,
+                    parameter_sets.sps.num_short_term_ref_pic_sets,
+                    parameter_sets.sps.num_short_term_ref_pic_sets,
+                    &[],
+                )?)
+            }
+        };
+        (Some(pic_order_cnt_lsb), short_term_ref_pic_set)
     };
 
     Ok(NativeVulkanH265AccessUnitSliceSnapshot {
@@ -8574,6 +8611,7 @@ fn native_vulkan_h265_first_slice_probe_snapshot(
         slice_type,
         pps_id,
         pic_order_cnt_lsb,
+        short_term_ref_pic_set,
         idr,
         irap,
     })
@@ -9846,6 +9884,89 @@ fn native_vulkan_h265_skip_short_term_ref_pic_set(
         bits.read_bool("used_by_curr_pic_s1_flag")?;
     }
     Ok(num_negative_pics.saturating_add(num_positive_pics))
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h265_read_short_term_ref_pic_set(
+    bits: &mut NativeVulkanH265BitReader<'_>,
+    st_rps_idx: u32,
+    _num_short_term_ref_pic_sets: u32,
+    _previous_num_delta_pocs: &[u32],
+) -> Result<NativeVulkanH265ShortTermRefPicSetSnapshot, String> {
+    let inter_ref_pic_set_prediction_flag =
+        st_rps_idx != 0 && bits.read_bool("inter_ref_pic_set_prediction_flag")?;
+    if inter_ref_pic_set_prediction_flag {
+        return Err(
+            "predicted H.265 short-term reference picture sets are not exposed by the probe yet"
+                .to_owned(),
+        );
+    }
+
+    let num_negative_pics = bits.read_ue("num_negative_pics")?;
+    let num_positive_pics = bits.read_ue("num_positive_pics")?;
+    let mut negative_delta_pocs = Vec::with_capacity(num_negative_pics as usize);
+    let mut negative_used_by_curr_pic = Vec::with_capacity(num_negative_pics as usize);
+    let mut previous_delta_poc = 0i32;
+    for _ in 0..num_negative_pics {
+        let delta_poc_s0_minus1 = bits.read_ue("delta_poc_s0_minus1")?;
+        let delta_poc = previous_delta_poc
+            .checked_sub(
+                i32::try_from(delta_poc_s0_minus1)
+                    .map_err(|_| "delta_poc_s0_minus1 exceeds i32 range".to_owned())?
+                    + 1,
+            )
+            .ok_or_else(|| "negative short-term delta POC underflow".to_owned())?;
+        previous_delta_poc = delta_poc;
+        negative_delta_pocs.push(delta_poc);
+        negative_used_by_curr_pic.push(bits.read_bool("used_by_curr_pic_s0_flag")?);
+    }
+
+    let mut positive_delta_pocs = Vec::with_capacity(num_positive_pics as usize);
+    let mut positive_used_by_curr_pic = Vec::with_capacity(num_positive_pics as usize);
+    let mut previous_delta_poc = 0i32;
+    for _ in 0..num_positive_pics {
+        let delta_poc_s1_minus1 = bits.read_ue("delta_poc_s1_minus1")?;
+        let delta_poc = previous_delta_poc
+            .checked_add(
+                i32::try_from(delta_poc_s1_minus1)
+                    .map_err(|_| "delta_poc_s1_minus1 exceeds i32 range".to_owned())?
+                    + 1,
+            )
+            .ok_or_else(|| "positive short-term delta POC overflow".to_owned())?;
+        previous_delta_poc = delta_poc;
+        positive_delta_pocs.push(delta_poc);
+        positive_used_by_curr_pic.push(bits.read_bool("used_by_curr_pic_s1_flag")?);
+    }
+    let used_by_current_count = negative_used_by_curr_pic
+        .iter()
+        .chain(positive_used_by_curr_pic.iter())
+        .filter(|used| **used)
+        .count() as u32;
+    let used_negative_delta_pocs = negative_delta_pocs
+        .iter()
+        .copied()
+        .zip(negative_used_by_curr_pic.iter().copied())
+        .filter_map(|(delta_poc, used)| used.then_some(delta_poc))
+        .collect::<Vec<_>>();
+    let used_positive_delta_pocs = positive_delta_pocs
+        .iter()
+        .copied()
+        .zip(positive_used_by_curr_pic.iter().copied())
+        .filter_map(|(delta_poc, used)| used.then_some(delta_poc))
+        .collect::<Vec<_>>();
+
+    Ok(NativeVulkanH265ShortTermRefPicSetSnapshot {
+        inter_ref_pic_set_prediction_flag,
+        num_negative_pics,
+        num_positive_pics,
+        negative_delta_pocs,
+        negative_used_by_curr_pic,
+        used_negative_delta_pocs,
+        positive_delta_pocs,
+        positive_used_by_curr_pic,
+        used_positive_delta_pocs,
+        used_by_current_count,
+    })
 }
 
 fn native_vulkan_h265_u8(value: u32, label: &'static str) -> Result<u8, String> {
