@@ -51,6 +51,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--probe-surface" => mode = NativeVulkanCliMode::ProbeSurface,
             "--probe-video" => mode = NativeVulkanCliMode::ProbeVideo,
             "--probe-video-session" => mode = NativeVulkanCliMode::ProbeVideoSession,
+            "--allocate-video-images" => video_session_options.allocate_video_images = true,
             "--run-clear" => mode = NativeVulkanCliMode::RunClear,
             "--run-static" => mode = NativeVulkanCliMode::RunStatic,
             "--run-video" => mode = NativeVulkanCliMode::RunVideo,
@@ -315,6 +316,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
 --probe-video enumerates Vulkan Video decode extensions and queue families, then exits.\n\
 --probe-video-session creates and binds a Vulkan Video H.265/AV1 decode session, then exits.\n\
+--allocate-video-images extends --probe-video-session with NV12 DPB/output sampled image allocation.\n\
 --run-clear creates a Vulkan device/swapchain, clears frames, presents, then prints runtime JSON.\n\
 --run-static decodes --source, fits it to the swapchain, copies it through Vulkan, presents, then prints runtime JSON.\n\
 --run-video accepts a video wallpaper plan, presents a poster/clear placeholder through native Vulkan, then prints video handoff telemetry.\n\
@@ -322,6 +324,6 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--decoder auto|hardware-preferred|hardware-required|software]\n\
-         [--video-codec h265|av1] [--width PX] [--height PX] [--start-offset-ms MS]"
+         [--video-codec h265|av1] [--width PX] [--height PX] [--allocate-video-images] [--start-offset-ms MS]"
     );
 }
