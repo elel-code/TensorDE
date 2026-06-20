@@ -46,6 +46,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut start_offset_ms = 0u64;
     let mut allow_foreground_layer = false;
     let mut video_session_options = NativeVulkanVideoSessionSmokeOptions::default();
+    let mut h265_ready_prefix_playback_frames = 0u32;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -199,6 +200,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .ok_or("--require-h265-ready-prefix requires a count")?;
                 video_session_options.extract_bitstream = true;
                 video_session_options.allocate_bitstream_buffer = true;
+            }
+            "--playback-frames" => {
+                h265_ready_prefix_playback_frames = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()?
+                    .ok_or("--playback-frames requires a count")?;
             }
             "--start-offset-ms" => {
                 start_offset_ms = args
@@ -359,6 +367,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             #[cfg(feature = "native-vulkan-gst-video")]
             {
+                let playback_frames = if h265_ready_prefix_playback_frames == 0 {
+                    video_session_options.decode_h265_ready_prefix_frames
+                } else {
+                    h265_ready_prefix_playback_frames
+                };
                 json!(run_h265_ready_prefix_video(
                     options,
                     source,
@@ -367,6 +380,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     fit,
                     video_session_options.bitstream_extract_max_samples,
                     video_session_options.decode_h265_ready_prefix_frames,
+                    playback_frames,
                 )?)
             }
             #[cfg(not(feature = "native-vulkan-gst-video"))]
@@ -379,6 +393,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     fit,
                     video_session_options.bitstream_extract_max_samples,
                     video_session_options.decode_h265_ready_prefix_frames,
+                    h265_ready_prefix_playback_frames,
                 );
                 return Err(
                     "--run-h265-ready-prefix-video requires native-vulkan-gst-video feature".into(),
@@ -486,6 +501,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --decode-h265-ready-prefix N extends --probe-video-session with N ready H.265 AU Vulkan Video decode submits and final-frame readback.\n\
 --sample-h265-ready-prefix extends --decode-h265-ready-prefix with final-frame NV12 shader sampling into an offscreen RGBA target.\n\
 --sample-h265-ready-prefix-sequence samples each ready-prefix decoded frame before the next AU can overwrite its DPB/output layer.\n\
+--playback-frames N repeats the ready-prefix AU window for N direct Vulkan Video decode/present frames.\n\
 --run-clear creates a Vulkan device/swapchain, clears frames, presents, then prints runtime JSON.\n\
 --run-static decodes --source, fits it to the swapchain, copies it through Vulkan, presents, then prints runtime JSON.\n\
 --run-video accepts a video wallpaper plan, presents a poster/clear placeholder through native Vulkan, then prints video handoff telemetry.\n\
@@ -499,7 +515,7 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--allocate-video-images] [--allocate-bitstream-buffer] [--bitstream-buffer-size BYTES]\n\
          [--extract-bitstream] [--decode-first-frame] [--sample-decoded-first-frame] [--bitstream-samples N]\n\
          [--decode-h265-ready-prefix N] [--sample-h265-ready-prefix] [--sample-h265-ready-prefix-sequence]\n\
-         [--require-h265-ready-prefix N]\n\
+         [--require-h265-ready-prefix N] [--playback-frames N]\n\
          [--start-offset-ms MS]"
     );
 }

@@ -1477,8 +1477,16 @@ pub struct NativeVulkanDirectH265FirstFrameRuntimeSnapshot {
 pub struct NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
     pub runtime_elapsed_ms: u64,
     pub requested_frame_count: u32,
+    pub ready_prefix_frame_count: u32,
+    pub requested_playback_frame_count: u32,
     pub decoded_frame_count: u32,
     pub presented_frame_count: u32,
+    pub playback_loop_count: u32,
+    pub loop_boundary_reset_count: u32,
+    pub frame_sleep_count: u32,
+    pub missed_frame_pacing_count: u32,
+    pub total_frame_sleep_us: u64,
+    pub max_frame_pacing_late_us: u64,
     pub average_present_fps: f64,
     pub configured: bool,
     pub source: PathBuf,
@@ -1511,6 +1519,10 @@ pub struct NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
 #[cfg(feature = "native-vulkan-gst-video")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanDirectH265ReadyPrefixFrameSnapshot {
+    pub playback_frame_index: u32,
+    pub playback_loop_index: u32,
+    pub ready_prefix_frame_index: u32,
+    pub loop_boundary_reset: bool,
     pub access_unit_index: u32,
     pub pts_ms: Option<u64>,
     pub pts_delta_ms: Option<u64>,
@@ -3103,16 +3115,22 @@ pub fn run_h265_ready_prefix_video(
     height: u32,
     fit: FitMode,
     bitstream_samples: u32,
-    frame_count: u32,
+    ready_prefix_frame_count: u32,
+    playback_frame_count: u32,
 ) -> Result<NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot, NativeVulkanError> {
     if width == 0 || height == 0 {
         return Err(NativeVulkanError::Video(
             "direct H.265 ready-prefix video requires a non-zero source extent".to_owned(),
         ));
     }
-    if frame_count == 0 {
+    if ready_prefix_frame_count == 0 {
         return Err(NativeVulkanError::Video(
-            "direct H.265 ready-prefix video requires at least one frame".to_owned(),
+            "direct H.265 ready-prefix video requires at least one ready-prefix frame".to_owned(),
+        ));
+    }
+    if playback_frame_count == 0 {
+        return Err(NativeVulkanError::Video(
+            "direct H.265 ready-prefix video requires at least one playback frame".to_owned(),
         ));
     }
     let target_max_fps = options.target_max_fps;
@@ -3483,9 +3501,10 @@ pub fn run_h265_ready_prefix_video(
             extract_options.height = height;
             extract_options.extract_bitstream = true;
             extract_options.bitstream_source = Some(source.clone());
-            extract_options.bitstream_extract_max_samples = bitstream_samples.max(frame_count);
+            extract_options.bitstream_extract_max_samples =
+                bitstream_samples.max(ready_prefix_frame_count);
             let extract = native_vulkan_extract_video_bitstream(&extract_options)?;
-            native_vulkan_validate_h265_ready_prefix(&extract.snapshot, frame_count)?;
+            native_vulkan_validate_h265_ready_prefix(&extract.snapshot, ready_prefix_frame_count)?;
             let parameter_sets =
                 extract
                     .snapshot
@@ -3499,7 +3518,7 @@ pub fn run_h265_ready_prefix_video(
                     })?;
             let payload = native_vulkan_h265_ready_prefix_bitstream_payload(
                 &extract,
-                frame_count,
+                ready_prefix_frame_count,
                 capabilities.min_bitstream_buffer_offset_alignment,
                 capabilities.min_bitstream_buffer_size_alignment,
             )?;
@@ -3534,20 +3553,20 @@ pub fn run_h265_ready_prefix_video(
             let plan = extract
                 .snapshot
                 .h265_decode_reference_plan
-                .get(..frame_count as usize)
+                .get(..ready_prefix_frame_count as usize)
                 .ok_or_else(|| {
                     NativeVulkanError::Video(format!(
-                        "H.265 reference plan has {} frames but {frame_count} were requested",
+                        "H.265 reference plan has {} frames but {ready_prefix_frame_count} were requested",
                         extract.snapshot.h265_decode_reference_plan.len()
                     ))
                 })?;
             let access_units = extract
                 .snapshot
                 .h265_access_units
-                .get(..frame_count as usize)
+                .get(..ready_prefix_frame_count as usize)
                 .ok_or_else(|| {
                     NativeVulkanError::Video(format!(
-                        "H.265 access unit snapshot has {} frames but {frame_count} were requested",
+                        "H.265 access unit snapshot has {} frames but {ready_prefix_frame_count} were requested",
                         extract.snapshot.h265_access_units.len()
                     ))
                 })?;
@@ -3574,13 +3593,26 @@ pub fn run_h265_ready_prefix_video(
             let mut next_frame = Instant::now();
             let started_at = Instant::now();
             let mut previous_pts_ms = None::<u64>;
-            let mut frames = Vec::with_capacity(frame_count as usize);
+            let mut previous_duration_ms = None::<u64>;
+            let mut frames = Vec::with_capacity(playback_frame_count as usize);
+            let mut loop_boundary_reset_count = 0u32;
+            let mut frame_sleep_count = 0u32;
+            let mut missed_frame_pacing_count = 0u32;
+            let mut total_frame_sleep_us = 0u64;
+            let mut max_frame_pacing_late_us = 0u64;
 
-            for ((entry, access_unit), span) in plan
-                .iter()
-                .zip(access_units.iter())
-                .zip(payload.spans.iter())
-            {
+            for playback_frame_index in 0..playback_frame_count {
+                probe.host.pump_events()?;
+                if probe.host.is_closed() {
+                    break;
+                }
+                let ready_prefix_frame_index = playback_frame_index % ready_prefix_frame_count;
+                let playback_loop_index = playback_frame_index / ready_prefix_frame_count;
+                let ready_prefix_index = ready_prefix_frame_index as usize;
+                let entry = &plan[ready_prefix_index];
+                let access_unit = &access_units[ready_prefix_index];
+                let span = &payload.spans[ready_prefix_index];
+                let loop_boundary_reset = ready_prefix_frame_index == 0 && playback_frame_index > 0;
                 let fences = [in_flight];
                 unsafe {
                     device
@@ -3599,14 +3631,24 @@ pub fn run_h265_ready_prefix_video(
                             result,
                         })?;
                 }
-                let pts_delta_ms = access_unit.pts_ms.and_then(|pts_ms| {
-                    previous_pts_ms.map(|previous| pts_ms.saturating_sub(previous))
-                });
-                let reset_before_decode = frames.is_empty()
+                let pts_delta_ms = if loop_boundary_reset {
+                    previous_duration_ms
+                        .or(access_unit.duration_ms)
+                        .or_else(|| frame_interval.map(|interval| interval.as_millis() as u64))
+                } else {
+                    access_unit.pts_ms.and_then(|pts_ms| {
+                        previous_pts_ms.map(|previous| pts_ms.saturating_sub(previous))
+                    })
+                };
+                let reset_before_decode = playback_frame_index == 0
+                    || loop_boundary_reset
                     || access_unit
                         .first_slice
                         .as_ref()
                         .is_some_and(|slice| slice.idr);
+                if loop_boundary_reset {
+                    loop_boundary_reset_count = loop_boundary_reset_count.saturating_add(1);
+                }
                 let mut frame = native_vulkan_decode_h265_ready_prefix_frame_to_image(
                     &device,
                     &video_queue_device,
@@ -3628,6 +3670,10 @@ pub fn run_h265_ready_prefix_video(
                     reset_before_decode,
                     pts_delta_ms,
                     decode_finished,
+                    playback_frame_index,
+                    playback_loop_index,
+                    ready_prefix_frame_index,
+                    loop_boundary_reset,
                 )?;
 
                 let present_started_at = Instant::now();
@@ -3703,15 +3749,25 @@ pub fn run_h265_ready_prefix_video(
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
                 frame.present_elapsed_us = native_vulkan_elapsed_us(present_started_at.elapsed());
                 previous_pts_ms = access_unit.pts_ms;
+                previous_duration_ms = access_unit.duration_ms;
                 retired_textures.push(texture);
                 frames.push(frame);
 
-                if let Some(interval) = frame_interval {
+                if let Some(interval) = frame_interval
+                    && playback_frame_index + 1 < playback_frame_count
+                {
                     next_frame += interval;
                     let now = Instant::now();
                     if next_frame > now {
-                        thread::sleep(next_frame - now);
+                        let sleep_duration = next_frame - now;
+                        frame_sleep_count = frame_sleep_count.saturating_add(1);
+                        total_frame_sleep_us = total_frame_sleep_us
+                            .saturating_add(native_vulkan_elapsed_us(sleep_duration));
+                        thread::sleep(sleep_duration);
                     } else {
+                        missed_frame_pacing_count = missed_frame_pacing_count.saturating_add(1);
+                        max_frame_pacing_late_us = max_frame_pacing_late_us
+                            .max(native_vulkan_elapsed_us(now.duration_since(next_frame)));
                         next_frame = now;
                     }
                 }
@@ -3732,9 +3788,24 @@ pub fn run_h265_ready_prefix_video(
             let presented_frame_count = frames.len() as u32;
             Ok(NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
                 runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
-                requested_frame_count: frame_count,
+                requested_frame_count: playback_frame_count,
+                ready_prefix_frame_count,
+                requested_playback_frame_count: playback_frame_count,
                 decoded_frame_count: frames.len() as u32,
                 presented_frame_count,
+                playback_loop_count: if frames.is_empty() {
+                    0
+                } else {
+                    frames
+                        .last()
+                        .map(|frame| frame.playback_loop_index.saturating_add(1))
+                        .unwrap_or(0)
+                },
+                loop_boundary_reset_count,
+                frame_sleep_count,
+                missed_frame_pacing_count,
+                total_frame_sleep_us,
+                max_frame_pacing_late_us,
                 average_present_fps: if elapsed.is_zero() {
                     0.0
                 } else {
@@ -10014,6 +10085,10 @@ fn native_vulkan_decode_h265_ready_prefix_frame_to_image(
     reset_before_decode: bool,
     pts_delta_ms: Option<u64>,
     signal_semaphore: vk::Semaphore,
+    playback_frame_index: u32,
+    playback_loop_index: u32,
+    ready_prefix_frame_index: u32,
+    loop_boundary_reset: bool,
 ) -> Result<NativeVulkanDirectH265ReadyPrefixFrameSnapshot, NativeVulkanError> {
     let first_slice = access_unit.first_slice.as_ref().ok_or_else(|| {
         NativeVulkanError::Video(format!(
@@ -10231,6 +10306,10 @@ fn native_vulkan_decode_h265_ready_prefix_frame_to_image(
     }
 
     Ok(NativeVulkanDirectH265ReadyPrefixFrameSnapshot {
+        playback_frame_index,
+        playback_loop_index,
+        ready_prefix_frame_index,
+        loop_boundary_reset,
         access_unit_index: access_unit.index,
         pts_ms: access_unit.pts_ms,
         pts_delta_ms,

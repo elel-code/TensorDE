@@ -17,6 +17,7 @@ Options:
   --report-dir <dir>    Exact evidence directory. Created and kept.
   --work-dir <dir>      Parent directory for generated evidence. Default: /tmp.
   --decode-prefix <n>   Ready-prefix AU count to decode/present. Default: 8.
+  --playback-frames <n> Decode/present frames by looping the ready prefix. Default: decode-prefix.
   --target-fps <fps>    Presentation target FPS. Default: 240.
   --width <px>          Generated/probed width. Default: 3840.
   --height <px>         Generated/probed height. Default: 2160.
@@ -34,6 +35,7 @@ source=""
 report_dir=""
 work_parent="${TMPDIR:-/tmp}"
 decode_prefix=8
+playback_frames=0
 target_fps=240
 width=3840
 height=2160
@@ -66,6 +68,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --decode-prefix)
       decode_prefix="${2:-}"
+      shift 2
+      ;;
+    --playback-frames)
+      playback_frames="${2:-}"
       shift 2
       ;;
     --target-fps)
@@ -132,9 +138,13 @@ case "$layer" in
     ;;
 esac
 
-if [[ "$decode_prefix" -lt 1 || "$target_fps" -lt 1 || "$width" -lt 2 || "$height" -lt 2 ]]; then
-  printf 'FAIL: decode-prefix/target-fps must be positive and width/height must be at least 2\n' >&2
+if [[ "$decode_prefix" -lt 1 || "$playback_frames" -lt 0 || "$target_fps" -lt 1 || "$width" -lt 2 || "$height" -lt 2 ]]; then
+  printf 'FAIL: decode-prefix/playback-frames/target-fps must be valid and width/height must be at least 2\n' >&2
   exit 1
+fi
+expected_frames="$decode_prefix"
+if [[ "$playback_frames" -gt 0 ]]; then
+  expected_frames="$playback_frames"
 fi
 
 if [[ -z "$report_dir" ]]; then
@@ -182,6 +192,9 @@ args=(
   --bitstream-samples "$decode_prefix"
   --decode-h265-ready-prefix "$decode_prefix"
 )
+if [[ "$playback_frames" -gt 0 ]]; then
+  args+=(--playback-frames "$playback_frames")
+fi
 if [[ -n "$output_name" ]]; then
   args+=(--output-name "$output_name")
 fi
@@ -207,6 +220,10 @@ presented_count="$(jq -r '.presented_frame_count // 0' "$runtime_json")"
 frame_count="$(jq -r '(.frames // []) | length' "$runtime_json")"
 bad_frames="$(jq -r '[.frames[]? | select(.decode_elapsed_us <= 0 or .present_elapsed_us <= 0)] | length' "$runtime_json")"
 distinct_layers="$(jq -r '[.frames[]?.dst_base_array_layer] | unique | length' "$runtime_json")"
+ready_prefix_count="$(jq -r '.ready_prefix_frame_count // 0' "$runtime_json")"
+requested_playback_count="$(jq -r '.requested_playback_frame_count // 0' "$runtime_json")"
+playback_loop_count="$(jq -r '.playback_loop_count // 0' "$runtime_json")"
+loop_boundary_reset_count="$(jq -r '.loop_boundary_reset_count // 0' "$runtime_json")"
 pts_delta_min="$(jq -r '.pts_delta_min_ms // "none"' "$runtime_json")"
 pts_delta_max="$(jq -r '.pts_delta_max_ms // "none"' "$runtime_json")"
 present_queue="$(jq -r '.present_queue_family_index // "none"' "$runtime_json")"
@@ -214,14 +231,23 @@ video_queue="$(jq -r '.video_decode_queue_family_index // "none"' "$runtime_json
 sync_strategy="$(jq -r '.cross_queue_sync_strategy // "none"' "$runtime_json")"
 swapchain_images="$(jq -r '.swapchain_image_count // 0' "$runtime_json")"
 resource_bytes="$(jq -r '.video_resource_memory_bytes // 0' "$runtime_json")"
+loop_gate_failed=0
+if [[ "$expected_frames" -gt "$decode_prefix" && ( "$playback_loop_count" -le 1 || "$loop_boundary_reset_count" -lt 1 ) ]]; then
+  loop_gate_failed=1
+fi
 
-if [[ "$decoded_count" -ne "$decode_prefix" || "$presented_count" -ne "$decode_prefix" || "$frame_count" -ne "$decode_prefix" || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$pts_delta_min" == "none" || "$pts_delta_max" == "none" || "$present_queue" == "none" || "$video_queue" == "none" || "$sync_strategy" != "per-frame-binary-semaphore-decode-signal-present-wait" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
+if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$ready_prefix_count" -ne "$decode_prefix" || "$requested_playback_count" -ne "$expected_frames" || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$loop_gate_failed" -ne 0 || "$pts_delta_min" == "none" || "$pts_delta_max" == "none" || "$present_queue" == "none" || "$video_queue" == "none" || "$sync_strategy" != "per-frame-binary-semaphore-decode-signal-present-wait" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
   {
     printf 'FAIL: native Vulkan direct H.265 ready-prefix video output was not valid\n'
     printf 'decoded_count: %s\n' "$decoded_count"
     printf 'presented_count: %s\n' "$presented_count"
     printf 'requested_decode_prefix: %s\n' "$decode_prefix"
+    printf 'expected_playback_frames: %s\n' "$expected_frames"
     printf 'frame_count: %s\n' "$frame_count"
+    printf 'ready_prefix_frame_count: %s\n' "$ready_prefix_count"
+    printf 'requested_playback_frame_count: %s\n' "$requested_playback_count"
+    printf 'playback_loop_count: %s\n' "$playback_loop_count"
+    printf 'loop_boundary_reset_count: %s\n' "$loop_boundary_reset_count"
     printf 'bad_frames: %s\n' "$bad_frames"
     printf 'distinct_layers: %s\n' "$distinct_layers"
     printf 'pts_delta_min_ms: %s\n' "$pts_delta_min"
@@ -247,8 +273,16 @@ fi
   printf 'swapchain_format: %s\n' "$(jq -r '.swapchain_format' "$runtime_json")"
   printf 'present_mode: %s\n' "$(jq -r '.present_mode' "$runtime_json")"
   printf 'runtime_elapsed_ms: %s\n' "$(jq -r '.runtime_elapsed_ms' "$runtime_json")"
+  printf 'ready_prefix_frame_count: %s\n' "$ready_prefix_count"
+  printf 'requested_playback_frame_count: %s\n' "$requested_playback_count"
   printf 'decoded_frame_count: %s\n' "$decoded_count"
   printf 'presented_frame_count: %s\n' "$presented_count"
+  printf 'playback_loop_count: %s\n' "$playback_loop_count"
+  printf 'loop_boundary_reset_count: %s\n' "$loop_boundary_reset_count"
+  printf 'frame_sleep_count: %s\n' "$(jq -r '.frame_sleep_count // 0' "$runtime_json")"
+  printf 'missed_frame_pacing_count: %s\n' "$(jq -r '.missed_frame_pacing_count // 0' "$runtime_json")"
+  printf 'total_frame_sleep_us: %s\n' "$(jq -r '.total_frame_sleep_us // 0' "$runtime_json")"
+  printf 'max_frame_pacing_late_us: %s\n' "$(jq -r '.max_frame_pacing_late_us // 0' "$runtime_json")"
   printf 'average_present_fps: %s\n' "$(jq -r '.average_present_fps' "$runtime_json")"
   printf 'target_max_fps: %s\n' "$(jq -r '.target_max_fps // "none"' "$runtime_json")"
   printf 'present_queue_family_index: %s\n' "$present_queue"
@@ -257,7 +291,12 @@ fi
   printf 'video_decode_queue_flags: %s\n' "$(jq -c '.video_decode_queue_flags' "$runtime_json")"
   printf 'video_decode_queue_codec_operations: %s\n' "$(jq -c '.video_decode_queue_codec_operations' "$runtime_json")"
   printf 'cross_queue_sync_strategy: %s\n' "$(jq -r '.cross_queue_sync_strategy' "$runtime_json")"
-  printf 'frame_layers: %s\n' "$(jq -c '[.frames[]?.dst_base_array_layer]' "$runtime_json")"
+  printf 'frame_layers_head: %s\n' "$(jq -c '[.frames[0:32][]?.dst_base_array_layer]' "$runtime_json")"
+  printf 'frame_layers_tail: %s\n' "$(jq -c '[.frames[-32:][]?.dst_base_array_layer]' "$runtime_json")"
+  printf 'frame_access_units_head: %s\n' "$(jq -c '[.frames[0:32][]?.access_unit_index]' "$runtime_json")"
+  printf 'frame_access_units_tail: %s\n' "$(jq -c '[.frames[-32:][]?.access_unit_index]' "$runtime_json")"
+  printf 'frame_loop_indices_head: %s\n' "$(jq -c '[.frames[0:32][]?.playback_loop_index]' "$runtime_json")"
+  printf 'frame_loop_indices_tail: %s\n' "$(jq -c '[.frames[-32:][]?.playback_loop_index]' "$runtime_json")"
   printf 'pts_delta_min_ms: %s\n' "$pts_delta_min"
   printf 'pts_delta_max_ms: %s\n' "$pts_delta_max"
   printf 'max_decode_elapsed_us: %s\n' "$(jq -r '[.frames[]?.decode_elapsed_us] | max' "$runtime_json")"
