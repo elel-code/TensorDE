@@ -19,7 +19,7 @@ fn main() {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::native_vulkan::{
         NativeVulkanOptions, NativeVulkanSurfaceProbeOptions, backend_contract, capabilities,
-        probe_wayland_surface, run_clear, run_static_image, run_video,
+        probe_vulkan_video_decode, probe_wayland_surface, run_clear, run_static_image, run_video,
         wallpaper_type_support_matrix,
     };
     use gilder::renderer::native_wayland::NativeWaylandLayer;
@@ -47,6 +47,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--contract" => mode = NativeVulkanCliMode::Contract,
             "--type-support" => mode = NativeVulkanCliMode::TypeSupport,
             "--probe-surface" => mode = NativeVulkanCliMode::ProbeSurface,
+            "--probe-video" => mode = NativeVulkanCliMode::ProbeVideo,
             "--run-clear" => mode = NativeVulkanCliMode::RunClear,
             "--run-static" => mode = NativeVulkanCliMode::RunStatic,
             "--run-video" => mode = NativeVulkanCliMode::RunVideo,
@@ -146,6 +147,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 wait_configure_roundtrips: options.wait_configure_roundtrips,
             })?)
         }
+        NativeVulkanCliMode::ProbeVideo => json!(probe_vulkan_video_decode()?),
         NativeVulkanCliMode::RunClear => json!(run_clear(options, duration)?),
         NativeVulkanCliMode::RunStatic => {
             let source = source.ok_or("--run-static requires --source")?;
@@ -273,6 +275,7 @@ enum NativeVulkanCliMode {
     Contract,
     TypeSupport,
     ProbeSurface,
+    ProbeVideo,
     RunClear,
     RunStatic,
     RunVideo,
@@ -281,10 +284,11 @@ enum NativeVulkanCliMode {
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--run-clear|--run-static|--run-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--run-clear|--run-static|--run-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
+--probe-video enumerates Vulkan Video decode extensions and queue families, then exits.\n\
 --run-clear creates a Vulkan device/swapchain, clears frames, presents, then prints runtime JSON.\n\
 --run-static decodes --source, fits it to the swapchain, copies it through Vulkan, presents, then prints runtime JSON.\n\
 --run-video accepts a video wallpaper plan, presents a poster/clear placeholder through native Vulkan, then prints video handoff telemetry.\n\

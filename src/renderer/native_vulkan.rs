@@ -13,6 +13,8 @@ use std::ffi::c_void;
 use std::ffi::{CStr, CString};
 use std::fmt;
 #[cfg(feature = "native-vulkan-gst-video")]
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
+#[cfg(feature = "native-vulkan-gst-video")]
 use std::os::raw::c_char;
 use std::path::PathBuf;
 use std::ptr;
@@ -39,6 +41,8 @@ use gst::prelude::*;
 use gstreamer as gst;
 #[cfg(feature = "native-vulkan-gst-video")]
 use gstreamer_video as gst_video;
+
+const NATIVE_VULKAN_VIDEO_CODEC_OPERATION_DECODE_VP9: u32 = 0x0000_0008;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanCapabilities {
@@ -168,6 +172,41 @@ pub struct NativeVulkanSurfaceCapabilitiesSnapshot {
     pub min_image_extent: (u32, u32),
     pub max_image_extent: (u32, u32),
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVideoDecodeProbeSnapshot {
+    pub physical_device_count: usize,
+    pub devices: Vec<NativeVulkanVideoDecodeDeviceSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVideoDecodeDeviceSnapshot {
+    pub physical_device_index: usize,
+    pub physical_device_name: String,
+    pub physical_device_type: &'static str,
+    pub vendor_id: u32,
+    pub device_id: u32,
+    pub api_version: String,
+    pub driver_version: u32,
+    pub has_video_queue_extension: bool,
+    pub has_video_decode_queue_extension: bool,
+    pub decode_codec_extensions: Vec<String>,
+    pub has_video_decode_queue_family: bool,
+    pub video_decode_ready: bool,
+    pub queue_families: Vec<NativeVulkanVideoDecodeQueueFamilySnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVideoDecodeQueueFamilySnapshot {
+    pub queue_family_index: u32,
+    pub queue_count: u32,
+    pub queue_flags: Vec<&'static str>,
+    pub video_codec_operation_bits: u32,
+    pub video_codec_operations: Vec<String>,
+}
+
+pub type NativeVulkanVideoDecodeProbeResult =
+    Result<NativeVulkanVideoDecodeProbeSnapshot, NativeVulkanError>;
 
 pub struct NativeVulkanSurfaceProbe {
     host: NativeWaylandHost,
@@ -372,6 +411,15 @@ pub fn probe_wayland_surface(
     Ok(probe.snapshot())
 }
 
+pub fn probe_vulkan_video_decode() -> NativeVulkanVideoDecodeProbeResult {
+    let (_entry, instance) = create_native_vulkan_instance()?;
+    let result = native_vulkan_video_decode_probe_inner(&instance);
+    unsafe {
+        instance.destroy_instance(None);
+    }
+    result
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeVulkanOptions {
     pub host: NativeWaylandHostOptions,
@@ -572,7 +620,7 @@ pub struct NativeVulkanSession {
     #[cfg(feature = "native-vulkan-gst-video")]
     video_renderer: Option<NativeVulkanVideoRenderer>,
     #[cfg(feature = "native-vulkan-gst-video")]
-    video_texture: Option<NativeVulkanCudaVideoTexture>,
+    video_texture: Option<NativeVulkanVideoTexture>,
     #[cfg(feature = "native-vulkan-gst-video")]
     video_import_status: NativeVulkanVideoImportStatus,
     clear_color: NativeVulkanClearColor,
@@ -836,6 +884,7 @@ impl NativeVulkanSession {
                     return Err(err);
                 }
             }
+            self.trim_allocator_after_frame();
 
             if let Some(interval) = frame_interval {
                 next_frame += interval;
@@ -970,6 +1019,16 @@ impl NativeVulkanSession {
                     operation: "vkWaitForFences",
                     result,
                 })
+        }
+    }
+
+    fn trim_allocator_after_frame(&self) {
+        #[cfg(feature = "native-vulkan-gst-video")]
+        if matches!(self.render_item, NativeVulkanRenderItem::Video { .. })
+            && self.frames_rendered > 0
+            && self.frames_rendered % 240 == 0
+        {
+            native_vulkan_trim_process_heap();
         }
     }
 
@@ -1151,30 +1210,42 @@ impl NativeVulkanSession {
         &mut self,
         sample: &gst::Sample,
     ) -> Result<NativeVulkanVideoImportReport, NativeVulkanError> {
-        let renderer = self.video_renderer.as_mut().ok_or_else(|| {
+        self.video_renderer.as_ref().ok_or_else(|| {
             NativeVulkanError::Video("native Vulkan video renderer is not initialized".to_owned())
         })?;
         let buffer = sample
             .buffer()
             .ok_or_else(|| NativeVulkanError::Video("appsink sample has no buffer".to_owned()))?;
         let meta = native_vulkan_gst_system_nv12_meta(sample, buffer)?;
+        if native_vulkan_gst_buffer_has_dmabuf_memory(buffer) {
+            let frame = native_vulkan_gst_dmabuf_frame(sample, buffer, &meta)?;
+            return self.import_dmabuf_video_frame(
+                &frame,
+                "GstDmaBufMemory->Vulkan external DRM modifier image planes",
+            );
+        }
+        if native_vulkan_gst_buffer_has_va_memory(buffer) {
+            let frame = native_vulkan_gst_va_dmabuf_frame(buffer, &meta)?;
+            return self.import_dmabuf_video_frame(
+                &frame,
+                "GstVAMemory->vaExportSurfaceHandle(DRM PRIME)->Vulkan external DRM modifier image planes",
+            );
+        }
         if !native_vulkan_gst_buffer_has_cuda_memory(buffer) {
             return Err(NativeVulkanError::Video(format!(
-                "native Vulkan CUDA import expected CUDAMemory, got {}",
+                "native Vulkan import expected DMABuf, VAMemory, or CUDAMemory, got {}",
                 native_vulkan_gst_memory_types(buffer).join("|")
             )));
         }
         let cuda_context = native_vulkan_gst_cuda_context_from_buffer(buffer)?;
-        let recreate = self
-            .video_texture
-            .as_ref()
-            .map(|texture| !texture.matches(cuda_context, meta.width, meta.height))
-            .unwrap_or(true);
-        if recreate {
-            if let Some(texture) = self.video_texture.take() {
-                texture.destroy(&self.device);
+        let recreate = match self.video_texture.as_ref() {
+            Some(NativeVulkanVideoTexture::Cuda(texture)) => {
+                !texture.matches(cuda_context, meta.width, meta.height)
             }
-            self.video_texture = Some(NativeVulkanCudaVideoTexture::new(
+            _ => true,
+        };
+        if recreate {
+            let texture = NativeVulkanCudaVideoTexture::new(
                 &self.instance,
                 self.physical_device,
                 self.queue,
@@ -1184,7 +1255,16 @@ impl NativeVulkanSession {
                 cuda_context,
                 meta.width,
                 meta.height,
-            )?);
+            )?;
+            if let Some(old_texture) = self.video_texture.take() {
+                old_texture.destroy(&self.device);
+            }
+            self.video_texture = Some(NativeVulkanVideoTexture::Cuda(texture));
+            let renderer = self.video_renderer.as_mut().ok_or_else(|| {
+                NativeVulkanError::Video(
+                    "native Vulkan video renderer is not initialized".to_owned(),
+                )
+            })?;
             renderer.update_descriptors(
                 &self.device,
                 self.video_texture
@@ -1192,15 +1272,52 @@ impl NativeVulkanSession {
                     .expect("video texture must exist after create"),
             );
         }
-        let texture = self
-            .video_texture
-            .as_mut()
-            .expect("video texture must exist before copy");
+        let Some(NativeVulkanVideoTexture::Cuda(texture)) = self.video_texture.as_mut() else {
+            return Err(NativeVulkanError::Video(
+                "native Vulkan CUDA texture was not initialized".to_owned(),
+            ));
+        };
         texture.copy_sample(buffer, &meta)?;
         Ok(NativeVulkanVideoImportReport {
             width: meta.width,
             height: meta.height,
             memory_path: "CUDAMemory->CUDA->Vulkan external image planes".to_owned(),
+            elapsed_us: 0,
+        })
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    fn import_dmabuf_video_frame(
+        &mut self,
+        frame: &NativeVulkanDmabufVideoFrame,
+        memory_path: &'static str,
+    ) -> Result<NativeVulkanVideoImportReport, NativeVulkanError> {
+        let texture = NativeVulkanDmabufVideoTexture::new(
+            &self.instance,
+            self.physical_device,
+            self.queue,
+            self.command_pool,
+            &self.device,
+            self.queue_family_index,
+            frame,
+        )?;
+        if let Some(old_texture) = self.video_texture.take() {
+            old_texture.destroy(&self.device);
+        }
+        self.video_texture = Some(NativeVulkanVideoTexture::Dmabuf(texture));
+        let renderer = self.video_renderer.as_mut().ok_or_else(|| {
+            NativeVulkanError::Video("native Vulkan video renderer is not initialized".to_owned())
+        })?;
+        renderer.update_descriptors(
+            &self.device,
+            self.video_texture
+                .as_ref()
+                .expect("video texture must exist after DMABuf import"),
+        );
+        Ok(NativeVulkanVideoImportReport {
+            width: frame.width,
+            height: frame.height,
+            memory_path: memory_path.to_owned(),
             elapsed_us: 0,
         })
     }
@@ -1317,6 +1434,7 @@ impl NativeVulkanGstVideoFrontend {
 
         gst::init().map_err(|err| NativeVulkanError::Video(err.to_string()))?;
         apply_decoder_rank_policy(*decoder_policy);
+        native_vulkan_apply_memory_path_decoder_policy();
         let pipeline = native_vulkan_gst_video_pipeline(source)?;
         let sink = pipeline
             .by_name("gilder-native-vulkan-video-appsink")
@@ -1525,6 +1643,11 @@ fn native_vulkan_gst_video_pipeline(source: &PathBuf) -> Result<gst::Pipeline, N
     let filesrc = native_vulkan_gst_element("filesrc")?;
     filesrc.set_property("location", source.to_string_lossy().as_ref());
     let decodebin = native_vulkan_gst_element("decodebin")?;
+    if let Ok(decodebin_bin) = decodebin.clone().dynamic_cast::<gst::Bin>() {
+        decodebin_bin.connect_element_added(|_, element| {
+            native_vulkan_configure_decoder_low_memory(element);
+        });
+    }
     let queue = native_vulkan_gst_element("queue")?;
     native_vulkan_configure_queue(&queue);
     let sink = native_vulkan_gst_element("appsink")?;
@@ -1599,9 +1722,25 @@ fn native_vulkan_gst_seek_loop_segment(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_configure_decoder_low_memory(decoder: &gst::Element) {
+    if decoder.find_property("qos").is_some() {
+        decoder.set_property("qos", false);
+    }
+    if decoder.find_property("max-display-delay").is_some() {
+        decoder.set_property("max-display-delay", 0i32);
+    }
+    if decoder.find_property("num-output-surfaces").is_some() {
+        decoder.set_property(
+            "num-output-surfaces",
+            native_vulkan_gst_nvdec_output_surfaces(),
+        );
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_configure_queue(queue: &gst::Element) {
     if queue.find_property("max-size-buffers").is_some() {
-        queue.set_property("max-size-buffers", 8u32);
+        queue.set_property("max-size-buffers", native_vulkan_gst_video_queue_frames());
     }
     if queue.find_property("max-size-bytes").is_some() {
         queue.set_property("max-size-bytes", 0u32);
@@ -1612,7 +1751,19 @@ fn native_vulkan_configure_queue(queue: &gst::Element) {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_gst_nvdec_output_surfaces() -> u32 {
+    std::env::var("GILDER_VULKAN_GST_NVDEC_OUTPUT_SURFACES")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .map(|value| value.clamp(1, 64))
+        .unwrap_or(1)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_configure_appsink(sink: &gst::Element) {
+    if let Some(caps) = native_vulkan_gst_forced_sink_caps() {
+        sink.set_property("caps", &caps);
+    }
     if sink.find_property("sync").is_some() {
         sink.set_property("sync", true);
     }
@@ -1629,7 +1780,7 @@ fn native_vulkan_configure_appsink(sink: &gst::Element) {
         sink.set_property("wait-on-eos", false);
     }
     if sink.find_property("max-buffers").is_some() {
-        sink.set_property("max-buffers", 8u32);
+        sink.set_property("max-buffers", native_vulkan_gst_video_queue_frames());
     }
     if sink.find_property("drop").is_some() {
         sink.set_property("drop", false);
@@ -1645,6 +1796,89 @@ fn native_vulkan_configure_appsink(sink: &gst::Element) {
     }
     if sink.find_property("render-delay").is_some() {
         sink.set_property("render-delay", 0u64);
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_gst_video_queue_frames() -> u32 {
+    1
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_gst_forced_sink_caps() -> Option<gst::Caps> {
+    if !native_vulkan_gst_prefers_dmabuf() {
+        return None;
+    }
+    Some(
+        gst::Caps::builder_full()
+            .structure_with_features(
+                gst::Structure::builder("video/x-raw")
+                    .field("format", "NV12")
+                    .build(),
+                gst::CapsFeatures::new(["memory:VAMemory"]),
+            )
+            .structure_with_features(
+                gst::Structure::builder("video/x-raw")
+                    .field("format", "DMA_DRM")
+                    .build(),
+                gst::CapsFeatures::new(["memory:DMABuf"]),
+            )
+            .build(),
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_apply_memory_path_decoder_policy() {
+    if !native_vulkan_gst_prefers_dmabuf() {
+        return;
+    }
+    for element in [
+        "vah264dec",
+        "vah265dec",
+        "vavp8dec",
+        "vavp9dec",
+        "vaav1dec",
+        "nvh264dec",
+        "nvh265dec",
+        "nvvp8dec",
+        "nvvp9dec",
+        "nvav1dec",
+        "avdec_h264",
+        "openh264dec",
+        "vp9dec",
+        "avdec_vp9",
+        "dav1ddec",
+        "avdec_av1",
+        "av1dec",
+    ] {
+        let Some(factory) = gst::ElementFactory::find(element) else {
+            continue;
+        };
+        if element.starts_with("va") {
+            factory.set_rank(gst::Rank::PRIMARY + 2048);
+        } else {
+            factory.set_rank(gst::Rank::NONE);
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_gst_prefers_dmabuf() -> bool {
+    std::env::var("GILDER_VULKAN_GST_MEMORY_PATH")
+        .map(|memory_path| {
+            matches!(
+                memory_path.as_str(),
+                "dmabuf" | "DMABuf" | "gst-dmabuf" | "direct-dmabuf"
+            )
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_trim_process_heap() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::malloc_trim(0);
     }
 }
 
@@ -1667,7 +1901,13 @@ fn native_vulkan_gst_memory_types(buffer: &gst::BufferRef) -> Vec<String> {
 
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_gst_memory_type(memory: &gst::MemoryRef) -> String {
-    for memory_type in ["CUDAMemory", "GLMemory", "DMABuf", "SystemMemory"] {
+    for memory_type in [
+        "CUDAMemory",
+        "GLMemory",
+        "DMABuf",
+        "VAMemory",
+        "SystemMemory",
+    ] {
         if memory.is_type(memory_type) {
             return memory_type.to_owned();
         }
@@ -1685,11 +1925,432 @@ fn native_vulkan_gst_memory_type(memory: &gst::MemoryRef) -> String {
         "GLMemory".to_owned()
     } else if lower.contains("dmabuf") || lower.contains("dma-buf") {
         "DMABuf".to_owned()
+    } else if lower.contains("va") {
+        "VAMemory".to_owned()
     } else if lower.contains("system") {
         "SystemMemory".to_owned()
     } else {
         memory_type
     }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_gst_dmabuf_frame(
+    sample: &gst::Sample,
+    buffer: &gst::BufferRef,
+    meta: &NativeVulkanGstSystemNv12Meta,
+) -> Result<NativeVulkanDmabufVideoFrame, NativeVulkanError> {
+    let (fourcc, modifier) = native_vulkan_gst_sample_drm_format(sample)?;
+    if fourcc != DRM_FORMAT_NV12 {
+        return Err(NativeVulkanError::Video(format!(
+            "native Vulkan DMABuf importer only supports NV12 for now, got fourcc=0x{fourcc:08x}"
+        )));
+    }
+    let y = native_vulkan_gst_dmabuf_plane(buffer, meta.y)?;
+    let uv = native_vulkan_gst_dmabuf_plane(buffer, meta.uv)?;
+    if y.fd != uv.fd {
+        return Err(NativeVulkanError::Video(
+            "native Vulkan DMABuf importer currently requires y/uv planes in one fd".to_owned(),
+        ));
+    }
+    Ok(NativeVulkanDmabufVideoFrame {
+        width: meta.width,
+        height: meta.height,
+        fd: y.fd,
+        modifier,
+        y,
+        uv,
+        _owned_fds: Vec::new(),
+    })
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_gst_sample_drm_format(
+    sample: &gst::Sample,
+) -> Result<(u32, u64), NativeVulkanError> {
+    let caps = sample
+        .caps()
+        .ok_or_else(|| NativeVulkanError::Video("DMABuf sample has no caps".to_owned()))?;
+    let structure = caps.structure(0).ok_or_else(|| {
+        NativeVulkanError::Video("DMABuf sample caps has no structure".to_owned())
+    })?;
+    if let Ok(drm_format) = structure.get::<String>("drm-format") {
+        let (fourcc, modifier) = native_vulkan_drm_fourcc_modifier_from_caps_format(&drm_format)
+            .ok_or_else(|| {
+                NativeVulkanError::Video(format!(
+                    "native Vulkan DMABuf could not parse drm-format={drm_format}"
+                ))
+            })?;
+        let modifier = modifier.ok_or_else(|| {
+            NativeVulkanError::Video(format!(
+                "native Vulkan DMABuf drm-format={drm_format} has no explicit modifier"
+            ))
+        })?;
+        return Ok((fourcc, modifier));
+    }
+
+    let format = structure
+        .get::<String>("format")
+        .unwrap_or_else(|_| "unknown".to_owned());
+    if format == "NV12" {
+        return Ok((DRM_FORMAT_NV12, DRM_FORMAT_MOD_LINEAR));
+    }
+    Err(NativeVulkanError::Video(format!(
+        "native Vulkan DMABuf expected drm-format or NV12 caps, got format={format}"
+    )))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_drm_fourcc_modifier_from_caps_format(format: &str) -> Option<(u32, Option<u64>)> {
+    let format = CString::new(format).ok()?;
+    let mut modifier = 0u64;
+    let fourcc = unsafe { gst_video_dma_drm_fourcc_from_string(format.as_ptr(), &mut modifier) };
+    (fourcc != 0).then_some((
+        fourcc,
+        (modifier != DRM_FORMAT_MOD_INVALID).then_some(modifier),
+    ))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_gst_dmabuf_plane(
+    buffer: &gst::BufferRef,
+    plane: NativeVulkanGstSystemNv12Plane,
+) -> Result<NativeVulkanDmabufVideoPlane, NativeVulkanError> {
+    let plane_end = plane.offset.checked_add(1).ok_or_else(|| {
+        NativeVulkanError::Video("native Vulkan DMABuf plane offset overflow".to_owned())
+    })?;
+    let (memory_range, memory_skip) = buffer
+        .find_memory(plane.offset..plane_end)
+        .ok_or_else(|| NativeVulkanError::Video("DMABuf plane has no memory".to_owned()))?;
+    let memory_index = memory_range.start;
+    if memory_index >= buffer.n_memory() {
+        return Err(NativeVulkanError::Video(
+            "native Vulkan DMABuf memory index out of range".to_owned(),
+        ));
+    }
+    let memory = buffer.peek_memory(memory_index);
+    let fd = native_vulkan_dmabuf_memory_fd(memory).ok_or_else(|| {
+        NativeVulkanError::Video(format!(
+            "native Vulkan DMABuf plane memory is not GstDmaBufMemory: {}",
+            native_vulkan_gst_memory_type(memory)
+        ))
+    })?;
+    let (_, memory_offset, _) = memory.sizes();
+    let offset = memory_offset
+        .checked_add(memory_skip)
+        .and_then(|offset| u64::try_from(offset).ok())
+        .ok_or_else(|| {
+            NativeVulkanError::Video("native Vulkan DMABuf plane offset too large".to_owned())
+        })?;
+    Ok(NativeVulkanDmabufVideoPlane {
+        fd,
+        offset,
+        stride: plane.stride,
+        height: plane.height,
+    })
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_gst_buffer_has_dmabuf_memory(buffer: &gst::BufferRef) -> bool {
+    (0..buffer.n_memory()).any(|index| native_vulkan_is_dmabuf_memory(buffer.peek_memory(index)))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_is_dmabuf_memory(memory: &gst::MemoryRef) -> bool {
+    let is_dmabuf =
+        unsafe { gst_is_dmabuf_memory(memory.as_ptr().cast_mut()) } != gst::glib::ffi::GFALSE;
+    is_dmabuf || memory.is_type("DMABuf")
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_dmabuf_memory_fd(memory: &gst::MemoryRef) -> Option<i32> {
+    if !native_vulkan_is_dmabuf_memory(memory) {
+        return None;
+    }
+    let fd = unsafe { gst_dmabuf_memory_get_fd(memory.as_ptr().cast_mut()) };
+    (fd >= 0).then_some(fd)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_gst_buffer_has_va_memory(buffer: &gst::BufferRef) -> bool {
+    (0..buffer.n_memory()).any(|index| native_vulkan_is_va_memory(buffer.peek_memory(index)))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_is_va_memory(memory: &gst::MemoryRef) -> bool {
+    memory.is_type("VAMemory") || native_vulkan_gst_memory_type(memory) == "VAMemory"
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_gst_va_dmabuf_frame(
+    buffer: &gst::BufferRef,
+    meta: &NativeVulkanGstSystemNv12Meta,
+) -> Result<NativeVulkanDmabufVideoFrame, NativeVulkanError> {
+    let va_surface = native_vulkan_gst_va_surface(buffer)?;
+    native_vulkan_va_check(
+        unsafe { vaSyncSurface(va_surface.display, va_surface.surface) },
+        "vaSyncSurface(video VAMemory)",
+    )?;
+    let exported = native_vulkan_va_export_prime_surface(va_surface)?;
+    native_vulkan_va_prime_surface_to_dmabuf_frame(exported, meta)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_gst_va_surface(
+    buffer: &gst::BufferRef,
+) -> Result<NativeVulkanVaSurface, NativeVulkanError> {
+    let display = unsafe { gst_va_buffer_peek_display(buffer.as_mut_ptr()) };
+    let surface = unsafe { gst_va_buffer_get_surface(buffer.as_mut_ptr()) };
+    if !display.is_null() && surface != VA_INVALID_SURFACE {
+        let va_display = unsafe { gst_va_display_get_va_dpy(display) };
+        if !va_display.is_null() {
+            return Ok(NativeVulkanVaSurface {
+                display: va_display,
+                surface,
+            });
+        }
+    }
+
+    for index in 0..buffer.n_memory() {
+        let memory = buffer.peek_memory(index);
+        if !native_vulkan_is_va_memory(memory) {
+            continue;
+        }
+        let display = unsafe { gst_va_memory_peek_display(memory.as_ptr().cast_mut()) };
+        let surface = unsafe { gst_va_memory_get_surface(memory.as_ptr().cast_mut()) };
+        if display.is_null() || surface == VA_INVALID_SURFACE {
+            continue;
+        }
+        let va_display = unsafe { gst_va_display_get_va_dpy(display) };
+        if !va_display.is_null() {
+            return Ok(NativeVulkanVaSurface {
+                display: va_display,
+                surface,
+            });
+        }
+    }
+
+    Err(NativeVulkanError::Video(
+        "native Vulkan VAMemory importer could not find a VA display/surface".to_owned(),
+    ))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_va_export_prime_surface(
+    surface: NativeVulkanVaSurface,
+) -> Result<NativeVulkanVaExportedPrimeSurface, NativeVulkanError> {
+    let separate_flags = VA_EXPORT_SURFACE_READ_ONLY | VA_EXPORT_SURFACE_SEPARATE_LAYERS;
+    match native_vulkan_va_export_prime_surface_with_flags(surface, separate_flags) {
+        Ok(exported) => Ok(exported),
+        Err(separate_err) => {
+            let composed_flags = VA_EXPORT_SURFACE_READ_ONLY | VA_EXPORT_SURFACE_COMPOSED_LAYERS;
+            native_vulkan_va_export_prime_surface_with_flags(surface, composed_flags).map_err(
+                |composed_err| {
+                    NativeVulkanError::Video(format!(
+                        "{separate_err}; composed VA DRM PRIME export also failed: {composed_err}"
+                    ))
+                },
+            )
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_va_export_prime_surface_with_flags(
+    surface: NativeVulkanVaSurface,
+    flags: u32,
+) -> Result<NativeVulkanVaExportedPrimeSurface, NativeVulkanError> {
+    let mut descriptor = NativeVulkanVaDrmPrimeSurfaceDescriptor::default();
+    native_vulkan_va_check(
+        unsafe {
+            vaExportSurfaceHandle(
+                surface.display,
+                surface.surface,
+                VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                flags,
+                (&mut descriptor as *mut NativeVulkanVaDrmPrimeSurfaceDescriptor).cast(),
+            )
+        },
+        "vaExportSurfaceHandle(video VAMemory DRM PRIME)",
+    )?;
+    NativeVulkanVaExportedPrimeSurface::new(descriptor)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_va_prime_surface_to_dmabuf_frame(
+    exported: NativeVulkanVaExportedPrimeSurface,
+    meta: &NativeVulkanGstSystemNv12Meta,
+) -> Result<NativeVulkanDmabufVideoFrame, NativeVulkanError> {
+    let descriptor = exported.descriptor;
+    native_vulkan_validate_va_prime_descriptor(&descriptor, meta)?;
+    let (y_object, y_offset, y_pitch, uv_object, uv_offset, uv_pitch) =
+        native_vulkan_va_nv12_plane_layouts(&descriptor)?;
+    if y_object != uv_object {
+        return Err(NativeVulkanError::Video(format!(
+            "native Vulkan VA DMABuf importer currently requires a single DRM object, got y_object={y_object} uv_object={uv_object}"
+        )));
+    }
+    let object = descriptor.objects.get(y_object).ok_or_else(|| {
+        NativeVulkanError::Video("VA DRM PRIME object index out of range".to_owned())
+    })?;
+    if object.drm_format_modifier == DRM_FORMAT_MOD_INVALID {
+        return Err(NativeVulkanError::Video(
+            "VA DRM PRIME export returned an invalid DRM modifier".to_owned(),
+        ));
+    }
+
+    Ok(NativeVulkanDmabufVideoFrame {
+        width: meta.width,
+        height: meta.height,
+        fd: exported
+            .owned_fds
+            .get(y_object)
+            .ok_or_else(|| {
+                NativeVulkanError::Video("VA DRM PRIME fd index out of range".to_owned())
+            })?
+            .as_raw_fd(),
+        modifier: object.drm_format_modifier,
+        y: NativeVulkanDmabufVideoPlane {
+            fd: exported
+                .owned_fds
+                .get(y_object)
+                .expect("VA DRM PRIME fd checked above")
+                .as_raw_fd(),
+            offset: u64::from(y_offset),
+            stride: y_pitch,
+            height: meta.height,
+        },
+        uv: NativeVulkanDmabufVideoPlane {
+            fd: exported
+                .owned_fds
+                .get(uv_object)
+                .ok_or_else(|| {
+                    NativeVulkanError::Video("VA DRM PRIME uv fd index out of range".to_owned())
+                })?
+                .as_raw_fd(),
+            offset: u64::from(uv_offset),
+            stride: uv_pitch,
+            height: meta.height / 2,
+        },
+        _owned_fds: exported.owned_fds,
+    })
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_validate_va_prime_descriptor(
+    descriptor: &NativeVulkanVaDrmPrimeSurfaceDescriptor,
+    meta: &NativeVulkanGstSystemNv12Meta,
+) -> Result<(), NativeVulkanError> {
+    if descriptor.fourcc != VA_FOURCC_NV12 && descriptor.fourcc != DRM_FORMAT_NV12 {
+        return Err(NativeVulkanError::Video(format!(
+            "native Vulkan VA DMABuf importer only supports NV12, got fourcc=0x{:08x}",
+            descriptor.fourcc
+        )));
+    }
+    if descriptor.width != meta.width || descriptor.height != meta.height {
+        return Err(NativeVulkanError::Video(format!(
+            "VA DRM PRIME descriptor size {}x{} does not match sample {}x{}",
+            descriptor.width, descriptor.height, meta.width, meta.height
+        )));
+    }
+    if descriptor.num_objects == 0 || descriptor.num_objects > 4 {
+        return Err(NativeVulkanError::Video(format!(
+            "VA DRM PRIME descriptor has invalid object count {}",
+            descriptor.num_objects
+        )));
+    }
+    if descriptor.num_layers == 0 || descriptor.num_layers > 4 {
+        return Err(NativeVulkanError::Video(format!(
+            "VA DRM PRIME descriptor has invalid layer count {}",
+            descriptor.num_layers
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_va_nv12_plane_layouts(
+    descriptor: &NativeVulkanVaDrmPrimeSurfaceDescriptor,
+) -> Result<(usize, u32, u32, usize, u32, u32), NativeVulkanError> {
+    let layer_count = descriptor.num_layers as usize;
+    for layer in descriptor.layers[..layer_count].iter() {
+        if layer.drm_format == DRM_FORMAT_NV12 && layer.num_planes >= 2 {
+            let y_object = native_vulkan_va_layer_object_index(layer, 0, descriptor)?;
+            let uv_object = native_vulkan_va_layer_object_index(layer, 1, descriptor)?;
+            return Ok((
+                y_object,
+                layer.offset[0],
+                layer.pitch[0],
+                uv_object,
+                layer.offset[1],
+                layer.pitch[1],
+            ));
+        }
+    }
+
+    let y_layer = descriptor.layers[..layer_count]
+        .iter()
+        .find(|layer| layer.drm_format == DRM_FORMAT_R8 && layer.num_planes >= 1)
+        .ok_or_else(|| {
+            NativeVulkanError::Video(
+                "VA DRM PRIME separate-layer export has no DRM_FORMAT_R8 luma layer".to_owned(),
+            )
+        })?;
+    let uv_layer = descriptor.layers[..layer_count]
+        .iter()
+        .find(|layer| layer.drm_format == DRM_FORMAT_GR88 && layer.num_planes >= 1)
+        .ok_or_else(|| {
+            NativeVulkanError::Video(
+                "VA DRM PRIME separate-layer export has no DRM_FORMAT_GR88 chroma layer".to_owned(),
+            )
+        })?;
+    let y_object = native_vulkan_va_layer_object_index(y_layer, 0, descriptor)?;
+    let uv_object = native_vulkan_va_layer_object_index(uv_layer, 0, descriptor)?;
+    Ok((
+        y_object,
+        y_layer.offset[0],
+        y_layer.pitch[0],
+        uv_object,
+        uv_layer.offset[0],
+        uv_layer.pitch[0],
+    ))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_va_layer_object_index(
+    layer: &NativeVulkanVaDrmPrimeLayer,
+    plane: usize,
+    descriptor: &NativeVulkanVaDrmPrimeSurfaceDescriptor,
+) -> Result<usize, NativeVulkanError> {
+    let object_index = layer.object_index[plane] as usize;
+    if object_index >= descriptor.num_objects as usize {
+        return Err(NativeVulkanError::Video(format!(
+            "VA DRM PRIME layer object index {object_index} is out of range"
+        )));
+    }
+    Ok(object_index)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_va_check(
+    status: NativeVulkanVaStatus,
+    operation: &'static str,
+) -> Result<(), NativeVulkanError> {
+    if status == VA_STATUS_SUCCESS {
+        return Ok(());
+    }
+    let message = unsafe {
+        let error = vaErrorStr(status);
+        if error.is_null() {
+            format!("{operation} failed with VAStatus {status}")
+        } else {
+            format!(
+                "{operation} failed with VAStatus {status}: {}",
+                CStr::from_ptr(error).to_string_lossy()
+            )
+        }
+    };
+    Err(NativeVulkanError::Video(message))
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -1733,7 +2394,10 @@ impl NativeVulkanVideoImportStatus {
 
     fn snapshot(&self) -> NativeVulkanVideoImportSnapshot {
         let texture_import_status = if self.frames_imported > 0 {
-            "importing-cuda-vulkan-image-planes"
+            match self.last_import_memory_path.as_deref() {
+                Some(path) if path.contains("GstDmaBufMemory") => "importing-dmabuf-vulkan-image",
+                _ => "importing-cuda-vulkan-image-planes",
+            }
         } else if self.last_import_error.is_some() {
             "waiting-for-supported-importer"
         } else {
@@ -1921,16 +2585,16 @@ impl NativeVulkanVideoRenderer {
         })
     }
 
-    fn update_descriptors(&mut self, device: &ash::Device, texture: &NativeVulkanCudaVideoTexture) {
+    fn update_descriptors(&mut self, device: &ash::Device, texture: &NativeVulkanVideoTexture) {
         let image_infos = [
             vk::DescriptorImageInfo::default()
                 .sampler(self.sampler)
-                .image_view(texture.y.view)
-                .image_layout(vk::ImageLayout::GENERAL),
+                .image_view(texture.y_view())
+                .image_layout(texture.image_layout()),
             vk::DescriptorImageInfo::default()
                 .sampler(self.sampler)
-                .image_view(texture.uv.view)
-                .image_layout(vk::ImageLayout::GENERAL),
+                .image_view(texture.uv_view())
+                .image_layout(texture.image_layout()),
         ];
         let writes = [
             vk::WriteDescriptorSet::default()
@@ -1956,7 +2620,7 @@ impl NativeVulkanVideoRenderer {
         image_index: usize,
         swapchain_image: vk::Image,
         swapchain_old_layout: vk::ImageLayout,
-        texture: &NativeVulkanCudaVideoTexture,
+        texture: &NativeVulkanVideoTexture,
         fit: FitMode,
     ) -> Result<(), NativeVulkanError> {
         unsafe {
@@ -2035,7 +2699,7 @@ impl NativeVulkanVideoRenderer {
             );
             let push = native_vulkan_video_fit_push_constants(
                 fit,
-                (texture.width, texture.height),
+                (texture.width(), texture.height()),
                 (self.extent.width, self.extent.height),
             );
             let push_bytes = std::slice::from_raw_parts(
@@ -2310,6 +2974,373 @@ fn native_vulkan_video_uv_transform(
         let height = (source_aspect / surface_aspect).clamp(0.0, 1.0);
         ([0.0, (1.0 - height) * 0.5], [1.0, height])
     }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+enum NativeVulkanVideoTexture {
+    Cuda(NativeVulkanCudaVideoTexture),
+    Dmabuf(NativeVulkanDmabufVideoTexture),
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanVideoTexture {
+    fn width(&self) -> u32 {
+        match self {
+            Self::Cuda(texture) => texture.width,
+            Self::Dmabuf(texture) => texture.width,
+        }
+    }
+
+    fn height(&self) -> u32 {
+        match self {
+            Self::Cuda(texture) => texture.height,
+            Self::Dmabuf(texture) => texture.height,
+        }
+    }
+
+    fn y_view(&self) -> vk::ImageView {
+        match self {
+            Self::Cuda(texture) => texture.y.view,
+            Self::Dmabuf(texture) => texture.y_view,
+        }
+    }
+
+    fn uv_view(&self) -> vk::ImageView {
+        match self {
+            Self::Cuda(texture) => texture.uv.view,
+            Self::Dmabuf(texture) => texture.uv_view,
+        }
+    }
+
+    fn image_layout(&self) -> vk::ImageLayout {
+        vk::ImageLayout::GENERAL
+    }
+
+    fn shader_read_barriers(&self) -> [vk::ImageMemoryBarrier<'static>; 2] {
+        match self {
+            Self::Cuda(texture) => texture.shader_read_barriers(),
+            Self::Dmabuf(texture) => texture.shader_read_barriers(),
+        }
+    }
+
+    fn destroy(self, device: &ash::Device) {
+        match self {
+            Self::Cuda(texture) => texture.destroy(device),
+            Self::Dmabuf(texture) => texture.destroy(device),
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeVulkanDmabufVideoPlane {
+    fd: i32,
+    offset: u64,
+    stride: u32,
+    height: u32,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug)]
+struct NativeVulkanDmabufVideoFrame {
+    width: u32,
+    height: u32,
+    fd: i32,
+    modifier: u64,
+    y: NativeVulkanDmabufVideoPlane,
+    uv: NativeVulkanDmabufVideoPlane,
+    _owned_fds: Vec<OwnedFd>,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+struct NativeVulkanDmabufVideoTexture {
+    width: u32,
+    height: u32,
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    y_view: vk::ImageView,
+    uv_view: vk::ImageView,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanDmabufVideoTexture {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        instance: &ash::Instance,
+        physical_device: vk::PhysicalDevice,
+        _queue: vk::Queue,
+        _command_pool: vk::CommandPool,
+        device: &ash::Device,
+        _queue_family_index: u32,
+        frame: &NativeVulkanDmabufVideoFrame,
+    ) -> Result<Self, NativeVulkanError> {
+        if frame.width == 0 || frame.height == 0 {
+            return Err(NativeVulkanError::Video(
+                "native Vulkan DMABuf video frame has zero dimension".to_owned(),
+            ));
+        }
+        if frame.width % 2 != 0 || frame.height % 2 != 0 {
+            return Err(NativeVulkanError::Video(format!(
+                "native Vulkan DMABuf video dimensions must be even, got {}x{}",
+                frame.width, frame.height
+            )));
+        }
+        if frame.fd < 0 || frame.y.fd != frame.fd || frame.uv.fd != frame.fd {
+            return Err(NativeVulkanError::Video(
+                "native Vulkan DMABuf importer currently requires a single fd NV12 frame"
+                    .to_owned(),
+            ));
+        }
+
+        let plane_layouts = [
+            native_vulkan_dmabuf_plane_layout(frame.y),
+            native_vulkan_dmabuf_plane_layout(frame.uv),
+        ];
+        let handle_type = vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT;
+        let mut external_image_info =
+            vk::ExternalMemoryImageCreateInfo::default().handle_types(handle_type);
+        let mut drm_modifier_info = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
+            .drm_format_modifier(frame.modifier)
+            .plane_layouts(&plane_layouts);
+        let image_info = vk::ImageCreateInfo::default()
+            .flags(vk::ImageCreateFlags::MUTABLE_FORMAT)
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk::Format::G8_B8R8_2PLANE_420_UNORM)
+            .extent(vk::Extent3D {
+                width: frame.width,
+                height: frame.height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+            .usage(vk::ImageUsageFlags::SAMPLED)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .push_next(&mut external_image_info)
+            .push_next(&mut drm_modifier_info);
+        let image = unsafe { device.create_image(&image_info, None) }.map_err(|result| {
+            NativeVulkanError::Vulkan {
+                operation: "vkCreateImage(video DMABuf image)",
+                result,
+            }
+        })?;
+
+        let requirements = unsafe { device.get_image_memory_requirements(image) };
+        let external_memory_fd = ash::khr::external_memory_fd::Device::new(instance, device);
+        let mut fd_properties = vk::MemoryFdPropertiesKHR::default();
+        unsafe {
+            external_memory_fd
+                .get_memory_fd_properties(handle_type, frame.fd, &mut fd_properties)
+                .map_err(|result| {
+                    device.destroy_image(image, None);
+                    NativeVulkanError::Vulkan {
+                        operation: "vkGetMemoryFdPropertiesKHR(video DMABuf)",
+                        result,
+                    }
+                })?;
+        }
+        let memory_type_bits = requirements.memory_type_bits & fd_properties.memory_type_bits;
+        if memory_type_bits == 0 {
+            unsafe {
+                device.destroy_image(image, None);
+            }
+            return Err(NativeVulkanError::Video(
+                "native Vulkan DMABuf import has zero compatible memory_type_bits".to_owned(),
+            ));
+        }
+        let memory_properties =
+            unsafe { instance.get_physical_device_memory_properties(physical_device) };
+        let memory_type_index = native_vulkan_memory_type_index_prefer(
+            &memory_properties,
+            memory_type_bits,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            vk::MemoryPropertyFlags::empty(),
+        )
+        .ok_or_else(|| {
+            unsafe {
+                device.destroy_image(image, None);
+            }
+            NativeVulkanError::MissingMemoryType("video DMABuf image")
+        })?;
+
+        let duplicated_fd = native_vulkan_dup_fd(frame.fd).map_err(|err| {
+            unsafe {
+                device.destroy_image(image, None);
+            }
+            err
+        })?;
+        let mut import_info = vk::ImportMemoryFdInfoKHR::default()
+            .handle_type(handle_type)
+            .fd(duplicated_fd.as_raw_fd());
+        let mut dedicated_info = vk::MemoryDedicatedAllocateInfo::default().image(image);
+        let allocate_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(requirements.size)
+            .memory_type_index(memory_type_index)
+            .push_next(&mut dedicated_info)
+            .push_next(&mut import_info);
+        let memory = match unsafe { device.allocate_memory(&allocate_info, None) } {
+            Ok(memory) => {
+                let _ = duplicated_fd.into_raw_fd();
+                memory
+            }
+            Err(result) => {
+                unsafe {
+                    device.destroy_image(image, None);
+                }
+                return Err(NativeVulkanError::Vulkan {
+                    operation: "vkAllocateMemory(video DMABuf image)",
+                    result,
+                });
+            }
+        };
+        if let Err(result) = unsafe { device.bind_image_memory(image, memory, 0) } {
+            unsafe {
+                device.free_memory(memory, None);
+                device.destroy_image(image, None);
+            }
+            return Err(NativeVulkanError::Vulkan {
+                operation: "vkBindImageMemory(video DMABuf image)",
+                result,
+            });
+        }
+
+        let y_view = match native_vulkan_create_dmabuf_plane_view(
+            device,
+            image,
+            vk::ImageAspectFlags::PLANE_0,
+            vk::Format::R8_UNORM,
+            "y",
+        ) {
+            Ok(view) => view,
+            Err(err) => {
+                unsafe {
+                    device.free_memory(memory, None);
+                    device.destroy_image(image, None);
+                }
+                return Err(err);
+            }
+        };
+        let uv_view = match native_vulkan_create_dmabuf_plane_view(
+            device,
+            image,
+            vk::ImageAspectFlags::PLANE_1,
+            vk::Format::R8G8_UNORM,
+            "uv",
+        ) {
+            Ok(view) => view,
+            Err(err) => {
+                unsafe {
+                    device.destroy_image_view(y_view, None);
+                    device.free_memory(memory, None);
+                    device.destroy_image(image, None);
+                }
+                return Err(err);
+            }
+        };
+
+        Ok(Self {
+            width: frame.width,
+            height: frame.height,
+            image,
+            memory,
+            y_view,
+            uv_view,
+        })
+    }
+
+    fn shader_read_barriers(&self) -> [vk::ImageMemoryBarrier<'static>; 2] {
+        [
+            native_vulkan_dmabuf_shader_read_barrier(self.image, vk::ImageAspectFlags::PLANE_0),
+            native_vulkan_dmabuf_shader_read_barrier(self.image, vk::ImageAspectFlags::PLANE_1),
+        ]
+    }
+
+    fn destroy(self, device: &ash::Device) {
+        unsafe {
+            device.destroy_image_view(self.uv_view, None);
+            device.destroy_image_view(self.y_view, None);
+            device.free_memory(self.memory, None);
+            device.destroy_image(self.image, None);
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_dmabuf_plane_layout(plane: NativeVulkanDmabufVideoPlane) -> vk::SubresourceLayout {
+    vk::SubresourceLayout {
+        offset: plane.offset,
+        size: u64::from(plane.stride) * u64::from(plane.height),
+        row_pitch: u64::from(plane.stride),
+        array_pitch: 0,
+        depth_pitch: 0,
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_dmabuf_shader_read_barrier(
+    image: vk::Image,
+    aspect_mask: vk::ImageAspectFlags,
+) -> vk::ImageMemoryBarrier<'static> {
+    vk::ImageMemoryBarrier::default()
+        .old_layout(vk::ImageLayout::GENERAL)
+        .new_layout(vk::ImageLayout::GENERAL)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        })
+        .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
+        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_create_dmabuf_plane_view(
+    device: &ash::Device,
+    image: vk::Image,
+    aspect_mask: vk::ImageAspectFlags,
+    format: vk::Format,
+    label: &'static str,
+) -> Result<vk::ImageView, NativeVulkanError> {
+    let view_info = vk::ImageViewCreateInfo::default()
+        .image(image)
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .format(format)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        });
+    unsafe { device.create_image_view(&view_info, None) }.map_err(|result| {
+        NativeVulkanError::Vulkan {
+            operation: match label {
+                "y" => "vkCreateImageView(video DMABuf y plane)",
+                "uv" => "vkCreateImageView(video DMABuf uv plane)",
+                _ => "vkCreateImageView(video DMABuf plane)",
+            },
+            result,
+        }
+    })
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_dup_fd(fd: i32) -> Result<OwnedFd, NativeVulkanError> {
+    let duplicated = unsafe { libc::dup(fd) };
+    if duplicated < 0 {
+        return Err(NativeVulkanError::Video(format!(
+            "native Vulkan DMABuf dup fd failed: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(unsafe { OwnedFd::from_raw_fd(duplicated) })
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -3312,6 +4343,84 @@ struct NativeVulkanGstCudaContext {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+#[repr(C)]
+struct NativeVulkanGstVaDisplay {
+    _private: [u8; 0],
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, Copy)]
+struct NativeVulkanVaSurface {
+    display: NativeVulkanVaDisplay,
+    surface: NativeVulkanVaSurfaceId,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct NativeVulkanVaDrmPrimeObject {
+    fd: i32,
+    size: u32,
+    drm_format_modifier: u64,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct NativeVulkanVaDrmPrimeLayer {
+    drm_format: u32,
+    num_planes: u32,
+    object_index: [u32; 4],
+    offset: [u32; 4],
+    pitch: [u32; 4],
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct NativeVulkanVaDrmPrimeSurfaceDescriptor {
+    fourcc: u32,
+    width: u32,
+    height: u32,
+    num_objects: u32,
+    objects: [NativeVulkanVaDrmPrimeObject; 4],
+    num_layers: u32,
+    layers: [NativeVulkanVaDrmPrimeLayer; 4],
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug)]
+struct NativeVulkanVaExportedPrimeSurface {
+    descriptor: NativeVulkanVaDrmPrimeSurfaceDescriptor,
+    owned_fds: Vec<OwnedFd>,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanVaExportedPrimeSurface {
+    fn new(descriptor: NativeVulkanVaDrmPrimeSurfaceDescriptor) -> Result<Self, NativeVulkanError> {
+        if descriptor.num_objects > 4 {
+            return Err(NativeVulkanError::Video(format!(
+                "VA DRM PRIME descriptor has invalid object count {}",
+                descriptor.num_objects
+            )));
+        }
+        let mut owned_fds = Vec::with_capacity(descriptor.num_objects as usize);
+        for object in descriptor.objects[..descriptor.num_objects as usize].iter() {
+            if object.fd < 0 {
+                return Err(NativeVulkanError::Video(
+                    "VA DRM PRIME export returned an invalid fd".to_owned(),
+                ));
+            }
+            owned_fds.push(unsafe { OwnedFd::from_raw_fd(object.fd) });
+        }
+        Ok(Self {
+            descriptor,
+            owned_fds,
+        })
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 const GST_MAP_READ_CUDA: gst::ffi::GstMapFlags =
     gst::ffi::GST_MAP_READ | (gst::ffi::GST_MAP_FLAG_LAST << 1);
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -3326,6 +4435,30 @@ const CUDA_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD: u32 = 1;
 const CUDA_STREAM_NON_BLOCKING: u32 = 1;
 #[cfg(feature = "native-vulkan-gst-video")]
 const CUDA_ARRAY_FORMAT_UNSIGNED_INT8: u32 = 1;
+#[cfg(feature = "native-vulkan-gst-video")]
+const DRM_FORMAT_NV12: u32 = 0x3231_564e;
+#[cfg(feature = "native-vulkan-gst-video")]
+const DRM_FORMAT_R8: u32 = 0x2020_3852;
+#[cfg(feature = "native-vulkan-gst-video")]
+const DRM_FORMAT_GR88: u32 = 0x3838_5247;
+#[cfg(feature = "native-vulkan-gst-video")]
+const DRM_FORMAT_MOD_LINEAR: u64 = 0;
+#[cfg(feature = "native-vulkan-gst-video")]
+const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
+#[cfg(feature = "native-vulkan-gst-video")]
+const VA_STATUS_SUCCESS: NativeVulkanVaStatus = 0;
+#[cfg(feature = "native-vulkan-gst-video")]
+const VA_INVALID_SURFACE: NativeVulkanVaSurfaceId = u32::MAX;
+#[cfg(feature = "native-vulkan-gst-video")]
+const VA_FOURCC_NV12: u32 = 0x3231_564e;
+#[cfg(feature = "native-vulkan-gst-video")]
+const VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2: u32 = 0x4000_0000;
+#[cfg(feature = "native-vulkan-gst-video")]
+const VA_EXPORT_SURFACE_READ_ONLY: u32 = 0x0001;
+#[cfg(feature = "native-vulkan-gst-video")]
+const VA_EXPORT_SURFACE_SEPARATE_LAYERS: u32 = 0x0004;
+#[cfg(feature = "native-vulkan-gst-video")]
+const VA_EXPORT_SURFACE_COMPOSED_LAYERS: u32 = 0x0008;
 
 #[cfg(feature = "native-vulkan-gst-video")]
 type NativeVulkanCudaDevicePtr = u64;
@@ -3337,6 +4470,12 @@ type NativeVulkanCudaArrayHandle = *mut c_void;
 type NativeVulkanCudaMipmappedArrayHandle = *mut c_void;
 #[cfg(feature = "native-vulkan-gst-video")]
 type NativeVulkanCudaStreamHandle = *mut c_void;
+#[cfg(feature = "native-vulkan-gst-video")]
+type NativeVulkanVaDisplay = *mut c_void;
+#[cfg(feature = "native-vulkan-gst-video")]
+type NativeVulkanVaSurfaceId = u32;
+#[cfg(feature = "native-vulkan-gst-video")]
+type NativeVulkanVaStatus = i32;
 
 #[cfg(feature = "native-vulkan-gst-video")]
 #[repr(C)]
@@ -3441,6 +4580,48 @@ unsafe extern "C" {
         mipmapped_array: NativeVulkanCudaMipmappedArrayHandle,
         level: u32,
     ) -> i32;
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[link(name = "gstallocators-1.0")]
+unsafe extern "C" {
+    fn gst_is_dmabuf_memory(mem: *mut gst::ffi::GstMemory) -> gst::glib::ffi::gboolean;
+    fn gst_dmabuf_memory_get_fd(mem: *mut gst::ffi::GstMemory) -> i32;
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[link(name = "gstvideo-1.0")]
+unsafe extern "C" {
+    fn gst_video_dma_drm_fourcc_from_string(format_str: *const c_char, modifier: *mut u64) -> u32;
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[link(name = "gstva-1.0")]
+unsafe extern "C" {
+    fn gst_va_memory_get_surface(mem: *mut gst::ffi::GstMemory) -> NativeVulkanVaSurfaceId;
+    fn gst_va_memory_peek_display(mem: *mut gst::ffi::GstMemory) -> *mut NativeVulkanGstVaDisplay;
+    fn gst_va_buffer_get_surface(buffer: *mut gst::ffi::GstBuffer) -> NativeVulkanVaSurfaceId;
+    fn gst_va_buffer_peek_display(
+        buffer: *mut gst::ffi::GstBuffer,
+    ) -> *mut NativeVulkanGstVaDisplay;
+    fn gst_va_display_get_va_dpy(display: *mut NativeVulkanGstVaDisplay) -> NativeVulkanVaDisplay;
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[link(name = "va")]
+unsafe extern "C" {
+    fn vaSyncSurface(
+        display: NativeVulkanVaDisplay,
+        render_target: NativeVulkanVaSurfaceId,
+    ) -> NativeVulkanVaStatus;
+    fn vaExportSurfaceHandle(
+        display: NativeVulkanVaDisplay,
+        surface_id: NativeVulkanVaSurfaceId,
+        mem_type: u32,
+        flags: u32,
+        descriptor: *mut c_void,
+    ) -> NativeVulkanVaStatus;
+    fn vaErrorStr(error_status: NativeVulkanVaStatus) -> *const c_char;
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -3756,6 +4937,193 @@ fn native_vulkan_memory_type_index(
         })
 }
 
+fn native_vulkan_video_decode_probe_inner(
+    instance: &ash::Instance,
+) -> Result<NativeVulkanVideoDecodeProbeSnapshot, NativeVulkanError> {
+    let physical_devices = unsafe { instance.enumerate_physical_devices() }.map_err(|result| {
+        NativeVulkanError::Vulkan {
+            operation: "vkEnumeratePhysicalDevices",
+            result,
+        }
+    })?;
+    let mut devices = Vec::with_capacity(physical_devices.len());
+    for (physical_device_index, physical_device) in physical_devices.iter().copied().enumerate() {
+        let properties = unsafe { instance.get_physical_device_properties(physical_device) };
+        let extensions = native_vulkan_device_extension_names(instance, physical_device)?;
+        let has_video_queue_extension = native_vulkan_extension_available_by_name(
+            &extensions,
+            ash_extension_name(vk::KHR_VIDEO_QUEUE_NAME),
+        );
+        let has_video_decode_queue_extension = native_vulkan_extension_available_by_name(
+            &extensions,
+            ash_extension_name(vk::KHR_VIDEO_DECODE_QUEUE_NAME),
+        );
+        let decode_codec_extensions = native_vulkan_video_decode_codec_extensions(&extensions);
+        let queue_families = native_vulkan_video_decode_queue_families(instance, physical_device);
+        let has_video_decode_queue_family = queue_families
+            .iter()
+            .any(|family| family.queue_flags.contains(&"video-decode"));
+        let video_decode_ready = has_video_queue_extension
+            && has_video_decode_queue_extension
+            && !decode_codec_extensions.is_empty()
+            && has_video_decode_queue_family;
+        devices.push(NativeVulkanVideoDecodeDeviceSnapshot {
+            physical_device_index,
+            physical_device_name: native_vulkan_physical_device_name(properties),
+            physical_device_type: native_vulkan_physical_device_type_label(properties.device_type),
+            vendor_id: properties.vendor_id,
+            device_id: properties.device_id,
+            api_version: native_vulkan_api_version_label(properties.api_version),
+            driver_version: properties.driver_version,
+            has_video_queue_extension,
+            has_video_decode_queue_extension,
+            decode_codec_extensions,
+            has_video_decode_queue_family,
+            video_decode_ready,
+            queue_families,
+        });
+    }
+    Ok(NativeVulkanVideoDecodeProbeSnapshot {
+        physical_device_count: physical_devices.len(),
+        devices,
+    })
+}
+
+fn native_vulkan_device_extension_names(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+) -> Result<Vec<String>, NativeVulkanError> {
+    let mut extensions = unsafe { instance.enumerate_device_extension_properties(physical_device) }
+        .map_err(|result| NativeVulkanError::Vulkan {
+            operation: "vkEnumerateDeviceExtensionProperties",
+            result,
+        })?
+        .iter()
+        .filter_map(|property| property.extension_name_as_c_str().ok())
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    extensions.sort();
+    Ok(extensions)
+}
+
+fn native_vulkan_video_decode_queue_families(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+) -> Vec<NativeVulkanVideoDecodeQueueFamilySnapshot> {
+    let queue_family_count =
+        unsafe { instance.get_physical_device_queue_family_properties2_len(physical_device) };
+    let mut queue_properties = vec![vk::QueueFamilyProperties2::default(); queue_family_count];
+    let mut video_properties =
+        vec![vk::QueueFamilyVideoPropertiesKHR::default(); queue_family_count];
+    for (queue, video) in queue_properties.iter_mut().zip(video_properties.iter_mut()) {
+        queue.p_next = (video as *mut vk::QueueFamilyVideoPropertiesKHR<'_>).cast();
+    }
+    unsafe {
+        instance
+            .get_physical_device_queue_family_properties2(physical_device, &mut queue_properties);
+    }
+
+    queue_properties
+        .iter()
+        .zip(video_properties.iter())
+        .enumerate()
+        .map(|(queue_family_index, (queue, video))| {
+            let queue_flags =
+                native_vulkan_queue_flag_labels(queue.queue_family_properties.queue_flags);
+            let video_codec_operation_bits = video.video_codec_operations.as_raw();
+            let video_codec_operations =
+                native_vulkan_video_codec_operation_labels(video.video_codec_operations);
+            NativeVulkanVideoDecodeQueueFamilySnapshot {
+                queue_family_index: queue_family_index as u32,
+                queue_count: queue.queue_family_properties.queue_count,
+                queue_flags,
+                video_codec_operation_bits,
+                video_codec_operations,
+            }
+        })
+        .collect()
+}
+
+fn native_vulkan_video_decode_codec_extensions(extensions: &[String]) -> Vec<String> {
+    [
+        ash_extension_name(vk::KHR_VIDEO_DECODE_H264_NAME),
+        ash_extension_name(vk::KHR_VIDEO_DECODE_H265_NAME),
+        "VK_KHR_video_decode_av1",
+        "VK_KHR_video_decode_vp9",
+    ]
+    .into_iter()
+    .filter(|extension| native_vulkan_extension_available_by_name(extensions, extension))
+    .map(str::to_owned)
+    .collect()
+}
+
+fn native_vulkan_extension_available_by_name(extensions: &[String], extension: &str) -> bool {
+    extensions.iter().any(|available| available == extension)
+}
+
+fn native_vulkan_queue_flag_labels(flags: vk::QueueFlags) -> Vec<&'static str> {
+    let mut labels = Vec::new();
+    if flags.contains(vk::QueueFlags::GRAPHICS) {
+        labels.push("graphics");
+    }
+    if flags.contains(vk::QueueFlags::COMPUTE) {
+        labels.push("compute");
+    }
+    if flags.contains(vk::QueueFlags::TRANSFER) {
+        labels.push("transfer");
+    }
+    if flags.contains(vk::QueueFlags::SPARSE_BINDING) {
+        labels.push("sparse-binding");
+    }
+    if flags.contains(vk::QueueFlags::VIDEO_DECODE_KHR) {
+        labels.push("video-decode");
+    }
+    if flags.contains(vk::QueueFlags::VIDEO_ENCODE_KHR) {
+        labels.push("video-encode");
+    }
+    labels
+}
+
+fn native_vulkan_video_codec_operation_labels(
+    operations: vk::VideoCodecOperationFlagsKHR,
+) -> Vec<String> {
+    let raw = operations.as_raw();
+    let known = [
+        (
+            vk::VideoCodecOperationFlagsKHR::DECODE_H264.as_raw(),
+            "decode-h264",
+        ),
+        (
+            vk::VideoCodecOperationFlagsKHR::DECODE_H265.as_raw(),
+            "decode-h265",
+        ),
+        (
+            vk::VideoCodecOperationFlagsKHR::DECODE_AV1.as_raw(),
+            "decode-av1",
+        ),
+        (NATIVE_VULKAN_VIDEO_CODEC_OPERATION_DECODE_VP9, "decode-vp9"),
+    ];
+    let known_bits = known.iter().fold(0u32, |bits, (bit, _)| bits | bit);
+    let mut labels = known
+        .into_iter()
+        .filter_map(|(bit, label)| ((raw & bit) != 0).then(|| label.to_owned()))
+        .collect::<Vec<_>>();
+    let unknown = raw & !known_bits;
+    if unknown != 0 {
+        labels.push(format!("unknown-0x{unknown:x}"));
+    }
+    labels
+}
+
+fn native_vulkan_api_version_label(version: u32) -> String {
+    format!(
+        "{}.{}.{}",
+        vk::api_version_major(version),
+        vk::api_version_minor(version),
+        vk::api_version_patch(version)
+    )
+}
+
 struct NativeVulkanPresentQueueQuery {
     selection: NativeVulkanPresentQueueSelection,
     #[allow(dead_code)]
@@ -4010,7 +5378,7 @@ fn choose_native_vulkan_swapchain_extent(
 }
 
 fn native_vulkan_swapchain_image_count(capabilities: &vk::SurfaceCapabilitiesKHR) -> u32 {
-    let preferred = capabilities.min_image_count.saturating_add(1).max(2);
+    let preferred = capabilities.min_image_count.max(2);
     if capabilities.max_image_count > 0 {
         preferred.min(capabilities.max_image_count)
     } else {
@@ -4570,6 +5938,19 @@ mod tests {
         assert!(capabilities.renders_frames_now);
         assert!(!capabilities.consumes_render_sync);
         assert!(capabilities.direct_video_memory_status.contains("DMABuf"));
+    }
+
+    #[test]
+    fn labels_vulkan_video_decode_codec_operations() {
+        let operations = vk::VideoCodecOperationFlagsKHR::from_raw(
+            vk::VideoCodecOperationFlagsKHR::DECODE_H264.as_raw()
+                | NATIVE_VULKAN_VIDEO_CODEC_OPERATION_DECODE_VP9,
+        );
+
+        let labels = native_vulkan_video_codec_operation_labels(operations);
+
+        assert!(labels.contains(&"decode-h264".to_owned()));
+        assert!(labels.contains(&"decode-vp9".to_owned()));
     }
 
     #[test]
