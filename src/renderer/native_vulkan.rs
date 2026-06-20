@@ -166,7 +166,22 @@ pub struct NativeVulkanSurfaceProbeSnapshot {
     pub selected_physical_device_name: Option<String>,
     pub selected_physical_device_type: Option<&'static str>,
     pub selected_queue_family_index: Option<u32>,
+    pub selected_queue_count: Option<u32>,
+    pub selected_queue_flags: Vec<&'static str>,
     pub selected_queue_supports_graphics: bool,
+    pub selected_queue_supports_video_decode: bool,
+    pub selected_queue_supports_h265_decode: bool,
+    pub selected_queue_video_codec_operation_bits: u32,
+    pub selected_queue_video_codec_operations: Vec<String>,
+    pub selected_device_has_video_queue_extension: bool,
+    pub selected_device_has_video_decode_queue_extension: bool,
+    pub selected_device_has_h265_decode_extension: bool,
+    pub selected_device_decode_codec_extensions: Vec<String>,
+    pub same_device_h265_decode_queue_family_index: Option<u32>,
+    pub same_device_h265_decode_queue_count: Option<u32>,
+    pub same_device_h265_decode_queue_flags: Vec<&'static str>,
+    pub same_device_h265_decode_queue_video_codec_operations: Vec<String>,
+    pub h265_decode_requires_cross_queue_sync: bool,
     pub surface_capabilities: Option<NativeVulkanSurfaceCapabilitiesSnapshot>,
 }
 
@@ -1155,6 +1170,49 @@ impl NativeVulkanSurfaceProbe {
         let Some(selected) = selected else {
             return Err(NativeVulkanError::MissingPresentQueue);
         };
+        let selected_queue_infos =
+            native_vulkan_video_decode_queue_family_infos(&self.instance, selected.physical_device);
+        let selected_queue_info = selected_queue_infos
+            .iter()
+            .find(|queue_family| queue_family.queue_family_index == selected.queue_family_index);
+        let selected_queue_count = selected_queue_info.map(|queue_family| queue_family.queue_count);
+        let selected_queue_flags_raw = selected_queue_info
+            .map(|queue_family| queue_family.queue_flags)
+            .unwrap_or_default();
+        let selected_queue_video_codec_operations_raw = selected_queue_info
+            .map(|queue_family| queue_family.video_codec_operations)
+            .unwrap_or_default();
+        let selected_queue_video_codec_operation_bits =
+            selected_queue_video_codec_operations_raw.as_raw();
+        let selected_queue_supports_video_decode =
+            selected_queue_flags_raw.contains(vk::QueueFlags::VIDEO_DECODE_KHR);
+        let selected_queue_supports_h265_decode = selected_queue_video_codec_operations_raw
+            .contains(vk::VideoCodecOperationFlagsKHR::DECODE_H265);
+        let same_device_h265_decode_queue = selected_queue_infos.iter().find(|queue_family| {
+            queue_family.queue_count > 0
+                && queue_family
+                    .queue_flags
+                    .contains(vk::QueueFlags::VIDEO_DECODE_KHR)
+                && queue_family
+                    .video_codec_operations
+                    .contains(vk::VideoCodecOperationFlagsKHR::DECODE_H265)
+        });
+        let extensions =
+            native_vulkan_device_extension_names(&self.instance, selected.physical_device)?;
+        let selected_device_has_video_queue_extension = native_vulkan_extension_available_by_name(
+            &extensions,
+            ash_extension_name(vk::KHR_VIDEO_QUEUE_NAME),
+        );
+        let selected_device_has_video_decode_queue_extension =
+            native_vulkan_extension_available_by_name(
+                &extensions,
+                ash_extension_name(vk::KHR_VIDEO_DECODE_QUEUE_NAME),
+            );
+        let selected_device_decode_codec_extensions =
+            native_vulkan_video_decode_codec_extensions(&extensions);
+        let selected_device_has_h265_decode_extension = selected_device_decode_codec_extensions
+            .iter()
+            .any(|extension| extension == ash_extension_name(vk::KHR_VIDEO_DECODE_H265_NAME));
         let surface_capabilities = unsafe {
             self.surface_loader
                 .get_physical_device_surface_capabilities(selected.physical_device, self.surface)
@@ -1174,7 +1232,37 @@ impl NativeVulkanSurfaceProbe {
             selected_physical_device_name: Some(selected.physical_device_name),
             selected_physical_device_type: Some(selected.physical_device_type),
             selected_queue_family_index: Some(selected.queue_family_index),
+            selected_queue_count,
+            selected_queue_flags: native_vulkan_queue_flag_labels(selected_queue_flags_raw),
             selected_queue_supports_graphics: true,
+            selected_queue_supports_video_decode,
+            selected_queue_supports_h265_decode,
+            selected_queue_video_codec_operation_bits,
+            selected_queue_video_codec_operations: native_vulkan_video_codec_operation_labels(
+                selected_queue_video_codec_operations_raw,
+            ),
+            selected_device_has_video_queue_extension,
+            selected_device_has_video_decode_queue_extension,
+            selected_device_has_h265_decode_extension,
+            selected_device_decode_codec_extensions,
+            same_device_h265_decode_queue_family_index: same_device_h265_decode_queue
+                .map(|queue_family| queue_family.queue_family_index),
+            same_device_h265_decode_queue_count: same_device_h265_decode_queue
+                .map(|queue_family| queue_family.queue_count),
+            same_device_h265_decode_queue_flags: same_device_h265_decode_queue
+                .map(|queue_family| native_vulkan_queue_flag_labels(queue_family.queue_flags))
+                .unwrap_or_default(),
+            same_device_h265_decode_queue_video_codec_operations: same_device_h265_decode_queue
+                .map(|queue_family| {
+                    native_vulkan_video_codec_operation_labels(queue_family.video_codec_operations)
+                })
+                .unwrap_or_default(),
+            h265_decode_requires_cross_queue_sync: same_device_h265_decode_queue.is_some_and(
+                |queue_family| {
+                    queue_family.queue_family_index != selected.queue_family_index
+                        && !selected_queue_supports_h265_decode
+                },
+            ),
             surface_capabilities: Some(surface_capabilities.into()),
         })
     }
@@ -1201,7 +1289,22 @@ impl NativeVulkanSurfaceProbeSnapshot {
             selected_physical_device_name: None,
             selected_physical_device_type: None,
             selected_queue_family_index: None,
+            selected_queue_count: None,
+            selected_queue_flags: Vec::new(),
             selected_queue_supports_graphics: false,
+            selected_queue_supports_video_decode: false,
+            selected_queue_supports_h265_decode: false,
+            selected_queue_video_codec_operation_bits: 0,
+            selected_queue_video_codec_operations: Vec::new(),
+            selected_device_has_video_queue_extension: false,
+            selected_device_has_video_decode_queue_extension: false,
+            selected_device_has_h265_decode_extension: false,
+            selected_device_decode_codec_extensions: Vec::new(),
+            same_device_h265_decode_queue_family_index: None,
+            same_device_h265_decode_queue_count: None,
+            same_device_h265_decode_queue_flags: Vec::new(),
+            same_device_h265_decode_queue_video_codec_operations: Vec::new(),
+            h265_decode_requires_cross_queue_sync: false,
             surface_capabilities: None,
         }
     }
