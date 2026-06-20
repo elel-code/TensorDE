@@ -2,6 +2,8 @@
 
 #[cfg(feature = "gtk-renderer")]
 pub mod gtk;
+#[cfg(feature = "native-wayland-renderer")]
+pub mod native_wayland;
 #[cfg(feature = "video-renderer")]
 pub mod video;
 

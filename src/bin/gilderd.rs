@@ -1670,11 +1670,18 @@ fn renderer_name() -> &'static str {
     match (
         cfg!(feature = "gtk-renderer"),
         cfg!(feature = "video-renderer"),
+        cfg!(feature = "native-wayland-renderer"),
     ) {
-        (true, true) => "gtk-layer-shell-static+gtk-gstreamer-video",
-        (true, false) => "gtk-layer-shell-static",
-        (false, true) => "gstreamer-video",
-        (false, false) => "not-implemented",
+        (true, true, true) => {
+            "native-wayland-experimental+gtk-layer-shell-static+gtk-gstreamer-video"
+        }
+        (true, false, true) => "native-wayland-experimental+gtk-layer-shell-static",
+        (false, true, true) => "native-wayland-experimental+gstreamer-video",
+        (false, false, true) => "native-wayland-experimental",
+        (true, true, false) => "gtk-layer-shell-static+gtk-gstreamer-video",
+        (true, false, false) => "gtk-layer-shell-static",
+        (false, true, false) => "gstreamer-video",
+        (false, false, false) => "not-implemented",
     }
 }
 
@@ -1684,6 +1691,7 @@ fn renderer_capabilities() -> Value {
             "built": cfg!(feature = "gtk-renderer"),
             "layer_shell_background_windows": cfg!(feature = "gtk-renderer"),
         },
+        "native_wayland": native_wayland_renderer_capabilities(),
         "video": video_renderer_capabilities(),
     })
 }
@@ -2034,6 +2042,26 @@ fn video_renderer_capabilities() -> Value {
         "headless_worker": cfg!(all(feature = "video-renderer", not(feature = "gtk-renderer"))),
         "requires_gtk4paintablesink_for_surface": cfg!(all(feature = "gtk-renderer", feature = "video-renderer")),
         "gstreamer": gilder::renderer::video::runtime_capabilities(),
+    })
+}
+
+#[cfg(feature = "native-wayland-renderer")]
+fn native_wayland_renderer_capabilities() -> Value {
+    json!(gilder::renderer::native_wayland::capabilities())
+}
+
+#[cfg(not(feature = "native-wayland-renderer"))]
+fn native_wayland_renderer_capabilities() -> Value {
+    json!({
+        "built": false,
+        "experimental": false,
+        "owns_wlr_layer_shell_surface": false,
+        "exports_raw_wayland_handles": false,
+        "raw_wayland_handles_planned": false,
+        "supports_fractional_scale_protocol": false,
+        "supports_viewporter_protocol": false,
+        "consumes_render_sync": false,
+        "unsafe_policy": "unsafe is not used by this build",
     })
 }
 
