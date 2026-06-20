@@ -19,8 +19,7 @@ Options:
                         Native runtime JSONL sample interval. Default: 1000.
   --source <path>       Existing video source. When set, run wgpu video mode.
   --video-backend <name>
-                        auto, cpu-upload, gpu-video, gst-gpu-video, or gst-dmabuf. Default: auto.
-                        gpu-video expects Annex-B H.264 (.h264/.264).
+                        auto, cpu-upload, or gst-dmabuf. Default: auto.
   --fit <name>          cover, contain, stretch, or center. Default: cover.
   --decoder <policy>    auto, hardware-preferred, hardware-required, software.
                         Default: hardware-preferred.
@@ -341,8 +340,8 @@ case "$fit" in
   *) echo "--fit must be cover, contain, stretch, or center" >&2; exit 2 ;;
 esac
 case "$video_backend" in
-  auto|cpu-upload|cpu|appsink|gpu-video|gpu|vulkan-video|gst-gpu-video|gstreamer-gpu-video|gst-vulkan-video|gst-dmabuf|dmabuf|gstreamer-dmabuf) ;;
-  *) echo "--video-backend must be auto, cpu-upload, gpu-video, gst-gpu-video, or gst-dmabuf" >&2; exit 2 ;;
+  auto|cpu-upload|cpu|appsink|gst-dmabuf|dmabuf|gstreamer-dmabuf) ;;
+  *) echo "--video-backend must be auto, cpu-upload, or gst-dmabuf" >&2; exit 2 ;;
 esac
 case "$decoder" in
   auto|hardware-preferred|hw-preferred|hardware-required|hw-required|software) ;;
@@ -378,18 +377,9 @@ if [[ "$no_build" -eq 0 ]]; then
   if [[ -n "$source" ]]; then
     build_backend="$video_backend"
     if [[ "$build_backend" == "auto" ]]; then
-      case "${source##*.}" in
-        h264|H264|264) build_backend="gpu-video" ;;
-        *) build_backend="gst-gpu-video" ;;
-      esac
+      build_backend="gst-dmabuf"
     fi
     case "$build_backend" in
-      gpu-video|gpu|vulkan-video)
-        cargo build --release --features native-wgpu-renderer,native-wgpu-gpu-video --bin gilder-native-wgpu
-        ;;
-      gst-gpu-video|gstreamer-gpu-video|gst-vulkan-video)
-        cargo build --release --features native-wgpu-gst-gpu-video --bin gilder-native-wgpu
-        ;;
       gst-dmabuf|dmabuf|gstreamer-dmabuf)
         cargo build --release --features native-wgpu-gst-dmabuf --bin gilder-native-wgpu
         ;;

@@ -18,10 +18,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(any(feature = "native-wgpu-gst-dmabuf", feature = "native-wgpu-gpu-video"))]
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
 use std::collections::VecDeque;
 
-#[cfg(any(feature = "native-wgpu-gst-dmabuf", feature = "native-wgpu-gpu-video"))]
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
 use std::sync::Arc;
 
 #[cfg(feature = "native-wgpu-gst-dmabuf")]
@@ -33,17 +33,6 @@ use std::{
     },
     ptr,
     ptr::NonNull,
-};
-
-#[cfg(feature = "native-wgpu-gpu-video")]
-use std::{
-    fs::File,
-    io::{Read, Seek, SeekFrom},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel},
-    },
-    thread::{self, JoinHandle},
 };
 
 #[cfg(feature = "video-renderer")]
@@ -336,205 +325,6 @@ impl NativeWgpuSession {
             surface_occluded_skips: self.renderer.surface_occluded_skips,
             surface_validation_skips: self.renderer.surface_validation_skips,
             last_render_error: self.renderer.last_render_error.clone(),
-        }
-    }
-}
-
-#[cfg(feature = "native-wgpu-gpu-video")]
-#[derive(Debug, Clone, PartialEq)]
-pub struct NativeWgpuGpuVideoOptions {
-    pub wayland: NativeWgpuOptions,
-    pub source: std::path::PathBuf,
-    pub fit: crate::core::FitMode,
-    pub loop_playback: bool,
-    pub input_mode: NativeWgpuGpuVideoInputMode,
-}
-
-#[cfg(feature = "native-wgpu-gpu-video")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeWgpuGpuVideoInputMode {
-    AnnexBFile,
-    GstH264ByteStream,
-}
-
-#[cfg(feature = "native-wgpu-gpu-video")]
-impl NativeWgpuGpuVideoInputMode {
-    fn backend_label(self) -> &'static str {
-        match self {
-            Self::AnnexBFile => "gpu-video",
-            Self::GstH264ByteStream => "gst-gpu-video",
-        }
-    }
-}
-
-#[cfg(feature = "native-wgpu-gpu-video")]
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct NativeWgpuGpuVideoSessionSnapshot {
-    pub renderer: NativeWgpuRuntimeSnapshot,
-    pub video: NativeWgpuGpuVideoPlayerSnapshot,
-}
-
-#[cfg(feature = "native-wgpu-gpu-video")]
-pub struct NativeWgpuGpuVideoSession {
-    renderer: NativeWgpuSurfaceRenderer,
-    player: NativeWgpuGpuVideoPlayer,
-    host: NativeWaylandHost,
-    layer: NativeWaylandLayer,
-    requested_output_name: Option<String>,
-    started: Instant,
-    _vulkan_instance: Arc<gpu_video::VulkanInstance>,
-    _vulkan_device: Arc<gpu_video::VulkanDevice>,
-    fit: crate::core::FitMode,
-}
-
-#[cfg(feature = "native-wgpu-gpu-video")]
-impl NativeWgpuGpuVideoSession {
-    #[allow(unsafe_code)]
-    pub fn connect(options: NativeWgpuGpuVideoOptions) -> Result<Self, NativeWgpuError> {
-        let mut host = NativeWaylandHost::connect(NativeWaylandHostOptions {
-            namespace: options.wayland.namespace,
-            layer: options.wayland.layer,
-            output_name: options.wayland.output_name.clone(),
-            opaque_region: true,
-            input_passthrough: true,
-            attach_parent_mapping_buffer: false,
-        })?;
-        host.wait_until_configured(8)?;
-        let handles = host.surface_handles()?;
-        let raw_display_handle =
-            RawDisplayHandle::Wayland(WaylandDisplayHandle::new(handles.display));
-        let raw_window_handle = RawWindowHandle::Wayland(WaylandWindowHandle::new(handles.surface));
-
-        let vulkan_instance = gpu_video::VulkanInstance::new()
-            .map_err(|err| NativeWgpuError::Wgpu(err.to_string()))?;
-        let wgpu_instance = vulkan_instance.wgpu_instance();
-
-        // SAFETY: both temporary and retained surfaces use raw Wayland handles
-        // owned by NativeWaylandHost. The retained surface is stored in renderer,
-        // which is dropped before host. The temporary surface is only used to
-        // filter for a Vulkan Video adapter that can present to this wl_surface.
-        let compatibility_surface = unsafe {
-            wgpu_instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: Some(raw_display_handle),
-                raw_window_handle,
-            })
-        }
-        .map_err(|err| NativeWgpuError::Wgpu(err.to_string()))?;
-        let vulkan_adapter = vulkan_instance
-            .create_adapter(&gpu_video::parameters::VulkanAdapterDescriptor {
-                supports_decoding: true,
-                supports_encoding: false,
-                compatible_surface: Some(&compatibility_surface),
-            })
-            .map_err(|err| NativeWgpuError::Wgpu(err.to_string()))?;
-        drop(compatibility_surface);
-
-        let vulkan_device = vulkan_adapter
-            .create_device(&gpu_video::parameters::VulkanDeviceDescriptor {
-                wgpu_limits: wgpu::Limits::default(),
-                ..Default::default()
-            })
-            .map_err(|err| NativeWgpuError::Wgpu(err.to_string()))?;
-        let adapter = vulkan_device.wgpu_adapter();
-        let device = vulkan_device.wgpu_device();
-        let queue = vulkan_device.wgpu_queue();
-
-        // SAFETY: see the compatibility surface above. This is the surface used
-        // by wgpu for swapchain presentation for the lifetime of the renderer.
-        let surface: wgpu::Surface<'static> = unsafe {
-            wgpu_instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: Some(raw_display_handle),
-                raw_window_handle,
-            })
-        }
-        .map_err(|err| NativeWgpuError::Wgpu(err.to_string()))?;
-
-        let renderer = NativeWgpuSurfaceRenderer::from_wgpu_surface(
-            surface,
-            adapter,
-            device,
-            queue,
-            handles.logical_size,
-            options.wayland.initial_color,
-            options.wayland.render_mode,
-        )?;
-        let player = NativeWgpuGpuVideoPlayer::new(
-            &options.source,
-            options.loop_playback,
-            Arc::clone(&vulkan_device),
-            options.input_mode,
-        )?;
-
-        Ok(Self {
-            renderer,
-            player,
-            host,
-            layer: options.wayland.layer,
-            requested_output_name: options.wayland.output_name,
-            started: Instant::now(),
-            _vulkan_instance: vulkan_instance,
-            _vulkan_device: vulkan_device,
-            fit: options.fit,
-        })
-    }
-
-    pub fn tick(&mut self) -> Result<(), NativeWgpuError> {
-        self.host.pump_events()?;
-        if let Some(size) = self.host.logical_size() {
-            self.renderer.resize(size);
-        }
-        if let Some(frame) = self.player.take_next_frame()? {
-            match self.renderer.present_gpu_video_frame(frame, self.fit) {
-                Ok(report) => self.player.record_present(report),
-                Err(err) => {
-                    self.player.record_error(err.to_string());
-                    return Err(err);
-                }
-            }
-        }
-        self.renderer.render()?;
-        Ok(())
-    }
-
-    pub fn is_closed(&self) -> bool {
-        self.host.is_closed()
-    }
-
-    pub fn snapshot(&self) -> NativeWgpuGpuVideoSessionSnapshot {
-        let surface = self.host.snapshot();
-        let elapsed_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        NativeWgpuGpuVideoSessionSnapshot {
-            renderer: NativeWgpuRuntimeSnapshot {
-                runtime_elapsed_ms: elapsed_ms,
-                configured: surface.configured,
-                layer: self.layer,
-                render_mode: self.renderer.render_mode,
-                requested_output_name: self.requested_output_name.clone(),
-                selected_output: surface.selected_output,
-                known_outputs: surface.known_outputs,
-                surface_logical_size: surface.logical_size,
-                surface_config_size: Some((
-                    self.renderer.config.width,
-                    self.renderer.config.height,
-                )),
-                surface_format: Some(format!("{:?}", self.renderer.config.format)),
-                present_mode: Some(format!("{:?}", self.renderer.config.present_mode)),
-                render_calls: self.renderer.render_calls,
-                frames_rendered: self.renderer.frames_rendered,
-                frames_skipped: self.renderer.frames_skipped,
-                average_render_fps: self.renderer.average_render_fps(),
-                render_duration_us_avg: self.renderer.render_duration_us_avg(),
-                render_duration_us_max: self.renderer.render_duration_us_max(),
-                last_render_duration_us: self.renderer.last_render_duration_us,
-                surface_suboptimal_frames: self.renderer.surface_suboptimal_frames,
-                surface_lost_skips: self.renderer.surface_lost_skips,
-                surface_outdated_skips: self.renderer.surface_outdated_skips,
-                surface_timeout_skips: self.renderer.surface_timeout_skips,
-                surface_occluded_skips: self.renderer.surface_occluded_skips,
-                surface_validation_skips: self.renderer.surface_validation_skips,
-                last_render_error: self.renderer.last_render_error.clone(),
-            },
-            video: self.player.snapshot(),
         }
     }
 }
@@ -2194,531 +1984,6 @@ unsafe fn native_wgpu_propose_cuda_mmap_allocation(
     true
 }
 
-#[cfg(feature = "native-wgpu-gpu-video")]
-struct NativeWgpuGpuVideoPlayer {
-    backend: &'static str,
-    events: Receiver<NativeWgpuGpuVideoDecoderEvent>,
-    stop_worker: Arc<AtomicBool>,
-    worker: Option<JoinHandle<()>>,
-    pending_frames: VecDeque<wgpu::Texture>,
-    loop_playback: bool,
-    reached_eof: bool,
-    decoded_frames: u64,
-    presented_frames: u64,
-    bytes_read: u64,
-    eos_messages: u64,
-    decoder_resets: u64,
-    last_frame_size: Option<(u32, u32)>,
-    last_frame_format: Option<String>,
-    last_error: Option<String>,
-}
-
-#[cfg(feature = "native-wgpu-gpu-video")]
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct NativeWgpuGpuVideoPlayerSnapshot {
-    pub backend: &'static str,
-    pub state: &'static str,
-    pub decoded_frames: u64,
-    pub presented_frames: u64,
-    pub pending_frames: usize,
-    pub bytes_read: u64,
-    pub eos_messages: u64,
-    pub decoder_resets: u64,
-    pub last_frame_size: Option<(u32, u32)>,
-    pub last_frame_format: Option<String>,
-    pub last_error: Option<String>,
-}
-
-#[cfg(feature = "native-wgpu-gpu-video")]
-impl NativeWgpuGpuVideoPlayer {
-    fn new(
-        source: &std::path::Path,
-        loop_playback: bool,
-        vulkan_device: Arc<gpu_video::VulkanDevice>,
-        input_mode: NativeWgpuGpuVideoInputMode,
-    ) -> Result<Self, NativeWgpuError> {
-        if input_mode == NativeWgpuGpuVideoInputMode::AnnexBFile
-            && !native_wgpu_is_annex_b_h264(source)
-        {
-            return Err(NativeWgpuError::Video(format!(
-                "gpu-video backend expects Annex-B H.264 bytestream (.h264/.264), got {}",
-                source.display()
-            )));
-        }
-        File::open(source)
-            .map_err(|err| NativeWgpuError::Video(format!("open {}: {err}", source.display())))?;
-        let (event_tx, events) = sync_channel(NATIVE_WGPU_GPU_VIDEO_CHANNEL_FRAMES);
-        let stop_worker = Arc::new(AtomicBool::new(false));
-        let worker_stop = Arc::clone(&stop_worker);
-        let worker_source = source.to_owned();
-        let worker = thread::Builder::new()
-            .name("gilder-gpu-video-decode".to_owned())
-            .spawn(move || {
-                native_wgpu_gpu_video_decode_worker(
-                    worker_source,
-                    loop_playback,
-                    vulkan_device,
-                    event_tx,
-                    worker_stop,
-                    input_mode,
-                );
-            })
-            .map_err(|err| NativeWgpuError::Video(format!("spawn gpu-video worker: {err}")))?;
-        Ok(Self {
-            backend: input_mode.backend_label(),
-            events,
-            stop_worker,
-            worker: Some(worker),
-            pending_frames: VecDeque::new(),
-            loop_playback,
-            reached_eof: false,
-            decoded_frames: 0,
-            presented_frames: 0,
-            bytes_read: 0,
-            eos_messages: 0,
-            decoder_resets: 0,
-            last_frame_size: None,
-            last_frame_format: None,
-            last_error: None,
-        })
-    }
-
-    fn take_next_frame(&mut self) -> Result<Option<wgpu::Texture>, NativeWgpuError> {
-        self.drain_decoder_events()?;
-        Ok(self.pending_frames.pop_front())
-    }
-
-    fn drain_decoder_events(&mut self) -> Result<(), NativeWgpuError> {
-        let mut events = 0usize;
-        while self.pending_frames.len() < NATIVE_WGPU_GPU_VIDEO_TARGET_PENDING_FRAMES
-            && events < NATIVE_WGPU_GPU_VIDEO_MAX_EVENTS_PER_TICK
-        {
-            match self.events.try_recv() {
-                Ok(NativeWgpuGpuVideoDecoderEvent::Frame(frame)) => {
-                    self.decoded_frames = self.decoded_frames.saturating_add(1);
-                    self.pending_frames.push_back(frame);
-                    self.reached_eof = false;
-                    self.last_error = None;
-                }
-                Ok(NativeWgpuGpuVideoDecoderEvent::BytesRead(bytes)) => {
-                    self.bytes_read = self.bytes_read.saturating_add(bytes);
-                }
-                Ok(NativeWgpuGpuVideoDecoderEvent::Eos) => {
-                    self.eos_messages = self.eos_messages.saturating_add(1);
-                    self.reached_eof = true;
-                }
-                Ok(NativeWgpuGpuVideoDecoderEvent::Reset) => {
-                    self.decoder_resets = self.decoder_resets.saturating_add(1);
-                    self.reached_eof = false;
-                }
-                Ok(NativeWgpuGpuVideoDecoderEvent::Error(error)) => {
-                    self.last_error = Some(error.clone());
-                    return Err(NativeWgpuError::Video(error));
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    if self.pending_frames.is_empty() && !self.reached_eof {
-                        let error = "gpu-video decoder worker disconnected".to_owned();
-                        self.last_error = Some(error.clone());
-                        return Err(NativeWgpuError::Video(error));
-                    }
-                    break;
-                }
-            }
-            events += 1;
-        }
-        Ok(())
-    }
-
-    fn record_present(&mut self, report: NativeWgpuNv12PresentReport) {
-        self.presented_frames = report.presented_frames;
-        self.last_frame_size = Some((report.width, report.height));
-        self.last_frame_format = Some(report.format);
-        self.last_error = None;
-    }
-
-    fn record_error(&mut self, error: String) {
-        self.last_error = Some(error);
-    }
-
-    fn snapshot(&self) -> NativeWgpuGpuVideoPlayerSnapshot {
-        NativeWgpuGpuVideoPlayerSnapshot {
-            backend: self.backend,
-            state: if self.reached_eof {
-                if self.loop_playback {
-                    "loop-boundary"
-                } else {
-                    "eos"
-                }
-            } else {
-                "decoding"
-            },
-            decoded_frames: self.decoded_frames,
-            presented_frames: self.presented_frames,
-            pending_frames: self.pending_frames.len(),
-            bytes_read: self.bytes_read,
-            eos_messages: self.eos_messages,
-            decoder_resets: self.decoder_resets,
-            last_frame_size: self.last_frame_size,
-            last_frame_format: self.last_frame_format.clone(),
-            last_error: self.last_error.clone(),
-        }
-    }
-}
-
-#[cfg(feature = "native-wgpu-gpu-video")]
-impl Drop for NativeWgpuGpuVideoPlayer {
-    fn drop(&mut self) {
-        self.stop_worker.store(true, Ordering::Relaxed);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-    }
-}
-
-#[cfg(feature = "native-wgpu-gpu-video")]
-enum NativeWgpuGpuVideoDecoderEvent {
-    Frame(wgpu::Texture),
-    BytesRead(u64),
-    Eos,
-    Reset,
-    Error(String),
-}
-
-#[cfg(feature = "native-wgpu-gpu-video")]
-fn native_wgpu_gpu_video_decode_worker(
-    source: std::path::PathBuf,
-    loop_playback: bool,
-    vulkan_device: Arc<gpu_video::VulkanDevice>,
-    event_tx: SyncSender<NativeWgpuGpuVideoDecoderEvent>,
-    stop: Arc<AtomicBool>,
-    input_mode: NativeWgpuGpuVideoInputMode,
-) {
-    let result = match input_mode {
-        NativeWgpuGpuVideoInputMode::AnnexBFile => native_wgpu_gpu_video_annex_b_decode_loop(
-            source,
-            loop_playback,
-            vulkan_device,
-            &event_tx,
-            &stop,
-        ),
-        NativeWgpuGpuVideoInputMode::GstH264ByteStream => {
-            native_wgpu_gpu_video_gst_h264_decode_loop(
-                source,
-                loop_playback,
-                vulkan_device,
-                &event_tx,
-                &stop,
-            )
-        }
-    };
-    if let Err(err) = result {
-        let _ = native_wgpu_gpu_video_send_event(
-            &event_tx,
-            &stop,
-            NativeWgpuGpuVideoDecoderEvent::Error(err),
-        );
-    }
-}
-
-#[cfg(feature = "native-wgpu-gpu-video")]
-fn native_wgpu_gpu_video_annex_b_decode_loop(
-    source: std::path::PathBuf,
-    loop_playback: bool,
-    vulkan_device: Arc<gpu_video::VulkanDevice>,
-    event_tx: &SyncSender<NativeWgpuGpuVideoDecoderEvent>,
-    stop: &AtomicBool,
-) -> Result<(), String> {
-    let mut file =
-        File::open(&source).map_err(|err| format!("open {}: {err}", source.display()))?;
-    let mut decoder = vulkan_device
-        .create_wgpu_textures_decoder_h264(gpu_video::parameters::DecoderParameters::default())
-        .map_err(|err| err.to_string())?;
-    let mut read_buffer = vec![0; NATIVE_WGPU_GPU_VIDEO_CHUNK_SIZE];
-
-    while !stop.load(Ordering::Relaxed) {
-        let bytes = file
-            .read(&mut read_buffer)
-            .map_err(|err| format!("read {}: {err}", source.display()))?;
-        if bytes == 0 {
-            native_wgpu_gpu_video_send_event(event_tx, stop, NativeWgpuGpuVideoDecoderEvent::Eos);
-            let decoded = decoder.flush().map_err(|err| err.to_string())?;
-            native_wgpu_gpu_video_send_frames(event_tx, stop, decoded);
-            if !loop_playback || stop.load(Ordering::Relaxed) {
-                return Ok(());
-            }
-            file.seek(SeekFrom::Start(0))
-                .map_err(|err| format!("seek {}: {err}", source.display()))?;
-            decoder = vulkan_device
-                .create_wgpu_textures_decoder_h264(
-                    gpu_video::parameters::DecoderParameters::default(),
-                )
-                .map_err(|err| err.to_string())?;
-            native_wgpu_gpu_video_send_event(event_tx, stop, NativeWgpuGpuVideoDecoderEvent::Reset);
-            continue;
-        }
-
-        native_wgpu_gpu_video_send_event(
-            event_tx,
-            stop,
-            NativeWgpuGpuVideoDecoderEvent::BytesRead(u64::try_from(bytes).unwrap_or(u64::MAX)),
-        );
-        let decoded = decoder
-            .decode(gpu_video::EncodedInputChunk {
-                data: &read_buffer[..bytes],
-                pts: None,
-            })
-            .map_err(|err| err.to_string())?;
-        native_wgpu_gpu_video_send_frames(event_tx, stop, decoded);
-    }
-
-    Ok(())
-}
-
-#[cfg(all(feature = "native-wgpu-gpu-video", feature = "video-renderer"))]
-fn native_wgpu_gpu_video_gst_h264_decode_loop(
-    source: std::path::PathBuf,
-    loop_playback: bool,
-    vulkan_device: Arc<gpu_video::VulkanDevice>,
-    event_tx: &SyncSender<NativeWgpuGpuVideoDecoderEvent>,
-    stop: &AtomicBool,
-) -> Result<(), String> {
-    gst::init().map_err(|err| err.to_string())?;
-    let sink = native_wgpu_gst_h264_bytestream_appsink().map_err(|err| err.to_string())?;
-    let pipeline =
-        native_wgpu_gst_h264_bytestream_pipeline(&source, &sink).map_err(|err| err.to_string())?;
-    let bus = pipeline
-        .bus()
-        .ok_or_else(|| "gst-gpu-video pipeline has no bus".to_owned())?;
-    pipeline
-        .set_state(gst::State::Playing)
-        .map_err(|err| err.to_string())?;
-
-    let mut decoder = vulkan_device
-        .create_wgpu_textures_decoder_h264(gpu_video::parameters::DecoderParameters::default())
-        .map_err(|err| err.to_string())?;
-
-    while !stop.load(Ordering::Relaxed) {
-        while let Some(message) = bus.pop() {
-            match message.view() {
-                gst::MessageView::Eos(_) => {
-                    native_wgpu_gpu_video_send_event(
-                        event_tx,
-                        stop,
-                        NativeWgpuGpuVideoDecoderEvent::Eos,
-                    );
-                    let decoded = decoder.flush().map_err(|err| err.to_string())?;
-                    native_wgpu_gpu_video_send_frames(event_tx, stop, decoded);
-                    if !loop_playback || stop.load(Ordering::Relaxed) {
-                        let _ = pipeline.set_state(gst::State::Null);
-                        return Ok(());
-                    }
-                    pipeline
-                        .seek_simple(gst::SeekFlags::FLUSH, gst::ClockTime::ZERO)
-                        .map_err(|err| err.to_string())?;
-                    pipeline
-                        .set_state(gst::State::Playing)
-                        .map_err(|err| err.to_string())?;
-                    decoder = vulkan_device
-                        .create_wgpu_textures_decoder_h264(
-                            gpu_video::parameters::DecoderParameters::default(),
-                        )
-                        .map_err(|err| err.to_string())?;
-                    native_wgpu_gpu_video_send_event(
-                        event_tx,
-                        stop,
-                        NativeWgpuGpuVideoDecoderEvent::Reset,
-                    );
-                }
-                gst::MessageView::Error(err) => {
-                    let mut message = format!(
-                        "{}: {}",
-                        err.src()
-                            .map(|src| src.path_string())
-                            .unwrap_or_else(|| "gstreamer".into()),
-                        err.error()
-                    );
-                    if let Some(debug) = err.debug() {
-                        message.push_str(": ");
-                        message.push_str(&debug);
-                    }
-                    let _ = pipeline.set_state(gst::State::Null);
-                    return Err(message);
-                }
-                _ => {}
-            }
-        }
-
-        let sample = sink.emit_by_name::<Option<gst::Sample>>("try-pull-sample", &[&5_000_000u64]);
-        let Some(sample) = sample else {
-            continue;
-        };
-        let buffer = sample
-            .buffer()
-            .ok_or_else(|| "gst-gpu-video appsink sample has no buffer".to_owned())?;
-        let pts = buffer.pts().map(|pts| pts.nseconds());
-        let map = buffer
-            .map_readable()
-            .map_err(|_| "gst-gpu-video H.264 buffer map_readable failed".to_owned())?;
-        let data = map.as_slice();
-        native_wgpu_gpu_video_send_event(
-            event_tx,
-            stop,
-            NativeWgpuGpuVideoDecoderEvent::BytesRead(
-                u64::try_from(data.len()).unwrap_or(u64::MAX),
-            ),
-        );
-        let decoded = decoder
-            .decode(gpu_video::EncodedInputChunk { data, pts })
-            .map_err(|err| err.to_string())?;
-        native_wgpu_gpu_video_send_frames(event_tx, stop, decoded);
-    }
-
-    let _ = pipeline.set_state(gst::State::Null);
-    Ok(())
-}
-
-#[cfg(all(feature = "native-wgpu-gpu-video", not(feature = "video-renderer")))]
-fn native_wgpu_gpu_video_gst_h264_decode_loop(
-    source: std::path::PathBuf,
-    loop_playback: bool,
-    vulkan_device: Arc<gpu_video::VulkanDevice>,
-    event_tx: &SyncSender<NativeWgpuGpuVideoDecoderEvent>,
-    stop: &AtomicBool,
-) -> Result<(), String> {
-    let _ = (source, loop_playback, vulkan_device, event_tx, stop);
-    Err("gst-gpu-video input requires building with video-renderer".to_owned())
-}
-
-#[cfg(all(feature = "native-wgpu-gpu-video", feature = "video-renderer"))]
-fn native_wgpu_gst_h264_bytestream_appsink() -> Result<gst::Element, NativeWgpuError> {
-    let caps = "video/x-h264,stream-format=byte-stream,alignment=au"
-        .parse::<gst::Caps>()
-        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
-    gst::ElementFactory::make("appsink")
-        .property("sync", false)
-        .property("async", false)
-        .property("emit-signals", false)
-        .property("enable-last-sample", false)
-        .property("wait-on-eos", false)
-        .property("max-buffers", 8u32)
-        .property("caps", &caps)
-        .build()
-        .map_err(|err| NativeWgpuError::Video(err.to_string()))
-}
-
-#[cfg(all(feature = "native-wgpu-gpu-video", feature = "video-renderer"))]
-fn native_wgpu_gst_h264_bytestream_pipeline(
-    source: &std::path::Path,
-    sink: &gst::Element,
-) -> Result<gst::Element, NativeWgpuError> {
-    let pipeline = gst::Pipeline::new();
-    let filesrc = native_wgpu_gst_element("filesrc")?;
-    filesrc.set_property("location", source.to_string_lossy().as_ref());
-    let demux = native_wgpu_gst_element("qtdemux")?;
-    let queue = native_wgpu_gst_element("queue")?;
-    if queue.find_property("max-size-buffers").is_some() {
-        queue.set_property("max-size-buffers", 8u32);
-    }
-    if queue.find_property("max-size-bytes").is_some() {
-        queue.set_property("max-size-bytes", 0u32);
-    }
-    if queue.find_property("max-size-time").is_some() {
-        queue.set_property("max-size-time", 0u64);
-    }
-    let h264parse = native_wgpu_gst_element("h264parse")?;
-    if h264parse.find_property("config-interval").is_some() {
-        h264parse.set_property("config-interval", -1i32);
-    }
-    let capsfilter = native_wgpu_gst_element("capsfilter")?;
-    let caps = "video/x-h264,stream-format=byte-stream,alignment=au"
-        .parse::<gst::Caps>()
-        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
-    capsfilter.set_property("caps", &caps);
-
-    pipeline
-        .add_many([&filesrc, &demux, &queue, &h264parse, &capsfilter, sink])
-        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
-    filesrc
-        .link(&demux)
-        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
-    gst::Element::link_many([&queue, &h264parse, &capsfilter, sink])
-        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
-
-    let queue_sink = queue
-        .static_pad("sink")
-        .ok_or_else(|| NativeWgpuError::Video("queue has no sink pad".to_owned()))?;
-    demux.connect_pad_added(move |_, pad| {
-        if queue_sink.is_linked() {
-            return;
-        }
-        let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
-        let is_h264 = caps
-            .structure(0)
-            .map(|structure| structure.name() == "video/x-h264")
-            .unwrap_or(false);
-        if is_h264 {
-            let _ = pad.link(&queue_sink);
-        }
-    });
-
-    Ok(pipeline.upcast::<gst::Element>())
-}
-
-#[cfg(feature = "native-wgpu-gpu-video")]
-fn native_wgpu_gpu_video_send_frames(
-    event_tx: &SyncSender<NativeWgpuGpuVideoDecoderEvent>,
-    stop: &AtomicBool,
-    frames: Vec<gpu_video::OutputFrame<wgpu::Texture>>,
-) {
-    for frame in frames {
-        if !native_wgpu_gpu_video_send_event(
-            event_tx,
-            stop,
-            NativeWgpuGpuVideoDecoderEvent::Frame(frame.data),
-        ) {
-            break;
-        }
-    }
-}
-
-#[cfg(feature = "native-wgpu-gpu-video")]
-fn native_wgpu_gpu_video_send_event(
-    event_tx: &SyncSender<NativeWgpuGpuVideoDecoderEvent>,
-    stop: &AtomicBool,
-    mut event: NativeWgpuGpuVideoDecoderEvent,
-) -> bool {
-    while !stop.load(Ordering::Relaxed) {
-        match event_tx.try_send(event) {
-            Ok(()) => return true,
-            Err(TrySendError::Full(returned)) => {
-                event = returned;
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            Err(TrySendError::Disconnected(_)) => return false,
-        }
-    }
-    false
-}
-
-#[cfg(feature = "native-wgpu-gpu-video")]
-fn native_wgpu_is_annex_b_h264(source: &std::path::Path) -> bool {
-    source
-        .extension()
-        .and_then(std::ffi::OsStr::to_str)
-        .map(|extension| matches!(extension.to_ascii_lowercase().as_str(), "h264" | "264"))
-        .unwrap_or(false)
-}
-
-#[cfg(feature = "native-wgpu-gpu-video")]
-const NATIVE_WGPU_GPU_VIDEO_CHUNK_SIZE: usize = 1024 * 1024;
-#[cfg(feature = "native-wgpu-gpu-video")]
-const NATIVE_WGPU_GPU_VIDEO_CHANNEL_FRAMES: usize = 16;
-#[cfg(feature = "native-wgpu-gpu-video")]
-const NATIVE_WGPU_GPU_VIDEO_MAX_EVENTS_PER_TICK: usize = 64;
-#[cfg(feature = "native-wgpu-gpu-video")]
-const NATIVE_WGPU_GPU_VIDEO_TARGET_PENDING_FRAMES: usize = 8;
-
 struct NativeWgpuSurfaceRenderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -2730,7 +1995,7 @@ struct NativeWgpuSurfaceRenderer {
     first_rendered_at: Option<Instant>,
     #[cfg(feature = "video-renderer")]
     video: Option<NativeWgpuVideoRenderer>,
-    #[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
+    #[cfg(feature = "native-wgpu-gst-dmabuf")]
     gpu_video: Option<NativeWgpuNv12VideoRenderer>,
     render_calls: u64,
     frames_rendered: u64,
@@ -2843,7 +2108,7 @@ impl NativeWgpuSurfaceRenderer {
             first_rendered_at: None,
             #[cfg(feature = "video-renderer")]
             video: None,
-            #[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
+            #[cfg(feature = "native-wgpu-gst-dmabuf")]
             gpu_video: None,
             render_calls: 0,
             frames_rendered: 0,
@@ -2874,7 +2139,7 @@ impl NativeWgpuSurfaceRenderer {
         if let Some(video) = self.video.as_mut() {
             video.update_fit_uniform(&self.queue, (self.config.width, self.config.height));
         }
-        #[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
+        #[cfg(feature = "native-wgpu-gst-dmabuf")]
         if let Some(video) = self.gpu_video.as_mut() {
             video.update_fit_uniform(&self.queue, (self.config.width, self.config.height));
         }
@@ -3003,7 +2268,7 @@ impl NativeWgpuSurfaceRenderer {
         view: &wgpu::TextureView,
     ) -> Result<(), NativeWgpuError> {
         let clear_color = self.clear_color().as_wgpu();
-        #[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
+        #[cfg(feature = "native-wgpu-gst-dmabuf")]
         if let Some(video) = self.gpu_video.as_mut().filter(|video| video.has_frame()) {
             #[cfg(feature = "native-wgpu-gst-dmabuf")]
             video.encode_pending_upload(encoder)?;
@@ -3062,24 +2327,6 @@ impl NativeWgpuSurfaceRenderer {
             (self.config.width, self.config.height),
             &info,
             source,
-            fit,
-        )
-    }
-
-    #[cfg(feature = "native-wgpu-gpu-video")]
-    fn present_gpu_video_frame(
-        &mut self,
-        frame: wgpu::Texture,
-        fit: crate::core::FitMode,
-    ) -> Result<NativeWgpuNv12PresentReport, NativeWgpuError> {
-        let video = self.gpu_video.get_or_insert_with(|| {
-            NativeWgpuNv12VideoRenderer::new(&self.device, self.config.format, fit)
-        });
-        video.present_texture(
-            &self.device,
-            &self.queue,
-            (self.config.width, self.config.height),
-            frame,
             fit,
         )
     }
@@ -3477,7 +2724,7 @@ impl NativeWgpuVideoRenderer {
     }
 }
 
-#[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
 struct NativeWgpuNv12VideoRenderer {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
@@ -3498,7 +2745,7 @@ struct NativeWgpuNv12VideoRenderer {
     presented_frames: u64,
 }
 
-#[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeWgpuNv12PresentReport {
     width: u32,
@@ -3508,7 +2755,7 @@ struct NativeWgpuNv12PresentReport {
     cuda_direct_pending_copies: Option<usize>,
 }
 
-#[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
 impl NativeWgpuNv12VideoRenderer {
     fn new(
         device: &wgpu::Device,
@@ -3640,7 +2887,7 @@ impl NativeWgpuNv12VideoRenderer {
     ) -> Result<NativeWgpuNv12PresentReport, NativeWgpuError> {
         if texture.format() != wgpu::TextureFormat::NV12 {
             return Err(NativeWgpuError::Video(format!(
-                "expected NV12 gpu-video frame, got {:?}",
+                "expected NV12 video frame, got {:?}",
                 texture.format()
             )));
         }
@@ -3648,7 +2895,7 @@ impl NativeWgpuNv12VideoRenderer {
         let height = texture.height();
         if width == 0 || height == 0 {
             return Err(NativeWgpuError::Video(
-                "gpu-video frame has zero dimension".to_owned(),
+                "NV12 video frame has zero dimension".to_owned(),
             ));
         }
 
@@ -7152,11 +6399,7 @@ fn native_wgpu_video_sample_info(
     })
 }
 
-#[cfg(any(
-    feature = "video-renderer",
-    feature = "native-wgpu-gpu-video",
-    feature = "native-wgpu-gst-dmabuf"
-))]
+#[cfg(any(feature = "video-renderer", feature = "native-wgpu-gst-dmabuf"))]
 fn video_uv_transform(
     fit: crate::core::FitMode,
     source_size: (u32, u32),
@@ -7182,11 +6425,7 @@ fn video_uv_transform(
     }
 }
 
-#[cfg(any(
-    feature = "video-renderer",
-    feature = "native-wgpu-gpu-video",
-    feature = "native-wgpu-gst-dmabuf"
-))]
+#[cfg(any(feature = "video-renderer", feature = "native-wgpu-gst-dmabuf"))]
 fn write_f32_pair(destination: &mut [u8], pair: [f32; 2]) {
     destination[0..4].copy_from_slice(&pair[0].to_ne_bytes());
     destination[4..8].copy_from_slice(&pair[1].to_ne_bytes());
@@ -7233,7 +6472,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-#[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
 const NATIVE_WGPU_NV12_SHADER: &str = r#"
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
