@@ -193,6 +193,9 @@ pub struct NativeVulkanVideoDecodeDeviceSnapshot {
     pub decode_codec_extensions: Vec<String>,
     pub has_video_decode_queue_family: bool,
     pub video_decode_ready: bool,
+    pub h264_direct_decode_ready: bool,
+    pub h264_zero_copy_sampled_candidate: bool,
+    pub h264_profiles: Vec<NativeVulkanVideoDecodeH264ProfileSnapshot>,
     pub queue_families: Vec<NativeVulkanVideoDecodeQueueFamilySnapshot>,
 }
 
@@ -203,6 +206,46 @@ pub struct NativeVulkanVideoDecodeQueueFamilySnapshot {
     pub queue_flags: Vec<&'static str>,
     pub video_codec_operation_bits: u32,
     pub video_codec_operations: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVideoDecodeH264ProfileSnapshot {
+    pub profile: &'static str,
+    pub std_profile_idc: u32,
+    pub picture_layout: &'static str,
+    pub chroma_subsampling: Vec<&'static str>,
+    pub luma_bit_depth: Vec<&'static str>,
+    pub chroma_bit_depth: Vec<&'static str>,
+    pub supported: bool,
+    pub max_level_idc: Option<u32>,
+    pub max_level: Option<&'static str>,
+    pub capability_flags: Vec<&'static str>,
+    pub decode_capability_flags: Vec<&'static str>,
+    pub min_bitstream_buffer_offset_alignment: Option<u64>,
+    pub min_bitstream_buffer_size_alignment: Option<u64>,
+    pub picture_access_granularity: Option<(u32, u32)>,
+    pub min_coded_extent: Option<(u32, u32)>,
+    pub max_coded_extent: Option<(u32, u32)>,
+    pub max_dpb_slots: Option<u32>,
+    pub max_active_reference_pictures: Option<u32>,
+    pub field_offset_granularity: Option<(i32, i32)>,
+    pub dpb_formats: Vec<NativeVulkanVideoFormatPropertiesSnapshot>,
+    pub output_formats: Vec<NativeVulkanVideoFormatPropertiesSnapshot>,
+    pub sampled_output_formats: Vec<NativeVulkanVideoFormatPropertiesSnapshot>,
+    pub nv12_dpb_supported: bool,
+    pub nv12_output_supported: bool,
+    pub nv12_sampled_output_supported: bool,
+    pub query_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVideoFormatPropertiesSnapshot {
+    pub format: &'static str,
+    pub format_raw: i32,
+    pub image_type: &'static str,
+    pub image_tiling: &'static str,
+    pub image_usage_flags: Vec<&'static str>,
+    pub image_create_flags: Vec<&'static str>,
 }
 
 pub type NativeVulkanVideoDecodeProbeResult =
@@ -412,8 +455,8 @@ pub fn probe_wayland_surface(
 }
 
 pub fn probe_vulkan_video_decode() -> NativeVulkanVideoDecodeProbeResult {
-    let (_entry, instance) = create_native_vulkan_instance()?;
-    let result = native_vulkan_video_decode_probe_inner(&instance);
+    let (entry, instance) = create_native_vulkan_instance()?;
+    let result = native_vulkan_video_decode_probe_inner(&entry, &instance);
     unsafe {
         instance.destroy_instance(None);
     }
@@ -4938,6 +4981,7 @@ fn native_vulkan_memory_type_index(
 }
 
 fn native_vulkan_video_decode_probe_inner(
+    entry: &ash::Entry,
     instance: &ash::Instance,
 ) -> Result<NativeVulkanVideoDecodeProbeSnapshot, NativeVulkanError> {
     let physical_devices = unsafe { instance.enumerate_physical_devices() }.map_err(|result| {
@@ -4946,6 +4990,7 @@ fn native_vulkan_video_decode_probe_inner(
             result,
         }
     })?;
+    let video_queue_loader = ash::khr::video_queue::Instance::new(entry, instance);
     let mut devices = Vec::with_capacity(physical_devices.len());
     for (physical_device_index, physical_device) in physical_devices.iter().copied().enumerate() {
         let properties = unsafe { instance.get_physical_device_properties(physical_device) };
@@ -4967,6 +5012,21 @@ fn native_vulkan_video_decode_probe_inner(
             && has_video_decode_queue_extension
             && !decode_codec_extensions.is_empty()
             && has_video_decode_queue_family;
+        let h264_profiles = native_vulkan_video_decode_h264_profiles(
+            &video_queue_loader,
+            physical_device,
+            has_video_queue_extension
+                && has_video_decode_queue_extension
+                && decode_codec_extensions.iter().any(|extension| {
+                    extension == ash_extension_name(vk::KHR_VIDEO_DECODE_H264_NAME)
+                }),
+        );
+        let h264_direct_decode_ready = h264_profiles.iter().any(|profile| {
+            profile.supported && profile.nv12_dpb_supported && profile.nv12_output_supported
+        });
+        let h264_zero_copy_sampled_candidate = h264_profiles
+            .iter()
+            .any(|profile| profile.supported && profile.nv12_sampled_output_supported);
         devices.push(NativeVulkanVideoDecodeDeviceSnapshot {
             physical_device_index,
             physical_device_name: native_vulkan_physical_device_name(properties),
@@ -4980,12 +5040,348 @@ fn native_vulkan_video_decode_probe_inner(
             decode_codec_extensions,
             has_video_decode_queue_family,
             video_decode_ready,
+            h264_direct_decode_ready,
+            h264_zero_copy_sampled_candidate,
+            h264_profiles,
             queue_families,
         });
     }
     Ok(NativeVulkanVideoDecodeProbeSnapshot {
         physical_device_count: physical_devices.len(),
         devices,
+    })
+}
+
+fn native_vulkan_video_decode_h264_profiles(
+    video_queue_loader: &ash::khr::video_queue::Instance,
+    physical_device: vk::PhysicalDevice,
+    query_enabled: bool,
+) -> Vec<NativeVulkanVideoDecodeH264ProfileSnapshot> {
+    [
+        (
+            "baseline",
+            vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_BASELINE,
+        ),
+        (
+            "main",
+            vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_MAIN,
+        ),
+        (
+            "high",
+            vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH,
+        ),
+    ]
+    .into_iter()
+    .map(|(profile, std_profile_idc)| {
+        if query_enabled {
+            native_vulkan_video_decode_h264_profile(
+                video_queue_loader,
+                physical_device,
+                profile,
+                std_profile_idc,
+            )
+        } else {
+            native_vulkan_video_decode_h264_profile_error(
+                profile,
+                std_profile_idc,
+                "required Vulkan Video H.264 decode extensions are unavailable".to_owned(),
+            )
+        }
+    })
+    .collect()
+}
+
+fn native_vulkan_video_decode_h264_profile(
+    video_queue_loader: &ash::khr::video_queue::Instance,
+    physical_device: vk::PhysicalDevice,
+    profile: &'static str,
+    std_profile_idc: vk::native::StdVideoH264ProfileIdc,
+) -> NativeVulkanVideoDecodeH264ProfileSnapshot {
+    let chroma_subsampling = vk::VideoChromaSubsamplingFlagsKHR::TYPE_420;
+    let luma_bit_depth = vk::VideoComponentBitDepthFlagsKHR::TYPE_8;
+    let chroma_bit_depth = vk::VideoComponentBitDepthFlagsKHR::TYPE_8;
+    let picture_layout = vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE;
+    let mut h264_profile_info = vk::VideoDecodeH264ProfileInfoKHR::default()
+        .std_profile_idc(std_profile_idc)
+        .picture_layout(picture_layout);
+    let profile_info = vk::VideoProfileInfoKHR::default()
+        .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_H264)
+        .chroma_subsampling(chroma_subsampling)
+        .luma_bit_depth(luma_bit_depth)
+        .chroma_bit_depth(chroma_bit_depth)
+        .push_next(&mut h264_profile_info);
+    let (
+        capability_flags,
+        min_bitstream_buffer_offset_alignment,
+        min_bitstream_buffer_size_alignment,
+        picture_access_granularity,
+        min_coded_extent,
+        max_coded_extent,
+        max_dpb_slots,
+        max_active_reference_pictures,
+        decode_capability_flags,
+        max_level_idc,
+        field_offset_granularity,
+    ) = {
+        let mut h264_capabilities = vk::VideoDecodeH264CapabilitiesKHR::default();
+        let mut decode_capabilities = vk::VideoDecodeCapabilitiesKHR::default();
+        let mut capabilities = vk::VideoCapabilitiesKHR::default()
+            .push_next(&mut h264_capabilities)
+            .push_next(&mut decode_capabilities);
+
+        let capabilities_result = unsafe {
+            (video_queue_loader
+                .fp()
+                .get_physical_device_video_capabilities_khr)(
+                physical_device,
+                &profile_info,
+                &mut capabilities,
+            )
+        }
+        .result();
+        if let Err(result) = capabilities_result {
+            return native_vulkan_video_decode_h264_profile_error(
+                profile,
+                std_profile_idc,
+                format!("vkGetPhysicalDeviceVideoCapabilitiesKHR: {result:?}"),
+            );
+        }
+
+        (
+            capabilities.flags,
+            capabilities.min_bitstream_buffer_offset_alignment,
+            capabilities.min_bitstream_buffer_size_alignment,
+            (
+                capabilities.picture_access_granularity.width,
+                capabilities.picture_access_granularity.height,
+            ),
+            (
+                capabilities.min_coded_extent.width,
+                capabilities.min_coded_extent.height,
+            ),
+            (
+                capabilities.max_coded_extent.width,
+                capabilities.max_coded_extent.height,
+            ),
+            capabilities.max_dpb_slots,
+            capabilities.max_active_reference_pictures,
+            decode_capabilities.flags,
+            h264_capabilities.max_level_idc,
+            (
+                h264_capabilities.field_offset_granularity.x,
+                h264_capabilities.field_offset_granularity.y,
+            ),
+        )
+    };
+
+    let dpb_and_output_coincide = decode_capability_flags
+        .contains(vk::VideoDecodeCapabilityFlagsKHR::DPB_AND_OUTPUT_COINCIDE);
+    let dpb_usage = if dpb_and_output_coincide {
+        vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR | vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR
+    } else {
+        vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR
+    };
+    let output_usage = vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR;
+    let sampled_output_usage =
+        vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR | vk::ImageUsageFlags::SAMPLED;
+
+    let mut query_errors = Vec::new();
+    let dpb_formats = match native_vulkan_video_format_properties(
+        video_queue_loader,
+        physical_device,
+        &profile_info,
+        dpb_usage,
+    ) {
+        Ok(formats) => formats,
+        Err(err) => {
+            query_errors.push(err);
+            Vec::new()
+        }
+    };
+    let output_formats = match native_vulkan_video_format_properties(
+        video_queue_loader,
+        physical_device,
+        &profile_info,
+        output_usage,
+    ) {
+        Ok(formats) => formats,
+        Err(err) => {
+            query_errors.push(err);
+            Vec::new()
+        }
+    };
+    let sampled_output_formats = match native_vulkan_video_format_properties(
+        video_queue_loader,
+        physical_device,
+        &profile_info,
+        sampled_output_usage,
+    ) {
+        Ok(formats) => formats,
+        Err(err) => {
+            query_errors.push(err);
+            Vec::new()
+        }
+    };
+    let sampled_output_required_usage: &[&str] = if dpb_and_output_coincide {
+        &["video-decode-dst", "video-decode-dpb", "sampled"]
+    } else {
+        &["video-decode-dst", "sampled"]
+    };
+    let nv12_dpb_supported =
+        native_vulkan_video_formats_include_nv12_with_usage(&dpb_formats, &["video-decode-dpb"]);
+    let nv12_output_supported =
+        native_vulkan_video_formats_include_nv12_with_usage(&output_formats, &["video-decode-dst"]);
+    let nv12_sampled_output_supported = native_vulkan_video_formats_include_nv12_with_usage(
+        &sampled_output_formats,
+        sampled_output_required_usage,
+    );
+
+    NativeVulkanVideoDecodeH264ProfileSnapshot {
+        profile,
+        std_profile_idc,
+        picture_layout: native_vulkan_h264_picture_layout_label(picture_layout),
+        chroma_subsampling: native_vulkan_video_chroma_subsampling_labels(chroma_subsampling),
+        luma_bit_depth: native_vulkan_video_component_bit_depth_labels(luma_bit_depth),
+        chroma_bit_depth: native_vulkan_video_component_bit_depth_labels(chroma_bit_depth),
+        supported: true,
+        max_level_idc: Some(max_level_idc),
+        max_level: native_vulkan_h264_level_label(max_level_idc),
+        capability_flags: native_vulkan_video_capability_flag_labels(capability_flags),
+        decode_capability_flags: native_vulkan_video_decode_capability_flag_labels(
+            decode_capability_flags,
+        ),
+        min_bitstream_buffer_offset_alignment: Some(min_bitstream_buffer_offset_alignment),
+        min_bitstream_buffer_size_alignment: Some(min_bitstream_buffer_size_alignment),
+        picture_access_granularity: Some(picture_access_granularity),
+        min_coded_extent: Some(min_coded_extent),
+        max_coded_extent: Some(max_coded_extent),
+        max_dpb_slots: Some(max_dpb_slots),
+        max_active_reference_pictures: Some(max_active_reference_pictures),
+        field_offset_granularity: Some(field_offset_granularity),
+        dpb_formats,
+        output_formats,
+        sampled_output_formats,
+        nv12_dpb_supported,
+        nv12_output_supported,
+        nv12_sampled_output_supported,
+        query_error: (!query_errors.is_empty()).then(|| query_errors.join("; ")),
+    }
+}
+
+fn native_vulkan_video_decode_h264_profile_error(
+    profile: &'static str,
+    std_profile_idc: vk::native::StdVideoH264ProfileIdc,
+    query_error: String,
+) -> NativeVulkanVideoDecodeH264ProfileSnapshot {
+    NativeVulkanVideoDecodeH264ProfileSnapshot {
+        profile,
+        std_profile_idc,
+        picture_layout: "progressive",
+        chroma_subsampling: vec!["420"],
+        luma_bit_depth: vec!["8-bit"],
+        chroma_bit_depth: vec!["8-bit"],
+        supported: false,
+        max_level_idc: None,
+        max_level: None,
+        capability_flags: Vec::new(),
+        decode_capability_flags: Vec::new(),
+        min_bitstream_buffer_offset_alignment: None,
+        min_bitstream_buffer_size_alignment: None,
+        picture_access_granularity: None,
+        min_coded_extent: None,
+        max_coded_extent: None,
+        max_dpb_slots: None,
+        max_active_reference_pictures: None,
+        field_offset_granularity: None,
+        dpb_formats: Vec::new(),
+        output_formats: Vec::new(),
+        sampled_output_formats: Vec::new(),
+        nv12_dpb_supported: false,
+        nv12_output_supported: false,
+        nv12_sampled_output_supported: false,
+        query_error: Some(query_error),
+    }
+}
+
+fn native_vulkan_video_format_properties(
+    video_queue_loader: &ash::khr::video_queue::Instance,
+    physical_device: vk::PhysicalDevice,
+    profile_info: &vk::VideoProfileInfoKHR<'_>,
+    image_usage: vk::ImageUsageFlags,
+) -> Result<Vec<NativeVulkanVideoFormatPropertiesSnapshot>, String> {
+    let mut profile_list_info =
+        vk::VideoProfileListInfoKHR::default().profiles(std::slice::from_ref(profile_info));
+    let format_info = vk::PhysicalDeviceVideoFormatInfoKHR::default()
+        .image_usage(image_usage)
+        .push_next(&mut profile_list_info);
+    let mut format_count = 0u32;
+    unsafe {
+        (video_queue_loader
+            .fp()
+            .get_physical_device_video_format_properties_khr)(
+            physical_device,
+            &format_info,
+            &mut format_count,
+            ptr::null_mut(),
+        )
+    }
+    .result()
+    .map_err(|result| {
+        format!(
+            "vkGetPhysicalDeviceVideoFormatPropertiesKHR({}): {result:?}",
+            native_vulkan_image_usage_label(image_usage)
+        )
+    })?;
+
+    let mut format_properties =
+        vec![vk::VideoFormatPropertiesKHR::default(); format_count as usize];
+    unsafe {
+        (video_queue_loader
+            .fp()
+            .get_physical_device_video_format_properties_khr)(
+            physical_device,
+            &format_info,
+            &mut format_count,
+            format_properties.as_mut_ptr(),
+        )
+    }
+    .result()
+    .map_err(|result| {
+        format!(
+            "vkGetPhysicalDeviceVideoFormatPropertiesKHR({}): {result:?}",
+            native_vulkan_image_usage_label(image_usage)
+        )
+    })?;
+    format_properties.truncate(format_count as usize);
+
+    Ok(format_properties
+        .into_iter()
+        .map(native_vulkan_video_format_properties_snapshot)
+        .collect())
+}
+
+fn native_vulkan_video_format_properties_snapshot(
+    format: vk::VideoFormatPropertiesKHR<'_>,
+) -> NativeVulkanVideoFormatPropertiesSnapshot {
+    NativeVulkanVideoFormatPropertiesSnapshot {
+        format: native_vulkan_format_label(format.format),
+        format_raw: format.format.as_raw(),
+        image_type: native_vulkan_image_type_label(format.image_type),
+        image_tiling: native_vulkan_image_tiling_label(format.image_tiling),
+        image_usage_flags: native_vulkan_image_usage_flag_labels(format.image_usage_flags),
+        image_create_flags: native_vulkan_image_create_flag_labels(format.image_create_flags),
+    }
+}
+
+fn native_vulkan_video_formats_include_nv12_with_usage(
+    formats: &[NativeVulkanVideoFormatPropertiesSnapshot],
+    required_usage: &[&str],
+) -> bool {
+    formats.iter().any(|format| {
+        format.format_raw == vk::Format::G8_B8R8_2PLANE_420_UNORM.as_raw()
+            && required_usage
+                .iter()
+                .all(|usage| format.image_usage_flags.contains(usage))
     })
 }
 
@@ -5111,6 +5507,212 @@ fn native_vulkan_video_codec_operation_labels(
     let unknown = raw & !known_bits;
     if unknown != 0 {
         labels.push(format!("unknown-0x{unknown:x}"));
+    }
+    labels
+}
+
+fn native_vulkan_h264_picture_layout_label(
+    layout: vk::VideoDecodeH264PictureLayoutFlagsKHR,
+) -> &'static str {
+    if layout.contains(vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE) {
+        "progressive"
+    } else if layout
+        .contains(vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_INTERLEAVED_LINES)
+    {
+        "interlaced-interleaved-lines"
+    } else if layout.contains(vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_SEPARATE_PLANES)
+    {
+        "interlaced-separate-planes"
+    } else {
+        "unknown"
+    }
+}
+
+fn native_vulkan_video_chroma_subsampling_labels(
+    flags: vk::VideoChromaSubsamplingFlagsKHR,
+) -> Vec<&'static str> {
+    let mut labels = Vec::new();
+    if flags.contains(vk::VideoChromaSubsamplingFlagsKHR::MONOCHROME) {
+        labels.push("monochrome");
+    }
+    if flags.contains(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420) {
+        labels.push("420");
+    }
+    if flags.contains(vk::VideoChromaSubsamplingFlagsKHR::TYPE_422) {
+        labels.push("422");
+    }
+    if flags.contains(vk::VideoChromaSubsamplingFlagsKHR::TYPE_444) {
+        labels.push("444");
+    }
+    labels
+}
+
+fn native_vulkan_video_component_bit_depth_labels(
+    flags: vk::VideoComponentBitDepthFlagsKHR,
+) -> Vec<&'static str> {
+    let mut labels = Vec::new();
+    if flags.contains(vk::VideoComponentBitDepthFlagsKHR::TYPE_8) {
+        labels.push("8-bit");
+    }
+    if flags.contains(vk::VideoComponentBitDepthFlagsKHR::TYPE_10) {
+        labels.push("10-bit");
+    }
+    if flags.contains(vk::VideoComponentBitDepthFlagsKHR::TYPE_12) {
+        labels.push("12-bit");
+    }
+    labels
+}
+
+fn native_vulkan_video_capability_flag_labels(
+    flags: vk::VideoCapabilityFlagsKHR,
+) -> Vec<&'static str> {
+    let mut labels = Vec::new();
+    if flags.contains(vk::VideoCapabilityFlagsKHR::PROTECTED_CONTENT) {
+        labels.push("protected-content");
+    }
+    if flags.contains(vk::VideoCapabilityFlagsKHR::SEPARATE_REFERENCE_IMAGES) {
+        labels.push("separate-reference-images");
+    }
+    labels
+}
+
+fn native_vulkan_video_decode_capability_flag_labels(
+    flags: vk::VideoDecodeCapabilityFlagsKHR,
+) -> Vec<&'static str> {
+    let mut labels = Vec::new();
+    if flags.contains(vk::VideoDecodeCapabilityFlagsKHR::DPB_AND_OUTPUT_COINCIDE) {
+        labels.push("dpb-and-output-coincide");
+    }
+    if flags.contains(vk::VideoDecodeCapabilityFlagsKHR::DPB_AND_OUTPUT_DISTINCT) {
+        labels.push("dpb-and-output-distinct");
+    }
+    labels
+}
+
+fn native_vulkan_h264_level_label(level: vk::native::StdVideoH264LevelIdc) -> Option<&'static str> {
+    match level {
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_1_0 => Some("1.0"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_1_1 => Some("1.1"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_1_2 => Some("1.2"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_1_3 => Some("1.3"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_2_0 => Some("2.0"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_2_1 => Some("2.1"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_2_2 => Some("2.2"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_3_0 => Some("3.0"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_3_1 => Some("3.1"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_3_2 => Some("3.2"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_4_0 => Some("4.0"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_4_1 => Some("4.1"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_4_2 => Some("4.2"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_5_0 => Some("5.0"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_5_1 => Some("5.1"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_5_2 => Some("5.2"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_6_0 => Some("6.0"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_6_1 => Some("6.1"),
+        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_6_2 => Some("6.2"),
+        _ => None,
+    }
+}
+
+fn native_vulkan_format_label(format: vk::Format) -> &'static str {
+    match format {
+        vk::Format::G8_B8R8_2PLANE_420_UNORM => "G8_B8R8_2PLANE_420_UNORM",
+        vk::Format::G8_B8_R8_3PLANE_420_UNORM => "G8_B8_R8_3PLANE_420_UNORM",
+        vk::Format::G8_B8R8_2PLANE_422_UNORM => "G8_B8R8_2PLANE_422_UNORM",
+        vk::Format::G8_B8_R8_3PLANE_422_UNORM => "G8_B8_R8_3PLANE_422_UNORM",
+        vk::Format::G8_B8R8_2PLANE_444_UNORM => "G8_B8R8_2PLANE_444_UNORM",
+        vk::Format::G8_B8_R8_3PLANE_444_UNORM => "G8_B8_R8_3PLANE_444_UNORM",
+        vk::Format::R8G8B8A8_UNORM => "R8G8B8A8_UNORM",
+        vk::Format::B8G8R8A8_UNORM => "B8G8R8A8_UNORM",
+        vk::Format::R8_UNORM => "R8_UNORM",
+        _ => "unknown",
+    }
+}
+
+fn native_vulkan_image_type_label(image_type: vk::ImageType) -> &'static str {
+    match image_type {
+        vk::ImageType::TYPE_1D => "1d",
+        vk::ImageType::TYPE_2D => "2d",
+        vk::ImageType::TYPE_3D => "3d",
+        _ => "unknown",
+    }
+}
+
+fn native_vulkan_image_tiling_label(image_tiling: vk::ImageTiling) -> &'static str {
+    match image_tiling {
+        vk::ImageTiling::OPTIMAL => "optimal",
+        vk::ImageTiling::LINEAR => "linear",
+        vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT => "drm-format-modifier",
+        _ => "unknown",
+    }
+}
+
+fn native_vulkan_image_usage_label(flags: vk::ImageUsageFlags) -> String {
+    let labels = native_vulkan_image_usage_flag_labels(flags);
+    if labels.is_empty() {
+        format!("0x{:x}", flags.as_raw())
+    } else {
+        labels.join("|")
+    }
+}
+
+fn native_vulkan_image_usage_flag_labels(flags: vk::ImageUsageFlags) -> Vec<&'static str> {
+    let mut labels = Vec::new();
+    if flags.contains(vk::ImageUsageFlags::TRANSFER_SRC) {
+        labels.push("transfer-src");
+    }
+    if flags.contains(vk::ImageUsageFlags::TRANSFER_DST) {
+        labels.push("transfer-dst");
+    }
+    if flags.contains(vk::ImageUsageFlags::SAMPLED) {
+        labels.push("sampled");
+    }
+    if flags.contains(vk::ImageUsageFlags::STORAGE) {
+        labels.push("storage");
+    }
+    if flags.contains(vk::ImageUsageFlags::COLOR_ATTACHMENT) {
+        labels.push("color-attachment");
+    }
+    if flags.contains(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT) {
+        labels.push("depth-stencil-attachment");
+    }
+    if flags.contains(vk::ImageUsageFlags::TRANSIENT_ATTACHMENT) {
+        labels.push("transient-attachment");
+    }
+    if flags.contains(vk::ImageUsageFlags::INPUT_ATTACHMENT) {
+        labels.push("input-attachment");
+    }
+    if flags.contains(vk::ImageUsageFlags::VIDEO_DECODE_SRC_KHR) {
+        labels.push("video-decode-src");
+    }
+    if flags.contains(vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR) {
+        labels.push("video-decode-dst");
+    }
+    if flags.contains(vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR) {
+        labels.push("video-decode-dpb");
+    }
+    labels
+}
+
+fn native_vulkan_image_create_flag_labels(flags: vk::ImageCreateFlags) -> Vec<&'static str> {
+    let mut labels = Vec::new();
+    if flags.contains(vk::ImageCreateFlags::SPARSE_BINDING) {
+        labels.push("sparse-binding");
+    }
+    if flags.contains(vk::ImageCreateFlags::SPARSE_RESIDENCY) {
+        labels.push("sparse-residency");
+    }
+    if flags.contains(vk::ImageCreateFlags::SPARSE_ALIASED) {
+        labels.push("sparse-aliased");
+    }
+    if flags.contains(vk::ImageCreateFlags::MUTABLE_FORMAT) {
+        labels.push("mutable-format");
+    }
+    if flags.contains(vk::ImageCreateFlags::CUBE_COMPATIBLE) {
+        labels.push("cube-compatible");
+    }
+    if flags.contains(vk::ImageCreateFlags::DISJOINT) {
+        labels.push("disjoint");
     }
     labels
 }
@@ -5951,6 +6553,36 @@ mod tests {
 
         assert!(labels.contains(&"decode-h264".to_owned()));
         assert!(labels.contains(&"decode-vp9".to_owned()));
+    }
+
+    #[test]
+    fn labels_h264_probe_format_requirements() {
+        assert_eq!(
+            native_vulkan_h264_level_label(
+                vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_5_2
+            ),
+            Some("5.2")
+        );
+
+        let usage = vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR
+            | vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR
+            | vk::ImageUsageFlags::SAMPLED;
+        let labels = native_vulkan_image_usage_flag_labels(usage);
+
+        assert!(labels.contains(&"video-decode-dst"));
+        assert!(labels.contains(&"video-decode-dpb"));
+        assert!(labels.contains(&"sampled"));
+        assert!(native_vulkan_video_formats_include_nv12_with_usage(
+            &[NativeVulkanVideoFormatPropertiesSnapshot {
+                format: "G8_B8R8_2PLANE_420_UNORM",
+                format_raw: vk::Format::G8_B8R8_2PLANE_420_UNORM.as_raw(),
+                image_type: "2d",
+                image_tiling: "optimal",
+                image_usage_flags: labels,
+                image_create_flags: vec!["mutable-format"],
+            }],
+            &["video-decode-dst", "video-decode-dpb", "sampled"]
+        ));
     }
 
     #[test]
