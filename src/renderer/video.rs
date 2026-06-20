@@ -108,7 +108,7 @@ const DECODER_ELEMENT_NAMES: &[&str] = &[
 ];
 const DECODER_RANK_BOOST: i32 = 512;
 const VIDEO_SINK_DEFAULT_MAX_LATENESS_NS: u64 = 50_000_000;
-const VIDEO_SINK_MIN_MAX_LATENESS_NS: u64 = 8_000_000;
+const VIDEO_SINK_MIN_MAX_LATENESS_NS: u64 = 4_000_000;
 const VIDEO_SINK_MAX_MAX_LATENESS_NS: u64 = 50_000_000;
 const VIDEO_QUEUE_MAX_SIZE_BUFFERS: u32 = 4;
 const VIDEO_QUEUE_MAX_SIZE_BYTES: u32 = 0;
@@ -2681,7 +2681,7 @@ mod tests {
         assert_eq!(video_sink_max_lateness_ns(Some(0)), 50_000_000);
         assert_eq!(video_sink_max_lateness_ns(Some(24)), 41_666_666);
         assert_eq!(video_sink_max_lateness_ns(Some(12)), 50_000_000);
-        assert_eq!(video_sink_max_lateness_ns(Some(240)), 8_000_000);
+        assert_eq!(video_sink_max_lateness_ns(Some(240)), 4_166_666);
     }
 
     #[test]
