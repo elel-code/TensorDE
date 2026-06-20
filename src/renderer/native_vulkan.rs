@@ -373,6 +373,7 @@ pub struct NativeVulkanVideoSessionSmokeOptions {
     pub bitstream_buffer_size: u64,
     pub extract_bitstream: bool,
     pub decode_first_frame: bool,
+    pub sample_decoded_first_frame: bool,
     pub bitstream_source: Option<PathBuf>,
     pub bitstream_extract_max_samples: u32,
 }
@@ -388,6 +389,7 @@ impl Default for NativeVulkanVideoSessionSmokeOptions {
             bitstream_buffer_size: 8 * 1024 * 1024,
             extract_bitstream: false,
             decode_first_frame: false,
+            sample_decoded_first_frame: false,
             bitstream_source: None,
             bitstream_extract_max_samples: 8,
         }
@@ -552,6 +554,7 @@ pub struct NativeVulkanVideoFirstFrameDecodeSnapshot {
     pub idr: bool,
     pub irap: bool,
     pub output_readback: Option<NativeVulkanVideoDecodeOutputReadbackSnapshot>,
+    pub output_sampling: Option<NativeVulkanVideoDecodeOutputSamplingSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -577,6 +580,34 @@ pub struct NativeVulkanVideoDecodeOutputReadbackSnapshot {
     pub uv_plane_max: u8,
     pub y_plane_unique_values: u32,
     pub uv_plane_unique_values: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVideoDecodeOutputSamplingSnapshot {
+    pub source_format: &'static str,
+    pub target_format: &'static str,
+    pub source_layout: &'static str,
+    pub shader_layout: &'static str,
+    pub render_extent: (u32, u32),
+    pub y_plane_view_created: bool,
+    pub uv_plane_view_created: bool,
+    pub color_image_created: bool,
+    pub color_image_view_created: bool,
+    pub renderer_created: bool,
+    pub command_buffer_recorded: bool,
+    pub rendered: bool,
+    pub copied: bool,
+    pub host_visible: bool,
+    pub host_coherent: bool,
+    pub host_cached: bool,
+    pub color_image_memory_size: u64,
+    pub readback_memory_size: u64,
+    pub total_bytes: u64,
+    pub rgba_hash: u64,
+    pub rgba_nonzero_bytes: u64,
+    pub rgba_min: u8,
+    pub rgba_max: u8,
+    pub rgba_unique_values: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1776,7 +1807,7 @@ impl NativeVulkanSession {
             texture,
             fit,
         )?;
-        self.swapchain_image_layouts[image_index] = vk::ImageLayout::PRESENT_SRC_KHR;
+        self.swapchain_image_layouts[image_index] = renderer.target_final_layout();
         Ok(())
     }
 
@@ -3038,6 +3069,7 @@ struct NativeVulkanVideoRenderer {
     pipeline: vk::Pipeline,
     sampler: vk::Sampler,
     extent: vk::Extent2D,
+    target_final_layout: vk::ImageLayout,
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -3048,12 +3080,29 @@ impl NativeVulkanVideoRenderer {
         extent: vk::Extent2D,
         swapchain_image_views: &[vk::ImageView],
     ) -> Result<Self, NativeVulkanError> {
-        let render_pass = native_vulkan_create_video_render_pass(device, swapchain_format)?;
+        Self::new_with_target_final_layout(
+            device,
+            swapchain_format,
+            extent,
+            swapchain_image_views,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+        )
+    }
+
+    fn new_with_target_final_layout(
+        device: &ash::Device,
+        target_format: vk::Format,
+        extent: vk::Extent2D,
+        target_image_views: &[vk::ImageView],
+        target_final_layout: vk::ImageLayout,
+    ) -> Result<Self, NativeVulkanError> {
+        let render_pass =
+            native_vulkan_create_video_render_pass(device, target_format, target_final_layout)?;
         let framebuffers = native_vulkan_create_video_framebuffers(
             device,
             render_pass,
             extent,
-            swapchain_image_views,
+            target_image_views,
         )?;
         let bindings = [
             native_vulkan_video_sampler_binding(0),
@@ -3194,7 +3243,12 @@ impl NativeVulkanVideoRenderer {
             pipeline,
             sampler,
             extent,
+            target_final_layout,
         })
+    }
+
+    fn target_final_layout(&self) -> vk::ImageLayout {
+        self.target_final_layout
     }
 
     fn update_descriptors(&mut self, device: &ash::Device, texture: &NativeVulkanVideoTexture) {
@@ -3366,6 +3420,7 @@ fn native_vulkan_video_sampler_binding(binding: u32) -> vk::DescriptorSetLayoutB
 fn native_vulkan_create_video_render_pass(
     device: &ash::Device,
     swapchain_format: vk::Format,
+    final_layout: vk::ImageLayout,
 ) -> Result<vk::RenderPass, NativeVulkanError> {
     let color_attachment = vk::AttachmentDescription::default()
         .format(swapchain_format)
@@ -3375,7 +3430,7 @@ fn native_vulkan_create_video_render_pass(
         .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
         .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
         .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-        .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
+        .final_layout(final_layout);
     let color_attachment_ref = vk::AttachmentReference::default()
         .attachment(0)
         .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
@@ -3592,6 +3647,7 @@ fn native_vulkan_video_uv_transform(
 enum NativeVulkanVideoTexture {
     Cuda(NativeVulkanCudaVideoTexture),
     Dmabuf(NativeVulkanDmabufVideoTexture),
+    Decoded(NativeVulkanDecodedVideoTexture),
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -3600,6 +3656,7 @@ impl NativeVulkanVideoTexture {
         match self {
             Self::Cuda(texture) => texture.width,
             Self::Dmabuf(texture) => texture.width,
+            Self::Decoded(texture) => texture.width,
         }
     }
 
@@ -3607,6 +3664,7 @@ impl NativeVulkanVideoTexture {
         match self {
             Self::Cuda(texture) => texture.height,
             Self::Dmabuf(texture) => texture.height,
+            Self::Decoded(texture) => texture.height,
         }
     }
 
@@ -3614,6 +3672,7 @@ impl NativeVulkanVideoTexture {
         match self {
             Self::Cuda(texture) => texture.y.view,
             Self::Dmabuf(texture) => texture.y_view,
+            Self::Decoded(texture) => texture.y_view,
         }
     }
 
@@ -3621,17 +3680,22 @@ impl NativeVulkanVideoTexture {
         match self {
             Self::Cuda(texture) => texture.uv.view,
             Self::Dmabuf(texture) => texture.uv_view,
+            Self::Decoded(texture) => texture.uv_view,
         }
     }
 
     fn image_layout(&self) -> vk::ImageLayout {
-        vk::ImageLayout::GENERAL
+        match self {
+            Self::Cuda(_) | Self::Dmabuf(_) => vk::ImageLayout::GENERAL,
+            Self::Decoded(texture) => texture.shader_layout,
+        }
     }
 
     fn shader_read_barriers(&self) -> [vk::ImageMemoryBarrier<'static>; 2] {
         match self {
             Self::Cuda(texture) => texture.shader_read_barriers(),
             Self::Dmabuf(texture) => texture.shader_read_barriers(),
+            Self::Decoded(texture) => texture.shader_read_barriers(),
         }
     }
 
@@ -3639,8 +3703,140 @@ impl NativeVulkanVideoTexture {
         match self {
             Self::Cuda(texture) => texture.destroy(device),
             Self::Dmabuf(texture) => texture.destroy(device),
+            Self::Decoded(texture) => texture.destroy(device),
         }
     }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+struct NativeVulkanDecodedVideoTexture {
+    image: vk::Image,
+    width: u32,
+    height: u32,
+    y_view: vk::ImageView,
+    uv_view: vk::ImageView,
+    source_layout: vk::ImageLayout,
+    shader_layout: vk::ImageLayout,
+    source_access: vk::AccessFlags,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanDecodedVideoTexture {
+    fn new(
+        device: &ash::Device,
+        image: vk::Image,
+        width: u32,
+        height: u32,
+        source_layout: vk::ImageLayout,
+        source_access: vk::AccessFlags,
+    ) -> Result<Self, NativeVulkanError> {
+        if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
+            return Err(NativeVulkanError::Video(format!(
+                "decoded NV12 texture requires non-zero even dimensions, got {width}x{height}"
+            )));
+        }
+        let y_view = native_vulkan_create_decoded_video_plane_view(
+            device,
+            image,
+            vk::ImageAspectFlags::PLANE_0,
+            vk::Format::R8_UNORM,
+            "y",
+        )?;
+        let uv_view = match native_vulkan_create_decoded_video_plane_view(
+            device,
+            image,
+            vk::ImageAspectFlags::PLANE_1,
+            vk::Format::R8G8_UNORM,
+            "uv",
+        ) {
+            Ok(view) => view,
+            Err(err) => {
+                unsafe {
+                    device.destroy_image_view(y_view, None);
+                }
+                return Err(err);
+            }
+        };
+        Ok(Self {
+            image,
+            width,
+            height,
+            y_view,
+            uv_view,
+            source_layout,
+            shader_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            source_access,
+        })
+    }
+
+    fn shader_read_barriers(&self) -> [vk::ImageMemoryBarrier<'static>; 2] {
+        [
+            self.shader_read_barrier(vk::ImageAspectFlags::PLANE_0),
+            self.shader_read_barrier(vk::ImageAspectFlags::PLANE_1),
+        ]
+    }
+
+    fn shader_read_barrier(
+        &self,
+        aspect_mask: vk::ImageAspectFlags,
+    ) -> vk::ImageMemoryBarrier<'static> {
+        vk::ImageMemoryBarrier::default()
+            .old_layout(self.source_layout)
+            .new_layout(self.shader_layout)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(self.image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .src_access_mask(self.source_access)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+    }
+
+    fn destroy(self, device: &ash::Device) {
+        unsafe {
+            device.destroy_image_view(self.uv_view, None);
+            device.destroy_image_view(self.y_view, None);
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_create_decoded_video_plane_view(
+    device: &ash::Device,
+    image: vk::Image,
+    aspect_mask: vk::ImageAspectFlags,
+    format: vk::Format,
+    label: &'static str,
+) -> Result<vk::ImageView, NativeVulkanError> {
+    let mut view_usage_info =
+        vk::ImageViewUsageCreateInfo::default().usage(vk::ImageUsageFlags::SAMPLED);
+    let view_info = vk::ImageViewCreateInfo::default()
+        .image(image)
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .format(format)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        })
+        .push_next(&mut view_usage_info);
+    unsafe { device.create_image_view(&view_info, None) }.map_err(|result| {
+        NativeVulkanError::Vulkan {
+            operation: match label {
+                "y" => "vkCreateImageView(decoded video y plane)",
+                "uv" => "vkCreateImageView(decoded video uv plane)",
+                _ => "vkCreateImageView(decoded video plane)",
+            },
+            result,
+        }
+    })
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -5599,6 +5795,21 @@ struct NativeVulkanVideoDecodeReadbackBuffer {
     memory_property_flags: vk::MemoryPropertyFlags,
 }
 
+#[cfg(feature = "native-vulkan-gst-video")]
+struct NativeVulkanDecodedSamplingTarget {
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    view: vk::ImageView,
+    readback_buffer: vk::Buffer,
+    readback_memory: vk::DeviceMemory,
+    extent: vk::Extent2D,
+    format: vk::Format,
+    total_bytes: u64,
+    color_memory_size: u64,
+    readback_memory_size: u64,
+    readback_memory_property_flags: vk::MemoryPropertyFlags,
+}
+
 struct NativeVulkanVideoSessionParameters {
     parameters: vk::VideoSessionParametersKHR,
     snapshot: NativeVulkanVideoSessionParametersSnapshot,
@@ -5776,6 +5987,37 @@ fn native_vulkan_video_decode_queue_family_infos(
         .collect()
 }
 
+fn native_vulkan_graphics_queue_family_index(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    preferred_queue_family_index: u32,
+) -> Result<u32, NativeVulkanError> {
+    let queue_families =
+        unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+    if queue_families
+        .get(preferred_queue_family_index as usize)
+        .is_some_and(|queue_family| {
+            queue_family.queue_count > 0
+                && queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+        })
+    {
+        return Ok(preferred_queue_family_index);
+    }
+    queue_families
+        .iter()
+        .enumerate()
+        .find_map(|(queue_family_index, queue_family)| {
+            (queue_family.queue_count > 0
+                && queue_family.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+            .then_some(queue_family_index as u32)
+        })
+        .ok_or_else(|| {
+            NativeVulkanError::Video(
+                "decoded first-frame sampling requires a graphics-capable queue family".to_owned(),
+            )
+        })
+}
+
 fn native_vulkan_video_session_required_device_extensions(
     codec: NativeVulkanVideoSessionCodec,
 ) -> Vec<&'static CStr> {
@@ -5947,11 +6189,31 @@ fn native_vulkan_video_session_create_and_bind(
         )));
     }
 
+    let graphics_queue_family_index = if options.sample_decoded_first_frame {
+        Some(native_vulkan_graphics_queue_family_index(
+            instance,
+            selection.physical_device,
+            selection.queue_family_index,
+        )?)
+    } else {
+        None
+    };
+    let mut device_queue_family_indices = vec![selection.queue_family_index];
+    if let Some(graphics_queue_family_index) = graphics_queue_family_index
+        && !device_queue_family_indices.contains(&graphics_queue_family_index)
+    {
+        device_queue_family_indices.push(graphics_queue_family_index);
+    }
     let priorities = [1.0_f32];
-    let queue_create_info = vk::DeviceQueueCreateInfo::default()
-        .queue_family_index(selection.queue_family_index)
-        .queue_priorities(&priorities);
-    let queue_create_infos = [queue_create_info];
+    let queue_create_infos = device_queue_family_indices
+        .iter()
+        .copied()
+        .map(|queue_family_index| {
+            vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(queue_family_index)
+                .queue_priorities(&priorities)
+        })
+        .collect::<Vec<_>>();
     let enabled_extensions = native_vulkan_video_session_required_device_extensions(options.codec);
     let enabled_extension_names = enabled_extensions
         .iter()
@@ -6081,6 +6343,7 @@ fn native_vulkan_video_session_create_and_bind(
                 } else {
                     vk::ImageUsageFlags::empty()
                 },
+                &device_queue_family_indices,
             )?;
             resource_images.push(image);
         }
@@ -6158,6 +6421,8 @@ fn native_vulkan_video_session_create_and_bind(
                 &video_queue_device,
                 &video_decode_queue_device,
                 selection.queue_family_index,
+                selection.queue_flags,
+                graphics_queue_family_index,
                 session,
                 parameters.parameters,
                 requested_extent,
@@ -6167,6 +6432,7 @@ fn native_vulkan_video_session_create_and_bind(
                 buffer,
                 extract,
                 parameter_sets,
+                options.sample_decoded_first_frame,
             )?)
         } else {
             None
@@ -6316,6 +6582,7 @@ fn native_vulkan_create_video_session_resource_image(
     array_layers: u32,
     decode_capability_flags: vk::VideoDecodeCapabilityFlagsKHR,
     additional_usage: vk::ImageUsageFlags,
+    queue_family_indices: &[u32],
 ) -> Result<NativeVulkanVideoResourceImage, NativeVulkanError> {
     if !decode_capability_flags.contains(vk::VideoDecodeCapabilityFlagsKHR::DPB_AND_OUTPUT_COINCIDE)
     {
@@ -6361,9 +6628,15 @@ fn native_vulkan_create_video_session_resource_image(
         .samples(vk::SampleCountFlags::TYPE_1)
         .tiling(format.image_tiling)
         .usage(image_usage)
-        .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .initial_layout(vk::ImageLayout::UNDEFINED)
         .push_next(&mut profile_list_info);
+    let image_create_info = if queue_family_indices.len() > 1 {
+        image_create_info
+            .sharing_mode(vk::SharingMode::CONCURRENT)
+            .queue_family_indices(queue_family_indices)
+    } else {
+        image_create_info.sharing_mode(vk::SharingMode::EXCLUSIVE)
+    };
     let image = unsafe { device.create_image(&image_create_info, None) }.map_err(|result| {
         NativeVulkanError::Vulkan {
             operation: "vkCreateImage(video session resource)",
@@ -6741,12 +7014,508 @@ fn native_vulkan_create_video_decode_readback_buffer(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanDecodedSamplingTarget {
+    fn new(
+        device: &ash::Device,
+        memory_properties: &vk::PhysicalDeviceMemoryProperties,
+        extent: vk::Extent2D,
+    ) -> Result<Self, NativeVulkanError> {
+        if extent.width == 0 || extent.height == 0 {
+            return Err(NativeVulkanError::Video(format!(
+                "decoded sampling target requires non-zero extent, got {}x{}",
+                extent.width, extent.height
+            )));
+        }
+        let format = vk::Format::R8G8B8A8_UNORM;
+        let total_bytes = u64::from(extent.width)
+            .checked_mul(u64::from(extent.height))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| {
+                NativeVulkanError::Video("RGBA sampling readback size overflow".to_owned())
+            })?;
+        let image_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(format)
+            .extent(vk::Extent3D {
+                width: extent.width,
+                height: extent.height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED);
+        let image = unsafe { device.create_image(&image_info, None) }.map_err(|result| {
+            NativeVulkanError::Vulkan {
+                operation: "vkCreateImage(decoded sampling color target)",
+                result,
+            }
+        })?;
+
+        let result = (|| -> Result<Self, NativeVulkanError> {
+            let image_requirements = unsafe { device.get_image_memory_requirements(image) };
+            let image_memory_type_index = native_vulkan_memory_type_index_prefer(
+                memory_properties,
+                image_requirements.memory_type_bits,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                vk::MemoryPropertyFlags::empty(),
+            )
+            .ok_or(NativeVulkanError::MissingMemoryType(
+                "decoded sampling color target",
+            ))?;
+            let image_allocate_info = vk::MemoryAllocateInfo::default()
+                .allocation_size(image_requirements.size)
+                .memory_type_index(image_memory_type_index);
+            let memory = unsafe { device.allocate_memory(&image_allocate_info, None) }.map_err(
+                |result| NativeVulkanError::Vulkan {
+                    operation: "vkAllocateMemory(decoded sampling color target)",
+                    result,
+                },
+            )?;
+            if let Err(result) = unsafe { device.bind_image_memory(image, memory, 0) } {
+                unsafe {
+                    device.free_memory(memory, None);
+                }
+                return Err(NativeVulkanError::Vulkan {
+                    operation: "vkBindImageMemory(decoded sampling color target)",
+                    result,
+                });
+            }
+
+            let view_info = vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(format)
+                .subresource_range(native_vulkan_color_subresource_range());
+            let view = match unsafe { device.create_image_view(&view_info, None) } {
+                Ok(view) => view,
+                Err(result) => {
+                    unsafe {
+                        device.free_memory(memory, None);
+                    }
+                    return Err(NativeVulkanError::Vulkan {
+                        operation: "vkCreateImageView(decoded sampling color target)",
+                        result,
+                    });
+                }
+            };
+
+            let readback_info = vk::BufferCreateInfo::default()
+                .size(total_bytes)
+                .usage(vk::BufferUsageFlags::TRANSFER_DST)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE);
+            let readback_buffer = match unsafe { device.create_buffer(&readback_info, None) } {
+                Ok(buffer) => buffer,
+                Err(result) => {
+                    unsafe {
+                        device.destroy_image_view(view, None);
+                        device.free_memory(memory, None);
+                    }
+                    return Err(NativeVulkanError::Vulkan {
+                        operation: "vkCreateBuffer(decoded sampling readback)",
+                        result,
+                    });
+                }
+            };
+
+            let readback_requirements =
+                unsafe { device.get_buffer_memory_requirements(readback_buffer) };
+            let readback_memory_type_index = match native_vulkan_memory_type_index_prefer(
+                memory_properties,
+                readback_requirements.memory_type_bits,
+                vk::MemoryPropertyFlags::HOST_CACHED,
+                vk::MemoryPropertyFlags::HOST_VISIBLE,
+            ) {
+                Some(index) => index,
+                None => {
+                    unsafe {
+                        device.destroy_buffer(readback_buffer, None);
+                        device.destroy_image_view(view, None);
+                        device.free_memory(memory, None);
+                    }
+                    return Err(NativeVulkanError::MissingMemoryType(
+                        "decoded sampling readback buffer",
+                    ));
+                }
+            };
+            let readback_memory_type =
+                memory_properties.memory_types[readback_memory_type_index as usize];
+            let readback_allocate_info = vk::MemoryAllocateInfo::default()
+                .allocation_size(readback_requirements.size)
+                .memory_type_index(readback_memory_type_index);
+            let readback_memory =
+                match unsafe { device.allocate_memory(&readback_allocate_info, None) } {
+                    Ok(memory) => memory,
+                    Err(result) => {
+                        unsafe {
+                            device.destroy_buffer(readback_buffer, None);
+                            device.destroy_image_view(view, None);
+                            device.free_memory(memory, None);
+                        }
+                        return Err(NativeVulkanError::Vulkan {
+                            operation: "vkAllocateMemory(decoded sampling readback)",
+                            result,
+                        });
+                    }
+                };
+            if let Err(result) =
+                unsafe { device.bind_buffer_memory(readback_buffer, readback_memory, 0) }
+            {
+                unsafe {
+                    device.free_memory(readback_memory, None);
+                    device.destroy_buffer(readback_buffer, None);
+                    device.destroy_image_view(view, None);
+                    device.free_memory(memory, None);
+                }
+                return Err(NativeVulkanError::Vulkan {
+                    operation: "vkBindBufferMemory(decoded sampling readback)",
+                    result,
+                });
+            }
+
+            Ok(Self {
+                image,
+                memory,
+                view,
+                readback_buffer,
+                readback_memory,
+                extent,
+                format,
+                total_bytes,
+                color_memory_size: image_requirements.size,
+                readback_memory_size: readback_requirements.size,
+                readback_memory_property_flags: readback_memory_type.property_flags,
+            })
+        })();
+
+        if result.is_err() {
+            unsafe {
+                device.destroy_image(image, None);
+            }
+        }
+        result
+    }
+
+    fn destroy(self, device: &ash::Device) {
+        unsafe {
+            device.destroy_buffer(self.readback_buffer, None);
+            device.free_memory(self.readback_memory, None);
+            device.destroy_image_view(self.view, None);
+            device.destroy_image(self.image, None);
+            device.free_memory(self.memory, None);
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_sample_decoded_video_output(
+    device: &ash::Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    queue: vk::Queue,
+    command_pool: vk::CommandPool,
+    extent: vk::Extent2D,
+    decoded_image: vk::Image,
+    wait_semaphore: Option<vk::Semaphore>,
+) -> Result<NativeVulkanVideoDecodeOutputSamplingSnapshot, NativeVulkanError> {
+    let command_buffer_info = vk::CommandBufferAllocateInfo::default()
+        .command_pool(command_pool)
+        .level(vk::CommandBufferLevel::PRIMARY)
+        .command_buffer_count(1);
+    let command_buffer =
+        unsafe { device.allocate_command_buffers(&command_buffer_info) }.map_err(|result| {
+            NativeVulkanError::Vulkan {
+                operation: "vkAllocateCommandBuffers(decoded sampling)",
+                result,
+            }
+        })?[0];
+
+    let mut texture = None::<NativeVulkanVideoTexture>;
+    let mut target = None::<NativeVulkanDecodedSamplingTarget>;
+    let mut renderer = None::<NativeVulkanVideoRenderer>;
+    let result =
+        (|| -> Result<NativeVulkanVideoDecodeOutputSamplingSnapshot, NativeVulkanError> {
+            texture = Some(NativeVulkanVideoTexture::Decoded(
+                NativeVulkanDecodedVideoTexture::new(
+                    device,
+                    decoded_image,
+                    extent.width,
+                    extent.height,
+                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    vk::AccessFlags::TRANSFER_READ,
+                )?,
+            ));
+            target = Some(NativeVulkanDecodedSamplingTarget::new(
+                device,
+                memory_properties,
+                extent,
+            )?);
+            let target_ref = target
+                .as_ref()
+                .expect("decoded sampling target must exist after create");
+            renderer = Some(NativeVulkanVideoRenderer::new_with_target_final_layout(
+                device,
+                target_ref.format,
+                extent,
+                &[target_ref.view],
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            )?);
+            let texture_ref = texture
+                .as_ref()
+                .expect("decoded sampling texture must exist after create");
+            let renderer_ref = renderer
+                .as_mut()
+                .expect("decoded sampling renderer must exist after create");
+            renderer_ref.update_descriptors(device, texture_ref);
+            renderer_ref.record_frame(
+                device,
+                command_buffer,
+                0,
+                target_ref.image,
+                vk::ImageLayout::UNDEFINED,
+                texture_ref,
+                FitMode::Stretch,
+            )?;
+            native_vulkan_submit_command_buffer_and_wait(
+                device,
+                queue,
+                command_buffer,
+                "decoded sampling render",
+                wait_semaphore,
+            )?;
+            native_vulkan_record_decoded_sampling_readback_commands(
+                device,
+                command_buffer,
+                target_ref,
+            )?;
+            native_vulkan_submit_command_buffer_and_wait(
+                device,
+                queue,
+                command_buffer,
+                "decoded sampling readback",
+                None,
+            )?;
+            native_vulkan_read_decoded_sampling_snapshot(device, target_ref)
+        })();
+
+    unsafe {
+        if let Some(renderer) = renderer.take() {
+            renderer.destroy(device);
+        }
+        if let Some(texture) = texture.take() {
+            texture.destroy(device);
+        }
+        if let Some(target) = target.take() {
+            target.destroy(device);
+        }
+        device.free_command_buffers(command_pool, &[command_buffer]);
+    }
+    result
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_submit_command_buffer_and_wait(
+    device: &ash::Device,
+    queue: vk::Queue,
+    command_buffer: vk::CommandBuffer,
+    label: &'static str,
+    wait_semaphore: Option<vk::Semaphore>,
+) -> Result<(), NativeVulkanError> {
+    let command_buffers = [command_buffer];
+    let wait_semaphores = wait_semaphore
+        .iter()
+        .copied()
+        .collect::<Vec<vk::Semaphore>>();
+    let wait_stages = wait_semaphore
+        .map(|_| vk::PipelineStageFlags::ALL_COMMANDS)
+        .into_iter()
+        .collect::<Vec<_>>();
+    let submit_info = vk::SubmitInfo::default()
+        .wait_semaphores(&wait_semaphores)
+        .wait_dst_stage_mask(&wait_stages)
+        .command_buffers(&command_buffers);
+    unsafe {
+        device
+            .queue_submit(queue, &[submit_info], vk::Fence::null())
+            .map_err(|result| NativeVulkanError::Vulkan {
+                operation: match label {
+                    "decoded sampling render" => "vkQueueSubmit(decoded sampling render)",
+                    "decoded sampling readback" => "vkQueueSubmit(decoded sampling readback)",
+                    _ => "vkQueueSubmit(decoded sampling)",
+                },
+                result,
+            })?;
+        device
+            .queue_wait_idle(queue)
+            .map_err(|result| NativeVulkanError::Vulkan {
+                operation: match label {
+                    "decoded sampling render" => "vkQueueWaitIdle(decoded sampling render)",
+                    "decoded sampling readback" => "vkQueueWaitIdle(decoded sampling readback)",
+                    _ => "vkQueueWaitIdle(decoded sampling)",
+                },
+                result,
+            })
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_record_decoded_sampling_readback_commands(
+    device: &ash::Device,
+    command_buffer: vk::CommandBuffer,
+    target: &NativeVulkanDecodedSamplingTarget,
+) -> Result<(), NativeVulkanError> {
+    unsafe {
+        device
+            .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
+            .map_err(|result| NativeVulkanError::Vulkan {
+                operation: "vkResetCommandBuffer(decoded sampling readback)",
+                result,
+            })?;
+        let begin_info = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        device
+            .begin_command_buffer(command_buffer, &begin_info)
+            .map_err(|result| NativeVulkanError::Vulkan {
+                operation: "vkBeginCommandBuffer(decoded sampling readback)",
+                result,
+            })?;
+        let copy = vk::BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+            .image_extent(vk::Extent3D {
+                width: target.extent.width,
+                height: target.extent.height,
+                depth: 1,
+            });
+        device.cmd_copy_image_to_buffer(
+            command_buffer,
+            target.image,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            target.readback_buffer,
+            &[copy],
+        );
+        let buffer_barrier = vk::BufferMemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .dst_stage_mask(vk::PipelineStageFlags2::HOST)
+            .dst_access_mask(vk::AccessFlags2::HOST_READ)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .buffer(target.readback_buffer)
+            .offset(0)
+            .size(vk::WHOLE_SIZE);
+        let buffer_barriers = [buffer_barrier];
+        let dependency_info =
+            vk::DependencyInfo::default().buffer_memory_barriers(&buffer_barriers);
+        device.cmd_pipeline_barrier2(command_buffer, &dependency_info);
+        device
+            .end_command_buffer(command_buffer)
+            .map_err(|result| NativeVulkanError::Vulkan {
+                operation: "vkEndCommandBuffer(decoded sampling readback)",
+                result,
+            })?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_read_decoded_sampling_snapshot(
+    device: &ash::Device,
+    target: &NativeVulkanDecodedSamplingTarget,
+) -> Result<NativeVulkanVideoDecodeOutputSamplingSnapshot, NativeVulkanError> {
+    let map = unsafe {
+        device.map_memory(
+            target.readback_memory,
+            0,
+            target.total_bytes,
+            vk::MemoryMapFlags::empty(),
+        )
+    }
+    .map_err(|result| NativeVulkanError::Vulkan {
+        operation: "vkMapMemory(decoded sampling readback)",
+        result,
+    })?;
+
+    let result =
+        (|| -> Result<NativeVulkanVideoDecodeOutputSamplingSnapshot, NativeVulkanError> {
+            if !target
+                .readback_memory_property_flags
+                .contains(vk::MemoryPropertyFlags::HOST_COHERENT)
+            {
+                let range = vk::MappedMemoryRange::default()
+                    .memory(target.readback_memory)
+                    .offset(0)
+                    .size(vk::WHOLE_SIZE);
+                unsafe { device.invalidate_mapped_memory_ranges(&[range]) }.map_err(|result| {
+                    NativeVulkanError::Vulkan {
+                        operation: "vkInvalidateMappedMemoryRanges(decoded sampling readback)",
+                        result,
+                    }
+                })?;
+            }
+            let bytes = unsafe {
+                std::slice::from_raw_parts(map.cast::<u8>(), target.total_bytes as usize)
+            };
+            let summary = native_vulkan_byte_summary(bytes);
+            Ok(NativeVulkanVideoDecodeOutputSamplingSnapshot {
+                source_format: "G8_B8R8_2PLANE_420_UNORM",
+                target_format: native_vulkan_format_label(target.format),
+                source_layout: "transfer-src-optimal",
+                shader_layout: "shader-read-only-optimal",
+                render_extent: (target.extent.width, target.extent.height),
+                y_plane_view_created: true,
+                uv_plane_view_created: true,
+                color_image_created: true,
+                color_image_view_created: true,
+                renderer_created: true,
+                command_buffer_recorded: true,
+                rendered: true,
+                copied: true,
+                host_visible: target
+                    .readback_memory_property_flags
+                    .contains(vk::MemoryPropertyFlags::HOST_VISIBLE),
+                host_coherent: target
+                    .readback_memory_property_flags
+                    .contains(vk::MemoryPropertyFlags::HOST_COHERENT),
+                host_cached: target
+                    .readback_memory_property_flags
+                    .contains(vk::MemoryPropertyFlags::HOST_CACHED),
+                color_image_memory_size: target.color_memory_size,
+                readback_memory_size: target.readback_memory_size,
+                total_bytes: target.total_bytes,
+                rgba_hash: summary.hash,
+                rgba_nonzero_bytes: summary.nonzero_bytes,
+                rgba_min: summary.min,
+                rgba_max: summary.max,
+                rgba_unique_values: summary.unique_values,
+            })
+        })();
+
+    unsafe {
+        device.unmap_memory(target.readback_memory);
+    }
+    result
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 #[allow(clippy::too_many_arguments)]
 fn native_vulkan_decode_h265_first_frame_smoke(
     device: &ash::Device,
     video_queue_device: &ash::khr::video_queue::Device,
     video_decode_queue_device: &ash::khr::video_decode_queue::Device,
     queue_family_index: u32,
+    _queue_flags: vk::QueueFlags,
+    graphics_queue_family_index: Option<u32>,
     session: vk::VideoSessionKHR,
     session_parameters: vk::VideoSessionParametersKHR,
     extent: vk::Extent2D,
@@ -6756,6 +7525,7 @@ fn native_vulkan_decode_h265_first_frame_smoke(
     buffer: &NativeVulkanVideoBitstreamBuffer,
     extract: &NativeVulkanVideoBitstreamExtract,
     parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
+    sample_decoded_output: bool,
 ) -> Result<NativeVulkanVideoFirstFrameDecodeSnapshot, NativeVulkanError> {
     if session_parameters == vk::VideoSessionParametersKHR::null() {
         return Err(NativeVulkanError::Video(
@@ -6790,7 +7560,10 @@ fn native_vulkan_decode_h265_first_frame_smoke(
 
     let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
     let command_pool_info = vk::CommandPoolCreateInfo::default()
-        .flags(vk::CommandPoolCreateFlags::TRANSIENT)
+        .flags(
+            vk::CommandPoolCreateFlags::TRANSIENT
+                | vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+        )
         .queue_family_index(queue_family_index);
     let command_pool =
         unsafe { device.create_command_pool(&command_pool_info, None) }.map_err(|result| {
@@ -6800,8 +7573,42 @@ fn native_vulkan_decode_h265_first_frame_smoke(
             }
         })?;
     let mut readback_buffer = None::<NativeVulkanVideoDecodeReadbackBuffer>;
+    let mut sampling_command_pool = None::<vk::CommandPool>;
+    let mut sampling_ready = None::<vk::Semaphore>;
 
     let result = (|| -> Result<NativeVulkanVideoFirstFrameDecodeSnapshot, NativeVulkanError> {
+        let sampling_queue_family_index = if sample_decoded_output {
+            Some(graphics_queue_family_index.ok_or_else(|| {
+                NativeVulkanError::Video(
+                    "decoded first-frame sampling requires a graphics queue family".to_owned(),
+                )
+            })?)
+        } else {
+            None
+        };
+        if let Some(sampling_queue_family_index) = sampling_queue_family_index {
+            let pool_info = vk::CommandPoolCreateInfo::default()
+                .flags(
+                    vk::CommandPoolCreateFlags::TRANSIENT
+                        | vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+                )
+                .queue_family_index(sampling_queue_family_index);
+            sampling_command_pool = Some(
+                unsafe { device.create_command_pool(&pool_info, None) }.map_err(|result| {
+                    NativeVulkanError::Vulkan {
+                        operation: "vkCreateCommandPool(decoded sampling)",
+                        result,
+                    }
+                })?,
+            );
+            sampling_ready = Some(
+                unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None) }
+                    .map_err(|result| NativeVulkanError::Vulkan {
+                        operation: "vkCreateSemaphore(decoded sampling ready)",
+                        result,
+                    })?,
+            );
+        }
         readback_buffer = Some(native_vulkan_create_video_decode_readback_buffer(
             device,
             memory_properties,
@@ -6933,7 +7740,10 @@ fn native_vulkan_decode_h265_first_frame_smoke(
                     result,
                 })?;
             let command_buffers = [command_buffer];
-            let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
+            let signal_semaphores = sampling_ready.iter().copied().collect::<Vec<_>>();
+            let submit_info = vk::SubmitInfo::default()
+                .command_buffers(&command_buffers)
+                .signal_semaphores(&signal_semaphores);
             device
                 .queue_submit(queue, &[submit_info], vk::Fence::null())
                 .map_err(|result| NativeVulkanError::Vulkan {
@@ -6948,6 +7758,24 @@ fn native_vulkan_decode_h265_first_frame_smoke(
                 })?;
         }
         let output_readback = native_vulkan_read_video_decode_output_snapshot(device, readback)?;
+        let output_sampling = if sample_decoded_output {
+            let sampling_queue_family_index = sampling_queue_family_index
+                .expect("sampling queue family index must exist when sampling is requested");
+            let sampling_queue = unsafe { device.get_device_queue(sampling_queue_family_index, 0) };
+            let sampling_command_pool = sampling_command_pool
+                .expect("sampling command pool must exist when sampling is requested");
+            Some(native_vulkan_sample_decoded_video_output(
+                device,
+                memory_properties,
+                sampling_queue,
+                sampling_command_pool,
+                extent,
+                image.image,
+                sampling_ready,
+            )?)
+        } else {
+            None
+        };
 
         Ok(NativeVulkanVideoFirstFrameDecodeSnapshot {
             codec: "h265-main-8",
@@ -6980,6 +7808,7 @@ fn native_vulkan_decode_h265_first_frame_smoke(
             idr: first_slice.idr,
             irap: first_slice.irap,
             output_readback: Some(output_readback),
+            output_sampling,
         })
     })();
 
@@ -6987,6 +7816,12 @@ fn native_vulkan_decode_h265_first_frame_smoke(
         if let Some(readback) = readback_buffer.as_ref() {
             device.destroy_buffer(readback.buffer, None);
             device.free_memory(readback.memory, None);
+        }
+        if let Some(semaphore) = sampling_ready {
+            device.destroy_semaphore(semaphore, None);
+        }
+        if let Some(command_pool) = sampling_command_pool {
+            device.destroy_command_pool(command_pool, None);
         }
         device.destroy_command_pool(command_pool, None);
     }
@@ -7001,6 +7836,8 @@ fn native_vulkan_decode_h265_first_frame_smoke(
     _video_queue_device: &ash::khr::video_queue::Device,
     _video_decode_queue_device: &ash::khr::video_decode_queue::Device,
     _queue_family_index: u32,
+    _queue_flags: vk::QueueFlags,
+    _graphics_queue_family_index: Option<u32>,
     _session: vk::VideoSessionKHR,
     _session_parameters: vk::VideoSessionParametersKHR,
     _extent: vk::Extent2D,
@@ -7010,6 +7847,7 @@ fn native_vulkan_decode_h265_first_frame_smoke(
     _buffer: &NativeVulkanVideoBitstreamBuffer,
     _extract: &NativeVulkanVideoBitstreamExtract,
     _parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
+    _sample_decoded_output: bool,
 ) -> Result<NativeVulkanVideoFirstFrameDecodeSnapshot, NativeVulkanError> {
     Err(NativeVulkanError::Video(
         "--decode-first-frame requires the native-vulkan-gst-video feature".to_owned(),
@@ -9139,6 +9977,9 @@ fn native_vulkan_stable_byte_hash(bytes: &[u8]) -> u64 {
 fn native_vulkan_video_session_smoke_result(
     options: &NativeVulkanVideoSessionSmokeOptions,
 ) -> &'static str {
+    if options.sample_decoded_first_frame {
+        return "h265-first-frame-decode-output-sampled-and-readback-completed";
+    }
     if options.decode_first_frame {
         return "h265-first-frame-decode-and-output-readback-completed";
     }
@@ -10981,6 +11822,7 @@ fn native_vulkan_format_label(format: vk::Format) -> &'static str {
         vk::Format::R8G8B8A8_UNORM => "R8G8B8A8_UNORM",
         vk::Format::B8G8R8A8_UNORM => "B8G8R8A8_UNORM",
         vk::Format::R8_UNORM => "R8_UNORM",
+        vk::Format::R8G8_UNORM => "R8G8_UNORM",
         _ => "unknown",
     }
 }
