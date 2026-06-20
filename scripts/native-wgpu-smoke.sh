@@ -429,6 +429,7 @@ if [[ -s "$runtime_json" ]]; then
       "last_render_error: \(renderer.last_render_error)",
       if .video then
         "video_backend: \(.video.backend // "cpu-upload")",
+        "video_pipeline_kind: \(.video.pipeline_kind // null)",
         "video_state: \(.video.state // .video.gst_state // null)",
         "video_pulled_samples: \(.video.pulled_samples // null)",
         "video_uploaded_frames: \(.video.uploaded_frames // null)",
@@ -485,6 +486,7 @@ if [[ -s "$runtime_json" ]]; then
     /"present_mode":/ { print "present_mode: " value() }
     /"last_render_error":/ { print "last_render_error: " value() }
     /"backend":/ { print "video_backend: " value() }
+    /"pipeline_kind":/ { print "video_pipeline_kind: " value() }
     /"state":/ { print "video_state: " value() }
     /"gst_state":/ { print "video_gst_state: " value() }
     /"pulled_samples":/ { print "video_pulled_samples: " value() }
