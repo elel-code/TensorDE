@@ -22,6 +22,9 @@ Options:
                         frame. Default: 0.
   --sample-prefix       Also sample the decoded ready-prefix final frame as an NV12 texture into
                         an offscreen RGBA target and read it back.
+  --sample-prefix-sequence
+                        Also sample every decoded ready-prefix frame before a later AU can
+                        overwrite its DPB/output layer.
   --width <px>          Generated/probed width. Default: 3840.
   --height <px>         Generated/probed height. Default: 2160.
   --rate <fps>          Generated frame rate. Default: 240.
@@ -39,6 +42,7 @@ samples=8
 required_ready_prefix=8
 decode_prefix=0
 sample_prefix=0
+sample_prefix_sequence=0
 width=3840
 height=2160
 rate=240
@@ -77,6 +81,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --sample-prefix)
       sample_prefix=1
+      shift
+      ;;
+    --sample-prefix-sequence)
+      sample_prefix=1
+      sample_prefix_sequence=1
       shift
       ;;
     --width)
@@ -169,7 +178,9 @@ summary="$report_dir/summary.txt"
 decode_args=()
 if [[ "$decode_prefix" -gt 0 ]]; then
   decode_args=(--decode-h265-ready-prefix "$decode_prefix")
-  if [[ "$sample_prefix" -eq 1 ]]; then
+  if [[ "$sample_prefix_sequence" -eq 1 ]]; then
+    decode_args+=(--sample-h265-ready-prefix-sequence)
+  elif [[ "$sample_prefix" -eq 1 ]]; then
     decode_args+=(--sample-h265-ready-prefix)
   fi
 fi
@@ -232,6 +243,26 @@ if [[ "$decode_prefix" -gt 0 ]]; then
       exit 1
     fi
   fi
+  if [[ "$sample_prefix_sequence" -eq 1 ]]; then
+    sequence_count="$(jq -r '(.h265_ready_prefix_decode.output_sampling_sequence // []) | length' "$probe_json")"
+    sequence_bad="$(jq -r '[.h265_ready_prefix_decode.output_sampling_sequence[]? | select(.rgba_unique_values <= 1 or .rgba_nonzero_bytes <= 0 or .readback_y_unique_values <= 1 or .readback_uv_unique_values <= 1)] | length' "$probe_json")"
+    sequence_distinct_hashes="$(jq -r '[.h265_ready_prefix_decode.output_sampling_sequence[]?.rgba_hash] | unique | length' "$probe_json")"
+    sequence_layers="$(jq -c '[.h265_ready_prefix_decode.output_sampling_sequence[]?.source_base_array_layer]' "$probe_json")"
+    frame_layers="$(jq -c '[.h265_ready_prefix_decode.frames[]?.dst_base_array_layer]' "$probe_json")"
+    if [[ "$sequence_count" -ne "$decode_prefix" || "$sequence_bad" -ne 0 || "$sequence_distinct_hashes" -le 1 || "$sequence_layers" != "$frame_layers" ]]; then
+      {
+        printf 'FAIL: native Vulkan H.265 decode-prefix sampled sequence was not valid\n'
+        printf 'sequence_count: %s\n' "$sequence_count"
+        printf 'requested_decode_prefix: %s\n' "$decode_prefix"
+        printf 'sequence_bad: %s\n' "$sequence_bad"
+        printf 'sequence_distinct_hashes: %s\n' "$sequence_distinct_hashes"
+        printf 'sequence_layers: %s\n' "$sequence_layers"
+        printf 'frame_layers: %s\n' "$frame_layers"
+        printf 'probe JSON: %s\n' "$probe_json"
+      } | tee "$summary"
+      exit 1
+    fi
+  fi
 fi
 
 {
@@ -257,6 +288,10 @@ fi
   printf 'decode_prefix_sample_rgba_hash: %s\n' "$(jq -r '.h265_ready_prefix_decode.output_sampling.rgba_hash // "none"' "$probe_json")"
   printf 'decode_prefix_sample_rgba_unique: %s\n' "$(jq -r '.h265_ready_prefix_decode.output_sampling.rgba_unique_values // "none"' "$probe_json")"
   printf 'decode_prefix_sample_rgba_nonzero: %s\n' "$(jq -r '.h265_ready_prefix_decode.output_sampling.rgba_nonzero_bytes // "none"' "$probe_json")"
+  printf 'decode_prefix_sample_sequence_requested: %s\n' "$sample_prefix_sequence"
+  printf 'decode_prefix_sample_sequence_count: %s\n' "$(jq -r '(.h265_ready_prefix_decode.output_sampling_sequence // []) | length' "$probe_json")"
+  printf 'decode_prefix_sample_sequence_distinct_hashes: %s\n' "$(jq -r '[.h265_ready_prefix_decode.output_sampling_sequence[]?.rgba_hash] | unique | length' "$probe_json")"
+  printf 'decode_prefix_sample_sequence_layers: %s\n' "$(jq -c '[.h265_ready_prefix_decode.output_sampling_sequence[]?.source_base_array_layer]' "$probe_json")"
   printf 'session_parameters_created: %s\n' "$(jq -r '.session_parameters_created' "$probe_json")"
   printf 'session_parameters_error: %s\n' "$(jq -r '.session_parameters_error // "none"' "$probe_json")"
   printf 'profile: %s\n' "$(jq -r '.bitstream_extract.h265_parameter_sets.sps.profile_label' "$probe_json")"
