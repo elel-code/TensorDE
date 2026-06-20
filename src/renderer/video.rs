@@ -741,17 +741,22 @@ pub(crate) fn configure_video_sink_low_memory(
 }
 
 pub(crate) fn configure_video_pipeline_low_memory(element: &gst::Element) {
-    configure_existing_video_queues(element);
+    configure_existing_video_elements(element);
     if let Ok(bin) = element.clone().downcast::<gst::Bin>() {
         let _ = bin.connect_deep_element_added(|_, _, child| {
-            configure_video_queue_low_memory(child);
+            configure_video_element_low_memory(child);
         });
     }
 }
 
-fn configure_existing_video_queues(element: &gst::Element) {
+fn configure_existing_video_elements(element: &gst::Element) {
+    configure_video_element_low_memory(element);
+    for_each_child_element(element, |child| configure_video_element_low_memory(&child));
+}
+
+fn configure_video_element_low_memory(element: &gst::Element) {
     configure_video_queue_low_memory(element);
-    for_each_child_element(element, |child| configure_video_queue_low_memory(&child));
+    configure_video_decoder_low_latency(element);
 }
 
 fn configure_video_queue_low_memory(element: &gst::Element) {
@@ -762,6 +767,10 @@ fn configure_video_queue_low_memory(element: &gst::Element) {
     set_optional_u32_property(element, "max-size-buffers", tuning.max_size_buffers);
     set_optional_u32_property(element, "max-size-bytes", tuning.max_size_bytes);
     set_optional_u64_property(element, "max-size-time", tuning.max_size_time_ns);
+}
+
+fn configure_video_decoder_low_latency(element: &gst::Element) {
+    set_optional_i32_property(element, "max-display-delay", 0);
 }
 
 fn is_video_queue_element(element: &gst::Element) -> bool {
@@ -843,6 +852,12 @@ fn set_optional_bool_property(element: &gst::Element, name: &str, value: bool) {
 }
 
 fn set_optional_i64_property(element: &gst::Element, name: &str, value: i64) {
+    if element.find_property(name).is_some() {
+        element.set_property(name, value);
+    }
+}
+
+fn set_optional_i32_property(element: &gst::Element, name: &str, value: i32) {
     if element.find_property(name).is_some() {
         element.set_property(name, value);
     }
@@ -2701,6 +2716,21 @@ mod tests {
         assert_eq!(reports[0].max_size_buffers, Some(4));
         assert_eq!(reports[0].max_size_bytes, Some(0));
         assert_eq!(reports[0].max_size_time_ns, Some(25_000_000));
+    }
+
+    #[test]
+    fn configures_decoder_display_delay_when_supported() {
+        gst::init().unwrap();
+        let Some(decoder) = gst::ElementFactory::make("nvh264dec").build().ok() else {
+            return;
+        };
+        if decoder.find_property("max-display-delay").is_none() {
+            return;
+        }
+
+        configure_video_decoder_low_latency(&decoder);
+
+        assert_eq!(decoder.property::<i32>("max-display-delay"), 0);
     }
 
     #[test]
