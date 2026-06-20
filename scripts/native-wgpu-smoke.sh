@@ -17,6 +17,12 @@ Options:
   --sample-interval <s> Sampling interval in whole seconds. Default: 1.
   --runtime-interval-ms <ms>
                         Native runtime JSONL sample interval. Default: 1000.
+  --source <path>       Existing video source. When set, run wgpu video mode.
+  --fit <name>          cover, contain, stretch, or center. Default: cover.
+  --decoder <policy>    auto, hardware-preferred, hardware-required, software.
+                        Default: hardware-preferred.
+  --loop                Loop video playback. Default.
+  --no-loop             Do not loop video playback.
   --target-fps <n>      Render loop target. Default: 240.
   --no-fps-limit        Disable render loop sleep.
   --layer <name>        background, bottom, top, or overlay. Default: bottom.
@@ -41,6 +47,10 @@ wayland_display="${WAYLAND_DISPLAY:-}"
 sample_duration=5
 sample_interval=1
 runtime_interval_ms=1000
+source=""
+fit="cover"
+decoder="hardware-preferred"
+loop_playback=1
 target_fps=240
 fps_limit=1
 layer="bottom"
@@ -88,6 +98,29 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "--runtime-interval-ms requires milliseconds" >&2; exit 2; }
       runtime_interval_ms="$2"
       shift 2
+      ;;
+    --source)
+      [[ $# -ge 2 ]] || { echo "--source requires a path" >&2; exit 2; }
+      source="$2"
+      shift 2
+      ;;
+    --fit)
+      [[ $# -ge 2 ]] || { echo "--fit requires a value" >&2; exit 2; }
+      fit="$2"
+      shift 2
+      ;;
+    --decoder)
+      [[ $# -ge 2 ]] || { echo "--decoder requires a value" >&2; exit 2; }
+      decoder="$2"
+      shift 2
+      ;;
+    --loop)
+      loop_playback=1
+      shift
+      ;;
+    --no-loop)
+      loop_playback=0
+      shift
       ;;
     --no-fps-limit)
       fps_limit=0
@@ -168,6 +201,18 @@ case "$render_mode" in
   solid|pulse) ;;
   *) echo "--render-mode must be solid or pulse" >&2; exit 2 ;;
 esac
+case "$fit" in
+  cover|contain|stretch|center) ;;
+  *) echo "--fit must be cover, contain, stretch, or center" >&2; exit 2 ;;
+esac
+case "$decoder" in
+  auto|hardware-preferred|hw-preferred|hardware-required|hw-required|software) ;;
+  *) echo "--decoder must be auto, hardware-preferred, hardware-required, or software" >&2; exit 2 ;;
+esac
+if [[ -n "$source" && ! -f "$source" ]]; then
+  echo "--source does not exist: $source" >&2
+  exit 2
+fi
 if [[ "$allow_foreground_layer" -eq 0 ]]; then
   case "$layer" in
     top|overlay)
@@ -191,7 +236,11 @@ fi
 
 exe="target/release/gilder-native-wgpu"
 if [[ "$no_build" -eq 0 ]]; then
-  cargo build --release --features native-wgpu-renderer --bin gilder-native-wgpu
+  if [[ -n "$source" ]]; then
+    cargo build --release --features native-wgpu-renderer,video-renderer --bin gilder-native-wgpu
+  else
+    cargo build --release --features native-wgpu-renderer --bin gilder-native-wgpu
+  fi
 fi
 if [[ ! -x "$exe" ]]; then
   echo "missing executable $exe; build it or omit --no-build" >&2
@@ -216,6 +265,14 @@ native_args=(
   --runtime-jsonl "$runtime_jsonl"
   --runtime-interval-ms "$runtime_interval_ms"
 )
+if [[ -n "$source" ]]; then
+  native_args+=(--source "$source" --fit "$fit" --decoder "$decoder")
+  if [[ "$loop_playback" -eq 1 ]]; then
+    native_args+=(--loop)
+  else
+    native_args+=(--no-loop)
+  fi
+fi
 if [[ "$fps_limit" -eq 1 ]]; then
   native_args+=(--target-fps "$target_fps")
 else
@@ -233,6 +290,11 @@ display: ${wayland_display}
 sample_duration: ${sample_duration}
 sample_interval: ${sample_interval}
 runtime_interval_ms: ${runtime_interval_ms}
+mode: $([[ -n "$source" ]] && printf video || printf clear)
+source: ${source:-none}
+fit: ${fit}
+decoder: ${decoder}
+loop_playback: $([[ "$loop_playback" -eq 1 ]] && printf yes || printf no)
 target_fps: $([[ "$fps_limit" -eq 1 ]] && printf '%s' "$target_fps" || printf unlimited)
 layer: ${layer}
 output_name: ${output_name:-compositor-selected}
@@ -310,7 +372,41 @@ awk -F, '
 ' "$samples_csv" >"$summary_txt"
 
 if [[ -s "$runtime_json" ]]; then
-  awk '
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '
+      def renderer: .renderer // .;
+      "runtime_elapsed_ms: \(renderer.runtime_elapsed_ms)",
+      "render_mode: \(renderer.render_mode)",
+      "render_calls: \(renderer.render_calls)",
+      "frames_rendered: \(renderer.frames_rendered)",
+      "frames_skipped: \(renderer.frames_skipped)",
+      "average_render_fps: \(renderer.average_render_fps)",
+      "render_duration_us_avg: \(renderer.render_duration_us_avg)",
+      "render_duration_us_max: \(renderer.render_duration_us_max)",
+      "last_render_duration_us: \(renderer.last_render_duration_us)",
+      "surface_suboptimal_frames: \(renderer.surface_suboptimal_frames)",
+      "surface_lost_skips: \(renderer.surface_lost_skips)",
+      "surface_outdated_skips: \(renderer.surface_outdated_skips)",
+      "surface_timeout_skips: \(renderer.surface_timeout_skips)",
+      "surface_occluded_skips: \(renderer.surface_occluded_skips)",
+      "surface_validation_skips: \(renderer.surface_validation_skips)",
+      "surface_format: \(renderer.surface_format)",
+      "present_mode: \(renderer.present_mode)",
+      "last_render_error: \(renderer.last_render_error)",
+      if .video then
+        "video_gst_state: \(.video.gst_state)",
+        "video_pulled_samples: \(.video.pulled_samples)",
+        "video_uploaded_frames: \(.video.uploaded_frames)",
+        "video_eos_messages: \(.video.eos_messages)",
+        "video_last_frame_size: \(.video.last_frame_size | if . == null then null else "\(.[0])x\(.[1])" end)",
+        "video_last_frame_format: \(.video.last_frame_format)",
+        "video_last_source_stride: \(.video.last_source_stride)",
+        "video_last_upload_stride: \(.video.last_upload_stride)",
+        "video_last_error: \(.video.last_error)"
+      else empty end
+    ' "$runtime_json" >"$runtime_summary_txt"
+  else
+    awk '
     function value() {
       line = $0
       sub(/^[[:space:]]*"[^"]+":[[:space:]]*/, "", line)
@@ -336,7 +432,17 @@ if [[ -s "$runtime_json" ]]; then
     /"surface_format":/ { print "surface_format: " value() }
     /"present_mode":/ { print "present_mode: " value() }
     /"last_render_error":/ { print "last_render_error: " value() }
+    /"gst_state":/ { print "video_gst_state: " value() }
+    /"pulled_samples":/ { print "video_pulled_samples: " value() }
+    /"uploaded_frames":/ { print "video_uploaded_frames: " value() }
+    /"eos_messages":/ { print "video_eos_messages: " value() }
+    /"last_frame_size":/ { print "video_last_frame_size: " value() }
+    /"last_frame_format":/ { print "video_last_frame_format: " value() }
+    /"last_source_stride":/ { print "video_last_source_stride: " value() }
+    /"last_upload_stride":/ { print "video_last_upload_stride: " value() }
+    /"last_error":/ { print "video_last_error: " value() }
   ' "$runtime_json" >"$runtime_summary_txt"
+  fi
 fi
 
 if [[ "$app_status" -ne 0 ]]; then

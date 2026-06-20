@@ -18,6 +18,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "video-renderer")]
+use gst::prelude::*;
+#[cfg(feature = "video-renderer")]
+use gstreamer as gst;
+#[cfg(feature = "video-renderer")]
+use gstreamer_video as gst_video;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeWgpuOptions {
     pub namespace: String,
@@ -166,6 +173,7 @@ pub enum NativeWgpuError {
     Wayland(String),
     Timeout(String),
     Wgpu(String),
+    Video(String),
 }
 
 impl fmt::Display for NativeWgpuError {
@@ -174,6 +182,7 @@ impl fmt::Display for NativeWgpuError {
             Self::Wayland(err) => write!(f, "wayland error: {err}"),
             Self::Timeout(err) => write!(f, "timeout: {err}"),
             Self::Wgpu(err) => write!(f, "wgpu error: {err}"),
+            Self::Video(err) => write!(f, "video error: {err}"),
         }
     }
 }
@@ -297,6 +306,367 @@ impl NativeWgpuSession {
     }
 }
 
+#[cfg(feature = "video-renderer")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeWgpuVideoOptions {
+    pub wayland: NativeWgpuOptions,
+    pub source: std::path::PathBuf,
+    pub fit: crate::core::FitMode,
+    pub loop_playback: bool,
+    pub target_max_fps: Option<u32>,
+    pub decoder_policy: crate::config::VideoDecoderPolicy,
+}
+
+#[cfg(feature = "video-renderer")]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeWgpuVideoSessionSnapshot {
+    pub renderer: NativeWgpuRuntimeSnapshot,
+    pub video: NativeWgpuVideoPlayerSnapshot,
+}
+
+#[cfg(feature = "video-renderer")]
+pub struct NativeWgpuVideoSession {
+    session: NativeWgpuSession,
+    player: NativeWgpuVideoPlayer,
+    fit: crate::core::FitMode,
+}
+
+#[cfg(feature = "video-renderer")]
+impl NativeWgpuVideoSession {
+    pub fn connect(options: NativeWgpuVideoOptions) -> Result<Self, NativeWgpuError> {
+        let mut session = NativeWgpuSession::connect(options.wayland)?;
+        let mut player = NativeWgpuVideoPlayer::new(
+            &options.source,
+            options.loop_playback,
+            options.target_max_fps,
+            options.decoder_policy,
+        )?;
+        player.play()?;
+        if let Some(sample) = player.pull_latest_sample() {
+            let upload = session.renderer.upload_video_sample(&sample, options.fit)?;
+            player.record_upload(upload);
+        }
+        Ok(Self {
+            session,
+            player,
+            fit: options.fit,
+        })
+    }
+
+    pub fn tick(&mut self) -> Result<(), NativeWgpuError> {
+        self.session.host.pump_events()?;
+        if let Some(size) = self.session.host.logical_size() {
+            self.session.renderer.resize(size);
+        }
+        self.player.poll_bus()?;
+        if let Some(sample) = self.player.pull_latest_sample() {
+            match self.session.renderer.upload_video_sample(&sample, self.fit) {
+                Ok(upload) => self.player.record_upload(upload),
+                Err(err) => {
+                    self.player.record_upload_error(err.to_string());
+                    return Err(err);
+                }
+            }
+        }
+        self.session.renderer.render()?;
+        Ok(())
+    }
+
+    pub fn run_for(
+        &mut self,
+        duration: Duration,
+        target_fps: Option<u32>,
+    ) -> Result<(), NativeWgpuError> {
+        let started = Instant::now();
+        let frame_interval = target_fps
+            .filter(|fps| *fps > 0)
+            .map(|fps| Duration::from_secs_f64(1.0 / f64::from(fps)));
+        while started.elapsed() < duration && !self.session.is_closed() {
+            let frame_started = Instant::now();
+            self.tick()?;
+            if let Some(interval) = frame_interval
+                && let Some(remaining) = interval.checked_sub(frame_started.elapsed())
+            {
+                std::thread::sleep(remaining);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.session.is_closed()
+    }
+
+    pub fn snapshot(&self) -> NativeWgpuVideoSessionSnapshot {
+        NativeWgpuVideoSessionSnapshot {
+            renderer: self.session.snapshot(),
+            video: self.player.snapshot(),
+        }
+    }
+
+    pub fn shutdown(&mut self) {
+        self.player.shutdown();
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+impl Drop for NativeWgpuVideoSession {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+struct NativeWgpuVideoPlayer {
+    pipeline: gst::Element,
+    sink: gst::Element,
+    bus: gst::Bus,
+    loop_playback: bool,
+    pulled_samples: u64,
+    uploaded_frames: u64,
+    eos_messages: u64,
+    last_frame_size: Option<(u32, u32)>,
+    last_frame_format: Option<String>,
+    last_source_stride: Option<u32>,
+    last_upload_stride: Option<u32>,
+    last_error: Option<String>,
+}
+
+#[cfg(feature = "video-renderer")]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeWgpuVideoPlayerSnapshot {
+    pub gst_state: String,
+    pub pulled_samples: u64,
+    pub uploaded_frames: u64,
+    pub eos_messages: u64,
+    pub last_frame_size: Option<(u32, u32)>,
+    pub last_frame_format: Option<String>,
+    pub last_source_stride: Option<u32>,
+    pub last_upload_stride: Option<u32>,
+    pub last_error: Option<String>,
+}
+
+#[cfg(feature = "video-renderer")]
+impl NativeWgpuVideoPlayer {
+    fn new(
+        source: &std::path::Path,
+        loop_playback: bool,
+        target_max_fps: Option<u32>,
+        decoder_policy: crate::config::VideoDecoderPolicy,
+    ) -> Result<Self, NativeWgpuError> {
+        gst::init().map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+        crate::renderer::video::apply_decoder_rank_policy(decoder_policy);
+        let sink = native_wgpu_appsink(target_max_fps)?;
+        let pipeline = native_wgpu_video_pipeline(source, &sink)?;
+        crate::renderer::video::configure_video_pipeline_low_memory(&pipeline);
+        let bus = pipeline
+            .bus()
+            .ok_or_else(|| NativeWgpuError::Video("video pipeline has no bus".to_owned()))?;
+        Ok(Self {
+            pipeline,
+            sink,
+            bus,
+            loop_playback,
+            pulled_samples: 0,
+            uploaded_frames: 0,
+            eos_messages: 0,
+            last_frame_size: None,
+            last_frame_format: None,
+            last_source_stride: None,
+            last_upload_stride: None,
+            last_error: None,
+        })
+    }
+
+    fn play(&mut self) -> Result<(), NativeWgpuError> {
+        self.pipeline
+            .set_state(gst::State::Playing)
+            .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+        Ok(())
+    }
+
+    fn shutdown(&mut self) {
+        let _ = self.pipeline.set_state(gst::State::Null);
+        let _ = self.pipeline.state(gst::ClockTime::from_mseconds(500));
+    }
+
+    fn poll_bus(&mut self) -> Result<(), NativeWgpuError> {
+        while let Some(message) = self.bus.pop() {
+            match message.view() {
+                gst::MessageView::Eos(_) => {
+                    self.eos_messages = self.eos_messages.saturating_add(1);
+                    if self.loop_playback {
+                        self.pipeline
+                            .seek_simple(gst::SeekFlags::FLUSH, gst::ClockTime::ZERO)
+                            .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+                        self.play()?;
+                    }
+                }
+                gst::MessageView::Error(err) => {
+                    let message = format!(
+                        "{}: {}",
+                        err.src()
+                            .map(|src| src.path_string())
+                            .unwrap_or_else(|| "gstreamer".into()),
+                        err.error()
+                    );
+                    self.last_error = Some(message.clone());
+                    return Err(NativeWgpuError::Video(message));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn pull_latest_sample(&mut self) -> Option<gst::Sample> {
+        let mut latest_sample = None;
+        let mut pulled_samples = 0u64;
+        let mut timeout_ns = 1_000_000u64;
+        loop {
+            let sample = self
+                .sink
+                .emit_by_name::<Option<gst::Sample>>("try-pull-sample", &[&timeout_ns]);
+            let Some(sample) = sample else {
+                break;
+            };
+            timeout_ns = 0;
+            pulled_samples = pulled_samples.saturating_add(1);
+            latest_sample = Some(sample);
+        }
+        self.pulled_samples = self.pulled_samples.saturating_add(pulled_samples);
+        latest_sample
+    }
+
+    fn record_upload(&mut self, upload: NativeWgpuVideoUploadReport) {
+        self.uploaded_frames = upload.uploaded_frames;
+        self.last_frame_size = Some((upload.width, upload.height));
+        self.last_frame_format = Some(upload.format);
+        self.last_source_stride = Some(upload.source_stride);
+        self.last_upload_stride = Some(upload.upload_stride);
+        self.last_error = None;
+    }
+
+    fn record_upload_error(&mut self, error: String) {
+        self.last_error = Some(error);
+    }
+
+    fn snapshot(&self) -> NativeWgpuVideoPlayerSnapshot {
+        let state = self
+            .pipeline
+            .state(gst::ClockTime::ZERO)
+            .1
+            .name()
+            .to_string();
+        NativeWgpuVideoPlayerSnapshot {
+            gst_state: state,
+            pulled_samples: self.pulled_samples,
+            uploaded_frames: self.uploaded_frames,
+            eos_messages: self.eos_messages,
+            last_frame_size: self.last_frame_size,
+            last_frame_format: self.last_frame_format.clone(),
+            last_source_stride: self.last_source_stride,
+            last_upload_stride: self.last_upload_stride,
+            last_error: self.last_error.clone(),
+        }
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+fn native_wgpu_appsink(target_max_fps: Option<u32>) -> Result<gst::Element, NativeWgpuError> {
+    let sink = gst::ElementFactory::make("appsink")
+        .property("sync", true)
+        .property("async", false)
+        .property("emit-signals", false)
+        .property("enable-last-sample", false)
+        .property("wait-on-eos", false)
+        .property("max-buffers", 2u32)
+        .property_from_str("leaky-type", "downstream")
+        .build()
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    let _ = crate::renderer::video::configure_video_sink_low_memory(&sink, target_max_fps);
+    if sink.find_property("qos").is_some() {
+        sink.set_property("qos", false);
+    }
+    if sink.find_property("max-lateness").is_some() {
+        sink.set_property("max-lateness", -1i64);
+    }
+    Ok(sink)
+}
+
+#[cfg(feature = "video-renderer")]
+fn native_wgpu_video_pipeline(
+    source: &std::path::Path,
+    sink: &gst::Element,
+) -> Result<gst::Element, NativeWgpuError> {
+    let pipeline = gst::Pipeline::new();
+    let filesrc = native_wgpu_gst_element("filesrc")?;
+    filesrc.set_property("location", source.to_string_lossy().as_ref());
+    let decodebin = native_wgpu_gst_element("decodebin")?;
+    let queue = native_wgpu_gst_element("queue")?;
+    if queue.find_property("max-size-buffers").is_some() {
+        queue.set_property("max-size-buffers", 2u32);
+    }
+    if queue.find_property("max-size-bytes").is_some() {
+        queue.set_property("max-size-bytes", 0u32);
+    }
+    if queue.find_property("max-size-time").is_some() {
+        queue.set_property("max-size-time", 25_000_000u64);
+    }
+    if queue.find_property("leaky").is_some() {
+        queue.set_property_from_str("leaky", "downstream");
+    }
+    let videoconvert = native_wgpu_gst_element("videoconvert")?;
+    let capsfilter = native_wgpu_gst_element("capsfilter")?;
+    let caps = "video/x-raw,format=RGBA"
+        .parse::<gst::Caps>()
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    capsfilter.set_property("caps", &caps);
+
+    pipeline
+        .add_many([
+            &filesrc,
+            &decodebin,
+            &queue,
+            &videoconvert,
+            &capsfilter,
+            sink,
+        ])
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    filesrc
+        .link(&decodebin)
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    gst::Element::link_many([&queue, &videoconvert, &capsfilter, sink])
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+
+    let queue_sink = queue
+        .static_pad("sink")
+        .ok_or_else(|| NativeWgpuError::Video("queue has no sink pad".to_owned()))?;
+    decodebin.connect_pad_added(move |_, pad| {
+        if queue_sink.is_linked() || !native_wgpu_pad_is_video(pad) {
+            return;
+        }
+        let _ = pad.link(&queue_sink);
+    });
+
+    Ok(pipeline.upcast::<gst::Element>())
+}
+
+#[cfg(feature = "video-renderer")]
+fn native_wgpu_gst_element(name: &str) -> Result<gst::Element, NativeWgpuError> {
+    gst::ElementFactory::make(name)
+        .build()
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))
+}
+
+#[cfg(feature = "video-renderer")]
+fn native_wgpu_pad_is_video(pad: &gst::Pad) -> bool {
+    let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
+    caps.structure(0)
+        .map(|structure| structure.name().starts_with("video/"))
+        .unwrap_or(false)
+}
+
 struct NativeWgpuSurfaceRenderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -305,6 +675,8 @@ struct NativeWgpuSurfaceRenderer {
     color: NativeWgpuColor,
     render_mode: NativeWgpuRenderMode,
     started: Instant,
+    #[cfg(feature = "video-renderer")]
+    video: Option<NativeWgpuVideoRenderer>,
     render_calls: u64,
     frames_rendered: u64,
     frames_skipped: u64,
@@ -399,6 +771,8 @@ impl NativeWgpuSurfaceRenderer {
             color,
             render_mode,
             started: Instant::now(),
+            #[cfg(feature = "video-renderer")]
+            video: None,
             render_calls: 0,
             frames_rendered: 0,
             frames_skipped: 0,
@@ -424,6 +798,10 @@ impl NativeWgpuSurfaceRenderer {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
+        #[cfg(feature = "video-renderer")]
+        if let Some(video) = self.video.as_mut() {
+            video.update_fit_uniform(&self.queue, (self.config.width, self.config.height));
+        }
     }
 
     fn render(&mut self) -> Result<(), NativeWgpuError> {
@@ -472,24 +850,7 @@ impl NativeWgpuSurfaceRenderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("gilder-native-wgpu-clear"),
             });
-        {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("gilder-native-wgpu-clear-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(self.clear_color().as_wgpu()),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-        }
+        self.encode_render_pass(&mut encoder, &view);
         self.queue.submit(Some(encoder.finish()));
         frame.present();
         self.frames_rendered = self.frames_rendered.saturating_add(1);
@@ -548,10 +909,530 @@ impl NativeWgpuSurfaceRenderer {
         };
         self.color.blend(accent, phase)
     }
+
+    fn encode_render_pass(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
+        #[cfg(feature = "video-renderer")]
+        if let Some(video) = self.video.as_ref().filter(|video| video.has_frame()) {
+            video.encode_render_pass(encoder, view, self.clear_color().as_wgpu());
+            return;
+        }
+
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("gilder-native-wgpu-clear-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(self.clear_color().as_wgpu()),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+    }
+
+    #[cfg(feature = "video-renderer")]
+    fn upload_video_sample(
+        &mut self,
+        sample: &gst::Sample,
+        fit: crate::core::FitMode,
+    ) -> Result<NativeWgpuVideoUploadReport, NativeWgpuError> {
+        let Some(buffer) = sample.buffer() else {
+            return Err(NativeWgpuError::Video(
+                "appsink sample has no buffer".to_owned(),
+            ));
+        };
+        let info = native_wgpu_video_sample_info(sample, buffer)?;
+        let map = buffer
+            .map_readable()
+            .map_err(|_| NativeWgpuError::Video("video buffer map_readable failed".to_owned()))?;
+        let source = map.as_slice();
+
+        let video = self.video.get_or_insert_with(|| {
+            NativeWgpuVideoRenderer::new(&self.device, self.config.format, fit)
+        });
+        video.upload_rgba(
+            &self.device,
+            &self.queue,
+            (self.config.width, self.config.height),
+            &info,
+            source,
+            fit,
+        )
+    }
 }
+
+#[cfg(feature = "video-renderer")]
+struct NativeWgpuVideoRenderer {
+    pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    fit_buffer: wgpu::Buffer,
+    texture: Option<wgpu::Texture>,
+    bind_group: Option<wgpu::BindGroup>,
+    source_size: Option<(u32, u32)>,
+    fit: crate::core::FitMode,
+    staging: Vec<u8>,
+    uploaded_frames: u64,
+}
+
+#[cfg(feature = "video-renderer")]
+impl NativeWgpuVideoRenderer {
+    fn new(
+        device: &wgpu::Device,
+        surface_format: wgpu::TextureFormat,
+        fit: crate::core::FitMode,
+    ) -> Self {
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("gilder-native-wgpu-video-bind-group-layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("gilder-native-wgpu-video-pipeline-layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("gilder-native-wgpu-video-shader"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(NATIVE_WGPU_VIDEO_SHADER)),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("gilder-native-wgpu-video-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("gilder-native-wgpu-video-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let fit_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gilder-native-wgpu-video-fit-buffer"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Self {
+            pipeline,
+            bind_group_layout,
+            sampler,
+            fit_buffer,
+            texture: None,
+            bind_group: None,
+            source_size: None,
+            fit,
+            staging: Vec::new(),
+            uploaded_frames: 0,
+        }
+    }
+
+    fn has_frame(&self) -> bool {
+        self.bind_group.is_some()
+    }
+
+    fn upload_rgba(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surface_size: (u32, u32),
+        info: &NativeWgpuVideoSampleInfo,
+        source: &[u8],
+        fit: crate::core::FitMode,
+    ) -> Result<NativeWgpuVideoUploadReport, NativeWgpuError> {
+        if info.format != "RGBA" {
+            return Err(NativeWgpuError::Video(format!(
+                "expected RGBA appsink frame, got {}",
+                info.format
+            )));
+        }
+        let row_bytes = info
+            .width
+            .checked_mul(4)
+            .ok_or_else(|| NativeWgpuError::Video("video row byte count overflow".to_owned()))?;
+        if info.stride < row_bytes {
+            return Err(NativeWgpuError::Video(format!(
+                "video stride {} is smaller than row bytes {}",
+                info.stride, row_bytes
+            )));
+        }
+        let upload_stride = align_to(row_bytes, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let upload_len = u64::from(upload_stride)
+            .checked_mul(u64::from(info.height))
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| NativeWgpuError::Video("video upload buffer too large".to_owned()))?;
+        self.staging.resize(upload_len, 0);
+
+        let row_bytes_usize = usize::try_from(row_bytes)
+            .map_err(|_| NativeWgpuError::Video("video row bytes too large".to_owned()))?;
+        let upload_stride_usize = usize::try_from(upload_stride)
+            .map_err(|_| NativeWgpuError::Video("video upload stride too large".to_owned()))?;
+        let source_stride_usize = usize::try_from(info.stride)
+            .map_err(|_| NativeWgpuError::Video("video source stride too large".to_owned()))?;
+        let source_offset = usize::try_from(info.offset)
+            .map_err(|_| NativeWgpuError::Video("video source offset too large".to_owned()))?;
+
+        for row in 0..usize::try_from(info.height).unwrap_or_default() {
+            let source_start = source_offset
+                .checked_add(row.checked_mul(source_stride_usize).ok_or_else(|| {
+                    NativeWgpuError::Video("video source row offset overflow".to_owned())
+                })?)
+                .ok_or_else(|| {
+                    NativeWgpuError::Video("video source row offset overflow".to_owned())
+                })?;
+            let source_end = source_start.checked_add(row_bytes_usize).ok_or_else(|| {
+                NativeWgpuError::Video("video source row end overflow".to_owned())
+            })?;
+            if source_end > source.len() {
+                return Err(NativeWgpuError::Video(format!(
+                    "video buffer too small for row {row}: need {source_end}, have {}",
+                    source.len()
+                )));
+            }
+            let destination_start = row.checked_mul(upload_stride_usize).ok_or_else(|| {
+                NativeWgpuError::Video("video destination row offset overflow".to_owned())
+            })?;
+            let destination_end =
+                destination_start
+                    .checked_add(row_bytes_usize)
+                    .ok_or_else(|| {
+                        NativeWgpuError::Video("video destination row end overflow".to_owned())
+                    })?;
+            self.staging[destination_start..destination_end]
+                .copy_from_slice(&source[source_start..source_end]);
+            if upload_stride_usize > row_bytes_usize {
+                self.staging[destination_end..destination_start + upload_stride_usize].fill(0);
+            }
+        }
+
+        self.ensure_texture(device, info.width, info.height);
+        let texture = self
+            .texture
+            .as_ref()
+            .expect("video texture must exist after ensure_texture");
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &self.staging,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(upload_stride),
+                rows_per_image: Some(info.height),
+            },
+            wgpu::Extent3d {
+                width: info.width,
+                height: info.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.fit = fit;
+        self.update_fit_uniform(queue, surface_size);
+        self.uploaded_frames = self.uploaded_frames.saturating_add(1);
+
+        Ok(NativeWgpuVideoUploadReport {
+            width: info.width,
+            height: info.height,
+            format: info.format.clone(),
+            source_stride: info.stride,
+            upload_stride,
+            uploaded_frames: self.uploaded_frames,
+        })
+    }
+
+    fn ensure_texture(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        if self.source_size == Some((width, height)) && self.texture.is_some() {
+            return;
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gilder-native-wgpu-video-texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gilder-native-wgpu-video-bind-group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.fit_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        self.source_size = Some((width, height));
+        self.texture = Some(texture);
+        self.bind_group = Some(bind_group);
+    }
+
+    fn update_fit_uniform(&self, queue: &wgpu::Queue, surface_size: (u32, u32)) {
+        let Some(source_size) = self.source_size else {
+            return;
+        };
+        let (offset, scale) = video_uv_transform(self.fit, source_size, surface_size);
+        let mut bytes = [0u8; 16];
+        write_f32_pair(&mut bytes[0..8], offset);
+        write_f32_pair(&mut bytes[8..16], scale);
+        queue.write_buffer(&self.fit_buffer, 0, &bytes);
+    }
+
+    fn encode_render_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        clear_color: wgpu::Color,
+    ) {
+        let Some(bind_group) = self.bind_group.as_ref() else {
+            return;
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("gilder-native-wgpu-video-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(clear_color),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+struct NativeWgpuVideoSampleInfo {
+    width: u32,
+    height: u32,
+    format: String,
+    offset: u64,
+    stride: u32,
+}
+
+#[cfg(feature = "video-renderer")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeWgpuVideoUploadReport {
+    width: u32,
+    height: u32,
+    format: String,
+    source_stride: u32,
+    upload_stride: u32,
+    uploaded_frames: u64,
+}
+
+#[cfg(feature = "video-renderer")]
+fn native_wgpu_video_sample_info(
+    sample: &gst::Sample,
+    buffer: &gst::BufferRef,
+) -> Result<NativeWgpuVideoSampleInfo, NativeWgpuError> {
+    let caps = sample
+        .caps()
+        .ok_or_else(|| NativeWgpuError::Video("appsink sample has no caps".to_owned()))?;
+    let structure = caps
+        .structure(0)
+        .ok_or_else(|| NativeWgpuError::Video("appsink caps has no structure".to_owned()))?;
+    let width = structure
+        .get::<i32>("width")
+        .map_err(|_| NativeWgpuError::Video("appsink caps missing width".to_owned()))?;
+    let height = structure
+        .get::<i32>("height")
+        .map_err(|_| NativeWgpuError::Video("appsink caps missing height".to_owned()))?;
+    let format = structure
+        .get::<String>("format")
+        .unwrap_or_else(|_| "unknown".to_owned());
+    let width = u32::try_from(width)
+        .ok()
+        .filter(|width| *width > 0)
+        .ok_or_else(|| NativeWgpuError::Video("invalid appsink frame width".to_owned()))?;
+    let height = u32::try_from(height)
+        .ok()
+        .filter(|height| *height > 0)
+        .ok_or_else(|| NativeWgpuError::Video("invalid appsink frame height".to_owned()))?;
+    let row_bytes = width
+        .checked_mul(4)
+        .ok_or_else(|| NativeWgpuError::Video("video row byte count overflow".to_owned()))?;
+    let (offset, stride) = buffer
+        .meta::<gst_video::VideoMeta>()
+        .and_then(|meta| {
+            let offset = meta.offset().first().copied()?;
+            let stride = meta.stride().first().copied()?;
+            let stride = u32::try_from(stride).ok()?;
+            Some((u64::try_from(offset).ok()?, stride))
+        })
+        .unwrap_or((0, row_bytes));
+    Ok(NativeWgpuVideoSampleInfo {
+        width,
+        height,
+        format,
+        offset,
+        stride,
+    })
+}
+
+#[cfg(feature = "video-renderer")]
+fn video_uv_transform(
+    fit: crate::core::FitMode,
+    source_size: (u32, u32),
+    surface_size: (u32, u32),
+) -> ([f32; 2], [f32; 2]) {
+    if matches!(fit, crate::core::FitMode::Stretch) {
+        return ([0.0, 0.0], [1.0, 1.0]);
+    }
+    let source_aspect = source_size.0 as f32 / source_size.1.max(1) as f32;
+    let surface_aspect = surface_size.0.max(1) as f32 / surface_size.1.max(1) as f32;
+    if matches!(
+        fit,
+        crate::core::FitMode::Contain | crate::core::FitMode::Center
+    ) {
+        return ([0.0, 0.0], [1.0, 1.0]);
+    }
+    if source_aspect > surface_aspect {
+        let width = (surface_aspect / source_aspect).clamp(0.0, 1.0);
+        ([(1.0 - width) * 0.5, 0.0], [width, 1.0])
+    } else {
+        let height = (source_aspect / surface_aspect).clamp(0.0, 1.0);
+        ([0.0, (1.0 - height) * 0.5], [1.0, height])
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+fn write_f32_pair(destination: &mut [u8], pair: [f32; 2]) {
+    destination[0..4].copy_from_slice(&pair[0].to_ne_bytes());
+    destination[4..8].copy_from_slice(&pair[1].to_ne_bytes());
+}
+
+#[cfg(feature = "video-renderer")]
+const NATIVE_WGPU_VIDEO_SHADER: &str = r#"
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+struct Fit {
+    offset: vec2<f32>,
+    scale: vec2<f32>,
+};
+
+@group(0) @binding(0) var video_texture: texture_2d<f32>;
+@group(0) @binding(1) var video_sampler: sampler;
+@group(0) @binding(2) var<uniform> fit: Fit;
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -3.0),
+        vec2<f32>(3.0, 1.0),
+        vec2<f32>(-1.0, 1.0),
+    );
+    var uvs = array<vec2<f32>, 3>(
+        vec2<f32>(0.0, 2.0),
+        vec2<f32>(2.0, 0.0),
+        vec2<f32>(0.0, 0.0),
+    );
+
+    var output: VertexOutput;
+    output.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
+    output.uv = fit.offset + uvs[vertex_index] * fit.scale;
+    return output;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(video_texture, video_sampler, input.uv);
+}
+"#;
 
 fn blend_channel(from: f64, to: f64, amount: f64) -> f64 {
     (from + (to - from) * amount).clamp(0.0, 1.0)
+}
+
+#[cfg(feature = "video-renderer")]
+fn align_to(value: u32, alignment: u32) -> u32 {
+    if alignment == 0 {
+        return value;
+    }
+    value.div_ceil(alignment) * alignment
 }
 
 fn average_fps(frames: u64, elapsed: Duration) -> f64 {

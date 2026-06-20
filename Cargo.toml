@@ -62,7 +62,7 @@ rustix = { version = "1.1", features = ["event"], optional = true }
 toml = "1"
 wayland-client = { version = "0.31", features = ["system", "libwayland_1_23"], optional = true }
 wayland-protocols = { version = "0.32", features = ["client", "staging"], optional = true }
-wgpu = { version = "29", default-features = false, features = ["std", "vulkan"], optional = true }
+wgpu = { version = "29", default-features = false, features = ["std", "vulkan", "wgsl"], optional = true }
 zip = { version = "4", default-features = false, features = ["deflate"] }
 
 [lints.rust]

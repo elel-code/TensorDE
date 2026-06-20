@@ -21,7 +21,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::native_wgpu::{
         NativeWgpuColor, NativeWgpuOptions, NativeWgpuRenderMode, NativeWgpuSession,
     };
-    use std::time::Duration;
+    use std::{path::PathBuf, time::Duration};
 
     let mut duration = Duration::from_secs(5);
     let mut target_fps = Some(60);
@@ -30,6 +30,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut output_name = None::<String>;
     let mut color = NativeWgpuColor::default();
     let mut render_mode = NativeWgpuRenderMode::Solid;
+    let mut source = None::<PathBuf>;
+    let mut fit = gilder::core::FitMode::Cover;
+    let mut loop_playback = true;
+    let mut decoder_policy = gilder::config::VideoDecoderPolicy::HardwarePreferred;
     let mut runtime_json = None::<std::path::PathBuf>;
     let mut runtime_jsonl = None::<std::path::PathBuf>;
     let mut runtime_interval = Duration::from_secs(1);
@@ -60,6 +64,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--color" => {
                 let value = args.next().ok_or("--color requires #rrggbb or r,g,b")?;
                 color = parse_color(&value)?;
+            }
+            "--source" => {
+                source = Some(args.next().ok_or("--source requires a path")?.into());
+            }
+            "--fit" => {
+                let value = args.next().ok_or("--fit requires a value")?;
+                fit = parse_fit_mode(&value)?;
+            }
+            "--loop" => loop_playback = true,
+            "--no-loop" => loop_playback = false,
+            "--decoder" => {
+                let value = args.next().ok_or("--decoder requires a value")?;
+                decoder_policy = parse_decoder_policy(&value)?;
             }
             "--render-mode" => {
                 let value = args.next().ok_or("--render-mode requires solid or pulse")?;
@@ -98,6 +115,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
+    if let Some(source) = source {
+        if !source.is_file() {
+            return Err(format!("source does not exist: {}", source.display()).into());
+        }
+        return run_video(
+            source,
+            NativeWgpuOptions {
+                namespace: "gilder-wallpaper-native-wgpu".to_owned(),
+                layer,
+                output_name,
+                initial_color: color,
+                render_mode,
+            },
+            fit,
+            loop_playback,
+            target_fps,
+            decoder_policy,
+            duration,
+            runtime_interval,
+            runtime_json,
+            runtime_jsonl,
+        );
+    }
+
     let mut session = NativeWgpuSession::connect(NativeWgpuOptions {
         namespace: "gilder-wallpaper-native-wgpu".to_owned(),
         layer,
@@ -132,6 +173,126 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .open(path)?;
         serde_json::to_writer_pretty(writer, &session.snapshot())?;
     }
+    Ok(())
+}
+
+#[cfg(feature = "native-wgpu-renderer")]
+fn run_video(
+    source: std::path::PathBuf,
+    wayland: gilder::renderer::native_wgpu::NativeWgpuOptions,
+    fit: gilder::core::FitMode,
+    loop_playback: bool,
+    target_fps: Option<u32>,
+    decoder_policy: gilder::config::VideoDecoderPolicy,
+    duration: std::time::Duration,
+    runtime_interval: std::time::Duration,
+    runtime_json: Option<std::path::PathBuf>,
+    runtime_jsonl: Option<std::path::PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "video-renderer")]
+    {
+        use gilder::renderer::native_wgpu::{NativeWgpuVideoOptions, NativeWgpuVideoSession};
+
+        let mut session = NativeWgpuVideoSession::connect(NativeWgpuVideoOptions {
+            wayland,
+            source,
+            fit,
+            loop_playback,
+            target_max_fps: target_fps,
+            decoder_policy,
+        })?;
+        let runtime_interval = runtime_interval.max(std::time::Duration::from_millis(100));
+        let mut runtime_jsonl = runtime_jsonl
+            .map(|path| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .truncate(true)
+                    .write(true)
+                    .open(path)
+                    .map(std::io::BufWriter::new)
+            })
+            .transpose()?;
+        run_video_session(
+            &mut session,
+            duration,
+            target_fps,
+            runtime_interval,
+            runtime_jsonl.as_mut(),
+        )?;
+
+        if let Some(path) = runtime_json {
+            let writer = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(path)?;
+            serde_json::to_writer_pretty(writer, &session.snapshot())?;
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(feature = "video-renderer"))]
+    {
+        let _ = (
+            source,
+            wayland,
+            fit,
+            loop_playback,
+            target_fps,
+            decoder_policy,
+            duration,
+            runtime_interval,
+            runtime_json,
+            runtime_jsonl,
+        );
+        Err("--source requires building with the video-renderer feature".into())
+    }
+}
+
+#[cfg(all(feature = "native-wgpu-renderer", feature = "video-renderer"))]
+fn run_video_session(
+    session: &mut gilder::renderer::native_wgpu::NativeWgpuVideoSession,
+    duration: std::time::Duration,
+    target_fps: Option<u32>,
+    runtime_interval: std::time::Duration,
+    runtime_jsonl: Option<&mut std::io::BufWriter<std::fs::File>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let started = std::time::Instant::now();
+    let mut last_runtime_sample = std::time::Instant::now();
+    let mut runtime_jsonl = runtime_jsonl;
+    let frame_interval = target_fps
+        .filter(|fps| *fps > 0)
+        .map(|fps| std::time::Duration::from_secs_f64(1.0 / f64::from(fps)));
+
+    write_video_runtime_sample(session, &mut runtime_jsonl)?;
+    while started.elapsed() < duration && !session.is_closed() {
+        let frame_started = std::time::Instant::now();
+        session.tick()?;
+        if last_runtime_sample.elapsed() >= runtime_interval {
+            write_video_runtime_sample(session, &mut runtime_jsonl)?;
+            last_runtime_sample = std::time::Instant::now();
+        }
+        if let Some(interval) = frame_interval
+            && let Some(remaining) = interval.checked_sub(frame_started.elapsed())
+        {
+            std::thread::sleep(remaining);
+        }
+    }
+    write_video_runtime_sample(session, &mut runtime_jsonl)?;
+    Ok(())
+}
+
+#[cfg(all(feature = "native-wgpu-renderer", feature = "video-renderer"))]
+fn write_video_runtime_sample(
+    session: &gilder::renderer::native_wgpu::NativeWgpuVideoSession,
+    writer: &mut Option<&mut std::io::BufWriter<std::fs::File>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(writer) = writer.as_mut() else {
+        return Ok(());
+    };
+    serde_json::to_writer(&mut **writer, &session.snapshot())?;
+    writer.write_all(b"\n")?;
+    writer.flush()?;
     Ok(())
 }
 
@@ -219,8 +380,36 @@ fn rgb_u8(red: u8, green: u8, blue: u8) -> gilder::renderer::native_wgpu::Native
 }
 
 #[cfg(feature = "native-wgpu-renderer")]
+fn parse_fit_mode(value: &str) -> Result<gilder::core::FitMode, Box<dyn std::error::Error>> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "cover" => Ok(gilder::core::FitMode::Cover),
+        "contain" => Ok(gilder::core::FitMode::Contain),
+        "stretch" => Ok(gilder::core::FitMode::Stretch),
+        "center" => Ok(gilder::core::FitMode::Center),
+        other => Err(format!("unsupported fit mode: {other}").into()),
+    }
+}
+
+#[cfg(feature = "native-wgpu-renderer")]
+fn parse_decoder_policy(
+    value: &str,
+) -> Result<gilder::config::VideoDecoderPolicy, Box<dyn std::error::Error>> {
+    match value {
+        "auto" => Ok(gilder::config::VideoDecoderPolicy::Auto),
+        "hardware-preferred" | "hw-preferred" => {
+            Ok(gilder::config::VideoDecoderPolicy::HardwarePreferred)
+        }
+        "hardware-required" | "hw-required" => {
+            Ok(gilder::config::VideoDecoderPolicy::HardwareRequired)
+        }
+        "software" => Ok(gilder::config::VideoDecoderPolicy::Software),
+        other => Err(format!("unsupported decoder policy: {other}").into()),
+    }
+}
+
+#[cfg(feature = "native-wgpu-renderer")]
 fn print_usage() {
     println!(
-        "usage: gilder-native-wgpu [--duration <seconds>] [--target-fps <fps>|--no-fps-limit] [--layer background|bottom|top|overlay] [--allow-foreground-layer] [--output-name <name>] [--color #rrggbb|r,g,b] [--render-mode solid|pulse] [--animate-color] [--runtime-json <path>] [--runtime-jsonl <path>] [--runtime-interval-ms <ms>]"
+        "usage: gilder-native-wgpu [--source <path>] [--duration <seconds>] [--target-fps <fps>|--no-fps-limit] [--layer background|bottom|top|overlay] [--allow-foreground-layer] [--output-name <name>] [--color #rrggbb|r,g,b] [--fit cover|contain|stretch|center] [--decoder auto|hardware-preferred|hardware-required|software] [--loop|--no-loop] [--render-mode solid|pulse] [--animate-color] [--runtime-json <path>] [--runtime-jsonl <path>] [--runtime-interval-ms <ms>]"
     );
 }
