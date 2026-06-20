@@ -15,6 +15,7 @@ fn main() {
 #[cfg(all(feature = "native-wayland-renderer", feature = "video-renderer"))]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::config::VideoDecoderPolicy;
+    use gilder::core::FitMode;
     use gilder::renderer::native_wayland::{
         NativeWaylandLayer, NativeWaylandVideoOptions, NativeWaylandVideoPipeline,
         NativeWaylandVideoSession,
@@ -33,13 +34,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut loop_playback = true;
     let mut decoder_policy = VideoDecoderPolicy::HardwarePreferred;
     let mut sink_throttle = false;
-    let mut layer = NativeWaylandLayer::Background;
+    let mut layer = NativeWaylandLayer::Bottom;
+    let mut allow_foreground_layer = false;
     let mut opaque_region = true;
     let mut input_passthrough = true;
-    let mut pipeline = NativeWaylandVideoPipeline::Playbin;
-    let mut output_name = "native-wayland".to_owned();
+    let mut pipeline = NativeWaylandVideoPipeline::AppsinkDmabufPresent;
+    let mut allow_legacy_waylandsink = false;
+    let mut fit = FitMode::Cover;
+    let mut output_name = None::<String>;
     let mut runtime_json = None::<PathBuf>;
     let mut runtime_interval = Duration::from_secs(1);
+    let mut debug_visible_frame = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -70,6 +75,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let value = args.next().ok_or("--layer requires a value")?;
                 layer = value.parse::<NativeWaylandLayer>()?;
             }
+            "--allow-foreground-layer" => allow_foreground_layer = true,
             "--opaque-region" => opaque_region = true,
             "--no-opaque-region" => opaque_region = false,
             "--input-passthrough" => input_passthrough = true,
@@ -78,8 +84,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let value = args.next().ok_or("--pipeline requires a value")?;
                 pipeline = value.parse::<NativeWaylandVideoPipeline>()?;
             }
+            "--allow-legacy-waylandsink" => allow_legacy_waylandsink = true,
+            "--fit" => {
+                let value = args.next().ok_or("--fit requires a value")?;
+                fit = parse_fit_mode(&value)?;
+            }
             "--output-name" => {
-                output_name = args.next().ok_or("--output-name requires a value")?;
+                output_name = Some(args.next().ok_or("--output-name requires a value")?);
             }
             "--runtime-json" => runtime_json = args.next().map(PathBuf::from),
             "--runtime-interval-ms" => {
@@ -90,6 +101,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map(Duration::from_millis)
                     .ok_or("--runtime-interval-ms requires a value")?;
             }
+            "--debug-visible-frame" => debug_visible_frame = true,
             "-h" | "--help" => {
                 print_usage();
                 return Ok(());
@@ -101,6 +113,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let source = source.ok_or("--source is required")?;
     if !source.is_file() {
         return Err(format!("source does not exist: {}", source.display()).into());
+    }
+    if !allow_foreground_layer
+        && matches!(layer, NativeWaylandLayer::Top | NativeWaylandLayer::Overlay)
+    {
+        return Err(format!(
+            "--layer {} covers normal application windows; pass --allow-foreground-layer for foreground debug",
+            layer.as_str()
+        )
+        .into());
+    }
+    if pipeline.uses_legacy_waylandsink() && !allow_legacy_waylandsink {
+        return Err(
+            "--pipeline playbin/playbin3 is the deprecated playbin+waylandsink path; pass --allow-legacy-waylandsink only for explicit comparison runs"
+                .into(),
+        );
     }
 
     let runtime_interval = runtime_interval.max(Duration::from_millis(100));
@@ -120,10 +147,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             host: gilder::renderer::native_wayland::NativeWaylandHostOptions {
                 namespace: "gilder-wallpaper-native-video".to_owned(),
                 layer,
+                output_name: output_name.clone(),
                 opaque_region,
                 input_passthrough,
             },
-            output_name,
+            output_name: output_name.unwrap_or_else(|| "native-wayland".to_owned()),
+            fit,
             muted,
             loop_playback,
             target_max_fps,
@@ -131,6 +160,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             decoder_policy,
             start_offset_ms: 0,
             pipeline,
+            debug_visible_frame,
         },
     )?;
     session.play()?;
@@ -142,7 +172,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let now = Instant::now();
         if now >= next_runtime_sample {
             if let Some(writer) = runtime_json.as_mut() {
-                serde_json::to_writer(&mut *writer, &session.runtime_snapshot())?;
+                serde_json::to_writer(&mut *writer, &session.runtime_sample_snapshot())?;
                 writer.write_all(b"\n")?;
                 writer.flush()?;
             }
@@ -177,8 +207,19 @@ fn parse_decoder_policy(
 }
 
 #[cfg(all(feature = "native-wayland-renderer", feature = "video-renderer"))]
+fn parse_fit_mode(value: &str) -> Result<gilder::core::FitMode, Box<dyn std::error::Error>> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "cover" => Ok(gilder::core::FitMode::Cover),
+        "contain" => Ok(gilder::core::FitMode::Contain),
+        "stretch" => Ok(gilder::core::FitMode::Stretch),
+        "center" => Ok(gilder::core::FitMode::Center),
+        other => Err(format!("unsupported fit mode: {other}").into()),
+    }
+}
+
+#[cfg(all(feature = "native-wayland-renderer", feature = "video-renderer"))]
 fn print_usage() {
     println!(
-        "usage: gilder-native-video --source <path> [--duration <seconds>] [--target-max-fps <fps>|--no-fps-limit] [--sink-throttle] [--decoder auto|hardware-preferred|hardware-required|software] [--pipeline playbin|playbin3] [--layer background|bottom|top|overlay] [--runtime-json <path>]"
+        "usage: gilder-native-video --source <path> [--duration <seconds>] [--target-max-fps <fps>|--no-fps-limit] [--sink-throttle] [--decoder auto|hardware-preferred|hardware-required|software] [--pipeline appsink-dmabuf-present|appsink-mmap-probe|appsink-probe|explicit-h264-gl|playbin|playbin3] [--allow-legacy-waylandsink] [--fit cover|contain|stretch|center] [--layer background|bottom|top|overlay] [--allow-foreground-layer] [--output-name <wl_output-name>] [--runtime-json <path>] [--debug-visible-frame]"
     );
 }

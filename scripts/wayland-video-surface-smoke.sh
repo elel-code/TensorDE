@@ -31,6 +31,11 @@ Options:
   --video-rate <fps> Generated test video frame rate. Default: 12
   --video-duration <sec>
                      Generated test video duration. Default: 2
+  --manifest-max-fps <fps>
+                     Set generated manifest entry max_fps. Default: 60
+  --performance-max-fps <fps>
+                     Write temporary performance interactive/background/battery max FPS.
+                     Default: use daemon defaults
   --video-queue-max-size-buffers <count>
                      Set GILDER_VIDEO_QUEUE_MAX_SIZE_BUFFERS for the isolated daemon
   --video-queue-max-size-time-ms <ms>
@@ -194,6 +199,8 @@ sample_interval=1
 video_size="128x72"
 video_rate=12
 video_duration=2
+manifest_max_fps=60
+performance_max_fps=""
 video_queue_max_size_buffers=""
 video_queue_max_size_time_ms=""
 video_queue_max_size_bytes=""
@@ -345,6 +352,16 @@ while [[ $# -gt 0 ]]; do
     --video-duration)
       [[ $# -ge 2 ]] || { echo "--video-duration requires seconds" >&2; exit 2; }
       video_duration="$2"
+      shift 2
+      ;;
+    --manifest-max-fps)
+      [[ $# -ge 2 ]] || { echo "--manifest-max-fps requires fps" >&2; exit 2; }
+      manifest_max_fps="$2"
+      shift 2
+      ;;
+    --performance-max-fps)
+      [[ $# -ge 2 ]] || { echo "--performance-max-fps requires fps" >&2; exit 2; }
+      performance_max_fps="$2"
       shift 2
       ;;
     --video-queue-max-size-buffers)
@@ -842,6 +859,14 @@ if [[ ! "$video_duration" =~ ^[1-9][0-9]*$ ]]; then
   echo "--video-duration must be a positive integer" >&2
   exit 2
 fi
+if [[ ! "$manifest_max_fps" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--manifest-max-fps must be a positive integer" >&2
+  exit 2
+fi
+if [[ -n "$performance_max_fps" && ! "$performance_max_fps" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--performance-max-fps must be a positive integer" >&2
+  exit 2
+fi
 if [[ -n "$video_queue_max_size_buffers" && ! "$video_queue_max_size_buffers" =~ ^[0-9]+$ ]]; then
   echo "--video-queue-max-size-buffers must be a non-negative integer" >&2
   exit 2
@@ -991,6 +1016,7 @@ status_resumed="$work_dir/status-resumed.json"
 wallpaper_dir="$work_dir/wallpaper.gwpdir"
 source_dir="$work_dir/source"
 video_source_path="$source_dir/loop.mp4"
+config_file="$work_dir/config/gilder/config.toml"
 output_state_override_file="$work_dir/output-state.override"
 resume_latency_csv="$work_dir/fullscreen-resume-latency.csv"
 resume_latency_summary="$work_dir/fullscreen-resume-latency.txt"
@@ -1205,6 +1231,8 @@ sample_interval: ${sample_interval}
 video_size: ${video_size}
 video_rate: ${video_rate}
 video_duration: ${video_duration}
+manifest_max_fps: ${manifest_max_fps}
+performance_max_fps: ${performance_max_fps:-default}
 video_queue_max_size_buffers: ${video_queue_max_size_buffers:-default}
 video_queue_max_size_time_ms: ${video_queue_max_size_time_ms:-default}
 video_queue_max_size_bytes: ${video_queue_max_size_bytes:-default}
@@ -1277,6 +1305,7 @@ wayland_display: ${WAYLAND_DISPLAY:-unset}
 xdg_runtime_dir: ${XDG_RUNTIME_DIR:-unset}
 checks: ${checks_path}
 output_state_override_file: $([[ "$measure_fullscreen_resume" -eq 1 ]] && printf '%s' "$output_state_override_file" || printf 'none')
+config_file: ${config_file}
 resume_latency_csv: $([[ "$measure_fullscreen_resume" -eq 1 ]] && printf '%s' "$resume_latency_csv" || printf 'none')
 video_runtime_csv: ${video_runtime_path}
 validation_report: ${validation_report_path}
@@ -1646,6 +1675,11 @@ expects_active_video_plan: $(active_video_plan_expectation_text)
 sample_performance: ${sample_performance}
 sample_paused: ${sample_paused}
 measure_fullscreen_resume: ${measure_fullscreen_resume}
+video_size: ${video_size}
+video_rate: ${video_rate}
+video_duration: ${video_duration}
+manifest_max_fps: ${manifest_max_fps}
+performance_max_fps: ${performance_max_fps:-default}
 require_video_runtime_row: ${require_video_runtime_row}
 expect_renderer_video_pipeline_lifecycle: ${expect_renderer_video_pipeline_lifecycle}
 expect_gtk_frame_clock_phases: ${expect_gtk_frame_clock_phases[*]:-none}
@@ -2430,6 +2464,15 @@ fi
 printf 'phase,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled,memory_retention_level,memory_retention_notes,memory_retention_estimated_min_pool_bytes,memory_retention_estimated_max_pool_bytes,memory_retention_pool_reports,memory_retention_system_memory_pool_reports,memory_retention_gpu_memory_pool_reports,memory_retention_dmabuf_pool_reports,memory_retention_other_memory_pool_reports,memory_retention_sink_frame_retention,queue_report_count,queue_elements,queue_max_size_buffers,queue_max_size_bytes,queue_max_size_time_ns,queue_current_level_buffers,queue_current_level_bytes,queue_current_level_time_ns,formats,sink_formats,format_paths,frame_sizes,caps_sources\n' > "$video_runtime_path"
 
 mkdir -p "$work_dir/runtime" "$work_dir/config" "$work_dir/state" "$work_dir/cache" "$source_dir"
+if [[ -n "$performance_max_fps" ]]; then
+  mkdir -p "$(dirname "$config_file")"
+  cat > "$config_file" <<EOF
+[performance]
+interactive_max_fps = ${performance_max_fps}
+background_max_fps = ${performance_max_fps}
+battery_max_fps = ${performance_max_fps}
+EOF
+fi
 if [[ "$measure_fullscreen_resume" -eq 1 ]]; then
   printf 'fullscreen\n' > "$output_state_override_file"
 fi
@@ -2447,6 +2490,7 @@ cat > "$source_dir/project.json" <<'EOF'
 }
 EOF
 "$gilder_convert" wallpaper-engine "$source_dir" "$wallpaper_dir" >/dev/null
+sed -i -E "s/(\"max_fps\"[[:space:]]*:[[:space:]]*)[0-9]+/\\1${manifest_max_fps}/" "$wallpaper_dir/manifest.gilder.json"
 pass "generated video wallpaper package"
 
 daemon_env=(

@@ -368,6 +368,8 @@ dependencies = [
  "gtk4",
  "gtk4-layer-shell",
  "jiff",
+ "libc",
+ "rustix",
  "serde",
  "serde_json",
  "smithay-client-toolkit",
