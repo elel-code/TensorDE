@@ -196,6 +196,12 @@ pub struct NativeVulkanVideoDecodeDeviceSnapshot {
     pub h264_direct_decode_ready: bool,
     pub h264_zero_copy_sampled_candidate: bool,
     pub h264_profiles: Vec<NativeVulkanVideoDecodeH264ProfileSnapshot>,
+    pub h265_direct_decode_ready: bool,
+    pub h265_zero_copy_sampled_candidate: bool,
+    pub h265_profiles: Vec<NativeVulkanVideoDecodeH265ProfileSnapshot>,
+    pub av1_direct_decode_ready: bool,
+    pub av1_zero_copy_sampled_candidate: bool,
+    pub av1_profiles: Vec<NativeVulkanVideoDecodeAv1ProfileSnapshot>,
     pub queue_families: Vec<NativeVulkanVideoDecodeQueueFamilySnapshot>,
 }
 
@@ -239,6 +245,63 @@ pub struct NativeVulkanVideoDecodeH264ProfileSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVideoDecodeH265ProfileSnapshot {
+    pub profile: &'static str,
+    pub std_profile_idc: u32,
+    pub chroma_subsampling: Vec<&'static str>,
+    pub luma_bit_depth: Vec<&'static str>,
+    pub chroma_bit_depth: Vec<&'static str>,
+    pub supported: bool,
+    pub max_level_idc: Option<u32>,
+    pub max_level: Option<&'static str>,
+    pub capability_flags: Vec<&'static str>,
+    pub decode_capability_flags: Vec<&'static str>,
+    pub min_bitstream_buffer_offset_alignment: Option<u64>,
+    pub min_bitstream_buffer_size_alignment: Option<u64>,
+    pub picture_access_granularity: Option<(u32, u32)>,
+    pub min_coded_extent: Option<(u32, u32)>,
+    pub max_coded_extent: Option<(u32, u32)>,
+    pub max_dpb_slots: Option<u32>,
+    pub max_active_reference_pictures: Option<u32>,
+    pub dpb_formats: Vec<NativeVulkanVideoFormatPropertiesSnapshot>,
+    pub output_formats: Vec<NativeVulkanVideoFormatPropertiesSnapshot>,
+    pub sampled_output_formats: Vec<NativeVulkanVideoFormatPropertiesSnapshot>,
+    pub nv12_dpb_supported: bool,
+    pub nv12_output_supported: bool,
+    pub nv12_sampled_output_supported: bool,
+    pub query_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVideoDecodeAv1ProfileSnapshot {
+    pub profile: &'static str,
+    pub std_profile: u32,
+    pub film_grain_support: bool,
+    pub chroma_subsampling: Vec<&'static str>,
+    pub luma_bit_depth: Vec<&'static str>,
+    pub chroma_bit_depth: Vec<&'static str>,
+    pub supported: bool,
+    pub max_level: Option<&'static str>,
+    pub max_level_raw: Option<u32>,
+    pub capability_flags: Vec<&'static str>,
+    pub decode_capability_flags: Vec<&'static str>,
+    pub min_bitstream_buffer_offset_alignment: Option<u64>,
+    pub min_bitstream_buffer_size_alignment: Option<u64>,
+    pub picture_access_granularity: Option<(u32, u32)>,
+    pub min_coded_extent: Option<(u32, u32)>,
+    pub max_coded_extent: Option<(u32, u32)>,
+    pub max_dpb_slots: Option<u32>,
+    pub max_active_reference_pictures: Option<u32>,
+    pub dpb_formats: Vec<NativeVulkanVideoFormatPropertiesSnapshot>,
+    pub output_formats: Vec<NativeVulkanVideoFormatPropertiesSnapshot>,
+    pub sampled_output_formats: Vec<NativeVulkanVideoFormatPropertiesSnapshot>,
+    pub nv12_dpb_supported: bool,
+    pub nv12_output_supported: bool,
+    pub nv12_sampled_output_supported: bool,
+    pub query_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVideoFormatPropertiesSnapshot {
     pub format: &'static str,
     pub format_raw: i32,
@@ -246,6 +309,16 @@ pub struct NativeVulkanVideoFormatPropertiesSnapshot {
     pub image_tiling: &'static str,
     pub image_usage_flags: Vec<&'static str>,
     pub image_create_flags: Vec<&'static str>,
+}
+
+struct NativeVulkanVideoDecodeFormatProbe {
+    dpb_formats: Vec<NativeVulkanVideoFormatPropertiesSnapshot>,
+    output_formats: Vec<NativeVulkanVideoFormatPropertiesSnapshot>,
+    sampled_output_formats: Vec<NativeVulkanVideoFormatPropertiesSnapshot>,
+    nv12_dpb_supported: bool,
+    nv12_output_supported: bool,
+    nv12_sampled_output_supported: bool,
+    query_error: Option<String>,
 }
 
 pub type NativeVulkanVideoDecodeProbeResult =
@@ -5027,6 +5100,36 @@ fn native_vulkan_video_decode_probe_inner(
         let h264_zero_copy_sampled_candidate = h264_profiles
             .iter()
             .any(|profile| profile.supported && profile.nv12_sampled_output_supported);
+        let h265_profiles = native_vulkan_video_decode_h265_profiles(
+            &video_queue_loader,
+            physical_device,
+            has_video_queue_extension
+                && has_video_decode_queue_extension
+                && decode_codec_extensions.iter().any(|extension| {
+                    extension == ash_extension_name(vk::KHR_VIDEO_DECODE_H265_NAME)
+                }),
+        );
+        let h265_direct_decode_ready = h265_profiles.iter().any(|profile| {
+            profile.supported && profile.nv12_dpb_supported && profile.nv12_output_supported
+        });
+        let h265_zero_copy_sampled_candidate = h265_profiles
+            .iter()
+            .any(|profile| profile.supported && profile.nv12_sampled_output_supported);
+        let av1_profiles = native_vulkan_video_decode_av1_profiles(
+            &video_queue_loader,
+            physical_device,
+            has_video_queue_extension
+                && has_video_decode_queue_extension
+                && decode_codec_extensions
+                    .iter()
+                    .any(|extension| extension == "VK_KHR_video_decode_av1"),
+        );
+        let av1_direct_decode_ready = av1_profiles.iter().any(|profile| {
+            profile.supported && profile.nv12_dpb_supported && profile.nv12_output_supported
+        });
+        let av1_zero_copy_sampled_candidate = av1_profiles
+            .iter()
+            .any(|profile| profile.supported && profile.nv12_sampled_output_supported);
         devices.push(NativeVulkanVideoDecodeDeviceSnapshot {
             physical_device_index,
             physical_device_name: native_vulkan_physical_device_name(properties),
@@ -5043,6 +5146,12 @@ fn native_vulkan_video_decode_probe_inner(
             h264_direct_decode_ready,
             h264_zero_copy_sampled_candidate,
             h264_profiles,
+            h265_direct_decode_ready,
+            h265_zero_copy_sampled_candidate,
+            h265_profiles,
+            av1_direct_decode_ready,
+            av1_zero_copy_sampled_candidate,
+            av1_profiles,
             queue_families,
         });
     }
@@ -5174,66 +5283,11 @@ fn native_vulkan_video_decode_h264_profile(
         )
     };
 
-    let dpb_and_output_coincide = decode_capability_flags
-        .contains(vk::VideoDecodeCapabilityFlagsKHR::DPB_AND_OUTPUT_COINCIDE);
-    let dpb_usage = if dpb_and_output_coincide {
-        vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR | vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR
-    } else {
-        vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR
-    };
-    let output_usage = vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR;
-    let sampled_output_usage =
-        vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR | vk::ImageUsageFlags::SAMPLED;
-
-    let mut query_errors = Vec::new();
-    let dpb_formats = match native_vulkan_video_format_properties(
+    let format_probe = native_vulkan_video_decode_format_probe(
         video_queue_loader,
         physical_device,
         &profile_info,
-        dpb_usage,
-    ) {
-        Ok(formats) => formats,
-        Err(err) => {
-            query_errors.push(err);
-            Vec::new()
-        }
-    };
-    let output_formats = match native_vulkan_video_format_properties(
-        video_queue_loader,
-        physical_device,
-        &profile_info,
-        output_usage,
-    ) {
-        Ok(formats) => formats,
-        Err(err) => {
-            query_errors.push(err);
-            Vec::new()
-        }
-    };
-    let sampled_output_formats = match native_vulkan_video_format_properties(
-        video_queue_loader,
-        physical_device,
-        &profile_info,
-        sampled_output_usage,
-    ) {
-        Ok(formats) => formats,
-        Err(err) => {
-            query_errors.push(err);
-            Vec::new()
-        }
-    };
-    let sampled_output_required_usage: &[&str] = if dpb_and_output_coincide {
-        &["video-decode-dst", "video-decode-dpb", "sampled"]
-    } else {
-        &["video-decode-dst", "sampled"]
-    };
-    let nv12_dpb_supported =
-        native_vulkan_video_formats_include_nv12_with_usage(&dpb_formats, &["video-decode-dpb"]);
-    let nv12_output_supported =
-        native_vulkan_video_formats_include_nv12_with_usage(&output_formats, &["video-decode-dst"]);
-    let nv12_sampled_output_supported = native_vulkan_video_formats_include_nv12_with_usage(
-        &sampled_output_formats,
-        sampled_output_required_usage,
+        decode_capability_flags,
     );
 
     NativeVulkanVideoDecodeH264ProfileSnapshot {
@@ -5258,13 +5312,13 @@ fn native_vulkan_video_decode_h264_profile(
         max_dpb_slots: Some(max_dpb_slots),
         max_active_reference_pictures: Some(max_active_reference_pictures),
         field_offset_granularity: Some(field_offset_granularity),
-        dpb_formats,
-        output_formats,
-        sampled_output_formats,
-        nv12_dpb_supported,
-        nv12_output_supported,
-        nv12_sampled_output_supported,
-        query_error: (!query_errors.is_empty()).then(|| query_errors.join("; ")),
+        dpb_formats: format_probe.dpb_formats,
+        output_formats: format_probe.output_formats,
+        sampled_output_formats: format_probe.sampled_output_formats,
+        nv12_dpb_supported: format_probe.nv12_dpb_supported,
+        nv12_output_supported: format_probe.nv12_output_supported,
+        nv12_sampled_output_supported: format_probe.nv12_sampled_output_supported,
+        query_error: format_probe.query_error,
     }
 }
 
@@ -5300,6 +5354,466 @@ fn native_vulkan_video_decode_h264_profile_error(
         nv12_output_supported: false,
         nv12_sampled_output_supported: false,
         query_error: Some(query_error),
+    }
+}
+
+fn native_vulkan_video_decode_h265_profiles(
+    video_queue_loader: &ash::khr::video_queue::Instance,
+    physical_device: vk::PhysicalDevice,
+    query_enabled: bool,
+) -> Vec<NativeVulkanVideoDecodeH265ProfileSnapshot> {
+    [
+        (
+            "main-8",
+            vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN,
+            vk::VideoComponentBitDepthFlagsKHR::TYPE_8,
+        ),
+        (
+            "main-10",
+            vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN_10,
+            vk::VideoComponentBitDepthFlagsKHR::TYPE_10,
+        ),
+    ]
+    .into_iter()
+    .map(|(profile, std_profile_idc, bit_depth)| {
+        if query_enabled {
+            native_vulkan_video_decode_h265_profile(
+                video_queue_loader,
+                physical_device,
+                profile,
+                std_profile_idc,
+                bit_depth,
+            )
+        } else {
+            native_vulkan_video_decode_h265_profile_error(
+                profile,
+                std_profile_idc,
+                bit_depth,
+                "required Vulkan Video H.265 decode extensions are unavailable".to_owned(),
+            )
+        }
+    })
+    .collect()
+}
+
+fn native_vulkan_video_decode_h265_profile(
+    video_queue_loader: &ash::khr::video_queue::Instance,
+    physical_device: vk::PhysicalDevice,
+    profile: &'static str,
+    std_profile_idc: vk::native::StdVideoH265ProfileIdc,
+    bit_depth: vk::VideoComponentBitDepthFlagsKHR,
+) -> NativeVulkanVideoDecodeH265ProfileSnapshot {
+    let chroma_subsampling = vk::VideoChromaSubsamplingFlagsKHR::TYPE_420;
+    let mut h265_profile_info =
+        vk::VideoDecodeH265ProfileInfoKHR::default().std_profile_idc(std_profile_idc);
+    let profile_info = vk::VideoProfileInfoKHR::default()
+        .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_H265)
+        .chroma_subsampling(chroma_subsampling)
+        .luma_bit_depth(bit_depth)
+        .chroma_bit_depth(bit_depth)
+        .push_next(&mut h265_profile_info);
+    let (
+        capability_flags,
+        min_bitstream_buffer_offset_alignment,
+        min_bitstream_buffer_size_alignment,
+        picture_access_granularity,
+        min_coded_extent,
+        max_coded_extent,
+        max_dpb_slots,
+        max_active_reference_pictures,
+        decode_capability_flags,
+        max_level_idc,
+    ) = {
+        let mut h265_capabilities = vk::VideoDecodeH265CapabilitiesKHR::default();
+        let mut decode_capabilities = vk::VideoDecodeCapabilitiesKHR::default();
+        let mut capabilities = vk::VideoCapabilitiesKHR::default()
+            .push_next(&mut h265_capabilities)
+            .push_next(&mut decode_capabilities);
+
+        let capabilities_result = unsafe {
+            (video_queue_loader
+                .fp()
+                .get_physical_device_video_capabilities_khr)(
+                physical_device,
+                &profile_info,
+                &mut capabilities,
+            )
+        }
+        .result();
+        if let Err(result) = capabilities_result {
+            return native_vulkan_video_decode_h265_profile_error(
+                profile,
+                std_profile_idc,
+                bit_depth,
+                format!("vkGetPhysicalDeviceVideoCapabilitiesKHR: {result:?}"),
+            );
+        }
+
+        (
+            capabilities.flags,
+            capabilities.min_bitstream_buffer_offset_alignment,
+            capabilities.min_bitstream_buffer_size_alignment,
+            (
+                capabilities.picture_access_granularity.width,
+                capabilities.picture_access_granularity.height,
+            ),
+            (
+                capabilities.min_coded_extent.width,
+                capabilities.min_coded_extent.height,
+            ),
+            (
+                capabilities.max_coded_extent.width,
+                capabilities.max_coded_extent.height,
+            ),
+            capabilities.max_dpb_slots,
+            capabilities.max_active_reference_pictures,
+            decode_capabilities.flags,
+            h265_capabilities.max_level_idc,
+        )
+    };
+    let format_probe = native_vulkan_video_decode_format_probe(
+        video_queue_loader,
+        physical_device,
+        &profile_info,
+        decode_capability_flags,
+    );
+
+    NativeVulkanVideoDecodeH265ProfileSnapshot {
+        profile,
+        std_profile_idc,
+        chroma_subsampling: native_vulkan_video_chroma_subsampling_labels(chroma_subsampling),
+        luma_bit_depth: native_vulkan_video_component_bit_depth_labels(bit_depth),
+        chroma_bit_depth: native_vulkan_video_component_bit_depth_labels(bit_depth),
+        supported: true,
+        max_level_idc: Some(max_level_idc),
+        max_level: native_vulkan_h265_level_label(max_level_idc),
+        capability_flags: native_vulkan_video_capability_flag_labels(capability_flags),
+        decode_capability_flags: native_vulkan_video_decode_capability_flag_labels(
+            decode_capability_flags,
+        ),
+        min_bitstream_buffer_offset_alignment: Some(min_bitstream_buffer_offset_alignment),
+        min_bitstream_buffer_size_alignment: Some(min_bitstream_buffer_size_alignment),
+        picture_access_granularity: Some(picture_access_granularity),
+        min_coded_extent: Some(min_coded_extent),
+        max_coded_extent: Some(max_coded_extent),
+        max_dpb_slots: Some(max_dpb_slots),
+        max_active_reference_pictures: Some(max_active_reference_pictures),
+        dpb_formats: format_probe.dpb_formats,
+        output_formats: format_probe.output_formats,
+        sampled_output_formats: format_probe.sampled_output_formats,
+        nv12_dpb_supported: format_probe.nv12_dpb_supported,
+        nv12_output_supported: format_probe.nv12_output_supported,
+        nv12_sampled_output_supported: format_probe.nv12_sampled_output_supported,
+        query_error: format_probe.query_error,
+    }
+}
+
+fn native_vulkan_video_decode_h265_profile_error(
+    profile: &'static str,
+    std_profile_idc: vk::native::StdVideoH265ProfileIdc,
+    bit_depth: vk::VideoComponentBitDepthFlagsKHR,
+    query_error: String,
+) -> NativeVulkanVideoDecodeH265ProfileSnapshot {
+    NativeVulkanVideoDecodeH265ProfileSnapshot {
+        profile,
+        std_profile_idc,
+        chroma_subsampling: vec!["420"],
+        luma_bit_depth: native_vulkan_video_component_bit_depth_labels(bit_depth),
+        chroma_bit_depth: native_vulkan_video_component_bit_depth_labels(bit_depth),
+        supported: false,
+        max_level_idc: None,
+        max_level: None,
+        capability_flags: Vec::new(),
+        decode_capability_flags: Vec::new(),
+        min_bitstream_buffer_offset_alignment: None,
+        min_bitstream_buffer_size_alignment: None,
+        picture_access_granularity: None,
+        min_coded_extent: None,
+        max_coded_extent: None,
+        max_dpb_slots: None,
+        max_active_reference_pictures: None,
+        dpb_formats: Vec::new(),
+        output_formats: Vec::new(),
+        sampled_output_formats: Vec::new(),
+        nv12_dpb_supported: false,
+        nv12_output_supported: false,
+        nv12_sampled_output_supported: false,
+        query_error: Some(query_error),
+    }
+}
+
+fn native_vulkan_video_decode_av1_profiles(
+    video_queue_loader: &ash::khr::video_queue::Instance,
+    physical_device: vk::PhysicalDevice,
+    query_enabled: bool,
+) -> Vec<NativeVulkanVideoDecodeAv1ProfileSnapshot> {
+    [
+        (
+            "main-8",
+            vk::native::StdVideoAV1Profile_STD_VIDEO_AV1_PROFILE_MAIN,
+            vk::VideoComponentBitDepthFlagsKHR::TYPE_8,
+            false,
+        ),
+        (
+            "main-10",
+            vk::native::StdVideoAV1Profile_STD_VIDEO_AV1_PROFILE_MAIN,
+            vk::VideoComponentBitDepthFlagsKHR::TYPE_10,
+            false,
+        ),
+    ]
+    .into_iter()
+    .map(|(profile, std_profile, bit_depth, film_grain_support)| {
+        if query_enabled {
+            native_vulkan_video_decode_av1_profile(
+                video_queue_loader,
+                physical_device,
+                profile,
+                std_profile,
+                bit_depth,
+                film_grain_support,
+            )
+        } else {
+            native_vulkan_video_decode_av1_profile_error(
+                profile,
+                std_profile,
+                bit_depth,
+                film_grain_support,
+                "required Vulkan Video AV1 decode extensions are unavailable".to_owned(),
+            )
+        }
+    })
+    .collect()
+}
+
+fn native_vulkan_video_decode_av1_profile(
+    video_queue_loader: &ash::khr::video_queue::Instance,
+    physical_device: vk::PhysicalDevice,
+    profile: &'static str,
+    std_profile: vk::native::StdVideoAV1Profile,
+    bit_depth: vk::VideoComponentBitDepthFlagsKHR,
+    film_grain_support: bool,
+) -> NativeVulkanVideoDecodeAv1ProfileSnapshot {
+    let chroma_subsampling = vk::VideoChromaSubsamplingFlagsKHR::TYPE_420;
+    let mut av1_profile_info = vk::VideoDecodeAV1ProfileInfoKHR::default()
+        .std_profile(std_profile)
+        .film_grain_support(film_grain_support);
+    let profile_info = vk::VideoProfileInfoKHR::default()
+        .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_AV1)
+        .chroma_subsampling(chroma_subsampling)
+        .luma_bit_depth(bit_depth)
+        .chroma_bit_depth(bit_depth)
+        .push_next(&mut av1_profile_info);
+    let (
+        capability_flags,
+        min_bitstream_buffer_offset_alignment,
+        min_bitstream_buffer_size_alignment,
+        picture_access_granularity,
+        min_coded_extent,
+        max_coded_extent,
+        max_dpb_slots,
+        max_active_reference_pictures,
+        decode_capability_flags,
+        max_level,
+    ) = {
+        let mut av1_capabilities = vk::VideoDecodeAV1CapabilitiesKHR::default();
+        let mut decode_capabilities = vk::VideoDecodeCapabilitiesKHR::default();
+        let mut capabilities = vk::VideoCapabilitiesKHR::default()
+            .push_next(&mut av1_capabilities)
+            .push_next(&mut decode_capabilities);
+
+        let capabilities_result = unsafe {
+            (video_queue_loader
+                .fp()
+                .get_physical_device_video_capabilities_khr)(
+                physical_device,
+                &profile_info,
+                &mut capabilities,
+            )
+        }
+        .result();
+        if let Err(result) = capabilities_result {
+            return native_vulkan_video_decode_av1_profile_error(
+                profile,
+                std_profile,
+                bit_depth,
+                film_grain_support,
+                format!("vkGetPhysicalDeviceVideoCapabilitiesKHR: {result:?}"),
+            );
+        }
+
+        (
+            capabilities.flags,
+            capabilities.min_bitstream_buffer_offset_alignment,
+            capabilities.min_bitstream_buffer_size_alignment,
+            (
+                capabilities.picture_access_granularity.width,
+                capabilities.picture_access_granularity.height,
+            ),
+            (
+                capabilities.min_coded_extent.width,
+                capabilities.min_coded_extent.height,
+            ),
+            (
+                capabilities.max_coded_extent.width,
+                capabilities.max_coded_extent.height,
+            ),
+            capabilities.max_dpb_slots,
+            capabilities.max_active_reference_pictures,
+            decode_capabilities.flags,
+            av1_capabilities.max_level,
+        )
+    };
+    let format_probe = native_vulkan_video_decode_format_probe(
+        video_queue_loader,
+        physical_device,
+        &profile_info,
+        decode_capability_flags,
+    );
+
+    NativeVulkanVideoDecodeAv1ProfileSnapshot {
+        profile,
+        std_profile,
+        film_grain_support,
+        chroma_subsampling: native_vulkan_video_chroma_subsampling_labels(chroma_subsampling),
+        luma_bit_depth: native_vulkan_video_component_bit_depth_labels(bit_depth),
+        chroma_bit_depth: native_vulkan_video_component_bit_depth_labels(bit_depth),
+        supported: true,
+        max_level: native_vulkan_av1_level_label(max_level),
+        max_level_raw: Some(max_level),
+        capability_flags: native_vulkan_video_capability_flag_labels(capability_flags),
+        decode_capability_flags: native_vulkan_video_decode_capability_flag_labels(
+            decode_capability_flags,
+        ),
+        min_bitstream_buffer_offset_alignment: Some(min_bitstream_buffer_offset_alignment),
+        min_bitstream_buffer_size_alignment: Some(min_bitstream_buffer_size_alignment),
+        picture_access_granularity: Some(picture_access_granularity),
+        min_coded_extent: Some(min_coded_extent),
+        max_coded_extent: Some(max_coded_extent),
+        max_dpb_slots: Some(max_dpb_slots),
+        max_active_reference_pictures: Some(max_active_reference_pictures),
+        dpb_formats: format_probe.dpb_formats,
+        output_formats: format_probe.output_formats,
+        sampled_output_formats: format_probe.sampled_output_formats,
+        nv12_dpb_supported: format_probe.nv12_dpb_supported,
+        nv12_output_supported: format_probe.nv12_output_supported,
+        nv12_sampled_output_supported: format_probe.nv12_sampled_output_supported,
+        query_error: format_probe.query_error,
+    }
+}
+
+fn native_vulkan_video_decode_av1_profile_error(
+    profile: &'static str,
+    std_profile: vk::native::StdVideoAV1Profile,
+    bit_depth: vk::VideoComponentBitDepthFlagsKHR,
+    film_grain_support: bool,
+    query_error: String,
+) -> NativeVulkanVideoDecodeAv1ProfileSnapshot {
+    NativeVulkanVideoDecodeAv1ProfileSnapshot {
+        profile,
+        std_profile,
+        film_grain_support,
+        chroma_subsampling: vec!["420"],
+        luma_bit_depth: native_vulkan_video_component_bit_depth_labels(bit_depth),
+        chroma_bit_depth: native_vulkan_video_component_bit_depth_labels(bit_depth),
+        supported: false,
+        max_level: None,
+        max_level_raw: None,
+        capability_flags: Vec::new(),
+        decode_capability_flags: Vec::new(),
+        min_bitstream_buffer_offset_alignment: None,
+        min_bitstream_buffer_size_alignment: None,
+        picture_access_granularity: None,
+        min_coded_extent: None,
+        max_coded_extent: None,
+        max_dpb_slots: None,
+        max_active_reference_pictures: None,
+        dpb_formats: Vec::new(),
+        output_formats: Vec::new(),
+        sampled_output_formats: Vec::new(),
+        nv12_dpb_supported: false,
+        nv12_output_supported: false,
+        nv12_sampled_output_supported: false,
+        query_error: Some(query_error),
+    }
+}
+
+fn native_vulkan_video_decode_format_probe(
+    video_queue_loader: &ash::khr::video_queue::Instance,
+    physical_device: vk::PhysicalDevice,
+    profile_info: &vk::VideoProfileInfoKHR<'_>,
+    decode_capability_flags: vk::VideoDecodeCapabilityFlagsKHR,
+) -> NativeVulkanVideoDecodeFormatProbe {
+    let dpb_and_output_coincide = decode_capability_flags
+        .contains(vk::VideoDecodeCapabilityFlagsKHR::DPB_AND_OUTPUT_COINCIDE);
+    let dpb_usage = if dpb_and_output_coincide {
+        vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR | vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR
+    } else {
+        vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR
+    };
+    let output_usage = vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR;
+    let sampled_output_usage =
+        vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR | vk::ImageUsageFlags::SAMPLED;
+    let sampled_output_required_usage: &[&str] = if dpb_and_output_coincide {
+        &["video-decode-dst", "video-decode-dpb", "sampled"]
+    } else {
+        &["video-decode-dst", "sampled"]
+    };
+
+    let mut query_errors = Vec::new();
+    let dpb_formats = match native_vulkan_video_format_properties(
+        video_queue_loader,
+        physical_device,
+        profile_info,
+        dpb_usage,
+    ) {
+        Ok(formats) => formats,
+        Err(err) => {
+            query_errors.push(err);
+            Vec::new()
+        }
+    };
+    let output_formats = match native_vulkan_video_format_properties(
+        video_queue_loader,
+        physical_device,
+        profile_info,
+        output_usage,
+    ) {
+        Ok(formats) => formats,
+        Err(err) => {
+            query_errors.push(err);
+            Vec::new()
+        }
+    };
+    let sampled_output_formats = match native_vulkan_video_format_properties(
+        video_queue_loader,
+        physical_device,
+        profile_info,
+        sampled_output_usage,
+    ) {
+        Ok(formats) => formats,
+        Err(err) => {
+            query_errors.push(err);
+            Vec::new()
+        }
+    };
+
+    NativeVulkanVideoDecodeFormatProbe {
+        nv12_dpb_supported: native_vulkan_video_formats_include_nv12_with_usage(
+            &dpb_formats,
+            &["video-decode-dpb"],
+        ),
+        nv12_output_supported: native_vulkan_video_formats_include_nv12_with_usage(
+            &output_formats,
+            &["video-decode-dst"],
+        ),
+        nv12_sampled_output_supported: native_vulkan_video_formats_include_nv12_with_usage(
+            &sampled_output_formats,
+            sampled_output_required_usage,
+        ),
+        dpb_formats,
+        output_formats,
+        sampled_output_formats,
+        query_error: (!query_errors.is_empty()).then(|| query_errors.join("; ")),
     }
 }
 
@@ -5614,6 +6128,55 @@ fn native_vulkan_h264_level_label(level: vk::native::StdVideoH264LevelIdc) -> Op
     }
 }
 
+fn native_vulkan_h265_level_label(level: vk::native::StdVideoH265LevelIdc) -> Option<&'static str> {
+    match level {
+        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_1_0 => Some("1.0"),
+        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_2_0 => Some("2.0"),
+        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_2_1 => Some("2.1"),
+        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_3_0 => Some("3.0"),
+        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_3_1 => Some("3.1"),
+        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_4_0 => Some("4.0"),
+        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_4_1 => Some("4.1"),
+        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_5_0 => Some("5.0"),
+        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_5_1 => Some("5.1"),
+        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_5_2 => Some("5.2"),
+        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_6_0 => Some("6.0"),
+        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_6_1 => Some("6.1"),
+        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_6_2 => Some("6.2"),
+        _ => None,
+    }
+}
+
+fn native_vulkan_av1_level_label(level: vk::native::StdVideoAV1Level) -> Option<&'static str> {
+    match level {
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_2_0 => Some("2.0"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_2_1 => Some("2.1"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_2_2 => Some("2.2"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_2_3 => Some("2.3"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_3_0 => Some("3.0"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_3_1 => Some("3.1"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_3_2 => Some("3.2"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_3_3 => Some("3.3"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_4_0 => Some("4.0"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_4_1 => Some("4.1"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_4_2 => Some("4.2"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_4_3 => Some("4.3"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_5_0 => Some("5.0"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_5_1 => Some("5.1"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_5_2 => Some("5.2"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_5_3 => Some("5.3"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_6_0 => Some("6.0"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_6_1 => Some("6.1"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_6_2 => Some("6.2"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_6_3 => Some("6.3"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_7_0 => Some("7.0"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_7_1 => Some("7.1"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_7_2 => Some("7.2"),
+        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_7_3 => Some("7.3"),
+        _ => None,
+    }
+}
+
 fn native_vulkan_format_label(format: vk::Format) -> &'static str {
     match format {
         vk::Format::G8_B8R8_2PLANE_420_UNORM => "G8_B8R8_2PLANE_420_UNORM",
@@ -5622,6 +6185,13 @@ fn native_vulkan_format_label(format: vk::Format) -> &'static str {
         vk::Format::G8_B8_R8_3PLANE_422_UNORM => "G8_B8_R8_3PLANE_422_UNORM",
         vk::Format::G8_B8R8_2PLANE_444_UNORM => "G8_B8R8_2PLANE_444_UNORM",
         vk::Format::G8_B8_R8_3PLANE_444_UNORM => "G8_B8_R8_3PLANE_444_UNORM",
+        vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 => {
+            "G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16"
+        }
+        vk::Format::G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16 => {
+            "G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16"
+        }
+        vk::Format::G16_B16R16_2PLANE_420_UNORM => "G16_B16R16_2PLANE_420_UNORM",
         vk::Format::R8G8B8A8_UNORM => "R8G8B8A8_UNORM",
         vk::Format::B8G8R8A8_UNORM => "B8G8R8A8_UNORM",
         vk::Format::R8_UNORM => "R8_UNORM",
@@ -6583,6 +7153,24 @@ mod tests {
             }],
             &["video-decode-dst", "video-decode-dpb", "sampled"]
         ));
+    }
+
+    #[test]
+    fn labels_h265_av1_probe_levels_and_formats() {
+        assert_eq!(
+            native_vulkan_h265_level_label(
+                vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_6_2
+            ),
+            Some("6.2")
+        );
+        assert_eq!(
+            native_vulkan_av1_level_label(vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_6_3),
+            Some("6.3")
+        );
+        assert_eq!(
+            native_vulkan_format_label(vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16),
+            "G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16"
+        );
     }
 
     #[test]
