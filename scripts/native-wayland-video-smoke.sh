@@ -22,11 +22,14 @@ Options:
   --target-max-fps <n>  Native max-lateness hint. Default: 240.
   --no-fps-limit        Disable native max-lateness hint.
   --sink-throttle       Also enforce target with sink throttle-time.
-  --pipeline <name>     appsink-dmabuf-present, appsink-mmap-probe,
-                        appsink-probe, or explicit-h264-gl.
+  --pipeline <name>     appsink-mmap-probe, appsink-probe,
+                        appsink-dmabuf-present, or explicit-h264-gl.
                         Legacy playbin/playbin3 require
                         --allow-legacy-waylandsink.
-                        Default: appsink-dmabuf-present.
+                        Default: appsink-mmap-probe.
+  --allow-unsafe-dmabuf-present
+                        Permit appsink-dmabuf-present, the manual linux-dmabuf
+                        attach prototype that can destabilize compositors.
   --allow-legacy-waylandsink
                         Permit the deprecated playbin+waylandsink path only
                         for explicit comparison runs.
@@ -68,8 +71,9 @@ video_duration=""
 target_max_fps=240
 fps_limit=1
 sink_throttle=0
-pipeline="appsink-dmabuf-present"
+pipeline="appsink-mmap-probe"
 allow_legacy_waylandsink=0
+allow_unsafe_dmabuf_present=0
 fit="cover"
 layer="bottom"
 output_name=""
@@ -153,6 +157,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-legacy-waylandsink)
       allow_legacy_waylandsink=1
+      shift
+      ;;
+    --allow-unsafe-dmabuf-present)
+      allow_unsafe_dmabuf_present=1
       shift
       ;;
     --fit)
@@ -898,6 +906,14 @@ case "$pipeline" in
     fi
     ;;
 esac
+case "$pipeline" in
+  appsink-dmabuf-present|dmabuf-present|present)
+    if [[ "$allow_unsafe_dmabuf_present" -eq 0 ]]; then
+      echo "--pipeline ${pipeline} manually attaches linux-dmabuf buffers and has crashed niri/NVIDIA during stress tests; pass --allow-unsafe-dmabuf-present only for isolated debugging" >&2
+      exit 2
+    fi
+    ;;
+esac
 case "$fit" in
   cover|contain|stretch|center) ;;
   *) echo "--fit must be cover, contain, stretch, or center" >&2; exit 2 ;;
@@ -1006,6 +1022,9 @@ fi
 if [[ "$allow_legacy_waylandsink" -eq 1 ]]; then
   native_args+=(--allow-legacy-waylandsink)
 fi
+if [[ "$allow_unsafe_dmabuf_present" -eq 1 ]]; then
+  native_args+=(--allow-unsafe-dmabuf-present)
+fi
 if [[ -n "$output_name" ]]; then
   native_args+=(--output-name "$output_name")
 fi
@@ -1045,6 +1064,7 @@ target_max_fps: $([[ "$fps_limit" -eq 1 ]] && printf '%s' "$target_max_fps" || p
 sink_throttle: $([[ "$sink_throttle" -eq 1 ]] && printf yes || printf no)
 pipeline: ${pipeline}
 allow_legacy_waylandsink: $([[ "$allow_legacy_waylandsink" -eq 1 ]] && printf yes || printf no)
+allow_unsafe_dmabuf_present: $([[ "$allow_unsafe_dmabuf_present" -eq 1 ]] && printf yes || printf no)
 fit: ${fit}
 layer: ${layer}
 allow_foreground_layer: $([[ "$allow_foreground_layer" -eq 1 ]] && printf yes || printf no)

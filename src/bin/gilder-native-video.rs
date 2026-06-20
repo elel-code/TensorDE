@@ -38,8 +38,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut allow_foreground_layer = false;
     let mut opaque_region = true;
     let mut input_passthrough = true;
-    let mut pipeline = NativeWaylandVideoPipeline::AppsinkDmabufPresent;
+    let mut pipeline = NativeWaylandVideoPipeline::AppsinkMmapProbe;
     let mut allow_legacy_waylandsink = false;
+    let mut allow_unsafe_dmabuf_present = false;
     let mut fit = FitMode::Cover;
     let mut output_name = None::<String>;
     let mut runtime_json = None::<PathBuf>;
@@ -85,6 +86,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 pipeline = value.parse::<NativeWaylandVideoPipeline>()?;
             }
             "--allow-legacy-waylandsink" => allow_legacy_waylandsink = true,
+            "--allow-unsafe-dmabuf-present" => allow_unsafe_dmabuf_present = true,
             "--fit" => {
                 let value = args.next().ok_or("--fit requires a value")?;
                 fit = parse_fit_mode(&value)?;
@@ -129,6 +131,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .into(),
         );
     }
+    if pipeline == NativeWaylandVideoPipeline::AppsinkDmabufPresent && !allow_unsafe_dmabuf_present
+    {
+        return Err(
+            "--pipeline appsink-dmabuf-present manually attaches linux-dmabuf buffers and has crashed niri/NVIDIA during stress tests; pass --allow-unsafe-dmabuf-present only for isolated debugging"
+                .into(),
+        );
+    }
 
     let runtime_interval = runtime_interval.max(Duration::from_millis(100));
     let mut runtime_json = runtime_json
@@ -150,6 +159,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 output_name: output_name.clone(),
                 opaque_region,
                 input_passthrough,
+                attach_parent_mapping_buffer: true,
             },
             output_name: output_name.unwrap_or_else(|| "native-wayland".to_owned()),
             fit,
@@ -186,6 +196,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::thread::sleep(Duration::from_millis(5));
     }
 
+    session.shutdown()?;
     Ok(())
 }
 
@@ -220,6 +231,6 @@ fn parse_fit_mode(value: &str) -> Result<gilder::core::FitMode, Box<dyn std::err
 #[cfg(all(feature = "native-wayland-renderer", feature = "video-renderer"))]
 fn print_usage() {
     println!(
-        "usage: gilder-native-video --source <path> [--duration <seconds>] [--target-max-fps <fps>|--no-fps-limit] [--sink-throttle] [--decoder auto|hardware-preferred|hardware-required|software] [--pipeline appsink-dmabuf-present|appsink-mmap-probe|appsink-probe|explicit-h264-gl|playbin|playbin3] [--allow-legacy-waylandsink] [--fit cover|contain|stretch|center] [--layer background|bottom|top|overlay] [--allow-foreground-layer] [--output-name <wl_output-name>] [--runtime-json <path>] [--debug-visible-frame]"
+        "usage: gilder-native-video --source <path> [--duration <seconds>] [--target-max-fps <fps>|--no-fps-limit] [--sink-throttle] [--decoder auto|hardware-preferred|hardware-required|software] [--pipeline appsink-mmap-probe|appsink-probe|explicit-h264-gl|appsink-dmabuf-present|playbin|playbin3] [--allow-unsafe-dmabuf-present] [--allow-legacy-waylandsink] [--fit cover|contain|stretch|center] [--layer background|bottom|top|overlay] [--allow-foreground-layer] [--output-name <wl_output-name>] [--runtime-json <path>] [--debug-visible-frame]"
     );
 }

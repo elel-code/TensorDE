@@ -1671,17 +1671,34 @@ fn renderer_name() -> &'static str {
         cfg!(feature = "gtk-renderer"),
         cfg!(feature = "video-renderer"),
         cfg!(feature = "native-wayland-renderer"),
+        cfg!(feature = "native-wgpu-renderer"),
     ) {
-        (true, true, true) => {
+        (true, true, true, true) => {
+            "native-wgpu-vulkan+native-wayland-experimental+gtk-layer-shell-static+gtk-gstreamer-video"
+        }
+        (true, false, true, true) => {
+            "native-wgpu-vulkan+native-wayland-experimental+gtk-layer-shell-static"
+        }
+        (false, true, true, true) => {
+            "native-wgpu-vulkan+native-wayland-experimental+gstreamer-video"
+        }
+        (false, false, true, true) => "native-wgpu-vulkan+native-wayland-experimental",
+        (true, true, false, true) => {
+            "native-wgpu-vulkan+gtk-layer-shell-static+gtk-gstreamer-video"
+        }
+        (true, false, false, true) => "native-wgpu-vulkan+gtk-layer-shell-static",
+        (false, true, false, true) => "native-wgpu-vulkan+gstreamer-video",
+        (false, false, false, true) => "native-wgpu-vulkan",
+        (true, true, true, false) => {
             "native-wayland-experimental+gtk-layer-shell-static+gtk-gstreamer-video"
         }
-        (true, false, true) => "native-wayland-experimental+gtk-layer-shell-static",
-        (false, true, true) => "native-wayland-experimental+gstreamer-video",
-        (false, false, true) => "native-wayland-experimental",
-        (true, true, false) => "gtk-layer-shell-static+gtk-gstreamer-video",
-        (true, false, false) => "gtk-layer-shell-static",
-        (false, true, false) => "gstreamer-video",
-        (false, false, false) => "not-implemented",
+        (true, false, true, false) => "native-wayland-experimental+gtk-layer-shell-static",
+        (false, true, true, false) => "native-wayland-experimental+gstreamer-video",
+        (false, false, true, false) => "native-wayland-experimental",
+        (true, true, false, false) => "gtk-layer-shell-static+gtk-gstreamer-video",
+        (true, false, false, false) => "gtk-layer-shell-static",
+        (false, true, false, false) => "gstreamer-video",
+        (false, false, false, false) => "not-implemented",
     }
 }
 
@@ -1692,6 +1709,7 @@ fn renderer_capabilities() -> Value {
             "layer_shell_background_windows": cfg!(feature = "gtk-renderer"),
         },
         "native_wayland": native_wayland_renderer_capabilities(),
+        "native_wgpu": native_wgpu_renderer_capabilities(),
         "video": video_renderer_capabilities(),
     })
 }
@@ -2061,6 +2079,25 @@ fn native_wayland_renderer_capabilities() -> Value {
         "supports_fractional_scale_protocol": false,
         "supports_viewporter_protocol": false,
         "consumes_render_sync": false,
+        "unsafe_policy": "unsafe is not used by this build",
+    })
+}
+
+#[cfg(feature = "native-wgpu-renderer")]
+fn native_wgpu_renderer_capabilities() -> Value {
+    json!(gilder::renderer::native_wgpu::capabilities())
+}
+
+#[cfg(not(feature = "native-wgpu-renderer"))]
+fn native_wgpu_renderer_capabilities() -> Value {
+    json!({
+        "built": false,
+        "backend_policy": "not built",
+        "layer_shell": false,
+        "raw_wayland_handles": false,
+        "wgpu_surface_swapchain": false,
+        "manual_linux_dmabuf_attach": false,
+        "intended_video_path": "not built",
         "unsafe_policy": "unsafe is not used by this build",
     })
 }

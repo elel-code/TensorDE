@@ -4,6 +4,8 @@
 //! such as video, web, shader, or scene runtimes should be layered on top of
 //! the surface host here.
 
+#![allow(unsafe_code)]
+
 #[cfg(feature = "video-renderer")]
 use gst::prelude::*;
 #[cfg(feature = "video-renderer")]
@@ -34,22 +36,22 @@ use smithay_client_toolkit::{
         slot::{Buffer, SlotPool},
     },
 };
+#[cfg(feature = "video-renderer")]
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    ffi::{CStr, CString, c_void},
-    fmt,
+    collections::BTreeMap,
+    ffi::{CStr, CString},
     fs::{self, File, OpenOptions},
-    io::ErrorKind,
     os::{
         fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd},
         raw::c_char,
         unix::fs::MetadataExt,
     },
     path::PathBuf,
-    ptr::{self, NonNull},
+    ptr,
     sync::{Arc, Mutex},
     time::Instant,
 };
+use std::{collections::BTreeSet, ffi::c_void, fmt, io::ErrorKind, ptr::NonNull};
 use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle,
     backend::WaylandError,
@@ -72,6 +74,7 @@ pub struct NativeWaylandHostOptions {
     pub output_name: Option<String>,
     pub opaque_region: bool,
     pub input_passthrough: bool,
+    pub attach_parent_mapping_buffer: bool,
 }
 
 impl Default for NativeWaylandHostOptions {
@@ -82,6 +85,7 @@ impl Default for NativeWaylandHostOptions {
             output_name: None,
             opaque_region: true,
             input_passthrough: true,
+            attach_parent_mapping_buffer: true,
         }
     }
 }
@@ -349,8 +353,10 @@ impl NativeWaylandHost {
             ),
             logical_size: None,
             configured: false,
+            closed: false,
             opaque_region_enabled: options.opaque_region,
             input_passthrough_enabled: options.input_passthrough,
+            parent_mapping_buffer_enabled: options.attach_parent_mapping_buffer,
             opaque_region: None,
             input_region: None,
             parent_mapping_buffer: None,
@@ -488,6 +494,14 @@ impl NativeWaylandHost {
         self.state.snapshot()
     }
 
+    pub fn logical_size(&self) -> Option<(u32, u32)> {
+        self.state.logical_size
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.state.closed
+    }
+
     pub fn surface_handles(&self) -> Result<NativeWaylandSurfaceHandles, NativeWaylandError> {
         let display = NonNull::new(self.connection.backend().display_ptr().cast::<c_void>())
             .ok_or(NativeWaylandError::MissingRawHandle("display"))?;
@@ -534,6 +548,26 @@ impl NativeWaylandHost {
     fn can_accept_dmabuf_frame(&self) -> bool {
         self.state.can_accept_dmabuf_frame()
     }
+
+    #[cfg(feature = "video-renderer")]
+    fn shutdown_dmabuf(&mut self) -> Result<(), NativeWaylandError> {
+        self.state.detach_dmabuf_surface();
+        self.connection
+            .flush()
+            .map_err(|err| NativeWaylandError::Wayland(err.to_string()))?;
+
+        for _ in 0..8 {
+            if !self.state.has_busy_dmabuf_buffers() {
+                break;
+            }
+            self.roundtrip()?;
+        }
+
+        self.state.clear_dmabuf_buffers();
+        self.connection
+            .flush()
+            .map_err(|err| NativeWaylandError::Wayland(err.to_string()))
+    }
 }
 
 #[cfg(feature = "video-renderer")]
@@ -565,7 +599,7 @@ impl Default for NativeWaylandVideoOptions {
             sink_throttle: false,
             decoder_policy: crate::config::VideoDecoderPolicy::HardwarePreferred,
             start_offset_ms: 0,
-            pipeline: NativeWaylandVideoPipeline::AppsinkDmabufPresent,
+            pipeline: NativeWaylandVideoPipeline::AppsinkMmapProbe,
             debug_visible_frame: false,
         }
     }
@@ -763,7 +797,7 @@ struct NativeWaylandDmabufExport {
 #[cfg(feature = "video-renderer")]
 struct NativeGbmDmabufAllocator {
     main_device: Option<u64>,
-    device: Option<NativeGbmDevice>,
+    device: Option<Arc<NativeGbmDevice>>,
     last_copy_fallback_error: Option<String>,
 }
 
@@ -921,7 +955,10 @@ impl NativeGbmDmabufAllocator {
             }
             let ptr = unsafe { gbm_bo_create(device.ptr.as_ptr(), width, height, format, flags) };
             if let Some(ptr) = NonNull::new(ptr) {
-                return Ok(NativeGbmBo { ptr });
+                return Ok(NativeGbmBo {
+                    ptr,
+                    _device: Arc::clone(&device),
+                });
             }
         }
         Err(format!(
@@ -933,12 +970,13 @@ impl NativeGbmDmabufAllocator {
         ))
     }
 
-    fn device(&mut self) -> Result<&mut NativeGbmDevice, String> {
+    fn device(&mut self) -> Result<Arc<NativeGbmDevice>, String> {
         if self.device.is_none() {
-            self.device = Some(NativeGbmDevice::open(self.main_device)?);
+            self.device = Some(Arc::new(NativeGbmDevice::open(self.main_device)?));
         }
         self.device
-            .as_mut()
+            .as_ref()
+            .cloned()
             .ok_or_else(|| "gbm_device_unavailable".to_owned())
     }
 }
@@ -985,6 +1023,7 @@ impl Drop for NativeGbmDevice {
 #[cfg(feature = "video-renderer")]
 struct NativeGbmBo {
     ptr: NonNull<NativeGbmBoRaw>,
+    _device: Arc<NativeGbmDevice>,
 }
 
 #[cfg(feature = "video-renderer")]
@@ -1445,6 +1484,7 @@ pub struct NativeWaylandVideoSession {
     player: NativeWaylandVideoPlayer,
     host: NativeWaylandHost,
     started: Instant,
+    shutdown_complete: bool,
 }
 
 #[cfg(feature = "video-renderer")]
@@ -1461,6 +1501,7 @@ impl NativeWaylandVideoSession {
             player,
             host,
             started: Instant::now(),
+            shutdown_complete: false,
         })
     }
 
@@ -1511,6 +1552,23 @@ impl NativeWaylandVideoSession {
             render_rectangle: self.player.render_rectangle,
             appsink_probe: self.player.appsink_probe_snapshot(),
         }
+    }
+
+    pub fn shutdown(&mut self) -> Result<(), NativeWaylandError> {
+        if self.shutdown_complete {
+            return Ok(());
+        }
+        self.player.shutdown();
+        self.host.shutdown_dmabuf()?;
+        self.shutdown_complete = true;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+impl Drop for NativeWaylandVideoSession {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
     }
 }
 
@@ -2634,6 +2692,7 @@ fn native_dmabuf_export_from_dmabuf_memory(
 }
 
 #[cfg(feature = "video-renderer")]
+#[allow(dead_code)]
 fn native_dmabuf_export_from_cuda_memory(
     buffer: &gst::BufferRef,
     meta: &NativeWaylandAppsinkVideoMetaSnapshot,
@@ -3265,6 +3324,7 @@ fn native_explicit_h264_gl_pipeline(
 }
 
 #[cfg(feature = "video-renderer")]
+#[allow(dead_code)]
 fn native_explicit_h264_gl_appsink_pipeline(
     source: &std::path::Path,
     sink: &gst::Element,
@@ -3461,8 +3521,16 @@ fn native_demux_pad_is_video(pad: &gst::Pad) -> bool {
 #[cfg(feature = "video-renderer")]
 impl Drop for NativeWaylandVideoPlayer {
     fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+#[cfg(feature = "video-renderer")]
+impl NativeWaylandVideoPlayer {
+    fn shutdown(&mut self) {
         self.bus.unset_sync_handler();
         let _ = self.pipeline.set_state(gst::State::Null);
+        let _ = self.pipeline.state(gst::ClockTime::from_mseconds(500));
     }
 }
 
@@ -3862,8 +3930,10 @@ struct NativeWaylandState {
     scale: NativeScaleState,
     logical_size: Option<(u32, u32)>,
     configured: bool,
+    closed: bool,
     opaque_region_enabled: bool,
     input_passthrough_enabled: bool,
+    parent_mapping_buffer_enabled: bool,
     opaque_region: Option<Region>,
     input_region: Option<Region>,
     parent_mapping_buffer: Option<NativeWaylandParentMappingBuffer>,
@@ -3958,6 +4028,9 @@ impl NativeWaylandState {
     }
 
     fn attach_parent_mapping_buffer(&mut self) {
+        if !self.parent_mapping_buffer_enabled {
+            return;
+        }
         let Some(layer) = self.layer.as_ref() else {
             return;
         };
@@ -4020,6 +4093,31 @@ impl NativeWaylandState {
     }
 
     #[cfg(feature = "video-renderer")]
+    fn detach_dmabuf_surface(&mut self) {
+        self.dmabuf_runtime.shutting_down = true;
+        let Some(layer) = self.layer.as_ref() else {
+            return;
+        };
+        let surface = layer.wl_surface();
+        surface.attach(None, 0, 0);
+        if let Some((width, height)) = self.logical_size {
+            surface.damage_buffer(0, 0, width as i32, height as i32);
+        }
+        layer.commit();
+        self.parent_mapping_buffer = None;
+    }
+
+    #[cfg(feature = "video-renderer")]
+    fn has_busy_dmabuf_buffers(&self) -> bool {
+        self.dmabuf_runtime.buffers_busy_len() > 0
+    }
+
+    #[cfg(feature = "video-renderer")]
+    fn clear_dmabuf_buffers(&mut self) {
+        self.dmabuf_runtime.clear_buffers();
+    }
+
+    #[cfg(feature = "video-renderer")]
     fn present_dmabuf_frame(
         &mut self,
         qh: &QueueHandle<Self>,
@@ -4027,6 +4125,12 @@ impl NativeWaylandState {
     ) -> Result<(), NativeWaylandError> {
         self.dmabuf_runtime.frames_submitted += 1;
         self.dmabuf_runtime.last_frame_format = Some(frame.format);
+
+        if self.dmabuf_runtime.shutting_down {
+            self.dmabuf_runtime.frame_attach_skips += 1;
+            self.dmabuf_runtime.last_attach_error = Some("dmabuf_shutdown_in_progress".to_owned());
+            return Ok(());
+        }
 
         if self.layer.is_none() {
             self.dmabuf_runtime.frame_attach_failures += 1;
@@ -4162,6 +4266,12 @@ impl NativeWaylandState {
         let NativeWaylandDmabufPendingBuffer { frame, _params, .. } =
             self.dmabuf_runtime.buffers_pending.swap_remove(index);
 
+        if self.dmabuf_runtime.shutting_down {
+            self.dmabuf_runtime.frame_attach_skips += 1;
+            self.dmabuf_runtime.last_attach_error = Some("dmabuf_shutdown_in_progress".to_owned());
+            return;
+        }
+
         let Some(layer) = self.layer.as_ref() else {
             self.dmabuf_runtime.frame_attach_failures += 1;
             self.dmabuf_runtime.last_attach_error =
@@ -4262,6 +4372,8 @@ struct NativeDmabufRuntimeState {
     last_frame_modifier: Option<u64>,
     last_attach_error: Option<String>,
     #[cfg(feature = "video-renderer")]
+    shutting_down: bool,
+    #[cfg(feature = "video-renderer")]
     buffers_pending: Vec<NativeWaylandDmabufPendingBuffer>,
     #[cfg(feature = "video-renderer")]
     buffers_in_flight: Vec<NativeWaylandDmabufAttachedBuffer>,
@@ -4269,6 +4381,7 @@ struct NativeDmabufRuntimeState {
 
 impl NativeDmabufRuntimeState {
     const SAMPLE_LIMIT: usize = 8;
+    #[cfg(feature = "video-renderer")]
     const MAX_BUFFERS_IN_FLIGHT: usize = 4;
 
     fn snapshot(&self, dmabuf_state: &DmabufState) -> NativeWaylandDmabufSnapshot {
@@ -4325,6 +4438,7 @@ impl NativeDmabufRuntimeState {
         }
     }
 
+    #[cfg(feature = "video-renderer")]
     fn buffers_busy_len(&self) -> usize {
         self.buffers_pending_len() + self.buffers_in_flight_len()
     }
@@ -4362,6 +4476,7 @@ impl NativeDmabufRuntimeState {
         }
     }
 
+    #[cfg(feature = "video-renderer")]
     fn supports_format_modifier(&self, format: u32, modifier: u64) -> bool {
         if let Some(feedback) = self.latest_feedback.as_ref()
             && feedback
@@ -4374,19 +4489,23 @@ impl NativeDmabufRuntimeState {
         false
     }
 
+    #[cfg(feature = "video-renderer")]
     fn release_buffer(&mut self, buffer: &wl_buffer::WlBuffer) {
         self.buffers_released += 1;
-        #[cfg(feature = "video-renderer")]
+        let buffer_id = buffer.id().protocol_id();
+        if let Some(index) = self
+            .buffers_in_flight
+            .iter()
+            .position(|in_flight| in_flight.buffer_id == buffer_id)
         {
-            let buffer_id = buffer.id().protocol_id();
-            if let Some(index) = self
-                .buffers_in_flight
-                .iter()
-                .position(|in_flight| in_flight.buffer_id == buffer_id)
-            {
-                self.buffers_in_flight.swap_remove(index);
-            }
+            self.buffers_in_flight.swap_remove(index);
         }
+    }
+
+    #[cfg(feature = "video-renderer")]
+    fn clear_buffers(&mut self) {
+        self.buffers_pending.clear();
+        self.buffers_in_flight.clear();
     }
 }
 
@@ -4528,7 +4647,13 @@ impl DmabufHandler for NativeWaylandState {
         params: &zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
         buffer: wl_buffer::WlBuffer,
     ) {
+        #[cfg(feature = "video-renderer")]
         self.attach_created_dmabuf_buffer(params, buffer);
+        #[cfg(not(feature = "video-renderer"))]
+        {
+            let _ = params;
+            let _ = buffer;
+        }
     }
 
     fn failed(
@@ -4537,11 +4662,21 @@ impl DmabufHandler for NativeWaylandState {
         _: &QueueHandle<Self>,
         params: &zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
     ) {
+        #[cfg(feature = "video-renderer")]
         self.fail_pending_dmabuf_buffer(params);
+        #[cfg(not(feature = "video-renderer"))]
+        {
+            let _ = params;
+        }
     }
 
     fn released(&mut self, _: &Connection, _: &QueueHandle<Self>, buffer: &wl_buffer::WlBuffer) {
+        #[cfg(feature = "video-renderer")]
         self.dmabuf_runtime.release_buffer(buffer);
+        #[cfg(not(feature = "video-renderer"))]
+        {
+            let _ = buffer;
+        }
     }
 }
 
@@ -4574,7 +4709,9 @@ impl SeatHandler for NativeWaylandState {
 }
 
 impl LayerShellHandler for NativeWaylandState {
-    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {}
+    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
+        self.closed = true;
+    }
 
     fn configure(
         &mut self,

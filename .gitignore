@@ -3,4 +3,4 @@
 *.gwp
 *.gwp.tmp
 .DS_Store
-linux-wallpaperengine/*
+/linux-wallpaperengine/

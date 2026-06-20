@@ -4,6 +4,8 @@
 pub mod gtk;
 #[cfg(feature = "native-wayland-renderer")]
 pub mod native_wayland;
+#[cfg(feature = "native-wgpu-renderer")]
+pub mod native_wgpu;
 #[cfg(feature = "video-renderer")]
 pub mod video;
 
