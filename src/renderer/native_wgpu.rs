@@ -2860,7 +2860,7 @@ impl NativeWgpuSurfaceRenderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("gilder-native-wgpu-clear"),
             });
-        self.encode_render_pass(&mut encoder, &view);
+        self.encode_frame(&mut encoder, &view)?;
         self.queue.submit(Some(encoder.finish()));
         frame.present();
         self.frames_rendered = self.frames_rendered.saturating_add(1);
@@ -2920,17 +2920,24 @@ impl NativeWgpuSurfaceRenderer {
         self.color.blend(accent, phase)
     }
 
-    fn encode_render_pass(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
+    fn encode_frame(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+    ) -> Result<(), NativeWgpuError> {
+        let clear_color = self.clear_color().as_wgpu();
         #[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
-        if let Some(video) = self.gpu_video.as_ref().filter(|video| video.has_frame()) {
-            video.encode_render_pass(encoder, view, self.clear_color().as_wgpu());
-            return;
+        if let Some(video) = self.gpu_video.as_mut().filter(|video| video.has_frame()) {
+            #[cfg(feature = "native-wgpu-gst-dmabuf")]
+            video.encode_pending_upload(encoder)?;
+            video.encode_render_pass(encoder, view, clear_color);
+            return Ok(());
         }
 
         #[cfg(feature = "video-renderer")]
         if let Some(video) = self.video.as_ref().filter(|video| video.has_frame()) {
-            video.encode_render_pass(encoder, view, self.clear_color().as_wgpu());
-            return;
+            video.encode_render_pass(encoder, view, clear_color);
+            return Ok(());
         }
 
         let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2939,7 +2946,7 @@ impl NativeWgpuSurfaceRenderer {
                 view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(self.clear_color().as_wgpu()),
+                    load: wgpu::LoadOp::Clear(clear_color),
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,
@@ -2949,6 +2956,7 @@ impl NativeWgpuSurfaceRenderer {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        Ok(())
     }
 
     #[cfg(feature = "video-renderer")]
@@ -3393,6 +3401,8 @@ struct NativeWgpuNv12VideoRenderer {
     fit_uniform_bytes: Option<[u8; 16]>,
     #[cfg(feature = "native-wgpu-gst-dmabuf")]
     cuda_direct_staging: Option<NativeWgpuCudaVulkanStagingBuffer>,
+    #[cfg(feature = "native-wgpu-gst-dmabuf")]
+    cuda_direct_staging_pending: bool,
     fit: crate::core::FitMode,
     presented_frames: u64,
 }
@@ -3515,6 +3525,8 @@ impl NativeWgpuNv12VideoRenderer {
             fit_uniform_bytes: None,
             #[cfg(feature = "native-wgpu-gst-dmabuf")]
             cuda_direct_staging: None,
+            #[cfg(feature = "native-wgpu-gst-dmabuf")]
+            cuda_direct_staging_pending: false,
             fit,
             presented_frames: 0,
         }
@@ -3586,6 +3598,10 @@ impl NativeWgpuNv12VideoRenderer {
         self.bind_group = Some(bind_group);
         self.source_size = Some((width, height));
         self.texture_copy_dst = false;
+        #[cfg(feature = "native-wgpu-gst-dmabuf")]
+        {
+            self.cuda_direct_staging_pending = false;
+        }
         self.fit = fit;
         self.update_fit_uniform(queue, surface_size);
         self.presented_frames = self.presented_frames.saturating_add(1);
@@ -3647,6 +3663,7 @@ impl NativeWgpuNv12VideoRenderer {
             meta.uv.row_bytes,
         )?;
 
+        self.cuda_direct_staging_pending = false;
         self.fit = fit;
         self.update_fit_uniform(queue, surface_size);
         self.presented_frames = self.presented_frames.saturating_add(1);
@@ -3703,16 +3720,7 @@ impl NativeWgpuNv12VideoRenderer {
             .as_mut()
             .expect("cuda-direct staging must exist after ensure");
         native_wgpu_copy_gst_cuda_sample_to_vulkan_staging(buffer, &meta, staging)?;
-
-        let texture = self
-            .texture
-            .as_ref()
-            .expect("system NV12 texture must exist after ensure_system_nv12_texture");
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("gilder-native-wgpu-cuda-direct-copy"),
-        });
-        native_wgpu_encode_cuda_direct_staging_to_nv12_texture(&mut encoder, staging, texture)?;
-        queue.submit(Some(encoder.finish()));
+        self.cuda_direct_staging_pending = true;
 
         self.fit = fit;
         self.update_fit_uniform(queue, surface_size);
@@ -3792,6 +3800,26 @@ impl NativeWgpuNv12VideoRenderer {
         self.bind_group = Some(bind_group);
         self.source_size = Some((width, height));
         self.texture_copy_dst = true;
+        self.cuda_direct_staging_pending = false;
+        Ok(())
+    }
+
+    #[cfg(feature = "native-wgpu-gst-dmabuf")]
+    fn encode_pending_upload(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<(), NativeWgpuError> {
+        if !self.cuda_direct_staging_pending {
+            return Ok(());
+        }
+        let staging = self.cuda_direct_staging.as_ref().ok_or_else(|| {
+            NativeWgpuError::Video("cuda-direct pending upload has no staging buffer".to_owned())
+        })?;
+        let texture = self.texture.as_ref().ok_or_else(|| {
+            NativeWgpuError::Video("cuda-direct pending upload has no NV12 texture".to_owned())
+        })?;
+        native_wgpu_encode_cuda_direct_staging_to_nv12_texture(encoder, staging, texture)?;
+        self.cuda_direct_staging_pending = false;
         Ok(())
     }
 
