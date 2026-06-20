@@ -617,6 +617,7 @@ pub struct NativeVulkanVideoBitstreamExtractSnapshot {
     pub requested_max_samples: u32,
     pub samples: u32,
     pub total_bytes: u64,
+    pub selected_access_unit_index: u32,
     pub selected_access_unit_bytes: u64,
     pub selected_access_unit_pts_ms: Option<u64>,
     pub selected_access_unit_duration_ms: Option<u64>,
@@ -635,6 +636,7 @@ pub struct NativeVulkanVideoBitstreamExtractSnapshot {
     pub h265_parameter_sets_present: bool,
     pub h265_parameter_sets: Option<NativeVulkanH265ParameterSetSnapshot>,
     pub h265_nal_units: Vec<NativeVulkanH265NalUnitSnapshot>,
+    pub h265_access_units: Vec<NativeVulkanH265AccessUnitSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -643,6 +645,37 @@ pub struct NativeVulkanH265NalUnitSnapshot {
     pub size: u64,
     pub nal_type: u8,
     pub nal_type_label: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanH265AccessUnitSnapshot {
+    pub index: u32,
+    pub bytes: u64,
+    pub byte_hash: u64,
+    pub pts_ms: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub has_annex_b_start_codes: bool,
+    pub has_parameter_sets: bool,
+    pub h265_vps_count: u32,
+    pub h265_sps_count: u32,
+    pub h265_pps_count: u32,
+    pub h265_idr_count: u32,
+    pub h265_slice_count: u32,
+    pub first_slice: Option<NativeVulkanH265AccessUnitSliceSnapshot>,
+    pub first_slice_parse_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanH265AccessUnitSliceSnapshot {
+    pub nal_type: u8,
+    pub nal_type_label: &'static str,
+    pub slice_segment_offset: u32,
+    pub first_slice_segment_in_pic_flag: bool,
+    pub slice_type: u32,
+    pub pps_id: u32,
+    pub pic_order_cnt_lsb: Option<u32>,
+    pub idr: bool,
+    pub irap: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -8265,10 +8298,12 @@ fn native_vulkan_collect_h265_bitstream_samples(
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut sample_count = 0u32;
     let mut total_bytes = 0u64;
-    let mut selected = None::<NativeVulkanH265AccessUnitExtract>;
+    let mut access_units = Vec::<NativeVulkanH265AccessUnitExtract>::new();
+    let mut selected_index = None::<usize>;
     let mut last_error = None::<String>;
+    let mut reached_eos = false;
 
-    while sample_count < max_samples && Instant::now() < deadline {
+    while sample_count < max_samples && Instant::now() < deadline && !reached_eos {
         while let Some(message) = bus.pop() {
             match message.view() {
                 gst::MessageView::Error(err) => {
@@ -8287,10 +8322,14 @@ fn native_vulkan_collect_h265_bitstream_samples(
                 }
                 gst::MessageView::Eos(_) => {
                     last_error = Some("H.265 bitstream pipeline reached EOS".to_owned());
+                    reached_eos = true;
                     break;
                 }
                 _ => {}
             }
+        }
+        if reached_eos {
+            break;
         }
 
         let timeout_ns = 50_000_000u64;
@@ -8301,29 +8340,31 @@ fn native_vulkan_collect_h265_bitstream_samples(
         sample_count = sample_count.saturating_add(1);
         let access_unit = native_vulkan_h265_access_unit_from_sample(&sample)?;
         total_bytes = total_bytes.saturating_add(access_unit.bytes.len() as u64);
-        if selected
-            .as_ref()
-            .map(|current| {
+        if selected_index
+            .map(|index| {
+                let current = &access_units[index];
                 !current.stats.parameter_sets_present()
                     && access_unit.stats.parameter_sets_present()
             })
             .unwrap_or(true)
         {
-            selected = Some(access_unit);
+            selected_index = Some(access_units.len());
         }
-        if selected
-            .as_ref()
-            .is_some_and(|access_unit| access_unit.stats.parameter_sets_present())
-        {
-            break;
-        }
+        access_units.push(access_unit);
     }
 
-    let selected = selected.ok_or_else(|| {
-        NativeVulkanError::Video(
-            last_error.unwrap_or_else(|| "H.265 bitstream probe produced no samples".to_owned()),
-        )
-    })?;
+    if access_units.is_empty() {
+        return Err(NativeVulkanError::Video(last_error.unwrap_or_else(|| {
+            "H.265 bitstream probe produced no samples".to_owned()
+        })));
+    }
+    let selected_index =
+        selected_index.ok_or_else(|| {
+            NativeVulkanError::Video(last_error.unwrap_or_else(|| {
+                "H.265 bitstream probe produced no selectable samples".to_owned()
+            }))
+        })?;
+    let selected = &access_units[selected_index];
     if !selected.stats.parameter_sets_present() {
         return Err(NativeVulkanError::Video(format!(
             "H.265 bitstream probe did not find VPS/SPS/PPS in {sample_count} samples"
@@ -8331,24 +8372,32 @@ fn native_vulkan_collect_h265_bitstream_samples(
     }
     let parameter_sets = native_vulkan_parse_h265_parameter_sets(&selected.bytes)
         .map_err(NativeVulkanError::Video)?;
+    let h265_access_units = access_units
+        .iter()
+        .enumerate()
+        .map(|(index, access_unit)| {
+            native_vulkan_h265_access_unit_snapshot(index as u32, access_unit, &parameter_sets)
+        })
+        .collect::<Vec<_>>();
 
     Ok(NativeVulkanVideoBitstreamExtract {
-        selected_access_unit: selected.bytes,
+        selected_access_unit: selected.bytes.clone(),
         snapshot: NativeVulkanVideoBitstreamExtractSnapshot {
             source: source.display().to_string(),
             frontend: "gstreamer-qtdemux-h265parse-appsink",
             requested_max_samples: max_samples,
-            samples: sample_count,
+            samples: access_units.len() as u32,
             total_bytes,
+            selected_access_unit_index: selected_index as u32,
             selected_access_unit_bytes: selected.stats.bytes,
             selected_access_unit_pts_ms: selected.pts_ms,
             selected_access_unit_duration_ms: selected.duration_ms,
-            caps: selected.caps,
-            stream_format: selected.stream_format,
-            alignment: selected.alignment,
+            caps: selected.caps.clone(),
+            stream_format: selected.stream_format.clone(),
+            alignment: selected.alignment.clone(),
             width: selected.width,
             height: selected.height,
-            framerate: selected.framerate,
+            framerate: selected.framerate.clone(),
             has_annex_b_start_codes: selected.stats.has_annex_b_start_codes,
             h265_vps_count: selected.stats.vps_count,
             h265_sps_count: selected.stats.sps_count,
@@ -8357,7 +8406,8 @@ fn native_vulkan_collect_h265_bitstream_samples(
             h265_slice_count: selected.stats.slice_count,
             h265_parameter_sets_present: selected.stats.parameter_sets_present(),
             h265_parameter_sets: Some(parameter_sets),
-            h265_nal_units: selected.stats.nal_units,
+            h265_nal_units: selected.stats.nal_units.clone(),
+            h265_access_units,
         },
     })
 }
@@ -8429,6 +8479,103 @@ fn native_vulkan_h265_access_unit_from_sample(
         height,
         framerate,
         stats,
+    })
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_access_unit_snapshot(
+    index: u32,
+    access_unit: &NativeVulkanH265AccessUnitExtract,
+    parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
+) -> NativeVulkanH265AccessUnitSnapshot {
+    let first_slice_result =
+        native_vulkan_h265_first_slice_probe_snapshot(&access_unit.bytes, parameter_sets);
+    let (first_slice, first_slice_parse_error) = match first_slice_result {
+        Ok(snapshot) => (Some(snapshot), None),
+        Err(err) => (None, Some(err)),
+    };
+    NativeVulkanH265AccessUnitSnapshot {
+        index,
+        bytes: access_unit.stats.bytes,
+        byte_hash: native_vulkan_stable_byte_hash(&access_unit.bytes),
+        pts_ms: access_unit.pts_ms,
+        duration_ms: access_unit.duration_ms,
+        has_annex_b_start_codes: access_unit.stats.has_annex_b_start_codes,
+        has_parameter_sets: access_unit.stats.parameter_sets_present(),
+        h265_vps_count: access_unit.stats.vps_count,
+        h265_sps_count: access_unit.stats.sps_count,
+        h265_pps_count: access_unit.stats.pps_count,
+        h265_idr_count: access_unit.stats.idr_count,
+        h265_slice_count: access_unit.stats.slice_count,
+        first_slice,
+        first_slice_parse_error,
+    }
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h265_first_slice_probe_snapshot(
+    access_unit: &[u8],
+    parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
+) -> Result<NativeVulkanH265AccessUnitSliceSnapshot, String> {
+    let nal_units = native_vulkan_h265_nal_payloads(access_unit);
+    let slice = nal_units
+        .iter()
+        .find(|unit| unit.nal_type <= 31)
+        .ok_or_else(|| "H.265 access unit has no slice NAL".to_owned())?;
+    let idr = matches!(slice.nal_type, 19 | 20);
+    let irap = (16..=23).contains(&slice.nal_type);
+    let rbsp = native_vulkan_h265_rbsp(slice.payload)?;
+    if rbsp.len() < 3 {
+        return Err("H.265 slice NAL is too short".to_owned());
+    }
+    let mut bits = NativeVulkanH265BitReader::new(&rbsp);
+    bits.skip_bits(16, "h265_nal_unit_header")?;
+    let first_slice_segment_in_pic_flag = bits.read_bool("first_slice_segment_in_pic_flag")?;
+    if irap {
+        bits.read_bool("no_output_of_prior_pics_flag")?;
+    }
+    let pps_id = bits.read_ue("slice_pic_parameter_set_id")?;
+    if pps_id != parameter_sets.pps.id {
+        return Err(format!(
+            "H.265 first slice PPS id {pps_id} does not match session PPS id {}",
+            parameter_sets.pps.id
+        ));
+    }
+    if !first_slice_segment_in_pic_flag {
+        return Err(
+            "H.265 access unit first slice is not the first slice segment in picture".to_owned(),
+        );
+    }
+    for _ in 0..parameter_sets.pps.num_extra_slice_header_bits {
+        bits.skip_bits(1, "slice_reserved_flag")?;
+    }
+    let slice_type = bits.read_ue("slice_type")?;
+    if parameter_sets.pps.output_flag_present_flag {
+        bits.read_bool("pic_output_flag")?;
+    }
+    if parameter_sets.sps.separate_colour_plane_flag {
+        bits.skip_bits(2, "colour_plane_id")?;
+    }
+    let pic_order_cnt_lsb = if idr {
+        None
+    } else {
+        Some(bits.read_bits(
+            parameter_sets.sps.log2_max_pic_order_cnt_lsb_minus4 + 4,
+            "slice_pic_order_cnt_lsb",
+        )?)
+    };
+
+    Ok(NativeVulkanH265AccessUnitSliceSnapshot {
+        nal_type: slice.nal_type,
+        nal_type_label: native_vulkan_h265_nal_type_label(slice.nal_type),
+        slice_segment_offset: u32::try_from(slice.start_code_offset)
+            .map_err(|_| "H.265 slice offset exceeds u32 range".to_owned())?,
+        first_slice_segment_in_pic_flag,
+        slice_type,
+        pps_id,
+        pic_order_cnt_lsb,
+        idr,
+        irap,
     })
 }
 
