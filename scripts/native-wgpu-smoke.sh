@@ -15,6 +15,8 @@ Options:
   --work-dir <dir>      Parent directory for temporary data. Default: /tmp.
   --sample-duration <s> Run/sample duration. Default: 5.
   --sample-interval <s> Sampling interval in whole seconds. Default: 1.
+  --runtime-interval-ms <ms>
+                        Native runtime JSONL sample interval. Default: 1000.
   --target-fps <n>      Render loop target. Default: 240.
   --no-fps-limit        Disable render loop sleep.
   --layer <name>        background, bottom, top, or overlay. Default: bottom.
@@ -36,6 +38,7 @@ report_dir=""
 wayland_display="${WAYLAND_DISPLAY:-}"
 sample_duration=5
 sample_interval=1
+runtime_interval_ms=1000
 target_fps=240
 fps_limit=1
 layer="bottom"
@@ -76,6 +79,11 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "--target-fps requires a value" >&2; exit 2; }
       target_fps="$2"
       fps_limit=1
+      shift 2
+      ;;
+    --runtime-interval-ms)
+      [[ $# -ge 2 ]] || { echo "--runtime-interval-ms requires milliseconds" >&2; exit 2; }
+      runtime_interval_ms="$2"
       shift 2
       ;;
     --no-fps-limit)
@@ -130,6 +138,10 @@ done
   echo "--sample-interval must be a positive integer" >&2
   exit 2
 }
+[[ "$runtime_interval_ms" =~ ^[0-9]+$ && "$runtime_interval_ms" -ge 100 ]] || {
+  echo "--runtime-interval-ms must be an integer >= 100" >&2
+  exit 2
+}
 if [[ "$fps_limit" -eq 1 ]]; then
   [[ "$target_fps" =~ ^[0-9]+$ && "$target_fps" -gt 0 ]] || {
     echo "--target-fps must be a positive integer" >&2
@@ -171,13 +183,22 @@ if [[ ! -x "$exe" ]]; then
 fi
 
 runtime_json="$work_dir/runtime.json"
+runtime_jsonl="$work_dir/runtime.jsonl"
 samples_csv="$work_dir/samples.csv"
 summary_txt="$work_dir/summary.txt"
+runtime_summary_txt="$work_dir/runtime-summary.txt"
 metadata_txt="$work_dir/metadata.txt"
 stdout_log="$work_dir/stdout.log"
 stderr_log="$work_dir/stderr.log"
 
-native_args=(--duration "$sample_duration" --layer "$layer" --color "$color" --runtime-json "$runtime_json")
+native_args=(
+  --duration "$sample_duration"
+  --layer "$layer"
+  --color "$color"
+  --runtime-json "$runtime_json"
+  --runtime-jsonl "$runtime_jsonl"
+  --runtime-interval-ms "$runtime_interval_ms"
+)
 if [[ "$fps_limit" -eq 1 ]]; then
   native_args+=(--target-fps "$target_fps")
 else
@@ -194,6 +215,7 @@ cat >"$metadata_txt" <<EOF
 display: ${wayland_display}
 sample_duration: ${sample_duration}
 sample_interval: ${sample_interval}
+runtime_interval_ms: ${runtime_interval_ms}
 target_fps: $([[ "$fps_limit" -eq 1 ]] && printf '%s' "$target_fps" || printf unlimited)
 layer: ${layer}
 output_name: ${output_name:-compositor-selected}
@@ -269,6 +291,35 @@ awk -F, '
   }
 ' "$samples_csv" >"$summary_txt"
 
+if [[ -s "$runtime_json" ]]; then
+  awk '
+    function value() {
+      line = $0
+      sub(/^[[:space:]]*"[^"]+":[[:space:]]*/, "", line)
+      gsub(/[",]/, "", line)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+      return line
+    }
+    /"runtime_elapsed_ms":/ { print "runtime_elapsed_ms: " value() }
+    /"render_calls":/ { print "render_calls: " value() }
+    /"frames_rendered":/ { print "frames_rendered: " value() }
+    /"frames_skipped":/ { print "frames_skipped: " value() }
+    /"average_render_fps":/ { print "average_render_fps: " value() }
+    /"render_duration_us_avg":/ { print "render_duration_us_avg: " value() }
+    /"render_duration_us_max":/ { print "render_duration_us_max: " value() }
+    /"last_render_duration_us":/ { print "last_render_duration_us: " value() }
+    /"surface_suboptimal_frames":/ { print "surface_suboptimal_frames: " value() }
+    /"surface_lost_skips":/ { print "surface_lost_skips: " value() }
+    /"surface_outdated_skips":/ { print "surface_outdated_skips: " value() }
+    /"surface_timeout_skips":/ { print "surface_timeout_skips: " value() }
+    /"surface_occluded_skips":/ { print "surface_occluded_skips: " value() }
+    /"surface_validation_skips":/ { print "surface_validation_skips: " value() }
+    /"surface_format":/ { print "surface_format: " value() }
+    /"present_mode":/ { print "present_mode: " value() }
+    /"last_render_error":/ { print "last_render_error: " value() }
+  ' "$runtime_json" >"$runtime_summary_txt"
+fi
+
 if [[ "$app_status" -ne 0 ]]; then
   echo "FAIL: gilder-native-wgpu exited with $app_status" >&2
   echo "stderr: $stderr_log" >&2
@@ -282,3 +333,5 @@ echo "metadata: $metadata_txt"
 echo "samples:  $samples_csv"
 echo "summary:  $summary_txt"
 echo "runtime:  $runtime_json"
+echo "runtime samples: $runtime_jsonl"
+echo "runtime summary: $runtime_summary_txt"

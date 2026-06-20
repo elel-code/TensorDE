@@ -1,4 +1,7 @@
 #[cfg(feature = "native-wgpu-renderer")]
+use std::io::Write;
+
+#[cfg(feature = "native-wgpu-renderer")]
 fn main() {
     if let Err(err) = run() {
         eprintln!("gilder-native-wgpu: {err}");
@@ -25,6 +28,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut output_name = None::<String>;
     let mut color = NativeWgpuColor::default();
     let mut runtime_json = None::<std::path::PathBuf>;
+    let mut runtime_jsonl = None::<std::path::PathBuf>;
+    let mut runtime_interval = Duration::from_secs(1);
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -56,6 +61,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--runtime-json" => {
                 runtime_json = Some(args.next().ok_or("--runtime-json requires a path")?.into());
             }
+            "--runtime-jsonl" => {
+                runtime_jsonl = Some(args.next().ok_or("--runtime-jsonl requires a path")?.into());
+            }
+            "--runtime-interval-ms" => {
+                runtime_interval = args
+                    .next()
+                    .map(|value| value.parse::<u64>())
+                    .transpose()?
+                    .map(Duration::from_millis)
+                    .ok_or("--runtime-interval-ms requires milliseconds")?;
+            }
             "-h" | "--help" => {
                 print_usage();
                 return Ok(());
@@ -80,7 +96,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         output_name,
         initial_color: color,
     })?;
-    session.run_for(duration, target_fps)?;
+    let runtime_interval = runtime_interval.max(Duration::from_millis(100));
+    let mut runtime_jsonl = runtime_jsonl
+        .map(|path| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(path)
+                .map(std::io::BufWriter::new)
+        })
+        .transpose()?;
+    run_session(
+        &mut session,
+        duration,
+        target_fps,
+        runtime_interval,
+        runtime_jsonl.as_mut(),
+    )?;
 
     if let Some(path) = runtime_json {
         let writer = std::fs::OpenOptions::new()
@@ -90,6 +123,53 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .open(path)?;
         serde_json::to_writer_pretty(writer, &session.snapshot())?;
     }
+    Ok(())
+}
+
+#[cfg(feature = "native-wgpu-renderer")]
+fn run_session(
+    session: &mut gilder::renderer::native_wgpu::NativeWgpuSession,
+    duration: std::time::Duration,
+    target_fps: Option<u32>,
+    runtime_interval: std::time::Duration,
+    runtime_jsonl: Option<&mut std::io::BufWriter<std::fs::File>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let started = std::time::Instant::now();
+    let mut last_runtime_sample = std::time::Instant::now();
+    let mut runtime_jsonl = runtime_jsonl;
+    let frame_interval = target_fps
+        .filter(|fps| *fps > 0)
+        .map(|fps| std::time::Duration::from_secs_f64(1.0 / f64::from(fps)));
+
+    write_runtime_sample(session, &mut runtime_jsonl)?;
+    while started.elapsed() < duration && !session.is_closed() {
+        let frame_started = std::time::Instant::now();
+        session.tick()?;
+        if last_runtime_sample.elapsed() >= runtime_interval {
+            write_runtime_sample(session, &mut runtime_jsonl)?;
+            last_runtime_sample = std::time::Instant::now();
+        }
+        if let Some(interval) = frame_interval
+            && let Some(remaining) = interval.checked_sub(frame_started.elapsed())
+        {
+            std::thread::sleep(remaining);
+        }
+    }
+    write_runtime_sample(session, &mut runtime_jsonl)?;
+    Ok(())
+}
+
+#[cfg(feature = "native-wgpu-renderer")]
+fn write_runtime_sample(
+    session: &gilder::renderer::native_wgpu::NativeWgpuSession,
+    writer: &mut Option<&mut std::io::BufWriter<std::fs::File>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(writer) = writer.as_mut() else {
+        return Ok(());
+    };
+    serde_json::to_writer(&mut **writer, &session.snapshot())?;
+    writer.write_all(b"\n")?;
+    writer.flush()?;
     Ok(())
 }
 
@@ -132,6 +212,6 @@ fn rgb_u8(red: u8, green: u8, blue: u8) -> gilder::renderer::native_wgpu::Native
 #[cfg(feature = "native-wgpu-renderer")]
 fn print_usage() {
     println!(
-        "usage: gilder-native-wgpu [--duration <seconds>] [--target-fps <fps>|--no-fps-limit] [--layer background|bottom|top|overlay] [--allow-foreground-layer] [--output-name <name>] [--color #rrggbb|r,g,b] [--runtime-json <path>]"
+        "usage: gilder-native-wgpu [--duration <seconds>] [--target-fps <fps>|--no-fps-limit] [--layer background|bottom|top|overlay] [--allow-foreground-layer] [--output-name <name>] [--color #rrggbb|r,g,b] [--runtime-json <path>] [--runtime-jsonl <path>] [--runtime-interval-ms <ms>]"
     );
 }

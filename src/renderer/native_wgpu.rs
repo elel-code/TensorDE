@@ -93,6 +93,7 @@ pub fn capabilities() -> NativeWgpuCapabilities {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeWgpuRuntimeSnapshot {
+    pub runtime_elapsed_ms: u64,
     pub configured: bool,
     pub layer: NativeWaylandLayer,
     pub requested_output_name: Option<String>,
@@ -102,8 +103,19 @@ pub struct NativeWgpuRuntimeSnapshot {
     pub surface_config_size: Option<(u32, u32)>,
     pub surface_format: Option<String>,
     pub present_mode: Option<String>,
+    pub render_calls: u64,
     pub frames_rendered: u64,
     pub frames_skipped: u64,
+    pub average_render_fps: f64,
+    pub render_duration_us_avg: Option<u64>,
+    pub render_duration_us_max: Option<u64>,
+    pub last_render_duration_us: Option<u64>,
+    pub surface_suboptimal_frames: u64,
+    pub surface_lost_skips: u64,
+    pub surface_outdated_skips: u64,
+    pub surface_timeout_skips: u64,
+    pub surface_occluded_skips: u64,
+    pub surface_validation_skips: u64,
     pub last_render_error: Option<String>,
 }
 
@@ -140,6 +152,7 @@ pub struct NativeWgpuSession {
     host: NativeWaylandHost,
     layer: NativeWaylandLayer,
     requested_output_name: Option<String>,
+    started: Instant,
 }
 
 impl NativeWgpuSession {
@@ -170,6 +183,7 @@ impl NativeWgpuSession {
             host,
             layer: options.layer,
             requested_output_name: options.output_name,
+            started: Instant::now(),
         })
     }
 
@@ -203,9 +217,15 @@ impl NativeWgpuSession {
         Ok(())
     }
 
+    pub fn is_closed(&self) -> bool {
+        self.host.is_closed()
+    }
+
     pub fn snapshot(&self) -> NativeWgpuRuntimeSnapshot {
         let surface = self.host.snapshot();
+        let elapsed_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
         NativeWgpuRuntimeSnapshot {
+            runtime_elapsed_ms: elapsed_ms,
             configured: surface.configured,
             layer: self.layer,
             requested_output_name: self.requested_output_name.clone(),
@@ -215,8 +235,19 @@ impl NativeWgpuSession {
             surface_config_size: Some((self.renderer.config.width, self.renderer.config.height)),
             surface_format: Some(format!("{:?}", self.renderer.config.format)),
             present_mode: Some(format!("{:?}", self.renderer.config.present_mode)),
+            render_calls: self.renderer.render_calls,
             frames_rendered: self.renderer.frames_rendered,
             frames_skipped: self.renderer.frames_skipped,
+            average_render_fps: average_fps(self.renderer.frames_rendered, self.started.elapsed()),
+            render_duration_us_avg: self.renderer.render_duration_us_avg(),
+            render_duration_us_max: self.renderer.render_duration_us_max(),
+            last_render_duration_us: self.renderer.last_render_duration_us,
+            surface_suboptimal_frames: self.renderer.surface_suboptimal_frames,
+            surface_lost_skips: self.renderer.surface_lost_skips,
+            surface_outdated_skips: self.renderer.surface_outdated_skips,
+            surface_timeout_skips: self.renderer.surface_timeout_skips,
+            surface_occluded_skips: self.renderer.surface_occluded_skips,
+            surface_validation_skips: self.renderer.surface_validation_skips,
             last_render_error: self.renderer.last_render_error.clone(),
         }
     }
@@ -228,8 +259,18 @@ struct NativeWgpuSurfaceRenderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     color: NativeWgpuColor,
+    render_calls: u64,
     frames_rendered: u64,
     frames_skipped: u64,
+    render_duration_us_total: u128,
+    render_duration_us_max: u64,
+    last_render_duration_us: Option<u64>,
+    surface_suboptimal_frames: u64,
+    surface_lost_skips: u64,
+    surface_outdated_skips: u64,
+    surface_timeout_skips: u64,
+    surface_occluded_skips: u64,
+    surface_validation_skips: u64,
     last_render_error: Option<String>,
 }
 
@@ -309,8 +350,18 @@ impl NativeWgpuSurfaceRenderer {
             queue,
             config,
             color,
+            render_calls: 0,
             frames_rendered: 0,
             frames_skipped: 0,
+            render_duration_us_total: 0,
+            render_duration_us_max: 0,
+            last_render_duration_us: None,
+            surface_suboptimal_frames: 0,
+            surface_lost_skips: 0,
+            surface_outdated_skips: 0,
+            surface_timeout_skips: 0,
+            surface_occluded_skips: 0,
+            surface_validation_skips: 0,
             last_render_error: None,
         })
     }
@@ -327,6 +378,8 @@ impl NativeWgpuSurfaceRenderer {
     }
 
     fn render(&mut self) -> Result<(), NativeWgpuError> {
+        let render_started = Instant::now();
+        self.render_calls = self.render_calls.saturating_add(1);
         let mut suboptimal = false;
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
@@ -334,25 +387,31 @@ impl NativeWgpuSurfaceRenderer {
                 suboptimal = true;
                 frame
             }
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+            wgpu::CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(&self.device, &self.config);
-                self.frames_skipped = self.frames_skipped.saturating_add(1);
-                self.last_render_error = Some("surface_lost_or_outdated".to_owned());
+                self.surface_outdated_skips = self.surface_outdated_skips.saturating_add(1);
+                self.record_skip(render_started, "surface_outdated");
+                return Ok(());
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(&self.device, &self.config);
+                self.surface_lost_skips = self.surface_lost_skips.saturating_add(1);
+                self.record_skip(render_started, "surface_lost");
                 return Ok(());
             }
             wgpu::CurrentSurfaceTexture::Timeout => {
-                self.frames_skipped = self.frames_skipped.saturating_add(1);
-                self.last_render_error = Some("surface_timeout".to_owned());
+                self.surface_timeout_skips = self.surface_timeout_skips.saturating_add(1);
+                self.record_skip(render_started, "surface_timeout");
                 return Ok(());
             }
             wgpu::CurrentSurfaceTexture::Occluded => {
-                self.frames_skipped = self.frames_skipped.saturating_add(1);
-                self.last_render_error = Some("surface_occluded".to_owned());
+                self.surface_occluded_skips = self.surface_occluded_skips.saturating_add(1);
+                self.record_skip(render_started, "surface_occluded");
                 return Ok(());
             }
             wgpu::CurrentSurfaceTexture::Validation => {
-                self.frames_skipped = self.frames_skipped.saturating_add(1);
-                self.last_render_error = Some("surface_validation".to_owned());
+                self.surface_validation_skips = self.surface_validation_skips.saturating_add(1);
+                self.record_skip(render_started, "surface_validation");
                 return Ok(());
             }
         };
@@ -385,7 +444,9 @@ impl NativeWgpuSurfaceRenderer {
         self.queue.submit(Some(encoder.finish()));
         frame.present();
         self.frames_rendered = self.frames_rendered.saturating_add(1);
+        self.record_render_duration(render_started);
         if suboptimal {
+            self.surface_suboptimal_frames = self.surface_suboptimal_frames.saturating_add(1);
             self.surface.configure(&self.device, &self.config);
             self.last_render_error = Some("surface_suboptimal".to_owned());
         } else {
@@ -393,6 +454,40 @@ impl NativeWgpuSurfaceRenderer {
         }
         Ok(())
     }
+
+    fn record_skip(&mut self, started: Instant, reason: &str) {
+        self.frames_skipped = self.frames_skipped.saturating_add(1);
+        self.record_render_duration(started);
+        self.last_render_error = Some(reason.to_owned());
+    }
+
+    fn record_render_duration(&mut self, started: Instant) {
+        let elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.render_duration_us_total = self
+            .render_duration_us_total
+            .saturating_add(u128::from(elapsed_us));
+        self.render_duration_us_max = self.render_duration_us_max.max(elapsed_us);
+        self.last_render_duration_us = Some(elapsed_us);
+    }
+
+    fn render_duration_us_avg(&self) -> Option<u64> {
+        if self.render_calls == 0 {
+            return None;
+        }
+        Some((self.render_duration_us_total / u128::from(self.render_calls)) as u64)
+    }
+
+    fn render_duration_us_max(&self) -> Option<u64> {
+        (self.render_calls > 0).then_some(self.render_duration_us_max)
+    }
+}
+
+fn average_fps(frames: u64, elapsed: Duration) -> f64 {
+    let elapsed = elapsed.as_secs_f64();
+    if elapsed <= f64::EPSILON {
+        return 0.0;
+    }
+    frames as f64 / elapsed
 }
 
 fn pick_present_mode(supported: &[wgpu::PresentMode]) -> wgpu::PresentMode {
