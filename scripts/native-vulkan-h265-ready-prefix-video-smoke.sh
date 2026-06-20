@@ -211,10 +211,11 @@ pts_delta_min="$(jq -r '.pts_delta_min_ms // "none"' "$runtime_json")"
 pts_delta_max="$(jq -r '.pts_delta_max_ms // "none"' "$runtime_json")"
 present_queue="$(jq -r '.present_queue_family_index // "none"' "$runtime_json")"
 video_queue="$(jq -r '.video_decode_queue_family_index // "none"' "$runtime_json")"
+sync_strategy="$(jq -r '.cross_queue_sync_strategy // "none"' "$runtime_json")"
 swapchain_images="$(jq -r '.swapchain_image_count // 0' "$runtime_json")"
 resource_bytes="$(jq -r '.video_resource_memory_bytes // 0' "$runtime_json")"
 
-if [[ "$decoded_count" -ne "$decode_prefix" || "$presented_count" -ne "$decode_prefix" || "$frame_count" -ne "$decode_prefix" || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$pts_delta_min" == "none" || "$pts_delta_max" == "none" || "$present_queue" == "none" || "$video_queue" == "none" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
+if [[ "$decoded_count" -ne "$decode_prefix" || "$presented_count" -ne "$decode_prefix" || "$frame_count" -ne "$decode_prefix" || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$pts_delta_min" == "none" || "$pts_delta_max" == "none" || "$present_queue" == "none" || "$video_queue" == "none" || "$sync_strategy" != "per-frame-binary-semaphore-decode-signal-present-wait" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
   {
     printf 'FAIL: native Vulkan direct H.265 ready-prefix video output was not valid\n'
     printf 'decoded_count: %s\n' "$decoded_count"
@@ -227,6 +228,7 @@ if [[ "$decoded_count" -ne "$decode_prefix" || "$presented_count" -ne "$decode_p
     printf 'pts_delta_max_ms: %s\n' "$pts_delta_max"
     printf 'present_queue: %s\n' "$present_queue"
     printf 'video_queue: %s\n' "$video_queue"
+    printf 'cross_queue_sync_strategy: %s\n' "$sync_strategy"
     printf 'swapchain_images: %s\n' "$swapchain_images"
     printf 'video_resource_memory_bytes: %s\n' "$resource_bytes"
     printf 'runtime JSON: %s\n' "$runtime_json"

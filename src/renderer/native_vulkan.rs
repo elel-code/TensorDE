@@ -3268,6 +3268,7 @@ pub fn run_h265_ready_prefix_video(
     let mut present_command_buffers = Vec::<vk::CommandBuffer>::new();
     let mut video_command_pool = vk::CommandPool::null();
     let mut image_available = vk::Semaphore::null();
+    let mut decode_finished = vk::Semaphore::null();
     let mut render_finished = vk::Semaphore::null();
     let mut in_flight = vk::Fence::null();
     let mut renderer = None::<NativeVulkanVideoRenderer>;
@@ -3368,6 +3369,11 @@ pub fn run_h265_ready_prefix_video(
             image_available = unsafe { device.create_semaphore(&semaphore_create_info, None) }
                 .map_err(|result| NativeVulkanError::Vulkan {
                     operation: "vkCreateSemaphore(direct h265 ready-prefix image_available)",
+                    result,
+                })?;
+            decode_finished = unsafe { device.create_semaphore(&semaphore_create_info, None) }
+                .map_err(|result| NativeVulkanError::Vulkan {
+                    operation: "vkCreateSemaphore(direct h265 ready-prefix decode_finished)",
                     result,
                 })?;
             render_finished = unsafe { device.create_semaphore(&semaphore_create_info, None) }
@@ -3621,6 +3627,7 @@ pub fn run_h265_ready_prefix_video(
                     &mut image_layer_layouts,
                     reset_before_decode,
                     pts_delta_ms,
+                    decode_finished,
                 )?;
 
                 let present_started_at = Instant::now();
@@ -3658,8 +3665,11 @@ pub fn run_h265_ready_prefix_video(
                     fit,
                 )?;
                 swapchain_image_layouts[image_index] = renderer_ref.target_final_layout();
-                let wait_semaphores = [image_available];
-                let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+                let wait_semaphores = [image_available, decode_finished];
+                let wait_stages = [
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    vk::PipelineStageFlags::ALL_COMMANDS,
+                ];
                 let command_buffers_for_submit = [present_command_buffers[image_index]];
                 let signal_semaphores = [render_finished];
                 let submit_info = vk::SubmitInfo::default()
@@ -3748,7 +3758,7 @@ pub fn run_h265_ready_prefix_video(
                 video_decode_queue_codec_operations: native_vulkan_video_codec_operation_labels(
                     video_queue_family.video_codec_operations,
                 ),
-                cross_queue_sync_strategy: "per-frame-decode-queue-wait-idle-then-present-queue-sampled-render",
+                cross_queue_sync_strategy: "per-frame-binary-semaphore-decode-signal-present-wait",
                 swapchain_extent: (swapchain_plan.extent.width, swapchain_plan.extent.height),
                 swapchain_image_count: swapchain_images.len(),
                 swapchain_format: native_vulkan_format_label(swapchain_plan.format.format)
@@ -3774,6 +3784,9 @@ pub fn run_h265_ready_prefix_video(
         }
         if image_available != vk::Semaphore::null() {
             device.destroy_semaphore(image_available, None);
+        }
+        if decode_finished != vk::Semaphore::null() {
+            device.destroy_semaphore(decode_finished, None);
         }
         if render_finished != vk::Semaphore::null() {
             device.destroy_semaphore(render_finished, None);
@@ -10000,6 +10013,7 @@ fn native_vulkan_decode_h265_ready_prefix_frame_to_image(
     image_layer_layouts: &mut [vk::ImageLayout],
     reset_before_decode: bool,
     pts_delta_ms: Option<u64>,
+    signal_semaphore: vk::Semaphore,
 ) -> Result<NativeVulkanDirectH265ReadyPrefixFrameSnapshot, NativeVulkanError> {
     let first_slice = access_unit.first_slice.as_ref().ok_or_else(|| {
         NativeVulkanError::Video(format!(
@@ -10204,17 +10218,14 @@ fn native_vulkan_decode_h265_ready_prefix_frame_to_image(
                 result,
             })?;
         let command_buffers = [command_buffer];
-        let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
+        let signal_semaphores = [signal_semaphore];
+        let submit_info = vk::SubmitInfo::default()
+            .command_buffers(&command_buffers)
+            .signal_semaphores(&signal_semaphores);
         device
             .queue_submit(video_queue, &[submit_info], vk::Fence::null())
             .map_err(|result| NativeVulkanError::Vulkan {
                 operation: "vkQueueSubmit(direct h265 visible frame decode)",
-                result,
-            })?;
-        device
-            .queue_wait_idle(video_queue)
-            .map_err(|result| NativeVulkanError::Vulkan {
-                operation: "vkQueueWaitIdle(direct h265 visible frame decode)",
                 result,
             })?;
     }
