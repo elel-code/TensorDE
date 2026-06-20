@@ -593,12 +593,15 @@ pub struct NativeVulkanH265ReadyPrefixDecodeSnapshot {
     pub output_readback: Option<NativeVulkanVideoDecodeOutputReadbackSnapshot>,
     pub output_sampling: Option<NativeVulkanVideoDecodeOutputSamplingSnapshot>,
     pub output_sampling_sequence: Vec<NativeVulkanH265ReadyPrefixSampledFrameSnapshot>,
+    pub output_sampling_sequence_timing:
+        Option<NativeVulkanH265ReadyPrefixSamplingSequenceTimingSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanH265ReadyPrefixSampledFrameSnapshot {
     pub access_unit_index: u32,
     pub pts_ms: Option<u64>,
+    pub pts_delta_ms: Option<u64>,
     pub source_base_array_layer: u32,
     pub readback_y_hash: u64,
     pub readback_uv_hash: u64,
@@ -607,6 +610,23 @@ pub struct NativeVulkanH265ReadyPrefixSampledFrameSnapshot {
     pub rgba_hash: u64,
     pub rgba_unique_values: u32,
     pub rgba_nonzero_bytes: u64,
+    pub decode_submit_wait_elapsed_us: u64,
+    pub readback_elapsed_us: u64,
+    pub sampling_elapsed_us: u64,
+    pub frame_elapsed_us: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanH265ReadyPrefixSamplingSequenceTimingSnapshot {
+    pub frame_count: u32,
+    pub total_elapsed_us: u64,
+    pub average_frame_elapsed_us: u64,
+    pub max_frame_elapsed_us: u64,
+    pub max_decode_submit_wait_elapsed_us: u64,
+    pub max_readback_elapsed_us: u64,
+    pub max_sampling_elapsed_us: u64,
+    pub pts_delta_min_ms: Option<u64>,
+    pub pts_delta_max_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -8598,6 +8618,7 @@ fn native_vulkan_decode_h265_ready_prefix_smoke(
             output_readback: Some(output_readback),
             output_sampling,
             output_sampling_sequence: Vec::new(),
+            output_sampling_sequence_timing: None,
         })
     })();
 
@@ -8720,12 +8741,18 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
         let mut reset_control_count = 0u32;
         let mut last_readback = None::<NativeVulkanVideoDecodeOutputReadbackSnapshot>;
         let mut last_sampling = None::<NativeVulkanVideoDecodeOutputSamplingSnapshot>;
+        let sequence_started_at = Instant::now();
+        let mut previous_pts_ms = None::<u64>;
 
         for ((entry, access_unit), span) in plan
             .iter()
             .zip(access_units.iter())
             .zip(payload.spans.iter())
         {
+            let frame_started_at = Instant::now();
+            let pts_delta_ms = access_unit
+                .pts_ms
+                .and_then(|pts_ms| previous_pts_ms.map(|previous| pts_ms.saturating_sub(previous)));
             let first_slice = access_unit.first_slice.as_ref().ok_or_else(|| {
                 NativeVulkanError::Video(format!(
                     "H.265 AU {} has no parsed first slice",
@@ -8884,6 +8911,7 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
                 .reference_slots(&reference_slots)
                 .push_next(&mut h265_picture_info);
 
+            let decode_started_at = Instant::now();
             unsafe {
                 device
                     .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
@@ -8952,9 +8980,14 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
                         result,
                     })?;
             }
+            let decode_submit_wait_elapsed_us =
+                native_vulkan_elapsed_us(decode_started_at.elapsed());
 
+            let readback_started_at = Instant::now();
             let output_readback =
                 native_vulkan_read_video_decode_output_snapshot(device, readback)?;
+            let readback_elapsed_us = native_vulkan_elapsed_us(readback_started_at.elapsed());
+            let sampling_started_at = Instant::now();
             let output_sampling = native_vulkan_sample_decoded_video_output(
                 device,
                 memory_properties,
@@ -8965,8 +8998,10 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
                 entry.planned_output_slot,
                 None,
             )?;
+            let sampling_elapsed_us = native_vulkan_elapsed_us(sampling_started_at.elapsed());
             image_layer_layouts[entry.planned_output_slot as usize] =
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+            let frame_elapsed_us = native_vulkan_elapsed_us(frame_started_at.elapsed());
 
             let reference_snapshots = available_references
                 .iter()
@@ -9007,7 +9042,13 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
                 &frame_snapshot,
                 &output_readback,
                 &output_sampling,
+                pts_delta_ms,
+                decode_submit_wait_elapsed_us,
+                readback_elapsed_us,
+                sampling_elapsed_us,
+                frame_elapsed_us,
             ));
+            previous_pts_ms = access_unit.pts_ms;
             frame_snapshots.push(frame_snapshot);
             last_readback = Some(output_readback);
             last_sampling = Some(output_sampling);
@@ -9016,6 +9057,10 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
         let last_frame = frame_snapshots
             .last()
             .expect("ready-prefix sequence decode must have at least one frame");
+        let sequence_timing = native_vulkan_h265_ready_prefix_sampling_sequence_timing(
+            &sampled_frames,
+            sequence_started_at.elapsed(),
+        );
         Ok(NativeVulkanH265ReadyPrefixDecodeSnapshot {
             codec: "h265-main-8",
             requested_frame_count: frame_count,
@@ -9036,6 +9081,7 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
             output_readback: last_readback,
             output_sampling: last_sampling,
             output_sampling_sequence: sampled_frames,
+            output_sampling_sequence_timing: Some(sequence_timing),
         })
     })();
 
@@ -9056,10 +9102,16 @@ fn native_vulkan_h265_ready_prefix_sampled_frame_snapshot(
     frame: &NativeVulkanH265DecodedFrameSnapshot,
     readback: &NativeVulkanVideoDecodeOutputReadbackSnapshot,
     sampling: &NativeVulkanVideoDecodeOutputSamplingSnapshot,
+    pts_delta_ms: Option<u64>,
+    decode_submit_wait_elapsed_us: u64,
+    readback_elapsed_us: u64,
+    sampling_elapsed_us: u64,
+    frame_elapsed_us: u64,
 ) -> NativeVulkanH265ReadyPrefixSampledFrameSnapshot {
     NativeVulkanH265ReadyPrefixSampledFrameSnapshot {
         access_unit_index: frame.access_unit_index,
         pts_ms: frame.pts_ms,
+        pts_delta_ms,
         source_base_array_layer: sampling.source_base_array_layer,
         readback_y_hash: readback.y_plane_hash,
         readback_uv_hash: readback.uv_plane_hash,
@@ -9068,6 +9120,54 @@ fn native_vulkan_h265_ready_prefix_sampled_frame_snapshot(
         rgba_hash: sampling.rgba_hash,
         rgba_unique_values: sampling.rgba_unique_values,
         rgba_nonzero_bytes: sampling.rgba_nonzero_bytes,
+        decode_submit_wait_elapsed_us,
+        readback_elapsed_us,
+        sampling_elapsed_us,
+        frame_elapsed_us,
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_ready_prefix_sampling_sequence_timing(
+    frames: &[NativeVulkanH265ReadyPrefixSampledFrameSnapshot],
+    total_elapsed: Duration,
+) -> NativeVulkanH265ReadyPrefixSamplingSequenceTimingSnapshot {
+    let frame_count = frames.len() as u32;
+    let total_frame_elapsed_us = frames.iter().fold(0u64, |total, frame| {
+        total.saturating_add(frame.frame_elapsed_us)
+    });
+    let pts_delta_min_ms = frames.iter().filter_map(|frame| frame.pts_delta_ms).min();
+    let pts_delta_max_ms = frames.iter().filter_map(|frame| frame.pts_delta_ms).max();
+    NativeVulkanH265ReadyPrefixSamplingSequenceTimingSnapshot {
+        frame_count,
+        total_elapsed_us: native_vulkan_elapsed_us(total_elapsed),
+        average_frame_elapsed_us: if frame_count == 0 {
+            0
+        } else {
+            total_frame_elapsed_us / u64::from(frame_count)
+        },
+        max_frame_elapsed_us: frames
+            .iter()
+            .map(|frame| frame.frame_elapsed_us)
+            .max()
+            .unwrap_or(0),
+        max_decode_submit_wait_elapsed_us: frames
+            .iter()
+            .map(|frame| frame.decode_submit_wait_elapsed_us)
+            .max()
+            .unwrap_or(0),
+        max_readback_elapsed_us: frames
+            .iter()
+            .map(|frame| frame.readback_elapsed_us)
+            .max()
+            .unwrap_or(0),
+        max_sampling_elapsed_us: frames
+            .iter()
+            .map(|frame| frame.sampling_elapsed_us)
+            .max()
+            .unwrap_or(0),
+        pts_delta_min_ms,
+        pts_delta_max_ms,
     }
 }
 

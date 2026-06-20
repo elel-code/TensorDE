@@ -249,6 +249,12 @@ if [[ "$decode_prefix" -gt 0 ]]; then
     sequence_distinct_hashes="$(jq -r '[.h265_ready_prefix_decode.output_sampling_sequence[]?.rgba_hash] | unique | length' "$probe_json")"
     sequence_layers="$(jq -c '[.h265_ready_prefix_decode.output_sampling_sequence[]?.source_base_array_layer]' "$probe_json")"
     frame_layers="$(jq -c '[.h265_ready_prefix_decode.frames[]?.dst_base_array_layer]' "$probe_json")"
+    sequence_timing_count="$(jq -r '.h265_ready_prefix_decode.output_sampling_sequence_timing.frame_count // 0' "$probe_json")"
+    sequence_timing_total_us="$(jq -r '.h265_ready_prefix_decode.output_sampling_sequence_timing.total_elapsed_us // 0' "$probe_json")"
+    sequence_timing_average_us="$(jq -r '.h265_ready_prefix_decode.output_sampling_sequence_timing.average_frame_elapsed_us // 0' "$probe_json")"
+    sequence_timing_bad="$(jq -r '[.h265_ready_prefix_decode.output_sampling_sequence[]? | select(.frame_elapsed_us <= 0 or .decode_submit_wait_elapsed_us <= 0 or .sampling_elapsed_us <= 0)] | length' "$probe_json")"
+    sequence_pts_delta_min="$(jq -r '.h265_ready_prefix_decode.output_sampling_sequence_timing.pts_delta_min_ms // "none"' "$probe_json")"
+    sequence_pts_delta_max="$(jq -r '.h265_ready_prefix_decode.output_sampling_sequence_timing.pts_delta_max_ms // "none"' "$probe_json")"
     if [[ "$sequence_count" -ne "$decode_prefix" || "$sequence_bad" -ne 0 || "$sequence_distinct_hashes" -le 1 || "$sequence_layers" != "$frame_layers" ]]; then
       {
         printf 'FAIL: native Vulkan H.265 decode-prefix sampled sequence was not valid\n'
@@ -258,6 +264,20 @@ if [[ "$decode_prefix" -gt 0 ]]; then
         printf 'sequence_distinct_hashes: %s\n' "$sequence_distinct_hashes"
         printf 'sequence_layers: %s\n' "$sequence_layers"
         printf 'frame_layers: %s\n' "$frame_layers"
+        printf 'probe JSON: %s\n' "$probe_json"
+      } | tee "$summary"
+      exit 1
+    fi
+    if [[ "$sequence_timing_count" -ne "$decode_prefix" || "$sequence_timing_total_us" -le 0 || "$sequence_timing_average_us" -le 0 || "$sequence_timing_bad" -ne 0 || "$sequence_pts_delta_min" == "none" || "$sequence_pts_delta_max" == "none" ]]; then
+      {
+        printf 'FAIL: native Vulkan H.265 decode-prefix sampled sequence timing was not valid\n'
+        printf 'sequence_timing_count: %s\n' "$sequence_timing_count"
+        printf 'requested_decode_prefix: %s\n' "$decode_prefix"
+        printf 'sequence_timing_total_us: %s\n' "$sequence_timing_total_us"
+        printf 'sequence_timing_average_us: %s\n' "$sequence_timing_average_us"
+        printf 'sequence_timing_bad: %s\n' "$sequence_timing_bad"
+        printf 'sequence_pts_delta_min: %s\n' "$sequence_pts_delta_min"
+        printf 'sequence_pts_delta_max: %s\n' "$sequence_pts_delta_max"
         printf 'probe JSON: %s\n' "$probe_json"
       } | tee "$summary"
       exit 1
@@ -292,6 +312,14 @@ fi
   printf 'decode_prefix_sample_sequence_count: %s\n' "$(jq -r '(.h265_ready_prefix_decode.output_sampling_sequence // []) | length' "$probe_json")"
   printf 'decode_prefix_sample_sequence_distinct_hashes: %s\n' "$(jq -r '[.h265_ready_prefix_decode.output_sampling_sequence[]?.rgba_hash] | unique | length' "$probe_json")"
   printf 'decode_prefix_sample_sequence_layers: %s\n' "$(jq -c '[.h265_ready_prefix_decode.output_sampling_sequence[]?.source_base_array_layer]' "$probe_json")"
+  printf 'decode_prefix_sample_sequence_total_elapsed_us: %s\n' "$(jq -r '.h265_ready_prefix_decode.output_sampling_sequence_timing.total_elapsed_us // "none"' "$probe_json")"
+  printf 'decode_prefix_sample_sequence_average_frame_elapsed_us: %s\n' "$(jq -r '.h265_ready_prefix_decode.output_sampling_sequence_timing.average_frame_elapsed_us // "none"' "$probe_json")"
+  printf 'decode_prefix_sample_sequence_max_frame_elapsed_us: %s\n' "$(jq -r '.h265_ready_prefix_decode.output_sampling_sequence_timing.max_frame_elapsed_us // "none"' "$probe_json")"
+  printf 'decode_prefix_sample_sequence_max_decode_submit_wait_elapsed_us: %s\n' "$(jq -r '.h265_ready_prefix_decode.output_sampling_sequence_timing.max_decode_submit_wait_elapsed_us // "none"' "$probe_json")"
+  printf 'decode_prefix_sample_sequence_max_readback_elapsed_us: %s\n' "$(jq -r '.h265_ready_prefix_decode.output_sampling_sequence_timing.max_readback_elapsed_us // "none"' "$probe_json")"
+  printf 'decode_prefix_sample_sequence_max_sampling_elapsed_us: %s\n' "$(jq -r '.h265_ready_prefix_decode.output_sampling_sequence_timing.max_sampling_elapsed_us // "none"' "$probe_json")"
+  printf 'decode_prefix_sample_sequence_pts_delta_min_ms: %s\n' "$(jq -r '.h265_ready_prefix_decode.output_sampling_sequence_timing.pts_delta_min_ms // "none"' "$probe_json")"
+  printf 'decode_prefix_sample_sequence_pts_delta_max_ms: %s\n' "$(jq -r '.h265_ready_prefix_decode.output_sampling_sequence_timing.pts_delta_max_ms // "none"' "$probe_json")"
   printf 'session_parameters_created: %s\n' "$(jq -r '.session_parameters_created' "$probe_json")"
   printf 'session_parameters_error: %s\n' "$(jq -r '.session_parameters_error // "none"' "$probe_json")"
   printf 'profile: %s\n' "$(jq -r '.bitstream_extract.h265_parameter_sets.sps.profile_label' "$probe_json")"
