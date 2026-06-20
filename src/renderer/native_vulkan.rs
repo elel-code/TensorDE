@@ -11,6 +11,7 @@ use serde::Serialize;
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::path::PathBuf;
+use std::ptr;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -72,6 +73,8 @@ pub enum NativeVulkanError {
     MissingSurfaceFormat,
     UnsupportedSwapchainUsage(&'static str),
     InvalidSwapchainExtent,
+    StaticImage(String),
+    MissingMemoryType(&'static str),
 }
 
 impl fmt::Display for NativeVulkanError {
@@ -94,6 +97,8 @@ impl fmt::Display for NativeVulkanError {
                 )
             }
             Self::InvalidSwapchainExtent => write!(f, "invalid Vulkan swapchain extent"),
+            Self::StaticImage(err) => write!(f, "static image error: {err}"),
+            Self::MissingMemoryType(label) => write!(f, "missing Vulkan memory type for {label}"),
         }
     }
 }
@@ -410,6 +415,7 @@ pub struct NativeVulkanRuntimeSnapshot {
     pub swapchain_format: String,
     pub present_mode: &'static str,
     pub clear_color: NativeVulkanClearColor,
+    pub static_upload_bytes: Option<u64>,
     pub render_item: NativeVulkanRenderItem,
     pub last_render_error: Option<String>,
 }
@@ -438,6 +444,7 @@ pub struct NativeVulkanSession {
     image_available: vk::Semaphore,
     render_finished: vk::Semaphore,
     in_flight: vk::Fence,
+    static_upload: Option<NativeVulkanStaticImageUpload>,
     clear_color: NativeVulkanClearColor,
     render_item: NativeVulkanRenderItem,
     started_at: Instant,
@@ -564,6 +571,24 @@ impl NativeVulkanSession {
                     result,
                 }
             })?;
+        let static_upload = match &render_item {
+            NativeVulkanRenderItem::StaticImage {
+                source,
+                fit,
+                background,
+                ..
+            } => Some(NativeVulkanStaticImageUpload::new(
+                &instance,
+                selection.physical_device,
+                &device,
+                source,
+                *fit,
+                background.as_deref(),
+                swapchain_plan.format.format,
+                swapchain_plan.extent,
+            )?),
+            _ => None,
+        };
 
         Ok(Self {
             host,
@@ -589,6 +614,7 @@ impl NativeVulkanSession {
             image_available,
             render_finished,
             in_flight,
+            static_upload,
             clear_color: options.clear_color,
             render_item,
             started_at: Instant::now(),
@@ -655,6 +681,10 @@ impl NativeVulkanSession {
             swapchain_format: format!("{:?}", self.swapchain_format),
             present_mode: native_vulkan_present_mode_label(self.present_mode),
             clear_color: self.clear_color,
+            static_upload_bytes: self
+                .static_upload
+                .as_ref()
+                .map(|upload| upload.size_bytes.min(u64::MAX as vk::DeviceSize) as u64),
             render_item: self.render_item.clone(),
             last_render_error: self.last_render_error.clone(),
         }
@@ -691,7 +721,7 @@ impl NativeVulkanSession {
         })?;
         let image_index = image_index as usize;
         let command_buffer = self.command_buffers[image_index];
-        self.record_clear_command(command_buffer, image_index)?;
+        self.record_frame_command(command_buffer, image_index)?;
 
         let wait_semaphores = [self.image_available];
         let wait_stages = [vk::PipelineStageFlags::TRANSFER];
@@ -730,7 +760,7 @@ impl NativeVulkanSession {
         Ok(())
     }
 
-    fn record_clear_command(
+    fn record_frame_command(
         &mut self,
         command_buffer: vk::CommandBuffer,
         image_index: usize,
@@ -773,14 +803,25 @@ impl NativeVulkanSession {
                 &[to_transfer],
             );
 
-            let clear_color = vk::ClearColorValue::from(self.clear_color);
-            self.device.cmd_clear_color_image(
-                command_buffer,
-                image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &clear_color,
-                &[range],
-            );
+            if let Some(static_upload) = &self.static_upload {
+                let copy = static_upload.buffer_image_copy;
+                self.device.cmd_copy_buffer_to_image(
+                    command_buffer,
+                    static_upload.buffer,
+                    image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[copy],
+                );
+            } else {
+                let clear_color = vk::ClearColorValue::from(self.clear_color);
+                self.device.cmd_clear_color_image(
+                    command_buffer,
+                    image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &clear_color,
+                    &[range],
+                );
+            }
 
             let to_present = vk::ImageMemoryBarrier::default()
                 .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
@@ -817,6 +858,9 @@ impl Drop for NativeVulkanSession {
     fn drop(&mut self) {
         unsafe {
             let _ = self.device.device_wait_idle();
+            if let Some(static_upload) = self.static_upload.take() {
+                static_upload.destroy(&self.device);
+            }
             self.device.destroy_fence(self.in_flight, None);
             self.device.destroy_semaphore(self.render_finished, None);
             self.device.destroy_semaphore(self.image_available, None);
@@ -837,6 +881,264 @@ pub fn run_clear(
     let target_max_fps = options.target_max_fps;
     let mut session = NativeVulkanSession::connect(options)?;
     session.run_for(duration, target_max_fps)
+}
+
+pub fn run_static_image(
+    options: NativeVulkanOptions,
+    duration: Duration,
+    plan: StaticWallpaperPlan,
+) -> Result<NativeVulkanRuntimeSnapshot, NativeVulkanError> {
+    let target_max_fps = options.target_max_fps;
+    let item = native_vulkan_static_item(&plan);
+    let mut session = NativeVulkanSession::connect_with_render_item(options, item)?;
+    session.run_for(duration, target_max_fps)
+}
+
+struct NativeVulkanStaticImageUpload {
+    buffer: vk::Buffer,
+    memory: vk::DeviceMemory,
+    buffer_image_copy: vk::BufferImageCopy,
+    size_bytes: vk::DeviceSize,
+}
+
+impl NativeVulkanStaticImageUpload {
+    fn new(
+        instance: &ash::Instance,
+        physical_device: vk::PhysicalDevice,
+        device: &ash::Device,
+        source: &PathBuf,
+        fit: FitMode,
+        background: Option<&str>,
+        swapchain_format: vk::Format,
+        extent: vk::Extent2D,
+    ) -> Result<Self, NativeVulkanError> {
+        let pixels = native_vulkan_static_image_pixels(
+            source,
+            fit,
+            background,
+            swapchain_format,
+            (extent.width, extent.height),
+        )?;
+        let size_bytes = pixels.len() as vk::DeviceSize;
+        let buffer_create_info = vk::BufferCreateInfo::default()
+            .size(size_bytes)
+            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let buffer =
+            unsafe { device.create_buffer(&buffer_create_info, None) }.map_err(|result| {
+                NativeVulkanError::Vulkan {
+                    operation: "vkCreateBuffer(static_image)",
+                    result,
+                }
+            })?;
+        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+        let memory_properties =
+            unsafe { instance.get_physical_device_memory_properties(physical_device) };
+        let memory_type_index = native_vulkan_memory_type_index(
+            &memory_properties,
+            requirements.memory_type_bits,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )
+        .ok_or(NativeVulkanError::MissingMemoryType(
+            "static image staging buffer",
+        ))?;
+        let allocate_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(requirements.size)
+            .memory_type_index(memory_type_index);
+        let memory = unsafe { device.allocate_memory(&allocate_info, None) }.map_err(|result| {
+            unsafe {
+                device.destroy_buffer(buffer, None);
+            }
+            NativeVulkanError::Vulkan {
+                operation: "vkAllocateMemory(static_image)",
+                result,
+            }
+        })?;
+        if let Err(err) = unsafe { device.bind_buffer_memory(buffer, memory, 0) } {
+            unsafe {
+                device.free_memory(memory, None);
+                device.destroy_buffer(buffer, None);
+            }
+            return Err(NativeVulkanError::Vulkan {
+                operation: "vkBindBufferMemory(static_image)",
+                result: err,
+            });
+        }
+        let map = unsafe { device.map_memory(memory, 0, size_bytes, vk::MemoryMapFlags::empty()) }
+            .map_err(|result| {
+                unsafe {
+                    device.free_memory(memory, None);
+                    device.destroy_buffer(buffer, None);
+                }
+                NativeVulkanError::Vulkan {
+                    operation: "vkMapMemory(static_image)",
+                    result,
+                }
+            })?;
+        unsafe {
+            ptr::copy_nonoverlapping(pixels.as_ptr(), map.cast::<u8>(), pixels.len());
+            device.unmap_memory(memory);
+        }
+
+        Ok(Self {
+            buffer,
+            memory,
+            buffer_image_copy: vk::BufferImageCopy {
+                buffer_offset: 0,
+                buffer_row_length: 0,
+                buffer_image_height: 0,
+                image_subresource: vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+                image_extent: vk::Extent3D {
+                    width: extent.width,
+                    height: extent.height,
+                    depth: 1,
+                },
+            },
+            size_bytes,
+        })
+    }
+
+    fn destroy(self, device: &ash::Device) {
+        unsafe {
+            device.free_memory(self.memory, None);
+            device.destroy_buffer(self.buffer, None);
+        }
+    }
+}
+
+fn native_vulkan_static_image_pixels(
+    source: &PathBuf,
+    fit: FitMode,
+    background: Option<&str>,
+    format: vk::Format,
+    target_size: (u32, u32),
+) -> Result<Vec<u8>, NativeVulkanError> {
+    if target_size.0 == 0 || target_size.1 == 0 {
+        return Err(NativeVulkanError::StaticImage(
+            "target image size is zero".to_owned(),
+        ));
+    }
+    let image = image::ImageReader::open(source)
+        .map_err(|err| NativeVulkanError::StaticImage(format!("open {}: {err}", source.display())))?
+        .with_guessed_format()
+        .map_err(|err| {
+            NativeVulkanError::StaticImage(format!("guess format {}: {err}", source.display()))
+        })?
+        .decode()
+        .map_err(|err| {
+            NativeVulkanError::StaticImage(format!("decode {}: {err}", source.display()))
+        })?
+        .to_rgba8();
+    let mut canvas = image::RgbaImage::from_pixel(
+        target_size.0,
+        target_size.1,
+        native_vulkan_parse_background(background),
+    );
+    native_vulkan_blit_fit(&image, &mut canvas, fit);
+    Ok(native_vulkan_encode_swapchain_pixels(&canvas, format))
+}
+
+fn native_vulkan_parse_background(background: Option<&str>) -> image::Rgba<u8> {
+    let Some(value) = background else {
+        return image::Rgba([0, 0, 0, 255]);
+    };
+    let Some(hex) = value.trim().strip_prefix('#') else {
+        return image::Rgba([0, 0, 0, 255]);
+    };
+    if hex.len() != 6 {
+        return image::Rgba([0, 0, 0, 255]);
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+    image::Rgba([r, g, b, 255])
+}
+
+fn native_vulkan_blit_fit(source: &image::RgbaImage, canvas: &mut image::RgbaImage, fit: FitMode) {
+    let source_width = source.width().max(1);
+    let source_height = source.height().max(1);
+    let target_width = canvas.width().max(1);
+    let target_height = canvas.height().max(1);
+    match fit {
+        FitMode::Stretch => {
+            let resized = image::imageops::resize(
+                source,
+                target_width,
+                target_height,
+                image::imageops::FilterType::Triangle,
+            );
+            image::imageops::replace(canvas, &resized, 0, 0);
+        }
+        FitMode::Center => {
+            let x = (target_width as i64 - source_width as i64) / 2;
+            let y = (target_height as i64 - source_height as i64) / 2;
+            image::imageops::overlay(canvas, source, x, y);
+        }
+        FitMode::Tile => {
+            let mut y = 0;
+            while y < target_height {
+                let mut x = 0;
+                while x < target_width {
+                    image::imageops::overlay(canvas, source, x as i64, y as i64);
+                    x = x.saturating_add(source_width);
+                }
+                y = y.saturating_add(source_height);
+            }
+        }
+        FitMode::Contain | FitMode::Cover => {
+            let scale_x = target_width as f64 / source_width as f64;
+            let scale_y = target_height as f64 / source_height as f64;
+            let scale = if fit == FitMode::Cover {
+                scale_x.max(scale_y)
+            } else {
+                scale_x.min(scale_y)
+            };
+            let scaled_width = ((source_width as f64 * scale).round() as u32).max(1);
+            let scaled_height = ((source_height as f64 * scale).round() as u32).max(1);
+            let resized = image::imageops::resize(
+                source,
+                scaled_width,
+                scaled_height,
+                image::imageops::FilterType::Triangle,
+            );
+            let x = (target_width as i64 - scaled_width as i64) / 2;
+            let y = (target_height as i64 - scaled_height as i64) / 2;
+            image::imageops::overlay(canvas, &resized, x, y);
+        }
+    }
+}
+
+fn native_vulkan_encode_swapchain_pixels(image: &image::RgbaImage, format: vk::Format) -> Vec<u8> {
+    let mut pixels = image.as_raw().clone();
+    if matches!(
+        format,
+        vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB
+    ) {
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+    }
+    pixels
+}
+
+fn native_vulkan_memory_type_index(
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    memory_type_bits: u32,
+    flags: vk::MemoryPropertyFlags,
+) -> Option<u32> {
+    memory_properties.memory_types[..memory_properties.memory_type_count as usize]
+        .iter()
+        .enumerate()
+        .find_map(|(index, memory_type)| {
+            let supported = (memory_type_bits & (1 << index)) != 0;
+            (supported && memory_type.property_flags.contains(flags)).then_some(index as u32)
+        })
 }
 
 struct NativeVulkanPresentQueueQuery {
@@ -1180,8 +1482,8 @@ pub fn wallpaper_type_support_matrix() -> Vec<NativeVulkanWallpaperTypeSupport> 
         NativeVulkanWallpaperTypeSupport {
             wallpaper_type: NativeVulkanWallpaperType::StaticImage,
             current_vulkan_item: true,
-            current_renderer_status: "render item mapped; clear pass placeholder until image upload lands",
-            target_vulkan_path: "decode image -> Vulkan image -> fit-aware textured fullscreen pass",
+            current_renderer_status: "CPU decode/fit into staging buffer, copied into swapchain image",
+            target_vulkan_path: "decode image -> sampled Vulkan image -> fit-aware textured fullscreen pass",
         },
         NativeVulkanWallpaperTypeSupport {
             wallpaper_type: NativeVulkanWallpaperType::Video,
@@ -1294,7 +1596,7 @@ fn native_vulkan_static_item(plan: &StaticWallpaperPlan) -> NativeVulkanRenderIt
         source: plan.source.clone(),
         fit: plan.fit,
         background: plan.background.clone(),
-        renderer_status: "planned-static-texture-upload",
+        renderer_status: "cpu-fit-staging-copy",
     }
 }
 
@@ -1554,6 +1856,45 @@ mod tests {
         ));
         assert!(matches!(items[1], NativeVulkanRenderItem::Video { .. }));
         assert_eq!(items[1].wallpaper_type(), NativeVulkanWallpaperType::Video);
+    }
+
+    #[test]
+    fn parses_static_background_hex() {
+        assert_eq!(
+            native_vulkan_parse_background(Some("#102030")),
+            image::Rgba([0x10, 0x20, 0x30, 255])
+        );
+        assert_eq!(
+            native_vulkan_parse_background(Some("bad")),
+            image::Rgba([0, 0, 0, 255])
+        );
+    }
+
+    #[test]
+    fn encodes_bgra_swapchain_pixels() {
+        let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 4]));
+
+        assert_eq!(
+            native_vulkan_encode_swapchain_pixels(&image, vk::Format::B8G8R8A8_UNORM),
+            vec![3, 2, 1, 4]
+        );
+        assert_eq!(
+            native_vulkan_encode_swapchain_pixels(&image, vk::Format::R8G8B8A8_UNORM),
+            vec![1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn contain_fit_preserves_letterbox_background() {
+        let source = image::RgbaImage::from_pixel(2, 1, image::Rgba([255, 0, 0, 255]));
+        let mut canvas = image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 0, 255]));
+
+        native_vulkan_blit_fit(&source, &mut canvas, FitMode::Contain);
+
+        assert_eq!(canvas.get_pixel(0, 0), &image::Rgba([0, 0, 0, 255]));
+        assert_eq!(canvas.get_pixel(0, 1), &image::Rgba([255, 0, 0, 255]));
+        assert_eq!(canvas.get_pixel(3, 2), &image::Rgba([255, 0, 0, 255]));
+        assert_eq!(canvas.get_pixel(0, 3), &image::Rgba([0, 0, 0, 255]));
     }
 
     #[test]
