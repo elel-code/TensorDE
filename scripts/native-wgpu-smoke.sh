@@ -65,6 +65,132 @@ color="#0b5cff"
 render_mode="solid"
 no_build=0
 
+write_smaps_mapping_summary() {
+  local target_pid="$1"
+  local report="$2"
+  local categories_csv="$3"
+  local smaps="/proc/${target_pid}/smaps"
+  local mappings_tmp="${report}.mappings.tmp"
+  local categories_tmp="${report}.categories.tmp"
+
+  if [[ ! -r "$smaps" ]]; then
+    printf 'category,pss_kib,rss_kib,private_clean_kib,private_dirty_kib,shared_kib\n' >"$categories_csv"
+    {
+      printf 'report: process-memory-mappings\n'
+      printf 'pid: %s\n' "$target_pid"
+      printf 'source: %s\n' "$smaps"
+      printf 'status: unavailable\n'
+    } >"$report"
+    return 0
+  fi
+
+  : >"$mappings_tmp"
+  : >"$categories_tmp"
+  awk -v mappings="$mappings_tmp" -v categories="$categories_tmp" '
+    function reset_current() {
+      rss = 0
+      pss = 0
+      private_clean = 0
+      private_dirty = 0
+      shared_clean = 0
+      shared_dirty = 0
+    }
+    function category_for(mapping) {
+      if (mapping ~ /^\/dev\/nvidia/) { return "nvidia-device" }
+      if (mapping ~ /^\/dev\/dri/) { return "dri-device" }
+      if (mapping == "[heap]") { return "heap" }
+      if (mapping ~ /^\[stack/) { return "stack" }
+      if (mapping ~ /^\[anon/) { return "anonymous" }
+      if (mapping ~ /^\/dev\/zero/) { return "shared-memory" }
+      if (mapping ~ /\/libnvidia/ || mapping ~ /\/libcuda/ || mapping ~ /\/libnvcuvid/) {
+        return "nvidia-library"
+      }
+      if (mapping ~ /\/gstreamer-1\.0\// || mapping ~ /\/libgst/) { return "gstreamer-library" }
+      if (mapping ~ /\/libgtk/ || mapping ~ /\/libgdk/) { return "gtk-library" }
+      if (mapping ~ /\/target\/(debug|release)\/gilder-native-wgpu$/) { return "gilder-binary" }
+      if (mapping ~ /^\/usr\/lib/) { return "system-library" }
+      if (mapping ~ /^\//) { return "file-mapping" }
+      return "other"
+    }
+    function emit_current() {
+      if (!have_mapping) { return }
+      shared = shared_clean + shared_dirty
+      printf "%d %d %d %d %d %s\n", pss, rss, private_clean, private_dirty, shared, key >> mappings
+      category = category_for(key)
+      category_pss[category] += pss
+      category_rss[category] += rss
+      category_private_clean[category] += private_clean
+      category_private_dirty[category] += private_dirty
+      category_shared[category] += shared
+      mapping_count += 1
+    }
+    /^[0-9a-fA-F]+-[0-9a-fA-F]+/ {
+      emit_current()
+      have_mapping = 1
+      reset_current()
+      key = "[anon]"
+      if (NF >= 6) {
+        key = $6
+        for (i = 7; i <= NF; i++) {
+          key = key " " $i
+        }
+      }
+      next
+    }
+    /^Rss:/ { rss = $2 + 0; next }
+    /^Pss:/ { pss = $2 + 0; next }
+    /^Private_Clean:/ { private_clean = $2 + 0; next }
+    /^Private_Dirty:/ { private_dirty = $2 + 0; next }
+    /^Shared_Clean:/ { shared_clean = $2 + 0; next }
+    /^Shared_Dirty:/ { shared_dirty = $2 + 0; next }
+    END {
+      emit_current()
+      for (category in category_pss) {
+        printf "%d %d %d %d %d %s\n",
+          category_pss[category],
+          category_rss[category],
+          category_private_clean[category],
+          category_private_dirty[category],
+          category_shared[category],
+          category >> categories
+      }
+      printf "%d\n", mapping_count > (categories ".count")
+    }
+  ' "$smaps"
+
+  {
+    printf 'report: process-memory-mappings\n'
+    printf 'pid: %s\n' "$target_pid"
+    printf 'source: %s\n' "$smaps"
+    printf 'status: available\n'
+    printf 'mapping_count: '
+    sed -n '1p' "${categories_tmp}.count" 2>/dev/null || printf '0\n'
+    printf 'top_mappings_by_pss:\n'
+    printf 'pss_kib rss_kib private_clean_kib private_dirty_kib shared_kib mapping\n'
+    sort -k1,1nr "$mappings_tmp" 2>/dev/null | sed -n '1,30p'
+    printf 'top_mappings_by_private_dirty:\n'
+    printf 'pss_kib rss_kib private_clean_kib private_dirty_kib shared_kib mapping\n'
+    sort -k4,4nr "$mappings_tmp" 2>/dev/null | sed -n '1,30p'
+    printf 'category_summary_by_pss:\n'
+    printf 'pss_kib rss_kib private_clean_kib private_dirty_kib shared_kib category\n'
+    sort -k1,1nr "$categories_tmp" 2>/dev/null
+    printf 'category_summary_by_private_dirty:\n'
+    printf 'pss_kib rss_kib private_clean_kib private_dirty_kib shared_kib category\n'
+    sort -k4,4nr "$categories_tmp" 2>/dev/null
+  } >"$report"
+
+  {
+    printf 'category,pss_kib,rss_kib,private_clean_kib,private_dirty_kib,shared_kib\n'
+    sort -k6,6 "$categories_tmp" 2>/dev/null | awk '
+      {
+        printf "%s,%d,%d,%d,%d,%d\n", $6, $1, $2, $3, $4, $5
+      }
+    '
+  } >"$categories_csv"
+
+  rm -f "$mappings_tmp" "$categories_tmp" "${categories_tmp}.count"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --display)
@@ -285,6 +411,8 @@ runtime_jsonl="$work_dir/runtime.jsonl"
 samples_csv="$work_dir/samples.csv"
 summary_txt="$work_dir/summary.txt"
 runtime_summary_txt="$work_dir/runtime-summary.txt"
+memory_mapping_summary_txt="$work_dir/memory-mapping-summary.txt"
+memory_mapping_categories_csv="$work_dir/memory-mapping-categories.csv"
 metadata_txt="$work_dir/metadata.txt"
 stdout_log="$work_dir/stdout.log"
 stderr_log="$work_dir/stderr.log"
@@ -363,6 +491,7 @@ while kill -0 "$app_pid" 2>/dev/null; do
         END { printf "%d %d %d %d %d %d\n", rss, private_dirty, shared_dirty, private_clean, shared_clean, swap }
       ' "/proc/$app_pid/smaps_rollup"
     )
+    write_smaps_mapping_summary "$app_pid" "$memory_mapping_summary_txt" "$memory_mapping_categories_csv"
   fi
   ps_line="$(ps -o rss=,vsz=,%cpu= -p "$app_pid" 2>/dev/null || true)"
   ps_rss=0
@@ -448,6 +577,7 @@ if [[ -s "$runtime_json" ]]; then
         "video_last_plane_offsets: \((.video.last_plane_offsets // []) | join("|"))",
         "video_last_plane_strides: \((.video.last_plane_strides // []) | join("|"))",
         "video_last_fd_count: \(.video.last_fd_count // null)",
+        "video_cuda_direct_pending_copies: \(.video.last_cuda_direct_pending_copies // null)",
         "video_bytes_read: \(.video.bytes_read // null)",
         "video_eos_messages: \(.video.eos_messages)",
         "video_decoder_resets: \(.video.decoder_resets // null)",
@@ -506,6 +636,7 @@ if [[ -s "$runtime_json" ]]; then
     /"last_plane_offsets":/ { print "video_last_plane_offsets: " value() }
     /"last_plane_strides":/ { print "video_last_plane_strides: " value() }
     /"last_fd_count":/ { print "video_last_fd_count: " value() }
+    /"last_cuda_direct_pending_copies":/ { print "video_cuda_direct_pending_copies: " value() }
     /"bytes_read":/ { print "video_bytes_read: " value() }
     /"eos_messages":/ { print "video_eos_messages: " value() }
     /"decoder_resets":/ { print "video_decoder_resets: " value() }
@@ -533,3 +664,5 @@ echo "summary:  $summary_txt"
 echo "runtime:  $runtime_json"
 echo "runtime samples: $runtime_jsonl"
 echo "runtime summary: $runtime_summary_txt"
+echo "memory mapping summary: $memory_mapping_summary_txt"
+echo "memory mapping categories: $memory_mapping_categories_csv"
