@@ -9,6 +9,8 @@
 
 use serde::Serialize;
 #[cfg(feature = "native-vulkan-gst-video")]
+use std::collections::BTreeMap;
+#[cfg(feature = "native-vulkan-gst-video")]
 use std::ffi::c_void;
 use std::ffi::{CStr, CString};
 use std::fmt;
@@ -45,6 +47,8 @@ use gstreamer as gst;
 use gstreamer_video as gst_video;
 
 const NATIVE_VULKAN_VIDEO_CODEC_OPERATION_DECODE_VP9: u32 = 0x0000_0008;
+#[cfg(feature = "native-vulkan-gst-video")]
+const NATIVE_VULKAN_H265_REFERENCE_PLAN_DPB_SLOTS: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanCapabilities {
@@ -637,6 +641,8 @@ pub struct NativeVulkanVideoBitstreamExtractSnapshot {
     pub h265_parameter_sets: Option<NativeVulkanH265ParameterSetSnapshot>,
     pub h265_nal_units: Vec<NativeVulkanH265NalUnitSnapshot>,
     pub h265_access_units: Vec<NativeVulkanH265AccessUnitSnapshot>,
+    pub h265_reference_plan_dpb_slots: u32,
+    pub h265_decode_reference_plan: Vec<NativeVulkanH265DecodeReferencePlanEntrySnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -691,6 +697,31 @@ pub struct NativeVulkanH265ShortTermRefPicSetSnapshot {
     pub positive_used_by_curr_pic: Vec<bool>,
     pub used_positive_delta_pocs: Vec<i32>,
     pub used_by_current_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanH265DecodeReferencePlanEntrySnapshot {
+    pub access_unit_index: u32,
+    pub pts_ms: Option<u64>,
+    pub nal_type_label: Option<&'static str>,
+    pub current_poc: Option<i32>,
+    pub planned_output_slot: u32,
+    pub setup_slot_index: Option<i32>,
+    pub evicted_poc: Option<i32>,
+    pub references: Vec<NativeVulkanH265DecodeReferenceSnapshot>,
+    pub available_reference_count: u32,
+    pub missing_reference_count: u32,
+    pub missing_reference_pocs: Vec<i32>,
+    pub ready_for_decode_submit: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanH265DecodeReferenceSnapshot {
+    pub delta_poc: i32,
+    pub poc: i32,
+    pub available: bool,
+    pub source_access_unit_index: Option<u32>,
+    pub dpb_slot: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -8394,6 +8425,9 @@ fn native_vulkan_collect_h265_bitstream_samples(
             native_vulkan_h265_access_unit_snapshot(index as u32, access_unit, &parameter_sets)
         })
         .collect::<Vec<_>>();
+    let h265_reference_plan_dpb_slots = NATIVE_VULKAN_H265_REFERENCE_PLAN_DPB_SLOTS;
+    let h265_decode_reference_plan =
+        native_vulkan_h265_decode_reference_plan(&h265_access_units, h265_reference_plan_dpb_slots);
 
     Ok(NativeVulkanVideoBitstreamExtract {
         selected_access_unit: selected.bytes.clone(),
@@ -8423,6 +8457,8 @@ fn native_vulkan_collect_h265_bitstream_samples(
             h265_parameter_sets: Some(parameter_sets),
             h265_nal_units: selected.stats.nal_units.clone(),
             h265_access_units,
+            h265_reference_plan_dpb_slots,
+            h265_decode_reference_plan,
         },
     })
 }
@@ -8525,6 +8561,107 @@ fn native_vulkan_h265_access_unit_snapshot(
         first_slice,
         first_slice_parse_error,
     }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_decode_reference_plan(
+    access_units: &[NativeVulkanH265AccessUnitSnapshot],
+    dpb_slots: u32,
+) -> Vec<NativeVulkanH265DecodeReferencePlanEntrySnapshot> {
+    let dpb_slots = dpb_slots.max(1);
+    let mut poc_to_decoded_slot = BTreeMap::<i32, (u32, u32)>::new();
+    let mut slot_to_poc = vec![None::<i32>; dpb_slots as usize];
+    let mut plan = Vec::with_capacity(access_units.len());
+
+    for access_unit in access_units {
+        let first_slice = access_unit.first_slice.as_ref();
+        let idr = first_slice.is_some_and(|slice| slice.idr);
+        if idr {
+            poc_to_decoded_slot.clear();
+            slot_to_poc.fill(None);
+        }
+        let current_poc = first_slice.and_then(|slice| {
+            if slice.idr {
+                Some(0)
+            } else {
+                slice.pic_order_cnt_lsb.map(|poc| poc as i32)
+            }
+        });
+        let planned_output_slot = access_unit.index % dpb_slots;
+        let evicted_poc = slot_to_poc
+            .get(planned_output_slot as usize)
+            .copied()
+            .flatten();
+        let reference_delta_pocs = first_slice
+            .and_then(|slice| slice.short_term_ref_pic_set.as_ref())
+            .map(|rps| {
+                rps.used_negative_delta_pocs
+                    .iter()
+                    .chain(rps.used_positive_delta_pocs.iter())
+                    .copied()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let references = current_poc
+            .map(|current_poc| {
+                reference_delta_pocs
+                    .iter()
+                    .copied()
+                    .map(|delta_poc| {
+                        let poc = current_poc.saturating_add(delta_poc);
+                        let source = poc_to_decoded_slot.get(&poc).copied();
+                        NativeVulkanH265DecodeReferenceSnapshot {
+                            delta_poc,
+                            poc,
+                            available: source.is_some(),
+                            source_access_unit_index: source.map(|(index, _)| index),
+                            dpb_slot: source.map(|(_, slot)| slot),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let missing_reference_pocs = references
+            .iter()
+            .filter(|reference| !reference.available)
+            .map(|reference| reference.poc)
+            .collect::<Vec<_>>();
+        let available_reference_count = references
+            .iter()
+            .filter(|reference| reference.available)
+            .count() as u32;
+        let missing_reference_count = missing_reference_pocs.len() as u32;
+        let ready_for_decode_submit = current_poc.is_some()
+            && access_unit.first_slice_parse_error.is_none()
+            && missing_reference_count == 0;
+
+        if ready_for_decode_submit && let Some(current_poc) = current_poc {
+            if let Some(evicted_poc) = evicted_poc {
+                poc_to_decoded_slot.remove(&evicted_poc);
+            }
+            if let Some(slot) = slot_to_poc.get_mut(planned_output_slot as usize) {
+                *slot = Some(current_poc);
+            }
+            poc_to_decoded_slot.insert(current_poc, (access_unit.index, planned_output_slot));
+        }
+
+        plan.push(NativeVulkanH265DecodeReferencePlanEntrySnapshot {
+            access_unit_index: access_unit.index,
+            pts_ms: access_unit.pts_ms,
+            nal_type_label: first_slice.map(|slice| slice.nal_type_label),
+            current_poc,
+            planned_output_slot,
+            setup_slot_index: current_poc.map(|_| planned_output_slot as i32),
+            evicted_poc,
+            references,
+            available_reference_count,
+            missing_reference_count,
+            missing_reference_pocs,
+            ready_for_decode_submit,
+        });
+    }
+
+    plan
 }
 
 #[cfg(any(feature = "native-vulkan-gst-video", test))]
