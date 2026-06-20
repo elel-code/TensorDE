@@ -3390,6 +3390,7 @@ struct NativeWgpuNv12VideoRenderer {
     bind_group: Option<wgpu::BindGroup>,
     source_size: Option<(u32, u32)>,
     texture_copy_dst: bool,
+    fit_uniform_bytes: Option<[u8; 16]>,
     #[cfg(feature = "native-wgpu-gst-dmabuf")]
     cuda_direct_staging: Option<NativeWgpuCudaVulkanStagingBuffer>,
     fit: crate::core::FitMode,
@@ -3511,6 +3512,7 @@ impl NativeWgpuNv12VideoRenderer {
             bind_group: None,
             source_size: None,
             texture_copy_dst: false,
+            fit_uniform_bytes: None,
             #[cfg(feature = "native-wgpu-gst-dmabuf")]
             cuda_direct_staging: None,
             fit,
@@ -3793,7 +3795,7 @@ impl NativeWgpuNv12VideoRenderer {
         Ok(())
     }
 
-    fn update_fit_uniform(&self, queue: &wgpu::Queue, surface_size: (u32, u32)) {
+    fn update_fit_uniform(&mut self, queue: &wgpu::Queue, surface_size: (u32, u32)) {
         let Some(source_size) = self.source_size else {
             return;
         };
@@ -3801,7 +3803,11 @@ impl NativeWgpuNv12VideoRenderer {
         let mut bytes = [0u8; 16];
         write_f32_pair(&mut bytes[0..8], offset);
         write_f32_pair(&mut bytes[8..16], scale);
+        if self.fit_uniform_bytes == Some(bytes) {
+            return;
+        }
         queue.write_buffer(&self.fit_buffer, 0, &bytes);
+        self.fit_uniform_bytes = Some(bytes);
     }
 
     fn encode_render_pass(
