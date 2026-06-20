@@ -23,6 +23,9 @@ early feature-gated GTK/GStreamer renderer paths.
 - `docs/ipc.md`: local IPC protocol.
 - `docs/packaging.md`: packaging asset install notes.
 - `docs/video-validation.md`: video codec smoke validation notes.
+- `docs/wallpaper-types.md`: wallpaper type support matrix and runtime gaps.
+- `docs/vulkan-migration.md`: renderer backend boundaries and Vulkan migration
+  preparation plan.
 - `docs/todo.md`: staged implementation checklist.
 - `docs/man/`: man pages for the command line tools.
 - `completions/`: bash and zsh shell completions.
