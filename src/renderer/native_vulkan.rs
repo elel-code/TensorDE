@@ -311,6 +311,129 @@ pub struct NativeVulkanVideoFormatPropertiesSnapshot {
     pub image_create_flags: Vec<&'static str>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NativeVulkanVideoSessionCodec {
+    #[serde(rename = "h265-main-8")]
+    H265Main8,
+    #[serde(rename = "av1-main-8")]
+    Av1Main8,
+}
+
+impl NativeVulkanVideoSessionCodec {
+    fn label(self) -> &'static str {
+        match self {
+            Self::H265Main8 => "h265-main-8",
+            Self::Av1Main8 => "av1-main-8",
+        }
+    }
+
+    fn profile_label(self) -> &'static str {
+        match self {
+            Self::H265Main8 | Self::Av1Main8 => "main-8",
+        }
+    }
+
+    fn codec_extension_name(self) -> &'static CStr {
+        match self {
+            Self::H265Main8 => vk::KHR_VIDEO_DECODE_H265_NAME,
+            Self::Av1Main8 => vk::KHR_VIDEO_DECODE_AV1_NAME,
+        }
+    }
+
+    fn codec_operation(self) -> vk::VideoCodecOperationFlagsKHR {
+        match self {
+            Self::H265Main8 => vk::VideoCodecOperationFlagsKHR::DECODE_H265,
+            Self::Av1Main8 => vk::VideoCodecOperationFlagsKHR::DECODE_AV1,
+        }
+    }
+}
+
+impl std::str::FromStr for NativeVulkanVideoSessionCodec {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "h265" | "hevc" | "h265-main-8" | "hevc-main-8" => Ok(Self::H265Main8),
+            "av1" | "av1-main-8" => Ok(Self::Av1Main8),
+            other => Err(format!("unsupported Vulkan Video session codec: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeVulkanVideoSessionSmokeOptions {
+    pub codec: NativeVulkanVideoSessionCodec,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Default for NativeVulkanVideoSessionSmokeOptions {
+    fn default() -> Self {
+        Self {
+            codec: NativeVulkanVideoSessionCodec::H265Main8,
+            width: 3840,
+            height: 2160,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVideoSessionSmokeSnapshot {
+    pub result: &'static str,
+    pub requested_codec: NativeVulkanVideoSessionCodec,
+    pub requested_extent: (u32, u32),
+    pub selected_physical_device_index: usize,
+    pub selected_physical_device_name: String,
+    pub selected_physical_device_type: &'static str,
+    pub vendor_id: u32,
+    pub device_id: u32,
+    pub api_version: String,
+    pub driver_version: u32,
+    pub selected_queue_family_index: u32,
+    pub selected_queue_count: u32,
+    pub selected_queue_flags: Vec<&'static str>,
+    pub selected_queue_video_codec_operations: Vec<String>,
+    pub enabled_device_extensions: Vec<&'static str>,
+    pub video_codec_operation: Vec<String>,
+    pub profile: &'static str,
+    pub picture_format: &'static str,
+    pub reference_picture_format: &'static str,
+    pub nv12_dpb_supported: bool,
+    pub nv12_output_supported: bool,
+    pub nv12_sampled_output_supported: bool,
+    pub capability_flags: Vec<&'static str>,
+    pub decode_capability_flags: Vec<&'static str>,
+    pub min_bitstream_buffer_offset_alignment: u64,
+    pub min_bitstream_buffer_size_alignment: u64,
+    pub picture_access_granularity: (u32, u32),
+    pub min_coded_extent: (u32, u32),
+    pub max_coded_extent: (u32, u32),
+    pub requested_extent_supported: bool,
+    pub driver_max_dpb_slots: u32,
+    pub driver_max_active_reference_pictures: u32,
+    pub session_max_dpb_slots: u32,
+    pub session_max_active_reference_pictures: u32,
+    pub codec_max_level: Option<String>,
+    pub std_header_version_name: String,
+    pub std_header_version_spec_version: u32,
+    pub memory_requirement_count: usize,
+    pub total_bound_memory_bytes: u64,
+    pub memory_requirements: Vec<NativeVulkanVideoSessionMemoryRequirementSnapshot>,
+    pub session_created: bool,
+    pub session_memory_bound: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVideoSessionMemoryRequirementSnapshot {
+    pub memory_bind_index: u32,
+    pub size: u64,
+    pub alignment: u64,
+    pub memory_type_bits: u32,
+    pub selected_memory_type_index: u32,
+    pub selected_memory_property_flags: Vec<&'static str>,
+}
+
 struct NativeVulkanVideoDecodeFormatProbe {
     dpb_formats: Vec<NativeVulkanVideoFormatPropertiesSnapshot>,
     output_formats: Vec<NativeVulkanVideoFormatPropertiesSnapshot>,
@@ -530,6 +653,23 @@ pub fn probe_wayland_surface(
 pub fn probe_vulkan_video_decode() -> NativeVulkanVideoDecodeProbeResult {
     let (entry, instance) = create_native_vulkan_instance()?;
     let result = native_vulkan_video_decode_probe_inner(&entry, &instance);
+    unsafe {
+        instance.destroy_instance(None);
+    }
+    result
+}
+
+pub fn probe_vulkan_video_session(
+    options: NativeVulkanVideoSessionSmokeOptions,
+) -> Result<NativeVulkanVideoSessionSmokeSnapshot, NativeVulkanError> {
+    if options.width == 0 || options.height == 0 {
+        return Err(NativeVulkanError::Video(
+            "Vulkan Video session extent must be non-zero".to_owned(),
+        ));
+    }
+
+    let (entry, instance) = create_native_vulkan_instance()?;
+    let result = native_vulkan_video_session_smoke_inner(&entry, &instance, options);
     unsafe {
         instance.destroy_instance(None);
     }
@@ -5053,6 +5193,685 @@ fn native_vulkan_memory_type_index(
         })
 }
 
+struct NativeVulkanVideoDecodeQueueSelection {
+    physical_device: vk::PhysicalDevice,
+    physical_device_index: usize,
+    physical_device_name: String,
+    physical_device_type: &'static str,
+    properties: vk::PhysicalDeviceProperties,
+    queue_family_index: u32,
+    queue_count: u32,
+    queue_flags: vk::QueueFlags,
+    video_codec_operations: vk::VideoCodecOperationFlagsKHR,
+}
+
+struct NativeVulkanVideoSessionCapabilityQuery {
+    capability_flags: vk::VideoCapabilityFlagsKHR,
+    min_bitstream_buffer_offset_alignment: u64,
+    min_bitstream_buffer_size_alignment: u64,
+    picture_access_granularity: vk::Extent2D,
+    min_coded_extent: vk::Extent2D,
+    max_coded_extent: vk::Extent2D,
+    max_dpb_slots: u32,
+    max_active_reference_pictures: u32,
+    decode_capability_flags: vk::VideoDecodeCapabilityFlagsKHR,
+    codec_max_level: Option<String>,
+    std_header_version: vk::ExtensionProperties,
+}
+
+fn native_vulkan_video_session_smoke_inner(
+    entry: &ash::Entry,
+    instance: &ash::Instance,
+    options: NativeVulkanVideoSessionSmokeOptions,
+) -> Result<NativeVulkanVideoSessionSmokeSnapshot, NativeVulkanError> {
+    let video_queue_loader = ash::khr::video_queue::Instance::new(entry, instance);
+    let selection = select_native_vulkan_video_decode_queue(instance, options.codec)?;
+
+    match options.codec {
+        NativeVulkanVideoSessionCodec::H265Main8 => {
+            let mut h265_profile_info = vk::VideoDecodeH265ProfileInfoKHR::default()
+                .std_profile_idc(
+                    vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN,
+                );
+            let profile_info = vk::VideoProfileInfoKHR::default()
+                .video_codec_operation(options.codec.codec_operation())
+                .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420)
+                .luma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
+                .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
+                .push_next(&mut h265_profile_info);
+            let capabilities = native_vulkan_video_session_h265_capabilities(
+                &video_queue_loader,
+                selection.physical_device,
+                &profile_info,
+            )?;
+            native_vulkan_video_session_create_and_bind(
+                &video_queue_loader,
+                instance,
+                selection,
+                options,
+                &profile_info,
+                capabilities,
+            )
+        }
+        NativeVulkanVideoSessionCodec::Av1Main8 => {
+            let mut av1_profile_info = vk::VideoDecodeAV1ProfileInfoKHR::default()
+                .std_profile(vk::native::StdVideoAV1Profile_STD_VIDEO_AV1_PROFILE_MAIN)
+                .film_grain_support(false);
+            let profile_info = vk::VideoProfileInfoKHR::default()
+                .video_codec_operation(options.codec.codec_operation())
+                .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420)
+                .luma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
+                .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
+                .push_next(&mut av1_profile_info);
+            let capabilities = native_vulkan_video_session_av1_capabilities(
+                &video_queue_loader,
+                selection.physical_device,
+                &profile_info,
+            )?;
+            native_vulkan_video_session_create_and_bind(
+                &video_queue_loader,
+                instance,
+                selection,
+                options,
+                &profile_info,
+                capabilities,
+            )
+        }
+    }
+}
+
+fn select_native_vulkan_video_decode_queue(
+    instance: &ash::Instance,
+    codec: NativeVulkanVideoSessionCodec,
+) -> Result<NativeVulkanVideoDecodeQueueSelection, NativeVulkanError> {
+    let physical_devices = unsafe { instance.enumerate_physical_devices() }.map_err(|result| {
+        NativeVulkanError::Vulkan {
+            operation: "vkEnumeratePhysicalDevices",
+            result,
+        }
+    })?;
+    let required_extensions = native_vulkan_video_session_required_device_extensions(codec);
+    let mut selected = None::<NativeVulkanVideoDecodeQueueSelection>;
+
+    for (physical_device_index, physical_device) in physical_devices.iter().copied().enumerate() {
+        let extensions = native_vulkan_device_extension_names(instance, physical_device)?;
+        if !required_extensions.iter().all(|extension| {
+            native_vulkan_extension_available_by_name(&extensions, ash_extension_name(extension))
+        }) {
+            continue;
+        }
+
+        let properties = unsafe { instance.get_physical_device_properties(physical_device) };
+        let queue_families =
+            native_vulkan_video_decode_queue_family_infos(instance, physical_device);
+        for queue_family in queue_families {
+            if queue_family.queue_count == 0
+                || !queue_family
+                    .queue_flags
+                    .contains(vk::QueueFlags::VIDEO_DECODE_KHR)
+                || !queue_family
+                    .video_codec_operations
+                    .contains(codec.codec_operation())
+            {
+                continue;
+            }
+
+            let candidate = NativeVulkanVideoDecodeQueueSelection {
+                physical_device,
+                physical_device_index,
+                physical_device_name: native_vulkan_physical_device_name(properties),
+                physical_device_type: native_vulkan_physical_device_type_label(
+                    properties.device_type,
+                ),
+                properties,
+                queue_family_index: queue_family.queue_family_index,
+                queue_count: queue_family.queue_count,
+                queue_flags: queue_family.queue_flags,
+                video_codec_operations: queue_family.video_codec_operations,
+            };
+            let prefer_candidate = selected.as_ref().is_none_or(|current| {
+                properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU
+                    && current.properties.device_type != vk::PhysicalDeviceType::DISCRETE_GPU
+            });
+            if prefer_candidate {
+                selected = Some(candidate);
+            }
+        }
+    }
+
+    selected.ok_or_else(|| {
+        NativeVulkanError::Video(format!(
+            "no Vulkan device exposes {} with a matching video decode queue",
+            codec.label()
+        ))
+    })
+}
+
+struct NativeVulkanVideoDecodeQueueFamilyInfo {
+    queue_family_index: u32,
+    queue_count: u32,
+    queue_flags: vk::QueueFlags,
+    video_codec_operations: vk::VideoCodecOperationFlagsKHR,
+}
+
+fn native_vulkan_video_decode_queue_family_infos(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+) -> Vec<NativeVulkanVideoDecodeQueueFamilyInfo> {
+    let queue_family_count =
+        unsafe { instance.get_physical_device_queue_family_properties2_len(physical_device) };
+    let mut queue_properties = vec![vk::QueueFamilyProperties2::default(); queue_family_count];
+    let mut video_properties =
+        vec![vk::QueueFamilyVideoPropertiesKHR::default(); queue_family_count];
+    for (queue, video) in queue_properties.iter_mut().zip(video_properties.iter_mut()) {
+        queue.p_next = (video as *mut vk::QueueFamilyVideoPropertiesKHR<'_>).cast();
+    }
+    unsafe {
+        instance
+            .get_physical_device_queue_family_properties2(physical_device, &mut queue_properties);
+    }
+
+    queue_properties
+        .iter()
+        .zip(video_properties.iter())
+        .enumerate()
+        .map(
+            |(queue_family_index, (queue, video))| NativeVulkanVideoDecodeQueueFamilyInfo {
+                queue_family_index: queue_family_index as u32,
+                queue_count: queue.queue_family_properties.queue_count,
+                queue_flags: queue.queue_family_properties.queue_flags,
+                video_codec_operations: video.video_codec_operations,
+            },
+        )
+        .collect()
+}
+
+fn native_vulkan_video_session_required_device_extensions(
+    codec: NativeVulkanVideoSessionCodec,
+) -> Vec<&'static CStr> {
+    vec![
+        vk::KHR_VIDEO_QUEUE_NAME,
+        vk::KHR_VIDEO_DECODE_QUEUE_NAME,
+        codec.codec_extension_name(),
+    ]
+}
+
+fn native_vulkan_video_session_h265_capabilities(
+    video_queue_loader: &ash::khr::video_queue::Instance,
+    physical_device: vk::PhysicalDevice,
+    profile_info: &vk::VideoProfileInfoKHR<'_>,
+) -> Result<NativeVulkanVideoSessionCapabilityQuery, NativeVulkanError> {
+    let mut h265_capabilities = vk::VideoDecodeH265CapabilitiesKHR::default();
+    let mut decode_capabilities = vk::VideoDecodeCapabilitiesKHR::default();
+    let mut capabilities = vk::VideoCapabilitiesKHR::default()
+        .push_next(&mut h265_capabilities)
+        .push_next(&mut decode_capabilities);
+
+    unsafe {
+        (video_queue_loader
+            .fp()
+            .get_physical_device_video_capabilities_khr)(
+            physical_device,
+            profile_info,
+            &mut capabilities,
+        )
+    }
+    .result()
+    .map_err(|result| NativeVulkanError::Vulkan {
+        operation: "vkGetPhysicalDeviceVideoCapabilitiesKHR(h265 session)",
+        result,
+    })?;
+
+    let capability_flags = capabilities.flags;
+    let min_bitstream_buffer_offset_alignment = capabilities.min_bitstream_buffer_offset_alignment;
+    let min_bitstream_buffer_size_alignment = capabilities.min_bitstream_buffer_size_alignment;
+    let picture_access_granularity = capabilities.picture_access_granularity;
+    let min_coded_extent = capabilities.min_coded_extent;
+    let max_coded_extent = capabilities.max_coded_extent;
+    let max_dpb_slots = capabilities.max_dpb_slots;
+    let max_active_reference_pictures = capabilities.max_active_reference_pictures;
+    let std_header_version = capabilities.std_header_version;
+    let decode_capability_flags = decode_capabilities.flags;
+    let codec_max_level =
+        native_vulkan_h265_level_label(h265_capabilities.max_level_idc).map(str::to_owned);
+
+    Ok(NativeVulkanVideoSessionCapabilityQuery {
+        capability_flags,
+        min_bitstream_buffer_offset_alignment,
+        min_bitstream_buffer_size_alignment,
+        picture_access_granularity,
+        min_coded_extent,
+        max_coded_extent,
+        max_dpb_slots,
+        max_active_reference_pictures,
+        decode_capability_flags,
+        codec_max_level,
+        std_header_version,
+    })
+}
+
+fn native_vulkan_video_session_av1_capabilities(
+    video_queue_loader: &ash::khr::video_queue::Instance,
+    physical_device: vk::PhysicalDevice,
+    profile_info: &vk::VideoProfileInfoKHR<'_>,
+) -> Result<NativeVulkanVideoSessionCapabilityQuery, NativeVulkanError> {
+    let mut av1_capabilities = vk::VideoDecodeAV1CapabilitiesKHR::default();
+    let mut decode_capabilities = vk::VideoDecodeCapabilitiesKHR::default();
+    let mut capabilities = vk::VideoCapabilitiesKHR::default()
+        .push_next(&mut av1_capabilities)
+        .push_next(&mut decode_capabilities);
+
+    unsafe {
+        (video_queue_loader
+            .fp()
+            .get_physical_device_video_capabilities_khr)(
+            physical_device,
+            profile_info,
+            &mut capabilities,
+        )
+    }
+    .result()
+    .map_err(|result| NativeVulkanError::Vulkan {
+        operation: "vkGetPhysicalDeviceVideoCapabilitiesKHR(av1 session)",
+        result,
+    })?;
+
+    let capability_flags = capabilities.flags;
+    let min_bitstream_buffer_offset_alignment = capabilities.min_bitstream_buffer_offset_alignment;
+    let min_bitstream_buffer_size_alignment = capabilities.min_bitstream_buffer_size_alignment;
+    let picture_access_granularity = capabilities.picture_access_granularity;
+    let min_coded_extent = capabilities.min_coded_extent;
+    let max_coded_extent = capabilities.max_coded_extent;
+    let max_dpb_slots = capabilities.max_dpb_slots;
+    let max_active_reference_pictures = capabilities.max_active_reference_pictures;
+    let std_header_version = capabilities.std_header_version;
+    let decode_capability_flags = decode_capabilities.flags;
+    let codec_max_level =
+        native_vulkan_av1_level_label(av1_capabilities.max_level).map(str::to_owned);
+
+    Ok(NativeVulkanVideoSessionCapabilityQuery {
+        capability_flags,
+        min_bitstream_buffer_offset_alignment,
+        min_bitstream_buffer_size_alignment,
+        picture_access_granularity,
+        min_coded_extent,
+        max_coded_extent,
+        max_dpb_slots,
+        max_active_reference_pictures,
+        decode_capability_flags,
+        codec_max_level,
+        std_header_version,
+    })
+}
+
+fn native_vulkan_video_session_create_and_bind(
+    video_queue_loader: &ash::khr::video_queue::Instance,
+    instance: &ash::Instance,
+    selection: NativeVulkanVideoDecodeQueueSelection,
+    options: NativeVulkanVideoSessionSmokeOptions,
+    profile_info: &vk::VideoProfileInfoKHR<'_>,
+    capabilities: NativeVulkanVideoSessionCapabilityQuery,
+) -> Result<NativeVulkanVideoSessionSmokeSnapshot, NativeVulkanError> {
+    let requested_extent = vk::Extent2D {
+        width: options.width,
+        height: options.height,
+    };
+    if !native_vulkan_video_session_extent_supported(requested_extent, &capabilities) {
+        return Err(NativeVulkanError::Video(format!(
+            "requested Vulkan Video extent {}x{} is outside {:?}..{:?} or is not aligned to {:?}",
+            requested_extent.width,
+            requested_extent.height,
+            (
+                capabilities.min_coded_extent.width,
+                capabilities.min_coded_extent.height
+            ),
+            (
+                capabilities.max_coded_extent.width,
+                capabilities.max_coded_extent.height
+            ),
+            (
+                capabilities.picture_access_granularity.width,
+                capabilities.picture_access_granularity.height
+            )
+        )));
+    }
+
+    let format_probe = native_vulkan_video_decode_format_probe(
+        video_queue_loader,
+        selection.physical_device,
+        profile_info,
+        capabilities.decode_capability_flags,
+    );
+    if !format_probe.nv12_dpb_supported
+        || !format_probe.nv12_output_supported
+        || !format_probe.nv12_sampled_output_supported
+    {
+        return Err(NativeVulkanError::Video(format!(
+            "{} lacks NV12 decode+sampled format support for direct Vulkan composition{}",
+            options.codec.label(),
+            format_probe
+                .query_error
+                .as_ref()
+                .map(|err| format!(": {err}"))
+                .unwrap_or_default()
+        )));
+    }
+
+    let priorities = [1.0_f32];
+    let queue_create_info = vk::DeviceQueueCreateInfo::default()
+        .queue_family_index(selection.queue_family_index)
+        .queue_priorities(&priorities);
+    let queue_create_infos = [queue_create_info];
+    let enabled_extensions = native_vulkan_video_session_required_device_extensions(options.codec);
+    let enabled_extension_names = enabled_extensions
+        .iter()
+        .map(|extension| extension.as_ptr())
+        .collect::<Vec<_>>();
+    let device_create_info = vk::DeviceCreateInfo::default()
+        .queue_create_infos(&queue_create_infos)
+        .enabled_extension_names(&enabled_extension_names);
+    let device =
+        unsafe { instance.create_device(selection.physical_device, &device_create_info, None) }
+            .map_err(|result| NativeVulkanError::Vulkan {
+                operation: "vkCreateDevice(vulkan video session)",
+                result,
+            })?;
+    let video_queue_device = ash::khr::video_queue::Device::new(instance, &device);
+    let memory_properties =
+        unsafe { instance.get_physical_device_memory_properties(selection.physical_device) };
+    let mut session = vk::VideoSessionKHR::null();
+    let mut allocated_memories = Vec::<vk::DeviceMemory>::new();
+
+    let result = (|| -> Result<NativeVulkanVideoSessionSmokeSnapshot, NativeVulkanError> {
+        let session_max_dpb_slots =
+            native_vulkan_video_session_max_dpb_slots(capabilities.max_dpb_slots);
+        let session_max_active_reference_pictures =
+            native_vulkan_video_session_max_active_reference_pictures(
+                capabilities.max_active_reference_pictures,
+                session_max_dpb_slots,
+            );
+        let picture_format = vk::Format::G8_B8R8_2PLANE_420_UNORM;
+        let create_info = vk::VideoSessionCreateInfoKHR::default()
+            .queue_family_index(selection.queue_family_index)
+            .video_profile(profile_info)
+            .picture_format(picture_format)
+            .reference_picture_format(picture_format)
+            .max_coded_extent(requested_extent)
+            .max_dpb_slots(session_max_dpb_slots)
+            .max_active_reference_pictures(session_max_active_reference_pictures)
+            .std_header_version(&capabilities.std_header_version);
+        session = native_vulkan_create_video_session(&video_queue_device, &create_info)?;
+
+        let memory_requirements =
+            native_vulkan_video_session_memory_requirements(&video_queue_device, session)?;
+        let mut bind_infos = Vec::with_capacity(memory_requirements.len());
+        let mut memory_snapshots = Vec::with_capacity(memory_requirements.len());
+        let mut total_bound_memory_bytes = 0u64;
+        for requirement in memory_requirements.iter() {
+            if requirement.memory_requirements.size == 0 {
+                return Err(NativeVulkanError::Video(format!(
+                    "video session memory bind {} reported zero size",
+                    requirement.memory_bind_index
+                )));
+            }
+            let memory_type_index = native_vulkan_memory_type_index(
+                &memory_properties,
+                requirement.memory_requirements.memory_type_bits,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            )
+            .or_else(|| {
+                native_vulkan_memory_type_index(
+                    &memory_properties,
+                    requirement.memory_requirements.memory_type_bits,
+                    vk::MemoryPropertyFlags::empty(),
+                )
+            })
+            .ok_or(NativeVulkanError::MissingMemoryType("video session memory"))?;
+            let allocation_info = vk::MemoryAllocateInfo::default()
+                .allocation_size(requirement.memory_requirements.size)
+                .memory_type_index(memory_type_index);
+            let memory =
+                unsafe { device.allocate_memory(&allocation_info, None) }.map_err(|result| {
+                    NativeVulkanError::Vulkan {
+                        operation: "vkAllocateMemory(video session)",
+                        result,
+                    }
+                })?;
+            allocated_memories.push(memory);
+            bind_infos.push(
+                vk::BindVideoSessionMemoryInfoKHR::default()
+                    .memory_bind_index(requirement.memory_bind_index)
+                    .memory(memory)
+                    .memory_offset(0)
+                    .memory_size(requirement.memory_requirements.size),
+            );
+            let memory_type = memory_properties.memory_types[memory_type_index as usize];
+            memory_snapshots.push(NativeVulkanVideoSessionMemoryRequirementSnapshot {
+                memory_bind_index: requirement.memory_bind_index,
+                size: requirement.memory_requirements.size,
+                alignment: requirement.memory_requirements.alignment,
+                memory_type_bits: requirement.memory_requirements.memory_type_bits,
+                selected_memory_type_index: memory_type_index,
+                selected_memory_property_flags: native_vulkan_memory_property_flag_labels(
+                    memory_type.property_flags,
+                ),
+            });
+            total_bound_memory_bytes =
+                total_bound_memory_bytes.saturating_add(requirement.memory_requirements.size);
+        }
+
+        native_vulkan_bind_video_session_memory(&video_queue_device, session, &bind_infos)?;
+
+        Ok(NativeVulkanVideoSessionSmokeSnapshot {
+            result: "session-created-and-memory-bound",
+            requested_codec: options.codec,
+            requested_extent: (requested_extent.width, requested_extent.height),
+            selected_physical_device_index: selection.physical_device_index,
+            selected_physical_device_name: selection.physical_device_name.clone(),
+            selected_physical_device_type: selection.physical_device_type,
+            vendor_id: selection.properties.vendor_id,
+            device_id: selection.properties.device_id,
+            api_version: native_vulkan_api_version_label(selection.properties.api_version),
+            driver_version: selection.properties.driver_version,
+            selected_queue_family_index: selection.queue_family_index,
+            selected_queue_count: selection.queue_count,
+            selected_queue_flags: native_vulkan_queue_flag_labels(selection.queue_flags),
+            selected_queue_video_codec_operations: native_vulkan_video_codec_operation_labels(
+                selection.video_codec_operations,
+            ),
+            enabled_device_extensions: enabled_extensions
+                .iter()
+                .map(|extension| ash_extension_name(extension))
+                .collect(),
+            video_codec_operation: native_vulkan_video_codec_operation_labels(
+                options.codec.codec_operation(),
+            ),
+            profile: options.codec.profile_label(),
+            picture_format: native_vulkan_format_label(picture_format),
+            reference_picture_format: native_vulkan_format_label(picture_format),
+            nv12_dpb_supported: format_probe.nv12_dpb_supported,
+            nv12_output_supported: format_probe.nv12_output_supported,
+            nv12_sampled_output_supported: format_probe.nv12_sampled_output_supported,
+            capability_flags: native_vulkan_video_capability_flag_labels(
+                capabilities.capability_flags,
+            ),
+            decode_capability_flags: native_vulkan_video_decode_capability_flag_labels(
+                capabilities.decode_capability_flags,
+            ),
+            min_bitstream_buffer_offset_alignment: capabilities
+                .min_bitstream_buffer_offset_alignment,
+            min_bitstream_buffer_size_alignment: capabilities.min_bitstream_buffer_size_alignment,
+            picture_access_granularity: (
+                capabilities.picture_access_granularity.width,
+                capabilities.picture_access_granularity.height,
+            ),
+            min_coded_extent: (
+                capabilities.min_coded_extent.width,
+                capabilities.min_coded_extent.height,
+            ),
+            max_coded_extent: (
+                capabilities.max_coded_extent.width,
+                capabilities.max_coded_extent.height,
+            ),
+            requested_extent_supported: true,
+            driver_max_dpb_slots: capabilities.max_dpb_slots,
+            driver_max_active_reference_pictures: capabilities.max_active_reference_pictures,
+            session_max_dpb_slots,
+            session_max_active_reference_pictures,
+            codec_max_level: capabilities.codec_max_level.clone(),
+            std_header_version_name: native_vulkan_extension_properties_name(
+                &capabilities.std_header_version,
+            ),
+            std_header_version_spec_version: capabilities.std_header_version.spec_version,
+            memory_requirement_count: memory_snapshots.len(),
+            total_bound_memory_bytes,
+            memory_requirements: memory_snapshots,
+            session_created: true,
+            session_memory_bound: true,
+        })
+    })();
+
+    unsafe {
+        if session != vk::VideoSessionKHR::null() {
+            (video_queue_device.fp().destroy_video_session_khr)(
+                video_queue_device.device(),
+                session,
+                ptr::null(),
+            );
+        }
+        for memory in allocated_memories.iter().copied() {
+            device.free_memory(memory, None);
+        }
+        device.destroy_device(None);
+    }
+
+    result
+}
+
+fn native_vulkan_video_session_extent_supported(
+    extent: vk::Extent2D,
+    capabilities: &NativeVulkanVideoSessionCapabilityQuery,
+) -> bool {
+    extent.width >= capabilities.min_coded_extent.width
+        && extent.height >= capabilities.min_coded_extent.height
+        && extent.width <= capabilities.max_coded_extent.width
+        && extent.height <= capabilities.max_coded_extent.height
+        && native_vulkan_video_session_extent_aligned(
+            extent.width,
+            capabilities.picture_access_granularity.width,
+        )
+        && native_vulkan_video_session_extent_aligned(
+            extent.height,
+            capabilities.picture_access_granularity.height,
+        )
+}
+
+fn native_vulkan_video_session_extent_aligned(value: u32, granularity: u32) -> bool {
+    granularity == 0 || value.is_multiple_of(granularity)
+}
+
+fn native_vulkan_video_session_max_dpb_slots(driver_max_dpb_slots: u32) -> u32 {
+    if driver_max_dpb_slots == 0 {
+        0
+    } else {
+        driver_max_dpb_slots.min(8).max(1)
+    }
+}
+
+fn native_vulkan_video_session_max_active_reference_pictures(
+    driver_max_active_reference_pictures: u32,
+    session_max_dpb_slots: u32,
+) -> u32 {
+    if driver_max_active_reference_pictures == 0 || session_max_dpb_slots == 0 {
+        0
+    } else {
+        driver_max_active_reference_pictures.min(session_max_dpb_slots)
+    }
+}
+
+fn native_vulkan_create_video_session(
+    video_queue_device: &ash::khr::video_queue::Device,
+    create_info: &vk::VideoSessionCreateInfoKHR<'_>,
+) -> Result<vk::VideoSessionKHR, NativeVulkanError> {
+    let mut session = vk::VideoSessionKHR::null();
+    unsafe {
+        (video_queue_device.fp().create_video_session_khr)(
+            video_queue_device.device(),
+            create_info,
+            ptr::null(),
+            &mut session,
+        )
+    }
+    .result()
+    .map_err(|result| NativeVulkanError::Vulkan {
+        operation: "vkCreateVideoSessionKHR",
+        result,
+    })?;
+    Ok(session)
+}
+
+fn native_vulkan_video_session_memory_requirements(
+    video_queue_device: &ash::khr::video_queue::Device,
+    session: vk::VideoSessionKHR,
+) -> Result<Vec<vk::VideoSessionMemoryRequirementsKHR<'static>>, NativeVulkanError> {
+    let mut memory_requirement_count = 0u32;
+    unsafe {
+        (video_queue_device
+            .fp()
+            .get_video_session_memory_requirements_khr)(
+            video_queue_device.device(),
+            session,
+            &mut memory_requirement_count,
+            ptr::null_mut(),
+        )
+    }
+    .result()
+    .map_err(|result| NativeVulkanError::Vulkan {
+        operation: "vkGetVideoSessionMemoryRequirementsKHR(count)",
+        result,
+    })?;
+
+    let mut memory_requirements =
+        vec![vk::VideoSessionMemoryRequirementsKHR::default(); memory_requirement_count as usize];
+    unsafe {
+        (video_queue_device
+            .fp()
+            .get_video_session_memory_requirements_khr)(
+            video_queue_device.device(),
+            session,
+            &mut memory_requirement_count,
+            memory_requirements.as_mut_ptr(),
+        )
+    }
+    .result()
+    .map_err(|result| NativeVulkanError::Vulkan {
+        operation: "vkGetVideoSessionMemoryRequirementsKHR",
+        result,
+    })?;
+    memory_requirements.truncate(memory_requirement_count as usize);
+    Ok(memory_requirements)
+}
+
+fn native_vulkan_bind_video_session_memory(
+    video_queue_device: &ash::khr::video_queue::Device,
+    session: vk::VideoSessionKHR,
+    bind_infos: &[vk::BindVideoSessionMemoryInfoKHR<'_>],
+) -> Result<(), NativeVulkanError> {
+    unsafe {
+        (video_queue_device.fp().bind_video_session_memory_khr)(
+            video_queue_device.device(),
+            session,
+            bind_infos.len() as u32,
+            bind_infos.as_ptr(),
+        )
+    }
+    .result()
+    .map_err(|result| NativeVulkanError::Vulkan {
+        operation: "vkBindVideoSessionMemoryKHR",
+        result,
+    })
+}
+
 fn native_vulkan_video_decode_probe_inner(
     entry: &ash::Entry,
     instance: &ash::Instance,
@@ -6285,6 +7104,35 @@ fn native_vulkan_image_create_flag_labels(flags: vk::ImageCreateFlags) -> Vec<&'
         labels.push("disjoint");
     }
     labels
+}
+
+fn native_vulkan_memory_property_flag_labels(flags: vk::MemoryPropertyFlags) -> Vec<&'static str> {
+    let mut labels = Vec::new();
+    if flags.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL) {
+        labels.push("device-local");
+    }
+    if flags.contains(vk::MemoryPropertyFlags::HOST_VISIBLE) {
+        labels.push("host-visible");
+    }
+    if flags.contains(vk::MemoryPropertyFlags::HOST_COHERENT) {
+        labels.push("host-coherent");
+    }
+    if flags.contains(vk::MemoryPropertyFlags::HOST_CACHED) {
+        labels.push("host-cached");
+    }
+    if flags.contains(vk::MemoryPropertyFlags::LAZILY_ALLOCATED) {
+        labels.push("lazily-allocated");
+    }
+    if flags.contains(vk::MemoryPropertyFlags::PROTECTED) {
+        labels.push("protected");
+    }
+    labels
+}
+
+fn native_vulkan_extension_properties_name(properties: &vk::ExtensionProperties) -> String {
+    unsafe { CStr::from_ptr(properties.extension_name.as_ptr()) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn native_vulkan_api_version_label(version: u32) -> String {
