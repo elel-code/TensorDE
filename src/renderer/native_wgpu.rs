@@ -18,13 +18,26 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(any(feature = "native-wgpu-gst-dmabuf", feature = "native-wgpu-gpu-video"))]
+use std::sync::Arc;
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+use std::{
+    ffi::{CString, c_void},
+    os::{
+        fd::{BorrowedFd, FromRawFd, IntoRawFd, OwnedFd},
+        raw::c_char,
+    },
+    ptr,
+    ptr::NonNull,
+};
+
 #[cfg(feature = "native-wgpu-gpu-video")]
 use std::{
     collections::VecDeque,
     fs::File,
     io::{Read, Seek, SeekFrom},
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel},
     },
@@ -326,6 +339,24 @@ pub struct NativeWgpuGpuVideoOptions {
     pub source: std::path::PathBuf,
     pub fit: crate::core::FitMode,
     pub loop_playback: bool,
+    pub input_mode: NativeWgpuGpuVideoInputMode,
+}
+
+#[cfg(feature = "native-wgpu-gpu-video")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeWgpuGpuVideoInputMode {
+    AnnexBFile,
+    GstH264ByteStream,
+}
+
+#[cfg(feature = "native-wgpu-gpu-video")]
+impl NativeWgpuGpuVideoInputMode {
+    fn backend_label(self) -> &'static str {
+        match self {
+            Self::AnnexBFile => "gpu-video",
+            Self::GstH264ByteStream => "gst-gpu-video",
+        }
+    }
 }
 
 #[cfg(feature = "native-wgpu-gpu-video")]
@@ -423,6 +454,7 @@ impl NativeWgpuGpuVideoSession {
             &options.source,
             options.loop_playback,
             Arc::clone(&vulkan_device),
+            options.input_mode,
         )?;
 
         Ok(Self {
@@ -612,6 +644,420 @@ impl Drop for NativeWgpuVideoSession {
     }
 }
 
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeWgpuGstDmabufOptions {
+    pub wayland: NativeWgpuOptions,
+    pub source: std::path::PathBuf,
+    pub fit: crate::core::FitMode,
+    pub loop_playback: bool,
+    pub target_max_fps: Option<u32>,
+    pub decoder_policy: crate::config::VideoDecoderPolicy,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeWgpuGstDmabufSessionSnapshot {
+    pub renderer: NativeWgpuRuntimeSnapshot,
+    pub video: NativeWgpuGstDmabufPlayerSnapshot,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+pub struct NativeWgpuGstDmabufSession {
+    session: NativeWgpuSession,
+    player: NativeWgpuGstDmabufPlayer,
+    fit: crate::core::FitMode,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+impl NativeWgpuGstDmabufSession {
+    pub fn connect(options: NativeWgpuGstDmabufOptions) -> Result<Self, NativeWgpuError> {
+        let mut session = NativeWgpuSession::connect(options.wayland)?;
+        let mut player = NativeWgpuGstDmabufPlayer::new(
+            &options.source,
+            options.loop_playback,
+            options.target_max_fps,
+            options.decoder_policy,
+        )?;
+        player.play()?;
+        player.try_present_latest_frame(&mut session.renderer, options.fit)?;
+        Ok(Self {
+            session,
+            player,
+            fit: options.fit,
+        })
+    }
+
+    pub fn tick(&mut self) -> Result<(), NativeWgpuError> {
+        self.session.host.pump_events()?;
+        if let Some(size) = self.session.host.logical_size() {
+            self.session.renderer.resize(size);
+        }
+        self.player.poll_bus()?;
+        self.player
+            .try_present_latest_frame(&mut self.session.renderer, self.fit)?;
+        self.session.renderer.render()?;
+        Ok(())
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.session.is_closed()
+    }
+
+    pub fn snapshot(&self) -> NativeWgpuGstDmabufSessionSnapshot {
+        NativeWgpuGstDmabufSessionSnapshot {
+            renderer: self.session.snapshot(),
+            video: self.player.snapshot(),
+        }
+    }
+
+    pub fn shutdown(&mut self) {
+        self.player.shutdown();
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+impl Drop for NativeWgpuGstDmabufSession {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+struct NativeWgpuGstDmabufPlayer {
+    pipeline: gst::Element,
+    sink: gst::Element,
+    bus: gst::Bus,
+    loop_playback: bool,
+    pulled_samples: u64,
+    exported_frames: u64,
+    export_failures: u64,
+    import_attempts: u64,
+    imported_frames: u64,
+    import_failures: u64,
+    eos_messages: u64,
+    last_frame_size: Option<(u32, u32)>,
+    last_frame_format: Option<String>,
+    last_memory_types: Vec<String>,
+    last_export_source: Option<String>,
+    last_drm_fourcc: Option<u32>,
+    last_drm_modifier: Option<u64>,
+    last_plane_offsets: Vec<u32>,
+    last_plane_strides: Vec<u32>,
+    last_fd_count: Option<usize>,
+    last_error: Option<String>,
+    pipeline_kind: NativeWgpuGstDmabufPipelineKind,
+    _cuda_context: Option<Arc<NativeWgpuCudaContextHandle>>,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeWgpuGstDmabufPlayerSnapshot {
+    pub backend: &'static str,
+    pub gst_state: String,
+    pub pulled_samples: u64,
+    pub exported_frames: u64,
+    pub export_failures: u64,
+    pub import_attempts: u64,
+    pub imported_frames: u64,
+    pub import_failures: u64,
+    pub eos_messages: u64,
+    pub last_frame_size: Option<(u32, u32)>,
+    pub last_frame_format: Option<String>,
+    pub last_memory_types: Vec<String>,
+    pub last_export_source: Option<String>,
+    pub last_drm_fourcc: Option<u32>,
+    pub last_drm_modifier: Option<u64>,
+    pub last_plane_offsets: Vec<u32>,
+    pub last_plane_strides: Vec<u32>,
+    pub last_fd_count: Option<usize>,
+    pub last_error: Option<String>,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+impl NativeWgpuGstDmabufPlayer {
+    fn new(
+        source: &std::path::Path,
+        loop_playback: bool,
+        target_max_fps: Option<u32>,
+        decoder_policy: crate::config::VideoDecoderPolicy,
+    ) -> Result<Self, NativeWgpuError> {
+        gst::init().map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+        crate::renderer::video::apply_decoder_rank_policy(decoder_policy);
+        let pipeline_kind = native_wgpu_gst_dmabuf_pipeline_kind();
+        let cuda_context = if pipeline_kind == NativeWgpuGstDmabufPipelineKind::CudaMmap {
+            Some(Arc::new(NativeWgpuCudaContextHandle::new(0)?))
+        } else {
+            None
+        };
+        let sink = match pipeline_kind {
+            NativeWgpuGstDmabufPipelineKind::CudaMmap => native_wgpu_gst_dmabuf_appsink(
+                target_max_fps,
+                Arc::clone(cuda_context.as_ref().expect("cuda context must exist")),
+            )?,
+            NativeWgpuGstDmabufPipelineKind::GlDmabuf => {
+                native_wgpu_gst_dmabuf_gl_appsink(target_max_fps)?
+            }
+            NativeWgpuGstDmabufPipelineKind::CudaNv12Upload => {
+                native_wgpu_gst_nv12_upload_appsink(target_max_fps)?
+            }
+        };
+        let pipeline = match pipeline_kind {
+            NativeWgpuGstDmabufPipelineKind::CudaMmap => {
+                native_wgpu_gst_dmabuf_pipeline(source, &sink)?
+            }
+            NativeWgpuGstDmabufPipelineKind::GlDmabuf => {
+                native_wgpu_gst_gl_dmabuf_pipeline(source, &sink)?
+            }
+            NativeWgpuGstDmabufPipelineKind::CudaNv12Upload => {
+                native_wgpu_gst_cuda_nv12_upload_pipeline(source, &sink)?
+            }
+        };
+        if let Some(cuda_context) = cuda_context.as_ref() {
+            pipeline.set_context(&cuda_context.gst_context()?);
+        }
+        crate::renderer::video::configure_video_pipeline_low_memory(&pipeline);
+        let bus = pipeline
+            .bus()
+            .ok_or_else(|| NativeWgpuError::Video("gst-dmabuf pipeline has no bus".to_owned()))?;
+        Ok(Self {
+            pipeline,
+            sink,
+            bus,
+            loop_playback,
+            pulled_samples: 0,
+            exported_frames: 0,
+            export_failures: 0,
+            import_attempts: 0,
+            imported_frames: 0,
+            import_failures: 0,
+            eos_messages: 0,
+            last_frame_size: None,
+            last_frame_format: None,
+            last_memory_types: Vec::new(),
+            last_export_source: None,
+            last_drm_fourcc: None,
+            last_drm_modifier: None,
+            last_plane_offsets: Vec::new(),
+            last_plane_strides: Vec::new(),
+            last_fd_count: None,
+            last_error: None,
+            pipeline_kind,
+            _cuda_context: cuda_context,
+        })
+    }
+
+    fn play(&mut self) -> Result<(), NativeWgpuError> {
+        self.pipeline
+            .set_state(gst::State::Playing)
+            .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+        Ok(())
+    }
+
+    fn shutdown(&mut self) {
+        let _ = self.pipeline.set_state(gst::State::Null);
+        let _ = self.pipeline.state(gst::ClockTime::from_mseconds(500));
+    }
+
+    fn poll_bus(&mut self) -> Result<(), NativeWgpuError> {
+        while let Some(message) = self.bus.pop() {
+            match message.view() {
+                gst::MessageView::Eos(_) => {
+                    self.eos_messages = self.eos_messages.saturating_add(1);
+                    if self.loop_playback {
+                        self.pipeline
+                            .seek_simple(
+                                gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                                gst::ClockTime::ZERO,
+                            )
+                            .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+                        self.play()?;
+                        return Ok(());
+                    }
+                }
+                gst::MessageView::Error(err) => {
+                    let mut message = format!(
+                        "{}: {}",
+                        err.src()
+                            .map(|src| src.path_string())
+                            .unwrap_or_else(|| "gstreamer".into()),
+                        err.error()
+                    );
+                    if let Some(debug) = err.debug() {
+                        message.push_str(": ");
+                        message.push_str(&debug);
+                    }
+                    self.last_error = Some(message.clone());
+                    return Err(NativeWgpuError::Video(message));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn try_present_latest_frame(
+        &mut self,
+        renderer: &mut NativeWgpuSurfaceRenderer,
+        fit: crate::core::FitMode,
+    ) -> Result<(), NativeWgpuError> {
+        match self.pipeline_kind {
+            NativeWgpuGstDmabufPipelineKind::CudaMmap
+            | NativeWgpuGstDmabufPipelineKind::GlDmabuf => {
+                if let Some(frame) = self.pull_latest_dmabuf_frame()? {
+                    self.record_export(&frame);
+                    match renderer.present_gst_dmabuf_frame(frame, fit) {
+                        Ok(report) => self.record_import(report),
+                        Err(err) => {
+                            self.record_import_error(err.to_string());
+                            return Err(err);
+                        }
+                    }
+                }
+            }
+            NativeWgpuGstDmabufPipelineKind::CudaNv12Upload => {
+                if let Some(sample) = self.pull_next_sample() {
+                    match renderer.present_gst_system_nv12_sample(&sample, fit) {
+                        Ok(report) => {
+                            self.record_system_nv12_upload(&sample, report);
+                        }
+                        Err(err) => {
+                            self.record_import_error(err.to_string());
+                            return Err(err);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn pull_next_sample(&mut self) -> Option<gst::Sample> {
+        let sample = self
+            .sink
+            .emit_by_name::<Option<gst::Sample>>("try-pull-sample", &[&1_000_000u64]);
+        if sample.is_some() {
+            self.pulled_samples = self.pulled_samples.saturating_add(1);
+        }
+        sample
+    }
+
+    fn pull_latest_dmabuf_frame(
+        &mut self,
+    ) -> Result<Option<NativeWgpuGstDmabufFrame>, NativeWgpuError> {
+        let Some(sample) = self.pull_next_sample() else {
+            return Ok(None);
+        };
+        match native_wgpu_gst_dmabuf_frame_from_sample(&sample) {
+            Ok(frame) => Ok(Some(frame)),
+            Err(err) => {
+                self.export_failures = self.export_failures.saturating_add(1);
+                if let Some(buffer) = sample.buffer() {
+                    self.last_memory_types = native_wgpu_gst_memory_types(buffer);
+                    if let Ok(meta) = native_wgpu_gst_dmabuf_meta(sample.caps(), buffer) {
+                        self.last_frame_size = Some((meta.width, meta.height));
+                        self.last_frame_format = Some(meta.caps_format);
+                        self.last_drm_fourcc = meta.drm_fourcc;
+                        self.last_drm_modifier = meta.drm_modifier;
+                    }
+                }
+                self.last_error = Some(err);
+                Ok(None)
+            }
+        }
+    }
+
+    fn record_export(&mut self, frame: &NativeWgpuGstDmabufFrame) {
+        self.exported_frames = self.exported_frames.saturating_add(1);
+        self.last_frame_size = Some((frame.width, frame.height));
+        self.last_frame_format = Some(frame.caps_format.clone());
+        self.last_memory_types = frame.memory_types.clone();
+        self.last_export_source = Some(frame.export_source.to_owned());
+        self.last_drm_fourcc = Some(frame.format);
+        self.last_drm_modifier = frame.modifier;
+        self.last_plane_offsets = frame.planes.iter().map(|plane| plane.offset).collect();
+        self.last_plane_strides = frame.planes.iter().map(|plane| plane.stride).collect();
+        self.last_fd_count = Some(frame.fds.len());
+        self.last_error = None;
+    }
+
+    fn record_system_nv12_upload(
+        &mut self,
+        sample: &gst::Sample,
+        report: NativeWgpuGstDmabufImportReport,
+    ) {
+        self.exported_frames = self.exported_frames.saturating_add(1);
+        self.import_attempts = self.import_attempts.saturating_add(1);
+        self.imported_frames = report.imported_frames;
+        if let Some(buffer) = sample.buffer() {
+            self.last_memory_types = native_wgpu_gst_memory_types(buffer);
+            if let Ok(meta) = native_wgpu_gst_dmabuf_meta(sample.caps(), buffer) {
+                self.last_frame_size = Some((meta.width, meta.height));
+                self.last_frame_format = Some(meta.caps_format);
+                self.last_drm_fourcc = meta.drm_fourcc;
+                self.last_drm_modifier = meta.drm_modifier;
+                self.last_plane_offsets = meta
+                    .offsets
+                    .iter()
+                    .take(2)
+                    .filter_map(|offset| u32::try_from(*offset).ok())
+                    .collect();
+                self.last_plane_strides = meta
+                    .strides
+                    .iter()
+                    .take(2)
+                    .filter_map(|stride| u32::try_from(*stride).ok())
+                    .collect();
+            }
+        }
+        self.last_export_source = Some("system-nv12-upload".to_owned());
+        self.last_fd_count = Some(0);
+        self.last_error = None;
+    }
+
+    fn record_import(&mut self, report: NativeWgpuGstDmabufImportReport) {
+        self.import_attempts = self.import_attempts.saturating_add(1);
+        self.imported_frames = report.imported_frames;
+        self.last_error = None;
+    }
+
+    fn record_import_error(&mut self, error: String) {
+        self.import_attempts = self.import_attempts.saturating_add(1);
+        self.import_failures = self.import_failures.saturating_add(1);
+        self.last_error = Some(error);
+    }
+
+    fn snapshot(&self) -> NativeWgpuGstDmabufPlayerSnapshot {
+        let state = self
+            .pipeline
+            .state(gst::ClockTime::ZERO)
+            .1
+            .name()
+            .to_string();
+        NativeWgpuGstDmabufPlayerSnapshot {
+            backend: "gst-dmabuf",
+            gst_state: state,
+            pulled_samples: self.pulled_samples,
+            exported_frames: self.exported_frames,
+            export_failures: self.export_failures,
+            import_attempts: self.import_attempts,
+            imported_frames: self.imported_frames,
+            import_failures: self.import_failures,
+            eos_messages: self.eos_messages,
+            last_frame_size: self.last_frame_size,
+            last_frame_format: self.last_frame_format.clone(),
+            last_memory_types: self.last_memory_types.clone(),
+            last_export_source: self.last_export_source.clone(),
+            last_drm_fourcc: self.last_drm_fourcc,
+            last_drm_modifier: self.last_drm_modifier,
+            last_plane_offsets: self.last_plane_offsets.clone(),
+            last_plane_strides: self.last_plane_strides.clone(),
+            last_fd_count: self.last_fd_count,
+            last_error: self.last_error.clone(),
+        }
+    }
+}
+
 #[cfg(feature = "video-renderer")]
 struct NativeWgpuVideoPlayer {
     pipeline: gst::Element,
@@ -699,13 +1145,17 @@ impl NativeWgpuVideoPlayer {
                     }
                 }
                 gst::MessageView::Error(err) => {
-                    let message = format!(
+                    let mut message = format!(
                         "{}: {}",
                         err.src()
                             .map(|src| src.path_string())
                             .unwrap_or_else(|| "gstreamer".into()),
                         err.error()
                     );
+                    if let Some(debug) = err.debug() {
+                        message.push_str(": ");
+                        message.push_str(&debug);
+                    }
                     self.last_error = Some(message.clone());
                     return Err(NativeWgpuError::Video(message));
                 }
@@ -863,8 +1313,518 @@ fn native_wgpu_pad_is_video(pad: &gst::Pad) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeWgpuGstDmabufPipelineKind {
+    CudaMmap,
+    GlDmabuf,
+    CudaNv12Upload,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gst_dmabuf_pipeline_kind() -> NativeWgpuGstDmabufPipelineKind {
+    match std::env::var("GILDER_WGPU_GST_DMABUF_PIPELINE")
+        .unwrap_or_default()
+        .as_str()
+    {
+        "gl" | "gl-dmabuf" | "gldownload" => NativeWgpuGstDmabufPipelineKind::GlDmabuf,
+        "nv12-upload" | "cuda-nv12-upload" | "cudadownload" => {
+            NativeWgpuGstDmabufPipelineKind::CudaNv12Upload
+        }
+        _ => NativeWgpuGstDmabufPipelineKind::CudaMmap,
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gst_dmabuf_queue_frames() -> u32 {
+    std::env::var("GILDER_WGPU_GST_DMABUF_QUEUE_FRAMES")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .map(|value| value.clamp(2, 16))
+        .unwrap_or(4)
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gst_dmabuf_appsink(
+    target_max_fps: Option<u32>,
+    cuda_context: Arc<NativeWgpuCudaContextHandle>,
+) -> Result<gst::Element, NativeWgpuError> {
+    let caps = "video/x-raw(memory:CUDAMemory),format=NV12"
+        .parse::<gst::Caps>()
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    let sink = gst::ElementFactory::make("appsink")
+        .property("sync", true)
+        .property("async", false)
+        .property("emit-signals", false)
+        .property("enable-last-sample", false)
+        .property("wait-on-eos", false)
+        .property("max-buffers", native_wgpu_gst_dmabuf_queue_frames())
+        .property("caps", &caps)
+        .build()
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    let _ = crate::renderer::video::configure_video_sink_low_memory(&sink, target_max_fps);
+    if sink.find_property("qos").is_some() {
+        sink.set_property("qos", false);
+    }
+    if sink.find_property("max-lateness").is_some() {
+        sink.set_property("max-lateness", -1i64);
+    }
+    install_native_wgpu_cuda_mmap_allocation_probe(&sink, cuda_context)?;
+    Ok(sink)
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gst_dmabuf_gl_appsink(
+    target_max_fps: Option<u32>,
+) -> Result<gst::Element, NativeWgpuError> {
+    let caps = "video/x-raw(memory:DMABuf)"
+        .parse::<gst::Caps>()
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    let sink = gst::ElementFactory::make("appsink")
+        .property("sync", true)
+        .property("async", false)
+        .property("emit-signals", false)
+        .property("enable-last-sample", false)
+        .property("wait-on-eos", false)
+        .property("max-buffers", native_wgpu_gst_dmabuf_queue_frames())
+        .property("caps", &caps)
+        .build()
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    let _ = crate::renderer::video::configure_video_sink_low_memory(&sink, target_max_fps);
+    if sink.find_property("qos").is_some() {
+        sink.set_property("qos", false);
+    }
+    if sink.find_property("max-lateness").is_some() {
+        sink.set_property("max-lateness", -1i64);
+    }
+    Ok(sink)
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gst_nv12_upload_appsink(
+    target_max_fps: Option<u32>,
+) -> Result<gst::Element, NativeWgpuError> {
+    let caps = "video/x-raw,format=NV12"
+        .parse::<gst::Caps>()
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    let sink = gst::ElementFactory::make("appsink")
+        .property("sync", true)
+        .property("async", false)
+        .property("emit-signals", false)
+        .property("enable-last-sample", false)
+        .property("wait-on-eos", false)
+        .property("max-buffers", native_wgpu_gst_dmabuf_queue_frames())
+        .property("caps", &caps)
+        .build()
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    let _ = crate::renderer::video::configure_video_sink_low_memory(&sink, target_max_fps);
+    if sink.find_property("qos").is_some() {
+        sink.set_property("qos", false);
+    }
+    if sink.find_property("max-lateness").is_some() {
+        sink.set_property("max-lateness", -1i64);
+    }
+    Ok(sink)
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gst_dmabuf_pipeline(
+    source: &std::path::Path,
+    sink: &gst::Element,
+) -> Result<gst::Element, NativeWgpuError> {
+    let pipeline = gst::Pipeline::new();
+    let filesrc = native_wgpu_gst_element("filesrc")?;
+    filesrc.set_property("location", source.to_string_lossy().as_ref());
+    let decodebin = native_wgpu_gst_element("decodebin")?;
+    let queue = native_wgpu_gst_element("queue")?;
+    if queue.find_property("max-size-buffers").is_some() {
+        queue.set_property("max-size-buffers", native_wgpu_gst_dmabuf_queue_frames());
+    }
+    if queue.find_property("max-size-bytes").is_some() {
+        queue.set_property("max-size-bytes", 0u32);
+    }
+    if queue.find_property("max-size-time").is_some() {
+        queue.set_property("max-size-time", 25_000_000u64);
+    }
+    let capsfilter = native_wgpu_gst_element("capsfilter")?;
+    let caps = "video/x-raw(memory:CUDAMemory),format=NV12"
+        .parse::<gst::Caps>()
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    capsfilter.set_property("caps", &caps);
+
+    pipeline
+        .add_many([&filesrc, &decodebin, &queue, &capsfilter, sink])
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    filesrc
+        .link(&decodebin)
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    gst::Element::link_many([&queue, &capsfilter, sink])
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+
+    let queue_sink = queue
+        .static_pad("sink")
+        .ok_or_else(|| NativeWgpuError::Video("queue has no sink pad".to_owned()))?;
+    decodebin.connect_pad_added(move |_, pad| {
+        if queue_sink.is_linked() || !native_wgpu_pad_is_video(pad) {
+            return;
+        }
+        let _ = pad.link(&queue_sink);
+    });
+
+    Ok(pipeline.upcast::<gst::Element>())
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gst_gl_dmabuf_pipeline(
+    source: &std::path::Path,
+    sink: &gst::Element,
+) -> Result<gst::Element, NativeWgpuError> {
+    let pipeline = gst::Pipeline::new();
+    let filesrc = native_wgpu_gst_element("filesrc")?;
+    filesrc.set_property("location", source.to_string_lossy().as_ref());
+    let demux = native_wgpu_gst_element("qtdemux")?;
+    let queue = native_wgpu_gst_element("queue")?;
+    if queue.find_property("max-size-buffers").is_some() {
+        queue.set_property("max-size-buffers", native_wgpu_gst_dmabuf_queue_frames());
+    }
+    if queue.find_property("max-size-bytes").is_some() {
+        queue.set_property("max-size-bytes", 0u32);
+    }
+    if queue.find_property("max-size-time").is_some() {
+        queue.set_property("max-size-time", 25_000_000u64);
+    }
+    let h264parse = native_wgpu_gst_element("h264parse")?;
+    if h264parse.find_property("config-interval").is_some() {
+        h264parse.set_property("config-interval", -1i32);
+    }
+    let decoder = native_wgpu_gst_element("nvh264dec")?;
+    if decoder.find_property("qos").is_some() {
+        decoder.set_property("qos", false);
+    }
+    if decoder.find_property("num-output-surfaces").is_some() {
+        decoder.set_property("num-output-surfaces", 4u32);
+    }
+    let gl_nv12_capsfilter = native_wgpu_gst_element("capsfilter")?;
+    let gl_nv12_caps = "video/x-raw(memory:GLMemory),format=NV12"
+        .parse::<gst::Caps>()
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    gl_nv12_capsfilter.set_property("caps", &gl_nv12_caps);
+    let glcolorconvert = native_wgpu_gst_element("glcolorconvert")?;
+    let gl_rgba_capsfilter = native_wgpu_gst_element("capsfilter")?;
+    let gl_rgba_caps = "video/x-raw(memory:GLMemory),format=RGBA"
+        .parse::<gst::Caps>()
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    gl_rgba_capsfilter.set_property("caps", &gl_rgba_caps);
+    let gldownload = native_wgpu_gst_element("gldownload")?;
+    let dmabuf_capsfilter = native_wgpu_gst_element("capsfilter")?;
+    let dmabuf_caps = "video/x-raw(memory:DMABuf)"
+        .parse::<gst::Caps>()
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    dmabuf_capsfilter.set_property("caps", &dmabuf_caps);
+
+    pipeline
+        .add_many([
+            &filesrc,
+            &demux,
+            &queue,
+            &h264parse,
+            &decoder,
+            &gl_nv12_capsfilter,
+            &glcolorconvert,
+            &gl_rgba_capsfilter,
+            &gldownload,
+            &dmabuf_capsfilter,
+            sink,
+        ])
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    filesrc
+        .link(&demux)
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    gst::Element::link_many([
+        &queue,
+        &h264parse,
+        &decoder,
+        &gl_nv12_capsfilter,
+        &glcolorconvert,
+        &gl_rgba_capsfilter,
+        &gldownload,
+        &dmabuf_capsfilter,
+        sink,
+    ])
+    .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+
+    let queue_sink = queue
+        .static_pad("sink")
+        .ok_or_else(|| NativeWgpuError::Video("queue has no sink pad".to_owned()))?;
+    demux.connect_pad_added(move |_, pad| {
+        if queue_sink.is_linked() {
+            return;
+        }
+        let _ = pad.link(&queue_sink);
+    });
+
+    Ok(pipeline.upcast::<gst::Element>())
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gst_cuda_nv12_upload_pipeline(
+    source: &std::path::Path,
+    sink: &gst::Element,
+) -> Result<gst::Element, NativeWgpuError> {
+    let pipeline = gst::Pipeline::new();
+    let filesrc = native_wgpu_gst_element("filesrc")?;
+    filesrc.set_property("location", source.to_string_lossy().as_ref());
+    let demux = native_wgpu_gst_element("qtdemux")?;
+    let queue = native_wgpu_gst_element("queue")?;
+    if queue.find_property("max-size-buffers").is_some() {
+        queue.set_property("max-size-buffers", native_wgpu_gst_dmabuf_queue_frames());
+    }
+    if queue.find_property("max-size-bytes").is_some() {
+        queue.set_property("max-size-bytes", 0u32);
+    }
+    if queue.find_property("max-size-time").is_some() {
+        queue.set_property("max-size-time", 25_000_000u64);
+    }
+    let h264parse = native_wgpu_gst_element("h264parse")?;
+    if h264parse.find_property("config-interval").is_some() {
+        h264parse.set_property("config-interval", -1i32);
+    }
+    let decoder = native_wgpu_gst_element("nvh264dec")?;
+    if decoder.find_property("qos").is_some() {
+        decoder.set_property("qos", false);
+    }
+    if decoder.find_property("num-output-surfaces").is_some() {
+        decoder.set_property("num-output-surfaces", 4u32);
+    }
+    let cudadownload = native_wgpu_gst_element("cudadownload")?;
+    let capsfilter = native_wgpu_gst_element("capsfilter")?;
+    let caps = "video/x-raw,format=NV12"
+        .parse::<gst::Caps>()
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    capsfilter.set_property("caps", &caps);
+
+    pipeline
+        .add_many([
+            &filesrc,
+            &demux,
+            &queue,
+            &h264parse,
+            &decoder,
+            &cudadownload,
+            &capsfilter,
+            sink,
+        ])
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    filesrc
+        .link(&demux)
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    gst::Element::link_many([
+        &queue,
+        &h264parse,
+        &decoder,
+        &cudadownload,
+        &capsfilter,
+        sink,
+    ])
+    .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+
+    let queue_sink = queue
+        .static_pad("sink")
+        .ok_or_else(|| NativeWgpuError::Video("queue has no sink pad".to_owned()))?;
+    demux.connect_pad_added(move |_, pad| {
+        if queue_sink.is_linked() {
+            return;
+        }
+        let _ = pad.link(&queue_sink);
+    });
+
+    Ok(pipeline.upcast::<gst::Element>())
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+struct NativeWgpuCudaContextHandle {
+    ptr: NonNull<NativeWgpuGstCudaContext>,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+impl NativeWgpuCudaContextHandle {
+    fn new(device_id: u32) -> Result<Self, NativeWgpuError> {
+        let loaded = unsafe { gst_cuda_load_library() } != gst::glib::ffi::GFALSE;
+        if !loaded {
+            return Err(NativeWgpuError::Video(
+                "failed to load CUDA library for gst-dmabuf shared CUDA context".to_owned(),
+            ));
+        }
+        let ptr = unsafe { gst_cuda_context_new(device_id) };
+        let ptr = NonNull::new(ptr).ok_or_else(|| {
+            NativeWgpuError::Video(format!(
+                "failed to create gst-dmabuf CUDA context for device {device_id}"
+            ))
+        })?;
+        Ok(Self { ptr })
+    }
+
+    fn as_ptr(&self) -> *mut NativeWgpuGstCudaContext {
+        self.ptr.as_ptr()
+    }
+
+    fn gst_context(&self) -> Result<gst::Context, NativeWgpuError> {
+        let context = unsafe { gst_context_new_cuda_context(self.as_ptr()) };
+        if context.is_null() {
+            return Err(NativeWgpuError::Video(
+                "failed to create GstContext for gst-dmabuf CUDA context".to_owned(),
+            ));
+        }
+        Ok(unsafe { gst::glib::translate::from_glib_full(context) })
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+impl Drop for NativeWgpuCudaContextHandle {
+    fn drop(&mut self) {
+        unsafe {
+            gst::ffi::gst_object_unref(self.ptr.as_ptr().cast::<gst::ffi::GstObject>());
+        }
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+unsafe impl Send for NativeWgpuCudaContextHandle {}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+unsafe impl Sync for NativeWgpuCudaContextHandle {}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn install_native_wgpu_cuda_mmap_allocation_probe(
+    sink: &gst::Element,
+    cuda_context: Arc<NativeWgpuCudaContextHandle>,
+) -> Result<(), NativeWgpuError> {
+    sink.set_property("emit-signals", true);
+
+    let pad = sink
+        .static_pad("sink")
+        .ok_or_else(|| NativeWgpuError::Video("appsink has no sink pad".to_owned()))?;
+    let pad_cuda_context = Arc::clone(&cuda_context);
+    let _pad_probe_id = pad.add_probe(gst::PadProbeType::QUERY_DOWNSTREAM, move |_, info| {
+        let Some(query) = info.query_mut() else {
+            return gst::PadProbeReturn::Ok;
+        };
+        if query.type_() != gst::QueryType::Allocation {
+            return gst::PadProbeReturn::Ok;
+        }
+        unsafe {
+            let _ = native_wgpu_propose_cuda_mmap_allocation(
+                query.as_mut_ptr(),
+                pad_cuda_context.as_ptr(),
+            );
+        }
+        gst::PadProbeReturn::Ok
+    });
+
+    let signal_cuda_context = Arc::clone(&cuda_context);
+    let _handler_id = sink.connect("propose-allocation", false, move |values| {
+        let handled = values
+            .get(1)
+            .and_then(|value| value.get::<&gst::QueryRef>().ok())
+            .map(|query| unsafe {
+                native_wgpu_propose_cuda_mmap_allocation(
+                    query.as_mut_ptr(),
+                    signal_cuda_context.as_ptr(),
+                )
+            })
+            .unwrap_or(false);
+        Some(handled.to_value())
+    });
+    Ok(())
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+unsafe fn native_wgpu_propose_cuda_mmap_allocation(
+    query: *mut gst::ffi::GstQuery,
+    cuda_context: *mut NativeWgpuGstCudaContext,
+) -> bool {
+    if query.is_null() || unsafe { (*query).type_ } != gst::ffi::GST_QUERY_ALLOCATION {
+        return false;
+    }
+
+    let mut caps = ptr::null_mut();
+    let mut need_pool = gst::glib::ffi::GFALSE;
+    unsafe {
+        gst::ffi::gst_query_parse_allocation(query, &mut caps, &mut need_pool);
+    }
+    if caps.is_null() || cuda_context.is_null() {
+        return false;
+    }
+
+    let video_info = unsafe { gst_video::ffi::gst_video_info_new() };
+    if video_info.is_null() {
+        return false;
+    }
+    let parsed_video_info = unsafe { gst_video::ffi::gst_video_info_from_caps(video_info, caps) }
+        != gst::glib::ffi::GFALSE;
+    if !parsed_video_info {
+        unsafe {
+            gst_video::ffi::gst_video_info_free(video_info);
+        }
+        return false;
+    }
+    let pool_size = unsafe { (*video_info).size };
+    unsafe {
+        gst_video::ffi::gst_video_info_free(video_info);
+    }
+    let Ok(pool_size_u32) = u32::try_from(pool_size) else {
+        return false;
+    };
+
+    let pool = unsafe { gst_cuda_buffer_pool_new(cuda_context) };
+    if pool.is_null() {
+        return false;
+    }
+    let config = unsafe { gst::ffi::gst_buffer_pool_get_config(pool) };
+    if config.is_null() {
+        unsafe {
+            gst::ffi::gst_object_unref(pool.cast::<gst::ffi::GstObject>());
+        }
+        return false;
+    }
+
+    const MIN_BUFFERS: u32 = 2;
+    const MAX_BUFFERS: u32 = 3;
+    unsafe {
+        gst::ffi::gst_buffer_pool_config_set_params(
+            config,
+            caps,
+            pool_size_u32,
+            MIN_BUFFERS,
+            MAX_BUFFERS,
+        );
+        gst_buffer_pool_config_set_cuda_alloc_method(config, GST_CUDA_MEMORY_ALLOC_MMAP);
+    }
+    let configured =
+        unsafe { gst::ffi::gst_buffer_pool_set_config(pool, config) } != gst::glib::ffi::GFALSE;
+    if !configured {
+        unsafe {
+            gst::ffi::gst_object_unref(pool.cast::<gst::ffi::GstObject>());
+        }
+        return false;
+    }
+
+    unsafe {
+        gst::ffi::gst_query_add_allocation_pool(
+            query,
+            pool,
+            pool_size_u32,
+            MIN_BUFFERS,
+            MAX_BUFFERS,
+        );
+        gst::ffi::gst_object_unref(pool.cast::<gst::ffi::GstObject>());
+    }
+    true
+}
+
 #[cfg(feature = "native-wgpu-gpu-video")]
 struct NativeWgpuGpuVideoPlayer {
+    backend: &'static str,
     events: Receiver<NativeWgpuGpuVideoDecoderEvent>,
     stop_worker: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
@@ -903,8 +1863,11 @@ impl NativeWgpuGpuVideoPlayer {
         source: &std::path::Path,
         loop_playback: bool,
         vulkan_device: Arc<gpu_video::VulkanDevice>,
+        input_mode: NativeWgpuGpuVideoInputMode,
     ) -> Result<Self, NativeWgpuError> {
-        if !native_wgpu_is_annex_b_h264(source) {
+        if input_mode == NativeWgpuGpuVideoInputMode::AnnexBFile
+            && !native_wgpu_is_annex_b_h264(source)
+        {
             return Err(NativeWgpuError::Video(format!(
                 "gpu-video backend expects Annex-B H.264 bytestream (.h264/.264), got {}",
                 source.display()
@@ -925,10 +1888,12 @@ impl NativeWgpuGpuVideoPlayer {
                     vulkan_device,
                     event_tx,
                     worker_stop,
+                    input_mode,
                 );
             })
             .map_err(|err| NativeWgpuError::Video(format!("spawn gpu-video worker: {err}")))?;
         Ok(Self {
+            backend: input_mode.backend_label(),
             events,
             stop_worker,
             worker: Some(worker),
@@ -1006,7 +1971,7 @@ impl NativeWgpuGpuVideoPlayer {
 
     fn snapshot(&self) -> NativeWgpuGpuVideoPlayerSnapshot {
         NativeWgpuGpuVideoPlayerSnapshot {
-            backend: "gpu-video",
+            backend: self.backend,
             state: if self.reached_eof {
                 if self.loop_playback {
                     "loop-boundary"
@@ -1055,10 +2020,27 @@ fn native_wgpu_gpu_video_decode_worker(
     vulkan_device: Arc<gpu_video::VulkanDevice>,
     event_tx: SyncSender<NativeWgpuGpuVideoDecoderEvent>,
     stop: Arc<AtomicBool>,
+    input_mode: NativeWgpuGpuVideoInputMode,
 ) {
-    if let Err(err) =
-        native_wgpu_gpu_video_decode_loop(source, loop_playback, vulkan_device, &event_tx, &stop)
-    {
+    let result = match input_mode {
+        NativeWgpuGpuVideoInputMode::AnnexBFile => native_wgpu_gpu_video_annex_b_decode_loop(
+            source,
+            loop_playback,
+            vulkan_device,
+            &event_tx,
+            &stop,
+        ),
+        NativeWgpuGpuVideoInputMode::GstH264ByteStream => {
+            native_wgpu_gpu_video_gst_h264_decode_loop(
+                source,
+                loop_playback,
+                vulkan_device,
+                &event_tx,
+                &stop,
+            )
+        }
+    };
+    if let Err(err) = result {
         let _ = native_wgpu_gpu_video_send_event(
             &event_tx,
             &stop,
@@ -1068,7 +2050,7 @@ fn native_wgpu_gpu_video_decode_worker(
 }
 
 #[cfg(feature = "native-wgpu-gpu-video")]
-fn native_wgpu_gpu_video_decode_loop(
+fn native_wgpu_gpu_video_annex_b_decode_loop(
     source: std::path::PathBuf,
     loop_playback: bool,
     vulkan_device: Arc<gpu_video::VulkanDevice>,
@@ -1119,6 +2101,196 @@ fn native_wgpu_gpu_video_decode_loop(
     }
 
     Ok(())
+}
+
+#[cfg(all(feature = "native-wgpu-gpu-video", feature = "video-renderer"))]
+fn native_wgpu_gpu_video_gst_h264_decode_loop(
+    source: std::path::PathBuf,
+    loop_playback: bool,
+    vulkan_device: Arc<gpu_video::VulkanDevice>,
+    event_tx: &SyncSender<NativeWgpuGpuVideoDecoderEvent>,
+    stop: &AtomicBool,
+) -> Result<(), String> {
+    gst::init().map_err(|err| err.to_string())?;
+    let sink = native_wgpu_gst_h264_bytestream_appsink().map_err(|err| err.to_string())?;
+    let pipeline =
+        native_wgpu_gst_h264_bytestream_pipeline(&source, &sink).map_err(|err| err.to_string())?;
+    let bus = pipeline
+        .bus()
+        .ok_or_else(|| "gst-gpu-video pipeline has no bus".to_owned())?;
+    pipeline
+        .set_state(gst::State::Playing)
+        .map_err(|err| err.to_string())?;
+
+    let mut decoder = vulkan_device
+        .create_wgpu_textures_decoder_h264(gpu_video::parameters::DecoderParameters::default())
+        .map_err(|err| err.to_string())?;
+
+    while !stop.load(Ordering::Relaxed) {
+        while let Some(message) = bus.pop() {
+            match message.view() {
+                gst::MessageView::Eos(_) => {
+                    native_wgpu_gpu_video_send_event(
+                        event_tx,
+                        stop,
+                        NativeWgpuGpuVideoDecoderEvent::Eos,
+                    );
+                    let decoded = decoder.flush().map_err(|err| err.to_string())?;
+                    native_wgpu_gpu_video_send_frames(event_tx, stop, decoded);
+                    if !loop_playback || stop.load(Ordering::Relaxed) {
+                        let _ = pipeline.set_state(gst::State::Null);
+                        return Ok(());
+                    }
+                    pipeline
+                        .seek_simple(gst::SeekFlags::FLUSH, gst::ClockTime::ZERO)
+                        .map_err(|err| err.to_string())?;
+                    pipeline
+                        .set_state(gst::State::Playing)
+                        .map_err(|err| err.to_string())?;
+                    decoder = vulkan_device
+                        .create_wgpu_textures_decoder_h264(
+                            gpu_video::parameters::DecoderParameters::default(),
+                        )
+                        .map_err(|err| err.to_string())?;
+                    native_wgpu_gpu_video_send_event(
+                        event_tx,
+                        stop,
+                        NativeWgpuGpuVideoDecoderEvent::Reset,
+                    );
+                }
+                gst::MessageView::Error(err) => {
+                    let mut message = format!(
+                        "{}: {}",
+                        err.src()
+                            .map(|src| src.path_string())
+                            .unwrap_or_else(|| "gstreamer".into()),
+                        err.error()
+                    );
+                    if let Some(debug) = err.debug() {
+                        message.push_str(": ");
+                        message.push_str(&debug);
+                    }
+                    let _ = pipeline.set_state(gst::State::Null);
+                    return Err(message);
+                }
+                _ => {}
+            }
+        }
+
+        let sample = sink.emit_by_name::<Option<gst::Sample>>("try-pull-sample", &[&5_000_000u64]);
+        let Some(sample) = sample else {
+            continue;
+        };
+        let buffer = sample
+            .buffer()
+            .ok_or_else(|| "gst-gpu-video appsink sample has no buffer".to_owned())?;
+        let pts = buffer.pts().map(|pts| pts.nseconds());
+        let map = buffer
+            .map_readable()
+            .map_err(|_| "gst-gpu-video H.264 buffer map_readable failed".to_owned())?;
+        let data = map.as_slice();
+        native_wgpu_gpu_video_send_event(
+            event_tx,
+            stop,
+            NativeWgpuGpuVideoDecoderEvent::BytesRead(
+                u64::try_from(data.len()).unwrap_or(u64::MAX),
+            ),
+        );
+        let decoded = decoder
+            .decode(gpu_video::EncodedInputChunk { data, pts })
+            .map_err(|err| err.to_string())?;
+        native_wgpu_gpu_video_send_frames(event_tx, stop, decoded);
+    }
+
+    let _ = pipeline.set_state(gst::State::Null);
+    Ok(())
+}
+
+#[cfg(all(feature = "native-wgpu-gpu-video", not(feature = "video-renderer")))]
+fn native_wgpu_gpu_video_gst_h264_decode_loop(
+    source: std::path::PathBuf,
+    loop_playback: bool,
+    vulkan_device: Arc<gpu_video::VulkanDevice>,
+    event_tx: &SyncSender<NativeWgpuGpuVideoDecoderEvent>,
+    stop: &AtomicBool,
+) -> Result<(), String> {
+    let _ = (source, loop_playback, vulkan_device, event_tx, stop);
+    Err("gst-gpu-video input requires building with video-renderer".to_owned())
+}
+
+#[cfg(all(feature = "native-wgpu-gpu-video", feature = "video-renderer"))]
+fn native_wgpu_gst_h264_bytestream_appsink() -> Result<gst::Element, NativeWgpuError> {
+    let caps = "video/x-h264,stream-format=byte-stream,alignment=au"
+        .parse::<gst::Caps>()
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    gst::ElementFactory::make("appsink")
+        .property("sync", false)
+        .property("async", false)
+        .property("emit-signals", false)
+        .property("enable-last-sample", false)
+        .property("wait-on-eos", false)
+        .property("max-buffers", 8u32)
+        .property("caps", &caps)
+        .build()
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))
+}
+
+#[cfg(all(feature = "native-wgpu-gpu-video", feature = "video-renderer"))]
+fn native_wgpu_gst_h264_bytestream_pipeline(
+    source: &std::path::Path,
+    sink: &gst::Element,
+) -> Result<gst::Element, NativeWgpuError> {
+    let pipeline = gst::Pipeline::new();
+    let filesrc = native_wgpu_gst_element("filesrc")?;
+    filesrc.set_property("location", source.to_string_lossy().as_ref());
+    let demux = native_wgpu_gst_element("qtdemux")?;
+    let queue = native_wgpu_gst_element("queue")?;
+    if queue.find_property("max-size-buffers").is_some() {
+        queue.set_property("max-size-buffers", 8u32);
+    }
+    if queue.find_property("max-size-bytes").is_some() {
+        queue.set_property("max-size-bytes", 0u32);
+    }
+    if queue.find_property("max-size-time").is_some() {
+        queue.set_property("max-size-time", 0u64);
+    }
+    let h264parse = native_wgpu_gst_element("h264parse")?;
+    if h264parse.find_property("config-interval").is_some() {
+        h264parse.set_property("config-interval", -1i32);
+    }
+    let capsfilter = native_wgpu_gst_element("capsfilter")?;
+    let caps = "video/x-h264,stream-format=byte-stream,alignment=au"
+        .parse::<gst::Caps>()
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    capsfilter.set_property("caps", &caps);
+
+    pipeline
+        .add_many([&filesrc, &demux, &queue, &h264parse, &capsfilter, sink])
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    filesrc
+        .link(&demux)
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+    gst::Element::link_many([&queue, &h264parse, &capsfilter, sink])
+        .map_err(|err| NativeWgpuError::Video(err.to_string()))?;
+
+    let queue_sink = queue
+        .static_pad("sink")
+        .ok_or_else(|| NativeWgpuError::Video("queue has no sink pad".to_owned()))?;
+    demux.connect_pad_added(move |_, pad| {
+        if queue_sink.is_linked() {
+            return;
+        }
+        let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
+        let is_h264 = caps
+            .structure(0)
+            .map(|structure| structure.name() == "video/x-h264")
+            .unwrap_or(false);
+        if is_h264 {
+            let _ = pad.link(&queue_sink);
+        }
+    });
+
+    Ok(pipeline.upcast::<gst::Element>())
 }
 
 #[cfg(feature = "native-wgpu-gpu-video")]
@@ -1185,7 +2357,7 @@ struct NativeWgpuSurfaceRenderer {
     started: Instant,
     #[cfg(feature = "video-renderer")]
     video: Option<NativeWgpuVideoRenderer>,
-    #[cfg(feature = "native-wgpu-gpu-video")]
+    #[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
     gpu_video: Option<NativeWgpuNv12VideoRenderer>,
     render_calls: u64,
     frames_rendered: u64,
@@ -1234,10 +2406,11 @@ impl NativeWgpuSurfaceRenderer {
             })
             .await
             .map_err(|err| NativeWgpuError::Wgpu(err.to_string()))?;
+        let required_features = native_wgpu_required_features(&adapter)?;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("gilder-native-wgpu-device"),
-                required_features: wgpu::Features::empty(),
+                required_features,
                 required_limits: wgpu::Limits::default(),
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
@@ -1296,7 +2469,7 @@ impl NativeWgpuSurfaceRenderer {
             started: Instant::now(),
             #[cfg(feature = "video-renderer")]
             video: None,
-            #[cfg(feature = "native-wgpu-gpu-video")]
+            #[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
             gpu_video: None,
             render_calls: 0,
             frames_rendered: 0,
@@ -1327,7 +2500,7 @@ impl NativeWgpuSurfaceRenderer {
         if let Some(video) = self.video.as_mut() {
             video.update_fit_uniform(&self.queue, (self.config.width, self.config.height));
         }
-        #[cfg(feature = "native-wgpu-gpu-video")]
+        #[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
         if let Some(video) = self.gpu_video.as_mut() {
             video.update_fit_uniform(&self.queue, (self.config.width, self.config.height));
         }
@@ -1440,7 +2613,7 @@ impl NativeWgpuSurfaceRenderer {
     }
 
     fn encode_render_pass(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
-        #[cfg(feature = "native-wgpu-gpu-video")]
+        #[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
         if let Some(video) = self.gpu_video.as_ref().filter(|video| video.has_frame()) {
             video.encode_render_pass(encoder, view, self.clear_color().as_wgpu());
             return;
@@ -1516,6 +2689,50 @@ impl NativeWgpuSurfaceRenderer {
             frame,
             fit,
         )
+    }
+
+    #[cfg(feature = "native-wgpu-gst-dmabuf")]
+    fn present_gst_dmabuf_frame(
+        &mut self,
+        frame: NativeWgpuGstDmabufFrame,
+        fit: crate::core::FitMode,
+    ) -> Result<NativeWgpuGstDmabufImportReport, NativeWgpuError> {
+        let texture = native_wgpu_import_gst_dmabuf_frame_as_nv12_texture(&self.device, frame)
+            .map_err(NativeWgpuError::Video)?;
+        let video = self.gpu_video.get_or_insert_with(|| {
+            NativeWgpuNv12VideoRenderer::new(&self.device, self.config.format, fit)
+        });
+        let report = video.present_texture(
+            &self.device,
+            &self.queue,
+            (self.config.width, self.config.height),
+            texture,
+            fit,
+        )?;
+        Ok(NativeWgpuGstDmabufImportReport {
+            imported_frames: report.presented_frames,
+        })
+    }
+
+    #[cfg(feature = "native-wgpu-gst-dmabuf")]
+    fn present_gst_system_nv12_sample(
+        &mut self,
+        sample: &gst::Sample,
+        fit: crate::core::FitMode,
+    ) -> Result<NativeWgpuGstDmabufImportReport, NativeWgpuError> {
+        let video = self.gpu_video.get_or_insert_with(|| {
+            NativeWgpuNv12VideoRenderer::new(&self.device, self.config.format, fit)
+        });
+        let report = video.present_system_nv12_sample(
+            &self.device,
+            &self.queue,
+            (self.config.width, self.config.height),
+            sample,
+            fit,
+        )?;
+        Ok(NativeWgpuGstDmabufImportReport {
+            imported_frames: report.presented_frames,
+        })
     }
 }
 
@@ -1834,7 +3051,7 @@ impl NativeWgpuVideoRenderer {
     }
 }
 
-#[cfg(feature = "native-wgpu-gpu-video")]
+#[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
 struct NativeWgpuNv12VideoRenderer {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
@@ -1843,11 +3060,12 @@ struct NativeWgpuNv12VideoRenderer {
     texture: Option<wgpu::Texture>,
     bind_group: Option<wgpu::BindGroup>,
     source_size: Option<(u32, u32)>,
+    texture_copy_dst: bool,
     fit: crate::core::FitMode,
     presented_frames: u64,
 }
 
-#[cfg(feature = "native-wgpu-gpu-video")]
+#[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeWgpuNv12PresentReport {
     width: u32,
@@ -1856,7 +3074,7 @@ struct NativeWgpuNv12PresentReport {
     presented_frames: u64,
 }
 
-#[cfg(feature = "native-wgpu-gpu-video")]
+#[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
 impl NativeWgpuNv12VideoRenderer {
     fn new(
         device: &wgpu::Device,
@@ -1961,6 +3179,7 @@ impl NativeWgpuNv12VideoRenderer {
             texture: None,
             bind_group: None,
             source_size: None,
+            texture_copy_dst: false,
             fit,
             presented_frames: 0,
         }
@@ -2031,6 +3250,7 @@ impl NativeWgpuNv12VideoRenderer {
         self.texture = Some(texture);
         self.bind_group = Some(bind_group);
         self.source_size = Some((width, height));
+        self.texture_copy_dst = false;
         self.fit = fit;
         self.update_fit_uniform(queue, surface_size);
         self.presented_frames = self.presented_frames.saturating_add(1);
@@ -2041,6 +3261,136 @@ impl NativeWgpuNv12VideoRenderer {
             format: "NV12".to_owned(),
             presented_frames: self.presented_frames,
         })
+    }
+
+    #[cfg(feature = "native-wgpu-gst-dmabuf")]
+    fn present_system_nv12_sample(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surface_size: (u32, u32),
+        sample: &gst::Sample,
+        fit: crate::core::FitMode,
+    ) -> Result<NativeWgpuNv12PresentReport, NativeWgpuError> {
+        let buffer = sample
+            .buffer()
+            .ok_or_else(|| NativeWgpuError::Video("appsink sample has no buffer".to_owned()))?;
+        let meta =
+            native_wgpu_gst_system_nv12_meta(sample, buffer).map_err(NativeWgpuError::Video)?;
+        let map = buffer.map_readable().map_err(|_| {
+            NativeWgpuError::Video("system NV12 buffer map_readable failed".to_owned())
+        })?;
+        let source = map.as_slice();
+
+        self.ensure_system_nv12_texture(device, meta.width, meta.height)?;
+        let texture = self
+            .texture
+            .as_ref()
+            .expect("system NV12 texture must exist after ensure_system_nv12_texture");
+        native_wgpu_write_system_nv12_plane(
+            queue,
+            texture,
+            source,
+            "y",
+            wgpu::TextureAspect::Plane0,
+            meta.y.offset,
+            meta.y.stride,
+            meta.y.width,
+            meta.y.height,
+            meta.y.row_bytes,
+        )?;
+        native_wgpu_write_system_nv12_plane(
+            queue,
+            texture,
+            source,
+            "uv",
+            wgpu::TextureAspect::Plane1,
+            meta.uv.offset,
+            meta.uv.stride,
+            meta.uv.width,
+            meta.uv.height,
+            meta.uv.row_bytes,
+        )?;
+
+        self.fit = fit;
+        self.update_fit_uniform(queue, surface_size);
+        self.presented_frames = self.presented_frames.saturating_add(1);
+
+        Ok(NativeWgpuNv12PresentReport {
+            width: meta.width,
+            height: meta.height,
+            format: "NV12".to_owned(),
+            presented_frames: self.presented_frames,
+        })
+    }
+
+    #[cfg(feature = "native-wgpu-gst-dmabuf")]
+    fn ensure_system_nv12_texture(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> Result<(), NativeWgpuError> {
+        if self.texture_copy_dst && self.source_size == Some((width, height)) {
+            return Ok(());
+        }
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gilder-native-wgpu-system-nv12-texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::NV12,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let y_view = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("gilder-native-wgpu-system-nv12-y-view"),
+            format: Some(wgpu::TextureFormat::R8Unorm),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            aspect: wgpu::TextureAspect::Plane0,
+            ..Default::default()
+        });
+        let uv_view = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("gilder-native-wgpu-system-nv12-uv-view"),
+            format: Some(wgpu::TextureFormat::Rg8Unorm),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            aspect: wgpu::TextureAspect::Plane1,
+            ..Default::default()
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gilder-native-wgpu-system-nv12-bind-group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&y_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&uv_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.fit_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        self.texture = Some(texture);
+        self.bind_group = Some(bind_group);
+        self.source_size = Some((width, height));
+        self.texture_copy_dst = true;
+        Ok(())
     }
 
     fn update_fit_uniform(&self, queue: &wgpu::Queue, surface_size: (u32, u32)) {
@@ -2083,6 +3433,1069 @@ impl NativeWgpuNv12VideoRenderer {
         pass.set_bind_group(0, bind_group, &[]);
         pass.draw(0..3, 0..1);
     }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+struct NativeWgpuGstDmabufFrame {
+    _gst_buffer: gst::Buffer,
+    fds: Vec<OwnedFd>,
+    width: u32,
+    height: u32,
+    format: u32,
+    modifier: Option<u64>,
+    planes: Vec<NativeWgpuGstDmabufPlane>,
+    export_source: &'static str,
+    memory_types: Vec<String>,
+    caps_format: String,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeWgpuGstDmabufPlane {
+    fd_index: usize,
+    offset: u32,
+    stride: u32,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+struct NativeWgpuGstDmabufExport {
+    source: &'static str,
+    format: u32,
+    fds: Vec<OwnedFd>,
+    planes: Vec<NativeWgpuGstDmabufPlane>,
+    modifier: Option<u64>,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeWgpuGstDmabufImportReport {
+    imported_frames: u64,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_import_gst_dmabuf_frame_as_nv12_texture(
+    device: &wgpu::Device,
+    mut frame: NativeWgpuGstDmabufFrame,
+) -> Result<wgpu::Texture, String> {
+    if frame.format != DRM_FORMAT_NV12 {
+        return Err(format!(
+            "vulkan_import_expected_nv12_fourcc_{}_got_{}",
+            DRM_FORMAT_NV12, frame.format
+        ));
+    }
+    if frame.width == 0 || frame.height == 0 {
+        return Err("vulkan_import_invalid_zero_size".to_owned());
+    }
+    if frame.fds.len() != 1 {
+        return Err(format!(
+            "vulkan_import_expected_single_fd_cuda_frame_got_{}",
+            frame.fds.len()
+        ));
+    }
+
+    let desc = wgpu::TextureDescriptor {
+        label: Some("gilder-native-wgpu-gst-dmabuf-nv12-texture"),
+        size: wgpu::Extent3d {
+            width: frame.width,
+            height: frame.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::NV12,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    };
+    let hal_desc = wgpu::hal::TextureDescriptor {
+        label: desc.label,
+        size: desc.size,
+        mip_level_count: desc.mip_level_count,
+        sample_count: desc.sample_count,
+        dimension: desc.dimension,
+        format: desc.format,
+        usage: wgpu::TextureUses::RESOURCE,
+        memory_flags: wgpu::hal::MemoryFlags::empty(),
+        view_formats: Vec::new(),
+    };
+
+    let hal_device = unsafe { device.as_hal::<wgpu::hal::api::Vulkan>() }
+        .ok_or_else(|| "vulkan_import_wgpu_device_is_not_vulkan".to_owned())?;
+    let raw_device = hal_device.raw_device().clone();
+    let external_memory_fd = ash::khr::external_memory_fd::Device::new(
+        hal_device.shared_instance().raw_instance(),
+        &raw_device,
+    );
+    let import_fd_raw = frame.fds.remove(0).into_raw_fd();
+    let handle_type_candidates = [
+        (
+            "OPAQUE_FD",
+            ash::vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD,
+        ),
+        (
+            "DMA_BUF_EXT",
+            ash::vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT,
+        ),
+    ];
+    let mut fd_probe_reports = Vec::with_capacity(handle_type_candidates.len());
+    let mut selected_fd_properties = None;
+    for (label, candidate) in handle_type_candidates {
+        let mut fd_properties = ash::vk::MemoryFdPropertiesKHR::default();
+        match unsafe {
+            external_memory_fd.get_memory_fd_properties(
+                candidate,
+                import_fd_raw,
+                &mut fd_properties,
+            )
+        } {
+            Ok(()) => {
+                fd_probe_reports.push(format!(
+                    "{label}=ok:memory_type_bits={:#x}",
+                    fd_properties.memory_type_bits
+                ));
+                selected_fd_properties = Some((candidate, fd_properties));
+                break;
+            }
+            Err(err) => fd_probe_reports.push(format!("{label}={err:?}")),
+        }
+    }
+    let Some((handle_type, fd_properties)) = selected_fd_properties else {
+        drop(unsafe { OwnedFd::from_raw_fd(import_fd_raw) });
+        return Err(format!(
+            "vulkan_import_fd_properties_failed:{}",
+            fd_probe_reports.join("|")
+        ));
+    };
+
+    let mut external_image_info =
+        ash::vk::ExternalMemoryImageCreateInfo::default().handle_types(handle_type);
+    let image_info = ash::vk::ImageCreateInfo::default()
+        .push_next(&mut external_image_info)
+        .image_type(ash::vk::ImageType::TYPE_2D)
+        .format(ash::vk::Format::G8_B8R8_2PLANE_420_UNORM)
+        .extent(ash::vk::Extent3D {
+            width: frame.width,
+            height: frame.height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(ash::vk::SampleCountFlags::TYPE_1)
+        .tiling(ash::vk::ImageTiling::LINEAR)
+        .usage(ash::vk::ImageUsageFlags::SAMPLED)
+        .sharing_mode(ash::vk::SharingMode::EXCLUSIVE)
+        .initial_layout(ash::vk::ImageLayout::PREINITIALIZED);
+    let image = unsafe { raw_device.create_image(&image_info, None) }.map_err(|err| {
+        // SAFETY: Vulkan did not take ownership of the fd when image creation failed.
+        drop(unsafe { OwnedFd::from_raw_fd(import_fd_raw) });
+        format!("vulkan_import_create_image_failed:{err:?}")
+    })?;
+
+    let requirements = unsafe { raw_device.get_image_memory_requirements(image) };
+    let memory_type_bits = requirements.memory_type_bits & fd_properties.memory_type_bits;
+    let memory_type_index = (0..32)
+        .find(|index| (memory_type_bits & (1u32 << index)) != 0)
+        .ok_or_else(|| {
+            unsafe {
+                raw_device.destroy_image(image, None);
+            }
+            drop(unsafe { OwnedFd::from_raw_fd(import_fd_raw) });
+            format!(
+                "vulkan_import_no_compatible_memory_type:image_bits={:#x}:fd_bits={:#x}",
+                requirements.memory_type_bits, fd_properties.memory_type_bits
+            )
+        })?;
+
+    let mut dedicated_info = ash::vk::MemoryDedicatedAllocateInfo::default().image(image);
+    let mut import_info = ash::vk::ImportMemoryFdInfoKHR::default()
+        .handle_type(handle_type)
+        .fd(import_fd_raw);
+    import_info.p_next = (&mut dedicated_info as *mut ash::vk::MemoryDedicatedAllocateInfo).cast();
+    let allocate_info = ash::vk::MemoryAllocateInfo::default()
+        .allocation_size(requirements.size)
+        .memory_type_index(memory_type_index)
+        .push_next(&mut import_info);
+    let memory = match unsafe { raw_device.allocate_memory(&allocate_info, None) } {
+        Ok(memory) => memory,
+        Err(err) => {
+            unsafe {
+                raw_device.destroy_image(image, None);
+            }
+            drop(unsafe { OwnedFd::from_raw_fd(import_fd_raw) });
+            return Err(format!(
+                "vulkan_import_allocate_memory_failed:{err:?}:size={}:type={}",
+                requirements.size, memory_type_index
+            ));
+        }
+    };
+    if let Err(err) = unsafe { raw_device.bind_image_memory(image, memory, 0) } {
+        unsafe {
+            raw_device.free_memory(memory, None);
+            raw_device.destroy_image(image, None);
+        }
+        return Err(format!("vulkan_import_bind_image_memory_failed:{err:?}"));
+    }
+
+    let drop_device = raw_device.clone();
+    let drop_callback: wgpu::hal::DropCallback = Box::new(move || {
+        unsafe {
+            drop_device.destroy_image(image, None);
+            drop_device.free_memory(memory, None);
+        }
+        drop(frame);
+    });
+    let hal_texture = unsafe {
+        hal_device.texture_from_raw(
+            image,
+            &hal_desc,
+            Some(drop_callback),
+            wgpu::hal::vulkan::TextureMemory::External,
+        )
+    };
+    let texture =
+        unsafe { device.create_texture_from_hal::<wgpu::hal::api::Vulkan>(hal_texture, &desc) };
+    Ok(texture)
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+struct NativeWgpuGstDmabufMeta {
+    format: gst_video::VideoFormat,
+    caps_format: String,
+    width: u32,
+    height: u32,
+    n_planes: u32,
+    offsets: Vec<usize>,
+    strides: Vec<i32>,
+    drm_fourcc: Option<u32>,
+    drm_modifier: Option<u64>,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeWgpuGstSystemNv12Plane {
+    offset: usize,
+    stride: u32,
+    width: u32,
+    height: u32,
+    row_bytes: u32,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeWgpuGstSystemNv12Meta {
+    width: u32,
+    height: u32,
+    y: NativeWgpuGstSystemNv12Plane,
+    uv: NativeWgpuGstSystemNv12Plane,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gst_dmabuf_frame_from_sample(
+    sample: &gst::Sample,
+) -> Result<NativeWgpuGstDmabufFrame, String> {
+    let buffer = sample
+        .buffer()
+        .ok_or_else(|| "appsink sample has no buffer".to_owned())?;
+    let meta = native_wgpu_gst_dmabuf_meta(sample.caps(), buffer)?;
+    let memory_types = native_wgpu_gst_memory_types(buffer);
+    let export = native_wgpu_dmabuf_export_from_buffer(buffer, &meta)?;
+    let gst_buffer = sample
+        .buffer_owned()
+        .ok_or_else(|| "missing owned GstBuffer for dmabuf lifetime".to_owned())?;
+
+    Ok(NativeWgpuGstDmabufFrame {
+        _gst_buffer: gst_buffer,
+        fds: export.fds,
+        width: meta.width,
+        height: meta.height,
+        format: export.format,
+        modifier: meta.drm_modifier.or(export.modifier),
+        planes: export.planes,
+        export_source: export.source,
+        memory_types,
+        caps_format: meta.caps_format,
+    })
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gst_system_nv12_meta(
+    sample: &gst::Sample,
+    buffer: &gst::BufferRef,
+) -> Result<NativeWgpuGstSystemNv12Meta, String> {
+    let meta = match native_wgpu_gst_dmabuf_meta(sample.caps(), buffer) {
+        Ok(meta) => meta,
+        Err(meta_err) => native_wgpu_gst_system_nv12_meta_from_caps(sample)
+            .map_err(|caps_err| format!("{meta_err};caps_fallback:{caps_err}"))?,
+    };
+    if meta.format != gst_video::VideoFormat::Nv12 && meta.caps_format != "NV12" {
+        return Err(format!(
+            "expected system NV12 appsink frame, got {}",
+            meta.caps_format
+        ));
+    }
+    if meta.width == 0 || meta.height == 0 {
+        return Err("system NV12 frame has zero dimension".to_owned());
+    }
+    if meta.width % 2 != 0 || meta.height % 2 != 0 {
+        return Err(format!(
+            "system NV12 frame dimensions must be even, got {}x{}",
+            meta.width, meta.height
+        ));
+    }
+    if meta.offsets.len() < 2 || meta.strides.len() < 2 {
+        return Err(format!(
+            "system NV12 frame needs 2 planes, got offsets={} strides={}",
+            meta.offsets.len(),
+            meta.strides.len()
+        ));
+    }
+
+    let y_stride = native_wgpu_positive_stride("system NV12 y", meta.strides[0])?;
+    let uv_stride = native_wgpu_positive_stride("system NV12 uv", meta.strides[1])?;
+    let y_row_bytes = meta.width;
+    let uv_row_bytes = meta.width;
+    if y_stride < y_row_bytes {
+        return Err(format!(
+            "system NV12 y stride {y_stride} smaller than row bytes {y_row_bytes}"
+        ));
+    }
+    if uv_stride < uv_row_bytes {
+        return Err(format!(
+            "system NV12 uv stride {uv_stride} smaller than row bytes {uv_row_bytes}"
+        ));
+    }
+
+    Ok(NativeWgpuGstSystemNv12Meta {
+        width: meta.width,
+        height: meta.height,
+        y: NativeWgpuGstSystemNv12Plane {
+            offset: meta.offsets[0],
+            stride: y_stride,
+            width: meta.width,
+            height: meta.height,
+            row_bytes: y_row_bytes,
+        },
+        uv: NativeWgpuGstSystemNv12Plane {
+            offset: meta.offsets[1],
+            stride: uv_stride,
+            width: meta.width / 2,
+            height: meta.height / 2,
+            row_bytes: uv_row_bytes,
+        },
+    })
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gst_system_nv12_meta_from_caps(
+    sample: &gst::Sample,
+) -> Result<NativeWgpuGstDmabufMeta, String> {
+    let caps = sample
+        .caps()
+        .ok_or_else(|| "appsink sample has no caps".to_owned())?;
+    let structure = caps
+        .structure(0)
+        .ok_or_else(|| "appsink caps has no structure".to_owned())?;
+    let width = structure
+        .get::<i32>("width")
+        .map_err(|_| "appsink caps missing width".to_owned())
+        .and_then(|width| {
+            u32::try_from(width)
+                .ok()
+                .filter(|width| *width > 0)
+                .ok_or_else(|| "invalid appsink frame width".to_owned())
+        })?;
+    let height = structure
+        .get::<i32>("height")
+        .map_err(|_| "appsink caps missing height".to_owned())
+        .and_then(|height| {
+            u32::try_from(height)
+                .ok()
+                .filter(|height| *height > 0)
+                .ok_or_else(|| "invalid appsink frame height".to_owned())
+        })?;
+    let caps_format = structure
+        .get::<String>("format")
+        .unwrap_or_else(|_| "unknown".to_owned());
+    let y_size = usize::try_from(u64::from(width) * u64::from(height))
+        .map_err(|_| "system NV12 plane offset overflow".to_owned())?;
+    let stride = i32::try_from(width).map_err(|_| "system NV12 stride too large".to_owned())?;
+
+    Ok(NativeWgpuGstDmabufMeta {
+        format: gst_video::VideoFormat::Nv12,
+        caps_format,
+        width,
+        height,
+        n_planes: 2,
+        offsets: vec![0, y_size],
+        strides: vec![stride, stride],
+        drm_fourcc: Some(DRM_FORMAT_NV12),
+        drm_modifier: None,
+    })
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_positive_stride(label: &str, stride: i32) -> Result<u32, String> {
+    u32::try_from(stride)
+        .ok()
+        .filter(|stride| *stride > 0)
+        .ok_or_else(|| format!("{label} stride must be positive, got {stride}"))
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_write_system_nv12_plane(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    source: &[u8],
+    label: &str,
+    aspect: wgpu::TextureAspect,
+    offset: usize,
+    stride: u32,
+    width: u32,
+    height: u32,
+    row_bytes: u32,
+) -> Result<(), NativeWgpuError> {
+    if width == 0 || height == 0 {
+        return Err(NativeWgpuError::Video(format!(
+            "system NV12 {label} plane has zero dimension"
+        )));
+    }
+    native_wgpu_validate_system_nv12_plane_range(
+        source.len(),
+        label,
+        offset,
+        stride,
+        row_bytes,
+        height,
+    )?;
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect,
+        },
+        source,
+        wgpu::TexelCopyBufferLayout {
+            offset: u64::try_from(offset).map_err(|_| {
+                NativeWgpuError::Video(format!("system NV12 {label} offset too large"))
+            })?,
+            bytes_per_row: Some(stride),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    Ok(())
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_validate_system_nv12_plane_range(
+    source_len: usize,
+    label: &str,
+    offset: usize,
+    stride: u32,
+    row_bytes: u32,
+    height: u32,
+) -> Result<(), NativeWgpuError> {
+    let stride = usize::try_from(stride)
+        .map_err(|_| NativeWgpuError::Video(format!("system NV12 {label} stride too large")))?;
+    let row_bytes = usize::try_from(row_bytes)
+        .map_err(|_| NativeWgpuError::Video(format!("system NV12 {label} row bytes too large")))?;
+    if stride < row_bytes {
+        return Err(NativeWgpuError::Video(format!(
+            "system NV12 {label} stride {stride} smaller than row bytes {row_bytes}"
+        )));
+    }
+    let last_row = usize::try_from(height.saturating_sub(1))
+        .ok()
+        .and_then(|row| row.checked_mul(stride))
+        .and_then(|row_offset| offset.checked_add(row_offset))
+        .ok_or_else(|| {
+            NativeWgpuError::Video(format!("system NV12 {label} plane offset overflow"))
+        })?;
+    let end = last_row
+        .checked_add(row_bytes)
+        .ok_or_else(|| NativeWgpuError::Video(format!("system NV12 {label} plane end overflow")))?;
+    if end > source_len {
+        return Err(NativeWgpuError::Video(format!(
+            "system NV12 {label} plane exceeds mapped buffer: need {end}, have {source_len}"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gst_dmabuf_meta(
+    caps: Option<&gst::CapsRef>,
+    buffer: &gst::BufferRef,
+) -> Result<NativeWgpuGstDmabufMeta, String> {
+    let meta = buffer
+        .meta::<gst_video::VideoMeta>()
+        .ok_or_else(|| "appsink buffer has no GstVideoMeta".to_owned())?;
+    let format = meta.format();
+    let caps_format = caps
+        .and_then(|caps| {
+            caps.structure(0)
+                .and_then(|structure| structure.get::<String>("format").ok())
+        })
+        .unwrap_or_else(|| format.to_str().to_string());
+    let caps_drm_format = caps.and_then(native_wgpu_caps_drm_format_string);
+    let caps_drm = caps_drm_format
+        .as_deref()
+        .and_then(native_wgpu_drm_fourcc_modifier_from_caps_format);
+    let drm_fourcc = caps_drm
+        .map(|(fourcc, _)| fourcc)
+        .or_else(|| native_wgpu_drm_fourcc_from_video_format(format));
+    let drm_modifier = caps_drm.and_then(|(_, modifier)| modifier).or_else(|| {
+        caps_drm_format
+            .as_deref()
+            .and_then(native_wgpu_drm_modifier_from_caps_format)
+    });
+    Ok(NativeWgpuGstDmabufMeta {
+        format,
+        caps_format,
+        width: meta.width(),
+        height: meta.height(),
+        n_planes: meta.n_planes(),
+        offsets: meta.offset().to_vec(),
+        strides: meta.stride().to_vec(),
+        drm_fourcc,
+        drm_modifier,
+    })
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_dmabuf_export_from_buffer(
+    buffer: &gst::BufferRef,
+    meta: &NativeWgpuGstDmabufMeta,
+) -> Result<NativeWgpuGstDmabufExport, String> {
+    match native_wgpu_dmabuf_export_from_dmabuf_memory(buffer, meta) {
+        Ok(export) => Ok(export),
+        Err(dmabuf_err) => match native_wgpu_dmabuf_export_from_cuda_memory(buffer, meta) {
+            Ok(export) => Ok(export),
+            Err(cuda_err) => match native_wgpu_dmabuf_export_from_gl_memory_egl(buffer, meta) {
+                Ok(export) => Ok(export),
+                Err(gl_err) => Err(format!(
+                    "dmabuf_memory:{dmabuf_err};cuda_memory:{cuda_err};gl_memory:{gl_err}"
+                )),
+            },
+        },
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_dmabuf_export_from_dmabuf_memory(
+    buffer: &gst::BufferRef,
+    meta: &NativeWgpuGstDmabufMeta,
+) -> Result<NativeWgpuGstDmabufExport, String> {
+    let memory_count = buffer.n_memory();
+    if memory_count == 0 {
+        return Err("buffer_has_no_memory".to_owned());
+    }
+
+    let mut fds = Vec::with_capacity(memory_count);
+    let mut memory_fd_indices = Vec::with_capacity(memory_count);
+    for memory_index in 0..memory_count {
+        let memory = buffer.peek_memory(memory_index);
+        let fd = native_wgpu_dmabuf_memory_fd(memory).ok_or_else(|| {
+            format!(
+                "memory_{memory_index}_not_dmabuf:{}",
+                native_wgpu_gst_memory_type(memory)
+            )
+        })?;
+        // SAFETY: GStreamer owns the fd returned by gst_dmabuf_memory_get_fd.
+        // Clone it so the imported GPU texture can outlive this borrowed view.
+        let owned_fd = unsafe { BorrowedFd::borrow_raw(fd) }
+            .try_clone_to_owned()
+            .map_err(|err| format!("memory_{memory_index}_fd_clone_failed:{err}"))?;
+        memory_fd_indices.push(fds.len());
+        fds.push(owned_fd);
+    }
+
+    let planes = native_wgpu_dmabuf_planes_from_buffer_layout(buffer, meta, |memory_index| {
+        memory_fd_indices.get(memory_index).copied()
+    })
+    .ok_or_else(|| "invalid_dmabuf_plane_layout".to_owned())?;
+    Ok(NativeWgpuGstDmabufExport {
+        source: "gst-dmabuf-memory",
+        format: meta.drm_fourcc.unwrap_or(DRM_FORMAT_NV12),
+        fds,
+        planes,
+        modifier: meta.drm_modifier,
+    })
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_dmabuf_export_from_cuda_memory(
+    buffer: &gst::BufferRef,
+    meta: &NativeWgpuGstDmabufMeta,
+) -> Result<NativeWgpuGstDmabufExport, String> {
+    let memory_count = buffer.n_memory();
+    if memory_count == 0 {
+        return Err("buffer_has_no_memory".to_owned());
+    }
+
+    let mut fds = Vec::with_capacity(memory_count);
+    let mut memory_fd_indices = Vec::with_capacity(memory_count);
+    for memory_index in 0..memory_count {
+        let memory = buffer.peek_memory(memory_index);
+        if !native_wgpu_is_cuda_memory(memory) {
+            return Err(format!(
+                "memory_{memory_index}_not_cuda:{}",
+                native_wgpu_gst_memory_type(memory)
+            ));
+        }
+        let cuda_memory = memory.as_ptr().cast_mut().cast::<NativeWgpuGstCudaMemory>();
+        let alloc_method = unsafe { gst_cuda_memory_get_alloc_method(cuda_memory) };
+        if alloc_method != GST_CUDA_MEMORY_ALLOC_MMAP {
+            return Err(format!(
+                "memory_{memory_index}_cuda_alloc_method_not_mmap:{}",
+                native_wgpu_cuda_alloc_method_label(alloc_method)
+            ));
+        }
+        let mut fd = -1;
+        let exported =
+            unsafe { gst_cuda_memory_export(cuda_memory, (&mut fd as *mut i32).cast::<c_void>()) }
+                != gst::glib::ffi::GFALSE;
+        if !exported || fd < 0 {
+            return Err(format!(
+                "memory_{memory_index}_cuda_export_failed:exported={exported}:fd={fd}"
+            ));
+        }
+        memory_fd_indices.push(fds.len());
+        // SAFETY: gst_cuda_memory_export returns a newly-opened POSIX fd for
+        // CUDA mmap memory.
+        fds.push(unsafe { OwnedFd::from_raw_fd(fd) });
+    }
+
+    let planes = native_wgpu_dmabuf_planes_from_buffer_layout(buffer, meta, |memory_index| {
+        memory_fd_indices.get(memory_index).copied()
+    })
+    .ok_or_else(|| "invalid_cuda_plane_layout".to_owned())?;
+    Ok(NativeWgpuGstDmabufExport {
+        source: "gst-cuda-memory-export",
+        format: meta.drm_fourcc.unwrap_or(DRM_FORMAT_NV12),
+        fds,
+        planes,
+        modifier: meta.drm_modifier,
+    })
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_dmabuf_export_from_gl_memory_egl(
+    buffer: &gst::BufferRef,
+    meta: &NativeWgpuGstDmabufMeta,
+) -> Result<NativeWgpuGstDmabufExport, String> {
+    let plane_count = native_wgpu_video_meta_plane_count(meta)
+        .ok_or_else(|| "invalid_video_plane_meta".to_owned())?;
+    if buffer.n_memory() < plane_count {
+        return Err(format!(
+            "memory_count_{}_less_than_plane_count_{plane_count}",
+            buffer.n_memory()
+        ));
+    }
+
+    let mut fds = Vec::with_capacity(plane_count);
+    let mut planes = Vec::with_capacity(plane_count);
+    let mut source = None;
+    for plane_index in 0..plane_count {
+        let memory = buffer.peek_memory(plane_index);
+        let export = native_wgpu_gl_memory_export_dmabuf(memory)
+            .map_err(|err| format!("plane_{plane_index}:{err}"))?;
+        let stride = u32::try_from(export.stride)
+            .map_err(|_| format!("plane_{plane_index}:invalid_export_stride"))?;
+        let offset = u32::try_from(export.offset)
+            .map_err(|_| format!("plane_{plane_index}:invalid_export_offset"))?;
+        source = Some(export.source);
+        fds.push(export.fd);
+        planes.push(NativeWgpuGstDmabufPlane {
+            fd_index: plane_index,
+            offset,
+            stride,
+        });
+    }
+
+    Ok(NativeWgpuGstDmabufExport {
+        source: source.unwrap_or("gst-gl-memory"),
+        format: meta.drm_fourcc.unwrap_or(DRM_FORMAT_NV12),
+        fds,
+        planes,
+        modifier: Some(DRM_FORMAT_MOD_INVALID),
+    })
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_dmabuf_planes_from_buffer_layout<F>(
+    buffer: &gst::BufferRef,
+    meta: &NativeWgpuGstDmabufMeta,
+    mut fd_index_for_memory: F,
+) -> Option<Vec<NativeWgpuGstDmabufPlane>>
+where
+    F: FnMut(usize) -> Option<usize>,
+{
+    let plane_count = native_wgpu_video_meta_plane_count(meta)?;
+    let mut planes = Vec::with_capacity(plane_count);
+    for plane_index in 0..plane_count {
+        let plane_offset = meta.offsets[plane_index];
+        let plane_stride = u32::try_from(meta.strides[plane_index]).ok()?;
+        if plane_stride == 0 {
+            return None;
+        }
+        let (memory_range, memory_skip) =
+            buffer.find_memory(plane_offset..plane_offset.saturating_add(1))?;
+        let memory_index = memory_range.start;
+        let memory = buffer.peek_memory(memory_index);
+        let (_, memory_offset, _) = memory.sizes();
+        let offset = u32::try_from(memory_offset.checked_add(memory_skip)?).ok()?;
+        let fd_index = fd_index_for_memory(memory_index)?;
+        planes.push(NativeWgpuGstDmabufPlane {
+            fd_index,
+            offset,
+            stride: plane_stride,
+        });
+    }
+    Some(planes)
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_video_meta_plane_count(meta: &NativeWgpuGstDmabufMeta) -> Option<usize> {
+    let plane_count = usize::try_from(meta.n_planes).ok()?;
+    if plane_count == 0 || meta.offsets.len() < plane_count || meta.strides.len() < plane_count {
+        return None;
+    }
+    Some(plane_count)
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_dmabuf_memory_fd(memory: &gst::MemoryRef) -> Option<i32> {
+    let is_dmabuf =
+        unsafe { gst_is_dmabuf_memory(memory.as_ptr().cast_mut()) } != gst::glib::ffi::GFALSE;
+    if !is_dmabuf {
+        return None;
+    }
+    let fd = unsafe { gst_dmabuf_memory_get_fd(memory.as_ptr().cast_mut()) };
+    (fd >= 0).then_some(fd)
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_is_cuda_memory(memory: &gst::MemoryRef) -> bool {
+    if memory.is_type("CUDAMemory") || memory.is_type("gst.cuda.memory") {
+        return true;
+    }
+    let is_cuda = unsafe { gst_is_cuda_memory(memory.as_ptr().cast_mut()) };
+    is_cuda != gst::glib::ffi::GFALSE
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_cuda_alloc_method_label(method: i32) -> &'static str {
+    match method {
+        1 => "malloc",
+        2 => "mmap",
+        _ => "unknown",
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+struct NativeWgpuGlMemoryEglDmabufExport {
+    source: &'static str,
+    fd: OwnedFd,
+    stride: i32,
+    offset: usize,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gl_memory_export_dmabuf(
+    memory: &gst::MemoryRef,
+) -> Result<NativeWgpuGlMemoryEglDmabufExport, String> {
+    match native_wgpu_gl_memory_egl_export_dmabuf(memory) {
+        Ok(export) => Ok(export),
+        Err(egl_err) => match native_wgpu_gl_memory_texture_export_dmabuf(memory) {
+            Ok(export) => Ok(export),
+            Err(texture_err) => Err(format!("egl:{egl_err};texture:{texture_err}")),
+        },
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gl_memory_egl_export_dmabuf(
+    memory: &gst::MemoryRef,
+) -> Result<NativeWgpuGlMemoryEglDmabufExport, String> {
+    let is_gl_egl =
+        unsafe { gst_is_gl_memory_egl(memory.as_ptr().cast_mut()) } != gst::glib::ffi::GFALSE;
+    if !is_gl_egl {
+        return Err(format!(
+            "not_gst_gl_memory_egl:{}",
+            native_wgpu_gst_memory_type(memory)
+        ));
+    }
+    let image = unsafe { gst_gl_memory_egl_get_image(memory.as_ptr().cast_mut().cast()) }
+        .cast::<NativeWgpuGstEGLImage>();
+    if image.is_null() {
+        return Err("gst_gl_memory_egl_get_image_null".to_owned());
+    }
+    let mut fd = -1;
+    let mut stride = 0;
+    let mut offset = 0usize;
+    let exported = unsafe { gst_egl_image_export_dmabuf(image, &mut fd, &mut stride, &mut offset) }
+        != gst::glib::ffi::GFALSE;
+    if !exported || fd < 0 || stride <= 0 {
+        return Err(format!(
+            "gst_egl_image_export_dmabuf_failed:exported={exported}:fd={fd}:stride={stride}:offset={offset}"
+        ));
+    }
+    Ok(NativeWgpuGlMemoryEglDmabufExport {
+        source: "gst-gl-memory-egl",
+        // SAFETY: gst_egl_image_export_dmabuf returns a newly-opened dmabuf fd.
+        fd: unsafe { OwnedFd::from_raw_fd(fd) },
+        stride,
+        offset,
+    })
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+struct NativeWgpuGlMemoryTextureExportState {
+    gl_memory: *mut NativeWgpuGstGLMemory,
+    fd: i32,
+    stride: i32,
+    offset: usize,
+    success: bool,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+unsafe extern "C" fn native_wgpu_gl_memory_texture_export_thread(
+    context: *mut c_void,
+    data: *mut c_void,
+) {
+    let state = unsafe { &mut *(data.cast::<NativeWgpuGlMemoryTextureExportState>()) };
+    let image = unsafe {
+        gst_egl_image_from_texture(
+            context.cast::<NativeWgpuGstGLContext>(),
+            state.gl_memory,
+            ptr::null_mut(),
+        )
+    };
+    if image.is_null() {
+        return;
+    }
+    state.success = unsafe {
+        gst_egl_image_export_dmabuf(image, &mut state.fd, &mut state.stride, &mut state.offset)
+    } != gst::glib::ffi::GFALSE;
+    unsafe {
+        gst::ffi::gst_mini_object_unref(image.cast::<gst::ffi::GstMiniObject>());
+    }
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gl_memory_texture_export_dmabuf(
+    memory: &gst::MemoryRef,
+) -> Result<NativeWgpuGlMemoryEglDmabufExport, String> {
+    let is_gl_memory =
+        unsafe { gst_is_gl_memory(memory.as_ptr().cast_mut()) } != gst::glib::ffi::GFALSE;
+    if !is_gl_memory {
+        return Err(format!(
+            "not_gst_gl_memory:{}",
+            native_wgpu_gst_memory_type(memory)
+        ));
+    }
+    let gl_memory = memory.as_ptr().cast_mut().cast::<NativeWgpuGstGLMemory>();
+    let context = unsafe { (*gl_memory).base.context };
+    if context.is_null() {
+        return Err("gl_memory_context_null".to_owned());
+    }
+    let mut state = NativeWgpuGlMemoryTextureExportState {
+        gl_memory,
+        fd: -1,
+        stride: 0,
+        offset: 0,
+        success: false,
+    };
+    unsafe {
+        gst_gl_context_thread_add(
+            context.cast::<c_void>(),
+            Some(native_wgpu_gl_memory_texture_export_thread),
+            (&mut state as *mut NativeWgpuGlMemoryTextureExportState).cast::<c_void>(),
+        );
+    }
+    if !state.success || state.fd < 0 || state.stride <= 0 {
+        return Err(format!(
+            "texture_export_failed:success={}:fd={}:stride={}:offset={}",
+            state.success, state.fd, state.stride, state.offset
+        ));
+    }
+    Ok(NativeWgpuGlMemoryEglDmabufExport {
+        source: "gst-gl-memory-texture",
+        // SAFETY: gst_egl_image_export_dmabuf returns a newly-opened dmabuf fd.
+        fd: unsafe { OwnedFd::from_raw_fd(state.fd) },
+        stride: state.stride,
+        offset: state.offset,
+    })
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_drm_fourcc_from_video_format(format: gst_video::VideoFormat) -> Option<u32> {
+    use gst::glib::translate::IntoGlib;
+
+    let fourcc = unsafe { gst_video_dma_drm_fourcc_from_format(format.into_glib()) };
+    (fourcc != 0).then_some(fourcc)
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_caps_drm_format_string(caps: &gst::CapsRef) -> Option<String> {
+    caps.structure(0)
+        .and_then(|structure| structure.get::<String>("drm-format").ok())
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_drm_modifier_from_caps_format(format: &str) -> Option<u64> {
+    let (_, modifier) = format.rsplit_once(':')?;
+    let modifier = modifier
+        .strip_prefix("0x")
+        .or_else(|| modifier.strip_prefix("0X"))
+        .unwrap_or(modifier);
+    u64::from_str_radix(modifier, 16).ok()
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_drm_fourcc_modifier_from_caps_format(format: &str) -> Option<(u32, Option<u64>)> {
+    let format = CString::new(format).ok()?;
+    let mut modifier = 0u64;
+    let fourcc = unsafe { gst_video_dma_drm_fourcc_from_string(format.as_ptr(), &mut modifier) };
+    (fourcc != 0).then_some((
+        fourcc,
+        (modifier != DRM_FORMAT_MOD_INVALID).then_some(modifier),
+    ))
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gst_memory_types(buffer: &gst::BufferRef) -> Vec<String> {
+    (0..buffer.n_memory())
+        .map(|index| native_wgpu_gst_memory_type(buffer.peek_memory(index)))
+        .collect()
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_gst_memory_type(memory: &gst::MemoryRef) -> String {
+    for memory_type in ["CUDAMemory", "GLMemory", "DMABuf", "SystemMemory"] {
+        if memory.is_type(memory_type) {
+            return memory_type.to_owned();
+        }
+    }
+    memory
+        .allocator()
+        .map(|allocator| allocator.memory_type().to_string())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+const DRM_FORMAT_NV12: u32 = 0x3231_564e;
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[link(name = "gstvideo-1.0")]
+unsafe extern "C" {
+    fn gst_video_dma_drm_fourcc_from_format(format: i32) -> u32;
+    fn gst_video_dma_drm_fourcc_from_string(format_str: *const c_char, modifier: *mut u64) -> u32;
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[link(name = "gstallocators-1.0")]
+unsafe extern "C" {
+    fn gst_is_dmabuf_memory(mem: *mut gst::ffi::GstMemory) -> gst::glib::ffi::gboolean;
+    fn gst_dmabuf_memory_get_fd(mem: *mut gst::ffi::GstMemory) -> i32;
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[repr(C)]
+struct NativeWgpuGstGLMemoryEGL {
+    _private: [u8; 0],
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[repr(C)]
+struct NativeWgpuGstCudaMemory {
+    _private: [u8; 0],
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[repr(C)]
+struct NativeWgpuGstCudaContext {
+    _private: [u8; 0],
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[repr(C)]
+struct NativeWgpuGstGLBaseMemory {
+    mem: gst::ffi::GstMemory,
+    context: *mut NativeWgpuGstGLContext,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[repr(C)]
+struct NativeWgpuGstGLMemory {
+    base: NativeWgpuGstGLBaseMemory,
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[repr(C)]
+struct NativeWgpuGstGLContext {
+    _private: [u8; 0],
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[repr(C)]
+struct NativeWgpuGstEGLImage {
+    _private: [u8; 0],
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[link(name = "gstgl-1.0")]
+unsafe extern "C" {
+    fn gst_is_gl_memory(mem: *mut gst::ffi::GstMemory) -> gst::glib::ffi::gboolean;
+    fn gst_is_gl_memory_egl(mem: *mut gst::ffi::GstMemory) -> gst::glib::ffi::gboolean;
+    fn gst_gl_memory_egl_get_image(mem: *mut NativeWgpuGstGLMemoryEGL) -> *mut c_void;
+    fn gst_egl_image_from_texture(
+        context: *mut NativeWgpuGstGLContext,
+        gl_mem: *mut NativeWgpuGstGLMemory,
+        attribs: *mut usize,
+    ) -> *mut NativeWgpuGstEGLImage;
+    fn gst_egl_image_export_dmabuf(
+        image: *mut NativeWgpuGstEGLImage,
+        fd: *mut i32,
+        stride: *mut i32,
+        offset: *mut usize,
+    ) -> gst::glib::ffi::gboolean;
+    fn gst_gl_context_thread_add(
+        context: *mut c_void,
+        func: Option<unsafe extern "C" fn(*mut c_void, *mut c_void)>,
+        data: *mut c_void,
+    );
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+const GST_CUDA_MEMORY_ALLOC_MMAP: i32 = 2;
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+#[link(name = "gstcuda-1.0")]
+unsafe extern "C" {
+    fn gst_cuda_load_library() -> gst::glib::ffi::gboolean;
+    fn gst_cuda_context_new(device_id: u32) -> *mut NativeWgpuGstCudaContext;
+    fn gst_context_new_cuda_context(
+        cuda_ctx: *mut NativeWgpuGstCudaContext,
+    ) -> *mut gst::ffi::GstContext;
+    fn gst_cuda_buffer_pool_new(
+        context: *mut NativeWgpuGstCudaContext,
+    ) -> *mut gst::ffi::GstBufferPool;
+    fn gst_buffer_pool_config_set_cuda_alloc_method(
+        config: *mut gst::ffi::GstStructure,
+        method: i32,
+    );
+    fn gst_is_cuda_memory(mem: *mut gst::ffi::GstMemory) -> gst::glib::ffi::gboolean;
+    fn gst_cuda_memory_get_alloc_method(mem: *mut NativeWgpuGstCudaMemory) -> i32;
+    fn gst_cuda_memory_export(mem: *mut NativeWgpuGstCudaMemory, os_handle: *mut c_void) -> i32;
 }
 
 #[cfg(feature = "video-renderer")]
@@ -2154,7 +4567,11 @@ fn native_wgpu_video_sample_info(
     })
 }
 
-#[cfg(any(feature = "video-renderer", feature = "native-wgpu-gpu-video"))]
+#[cfg(any(
+    feature = "video-renderer",
+    feature = "native-wgpu-gpu-video",
+    feature = "native-wgpu-gst-dmabuf"
+))]
 fn video_uv_transform(
     fit: crate::core::FitMode,
     source_size: (u32, u32),
@@ -2180,7 +4597,11 @@ fn video_uv_transform(
     }
 }
 
-#[cfg(any(feature = "video-renderer", feature = "native-wgpu-gpu-video"))]
+#[cfg(any(
+    feature = "video-renderer",
+    feature = "native-wgpu-gpu-video",
+    feature = "native-wgpu-gst-dmabuf"
+))]
 fn write_f32_pair(destination: &mut [u8], pair: [f32; 2]) {
     destination[0..4].copy_from_slice(&pair[0].to_ne_bytes());
     destination[4..8].copy_from_slice(&pair[1].to_ne_bytes());
@@ -2227,7 +4648,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-#[cfg(feature = "native-wgpu-gpu-video")]
+#[cfg(any(feature = "native-wgpu-gpu-video", feature = "native-wgpu-gst-dmabuf"))]
 const NATIVE_WGPU_NV12_SHADER: &str = r#"
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -2323,4 +4744,32 @@ fn pick_present_mode(supported: &[wgpu::PresentMode]) -> wgpu::PresentMode {
         .first()
         .copied()
         .unwrap_or(wgpu::PresentMode::Fifo)
+}
+
+fn native_wgpu_required_features(
+    adapter: &wgpu::Adapter,
+) -> Result<wgpu::Features, NativeWgpuError> {
+    let features = native_wgpu_required_feature_flags();
+    let adapter_features = adapter.features();
+    if !adapter_features.contains(features) {
+        return Err(NativeWgpuError::Wgpu(format!(
+            "adapter missing required wgpu features: {:?}",
+            features - adapter_features
+        )));
+    }
+    Ok(features)
+}
+
+fn native_wgpu_required_feature_flags() -> wgpu::Features {
+    wgpu::Features::empty() | native_wgpu_required_nv12_feature()
+}
+
+#[cfg(feature = "native-wgpu-gst-dmabuf")]
+fn native_wgpu_required_nv12_feature() -> wgpu::Features {
+    wgpu::Features::TEXTURE_FORMAT_NV12
+}
+
+#[cfg(not(feature = "native-wgpu-gst-dmabuf"))]
+fn native_wgpu_required_nv12_feature() -> wgpu::Features {
+    wgpu::Features::empty()
 }

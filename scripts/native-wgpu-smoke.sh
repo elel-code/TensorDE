@@ -19,7 +19,7 @@ Options:
                         Native runtime JSONL sample interval. Default: 1000.
   --source <path>       Existing video source. When set, run wgpu video mode.
   --video-backend <name>
-                        auto, cpu-upload, or gpu-video. Default: auto.
+                        auto, cpu-upload, gpu-video, gst-gpu-video, or gst-dmabuf. Default: auto.
                         gpu-video expects Annex-B H.264 (.h264/.264).
   --fit <name>          cover, contain, stretch, or center. Default: cover.
   --decoder <policy>    auto, hardware-preferred, hardware-required, software.
@@ -215,8 +215,8 @@ case "$fit" in
   *) echo "--fit must be cover, contain, stretch, or center" >&2; exit 2 ;;
 esac
 case "$video_backend" in
-  auto|cpu-upload|cpu|appsink|gpu-video|gpu|vulkan-video) ;;
-  *) echo "--video-backend must be auto, cpu-upload, or gpu-video" >&2; exit 2 ;;
+  auto|cpu-upload|cpu|appsink|gpu-video|gpu|vulkan-video|gst-gpu-video|gstreamer-gpu-video|gst-vulkan-video|gst-dmabuf|dmabuf|gstreamer-dmabuf) ;;
+  *) echo "--video-backend must be auto, cpu-upload, gpu-video, gst-gpu-video, or gst-dmabuf" >&2; exit 2 ;;
 esac
 case "$decoder" in
   auto|hardware-preferred|hw-preferred|hardware-required|hw-required|software) ;;
@@ -254,12 +254,18 @@ if [[ "$no_build" -eq 0 ]]; then
     if [[ "$build_backend" == "auto" ]]; then
       case "${source##*.}" in
         h264|H264|264) build_backend="gpu-video" ;;
-        *) build_backend="cpu-upload" ;;
+        *) build_backend="gst-gpu-video" ;;
       esac
     fi
     case "$build_backend" in
       gpu-video|gpu|vulkan-video)
         cargo build --release --features native-wgpu-renderer,native-wgpu-gpu-video --bin gilder-native-wgpu
+        ;;
+      gst-gpu-video|gstreamer-gpu-video|gst-vulkan-video)
+        cargo build --release --features native-wgpu-gst-gpu-video --bin gilder-native-wgpu
+        ;;
+      gst-dmabuf|dmabuf|gstreamer-dmabuf)
+        cargo build --release --features native-wgpu-gst-dmabuf --bin gilder-native-wgpu
         ;;
       *)
         cargo build --release --features native-wgpu-renderer,video-renderer --bin gilder-native-wgpu
@@ -426,9 +432,21 @@ if [[ -s "$runtime_json" ]]; then
         "video_state: \(.video.state // .video.gst_state // null)",
         "video_pulled_samples: \(.video.pulled_samples // null)",
         "video_uploaded_frames: \(.video.uploaded_frames // null)",
+        "video_exported_frames: \(.video.exported_frames // null)",
+        "video_export_failures: \(.video.export_failures // null)",
+        "video_import_attempts: \(.video.import_attempts // null)",
+        "video_imported_frames: \(.video.imported_frames // null)",
+        "video_import_failures: \(.video.import_failures // null)",
         "video_decoded_frames: \(.video.decoded_frames // null)",
         "video_presented_frames: \(.video.presented_frames // null)",
         "video_pending_frames: \(.video.pending_frames // null)",
+        "video_last_memory_types: \((.video.last_memory_types // []) | join("|"))",
+        "video_last_export_source: \(.video.last_export_source // null)",
+        "video_last_drm_fourcc: \(.video.last_drm_fourcc // null)",
+        "video_last_drm_modifier: \(.video.last_drm_modifier // null)",
+        "video_last_plane_offsets: \((.video.last_plane_offsets // []) | join("|"))",
+        "video_last_plane_strides: \((.video.last_plane_strides // []) | join("|"))",
+        "video_last_fd_count: \(.video.last_fd_count // null)",
         "video_bytes_read: \(.video.bytes_read // null)",
         "video_eos_messages: \(.video.eos_messages)",
         "video_decoder_resets: \(.video.decoder_resets // null)",
@@ -471,9 +489,21 @@ if [[ -s "$runtime_json" ]]; then
     /"gst_state":/ { print "video_gst_state: " value() }
     /"pulled_samples":/ { print "video_pulled_samples: " value() }
     /"uploaded_frames":/ { print "video_uploaded_frames: " value() }
+    /"exported_frames":/ { print "video_exported_frames: " value() }
+    /"export_failures":/ { print "video_export_failures: " value() }
+    /"import_attempts":/ { print "video_import_attempts: " value() }
+    /"imported_frames":/ { print "video_imported_frames: " value() }
+    /"import_failures":/ { print "video_import_failures: " value() }
     /"decoded_frames":/ { print "video_decoded_frames: " value() }
     /"presented_frames":/ { print "video_presented_frames: " value() }
     /"pending_frames":/ { print "video_pending_frames: " value() }
+    /"last_memory_types":/ { print "video_last_memory_types: " value() }
+    /"last_export_source":/ { print "video_last_export_source: " value() }
+    /"last_drm_fourcc":/ { print "video_last_drm_fourcc: " value() }
+    /"last_drm_modifier":/ { print "video_last_drm_modifier: " value() }
+    /"last_plane_offsets":/ { print "video_last_plane_offsets: " value() }
+    /"last_plane_strides":/ { print "video_last_plane_strides: " value() }
+    /"last_fd_count":/ { print "video_last_fd_count: " value() }
     /"bytes_read":/ { print "video_bytes_read: " value() }
     /"eos_messages":/ { print "video_eos_messages: " value() }
     /"decoder_resets":/ { print "video_decoder_resets: " value() }

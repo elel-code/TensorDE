@@ -23,6 +23,8 @@ native-wgpu-renderer = [
     "dep:wgpu",
 ]
 native-wgpu-gpu-video = ["native-wgpu-renderer", "dep:gpu-video"]
+native-wgpu-gst-gpu-video = ["native-wgpu-gpu-video", "video-renderer"]
+native-wgpu-gst-dmabuf = ["native-wgpu-renderer", "video-renderer", "dep:ash"]
 video-renderer = ["dep:gstreamer", "dep:gstreamer-video", "dep:libc"]
 
 [[bin]]
@@ -48,6 +50,7 @@ path = "src/bin/gilder-native-wgpu.rs"
 required-features = ["native-wgpu-renderer"]
 
 [dependencies]
+ash = { version = "0.38", optional = true }
 gtk = { package = "gtk4", version = "0.11", features = ["v4_8"], optional = true }
 gtk4-layer-shell = { version = "0.8", features = ["v1_3"], optional = true }
 gstreamer = { version = "0.25", optional = true }

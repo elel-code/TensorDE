@@ -500,6 +500,7 @@ dependencies = [
 name = "gilder"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "gpu-video",
  "gstreamer",
  "gstreamer-video",

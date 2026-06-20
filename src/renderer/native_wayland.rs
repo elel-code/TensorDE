@@ -2919,11 +2919,17 @@ struct NativeGlMemoryTextureExportState {
 
 #[cfg(feature = "video-renderer")]
 unsafe extern "C" fn native_gl_memory_texture_export_thread(
-    context: *mut NativeGstGLContext,
+    context: *mut c_void,
     data: *mut c_void,
 ) {
     let state = unsafe { &mut *(data.cast::<NativeGlMemoryTextureExportState>()) };
-    let image = unsafe { gst_egl_image_from_texture(context, state.gl_memory, ptr::null_mut()) };
+    let image = unsafe {
+        gst_egl_image_from_texture(
+            context.cast::<NativeGstGLContext>(),
+            state.gl_memory,
+            ptr::null_mut(),
+        )
+    };
     if image.is_null() {
         return;
     }
@@ -2961,7 +2967,7 @@ fn native_gl_memory_texture_export_dmabuf(
     };
     unsafe {
         gst_gl_context_thread_add(
-            context,
+            context.cast::<c_void>(),
             Some(native_gl_memory_texture_export_thread),
             (&mut state as *mut NativeGlMemoryTextureExportState).cast::<c_void>(),
         );
@@ -3844,8 +3850,8 @@ unsafe extern "C" {
         offset: *mut usize,
     ) -> gst::glib::ffi::gboolean;
     fn gst_gl_context_thread_add(
-        context: *mut NativeGstGLContext,
-        func: Option<unsafe extern "C" fn(*mut NativeGstGLContext, *mut c_void)>,
+        context: *mut c_void,
+        func: Option<unsafe extern "C" fn(*mut c_void, *mut c_void)>,
         data: *mut c_void,
     );
 }

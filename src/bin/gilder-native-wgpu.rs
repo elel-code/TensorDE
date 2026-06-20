@@ -82,7 +82,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--video-backend" => {
                 let value = args
                     .next()
-                    .ok_or("--video-backend requires auto, cpu-upload, or gpu-video")?;
+                    .ok_or("--video-backend requires auto, cpu-upload, gpu-video, gst-gpu-video, or gst-dmabuf")?;
                 video_backend = parse_video_backend(&value)?;
             }
             "--render-mode" => {
@@ -209,8 +209,33 @@ fn run_video(
             runtime_interval,
             runtime_json,
             runtime_jsonl,
+            NativeWgpuCliGpuVideoInputMode::AnnexBFile,
+        ),
+        NativeWgpuCliVideoBackend::GstGpuVideo => run_gpu_video(
+            source,
+            wayland,
+            fit,
+            loop_playback,
+            target_fps,
+            duration,
+            runtime_interval,
+            runtime_json,
+            runtime_jsonl,
+            NativeWgpuCliGpuVideoInputMode::GstH264ByteStream,
         ),
         NativeWgpuCliVideoBackend::CpuUpload => run_cpu_upload_video(
+            source,
+            wayland,
+            fit,
+            loop_playback,
+            target_fps,
+            decoder_policy,
+            duration,
+            runtime_interval,
+            runtime_json,
+            runtime_jsonl,
+        ),
+        NativeWgpuCliVideoBackend::GstDmabuf => run_gst_dmabuf_video(
             source,
             wayland,
             fit,
@@ -299,6 +324,90 @@ fn run_cpu_upload_video(
     }
 }
 
+#[cfg(all(feature = "native-wgpu-renderer", feature = "native-wgpu-gst-dmabuf"))]
+fn run_gst_dmabuf_video(
+    source: std::path::PathBuf,
+    wayland: gilder::renderer::native_wgpu::NativeWgpuOptions,
+    fit: gilder::core::FitMode,
+    loop_playback: bool,
+    target_fps: Option<u32>,
+    decoder_policy: gilder::config::VideoDecoderPolicy,
+    duration: std::time::Duration,
+    runtime_interval: std::time::Duration,
+    runtime_json: Option<std::path::PathBuf>,
+    runtime_jsonl: Option<std::path::PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use gilder::renderer::native_wgpu::{NativeWgpuGstDmabufOptions, NativeWgpuGstDmabufSession};
+
+    let mut session = NativeWgpuGstDmabufSession::connect(NativeWgpuGstDmabufOptions {
+        wayland,
+        source,
+        fit,
+        loop_playback,
+        target_max_fps: target_fps,
+        decoder_policy,
+    })?;
+    let runtime_interval = runtime_interval.max(std::time::Duration::from_millis(100));
+    let mut runtime_jsonl = runtime_jsonl
+        .map(|path| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(path)
+                .map(std::io::BufWriter::new)
+        })
+        .transpose()?;
+    run_gst_dmabuf_video_session(
+        &mut session,
+        duration,
+        target_fps,
+        runtime_interval,
+        runtime_jsonl.as_mut(),
+    )?;
+
+    if let Some(path) = runtime_json {
+        let writer = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(path)?;
+        serde_json::to_writer_pretty(writer, &session.snapshot())?;
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "native-wgpu-renderer",
+    not(feature = "native-wgpu-gst-dmabuf")
+))]
+fn run_gst_dmabuf_video(
+    source: std::path::PathBuf,
+    wayland: gilder::renderer::native_wgpu::NativeWgpuOptions,
+    fit: gilder::core::FitMode,
+    loop_playback: bool,
+    target_fps: Option<u32>,
+    decoder_policy: gilder::config::VideoDecoderPolicy,
+    duration: std::time::Duration,
+    runtime_interval: std::time::Duration,
+    runtime_json: Option<std::path::PathBuf>,
+    runtime_jsonl: Option<std::path::PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _ = (
+        source,
+        wayland,
+        fit,
+        loop_playback,
+        target_fps,
+        decoder_policy,
+        duration,
+        runtime_interval,
+        runtime_json,
+        runtime_jsonl,
+    );
+    Err("--video-backend gst-dmabuf requires building with native-wgpu-gst-dmabuf".into())
+}
+
 #[cfg(all(feature = "native-wgpu-renderer", feature = "native-wgpu-gpu-video"))]
 fn run_gpu_video(
     source: std::path::PathBuf,
@@ -310,14 +419,24 @@ fn run_gpu_video(
     runtime_interval: std::time::Duration,
     runtime_json: Option<std::path::PathBuf>,
     runtime_jsonl: Option<std::path::PathBuf>,
+    input_mode: NativeWgpuCliGpuVideoInputMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use gilder::renderer::native_wgpu::{NativeWgpuGpuVideoOptions, NativeWgpuGpuVideoSession};
+    use gilder::renderer::native_wgpu::{
+        NativeWgpuGpuVideoInputMode, NativeWgpuGpuVideoOptions, NativeWgpuGpuVideoSession,
+    };
+    let input_mode = match input_mode {
+        NativeWgpuCliGpuVideoInputMode::AnnexBFile => NativeWgpuGpuVideoInputMode::AnnexBFile,
+        NativeWgpuCliGpuVideoInputMode::GstH264ByteStream => {
+            NativeWgpuGpuVideoInputMode::GstH264ByteStream
+        }
+    };
 
     let mut session = NativeWgpuGpuVideoSession::connect(NativeWgpuGpuVideoOptions {
         wayland,
         source,
         fit,
         loop_playback,
+        input_mode,
     })?;
     let runtime_interval = runtime_interval.max(std::time::Duration::from_millis(100));
     let mut runtime_jsonl = runtime_jsonl
@@ -363,6 +482,7 @@ fn run_gpu_video(
     runtime_interval: std::time::Duration,
     runtime_json: Option<std::path::PathBuf>,
     runtime_jsonl: Option<std::path::PathBuf>,
+    input_mode: NativeWgpuCliGpuVideoInputMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let _ = (
         source,
@@ -374,6 +494,7 @@ fn run_gpu_video(
         runtime_interval,
         runtime_json,
         runtime_jsonl,
+        input_mode,
     );
     Err("--video-backend gpu-video requires building with native-wgpu-gpu-video".into())
 }
@@ -414,6 +535,53 @@ fn run_video_session(
 #[cfg(all(feature = "native-wgpu-renderer", feature = "video-renderer"))]
 fn write_video_runtime_sample(
     session: &gilder::renderer::native_wgpu::NativeWgpuVideoSession,
+    writer: &mut Option<&mut std::io::BufWriter<std::fs::File>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(writer) = writer.as_mut() else {
+        return Ok(());
+    };
+    serde_json::to_writer(&mut **writer, &session.snapshot())?;
+    writer.write_all(b"\n")?;
+    writer.flush()?;
+    Ok(())
+}
+
+#[cfg(all(feature = "native-wgpu-renderer", feature = "native-wgpu-gst-dmabuf"))]
+fn run_gst_dmabuf_video_session(
+    session: &mut gilder::renderer::native_wgpu::NativeWgpuGstDmabufSession,
+    duration: std::time::Duration,
+    target_fps: Option<u32>,
+    runtime_interval: std::time::Duration,
+    runtime_jsonl: Option<&mut std::io::BufWriter<std::fs::File>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let started = std::time::Instant::now();
+    let mut last_runtime_sample = std::time::Instant::now();
+    let mut runtime_jsonl = runtime_jsonl;
+    let frame_interval = target_fps
+        .filter(|fps| *fps > 0)
+        .map(|fps| std::time::Duration::from_secs_f64(1.0 / f64::from(fps)));
+
+    write_gst_dmabuf_video_runtime_sample(session, &mut runtime_jsonl)?;
+    while started.elapsed() < duration && !session.is_closed() {
+        let frame_started = std::time::Instant::now();
+        session.tick()?;
+        if last_runtime_sample.elapsed() >= runtime_interval {
+            write_gst_dmabuf_video_runtime_sample(session, &mut runtime_jsonl)?;
+            last_runtime_sample = std::time::Instant::now();
+        }
+        if let Some(interval) = frame_interval
+            && let Some(remaining) = interval.checked_sub(frame_started.elapsed())
+        {
+            std::thread::sleep(remaining);
+        }
+    }
+    write_gst_dmabuf_video_runtime_sample(session, &mut runtime_jsonl)?;
+    Ok(())
+}
+
+#[cfg(all(feature = "native-wgpu-renderer", feature = "native-wgpu-gst-dmabuf"))]
+fn write_gst_dmabuf_video_runtime_sample(
+    session: &gilder::renderer::native_wgpu::NativeWgpuGstDmabufSession,
     writer: &mut Option<&mut std::io::BufWriter<std::fs::File>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let Some(writer) = writer.as_mut() else {
@@ -589,6 +757,15 @@ enum NativeWgpuCliVideoBackend {
     Auto,
     CpuUpload,
     GpuVideo,
+    GstGpuVideo,
+    GstDmabuf,
+}
+
+#[cfg(feature = "native-wgpu-renderer")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeWgpuCliGpuVideoInputMode {
+    AnnexBFile,
+    GstH264ByteStream,
 }
 
 #[cfg(feature = "native-wgpu-renderer")]
@@ -599,7 +776,14 @@ fn parse_video_backend(
         "auto" => Ok(NativeWgpuCliVideoBackend::Auto),
         "cpu-upload" | "cpu" | "appsink" => Ok(NativeWgpuCliVideoBackend::CpuUpload),
         "gpu-video" | "gpu" | "vulkan-video" => Ok(NativeWgpuCliVideoBackend::GpuVideo),
-        other => Err(format!("unsupported video backend: {other}").into()),
+        "gst-gpu-video" | "gstreamer-gpu-video" | "gst-vulkan-video" => {
+            Ok(NativeWgpuCliVideoBackend::GstGpuVideo)
+        }
+        "gst-dmabuf" | "dmabuf" | "gstreamer-dmabuf" => Ok(NativeWgpuCliVideoBackend::GstDmabuf),
+        other => Err(format!(
+            "unsupported video backend: {other}; expected auto, cpu-upload, gpu-video, gst-gpu-video, or gst-dmabuf"
+        )
+        .into()),
     }
 }
 
@@ -613,6 +797,8 @@ fn resolve_video_backend(
     }
     if cfg!(feature = "native-wgpu-gpu-video") && is_annex_b_h264_source(source) {
         NativeWgpuCliVideoBackend::GpuVideo
+    } else if cfg!(feature = "native-wgpu-gst-gpu-video") {
+        NativeWgpuCliVideoBackend::GstGpuVideo
     } else {
         NativeWgpuCliVideoBackend::CpuUpload
     }
@@ -630,6 +816,6 @@ fn is_annex_b_h264_source(source: &std::path::Path) -> bool {
 #[cfg(feature = "native-wgpu-renderer")]
 fn print_usage() {
     println!(
-        "usage: gilder-native-wgpu [--source <path>] [--video-backend auto|cpu-upload|gpu-video] [--duration <seconds>] [--target-fps <fps>|--no-fps-limit] [--layer background|bottom|top|overlay] [--allow-foreground-layer] [--output-name <name>] [--color #rrggbb|r,g,b] [--fit cover|contain|stretch|center] [--decoder auto|hardware-preferred|hardware-required|software] [--loop|--no-loop] [--render-mode solid|pulse] [--animate-color] [--runtime-json <path>] [--runtime-jsonl <path>] [--runtime-interval-ms <ms>]"
+        "usage: gilder-native-wgpu [--source <path>] [--video-backend auto|cpu-upload|gpu-video|gst-gpu-video|gst-dmabuf] [--duration <seconds>] [--target-fps <fps>|--no-fps-limit] [--layer background|bottom|top|overlay] [--allow-foreground-layer] [--output-name <name>] [--color #rrggbb|r,g,b] [--fit cover|contain|stretch|center] [--decoder auto|hardware-preferred|hardware-required|software] [--loop|--no-loop] [--render-mode solid|pulse] [--animate-color] [--runtime-json <path>] [--runtime-jsonl <path>] [--runtime-interval-ms <ms>]"
     );
 }
