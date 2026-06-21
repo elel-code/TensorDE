@@ -230,7 +230,12 @@ if [[ "$decode_prefix" -gt 0 ]]; then
     sample_nonzero="$(jq -r '.h265_ready_prefix_decode.output_sampling.rgba_nonzero_bytes // 0' "$probe_json")"
     sample_layer="$(jq -r '.h265_ready_prefix_decode.output_sampling.source_base_array_layer // "none"' "$probe_json")"
     readback_layer="$(jq -r '.h265_ready_prefix_decode.readback_base_array_layer // "none"' "$probe_json")"
-    if [[ "$sample_rendered" != "true" || "$sample_unique" -le 1 || "$sample_nonzero" -le 0 || "$sample_layer" != "$readback_layer" ]]; then
+    image_view_type="$(jq -r '.video_images[0].image_view_type // "none"' "$probe_json")"
+    sample_layer_matches=0
+    if [[ "$sample_layer" == "$readback_layer" || ( "$image_view_type" == "separate-2d" && "$sample_layer" == "0" ) ]]; then
+      sample_layer_matches=1
+    fi
+    if [[ "$sample_rendered" != "true" || "$sample_unique" -le 1 || "$sample_nonzero" -le 0 || "$sample_layer_matches" -ne 1 ]]; then
       {
         printf 'FAIL: native Vulkan H.265 decode-prefix sampled output was not valid\n'
         printf 'sample_rendered: %s\n' "$sample_rendered"
@@ -238,6 +243,7 @@ if [[ "$decode_prefix" -gt 0 ]]; then
         printf 'sample_nonzero: %s\n' "$sample_nonzero"
         printf 'sample_layer: %s\n' "$sample_layer"
         printf 'readback_layer: %s\n' "$readback_layer"
+        printf 'image_view_type: %s\n' "$image_view_type"
         printf 'probe JSON: %s\n' "$probe_json"
       } | tee "$summary"
       exit 1
