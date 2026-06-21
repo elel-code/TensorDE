@@ -19856,7 +19856,6 @@ fn native_vulkan_h264_reference_frame_nums_for_slice(
 ) -> Result<Vec<NativeVulkanH264ReferenceListEntry>, String> {
     let mut short_term_entries = short_term_references
         .iter()
-        .filter(|(_, reference)| reference.dpb_slot != planned_output_slot)
         .map(|(frame_num, _)| {
             (
                 *frame_num,
@@ -19870,14 +19869,9 @@ fn native_vulkan_h264_reference_frame_nums_for_slice(
         .into_iter()
         .map(|(frame_num, _)| NativeVulkanH264ReferenceListEntry::ShortTerm(frame_num))
         .collect::<Vec<_>>();
-    entries.extend(
-        long_term_references
-            .iter()
-            .filter(|(_, reference)| reference.dpb_slot != planned_output_slot)
-            .map(|(long_term_frame_idx, _)| {
-                NativeVulkanH264ReferenceListEntry::LongTerm(*long_term_frame_idx)
-            }),
-    );
+    entries.extend(long_term_references.iter().map(|(long_term_frame_idx, _)| {
+        NativeVulkanH264ReferenceListEntry::LongTerm(*long_term_frame_idx)
+    }));
 
     native_vulkan_h264_apply_ref_pic_list_modifications(
         &mut entries,
@@ -19927,7 +19921,6 @@ fn native_vulkan_h264_b_reference_frame_nums_for_slice(
     after.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
     let long_term_entries = long_term_references
         .iter()
-        .filter(|(_, reference)| reference.dpb_slot != planned_output_slot)
         .map(|(long_term_frame_idx, _)| {
             NativeVulkanH264ReferenceListEntry::LongTerm(*long_term_frame_idx)
         })
@@ -20573,6 +20566,7 @@ impl NativeVulkanH264DecodeReferencePlanner {
         let references = if unsupported_reason.is_none() && requested_reference_count > 0 {
             reference_entries
                 .into_iter()
+                .take(requested_reference_count as usize)
                 .filter_map(|entry| {
                     let (used_for_long_term_reference, long_term_frame_idx, reference) = match entry
                     {
@@ -20585,22 +20579,17 @@ impl NativeVulkanH264DecodeReferencePlanner {
                             self.long_term_references.get(&long_term_frame_idx),
                         ),
                     };
-                    reference.and_then(|reference| {
-                        (reference.dpb_slot != planned_output_slot).then(|| {
-                            NativeVulkanH264DecodeReferenceSnapshot {
-                                frame_num: reference.frame_num,
-                                used_for_long_term_reference,
-                                long_term_frame_idx,
-                                non_existing: reference.non_existing,
-                                pic_order_cnt_val: reference.pic_order_cnt_val,
-                                available: true,
-                                source_access_unit_index: reference.source_access_unit_index,
-                                dpb_slot: Some(reference.dpb_slot),
-                            }
-                        })
+                    reference.map(|reference| NativeVulkanH264DecodeReferenceSnapshot {
+                        frame_num: reference.frame_num,
+                        used_for_long_term_reference,
+                        long_term_frame_idx,
+                        non_existing: reference.non_existing,
+                        pic_order_cnt_val: reference.pic_order_cnt_val,
+                        available: reference.dpb_slot != planned_output_slot,
+                        source_access_unit_index: reference.source_access_unit_index,
+                        dpb_slot: Some(reference.dpb_slot),
                     })
                 })
-                .take(requested_reference_count as usize)
                 .collect::<Vec<_>>()
         } else {
             Vec::new()
@@ -20610,7 +20599,7 @@ impl NativeVulkanH264DecodeReferencePlanner {
             .filter(|reference| reference.available)
             .count() as u32;
         let missing_reference_count =
-            requested_reference_count.saturating_sub(available_reference_count);
+            (references.len() as u32).saturating_sub(available_reference_count);
         let ready_for_decode_submit = current_frame_num.is_some()
             && current_pic_order_cnt_val.is_some()
             && unsupported_reason.is_none()
@@ -21009,6 +20998,31 @@ impl NativeVulkanH265DecodeReferencePlanner {
         self.prev_poc_msb = 0;
     }
 
+    fn choose_output_slot(&mut self, protected_pocs: &[i32]) -> u32 {
+        for offset in 0..self.dpb_slots {
+            let slot = (self.next_output_slot + offset) % self.dpb_slots;
+            if self
+                .slot_to_poc
+                .get(slot as usize)
+                .is_none_or(Option::is_none)
+            {
+                self.next_output_slot = (slot + 1) % self.dpb_slots;
+                return slot;
+            }
+        }
+        for offset in 0..self.dpb_slots {
+            let slot = (self.next_output_slot + offset) % self.dpb_slots;
+            let slot_poc = self.slot_to_poc.get(slot as usize).copied().flatten();
+            if slot_poc.is_none_or(|poc| !protected_pocs.contains(&poc)) {
+                self.next_output_slot = (slot + 1) % self.dpb_slots;
+                return slot;
+            }
+        }
+        let slot = self.next_output_slot % self.dpb_slots;
+        self.next_output_slot = (slot + 1) % self.dpb_slots;
+        slot
+    }
+
     fn derive_current_poc(
         &mut self,
         slice: &NativeVulkanH265AccessUnitSliceSnapshot,
@@ -21045,15 +21059,6 @@ impl NativeVulkanH265DecodeReferencePlanner {
             self.reset_for_idr();
         }
         let current_poc = first_slice.and_then(|slice| self.derive_current_poc(slice));
-        let planned_output_slot = self.next_output_slot % self.dpb_slots;
-        if current_poc.is_some() {
-            self.next_output_slot = self.next_output_slot.saturating_add(1);
-        }
-        let evicted_poc = self
-            .slot_to_poc
-            .get(planned_output_slot as usize)
-            .copied()
-            .flatten();
         let reference_delta_pocs = first_slice
             .and_then(|slice| slice.short_term_ref_pic_set.as_ref())
             .map(|rps| {
@@ -21064,6 +21069,25 @@ impl NativeVulkanH265DecodeReferencePlanner {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let protected_pocs = current_poc
+            .map(|current_poc| {
+                reference_delta_pocs
+                    .iter()
+                    .copied()
+                    .map(|delta_poc| current_poc.saturating_add(delta_poc))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let planned_output_slot = if current_poc.is_some() {
+            self.choose_output_slot(&protected_pocs)
+        } else {
+            self.next_output_slot % self.dpb_slots
+        };
+        let evicted_poc = self
+            .slot_to_poc
+            .get(planned_output_slot as usize)
+            .copied()
+            .flatten();
         let references = current_poc
             .map(|current_poc| {
                 reference_delta_pocs
@@ -31021,6 +31045,35 @@ mod tests {
 
     #[cfg(feature = "native-vulkan-gst-video")]
     #[test]
+    fn keeps_h265_b_frame_references_when_reusing_full_dpb() {
+        let access_units = vec![
+            h265_test_access_unit(0, 0, true, &[]),
+            h265_test_access_unit(1, 3, false, &[-3]),
+            h265_test_access_unit(2, 2, false, &[-2, 1]),
+            h265_test_access_unit(3, 1, false, &[-1, 1, 2]),
+            h265_test_access_unit(4, 6, false, &[-3, -4, -6]),
+            h265_test_access_unit(5, 5, false, &[-2, -3, -5, 1]),
+        ];
+
+        let plan = native_vulkan_h265_decode_reference_plan(&access_units, 5, 16);
+
+        assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
+        assert_eq!(plan[5].current_poc, Some(5));
+        assert_eq!(plan[5].planned_output_slot, 3);
+        assert_eq!(plan[5].evicted_poc, Some(1));
+        assert_eq!(plan[5].missing_reference_pocs, Vec::<i32>::new());
+        assert_eq!(
+            plan[5]
+                .references
+                .iter()
+                .map(|reference| reference.poc)
+                .collect::<Vec<_>>(),
+            vec![3, 2, 0, 6]
+        );
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
     fn chooses_minimum_h265_dpb_slots_by_reference_distance() {
         let access_units = vec![
             h265_test_access_unit(0, 0, true, &[]),
@@ -31034,13 +31087,13 @@ mod tests {
         );
         let (dpb_slots, plan) = native_vulkan_h265_min_decodable_dpb_plan(&access_units, 3, 16);
 
-        assert_eq!(dpb_slots, 3);
+        assert_eq!(dpb_slots, 2);
         assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
         assert_eq!(
             plan.iter()
                 .map(|entry| entry.planned_output_slot)
                 .collect::<Vec<_>>(),
-            vec![0, 1, 2]
+            vec![0, 1, 1]
         );
     }
 
