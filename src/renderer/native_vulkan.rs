@@ -2248,6 +2248,7 @@ pub struct NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot {
     pub stream_max_active_reference_pictures: u32,
     pub session_max_dpb_slots: u32,
     pub session_max_active_reference_pictures: u32,
+    pub h264_picture_layout: &'static str,
     pub swapchain_extent: (u32, u32),
     pub swapchain_image_count: usize,
     pub swapchain_format: String,
@@ -2437,6 +2438,14 @@ pub struct NativeVulkanDmabufImportSnapshot {
     pub y_stride: u32,
     pub uv_offset: u64,
     pub uv_stride: u32,
+    pub image_memory_type_bits: Option<u32>,
+    pub image_memory_type_bits_hex: Option<String>,
+    pub fd_memory_type_bits: Option<u32>,
+    pub fd_memory_type_bits_hex: Option<String>,
+    pub compatible_memory_type_bits: Option<u32>,
+    pub compatible_memory_type_bits_hex: Option<String>,
+    pub selected_memory_type_index: Option<u32>,
+    pub memory_allocation_size: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3225,11 +3234,11 @@ impl NativeVulkanSession {
             frame.format.vulkan_image_format(),
             frame.modifier,
         );
-        let contract =
+        let mut contract =
             native_vulkan_dmabuf_import_snapshot(frame, memory_path, driver_modifier_plane_count);
         self.video_import_status
             .record_dmabuf_contract(contract.clone());
-        let texture = NativeVulkanDmabufVideoTexture::new(
+        let (texture, memory_contract) = NativeVulkanDmabufVideoTexture::new(
             &self.instance,
             self.physical_device,
             self.queue,
@@ -3239,6 +3248,9 @@ impl NativeVulkanSession {
             frame,
             driver_modifier_plane_count,
         )?;
+        contract.apply_memory_contract(memory_contract);
+        self.video_import_status
+            .record_dmabuf_contract(contract.clone());
         if let Some(old_texture) = self.video_texture.take() {
             old_texture.destroy(&self.device);
         }
@@ -4075,21 +4087,28 @@ pub fn run_h264_ready_prefix_video(
         )?;
     }
 
+    let stream_has_field_pictures =
+        native_vulkan_h264_streaming_queue_has_field_pictures(&streaming_queue);
+    let h264_picture_layout_candidates = native_vulkan_h264_picture_layout_candidates(
+        &parameter_sets.sps,
+        stream_has_field_pictures,
+    );
+    let video_queue_loader = ash::khr::video_queue::Instance::new(&probe._entry, &probe.instance);
+    let (h264_picture_layout, capabilities) =
+        native_vulkan_select_h264_picture_layout_capabilities(
+            &video_queue_loader,
+            present_selection.physical_device,
+            &h264_picture_layout_candidates,
+        )?;
     let mut h264_profile_info = vk::VideoDecodeH264ProfileInfoKHR::default()
         .std_profile_idc(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH)
-        .picture_layout(vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE);
+        .picture_layout(h264_picture_layout);
     let profile_info = vk::VideoProfileInfoKHR::default()
         .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_H264)
         .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420)
         .luma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
         .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
         .push_next(&mut h264_profile_info);
-    let video_queue_loader = ash::khr::video_queue::Instance::new(&probe._entry, &probe.instance);
-    let capabilities = native_vulkan_video_session_h264_capabilities(
-        &video_queue_loader,
-        present_selection.physical_device,
-        &profile_info,
-    )?;
     let source_extent = vk::Extent2D { width, height };
     if !native_vulkan_video_session_extent_supported(source_extent, &capabilities) {
         return Err(NativeVulkanError::Video(format!(
@@ -4812,6 +4831,7 @@ pub fn run_h264_ready_prefix_video(
                 stream_max_active_reference_pictures,
                 session_max_dpb_slots,
                 session_max_active_reference_pictures,
+                h264_picture_layout: native_vulkan_h264_picture_layout_label(h264_picture_layout),
                 swapchain_extent: (swapchain_plan.extent.width, swapchain_plan.extent.height),
                 swapchain_image_count: swapchain_images.len(),
                 swapchain_format: native_vulkan_format_label(swapchain_plan.format.format)
@@ -7829,6 +7849,40 @@ fn native_vulkan_dmabuf_import_snapshot(
         y_stride: frame.y.stride,
         uv_offset: frame.uv.offset,
         uv_stride: frame.uv.stride,
+        image_memory_type_bits: None,
+        image_memory_type_bits_hex: None,
+        fd_memory_type_bits: None,
+        fd_memory_type_bits_hex: None,
+        compatible_memory_type_bits: None,
+        compatible_memory_type_bits_hex: None,
+        selected_memory_type_index: None,
+        memory_allocation_size: None,
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeVulkanDmabufImportMemoryContract {
+    image_memory_type_bits: u32,
+    fd_memory_type_bits: u32,
+    compatible_memory_type_bits: u32,
+    selected_memory_type_index: u32,
+    memory_allocation_size: u64,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanDmabufImportSnapshot {
+    fn apply_memory_contract(&mut self, contract: NativeVulkanDmabufImportMemoryContract) {
+        self.image_memory_type_bits = Some(contract.image_memory_type_bits);
+        self.image_memory_type_bits_hex =
+            Some(format!("0x{:08x}", contract.image_memory_type_bits));
+        self.fd_memory_type_bits = Some(contract.fd_memory_type_bits);
+        self.fd_memory_type_bits_hex = Some(format!("0x{:08x}", contract.fd_memory_type_bits));
+        self.compatible_memory_type_bits = Some(contract.compatible_memory_type_bits);
+        self.compatible_memory_type_bits_hex =
+            Some(format!("0x{:08x}", contract.compatible_memory_type_bits));
+        self.selected_memory_type_index = Some(contract.selected_memory_type_index);
+        self.memory_allocation_size = Some(contract.memory_allocation_size);
     }
 }
 
@@ -7854,7 +7908,7 @@ impl NativeVulkanDmabufVideoTexture {
         _queue_family_index: u32,
         frame: &NativeVulkanDmabufVideoFrame,
         driver_modifier_plane_count: Option<u32>,
-    ) -> Result<Self, NativeVulkanError> {
+    ) -> Result<(Self, NativeVulkanDmabufImportMemoryContract), NativeVulkanError> {
         if frame.width == 0 || frame.height == 0 {
             return Err(NativeVulkanError::Video(
                 "native Vulkan DMABuf video frame has zero dimension".to_owned(),
@@ -7936,9 +7990,10 @@ impl NativeVulkanDmabufVideoTexture {
             unsafe {
                 device.destroy_image(image, None);
             }
-            return Err(NativeVulkanError::Video(
-                "native Vulkan DMABuf import has zero compatible memory_type_bits".to_owned(),
-            ));
+            return Err(NativeVulkanError::Video(format!(
+                "native Vulkan DMABuf import has zero compatible memory_type_bits: image=0x{:08x} fd=0x{:08x}",
+                requirements.memory_type_bits, fd_properties.memory_type_bits
+            )));
         }
         let memory_properties =
             unsafe { instance.get_physical_device_memory_properties(physical_device) };
@@ -8030,14 +8085,23 @@ impl NativeVulkanDmabufVideoTexture {
             }
         };
 
-        Ok(Self {
-            width: frame.width,
-            height: frame.height,
-            image,
-            memory,
-            y_view,
-            uv_view,
-        })
+        Ok((
+            Self {
+                width: frame.width,
+                height: frame.height,
+                image,
+                memory,
+                y_view,
+                uv_view,
+            },
+            NativeVulkanDmabufImportMemoryContract {
+                image_memory_type_bits: requirements.memory_type_bits,
+                fd_memory_type_bits: fd_properties.memory_type_bits,
+                compatible_memory_type_bits: memory_type_bits,
+                selected_memory_type_index: memory_type_index,
+                memory_allocation_size: requirements.size,
+            },
+        ))
     }
 
     fn shader_read_barriers(&self) -> [vk::ImageMemoryBarrier<'static>; 2] {
@@ -21385,6 +21449,80 @@ fn native_vulkan_streaming_bootstrap_scan_limit(capacity: usize) -> usize {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_streaming_queue_has_field_pictures(
+    queue: &NativeVulkanH264StreamingPacketQueue,
+) -> bool {
+    queue.bootstrap_access_units().iter().any(|access_unit| {
+        access_unit
+            .first_slice
+            .as_ref()
+            .is_some_and(|slice| slice.field_pic_flag)
+    })
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_picture_layout_candidates(
+    sps: &NativeVulkanH264SpsSnapshot,
+    stream_has_field_pictures: bool,
+) -> Vec<vk::VideoDecodeH264PictureLayoutFlagsKHR> {
+    if sps.frame_mbs_only_flag {
+        return vec![vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE];
+    }
+    if stream_has_field_pictures {
+        return vec![
+            vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_INTERLEAVED_LINES,
+            vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_SEPARATE_PLANES,
+        ];
+    }
+    vec![
+        vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE,
+        vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_INTERLEAVED_LINES,
+        vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_SEPARATE_PLANES,
+    ]
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_select_h264_picture_layout_capabilities(
+    video_queue_loader: &ash::khr::video_queue::Instance,
+    physical_device: vk::PhysicalDevice,
+    picture_layouts: &[vk::VideoDecodeH264PictureLayoutFlagsKHR],
+) -> Result<
+    (
+        vk::VideoDecodeH264PictureLayoutFlagsKHR,
+        NativeVulkanVideoSessionCapabilityQuery,
+    ),
+    NativeVulkanError,
+> {
+    let mut failures = Vec::<String>::new();
+    for picture_layout in picture_layouts {
+        let mut h264_profile_info = vk::VideoDecodeH264ProfileInfoKHR::default()
+            .std_profile_idc(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH)
+            .picture_layout(*picture_layout);
+        let profile_info = vk::VideoProfileInfoKHR::default()
+            .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_H264)
+            .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420)
+            .luma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
+            .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
+            .push_next(&mut h264_profile_info);
+        match native_vulkan_video_session_h264_capabilities(
+            video_queue_loader,
+            physical_device,
+            &profile_info,
+        ) {
+            Ok(capabilities) => return Ok((*picture_layout, capabilities)),
+            Err(err) => failures.push(format!(
+                "{}: {err}",
+                native_vulkan_h264_picture_layout_label(*picture_layout)
+            )),
+        }
+    }
+    Err(NativeVulkanError::Video(format!(
+        "direct H.264 ready-prefix video could not find a supported picture layout: {}",
+        failures.join("; ")
+    )))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_h264_align_streaming_bootstrap(
     queue: &mut NativeVulkanH264StreamingPacketQueue,
     parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
@@ -28399,7 +28537,7 @@ fn native_vulkan_video_decode_h264_profiles(
     physical_device: vk::PhysicalDevice,
     query_enabled: bool,
 ) -> Vec<NativeVulkanVideoDecodeH264ProfileSnapshot> {
-    [
+    let profiles = [
         (
             "baseline",
             vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_BASELINE,
@@ -28412,25 +28550,35 @@ fn native_vulkan_video_decode_h264_profiles(
             "high",
             vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH,
         ),
-    ]
-    .into_iter()
-    .map(|(profile, std_profile_idc)| {
-        if query_enabled {
-            native_vulkan_video_decode_h264_profile(
-                video_queue_loader,
-                physical_device,
-                profile,
-                std_profile_idc,
-            )
-        } else {
-            native_vulkan_video_decode_h264_profile_error(
-                profile,
-                std_profile_idc,
-                "required Vulkan Video H.264 decode extensions are unavailable".to_owned(),
-            )
-        }
-    })
-    .collect()
+    ];
+    let picture_layouts = [
+        vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE,
+        vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_INTERLEAVED_LINES,
+        vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_SEPARATE_PLANES,
+    ];
+    profiles
+        .into_iter()
+        .flat_map(|(profile, std_profile_idc)| {
+            picture_layouts.into_iter().map(move |picture_layout| {
+                if query_enabled {
+                    native_vulkan_video_decode_h264_profile(
+                        video_queue_loader,
+                        physical_device,
+                        profile,
+                        std_profile_idc,
+                        picture_layout,
+                    )
+                } else {
+                    native_vulkan_video_decode_h264_profile_error(
+                        profile,
+                        std_profile_idc,
+                        picture_layout,
+                        "required Vulkan Video H.264 decode extensions are unavailable".to_owned(),
+                    )
+                }
+            })
+        })
+        .collect()
 }
 
 fn native_vulkan_video_decode_h264_profile(
@@ -28438,11 +28586,11 @@ fn native_vulkan_video_decode_h264_profile(
     physical_device: vk::PhysicalDevice,
     profile: &'static str,
     std_profile_idc: vk::native::StdVideoH264ProfileIdc,
+    picture_layout: vk::VideoDecodeH264PictureLayoutFlagsKHR,
 ) -> NativeVulkanVideoDecodeH264ProfileSnapshot {
     let chroma_subsampling = vk::VideoChromaSubsamplingFlagsKHR::TYPE_420;
     let luma_bit_depth = vk::VideoComponentBitDepthFlagsKHR::TYPE_8;
     let chroma_bit_depth = vk::VideoComponentBitDepthFlagsKHR::TYPE_8;
-    let picture_layout = vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE;
     let mut h264_profile_info = vk::VideoDecodeH264ProfileInfoKHR::default()
         .std_profile_idc(std_profile_idc)
         .picture_layout(picture_layout);
@@ -28485,6 +28633,7 @@ fn native_vulkan_video_decode_h264_profile(
             return native_vulkan_video_decode_h264_profile_error(
                 profile,
                 std_profile_idc,
+                picture_layout,
                 format!("vkGetPhysicalDeviceVideoCapabilitiesKHR: {result:?}"),
             );
         }
@@ -28558,12 +28707,13 @@ fn native_vulkan_video_decode_h264_profile(
 fn native_vulkan_video_decode_h264_profile_error(
     profile: &'static str,
     std_profile_idc: vk::native::StdVideoH264ProfileIdc,
+    picture_layout: vk::VideoDecodeH264PictureLayoutFlagsKHR,
     query_error: String,
 ) -> NativeVulkanVideoDecodeH264ProfileSnapshot {
     NativeVulkanVideoDecodeH264ProfileSnapshot {
         profile,
         std_profile_idc,
-        picture_layout: "progressive",
+        picture_layout: native_vulkan_h264_picture_layout_label(picture_layout),
         chroma_subsampling: vec!["420"],
         luma_bit_depth: vec!["8-bit"],
         chroma_bit_depth: vec!["8-bit"],
@@ -29293,15 +29443,13 @@ fn native_vulkan_video_codec_operation_labels(
 fn native_vulkan_h264_picture_layout_label(
     layout: vk::VideoDecodeH264PictureLayoutFlagsKHR,
 ) -> &'static str {
-    if layout.contains(vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE) {
-        "progressive"
-    } else if layout
-        .contains(vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_INTERLEAVED_LINES)
-    {
+    if layout.contains(vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_INTERLEAVED_LINES) {
         "interlaced-interleaved-lines"
     } else if layout.contains(vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_SEPARATE_PLANES)
     {
         "interlaced-separate-planes"
+    } else if layout.as_raw() == vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE.as_raw() {
+        "progressive"
     } else {
         "unknown"
     }
@@ -30625,6 +30773,24 @@ mod tests {
             ),
             Some("5.2")
         );
+        assert_eq!(
+            native_vulkan_h264_picture_layout_label(
+                vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE
+            ),
+            "progressive"
+        );
+        assert_eq!(
+            native_vulkan_h264_picture_layout_label(
+                vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_INTERLEAVED_LINES
+            ),
+            "interlaced-interleaved-lines"
+        );
+        assert_eq!(
+            native_vulkan_h264_picture_layout_label(
+                vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_SEPARATE_PLANES
+            ),
+            "interlaced-separate-planes"
+        );
 
         let usage = vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR
             | vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR
@@ -31381,6 +31547,52 @@ mod tests {
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
+    fn h264_test_sps(frame_mbs_only_flag: bool) -> NativeVulkanH264SpsSnapshot {
+        NativeVulkanH264SpsSnapshot {
+            id: 0,
+            profile_idc: 100,
+            profile_label: "high",
+            constraint_set0_flag: false,
+            constraint_set1_flag: false,
+            constraint_set2_flag: false,
+            constraint_set3_flag: false,
+            constraint_set4_flag: false,
+            constraint_set5_flag: false,
+            level_idc: 52,
+            level_label: Some("5.2"),
+            chroma_format_idc: 1,
+            chroma_format_label: "4:2:0",
+            separate_colour_plane_flag: false,
+            bit_depth_luma_minus8: 0,
+            bit_depth_chroma_minus8: 0,
+            qpprime_y_zero_transform_bypass_flag: false,
+            seq_scaling_matrix_present_flag: false,
+            log2_max_frame_num_minus4: 0,
+            pic_order_cnt_type: 0,
+            log2_max_pic_order_cnt_lsb_minus4: 0,
+            delta_pic_order_always_zero_flag: false,
+            offset_for_non_ref_pic: 0,
+            offset_for_top_to_bottom_field: 0,
+            offset_for_ref_frame: Vec::new(),
+            max_num_ref_frames: 2,
+            gaps_in_frame_num_value_allowed_flag: false,
+            pic_width_in_mbs_minus1: 119,
+            pic_height_in_map_units_minus1: 67,
+            frame_mbs_only_flag,
+            mb_adaptive_frame_field_flag: !frame_mbs_only_flag,
+            direct_8x8_inference_flag: true,
+            frame_cropping_flag: false,
+            frame_crop_left_offset: 0,
+            frame_crop_right_offset: 0,
+            frame_crop_top_offset: 0,
+            frame_crop_bottom_offset: 0,
+            vui_parameters_present_flag: false,
+            width: 1920,
+            height: 1080,
+        }
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
     fn h264_test_mmco(
         memory_management_control_operation: u32,
         difference_of_pic_nums_minus1: Option<u32>,
@@ -31466,6 +31678,30 @@ mod tests {
         assert_eq!(bottom.bottom_field_flag(), 1);
         assert_eq!(bottom.used_for_long_term_reference(), 1);
         assert_eq!(bottom.is_non_existing(), 1);
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn chooses_h264_picture_layout_candidates_from_sps_and_field_window() {
+        assert_eq!(
+            native_vulkan_h264_picture_layout_candidates(&h264_test_sps(true), false),
+            vec![vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE]
+        );
+        assert_eq!(
+            native_vulkan_h264_picture_layout_candidates(&h264_test_sps(false), false),
+            vec![
+                vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE,
+                vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_INTERLEAVED_LINES,
+                vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_SEPARATE_PLANES,
+            ]
+        );
+        assert_eq!(
+            native_vulkan_h264_picture_layout_candidates(&h264_test_sps(false), true),
+            vec![
+                vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_INTERLEAVED_LINES,
+                vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_SEPARATE_PLANES,
+            ]
+        );
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
@@ -32891,6 +33127,14 @@ mod tests {
             y_stride: 3840,
             uv_offset: 8294400,
             uv_stride: 3840,
+            image_memory_type_bits: Some(0x0000_0080),
+            image_memory_type_bits_hex: Some("0x00000080".to_owned()),
+            fd_memory_type_bits: Some(0x0000_00c0),
+            fd_memory_type_bits_hex: Some("0x000000c0".to_owned()),
+            compatible_memory_type_bits: Some(0x0000_0080),
+            compatible_memory_type_bits_hex: Some("0x00000080".to_owned()),
+            selected_memory_type_index: Some(7),
+            memory_allocation_size: Some(12_451_840),
         };
         let import = NativeVulkanVideoImportSnapshot {
             texture_import_status: "importing-dmabuf-vulkan-image",
