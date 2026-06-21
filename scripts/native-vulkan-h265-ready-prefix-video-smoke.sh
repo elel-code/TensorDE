@@ -40,6 +40,13 @@ Options:
                         Require arbitrary-entry playback to cross EOS, seek,
                         skip the broken prefix again, and restart each loop on IDR.
   --allow-short-loop    Allow looped visible playback with a ready-prefix shorter than 1 second.
+  --performance-snapshot
+                        Capture process CPU/RSS/PSS/USS/Private_Dirty/smaps while the
+                        native Vulkan process is running.
+  --performance-duration <sec>
+                        Performance sampling duration. Default: 10.
+  --performance-interval <sec>
+                        Performance sampling interval. Default: 1.
   --layer <layer>       Wayland layer. Default: background.
   --fit <mode>          Render fit. Default: cover.
   --no-build            Reuse existing target/release/gilder-native-vulkan.
@@ -74,6 +81,9 @@ no_build=0
 generated_source=0
 source_duration_seconds=0
 streaming_queue=1
+performance_snapshot=0
+performance_duration=10
+performance_interval=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -150,6 +160,18 @@ while [[ $# -gt 0 ]]; do
     --allow-short-loop)
       allow_short_loop=1
       shift
+      ;;
+    --performance-snapshot)
+      performance_snapshot=1
+      shift
+      ;;
+    --performance-duration)
+      performance_duration="${2:-}"
+      shift 2
+      ;;
+    --performance-interval)
+      performance_interval="${2:-}"
+      shift 2
       ;;
     --layer)
       layer="${2:-}"
@@ -298,6 +320,8 @@ fi
 runtime_json="$report_dir/runtime.json"
 runtime_stderr="$report_dir/runtime.stderr"
 summary="$report_dir/summary.txt"
+performance_dir="$report_dir/performance"
+performance_log="$report_dir/performance.log"
 args=(
   --run-h265-ready-prefix-video
   --source "$source"
@@ -319,13 +343,40 @@ if [[ -n "$output_name" ]]; then
   args+=(--output-name "$output_name")
 fi
 
-set +e
-env WAYLAND_DISPLAY="$display" \
-  target/release/gilder-native-vulkan \
-  "${args[@]}" \
-  >"$runtime_json" 2>"$runtime_stderr"
-runtime_status=$?
-set -e
+performance_status=0
+if [[ "$performance_snapshot" -eq 1 ]]; then
+  if [[ ! -x scripts/performance-snapshot.sh ]]; then
+    printf 'FAIL: missing executable scripts/performance-snapshot.sh\n' | tee "$summary"
+    exit 1
+  fi
+  set +e
+  env WAYLAND_DISPLAY="$display" \
+    target/release/gilder-native-vulkan \
+    "${args[@]}" \
+    >"$runtime_json" 2>"$runtime_stderr" &
+  runtime_pid=$!
+  scripts/performance-snapshot.sh \
+    --pid "$runtime_pid" \
+    --label "native-vulkan-h265-ready-prefix-video" \
+    --duration "$performance_duration" \
+    --interval "$performance_interval" \
+    --output-dir "$performance_dir" \
+    --allow-missing \
+    --keep \
+    >"$performance_log" 2>&1
+  performance_status=$?
+  wait "$runtime_pid"
+  runtime_status=$?
+  set -e
+else
+  set +e
+  env WAYLAND_DISPLAY="$display" \
+    target/release/gilder-native-vulkan \
+    "${args[@]}" \
+    >"$runtime_json" 2>"$runtime_stderr"
+  runtime_status=$?
+  set -e
+fi
 
 if [[ "$runtime_status" -ne 0 ]]; then
   printf 'FAIL: native Vulkan direct H.265 ready-prefix video smoke failed\n' | tee "$summary"
@@ -333,6 +384,13 @@ if [[ "$runtime_status" -ne 0 ]]; then
   printf 'stderr: %s\n' "$runtime_stderr" | tee -a "$summary"
   sed -n '1,160p' "$runtime_stderr" >&2
   exit "$runtime_status"
+fi
+if [[ "$performance_snapshot" -eq 1 && "$performance_status" -ne 0 ]]; then
+  printf 'FAIL: native Vulkan direct H.265 performance snapshot failed\n' | tee "$summary"
+  printf 'source: %s\n' "$source" | tee -a "$summary"
+  printf 'performance log: %s\n' "$performance_log" | tee -a "$summary"
+  sed -n '1,200p' "$performance_log" >&2
+  exit "$performance_status"
 fi
 
 decoded_count="$(jq -r '.decoded_frame_count // 0' "$runtime_json")"
@@ -577,8 +635,26 @@ fi
   printf 'video_resource_memory_bytes: %s\n' "$resource_bytes"
   printf 'session_memory_bytes: %s\n' "$(jq -r '.session_memory_bytes' "$runtime_json")"
   printf 'bitstream_buffer_bytes: %s\n' "$(jq -r '.bitstream_buffer_bytes' "$runtime_json")"
+  printf 'performance_snapshot: %s\n' "$([[ "$performance_snapshot" -eq 1 ]] && printf yes || printf no)"
+  if [[ "$performance_snapshot" -eq 1 ]]; then
+    printf 'performance_dir: %s\n' "$performance_dir"
+    printf 'performance_log: %s\n' "$performance_log"
+    if [[ -s "$performance_dir/summary.txt" ]]; then
+      printf 'performance_summary: %s\n' "$performance_dir/summary.txt"
+      printf 'performance_samples: %s\n' "$(awk -F': ' '$1 == "samples" { print $2 }' "$performance_dir/summary.txt")"
+      printf 'performance_avg_cpu_percent: %s\n' "$(awk -F': ' '$1 == "avg_cpu_percent" { print $2 }' "$performance_dir/summary.txt")"
+      printf 'performance_max_rss_kib: %s\n' "$(awk -F': ' '$1 == "max_rss_kib" { print $2 }' "$performance_dir/summary.txt")"
+      printf 'performance_max_pss_kib: %s\n' "$(awk -F': ' '$1 == "max_pss_kib" { print $2 }' "$performance_dir/summary.txt")"
+      printf 'performance_max_uss_kib: %s\n' "$(awk -F': ' '$1 == "max_uss_kib" { print $2 }' "$performance_dir/summary.txt")"
+      printf 'performance_max_private_dirty_kib: %s\n' "$(awk -F': ' '$1 == "max_private_dirty_kib" { print $2 }' "$performance_dir/summary.txt")"
+      printf 'performance_max_nvidia_process_gpu_memory_mib: %s\n' "$(awk -F': ' '$1 == "max_nvidia_process_gpu_memory_mib" { print $2 }' "$performance_dir/summary.txt")"
+    fi
+  fi
 } >"$summary"
 
 printf 'PASS: native Vulkan direct H.265 ready-prefix video smoke passed\n'
 printf 'summary: %s\n' "$summary"
 printf 'runtime JSON: %s\n' "$runtime_json"
+if [[ "$performance_snapshot" -eq 1 ]]; then
+  printf 'performance summary: %s\n' "$performance_dir/summary.txt"
+fi
