@@ -5360,7 +5360,10 @@ pub fn run_h265_ready_prefix_video(
                 image.image,
                 image.snapshot.array_layers,
             )?;
-            let mut active_dpb_pocs = vec![None::<i32>; image.snapshot.array_layers as usize];
+            let mut active_dpb_refs = vec![
+                None::<NativeVulkanH265ActiveDpbReference>;
+                image.snapshot.array_layers as usize
+            ];
             let mut swapchain_image_layouts =
                 vec![vk::ImageLayout::UNDEFINED; swapchain_images.len()];
             let fifo_present_paced = swapchain_plan.present_mode == vk::PresentModeKHR::FIFO;
@@ -5454,7 +5457,7 @@ pub fn run_h265_ready_prefix_video(
                     loop_boundary_reset_count = loop_boundary_reset_count.saturating_add(1);
                 }
                 if reset_before_decode {
-                    active_dpb_pocs.fill(None);
+                    active_dpb_refs.fill(None);
                 }
                 let bitstream_upload_started_at = Instant::now();
                 let span = native_vulkan_write_h265_streaming_packet_to_bitstream_ring(
@@ -5481,7 +5484,7 @@ pub fn run_h265_ready_prefix_video(
                     &entry,
                     &access_unit,
                     &span,
-                    &active_dpb_pocs,
+                    &active_dpb_refs,
                     &mut image_layer_layouts,
                     reset_before_decode,
                     pts_delta_ms,
@@ -5493,8 +5496,12 @@ pub fn run_h265_ready_prefix_video(
                     bitstream_upload_elapsed_us,
                 )?;
                 frame.fence_wait_elapsed_us = fence_wait_elapsed_us;
-                if let Some(slot) = active_dpb_pocs.get_mut(frame.dst_base_array_layer as usize) {
-                    *slot = Some(frame.pic_order_cnt_val);
+                native_vulkan_h265_apply_reference_usage(&mut active_dpb_refs, &entry.references);
+                if let Some(slot) = active_dpb_refs.get_mut(frame.dst_base_array_layer as usize) {
+                    *slot = Some(NativeVulkanH265ActiveDpbReference {
+                        poc: frame.pic_order_cnt_val,
+                        used_for_long_term_reference: false,
+                    });
                 }
 
                 let present_started_at = Instant::now();
@@ -15084,6 +15091,65 @@ struct NativeVulkanH264ActiveDpbReference {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeVulkanH265ActiveDpbReference {
+    poc: i32,
+    used_for_long_term_reference: bool,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_begin_slot_refs(
+    active_dpb_refs: &[Option<NativeVulkanH265ActiveDpbReference>],
+    references: &[NativeVulkanH265DecodeReferenceSnapshot],
+    reset_before_decode: bool,
+) -> Vec<(u32, Option<NativeVulkanH265ActiveDpbReference>)> {
+    let active_only = native_vulkan_h265_begin_reference_slots_active_only();
+    active_dpb_refs
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(|(slot, active_reference)| {
+            let reference_override = references
+                .iter()
+                .find(|reference| reference.available && reference.dpb_slot == Some(slot as u32))
+                .map(|reference| NativeVulkanH265ActiveDpbReference {
+                    poc: reference.poc,
+                    used_for_long_term_reference: reference.used_for_long_term_reference,
+                });
+            let had_active_reference = active_reference.is_some() || reference_override.is_some();
+            if active_only && !had_active_reference {
+                return None;
+            }
+            let reference = if reset_before_decode {
+                None
+            } else {
+                reference_override.or(active_reference)
+            };
+            Some((slot as u32, reference))
+        })
+        .collect()
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_apply_reference_usage(
+    active_dpb_refs: &mut [Option<NativeVulkanH265ActiveDpbReference>],
+    references: &[NativeVulkanH265DecodeReferenceSnapshot],
+) {
+    for reference in references.iter().filter(|reference| reference.available) {
+        let Some(dpb_slot) = reference.dpb_slot else {
+            continue;
+        };
+        let Some(slot) = active_dpb_refs.get_mut(dpb_slot as usize) else {
+            continue;
+        };
+        *slot = Some(NativeVulkanH265ActiveDpbReference {
+            poc: reference.poc,
+            used_for_long_term_reference: reference.used_for_long_term_reference,
+        });
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 #[allow(clippy::too_many_arguments)]
 fn native_vulkan_decode_h264_ready_prefix_frame_to_image(
     device: &ash::Device,
@@ -15505,7 +15571,7 @@ fn native_vulkan_decode_h265_ready_prefix_frame_to_image(
     entry: &NativeVulkanH265DecodeReferencePlanEntrySnapshot,
     access_unit: &NativeVulkanH265AccessUnitSnapshot,
     span: &NativeVulkanH265ReadyPrefixBitstreamSpan,
-    active_dpb_pocs: &[Option<i32>],
+    active_dpb_refs: &[Option<NativeVulkanH265ActiveDpbReference>],
     image_layer_layouts: &mut [vk::ImageLayout],
     reset_before_decode: bool,
     pts_delta_ms: Option<u64>,
@@ -15682,27 +15748,30 @@ fn native_vulkan_decode_h265_ready_prefix_frame_to_image(
         .setup_reference_slot(&setup_reference_slot)
         .reference_slots(&reference_slots)
         .push_next(&mut h265_picture_info);
-    let begin_slot_pocs = active_dpb_pocs
-        .iter()
-        .copied()
-        .enumerate()
-        .filter(|(_, poc)| !native_vulkan_h265_begin_reference_slots_active_only() || poc.is_some())
-        .map(|(slot, poc)| (slot as u32, if reset_before_decode { None } else { poc }))
-        .collect::<Vec<_>>();
-    let begin_reference_resources = begin_slot_pocs
+    let begin_slot_refs =
+        native_vulkan_h265_begin_slot_refs(active_dpb_refs, &entry.references, reset_before_decode);
+    let begin_reference_resources = begin_slot_refs
         .iter()
         .map(|(slot, _)| native_vulkan_video_picture_resource_info_for_image(image, extent, *slot))
         .collect::<Result<Vec<_>, _>>()?;
-    let begin_reference_std_infos = begin_slot_pocs
+    let begin_reference_std_infos = begin_slot_refs
         .iter()
-        .map(|(_, poc)| vk::native::StdVideoDecodeH265ReferenceInfo {
-            flags: vk::native::StdVideoDecodeH265ReferenceInfoFlags {
-                _bitfield_align_1: [],
-                _bitfield_1: vk::native::StdVideoDecodeH265ReferenceInfoFlags::new_bitfield_1(0, 0),
-                __bindgen_padding_0: [0; 3],
+        .map(
+            |(_, reference)| vk::native::StdVideoDecodeH265ReferenceInfo {
+                flags: vk::native::StdVideoDecodeH265ReferenceInfoFlags {
+                    _bitfield_align_1: [],
+                    _bitfield_1: vk::native::StdVideoDecodeH265ReferenceInfoFlags::new_bitfield_1(
+                        native_vulkan_bool_u32(
+                            reference
+                                .is_some_and(|reference| reference.used_for_long_term_reference),
+                        ),
+                        0,
+                    ),
+                    __bindgen_padding_0: [0; 3],
+                },
+                PicOrderCntVal: reference.map(|reference| reference.poc).unwrap_or(0),
             },
-            PicOrderCntVal: poc.unwrap_or(0),
-        })
+        )
         .collect::<Vec<_>>();
     let mut begin_reference_h265_slot_infos = begin_reference_std_infos
         .iter()
@@ -15710,12 +15779,16 @@ fn native_vulkan_decode_h265_ready_prefix_frame_to_image(
             vk::VideoDecodeH265DpbSlotInfoKHR::default().std_reference_info(std_reference_info)
         })
         .collect::<Vec<_>>();
-    let mut begin_reference_slots = Vec::with_capacity(begin_slot_pocs.len());
-    for (index, (slot, poc)) in begin_slot_pocs.iter().enumerate() {
+    let mut begin_reference_slots = Vec::with_capacity(begin_slot_refs.len());
+    for (index, (slot, reference)) in begin_slot_refs.iter().enumerate() {
         let mut reference_slot = vk::VideoReferenceSlotInfoKHR::default()
             .picture_resource(&begin_reference_resources[index])
-            .slot_index(if poc.is_some() { *slot as i32 } else { -1 });
-        if poc.is_some() {
+            .slot_index(if reference.is_some() {
+                *slot as i32
+            } else {
+                -1
+            });
+        if reference.is_some() {
             reference_slot.p_next = (&mut begin_reference_h265_slot_infos[index]
                 as *mut vk::VideoDecodeH265DpbSlotInfoKHR<'_>)
                 .cast::<c_void>();
@@ -16515,7 +16588,8 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
             vk::VideoCodingControlInfoKHR::default().flags(vk::VideoCodingControlFlagsKHR::RESET);
         let mut image_layer_layouts =
             vec![vk::ImageLayout::UNDEFINED; image.snapshot.array_layers as usize];
-        let mut active_dpb_pocs = vec![None::<i32>; image.snapshot.array_layers as usize];
+        let mut active_dpb_refs =
+            vec![None::<NativeVulkanH265ActiveDpbReference>; image.snapshot.array_layers as usize];
 
         let mut frame_snapshots = Vec::with_capacity(frame_count as usize);
         let mut sampled_frames = Vec::with_capacity(frame_count as usize);
@@ -16553,7 +16627,7 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
             }
             let reset_before_decode = frame_snapshots.is_empty() || first_slice.idr;
             if reset_before_decode {
-                active_dpb_pocs.fill(None);
+                active_dpb_refs.fill(None);
             }
             let mut decode_span = span.clone();
             let bitstream_barrier_size = if streaming_bitstream_slot {
@@ -16587,32 +16661,32 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
                     access_unit.index
                 ))
             })?;
-            let begin_slot_pocs = active_dpb_pocs
-                .iter()
-                .copied()
-                .enumerate()
-                .filter(|(_, poc)| {
-                    !native_vulkan_h265_begin_reference_slots_active_only() || poc.is_some()
-                })
-                .map(|(slot, poc)| (slot as u32, poc))
-                .collect::<Vec<_>>();
-            let begin_reference_resources = begin_slot_pocs
+            let begin_slot_refs =
+                native_vulkan_h265_begin_slot_refs(&active_dpb_refs, &entry.references, false);
+            let begin_reference_resources = begin_slot_refs
                 .iter()
                 .map(|(slot, _)| {
                     native_vulkan_video_picture_resource_info_for_image(image, extent, *slot)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let begin_reference_std_infos = begin_slot_pocs
+            let begin_reference_std_infos = begin_slot_refs
                 .iter()
-                .map(|(_, poc)| vk::native::StdVideoDecodeH265ReferenceInfo {
-                    flags: vk::native::StdVideoDecodeH265ReferenceInfoFlags {
-                        _bitfield_align_1: [],
-                        _bitfield_1:
-                            vk::native::StdVideoDecodeH265ReferenceInfoFlags::new_bitfield_1(0, 0),
-                        __bindgen_padding_0: [0; 3],
+                .map(
+                    |(_, reference)| vk::native::StdVideoDecodeH265ReferenceInfo {
+                        flags: vk::native::StdVideoDecodeH265ReferenceInfoFlags {
+                            _bitfield_align_1: [],
+                            _bitfield_1:
+                                vk::native::StdVideoDecodeH265ReferenceInfoFlags::new_bitfield_1(
+                                    native_vulkan_bool_u32(reference.is_some_and(|reference| {
+                                        reference.used_for_long_term_reference
+                                    })),
+                                    0,
+                                ),
+                            __bindgen_padding_0: [0; 3],
+                        },
+                        PicOrderCntVal: reference.map(|reference| reference.poc).unwrap_or(0),
                     },
-                    PicOrderCntVal: poc.unwrap_or(0),
-                })
+                )
                 .collect::<Vec<_>>();
             let mut begin_reference_h265_slot_infos = begin_reference_std_infos
                 .iter()
@@ -16621,12 +16695,16 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
                         .std_reference_info(std_reference_info)
                 })
                 .collect::<Vec<_>>();
-            let mut begin_reference_slots = Vec::with_capacity(begin_slot_pocs.len());
-            for (index, (slot, poc)) in begin_slot_pocs.iter().enumerate() {
+            let mut begin_reference_slots = Vec::with_capacity(begin_slot_refs.len());
+            for (index, (slot, reference)) in begin_slot_refs.iter().enumerate() {
                 let mut reference_slot = vk::VideoReferenceSlotInfoKHR::default()
                     .picture_resource(&begin_reference_resources[index])
-                    .slot_index(if poc.is_some() { *slot as i32 } else { -1 });
-                if poc.is_some() {
+                    .slot_index(if reference.is_some() {
+                        *slot as i32
+                    } else {
+                        -1
+                    });
+                if reference.is_some() {
                     reference_slot.p_next = (&mut begin_reference_h265_slot_infos[index]
                         as *mut vk::VideoDecodeH265DpbSlotInfoKHR<'_>)
                         .cast::<c_void>();
@@ -16902,8 +16980,12 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
             image_layer_layouts[entry.planned_output_slot as usize] =
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
             let frame_elapsed_us = native_vulkan_elapsed_us(frame_started_at.elapsed());
-            if let Some(slot) = active_dpb_pocs.get_mut(entry.planned_output_slot as usize) {
-                *slot = Some(current_poc);
+            native_vulkan_h265_apply_reference_usage(&mut active_dpb_refs, &entry.references);
+            if let Some(slot) = active_dpb_refs.get_mut(entry.planned_output_slot as usize) {
+                *slot = Some(NativeVulkanH265ActiveDpbReference {
+                    poc: current_poc,
+                    used_for_long_term_reference: false,
+                });
             }
             let render_target_ref = render_target
                 .as_ref()
@@ -17003,8 +17085,10 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
             command_pool_created: true,
             command_buffer_allocated: true,
             command_buffer_recorded: true,
-            begin_reference_slot_count: active_dpb_pocs.iter().filter(|poc| poc.is_some()).count()
-                as u32,
+            begin_reference_slot_count: active_dpb_refs
+                .iter()
+                .filter(|reference| reference.is_some())
+                .count() as u32,
             reset_control_recorded: true,
             reset_control_count,
             decode_query_status_enabled,
@@ -32142,6 +32226,47 @@ mod tests {
             vec![(4, false), (0, true)]
         );
         assert_eq!(plan[2].available_reference_count, 2);
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn h265_begin_slots_preserve_current_long_term_reference_flags() {
+        let active_refs = vec![
+            None,
+            Some(NativeVulkanH265ActiveDpbReference {
+                poc: 4,
+                used_for_long_term_reference: false,
+            }),
+        ];
+        let references = vec![NativeVulkanH265DecodeReferenceSnapshot {
+            delta_poc: -4,
+            poc: 4,
+            used_for_long_term_reference: true,
+            available: true,
+            source_access_unit_index: Some(1),
+            dpb_slot: Some(1),
+        }];
+
+        let begin_refs = native_vulkan_h265_begin_slot_refs(&active_refs, &references, false);
+        let slot_1 = begin_refs
+            .iter()
+            .find(|(slot, _)| *slot == 1)
+            .expect("active reference slot should be emitted");
+
+        assert_eq!(
+            slot_1.1,
+            Some(NativeVulkanH265ActiveDpbReference {
+                poc: 4,
+                used_for_long_term_reference: true,
+            })
+        );
+
+        let reset_begin_refs = native_vulkan_h265_begin_slot_refs(&active_refs, &references, true);
+        let reset_slot_1 = reset_begin_refs
+            .iter()
+            .find(|(slot, _)| *slot == 1)
+            .expect("pre-reset active slot should remain visible as inactive");
+        assert_eq!(reset_slot_1.1, None);
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
