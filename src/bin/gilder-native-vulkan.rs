@@ -89,6 +89,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 video_session_options.allocate_bitstream_buffer = true;
                 video_session_options.allocate_video_images = true;
             }
+            "--decode-h264-ready-prefix" => {
+                let count = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()?
+                    .ok_or("--decode-h264-ready-prefix requires a count")?;
+                video_session_options.decode_h264_ready_prefix_frames = count;
+                video_session_options.h264_required_ready_prefix_access_units = count;
+                video_session_options.extract_bitstream = true;
+                video_session_options.allocate_bitstream_buffer = true;
+                video_session_options.allocate_video_images = true;
+            }
             "--decode-h265-ready-prefix" => {
                 let count = args
                     .next()
@@ -219,6 +231,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|value| value.parse::<u32>())
                     .transpose()?
                     .ok_or("--require-h264-idr-prefix requires a count")?;
+                video_session_options.extract_bitstream = true;
+                video_session_options.allocate_bitstream_buffer = true;
+            }
+            "--require-h264-ready-prefix" => {
+                video_session_options.h264_required_ready_prefix_access_units = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()?
+                    .ok_or("--require-h264-ready-prefix requires a count")?;
                 video_session_options.extract_bitstream = true;
                 video_session_options.allocate_bitstream_buffer = true;
             }
@@ -520,6 +541,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --decode-first-frame extends --probe-video-session with a real H.264/H.265 IDR Vulkan Video command buffer submit.\n\
 --sample-decoded-first-frame extends --decode-first-frame with NV12 shader sampling into an offscreen Vulkan color target.\n\
 --decode-h264-idr-prefix N extends --probe-video-session with N H.264 IDR AU Vulkan Video decode submits and final-frame readback.\n\
+--decode-h264-ready-prefix N extends --probe-video-session with N reference-ready H.264 AU Vulkan Video decode submits and final-frame readback.\n\
 --decode-h265-ready-prefix N extends --probe-video-session with N ready H.265 AU Vulkan Video decode submits and final-frame readback.\n\
 --sample-h265-ready-prefix extends --decode-h265-ready-prefix with final-frame NV12 shader sampling into an offscreen RGBA target.\n\
 --sample-h265-ready-prefix-sequence samples each ready-prefix decoded frame before the next AU can overwrite its DPB/output layer.\n\
@@ -537,6 +559,7 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--allocate-video-images] [--allocate-bitstream-buffer] [--bitstream-buffer-size BYTES]\n\
          [--extract-bitstream] [--decode-first-frame] [--sample-decoded-first-frame] [--bitstream-samples N]\n\
          [--decode-h264-idr-prefix N] [--require-h264-idr-prefix N]\n\
+         [--decode-h264-ready-prefix N] [--require-h264-ready-prefix N]\n\
          [--decode-h265-ready-prefix N] [--sample-h265-ready-prefix] [--sample-h265-ready-prefix-sequence]\n\
          [--require-h265-ready-prefix N] [--playback-frames N]\n\
          [--start-offset-ms MS]"
