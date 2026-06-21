@@ -24,7 +24,7 @@ Options:
   --decode-prefix <n>   Ready-prefix AU count to decode/present. Default:
                         playback-frames when playback-frames is set, otherwise target-fps.
   --playback-frames <n> Decode/present frames by looping the ready prefix. Default: decode-prefix.
-  --streaming-queue    Use bounded parser/appsink packet queue instead of ready-prefix spool.
+  --streaming-queue    Compatibility no-op; bounded parser/appsink packet queue is always used.
   --target-fps <fps>    Presentation target FPS. Default: 240.
   --gop-size <frames>   Generated H.265 keyint/min-keyint. Default: target-fps.
   --width <px>          Generated/probed width. Default: 3840.
@@ -59,7 +59,7 @@ fit="cover"
 no_build=0
 generated_source=0
 source_duration_seconds=0
-streaming_queue=0
+streaming_queue=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -320,14 +320,8 @@ if [[ "$bitstream_strategy" != "fixed-capacity-persistent-mapped-ring" || "$bits
   bitstream_gate_failed=1
 fi
 input_gate_failed=0
-if [[ "$streaming_queue" -eq 1 ]]; then
-  if [[ "$h265_input_mode" != "streaming-queue" || "$h265_packet_queue_capacity" -le 0 || "$h265_packet_queue_pulled_count" -lt "$expected_frames" || "$h265_packet_queue_max_payload_bytes" -le 0 ]]; then
-    input_gate_failed=1
-  fi
-else
-  if [[ "$h265_input_mode" != "ready-prefix-spool" ]]; then
-    input_gate_failed=1
-  fi
+if [[ "$h265_input_mode" != "streaming-queue" || "$h265_packet_queue_capacity" -le 0 || "$h265_packet_queue_pulled_count" -lt "$expected_frames" || "$h265_packet_queue_max_payload_bytes" -le 0 ]]; then
+  input_gate_failed=1
 fi
 if [[ "$decode_prefix" -gt 1 && ( "$bitstream_slot_count" -le 1 || "$bitstream_ring_capacity_bytes" -le "$bitstream_slot_bytes" ) ]]; then
   bitstream_gate_failed=1

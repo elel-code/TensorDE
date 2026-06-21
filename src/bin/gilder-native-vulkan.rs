@@ -49,9 +49,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut video_session_options = NativeVulkanVideoSessionSmokeOptions::default();
     let mut ready_prefix_playback_frames = 0u32;
     #[cfg(feature = "native-vulkan-gst-video")]
-    let mut h264_video_input = NativeVulkanH264VideoInputMode::ReadyPrefixSpool;
+    let mut h264_video_input = NativeVulkanH264VideoInputMode::StreamingQueue;
     #[cfg(feature = "native-vulkan-gst-video")]
-    let mut h265_video_input = NativeVulkanH265VideoInputMode::ReadyPrefixSpool;
+    let mut h265_video_input = NativeVulkanH265VideoInputMode::StreamingQueue;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -579,9 +579,10 @@ fn parse_h264_video_input_mode(
     use gilder::renderer::native_vulkan::NativeVulkanH264VideoInputMode;
 
     match value {
-        "ready-prefix-spool" | "spool" | "ready-prefix" => {
-            Ok(NativeVulkanH264VideoInputMode::ReadyPrefixSpool)
-        }
+        "ready-prefix-spool" | "spool" | "ready-prefix" => Err(
+            "H.264 ready-prefix spool input is no longer maintained; use streaming-queue"
+                .to_owned(),
+        ),
         "streaming-queue" | "streaming" | "queue" => {
             Ok(NativeVulkanH264VideoInputMode::StreamingQueue)
         }
@@ -599,9 +600,10 @@ fn parse_h265_video_input_mode(
     use gilder::renderer::native_vulkan::NativeVulkanH265VideoInputMode;
 
     match value {
-        "ready-prefix-spool" | "spool" | "ready-prefix" => {
-            Ok(NativeVulkanH265VideoInputMode::ReadyPrefixSpool)
-        }
+        "ready-prefix-spool" | "spool" | "ready-prefix" => Err(
+            "H.265 ready-prefix spool input is no longer maintained; use streaming-queue"
+                .to_owned(),
+        ),
         "streaming-queue" | "streaming" | "queue" => {
             Ok(NativeVulkanH265VideoInputMode::StreamingQueue)
         }
@@ -669,9 +671,9 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --run-video accepts a video wallpaper plan, presents a poster/clear placeholder through native Vulkan, then prints video handoff telemetry.\n\
 --run-h265-first-frame-video decodes the first H.265 IDR with Vulkan Video and samples the decoded NV12 image to the swapchain.\n\
 --run-h264-ready-prefix-video decodes a ready H.264 AU prefix with Vulkan Video and samples each decoded NV12 layer to the swapchain.\n\
---h264-input ready-prefix-spool|streaming-queue selects retained spool or bounded streaming packet queue input for H.264 visible video.\n\
+--h264-input streaming-queue selects bounded streaming packet queue input for H.264 visible video; ready-prefix spool is no longer maintained.\n\
 --run-h265-ready-prefix-video decodes a ready H.265 AU prefix with Vulkan Video and samples each decoded NV12 layer to the swapchain.\n\
---h265-input ready-prefix-spool|streaming-queue selects retained spool or bounded streaming packet queue input for H.265 visible video.\n\
+--h265-input streaming-queue selects bounded streaming packet queue input for H.265 visible video; ready-prefix spool is no longer maintained.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\

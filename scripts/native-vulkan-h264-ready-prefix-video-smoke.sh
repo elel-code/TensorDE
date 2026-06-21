@@ -24,10 +24,11 @@ Options:
   --decode-prefix <n>   Ready-prefix AU count to decode/present. Default:
                         playback-frames when playback-frames is set, otherwise target-fps.
   --playback-frames <n> Decode/present frames by looping the ready prefix. Default: decode-prefix.
-  --streaming-queue    Use bounded parser/appsink packet queue instead of ready-prefix spool.
+  --streaming-queue    Compatibility no-op; bounded parser/appsink packet queue is always used.
   --target-fps <fps>    Presentation target FPS. Default: 240.
   --gop-size <frames>   Generated H.264 keyint/min-keyint. Default: target-fps.
   --refs <count>        Generated active reference frames. Default: 2.
+  --bframes <count>     Generated B-frame count. Default: 0.
   --level <level>       Generated H.264 level. Default: 6.2.
   --width <px>          Generated/probed width. Default: 3840.
   --height <px>         Generated/probed height. Default: 2160.
@@ -52,6 +53,7 @@ playback_frames=0
 target_fps=240
 gop_size=0
 refs=2
+bframes=0
 level=6.2
 width=3840
 height=2160
@@ -63,7 +65,7 @@ fit="cover"
 no_build=0
 generated_source=0
 source_duration_seconds=0
-streaming_queue=0
+streaming_queue=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -110,6 +112,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --refs)
       refs="${2:-}"
+      shift 2
+      ;;
+    --bframes)
+      bframes="${2:-}"
       shift 2
       ;;
     --level)
@@ -193,8 +199,8 @@ fi
 if [[ "$decode_prefix_explicit" -eq 0 && "$playback_frames" -gt "$decode_prefix" ]]; then
   decode_prefix="$playback_frames"
 fi
-if [[ "$decode_prefix" -lt 2 || "$playback_frames" -lt 0 || "$target_fps" -lt 1 || "$gop_size" -lt 2 || "$refs" -lt 1 || "$refs" -gt 16 || "$width" -lt 128 || "$height" -lt 128 ]]; then
-  printf 'FAIL: decode-prefix/playback-frames/target-fps/gop-size/refs must be valid and width/height must be at least 128\n' >&2
+if [[ "$decode_prefix" -lt 2 || "$playback_frames" -lt 0 || "$target_fps" -lt 1 || "$gop_size" -lt 2 || "$refs" -lt 1 || "$refs" -gt 16 || "$bframes" -lt 0 || "$bframes" -gt 16 || "$width" -lt 128 || "$height" -lt 128 ]]; then
+  printf 'FAIL: decode-prefix/playback-frames/target-fps/gop-size/refs/bframes must be valid and width/height must be at least 128\n' >&2
   exit 1
 fi
 if (( width % 16 != 0 || height % 16 != 0 )); then
@@ -240,12 +246,12 @@ if [[ -z "$source" ]]; then
     gop_size=$((decode_prefix + 1))
   fi
   source_duration_seconds=$(( (frames + target_fps - 1) / target_fps ))
-  source="$generated_dir/h264-high-ippp-ref${refs}-${width}x${height}-${target_fps}fps-${frames}frames-${decode_prefix}au.mp4"
+  source="$generated_dir/h264-high-b${bframes}-ref${refs}-${width}x${height}-${target_fps}fps-${frames}frames-${decode_prefix}au.mp4"
   ffmpeg -hide_banner -loglevel error -y \
     -f lavfi -i "testsrc2=size=${width}x${height}:rate=${target_fps}:duration=${source_duration_seconds}" \
     -frames:v "$frames" -an \
     -c:v libx264 -profile:v high -level:v "$level" -preset veryfast -tune zerolatency -pix_fmt yuv420p \
-    -x264-params "keyint=${gop_size}:min-keyint=${gop_size}:scenecut=0:open-gop=0:bframes=0:ref=${refs}:repeat-headers=1:cabac=1:8x8dct=1:weightp=0" \
+    -x264-params "keyint=${gop_size}:min-keyint=${gop_size}:scenecut=0:open-gop=0:bframes=${bframes}:b-adapt=0:ref=${refs}:repeat-headers=1:cabac=1:8x8dct=1:weightp=0:weightb=0" \
     "$source"
 fi
 
@@ -331,12 +337,17 @@ h264_packet_queue_max_payload_bytes="$(jq -r '.h264_packet_queue_max_payload_byt
 swapchain_images="$(jq -r '.swapchain_image_count // 0' "$runtime_json")"
 resource_bytes="$(jq -r '.video_resource_memory_bytes // 0' "$runtime_json")"
 idr_frames="$(jq -r '[.frames[]? | select(.idr == true)] | length' "$runtime_json")"
-p_frames="$(jq -r '[.frames[]? | select(.idr != true)] | length' "$runtime_json")"
+p_frames="$(jq -r '[.frames[]? | select(.slice_type == 0 or .slice_type == 5)] | length' "$runtime_json")"
+b_frames="$(jq -r '[.frames[]? | select(.slice_type == 1 or .slice_type == 6)] | length' "$runtime_json")"
 max_requested_reference_count="$(jq -r '[.frames[]? | .requested_reference_count] | max // 0' "$runtime_json")"
 max_reference_count="$(jq -r '[.frames[]? | .decode_reference_slot_count] | max // 0' "$runtime_json")"
 reference_gate_failed=0
 if [[ "$generated_source" -eq 1 && "$decode_prefix" -gt "$refs" && ( "$idr_frames" -lt 1 || "$p_frames" -lt 1 || "$max_requested_reference_count" -lt "$refs" || "$max_reference_count" -lt "$refs" ) ]]; then
   reference_gate_failed=1
+fi
+b_frame_gate_failed=0
+if [[ "$generated_source" -eq 1 && "$bframes" -gt 0 && "$b_frames" -lt 1 ]]; then
+  b_frame_gate_failed=1
 fi
 loop_gate_failed=0
 if [[ "$expected_frames" -gt "$decode_prefix" && ( "$playback_loop_count" -le 1 || "$loop_boundary_reset_count" -lt 1 ) ]]; then
@@ -347,14 +358,8 @@ if [[ "$bitstream_strategy" != "fixed-capacity-persistent-mapped-ring" || "$bits
   bitstream_gate_failed=1
 fi
 input_gate_failed=0
-if [[ "$streaming_queue" -eq 1 ]]; then
-  if [[ "$h264_input_mode" != "streaming-queue" || "$h264_packet_queue_capacity" -le 0 || "$h264_packet_queue_pulled_count" -lt "$expected_frames" || "$h264_packet_queue_max_payload_bytes" -le 0 ]]; then
-    input_gate_failed=1
-  fi
-else
-  if [[ "$h264_input_mode" != "ready-prefix-spool" ]]; then
-    input_gate_failed=1
-  fi
+if [[ "$h264_input_mode" != "streaming-queue" || "$h264_packet_queue_capacity" -le 0 || "$h264_packet_queue_pulled_count" -lt "$expected_frames" || "$h264_packet_queue_max_payload_bytes" -le 0 ]]; then
+  input_gate_failed=1
 fi
 if [[ "$decode_prefix" -gt 1 && ( "$bitstream_slot_count" -le 1 || "$bitstream_ring_capacity_bytes" -le "$bitstream_slot_bytes" ) ]]; then
   bitstream_gate_failed=1
@@ -371,7 +376,7 @@ if [[ "$driver_max_dpb_slots" == "none" || "$stream_sps_dpb_slots" -le 0 || "$st
   dpb_gate_failed=1
 fi
 
-if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$ready_prefix_count" -ne "$decode_prefix" || "$requested_playback_count" -ne "$expected_frames" || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$reference_gate_failed" -ne 0 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$pts_delta_min" == "none" || "$pts_delta_max" == "none" || "$present_queue" == "none" || "$video_queue" == "none" || "$sync_strategy" != "per-frame-binary-semaphore-decode-signal-present-wait" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
+if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$ready_prefix_count" -ne "$decode_prefix" || "$requested_playback_count" -ne "$expected_frames" || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$reference_gate_failed" -ne 0 || "$b_frame_gate_failed" -ne 0 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$pts_delta_min" == "none" || "$pts_delta_max" == "none" || "$present_queue" == "none" || "$video_queue" == "none" || "$sync_strategy" != "per-frame-binary-semaphore-decode-signal-present-wait" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
   {
     printf 'FAIL: native Vulkan direct H.264 ready-prefix video output was not valid\n'
     printf 'decoded_count: %s\n' "$decoded_count"
@@ -388,6 +393,7 @@ if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expect
     printf 'distinct_layers: %s\n' "$distinct_layers"
     printf 'idr_frames: %s\n' "$idr_frames"
     printf 'p_frames: %s\n' "$p_frames"
+    printf 'b_frames: %s\n' "$b_frames"
     printf 'generated_refs: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$refs" || printf none)"
     printf 'max_requested_reference_count: %s\n' "$max_requested_reference_count"
     printf 'max_reference_count: %s\n' "$max_reference_count"
@@ -429,8 +435,9 @@ fi
   printf 'generated_source_frames: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$frames" || printf none)"
   printf 'generated_source_duration_seconds: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$source_duration_seconds" || printf none)"
   printf 'generated_source_frames_explicit: %s\n' "$([[ "$frames_explicit" -eq 1 ]] && printf yes || printf no)"
-  printf 'generated_source_pattern: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf 'testsrc2-continuous-closed-gop-h264-high-ippp' || printf none)"
+  printf 'generated_source_pattern: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf 'testsrc2-continuous-closed-gop-h264-high-b%s' "$bframes" || printf none)"
   printf 'generated_source_refs: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$refs" || printf none)"
+  printf 'generated_source_bframes: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$bframes" || printf none)"
   printf 'generated_source_level: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$level" || printf none)"
   printf 'decode_prefix_explicit: %s\n' "$([[ "$decode_prefix_explicit" -eq 1 ]] && printf yes || printf no)"
   printf 'selected_device: %s\n' "$(jq -r '.selected_physical_device_name' "$runtime_json")"
@@ -451,6 +458,7 @@ fi
   printf 'loop_boundary_reset_count: %s\n' "$loop_boundary_reset_count"
   printf 'idr_frames: %s\n' "$idr_frames"
   printf 'p_frames: %s\n' "$p_frames"
+  printf 'b_frames: %s\n' "$b_frames"
   printf 'max_requested_reference_count: %s\n' "$max_requested_reference_count"
   printf 'max_reference_count: %s\n' "$max_reference_count"
   printf 'pacing_strategy: %s\n' "$pacing_strategy"
