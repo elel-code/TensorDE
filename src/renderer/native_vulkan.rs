@@ -8,7 +8,7 @@
 
 use serde::Serialize;
 #[cfg(feature = "native-vulkan-gst-video")]
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{CStr, CString, c_void};
 use std::fmt;
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -50,6 +50,41 @@ use gstreamer as gst;
 use gstreamer_video as gst_video;
 
 const NATIVE_VULKAN_VIDEO_CODEC_OPERATION_DECODE_VP9: u32 = 0x0000_0008;
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeVulkanH264VideoInputMode {
+    ReadyPrefixSpool,
+    StreamingQueue,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanH264VideoInputMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadyPrefixSpool => "ready-prefix-spool",
+            Self::StreamingQueue => "streaming-queue",
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeVulkanH265VideoInputMode {
+    ReadyPrefixSpool,
+    StreamingQueue,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanH265VideoInputMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadyPrefixSpool => "ready-prefix-spool",
+            Self::StreamingQueue => "streaming-queue",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanCapabilities {
     pub built: bool,
@@ -1043,6 +1078,7 @@ pub struct NativeVulkanH264AccessUnitSliceSnapshot {
     pub idr_pic_id: u16,
     pub num_ref_idx_l0_active_minus1: Option<u32>,
     pub ref_pic_list_modification_l0: bool,
+    pub ref_pic_list_modifications_l0: Vec<NativeVulkanH264RefPicListModificationSnapshot>,
     pub adaptive_ref_pic_marking_mode_flag: bool,
     pub field_pic_flag: bool,
     pub bottom_field_flag: bool,
@@ -1055,6 +1091,13 @@ pub struct NativeVulkanH264AccessUnitSliceSnapshot {
     pub slice_offsets: Vec<u32>,
     pub idr: bool,
     pub irap: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanH264RefPicListModificationSnapshot {
+    pub modification_of_pic_nums_idc: u32,
+    pub abs_diff_pic_num_minus1: Option<u32>,
+    pub long_term_pic_num: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2038,6 +2081,13 @@ pub struct NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
     pub bitstream_window_payload_bytes: u64,
     pub bitstream_upload_count: u32,
     pub bitstream_uploaded_bytes: u64,
+    pub h265_input_mode: &'static str,
+    pub h265_packet_queue_capacity: u32,
+    pub h265_packet_queue_pulled_count: u32,
+    pub h265_packet_queue_eos_count: u32,
+    pub h265_packet_queue_loop_count: u32,
+    pub h265_packet_queue_max_payload_bytes: u64,
+    pub h265_packet_queue_retained_payload_bytes: u64,
     pub pts_delta_min_ms: Option<u64>,
     pub pts_delta_max_ms: Option<u64>,
     pub frames: Vec<NativeVulkanDirectH265ReadyPrefixFrameSnapshot>,
@@ -2132,6 +2182,13 @@ pub struct NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot {
     pub bitstream_window_payload_bytes: u64,
     pub bitstream_upload_count: u32,
     pub bitstream_uploaded_bytes: u64,
+    pub h264_input_mode: &'static str,
+    pub h264_packet_queue_capacity: u32,
+    pub h264_packet_queue_pulled_count: u32,
+    pub h264_packet_queue_eos_count: u32,
+    pub h264_packet_queue_loop_count: u32,
+    pub h264_packet_queue_max_payload_bytes: u64,
+    pub h264_packet_queue_retained_payload_bytes: u64,
     pub pts_delta_min_ms: Option<u64>,
     pub pts_delta_max_ms: Option<u64>,
     pub frames: Vec<NativeVulkanDirectH264ReadyPrefixFrameSnapshot>,
@@ -3767,6 +3824,7 @@ pub fn run_h264_ready_prefix_video(
     fit: FitMode,
     bitstream_samples: u32,
     ready_prefix_frame_count: u32,
+    input_mode: NativeVulkanH264VideoInputMode,
     playback_frame_count: u32,
 ) -> Result<NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot, NativeVulkanError> {
     if width == 0 || height == 0 {
@@ -4061,65 +4119,143 @@ pub fn run_h264_ready_prefix_video(
                     }
                 })?;
 
-            let extract = native_vulkan_extract_h264_bitstream(
-                &source,
-                bitstream_samples.max(ready_prefix_frame_count),
-            )?;
-            native_vulkan_validate_h264_ready_prefix(&extract.snapshot, ready_prefix_frame_count)?;
-            let parameter_sets = extract
-                .snapshot
-                .h264_parameter_sets
-                .as_ref()
-                .cloned()
-                .ok_or_else(|| {
-                    NativeVulkanError::Video(
-                        "direct H.264 ready-prefix video requires parsed H.264 parameter sets"
-                            .to_owned(),
+            let mut spooled_extract = None::<NativeVulkanH264VideoBitstreamSpoolExtract>;
+            let mut streaming_queue = None::<NativeVulkanH264StreamingPacketQueue>;
+            let mut access_units = Vec::<NativeVulkanH264AccessUnitSnapshot>::new();
+            let mut optimized_reference_plan =
+                Vec::<NativeVulkanH264DecodeReferencePlanEntrySnapshot>::new();
+            let (
+                parameter_sets,
+                stream_sps_dpb_slots,
+                stream_max_active_reference_pictures,
+                stream_dpb_slots,
+                streaming_bitstream,
+            ) = match input_mode {
+                NativeVulkanH264VideoInputMode::ReadyPrefixSpool => {
+                    let extract = native_vulkan_extract_h264_bitstream_spooled(
+                        &source,
+                        bitstream_samples.max(ready_prefix_frame_count),
+                    )?;
+                    native_vulkan_validate_h264_ready_prefix(
+                        &extract.snapshot,
+                        ready_prefix_frame_count,
+                    )?;
+                    let parameter_sets = extract
+                        .snapshot
+                        .h264_parameter_sets
+                        .as_ref()
+                        .cloned()
+                        .ok_or_else(|| {
+                            NativeVulkanError::Video(
+                                "direct H.264 ready-prefix video requires parsed H.264 parameter sets"
+                                    .to_owned(),
+                            )
+                        })?;
+                    access_units = extract
+                        .snapshot
+                        .h264_access_units
+                        .get(..ready_prefix_frame_count as usize)
+                        .ok_or_else(|| {
+                            NativeVulkanError::Video(format!(
+                                "H.264 access unit snapshot has {} frames but {ready_prefix_frame_count} were requested",
+                                extract.snapshot.h264_access_units.len()
+                            ))
+                        })?
+                        .to_vec();
+                    let stream_sps_dpb_slots =
+                        native_vulkan_h264_sps_dpb_slot_count(&parameter_sets.sps);
+                    let max_frame_num = native_vulkan_h264_sps_max_frame_num(&parameter_sets.sps);
+                    let stream_max_active_reference_pictures =
+                        native_vulkan_h264_access_units_max_active_references(&access_units);
+                    let (stream_dpb_slots, plan) = native_vulkan_h264_min_decodable_dpb_plan(
+                        &access_units,
+                        stream_sps_dpb_slots,
+                        stream_max_active_reference_pictures.max(1),
+                        max_frame_num,
+                    );
+                    if let Some(first_unready) =
+                        plan.iter().find(|entry| !entry.ready_for_decode_submit)
+                    {
+                        return Err(NativeVulkanError::Video(format!(
+                            "H.264 ready-prefix AU {} is not decodable with optimized DPB slot count {stream_dpb_slots}: {}",
+                            first_unready.access_unit_index,
+                            first_unready
+                                .unsupported_reason
+                                .as_deref()
+                                .unwrap_or("missing references")
+                        )));
+                    }
+                    let streaming_bitstream =
+                        native_vulkan_h264_ready_prefix_streaming_bitstream_plan_spooled(
+                            &extract,
+                            ready_prefix_frame_count,
+                            capabilities.min_bitstream_buffer_offset_alignment,
+                            capabilities.min_bitstream_buffer_size_alignment,
+                        )?;
+                    optimized_reference_plan = plan;
+                    spooled_extract = Some(extract);
+                    (
+                        parameter_sets,
+                        stream_sps_dpb_slots,
+                        stream_max_active_reference_pictures,
+                        stream_dpb_slots,
+                        streaming_bitstream,
                     )
-                })?;
-            let access_units = extract
-                .snapshot
-                .h264_access_units
-                .get(..ready_prefix_frame_count as usize)
-                .ok_or_else(|| {
-                    NativeVulkanError::Video(format!(
-                        "H.264 access unit snapshot has {} frames but {ready_prefix_frame_count} were requested",
-                        extract.snapshot.h264_access_units.len()
-                    ))
-                })?
-                .to_vec();
-            let stream_sps_dpb_slots = native_vulkan_h264_sps_dpb_slot_count(&parameter_sets.sps);
-            let stream_max_active_reference_pictures = access_units
-                .iter()
-                .filter_map(|access_unit| access_unit.first_slice.as_ref())
-                .filter_map(|slice| {
-                    slice
-                        .is_p
-                        .then(|| slice.num_ref_idx_l0_active_minus1.map(|value| value + 1))
-                        .flatten()
-                })
-                .max()
-                .unwrap_or(0);
-            let (stream_dpb_slots, optimized_reference_plan) =
-                native_vulkan_h264_min_decodable_dpb_plan(
-                    &access_units,
-                    stream_sps_dpb_slots,
-                    stream_max_active_reference_pictures.max(1),
-                );
-            if let Some(first_unready) = optimized_reference_plan
-                .iter()
-                .find(|entry| !entry.ready_for_decode_submit)
-            {
-                return Err(NativeVulkanError::Video(format!(
-                    "H.264 ready-prefix AU {} is not decodable with optimized DPB slot count {stream_dpb_slots}: {}",
-                    first_unready.access_unit_index,
-                    first_unready
-                        .unsupported_reason
-                        .as_deref()
-                        .unwrap_or("missing references")
-                )));
-            }
-            let plan = optimized_reference_plan.as_slice();
+                }
+                NativeVulkanH264VideoInputMode::StreamingQueue => {
+                    let queue_capacity = native_vulkan_h264_streaming_packet_queue_capacity(
+                        ready_prefix_frame_count,
+                    );
+                    let queue =
+                        native_vulkan_start_h264_streaming_packet_queue(&source, queue_capacity)?;
+                    let parameter_sets = queue.parameter_sets.clone();
+                    let bootstrap_access_units = queue.bootstrap_access_units();
+                    let stream_sps_dpb_slots =
+                        native_vulkan_h264_sps_dpb_slot_count(&parameter_sets.sps);
+                    let max_frame_num = native_vulkan_h264_sps_max_frame_num(&parameter_sets.sps);
+                    let stream_max_active_reference_pictures =
+                        native_vulkan_h264_access_units_max_active_references(
+                            &bootstrap_access_units,
+                        )
+                        .max(1);
+                    let (stream_dpb_slots, bootstrap_plan) =
+                        native_vulkan_h264_min_decodable_dpb_plan(
+                            &bootstrap_access_units,
+                            stream_sps_dpb_slots,
+                            stream_max_active_reference_pictures,
+                            max_frame_num,
+                        );
+                    if let Some(first_unready) = bootstrap_plan
+                        .iter()
+                        .find(|entry| !entry.ready_for_decode_submit)
+                    {
+                        return Err(NativeVulkanError::Video(format!(
+                            "H.264 streaming bootstrap AU {} is not decodable with optimized DPB slot count {stream_dpb_slots}: {}",
+                            first_unready.access_unit_index,
+                            first_unready
+                                .unsupported_reason
+                                .as_deref()
+                                .unwrap_or("missing references")
+                        )));
+                    }
+                    let streaming_bitstream = native_vulkan_h264_streaming_queue_bitstream_plan(
+                        &queue,
+                        width,
+                        height,
+                        capabilities.min_bitstream_buffer_offset_alignment,
+                        capabilities.min_bitstream_buffer_size_alignment,
+                    )?;
+                    streaming_queue = Some(queue);
+                    (
+                        parameter_sets,
+                        stream_sps_dpb_slots,
+                        stream_max_active_reference_pictures,
+                        stream_dpb_slots,
+                        streaming_bitstream,
+                    )
+                }
+            };
+            let stream_max_frame_num = native_vulkan_h264_sps_max_frame_num(&parameter_sets.sps);
             let session_max_dpb_slots = native_vulkan_h265_session_dpb_slots_for_count(
                 capabilities.max_dpb_slots,
                 stream_dpb_slots,
@@ -4216,12 +4352,6 @@ pub fn run_h264_ready_prefix_video(
                 false,
             )?);
 
-            let streaming_bitstream = native_vulkan_h264_ready_prefix_streaming_bitstream_plan(
-                &extract,
-                ready_prefix_frame_count,
-                capabilities.min_bitstream_buffer_offset_alignment,
-                capabilities.min_bitstream_buffer_size_alignment,
-            )?;
             bitstream_buffer = Some(
                 native_vulkan_create_video_session_bitstream_buffer_with_mapping(
                     &device,
@@ -4287,28 +4417,94 @@ pub fn run_h264_ready_prefix_video(
             let mut total_frame_sleep_us = 0u64;
             let mut max_frame_pacing_late_us = 0u64;
             let mut bitstream_ring = NativeVulkanVideoBitstreamRing::new(&streaming_bitstream);
+            let mut streaming_reference_planner = NativeVulkanH264DecodeReferencePlanner::new(
+                stream_dpb_slots,
+                stream_max_active_reference_pictures.max(1),
+                stream_max_frame_num,
+            );
+            let mut previous_source_loop_index = 0u32;
 
             for playback_frame_index in 0..playback_frame_count {
                 probe.host.pump_events()?;
                 if probe.host.is_closed() {
                     break;
                 }
-                let ready_prefix_frame_index = playback_frame_index % ready_prefix_frame_count;
-                let playback_loop_index = playback_frame_index / ready_prefix_frame_count;
-                let ready_prefix_index = ready_prefix_frame_index as usize;
-                let entry = &plan[ready_prefix_index];
-                let access_unit = &access_units[ready_prefix_index];
-                let access_unit_payload =
-                    extract
-                        .h264_access_unit_payloads
-                        .get(ready_prefix_index)
-                        .ok_or_else(|| {
-                            NativeVulkanError::Video(format!(
-                                "H.264 bitstream has {} payloads but AU {ready_prefix_index} was requested",
-                                extract.h264_access_unit_payloads.len()
-                            ))
+                let (
+                    ready_prefix_frame_index,
+                    playback_loop_index,
+                    ready_prefix_index,
+                    entry,
+                    access_unit,
+                    streaming_packet,
+                    loop_boundary_reset,
+                ) = match input_mode {
+                    NativeVulkanH264VideoInputMode::ReadyPrefixSpool => {
+                        let ready_prefix_frame_index =
+                            playback_frame_index % ready_prefix_frame_count;
+                        let playback_loop_index = playback_frame_index / ready_prefix_frame_count;
+                        let ready_prefix_index = ready_prefix_frame_index as usize;
+                        let entry = optimized_reference_plan
+                            .get(ready_prefix_index)
+                            .cloned()
+                            .ok_or_else(|| {
+                                NativeVulkanError::Video(format!(
+                                    "H.264 ready-prefix plan has {} entries but index {ready_prefix_index} was requested",
+                                    optimized_reference_plan.len()
+                                ))
+                            })?;
+                        let access_unit = access_units
+                            .get(ready_prefix_index)
+                            .cloned()
+                            .ok_or_else(|| {
+                                NativeVulkanError::Video(format!(
+                                    "H.264 ready-prefix has {} AU snapshots but index {ready_prefix_index} was requested",
+                                    access_units.len()
+                                ))
+                            })?;
+                        (
+                            ready_prefix_frame_index,
+                            playback_loop_index,
+                            Some(ready_prefix_index),
+                            entry,
+                            access_unit,
+                            None,
+                            ready_prefix_frame_index == 0 && playback_frame_index > 0,
+                        )
+                    }
+                    NativeVulkanH264VideoInputMode::StreamingQueue => {
+                        let queue = streaming_queue.as_mut().ok_or_else(|| {
+                            NativeVulkanError::Video(
+                                "H.264 streaming queue is not initialized".to_owned(),
+                            )
                         })?;
-                let loop_boundary_reset = ready_prefix_frame_index == 0 && playback_frame_index > 0;
+                        let packet = queue.next_packet(true)?;
+                        let access_unit = packet.snapshot.clone();
+                        let entry = streaming_reference_planner.plan_next(&access_unit);
+                        if !entry.ready_for_decode_submit {
+                            return Err(NativeVulkanError::Video(format!(
+                                "H.264 streaming AU {} is not decodable: {}",
+                                entry.access_unit_index,
+                                entry
+                                    .unsupported_reason
+                                    .as_deref()
+                                    .unwrap_or("missing references")
+                            )));
+                        }
+                        let source_loop_index = packet.source_loop_index;
+                        let loop_boundary_reset = playback_frame_index > 0
+                            && source_loop_index != previous_source_loop_index;
+                        previous_source_loop_index = source_loop_index;
+                        (
+                            playback_frame_index,
+                            source_loop_index,
+                            None,
+                            entry,
+                            access_unit,
+                            Some(packet),
+                            loop_boundary_reset,
+                        )
+                    }
+                };
                 let fences = [in_flight];
                 unsafe {
                     device
@@ -4349,14 +4545,34 @@ pub fn run_h264_ready_prefix_video(
                     active_dpb_refs.fill(None);
                 }
                 let bitstream_upload_started_at = Instant::now();
-                let span = native_vulkan_write_h264_payload_to_bitstream_ring(
-                    &extract,
-                    &parameter_sets,
-                    ready_prefix_index,
-                    &device,
-                    buffer,
-                    &mut bitstream_ring,
-                )?;
+                let span = match streaming_packet.as_ref() {
+                    Some(packet) => native_vulkan_write_h264_streaming_packet_to_bitstream_ring(
+                        packet,
+                        &device,
+                        buffer,
+                        &mut bitstream_ring,
+                    )?,
+                    None => {
+                        let ready_prefix_index = ready_prefix_index.ok_or_else(|| {
+                            NativeVulkanError::Video(
+                                "H.264 ready-prefix index missing for spooled input".to_owned(),
+                            )
+                        })?;
+                        spooled_extract
+                            .as_mut()
+                            .ok_or_else(|| {
+                                NativeVulkanError::Video(
+                                    "H.264 spooled input is not initialized".to_owned(),
+                                )
+                            })?
+                            .write_payload_to_bitstream_ring(
+                                ready_prefix_index,
+                                &device,
+                                buffer,
+                                &mut bitstream_ring,
+                            )?
+                    }
+                };
                 let bitstream_upload_elapsed_us =
                     native_vulkan_elapsed_us(bitstream_upload_started_at.elapsed());
                 let mut frame = native_vulkan_decode_h264_ready_prefix_frame_to_image(
@@ -4372,9 +4588,8 @@ pub fn run_h264_ready_prefix_video(
                     buffer,
                     buffer.snapshot.size,
                     &parameter_sets,
-                    entry,
-                    access_unit,
-                    access_unit_payload,
+                    &entry,
+                    &access_unit,
                     &span,
                     &active_dpb_refs,
                     &mut image_layer_layouts,
@@ -4573,6 +4788,31 @@ pub fn run_h264_ready_prefix_video(
                 bitstream_window_payload_bytes: streaming_bitstream.window_payload_bytes,
                 bitstream_upload_count: frames.len() as u32,
                 bitstream_uploaded_bytes: frames.iter().map(|frame| frame.src_buffer_range).sum(),
+                h264_input_mode: input_mode.as_str(),
+                h264_packet_queue_capacity: streaming_queue
+                    .as_ref()
+                    .map(|queue| queue.capacity.min(u32::MAX as usize) as u32)
+                    .unwrap_or(0),
+                h264_packet_queue_pulled_count: streaming_queue
+                    .as_ref()
+                    .map(|queue| queue.pulled_count)
+                    .unwrap_or(0),
+                h264_packet_queue_eos_count: streaming_queue
+                    .as_ref()
+                    .map(|queue| queue.eos_count)
+                    .unwrap_or(0),
+                h264_packet_queue_loop_count: streaming_queue
+                    .as_ref()
+                    .map(|queue| queue.loop_count)
+                    .unwrap_or(0),
+                h264_packet_queue_max_payload_bytes: streaming_queue
+                    .as_ref()
+                    .map(|queue| queue.max_payload_bytes)
+                    .unwrap_or(0),
+                h264_packet_queue_retained_payload_bytes: streaming_queue
+                    .as_ref()
+                    .map(|queue| queue.retained_payload_bytes())
+                    .unwrap_or(0),
                 pts_delta_min_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).min(),
                 pts_delta_max_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).max(),
                 frames,
@@ -4654,6 +4894,7 @@ pub fn run_h265_ready_prefix_video(
     fit: FitMode,
     bitstream_samples: u32,
     ready_prefix_frame_count: u32,
+    input_mode: NativeVulkanH265VideoInputMode,
     playback_frame_count: u32,
 ) -> Result<NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot, NativeVulkanError> {
     if width == 0 || height == 0 {
@@ -4947,48 +5188,128 @@ pub fn run_h265_ready_prefix_video(
                     }
                 })?;
 
-            let mut extract = native_vulkan_extract_h265_bitstream_spooled(
-                &source,
-                bitstream_samples.max(ready_prefix_frame_count),
-            )?;
-            native_vulkan_validate_h265_ready_prefix(&extract.snapshot, ready_prefix_frame_count)?;
-            let parameter_sets = extract
-                .snapshot
-                .h265_parameter_sets
-                .as_ref()
-                .cloned()
-                .ok_or_else(|| {
-                    NativeVulkanError::Video(
-                        "direct H.265 ready-prefix video requires parsed H.265 parameter sets"
-                            .to_owned(),
+            let mut spooled_extract = None::<NativeVulkanVideoBitstreamSpoolExtract>;
+            let mut streaming_queue = None::<NativeVulkanH265StreamingPacketQueue>;
+            let mut access_units = Vec::<NativeVulkanH265AccessUnitSnapshot>::new();
+            let mut optimized_reference_plan =
+                Vec::<NativeVulkanH265DecodeReferencePlanEntrySnapshot>::new();
+            let (
+                parameter_sets,
+                stream_sps_dpb_slots,
+                stream_max_active_reference_pictures,
+                stream_dpb_slots,
+                streaming_bitstream,
+            ) = match input_mode {
+                NativeVulkanH265VideoInputMode::ReadyPrefixSpool => {
+                    let extract = native_vulkan_extract_h265_bitstream_spooled(
+                        &source,
+                        bitstream_samples.max(ready_prefix_frame_count),
+                    )?;
+                    native_vulkan_validate_h265_ready_prefix(
+                        &extract.snapshot,
+                        ready_prefix_frame_count,
+                    )?;
+                    let parameter_sets = extract
+                        .snapshot
+                        .h265_parameter_sets
+                        .as_ref()
+                        .cloned()
+                        .ok_or_else(|| {
+                            NativeVulkanError::Video(
+                                "direct H.265 ready-prefix video requires parsed H.265 parameter sets"
+                                    .to_owned(),
+                            )
+                        })?;
+                    access_units = extract
+                        .snapshot
+                        .h265_access_units
+                        .get(..ready_prefix_frame_count as usize)
+                        .ok_or_else(|| {
+                            NativeVulkanError::Video(format!(
+                                "H.265 access unit snapshot has {} frames but {ready_prefix_frame_count} were requested",
+                                extract.snapshot.h265_access_units.len()
+                            ))
+                        })?
+                        .to_vec();
+                    let stream_sps_dpb_slots =
+                        native_vulkan_h265_sps_dpb_slot_count(&parameter_sets.sps);
+                    let stream_max_active_reference_pictures =
+                        native_vulkan_h265_access_units_max_active_references(&access_units);
+                    let (stream_dpb_slots, plan) = native_vulkan_h265_min_decodable_dpb_plan(
+                        &access_units,
+                        stream_sps_dpb_slots,
+                    );
+                    if let Some(first_unready) =
+                        plan.iter().find(|entry| !entry.ready_for_decode_submit)
+                    {
+                        return Err(NativeVulkanError::Video(format!(
+                            "H.265 ready-prefix AU {} is not decodable with optimized DPB slot count {stream_dpb_slots}; missing POCs {:?}",
+                            first_unready.access_unit_index, first_unready.missing_reference_pocs
+                        )));
+                    }
+                    let streaming_bitstream =
+                        native_vulkan_h265_ready_prefix_streaming_bitstream_plan_spooled(
+                            &extract,
+                            ready_prefix_frame_count,
+                            capabilities.min_bitstream_buffer_offset_alignment,
+                            capabilities.min_bitstream_buffer_size_alignment,
+                        )?;
+                    optimized_reference_plan = plan;
+                    spooled_extract = Some(extract);
+                    (
+                        parameter_sets,
+                        stream_sps_dpb_slots,
+                        stream_max_active_reference_pictures,
+                        stream_dpb_slots,
+                        streaming_bitstream,
                     )
-                })?;
-            let access_units = extract
-                .snapshot
-                .h265_access_units
-                .get(..ready_prefix_frame_count as usize)
-                .ok_or_else(|| {
-                    NativeVulkanError::Video(format!(
-                        "H.265 access unit snapshot has {} frames but {ready_prefix_frame_count} were requested",
-                        extract.snapshot.h265_access_units.len()
-                    ))
-                })?
-                .to_vec();
-            let stream_sps_dpb_slots = native_vulkan_h265_sps_dpb_slot_count(&parameter_sets.sps);
-            let stream_max_active_reference_pictures =
-                native_vulkan_h265_access_units_max_active_references(&access_units);
-            let (stream_dpb_slots, optimized_reference_plan) =
-                native_vulkan_h265_min_decodable_dpb_plan(&access_units, stream_sps_dpb_slots);
-            if let Some(first_unready) = optimized_reference_plan
-                .iter()
-                .find(|entry| !entry.ready_for_decode_submit)
-            {
-                return Err(NativeVulkanError::Video(format!(
-                    "H.265 ready-prefix AU {} is not decodable with optimized DPB slot count {stream_dpb_slots}; missing POCs {:?}",
-                    first_unready.access_unit_index, first_unready.missing_reference_pocs
-                )));
-            }
-            let plan = optimized_reference_plan.as_slice();
+                }
+                NativeVulkanH265VideoInputMode::StreamingQueue => {
+                    let queue_capacity = native_vulkan_h265_streaming_packet_queue_capacity(
+                        ready_prefix_frame_count,
+                    );
+                    let queue =
+                        native_vulkan_start_h265_streaming_packet_queue(&source, queue_capacity)?;
+                    let parameter_sets = queue.parameter_sets.clone();
+                    let bootstrap_access_units = queue.bootstrap_access_units();
+                    let stream_sps_dpb_slots =
+                        native_vulkan_h265_sps_dpb_slot_count(&parameter_sets.sps);
+                    let stream_max_active_reference_pictures =
+                        native_vulkan_h265_access_units_max_active_references(
+                            &bootstrap_access_units,
+                        )
+                        .max(1);
+                    let (stream_dpb_slots, bootstrap_plan) =
+                        native_vulkan_h265_min_decodable_dpb_plan(
+                            &bootstrap_access_units,
+                            stream_sps_dpb_slots,
+                        );
+                    if let Some(first_unready) = bootstrap_plan
+                        .iter()
+                        .find(|entry| !entry.ready_for_decode_submit)
+                    {
+                        return Err(NativeVulkanError::Video(format!(
+                            "H.265 streaming bootstrap AU {} is not decodable with optimized DPB slot count {stream_dpb_slots}; missing POCs {:?}",
+                            first_unready.access_unit_index, first_unready.missing_reference_pocs
+                        )));
+                    }
+                    let streaming_bitstream = native_vulkan_h265_streaming_queue_bitstream_plan(
+                        &queue,
+                        width,
+                        height,
+                        capabilities.min_bitstream_buffer_offset_alignment,
+                        capabilities.min_bitstream_buffer_size_alignment,
+                    )?;
+                    streaming_queue = Some(queue);
+                    (
+                        parameter_sets,
+                        stream_sps_dpb_slots,
+                        stream_max_active_reference_pictures,
+                        stream_dpb_slots,
+                        streaming_bitstream,
+                    )
+                }
+            };
             let session_max_dpb_slots = native_vulkan_h265_session_dpb_slots_for_count(
                 capabilities.max_dpb_slots,
                 stream_dpb_slots,
@@ -5080,13 +5401,6 @@ pub fn run_h265_ready_prefix_video(
                 false,
             )?);
 
-            let streaming_bitstream =
-                native_vulkan_h265_ready_prefix_streaming_bitstream_plan_spooled(
-                    &extract,
-                    ready_prefix_frame_count,
-                    capabilities.min_bitstream_buffer_offset_alignment,
-                    capabilities.min_bitstream_buffer_size_alignment,
-                )?;
             bitstream_buffer = Some(
                 native_vulkan_create_video_session_bitstream_buffer_with_mapping(
                     &device,
@@ -5149,18 +5463,95 @@ pub fn run_h265_ready_prefix_video(
             let mut total_frame_sleep_us = 0u64;
             let mut max_frame_pacing_late_us = 0u64;
             let mut bitstream_ring = NativeVulkanVideoBitstreamRing::new(&streaming_bitstream);
+            let mut streaming_seen_access_units = Vec::<NativeVulkanH265AccessUnitSnapshot>::new();
+            let mut previous_source_loop_index = 0u32;
 
             for playback_frame_index in 0..playback_frame_count {
                 probe.host.pump_events()?;
                 if probe.host.is_closed() {
                     break;
                 }
-                let ready_prefix_frame_index = playback_frame_index % ready_prefix_frame_count;
-                let playback_loop_index = playback_frame_index / ready_prefix_frame_count;
-                let ready_prefix_index = ready_prefix_frame_index as usize;
-                let entry = &plan[ready_prefix_index];
-                let access_unit = &access_units[ready_prefix_index];
-                let loop_boundary_reset = ready_prefix_frame_index == 0 && playback_frame_index > 0;
+                let (
+                    ready_prefix_frame_index,
+                    playback_loop_index,
+                    ready_prefix_index,
+                    entry,
+                    access_unit,
+                    streaming_packet,
+                    loop_boundary_reset,
+                ) = match input_mode {
+                    NativeVulkanH265VideoInputMode::ReadyPrefixSpool => {
+                        let ready_prefix_frame_index =
+                            playback_frame_index % ready_prefix_frame_count;
+                        let playback_loop_index = playback_frame_index / ready_prefix_frame_count;
+                        let ready_prefix_index = ready_prefix_frame_index as usize;
+                        let entry = optimized_reference_plan
+                            .get(ready_prefix_index)
+                            .cloned()
+                            .ok_or_else(|| {
+                                NativeVulkanError::Video(format!(
+                                    "H.265 ready-prefix plan has {} entries but index {ready_prefix_index} was requested",
+                                    optimized_reference_plan.len()
+                                ))
+                            })?;
+                        let access_unit = access_units
+                            .get(ready_prefix_index)
+                            .cloned()
+                            .ok_or_else(|| {
+                                NativeVulkanError::Video(format!(
+                                    "H.265 ready-prefix has {} AU snapshots but index {ready_prefix_index} was requested",
+                                    access_units.len()
+                                ))
+                            })?;
+                        (
+                            ready_prefix_frame_index,
+                            playback_loop_index,
+                            Some(ready_prefix_index),
+                            entry,
+                            access_unit,
+                            None,
+                            ready_prefix_frame_index == 0 && playback_frame_index > 0,
+                        )
+                    }
+                    NativeVulkanH265VideoInputMode::StreamingQueue => {
+                        let queue = streaming_queue.as_mut().ok_or_else(|| {
+                            NativeVulkanError::Video(
+                                "H.265 streaming queue is not initialized".to_owned(),
+                            )
+                        })?;
+                        let packet = queue.next_packet(true)?;
+                        let access_unit = packet.snapshot.clone();
+                        streaming_seen_access_units.push(access_unit.clone());
+                        let plan = native_vulkan_h265_decode_reference_plan(
+                            &streaming_seen_access_units,
+                            stream_dpb_slots,
+                        );
+                        let entry = plan.last().cloned().ok_or_else(|| {
+                            NativeVulkanError::Video(
+                                "H.265 streaming reference plan is empty".to_owned(),
+                            )
+                        })?;
+                        if !entry.ready_for_decode_submit {
+                            return Err(NativeVulkanError::Video(format!(
+                                "H.265 streaming AU {} is not decodable; missing POCs {:?}",
+                                entry.access_unit_index, entry.missing_reference_pocs
+                            )));
+                        }
+                        let source_loop_index = packet.source_loop_index;
+                        let loop_boundary_reset = playback_frame_index > 0
+                            && source_loop_index != previous_source_loop_index;
+                        previous_source_loop_index = source_loop_index;
+                        (
+                            playback_frame_index,
+                            source_loop_index,
+                            None,
+                            entry,
+                            access_unit,
+                            Some(packet),
+                            loop_boundary_reset,
+                        )
+                    }
+                };
                 let fences = [in_flight];
                 unsafe {
                     device
@@ -5201,12 +5592,34 @@ pub fn run_h265_ready_prefix_video(
                     active_dpb_pocs.fill(None);
                 }
                 let bitstream_upload_started_at = Instant::now();
-                let span = extract.write_payload_to_bitstream_ring(
-                    ready_prefix_index,
-                    &device,
-                    buffer,
-                    &mut bitstream_ring,
-                )?;
+                let span = match streaming_packet.as_ref() {
+                    Some(packet) => native_vulkan_write_h265_streaming_packet_to_bitstream_ring(
+                        packet,
+                        &device,
+                        buffer,
+                        &mut bitstream_ring,
+                    )?,
+                    None => {
+                        let ready_prefix_index = ready_prefix_index.ok_or_else(|| {
+                            NativeVulkanError::Video(
+                                "H.265 ready-prefix index missing for spooled input".to_owned(),
+                            )
+                        })?;
+                        spooled_extract
+                            .as_mut()
+                            .ok_or_else(|| {
+                                NativeVulkanError::Video(
+                                    "H.265 spooled input is not initialized".to_owned(),
+                                )
+                            })?
+                            .write_payload_to_bitstream_ring(
+                                ready_prefix_index,
+                                &device,
+                                buffer,
+                                &mut bitstream_ring,
+                            )?
+                    }
+                };
                 let bitstream_upload_elapsed_us =
                     native_vulkan_elapsed_us(bitstream_upload_started_at.elapsed());
                 let mut frame = native_vulkan_decode_h265_ready_prefix_frame_to_image(
@@ -5222,8 +5635,8 @@ pub fn run_h265_ready_prefix_video(
                     buffer,
                     buffer.snapshot.size,
                     &parameter_sets,
-                    entry,
-                    access_unit,
+                    &entry,
+                    &access_unit,
                     &span,
                     &active_dpb_pocs,
                     &mut image_layer_layouts,
@@ -5419,6 +5832,31 @@ pub fn run_h265_ready_prefix_video(
                 bitstream_window_payload_bytes: streaming_bitstream.window_payload_bytes,
                 bitstream_upload_count: frames.len() as u32,
                 bitstream_uploaded_bytes: frames.iter().map(|frame| frame.src_buffer_range).sum(),
+                h265_input_mode: input_mode.as_str(),
+                h265_packet_queue_capacity: streaming_queue
+                    .as_ref()
+                    .map(|queue| queue.capacity.min(u32::MAX as usize) as u32)
+                    .unwrap_or(0),
+                h265_packet_queue_pulled_count: streaming_queue
+                    .as_ref()
+                    .map(|queue| queue.pulled_count)
+                    .unwrap_or(0),
+                h265_packet_queue_eos_count: streaming_queue
+                    .as_ref()
+                    .map(|queue| queue.eos_count)
+                    .unwrap_or(0),
+                h265_packet_queue_loop_count: streaming_queue
+                    .as_ref()
+                    .map(|queue| queue.loop_count)
+                    .unwrap_or(0),
+                h265_packet_queue_max_payload_bytes: streaming_queue
+                    .as_ref()
+                    .map(|queue| queue.max_payload_bytes)
+                    .unwrap_or(0),
+                h265_packet_queue_retained_payload_bytes: streaming_queue
+                    .as_ref()
+                    .map(|queue| queue.retained_payload_bytes())
+                    .unwrap_or(0),
                 pts_delta_min_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).min(),
                 pts_delta_max_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).max(),
                 frames,
@@ -9519,9 +9957,212 @@ impl NativeVulkanVideoBitstreamSpoolExtract {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+struct NativeVulkanH264VideoBitstreamSpoolExtract {
+    file: File,
+    path: PathBuf,
+    records: Vec<NativeVulkanH264AccessUnitSpoolRecord>,
+    file_position: u64,
+    snapshot: NativeVulkanVideoBitstreamExtractSnapshot,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanH264VideoBitstreamSpoolExtract {
+    fn write_payload_to_bitstream_ring(
+        &mut self,
+        index: usize,
+        device: &ash::Device,
+        buffer: &NativeVulkanVideoBitstreamBuffer,
+        ring: &mut NativeVulkanVideoBitstreamRing,
+    ) -> Result<NativeVulkanH264ReadyPrefixBitstreamSpan, NativeVulkanError> {
+        let record = self.records.get(index).ok_or_else(|| {
+            NativeVulkanError::Video(format!(
+                "H.264 spooled bitstream has {} records but AU {index} was requested",
+                self.records.len()
+            ))
+        })?;
+        let span = ring.allocate_h264(record.len, record.slice_offsets.clone())?;
+        native_vulkan_write_video_session_h264_bitstream_buffer_from_spool(
+            device,
+            buffer,
+            span.offset,
+            span.range,
+            &mut self.file,
+            &self.path,
+            record,
+            &mut self.file_position,
+        )?;
+        Ok(span)
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl Drop for NativeVulkanH264VideoBitstreamSpoolExtract {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+struct NativeVulkanH264StreamingPacket {
+    access_unit: NativeVulkanH264AccessUnitExtract,
+    snapshot: NativeVulkanH264AccessUnitSnapshot,
+    source_loop_index: u32,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+struct NativeVulkanH264StreamingPacketQueue {
+    pipeline: gst::Pipeline,
+    sink: gst::Element,
+    bus: gst::Bus,
+    parameter_sets: NativeVulkanH264ParameterSetSnapshot,
+    queued: VecDeque<NativeVulkanH264StreamingPacket>,
+    capacity: usize,
+    next_access_unit_index: u32,
+    pulled_count: u32,
+    eos_count: u32,
+    loop_count: u32,
+    max_payload_bytes: u64,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl Drop for NativeVulkanH264StreamingPacketQueue {
+    fn drop(&mut self) {
+        let _ = self.pipeline.set_state(gst::State::Null);
+        let _ = self.pipeline.state(gst::ClockTime::from_mseconds(500));
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+struct NativeVulkanH265StreamingPacket {
+    access_unit: NativeVulkanH265AccessUnitExtract,
+    snapshot: NativeVulkanH265AccessUnitSnapshot,
+    source_loop_index: u32,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+struct NativeVulkanH265StreamingPacketQueue {
+    pipeline: gst::Pipeline,
+    sink: gst::Element,
+    bus: gst::Bus,
+    parameter_sets: NativeVulkanH265ParameterSetSnapshot,
+    queued: VecDeque<NativeVulkanH265StreamingPacket>,
+    capacity: usize,
+    next_access_unit_index: u32,
+    pulled_count: u32,
+    eos_count: u32,
+    loop_count: u32,
+    max_payload_bytes: u64,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl Drop for NativeVulkanH265StreamingPacketQueue {
+    fn drop(&mut self) {
+        let _ = self.pipeline.set_state(gst::State::Null);
+        let _ = self.pipeline.state(gst::ClockTime::from_mseconds(500));
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanH265StreamingPacketQueue {
+    fn bootstrap_access_units(&self) -> Vec<NativeVulkanH265AccessUnitSnapshot> {
+        self.queued
+            .iter()
+            .map(|packet| packet.snapshot.clone())
+            .collect()
+    }
+
+    fn retained_payload_bytes(&self) -> u64 {
+        self.queued
+            .iter()
+            .map(|packet| packet.access_unit.bytes.len() as u64)
+            .sum()
+    }
+
+    fn next_packet(
+        &mut self,
+        loop_on_eos: bool,
+    ) -> Result<NativeVulkanH265StreamingPacket, NativeVulkanError> {
+        while self.queued.is_empty() {
+            self.fill_one(loop_on_eos)?;
+        }
+        self.queued.pop_front().ok_or_else(|| {
+            NativeVulkanError::Video("H.265 streaming packet queue is empty".to_owned())
+        })
+    }
+
+    fn fill_one(&mut self, loop_on_eos: bool) -> Result<(), NativeVulkanError> {
+        if self.queued.len() >= self.capacity {
+            return Ok(());
+        }
+        let Some(access_unit) = native_vulkan_pull_h265_streaming_access_unit(
+            &self.pipeline,
+            &self.sink,
+            &self.bus,
+            loop_on_eos,
+            &mut self.eos_count,
+            &mut self.loop_count,
+        )?
+        else {
+            return Err(NativeVulkanError::Video(
+                "H.265 streaming packet queue reached EOS".to_owned(),
+            ));
+        };
+        self.pulled_count = self.pulled_count.saturating_add(1);
+        self.max_payload_bytes = self.max_payload_bytes.max(access_unit.bytes.len() as u64);
+        let snapshot = native_vulkan_h265_access_unit_snapshot(
+            self.next_access_unit_index,
+            &access_unit,
+            &self.parameter_sets,
+        );
+        self.next_access_unit_index = self.next_access_unit_index.saturating_add(1);
+        self.queued.push_back(NativeVulkanH265StreamingPacket {
+            access_unit,
+            snapshot,
+            source_loop_index: self.loop_count,
+        });
+        Ok(())
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 impl Drop for NativeVulkanVideoBitstreamSpoolExtract {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone)]
+struct NativeVulkanH264AccessUnitSpoolRecord {
+    offset: u64,
+    len: u64,
+    slice_offsets: Vec<u32>,
+    pts_ms: Option<u64>,
+    duration_ms: Option<u64>,
+    caps: Option<String>,
+    stream_format: Option<String>,
+    alignment: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    framerate: Option<String>,
+    stats: NativeVulkanH264NalStats,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanH264AccessUnitSpoolRecord {
+    fn to_extract(&self, bytes: Vec<u8>) -> NativeVulkanH264AccessUnitExtract {
+        NativeVulkanH264AccessUnitExtract {
+            bytes,
+            pts_ms: self.pts_ms,
+            duration_ms: self.duration_ms,
+            caps: self.caps.clone(),
+            stream_format: self.stream_format.clone(),
+            alignment: self.alignment.clone(),
+            width: self.width,
+            height: self.height,
+            framerate: self.framerate.clone(),
+            stats: self.stats.clone(),
+        }
     }
 }
 
@@ -11929,6 +12570,102 @@ fn native_vulkan_write_video_session_bitstream_buffer_from_spool(
     Ok(())
 }
 
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_write_video_session_h264_bitstream_buffer_from_spool(
+    device: &ash::Device,
+    buffer: &NativeVulkanVideoBitstreamBuffer,
+    offset: u64,
+    range: u64,
+    file: &mut File,
+    path: &Path,
+    record: &NativeVulkanH264AccessUnitSpoolRecord,
+    file_position: &mut u64,
+) -> Result<(), NativeVulkanError> {
+    let mapped_ptr = buffer.mapped_ptr.ok_or_else(|| {
+        NativeVulkanError::Video("video bitstream buffer is not persistently mapped".to_owned())
+    })?;
+    if record.len > range {
+        return Err(NativeVulkanError::Video(format!(
+            "H.264 spooled video bitstream payload has {} bytes but decode range is {range}",
+            record.len
+        )));
+    }
+    let end = offset.checked_add(range).ok_or_else(|| {
+        NativeVulkanError::Video("H.264 video bitstream upload range overflow".to_owned())
+    })?;
+    if end > buffer.snapshot.size {
+        return Err(NativeVulkanError::Video(format!(
+            "H.264 video bitstream upload range {offset}..{end} exceeds buffer size {}",
+            buffer.snapshot.size
+        )));
+    }
+    let offset_usize = usize::try_from(offset).map_err(|_| {
+        NativeVulkanError::Video(format!(
+            "H.264 video bitstream offset {offset} does not fit usize"
+        ))
+    })?;
+    let payload_len = usize::try_from(record.len).map_err(|_| {
+        NativeVulkanError::Video(format!(
+            "H.264 spooled AU length {} does not fit usize",
+            record.len
+        ))
+    })?;
+
+    if *file_position != record.offset {
+        file.seek(SeekFrom::Start(record.offset)).map_err(|err| {
+            NativeVulkanError::Video(format!(
+                "seek H.264 AU spool {} to {}: {err}",
+                path.display(),
+                record.offset
+            ))
+        })?;
+        *file_position = record.offset;
+    }
+    unsafe {
+        let dst = mapped_ptr.cast::<u8>().add(offset_usize);
+        let dst_payload = std::slice::from_raw_parts_mut(dst, payload_len);
+        file.read_exact(dst_payload).map_err(|err| {
+            NativeVulkanError::Video(format!(
+                "read H.264 AU spool {} at {} for {} bytes into bitstream buffer: {err}",
+                path.display(),
+                record.offset,
+                record.len
+            ))
+        })?;
+        *file_position = record.offset.saturating_add(record.len);
+        if range > record.len {
+            let clear_offset = usize::try_from(record.len).map_err(|_| {
+                NativeVulkanError::Video(format!(
+                    "H.264 spooled AU length {} does not fit usize",
+                    record.len
+                ))
+            })?;
+            let clear_len = usize::try_from(range - record.len).map_err(|_| {
+                NativeVulkanError::Video(
+                    "H.264 video bitstream padding length does not fit usize".to_owned(),
+                )
+            })?;
+            ptr::write_bytes(dst.add(clear_offset), 0, clear_len);
+        }
+    }
+    if !buffer
+        .memory_property_flags
+        .contains(vk::MemoryPropertyFlags::HOST_COHERENT)
+    {
+        let flush_range = vk::MappedMemoryRange::default()
+            .memory(buffer.memory)
+            .offset(0)
+            .size(vk::WHOLE_SIZE);
+        unsafe { device.flush_mapped_memory_ranges(&[flush_range]) }.map_err(|result| {
+            NativeVulkanError::Vulkan {
+                operation: "vkFlushMappedMemoryRanges(h264 video bitstream reusable slot)",
+                result,
+            }
+        })?;
+    }
+    Ok(())
+}
+
 unsafe fn native_vulkan_destroy_video_session_bitstream_buffer(
     device: &ash::Device,
     buffer: NativeVulkanVideoBitstreamBuffer,
@@ -14315,7 +15052,6 @@ fn native_vulkan_decode_h264_ready_prefix_frame_to_image(
     parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
     entry: &NativeVulkanH264DecodeReferencePlanEntrySnapshot,
     access_unit: &NativeVulkanH264AccessUnitSnapshot,
-    access_unit_payload: &[u8],
     span: &NativeVulkanH264ReadyPrefixBitstreamSpan,
     active_dpb_refs: &[Option<NativeVulkanH264ActiveDpbReference>],
     image_layer_layouts: &mut [vk::ImageLayout],
@@ -14349,8 +15085,24 @@ fn native_vulkan_decode_h264_ready_prefix_frame_to_image(
             access_unit.index, entry.planned_output_slot, image.snapshot.array_layers
         )));
     }
-    let picture = native_vulkan_h264_picture_decode_info(access_unit_payload, parameter_sets)
-        .map_err(NativeVulkanError::Video)?;
+    if let Some(err) = &access_unit.first_slice_parse_error {
+        return Err(NativeVulkanError::Video(format!(
+            "direct H.264 visible AU {} first slice parse failed: {err}",
+            access_unit.index
+        )));
+    }
+    let picture = access_unit.first_slice.as_ref().ok_or_else(|| {
+        NativeVulkanError::Video(format!(
+            "direct H.264 visible AU {} has no parsed first slice",
+            access_unit.index
+        ))
+    })?;
+    if picture.slice_offsets.is_empty() {
+        return Err(NativeVulkanError::Video(format!(
+            "direct H.264 visible AU {} has no slice offsets",
+            access_unit.index
+        )));
+    }
     let available_references = entry
         .references
         .iter()
@@ -16943,6 +17695,407 @@ fn native_vulkan_extract_h264_bitstream(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_extract_h264_bitstream_spooled(
+    source: &Path,
+    max_samples: u32,
+) -> Result<NativeVulkanH264VideoBitstreamSpoolExtract, NativeVulkanError> {
+    gst::init().map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    let pipeline = native_vulkan_h264_bitstream_pipeline(source)?;
+    let sink = pipeline
+        .by_name("gilder-native-vulkan-h264-bitstream-appsink")
+        .ok_or_else(|| NativeVulkanError::Video("H.264 bitstream appsink not found".to_owned()))?;
+    let bus = pipeline.bus().ok_or_else(|| {
+        NativeVulkanError::Video("H.264 bitstream pipeline has no bus".to_owned())
+    })?;
+    let (spool_path, spool_file) = native_vulkan_create_h264_spool_file()?;
+
+    let result = (|| -> Result<NativeVulkanH264VideoBitstreamSpoolExtract, NativeVulkanError> {
+        pipeline
+            .set_state(gst::State::Playing)
+            .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+        native_vulkan_collect_h264_bitstream_samples_spooled(
+            source,
+            &sink,
+            &bus,
+            max_samples,
+            spool_path.clone(),
+            spool_file,
+        )
+    })();
+
+    let _ = pipeline.set_state(gst::State::Null);
+    let _ = pipeline.state(gst::ClockTime::from_mseconds(500));
+    if result.is_err() {
+        let _ = fs::remove_file(&spool_path);
+    }
+    result
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_start_h264_streaming_packet_queue(
+    source: &Path,
+    capacity: usize,
+) -> Result<NativeVulkanH264StreamingPacketQueue, NativeVulkanError> {
+    let capacity = capacity.max(1);
+    gst::init().map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    let pipeline = native_vulkan_h264_bitstream_pipeline(source)?;
+    let sink = pipeline
+        .by_name("gilder-native-vulkan-h264-bitstream-appsink")
+        .ok_or_else(|| NativeVulkanError::Video("H.264 bitstream appsink not found".to_owned()))?;
+    let bus = pipeline.bus().ok_or_else(|| {
+        NativeVulkanError::Video("H.264 bitstream pipeline has no bus".to_owned())
+    })?;
+
+    pipeline
+        .set_state(gst::State::Playing)
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+
+    let mut pending = Vec::<NativeVulkanH264AccessUnitExtract>::new();
+    let mut selected_parameter_sets_access_unit = None::<Vec<u8>>;
+    let mut pulled_count = 0u32;
+    let mut eos_count = 0u32;
+    let mut loop_count = 0u32;
+    let mut max_payload_bytes = 0u64;
+
+    while pending.len() < capacity {
+        let Some(access_unit) = native_vulkan_pull_h264_streaming_access_unit(
+            &pipeline,
+            &sink,
+            &bus,
+            false,
+            &mut eos_count,
+            &mut loop_count,
+        )?
+        else {
+            break;
+        };
+        pulled_count = pulled_count.saturating_add(1);
+        max_payload_bytes = max_payload_bytes.max(access_unit.bytes.len() as u64);
+        if selected_parameter_sets_access_unit.is_none()
+            && access_unit.stats.parameter_sets_present()
+        {
+            selected_parameter_sets_access_unit = Some(access_unit.bytes.clone());
+        }
+        pending.push(access_unit);
+    }
+
+    if pending.is_empty() {
+        return Err(NativeVulkanError::Video(
+            "H.264 streaming packet queue produced no bootstrap packets".to_owned(),
+        ));
+    }
+    let selected_parameter_sets_access_unit =
+        selected_parameter_sets_access_unit.ok_or_else(|| {
+            NativeVulkanError::Video(format!(
+                "H.264 streaming packet queue did not find SPS/PPS in {} bootstrap packet(s)",
+                pending.len()
+            ))
+        })?;
+    let parameter_sets =
+        native_vulkan_parse_h264_parameter_sets(&selected_parameter_sets_access_unit)
+            .map_err(NativeVulkanError::Video)?;
+
+    let mut queued = VecDeque::with_capacity(capacity);
+    for (index, access_unit) in pending.into_iter().enumerate() {
+        let snapshot =
+            native_vulkan_h264_access_unit_snapshot(index as u32, &access_unit, &parameter_sets);
+        queued.push_back(NativeVulkanH264StreamingPacket {
+            access_unit,
+            snapshot,
+            source_loop_index: loop_count,
+        });
+    }
+    let next_access_unit_index = queued.len().min(u32::MAX as usize) as u32;
+
+    Ok(NativeVulkanH264StreamingPacketQueue {
+        pipeline,
+        sink,
+        bus,
+        parameter_sets,
+        queued,
+        capacity,
+        next_access_unit_index,
+        pulled_count,
+        eos_count,
+        loop_count,
+        max_payload_bytes,
+    })
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_start_h265_streaming_packet_queue(
+    source: &Path,
+    capacity: usize,
+) -> Result<NativeVulkanH265StreamingPacketQueue, NativeVulkanError> {
+    let capacity = capacity.max(1);
+    gst::init().map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    let pipeline = native_vulkan_h265_bitstream_pipeline(source)?;
+    let sink = pipeline
+        .by_name("gilder-native-vulkan-h265-bitstream-appsink")
+        .ok_or_else(|| NativeVulkanError::Video("H.265 bitstream appsink not found".to_owned()))?;
+    let bus = pipeline.bus().ok_or_else(|| {
+        NativeVulkanError::Video("H.265 bitstream pipeline has no bus".to_owned())
+    })?;
+
+    pipeline
+        .set_state(gst::State::Playing)
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+
+    let mut pending = Vec::<NativeVulkanH265AccessUnitExtract>::new();
+    let mut selected_parameter_sets_access_unit = None::<Vec<u8>>;
+    let mut pulled_count = 0u32;
+    let mut eos_count = 0u32;
+    let mut loop_count = 0u32;
+    let mut max_payload_bytes = 0u64;
+
+    while pending.len() < capacity {
+        let Some(access_unit) = native_vulkan_pull_h265_streaming_access_unit(
+            &pipeline,
+            &sink,
+            &bus,
+            false,
+            &mut eos_count,
+            &mut loop_count,
+        )?
+        else {
+            break;
+        };
+        pulled_count = pulled_count.saturating_add(1);
+        max_payload_bytes = max_payload_bytes.max(access_unit.bytes.len() as u64);
+        if selected_parameter_sets_access_unit.is_none()
+            && access_unit.stats.parameter_sets_present()
+        {
+            selected_parameter_sets_access_unit = Some(access_unit.bytes.clone());
+        }
+        pending.push(access_unit);
+    }
+
+    if pending.is_empty() {
+        return Err(NativeVulkanError::Video(
+            "H.265 streaming packet queue produced no bootstrap packets".to_owned(),
+        ));
+    }
+    let selected_parameter_sets_access_unit =
+        selected_parameter_sets_access_unit.ok_or_else(|| {
+            NativeVulkanError::Video(format!(
+                "H.265 streaming packet queue did not find VPS/SPS/PPS in {} bootstrap packet(s)",
+                pending.len()
+            ))
+        })?;
+    let parameter_sets =
+        native_vulkan_parse_h265_parameter_sets(&selected_parameter_sets_access_unit)
+            .map_err(NativeVulkanError::Video)?;
+
+    let mut queued = VecDeque::with_capacity(capacity);
+    for (index, access_unit) in pending.into_iter().enumerate() {
+        let snapshot =
+            native_vulkan_h265_access_unit_snapshot(index as u32, &access_unit, &parameter_sets);
+        queued.push_back(NativeVulkanH265StreamingPacket {
+            access_unit,
+            snapshot,
+            source_loop_index: loop_count,
+        });
+    }
+    let next_access_unit_index = queued.len().min(u32::MAX as usize) as u32;
+
+    Ok(NativeVulkanH265StreamingPacketQueue {
+        pipeline,
+        sink,
+        bus,
+        parameter_sets,
+        queued,
+        capacity,
+        next_access_unit_index,
+        pulled_count,
+        eos_count,
+        loop_count,
+        max_payload_bytes,
+    })
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanH264StreamingPacketQueue {
+    fn bootstrap_access_units(&self) -> Vec<NativeVulkanH264AccessUnitSnapshot> {
+        self.queued
+            .iter()
+            .map(|packet| packet.snapshot.clone())
+            .collect()
+    }
+
+    fn retained_payload_bytes(&self) -> u64 {
+        self.queued
+            .iter()
+            .map(|packet| packet.access_unit.bytes.len() as u64)
+            .sum()
+    }
+
+    fn next_packet(
+        &mut self,
+        loop_on_eos: bool,
+    ) -> Result<NativeVulkanH264StreamingPacket, NativeVulkanError> {
+        while self.queued.is_empty() {
+            self.fill_one(loop_on_eos)?;
+        }
+        self.queued.pop_front().ok_or_else(|| {
+            NativeVulkanError::Video("H.264 streaming packet queue is empty".to_owned())
+        })
+    }
+
+    fn fill_one(&mut self, loop_on_eos: bool) -> Result<(), NativeVulkanError> {
+        if self.queued.len() >= self.capacity {
+            return Ok(());
+        }
+        let Some(access_unit) = native_vulkan_pull_h264_streaming_access_unit(
+            &self.pipeline,
+            &self.sink,
+            &self.bus,
+            loop_on_eos,
+            &mut self.eos_count,
+            &mut self.loop_count,
+        )?
+        else {
+            return Err(NativeVulkanError::Video(
+                "H.264 streaming packet queue reached EOS".to_owned(),
+            ));
+        };
+        self.pulled_count = self.pulled_count.saturating_add(1);
+        self.max_payload_bytes = self.max_payload_bytes.max(access_unit.bytes.len() as u64);
+        let snapshot = native_vulkan_h264_access_unit_snapshot(
+            self.next_access_unit_index,
+            &access_unit,
+            &self.parameter_sets,
+        );
+        self.next_access_unit_index = self.next_access_unit_index.saturating_add(1);
+        self.queued.push_back(NativeVulkanH264StreamingPacket {
+            access_unit,
+            snapshot,
+            source_loop_index: self.loop_count,
+        });
+        Ok(())
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_pull_h264_streaming_access_unit(
+    pipeline: &gst::Pipeline,
+    sink: &gst::Element,
+    bus: &gst::Bus,
+    loop_on_eos: bool,
+    eos_count: &mut u32,
+    loop_count: &mut u32,
+) -> Result<Option<NativeVulkanH264AccessUnitExtract>, NativeVulkanError> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        while let Some(message) = bus.pop() {
+            match message.view() {
+                gst::MessageView::Error(err) => {
+                    let mut message = format!(
+                        "{}: {}",
+                        err.src()
+                            .map(|src| src.path_string())
+                            .unwrap_or_else(|| "gstreamer".into()),
+                        err.error()
+                    );
+                    if let Some(debug) = err.debug() {
+                        message.push_str(": ");
+                        message.push_str(&debug);
+                    }
+                    return Err(NativeVulkanError::Video(message));
+                }
+                gst::MessageView::Eos(_) => {
+                    *eos_count = eos_count.saturating_add(1);
+                    if !loop_on_eos {
+                        return Ok(None);
+                    }
+                    pipeline
+                        .seek_simple(
+                            gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                            gst::ClockTime::ZERO,
+                        )
+                        .map_err(|err| {
+                            NativeVulkanError::Video(format!(
+                                "seek H.264 streaming packet queue to start: {err}"
+                            ))
+                        })?;
+                    *loop_count = loop_count.saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+
+        let timeout_ns = 50_000_000u64;
+        let sample = sink.emit_by_name::<Option<gst::Sample>>("try-pull-sample", &[&timeout_ns]);
+        if let Some(sample) = sample {
+            return native_vulkan_h264_access_unit_from_sample(&sample).map(Some);
+        }
+    }
+
+    Err(NativeVulkanError::Video(
+        "H.264 streaming packet queue timed out waiting for an AU".to_owned(),
+    ))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_pull_h265_streaming_access_unit(
+    pipeline: &gst::Pipeline,
+    sink: &gst::Element,
+    bus: &gst::Bus,
+    loop_on_eos: bool,
+    eos_count: &mut u32,
+    loop_count: &mut u32,
+) -> Result<Option<NativeVulkanH265AccessUnitExtract>, NativeVulkanError> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        while let Some(message) = bus.pop() {
+            match message.view() {
+                gst::MessageView::Error(err) => {
+                    let mut message = format!(
+                        "{}: {}",
+                        err.src()
+                            .map(|src| src.path_string())
+                            .unwrap_or_else(|| "gstreamer".into()),
+                        err.error()
+                    );
+                    if let Some(debug) = err.debug() {
+                        message.push_str(": ");
+                        message.push_str(&debug);
+                    }
+                    return Err(NativeVulkanError::Video(message));
+                }
+                gst::MessageView::Eos(_) => {
+                    *eos_count = eos_count.saturating_add(1);
+                    if !loop_on_eos {
+                        return Ok(None);
+                    }
+                    pipeline
+                        .seek_simple(
+                            gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                            gst::ClockTime::ZERO,
+                        )
+                        .map_err(|err| {
+                            NativeVulkanError::Video(format!(
+                                "seek H.265 streaming packet queue to start: {err}"
+                            ))
+                        })?;
+                    *loop_count = loop_count.saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+
+        let timeout_ns = 50_000_000u64;
+        let sample = sink.emit_by_name::<Option<gst::Sample>>("try-pull-sample", &[&timeout_ns]);
+        if let Some(sample) = sample {
+            return native_vulkan_h265_access_unit_from_sample(&sample).map(Some);
+        }
+    }
+
+    Err(NativeVulkanError::Video(
+        "H.265 streaming packet queue timed out waiting for an AU".to_owned(),
+    ))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_extract_h265_bitstream(
     source: &Path,
     max_samples: u32,
@@ -17032,6 +18185,40 @@ fn native_vulkan_extract_av1_bitstream(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_create_h264_spool_file() -> Result<(PathBuf, File), NativeVulkanError> {
+    let pid = std::process::id();
+    let timestamp_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp_dir = std::env::temp_dir();
+    for attempt in 0..32u32 {
+        let path = temp_dir.join(format!(
+            "gilder-h264-au-spool-{pid}-{timestamp_ns}-{attempt}.bin"
+        ));
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => {
+                return Err(NativeVulkanError::Video(format!(
+                    "create H.264 AU spool {}: {err}",
+                    path.display()
+                )));
+            }
+        }
+    }
+
+    Err(NativeVulkanError::Video(
+        "create H.264 AU spool: exhausted unique path attempts".to_owned(),
+    ))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_create_h265_spool_file() -> Result<(PathBuf, File), NativeVulkanError> {
     let pid = std::process::id();
     let timestamp_ns = SystemTime::now()
@@ -17063,6 +18250,48 @@ fn native_vulkan_create_h265_spool_file() -> Result<(PathBuf, File), NativeVulka
     Err(NativeVulkanError::Video(
         "create H.265 AU spool: exhausted unique path attempts".to_owned(),
     ))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_read_h264_spooled_payload(
+    file: &mut File,
+    path: &Path,
+    record: &NativeVulkanH264AccessUnitSpoolRecord,
+) -> Result<Vec<u8>, NativeVulkanError> {
+    let mut payload = Vec::new();
+    native_vulkan_read_h264_spooled_payload_into(file, path, record, &mut payload)?;
+    Ok(payload)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_read_h264_spooled_payload_into(
+    file: &mut File,
+    path: &Path,
+    record: &NativeVulkanH264AccessUnitSpoolRecord,
+    payload: &mut Vec<u8>,
+) -> Result<(), NativeVulkanError> {
+    let len = usize::try_from(record.len).map_err(|_| {
+        NativeVulkanError::Video(format!(
+            "H.264 spooled AU length {} does not fit usize",
+            record.len
+        ))
+    })?;
+    payload.resize(len, 0);
+    file.seek(SeekFrom::Start(record.offset)).map_err(|err| {
+        NativeVulkanError::Video(format!(
+            "seek H.264 AU spool {} to {}: {err}",
+            path.display(),
+            record.offset
+        ))
+    })?;
+    file.read_exact(payload).map_err(|err| {
+        NativeVulkanError::Video(format!(
+            "read H.264 AU spool {} at {} for {} bytes: {err}",
+            path.display(),
+            record.offset,
+            record.len
+        ))
+    })
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -17276,6 +18505,139 @@ fn native_vulkan_h264_ready_prefix_bitstream_payload(
     Ok(NativeVulkanH264ReadyPrefixBitstreamPayload { bytes, spans })
 }
 
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_ready_prefix_streaming_bitstream_plan_spooled(
+    extract: &NativeVulkanH264VideoBitstreamSpoolExtract,
+    frame_count: u32,
+    min_offset_alignment: u64,
+    min_size_alignment: u64,
+) -> Result<NativeVulkanH265ReadyPrefixStreamingBitstreamPlan, NativeVulkanError> {
+    native_vulkan_validate_h264_ready_prefix(&extract.snapshot, frame_count)?;
+    let frame_count_usize = frame_count as usize;
+    if extract.records.len() < frame_count_usize {
+        return Err(NativeVulkanError::Video(format!(
+            "H.264 spooled bitstream has {} records but {frame_count} ready-prefix frames were requested",
+            extract.records.len()
+        )));
+    }
+
+    let min_offset_alignment = min_offset_alignment.max(1);
+    let min_size_alignment = min_size_alignment.max(1);
+    let mut slot_bytes = 0u64;
+    let mut window_payload_bytes = 0u64;
+    for record in extract.records.iter().take(frame_count_usize) {
+        let range = native_vulkan_align_up(record.len, min_size_alignment);
+        slot_bytes = slot_bytes.max(range);
+        window_payload_bytes = window_payload_bytes.saturating_add(record.len);
+    }
+    let ring_slot_count = native_vulkan_bitstream_ring_slot_count(frame_count);
+    let slot_stride = native_vulkan_align_up(slot_bytes, min_offset_alignment);
+    let ring_capacity_bytes = slot_stride
+        .checked_mul(u64::from(ring_slot_count))
+        .ok_or_else(|| {
+            NativeVulkanError::Video("H.264 bitstream ring capacity overflow".to_owned())
+        })?;
+
+    Ok(NativeVulkanH265ReadyPrefixStreamingBitstreamPlan {
+        slot_bytes: slot_stride,
+        ring_capacity_bytes,
+        ring_slot_count,
+        min_offset_alignment,
+        min_size_alignment,
+        window_payload_bytes,
+    })
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_streaming_queue_bitstream_plan(
+    queue: &NativeVulkanH264StreamingPacketQueue,
+    width: u32,
+    height: u32,
+    min_offset_alignment: u64,
+    min_size_alignment: u64,
+) -> Result<NativeVulkanH265ReadyPrefixStreamingBitstreamPlan, NativeVulkanError> {
+    let min_offset_alignment = min_offset_alignment.max(1);
+    let min_size_alignment = min_size_alignment.max(1);
+    let sampled_max_payload_bytes = queue.max_payload_bytes.max(1);
+    let source_extent_heuristic = u64::from(width)
+        .saturating_mul(u64::from(height))
+        .checked_div(16)
+        .unwrap_or(0);
+    let default_slot_payload_bytes = sampled_max_payload_bytes
+        .saturating_mul(2)
+        .max(source_extent_heuristic)
+        .max(256 * 1024);
+    let slot_payload_bytes = std::env::var("GILDER_VULKAN_H264_STREAMING_RING_SLOT_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default_slot_payload_bytes);
+    let slot_bytes = native_vulkan_align_up(
+        native_vulkan_align_up(slot_payload_bytes, min_size_alignment),
+        min_offset_alignment,
+    );
+    let ring_slot_count = native_vulkan_bitstream_ring_slot_count(queue.capacity as u32);
+    let ring_capacity_bytes = slot_bytes
+        .checked_mul(u64::from(ring_slot_count))
+        .ok_or_else(|| {
+            NativeVulkanError::Video("H.264 streaming bitstream ring capacity overflow".to_owned())
+        })?;
+
+    Ok(NativeVulkanH265ReadyPrefixStreamingBitstreamPlan {
+        slot_bytes,
+        ring_capacity_bytes,
+        ring_slot_count,
+        min_offset_alignment,
+        min_size_alignment,
+        window_payload_bytes: queue.retained_payload_bytes(),
+    })
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_streaming_queue_bitstream_plan(
+    queue: &NativeVulkanH265StreamingPacketQueue,
+    width: u32,
+    height: u32,
+    min_offset_alignment: u64,
+    min_size_alignment: u64,
+) -> Result<NativeVulkanH265ReadyPrefixStreamingBitstreamPlan, NativeVulkanError> {
+    let min_offset_alignment = min_offset_alignment.max(1);
+    let min_size_alignment = min_size_alignment.max(1);
+    let sampled_max_payload_bytes = queue.max_payload_bytes.max(1);
+    let source_extent_heuristic = u64::from(width)
+        .saturating_mul(u64::from(height))
+        .checked_div(16)
+        .unwrap_or(0);
+    let default_slot_payload_bytes = sampled_max_payload_bytes
+        .saturating_mul(2)
+        .max(source_extent_heuristic)
+        .max(256 * 1024);
+    let slot_payload_bytes = std::env::var("GILDER_VULKAN_H265_STREAMING_RING_SLOT_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default_slot_payload_bytes);
+    let slot_bytes = native_vulkan_align_up(
+        native_vulkan_align_up(slot_payload_bytes, min_size_alignment),
+        min_offset_alignment,
+    );
+    let ring_slot_count = native_vulkan_bitstream_ring_slot_count(queue.capacity as u32);
+    let ring_capacity_bytes = slot_bytes
+        .checked_mul(u64::from(ring_slot_count))
+        .ok_or_else(|| {
+            NativeVulkanError::Video("H.265 streaming bitstream ring capacity overflow".to_owned())
+        })?;
+
+    Ok(NativeVulkanH265ReadyPrefixStreamingBitstreamPlan {
+        slot_bytes,
+        ring_capacity_bytes,
+        ring_slot_count,
+        min_offset_alignment,
+        min_size_alignment,
+        window_payload_bytes: queue.retained_payload_bytes(),
+    })
+}
+
 fn native_vulkan_h265_ready_prefix_bitstream_payload(
     extract: &NativeVulkanVideoBitstreamExtract,
     frame_count: u32,
@@ -17462,6 +18824,7 @@ fn native_vulkan_h265_ready_prefix_streaming_bitstream_plan_spooled(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+#[allow(dead_code)]
 fn native_vulkan_h264_ready_prefix_streaming_bitstream_plan(
     extract: &NativeVulkanVideoBitstreamExtract,
     frame_count: u32,
@@ -17509,6 +18872,7 @@ fn native_vulkan_h264_ready_prefix_streaming_bitstream_plan(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+#[allow(dead_code)]
 fn native_vulkan_write_h264_payload_to_bitstream_ring(
     extract: &NativeVulkanVideoBitstreamExtract,
     parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
@@ -17535,6 +18899,60 @@ fn native_vulkan_write_h264_payload_to_bitstream_ring(
         span.offset,
         span.range,
         payload,
+    )?;
+    Ok(span)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_write_h264_streaming_packet_to_bitstream_ring(
+    packet: &NativeVulkanH264StreamingPacket,
+    device: &ash::Device,
+    buffer: &NativeVulkanVideoBitstreamBuffer,
+    ring: &mut NativeVulkanVideoBitstreamRing,
+) -> Result<NativeVulkanH264ReadyPrefixBitstreamSpan, NativeVulkanError> {
+    let first_slice = packet.snapshot.first_slice.as_ref().ok_or_else(|| {
+        NativeVulkanError::Video(format!(
+            "H.264 streaming AU {} has no parsed first slice",
+            packet.snapshot.index
+        ))
+    })?;
+    let span = ring.allocate_h264(
+        packet.access_unit.bytes.len() as u64,
+        first_slice.slice_offsets.clone(),
+    )?;
+    native_vulkan_write_video_session_bitstream_buffer(
+        device,
+        buffer,
+        span.offset,
+        span.range,
+        &packet.access_unit.bytes,
+    )?;
+    Ok(span)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_write_h265_streaming_packet_to_bitstream_ring(
+    packet: &NativeVulkanH265StreamingPacket,
+    device: &ash::Device,
+    buffer: &NativeVulkanVideoBitstreamBuffer,
+    ring: &mut NativeVulkanVideoBitstreamRing,
+) -> Result<NativeVulkanH265ReadyPrefixBitstreamSpan, NativeVulkanError> {
+    let first_slice = packet.snapshot.first_slice.as_ref().ok_or_else(|| {
+        NativeVulkanError::Video(format!(
+            "H.265 streaming AU {} has no parsed first slice",
+            packet.snapshot.index
+        ))
+    })?;
+    let span = ring.allocate(
+        packet.access_unit.bytes.len() as u64,
+        first_slice.slice_segment_offset,
+    )?;
+    native_vulkan_write_video_session_bitstream_buffer(
+        device,
+        buffer,
+        span.offset,
+        span.range,
+        &packet.access_unit.bytes,
     )?;
     Ok(span)
 }
@@ -17883,11 +19301,13 @@ fn native_vulkan_collect_h264_bitstream_samples(
         });
     let max_h264_dpb_slots = native_vulkan_h264_sps_dpb_slot_count(&parameter_sets.sps).max(2);
     let max_h264_references = parameter_sets.sps.max_num_ref_frames.max(1);
+    let max_h264_frame_num = native_vulkan_h264_sps_max_frame_num(&parameter_sets.sps);
     let (h264_reference_plan_dpb_slots, h264_decode_reference_plan) =
         native_vulkan_h264_min_decodable_dpb_plan(
             &h264_access_units,
             max_h264_dpb_slots,
             max_h264_references,
+            max_h264_frame_num,
         );
     let h264_decode_ready_count = h264_decode_reference_plan
         .iter()
@@ -17984,6 +19404,293 @@ fn native_vulkan_collect_h264_bitstream_samples(
             av1_obus: Vec::new(),
             av1_temporal_units: Vec::new(),
         },
+    })
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_collect_h264_bitstream_samples_spooled(
+    source: &Path,
+    sink: &gst::Element,
+    bus: &gst::Bus,
+    max_samples: u32,
+    spool_path: PathBuf,
+    mut spool_file: File,
+) -> Result<NativeVulkanH264VideoBitstreamSpoolExtract, NativeVulkanError> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut sample_count = 0u32;
+    let mut total_bytes = 0u64;
+    let mut records = Vec::<NativeVulkanH264AccessUnitSpoolRecord>::new();
+    let mut selected_index = None::<usize>;
+    let mut selected_access_unit = None::<Vec<u8>>;
+    let mut last_error = None::<String>;
+    let mut reached_eos = false;
+
+    while sample_count < max_samples && Instant::now() < deadline && !reached_eos {
+        while let Some(message) = bus.pop() {
+            match message.view() {
+                gst::MessageView::Error(err) => {
+                    let mut message = format!(
+                        "{}: {}",
+                        err.src()
+                            .map(|src| src.path_string())
+                            .unwrap_or_else(|| "gstreamer".into()),
+                        err.error()
+                    );
+                    if let Some(debug) = err.debug() {
+                        message.push_str(": ");
+                        message.push_str(&debug);
+                    }
+                    return Err(NativeVulkanError::Video(message));
+                }
+                gst::MessageView::Eos(_) => {
+                    last_error = Some("H.264 bitstream pipeline reached EOS".to_owned());
+                    reached_eos = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if reached_eos {
+            break;
+        }
+
+        let timeout_ns = 50_000_000u64;
+        let sample = sink.emit_by_name::<Option<gst::Sample>>("try-pull-sample", &[&timeout_ns]);
+        let Some(sample) = sample else {
+            continue;
+        };
+        sample_count = sample_count.saturating_add(1);
+        let buffer = sample.buffer().ok_or_else(|| {
+            NativeVulkanError::Video("H.264 bitstream sample has no buffer".to_owned())
+        })?;
+        let map = buffer.map_readable().map_err(|_| {
+            NativeVulkanError::Video("H.264 bitstream buffer map_readable failed".to_owned())
+        })?;
+        let bytes = map.as_slice();
+        if bytes.is_empty() {
+            return Err(NativeVulkanError::Video(
+                "H.264 bitstream sample is empty".to_owned(),
+            ));
+        }
+        let metadata = native_vulkan_h265_access_unit_metadata_from_sample(&sample, buffer);
+        let stats = native_vulkan_h264_nal_stats(bytes);
+        let should_select = selected_index
+            .map(|index| {
+                let current = &records[index];
+                !current.stats.parameter_sets_present() && stats.parameter_sets_present()
+            })
+            .unwrap_or(true);
+        if should_select {
+            selected_index = Some(records.len());
+            selected_access_unit = Some(bytes.to_vec());
+        }
+        let offset = total_bytes;
+        spool_file.write_all(bytes).map_err(|err| {
+            NativeVulkanError::Video(format!(
+                "write H.264 AU spool {} at {offset}: {err}",
+                spool_path.display()
+            ))
+        })?;
+        total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+        records.push(NativeVulkanH264AccessUnitSpoolRecord {
+            offset,
+            len: bytes.len() as u64,
+            slice_offsets: Vec::new(),
+            pts_ms: metadata.pts_ms,
+            duration_ms: metadata.duration_ms,
+            caps: metadata.caps,
+            stream_format: metadata.stream_format,
+            alignment: metadata.alignment,
+            width: metadata.width,
+            height: metadata.height,
+            framerate: metadata.framerate,
+            stats,
+        });
+    }
+
+    if records.is_empty() {
+        return Err(NativeVulkanError::Video(last_error.unwrap_or_else(|| {
+            "H.264 bitstream probe produced no samples".to_owned()
+        })));
+    }
+    let selected_index =
+        selected_index.ok_or_else(|| {
+            NativeVulkanError::Video(last_error.unwrap_or_else(|| {
+                "H.264 bitstream probe produced no selectable samples".to_owned()
+            }))
+        })?;
+    let selected = &records[selected_index];
+    if !selected.stats.parameter_sets_present() {
+        return Err(NativeVulkanError::Video(format!(
+            "H.264 bitstream probe did not find SPS/PPS in {sample_count} samples"
+        )));
+    }
+    let selected_access_unit = selected_access_unit.ok_or_else(|| {
+        NativeVulkanError::Video("H.264 bitstream probe lost selected AU payload".to_owned())
+    })?;
+    let parameter_sets = native_vulkan_parse_h264_parameter_sets(&selected_access_unit)
+        .map_err(NativeVulkanError::Video)?;
+    drop(selected_access_unit);
+
+    spool_file.flush().map_err(|err| {
+        NativeVulkanError::Video(format!(
+            "flush H.264 AU spool {}: {err}",
+            spool_path.display()
+        ))
+    })?;
+    let mut h264_access_units = Vec::with_capacity(records.len());
+    for (index, record) in records.iter_mut().enumerate() {
+        let bytes = native_vulkan_read_h264_spooled_payload(&mut spool_file, &spool_path, record)?;
+        let access_unit = record.to_extract(bytes);
+        let snapshot =
+            native_vulkan_h264_access_unit_snapshot(index as u32, &access_unit, &parameter_sets);
+        record.slice_offsets = snapshot
+            .first_slice
+            .as_ref()
+            .map(|slice| slice.slice_offsets.clone())
+            .unwrap_or_default();
+        h264_access_units.push(snapshot);
+    }
+    let h264_idr_decode_ready_count = h264_access_units
+        .iter()
+        .filter(|access_unit| access_unit.idr_decode_ready)
+        .count() as u32;
+    let h264_idr_decode_ready_prefix_count = h264_access_units
+        .iter()
+        .take_while(|access_unit| access_unit.idr_decode_ready)
+        .count() as u32;
+    let h264_idr_decode_first_unready = h264_access_units
+        .iter()
+        .find(|access_unit| !access_unit.idr_decode_ready);
+    let h264_idr_decode_first_unready_access_unit_index =
+        h264_idr_decode_first_unready.map(|access_unit| access_unit.index);
+    let h264_idr_decode_first_unready_reason =
+        h264_idr_decode_first_unready.map(|access_unit| {
+            access_unit
+                .first_slice_parse_error
+                .clone()
+                .or_else(|| {
+                    access_unit.first_slice.as_ref().map(|slice| {
+                        format!(
+                            "H.264 AU {} is not IDR intra-only: nal={}, slice_type={}, idr={}, intra={}",
+                            access_unit.index,
+                            slice.nal_type_label,
+                            slice.slice_type,
+                            slice.idr,
+                            slice.is_intra
+                        )
+                    })
+                })
+                .unwrap_or_else(|| {
+                    format!("H.264 AU {} has no parsed first slice", access_unit.index)
+                })
+        });
+    let max_h264_dpb_slots = native_vulkan_h264_sps_dpb_slot_count(&parameter_sets.sps).max(2);
+    let max_h264_references = parameter_sets.sps.max_num_ref_frames.max(1);
+    let max_h264_frame_num = native_vulkan_h264_sps_max_frame_num(&parameter_sets.sps);
+    let (h264_reference_plan_dpb_slots, h264_decode_reference_plan) =
+        native_vulkan_h264_min_decodable_dpb_plan(
+            &h264_access_units,
+            max_h264_dpb_slots,
+            max_h264_references,
+            max_h264_frame_num,
+        );
+    let h264_decode_ready_count = h264_decode_reference_plan
+        .iter()
+        .filter(|entry| entry.ready_for_decode_submit)
+        .count() as u32;
+    let h264_decode_ready_prefix_count = h264_decode_reference_plan
+        .iter()
+        .take_while(|entry| entry.ready_for_decode_submit)
+        .count() as u32;
+    let h264_decode_first_unready = h264_decode_reference_plan
+        .iter()
+        .find(|entry| !entry.ready_for_decode_submit);
+    let h264_decode_first_unready_access_unit_index =
+        h264_decode_first_unready.map(|entry| entry.access_unit_index);
+    let h264_decode_first_unready_reason = h264_decode_first_unready.map(|entry| {
+        entry.unsupported_reason.clone().unwrap_or_else(|| {
+            format!(
+                "missing {} active H.264 reference(s)",
+                entry.missing_reference_count
+            )
+        })
+    });
+
+    let selected = &records[selected_index];
+    let snapshot = NativeVulkanVideoBitstreamExtractSnapshot {
+        source: source.display().to_string(),
+        frontend: "gstreamer-qtdemux-h264parse-appsink-spooled",
+        requested_max_samples: max_samples,
+        samples: records.len() as u32,
+        total_bytes,
+        selected_access_unit_index: selected_index as u32,
+        selected_access_unit_bytes: selected.stats.bytes,
+        selected_access_unit_pts_ms: selected.pts_ms,
+        selected_access_unit_duration_ms: selected.duration_ms,
+        caps: selected.caps.clone(),
+        stream_format: selected.stream_format.clone(),
+        alignment: selected.alignment.clone(),
+        width: selected.width,
+        height: selected.height,
+        framerate: selected.framerate.clone(),
+        has_annex_b_start_codes: selected.stats.has_annex_b_start_codes,
+        h264_sps_count: selected.stats.sps_count,
+        h264_pps_count: selected.stats.pps_count,
+        h264_idr_count: selected.stats.idr_count,
+        h264_slice_count: selected.stats.slice_count,
+        h264_parameter_sets_present: selected.stats.parameter_sets_present(),
+        h264_parameter_sets: Some(parameter_sets),
+        h264_access_units,
+        h264_idr_decode_ready_count,
+        h264_idr_decode_ready_prefix_count,
+        h264_idr_decode_first_unready_access_unit_index,
+        h264_idr_decode_first_unready_reason,
+        h264_reference_plan_dpb_slots,
+        h264_decode_ready_count,
+        h264_decode_ready_prefix_count,
+        h264_decode_first_unready_access_unit_index,
+        h264_decode_first_unready_reason,
+        h264_decode_reference_plan,
+        h265_vps_count: 0,
+        h265_sps_count: 0,
+        h265_pps_count: 0,
+        h265_idr_count: 0,
+        h265_slice_count: 0,
+        h265_parameter_sets_present: false,
+        h265_parameter_sets: None,
+        h265_nal_units: Vec::new(),
+        h265_access_units: Vec::new(),
+        h265_reference_plan_dpb_slots: 0,
+        h265_decode_ready_count: 0,
+        h265_decode_ready_prefix_count: 0,
+        h265_decode_first_unready_access_unit_index: None,
+        h265_decode_first_unready_missing_reference_pocs: Vec::new(),
+        h265_decode_reference_plan: Vec::new(),
+        av1_obu_count: 0,
+        av1_sequence_header_count: 0,
+        av1_temporal_delimiter_count: 0,
+        av1_frame_header_count: 0,
+        av1_tile_group_count: 0,
+        av1_frame_count: 0,
+        av1_decode_candidate: false,
+        av1_tile_payload_bytes: 0,
+        av1_frame_payload_bytes: 0,
+        av1_first_frame_header_obu_offset: None,
+        av1_first_tile_group_obu_offset: None,
+        av1_sequence_header_present: false,
+        av1_sequence_header: None,
+        av1_first_frame_submit: None,
+        av1_obus: Vec::new(),
+        av1_temporal_units: Vec::new(),
+    };
+
+    Ok(NativeVulkanH264VideoBitstreamSpoolExtract {
+        file: spool_file,
+        path: spool_path,
+        records,
+        file_position: u64::MAX,
+        snapshot,
     })
 }
 
@@ -18745,6 +20452,7 @@ fn native_vulkan_h264_access_unit_snapshot(
                 idr_pic_id: first_frame.idr_pic_id,
                 num_ref_idx_l0_active_minus1: first_frame.num_ref_idx_l0_active_minus1,
                 ref_pic_list_modification_l0: first_frame.ref_pic_list_modification_l0,
+                ref_pic_list_modifications_l0: first_frame.ref_pic_list_modifications_l0,
                 adaptive_ref_pic_marking_mode_flag: first_frame.adaptive_ref_pic_marking_mode_flag,
                 field_pic_flag: first_frame.field_pic_flag,
                 bottom_field_flag: first_frame.bottom_field_flag,
@@ -18779,7 +20487,7 @@ fn native_vulkan_h264_access_unit_snapshot(
             && !slice.slice_offsets.is_empty()
             && !slice.is_b
             && !slice.long_term_reference_flag
-            && !slice.ref_pic_list_modification_l0
+            && native_vulkan_h264_ref_pic_list_modifications_l0_short_term_only(slice)
             && !slice.adaptive_ref_pic_marking_mode_flag
             && (slice.is_intra || (slice.is_p && active_l0_refs > 0))
     });
@@ -18925,36 +20633,172 @@ fn native_vulkan_h265_sps_short_term_ref_pic_sets_supported(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_h264_decode_reference_plan(
-    access_units: &[NativeVulkanH264AccessUnitSnapshot],
+fn native_vulkan_h264_streaming_packet_queue_capacity(requested_frame_count: u32) -> usize {
+    std::env::var("GILDER_VULKAN_H264_PACKET_QUEUE_CAPACITY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| requested_frame_count.clamp(8, 32) as usize)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_streaming_packet_queue_capacity(requested_frame_count: u32) -> usize {
+    std::env::var("GILDER_VULKAN_H265_PACKET_QUEUE_CAPACITY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| requested_frame_count.clamp(8, 32) as usize)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_sps_max_frame_num(sps: &NativeVulkanH264SpsSnapshot) -> u32 {
+    1u32.checked_shl(sps.log2_max_frame_num_minus4.saturating_add(4))
+        .unwrap_or(u32::MAX)
+        .max(1)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_ref_pic_list_modifications_l0_short_term_only(
+    slice: &NativeVulkanH264AccessUnitSliceSnapshot,
+) -> bool {
+    slice
+        .ref_pic_list_modifications_l0
+        .iter()
+        .all(|modification| matches!(modification.modification_of_pic_nums_idc, 0 | 1))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_reference_frame_nums_for_slice(
+    slice: &NativeVulkanH264AccessUnitSliceSnapshot,
+    short_term_reference_order: &[u16],
+    frame_to_decoded_slot: &BTreeMap<u16, (u32, u32, i32)>,
+    planned_output_slot: u32,
+    max_frame_num: u32,
+) -> Result<Vec<u16>, String> {
+    let mut frame_nums = short_term_reference_order
+        .iter()
+        .rev()
+        .copied()
+        .filter(|frame_num| {
+            frame_to_decoded_slot
+                .get(frame_num)
+                .is_some_and(|(_, dpb_slot, _)| *dpb_slot != planned_output_slot)
+        })
+        .collect::<Vec<_>>();
+    if slice.ref_pic_list_modifications_l0.is_empty() {
+        return Ok(frame_nums);
+    }
+
+    let max_frame_num = max_frame_num.max(1);
+    let mut pic_num_lx_pred = u32::from(slice.frame_num);
+    let mut insertion_index = 0usize;
+    for modification in &slice.ref_pic_list_modifications_l0 {
+        let pic_num_lx = match modification.modification_of_pic_nums_idc {
+            0 | 1 => {
+                let diff = modification
+                    .abs_diff_pic_num_minus1
+                    .ok_or_else(|| {
+                        "H.264 short-term ref list modification is missing abs_diff_pic_num_minus1"
+                            .to_owned()
+                    })?
+                    .saturating_add(1);
+                if modification.modification_of_pic_nums_idc == 0 {
+                    if pic_num_lx_pred < diff {
+                        pic_num_lx_pred
+                            .saturating_add(max_frame_num)
+                            .saturating_sub(diff)
+                    } else {
+                        pic_num_lx_pred.saturating_sub(diff)
+                    }
+                } else {
+                    let value = pic_num_lx_pred.saturating_add(diff);
+                    if value >= max_frame_num {
+                        value.saturating_sub(max_frame_num)
+                    } else {
+                        value
+                    }
+                }
+            }
+            2 => {
+                return Err(
+                    "H.264 long-term reference list modification is not supported yet".to_owned(),
+                );
+            }
+            other => {
+                return Err(format!(
+                    "H.264 ref_pic_list_modification_l0 idc {other} is not supported"
+                ));
+            }
+        };
+        pic_num_lx_pred = pic_num_lx;
+        let frame_num = u16::try_from(pic_num_lx).map_err(|_| {
+            format!("H.264 modified reference frame_num {pic_num_lx} exceeds u16 range")
+        })?;
+        let Some((_, dpb_slot, _)) = frame_to_decoded_slot.get(&frame_num) else {
+            return Err(format!(
+                "H.264 ref list modification requested unavailable short-term frame_num {frame_num}"
+            ));
+        };
+        if *dpb_slot == planned_output_slot {
+            return Err(format!(
+                "H.264 ref list modification requested frame_num {frame_num} in the output DPB slot"
+            ));
+        }
+        frame_nums.retain(|existing| *existing != frame_num);
+        frame_nums.insert(insertion_index.min(frame_nums.len()), frame_num);
+        insertion_index = insertion_index.saturating_add(1);
+    }
+
+    Ok(frame_nums)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+struct NativeVulkanH264DecodeReferencePlanner {
     dpb_slots: u32,
     max_short_term_references: u32,
-) -> Vec<NativeVulkanH264DecodeReferencePlanEntrySnapshot> {
-    let dpb_slots = dpb_slots.max(1);
-    let max_short_term_references = max_short_term_references.max(1);
-    let mut frame_to_decoded_slot = BTreeMap::<u16, (u32, u32, i32)>::new();
-    let mut slot_to_frame_num = vec![None::<u16>; dpb_slots as usize];
-    let mut short_term_reference_order = Vec::<u16>::new();
-    let mut next_output_slot = 0u32;
-    let mut plan = Vec::with_capacity(access_units.len());
+    max_frame_num: u32,
+    frame_to_decoded_slot: BTreeMap<u16, (u32, u32, i32)>,
+    slot_to_frame_num: Vec<Option<u16>>,
+    short_term_reference_order: Vec<u16>,
+    next_output_slot: u32,
+}
 
-    for access_unit in access_units {
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanH264DecodeReferencePlanner {
+    fn new(dpb_slots: u32, max_short_term_references: u32, max_frame_num: u32) -> Self {
+        let dpb_slots = dpb_slots.max(1);
+        Self {
+            dpb_slots,
+            max_short_term_references: max_short_term_references.max(1),
+            max_frame_num: max_frame_num.max(1),
+            frame_to_decoded_slot: BTreeMap::new(),
+            slot_to_frame_num: vec![None; dpb_slots as usize],
+            short_term_reference_order: Vec::new(),
+            next_output_slot: 0,
+        }
+    }
+
+    fn plan_next(
+        &mut self,
+        access_unit: &NativeVulkanH264AccessUnitSnapshot,
+    ) -> NativeVulkanH264DecodeReferencePlanEntrySnapshot {
         let first_slice = access_unit.first_slice.as_ref();
         let idr = first_slice.is_some_and(|slice| slice.idr);
         if idr {
-            frame_to_decoded_slot.clear();
-            slot_to_frame_num.fill(None);
-            short_term_reference_order.clear();
-            next_output_slot = 0;
+            self.frame_to_decoded_slot.clear();
+            self.slot_to_frame_num.fill(None);
+            self.short_term_reference_order.clear();
+            self.next_output_slot = 0;
         }
 
         let current_frame_num = first_slice.map(|slice| slice.frame_num);
         let current_pic_order_cnt_val = first_slice.map(|slice| slice.pic_order_cnt[0]);
-        let planned_output_slot = next_output_slot % dpb_slots;
+        let planned_output_slot = self.next_output_slot % self.dpb_slots;
         if current_frame_num.is_some() {
-            next_output_slot = next_output_slot.saturating_add(1);
+            self.next_output_slot = self.next_output_slot.saturating_add(1);
         }
-        let evicted_frame_num = slot_to_frame_num
+        let evicted_frame_num = self
+            .slot_to_frame_num
             .get(planned_output_slot as usize)
             .copied()
             .flatten();
@@ -18984,15 +20828,16 @@ fn native_vulkan_h264_decode_reference_plan(
                     )
                 } else if slice.long_term_reference_flag {
                     Some("H.264 long-term references are not supported by the first continuous direct gate".to_owned())
-                } else if slice.ref_pic_list_modification_l0 {
-                    Some("H.264 reference list modification is not supported by the first continuous direct gate".to_owned())
+                } else if !native_vulkan_h264_ref_pic_list_modifications_l0_short_term_only(slice) {
+                    Some("H.264 long-term reference list modification is not supported by the first continuous direct gate".to_owned())
                 } else if slice.adaptive_ref_pic_marking_mode_flag {
                     Some("H.264 adaptive reference picture marking is not supported by the first continuous direct gate".to_owned())
                 } else if slice.is_p && requested_reference_count == 0 {
                     Some("H.264 P-slice requested zero active references".to_owned())
-                } else if requested_reference_count > max_short_term_references {
+                } else if requested_reference_count > self.max_short_term_references {
                     Some(format!(
-                        "H.264 P-slice requests {requested_reference_count} active L0 references but stream/driver plan keeps {max_short_term_references}"
+                        "H.264 P-slice requests {requested_reference_count} active L0 references but stream/driver plan keeps {}",
+                        self.max_short_term_references
                     ))
                 } else if !slice.is_intra && !slice.is_p {
                     Some(format!(
@@ -19010,16 +20855,32 @@ fn native_vulkan_h264_decode_reference_plan(
             }
         }
 
+        let mut reference_frame_nums = Vec::<u16>::new();
+        if unsupported_reason.is_none()
+            && requested_reference_count > 0
+            && let Some(slice) = first_slice
+        {
+            match native_vulkan_h264_reference_frame_nums_for_slice(
+                slice,
+                &self.short_term_reference_order,
+                &self.frame_to_decoded_slot,
+                planned_output_slot,
+                self.max_frame_num,
+            ) {
+                Ok(frame_nums) => reference_frame_nums = frame_nums,
+                Err(err) => unsupported_reason = Some(err),
+            }
+        }
+
         let references = if unsupported_reason.is_none() && requested_reference_count > 0 {
-            short_term_reference_order
-                .iter()
-                .rev()
+            reference_frame_nums
+                .into_iter()
                 .filter_map(|frame_num| {
-                    frame_to_decoded_slot.get(frame_num).and_then(
+                    self.frame_to_decoded_slot.get(&frame_num).and_then(
                         |(source_access_unit_index, dpb_slot, pic_order_cnt_val)| {
                             (*dpb_slot != planned_output_slot).then(|| {
                                 NativeVulkanH264DecodeReferenceSnapshot {
-                                    frame_num: *frame_num,
+                                    frame_num,
                                     pic_order_cnt_val: *pic_order_cnt_val,
                                     available: true,
                                     source_access_unit_index: Some(*source_access_unit_index),
@@ -19051,13 +20912,14 @@ fn native_vulkan_h264_decode_reference_plan(
             && slice.is_reference
         {
             if let Some(evicted_frame_num) = evicted_frame_num {
-                frame_to_decoded_slot.remove(&evicted_frame_num);
-                short_term_reference_order.retain(|frame_num| *frame_num != evicted_frame_num);
+                self.frame_to_decoded_slot.remove(&evicted_frame_num);
+                self.short_term_reference_order
+                    .retain(|frame_num| *frame_num != evicted_frame_num);
             }
-            if let Some(slot) = slot_to_frame_num.get_mut(planned_output_slot as usize) {
+            if let Some(slot) = self.slot_to_frame_num.get_mut(planned_output_slot as usize) {
                 *slot = Some(current_frame_num);
             }
-            frame_to_decoded_slot.insert(
+            self.frame_to_decoded_slot.insert(
                 current_frame_num,
                 (
                     access_unit.index,
@@ -19065,22 +20927,27 @@ fn native_vulkan_h264_decode_reference_plan(
                     current_pic_order_cnt_val,
                 ),
             );
-            short_term_reference_order.retain(|frame_num| *frame_num != current_frame_num);
-            short_term_reference_order.push(current_frame_num);
-            while short_term_reference_order.len() > max_short_term_references as usize {
-                let old_frame_num = short_term_reference_order.remove(0);
-                if let Some((_, old_slot, _)) = frame_to_decoded_slot.remove(&old_frame_num)
-                    && slot_to_frame_num.get(old_slot as usize).copied().flatten()
+            self.short_term_reference_order
+                .retain(|frame_num| *frame_num != current_frame_num);
+            self.short_term_reference_order.push(current_frame_num);
+            while self.short_term_reference_order.len() > self.max_short_term_references as usize {
+                let old_frame_num = self.short_term_reference_order.remove(0);
+                if let Some((_, old_slot, _)) = self.frame_to_decoded_slot.remove(&old_frame_num)
+                    && self
+                        .slot_to_frame_num
+                        .get(old_slot as usize)
+                        .copied()
+                        .flatten()
                         == Some(old_frame_num)
                     && old_slot != planned_output_slot
-                    && let Some(slot) = slot_to_frame_num.get_mut(old_slot as usize)
+                    && let Some(slot) = self.slot_to_frame_num.get_mut(old_slot as usize)
                 {
                     *slot = None;
                 }
             }
         }
 
-        plan.push(NativeVulkanH264DecodeReferencePlanEntrySnapshot {
+        NativeVulkanH264DecodeReferencePlanEntrySnapshot {
             access_unit_index: access_unit.index,
             pts_ms: access_unit.pts_ms,
             nal_type_label: first_slice.map(|slice| slice.nal_type_label),
@@ -19095,10 +20962,46 @@ fn native_vulkan_h264_decode_reference_plan(
             missing_reference_count,
             unsupported_reason,
             ready_for_decode_submit,
-        });
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_decode_reference_plan(
+    access_units: &[NativeVulkanH264AccessUnitSnapshot],
+    dpb_slots: u32,
+    max_short_term_references: u32,
+    max_frame_num: u32,
+) -> Vec<NativeVulkanH264DecodeReferencePlanEntrySnapshot> {
+    let mut planner = NativeVulkanH264DecodeReferencePlanner::new(
+        dpb_slots,
+        max_short_term_references,
+        max_frame_num,
+    );
+    let mut plan = Vec::with_capacity(access_units.len());
+
+    for access_unit in access_units {
+        plan.push(planner.plan_next(access_unit));
     }
 
     plan
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_access_units_max_active_references(
+    access_units: &[NativeVulkanH264AccessUnitSnapshot],
+) -> u32 {
+    access_units
+        .iter()
+        .filter_map(|access_unit| access_unit.first_slice.as_ref())
+        .filter_map(|slice| {
+            slice
+                .is_p
+                .then(|| slice.num_ref_idx_l0_active_minus1.map(|value| value + 1))
+                .flatten()
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -19106,6 +21009,7 @@ fn native_vulkan_h264_min_decodable_dpb_plan(
     access_units: &[NativeVulkanH264AccessUnitSnapshot],
     max_dpb_slots: u32,
     max_short_term_references: u32,
+    max_frame_num: u32,
 ) -> (u32, Vec<NativeVulkanH264DecodeReferencePlanEntrySnapshot>) {
     let max_dpb_slots = max_dpb_slots.max(1);
     let mut last_plan = Vec::new();
@@ -19114,6 +21018,7 @@ fn native_vulkan_h264_min_decodable_dpb_plan(
             access_units,
             dpb_slots,
             max_short_term_references,
+            max_frame_num,
         );
         if plan.iter().all(|entry| entry.ready_for_decode_submit) {
             return (dpb_slots, plan);
@@ -20396,6 +22301,7 @@ struct NativeVulkanH264FirstFrameDecodeInfo {
     idr_pic_id: u16,
     num_ref_idx_l0_active_minus1: Option<u32>,
     ref_pic_list_modification_l0: bool,
+    ref_pic_list_modifications_l0: Vec<NativeVulkanH264RefPicListModificationSnapshot>,
     adaptive_ref_pic_marking_mode_flag: bool,
     field_pic_flag: bool,
     bottom_field_flag: bool,
@@ -20586,6 +22492,8 @@ fn native_vulkan_h264_slice_decode_info(
         }
     }
     let mut ref_pic_list_modification_l0 = false;
+    let mut ref_pic_list_modifications_l0 =
+        Vec::<NativeVulkanH264RefPicListModificationSnapshot>::new();
     if is_p || is_b {
         ref_pic_list_modification_l0 = bits.read_bool("ref_pic_list_modification_flag_l0")?;
         if ref_pic_list_modification_l0 {
@@ -20594,19 +22502,23 @@ fn native_vulkan_h264_slice_decode_info(
                 if modification_of_pic_nums_idc == 3 {
                     break;
                 }
-                match modification_of_pic_nums_idc {
-                    0 | 1 => {
-                        bits.read_ue("abs_diff_pic_num_minus1")?;
-                    }
-                    2 => {
-                        bits.read_ue("long_term_pic_num")?;
-                    }
-                    other => {
-                        return Err(format!(
-                            "H.264 ref_pic_list_modification_l0 idc {other} is not supported"
-                        ));
-                    }
-                }
+                let (abs_diff_pic_num_minus1, long_term_pic_num) =
+                    match modification_of_pic_nums_idc {
+                        0 | 1 => (Some(bits.read_ue("abs_diff_pic_num_minus1")?), None),
+                        2 => (None, Some(bits.read_ue("long_term_pic_num")?)),
+                        other => {
+                            return Err(format!(
+                                "H.264 ref_pic_list_modification_l0 idc {other} is not supported"
+                            ));
+                        }
+                    };
+                ref_pic_list_modifications_l0.push(
+                    NativeVulkanH264RefPicListModificationSnapshot {
+                        modification_of_pic_nums_idc,
+                        abs_diff_pic_num_minus1,
+                        long_term_pic_num,
+                    },
+                );
             }
         }
         if is_b {
@@ -20647,6 +22559,7 @@ fn native_vulkan_h264_slice_decode_info(
         idr_pic_id,
         num_ref_idx_l0_active_minus1,
         ref_pic_list_modification_l0,
+        ref_pic_list_modifications_l0,
         adaptive_ref_pic_marking_mode_flag,
         field_pic_flag,
         bottom_field_flag,
@@ -27836,6 +29749,7 @@ mod tests {
                 idr_pic_id: if idr { 0 } else { 0 },
                 num_ref_idx_l0_active_minus1: is_p.then_some(0),
                 ref_pic_list_modification_l0: false,
+                ref_pic_list_modifications_l0: Vec::new(),
                 adaptive_ref_pic_marking_mode_flag: false,
                 field_pic_flag: false,
                 bottom_field_flag: false,
@@ -27864,12 +29778,12 @@ mod tests {
             h264_test_access_unit(2, 2, false),
         ];
 
-        let one_slot_plan = native_vulkan_h264_decode_reference_plan(&access_units, 1, 1);
+        let one_slot_plan = native_vulkan_h264_decode_reference_plan(&access_units, 1, 1, 16);
         assert!(one_slot_plan[0].ready_for_decode_submit);
         assert!(!one_slot_plan[1].ready_for_decode_submit);
         assert_eq!(one_slot_plan[1].missing_reference_count, 1);
 
-        let (dpb_slots, plan) = native_vulkan_h264_min_decodable_dpb_plan(&access_units, 2, 1);
+        let (dpb_slots, plan) = native_vulkan_h264_min_decodable_dpb_plan(&access_units, 2, 1, 16);
 
         assert_eq!(dpb_slots, 2);
         assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
@@ -27909,7 +29823,7 @@ mod tests {
             .unwrap()
             .num_ref_idx_l0_active_minus1 = Some(1);
 
-        let (dpb_slots, plan) = native_vulkan_h264_min_decodable_dpb_plan(&access_units, 3, 2);
+        let (dpb_slots, plan) = native_vulkan_h264_min_decodable_dpb_plan(&access_units, 3, 2, 16);
 
         assert_eq!(dpb_slots, 3);
         assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
@@ -27941,6 +29855,31 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![Some(2), Some(1)]
         );
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn plans_h264_short_term_ref_list_modification_p_slice() {
+        let mut access_units = vec![
+            h264_test_access_unit(0, 0, true),
+            h264_test_access_unit(1, 1, false),
+            h264_test_access_unit(2, 2, false),
+        ];
+        let p_slice = access_units[2].first_slice.as_mut().unwrap();
+        p_slice.ref_pic_list_modification_l0 = true;
+        p_slice.ref_pic_list_modifications_l0 =
+            vec![NativeVulkanH264RefPicListModificationSnapshot {
+                modification_of_pic_nums_idc: 0,
+                abs_diff_pic_num_minus1: Some(1),
+                long_term_pic_num: None,
+            }];
+
+        let (dpb_slots, plan) = native_vulkan_h264_min_decodable_dpb_plan(&access_units, 3, 2, 16);
+
+        assert_eq!(dpb_slots, 3);
+        assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
+        assert_eq!(plan[2].references[0].frame_num, 0);
+        assert_eq!(plan[2].references[0].source_access_unit_index, Some(0));
     }
 
     #[test]

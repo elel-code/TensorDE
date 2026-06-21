@@ -17,15 +17,16 @@ fn main() {
 
 #[cfg(feature = "native-vulkan-renderer")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "native-vulkan-gst-video")]
+    use gilder::renderer::native_vulkan::{
+        NativeVulkanH264VideoInputMode, NativeVulkanH265VideoInputMode,
+        run_h264_ready_prefix_video, run_h265_first_frame_video, run_h265_ready_prefix_video,
+    };
     use gilder::renderer::native_vulkan::{
         NativeVulkanOptions, NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionSmokeOptions,
         backend_contract, capabilities, probe_vulkan_video_decode, probe_vulkan_video_session,
         probe_wayland_surface, run_clear, run_static_image, run_video,
         wallpaper_type_support_matrix,
-    };
-    #[cfg(feature = "native-vulkan-gst-video")]
-    use gilder::renderer::native_vulkan::{
-        run_h264_ready_prefix_video, run_h265_first_frame_video, run_h265_ready_prefix_video,
     };
     use gilder::renderer::native_wayland::NativeWaylandLayer;
     use gilder::renderer::{StaticWallpaperPlan, VideoWallpaperPlan};
@@ -47,6 +48,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut allow_foreground_layer = false;
     let mut video_session_options = NativeVulkanVideoSessionSmokeOptions::default();
     let mut ready_prefix_playback_frames = 0u32;
+    #[cfg(feature = "native-vulkan-gst-video")]
+    let mut h264_video_input = NativeVulkanH264VideoInputMode::ReadyPrefixSpool;
+    #[cfg(feature = "native-vulkan-gst-video")]
+    let mut h265_video_input = NativeVulkanH265VideoInputMode::ReadyPrefixSpool;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -251,6 +256,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .transpose()?
                     .ok_or("--playback-frames requires a count")?;
             }
+            "--h264-input" | "--h264-input-mode" => {
+                let value = args.next().ok_or("--h264-input requires a value")?;
+                #[cfg(feature = "native-vulkan-gst-video")]
+                {
+                    h264_video_input = parse_h264_video_input_mode(&value)?;
+                }
+                #[cfg(not(feature = "native-vulkan-gst-video"))]
+                {
+                    let _ = value;
+                    return Err("--h264-input requires native-vulkan-gst-video feature".into());
+                }
+            }
+            "--h265-input" | "--h265-input-mode" => {
+                let value = args.next().ok_or("--h265-input requires a value")?;
+                #[cfg(feature = "native-vulkan-gst-video")]
+                {
+                    h265_video_input = parse_h265_video_input_mode(&value)?;
+                }
+                #[cfg(not(feature = "native-vulkan-gst-video"))]
+                {
+                    let _ = value;
+                    return Err("--h265-input requires native-vulkan-gst-video feature".into());
+                }
+            }
             "--start-offset-ms" => {
                 start_offset_ms = args
                     .next()
@@ -423,6 +452,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     fit,
                     video_session_options.bitstream_extract_max_samples,
                     video_session_options.decode_h264_ready_prefix_frames,
+                    h264_video_input,
                     playback_frames,
                 )?)
             }
@@ -468,6 +498,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     fit,
                     video_session_options.bitstream_extract_max_samples,
                     video_session_options.decode_h265_ready_prefix_frames,
+                    h265_video_input,
                     playback_frames,
                 )?)
             }
@@ -538,6 +569,46 @@ fn parse_fit_mode(value: &str) -> Result<gilder::core::FitMode, String> {
     }
 }
 
+#[cfg(all(
+    feature = "native-vulkan-renderer",
+    feature = "native-vulkan-gst-video"
+))]
+fn parse_h264_video_input_mode(
+    value: &str,
+) -> Result<gilder::renderer::native_vulkan::NativeVulkanH264VideoInputMode, String> {
+    use gilder::renderer::native_vulkan::NativeVulkanH264VideoInputMode;
+
+    match value {
+        "ready-prefix-spool" | "spool" | "ready-prefix" => {
+            Ok(NativeVulkanH264VideoInputMode::ReadyPrefixSpool)
+        }
+        "streaming-queue" | "streaming" | "queue" => {
+            Ok(NativeVulkanH264VideoInputMode::StreamingQueue)
+        }
+        other => Err(format!("unsupported H.264 video input mode: {other}")),
+    }
+}
+
+#[cfg(all(
+    feature = "native-vulkan-renderer",
+    feature = "native-vulkan-gst-video"
+))]
+fn parse_h265_video_input_mode(
+    value: &str,
+) -> Result<gilder::renderer::native_vulkan::NativeVulkanH265VideoInputMode, String> {
+    use gilder::renderer::native_vulkan::NativeVulkanH265VideoInputMode;
+
+    match value {
+        "ready-prefix-spool" | "spool" | "ready-prefix" => {
+            Ok(NativeVulkanH265VideoInputMode::ReadyPrefixSpool)
+        }
+        "streaming-queue" | "streaming" | "queue" => {
+            Ok(NativeVulkanH265VideoInputMode::StreamingQueue)
+        }
+        other => Err(format!("unsupported H.265 video input mode: {other}")),
+    }
+}
+
 #[cfg(feature = "native-vulkan-renderer")]
 fn parse_decoder_policy(
     value: &str,
@@ -598,7 +669,9 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --run-video accepts a video wallpaper plan, presents a poster/clear placeholder through native Vulkan, then prints video handoff telemetry.\n\
 --run-h265-first-frame-video decodes the first H.265 IDR with Vulkan Video and samples the decoded NV12 image to the swapchain.\n\
 --run-h264-ready-prefix-video decodes a ready H.264 AU prefix with Vulkan Video and samples each decoded NV12 layer to the swapchain.\n\
+--h264-input ready-prefix-spool|streaming-queue selects retained spool or bounded streaming packet queue input for H.264 visible video.\n\
 --run-h265-ready-prefix-video decodes a ready H.265 AU prefix with Vulkan Video and samples each decoded NV12 layer to the swapchain.\n\
+--h265-input ready-prefix-spool|streaming-queue selects retained spool or bounded streaming packet queue input for H.265 visible video.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\

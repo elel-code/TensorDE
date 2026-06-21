@@ -24,6 +24,7 @@ Options:
   --decode-prefix <n>   Ready-prefix AU count to decode/present. Default:
                         playback-frames when playback-frames is set, otherwise target-fps.
   --playback-frames <n> Decode/present frames by looping the ready prefix. Default: decode-prefix.
+  --streaming-queue    Use bounded parser/appsink packet queue instead of ready-prefix spool.
   --target-fps <fps>    Presentation target FPS. Default: 240.
   --gop-size <frames>   Generated H.265 keyint/min-keyint. Default: target-fps.
   --width <px>          Generated/probed width. Default: 3840.
@@ -58,6 +59,7 @@ fit="cover"
 no_build=0
 generated_source=0
 source_duration_seconds=0
+streaming_queue=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -89,6 +91,10 @@ while [[ $# -gt 0 ]]; do
     --playback-frames)
       playback_frames="${2:-}"
       shift 2
+      ;;
+    --streaming-queue)
+      streaming_queue=1
+      shift
       ;;
     --target-fps)
       target_fps="${2:-}"
@@ -246,6 +252,9 @@ args=(
 if [[ "$playback_frames" -gt 0 ]]; then
   args+=(--playback-frames "$playback_frames")
 fi
+if [[ "$streaming_queue" -eq 1 ]]; then
+  args+=(--h265-input streaming-queue)
+fi
 if [[ -n "$output_name" ]]; then
   args+=(--output-name "$output_name")
 fi
@@ -296,6 +305,10 @@ bitstream_ring_wrap_count="$(jq -r '.bitstream_ring_wrap_count // 0' "$runtime_j
 bitstream_window_payload_bytes="$(jq -r '.bitstream_window_payload_bytes // 0' "$runtime_json")"
 bitstream_upload_count="$(jq -r '.bitstream_upload_count // 0' "$runtime_json")"
 bitstream_uploaded_bytes="$(jq -r '.bitstream_uploaded_bytes // 0' "$runtime_json")"
+h265_input_mode="$(jq -r '.h265_input_mode // "none"' "$runtime_json")"
+h265_packet_queue_capacity="$(jq -r '.h265_packet_queue_capacity // 0' "$runtime_json")"
+h265_packet_queue_pulled_count="$(jq -r '.h265_packet_queue_pulled_count // 0' "$runtime_json")"
+h265_packet_queue_max_payload_bytes="$(jq -r '.h265_packet_queue_max_payload_bytes // 0' "$runtime_json")"
 swapchain_images="$(jq -r '.swapchain_image_count // 0' "$runtime_json")"
 resource_bytes="$(jq -r '.video_resource_memory_bytes // 0' "$runtime_json")"
 loop_gate_failed=0
@@ -305,6 +318,16 @@ fi
 bitstream_gate_failed=0
 if [[ "$bitstream_strategy" != "fixed-capacity-persistent-mapped-ring" || "$bitstream_slot_count" -le 0 || "$bitstream_slot_bytes" -le 0 || "$bitstream_ring_capacity_bytes" -lt "$bitstream_slot_bytes" || "$bitstream_window_payload_bytes" -le 0 || "$bitstream_upload_count" -ne "$expected_frames" || "$bitstream_uploaded_bytes" -le 0 ]]; then
   bitstream_gate_failed=1
+fi
+input_gate_failed=0
+if [[ "$streaming_queue" -eq 1 ]]; then
+  if [[ "$h265_input_mode" != "streaming-queue" || "$h265_packet_queue_capacity" -le 0 || "$h265_packet_queue_pulled_count" -lt "$expected_frames" || "$h265_packet_queue_max_payload_bytes" -le 0 ]]; then
+    input_gate_failed=1
+  fi
+else
+  if [[ "$h265_input_mode" != "ready-prefix-spool" ]]; then
+    input_gate_failed=1
+  fi
 fi
 if [[ "$decode_prefix" -gt 1 && ( "$bitstream_slot_count" -le 1 || "$bitstream_ring_capacity_bytes" -le "$bitstream_slot_bytes" ) ]]; then
   bitstream_gate_failed=1
@@ -321,7 +344,7 @@ if [[ "$driver_max_dpb_slots" == "none" || "$stream_sps_dpb_slots" -le 0 || "$st
   dpb_gate_failed=1
 fi
 
-if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$ready_prefix_count" -ne "$decode_prefix" || "$requested_playback_count" -ne "$expected_frames" || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$pts_delta_min" == "none" || "$pts_delta_max" == "none" || "$present_queue" == "none" || "$video_queue" == "none" || "$sync_strategy" != "per-frame-binary-semaphore-decode-signal-present-wait" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
+if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$ready_prefix_count" -ne "$decode_prefix" || "$requested_playback_count" -ne "$expected_frames" || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$pts_delta_min" == "none" || "$pts_delta_max" == "none" || "$present_queue" == "none" || "$video_queue" == "none" || "$sync_strategy" != "per-frame-binary-semaphore-decode-signal-present-wait" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
   {
     printf 'FAIL: native Vulkan direct H.265 ready-prefix video output was not valid\n'
     printf 'decoded_count: %s\n' "$decoded_count"
@@ -357,6 +380,10 @@ if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expect
     printf 'bitstream_window_payload_bytes: %s\n' "$bitstream_window_payload_bytes"
     printf 'bitstream_upload_count: %s\n' "$bitstream_upload_count"
     printf 'bitstream_uploaded_bytes: %s\n' "$bitstream_uploaded_bytes"
+    printf 'h265_input_mode: %s\n' "$h265_input_mode"
+    printf 'h265_packet_queue_capacity: %s\n' "$h265_packet_queue_capacity"
+    printf 'h265_packet_queue_pulled_count: %s\n' "$h265_packet_queue_pulled_count"
+    printf 'h265_packet_queue_max_payload_bytes: %s\n' "$h265_packet_queue_max_payload_bytes"
     printf 'swapchain_images: %s\n' "$swapchain_images"
     printf 'video_resource_memory_bytes: %s\n' "$resource_bytes"
     printf 'runtime JSON: %s\n' "$runtime_json"
@@ -417,6 +444,13 @@ fi
   printf 'bitstream_window_payload_bytes: %s\n' "$bitstream_window_payload_bytes"
   printf 'bitstream_upload_count: %s\n' "$bitstream_upload_count"
   printf 'bitstream_uploaded_bytes: %s\n' "$bitstream_uploaded_bytes"
+  printf 'h265_input_mode: %s\n' "$h265_input_mode"
+  printf 'h265_packet_queue_capacity: %s\n' "$h265_packet_queue_capacity"
+  printf 'h265_packet_queue_pulled_count: %s\n' "$h265_packet_queue_pulled_count"
+  printf 'h265_packet_queue_eos_count: %s\n' "$(jq -r '.h265_packet_queue_eos_count // 0' "$runtime_json")"
+  printf 'h265_packet_queue_loop_count: %s\n' "$(jq -r '.h265_packet_queue_loop_count // 0' "$runtime_json")"
+  printf 'h265_packet_queue_max_payload_bytes: %s\n' "$h265_packet_queue_max_payload_bytes"
+  printf 'h265_packet_queue_retained_payload_bytes: %s\n' "$(jq -r '.h265_packet_queue_retained_payload_bytes // 0' "$runtime_json")"
   printf 'frame_layers_head: %s\n' "$(jq -c '[.frames[0:32][]?.dst_base_array_layer]' "$runtime_json")"
   printf 'frame_layers_tail: %s\n' "$(jq -c '[.frames[-32:][]?.dst_base_array_layer]' "$runtime_json")"
   printf 'frame_access_units_head: %s\n' "$(jq -c '[.frames[0:32][]?.access_unit_index]' "$runtime_json")"
