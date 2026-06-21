@@ -1342,6 +1342,12 @@ pub struct NativeVulkanH265AccessUnitSliceSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanH265ShortTermRefPicSetSnapshot {
     pub inter_ref_pic_set_prediction_flag: bool,
+    pub delta_idx_minus1: Option<u32>,
+    pub delta_rps_sign: Option<bool>,
+    pub abs_delta_rps_minus1: Option<u32>,
+    pub num_delta_pocs_of_ref_rps_idx: u32,
+    pub use_delta_flags: Vec<bool>,
+    pub used_by_current_flags: Vec<bool>,
     pub num_negative_pics: u32,
     pub num_positive_pics: u32,
     pub negative_delta_pocs: Vec<i32>,
@@ -19597,9 +19603,13 @@ fn native_vulkan_h265_sps_short_term_ref_pic_sets_supported(
     ref_pic_sets: &[NativeVulkanH265ShortTermRefPicSetSnapshot],
 ) -> bool {
     ref_pic_sets.iter().all(|ref_pic_set| {
-        !ref_pic_set.inter_ref_pic_set_prediction_flag
-            && ref_pic_set.num_negative_pics <= 16
+        ref_pic_set.num_negative_pics <= 16
             && ref_pic_set.num_positive_pics <= 16
+            && ref_pic_set.use_delta_flags.len() <= 16
+            && ref_pic_set.used_by_current_flags.len() <= 16
+            && ref_pic_set
+                .abs_delta_rps_minus1
+                .is_none_or(|value| value <= u16::MAX as u32)
             && ref_pic_set
                 .negative_delta_pocs
                 .iter()
@@ -21382,8 +21392,7 @@ fn native_vulkan_h265_first_slice_probe_snapshot(
                 .map_err(|_| "H.265 short-term RPS bit count exceeds u16 range".to_owned())?;
             if short_term_ref_pic_set.inter_ref_pic_set_prediction_flag {
                 num_delta_pocs_of_ref_rps_idx = native_vulkan_h265_u8(
-                    short_term_ref_pic_set.num_negative_pics
-                        + short_term_ref_pic_set.num_positive_pics,
+                    short_term_ref_pic_set.num_delta_pocs_of_ref_rps_idx,
                     "NumDeltaPocsOfRefRpsIdx",
                 )?;
             }
@@ -23806,16 +23815,183 @@ fn native_vulkan_h265_skip_scaling_list_data(
 fn native_vulkan_h265_read_short_term_ref_pic_set(
     bits: &mut NativeVulkanH265BitReader<'_>,
     st_rps_idx: u32,
-    _num_short_term_ref_pic_sets: u32,
-    _previous_ref_pic_sets: &[NativeVulkanH265ShortTermRefPicSetSnapshot],
+    num_short_term_ref_pic_sets: u32,
+    previous_ref_pic_sets: &[NativeVulkanH265ShortTermRefPicSetSnapshot],
 ) -> Result<NativeVulkanH265ShortTermRefPicSetSnapshot, String> {
     let inter_ref_pic_set_prediction_flag =
         st_rps_idx != 0 && bits.read_bool("inter_ref_pic_set_prediction_flag")?;
     if inter_ref_pic_set_prediction_flag {
-        return Err(
-            "predicted H.265 short-term reference picture sets are not exposed by the probe yet"
-                .to_owned(),
-        );
+        let delta_idx_minus1 = if st_rps_idx == num_short_term_ref_pic_sets {
+            bits.read_ue("delta_idx_minus1")?
+        } else {
+            0
+        };
+        let ref_rps_idx = st_rps_idx
+            .checked_sub(delta_idx_minus1.saturating_add(1))
+            .ok_or_else(|| {
+                format!(
+                    "H.265 predicted RPS delta_idx_minus1 {delta_idx_minus1} underflows stRpsIdx {st_rps_idx}"
+                )
+            })?;
+        let ref_pic_set = previous_ref_pic_sets
+            .get(ref_rps_idx as usize)
+            .ok_or_else(|| {
+                format!(
+                    "H.265 predicted RPS RefRpsIdx {ref_rps_idx} exceeds previous RPS count {}",
+                    previous_ref_pic_sets.len()
+                )
+            })?;
+        let ref_num_delta_pocs = ref_pic_set
+            .num_negative_pics
+            .checked_add(ref_pic_set.num_positive_pics)
+            .ok_or_else(|| "H.265 predicted RPS reference delta POC count overflow".to_owned())?;
+        let delta_rps_sign = bits.read_bool("delta_rps_sign")?;
+        let abs_delta_rps_minus1 = bits.read_ue("abs_delta_rps_minus1")?;
+        let delta_rps_magnitude = i32::try_from(abs_delta_rps_minus1.saturating_add(1))
+            .map_err(|_| "H.265 predicted RPS abs_delta_rps_minus1 exceeds i32 range".to_owned())?;
+        let delta_rps = if delta_rps_sign {
+            -delta_rps_magnitude
+        } else {
+            delta_rps_magnitude
+        };
+        let flag_count = ref_num_delta_pocs.saturating_add(1);
+        if flag_count > 16 {
+            return Err(format!(
+                "H.265 predicted RPS has {flag_count} use-delta flags; maximum supported is 16"
+            ));
+        }
+        let mut used_by_current_flags = Vec::with_capacity(flag_count as usize);
+        let mut use_delta_flags = Vec::with_capacity(flag_count as usize);
+        for flag_index in 0..flag_count {
+            let used_by_current = bits.read_bool("used_by_curr_pic_flag")?;
+            let use_delta = if used_by_current {
+                true
+            } else {
+                bits.read_bool("use_delta_flag")?
+            };
+            used_by_current_flags.push(used_by_current);
+            use_delta_flags.push(use_delta);
+            if flag_index == ref_num_delta_pocs && !use_delta {
+                continue;
+            }
+        }
+
+        let mut negative_entries = Vec::<(i32, bool)>::new();
+        let mut positive_entries = Vec::<(i32, bool)>::new();
+        let ref_negative_count = ref_pic_set.negative_delta_pocs.len();
+        let ref_positive_count = ref_pic_set.positive_delta_pocs.len();
+        for index in (0..ref_positive_count).rev() {
+            let flag_index = ref_negative_count + index;
+            let delta_poc = ref_pic_set.positive_delta_pocs[index]
+                .checked_add(delta_rps)
+                .ok_or_else(|| "H.265 predicted positive RPS delta overflow".to_owned())?;
+            if delta_poc < 0 && use_delta_flags.get(flag_index).copied().unwrap_or(false) {
+                negative_entries.push((
+                    delta_poc,
+                    used_by_current_flags
+                        .get(flag_index)
+                        .copied()
+                        .unwrap_or(false),
+                ));
+            }
+        }
+        let delta_rps_flag_index = ref_num_delta_pocs as usize;
+        if delta_rps < 0
+            && use_delta_flags
+                .get(delta_rps_flag_index)
+                .copied()
+                .unwrap_or(false)
+        {
+            negative_entries.push((
+                delta_rps,
+                used_by_current_flags
+                    .get(delta_rps_flag_index)
+                    .copied()
+                    .unwrap_or(false),
+            ));
+        }
+        for index in 0..ref_negative_count {
+            let delta_poc = ref_pic_set.negative_delta_pocs[index]
+                .checked_add(delta_rps)
+                .ok_or_else(|| "H.265 predicted negative RPS delta overflow".to_owned())?;
+            if delta_poc < 0 && use_delta_flags.get(index).copied().unwrap_or(false) {
+                negative_entries.push((
+                    delta_poc,
+                    used_by_current_flags.get(index).copied().unwrap_or(false),
+                ));
+            }
+        }
+
+        for index in (0..ref_negative_count).rev() {
+            let delta_poc = ref_pic_set.negative_delta_pocs[index]
+                .checked_add(delta_rps)
+                .ok_or_else(|| "H.265 predicted negative RPS delta overflow".to_owned())?;
+            if delta_poc > 0 && use_delta_flags.get(index).copied().unwrap_or(false) {
+                positive_entries.push((
+                    delta_poc,
+                    used_by_current_flags.get(index).copied().unwrap_or(false),
+                ));
+            }
+        }
+        if delta_rps > 0
+            && use_delta_flags
+                .get(delta_rps_flag_index)
+                .copied()
+                .unwrap_or(false)
+        {
+            positive_entries.push((
+                delta_rps,
+                used_by_current_flags
+                    .get(delta_rps_flag_index)
+                    .copied()
+                    .unwrap_or(false),
+            ));
+        }
+        for index in 0..ref_positive_count {
+            let flag_index = ref_negative_count + index;
+            let delta_poc = ref_pic_set.positive_delta_pocs[index]
+                .checked_add(delta_rps)
+                .ok_or_else(|| "H.265 predicted positive RPS delta overflow".to_owned())?;
+            if delta_poc > 0 && use_delta_flags.get(flag_index).copied().unwrap_or(false) {
+                positive_entries.push((
+                    delta_poc,
+                    used_by_current_flags
+                        .get(flag_index)
+                        .copied()
+                        .unwrap_or(false),
+                ));
+            }
+        }
+
+        let negative_delta_pocs = negative_entries
+            .iter()
+            .map(|(delta_poc, _)| *delta_poc)
+            .collect::<Vec<_>>();
+        let negative_used_by_curr_pic = negative_entries
+            .iter()
+            .map(|(_, used)| *used)
+            .collect::<Vec<_>>();
+        let positive_delta_pocs = positive_entries
+            .iter()
+            .map(|(delta_poc, _)| *delta_poc)
+            .collect::<Vec<_>>();
+        let positive_used_by_curr_pic = positive_entries
+            .iter()
+            .map(|(_, used)| *used)
+            .collect::<Vec<_>>();
+        return Ok(native_vulkan_h265_short_term_ref_pic_set_snapshot(
+            true,
+            Some(delta_idx_minus1),
+            Some(delta_rps_sign),
+            Some(abs_delta_rps_minus1),
+            ref_num_delta_pocs,
+            use_delta_flags,
+            used_by_current_flags,
+            negative_delta_pocs,
+            negative_used_by_curr_pic,
+            positive_delta_pocs,
+            positive_used_by_curr_pic,
+        ));
     }
 
     let num_negative_pics = bits.read_ue("num_negative_pics")?;
@@ -23853,6 +24029,36 @@ fn native_vulkan_h265_read_short_term_ref_pic_set(
         positive_delta_pocs.push(delta_poc);
         positive_used_by_curr_pic.push(bits.read_bool("used_by_curr_pic_s1_flag")?);
     }
+    Ok(native_vulkan_h265_short_term_ref_pic_set_snapshot(
+        false,
+        None,
+        None,
+        None,
+        0,
+        Vec::new(),
+        Vec::new(),
+        negative_delta_pocs,
+        negative_used_by_curr_pic,
+        positive_delta_pocs,
+        positive_used_by_curr_pic,
+    ))
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[allow(clippy::too_many_arguments)]
+fn native_vulkan_h265_short_term_ref_pic_set_snapshot(
+    inter_ref_pic_set_prediction_flag: bool,
+    delta_idx_minus1: Option<u32>,
+    delta_rps_sign: Option<bool>,
+    abs_delta_rps_minus1: Option<u32>,
+    num_delta_pocs_of_ref_rps_idx: u32,
+    use_delta_flags: Vec<bool>,
+    used_by_current_flags: Vec<bool>,
+    negative_delta_pocs: Vec<i32>,
+    negative_used_by_curr_pic: Vec<bool>,
+    positive_delta_pocs: Vec<i32>,
+    positive_used_by_curr_pic: Vec<bool>,
+) -> NativeVulkanH265ShortTermRefPicSetSnapshot {
     let used_by_current_count = negative_used_by_curr_pic
         .iter()
         .chain(positive_used_by_curr_pic.iter())
@@ -23870,11 +24076,16 @@ fn native_vulkan_h265_read_short_term_ref_pic_set(
         .zip(positive_used_by_curr_pic.iter().copied())
         .filter_map(|(delta_poc, used)| used.then_some(delta_poc))
         .collect::<Vec<_>>();
-
-    Ok(NativeVulkanH265ShortTermRefPicSetSnapshot {
+    NativeVulkanH265ShortTermRefPicSetSnapshot {
         inter_ref_pic_set_prediction_flag,
-        num_negative_pics,
-        num_positive_pics,
+        delta_idx_minus1,
+        delta_rps_sign,
+        abs_delta_rps_minus1,
+        num_delta_pocs_of_ref_rps_idx,
+        use_delta_flags,
+        used_by_current_flags,
+        num_negative_pics: negative_delta_pocs.len() as u32,
+        num_positive_pics: positive_delta_pocs.len() as u32,
         negative_delta_pocs,
         negative_used_by_curr_pic,
         used_negative_delta_pocs,
@@ -23882,7 +24093,7 @@ fn native_vulkan_h265_read_short_term_ref_pic_set(
         positive_used_by_curr_pic,
         used_positive_delta_pocs,
         used_by_current_count,
-    })
+    }
 }
 
 fn native_vulkan_h265_u8(value: u32, label: &'static str) -> Result<u8, String> {
@@ -26958,12 +27169,6 @@ fn native_vulkan_h265_std_short_term_ref_pic_sets(
 fn native_vulkan_h265_std_short_term_ref_pic_set(
     ref_pic_set: &NativeVulkanH265ShortTermRefPicSetSnapshot,
 ) -> Result<vk::native::StdVideoH265ShortTermRefPicSet, String> {
-    if ref_pic_set.inter_ref_pic_set_prediction_flag {
-        return Err(
-            "predicted H.265 SPS short-term reference picture sets are not in the Vulkan STD subset yet"
-                .to_owned(),
-        );
-    }
     let num_negative_pics = native_vulkan_h265_u8(
         ref_pic_set.num_negative_pics,
         "short_term_ref_pic_set.num_negative_pics",
@@ -27014,13 +27219,22 @@ fn native_vulkan_h265_std_short_term_ref_pic_set(
     Ok(vk::native::StdVideoH265ShortTermRefPicSet {
         flags: vk::native::StdVideoH265ShortTermRefPicSetFlags {
             _bitfield_align_1: [],
-            _bitfield_1: vk::native::StdVideoH265ShortTermRefPicSetFlags::new_bitfield_1(0, 0),
+            _bitfield_1: vk::native::StdVideoH265ShortTermRefPicSetFlags::new_bitfield_1(
+                native_vulkan_bool_u32(ref_pic_set.inter_ref_pic_set_prediction_flag),
+                native_vulkan_bool_u32(ref_pic_set.delta_rps_sign.unwrap_or(false)),
+            ),
             __bindgen_padding_0: [0; 3],
         },
-        delta_idx_minus1: 0,
-        use_delta_flag: 0,
-        abs_delta_rps_minus1: 0,
-        used_by_curr_pic_flag: 0,
+        delta_idx_minus1: ref_pic_set.delta_idx_minus1.unwrap_or(0),
+        use_delta_flag: native_vulkan_h265_used_by_current_mask(&ref_pic_set.use_delta_flags)?,
+        abs_delta_rps_minus1: ref_pic_set
+            .abs_delta_rps_minus1
+            .map(|value| native_vulkan_h265_u16(value, "abs_delta_rps_minus1"))
+            .transpose()?
+            .unwrap_or(0),
+        used_by_curr_pic_flag: native_vulkan_h265_used_by_current_mask(
+            &ref_pic_set.used_by_current_flags,
+        )?,
         used_by_curr_pic_s0_flag,
         used_by_curr_pic_s1_flag,
         reserved1: 0,
@@ -30980,6 +31194,12 @@ mod tests {
             .collect::<Vec<_>>();
         let short_term_ref_pic_set = (!idr).then(|| NativeVulkanH265ShortTermRefPicSetSnapshot {
             inter_ref_pic_set_prediction_flag: false,
+            delta_idx_minus1: None,
+            delta_rps_sign: None,
+            abs_delta_rps_minus1: None,
+            num_delta_pocs_of_ref_rps_idx: 0,
+            use_delta_flags: Vec::new(),
+            used_by_current_flags: Vec::new(),
             num_negative_pics: negative_delta_pocs.len() as u32,
             num_positive_pics: positive_delta_pocs.len() as u32,
             negative_delta_pocs: negative_delta_pocs.clone(),
@@ -31022,6 +31242,93 @@ mod tests {
             }),
             first_slice_parse_error: None,
         }
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn parses_predicted_h265_short_term_ref_pic_set() {
+        fn push_bits(bits: &mut Vec<bool>, value: u32, count: u32) {
+            for shift in (0..count).rev() {
+                bits.push(((value >> shift) & 1) != 0);
+            }
+        }
+        fn push_ue(bits: &mut Vec<bool>, value: u32) {
+            let code_num = value + 1;
+            let bit_count = 32 - code_num.leading_zeros();
+            for _ in 0..bit_count.saturating_sub(1) {
+                bits.push(false);
+            }
+            push_bits(bits, code_num, bit_count);
+        }
+        fn pack_bits(mut bits: Vec<bool>) -> Vec<u8> {
+            bits.push(true);
+            while !bits.len().is_multiple_of(8) {
+                bits.push(false);
+            }
+            let mut bytes = vec![0u8; bits.len() / 8];
+            for (index, bit) in bits.into_iter().enumerate() {
+                if bit {
+                    bytes[index / 8] |= 1 << (7 - (index % 8));
+                }
+            }
+            bytes
+        }
+
+        let reference_rps = native_vulkan_h265_short_term_ref_pic_set_snapshot(
+            false,
+            None,
+            None,
+            None,
+            0,
+            Vec::new(),
+            Vec::new(),
+            vec![-1, -3],
+            vec![true, false],
+            vec![2],
+            vec![true],
+        );
+        let mut bits = Vec::new();
+        bits.push(true); // inter_ref_pic_set_prediction_flag
+        push_ue(&mut bits, 0); // delta_idx_minus1: RefRpsIdx = 0
+        bits.push(true); // delta_rps_sign: negative DeltaRps
+        push_ue(&mut bits, 0); // abs_delta_rps_minus1: |DeltaRps| = 1
+        bits.push(true); // ref negative -1 is used by current and included
+        bits.push(false); // ref negative -3 is not used by current
+        bits.push(true); // ref negative -3 is still included
+        bits.push(true); // ref positive +2 is used by current and included
+        bits.push(true); // DeltaRps -1 is used by current and included
+        let bytes = pack_bits(bits);
+        let mut reader = NativeVulkanH265BitReader::new(&bytes);
+
+        let rps =
+            native_vulkan_h265_read_short_term_ref_pic_set(&mut reader, 1, 1, &[reference_rps])
+                .expect("predicted RPS should parse");
+
+        assert!(rps.inter_ref_pic_set_prediction_flag);
+        assert_eq!(rps.delta_idx_minus1, Some(0));
+        assert_eq!(rps.delta_rps_sign, Some(true));
+        assert_eq!(rps.abs_delta_rps_minus1, Some(0));
+        assert_eq!(rps.num_delta_pocs_of_ref_rps_idx, 3);
+        assert_eq!(rps.use_delta_flags, vec![true, true, true, true]);
+        assert_eq!(rps.used_by_current_flags, vec![true, false, true, true]);
+        assert_eq!(rps.negative_delta_pocs, vec![-1, -2, -4]);
+        assert_eq!(rps.negative_used_by_curr_pic, vec![true, true, false]);
+        assert_eq!(rps.used_negative_delta_pocs, vec![-1, -2]);
+        assert_eq!(rps.positive_delta_pocs, vec![1]);
+        assert_eq!(rps.positive_used_by_curr_pic, vec![true]);
+        assert_eq!(rps.used_positive_delta_pocs, vec![1]);
+        assert_eq!(rps.used_by_current_count, 3);
+
+        let std_rps = native_vulkan_h265_std_short_term_ref_pic_set(&rps)
+            .expect("predicted RPS should map to Vulkan STD fields");
+        assert_eq!(std_rps.flags.inter_ref_pic_set_prediction_flag(), 1);
+        assert_eq!(std_rps.flags.delta_rps_sign(), 1);
+        assert_eq!(std_rps.delta_idx_minus1, 0);
+        assert_eq!(std_rps.abs_delta_rps_minus1, 0);
+        assert_eq!(std_rps.use_delta_flag, 0b1111);
+        assert_eq!(std_rps.used_by_curr_pic_flag, 0b1101);
+        assert_eq!(std_rps.num_negative_pics, 3);
+        assert_eq!(std_rps.num_positive_pics, 1);
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
