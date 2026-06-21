@@ -20223,6 +20223,19 @@ fn native_vulkan_h264_short_term_pic_num(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_picture_order_cnt_val(
+    field_pic_flag: bool,
+    bottom_field_flag: bool,
+    pic_order_cnt: [i32; 2],
+) -> i32 {
+    if field_pic_flag && bottom_field_flag {
+        pic_order_cnt[1]
+    } else {
+        pic_order_cnt[0]
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_h264_find_short_term_reference_by_pic_num(
     short_term_references: &BTreeMap<
         NativeVulkanH264ShortTermPictureKey,
@@ -20466,7 +20479,11 @@ fn native_vulkan_h264_b_reference_frame_nums_for_slice(
     planned_output_slot: u32,
     max_frame_num: u32,
 ) -> Result<Vec<NativeVulkanH264ReferenceListEntry>, String> {
-    let current_poc = slice.pic_order_cnt[0];
+    let current_poc = native_vulkan_h264_picture_order_cnt_val(
+        slice.field_pic_flag,
+        slice.bottom_field_flag,
+        slice.pic_order_cnt,
+    );
     let l0_count = slice
         .num_ref_idx_l0_active_minus1
         .map(|value| value.saturating_add(1))
@@ -20808,6 +20825,9 @@ impl NativeVulkanH264DecodeReferencePlanner {
             ));
         }
         let previous_frame_num_u32 = u32::from(previous_frame_num) % max_frame_num;
+        if previous_frame_num_u32 == current_frame_num_u32 {
+            return Ok(NativeVulkanH264InferredNonExistingPlan::default());
+        }
         let mut frame_num = (previous_frame_num_u32 + 1) % max_frame_num;
         if frame_num == current_frame_num_u32 {
             return Ok(NativeVulkanH264InferredNonExistingPlan::default());
@@ -21044,7 +21064,13 @@ impl NativeVulkanH264DecodeReferencePlanner {
         }
 
         let current_frame_num = first_slice.map(|slice| slice.frame_num);
-        let current_pic_order_cnt_val = first_slice.map(|slice| slice.pic_order_cnt[0]);
+        let current_pic_order_cnt_val = first_slice.map(|slice| {
+            native_vulkan_h264_picture_order_cnt_val(
+                slice.field_pic_flag,
+                slice.bottom_field_flag,
+                slice.pic_order_cnt,
+            )
+        });
         let current_pic_order_cnt = first_slice.map(|slice| slice.pic_order_cnt);
         let current_long_term_frame_idx = first_slice
             .filter(|slice| slice.idr && slice.long_term_reference_flag)
@@ -21077,9 +21103,9 @@ impl NativeVulkanH264DecodeReferencePlanner {
         };
         if unsupported_reason.is_none() {
             if let Some(slice) = first_slice {
-                unsupported_reason = if slice.field_pic_flag {
-                    Some("H.264 field pictures are not supported by the first continuous direct gate".to_owned())
-                } else if !native_vulkan_h264_ref_pic_list_modifications_supported(slice) {
+                unsupported_reason = if !native_vulkan_h264_ref_pic_list_modifications_supported(
+                    slice,
+                ) {
                     Some("H.264 unsupported reference list modification is not supported by the continuous direct gate".to_owned())
                 } else if slice.is_p && requested_reference_count == 0 {
                     Some("H.264 P-slice requested zero active references".to_owned())
@@ -21498,9 +21524,9 @@ fn native_vulkan_h264_picture_layout_candidates(
         ];
     }
     vec![
-        vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE,
         vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_INTERLEAVED_LINES,
         vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_SEPARATE_PLANES,
+        vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE,
     ]
 }
 
@@ -22549,8 +22575,7 @@ fn native_vulkan_parse_h264_parameter_sets(
         && sps.chroma_format_idc == 1
         && !sps.separate_colour_plane_flag
         && sps.bit_depth_luma_minus8 == 0
-        && sps.bit_depth_chroma_minus8 == 0
-        && sps.frame_mbs_only_flag;
+        && sps.bit_depth_chroma_minus8 == 0;
     let vulkan_std_session_parameters_ready = requested_profile_compatible
         && sps.id == pps.sps_id
         && pps.num_slice_groups_minus1 == 0
@@ -31788,6 +31813,50 @@ mod tests {
 
     #[cfg(feature = "native-vulkan-gst-video")]
     #[test]
+    fn plans_h264_complementary_field_pair_without_frame_num_gap() {
+        let mut access_units = vec![
+            h264_test_access_unit(0, 0, true),
+            h264_test_access_unit(1, 1, false),
+            h264_test_access_unit(2, 1, false),
+            h264_test_access_unit(3, 2, false),
+        ];
+        let top_field = access_units[1].first_slice.as_mut().unwrap();
+        top_field.field_pic_flag = true;
+        top_field.bottom_field_flag = false;
+        top_field.pic_order_cnt = [2, 0];
+        let bottom_field = access_units[2].first_slice.as_mut().unwrap();
+        bottom_field.field_pic_flag = true;
+        bottom_field.bottom_field_flag = true;
+        bottom_field.pic_order_cnt = [2, 3];
+        let next_frame = access_units[3].first_slice.as_mut().unwrap();
+        next_frame.num_ref_idx_l0_active_minus1 = Some(1);
+        next_frame.pic_order_cnt = [4, 4];
+
+        let plan =
+            native_vulkan_h264_decode_reference_plan_with_gaps(&access_units, 4, 3, 16, false);
+
+        assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
+        assert_eq!(plan[1].current_pic_order_cnt_val, Some(2));
+        assert_eq!(plan[2].current_pic_order_cnt_val, Some(3));
+        assert_eq!(plan[2].references[0].frame_num, 1);
+        assert!(plan[2].references[0].field_pic_flag);
+        assert!(!plan[2].references[0].bottom_field_flag);
+        assert_eq!(
+            plan[3]
+                .references
+                .iter()
+                .map(|reference| (
+                    reference.frame_num,
+                    reference.field_pic_flag,
+                    reference.bottom_field_flag
+                ))
+                .collect::<Vec<_>>(),
+            vec![(1, true, true), (1, true, false)]
+        );
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
     fn chooses_h264_picture_layout_candidates_from_sps_and_field_window() {
         assert_eq!(
             native_vulkan_h264_picture_layout_candidates(&h264_test_sps(true), false),
@@ -31796,9 +31865,9 @@ mod tests {
         assert_eq!(
             native_vulkan_h264_picture_layout_candidates(&h264_test_sps(false), false),
             vec![
-                vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE,
                 vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_INTERLEAVED_LINES,
                 vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_SEPARATE_PLANES,
+                vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE,
             ]
         );
         assert_eq!(
