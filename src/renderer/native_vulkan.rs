@@ -20290,6 +20290,26 @@ impl NativeVulkanH264DecodeReferencePlanner {
         slot
     }
 
+    fn active_reference_count(&self) -> usize {
+        self.short_term_references
+            .len()
+            .saturating_add(self.long_term_references.len())
+    }
+
+    fn enforce_sliding_reference_window(&mut self) -> Vec<(u16, u32)> {
+        let mut dropped = Vec::new();
+        while self.active_reference_count() > self.max_short_term_references as usize {
+            let Some(old_frame_num) = self.short_term_reference_order.first().copied() else {
+                break;
+            };
+            self.short_term_reference_order.remove(0);
+            if let Some(old_slot) = self.remove_short_term_reference(old_frame_num) {
+                dropped.push((old_frame_num, old_slot));
+            }
+        }
+        dropped
+    }
+
     fn infer_non_existing_short_term_references(
         &mut self,
         current_frame_num: u16,
@@ -20341,15 +20361,12 @@ impl NativeVulkanH264DecodeReferencePlanner {
             self.short_term_reference_order
                 .retain(|existing| *existing != inferred_frame_num);
             self.short_term_reference_order.push(inferred_frame_num);
-            while self.short_term_reference_order.len() > self.max_short_term_references as usize {
-                let old_frame_num = self.short_term_reference_order.remove(0);
-                if let Some(old_slot) = self.remove_short_term_reference(old_frame_num) {
-                    if !plan.dropped_short_term_frame_nums.contains(&old_frame_num) {
-                        plan.dropped_short_term_frame_nums.push(old_frame_num);
-                    }
-                    if !plan.dropped_reference_slots.contains(&old_slot) {
-                        plan.dropped_reference_slots.push(old_slot);
-                    }
+            for (old_frame_num, old_slot) in self.enforce_sliding_reference_window() {
+                if !plan.dropped_short_term_frame_nums.contains(&old_frame_num) {
+                    plan.dropped_short_term_frame_nums.push(old_frame_num);
+                }
+                if !plan.dropped_reference_slots.contains(&old_slot) {
+                    plan.dropped_reference_slots.push(old_slot);
                 }
             }
             frame_num = (frame_num + 1) % max_frame_num;
@@ -20646,7 +20663,7 @@ impl NativeVulkanH264DecodeReferencePlanner {
             && requested_reference_count > self.max_short_term_references
         {
             unsupported_reason = Some(format!(
-                "H.264 slice requests {requested_reference_count} active short-term references but stream/driver plan keeps {}",
+                "H.264 slice requests {requested_reference_count} active references but stream/driver plan keeps {}",
                 self.max_short_term_references
             ));
         }
@@ -20805,14 +20822,9 @@ impl NativeVulkanH264DecodeReferencePlanner {
                     self.short_term_reference_order
                         .retain(|frame_num| *frame_num != current_frame_num);
                     self.short_term_reference_order.push(current_frame_num);
-                    while self.short_term_reference_order.len()
-                        > self.max_short_term_references as usize
-                    {
-                        let old_frame_num = self.short_term_reference_order.remove(0);
-                        if let Some(old_slot) = self.remove_short_term_reference(old_frame_num) {
-                            dropped_reference_frame_nums.push(old_frame_num);
-                            dropped_reference_slots.push(old_slot);
-                        }
+                    for (old_frame_num, old_slot) in self.enforce_sliding_reference_window() {
+                        dropped_reference_frame_nums.push(old_frame_num);
+                        dropped_reference_slots.push(old_slot);
                     }
                 }
                 self.previous_reference_frame_num = Some(current_frame_num);
@@ -31185,6 +31197,46 @@ mod tests {
         assert_eq!(plan[1].references[0].frame_num, 0);
         assert!(plan[1].references[0].used_for_long_term_reference);
         assert_eq!(plan[1].references[0].long_term_frame_idx, Some(0));
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn slides_h264_short_term_window_with_existing_long_term_reference() {
+        let mut access_units = vec![
+            h264_test_access_unit(0, 0, true),
+            h264_test_access_unit(1, 1, false),
+            h264_test_access_unit(2, 2, false),
+            h264_test_access_unit(3, 3, false),
+        ];
+        access_units[0]
+            .first_slice
+            .as_mut()
+            .unwrap()
+            .long_term_reference_flag = true;
+        access_units[3]
+            .first_slice
+            .as_mut()
+            .unwrap()
+            .num_ref_idx_l0_active_minus1 = Some(1);
+
+        let plan = native_vulkan_h264_decode_reference_plan(&access_units, 3, 2, 16);
+
+        assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
+        assert_eq!(plan[2].dropped_reference_frame_nums, vec![1]);
+        assert_eq!(
+            plan[3]
+                .references
+                .iter()
+                .map(|reference| {
+                    (
+                        reference.frame_num,
+                        reference.used_for_long_term_reference,
+                        reference.source_access_unit_index,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![(2, false, Some(2)), (0, true, Some(0))]
+        );
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
