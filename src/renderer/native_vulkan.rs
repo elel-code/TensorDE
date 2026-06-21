@@ -782,6 +782,8 @@ pub struct NativeVulkanH264DecodedFrameSnapshot {
     pub pic_order_cnt_val: i32,
     pub idr: bool,
     pub irap: bool,
+    pub used_for_long_term_reference: bool,
+    pub long_term_frame_idx: Option<u16>,
     pub reset_before_decode: bool,
     pub src_buffer_offset: u64,
     pub src_buffer_range: u64,
@@ -799,6 +801,8 @@ pub struct NativeVulkanH264DecodedFrameReferenceSnapshot {
     pub dpb_slot: u32,
     pub source_access_unit_index: u32,
     pub frame_num: u16,
+    pub used_for_long_term_reference: bool,
+    pub long_term_frame_idx: Option<u16>,
     pub pic_order_cnt_val: i32,
 }
 
@@ -1111,10 +1115,14 @@ pub struct NativeVulkanH264DecodeReferencePlanEntrySnapshot {
     pub nal_type_label: Option<&'static str>,
     pub current_frame_num: Option<u16>,
     pub current_pic_order_cnt_val: Option<i32>,
+    pub current_long_term_frame_idx: Option<u16>,
     pub planned_output_slot: u32,
     pub setup_slot_index: Option<i32>,
     pub evicted_frame_num: Option<u16>,
+    pub evicted_long_term_frame_idx: Option<u16>,
     pub dropped_reference_frame_nums: Vec<u16>,
+    pub dropped_long_term_frame_indices: Vec<u16>,
+    pub long_term_reference_conversions: Vec<NativeVulkanH264LongTermReferenceConversionSnapshot>,
     pub dropped_reference_slots: Vec<u32>,
     pub requested_reference_count: u32,
     pub references: Vec<NativeVulkanH264DecodeReferenceSnapshot>,
@@ -1127,10 +1135,19 @@ pub struct NativeVulkanH264DecodeReferencePlanEntrySnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanH264DecodeReferenceSnapshot {
     pub frame_num: u16,
+    pub used_for_long_term_reference: bool,
+    pub long_term_frame_idx: Option<u16>,
     pub pic_order_cnt_val: i32,
     pub available: bool,
     pub source_access_unit_index: Option<u32>,
     pub dpb_slot: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanH264LongTermReferenceConversionSnapshot {
+    pub frame_num: u16,
+    pub long_term_frame_idx: u16,
+    pub dpb_slot: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2227,6 +2244,8 @@ pub struct NativeVulkanDirectH264ReadyPrefixFrameSnapshot {
     pub idr: bool,
     pub irap: bool,
     pub is_reference: bool,
+    pub used_for_long_term_reference: bool,
+    pub long_term_frame_idx: Option<u16>,
     pub requested_reference_count: u32,
     pub reset_before_decode: bool,
     pub src_buffer_offset: u64,
@@ -4484,11 +4503,20 @@ pub fn run_h264_ready_prefix_video(
                         *slot = None;
                     }
                 }
+                for conversion in &entry.long_term_reference_conversions {
+                    if let Some(Some(reference)) =
+                        active_dpb_refs.get_mut(conversion.dpb_slot as usize)
+                        && reference.frame_num == conversion.frame_num
+                    {
+                        reference.used_for_long_term_reference = true;
+                    }
+                }
                 if let Some(slot) = active_dpb_refs.get_mut(frame.dst_base_array_layer as usize) {
                     if frame.is_reference {
                         *slot = Some(NativeVulkanH264ActiveDpbReference {
                             frame_num: frame.frame_num,
                             pic_order_cnt_val: frame.pic_order_cnt_val,
+                            used_for_long_term_reference: frame.used_for_long_term_reference,
                         });
                     } else {
                         *slot = None;
@@ -13546,6 +13574,8 @@ fn native_vulkan_decode_h264_idr_prefix_smoke(
                     pic_order_cnt_val: first_frame.pic_order_cnt[0],
                     idr: first_frame.idr,
                     irap: first_frame.irap,
+                    used_for_long_term_reference: first_frame.long_term_reference_flag,
+                    long_term_frame_idx: first_frame.long_term_reference_flag.then_some(0),
                     reset_before_decode,
                     src_buffer_offset: span.offset,
                     src_buffer_range: span.range,
@@ -13823,7 +13853,7 @@ fn native_vulkan_decode_h264_ready_prefix_smoke(
                             vk::native::StdVideoDecodeH264ReferenceInfoFlags::new_bitfield_1(
                                 0,
                                 0,
-                                native_vulkan_bool_u32(picture.long_term_reference_flag),
+                                native_vulkan_bool_u32(entry.current_long_term_frame_idx.is_some()),
                                 0,
                             ),
                         __bindgen_padding_0: [0; 3],
@@ -13874,7 +13904,10 @@ fn native_vulkan_decode_h264_ready_prefix_smoke(
                             _bitfield_align_1: [],
                             _bitfield_1:
                                 vk::native::StdVideoDecodeH264ReferenceInfoFlags::new_bitfield_1(
-                                    0, 0, 0, 0,
+                                    0,
+                                    0,
+                                    native_vulkan_bool_u32(reference.used_for_long_term_reference),
+                                    0,
                                 ),
                             __bindgen_padding_0: [0; 3],
                         },
@@ -13963,6 +13996,8 @@ fn native_vulkan_decode_h264_ready_prefix_smoke(
                                 .source_access_unit_index
                                 .unwrap_or(u32::MAX),
                             frame_num: reference.frame_num,
+                            used_for_long_term_reference: reference.used_for_long_term_reference,
+                            long_term_frame_idx: reference.long_term_frame_idx,
                             pic_order_cnt_val: reference.pic_order_cnt_val,
                         }
                     })
@@ -13979,6 +14014,8 @@ fn native_vulkan_decode_h264_ready_prefix_smoke(
                     pic_order_cnt_val: picture.pic_order_cnt[0],
                     idr: picture.idr,
                     irap: picture.irap,
+                    used_for_long_term_reference: entry.current_long_term_frame_idx.is_some(),
+                    long_term_frame_idx: entry.current_long_term_frame_idx,
                     reset_before_decode,
                     src_buffer_offset: span.offset,
                     src_buffer_range: span.range,
@@ -14741,6 +14778,7 @@ fn native_vulkan_h265_begin_includes_setup_slot() -> bool {
 struct NativeVulkanH264ActiveDpbReference {
     frame_num: u16,
     pic_order_cnt_val: i32,
+    used_for_long_term_reference: bool,
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -14836,7 +14874,7 @@ fn native_vulkan_decode_h264_ready_prefix_frame_to_image(
             _bitfield_1: vk::native::StdVideoDecodeH264ReferenceInfoFlags::new_bitfield_1(
                 0,
                 0,
-                native_vulkan_bool_u32(picture.long_term_reference_flag),
+                native_vulkan_bool_u32(entry.current_long_term_frame_idx.is_some()),
                 0,
             ),
             __bindgen_padding_0: [0; 3],
@@ -14875,7 +14913,10 @@ fn native_vulkan_decode_h264_ready_prefix_frame_to_image(
             flags: vk::native::StdVideoDecodeH264ReferenceInfoFlags {
                 _bitfield_align_1: [],
                 _bitfield_1: vk::native::StdVideoDecodeH264ReferenceInfoFlags::new_bitfield_1(
-                    0, 0, 0, 0,
+                    0,
+                    0,
+                    native_vulkan_bool_u32(reference.used_for_long_term_reference),
+                    0,
                 ),
                 __bindgen_padding_0: [0; 3],
             },
@@ -14928,12 +14969,16 @@ fn native_vulkan_decode_h264_ready_prefix_frame_to_image(
             let reference = reference.unwrap_or(NativeVulkanH264ActiveDpbReference {
                 frame_num: 0,
                 pic_order_cnt_val: 0,
+                used_for_long_term_reference: false,
             });
             vk::native::StdVideoDecodeH264ReferenceInfo {
                 flags: vk::native::StdVideoDecodeH264ReferenceInfoFlags {
                     _bitfield_align_1: [],
                     _bitfield_1: vk::native::StdVideoDecodeH264ReferenceInfoFlags::new_bitfield_1(
-                        0, 0, 0, 0,
+                        0,
+                        0,
+                        native_vulkan_bool_u32(reference.used_for_long_term_reference),
+                        0,
                     ),
                     __bindgen_padding_0: [0; 3],
                 },
@@ -15071,6 +15116,8 @@ fn native_vulkan_decode_h264_ready_prefix_frame_to_image(
                     .expect("available references were checked for DPB slots"),
                 source_access_unit_index: reference.source_access_unit_index.unwrap_or(u32::MAX),
                 frame_num: reference.frame_num,
+                used_for_long_term_reference: reference.used_for_long_term_reference,
+                long_term_frame_idx: reference.long_term_frame_idx,
                 pic_order_cnt_val: reference.pic_order_cnt_val,
             },
         )
@@ -15094,6 +15141,8 @@ fn native_vulkan_decode_h264_ready_prefix_frame_to_image(
         idr: picture.idr,
         irap: picture.irap,
         is_reference: picture.is_reference,
+        used_for_long_term_reference: entry.current_long_term_frame_idx.is_some(),
+        long_term_frame_idx: entry.current_long_term_frame_idx,
         requested_reference_count: entry.requested_reference_count,
         reset_before_decode,
         src_buffer_offset: span.offset,
@@ -19408,7 +19457,7 @@ fn native_vulkan_h264_access_unit_snapshot(
             && !slice.slice_offsets.is_empty()
             && !slice.is_b
             && !slice.long_term_reference_flag
-            && native_vulkan_h264_ref_pic_list_modifications_short_term_only(slice)
+            && native_vulkan_h264_ref_pic_list_modifications_supported(slice)
             && !slice.adaptive_ref_pic_marking_mode_flag
             && (slice.is_intra || (slice.is_p && active_l0_refs > 0))
     });
@@ -19586,31 +19635,64 @@ fn native_vulkan_h265_sps_max_pic_order_cnt_lsb(sps: &NativeVulkanH265SpsSnapsho
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_h264_ref_pic_list_modifications_short_term_only(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeVulkanH264ReferenceListEntry {
+    ShortTerm(u16),
+    LongTerm(u16),
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeVulkanH264DpbSlotKey {
+    ShortTerm(u16),
+    LongTerm(u16),
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, Copy)]
+struct NativeVulkanH264DpbReferenceState {
+    source_access_unit_index: u32,
+    dpb_slot: u32,
+    pic_order_cnt_val: i32,
+    frame_num: u16,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, Default)]
+struct NativeVulkanH264AdaptiveMarkingPlan {
+    drop_short_term_frame_nums: Vec<u16>,
+    drop_long_term_frame_indices: Vec<u16>,
+    convert_short_term_to_long_term: Vec<(u16, u16)>,
+    current_long_term_frame_idx: Option<u16>,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_ref_pic_list_modifications_supported(
     slice: &NativeVulkanH264AccessUnitSliceSnapshot,
 ) -> bool {
-    native_vulkan_h264_ref_pic_list_modification_items_short_term_only(
+    native_vulkan_h264_ref_pic_list_modification_items_supported(
         &slice.ref_pic_list_modifications_l0,
-    ) && native_vulkan_h264_ref_pic_list_modification_items_short_term_only(
+    ) && native_vulkan_h264_ref_pic_list_modification_items_supported(
         &slice.ref_pic_list_modifications_l1,
     )
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_h264_ref_pic_list_modification_items_short_term_only(
+fn native_vulkan_h264_ref_pic_list_modification_items_supported(
     modifications: &[NativeVulkanH264RefPicListModificationSnapshot],
 ) -> bool {
     modifications
         .iter()
-        .all(|modification| matches!(modification.modification_of_pic_nums_idc, 0 | 1))
+        .all(|modification| matches!(modification.modification_of_pic_nums_idc, 0 | 1 | 2))
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_h264_apply_ref_pic_list_modifications(
-    frame_nums: &mut Vec<u16>,
+    entries: &mut Vec<NativeVulkanH264ReferenceListEntry>,
     modifications: &[NativeVulkanH264RefPicListModificationSnapshot],
     current_frame_num: u16,
-    frame_to_decoded_slot: &BTreeMap<u16, (u32, u32, i32)>,
+    short_term_references: &BTreeMap<u16, NativeVulkanH264DpbReferenceState>,
+    long_term_references: &BTreeMap<u16, NativeVulkanH264DpbReferenceState>,
     planned_output_slot: u32,
     max_frame_num: u32,
     list_label: &'static str,
@@ -19623,7 +19705,7 @@ fn native_vulkan_h264_apply_ref_pic_list_modifications(
     let mut pic_num_lx_pred = u32::from(current_frame_num);
     let mut insertion_index = 0usize;
     for modification in modifications {
-        let pic_num_lx = match modification.modification_of_pic_nums_idc {
+        let entry = match modification.modification_of_pic_nums_idc {
             0 | 1 => {
                 let diff = modification
                     .abs_diff_pic_num_minus1
@@ -19632,7 +19714,7 @@ fn native_vulkan_h264_apply_ref_pic_list_modifications(
                             .to_owned()
                     })?
                     .saturating_add(1);
-                if modification.modification_of_pic_nums_idc == 0 {
+                let pic_num_lx = if modification.modification_of_pic_nums_idc == 0 {
                     if pic_num_lx_pred < diff {
                         pic_num_lx_pred
                             .saturating_add(max_frame_num)
@@ -19647,12 +19729,46 @@ fn native_vulkan_h264_apply_ref_pic_list_modifications(
                     } else {
                         value
                     }
+                };
+                pic_num_lx_pred = pic_num_lx;
+                let frame_num = u16::try_from(pic_num_lx).map_err(|_| {
+                    format!("H.264 modified reference frame_num {pic_num_lx} exceeds u16 range")
+                })?;
+                let Some(reference) = short_term_references.get(&frame_num) else {
+                    return Err(format!(
+                        "H.264 {list_label} ref list modification requested unavailable short-term frame_num {frame_num}"
+                    ));
+                };
+                if reference.dpb_slot == planned_output_slot {
+                    return Err(format!(
+                        "H.264 {list_label} ref list modification requested frame_num {frame_num} in the output DPB slot"
+                    ));
                 }
+                NativeVulkanH264ReferenceListEntry::ShortTerm(frame_num)
             }
             2 => {
-                return Err(
-                    "H.264 long-term reference list modification is not supported yet".to_owned(),
-                );
+                let long_term_pic_num = modification
+                    .long_term_pic_num
+                    .ok_or_else(|| {
+                        "H.264 long-term ref list modification is missing long_term_pic_num"
+                            .to_owned()
+                    })
+                    .and_then(|value| {
+                        u16::try_from(value).map_err(|_| {
+                            format!("H.264 long_term_pic_num {value} exceeds supported u16 range")
+                        })
+                    })?;
+                let Some(reference) = long_term_references.get(&long_term_pic_num) else {
+                    return Err(format!(
+                        "H.264 {list_label} ref list modification requested unavailable long-term pic num {long_term_pic_num}"
+                    ));
+                };
+                if reference.dpb_slot == planned_output_slot {
+                    return Err(format!(
+                        "H.264 {list_label} ref list modification requested long-term pic num {long_term_pic_num} in the output DPB slot"
+                    ));
+                }
+                NativeVulkanH264ReferenceListEntry::LongTerm(long_term_pic_num)
             }
             other => {
                 return Err(format!(
@@ -19660,22 +19776,8 @@ fn native_vulkan_h264_apply_ref_pic_list_modifications(
                 ));
             }
         };
-        pic_num_lx_pred = pic_num_lx;
-        let frame_num = u16::try_from(pic_num_lx).map_err(|_| {
-            format!("H.264 modified reference frame_num {pic_num_lx} exceeds u16 range")
-        })?;
-        let Some((_, dpb_slot, _)) = frame_to_decoded_slot.get(&frame_num) else {
-            return Err(format!(
-                "H.264 {list_label} ref list modification requested unavailable short-term frame_num {frame_num}"
-            ));
-        };
-        if *dpb_slot == planned_output_slot {
-            return Err(format!(
-                "H.264 {list_label} ref list modification requested frame_num {frame_num} in the output DPB slot"
-            ));
-        }
-        frame_nums.retain(|existing| *existing != frame_num);
-        frame_nums.insert(insertion_index.min(frame_nums.len()), frame_num);
+        entries.retain(|existing| *existing != entry);
+        entries.insert(insertion_index.min(entries.len()), entry);
         insertion_index = insertion_index.saturating_add(1);
     }
 
@@ -19686,40 +19788,52 @@ fn native_vulkan_h264_apply_ref_pic_list_modifications(
 fn native_vulkan_h264_reference_frame_nums_for_slice(
     slice: &NativeVulkanH264AccessUnitSliceSnapshot,
     short_term_reference_order: &[u16],
-    frame_to_decoded_slot: &BTreeMap<u16, (u32, u32, i32)>,
+    short_term_references: &BTreeMap<u16, NativeVulkanH264DpbReferenceState>,
+    long_term_references: &BTreeMap<u16, NativeVulkanH264DpbReferenceState>,
     planned_output_slot: u32,
     max_frame_num: u32,
-) -> Result<Vec<u16>, String> {
-    let mut frame_nums = short_term_reference_order
+) -> Result<Vec<NativeVulkanH264ReferenceListEntry>, String> {
+    let mut entries = short_term_reference_order
         .iter()
         .rev()
         .copied()
         .filter(|frame_num| {
-            frame_to_decoded_slot
+            short_term_references
                 .get(frame_num)
-                .is_some_and(|(_, dpb_slot, _)| *dpb_slot != planned_output_slot)
+                .is_some_and(|reference| reference.dpb_slot != planned_output_slot)
         })
+        .map(NativeVulkanH264ReferenceListEntry::ShortTerm)
         .collect::<Vec<_>>();
+    entries.extend(
+        long_term_references
+            .iter()
+            .filter(|(_, reference)| reference.dpb_slot != planned_output_slot)
+            .map(|(long_term_frame_idx, _)| {
+                NativeVulkanH264ReferenceListEntry::LongTerm(*long_term_frame_idx)
+            }),
+    );
 
     native_vulkan_h264_apply_ref_pic_list_modifications(
-        &mut frame_nums,
+        &mut entries,
         &slice.ref_pic_list_modifications_l0,
         slice.frame_num,
-        frame_to_decoded_slot,
+        short_term_references,
+        long_term_references,
         planned_output_slot,
         max_frame_num,
         "L0",
     )?;
-    Ok(frame_nums)
+    Ok(entries)
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_h264_b_reference_frame_nums_for_slice(
     slice: &NativeVulkanH264AccessUnitSliceSnapshot,
-    frame_to_decoded_slot: &BTreeMap<u16, (u32, u32, i32)>,
+    short_term_references: &BTreeMap<u16, NativeVulkanH264DpbReferenceState>,
+    long_term_references: &BTreeMap<u16, NativeVulkanH264DpbReferenceState>,
     planned_output_slot: u32,
     max_frame_num: u32,
-) -> Result<Vec<u16>, String> {
+) -> Result<Vec<NativeVulkanH264ReferenceListEntry>, String> {
     let current_poc = slice.pic_order_cnt[0];
     let l0_count = slice
         .num_ref_idx_l0_active_minus1
@@ -19729,26 +19843,41 @@ fn native_vulkan_h264_b_reference_frame_nums_for_slice(
         .num_ref_idx_l1_active_minus1
         .map(|value| value.saturating_add(1))
         .unwrap_or(0) as usize;
-    let mut before = frame_to_decoded_slot
+    let mut before = short_term_references
         .iter()
-        .filter_map(|(frame_num, (_, _, poc))| (*poc < current_poc).then_some((*frame_num, *poc)))
+        .filter_map(|(frame_num, reference)| {
+            (reference.pic_order_cnt_val < current_poc)
+                .then_some((*frame_num, reference.pic_order_cnt_val))
+        })
         .collect::<Vec<_>>();
     before.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| right.0.cmp(&left.0)));
-    let mut after = frame_to_decoded_slot
+    let mut after = short_term_references
         .iter()
-        .filter_map(|(frame_num, (_, _, poc))| (*poc > current_poc).then_some((*frame_num, *poc)))
+        .filter_map(|(frame_num, reference)| {
+            (reference.pic_order_cnt_val > current_poc)
+                .then_some((*frame_num, reference.pic_order_cnt_val))
+        })
         .collect::<Vec<_>>();
     after.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
+    let long_term_entries = long_term_references
+        .iter()
+        .filter(|(_, reference)| reference.dpb_slot != planned_output_slot)
+        .map(|(long_term_frame_idx, _)| {
+            NativeVulkanH264ReferenceListEntry::LongTerm(*long_term_frame_idx)
+        })
+        .collect::<Vec<_>>();
 
     let mut l0 = before
         .iter()
         .chain(after.iter())
-        .map(|(frame_num, _)| *frame_num)
+        .map(|(frame_num, _)| NativeVulkanH264ReferenceListEntry::ShortTerm(*frame_num))
+        .chain(long_term_entries.iter().copied())
         .collect::<Vec<_>>();
     let mut l1 = after
         .iter()
         .chain(before.iter())
-        .map(|(frame_num, _)| *frame_num)
+        .map(|(frame_num, _)| NativeVulkanH264ReferenceListEntry::ShortTerm(*frame_num))
+        .chain(long_term_entries.iter().copied())
         .collect::<Vec<_>>();
     if l0.len() > 1 && l1.len() > 1 && l0 == l1 {
         l1.swap(0, 1);
@@ -19757,7 +19886,8 @@ fn native_vulkan_h264_b_reference_frame_nums_for_slice(
         &mut l0,
         &slice.ref_pic_list_modifications_l0,
         slice.frame_num,
-        frame_to_decoded_slot,
+        short_term_references,
+        long_term_references,
         planned_output_slot,
         max_frame_num,
         "L0",
@@ -19766,7 +19896,8 @@ fn native_vulkan_h264_b_reference_frame_nums_for_slice(
         &mut l1,
         &slice.ref_pic_list_modifications_l1,
         slice.frame_num,
-        frame_to_decoded_slot,
+        short_term_references,
+        long_term_references,
         planned_output_slot,
         max_frame_num,
         "L1",
@@ -19775,67 +19906,134 @@ fn native_vulkan_h264_b_reference_frame_nums_for_slice(
     l1.truncate(l1_count);
     l0.extend(l1);
     let mut unique = Vec::with_capacity(l0.len());
-    for frame_num in l0 {
-        if !unique.contains(&frame_num) {
-            unique.push(frame_num);
+    for entry in l0 {
+        if !unique.contains(&entry) {
+            unique.push(entry);
         }
     }
     Ok(unique)
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_h264_adaptive_marking_dropped_frame_nums_for_slice(
+fn native_vulkan_h264_adaptive_marking_plan_for_slice(
     slice: &NativeVulkanH264AccessUnitSliceSnapshot,
-    frame_to_decoded_slot: &BTreeMap<u16, (u32, u32, i32)>,
+    short_term_references: &BTreeMap<u16, NativeVulkanH264DpbReferenceState>,
+    long_term_references: &BTreeMap<u16, NativeVulkanH264DpbReferenceState>,
     max_frame_num: u32,
-) -> Result<Vec<u16>, String> {
+) -> Result<NativeVulkanH264AdaptiveMarkingPlan, String> {
+    let mut plan = NativeVulkanH264AdaptiveMarkingPlan::default();
     if !slice.adaptive_ref_pic_marking_mode_flag {
-        return Ok(Vec::new());
+        if slice.idr && slice.long_term_reference_flag {
+            plan.current_long_term_frame_idx = Some(0);
+        }
+        return Ok(plan);
     }
 
-    let mut dropped = Vec::<u16>::new();
     let max_frame_num = max_frame_num.max(1);
     for operation in &slice.memory_management_control_operations {
         match operation.memory_management_control_operation {
             1 => {
-                let difference = operation
-                    .difference_of_pic_nums_minus1
-                    .ok_or_else(|| {
-                        "H.264 MMCO 1 is missing difference_of_pic_nums_minus1".to_owned()
-                    })?
-                    .saturating_add(1);
-                let current = u32::from(slice.frame_num);
-                let pic_num = if current < difference {
-                    current
-                        .saturating_add(max_frame_num)
-                        .saturating_sub(difference)
-                } else {
-                    current.saturating_sub(difference)
-                };
-                let frame_num = u16::try_from(pic_num).map_err(|_| {
-                    format!("H.264 MMCO 1 target frame_num {pic_num} exceeds u16 range")
-                })?;
-                if !frame_to_decoded_slot.contains_key(&frame_num) {
+                let frame_num = native_vulkan_h264_mmco_short_term_frame_num(
+                    slice.frame_num,
+                    operation.difference_of_pic_nums_minus1,
+                    max_frame_num,
+                    "MMCO 1",
+                )?;
+                if !short_term_references.contains_key(&frame_num) {
                     return Err(format!(
                         "H.264 MMCO 1 requested unavailable short-term frame_num {frame_num}"
                     ));
                 }
-                if !dropped.contains(&frame_num) {
-                    dropped.push(frame_num);
+                if !plan.drop_short_term_frame_nums.contains(&frame_num) {
+                    plan.drop_short_term_frame_nums.push(frame_num);
                 }
             }
-            5 => {
-                for frame_num in frame_to_decoded_slot.keys().copied() {
-                    if !dropped.contains(&frame_num) {
-                        dropped.push(frame_num);
+            2 => {
+                let long_term_pic_num = native_vulkan_h264_optional_u16(
+                    operation.long_term_pic_num,
+                    "long_term_pic_num",
+                )?;
+                if !long_term_references.contains_key(&long_term_pic_num) {
+                    return Err(format!(
+                        "H.264 MMCO 2 requested unavailable long-term pic num {long_term_pic_num}"
+                    ));
+                }
+                if !plan
+                    .drop_long_term_frame_indices
+                    .contains(&long_term_pic_num)
+                {
+                    plan.drop_long_term_frame_indices.push(long_term_pic_num);
+                }
+            }
+            3 => {
+                let frame_num = native_vulkan_h264_mmco_short_term_frame_num(
+                    slice.frame_num,
+                    operation.difference_of_pic_nums_minus1,
+                    max_frame_num,
+                    "MMCO 3",
+                )?;
+                if !short_term_references.contains_key(&frame_num) {
+                    return Err(format!(
+                        "H.264 MMCO 3 requested unavailable short-term frame_num {frame_num}"
+                    ));
+                }
+                let long_term_frame_idx = native_vulkan_h264_optional_u16(
+                    operation.long_term_frame_idx,
+                    "long_term_frame_idx",
+                )?;
+                plan.convert_short_term_to_long_term
+                    .push((frame_num, long_term_frame_idx));
+            }
+            4 => {
+                let max_plus1 = operation.max_long_term_frame_idx_plus1.ok_or_else(|| {
+                    "H.264 MMCO 4 is missing max_long_term_frame_idx_plus1".to_owned()
+                })?;
+                if max_plus1 == 0 {
+                    for long_term_frame_idx in long_term_references.keys().copied() {
+                        if !plan
+                            .drop_long_term_frame_indices
+                            .contains(&long_term_frame_idx)
+                        {
+                            plan.drop_long_term_frame_indices.push(long_term_frame_idx);
+                        }
+                    }
+                } else {
+                    let max_idx = u16::try_from(max_plus1.saturating_sub(1)).map_err(|_| {
+                        format!(
+                            "H.264 MMCO 4 max_long_term_frame_idx_plus1 {max_plus1} exceeds supported u16 range"
+                        )
+                    })?;
+                    for long_term_frame_idx in long_term_references.keys().copied() {
+                        if long_term_frame_idx > max_idx
+                            && !plan
+                                .drop_long_term_frame_indices
+                                .contains(&long_term_frame_idx)
+                        {
+                            plan.drop_long_term_frame_indices.push(long_term_frame_idx);
+                        }
                     }
                 }
             }
-            2 | 3 | 4 | 6 => {
-                return Err(format!(
-                    "H.264 MMCO {} uses long-term reference state, which is not supported by the first continuous direct gate",
-                    operation.memory_management_control_operation
-                ));
+            5 => {
+                for frame_num in short_term_references.keys().copied() {
+                    if !plan.drop_short_term_frame_nums.contains(&frame_num) {
+                        plan.drop_short_term_frame_nums.push(frame_num);
+                    }
+                }
+                for long_term_frame_idx in long_term_references.keys().copied() {
+                    if !plan
+                        .drop_long_term_frame_indices
+                        .contains(&long_term_frame_idx)
+                    {
+                        plan.drop_long_term_frame_indices.push(long_term_frame_idx);
+                    }
+                }
+            }
+            6 => {
+                plan.current_long_term_frame_idx = Some(native_vulkan_h264_optional_u16(
+                    operation.long_term_frame_idx,
+                    "long_term_frame_idx",
+                )?);
             }
             other => {
                 return Err(format!(
@@ -19845,7 +20043,35 @@ fn native_vulkan_h264_adaptive_marking_dropped_frame_nums_for_slice(
         }
     }
 
-    Ok(dropped)
+    Ok(plan)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_mmco_short_term_frame_num(
+    current_frame_num: u16,
+    difference_of_pic_nums_minus1: Option<u32>,
+    max_frame_num: u32,
+    label: &'static str,
+) -> Result<u16, String> {
+    let difference = difference_of_pic_nums_minus1
+        .ok_or_else(|| format!("H.264 {label} is missing difference_of_pic_nums_minus1"))?
+        .saturating_add(1);
+    let current = u32::from(current_frame_num);
+    let pic_num = if current < difference {
+        current
+            .saturating_add(max_frame_num)
+            .saturating_sub(difference)
+    } else {
+        current.saturating_sub(difference)
+    };
+    u16::try_from(pic_num)
+        .map_err(|_| format!("H.264 {label} target frame_num {pic_num} exceeds u16 range"))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_optional_u16(value: Option<u32>, label: &'static str) -> Result<u16, String> {
+    let value = value.ok_or_else(|| format!("H.264 value {label} is missing"))?;
+    u16::try_from(value).map_err(|_| format!("H.264 {label} {value} exceeds supported u16 range"))
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -19853,8 +20079,9 @@ struct NativeVulkanH264DecodeReferencePlanner {
     dpb_slots: u32,
     max_short_term_references: u32,
     max_frame_num: u32,
-    frame_to_decoded_slot: BTreeMap<u16, (u32, u32, i32)>,
-    slot_to_frame_num: Vec<Option<u16>>,
+    short_term_references: BTreeMap<u16, NativeVulkanH264DpbReferenceState>,
+    long_term_references: BTreeMap<u16, NativeVulkanH264DpbReferenceState>,
+    slot_to_reference_key: Vec<Option<NativeVulkanH264DpbSlotKey>>,
     short_term_reference_order: Vec<u16>,
     next_output_slot: u32,
 }
@@ -19867,8 +20094,9 @@ impl NativeVulkanH264DecodeReferencePlanner {
             dpb_slots,
             max_short_term_references: max_short_term_references.max(1),
             max_frame_num: max_frame_num.max(1),
-            frame_to_decoded_slot: BTreeMap::new(),
-            slot_to_frame_num: vec![None; dpb_slots as usize],
+            short_term_references: BTreeMap::new(),
+            long_term_references: BTreeMap::new(),
+            slot_to_reference_key: vec![None; dpb_slots as usize],
             short_term_reference_order: Vec::new(),
             next_output_slot: 0,
         }
@@ -19878,7 +20106,7 @@ impl NativeVulkanH264DecodeReferencePlanner {
         for offset in 0..self.dpb_slots {
             let slot = (self.next_output_slot + offset) % self.dpb_slots;
             if self
-                .slot_to_frame_num
+                .slot_to_reference_key
                 .get(slot as usize)
                 .is_none_or(Option::is_none)
             {
@@ -19894,13 +20122,75 @@ impl NativeVulkanH264DecodeReferencePlanner {
     fn remove_short_term_reference(&mut self, frame_num: u16) -> Option<u32> {
         self.short_term_reference_order
             .retain(|existing| *existing != frame_num);
-        let (_, slot, _) = self.frame_to_decoded_slot.remove(&frame_num)?;
-        if self.slot_to_frame_num.get(slot as usize).copied().flatten() == Some(frame_num)
-            && let Some(slot_ref) = self.slot_to_frame_num.get_mut(slot as usize)
+        let reference = self.short_term_references.remove(&frame_num)?;
+        let slot = reference.dpb_slot;
+        if self
+            .slot_to_reference_key
+            .get(slot as usize)
+            .copied()
+            .flatten()
+            == Some(NativeVulkanH264DpbSlotKey::ShortTerm(frame_num))
+            && let Some(slot_ref) = self.slot_to_reference_key.get_mut(slot as usize)
         {
             *slot_ref = None;
         }
         Some(slot)
+    }
+
+    fn remove_long_term_reference(&mut self, long_term_frame_idx: u16) -> Option<u32> {
+        let reference = self.long_term_references.remove(&long_term_frame_idx)?;
+        let slot = reference.dpb_slot;
+        if self
+            .slot_to_reference_key
+            .get(slot as usize)
+            .copied()
+            .flatten()
+            == Some(NativeVulkanH264DpbSlotKey::LongTerm(long_term_frame_idx))
+            && let Some(slot_ref) = self.slot_to_reference_key.get_mut(slot as usize)
+        {
+            *slot_ref = None;
+        }
+        Some(slot)
+    }
+
+    fn clear_slot(&mut self, slot: u32) {
+        let key = self
+            .slot_to_reference_key
+            .get(slot as usize)
+            .copied()
+            .flatten();
+        match key {
+            Some(NativeVulkanH264DpbSlotKey::ShortTerm(frame_num)) => {
+                self.short_term_reference_order
+                    .retain(|existing| *existing != frame_num);
+                self.short_term_references.remove(&frame_num);
+            }
+            Some(NativeVulkanH264DpbSlotKey::LongTerm(long_term_frame_idx)) => {
+                self.long_term_references.remove(&long_term_frame_idx);
+            }
+            None => {}
+        }
+        if let Some(slot_ref) = self.slot_to_reference_key.get_mut(slot as usize) {
+            *slot_ref = None;
+        }
+    }
+
+    fn convert_short_term_to_long_term(
+        &mut self,
+        frame_num: u16,
+        long_term_frame_idx: u16,
+    ) -> Option<(u32, Option<u32>)> {
+        let replaced_slot = self.remove_long_term_reference(long_term_frame_idx);
+        self.short_term_reference_order
+            .retain(|existing| *existing != frame_num);
+        let reference = self.short_term_references.remove(&frame_num)?;
+        let slot = reference.dpb_slot;
+        self.long_term_references
+            .insert(long_term_frame_idx, reference);
+        if let Some(slot_ref) = self.slot_to_reference_key.get_mut(slot as usize) {
+            *slot_ref = Some(NativeVulkanH264DpbSlotKey::LongTerm(long_term_frame_idx));
+        }
+        Some((slot, replaced_slot))
     }
 
     fn plan_next(
@@ -19910,24 +20200,38 @@ impl NativeVulkanH264DecodeReferencePlanner {
         let first_slice = access_unit.first_slice.as_ref();
         let idr = first_slice.is_some_and(|slice| slice.idr);
         if idr {
-            self.frame_to_decoded_slot.clear();
-            self.slot_to_frame_num.fill(None);
+            self.short_term_references.clear();
+            self.long_term_references.clear();
+            self.slot_to_reference_key.fill(None);
             self.short_term_reference_order.clear();
             self.next_output_slot = 0;
         }
 
         let current_frame_num = first_slice.map(|slice| slice.frame_num);
         let current_pic_order_cnt_val = first_slice.map(|slice| slice.pic_order_cnt[0]);
+        let current_long_term_frame_idx = first_slice
+            .filter(|slice| slice.idr && slice.long_term_reference_flag)
+            .map(|_| 0u16);
         let planned_output_slot = if current_frame_num.is_some() {
             self.choose_output_slot()
         } else {
             self.next_output_slot % self.dpb_slots
         };
-        let evicted_frame_num = self
-            .slot_to_frame_num
+        let evicted_key = self
+            .slot_to_reference_key
             .get(planned_output_slot as usize)
             .copied()
             .flatten();
+        let evicted_frame_num = match evicted_key {
+            Some(NativeVulkanH264DpbSlotKey::ShortTerm(frame_num)) => Some(frame_num),
+            _ => None,
+        };
+        let evicted_long_term_frame_idx = match evicted_key {
+            Some(NativeVulkanH264DpbSlotKey::LongTerm(long_term_frame_idx)) => {
+                Some(long_term_frame_idx)
+            }
+            _ => None,
+        };
 
         let mut unsupported_reason = access_unit.first_slice_parse_error.clone();
         let requested_l0_reference_count = first_slice
@@ -19958,10 +20262,8 @@ impl NativeVulkanH264DecodeReferencePlanner {
             if let Some(slice) = first_slice {
                 unsupported_reason = if slice.field_pic_flag {
                     Some("H.264 field pictures are not supported by the first continuous direct gate".to_owned())
-                } else if slice.long_term_reference_flag {
-                    Some("H.264 long-term references are not supported by the first continuous direct gate".to_owned())
-                } else if !native_vulkan_h264_ref_pic_list_modifications_short_term_only(slice) {
-                    Some("H.264 long-term reference list modification is not supported by the first continuous direct gate".to_owned())
+                } else if !native_vulkan_h264_ref_pic_list_modifications_supported(slice) {
+                    Some("H.264 unsupported reference list modification is not supported by the continuous direct gate".to_owned())
                 } else if slice.is_p && requested_reference_count == 0 {
                     Some("H.264 P-slice requested zero active references".to_owned())
                 } else if slice.is_b
@@ -19984,20 +20286,21 @@ impl NativeVulkanH264DecodeReferencePlanner {
             }
         }
 
-        let mut reference_frame_nums = Vec::<u16>::new();
+        let mut reference_entries = Vec::<NativeVulkanH264ReferenceListEntry>::new();
         if unsupported_reason.is_none()
             && let Some(slice) = first_slice
         {
             if slice.is_b {
                 match native_vulkan_h264_b_reference_frame_nums_for_slice(
                     slice,
-                    &self.frame_to_decoded_slot,
+                    &self.short_term_references,
+                    &self.long_term_references,
                     planned_output_slot,
                     self.max_frame_num,
                 ) {
-                    Ok(frame_nums) => {
-                        requested_reference_count = frame_nums.len() as u32;
-                        reference_frame_nums = frame_nums;
+                    Ok(entries) => {
+                        requested_reference_count = entries.len() as u32;
+                        reference_entries = entries;
                     }
                     Err(err) => unsupported_reason = Some(err),
                 }
@@ -20005,11 +20308,12 @@ impl NativeVulkanH264DecodeReferencePlanner {
                 match native_vulkan_h264_reference_frame_nums_for_slice(
                     slice,
                     &self.short_term_reference_order,
-                    &self.frame_to_decoded_slot,
+                    &self.short_term_references,
+                    &self.long_term_references,
                     planned_output_slot,
                     self.max_frame_num,
                 ) {
-                    Ok(frame_nums) => reference_frame_nums = frame_nums,
+                    Ok(entries) => reference_entries = entries,
                     Err(err) => unsupported_reason = Some(err),
                 }
             }
@@ -20022,39 +20326,50 @@ impl NativeVulkanH264DecodeReferencePlanner {
                 self.max_short_term_references
             ));
         }
-        let mut adaptive_marking_dropped_frame_nums = Vec::<u16>::new();
+        let mut adaptive_marking_plan = NativeVulkanH264AdaptiveMarkingPlan::default();
         if unsupported_reason.is_none()
             && let Some(slice) = first_slice
             && slice.is_reference
-            && slice.adaptive_ref_pic_marking_mode_flag
         {
-            match native_vulkan_h264_adaptive_marking_dropped_frame_nums_for_slice(
+            match native_vulkan_h264_adaptive_marking_plan_for_slice(
                 slice,
-                &self.frame_to_decoded_slot,
+                &self.short_term_references,
+                &self.long_term_references,
                 self.max_frame_num,
             ) {
-                Ok(frame_nums) => adaptive_marking_dropped_frame_nums = frame_nums,
+                Ok(plan) => adaptive_marking_plan = plan,
                 Err(err) => unsupported_reason = Some(err),
             }
         }
 
         let references = if unsupported_reason.is_none() && requested_reference_count > 0 {
-            reference_frame_nums
+            reference_entries
                 .into_iter()
-                .filter_map(|frame_num| {
-                    self.frame_to_decoded_slot.get(&frame_num).and_then(
-                        |(source_access_unit_index, dpb_slot, pic_order_cnt_val)| {
-                            (*dpb_slot != planned_output_slot).then(|| {
-                                NativeVulkanH264DecodeReferenceSnapshot {
-                                    frame_num,
-                                    pic_order_cnt_val: *pic_order_cnt_val,
-                                    available: true,
-                                    source_access_unit_index: Some(*source_access_unit_index),
-                                    dpb_slot: Some(*dpb_slot),
-                                }
-                            })
-                        },
-                    )
+                .filter_map(|entry| {
+                    let (used_for_long_term_reference, long_term_frame_idx, reference) = match entry
+                    {
+                        NativeVulkanH264ReferenceListEntry::ShortTerm(frame_num) => {
+                            (false, None, self.short_term_references.get(&frame_num))
+                        }
+                        NativeVulkanH264ReferenceListEntry::LongTerm(long_term_frame_idx) => (
+                            true,
+                            Some(long_term_frame_idx),
+                            self.long_term_references.get(&long_term_frame_idx),
+                        ),
+                    };
+                    reference.and_then(|reference| {
+                        (reference.dpb_slot != planned_output_slot).then(|| {
+                            NativeVulkanH264DecodeReferenceSnapshot {
+                                frame_num: reference.frame_num,
+                                used_for_long_term_reference,
+                                long_term_frame_idx,
+                                pic_order_cnt_val: reference.pic_order_cnt_val,
+                                available: true,
+                                source_access_unit_index: Some(reference.source_access_unit_index),
+                                dpb_slot: Some(reference.dpb_slot),
+                            }
+                        })
+                    })
                 })
                 .take(requested_reference_count as usize)
                 .collect::<Vec<_>>()
@@ -20072,58 +20387,110 @@ impl NativeVulkanH264DecodeReferencePlanner {
             && unsupported_reason.is_none()
             && missing_reference_count == 0;
 
+        let current_reference_long_term_frame_idx = adaptive_marking_plan
+            .current_long_term_frame_idx
+            .or(current_long_term_frame_idx);
         let mut dropped_reference_frame_nums = Vec::<u16>::new();
+        let mut dropped_long_term_frame_indices = Vec::<u16>::new();
+        let mut long_term_reference_conversions =
+            Vec::<NativeVulkanH264LongTermReferenceConversionSnapshot>::new();
         let mut dropped_reference_slots = Vec::<u32>::new();
         if ready_for_decode_submit {
-            if let Some(evicted_frame_num) = evicted_frame_num {
-                self.remove_short_term_reference(evicted_frame_num);
+            if let Some(evicted_key) = evicted_key {
+                match evicted_key {
+                    NativeVulkanH264DpbSlotKey::ShortTerm(frame_num) => {
+                        self.remove_short_term_reference(frame_num);
+                    }
+                    NativeVulkanH264DpbSlotKey::LongTerm(long_term_frame_idx) => {
+                        self.remove_long_term_reference(long_term_frame_idx);
+                    }
+                }
             }
-            if let Some(slot) = self.slot_to_frame_num.get_mut(planned_output_slot as usize) {
-                *slot = None;
-            }
-            for frame_num in adaptive_marking_dropped_frame_nums {
+            self.clear_slot(planned_output_slot);
+            for frame_num in adaptive_marking_plan.drop_short_term_frame_nums {
                 if let Some(slot) = self.remove_short_term_reference(frame_num) {
                     dropped_reference_frame_nums.push(frame_num);
                     dropped_reference_slots.push(slot);
+                }
+            }
+            for long_term_frame_idx in adaptive_marking_plan.drop_long_term_frame_indices {
+                if let Some(slot) = self.remove_long_term_reference(long_term_frame_idx) {
+                    dropped_long_term_frame_indices.push(long_term_frame_idx);
+                    dropped_reference_slots.push(slot);
+                }
+            }
+            for (frame_num, long_term_frame_idx) in
+                adaptive_marking_plan.convert_short_term_to_long_term
+            {
+                if let Some((slot, replaced_slot)) =
+                    self.convert_short_term_to_long_term(frame_num, long_term_frame_idx)
+                {
+                    long_term_reference_conversions.push(
+                        NativeVulkanH264LongTermReferenceConversionSnapshot {
+                            frame_num,
+                            long_term_frame_idx,
+                            dpb_slot: slot,
+                        },
+                    );
+                    if let Some(replaced_slot) = replaced_slot {
+                        if !dropped_long_term_frame_indices.contains(&long_term_frame_idx) {
+                            dropped_long_term_frame_indices.push(long_term_frame_idx);
+                        }
+                        if !dropped_reference_slots.contains(&replaced_slot) {
+                            dropped_reference_slots.push(replaced_slot);
+                        }
+                    }
                 }
             }
             if let (Some(slice), Some(current_frame_num), Some(current_pic_order_cnt_val)) =
                 (first_slice, current_frame_num, current_pic_order_cnt_val)
                 && slice.is_reference
             {
-                if let Some(slot) = self.slot_to_frame_num.get_mut(planned_output_slot as usize) {
-                    *slot = Some(current_frame_num);
-                }
-                self.frame_to_decoded_slot.insert(
-                    current_frame_num,
-                    (
-                        access_unit.index,
-                        planned_output_slot,
-                        current_pic_order_cnt_val,
-                    ),
-                );
-                self.short_term_reference_order
-                    .retain(|frame_num| *frame_num != current_frame_num);
-                self.short_term_reference_order.push(current_frame_num);
-                while self.short_term_reference_order.len()
-                    > self.max_short_term_references as usize
-                {
-                    let old_frame_num = self.short_term_reference_order.remove(0);
-                    if let Some((_, old_slot, _)) =
-                        self.frame_to_decoded_slot.remove(&old_frame_num)
+                let reference_state = NativeVulkanH264DpbReferenceState {
+                    source_access_unit_index: access_unit.index,
+                    dpb_slot: planned_output_slot,
+                    pic_order_cnt_val: current_pic_order_cnt_val,
+                    frame_num: current_frame_num,
+                };
+                if let Some(long_term_frame_idx) = current_reference_long_term_frame_idx {
+                    if let Some(replaced_slot) =
+                        self.remove_long_term_reference(long_term_frame_idx)
                     {
-                        if self
-                            .slot_to_frame_num
-                            .get(old_slot as usize)
-                            .copied()
-                            .flatten()
-                            == Some(old_frame_num)
-                            && let Some(slot) = self.slot_to_frame_num.get_mut(old_slot as usize)
-                        {
-                            *slot = None;
+                        if replaced_slot != planned_output_slot {
+                            dropped_reference_slots.push(replaced_slot);
                         }
-                        dropped_reference_frame_nums.push(old_frame_num);
-                        dropped_reference_slots.push(old_slot);
+                        if !dropped_long_term_frame_indices.contains(&long_term_frame_idx) {
+                            dropped_long_term_frame_indices.push(long_term_frame_idx);
+                        }
+                    }
+                    self.long_term_references
+                        .insert(long_term_frame_idx, reference_state);
+                    if let Some(slot) = self
+                        .slot_to_reference_key
+                        .get_mut(planned_output_slot as usize)
+                    {
+                        *slot = Some(NativeVulkanH264DpbSlotKey::LongTerm(long_term_frame_idx));
+                    }
+                } else {
+                    if let Some(slot) = self
+                        .slot_to_reference_key
+                        .get_mut(planned_output_slot as usize)
+                    {
+                        *slot = Some(NativeVulkanH264DpbSlotKey::ShortTerm(current_frame_num));
+                    }
+                    self.short_term_references
+                        .insert(current_frame_num, reference_state);
+                    self.short_term_reference_order
+                        .retain(|frame_num| *frame_num != current_frame_num);
+                    self.short_term_reference_order.push(current_frame_num);
+                    while self.short_term_reference_order.len()
+                        > self.max_short_term_references as usize
+                    {
+                        let old_frame_num = self.short_term_reference_order.remove(0);
+                        if let Some(old_slot) = self.remove_short_term_reference(old_frame_num) {
+                            dropped_reference_frame_nums.push(old_frame_num);
+                            dropped_reference_slots.push(old_slot);
+                        }
                     }
                 }
             }
@@ -20135,12 +20502,16 @@ impl NativeVulkanH264DecodeReferencePlanner {
             nal_type_label: first_slice.map(|slice| slice.nal_type_label),
             current_frame_num,
             current_pic_order_cnt_val,
+            current_long_term_frame_idx: current_reference_long_term_frame_idx,
             planned_output_slot,
             setup_slot_index: first_slice
                 .filter(|slice| slice.is_reference)
                 .map(|_| planned_output_slot as i32),
             evicted_frame_num,
+            evicted_long_term_frame_idx,
             dropped_reference_frame_nums,
+            dropped_long_term_frame_indices,
+            long_term_reference_conversions,
             dropped_reference_slots,
             requested_reference_count,
             references,
@@ -29362,6 +29733,34 @@ mod tests {
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
+    fn h264_test_mmco(
+        memory_management_control_operation: u32,
+        difference_of_pic_nums_minus1: Option<u32>,
+        long_term_pic_num: Option<u32>,
+        long_term_frame_idx: Option<u32>,
+        max_long_term_frame_idx_plus1: Option<u32>,
+    ) -> NativeVulkanH264MemoryManagementControlOperationSnapshot {
+        NativeVulkanH264MemoryManagementControlOperationSnapshot {
+            memory_management_control_operation,
+            difference_of_pic_nums_minus1,
+            long_term_pic_num,
+            long_term_frame_idx,
+            max_long_term_frame_idx_plus1,
+        }
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    fn h264_test_long_term_l0_modification(
+        long_term_pic_num: u32,
+    ) -> NativeVulkanH264RefPicListModificationSnapshot {
+        NativeVulkanH264RefPicListModificationSnapshot {
+            modification_of_pic_nums_idc: 2,
+            abs_diff_pic_num_minus1: None,
+            long_term_pic_num: Some(long_term_pic_num),
+        }
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
     #[test]
     fn chooses_minimum_h264_dpb_slots_for_ippp_ready_prefix() {
         let access_units = vec![
@@ -29513,6 +29912,193 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![2, 1]
         );
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn plans_h264_long_term_reference_marking_and_ref_list_modification() {
+        let mut access_units = vec![
+            h264_test_access_unit(0, 0, true),
+            h264_test_access_unit(1, 1, false),
+            h264_test_access_unit(2, 2, false),
+            h264_test_access_unit(3, 3, false),
+        ];
+        let mark_long_term = access_units[1].first_slice.as_mut().unwrap();
+        mark_long_term.adaptive_ref_pic_marking_mode_flag = true;
+        mark_long_term.memory_management_control_operations =
+            vec![NativeVulkanH264MemoryManagementControlOperationSnapshot {
+                memory_management_control_operation: 3,
+                difference_of_pic_nums_minus1: Some(0),
+                long_term_pic_num: None,
+                long_term_frame_idx: Some(0),
+                max_long_term_frame_idx_plus1: None,
+            }];
+        let long_term_reference = access_units[2].first_slice.as_mut().unwrap();
+        long_term_reference.ref_pic_list_modification_l0 = true;
+        long_term_reference.ref_pic_list_modifications_l0 =
+            vec![NativeVulkanH264RefPicListModificationSnapshot {
+                modification_of_pic_nums_idc: 2,
+                abs_diff_pic_num_minus1: None,
+                long_term_pic_num: Some(0),
+            }];
+        let drop_long_term = access_units[3].first_slice.as_mut().unwrap();
+        drop_long_term.adaptive_ref_pic_marking_mode_flag = true;
+        drop_long_term.memory_management_control_operations =
+            vec![NativeVulkanH264MemoryManagementControlOperationSnapshot {
+                memory_management_control_operation: 2,
+                difference_of_pic_nums_minus1: None,
+                long_term_pic_num: Some(0),
+                long_term_frame_idx: None,
+                max_long_term_frame_idx_plus1: None,
+            }];
+
+        let plan = native_vulkan_h264_decode_reference_plan(&access_units, 4, 2, 16);
+
+        assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
+        assert!(plan[1].dropped_reference_frame_nums.is_empty());
+        assert_eq!(plan[2].references[0].frame_num, 0);
+        assert!(plan[2].references[0].used_for_long_term_reference);
+        assert_eq!(plan[2].references[0].long_term_frame_idx, Some(0));
+        assert_eq!(plan[2].references[0].source_access_unit_index, Some(0));
+        assert_eq!(plan[3].dropped_long_term_frame_indices, vec![0]);
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn plans_h264_idr_long_term_reference_flag() {
+        let mut access_units = vec![
+            h264_test_access_unit(0, 0, true),
+            h264_test_access_unit(1, 1, false),
+        ];
+        access_units[0]
+            .first_slice
+            .as_mut()
+            .unwrap()
+            .long_term_reference_flag = true;
+        let p_slice = access_units[1].first_slice.as_mut().unwrap();
+        p_slice.ref_pic_list_modification_l0 = true;
+        p_slice.ref_pic_list_modifications_l0 = vec![h264_test_long_term_l0_modification(0)];
+
+        let plan = native_vulkan_h264_decode_reference_plan(&access_units, 2, 1, 16);
+
+        assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
+        assert_eq!(plan[0].current_long_term_frame_idx, Some(0));
+        assert_eq!(plan[1].references[0].frame_num, 0);
+        assert!(plan[1].references[0].used_for_long_term_reference);
+        assert_eq!(plan[1].references[0].long_term_frame_idx, Some(0));
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn plans_h264_mmco6_current_picture_as_long_term_reference() {
+        let mut access_units = vec![
+            h264_test_access_unit(0, 0, true),
+            h264_test_access_unit(1, 1, false),
+            h264_test_access_unit(2, 2, false),
+        ];
+        let mark_current_long_term = access_units[1].first_slice.as_mut().unwrap();
+        mark_current_long_term.adaptive_ref_pic_marking_mode_flag = true;
+        mark_current_long_term.memory_management_control_operations =
+            vec![h264_test_mmco(6, None, None, Some(1), None)];
+        let p_slice = access_units[2].first_slice.as_mut().unwrap();
+        p_slice.ref_pic_list_modification_l0 = true;
+        p_slice.ref_pic_list_modifications_l0 = vec![h264_test_long_term_l0_modification(1)];
+
+        let plan = native_vulkan_h264_decode_reference_plan(&access_units, 3, 2, 16);
+
+        assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
+        assert_eq!(plan[1].current_long_term_frame_idx, Some(1));
+        assert_eq!(plan[2].references[0].frame_num, 1);
+        assert!(plan[2].references[0].used_for_long_term_reference);
+        assert_eq!(plan[2].references[0].long_term_frame_idx, Some(1));
+        assert_eq!(plan[2].references[0].source_access_unit_index, Some(1));
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn plans_h264_mmco4_drops_long_term_references_above_limit() {
+        let mut access_units = vec![
+            h264_test_access_unit(0, 0, true),
+            h264_test_access_unit(1, 1, false),
+            h264_test_access_unit(2, 2, false),
+            h264_test_access_unit(3, 3, false),
+        ];
+        let convert_idr_to_long_term = access_units[1].first_slice.as_mut().unwrap();
+        convert_idr_to_long_term.adaptive_ref_pic_marking_mode_flag = true;
+        convert_idr_to_long_term.memory_management_control_operations =
+            vec![h264_test_mmco(3, Some(0), None, Some(0), None)];
+        let convert_previous_to_long_term = access_units[2].first_slice.as_mut().unwrap();
+        convert_previous_to_long_term.adaptive_ref_pic_marking_mode_flag = true;
+        convert_previous_to_long_term.memory_management_control_operations =
+            vec![h264_test_mmco(3, Some(0), None, Some(2), None)];
+        let trim_long_terms = access_units[3].first_slice.as_mut().unwrap();
+        trim_long_terms.adaptive_ref_pic_marking_mode_flag = true;
+        trim_long_terms.memory_management_control_operations =
+            vec![h264_test_mmco(4, None, None, None, Some(1))];
+
+        let plan = native_vulkan_h264_decode_reference_plan(&access_units, 4, 2, 16);
+
+        assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
+        assert_eq!(plan[1].long_term_reference_conversions[0].frame_num, 0);
+        assert_eq!(
+            plan[2].long_term_reference_conversions[0].long_term_frame_idx,
+            2
+        );
+        assert_eq!(plan[3].dropped_long_term_frame_indices, vec![2]);
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn plans_h264_mmco5_clears_all_existing_references_before_current_picture() {
+        let mut access_units = vec![
+            h264_test_access_unit(0, 0, true),
+            h264_test_access_unit(1, 1, false),
+            h264_test_access_unit(2, 2, false),
+            h264_test_access_unit(3, 3, false),
+        ];
+        let clear_refs = access_units[2].first_slice.as_mut().unwrap();
+        clear_refs.adaptive_ref_pic_marking_mode_flag = true;
+        clear_refs.memory_management_control_operations =
+            vec![h264_test_mmco(5, None, None, None, None)];
+
+        let plan = native_vulkan_h264_decode_reference_plan(&access_units, 4, 2, 16);
+
+        assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
+        assert_eq!(plan[2].dropped_reference_frame_nums, vec![0, 1]);
+        assert_eq!(plan[3].references.len(), 1);
+        assert_eq!(plan[3].references[0].frame_num, 2);
+        assert_eq!(plan[3].references[0].source_access_unit_index, Some(2));
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn plans_h264_long_term_index_replacement() {
+        let mut access_units = vec![
+            h264_test_access_unit(0, 0, true),
+            h264_test_access_unit(1, 1, false),
+            h264_test_access_unit(2, 2, false),
+            h264_test_access_unit(3, 3, false),
+        ];
+        let convert_idr_to_long_term = access_units[1].first_slice.as_mut().unwrap();
+        convert_idr_to_long_term.adaptive_ref_pic_marking_mode_flag = true;
+        convert_idr_to_long_term.memory_management_control_operations =
+            vec![h264_test_mmco(3, Some(0), None, Some(0), None)];
+        let replace_long_term = access_units[2].first_slice.as_mut().unwrap();
+        replace_long_term.adaptive_ref_pic_marking_mode_flag = true;
+        replace_long_term.memory_management_control_operations =
+            vec![h264_test_mmco(3, Some(0), None, Some(0), None)];
+        let p_slice = access_units[3].first_slice.as_mut().unwrap();
+        p_slice.ref_pic_list_modification_l0 = true;
+        p_slice.ref_pic_list_modifications_l0 = vec![h264_test_long_term_l0_modification(0)];
+
+        let plan = native_vulkan_h264_decode_reference_plan(&access_units, 4, 2, 16);
+
+        assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
+        assert_eq!(plan[2].dropped_long_term_frame_indices, vec![0]);
+        assert_eq!(plan[2].long_term_reference_conversions[0].frame_num, 1);
+        assert_eq!(plan[3].references[0].frame_num, 1);
+        assert!(plan[3].references[0].used_for_long_term_reference);
+        assert_eq!(plan[3].references[0].source_access_unit_index, Some(1));
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
