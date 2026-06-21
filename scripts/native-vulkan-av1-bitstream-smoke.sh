@@ -211,8 +211,17 @@ session_parameters_codec="$(jq -r '.session_parameters.codec // "none"' "$probe_
 session_parameters_source="$(jq -r '.session_parameters.source // "none"' "$probe_json")"
 mapped_write_source="$(jq -r '.bitstream_buffer.mapped_write_source // "none"' "$probe_json")"
 mapped_write_bytes="$(jq -r '.bitstream_buffer.mapped_write_bytes // 0' "$probe_json")"
+first_frame_submit_present="$(jq -r '(.bitstream_extract.av1_first_frame_submit != null)' "$probe_json")"
+first_frame_header_found="$(jq -r '.bitstream_extract.av1_first_frame_submit.found_frame_header // false' "$probe_json")"
+first_frame_type="$(jq -r '.bitstream_extract.av1_first_frame_submit.frame_type_label // "none"' "$probe_json")"
+first_frame_tile_count="$(jq -r '.bitstream_extract.av1_first_frame_submit.tile_count // 0' "$probe_json")"
+first_frame_tile_columns="$(jq -r '.bitstream_extract.av1_first_frame_submit.tile_columns // 0' "$probe_json")"
+first_frame_tile_rows="$(jq -r '.bitstream_extract.av1_first_frame_submit.tile_rows // 0' "$probe_json")"
+first_frame_tile_size_bytes="$(jq -r '.bitstream_extract.av1_first_frame_submit.tile_size_bytes // 0' "$probe_json")"
+first_frame_submit_candidate="$(jq -r '.bitstream_extract.av1_first_frame_submit.vulkan_submit_candidate // false' "$probe_json")"
+first_frame_submit_reason="$(jq -r '.bitstream_extract.av1_first_frame_submit.unsupported_reason // "none"' "$probe_json")"
 
-if [[ "$codec" != "$video_codec" || "$samples" -lt 1 || "$frontend" != "gstreamer-demux-av1parse-appsink" || "$stream_format" != "obu-stream" || "$alignment" != "tu" || "$sequence_header_present" != "true" || "$obu_count" -lt 1 || "$sequence_header_count" -lt 1 || "$frame_count" -lt 1 || "$decode_candidate" != "true" || "$sequence_profile" != "main" || "$sequence_bit_depth" -ne "$bit_depth" || "$sequence_width" -ne "$width" || "$sequence_height" -ne "$height" || "$sequence_std_ready" != "true" || "$session_parameters_created" != "true" || "$session_parameters_codec" != "$video_codec" || "$session_parameters_source" != "native-rust-av1-sequence-header-to-vulkan-std" || "$mapped_write_source" != "extracted-encoded-video-unit" || "$mapped_write_bytes" -le 0 ]]; then
+if [[ "$codec" != "$video_codec" || "$samples" -lt 1 || "$frontend" != "gstreamer-demux-av1parse-appsink" || "$stream_format" != "obu-stream" || "$alignment" != "tu" || "$sequence_header_present" != "true" || "$obu_count" -lt 1 || "$sequence_header_count" -lt 1 || "$frame_count" -lt 1 || "$decode_candidate" != "true" || "$sequence_profile" != "main" || "$sequence_bit_depth" -ne "$bit_depth" || "$sequence_width" -ne "$width" || "$sequence_height" -ne "$height" || "$sequence_std_ready" != "true" || "$session_parameters_created" != "true" || "$session_parameters_codec" != "$video_codec" || "$session_parameters_source" != "native-rust-av1-sequence-header-to-vulkan-std" || "$mapped_write_source" != "extracted-encoded-video-unit" || "$mapped_write_bytes" -le 0 || "$first_frame_submit_present" != "true" || "$first_frame_header_found" != "true" || "$first_frame_type" != "key" || "$first_frame_tile_count" -lt 1 ]]; then
   {
     printf 'FAIL: native Vulkan AV1 bitstream output was not valid\n'
     printf 'codec: %s\n' "$codec"
@@ -237,6 +246,12 @@ if [[ "$codec" != "$video_codec" || "$samples" -lt 1 || "$frontend" != "gstreame
     printf 'session_parameters_source: %s\n' "$session_parameters_source"
     printf 'mapped_write_source: %s\n' "$mapped_write_source"
     printf 'mapped_write_bytes: %s\n' "$mapped_write_bytes"
+    printf 'first_frame_submit_present: %s\n' "$first_frame_submit_present"
+    printf 'first_frame_header_found: %s\n' "$first_frame_header_found"
+    printf 'first_frame_type: %s\n' "$first_frame_type"
+    printf 'first_frame_tile_count: %s\n' "$first_frame_tile_count"
+    printf 'first_frame_submit_candidate: %s\n' "$first_frame_submit_candidate"
+    printf 'first_frame_submit_reason: %s\n' "$first_frame_submit_reason"
     printf 'probe JSON: %s\n' "$probe_json"
   } | tee "$summary"
   exit 1
@@ -267,6 +282,15 @@ fi
   printf 'av1_frame_payload_bytes: %s\n' "$frame_payload_bytes"
   printf 'av1_first_frame_header_obu_offset: %s\n' "$(jq -r '.bitstream_extract.av1_first_frame_header_obu_offset // "none"' "$probe_json")"
   printf 'av1_first_tile_group_obu_offset: %s\n' "$(jq -r '.bitstream_extract.av1_first_tile_group_obu_offset // "none"' "$probe_json")"
+  printf 'av1_first_frame_submit_present: %s\n' "$first_frame_submit_present"
+  printf 'av1_first_frame_header_found: %s\n' "$first_frame_header_found"
+  printf 'av1_first_frame_type: %s\n' "$first_frame_type"
+  printf 'av1_first_frame_tile_count: %s\n' "$first_frame_tile_count"
+  printf 'av1_first_frame_tile_columns: %s\n' "$first_frame_tile_columns"
+  printf 'av1_first_frame_tile_rows: %s\n' "$first_frame_tile_rows"
+  printf 'av1_first_frame_tile_size_bytes: %s\n' "$first_frame_tile_size_bytes"
+  printf 'av1_first_frame_submit_candidate: %s\n' "$first_frame_submit_candidate"
+  printf 'av1_first_frame_submit_reason: %s\n' "$first_frame_submit_reason"
   printf 'av1_sequence_profile: %s\n' "$sequence_profile"
   printf 'av1_sequence_bit_depth: %s\n' "$sequence_bit_depth"
   printf 'av1_sequence_extent: %sx%s\n' "$sequence_width" "$sequence_height"
