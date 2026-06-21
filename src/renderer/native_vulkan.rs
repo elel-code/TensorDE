@@ -10043,19 +10043,41 @@ struct NativeVulkanAv1TemporalUnitExtract {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-struct NativeVulkanH264StreamingPacket {
-    access_unit: NativeVulkanH264AccessUnitExtract,
-    snapshot: NativeVulkanH264AccessUnitSnapshot,
+trait NativeVulkanStreamingAccessUnit: Sized {
+    type ParameterSets: Clone;
+    type Snapshot: Clone;
+
+    const CODEC_LABEL: &'static str;
+    const PARAMETER_SETS_LABEL: &'static str;
+    const RING_SLOT_BYTES_ENV: &'static str;
+
+    fn pipeline(source: &Path) -> Result<gst::Pipeline, NativeVulkanError>;
+    fn sink_name() -> &'static str;
+    fn from_sample(sample: &gst::Sample) -> Result<Self, NativeVulkanError>;
+    fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String>;
+    fn snapshot(
+        index: u32,
+        access_unit: &Self,
+        parameter_sets: &Self::ParameterSets,
+    ) -> Self::Snapshot;
+    fn bytes(&self) -> &[u8];
+    fn has_parameter_sets(&self) -> bool;
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+struct NativeVulkanStreamingPacket<A: NativeVulkanStreamingAccessUnit> {
+    access_unit: A,
+    snapshot: A::Snapshot,
     source_loop_index: u32,
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-struct NativeVulkanH264StreamingPacketQueue {
+struct NativeVulkanStreamingPacketQueue<A: NativeVulkanStreamingAccessUnit> {
     pipeline: gst::Pipeline,
     sink: gst::Element,
     bus: gst::Bus,
-    parameter_sets: NativeVulkanH264ParameterSetSnapshot,
-    queued: VecDeque<NativeVulkanH264StreamingPacket>,
+    parameter_sets: A::ParameterSets,
+    queued: VecDeque<NativeVulkanStreamingPacket<A>>,
     capacity: usize,
     next_access_unit_index: u32,
     pulled_count: u32,
@@ -10065,7 +10087,7 @@ struct NativeVulkanH264StreamingPacketQueue {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-impl Drop for NativeVulkanH264StreamingPacketQueue {
+impl<A: NativeVulkanStreamingAccessUnit> Drop for NativeVulkanStreamingPacketQueue<A> {
     fn drop(&mut self) {
         let _ = self.pipeline.set_state(gst::State::Null);
         let _ = self.pipeline.state(gst::ClockTime::from_mseconds(500));
@@ -10073,38 +10095,8 @@ impl Drop for NativeVulkanH264StreamingPacketQueue {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-struct NativeVulkanH265StreamingPacket {
-    access_unit: NativeVulkanH265AccessUnitExtract,
-    snapshot: NativeVulkanH265AccessUnitSnapshot,
-    source_loop_index: u32,
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-struct NativeVulkanH265StreamingPacketQueue {
-    pipeline: gst::Pipeline,
-    sink: gst::Element,
-    bus: gst::Bus,
-    parameter_sets: NativeVulkanH265ParameterSetSnapshot,
-    queued: VecDeque<NativeVulkanH265StreamingPacket>,
-    capacity: usize,
-    next_access_unit_index: u32,
-    pulled_count: u32,
-    eos_count: u32,
-    loop_count: u32,
-    max_payload_bytes: u64,
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-impl Drop for NativeVulkanH265StreamingPacketQueue {
-    fn drop(&mut self) {
-        let _ = self.pipeline.set_state(gst::State::Null);
-        let _ = self.pipeline.state(gst::ClockTime::from_mseconds(500));
-    }
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-impl NativeVulkanH265StreamingPacketQueue {
-    fn bootstrap_access_units(&self) -> Vec<NativeVulkanH265AccessUnitSnapshot> {
+impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
+    fn bootstrap_access_units(&self) -> Vec<A::Snapshot> {
         self.queued
             .iter()
             .map(|packet| packet.snapshot.clone())
@@ -10114,19 +10106,22 @@ impl NativeVulkanH265StreamingPacketQueue {
     fn retained_payload_bytes(&self) -> u64 {
         self.queued
             .iter()
-            .map(|packet| packet.access_unit.bytes.len() as u64)
+            .map(|packet| packet.access_unit.bytes().len() as u64)
             .sum()
     }
 
     fn next_packet(
         &mut self,
         loop_on_eos: bool,
-    ) -> Result<NativeVulkanH265StreamingPacket, NativeVulkanError> {
+    ) -> Result<NativeVulkanStreamingPacket<A>, NativeVulkanError> {
         while self.queued.is_empty() {
             self.fill_one(loop_on_eos)?;
         }
         self.queued.pop_front().ok_or_else(|| {
-            NativeVulkanError::Video("H.265 streaming packet queue is empty".to_owned())
+            NativeVulkanError::Video(format!(
+                "{} streaming packet queue is empty",
+                A::CODEC_LABEL
+            ))
         })
     }
 
@@ -10134,7 +10129,7 @@ impl NativeVulkanH265StreamingPacketQueue {
         if self.queued.len() >= self.capacity {
             return Ok(());
         }
-        let Some(access_unit) = native_vulkan_pull_h265_streaming_access_unit(
+        let Some(access_unit) = native_vulkan_pull_streaming_access_unit::<A>(
             &self.pipeline,
             &self.sink,
             &self.bus,
@@ -10143,19 +10138,20 @@ impl NativeVulkanH265StreamingPacketQueue {
             &mut self.loop_count,
         )?
         else {
-            return Err(NativeVulkanError::Video(
-                "H.265 streaming packet queue reached EOS".to_owned(),
-            ));
+            return Err(NativeVulkanError::Video(format!(
+                "{} streaming packet queue reached EOS",
+                A::CODEC_LABEL
+            )));
         };
         self.pulled_count = self.pulled_count.saturating_add(1);
-        self.max_payload_bytes = self.max_payload_bytes.max(access_unit.bytes.len() as u64);
-        let snapshot = native_vulkan_h265_access_unit_snapshot(
+        self.max_payload_bytes = self.max_payload_bytes.max(access_unit.bytes().len() as u64);
+        let snapshot = A::snapshot(
             self.next_access_unit_index,
             &access_unit,
             &self.parameter_sets,
         );
         self.next_access_unit_index = self.next_access_unit_index.saturating_add(1);
-        self.queued.push_back(NativeVulkanH265StreamingPacket {
+        self.queued.push_back(NativeVulkanStreamingPacket {
             access_unit,
             snapshot,
             source_loop_index: self.loop_count,
@@ -10163,6 +10159,22 @@ impl NativeVulkanH265StreamingPacketQueue {
         Ok(())
     }
 }
+
+#[cfg(feature = "native-vulkan-gst-video")]
+type NativeVulkanH264StreamingPacket =
+    NativeVulkanStreamingPacket<NativeVulkanH264AccessUnitExtract>;
+
+#[cfg(feature = "native-vulkan-gst-video")]
+type NativeVulkanH264StreamingPacketQueue =
+    NativeVulkanStreamingPacketQueue<NativeVulkanH264AccessUnitExtract>;
+
+#[cfg(feature = "native-vulkan-gst-video")]
+type NativeVulkanH265StreamingPacket =
+    NativeVulkanStreamingPacket<NativeVulkanH265AccessUnitExtract>;
+
+#[cfg(feature = "native-vulkan-gst-video")]
+type NativeVulkanH265StreamingPacketQueue =
+    NativeVulkanStreamingPacketQueue<NativeVulkanH265AccessUnitExtract>;
 
 #[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
 struct NativeVulkanH265ReadyPrefixBitstreamPayload {
@@ -17482,90 +17494,9 @@ fn native_vulkan_start_h264_streaming_packet_queue(
     source: &Path,
     capacity: usize,
 ) -> Result<NativeVulkanH264StreamingPacketQueue, NativeVulkanError> {
-    let capacity = capacity.max(1);
-    gst::init().map_err(|err| NativeVulkanError::Video(err.to_string()))?;
-    let pipeline = native_vulkan_h264_bitstream_pipeline(source)?;
-    let sink = pipeline
-        .by_name("gilder-native-vulkan-h264-bitstream-appsink")
-        .ok_or_else(|| NativeVulkanError::Video("H.264 bitstream appsink not found".to_owned()))?;
-    let bus = pipeline.bus().ok_or_else(|| {
-        NativeVulkanError::Video("H.264 bitstream pipeline has no bus".to_owned())
-    })?;
-
-    pipeline
-        .set_state(gst::State::Playing)
-        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
-
-    let mut pending = Vec::<NativeVulkanH264AccessUnitExtract>::new();
-    let mut selected_parameter_sets_access_unit = None::<Vec<u8>>;
-    let mut pulled_count = 0u32;
-    let mut eos_count = 0u32;
-    let mut loop_count = 0u32;
-    let mut max_payload_bytes = 0u64;
-
-    while pending.len() < capacity {
-        let Some(access_unit) = native_vulkan_pull_h264_streaming_access_unit(
-            &pipeline,
-            &sink,
-            &bus,
-            false,
-            &mut eos_count,
-            &mut loop_count,
-        )?
-        else {
-            break;
-        };
-        pulled_count = pulled_count.saturating_add(1);
-        max_payload_bytes = max_payload_bytes.max(access_unit.bytes.len() as u64);
-        if selected_parameter_sets_access_unit.is_none()
-            && access_unit.stats.parameter_sets_present()
-        {
-            selected_parameter_sets_access_unit = Some(access_unit.bytes.clone());
-        }
-        pending.push(access_unit);
-    }
-
-    if pending.is_empty() {
-        return Err(NativeVulkanError::Video(
-            "H.264 streaming packet queue produced no bootstrap packets".to_owned(),
-        ));
-    }
-    let selected_parameter_sets_access_unit =
-        selected_parameter_sets_access_unit.ok_or_else(|| {
-            NativeVulkanError::Video(format!(
-                "H.264 streaming packet queue did not find SPS/PPS in {} bootstrap packet(s)",
-                pending.len()
-            ))
-        })?;
-    let parameter_sets =
-        native_vulkan_parse_h264_parameter_sets(&selected_parameter_sets_access_unit)
-            .map_err(NativeVulkanError::Video)?;
-
-    let mut queued = VecDeque::with_capacity(capacity);
-    for (index, access_unit) in pending.into_iter().enumerate() {
-        let snapshot =
-            native_vulkan_h264_access_unit_snapshot(index as u32, &access_unit, &parameter_sets);
-        queued.push_back(NativeVulkanH264StreamingPacket {
-            access_unit,
-            snapshot,
-            source_loop_index: loop_count,
-        });
-    }
-    let next_access_unit_index = queued.len().min(u32::MAX as usize) as u32;
-
-    Ok(NativeVulkanH264StreamingPacketQueue {
-        pipeline,
-        sink,
-        bus,
-        parameter_sets,
-        queued,
-        capacity,
-        next_access_unit_index,
-        pulled_count,
-        eos_count,
-        loop_count,
-        max_payload_bytes,
-    })
+    native_vulkan_start_streaming_packet_queue::<NativeVulkanH264AccessUnitExtract>(
+        source, capacity,
+    )
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -17573,21 +17504,31 @@ fn native_vulkan_start_h265_streaming_packet_queue(
     source: &Path,
     capacity: usize,
 ) -> Result<NativeVulkanH265StreamingPacketQueue, NativeVulkanError> {
+    native_vulkan_start_streaming_packet_queue::<NativeVulkanH265AccessUnitExtract>(
+        source, capacity,
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_start_streaming_packet_queue<A: NativeVulkanStreamingAccessUnit>(
+    source: &Path,
+    capacity: usize,
+) -> Result<NativeVulkanStreamingPacketQueue<A>, NativeVulkanError> {
     let capacity = capacity.max(1);
     gst::init().map_err(|err| NativeVulkanError::Video(err.to_string()))?;
-    let pipeline = native_vulkan_h265_bitstream_pipeline(source)?;
-    let sink = pipeline
-        .by_name("gilder-native-vulkan-h265-bitstream-appsink")
-        .ok_or_else(|| NativeVulkanError::Video("H.265 bitstream appsink not found".to_owned()))?;
+    let pipeline = A::pipeline(source)?;
+    let sink = pipeline.by_name(A::sink_name()).ok_or_else(|| {
+        NativeVulkanError::Video(format!("{} bitstream appsink not found", A::CODEC_LABEL))
+    })?;
     let bus = pipeline.bus().ok_or_else(|| {
-        NativeVulkanError::Video("H.265 bitstream pipeline has no bus".to_owned())
+        NativeVulkanError::Video(format!("{} bitstream pipeline has no bus", A::CODEC_LABEL))
     })?;
 
     pipeline
         .set_state(gst::State::Playing)
         .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
 
-    let mut pending = Vec::<NativeVulkanH265AccessUnitExtract>::new();
+    let mut pending = Vec::<A>::new();
     let mut selected_parameter_sets_access_unit = None::<Vec<u8>>;
     let mut pulled_count = 0u32;
     let mut eos_count = 0u32;
@@ -17595,7 +17536,7 @@ fn native_vulkan_start_h265_streaming_packet_queue(
     let mut max_payload_bytes = 0u64;
 
     while pending.len() < capacity {
-        let Some(access_unit) = native_vulkan_pull_h265_streaming_access_unit(
+        let Some(access_unit) = native_vulkan_pull_streaming_access_unit::<A>(
             &pipeline,
             &sink,
             &bus,
@@ -17607,36 +17548,35 @@ fn native_vulkan_start_h265_streaming_packet_queue(
             break;
         };
         pulled_count = pulled_count.saturating_add(1);
-        max_payload_bytes = max_payload_bytes.max(access_unit.bytes.len() as u64);
-        if selected_parameter_sets_access_unit.is_none()
-            && access_unit.stats.parameter_sets_present()
-        {
-            selected_parameter_sets_access_unit = Some(access_unit.bytes.clone());
+        max_payload_bytes = max_payload_bytes.max(access_unit.bytes().len() as u64);
+        if selected_parameter_sets_access_unit.is_none() && access_unit.has_parameter_sets() {
+            selected_parameter_sets_access_unit = Some(access_unit.bytes().to_vec());
         }
         pending.push(access_unit);
     }
 
     if pending.is_empty() {
-        return Err(NativeVulkanError::Video(
-            "H.265 streaming packet queue produced no bootstrap packets".to_owned(),
-        ));
+        return Err(NativeVulkanError::Video(format!(
+            "{} streaming packet queue produced no bootstrap packets",
+            A::CODEC_LABEL
+        )));
     }
     let selected_parameter_sets_access_unit =
         selected_parameter_sets_access_unit.ok_or_else(|| {
             NativeVulkanError::Video(format!(
-                "H.265 streaming packet queue did not find VPS/SPS/PPS in {} bootstrap packet(s)",
+                "{} streaming packet queue did not find {} in {} bootstrap packet(s)",
+                A::CODEC_LABEL,
+                A::PARAMETER_SETS_LABEL,
                 pending.len()
             ))
         })?;
-    let parameter_sets =
-        native_vulkan_parse_h265_parameter_sets(&selected_parameter_sets_access_unit)
-            .map_err(NativeVulkanError::Video)?;
+    let parameter_sets = A::parse_parameter_sets(&selected_parameter_sets_access_unit)
+        .map_err(NativeVulkanError::Video)?;
 
     let mut queued = VecDeque::with_capacity(capacity);
     for (index, access_unit) in pending.into_iter().enumerate() {
-        let snapshot =
-            native_vulkan_h265_access_unit_snapshot(index as u32, &access_unit, &parameter_sets);
-        queued.push_back(NativeVulkanH265StreamingPacket {
+        let snapshot = A::snapshot(index as u32, &access_unit, &parameter_sets);
+        queued.push_back(NativeVulkanStreamingPacket {
             access_unit,
             snapshot,
             source_loop_index: loop_count,
@@ -17644,7 +17584,7 @@ fn native_vulkan_start_h265_streaming_packet_queue(
     }
     let next_access_unit_index = queued.len().min(u32::MAX as usize) as u32;
 
-    Ok(NativeVulkanH265StreamingPacketQueue {
+    Ok(NativeVulkanStreamingPacketQueue {
         pipeline,
         sink,
         bus,
@@ -17660,76 +17600,14 @@ fn native_vulkan_start_h265_streaming_packet_queue(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-impl NativeVulkanH264StreamingPacketQueue {
-    fn bootstrap_access_units(&self) -> Vec<NativeVulkanH264AccessUnitSnapshot> {
-        self.queued
-            .iter()
-            .map(|packet| packet.snapshot.clone())
-            .collect()
-    }
-
-    fn retained_payload_bytes(&self) -> u64 {
-        self.queued
-            .iter()
-            .map(|packet| packet.access_unit.bytes.len() as u64)
-            .sum()
-    }
-
-    fn next_packet(
-        &mut self,
-        loop_on_eos: bool,
-    ) -> Result<NativeVulkanH264StreamingPacket, NativeVulkanError> {
-        while self.queued.is_empty() {
-            self.fill_one(loop_on_eos)?;
-        }
-        self.queued.pop_front().ok_or_else(|| {
-            NativeVulkanError::Video("H.264 streaming packet queue is empty".to_owned())
-        })
-    }
-
-    fn fill_one(&mut self, loop_on_eos: bool) -> Result<(), NativeVulkanError> {
-        if self.queued.len() >= self.capacity {
-            return Ok(());
-        }
-        let Some(access_unit) = native_vulkan_pull_h264_streaming_access_unit(
-            &self.pipeline,
-            &self.sink,
-            &self.bus,
-            loop_on_eos,
-            &mut self.eos_count,
-            &mut self.loop_count,
-        )?
-        else {
-            return Err(NativeVulkanError::Video(
-                "H.264 streaming packet queue reached EOS".to_owned(),
-            ));
-        };
-        self.pulled_count = self.pulled_count.saturating_add(1);
-        self.max_payload_bytes = self.max_payload_bytes.max(access_unit.bytes.len() as u64);
-        let snapshot = native_vulkan_h264_access_unit_snapshot(
-            self.next_access_unit_index,
-            &access_unit,
-            &self.parameter_sets,
-        );
-        self.next_access_unit_index = self.next_access_unit_index.saturating_add(1);
-        self.queued.push_back(NativeVulkanH264StreamingPacket {
-            access_unit,
-            snapshot,
-            source_loop_index: self.loop_count,
-        });
-        Ok(())
-    }
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_pull_h264_streaming_access_unit(
+fn native_vulkan_pull_streaming_access_unit<A: NativeVulkanStreamingAccessUnit>(
     pipeline: &gst::Pipeline,
     sink: &gst::Element,
     bus: &gst::Bus,
     loop_on_eos: bool,
     eos_count: &mut u32,
     loop_count: &mut u32,
-) -> Result<Option<NativeVulkanH264AccessUnitExtract>, NativeVulkanError> {
+) -> Result<Option<A>, NativeVulkanError> {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         while let Some(message) = bus.pop() {
@@ -17760,7 +17638,8 @@ fn native_vulkan_pull_h264_streaming_access_unit(
                         )
                         .map_err(|err| {
                             NativeVulkanError::Video(format!(
-                                "seek H.264 streaming packet queue to start: {err}"
+                                "seek {} streaming packet queue to start: {err}",
+                                A::CODEC_LABEL
                             ))
                         })?;
                     *loop_count = loop_count.saturating_add(1);
@@ -17772,73 +17651,14 @@ fn native_vulkan_pull_h264_streaming_access_unit(
         let timeout_ns = 50_000_000u64;
         let sample = sink.emit_by_name::<Option<gst::Sample>>("try-pull-sample", &[&timeout_ns]);
         if let Some(sample) = sample {
-            return native_vulkan_h264_access_unit_from_sample(&sample).map(Some);
+            return A::from_sample(&sample).map(Some);
         }
     }
 
-    Err(NativeVulkanError::Video(
-        "H.264 streaming packet queue timed out waiting for an AU".to_owned(),
-    ))
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_pull_h265_streaming_access_unit(
-    pipeline: &gst::Pipeline,
-    sink: &gst::Element,
-    bus: &gst::Bus,
-    loop_on_eos: bool,
-    eos_count: &mut u32,
-    loop_count: &mut u32,
-) -> Result<Option<NativeVulkanH265AccessUnitExtract>, NativeVulkanError> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        while let Some(message) = bus.pop() {
-            match message.view() {
-                gst::MessageView::Error(err) => {
-                    let mut message = format!(
-                        "{}: {}",
-                        err.src()
-                            .map(|src| src.path_string())
-                            .unwrap_or_else(|| "gstreamer".into()),
-                        err.error()
-                    );
-                    if let Some(debug) = err.debug() {
-                        message.push_str(": ");
-                        message.push_str(&debug);
-                    }
-                    return Err(NativeVulkanError::Video(message));
-                }
-                gst::MessageView::Eos(_) => {
-                    *eos_count = eos_count.saturating_add(1);
-                    if !loop_on_eos {
-                        return Ok(None);
-                    }
-                    pipeline
-                        .seek_simple(
-                            gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
-                            gst::ClockTime::ZERO,
-                        )
-                        .map_err(|err| {
-                            NativeVulkanError::Video(format!(
-                                "seek H.265 streaming packet queue to start: {err}"
-                            ))
-                        })?;
-                    *loop_count = loop_count.saturating_add(1);
-                }
-                _ => {}
-            }
-        }
-
-        let timeout_ns = 50_000_000u64;
-        let sample = sink.emit_by_name::<Option<gst::Sample>>("try-pull-sample", &[&timeout_ns]);
-        if let Some(sample) = sample {
-            return native_vulkan_h265_access_unit_from_sample(&sample).map(Some);
-        }
-    }
-
-    Err(NativeVulkanError::Video(
-        "H.265 streaming packet queue timed out waiting for an AU".to_owned(),
-    ))
+    Err(NativeVulkanError::Video(format!(
+        "{} streaming packet queue timed out waiting for an AU",
+        A::CODEC_LABEL
+    )))
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -18089,8 +17909,8 @@ fn native_vulkan_h264_ready_prefix_bitstream_payload(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_h264_streaming_queue_bitstream_plan(
-    queue: &NativeVulkanH264StreamingPacketQueue,
+fn native_vulkan_streaming_queue_bitstream_plan<A: NativeVulkanStreamingAccessUnit>(
+    queue: &NativeVulkanStreamingPacketQueue<A>,
     width: u32,
     height: u32,
     min_offset_alignment: u64,
@@ -18107,7 +17927,7 @@ fn native_vulkan_h264_streaming_queue_bitstream_plan(
         .saturating_mul(2)
         .max(source_extent_heuristic)
         .max(256 * 1024);
-    let slot_payload_bytes = std::env::var("GILDER_VULKAN_H264_STREAMING_RING_SLOT_BYTES")
+    let slot_payload_bytes = std::env::var(A::RING_SLOT_BYTES_ENV)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
@@ -18120,7 +17940,10 @@ fn native_vulkan_h264_streaming_queue_bitstream_plan(
     let ring_capacity_bytes = slot_bytes
         .checked_mul(u64::from(ring_slot_count))
         .ok_or_else(|| {
-            NativeVulkanError::Video("H.264 streaming bitstream ring capacity overflow".to_owned())
+            NativeVulkanError::Video(format!(
+                "{} streaming bitstream ring capacity overflow",
+                A::CODEC_LABEL
+            ))
         })?;
 
     Ok(NativeVulkanH265ReadyPrefixStreamingBitstreamPlan {
@@ -18134,6 +17957,23 @@ fn native_vulkan_h264_streaming_queue_bitstream_plan(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_streaming_queue_bitstream_plan(
+    queue: &NativeVulkanH264StreamingPacketQueue,
+    width: u32,
+    height: u32,
+    min_offset_alignment: u64,
+    min_size_alignment: u64,
+) -> Result<NativeVulkanH265ReadyPrefixStreamingBitstreamPlan, NativeVulkanError> {
+    native_vulkan_streaming_queue_bitstream_plan(
+        queue,
+        width,
+        height,
+        min_offset_alignment,
+        min_size_alignment,
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_h265_streaming_queue_bitstream_plan(
     queue: &NativeVulkanH265StreamingPacketQueue,
     width: u32,
@@ -18141,41 +17981,13 @@ fn native_vulkan_h265_streaming_queue_bitstream_plan(
     min_offset_alignment: u64,
     min_size_alignment: u64,
 ) -> Result<NativeVulkanH265ReadyPrefixStreamingBitstreamPlan, NativeVulkanError> {
-    let min_offset_alignment = min_offset_alignment.max(1);
-    let min_size_alignment = min_size_alignment.max(1);
-    let sampled_max_payload_bytes = queue.max_payload_bytes.max(1);
-    let source_extent_heuristic = u64::from(width)
-        .saturating_mul(u64::from(height))
-        .checked_div(16)
-        .unwrap_or(0);
-    let default_slot_payload_bytes = sampled_max_payload_bytes
-        .saturating_mul(2)
-        .max(source_extent_heuristic)
-        .max(256 * 1024);
-    let slot_payload_bytes = std::env::var("GILDER_VULKAN_H265_STREAMING_RING_SLOT_BYTES")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(default_slot_payload_bytes);
-    let slot_bytes = native_vulkan_align_up(
-        native_vulkan_align_up(slot_payload_bytes, min_size_alignment),
-        min_offset_alignment,
-    );
-    let ring_slot_count = native_vulkan_bitstream_ring_slot_count(queue.capacity as u32);
-    let ring_capacity_bytes = slot_bytes
-        .checked_mul(u64::from(ring_slot_count))
-        .ok_or_else(|| {
-            NativeVulkanError::Video("H.265 streaming bitstream ring capacity overflow".to_owned())
-        })?;
-
-    Ok(NativeVulkanH265ReadyPrefixStreamingBitstreamPlan {
-        slot_bytes,
-        ring_capacity_bytes,
-        ring_slot_count,
+    native_vulkan_streaming_queue_bitstream_plan(
+        queue,
+        width,
+        height,
         min_offset_alignment,
         min_size_alignment,
-        window_payload_bytes: queue.retained_payload_bytes(),
-    })
+    )
 }
 
 fn native_vulkan_h265_ready_prefix_bitstream_payload(
@@ -19302,6 +19114,90 @@ struct NativeVulkanH264AccessUnitExtract {
     height: Option<u32>,
     framerate: Option<String>,
     stats: NativeVulkanH264NalStats,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanStreamingAccessUnit for NativeVulkanH264AccessUnitExtract {
+    type ParameterSets = NativeVulkanH264ParameterSetSnapshot;
+    type Snapshot = NativeVulkanH264AccessUnitSnapshot;
+
+    const CODEC_LABEL: &'static str = "H.264";
+    const PARAMETER_SETS_LABEL: &'static str = "SPS/PPS";
+    const RING_SLOT_BYTES_ENV: &'static str = "GILDER_VULKAN_H264_STREAMING_RING_SLOT_BYTES";
+
+    fn pipeline(source: &Path) -> Result<gst::Pipeline, NativeVulkanError> {
+        native_vulkan_h264_bitstream_pipeline(source)
+    }
+
+    fn sink_name() -> &'static str {
+        "gilder-native-vulkan-h264-bitstream-appsink"
+    }
+
+    fn from_sample(sample: &gst::Sample) -> Result<Self, NativeVulkanError> {
+        native_vulkan_h264_access_unit_from_sample(sample)
+    }
+
+    fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String> {
+        native_vulkan_parse_h264_parameter_sets(bytes)
+    }
+
+    fn snapshot(
+        index: u32,
+        access_unit: &Self,
+        parameter_sets: &Self::ParameterSets,
+    ) -> Self::Snapshot {
+        native_vulkan_h264_access_unit_snapshot(index, access_unit, parameter_sets)
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    fn has_parameter_sets(&self) -> bool {
+        self.stats.parameter_sets_present()
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
+    type ParameterSets = NativeVulkanH265ParameterSetSnapshot;
+    type Snapshot = NativeVulkanH265AccessUnitSnapshot;
+
+    const CODEC_LABEL: &'static str = "H.265";
+    const PARAMETER_SETS_LABEL: &'static str = "VPS/SPS/PPS";
+    const RING_SLOT_BYTES_ENV: &'static str = "GILDER_VULKAN_H265_STREAMING_RING_SLOT_BYTES";
+
+    fn pipeline(source: &Path) -> Result<gst::Pipeline, NativeVulkanError> {
+        native_vulkan_h265_bitstream_pipeline(source)
+    }
+
+    fn sink_name() -> &'static str {
+        "gilder-native-vulkan-h265-bitstream-appsink"
+    }
+
+    fn from_sample(sample: &gst::Sample) -> Result<Self, NativeVulkanError> {
+        native_vulkan_h265_access_unit_from_sample(sample)
+    }
+
+    fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String> {
+        native_vulkan_parse_h265_parameter_sets(bytes)
+    }
+
+    fn snapshot(
+        index: u32,
+        access_unit: &Self,
+        parameter_sets: &Self::ParameterSets,
+    ) -> Self::Snapshot {
+        native_vulkan_h265_access_unit_snapshot(index, access_unit, parameter_sets)
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    fn has_parameter_sets(&self) -> bool {
+        self.stats.parameter_sets_present()
+    }
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
