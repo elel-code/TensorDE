@@ -21451,8 +21451,20 @@ fn native_vulkan_h265_access_units_max_active_references(
     access_units
         .iter()
         .filter_map(|access_unit| access_unit.first_slice.as_ref())
-        .filter_map(|slice| slice.short_term_ref_pic_set.as_ref())
-        .map(|rps| rps.used_by_current_count)
+        .map(|slice| {
+            let short_term_count = slice
+                .short_term_ref_pic_set
+                .as_ref()
+                .map(|rps| rps.used_by_current_count)
+                .unwrap_or(0);
+            let long_term_count = slice
+                .long_term_references
+                .iter()
+                .filter(|reference| reference.used_by_current)
+                .count()
+                .min(u32::MAX as usize) as u32;
+            short_term_count.saturating_add(long_term_count)
+        })
         .max()
         .unwrap_or(0)
 }
@@ -31663,6 +31675,46 @@ mod tests {
         assert_eq!(st_before, [0xff; 8]);
         assert_eq!(lt_curr[0], 1);
         assert_eq!(&lt_curr[1..], &[0xff; 7]);
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn counts_h265_mixed_short_and_long_term_active_references() {
+        let mut access_units = vec![
+            h265_test_access_unit(0, 0, true, &[]),
+            h265_test_access_unit(1, 4, false, &[]),
+            h265_test_access_unit(2, 8, false, &[-4]),
+        ];
+        access_units[2]
+            .first_slice
+            .as_mut()
+            .unwrap()
+            .long_term_references = vec![NativeVulkanH265LongTermReferenceSnapshot {
+            from_sps: false,
+            lt_idx_sps: None,
+            poc_lsb: 0,
+            used_by_current: true,
+            delta_poc_msb_present_flag: false,
+            delta_poc_msb_cycle_lt: None,
+        }];
+
+        assert_eq!(
+            native_vulkan_h265_access_units_max_active_references(&access_units),
+            2
+        );
+
+        let plan = native_vulkan_h265_decode_reference_plan(&access_units, 3, 16);
+
+        assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
+        assert_eq!(
+            plan[2]
+                .references
+                .iter()
+                .map(|reference| (reference.poc, reference.used_for_long_term_reference))
+                .collect::<Vec<_>>(),
+            vec![(4, false), (0, true)]
+        );
+        assert_eq!(plan[2].available_reference_count, 2);
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
