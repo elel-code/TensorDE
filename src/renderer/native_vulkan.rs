@@ -3015,6 +3015,17 @@ impl NativeVulkanSession {
                 "GstDmaBufMemory->Vulkan external DRM modifier image planes",
             );
         }
+        let memory_types = native_vulkan_gst_memory_types(buffer);
+        #[cfg(not(feature = "native-vulkan-gst-va"))]
+        if memory_types
+            .iter()
+            .any(|memory_type| memory_type == "VAMemory" || memory_type.contains("VAMemory"))
+        {
+            return Err(NativeVulkanError::Video(
+                "native Vulkan VAMemory importer requires the native-vulkan-gst-va feature"
+                    .to_owned(),
+            ));
+        }
         if native_vulkan_gst_buffer_has_va_memory(buffer) {
             let frame = native_vulkan_gst_va_dmabuf_frame(buffer, &meta)?;
             return self.import_dmabuf_video_frame(
@@ -3022,10 +3033,20 @@ impl NativeVulkanSession {
                 "GstVAMemory->vaExportSurfaceHandle(DRM PRIME)->Vulkan external DRM modifier image planes",
             );
         }
+        #[cfg(not(feature = "native-vulkan-gst-cuda"))]
+        if memory_types
+            .iter()
+            .any(|memory_type| memory_type == "CUDAMemory" || memory_type.contains("CUDAMemory"))
+        {
+            return Err(NativeVulkanError::Video(
+                "native Vulkan CUDAMemory importer requires the native-vulkan-gst-cuda feature"
+                    .to_owned(),
+            ));
+        }
         if !native_vulkan_gst_buffer_has_cuda_memory(buffer) {
             return Err(NativeVulkanError::Video(format!(
                 "native Vulkan import expected DMABuf, VAMemory, or CUDAMemory, got {}",
-                native_vulkan_gst_memory_types(buffer).join("|")
+                memory_types.join("|")
             )));
         }
         let cuda_context = native_vulkan_gst_cuda_context_from_buffer(buffer)?;
@@ -6336,7 +6357,15 @@ fn native_vulkan_gst_buffer_has_va_memory(buffer: &gst::BufferRef) -> bool {
 
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_is_va_memory(memory: &gst::MemoryRef) -> bool {
-    memory.is_type("VAMemory") || native_vulkan_gst_memory_type(memory) == "VAMemory"
+    #[cfg(feature = "native-vulkan-gst-va")]
+    {
+        memory.is_type("VAMemory") || native_vulkan_gst_memory_type(memory) == "VAMemory"
+    }
+    #[cfg(not(feature = "native-vulkan-gst-va"))]
+    {
+        let _ = memory;
+        false
+    }
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -8922,11 +8951,19 @@ impl Drop for NativeVulkanGstCudaContextPushGuard {
 
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_is_cuda_memory(memory: &gst::MemoryRef) -> bool {
-    if memory.is_type("CUDAMemory") || memory.is_type("gst.cuda.memory") {
-        return true;
+    #[cfg(feature = "native-vulkan-gst-cuda")]
+    {
+        if memory.is_type("CUDAMemory") || memory.is_type("gst.cuda.memory") {
+            return true;
+        }
+        let is_cuda = unsafe { gst_is_cuda_memory(memory.as_ptr().cast_mut()) };
+        is_cuda != gst::glib::ffi::GFALSE
     }
-    let is_cuda = unsafe { gst_is_cuda_memory(memory.as_ptr().cast_mut()) };
-    is_cuda != gst::glib::ffi::GFALSE
+    #[cfg(not(feature = "native-vulkan-gst-cuda"))]
+    {
+        let _ = memory;
+        false
+    }
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -9184,7 +9221,7 @@ struct NativeVulkanCudaMemcpy2D {
     height: usize,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-gst-cuda")]
 #[link(name = "gstcuda-1.0")]
 #[allow(clashing_extern_declarations)]
 unsafe extern "C" {
@@ -9213,7 +9250,129 @@ unsafe extern "C" {
     fn gst_cuda_memory_sync(mem: *mut NativeVulkanGstCudaMemory);
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-cuda")
+))]
+#[allow(non_snake_case)]
+unsafe fn CuGetErrorName(_error: i32, _p_str: *mut *const c_char) -> i32 {
+    -1
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-cuda")
+))]
+#[allow(non_snake_case)]
+unsafe fn CuGetErrorString(_error: i32, _p_str: *mut *const c_char) -> i32 {
+    -1
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-cuda")
+))]
+#[allow(non_snake_case)]
+unsafe fn CuMemcpy2DAsync(
+    _copy: *const NativeVulkanCudaMemcpy2D,
+    _stream: NativeVulkanCudaStreamHandle,
+) -> i32 {
+    -1
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-cuda")
+))]
+#[allow(non_snake_case)]
+unsafe fn CuStreamCreate(_stream_out: *mut NativeVulkanCudaStreamHandle, _flags: u32) -> i32 {
+    -1
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-cuda")
+))]
+#[allow(non_snake_case)]
+unsafe fn CuStreamDestroy(_stream: NativeVulkanCudaStreamHandle) -> i32 {
+    -1
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-cuda")
+))]
+#[allow(non_snake_case)]
+unsafe fn CuStreamSynchronize(_stream: NativeVulkanCudaStreamHandle) -> i32 {
+    -1
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-cuda")
+))]
+#[allow(non_snake_case)]
+unsafe fn CuImportExternalMemory(
+    _ext_mem_out: *mut NativeVulkanCudaExternalMemoryHandle,
+    _mem_handle_desc: *const NativeVulkanCudaExternalMemoryHandleDesc,
+) -> i32 {
+    -1
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-cuda")
+))]
+#[allow(non_snake_case)]
+unsafe fn CuExternalMemoryGetMappedMipmappedArray(
+    _mipmap: *mut NativeVulkanCudaMipmappedArrayHandle,
+    _ext_mem: NativeVulkanCudaExternalMemoryHandle,
+    _mipmap_desc: *const NativeVulkanCudaExternalMemoryMipmappedArrayDesc,
+) -> i32 {
+    -1
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-cuda")
+))]
+#[allow(non_snake_case)]
+unsafe fn CuDestroyExternalMemory(_ext_mem: NativeVulkanCudaExternalMemoryHandle) -> i32 {
+    -1
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-cuda")
+))]
+unsafe fn gst_cuda_context_push(_ctx: *mut NativeVulkanGstCudaContext) -> gst::glib::ffi::gboolean {
+    gst::glib::ffi::GFALSE
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-cuda")
+))]
+unsafe fn gst_cuda_context_pop(_cuda_ctx: *mut *mut c_void) -> gst::glib::ffi::gboolean {
+    gst::glib::ffi::GFALSE
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-cuda")
+))]
+#[allow(dead_code)]
+unsafe fn gst_is_cuda_memory(_mem: *mut gst::ffi::GstMemory) -> gst::glib::ffi::gboolean {
+    gst::glib::ffi::GFALSE
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-cuda")
+))]
+unsafe fn gst_cuda_memory_sync(_mem: *mut NativeVulkanGstCudaMemory) {}
+
+#[cfg(feature = "native-vulkan-gst-cuda")]
 #[link(name = "cuda")]
 unsafe extern "C" {
     fn cuMipmappedArrayGetLevel(
@@ -9221,6 +9380,19 @@ unsafe extern "C" {
         mipmapped_array: NativeVulkanCudaMipmappedArrayHandle,
         level: u32,
     ) -> i32;
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-cuda")
+))]
+#[allow(non_snake_case)]
+unsafe fn cuMipmappedArrayGetLevel(
+    _level_array: *mut NativeVulkanCudaArrayHandle,
+    _mipmapped_array: NativeVulkanCudaMipmappedArrayHandle,
+    _level: u32,
+) -> i32 {
+    -1
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -9236,7 +9408,7 @@ unsafe extern "C" {
     fn gst_video_dma_drm_fourcc_from_string(format_str: *const c_char, modifier: *mut u64) -> u32;
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-gst-va")]
 #[link(name = "gstva-1.0")]
 unsafe extern "C" {
     fn gst_va_memory_get_surface(mem: *mut gst::ffi::GstMemory) -> NativeVulkanVaSurfaceId;
@@ -9248,7 +9420,53 @@ unsafe extern "C" {
     fn gst_va_display_get_va_dpy(display: *mut NativeVulkanGstVaDisplay) -> NativeVulkanVaDisplay;
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-va")
+))]
+unsafe fn gst_va_memory_get_surface(_mem: *mut gst::ffi::GstMemory) -> NativeVulkanVaSurfaceId {
+    VA_INVALID_SURFACE
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-va")
+))]
+unsafe fn gst_va_memory_peek_display(
+    _mem: *mut gst::ffi::GstMemory,
+) -> *mut NativeVulkanGstVaDisplay {
+    ptr::null_mut()
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-va")
+))]
+unsafe fn gst_va_buffer_get_surface(_buffer: *mut gst::ffi::GstBuffer) -> NativeVulkanVaSurfaceId {
+    VA_INVALID_SURFACE
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-va")
+))]
+unsafe fn gst_va_buffer_peek_display(
+    _buffer: *mut gst::ffi::GstBuffer,
+) -> *mut NativeVulkanGstVaDisplay {
+    ptr::null_mut()
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-va")
+))]
+unsafe fn gst_va_display_get_va_dpy(
+    _display: *mut NativeVulkanGstVaDisplay,
+) -> NativeVulkanVaDisplay {
+    ptr::null_mut()
+}
+
+#[cfg(feature = "native-vulkan-gst-va")]
 #[link(name = "va")]
 unsafe extern "C" {
     fn vaSyncSurface(
@@ -9263,6 +9481,42 @@ unsafe extern "C" {
         descriptor: *mut c_void,
     ) -> NativeVulkanVaStatus;
     fn vaErrorStr(error_status: NativeVulkanVaStatus) -> *const c_char;
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-va")
+))]
+#[allow(non_snake_case)]
+unsafe fn vaSyncSurface(
+    _display: NativeVulkanVaDisplay,
+    _render_target: NativeVulkanVaSurfaceId,
+) -> NativeVulkanVaStatus {
+    -1
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-va")
+))]
+#[allow(non_snake_case)]
+unsafe fn vaExportSurfaceHandle(
+    _display: NativeVulkanVaDisplay,
+    _surface_id: NativeVulkanVaSurfaceId,
+    _mem_type: u32,
+    _flags: u32,
+    _descriptor: *mut c_void,
+) -> NativeVulkanVaStatus {
+    -1
+}
+
+#[cfg(all(
+    feature = "native-vulkan-gst-video",
+    not(feature = "native-vulkan-gst-va")
+))]
+#[allow(non_snake_case)]
+unsafe fn vaErrorStr(_error_status: NativeVulkanVaStatus) -> *const c_char {
+    ptr::null()
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]

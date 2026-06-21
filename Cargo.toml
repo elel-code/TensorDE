@@ -17,6 +17,8 @@ native-wayland-renderer = [
 ]
 native-vulkan-renderer = ["native-wayland-renderer", "dep:ash", "dep:image"]
 native-vulkan-gst-video = ["native-vulkan-renderer", "video-renderer"]
+native-vulkan-gst-cuda = ["native-vulkan-gst-video"]
+native-vulkan-gst-va = ["native-vulkan-gst-video"]
 video-renderer = ["dep:gstreamer", "dep:gstreamer-video", "dep:libc"]
 
 [[bin]]
