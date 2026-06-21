@@ -2545,7 +2545,7 @@ impl NativeVulkanSession {
         let buffer = sample
             .buffer()
             .ok_or_else(|| NativeVulkanError::Video("appsink sample has no buffer".to_owned()))?;
-        let meta = native_vulkan_gst_system_nv12_meta(sample, buffer)?;
+        let meta = native_vulkan_gst_system_yuv420_meta(sample, buffer)?;
         if native_vulkan_gst_buffer_has_dmabuf_memory(buffer) {
             let frame = native_vulkan_gst_dmabuf_frame(sample, buffer, &meta)?;
             return self.import_dmabuf_video_frame(
@@ -2569,7 +2569,7 @@ impl NativeVulkanSession {
         let cuda_context = native_vulkan_gst_cuda_context_from_buffer(buffer)?;
         let recreate = match self.video_texture.as_ref() {
             Some(NativeVulkanVideoTexture::Cuda(texture)) => {
-                !texture.matches(cuda_context, meta.width, meta.height)
+                !texture.matches(cuda_context, meta.width, meta.height, meta.format)
             }
             _ => true,
         };
@@ -2584,6 +2584,7 @@ impl NativeVulkanSession {
                 cuda_context,
                 meta.width,
                 meta.height,
+                meta.format,
             )?;
             if let Some(old_texture) = self.video_texture.take() {
                 old_texture.destroy(&self.device);
@@ -4638,6 +4639,12 @@ fn native_vulkan_gst_forced_sink_caps() -> Option<gst::Caps> {
             )
             .structure_with_features(
                 gst::Structure::builder("video/x-raw")
+                    .field("format", "P010_10LE")
+                    .build(),
+                gst::CapsFeatures::new(["memory:VAMemory"]),
+            )
+            .structure_with_features(
+                gst::Structure::builder("video/x-raw")
                     .field("format", "DMA_DRM")
                     .build(),
                 gst::CapsFeatures::new(["memory:DMABuf"]),
@@ -4760,9 +4767,11 @@ fn native_vulkan_gst_dmabuf_frame(
     meta: &NativeVulkanGstSystemNv12Meta,
 ) -> Result<NativeVulkanDmabufVideoFrame, NativeVulkanError> {
     let (fourcc, modifier) = native_vulkan_gst_sample_drm_format(sample)?;
-    if fourcc != DRM_FORMAT_NV12 {
+    if fourcc != meta.format.drm_format() {
         return Err(NativeVulkanError::Video(format!(
-            "native Vulkan DMABuf importer only supports NV12 for now, got fourcc=0x{fourcc:08x}"
+            "native Vulkan DMABuf importer expected {} fourcc=0x{:08x}, got fourcc=0x{fourcc:08x}",
+            meta.format.label(),
+            meta.format.drm_format()
         )));
     }
     let y = native_vulkan_gst_dmabuf_plane(buffer, meta.y)?;
@@ -4773,6 +4782,7 @@ fn native_vulkan_gst_dmabuf_frame(
         ));
     }
     Ok(NativeVulkanDmabufVideoFrame {
+        format: meta.format,
         width: meta.width,
         height: meta.height,
         fd: y.fd,
@@ -4811,8 +4821,8 @@ fn native_vulkan_gst_sample_drm_format(
     let format = structure
         .get::<String>("format")
         .unwrap_or_else(|_| "unknown".to_owned());
-    if format == "NV12" {
-        return Ok((DRM_FORMAT_NV12, DRM_FORMAT_MOD_LINEAR));
+    if let Some(format) = NativeVulkanVideoSampleFormat::from_caps_format(&format) {
+        return Ok((format.drm_format(), DRM_FORMAT_MOD_LINEAR));
     }
     Err(NativeVulkanError::Video(format!(
         "native Vulkan DMABuf expected drm-format or NV12 caps, got format={format}"
@@ -5003,7 +5013,7 @@ fn native_vulkan_va_prime_surface_to_dmabuf_frame(
     let descriptor = exported.descriptor;
     native_vulkan_validate_va_prime_descriptor(&descriptor, meta)?;
     let (y_object, y_offset, y_pitch, uv_object, uv_offset, uv_pitch) =
-        native_vulkan_va_nv12_plane_layouts(&descriptor)?;
+        native_vulkan_va_yuv420_plane_layouts(&descriptor, meta.format)?;
     if y_object != uv_object {
         return Err(NativeVulkanError::Video(format!(
             "native Vulkan VA DMABuf importer currently requires a single DRM object, got y_object={y_object} uv_object={uv_object}"
@@ -5019,6 +5029,7 @@ fn native_vulkan_va_prime_surface_to_dmabuf_frame(
     }
 
     Ok(NativeVulkanDmabufVideoFrame {
+        format: meta.format,
         width: meta.width,
         height: meta.height,
         fd: exported
@@ -5060,9 +5071,11 @@ fn native_vulkan_validate_va_prime_descriptor(
     descriptor: &NativeVulkanVaDrmPrimeSurfaceDescriptor,
     meta: &NativeVulkanGstSystemNv12Meta,
 ) -> Result<(), NativeVulkanError> {
-    if descriptor.fourcc != VA_FOURCC_NV12 && descriptor.fourcc != DRM_FORMAT_NV12 {
+    if descriptor.fourcc != meta.format.drm_format() {
         return Err(NativeVulkanError::Video(format!(
-            "native Vulkan VA DMABuf importer only supports NV12, got fourcc=0x{:08x}",
+            "native Vulkan VA DMABuf importer expected {} fourcc=0x{:08x}, got fourcc=0x{:08x}",
+            meta.format.label(),
+            meta.format.drm_format(),
             descriptor.fourcc
         )));
     }
@@ -5088,12 +5101,13 @@ fn native_vulkan_validate_va_prime_descriptor(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_va_nv12_plane_layouts(
+fn native_vulkan_va_yuv420_plane_layouts(
     descriptor: &NativeVulkanVaDrmPrimeSurfaceDescriptor,
+    format: NativeVulkanVideoSampleFormat,
 ) -> Result<(usize, u32, u32, usize, u32, u32), NativeVulkanError> {
     let layer_count = descriptor.num_layers as usize;
     for layer in descriptor.layers[..layer_count].iter() {
-        if layer.drm_format == DRM_FORMAT_NV12 && layer.num_planes >= 2 {
+        if layer.drm_format == format.drm_format() && layer.num_planes >= 2 {
             let y_object = native_vulkan_va_layer_object_index(layer, 0, descriptor)?;
             let uv_object = native_vulkan_va_layer_object_index(layer, 1, descriptor)?;
             return Ok((
@@ -5107,21 +5121,31 @@ fn native_vulkan_va_nv12_plane_layouts(
         }
     }
 
+    let y_fourcc = match format {
+        NativeVulkanVideoSampleFormat::Nv12 => DRM_FORMAT_R8,
+        NativeVulkanVideoSampleFormat::P010 => DRM_FORMAT_R16,
+    };
+    let uv_fourcc = match format {
+        NativeVulkanVideoSampleFormat::Nv12 => DRM_FORMAT_GR88,
+        NativeVulkanVideoSampleFormat::P010 => DRM_FORMAT_GR1616,
+    };
     let y_layer = descriptor.layers[..layer_count]
         .iter()
-        .find(|layer| layer.drm_format == DRM_FORMAT_R8 && layer.num_planes >= 1)
+        .find(|layer| layer.drm_format == y_fourcc && layer.num_planes >= 1)
         .ok_or_else(|| {
-            NativeVulkanError::Video(
-                "VA DRM PRIME separate-layer export has no DRM_FORMAT_R8 luma layer".to_owned(),
-            )
+            NativeVulkanError::Video(format!(
+                "VA DRM PRIME separate-layer export has no {} luma layer",
+                format.label()
+            ))
         })?;
     let uv_layer = descriptor.layers[..layer_count]
         .iter()
-        .find(|layer| layer.drm_format == DRM_FORMAT_GR88 && layer.num_planes >= 1)
+        .find(|layer| layer.drm_format == uv_fourcc && layer.num_planes >= 1)
         .ok_or_else(|| {
-            NativeVulkanError::Video(
-                "VA DRM PRIME separate-layer export has no DRM_FORMAT_GR88 chroma layer".to_owned(),
-            )
+            NativeVulkanError::Video(format!(
+                "VA DRM PRIME separate-layer export has no {} chroma layer",
+                format.label()
+            ))
         })?;
     let y_object = native_vulkan_va_layer_object_index(y_layer, 0, descriptor)?;
     let uv_object = native_vulkan_va_layer_object_index(uv_layer, 0, descriptor)?;
@@ -6033,6 +6057,7 @@ struct NativeVulkanDmabufVideoPlane {
 #[cfg(feature = "native-vulkan-gst-video")]
 #[derive(Debug)]
 struct NativeVulkanDmabufVideoFrame {
+    format: NativeVulkanVideoSampleFormat,
     width: u32,
     height: u32,
     fd: i32,
@@ -6077,7 +6102,7 @@ impl NativeVulkanDmabufVideoTexture {
         }
         if frame.fd < 0 || frame.y.fd != frame.fd || frame.uv.fd != frame.fd {
             return Err(NativeVulkanError::Video(
-                "native Vulkan DMABuf importer currently requires a single fd NV12 frame"
+                "native Vulkan DMABuf importer currently requires a single fd two-plane YUV420 frame"
                     .to_owned(),
             ));
         }
@@ -6095,7 +6120,7 @@ impl NativeVulkanDmabufVideoTexture {
         let image_info = vk::ImageCreateInfo::default()
             .flags(vk::ImageCreateFlags::MUTABLE_FORMAT)
             .image_type(vk::ImageType::TYPE_2D)
-            .format(vk::Format::G8_B8R8_2PLANE_420_UNORM)
+            .format(frame.format.vulkan_image_format())
             .extent(vk::Extent3D {
                 width: frame.width,
                 height: frame.height,
@@ -6200,7 +6225,7 @@ impl NativeVulkanDmabufVideoTexture {
             device,
             image,
             vk::ImageAspectFlags::PLANE_0,
-            vk::Format::R8_UNORM,
+            frame.format.y_view_format(),
             "y",
         ) {
             Ok(view) => view,
@@ -6216,7 +6241,7 @@ impl NativeVulkanDmabufVideoTexture {
             device,
             image,
             vk::ImageAspectFlags::PLANE_1,
-            vk::Format::R8G8_UNORM,
+            frame.format.uv_view_format(),
             "uv",
         ) {
             Ok(view) => view,
@@ -6336,6 +6361,7 @@ fn native_vulkan_dup_fd(fd: i32) -> Result<OwnedFd, NativeVulkanError> {
 #[cfg(feature = "native-vulkan-gst-video")]
 struct NativeVulkanCudaVideoTexture {
     cuda_context: *mut NativeVulkanGstCudaContext,
+    format: NativeVulkanVideoSampleFormat,
     width: u32,
     height: u32,
     cuda_stream: NativeVulkanCudaStream,
@@ -6355,6 +6381,7 @@ impl NativeVulkanCudaVideoTexture {
         cuda_context: *mut NativeVulkanGstCudaContext,
         width: u32,
         height: u32,
+        format: NativeVulkanVideoSampleFormat,
     ) -> Result<Self, NativeVulkanError> {
         if width == 0 || height == 0 {
             return Err(NativeVulkanError::Video(
@@ -6382,8 +6409,10 @@ impl NativeVulkanCudaVideoTexture {
             queue_family_index,
             width,
             height,
-            vk::Format::R8_UNORM,
+            format.y_view_format(),
             1,
+            format.bytes_per_component(),
+            format.cuda_array_format(),
             "y",
         )?;
         let uv = match NativeVulkanCudaVideoPlane::new(
@@ -6395,8 +6424,10 @@ impl NativeVulkanCudaVideoTexture {
             queue_family_index,
             width / 2,
             height / 2,
-            vk::Format::R8G8_UNORM,
+            format.uv_view_format(),
             2,
+            format.bytes_per_component(),
+            format.cuda_array_format(),
             "uv",
         ) {
             Ok(plane) => plane,
@@ -6407,6 +6438,7 @@ impl NativeVulkanCudaVideoTexture {
         };
         Ok(Self {
             cuda_context,
+            format,
             width,
             height,
             cuda_stream,
@@ -6420,8 +6452,12 @@ impl NativeVulkanCudaVideoTexture {
         cuda_context: *mut NativeVulkanGstCudaContext,
         width: u32,
         height: u32,
+        format: NativeVulkanVideoSampleFormat,
     ) -> bool {
-        self.cuda_context == cuda_context && self.width == width && self.height == height
+        self.cuda_context == cuda_context
+            && self.width == width
+            && self.height == height
+            && self.format == format
     }
 
     fn copy_sample(
@@ -6495,6 +6531,7 @@ struct NativeVulkanCudaVideoPlane {
     width: u32,
     height: u32,
     channels: u32,
+    bytes_per_channel: u32,
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -6511,6 +6548,8 @@ impl NativeVulkanCudaVideoPlane {
         height: u32,
         format: vk::Format,
         channels: u32,
+        bytes_per_channel: u32,
+        cuda_array_format: u32,
         label: &'static str,
     ) -> Result<Self, NativeVulkanError> {
         let handle_type = vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD;
@@ -6624,6 +6663,7 @@ impl NativeVulkanCudaVideoPlane {
             width,
             height,
             channels,
+            cuda_array_format,
             label,
         ) {
             Ok(memory) => memory,
@@ -6660,6 +6700,7 @@ impl NativeVulkanCudaVideoPlane {
             width,
             height,
             channels,
+            bytes_per_channel,
         })
     }
 
@@ -6787,6 +6828,73 @@ fn native_vulkan_memory_type_index_prefer(
 
 #[cfg(feature = "native-vulkan-gst-video")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeVulkanVideoSampleFormat {
+    Nv12,
+    P010,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanVideoSampleFormat {
+    fn from_caps_format(format: &str) -> Option<Self> {
+        match format {
+            "NV12" => Some(Self::Nv12),
+            "P010_10LE" | "P010" => Some(Self::P010),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Nv12 => "NV12",
+            Self::P010 => "P010_10LE",
+        }
+    }
+
+    fn vulkan_image_format(self) -> vk::Format {
+        match self {
+            Self::Nv12 => vk::Format::G8_B8R8_2PLANE_420_UNORM,
+            Self::P010 => vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16,
+        }
+    }
+
+    fn y_view_format(self) -> vk::Format {
+        match self {
+            Self::Nv12 => vk::Format::R8_UNORM,
+            Self::P010 => vk::Format::R16_UNORM,
+        }
+    }
+
+    fn uv_view_format(self) -> vk::Format {
+        match self {
+            Self::Nv12 => vk::Format::R8G8_UNORM,
+            Self::P010 => vk::Format::R16G16_UNORM,
+        }
+    }
+
+    fn bytes_per_component(self) -> u32 {
+        match self {
+            Self::Nv12 => 1,
+            Self::P010 => 2,
+        }
+    }
+
+    fn cuda_array_format(self) -> u32 {
+        match self {
+            Self::Nv12 => CUDA_ARRAY_FORMAT_UNSIGNED_INT8,
+            Self::P010 => CUDA_ARRAY_FORMAT_UNSIGNED_INT16,
+        }
+    }
+
+    fn drm_format(self) -> u32 {
+        match self {
+            Self::Nv12 => DRM_FORMAT_NV12,
+            Self::P010 => DRM_FORMAT_P010,
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeVulkanGstSystemNv12Plane {
     offset: usize,
     stride: u32,
@@ -6797,6 +6905,7 @@ struct NativeVulkanGstSystemNv12Plane {
 #[cfg(feature = "native-vulkan-gst-video")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeVulkanGstSystemNv12Meta {
+    format: NativeVulkanVideoSampleFormat,
     width: u32,
     height: u32,
     y: NativeVulkanGstSystemNv12Plane,
@@ -6804,20 +6913,20 @@ struct NativeVulkanGstSystemNv12Meta {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_gst_system_nv12_meta(
+fn native_vulkan_gst_system_yuv420_meta(
     sample: &gst::Sample,
     buffer: &gst::BufferRef,
 ) -> Result<NativeVulkanGstSystemNv12Meta, NativeVulkanError> {
-    let meta = match native_vulkan_gst_nv12_meta_from_video_meta(sample.caps(), buffer) {
+    let meta = match native_vulkan_gst_yuv420_meta_from_video_meta(sample.caps(), buffer) {
         Ok(meta) => meta,
-        Err(meta_err) => native_vulkan_gst_nv12_meta_from_caps(sample)
+        Err(meta_err) => native_vulkan_gst_yuv420_meta_from_caps(sample)
             .map_err(|caps_err| NativeVulkanError::Video(format!("{meta_err};{caps_err}")))?,
     };
     Ok(meta)
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_gst_nv12_meta_from_video_meta(
+fn native_vulkan_gst_yuv420_meta_from_video_meta(
     caps: Option<&gst::CapsRef>,
     buffer: &gst::BufferRef,
 ) -> Result<NativeVulkanGstSystemNv12Meta, String> {
@@ -6828,9 +6937,8 @@ fn native_vulkan_gst_nv12_meta_from_video_meta(
         .and_then(|caps| caps.structure(0))
         .and_then(|structure| structure.get::<String>("format").ok())
         .unwrap_or_else(|| meta.format().to_str().to_string());
-    if meta.format() != gst_video::VideoFormat::Nv12 && caps_format != "NV12" {
-        return Err(format!("expected NV12 appsink frame, got {caps_format}"));
-    }
+    let format = NativeVulkanVideoSampleFormat::from_caps_format(&caps_format)
+        .ok_or_else(|| format!("expected NV12 or P010 appsink frame, got {caps_format}"))?;
     let width = meta.width();
     let height = meta.height();
     if width == 0 || height == 0 {
@@ -6838,43 +6946,52 @@ fn native_vulkan_gst_nv12_meta_from_video_meta(
     }
     if width % 2 != 0 || height % 2 != 0 {
         return Err(format!(
-            "NV12 frame dimensions must be even, got {width}x{height}"
+            "{} frame dimensions must be even, got {width}x{height}",
+            format.label()
         ));
     }
     if meta.offset().len() < 2 || meta.stride().len() < 2 {
         return Err(format!(
-            "NV12 frame needs 2 planes, got offsets={} strides={}",
+            "{} frame needs 2 planes, got offsets={} strides={}",
+            format.label(),
             meta.offset().len(),
             meta.stride().len()
         ));
     }
-    let y_stride = native_vulkan_positive_stride("NV12 y", meta.stride()[0])?;
-    let uv_stride = native_vulkan_positive_stride("NV12 uv", meta.stride()[1])?;
-    if y_stride < width || uv_stride < width {
+    let y_stride =
+        native_vulkan_positive_stride(format!("{} y", format.label()), meta.stride()[0])?;
+    let uv_stride =
+        native_vulkan_positive_stride(format!("{} uv", format.label()), meta.stride()[1])?;
+    let row_bytes = width
+        .checked_mul(format.bytes_per_component())
+        .ok_or_else(|| format!("{} row byte width overflow", format.label()))?;
+    if y_stride < row_bytes || uv_stride < row_bytes {
         return Err(format!(
-            "NV12 stride too small: y={y_stride} uv={uv_stride} width={width}"
+            "{} stride too small: y={y_stride} uv={uv_stride} row_bytes={row_bytes}",
+            format.label()
         ));
     }
     Ok(NativeVulkanGstSystemNv12Meta {
+        format,
         width,
         height,
         y: NativeVulkanGstSystemNv12Plane {
             offset: meta.offset()[0],
             stride: y_stride,
             height,
-            row_bytes: width,
+            row_bytes,
         },
         uv: NativeVulkanGstSystemNv12Plane {
             offset: meta.offset()[1],
             stride: uv_stride,
             height: height / 2,
-            row_bytes: width,
+            row_bytes,
         },
     })
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_gst_nv12_meta_from_caps(
+fn native_vulkan_gst_yuv420_meta_from_caps(
     sample: &gst::Sample,
 ) -> Result<NativeVulkanGstSystemNv12Meta, String> {
     let caps = sample
@@ -6886,9 +7003,8 @@ fn native_vulkan_gst_nv12_meta_from_caps(
     let format = structure
         .get::<String>("format")
         .unwrap_or_else(|_| "unknown".to_owned());
-    if format != "NV12" {
-        return Err(format!("caps fallback expected NV12, got {format}"));
-    }
+    let format = NativeVulkanVideoSampleFormat::from_caps_format(&format)
+        .ok_or_else(|| format!("caps fallback expected NV12 or P010, got {format}"))?;
     let width = structure
         .get::<i32>("width")
         .map_err(|_| "appsink caps missing width".to_owned())
@@ -6909,31 +7025,36 @@ fn native_vulkan_gst_nv12_meta_from_caps(
         })?;
     if width % 2 != 0 || height % 2 != 0 {
         return Err(format!(
-            "NV12 frame dimensions must be even, got {width}x{height}"
+            "{} frame dimensions must be even, got {width}x{height}",
+            format.label()
         ));
     }
-    let y_size = usize::try_from(u64::from(width) * u64::from(height))
-        .map_err(|_| "NV12 plane offset overflow".to_owned())?;
+    let row_bytes = width
+        .checked_mul(format.bytes_per_component())
+        .ok_or_else(|| format!("{} row byte width overflow", format.label()))?;
+    let y_size = usize::try_from(u64::from(row_bytes) * u64::from(height))
+        .map_err(|_| format!("{} plane offset overflow", format.label()))?;
     Ok(NativeVulkanGstSystemNv12Meta {
+        format,
         width,
         height,
         y: NativeVulkanGstSystemNv12Plane {
             offset: 0,
-            stride: width,
+            stride: row_bytes,
             height,
-            row_bytes: width,
+            row_bytes,
         },
         uv: NativeVulkanGstSystemNv12Plane {
             offset: y_size,
-            stride: width,
+            stride: row_bytes,
             height: height / 2,
-            row_bytes: width,
+            row_bytes,
         },
     })
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_positive_stride(label: &str, stride: i32) -> Result<u32, String> {
+fn native_vulkan_positive_stride(label: String, stride: i32) -> Result<u32, String> {
     u32::try_from(stride)
         .ok()
         .filter(|stride| *stride > 0)
@@ -6982,9 +7103,13 @@ fn native_vulkan_copy_gst_cuda_plane_to_vulkan_image(
     image: &NativeVulkanCudaVideoPlane,
     label: &str,
 ) -> Result<NativeVulkanCudaMemoryMap, NativeVulkanError> {
-    let expected_row_bytes = image.width.checked_mul(image.channels).ok_or_else(|| {
-        NativeVulkanError::Video(format!("native Vulkan CUDA {label} row byte overflow"))
-    })?;
+    let expected_row_bytes = image
+        .width
+        .checked_mul(image.channels)
+        .and_then(|bytes| bytes.checked_mul(image.bytes_per_channel))
+        .ok_or_else(|| {
+            NativeVulkanError::Video(format!("native Vulkan CUDA {label} row byte overflow"))
+        })?;
     if row_bytes != expected_row_bytes || height != image.height {
         return Err(NativeVulkanError::Video(format!(
             "native Vulkan CUDA {label} plane shape mismatch: row_bytes={row_bytes} height={height} image={}x{} channels={}",
@@ -7128,6 +7253,7 @@ impl NativeVulkanCudaExternalImageMemory {
         width: u32,
         height: u32,
         channels: u32,
+        cuda_array_format: u32,
         label: &str,
     ) -> Result<Self, NativeVulkanError> {
         let mut external_memory = ptr::null_mut();
@@ -7158,7 +7284,7 @@ impl NativeVulkanCudaExternalImageMemory {
                     NativeVulkanError::Video(format!("native Vulkan CUDA {label} height too large"))
                 })?,
                 depth: 0,
-                format: CUDA_ARRAY_FORMAT_UNSIGNED_INT8,
+                format: cuda_array_format,
                 num_channels: channels,
                 flags: 0,
             },
@@ -7426,11 +7552,19 @@ const CUDA_STREAM_NON_BLOCKING: u32 = 1;
 #[cfg(feature = "native-vulkan-gst-video")]
 const CUDA_ARRAY_FORMAT_UNSIGNED_INT8: u32 = 1;
 #[cfg(feature = "native-vulkan-gst-video")]
+const CUDA_ARRAY_FORMAT_UNSIGNED_INT16: u32 = 2;
+#[cfg(feature = "native-vulkan-gst-video")]
 const DRM_FORMAT_NV12: u32 = 0x3231_564e;
+#[cfg(feature = "native-vulkan-gst-video")]
+const DRM_FORMAT_P010: u32 = 0x3031_3050;
 #[cfg(feature = "native-vulkan-gst-video")]
 const DRM_FORMAT_R8: u32 = 0x2020_3852;
 #[cfg(feature = "native-vulkan-gst-video")]
+const DRM_FORMAT_R16: u32 = 0x2036_3152;
+#[cfg(feature = "native-vulkan-gst-video")]
 const DRM_FORMAT_GR88: u32 = 0x3838_5247;
+#[cfg(feature = "native-vulkan-gst-video")]
+const DRM_FORMAT_GR1616: u32 = 0x3233_5247;
 #[cfg(feature = "native-vulkan-gst-video")]
 const DRM_FORMAT_MOD_LINEAR: u64 = 0;
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -7439,8 +7573,6 @@ const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
 const VA_STATUS_SUCCESS: NativeVulkanVaStatus = 0;
 #[cfg(feature = "native-vulkan-gst-video")]
 const VA_INVALID_SURFACE: NativeVulkanVaSurfaceId = u32::MAX;
-#[cfg(feature = "native-vulkan-gst-video")]
-const VA_FOURCC_NV12: u32 = 0x3231_564e;
 #[cfg(feature = "native-vulkan-gst-video")]
 const VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2: u32 = 0x4000_0000;
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -20201,6 +20333,8 @@ fn native_vulkan_format_label(format: vk::Format) -> &'static str {
         vk::Format::B8G8R8A8_UNORM => "B8G8R8A8_UNORM",
         vk::Format::R8_UNORM => "R8_UNORM",
         vk::Format::R8G8_UNORM => "R8G8_UNORM",
+        vk::Format::R16_UNORM => "R16_UNORM",
+        vk::Format::R16G16_UNORM => "R16G16_UNORM",
         _ => "unknown",
     }
 }
