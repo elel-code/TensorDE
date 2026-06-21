@@ -890,6 +890,7 @@ pub struct NativeVulkanH265DecodedFrameReferenceSnapshot {
     pub dpb_slot: u32,
     pub source_access_unit_index: u32,
     pub poc: i32,
+    pub used_for_long_term_reference: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1335,8 +1336,19 @@ pub struct NativeVulkanH265AccessUnitSliceSnapshot {
     pub num_delta_pocs_of_ref_rps_idx: u8,
     pub num_bits_for_st_ref_pic_set_in_slice: u16,
     pub short_term_ref_pic_set: Option<NativeVulkanH265ShortTermRefPicSetSnapshot>,
+    pub long_term_references: Vec<NativeVulkanH265LongTermReferenceSnapshot>,
     pub idr: bool,
     pub irap: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanH265LongTermReferenceSnapshot {
+    pub from_sps: bool,
+    pub lt_idx_sps: Option<u32>,
+    pub poc_lsb: u32,
+    pub used_by_current: bool,
+    pub delta_poc_msb_present_flag: bool,
+    pub delta_poc_msb_cycle_lt: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1379,6 +1391,7 @@ pub struct NativeVulkanH265DecodeReferencePlanEntrySnapshot {
 pub struct NativeVulkanH265DecodeReferenceSnapshot {
     pub delta_poc: i32,
     pub poc: i32,
+    pub used_for_long_term_reference: bool,
     pub available: bool,
     pub source_access_unit_index: Option<u32>,
     pub dpb_slot: Option<u32>,
@@ -1545,11 +1558,18 @@ pub struct NativeVulkanH265SpsSnapshot {
     pub num_short_term_ref_pic_sets: u32,
     pub short_term_ref_pic_sets: Vec<NativeVulkanH265ShortTermRefPicSetSnapshot>,
     pub long_term_ref_pics_present_flag: bool,
+    pub long_term_ref_pics_sps: Vec<NativeVulkanH265LongTermRefPicSpsSnapshot>,
     pub temporal_mvp_enabled_flag: bool,
     pub strong_intra_smoothing_enabled_flag: bool,
     pub vui_parameters_present_flag: bool,
     pub vui: Option<NativeVulkanH265VuiSnapshot>,
     pub sps_extension_present_flag: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanH265LongTermRefPicSpsSnapshot {
+    pub lt_ref_pic_poc_lsb_sps: u32,
+    pub used_by_curr_pic_lt_sps_flag: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -14745,25 +14765,64 @@ fn native_vulkan_h265_ref_pic_set_st_curr_before(
     access_unit_index: u32,
     available_references: &[&NativeVulkanH265DecodeReferenceSnapshot],
 ) -> Result<[u8; 8], NativeVulkanError> {
-    if available_references.len() > 8 {
+    let references = available_references
+        .iter()
+        .copied()
+        .filter(|reference| !reference.used_for_long_term_reference && reference.delta_poc < 0)
+        .collect::<Vec<_>>();
+    native_vulkan_h265_ref_pic_set_slots(access_unit_index, &references, "StCurrBefore")
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_ref_pic_set_st_curr_after(
+    access_unit_index: u32,
+    available_references: &[&NativeVulkanH265DecodeReferenceSnapshot],
+) -> Result<[u8; 8], NativeVulkanError> {
+    let references = available_references
+        .iter()
+        .copied()
+        .filter(|reference| !reference.used_for_long_term_reference && reference.delta_poc > 0)
+        .collect::<Vec<_>>();
+    native_vulkan_h265_ref_pic_set_slots(access_unit_index, &references, "StCurrAfter")
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_ref_pic_set_lt_curr(
+    access_unit_index: u32,
+    available_references: &[&NativeVulkanH265DecodeReferenceSnapshot],
+) -> Result<[u8; 8], NativeVulkanError> {
+    let references = available_references
+        .iter()
+        .copied()
+        .filter(|reference| reference.used_for_long_term_reference)
+        .collect::<Vec<_>>();
+    native_vulkan_h265_ref_pic_set_slots(access_unit_index, &references, "LtCurr")
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_ref_pic_set_slots(
+    access_unit_index: u32,
+    references: &[&NativeVulkanH265DecodeReferenceSnapshot],
+    label: &'static str,
+) -> Result<[u8; 8], NativeVulkanError> {
+    if references.len() > 8 {
         return Err(NativeVulkanError::Video(format!(
-            "H.265 AU {access_unit_index} has {} short-term references; Vulkan STD H.265 decode supports at most 8 current-before entries",
-            available_references.len()
+            "H.265 AU {access_unit_index} has {} {label} references; Vulkan STD H.265 decode supports at most 8 entries",
+            references.len()
         )));
     }
-    let mut ref_pic_set_st_curr_before = [0xffu8; 8];
-    for (index, reference) in available_references.iter().enumerate() {
+    let mut slots = [0xffu8; 8];
+    for (index, reference) in references.iter().enumerate() {
         let dpb_slot = reference.dpb_slot.ok_or_else(|| {
             NativeVulkanError::Video(format!(
                 "H.265 AU {access_unit_index} reference POC {} has no DPB slot",
                 reference.poc
             ))
         })?;
-        ref_pic_set_st_curr_before[index] =
-            native_vulkan_h265_u8(dpb_slot, "RefPicSetStCurrBefore slotIndex")
-                .map_err(NativeVulkanError::Video)?;
+        slots[index] = native_vulkan_h265_u8(dpb_slot, "RefPicSet slotIndex")
+            .map_err(NativeVulkanError::Video)?;
     }
-    Ok(ref_pic_set_st_curr_before)
+    Ok(slots)
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -15359,7 +15418,10 @@ fn native_vulkan_decode_h265_ready_prefix_frame_to_image(
         .map(|reference| vk::native::StdVideoDecodeH265ReferenceInfo {
             flags: vk::native::StdVideoDecodeH265ReferenceInfoFlags {
                 _bitfield_align_1: [],
-                _bitfield_1: vk::native::StdVideoDecodeH265ReferenceInfoFlags::new_bitfield_1(0, 0),
+                _bitfield_1: vk::native::StdVideoDecodeH265ReferenceInfoFlags::new_bitfield_1(
+                    native_vulkan_bool_u32(reference.used_for_long_term_reference),
+                    0,
+                ),
                 __bindgen_padding_0: [0; 3],
             },
             PicOrderCntVal: reference.poc,
@@ -15389,6 +15451,10 @@ fn native_vulkan_decode_h265_ready_prefix_frame_to_image(
         .collect::<Vec<_>>();
     let ref_pic_set_st_curr_before =
         native_vulkan_h265_ref_pic_set_st_curr_before(access_unit.index, &available_references)?;
+    let ref_pic_set_st_curr_after =
+        native_vulkan_h265_ref_pic_set_st_curr_after(access_unit.index, &available_references)?;
+    let ref_pic_set_lt_curr =
+        native_vulkan_h265_ref_pic_set_lt_curr(access_unit.index, &available_references)?;
     let num_delta_pocs_of_ref_rps_idx =
         native_vulkan_h265_num_delta_pocs_of_ref_rps_idx(first_slice);
     let num_bits_for_st_ref_pic_set_in_slice =
@@ -15420,8 +15486,8 @@ fn native_vulkan_decode_h265_ready_prefix_frame_to_image(
         NumBitsForSTRefPicSetInSlice: num_bits_for_st_ref_pic_set_in_slice,
         reserved: 0,
         RefPicSetStCurrBefore: ref_pic_set_st_curr_before,
-        RefPicSetStCurrAfter: [0xff; 8],
-        RefPicSetLtCurr: [0xff; 8],
+        RefPicSetStCurrAfter: ref_pic_set_st_curr_after,
+        RefPicSetLtCurr: ref_pic_set_lt_curr,
     };
     let slice_segment_offsets = native_vulkan_h265_slice_segment_offsets(span)?;
     let mut h265_picture_info = vk::VideoDecodeH265PictureInfoKHR::default()
@@ -15880,7 +15946,8 @@ fn native_vulkan_decode_h265_ready_prefix_smoke(
                             _bitfield_align_1: [],
                             _bitfield_1:
                                 vk::native::StdVideoDecodeH265ReferenceInfoFlags::new_bitfield_1(
-                                    0, 0,
+                                    native_vulkan_bool_u32(reference.used_for_long_term_reference),
+                                    0,
                                 ),
                             __bindgen_padding_0: [0; 3],
                         },
@@ -15911,6 +15978,14 @@ fn native_vulkan_decode_h265_ready_prefix_smoke(
                     })
                     .collect::<Vec<_>>();
                 let ref_pic_set_st_curr_before = native_vulkan_h265_ref_pic_set_st_curr_before(
+                    access_unit.index,
+                    &available_references,
+                )?;
+                let ref_pic_set_st_curr_after = native_vulkan_h265_ref_pic_set_st_curr_after(
+                    access_unit.index,
+                    &available_references,
+                )?;
+                let ref_pic_set_lt_curr = native_vulkan_h265_ref_pic_set_lt_curr(
                     access_unit.index,
                     &available_references,
                 )?;
@@ -15945,8 +16020,8 @@ fn native_vulkan_decode_h265_ready_prefix_smoke(
                     NumBitsForSTRefPicSetInSlice: num_bits_for_st_ref_pic_set_in_slice,
                     reserved: 0,
                     RefPicSetStCurrBefore: ref_pic_set_st_curr_before,
-                    RefPicSetStCurrAfter: [0xff; 8],
-                    RefPicSetLtCurr: [0xff; 8],
+                    RefPicSetStCurrAfter: ref_pic_set_st_curr_after,
+                    RefPicSetLtCurr: ref_pic_set_lt_curr,
                 };
                 let slice_segment_offsets = native_vulkan_h265_slice_segment_offsets(span)?;
                 let mut h265_picture_info = vk::VideoDecodeH265PictureInfoKHR::default()
@@ -15987,6 +16062,7 @@ fn native_vulkan_decode_h265_ready_prefix_smoke(
                                 .source_access_unit_index
                                 .unwrap_or(u32::MAX),
                             poc: reference.poc,
+                            used_for_long_term_reference: reference.used_for_long_term_reference,
                         }
                     })
                     .collect::<Vec<_>>();
@@ -16444,7 +16520,10 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
                     flags: vk::native::StdVideoDecodeH265ReferenceInfoFlags {
                         _bitfield_align_1: [],
                         _bitfield_1:
-                            vk::native::StdVideoDecodeH265ReferenceInfoFlags::new_bitfield_1(0, 0),
+                            vk::native::StdVideoDecodeH265ReferenceInfoFlags::new_bitfield_1(
+                                native_vulkan_bool_u32(reference.used_for_long_term_reference),
+                                0,
+                            ),
                         __bindgen_padding_0: [0; 3],
                     },
                     PicOrderCntVal: reference.poc,
@@ -16477,6 +16556,12 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
                 access_unit.index,
                 &available_references,
             )?;
+            let ref_pic_set_st_curr_after = native_vulkan_h265_ref_pic_set_st_curr_after(
+                access_unit.index,
+                &available_references,
+            )?;
+            let ref_pic_set_lt_curr =
+                native_vulkan_h265_ref_pic_set_lt_curr(access_unit.index, &available_references)?;
             let num_delta_pocs_of_ref_rps_idx =
                 native_vulkan_h265_num_delta_pocs_of_ref_rps_idx(first_slice);
             let num_bits_for_st_ref_pic_set_in_slice =
@@ -16508,8 +16593,8 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
                 NumBitsForSTRefPicSetInSlice: num_bits_for_st_ref_pic_set_in_slice,
                 reserved: 0,
                 RefPicSetStCurrBefore: ref_pic_set_st_curr_before,
-                RefPicSetStCurrAfter: [0xff; 8],
-                RefPicSetLtCurr: [0xff; 8],
+                RefPicSetStCurrAfter: ref_pic_set_st_curr_after,
+                RefPicSetLtCurr: ref_pic_set_lt_curr,
             };
             let slice_segment_offsets = native_vulkan_h265_slice_segment_offsets(&decode_span)?;
             let mut h265_picture_info = vk::VideoDecodeH265PictureInfoKHR::default()
@@ -16672,6 +16757,7 @@ fn native_vulkan_decode_h265_ready_prefix_sequence_smoke(
                             .source_access_unit_index
                             .unwrap_or(u32::MAX),
                         poc: reference.poc,
+                        used_for_long_term_reference: reference.used_for_long_term_reference,
                     }
                 })
                 .collect::<Vec<_>>();
@@ -19618,6 +19704,13 @@ fn native_vulkan_h265_sps_short_term_ref_pic_sets_supported(
     })
 }
 
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h265_sps_long_term_ref_pics_supported(
+    ref_pics: &[NativeVulkanH265LongTermRefPicSpsSnapshot],
+) -> bool {
+    ref_pics.len() <= 32
+}
+
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_h264_streaming_packet_queue_capacity(requested_frame_count: u32) -> usize {
     std::env::var("GILDER_VULKAN_H264_PACKET_QUEUE_CAPACITY")
@@ -20986,6 +21079,14 @@ struct NativeVulkanH265DecodeReferencePlanner {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, Copy)]
+struct NativeVulkanH265ReferenceRequest {
+    delta_poc: i32,
+    poc: i32,
+    used_for_long_term_reference: bool,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 impl NativeVulkanH265DecodeReferencePlanner {
     fn new(dpb_slots: u32, max_pic_order_cnt_lsb: u32) -> Self {
         let dpb_slots = dpb_slots.max(1);
@@ -21059,6 +21160,33 @@ impl NativeVulkanH265DecodeReferencePlanner {
         Some(poc_msb.saturating_add(poc_lsb))
     }
 
+    fn derive_long_term_reference_poc(
+        &self,
+        slice: &NativeVulkanH265AccessUnitSliceSnapshot,
+        current_poc: i32,
+        reference: &NativeVulkanH265LongTermReferenceSnapshot,
+    ) -> Option<i32> {
+        if !reference.used_by_current {
+            return None;
+        }
+        let max_lsb = i32::try_from(self.max_pic_order_cnt_lsb.max(1)).unwrap_or(i32::MAX);
+        let poc_lsb = i32::try_from(reference.poc_lsb).ok()?;
+        if let Some(delta_poc_msb_cycle_lt) = reference.delta_poc_msb_cycle_lt {
+            let current_poc_lsb = slice.pic_order_cnt_lsb? as i32;
+            let delta_msb = i32::try_from(delta_poc_msb_cycle_lt).ok()?;
+            return Some(
+                current_poc
+                    .saturating_sub(delta_msb.saturating_mul(max_lsb))
+                    .saturating_sub(current_poc_lsb.saturating_sub(poc_lsb)),
+            );
+        }
+        self.poc_to_decoded_slot
+            .keys()
+            .copied()
+            .find(|decoded_poc| decoded_poc.rem_euclid(max_lsb) == poc_lsb.rem_euclid(max_lsb))
+            .or(Some(poc_lsb))
+    }
+
     fn plan_next(
         &mut self,
         access_unit: &NativeVulkanH265AccessUnitSnapshot,
@@ -21079,12 +21207,37 @@ impl NativeVulkanH265DecodeReferencePlanner {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let protected_pocs = current_poc
-            .map(|current_poc| {
-                reference_delta_pocs
+        let reference_requests =
+            if let (Some(slice), Some(current_poc)) = (first_slice, current_poc) {
+                let mut requests = reference_delta_pocs
                     .iter()
                     .copied()
-                    .map(|delta_poc| current_poc.saturating_add(delta_poc))
+                    .map(|delta_poc| NativeVulkanH265ReferenceRequest {
+                        delta_poc,
+                        poc: current_poc.saturating_add(delta_poc),
+                        used_for_long_term_reference: false,
+                    })
+                    .collect::<Vec<_>>();
+                for long_term_reference in &slice.long_term_references {
+                    if let Some(poc) =
+                        self.derive_long_term_reference_poc(slice, current_poc, long_term_reference)
+                    {
+                        requests.push(NativeVulkanH265ReferenceRequest {
+                            delta_poc: poc.saturating_sub(current_poc),
+                            poc,
+                            used_for_long_term_reference: true,
+                        });
+                    }
+                }
+                requests
+            } else {
+                Vec::new()
+            };
+        let protected_pocs = current_poc
+            .map(|_| {
+                reference_requests
+                    .iter()
+                    .map(|request| request.poc)
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -21098,26 +21251,22 @@ impl NativeVulkanH265DecodeReferencePlanner {
             .get(planned_output_slot as usize)
             .copied()
             .flatten();
-        let references = current_poc
-            .map(|current_poc| {
-                reference_delta_pocs
-                    .iter()
-                    .copied()
-                    .map(|delta_poc| {
-                        let poc = current_poc.saturating_add(delta_poc);
-                        let source = self.poc_to_decoded_slot.get(&poc).copied();
-                        let available = source.is_some_and(|(_, slot)| slot != planned_output_slot);
-                        NativeVulkanH265DecodeReferenceSnapshot {
-                            delta_poc,
-                            poc,
-                            available,
-                            source_access_unit_index: source.map(|(index, _)| index),
-                            dpb_slot: source.map(|(_, slot)| slot),
-                        }
-                    })
-                    .collect::<Vec<_>>()
+        let references = reference_requests
+            .iter()
+            .copied()
+            .map(|request| {
+                let source = self.poc_to_decoded_slot.get(&request.poc).copied();
+                let available = source.is_some_and(|(_, slot)| slot != planned_output_slot);
+                NativeVulkanH265DecodeReferenceSnapshot {
+                    delta_poc: request.delta_poc,
+                    poc: request.poc,
+                    used_for_long_term_reference: request.used_for_long_term_reference,
+                    available,
+                    source_access_unit_index: source.map(|(index, _)| index),
+                    dpb_slot: source.map(|(_, slot)| slot),
+                }
             })
-            .unwrap_or_default();
+            .collect::<Vec<_>>();
         let missing_reference_pocs = references
             .iter()
             .filter(|reference| !reference.available)
@@ -21344,8 +21493,8 @@ fn native_vulkan_h265_first_slice_probe_snapshot(
     let mut short_term_ref_pic_set_idx = None::<u32>;
     let mut num_delta_pocs_of_ref_rps_idx = 0u8;
     let mut num_bits_for_st_ref_pic_set_in_slice = 0u16;
-    let (pic_order_cnt_lsb, short_term_ref_pic_set) = if idr {
-        (None, None)
+    let (pic_order_cnt_lsb, short_term_ref_pic_set, long_term_references) = if idr {
+        (None, None, Vec::new())
     } else {
         let pic_order_cnt_lsb = bits.read_bits(
             parameter_sets.sps.log2_max_pic_order_cnt_lsb_minus4 + 4,
@@ -21398,7 +21547,13 @@ fn native_vulkan_h265_first_slice_probe_snapshot(
             }
             Some(short_term_ref_pic_set)
         };
-        (Some(pic_order_cnt_lsb), short_term_ref_pic_set)
+        let long_term_references =
+            native_vulkan_h265_read_long_term_references(&mut bits, &parameter_sets.sps)?;
+        (
+            Some(pic_order_cnt_lsb),
+            short_term_ref_pic_set,
+            long_term_references,
+        )
     };
 
     Ok(NativeVulkanH265AccessUnitSliceSnapshot {
@@ -21415,9 +21570,110 @@ fn native_vulkan_h265_first_slice_probe_snapshot(
         num_delta_pocs_of_ref_rps_idx,
         num_bits_for_st_ref_pic_set_in_slice,
         short_term_ref_pic_set,
+        long_term_references,
         idr,
         irap,
     })
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h265_read_long_term_references(
+    bits: &mut NativeVulkanH265BitReader<'_>,
+    sps: &NativeVulkanH265SpsSnapshot,
+) -> Result<Vec<NativeVulkanH265LongTermReferenceSnapshot>, String> {
+    if !sps.long_term_ref_pics_present_flag {
+        return Ok(Vec::new());
+    }
+
+    let sps_ref_count = sps.long_term_ref_pics_sps.len() as u32;
+    let num_long_term_sps = if sps_ref_count > 0 {
+        bits.read_ue("num_long_term_sps")?
+    } else {
+        0
+    };
+    let num_long_term_pics = bits.read_ue("num_long_term_pics")?;
+    if num_long_term_sps > sps_ref_count {
+        return Err(format!(
+            "H.265 slice requests {num_long_term_sps} SPS long-term refs but SPS has {sps_ref_count}"
+        ));
+    }
+    let total = num_long_term_sps
+        .checked_add(num_long_term_pics)
+        .ok_or_else(|| "H.265 long-term reference count overflow".to_owned())?;
+    if total > 32 {
+        return Err(format!(
+            "H.265 slice has {total} long-term refs; maximum supported is 32"
+        ));
+    }
+
+    let mut references = Vec::with_capacity(total as usize);
+    let lt_idx_sps_bits = native_vulkan_h265_ceil_log2(sps_ref_count);
+    let poc_lsb_bits = sps
+        .log2_max_pic_order_cnt_lsb_minus4
+        .checked_add(4)
+        .ok_or_else(|| "H.265 long-term POC LSB bit count overflow".to_owned())?;
+    let mut previous_delta_poc_msb_cycle_lt = None::<u32>;
+    for index in 0..total {
+        let (from_sps, lt_idx_sps, poc_lsb, used_by_current) = if index < num_long_term_sps {
+            let lt_idx_sps = if sps_ref_count > 1 {
+                bits.read_bits(lt_idx_sps_bits, "lt_idx_sps")?
+            } else {
+                0
+            };
+            let entry = sps
+                .long_term_ref_pics_sps
+                .get(lt_idx_sps as usize)
+                .ok_or_else(|| {
+                    format!(
+                        "H.265 slice lt_idx_sps {lt_idx_sps} exceeds SPS long-term ref count {sps_ref_count}"
+                    )
+                })?;
+            (
+                true,
+                Some(lt_idx_sps),
+                entry.lt_ref_pic_poc_lsb_sps,
+                entry.used_by_curr_pic_lt_sps_flag,
+            )
+        } else {
+            let poc_lsb = bits.read_bits(poc_lsb_bits, "poc_lsb_lt")?;
+            let used_by_current = bits.read_bool("used_by_curr_pic_lt_flag")?;
+            (false, None, poc_lsb, used_by_current)
+        };
+        let delta_poc_msb_present_flag = bits.read_bool("delta_poc_msb_present_flag")?;
+        let delta_poc_msb_cycle_lt = if delta_poc_msb_present_flag {
+            let value = bits.read_ue("delta_poc_msb_cycle_lt")?;
+            let derived = if index == 0 || index == num_long_term_sps {
+                value
+            } else {
+                previous_delta_poc_msb_cycle_lt
+                    .unwrap_or(0)
+                    .saturating_add(value)
+            };
+            previous_delta_poc_msb_cycle_lt = Some(derived);
+            Some(derived)
+        } else {
+            None
+        };
+        references.push(NativeVulkanH265LongTermReferenceSnapshot {
+            from_sps,
+            lt_idx_sps,
+            poc_lsb,
+            used_by_current,
+            delta_poc_msb_present_flag,
+            delta_poc_msb_cycle_lt,
+        });
+    }
+
+    Ok(references)
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h265_ceil_log2(value: u32) -> u32 {
+    if value <= 1 {
+        0
+    } else {
+        u32::BITS - (value - 1).leading_zeros()
+    }
 }
 
 #[cfg(any(feature = "native-vulkan-gst-video", test))]
@@ -21454,7 +21710,7 @@ fn native_vulkan_parse_h265_parameter_sets(
         && vps.id == sps.vps_id
         && sps.id == pps.sps_id
         && native_vulkan_h265_sps_short_term_ref_pic_sets_supported(&sps.short_term_ref_pic_sets)
-        && !sps.long_term_ref_pics_present_flag
+        && native_vulkan_h265_sps_long_term_ref_pics_supported(&sps.long_term_ref_pics_sps)
         && !sps.scaling_list_enabled_flag
         && !sps.sps_scaling_list_data_present_flag
         && !sps.pcm_enabled_flag
@@ -21541,6 +21797,7 @@ fn native_vulkan_parse_h265_parameter_sets(
             num_short_term_ref_pic_sets: sps.num_short_term_ref_pic_sets,
             short_term_ref_pic_sets: sps.short_term_ref_pic_sets.clone(),
             long_term_ref_pics_present_flag: sps.long_term_ref_pics_present_flag,
+            long_term_ref_pics_sps: sps.long_term_ref_pics_sps.clone(),
             temporal_mvp_enabled_flag: sps.temporal_mvp_enabled_flag,
             strong_intra_smoothing_enabled_flag: sps.strong_intra_smoothing_enabled_flag,
             vui_parameters_present_flag: sps.vui_parameters_present_flag,
@@ -22976,6 +23233,7 @@ struct NativeVulkanH265ParsedSps {
     num_short_term_ref_pic_sets: u32,
     short_term_ref_pic_sets: Vec<NativeVulkanH265ShortTermRefPicSetSnapshot>,
     long_term_ref_pics_present_flag: bool,
+    long_term_ref_pics_sps: Vec<NativeVulkanH265LongTermRefPicSpsSnapshot>,
     temporal_mvp_enabled_flag: bool,
     strong_intra_smoothing_enabled_flag: bool,
     vui_parameters_present_flag: bool,
@@ -23269,14 +23527,25 @@ fn native_vulkan_parse_h265_sps(payload: &[u8]) -> Result<NativeVulkanH265Parsed
         short_term_ref_pic_sets.push(short_term_ref_pic_set);
     }
     let long_term_ref_pics_present_flag = bits.read_bool("long_term_ref_pics_present_flag")?;
+    let mut long_term_ref_pics_sps = Vec::new();
     if long_term_ref_pics_present_flag {
         let num_long_term_ref_pics_sps = bits.read_ue("num_long_term_ref_pics_sps")?;
+        if num_long_term_ref_pics_sps > 32 {
+            return Err(format!(
+                "H.265 SPS has {num_long_term_ref_pics_sps} long-term refs; maximum supported is 32"
+            ));
+        }
+        long_term_ref_pics_sps.reserve(num_long_term_ref_pics_sps as usize);
         for _ in 0..num_long_term_ref_pics_sps {
-            bits.skip_bits(
+            let lt_ref_pic_poc_lsb_sps = bits.read_bits(
                 log2_max_pic_order_cnt_lsb_minus4 + 4,
                 "lt_ref_pic_poc_lsb_sps",
             )?;
-            bits.read_bool("used_by_curr_pic_lt_sps_flag")?;
+            let used_by_curr_pic_lt_sps_flag = bits.read_bool("used_by_curr_pic_lt_sps_flag")?;
+            long_term_ref_pics_sps.push(NativeVulkanH265LongTermRefPicSpsSnapshot {
+                lt_ref_pic_poc_lsb_sps,
+                used_by_curr_pic_lt_sps_flag,
+            });
         }
     }
     let temporal_mvp_enabled_flag = bits.read_bool("sps_temporal_mvp_enabled_flag")?;
@@ -23327,6 +23596,7 @@ fn native_vulkan_parse_h265_sps(payload: &[u8]) -> Result<NativeVulkanH265Parsed
         num_short_term_ref_pic_sets,
         short_term_ref_pic_sets,
         long_term_ref_pics_present_flag,
+        long_term_ref_pics_sps,
         temporal_mvp_enabled_flag,
         strong_intra_smoothing_enabled_flag,
         vui_parameters_present_flag,
@@ -26600,6 +26870,13 @@ fn native_vulkan_create_h265_video_session_parameters(
     } else {
         sps_short_term_ref_pic_sets.as_ptr()
     };
+    let sps_long_term_ref_pics =
+        native_vulkan_h265_std_long_term_ref_pics_sps(&parameter_sets.sps.long_term_ref_pics_sps)
+            .map_err(NativeVulkanError::Video)?;
+    let sps_long_term_ref_pics_ptr = sps_long_term_ref_pics
+        .as_ref()
+        .map(|ref_pics| ref_pics as *const vk::native::StdVideoH265LongTermRefPicsSps)
+        .unwrap_or_else(ptr::null);
 
     let vps = [vk::native::StdVideoH265VideoParameterSet {
         flags: vk::native::StdVideoH265VpsFlags {
@@ -26728,7 +27005,11 @@ fn native_vulkan_create_h265_video_session_parameters(
             "num_short_term_ref_pic_sets",
         )
         .map_err(NativeVulkanError::Video)?,
-        num_long_term_ref_pics_sps: 0,
+        num_long_term_ref_pics_sps: native_vulkan_h265_u8(
+            parameter_sets.sps.long_term_ref_pics_sps.len() as u32,
+            "num_long_term_ref_pics_sps",
+        )
+        .map_err(NativeVulkanError::Video)?,
         pcm_sample_bit_depth_luma_minus1: 0,
         pcm_sample_bit_depth_chroma_minus1: 0,
         log2_min_pcm_luma_coding_block_size_minus3: 0,
@@ -26747,7 +27028,7 @@ fn native_vulkan_create_h265_video_session_parameters(
         pDecPicBufMgr: &sps_dec_pic_buf_mgr,
         pScalingLists: ptr::null(),
         pShortTermRefPicSet: sps_short_term_ref_pic_sets_ptr,
-        pLongTermRefPicsSps: ptr::null(),
+        pLongTermRefPicsSps: sps_long_term_ref_pics_ptr,
         pSequenceParameterSetVui: sps_vui_ptr,
         pPredictorPaletteEntries: ptr::null(),
     }];
@@ -27164,6 +27445,31 @@ fn native_vulkan_h265_std_short_term_ref_pic_sets(
         .iter()
         .map(native_vulkan_h265_std_short_term_ref_pic_set)
         .collect()
+}
+
+fn native_vulkan_h265_std_long_term_ref_pics_sps(
+    ref_pics: &[NativeVulkanH265LongTermRefPicSpsSnapshot],
+) -> Result<Option<vk::native::StdVideoH265LongTermRefPicsSps>, String> {
+    if ref_pics.is_empty() {
+        return Ok(None);
+    }
+    if ref_pics.len() > 32 {
+        return Err("H.265 SPS long-term reference picture set exceeds 32 refs".to_owned());
+    }
+
+    let mut used_by_curr_pic_lt_sps_flag = 0u32;
+    let mut lt_ref_pic_poc_lsb_sps = [0u32; 32];
+    for (index, ref_pic) in ref_pics.iter().enumerate() {
+        if ref_pic.used_by_curr_pic_lt_sps_flag {
+            used_by_curr_pic_lt_sps_flag |= 1u32 << index;
+        }
+        lt_ref_pic_poc_lsb_sps[index] = ref_pic.lt_ref_pic_poc_lsb_sps;
+    }
+
+    Ok(Some(vk::native::StdVideoH265LongTermRefPicsSps {
+        used_by_curr_pic_lt_sps_flag,
+        lt_ref_pic_poc_lsb_sps,
+    }))
 }
 
 fn native_vulkan_h265_std_short_term_ref_pic_set(
@@ -31237,11 +31543,74 @@ mod tests {
                 num_delta_pocs_of_ref_rps_idx: 0,
                 num_bits_for_st_ref_pic_set_in_slice: 0,
                 short_term_ref_pic_set,
+                long_term_references: Vec::new(),
                 idr,
                 irap: idr,
             }),
             first_slice_parse_error: None,
         }
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn maps_h265_sps_long_term_refs_to_vulkan_std() {
+        let std_refs = native_vulkan_h265_std_long_term_ref_pics_sps(&[
+            NativeVulkanH265LongTermRefPicSpsSnapshot {
+                lt_ref_pic_poc_lsb_sps: 4,
+                used_by_curr_pic_lt_sps_flag: true,
+            },
+            NativeVulkanH265LongTermRefPicSpsSnapshot {
+                lt_ref_pic_poc_lsb_sps: 9,
+                used_by_curr_pic_lt_sps_flag: false,
+            },
+        ])
+        .expect("H.265 SPS long-term refs should map")
+        .expect("non-empty refs should produce STD payload");
+
+        assert_eq!(std_refs.used_by_curr_pic_lt_sps_flag, 0b01);
+        assert_eq!(std_refs.lt_ref_pic_poc_lsb_sps[0], 4);
+        assert_eq!(std_refs.lt_ref_pic_poc_lsb_sps[1], 9);
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn plans_h265_long_term_reference_by_poc_lsb() {
+        let mut access_units = vec![
+            h265_test_access_unit(0, 0, true, &[]),
+            h265_test_access_unit(1, 4, false, &[]),
+            h265_test_access_unit(2, 8, false, &[]),
+        ];
+        access_units[2]
+            .first_slice
+            .as_mut()
+            .unwrap()
+            .long_term_references = vec![NativeVulkanH265LongTermReferenceSnapshot {
+            from_sps: false,
+            lt_idx_sps: None,
+            poc_lsb: 4,
+            used_by_current: true,
+            delta_poc_msb_present_flag: false,
+            delta_poc_msb_cycle_lt: None,
+        }];
+
+        let plan = native_vulkan_h265_decode_reference_plan(&access_units, 3, 16);
+
+        assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
+        assert_eq!(plan[2].references.len(), 1);
+        assert_eq!(plan[2].references[0].poc, 4);
+        assert_eq!(plan[2].references[0].delta_poc, -4);
+        assert!(plan[2].references[0].used_for_long_term_reference);
+        assert_eq!(plan[2].references[0].source_access_unit_index, Some(1));
+        assert_eq!(plan[2].references[0].dpb_slot, Some(1));
+
+        let available_references = plan[2].references.iter().collect::<Vec<_>>();
+        let st_before = native_vulkan_h265_ref_pic_set_st_curr_before(2, &available_references)
+            .expect("short-term before refs should map");
+        let lt_curr = native_vulkan_h265_ref_pic_set_lt_curr(2, &available_references)
+            .expect("long-term refs should map");
+        assert_eq!(st_before, [0xff; 8]);
+        assert_eq!(lt_curr[0], 1);
+        assert_eq!(&lt_curr[1..], &[0xff; 7]);
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
