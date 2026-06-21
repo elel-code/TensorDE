@@ -852,6 +852,7 @@ pub struct NativeVulkanVideoBitstreamExtractSnapshot {
     pub h264_idr_count: u32,
     pub h264_slice_count: u32,
     pub h264_parameter_sets_present: bool,
+    pub h264_parameter_sets: Option<NativeVulkanH264ParameterSetSnapshot>,
     pub h265_vps_count: u32,
     pub h265_sps_count: u32,
     pub h265_pps_count: u32,
@@ -1081,6 +1082,81 @@ pub struct NativeVulkanH265DecodeReferenceSnapshot {
     pub available: bool,
     pub source_access_unit_index: Option<u32>,
     pub dpb_slot: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanH264ParameterSetSnapshot {
+    pub parser: &'static str,
+    pub sps: NativeVulkanH264SpsSnapshot,
+    pub pps: NativeVulkanH264PpsSnapshot,
+    pub requested_profile_compatible: bool,
+    pub vulkan_std_session_parameters_ready: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanH264SpsSnapshot {
+    pub id: u32,
+    pub profile_idc: u8,
+    pub profile_label: &'static str,
+    pub constraint_set0_flag: bool,
+    pub constraint_set1_flag: bool,
+    pub constraint_set2_flag: bool,
+    pub constraint_set3_flag: bool,
+    pub constraint_set4_flag: bool,
+    pub constraint_set5_flag: bool,
+    pub level_idc: u8,
+    pub level_label: Option<&'static str>,
+    pub chroma_format_idc: u32,
+    pub chroma_format_label: &'static str,
+    pub separate_colour_plane_flag: bool,
+    pub bit_depth_luma_minus8: u32,
+    pub bit_depth_chroma_minus8: u32,
+    pub qpprime_y_zero_transform_bypass_flag: bool,
+    pub seq_scaling_matrix_present_flag: bool,
+    pub log2_max_frame_num_minus4: u32,
+    pub pic_order_cnt_type: u32,
+    pub log2_max_pic_order_cnt_lsb_minus4: u32,
+    pub delta_pic_order_always_zero_flag: bool,
+    pub offset_for_non_ref_pic: i32,
+    pub offset_for_top_to_bottom_field: i32,
+    pub offset_for_ref_frame: Vec<i32>,
+    pub max_num_ref_frames: u32,
+    pub gaps_in_frame_num_value_allowed_flag: bool,
+    pub pic_width_in_mbs_minus1: u32,
+    pub pic_height_in_map_units_minus1: u32,
+    pub frame_mbs_only_flag: bool,
+    pub mb_adaptive_frame_field_flag: bool,
+    pub direct_8x8_inference_flag: bool,
+    pub frame_cropping_flag: bool,
+    pub frame_crop_left_offset: u32,
+    pub frame_crop_right_offset: u32,
+    pub frame_crop_top_offset: u32,
+    pub frame_crop_bottom_offset: u32,
+    pub vui_parameters_present_flag: bool,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanH264PpsSnapshot {
+    pub id: u32,
+    pub sps_id: u32,
+    pub entropy_coding_mode_flag: bool,
+    pub bottom_field_pic_order_in_frame_present_flag: bool,
+    pub num_slice_groups_minus1: u32,
+    pub num_ref_idx_l0_default_active_minus1: u32,
+    pub num_ref_idx_l1_default_active_minus1: u32,
+    pub weighted_pred_flag: bool,
+    pub weighted_bipred_idc: u32,
+    pub pic_init_qp_minus26: i32,
+    pub pic_init_qs_minus26: i32,
+    pub chroma_qp_index_offset: i32,
+    pub deblocking_filter_control_present_flag: bool,
+    pub constrained_intra_pred_flag: bool,
+    pub redundant_pic_cnt_present_flag: bool,
+    pub transform_8x8_mode_flag: bool,
+    pub pic_scaling_matrix_present_flag: bool,
+    pub second_chroma_qp_index_offset: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -9194,7 +9270,9 @@ fn native_vulkan_video_session_create_and_bind(
             );
         }
         let session_parameters_requested = match options.codec {
-            NativeVulkanVideoSessionCodec::H264High8 => false,
+            NativeVulkanVideoSessionCodec::H264High8 => bitstream_extract
+                .as_ref()
+                .is_some_and(|extract| extract.snapshot.h264_parameter_sets.is_some()),
             NativeVulkanVideoSessionCodec::H265Main8
             | NativeVulkanVideoSessionCodec::H265Main10 => bitstream_extract
                 .as_ref()
@@ -9207,7 +9285,22 @@ fn native_vulkan_video_session_create_and_bind(
         };
         let mut session_parameters_error = None::<String>;
         let session_parameters = match options.codec {
-            NativeVulkanVideoSessionCodec::H264High8 => None,
+            NativeVulkanVideoSessionCodec::H264High8 => {
+                match bitstream_extract
+                    .as_ref()
+                    .and_then(|extract| extract.snapshot.h264_parameter_sets.as_ref())
+                    .map(|parameter_sets| {
+                        native_vulkan_create_h264_video_session_parameters(
+                            &video_queue_device,
+                            session,
+                            parameter_sets,
+                        )
+                    }) {
+                    Some(Ok(parameters)) => Some(parameters),
+                    Some(Err(err)) => return Err(err),
+                    None => None,
+                }
+            }
             NativeVulkanVideoSessionCodec::H265Main8
             | NativeVulkanVideoSessionCodec::H265Main10 => {
                 match bitstream_extract
@@ -14490,6 +14583,8 @@ fn native_vulkan_collect_h264_bitstream_samples(
             "H.264 bitstream probe did not find SPS/PPS in {sample_count} samples"
         )));
     }
+    let parameter_sets = native_vulkan_parse_h264_parameter_sets(&selected.bytes)
+        .map_err(NativeVulkanError::Video)?;
 
     Ok(NativeVulkanVideoBitstreamExtract {
         selected_access_unit: selected.bytes.clone(),
@@ -14516,6 +14611,7 @@ fn native_vulkan_collect_h264_bitstream_samples(
             h264_idr_count: selected.stats.idr_count,
             h264_slice_count: selected.stats.slice_count,
             h264_parameter_sets_present: selected.stats.parameter_sets_present(),
+            h264_parameter_sets: Some(parameter_sets),
             h265_vps_count: 0,
             h265_sps_count: 0,
             h265_pps_count: 0,
@@ -14689,6 +14785,7 @@ fn native_vulkan_collect_h265_bitstream_samples(
             h264_idr_count: 0,
             h264_slice_count: 0,
             h264_parameter_sets_present: false,
+            h264_parameter_sets: None,
             h265_vps_count: selected.stats.vps_count,
             h265_sps_count: selected.stats.sps_count,
             h265_pps_count: selected.stats.pps_count,
@@ -14838,6 +14935,7 @@ fn native_vulkan_collect_av1_bitstream_samples(
             h264_idr_count: 0,
             h264_slice_count: 0,
             h264_parameter_sets_present: false,
+            h264_parameter_sets: None,
             h265_vps_count: 0,
             h265_sps_count: 0,
             h265_pps_count: 0,
@@ -15057,6 +15155,7 @@ fn native_vulkan_collect_h265_bitstream_samples_spooled(
         h264_idr_count: 0,
         h264_slice_count: 0,
         h264_parameter_sets_present: false,
+        h264_parameter_sets: None,
         h265_vps_count: selected.stats.vps_count,
         h265_sps_count: selected.stats.sps_count,
         h265_pps_count: selected.stats.pps_count,
@@ -15852,6 +15951,678 @@ fn native_vulkan_h265_vui_snapshot(vui: &NativeVulkanH265ParsedVui) -> NativeVul
         max_bits_per_min_cu_denom: vui.max_bits_per_min_cu_denom,
         log2_max_mv_length_horizontal: vui.log2_max_mv_length_horizontal,
         log2_max_mv_length_vertical: vui.log2_max_mv_length_vertical,
+    }
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_parse_h264_parameter_sets(
+    access_unit: &[u8],
+) -> Result<NativeVulkanH264ParameterSetSnapshot, String> {
+    let nal_units = native_vulkan_h264_nal_payloads(access_unit);
+    let sps_payload = nal_units
+        .iter()
+        .find(|unit| unit.nal_type == 7)
+        .ok_or_else(|| "H.264 access unit has no SPS NAL".to_owned())?;
+    let pps_payload = nal_units
+        .iter()
+        .find(|unit| unit.nal_type == 8)
+        .ok_or_else(|| "H.264 access unit has no PPS NAL".to_owned())?;
+
+    let sps = native_vulkan_parse_h264_sps(sps_payload.payload)?;
+    let pps = native_vulkan_parse_h264_pps(pps_payload.payload, &sps)?;
+    let requested_profile_compatible = sps.profile_idc == 100
+        && sps.chroma_format_idc == 1
+        && !sps.separate_colour_plane_flag
+        && sps.bit_depth_luma_minus8 == 0
+        && sps.bit_depth_chroma_minus8 == 0
+        && sps.frame_mbs_only_flag;
+    let vulkan_std_session_parameters_ready = requested_profile_compatible
+        && sps.id == pps.sps_id
+        && pps.num_slice_groups_minus1 == 0
+        && sps.pic_order_cnt_type <= 2
+        && sps.offset_for_ref_frame.len() <= u8::MAX as usize
+        && !sps.seq_scaling_matrix_present_flag
+        && !pps.pic_scaling_matrix_present_flag;
+
+    Ok(NativeVulkanH264ParameterSetSnapshot {
+        parser: "native-rust-h264-sps-pps",
+        sps,
+        pps,
+        requested_profile_compatible,
+        vulkan_std_session_parameters_ready,
+    })
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_parse_h264_sps(payload: &[u8]) -> Result<NativeVulkanH264SpsSnapshot, String> {
+    let rbsp = native_vulkan_h264_rbsp(payload)?;
+    if rbsp.len() < 4 {
+        return Err("H.264 SPS NAL is too short".to_owned());
+    }
+    let mut bits = NativeVulkanH264BitReader::new(&rbsp[1..]);
+    let profile_idc = native_vulkan_h264_u8(bits.read_bits(8, "profile_idc")?, "profile_idc")?;
+    let constraint_flags = native_vulkan_h264_u8(
+        bits.read_bits(8, "constraint_set_flags")?,
+        "constraint_set_flags",
+    )?;
+    let constraint_set0_flag = constraint_flags & 0x80 != 0;
+    let constraint_set1_flag = constraint_flags & 0x40 != 0;
+    let constraint_set2_flag = constraint_flags & 0x20 != 0;
+    let constraint_set3_flag = constraint_flags & 0x10 != 0;
+    let constraint_set4_flag = constraint_flags & 0x08 != 0;
+    let constraint_set5_flag = constraint_flags & 0x04 != 0;
+    let level_idc = native_vulkan_h264_u8(bits.read_bits(8, "level_idc")?, "level_idc")?;
+    let id = bits.read_ue("seq_parameter_set_id")?;
+
+    let mut chroma_format_idc = 1;
+    let mut separate_colour_plane_flag = false;
+    let mut bit_depth_luma_minus8 = 0;
+    let mut bit_depth_chroma_minus8 = 0;
+    let mut qpprime_y_zero_transform_bypass_flag = false;
+    let mut seq_scaling_matrix_present_flag = false;
+    if native_vulkan_h264_profile_has_high_syntax(profile_idc) {
+        chroma_format_idc = bits.read_ue("chroma_format_idc")?;
+        if chroma_format_idc > 3 {
+            return Err(format!(
+                "H.264 chroma_format_idc {chroma_format_idc} is not supported"
+            ));
+        }
+        if chroma_format_idc == 3 {
+            separate_colour_plane_flag = bits.read_bool("separate_colour_plane_flag")?;
+        }
+        bit_depth_luma_minus8 = bits.read_ue("bit_depth_luma_minus8")?;
+        bit_depth_chroma_minus8 = bits.read_ue("bit_depth_chroma_minus8")?;
+        qpprime_y_zero_transform_bypass_flag =
+            bits.read_bool("qpprime_y_zero_transform_bypass_flag")?;
+        seq_scaling_matrix_present_flag = bits.read_bool("seq_scaling_matrix_present_flag")?;
+        if seq_scaling_matrix_present_flag {
+            let scaling_list_count = if chroma_format_idc != 3 { 8 } else { 12 };
+            for index in 0..scaling_list_count {
+                if bits.read_bool("seq_scaling_list_present_flag")? {
+                    let size = if index < 6 { 16 } else { 64 };
+                    native_vulkan_h264_skip_scaling_list(&mut bits, size)?;
+                }
+            }
+        }
+    }
+
+    let log2_max_frame_num_minus4 = bits.read_ue("log2_max_frame_num_minus4")?;
+    let pic_order_cnt_type = bits.read_ue("pic_order_cnt_type")?;
+    let mut log2_max_pic_order_cnt_lsb_minus4 = 0;
+    let mut delta_pic_order_always_zero_flag = false;
+    let mut offset_for_non_ref_pic = 0;
+    let mut offset_for_top_to_bottom_field = 0;
+    let mut offset_for_ref_frame = Vec::new();
+    match pic_order_cnt_type {
+        0 => {
+            log2_max_pic_order_cnt_lsb_minus4 =
+                bits.read_ue("log2_max_pic_order_cnt_lsb_minus4")?;
+        }
+        1 => {
+            delta_pic_order_always_zero_flag =
+                bits.read_bool("delta_pic_order_always_zero_flag")?;
+            offset_for_non_ref_pic = bits.read_se("offset_for_non_ref_pic")?;
+            offset_for_top_to_bottom_field = bits.read_se("offset_for_top_to_bottom_field")?;
+            let num_ref_frames_in_pic_order_cnt_cycle =
+                bits.read_ue("num_ref_frames_in_pic_order_cnt_cycle")?;
+            if num_ref_frames_in_pic_order_cnt_cycle > u8::MAX as u32 {
+                return Err(format!(
+                    "H.264 num_ref_frames_in_pic_order_cnt_cycle {num_ref_frames_in_pic_order_cnt_cycle} exceeds u8 range"
+                ));
+            }
+            for _ in 0..num_ref_frames_in_pic_order_cnt_cycle {
+                offset_for_ref_frame.push(bits.read_se("offset_for_ref_frame")?);
+            }
+        }
+        2 => {}
+        _ => {
+            return Err(format!(
+                "H.264 pic_order_cnt_type {pic_order_cnt_type} is not supported"
+            ));
+        }
+    }
+
+    let max_num_ref_frames = bits.read_ue("max_num_ref_frames")?;
+    let gaps_in_frame_num_value_allowed_flag =
+        bits.read_bool("gaps_in_frame_num_value_allowed_flag")?;
+    let pic_width_in_mbs_minus1 = bits.read_ue("pic_width_in_mbs_minus1")?;
+    let pic_height_in_map_units_minus1 = bits.read_ue("pic_height_in_map_units_minus1")?;
+    let frame_mbs_only_flag = bits.read_bool("frame_mbs_only_flag")?;
+    let mb_adaptive_frame_field_flag = if frame_mbs_only_flag {
+        false
+    } else {
+        bits.read_bool("mb_adaptive_frame_field_flag")?
+    };
+    let direct_8x8_inference_flag = bits.read_bool("direct_8x8_inference_flag")?;
+    let frame_cropping_flag = bits.read_bool("frame_cropping_flag")?;
+    let (
+        frame_crop_left_offset,
+        frame_crop_right_offset,
+        frame_crop_top_offset,
+        frame_crop_bottom_offset,
+    ) = if frame_cropping_flag {
+        (
+            bits.read_ue("frame_crop_left_offset")?,
+            bits.read_ue("frame_crop_right_offset")?,
+            bits.read_ue("frame_crop_top_offset")?,
+            bits.read_ue("frame_crop_bottom_offset")?,
+        )
+    } else {
+        (0, 0, 0, 0)
+    };
+    let vui_parameters_present_flag = bits.read_bool("vui_parameters_present_flag")?;
+    let (width, height) = native_vulkan_h264_sps_dimensions(
+        chroma_format_idc,
+        separate_colour_plane_flag,
+        pic_width_in_mbs_minus1,
+        pic_height_in_map_units_minus1,
+        frame_mbs_only_flag,
+        frame_crop_left_offset,
+        frame_crop_right_offset,
+        frame_crop_top_offset,
+        frame_crop_bottom_offset,
+    )?;
+
+    Ok(NativeVulkanH264SpsSnapshot {
+        id,
+        profile_idc,
+        profile_label: native_vulkan_h264_profile_idc_label(profile_idc),
+        constraint_set0_flag,
+        constraint_set1_flag,
+        constraint_set2_flag,
+        constraint_set3_flag,
+        constraint_set4_flag,
+        constraint_set5_flag,
+        level_idc,
+        level_label: native_vulkan_h264_level_idc_byte_label(level_idc),
+        chroma_format_idc,
+        chroma_format_label: native_vulkan_h264_chroma_format_label(chroma_format_idc),
+        separate_colour_plane_flag,
+        bit_depth_luma_minus8,
+        bit_depth_chroma_minus8,
+        qpprime_y_zero_transform_bypass_flag,
+        seq_scaling_matrix_present_flag,
+        log2_max_frame_num_minus4,
+        pic_order_cnt_type,
+        log2_max_pic_order_cnt_lsb_minus4,
+        delta_pic_order_always_zero_flag,
+        offset_for_non_ref_pic,
+        offset_for_top_to_bottom_field,
+        offset_for_ref_frame,
+        max_num_ref_frames,
+        gaps_in_frame_num_value_allowed_flag,
+        pic_width_in_mbs_minus1,
+        pic_height_in_map_units_minus1,
+        frame_mbs_only_flag,
+        mb_adaptive_frame_field_flag,
+        direct_8x8_inference_flag,
+        frame_cropping_flag,
+        frame_crop_left_offset,
+        frame_crop_right_offset,
+        frame_crop_top_offset,
+        frame_crop_bottom_offset,
+        vui_parameters_present_flag,
+        width,
+        height,
+    })
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_parse_h264_pps(
+    payload: &[u8],
+    sps: &NativeVulkanH264SpsSnapshot,
+) -> Result<NativeVulkanH264PpsSnapshot, String> {
+    let rbsp = native_vulkan_h264_rbsp(payload)?;
+    if rbsp.len() < 2 {
+        return Err("H.264 PPS NAL is too short".to_owned());
+    }
+    let mut bits = NativeVulkanH264BitReader::new(&rbsp[1..]);
+    let id = bits.read_ue("pic_parameter_set_id")?;
+    let sps_id = bits.read_ue("seq_parameter_set_id")?;
+    let entropy_coding_mode_flag = bits.read_bool("entropy_coding_mode_flag")?;
+    let bottom_field_pic_order_in_frame_present_flag =
+        bits.read_bool("bottom_field_pic_order_in_frame_present_flag")?;
+    let num_slice_groups_minus1 = bits.read_ue("num_slice_groups_minus1")?;
+    if num_slice_groups_minus1 > 0 {
+        return Err(format!(
+            "H.264 num_slice_groups_minus1 {num_slice_groups_minus1} is not supported"
+        ));
+    }
+    let num_ref_idx_l0_default_active_minus1 =
+        bits.read_ue("num_ref_idx_l0_default_active_minus1")?;
+    let num_ref_idx_l1_default_active_minus1 =
+        bits.read_ue("num_ref_idx_l1_default_active_minus1")?;
+    let weighted_pred_flag = bits.read_bool("weighted_pred_flag")?;
+    let weighted_bipred_idc = bits.read_bits(2, "weighted_bipred_idc")?;
+    let pic_init_qp_minus26 = bits.read_se("pic_init_qp_minus26")?;
+    let pic_init_qs_minus26 = bits.read_se("pic_init_qs_minus26")?;
+    let chroma_qp_index_offset = bits.read_se("chroma_qp_index_offset")?;
+    let deblocking_filter_control_present_flag =
+        bits.read_bool("deblocking_filter_control_present_flag")?;
+    let constrained_intra_pred_flag = bits.read_bool("constrained_intra_pred_flag")?;
+    let redundant_pic_cnt_present_flag = bits.read_bool("redundant_pic_cnt_present_flag")?;
+    let mut transform_8x8_mode_flag = false;
+    let mut pic_scaling_matrix_present_flag = false;
+    let mut second_chroma_qp_index_offset = chroma_qp_index_offset;
+    if native_vulkan_rbsp_more_data(&rbsp[1..], bits.bit_offset()) {
+        transform_8x8_mode_flag = bits.read_bool("transform_8x8_mode_flag")?;
+        pic_scaling_matrix_present_flag = bits.read_bool("pic_scaling_matrix_present_flag")?;
+        if pic_scaling_matrix_present_flag {
+            let scaling_list_count = 6 + if transform_8x8_mode_flag {
+                if sps.chroma_format_idc != 3 { 2 } else { 6 }
+            } else {
+                0
+            };
+            for index in 0..scaling_list_count {
+                if bits.read_bool("pic_scaling_list_present_flag")? {
+                    let size = if index < 6 { 16 } else { 64 };
+                    native_vulkan_h264_skip_scaling_list(&mut bits, size)?;
+                }
+            }
+        }
+        if native_vulkan_rbsp_more_data(&rbsp[1..], bits.bit_offset()) {
+            second_chroma_qp_index_offset = bits.read_se("second_chroma_qp_index_offset")?;
+        }
+    }
+
+    Ok(NativeVulkanH264PpsSnapshot {
+        id,
+        sps_id,
+        entropy_coding_mode_flag,
+        bottom_field_pic_order_in_frame_present_flag,
+        num_slice_groups_minus1,
+        num_ref_idx_l0_default_active_minus1,
+        num_ref_idx_l1_default_active_minus1,
+        weighted_pred_flag,
+        weighted_bipred_idc,
+        pic_init_qp_minus26,
+        pic_init_qs_minus26,
+        chroma_qp_index_offset,
+        deblocking_filter_control_present_flag,
+        constrained_intra_pred_flag,
+        redundant_pic_cnt_present_flag,
+        transform_8x8_mode_flag,
+        pic_scaling_matrix_present_flag,
+        second_chroma_qp_index_offset,
+    })
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h264_sps_dimensions(
+    chroma_format_idc: u32,
+    separate_colour_plane_flag: bool,
+    pic_width_in_mbs_minus1: u32,
+    pic_height_in_map_units_minus1: u32,
+    frame_mbs_only_flag: bool,
+    frame_crop_left_offset: u32,
+    frame_crop_right_offset: u32,
+    frame_crop_top_offset: u32,
+    frame_crop_bottom_offset: u32,
+) -> Result<(u32, u32), String> {
+    let chroma_array_type = if separate_colour_plane_flag {
+        0
+    } else {
+        chroma_format_idc
+    };
+    let (sub_width_c, sub_height_c): (u32, u32) = match chroma_format_idc {
+        0 => (1, 1),
+        1 => (2, 2),
+        2 => (2, 1),
+        3 => (1, 1),
+        _ => {
+            return Err(format!(
+                "H.264 chroma_format_idc {chroma_format_idc} is not supported"
+            ));
+        }
+    };
+    let frame_height_in_mbs_factor = if frame_mbs_only_flag { 1 } else { 2 };
+    let (crop_unit_x, crop_unit_y) = if chroma_array_type == 0 {
+        (1, frame_height_in_mbs_factor)
+    } else {
+        (
+            sub_width_c,
+            sub_height_c.saturating_mul(frame_height_in_mbs_factor),
+        )
+    };
+    let coded_width = pic_width_in_mbs_minus1
+        .checked_add(1)
+        .and_then(|mbs| mbs.checked_mul(16))
+        .ok_or_else(|| "H.264 SPS width overflow".to_owned())?;
+    let coded_height = pic_height_in_map_units_minus1
+        .checked_add(1)
+        .and_then(|map_units| map_units.checked_mul(frame_height_in_mbs_factor))
+        .and_then(|mbs| mbs.checked_mul(16))
+        .ok_or_else(|| "H.264 SPS height overflow".to_owned())?;
+    let crop_width = frame_crop_left_offset
+        .checked_add(frame_crop_right_offset)
+        .and_then(|crop| crop.checked_mul(crop_unit_x))
+        .ok_or_else(|| "H.264 SPS crop width overflow".to_owned())?;
+    let crop_height = frame_crop_top_offset
+        .checked_add(frame_crop_bottom_offset)
+        .and_then(|crop| crop.checked_mul(crop_unit_y))
+        .ok_or_else(|| "H.264 SPS crop height overflow".to_owned())?;
+    Ok((
+        coded_width.saturating_sub(crop_width),
+        coded_height.saturating_sub(crop_height),
+    ))
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h264_skip_scaling_list(
+    bits: &mut NativeVulkanH264BitReader<'_>,
+    size: u32,
+) -> Result<(), String> {
+    let mut last_scale = 8i32;
+    let mut next_scale = 8i32;
+    for _ in 0..size {
+        if next_scale != 0 {
+            let delta_scale = bits.read_se("delta_scale")?;
+            next_scale = (last_scale + delta_scale + 256) % 256;
+        }
+        if next_scale != 0 {
+            last_scale = next_scale;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h264_profile_has_high_syntax(profile_idc: u8) -> bool {
+    matches!(
+        profile_idc,
+        100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
+    )
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h264_profile_idc_label(profile_idc: u8) -> &'static str {
+    match profile_idc {
+        66 => "baseline",
+        77 => "main",
+        88 => "extended",
+        100 => "high",
+        110 => "high-10",
+        122 => "high-422",
+        244 => "high-444-predictive",
+        _ => "unknown",
+    }
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h264_chroma_format_label(chroma_format_idc: u32) -> &'static str {
+    match chroma_format_idc {
+        0 => "monochrome",
+        1 => "4:2:0",
+        2 => "4:2:2",
+        3 => "4:4:4",
+        _ => "unknown",
+    }
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h264_level_idc_byte_label(level_idc: u8) -> Option<&'static str> {
+    match level_idc {
+        10 => Some("1.0"),
+        11 => Some("1.1"),
+        12 => Some("1.2"),
+        13 => Some("1.3"),
+        20 => Some("2.0"),
+        21 => Some("2.1"),
+        22 => Some("2.2"),
+        30 => Some("3.0"),
+        31 => Some("3.1"),
+        32 => Some("3.2"),
+        40 => Some("4.0"),
+        41 => Some("4.1"),
+        42 => Some("4.2"),
+        50 => Some("5.0"),
+        51 => Some("5.1"),
+        52 => Some("5.2"),
+        60 => Some("6.0"),
+        61 => Some("6.1"),
+        62 => Some("6.2"),
+        _ => None,
+    }
+}
+
+fn native_vulkan_h264_u8(value: u32, label: &'static str) -> Result<u8, String> {
+    u8::try_from(value).map_err(|_| format!("{label}={value} exceeds u8 range"))
+}
+
+fn native_vulkan_h264_i8(value: i32, label: &'static str) -> Result<i8, String> {
+    i8::try_from(value).map_err(|_| format!("{label}={value} exceeds i8 range"))
+}
+
+fn native_vulkan_h264_std_profile_idc(
+    profile_idc: u8,
+) -> Result<vk::native::StdVideoH264ProfileIdc, NativeVulkanError> {
+    match profile_idc {
+        66 => Ok(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_BASELINE),
+        77 => Ok(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_MAIN),
+        100 => Ok(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH),
+        244 => {
+            Ok(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH_444_PREDICTIVE)
+        }
+        _ => Err(NativeVulkanError::Video(format!(
+            "H.264 profile_idc {profile_idc} is not supported by the Vulkan STD mapper"
+        ))),
+    }
+}
+
+fn native_vulkan_h264_std_level_idc(
+    level_idc: u8,
+) -> Result<vk::native::StdVideoH264LevelIdc, NativeVulkanError> {
+    let level = match level_idc {
+        10 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_1_0,
+        11 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_1_1,
+        12 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_1_2,
+        13 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_1_3,
+        20 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_2_0,
+        21 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_2_1,
+        22 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_2_2,
+        30 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_3_0,
+        31 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_3_1,
+        32 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_3_2,
+        40 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_4_0,
+        41 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_4_1,
+        42 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_4_2,
+        50 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_5_0,
+        51 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_5_1,
+        52 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_5_2,
+        60 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_6_0,
+        61 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_6_1,
+        62 => vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_6_2,
+        _ => {
+            return Err(NativeVulkanError::Video(format!(
+                "H.264 level_idc {level_idc} is not supported by the Vulkan STD mapper"
+            )));
+        }
+    };
+    Ok(level)
+}
+
+fn native_vulkan_h264_std_chroma_format_idc(
+    chroma_format_idc: u32,
+) -> Result<vk::native::StdVideoH264ChromaFormatIdc, NativeVulkanError> {
+    match chroma_format_idc {
+        0 => {
+            Ok(vk::native::StdVideoH264ChromaFormatIdc_STD_VIDEO_H264_CHROMA_FORMAT_IDC_MONOCHROME)
+        }
+        1 => Ok(vk::native::StdVideoH264ChromaFormatIdc_STD_VIDEO_H264_CHROMA_FORMAT_IDC_420),
+        2 => Ok(vk::native::StdVideoH264ChromaFormatIdc_STD_VIDEO_H264_CHROMA_FORMAT_IDC_422),
+        3 => Ok(vk::native::StdVideoH264ChromaFormatIdc_STD_VIDEO_H264_CHROMA_FORMAT_IDC_444),
+        _ => Err(NativeVulkanError::Video(format!(
+            "H.264 chroma_format_idc {chroma_format_idc} is not supported by the Vulkan STD mapper"
+        ))),
+    }
+}
+
+fn native_vulkan_h264_std_poc_type(
+    pic_order_cnt_type: u32,
+) -> Result<vk::native::StdVideoH264PocType, NativeVulkanError> {
+    match pic_order_cnt_type {
+        0 => Ok(vk::native::StdVideoH264PocType_STD_VIDEO_H264_POC_TYPE_0),
+        1 => Ok(vk::native::StdVideoH264PocType_STD_VIDEO_H264_POC_TYPE_1),
+        2 => Ok(vk::native::StdVideoH264PocType_STD_VIDEO_H264_POC_TYPE_2),
+        _ => Err(NativeVulkanError::Video(format!(
+            "H.264 pic_order_cnt_type {pic_order_cnt_type} is not supported by the Vulkan STD mapper"
+        ))),
+    }
+}
+
+fn native_vulkan_h264_std_weighted_bipred_idc(
+    weighted_bipred_idc: u32,
+) -> Result<vk::native::StdVideoH264WeightedBipredIdc, NativeVulkanError> {
+    match weighted_bipred_idc {
+        0 => Ok(
+            vk::native::StdVideoH264WeightedBipredIdc_STD_VIDEO_H264_WEIGHTED_BIPRED_IDC_DEFAULT,
+        ),
+        1 => Ok(
+            vk::native::StdVideoH264WeightedBipredIdc_STD_VIDEO_H264_WEIGHTED_BIPRED_IDC_EXPLICIT,
+        ),
+        2 => Ok(
+            vk::native::StdVideoH264WeightedBipredIdc_STD_VIDEO_H264_WEIGHTED_BIPRED_IDC_IMPLICIT,
+        ),
+        _ => Err(NativeVulkanError::Video(format!(
+            "H.264 weighted_bipred_idc {weighted_bipred_idc} is not supported by the Vulkan STD mapper"
+        ))),
+    }
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h264_rbsp(payload: &[u8]) -> Result<Vec<u8>, String> {
+    if payload.is_empty() {
+        return Err("H.264 NAL payload is empty".to_owned());
+    }
+    let mut rbsp = Vec::with_capacity(payload.len());
+    let mut zero_count = 0u8;
+    for byte in payload.iter().copied() {
+        if zero_count == 2 && byte == 0x03 {
+            zero_count = 0;
+            continue;
+        }
+        rbsp.push(byte);
+        if byte == 0 {
+            zero_count = zero_count.saturating_add(1).min(2);
+        } else {
+            zero_count = 0;
+        }
+    }
+    Ok(rbsp)
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_rbsp_more_data(bytes: &[u8], bit_offset: usize) -> bool {
+    let total_bits = bytes.len().saturating_mul(8);
+    if bit_offset >= total_bits {
+        return false;
+    }
+    let mut last_one_bit = None;
+    for bit in bit_offset..total_bits {
+        let byte = bytes[bit / 8];
+        let shift = 7 - (bit % 8);
+        if ((byte >> shift) & 1) != 0 {
+            last_one_bit = Some(bit);
+        }
+    }
+    last_one_bit.is_some_and(|last| bit_offset < last)
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[derive(Debug, Clone, Copy)]
+struct NativeVulkanH264NalPayload<'a> {
+    nal_type: u8,
+    payload: &'a [u8],
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h264_nal_payloads(bytes: &[u8]) -> Vec<NativeVulkanH264NalPayload<'_>> {
+    let mut payloads = Vec::new();
+    let mut offset = 0usize;
+    while let Some((_, payload_offset)) = native_vulkan_next_annex_b_start_code(bytes, offset) {
+        let next_start = native_vulkan_next_annex_b_start_code(bytes, payload_offset)
+            .map(|(next_start, _)| next_start)
+            .unwrap_or(bytes.len());
+        if payload_offset < next_start
+            && let Some(nal_type) = bytes.get(payload_offset).map(|header| header & 0x1f)
+        {
+            payloads.push(NativeVulkanH264NalPayload {
+                nal_type,
+                payload: &bytes[payload_offset..next_start],
+            });
+        }
+        offset = next_start;
+    }
+    payloads
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+struct NativeVulkanH264BitReader<'a> {
+    bytes: &'a [u8],
+    bit_offset: usize,
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+impl<'a> NativeVulkanH264BitReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            bytes,
+            bit_offset: 0,
+        }
+    }
+
+    fn bit_offset(&self) -> usize {
+        self.bit_offset
+    }
+
+    fn read_bool(&mut self, label: &'static str) -> Result<bool, String> {
+        Ok(self.read_bits(1, label)? != 0)
+    }
+
+    fn read_bits(&mut self, count: u32, label: &'static str) -> Result<u32, String> {
+        if count > 32 {
+            return Err(format!("{label} requested too many bits: {count}"));
+        }
+        let end = self
+            .bit_offset
+            .checked_add(count as usize)
+            .ok_or_else(|| format!("{label} bit offset overflow"))?;
+        if end > self.bytes.len() * 8 {
+            return Err(format!("{label} exceeds H.264 RBSP length"));
+        }
+        let mut value = 0u32;
+        for _ in 0..count {
+            let byte = self.bytes[self.bit_offset / 8];
+            let shift = 7 - (self.bit_offset % 8);
+            value = (value << 1) | u32::from((byte >> shift) & 1);
+            self.bit_offset += 1;
+        }
+        Ok(value)
+    }
+
+    fn read_ue(&mut self, label: &'static str) -> Result<u32, String> {
+        let mut leading_zero_bits = 0u32;
+        while !self.read_bool(label)? {
+            leading_zero_bits += 1;
+            if leading_zero_bits > 31 {
+                return Err(format!("{label} Exp-Golomb code is too large"));
+            }
+        }
+        if leading_zero_bits == 0 {
+            return Ok(0);
+        }
+        let suffix = self.read_bits(leading_zero_bits, label)?;
+        Ok((1u32 << leading_zero_bits) - 1 + suffix)
+    }
+
+    fn read_se(&mut self, label: &'static str) -> Result<i32, String> {
+        let value = self.read_ue(label)?;
+        let signed = value.div_ceil(2) as i32;
+        if value % 2 == 0 {
+            Ok(-signed)
+        } else {
+            Ok(signed)
+        }
     }
 }
 
@@ -18194,6 +18965,211 @@ fn native_vulkan_av1_sequence_header_codec_label(
         10 => "av1-main-10",
         _ => "av1-main-8",
     }
+}
+
+fn native_vulkan_create_h264_video_session_parameters(
+    video_queue_device: &ash::khr::video_queue::Device,
+    session: vk::VideoSessionKHR,
+    parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
+) -> Result<NativeVulkanVideoSessionParameters, NativeVulkanError> {
+    if !parameter_sets.vulkan_std_session_parameters_ready {
+        return Err(NativeVulkanError::Video(
+            "H.264 parameter sets are not in the first supported Vulkan STD subset".to_owned(),
+        ));
+    }
+
+    let offset_for_ref_frame = parameter_sets.sps.offset_for_ref_frame.clone();
+    let offset_for_ref_frame_ptr = if offset_for_ref_frame.is_empty() {
+        ptr::null()
+    } else {
+        offset_for_ref_frame.as_ptr()
+    };
+    let sps = [vk::native::StdVideoH264SequenceParameterSet {
+        flags: vk::native::StdVideoH264SpsFlags {
+            _bitfield_align_1: [],
+            _bitfield_1: vk::native::StdVideoH264SpsFlags::new_bitfield_1(
+                native_vulkan_bool_u32(parameter_sets.sps.constraint_set0_flag),
+                native_vulkan_bool_u32(parameter_sets.sps.constraint_set1_flag),
+                native_vulkan_bool_u32(parameter_sets.sps.constraint_set2_flag),
+                native_vulkan_bool_u32(parameter_sets.sps.constraint_set3_flag),
+                native_vulkan_bool_u32(parameter_sets.sps.constraint_set4_flag),
+                native_vulkan_bool_u32(parameter_sets.sps.constraint_set5_flag),
+                native_vulkan_bool_u32(parameter_sets.sps.direct_8x8_inference_flag),
+                native_vulkan_bool_u32(parameter_sets.sps.mb_adaptive_frame_field_flag),
+                native_vulkan_bool_u32(parameter_sets.sps.frame_mbs_only_flag),
+                native_vulkan_bool_u32(parameter_sets.sps.delta_pic_order_always_zero_flag),
+                native_vulkan_bool_u32(parameter_sets.sps.separate_colour_plane_flag),
+                native_vulkan_bool_u32(parameter_sets.sps.gaps_in_frame_num_value_allowed_flag),
+                native_vulkan_bool_u32(parameter_sets.sps.qpprime_y_zero_transform_bypass_flag),
+                native_vulkan_bool_u32(parameter_sets.sps.frame_cropping_flag),
+                native_vulkan_bool_u32(parameter_sets.sps.seq_scaling_matrix_present_flag),
+                native_vulkan_bool_u32(parameter_sets.sps.vui_parameters_present_flag),
+            ),
+            __bindgen_padding_0: 0,
+        },
+        profile_idc: native_vulkan_h264_std_profile_idc(parameter_sets.sps.profile_idc)?,
+        level_idc: native_vulkan_h264_std_level_idc(parameter_sets.sps.level_idc)?,
+        chroma_format_idc: native_vulkan_h264_std_chroma_format_idc(
+            parameter_sets.sps.chroma_format_idc,
+        )?,
+        seq_parameter_set_id: native_vulkan_h264_u8(parameter_sets.sps.id, "seq_parameter_set_id")
+            .map_err(NativeVulkanError::Video)?,
+        bit_depth_luma_minus8: native_vulkan_h264_u8(
+            parameter_sets.sps.bit_depth_luma_minus8,
+            "bit_depth_luma_minus8",
+        )
+        .map_err(NativeVulkanError::Video)?,
+        bit_depth_chroma_minus8: native_vulkan_h264_u8(
+            parameter_sets.sps.bit_depth_chroma_minus8,
+            "bit_depth_chroma_minus8",
+        )
+        .map_err(NativeVulkanError::Video)?,
+        log2_max_frame_num_minus4: native_vulkan_h264_u8(
+            parameter_sets.sps.log2_max_frame_num_minus4,
+            "log2_max_frame_num_minus4",
+        )
+        .map_err(NativeVulkanError::Video)?,
+        pic_order_cnt_type: native_vulkan_h264_std_poc_type(parameter_sets.sps.pic_order_cnt_type)?,
+        offset_for_non_ref_pic: parameter_sets.sps.offset_for_non_ref_pic,
+        offset_for_top_to_bottom_field: parameter_sets.sps.offset_for_top_to_bottom_field,
+        log2_max_pic_order_cnt_lsb_minus4: native_vulkan_h264_u8(
+            parameter_sets.sps.log2_max_pic_order_cnt_lsb_minus4,
+            "log2_max_pic_order_cnt_lsb_minus4",
+        )
+        .map_err(NativeVulkanError::Video)?,
+        num_ref_frames_in_pic_order_cnt_cycle: native_vulkan_h264_u8(
+            parameter_sets.sps.offset_for_ref_frame.len() as u32,
+            "num_ref_frames_in_pic_order_cnt_cycle",
+        )
+        .map_err(NativeVulkanError::Video)?,
+        max_num_ref_frames: native_vulkan_h264_u8(
+            parameter_sets.sps.max_num_ref_frames,
+            "max_num_ref_frames",
+        )
+        .map_err(NativeVulkanError::Video)?,
+        reserved1: 0,
+        pic_width_in_mbs_minus1: parameter_sets.sps.pic_width_in_mbs_minus1,
+        pic_height_in_map_units_minus1: parameter_sets.sps.pic_height_in_map_units_minus1,
+        frame_crop_left_offset: parameter_sets.sps.frame_crop_left_offset,
+        frame_crop_right_offset: parameter_sets.sps.frame_crop_right_offset,
+        frame_crop_top_offset: parameter_sets.sps.frame_crop_top_offset,
+        frame_crop_bottom_offset: parameter_sets.sps.frame_crop_bottom_offset,
+        reserved2: 0,
+        pOffsetForRefFrame: offset_for_ref_frame_ptr,
+        pScalingLists: ptr::null(),
+        pSequenceParameterSetVui: ptr::null(),
+    }];
+
+    let pps = [vk::native::StdVideoH264PictureParameterSet {
+        flags: vk::native::StdVideoH264PpsFlags {
+            _bitfield_align_1: [],
+            _bitfield_1: vk::native::StdVideoH264PpsFlags::new_bitfield_1(
+                native_vulkan_bool_u32(parameter_sets.pps.transform_8x8_mode_flag),
+                native_vulkan_bool_u32(parameter_sets.pps.redundant_pic_cnt_present_flag),
+                native_vulkan_bool_u32(parameter_sets.pps.constrained_intra_pred_flag),
+                native_vulkan_bool_u32(parameter_sets.pps.deblocking_filter_control_present_flag),
+                native_vulkan_bool_u32(parameter_sets.pps.weighted_pred_flag),
+                native_vulkan_bool_u32(
+                    parameter_sets
+                        .pps
+                        .bottom_field_pic_order_in_frame_present_flag,
+                ),
+                native_vulkan_bool_u32(parameter_sets.pps.entropy_coding_mode_flag),
+                native_vulkan_bool_u32(parameter_sets.pps.pic_scaling_matrix_present_flag),
+            ),
+            __bindgen_padding_0: [0; 3],
+        },
+        seq_parameter_set_id: native_vulkan_h264_u8(
+            parameter_sets.pps.sps_id,
+            "pps.seq_parameter_set_id",
+        )
+        .map_err(NativeVulkanError::Video)?,
+        pic_parameter_set_id: native_vulkan_h264_u8(parameter_sets.pps.id, "pic_parameter_set_id")
+            .map_err(NativeVulkanError::Video)?,
+        num_ref_idx_l0_default_active_minus1: native_vulkan_h264_u8(
+            parameter_sets.pps.num_ref_idx_l0_default_active_minus1,
+            "num_ref_idx_l0_default_active_minus1",
+        )
+        .map_err(NativeVulkanError::Video)?,
+        num_ref_idx_l1_default_active_minus1: native_vulkan_h264_u8(
+            parameter_sets.pps.num_ref_idx_l1_default_active_minus1,
+            "num_ref_idx_l1_default_active_minus1",
+        )
+        .map_err(NativeVulkanError::Video)?,
+        weighted_bipred_idc: native_vulkan_h264_std_weighted_bipred_idc(
+            parameter_sets.pps.weighted_bipred_idc,
+        )?,
+        pic_init_qp_minus26: native_vulkan_h264_i8(
+            parameter_sets.pps.pic_init_qp_minus26,
+            "pic_init_qp_minus26",
+        )
+        .map_err(NativeVulkanError::Video)?,
+        pic_init_qs_minus26: native_vulkan_h264_i8(
+            parameter_sets.pps.pic_init_qs_minus26,
+            "pic_init_qs_minus26",
+        )
+        .map_err(NativeVulkanError::Video)?,
+        chroma_qp_index_offset: native_vulkan_h264_i8(
+            parameter_sets.pps.chroma_qp_index_offset,
+            "chroma_qp_index_offset",
+        )
+        .map_err(NativeVulkanError::Video)?,
+        second_chroma_qp_index_offset: native_vulkan_h264_i8(
+            parameter_sets.pps.second_chroma_qp_index_offset,
+            "second_chroma_qp_index_offset",
+        )
+        .map_err(NativeVulkanError::Video)?,
+        pScalingLists: ptr::null(),
+    }];
+
+    let add_info = vk::VideoDecodeH264SessionParametersAddInfoKHR::default()
+        .std_sp_ss(&sps)
+        .std_pp_ss(&pps);
+    let max_std_sps_count = 32;
+    let max_std_pps_count = 32;
+    let mut h264_create_info = vk::VideoDecodeH264SessionParametersCreateInfoKHR::default()
+        .max_std_sps_count(max_std_sps_count)
+        .max_std_pps_count(max_std_pps_count)
+        .parameters_add_info(&add_info);
+    let create_info = vk::VideoSessionParametersCreateInfoKHR::default()
+        .video_session(session)
+        .push_next(&mut h264_create_info);
+    let mut parameters = vk::VideoSessionParametersKHR::null();
+    unsafe {
+        (video_queue_device.fp().create_video_session_parameters_khr)(
+            video_queue_device.device(),
+            &create_info,
+            ptr::null(),
+            &mut parameters,
+        )
+    }
+    .result()
+    .map_err(|result| NativeVulkanError::Vulkan {
+        operation: "vkCreateVideoSessionParametersKHR(h264)",
+        result,
+    })?;
+
+    Ok(NativeVulkanVideoSessionParameters {
+        parameters,
+        snapshot: NativeVulkanVideoSessionParametersSnapshot {
+            codec: "h264-high-8",
+            source: "native-rust-h264-sps-pps-to-vulkan-std",
+            max_std_vps_count: 0,
+            max_std_sps_count,
+            max_std_pps_count,
+            std_vps_count: 0,
+            std_sps_count: sps.len() as u32,
+            std_pps_count: pps.len() as u32,
+            vps_id: 0,
+            sps_id: parameter_sets.sps.id,
+            pps_id: parameter_sets.pps.id,
+            profile_idc: parameter_sets.sps.profile_idc,
+            level_idc: parameter_sets.sps.level_idc,
+            width: parameter_sets.sps.width,
+            height: parameter_sets.sps.height,
+            created: true,
+        },
+    })
 }
 
 fn native_vulkan_create_h265_video_session_parameters(
@@ -21428,6 +22404,33 @@ mod tests {
         assert_eq!(stats.idr_count, 1);
         assert_eq!(stats.slice_count, 2);
         assert!(stats.parameter_sets_present());
+    }
+
+    #[test]
+    fn parses_h264_high_sps_pps_for_vulkan_std_subset() {
+        let bytes = [
+            0x00, 0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x2a, 0xac, 0xb4, 0x02, 0x80, 0x2d, 0xd8,
+            0x08, 0x80, 0x00, 0x00, 0x03, 0x00, 0x80, 0x00, 0x00, 0x3c, 0x47, 0x8c, 0x19, 0x50,
+            0x00, 0x00, 0x00, 0x01, 0x68, 0xef, 0x0f, 0xcb,
+        ];
+
+        let parameter_sets = native_vulkan_parse_h264_parameter_sets(&bytes).unwrap();
+
+        assert_eq!(parameter_sets.parser, "native-rust-h264-sps-pps");
+        assert_eq!(parameter_sets.sps.profile_idc, 100);
+        assert_eq!(parameter_sets.sps.profile_label, "high");
+        assert_eq!(parameter_sets.sps.level_idc, 42);
+        assert_eq!(parameter_sets.sps.width, 1280);
+        assert_eq!(parameter_sets.sps.height, 720);
+        assert_eq!(parameter_sets.sps.chroma_format_idc, 1);
+        assert_eq!(parameter_sets.sps.pic_order_cnt_type, 2);
+        assert_eq!(parameter_sets.pps.id, 0);
+        assert_eq!(parameter_sets.pps.sps_id, 0);
+        assert!(parameter_sets.pps.entropy_coding_mode_flag);
+        assert!(parameter_sets.pps.transform_8x8_mode_flag);
+        assert!(parameter_sets.pps.weighted_pred_flag);
+        assert!(parameter_sets.requested_profile_compatible);
+        assert!(parameter_sets.vulkan_std_session_parameters_ready);
     }
 
     #[test]

@@ -17,6 +17,7 @@ Options:
   --width <px>          Generated/probed width. Default: 1280.
   --height <px>         Generated/probed height. Default: 720.
   --rate <fps>          Generated frame rate. Default: 60.
+  --level <level>       Generated H.264 level. Default: 4.2.
   --frames <count>      Generated frame count. Default: samples + 2.
   --samples <count>     AU samples to collect. Default: 8.
   --no-build            Reuse existing target/release/gilder-native-vulkan.
@@ -31,6 +32,7 @@ work_parent="${TMPDIR:-/tmp}"
 width=1280
 height=720
 rate=60
+level=4.2
 frames=0
 samples=8
 no_build=0
@@ -64,6 +66,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --rate)
       rate="${2:-}"
+      shift 2
+      ;;
+    --level)
+      level="${2:-}"
       shift 2
       ;;
     --frames)
@@ -131,8 +137,8 @@ if [[ -z "$source" ]]; then
   ffmpeg -hide_banner -loglevel error -y \
     -f lavfi -i "testsrc2=size=${width}x${height}:rate=${rate}" \
     -frames:v "$frames" -an \
-    -c:v libx264 -profile:v high -level:v 4.2 -preset ultrafast -tune zerolatency -pix_fmt yuv420p \
-    -x264-params "keyint=2:min-keyint=2:scenecut=0:open-gop=0:bframes=0:ref=1:repeat-headers=1" \
+    -c:v libx264 -profile:v high -level:v "$level" -preset veryfast -tune zerolatency -pix_fmt yuv420p \
+    -x264-params "keyint=2:min-keyint=2:scenecut=0:open-gop=0:bframes=0:ref=1:repeat-headers=1:cabac=1:8x8dct=1" \
     "$source"
 fi
 
@@ -185,13 +191,21 @@ h264_pps_count="$(jq -r '.bitstream_extract.h264_pps_count // 0' "$probe_json")"
 h264_idr_count="$(jq -r '.bitstream_extract.h264_idr_count // 0' "$probe_json")"
 h264_slice_count="$(jq -r '.bitstream_extract.h264_slice_count // 0' "$probe_json")"
 h264_parameter_sets_present="$(jq -r '.bitstream_extract.h264_parameter_sets_present // false' "$probe_json")"
+h264_parameter_sets_ready="$(jq -r '.bitstream_extract.h264_parameter_sets.vulkan_std_session_parameters_ready // false' "$probe_json")"
+h264_parameter_sets_parser="$(jq -r '.bitstream_extract.h264_parameter_sets.parser // "none"' "$probe_json")"
+h264_sps_profile_idc="$(jq -r '.bitstream_extract.h264_parameter_sets.sps.profile_idc // 0' "$probe_json")"
+h264_sps_level_idc="$(jq -r '.bitstream_extract.h264_parameter_sets.sps.level_idc // 0' "$probe_json")"
+h264_sps_width="$(jq -r '.bitstream_extract.h264_parameter_sets.sps.width // 0' "$probe_json")"
+h264_sps_height="$(jq -r '.bitstream_extract.h264_parameter_sets.sps.height // 0' "$probe_json")"
 session_parameters_requested="$(jq -r 'if has("session_parameters_requested") then .session_parameters_requested else true end' "$probe_json")"
 session_parameters_created="$(jq -r 'if has("session_parameters_created") then .session_parameters_created else true end' "$probe_json")"
+session_parameters_codec="$(jq -r '.session_parameters.codec // "none"' "$probe_json")"
+session_parameters_source="$(jq -r '.session_parameters.source // "none"' "$probe_json")"
 mapped_write_source="$(jq -r '.bitstream_buffer.mapped_write_source // "none"' "$probe_json")"
 mapped_write_bytes="$(jq -r '.bitstream_buffer.mapped_write_bytes // 0' "$probe_json")"
 samples_collected="$(jq -r '.bitstream_extract.samples // 0' "$probe_json")"
 
-if [[ "$codec" != "h264-high-8" || "$profile" != "high-8" || "$picture_format" != "G8_B8R8_2PLANE_420_UNORM" || "$target_dpb" != "true" || "$target_output" != "true" || "$target_sampled" != "true" || "$video_image_format" != "$picture_format" || "$frontend" != "gstreamer-qtdemux-h264parse-appsink" || "$stream_format" != "byte-stream" || "$alignment" != "au" || "$has_annex_b" != "true" || "$h264_sps_count" -lt 1 || "$h264_pps_count" -lt 1 || "$h264_idr_count" -lt 1 || "$h264_slice_count" -lt 1 || "$h264_parameter_sets_present" != "true" || "$session_parameters_requested" != "false" || "$session_parameters_created" != "false" || "$mapped_write_source" != "extracted-encoded-video-unit" || "$mapped_write_bytes" -le 0 || "$samples_collected" -lt 1 ]]; then
+if [[ "$codec" != "h264-high-8" || "$profile" != "high-8" || "$picture_format" != "G8_B8R8_2PLANE_420_UNORM" || "$target_dpb" != "true" || "$target_output" != "true" || "$target_sampled" != "true" || "$video_image_format" != "$picture_format" || "$frontend" != "gstreamer-qtdemux-h264parse-appsink" || "$stream_format" != "byte-stream" || "$alignment" != "au" || "$has_annex_b" != "true" || "$h264_sps_count" -lt 1 || "$h264_pps_count" -lt 1 || "$h264_idr_count" -lt 1 || "$h264_slice_count" -lt 1 || "$h264_parameter_sets_present" != "true" || "$h264_parameter_sets_ready" != "true" || "$h264_parameter_sets_parser" != "native-rust-h264-sps-pps" || "$h264_sps_profile_idc" -ne 100 || "$h264_sps_width" -le 0 || "$h264_sps_height" -le 0 || "$session_parameters_requested" != "true" || "$session_parameters_created" != "true" || "$session_parameters_codec" != "h264-high-8" || "$session_parameters_source" != "native-rust-h264-sps-pps-to-vulkan-std" || "$mapped_write_source" != "extracted-encoded-video-unit" || "$mapped_write_bytes" -le 0 || "$samples_collected" -lt 1 ]]; then
   {
     printf 'FAIL: native Vulkan H.264 bitstream output was not valid\n'
     printf 'codec: %s\n' "$codec"
@@ -210,8 +224,16 @@ if [[ "$codec" != "h264-high-8" || "$profile" != "high-8" || "$picture_format" !
     printf 'h264_idr_count: %s\n' "$h264_idr_count"
     printf 'h264_slice_count: %s\n' "$h264_slice_count"
     printf 'h264_parameter_sets_present: %s\n' "$h264_parameter_sets_present"
+    printf 'h264_parameter_sets_ready: %s\n' "$h264_parameter_sets_ready"
+    printf 'h264_parameter_sets_parser: %s\n' "$h264_parameter_sets_parser"
+    printf 'h264_sps_profile_idc: %s\n' "$h264_sps_profile_idc"
+    printf 'h264_sps_level_idc: %s\n' "$h264_sps_level_idc"
+    printf 'h264_sps_width: %s\n' "$h264_sps_width"
+    printf 'h264_sps_height: %s\n' "$h264_sps_height"
     printf 'session_parameters_requested: %s\n' "$session_parameters_requested"
     printf 'session_parameters_created: %s\n' "$session_parameters_created"
+    printf 'session_parameters_codec: %s\n' "$session_parameters_codec"
+    printf 'session_parameters_source: %s\n' "$session_parameters_source"
     printf 'mapped_write_source: %s\n' "$mapped_write_source"
     printf 'mapped_write_bytes: %s\n' "$mapped_write_bytes"
     printf 'samples_collected: %s\n' "$samples_collected"
@@ -228,6 +250,7 @@ fi
   printf 'result: %s\n' "$(jq -r '.result' "$probe_json")"
   printf 'requested_codec: %s\n' "$codec"
   printf 'profile: %s\n' "$profile"
+  printf 'generated_h264_level: %s\n' "$level"
   printf 'samples: %s\n' "$samples_collected"
   printf 'picture_format: %s\n' "$picture_format"
   printf 'target_picture_dpb_supported: %s\n' "$target_dpb"
@@ -243,8 +266,16 @@ fi
   printf 'h264_idr_count: %s\n' "$h264_idr_count"
   printf 'h264_slice_count: %s\n' "$h264_slice_count"
   printf 'h264_parameter_sets_present: %s\n' "$h264_parameter_sets_present"
+  printf 'h264_parameter_sets_ready: %s\n' "$h264_parameter_sets_ready"
+  printf 'h264_parameter_sets_parser: %s\n' "$h264_parameter_sets_parser"
+  printf 'h264_sps_profile_idc: %s\n' "$h264_sps_profile_idc"
+  printf 'h264_sps_level_idc: %s\n' "$h264_sps_level_idc"
+  printf 'h264_sps_width: %s\n' "$h264_sps_width"
+  printf 'h264_sps_height: %s\n' "$h264_sps_height"
   printf 'session_parameters_requested: %s\n' "$session_parameters_requested"
   printf 'session_parameters_created: %s\n' "$session_parameters_created"
+  printf 'session_parameters_codec: %s\n' "$session_parameters_codec"
+  printf 'session_parameters_source: %s\n' "$session_parameters_source"
   printf 'selected_access_unit_bytes: %s\n' "$(jq -r '.bitstream_extract.selected_access_unit_bytes' "$probe_json")"
   printf 'mapped_write_source: %s\n' "$mapped_write_source"
   printf 'mapped_write_bytes: %s\n' "$mapped_write_bytes"
