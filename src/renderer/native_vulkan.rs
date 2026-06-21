@@ -2057,6 +2057,7 @@ pub struct NativeVulkanRuntimeSnapshot {
     pub wayland_surface_buffer_size: (u32, u32),
     pub selected_physical_device_name: String,
     pub selected_physical_device_type: &'static str,
+    pub selected_vulkan_drm_device: Option<NativeVulkanDrmDeviceSnapshot>,
     pub selected_queue_family_index: u32,
     pub swapchain_extent: (u32, u32),
     pub swapchain_image_count: usize,
@@ -2388,6 +2389,7 @@ pub struct NativeVulkanVideoRuntimeSnapshot {
     pub max_import_elapsed_us: Option<u64>,
     pub last_dmabuf_import: Option<NativeVulkanDmabufImportSnapshot>,
     pub memory_route: NativeVulkanVideoMemoryRouteSnapshot,
+    pub selected_vulkan_drm_device: Option<NativeVulkanDrmDeviceSnapshot>,
     pub last_sample_caps: Option<String>,
     pub last_sample_format: Option<String>,
     pub last_sample_size: Option<(u32, u32)>,
@@ -2410,6 +2412,21 @@ pub struct NativeVulkanVideoMemoryRouteSnapshot {
     pub direct_import_confirmed: bool,
     pub copy_risk: &'static str,
     pub notes: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanDrmDeviceSnapshot {
+    pub extension_available: bool,
+    pub has_primary: bool,
+    pub primary_major: Option<i64>,
+    pub primary_minor: Option<i64>,
+    pub primary_dev_t: Option<u64>,
+    pub primary_node: Option<String>,
+    pub has_render: bool,
+    pub render_major: Option<i64>,
+    pub render_minor: Option<i64>,
+    pub render_dev_t: Option<u64>,
+    pub render_node: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2505,6 +2522,7 @@ pub struct NativeVulkanSession {
     physical_device: vk::PhysicalDevice,
     selected_physical_device_name: String,
     selected_physical_device_type: &'static str,
+    selected_vulkan_drm_device: Option<NativeVulkanDrmDeviceSnapshot>,
     queue_family_index: u32,
     device: ash::Device,
     queue: vk::Queue,
@@ -2730,6 +2748,8 @@ impl NativeVulkanSession {
             )?),
             _ => None,
         };
+        let selected_vulkan_drm_device =
+            native_vulkan_physical_device_drm_snapshot(&instance, selection.physical_device);
 
         Ok(Self {
             host,
@@ -2741,6 +2761,7 @@ impl NativeVulkanSession {
             physical_device: selection.physical_device,
             selected_physical_device_name: selection.physical_device_name,
             selected_physical_device_type: selection.physical_device_type,
+            selected_vulkan_drm_device,
             queue_family_index: selection.queue_family_index,
             device,
             queue,
@@ -2833,6 +2854,7 @@ impl NativeVulkanSession {
             ),
             selected_physical_device_name: self.selected_physical_device_name.clone(),
             selected_physical_device_type: self.selected_physical_device_type,
+            selected_vulkan_drm_device: self.selected_vulkan_drm_device.clone(),
             selected_queue_family_index: self.queue_family_index,
             swapchain_extent: (self.swapchain_extent.width, self.swapchain_extent.height),
             swapchain_image_count: self.swapchain_images.len(),
@@ -2847,6 +2869,7 @@ impl NativeVulkanSession {
                 &self.render_item,
                 self.video_frontend_snapshot(),
                 self.video_import_snapshot(),
+                self.selected_vulkan_drm_device.clone(),
                 self.frames_rendered,
                 self.static_upload
                     .as_ref()
@@ -29321,6 +29344,87 @@ fn native_vulkan_device_extension_names(
     Ok(extensions)
 }
 
+fn native_vulkan_physical_device_drm_snapshot(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+) -> Option<NativeVulkanDrmDeviceSnapshot> {
+    let extensions = native_vulkan_device_extension_names(instance, physical_device).ok()?;
+    let extension_available = native_vulkan_extension_available_by_name(
+        &extensions,
+        ash_extension_name(ash::ext::physical_device_drm::NAME),
+    );
+    if !extension_available {
+        return Some(native_vulkan_drm_device_snapshot_from_parts(
+            false, false, 0, 0, false, 0, 0,
+        ));
+    }
+
+    let mut drm_properties = vk::PhysicalDeviceDrmPropertiesEXT::default();
+    let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut drm_properties);
+    unsafe {
+        instance.get_physical_device_properties2(physical_device, &mut properties);
+    }
+    Some(native_vulkan_drm_device_snapshot_from_parts(
+        true,
+        drm_properties.has_primary != 0,
+        drm_properties.primary_major,
+        drm_properties.primary_minor,
+        drm_properties.has_render != 0,
+        drm_properties.render_major,
+        drm_properties.render_minor,
+    ))
+}
+
+fn native_vulkan_drm_device_snapshot_from_parts(
+    extension_available: bool,
+    has_primary: bool,
+    primary_major: i64,
+    primary_minor: i64,
+    has_render: bool,
+    render_major: i64,
+    render_minor: i64,
+) -> NativeVulkanDrmDeviceSnapshot {
+    NativeVulkanDrmDeviceSnapshot {
+        extension_available,
+        has_primary,
+        primary_major: has_primary.then_some(primary_major),
+        primary_minor: has_primary.then_some(primary_minor),
+        primary_dev_t: has_primary
+            .then(|| native_vulkan_drm_dev_t(primary_major, primary_minor))
+            .flatten(),
+        primary_node: has_primary
+            .then(|| native_vulkan_drm_node_path("card", primary_major, primary_minor))
+            .flatten(),
+        has_render,
+        render_major: has_render.then_some(render_major),
+        render_minor: has_render.then_some(render_minor),
+        render_dev_t: has_render
+            .then(|| native_vulkan_drm_dev_t(render_major, render_minor))
+            .flatten(),
+        render_node: has_render
+            .then(|| native_vulkan_drm_node_path("renderD", render_major, render_minor))
+            .flatten(),
+    }
+}
+
+fn native_vulkan_drm_dev_t(major: i64, minor: i64) -> Option<u64> {
+    let major = u64::from(u32::try_from(major).ok()?);
+    let minor = u64::from(u32::try_from(minor).ok()?);
+    let mut dev = 0u64;
+    dev |= (major & 0x0000_0fff) << 8;
+    dev |= (major & 0xffff_f000) << 32;
+    dev |= minor & 0x0000_00ff;
+    dev |= (minor & 0xffff_ff00) << 12;
+    Some(dev)
+}
+
+fn native_vulkan_drm_node_path(prefix: &'static str, major: i64, minor: i64) -> Option<String> {
+    if major != 226 || minor < 0 {
+        return None;
+    }
+    Some(format!("/dev/dri/{prefix}{minor}"))
+}
+
 fn native_vulkan_video_decode_queue_families(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
@@ -30304,6 +30408,7 @@ fn native_vulkan_video_runtime_snapshot(
     item: &NativeVulkanRenderItem,
     frontend: Option<NativeVulkanGstVideoFrontendSnapshot>,
     import: Option<NativeVulkanVideoImportSnapshot>,
+    selected_vulkan_drm_device: Option<NativeVulkanDrmDeviceSnapshot>,
     rendered_frames: u64,
     poster_upload_bytes: Option<u64>,
 ) -> Option<NativeVulkanVideoRuntimeSnapshot> {
@@ -30404,6 +30509,7 @@ fn native_vulkan_video_runtime_snapshot(
             .as_ref()
             .and_then(|import| import.last_dmabuf_import.clone()),
         memory_route,
+        selected_vulkan_drm_device,
         last_sample_caps: frontend
             .as_ref()
             .and_then(|frontend| frontend.last_sample_caps.clone()),
@@ -32975,7 +33081,7 @@ mod tests {
             renderer_status: "vulkan-lifecycle-video-placeholder",
         };
 
-        let snapshot = native_vulkan_video_runtime_snapshot(&item, None, None, 9, Some(1024))
+        let snapshot = native_vulkan_video_runtime_snapshot(&item, None, None, None, 9, Some(1024))
             .expect("video snapshot");
 
         assert_eq!(snapshot.frontend, "gstreamer-planned");
@@ -33060,9 +33166,15 @@ mod tests {
             last_dmabuf_import: None,
         };
 
-        let snapshot =
-            native_vulkan_video_runtime_snapshot(&item, Some(frontend), Some(import), 12, None)
-                .unwrap();
+        let snapshot = native_vulkan_video_runtime_snapshot(
+            &item,
+            Some(frontend),
+            Some(import),
+            None,
+            12,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(snapshot.frontend, "gstreamer-appsink");
         assert_eq!(snapshot.frontend_status, "appsink-receiving-samples");
@@ -33149,8 +33261,9 @@ mod tests {
             last_dmabuf_import: Some(contract.clone()),
         };
 
-        let snapshot = native_vulkan_video_runtime_snapshot(&item, None, Some(import), 1, None)
-            .expect("video snapshot");
+        let snapshot =
+            native_vulkan_video_runtime_snapshot(&item, None, Some(import), None, 1, None)
+                .expect("video snapshot");
 
         assert_eq!(snapshot.last_dmabuf_import, Some(contract));
         assert_eq!(snapshot.memory_route.route, "direct-dmabuf-import");
@@ -33205,7 +33318,8 @@ mod tests {
         };
 
         let snapshot =
-            native_vulkan_video_runtime_snapshot(&item, Some(frontend), None, 1, None).unwrap();
+            native_vulkan_video_runtime_snapshot(&item, Some(frontend), None, None, 1, None)
+                .unwrap();
 
         assert_eq!(snapshot.memory_route.route, "dmabuf-caps-pending-import");
         assert!(snapshot.memory_route.direct_candidate);
@@ -33214,6 +33328,24 @@ mod tests {
             snapshot.memory_route.copy_risk,
             "unknown-until-import-contract"
         );
+    }
+
+    #[test]
+    fn drm_device_snapshot_derives_linux_dri_nodes() {
+        let snapshot =
+            native_vulkan_drm_device_snapshot_from_parts(true, true, 226, 1, true, 226, 128);
+
+        assert!(snapshot.extension_available);
+        assert!(snapshot.has_primary);
+        assert_eq!(snapshot.primary_major, Some(226));
+        assert_eq!(snapshot.primary_minor, Some(1));
+        assert_eq!(snapshot.primary_node.as_deref(), Some("/dev/dri/card1"));
+        assert!(snapshot.primary_dev_t.is_some());
+        assert!(snapshot.has_render);
+        assert_eq!(snapshot.render_major, Some(226));
+        assert_eq!(snapshot.render_minor, Some(128));
+        assert_eq!(snapshot.render_node.as_deref(), Some("/dev/dri/renderD128"));
+        assert!(snapshot.render_dev_t.is_some());
     }
 
     #[test]
