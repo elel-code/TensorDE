@@ -77,6 +77,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 video_session_options.allocate_bitstream_buffer = true;
                 video_session_options.allocate_video_images = true;
             }
+            "--decode-h264-idr-prefix" => {
+                let count = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()?
+                    .ok_or("--decode-h264-idr-prefix requires a count")?;
+                video_session_options.decode_h264_idr_prefix_frames = count;
+                video_session_options.h264_required_idr_prefix_access_units = count;
+                video_session_options.extract_bitstream = true;
+                video_session_options.allocate_bitstream_buffer = true;
+                video_session_options.allocate_video_images = true;
+            }
             "--decode-h265-ready-prefix" => {
                 let count = args
                     .next()
@@ -198,6 +210,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|value| value.parse::<u32>())
                     .transpose()?
                     .ok_or("--require-h265-ready-prefix requires a count")?;
+                video_session_options.extract_bitstream = true;
+                video_session_options.allocate_bitstream_buffer = true;
+            }
+            "--require-h264-idr-prefix" => {
+                video_session_options.h264_required_idr_prefix_access_units = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()?
+                    .ok_or("--require-h264-idr-prefix requires a count")?;
                 video_session_options.extract_bitstream = true;
                 video_session_options.allocate_bitstream_buffer = true;
             }
@@ -492,12 +513,13 @@ fn print_usage() {
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
 --probe-video enumerates Vulkan Video decode extensions and queue families, then exits.\n\
---probe-video-session creates and binds a Vulkan Video H.265/AV1 decode session, then exits.\n\
+--probe-video-session creates and binds a Vulkan Video H.264/H.265/AV1 decode session, then exits.\n\
 --allocate-video-images extends --probe-video-session with codec-matching 2-plane 4:2:0 DPB/output sampled image allocation.\n\
 --allocate-bitstream-buffer extends --probe-video-session with a mapped VIDEO_DECODE_SRC bitstream buffer.\n\
---extract-bitstream extends --probe-video-session with qtdemux+h265parse encoded AU extraction and writes the selected AU to the bitstream buffer.\n\
---decode-first-frame extends --probe-video-session with a real H.265 IDR Vulkan Video command buffer submit.\n\
+--extract-bitstream extends --probe-video-session with parser/appsink encoded AU extraction and writes the selected AU to the bitstream buffer.\n\
+--decode-first-frame extends --probe-video-session with a real H.264/H.265 IDR Vulkan Video command buffer submit.\n\
 --sample-decoded-first-frame extends --decode-first-frame with NV12 shader sampling into an offscreen Vulkan color target.\n\
+--decode-h264-idr-prefix N extends --probe-video-session with N H.264 IDR AU Vulkan Video decode submits and final-frame readback.\n\
 --decode-h265-ready-prefix N extends --probe-video-session with N ready H.265 AU Vulkan Video decode submits and final-frame readback.\n\
 --sample-h265-ready-prefix extends --decode-h265-ready-prefix with final-frame NV12 shader sampling into an offscreen RGBA target.\n\
 --sample-h265-ready-prefix-sequence samples each ready-prefix decoded frame before the next AU can overwrite its DPB/output layer.\n\
@@ -514,6 +536,7 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--video-codec h264|h265|h265-main-10|av1|av1-main-10] [--width PX] [--height PX]\n\
          [--allocate-video-images] [--allocate-bitstream-buffer] [--bitstream-buffer-size BYTES]\n\
          [--extract-bitstream] [--decode-first-frame] [--sample-decoded-first-frame] [--bitstream-samples N]\n\
+         [--decode-h264-idr-prefix N] [--require-h264-idr-prefix N]\n\
          [--decode-h265-ready-prefix N] [--sample-h265-ready-prefix] [--sample-h265-ready-prefix-sequence]\n\
          [--require-h265-ready-prefix N] [--playback-frames N]\n\
          [--start-offset-ms MS]"
