@@ -493,7 +493,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
 --probe-video enumerates Vulkan Video decode extensions and queue families, then exits.\n\
 --probe-video-session creates and binds a Vulkan Video H.265/AV1 decode session, then exits.\n\
---allocate-video-images extends --probe-video-session with NV12 DPB/output sampled image allocation.\n\
+--allocate-video-images extends --probe-video-session with codec-matching 2-plane 4:2:0 DPB/output sampled image allocation.\n\
 --allocate-bitstream-buffer extends --probe-video-session with a mapped VIDEO_DECODE_SRC bitstream buffer.\n\
 --extract-bitstream extends --probe-video-session with qtdemux+h265parse encoded AU extraction and writes the selected AU to the bitstream buffer.\n\
 --decode-first-frame extends --probe-video-session with a real H.265 IDR Vulkan Video command buffer submit.\n\
@@ -511,7 +511,7 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--decoder auto|hardware-preferred|hardware-required|software]\n\
-         [--video-codec h265|av1] [--width PX] [--height PX]\n\
+         [--video-codec h265|h265-main-10|av1|av1-main-10] [--width PX] [--height PX]\n\
          [--allocate-video-images] [--allocate-bitstream-buffer] [--bitstream-buffer-size BYTES]\n\
          [--extract-bitstream] [--decode-first-frame] [--sample-decoded-first-frame] [--bitstream-samples N]\n\
          [--decode-h265-ready-prefix N] [--sample-h265-ready-prefix] [--sample-h265-ready-prefix-sequence]\n\

@@ -338,35 +338,79 @@ pub struct NativeVulkanVideoFormatPropertiesSnapshot {
 pub enum NativeVulkanVideoSessionCodec {
     #[serde(rename = "h265-main-8")]
     H265Main8,
+    #[serde(rename = "h265-main-10")]
+    H265Main10,
     #[serde(rename = "av1-main-8")]
     Av1Main8,
+    #[serde(rename = "av1-main-10")]
+    Av1Main10,
 }
 
 impl NativeVulkanVideoSessionCodec {
     fn label(self) -> &'static str {
         match self {
             Self::H265Main8 => "h265-main-8",
+            Self::H265Main10 => "h265-main-10",
             Self::Av1Main8 => "av1-main-8",
+            Self::Av1Main10 => "av1-main-10",
         }
     }
 
     fn profile_label(self) -> &'static str {
         match self {
             Self::H265Main8 | Self::Av1Main8 => "main-8",
+            Self::H265Main10 | Self::Av1Main10 => "main-10",
         }
     }
 
     fn codec_extension_name(self) -> &'static CStr {
         match self {
-            Self::H265Main8 => vk::KHR_VIDEO_DECODE_H265_NAME,
-            Self::Av1Main8 => vk::KHR_VIDEO_DECODE_AV1_NAME,
+            Self::H265Main8 | Self::H265Main10 => vk::KHR_VIDEO_DECODE_H265_NAME,
+            Self::Av1Main8 | Self::Av1Main10 => vk::KHR_VIDEO_DECODE_AV1_NAME,
         }
     }
 
     fn codec_operation(self) -> vk::VideoCodecOperationFlagsKHR {
         match self {
-            Self::H265Main8 => vk::VideoCodecOperationFlagsKHR::DECODE_H265,
-            Self::Av1Main8 => vk::VideoCodecOperationFlagsKHR::DECODE_AV1,
+            Self::H265Main8 | Self::H265Main10 => vk::VideoCodecOperationFlagsKHR::DECODE_H265,
+            Self::Av1Main8 | Self::Av1Main10 => vk::VideoCodecOperationFlagsKHR::DECODE_AV1,
+        }
+    }
+
+    fn bit_depth_flags(self) -> vk::VideoComponentBitDepthFlagsKHR {
+        match self {
+            Self::H265Main8 | Self::Av1Main8 => vk::VideoComponentBitDepthFlagsKHR::TYPE_8,
+            Self::H265Main10 | Self::Av1Main10 => vk::VideoComponentBitDepthFlagsKHR::TYPE_10,
+        }
+    }
+
+    fn picture_format(self) -> vk::Format {
+        match self {
+            Self::H265Main8 | Self::Av1Main8 => vk::Format::G8_B8R8_2PLANE_420_UNORM,
+            Self::H265Main10 | Self::Av1Main10 => {
+                vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
+            }
+        }
+    }
+
+    fn h265_std_profile_idc(self) -> Option<vk::native::StdVideoH265ProfileIdc> {
+        match self {
+            Self::H265Main8 => {
+                Some(vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN)
+            }
+            Self::H265Main10 => {
+                Some(vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN_10)
+            }
+            Self::Av1Main8 | Self::Av1Main10 => None,
+        }
+    }
+
+    fn av1_std_profile(self) -> Option<vk::native::StdVideoAV1Profile> {
+        match self {
+            Self::Av1Main8 | Self::Av1Main10 => {
+                Some(vk::native::StdVideoAV1Profile_STD_VIDEO_AV1_PROFILE_MAIN)
+            }
+            Self::H265Main8 | Self::H265Main10 => None,
         }
     }
 }
@@ -377,7 +421,9 @@ impl std::str::FromStr for NativeVulkanVideoSessionCodec {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "h265" | "hevc" | "h265-main-8" | "hevc-main-8" => Ok(Self::H265Main8),
+            "h265-main-10" | "hevc-main-10" => Ok(Self::H265Main10),
             "av1" | "av1-main-8" => Ok(Self::Av1Main8),
+            "av1-main-10" => Ok(Self::Av1Main10),
             other => Err(format!("unsupported Vulkan Video session codec: {other}")),
         }
     }
@@ -448,6 +494,9 @@ pub struct NativeVulkanVideoSessionSmokeSnapshot {
     pub profile: &'static str,
     pub picture_format: &'static str,
     pub reference_picture_format: &'static str,
+    pub target_picture_dpb_supported: bool,
+    pub target_picture_output_supported: bool,
+    pub target_picture_sampled_output_supported: bool,
     pub nv12_dpb_supported: bool,
     pub nv12_output_supported: bool,
     pub nv12_sampled_output_supported: bool,
@@ -2985,6 +3034,7 @@ pub fn run_h265_first_frame_video(
                 &profile_info,
                 source_extent,
                 session_max_dpb_slots.max(1),
+                picture_format,
                 capabilities.decode_capability_flags,
                 vk::ImageUsageFlags::empty(),
                 &device_queue_family_indices,
@@ -3722,6 +3772,7 @@ pub fn run_h265_ready_prefix_video(
                 &profile_info,
                 source_extent,
                 session_max_dpb_slots.max(1),
+                picture_format,
                 capabilities.decode_capability_flags,
                 vk::ImageUsageFlags::empty(),
                 &device_queue_family_indices,
@@ -8254,16 +8305,19 @@ fn native_vulkan_video_session_smoke_inner(
     let selection = select_native_vulkan_video_decode_queue(instance, options.codec)?;
 
     match options.codec {
-        NativeVulkanVideoSessionCodec::H265Main8 => {
+        NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10 => {
             let mut h265_profile_info = vk::VideoDecodeH265ProfileInfoKHR::default()
-                .std_profile_idc(
-                    vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN,
-                );
+                .std_profile_idc(options.codec.h265_std_profile_idc().ok_or_else(|| {
+                    NativeVulkanError::Video(format!(
+                        "{} is not an H.265 Vulkan Video codec",
+                        options.codec.label()
+                    ))
+                })?);
             let profile_info = vk::VideoProfileInfoKHR::default()
                 .video_codec_operation(options.codec.codec_operation())
                 .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420)
-                .luma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
-                .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
+                .luma_bit_depth(options.codec.bit_depth_flags())
+                .chroma_bit_depth(options.codec.bit_depth_flags())
                 .push_next(&mut h265_profile_info);
             let capabilities = native_vulkan_video_session_h265_capabilities(
                 &video_queue_loader,
@@ -8279,15 +8333,20 @@ fn native_vulkan_video_session_smoke_inner(
                 capabilities,
             )
         }
-        NativeVulkanVideoSessionCodec::Av1Main8 => {
+        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => {
             let mut av1_profile_info = vk::VideoDecodeAV1ProfileInfoKHR::default()
-                .std_profile(vk::native::StdVideoAV1Profile_STD_VIDEO_AV1_PROFILE_MAIN)
+                .std_profile(options.codec.av1_std_profile().ok_or_else(|| {
+                    NativeVulkanError::Video(format!(
+                        "{} is not an AV1 Vulkan Video codec",
+                        options.codec.label()
+                    ))
+                })?)
                 .film_grain_support(false);
             let profile_info = vk::VideoProfileInfoKHR::default()
                 .video_codec_operation(options.codec.codec_operation())
                 .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420)
-                .luma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
-                .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
+                .luma_bit_depth(options.codec.bit_depth_flags())
+                .chroma_bit_depth(options.codec.bit_depth_flags())
                 .push_next(&mut av1_profile_info);
             let capabilities = native_vulkan_video_session_av1_capabilities(
                 &video_queue_loader,
@@ -8606,19 +8665,45 @@ fn native_vulkan_video_session_create_and_bind(
         )));
     }
 
+    let picture_format = options.codec.picture_format();
     let format_probe = native_vulkan_video_decode_format_probe(
         video_queue_loader,
         selection.physical_device,
         profile_info,
         capabilities.decode_capability_flags,
     );
-    if !format_probe.nv12_dpb_supported
-        || !format_probe.nv12_output_supported
-        || !format_probe.nv12_sampled_output_supported
+    let target_picture_dpb_supported = native_vulkan_video_formats_include_format_with_usage(
+        &format_probe.dpb_formats,
+        picture_format,
+        &["video-decode-dpb"],
+    );
+    let target_picture_output_supported = native_vulkan_video_formats_include_format_with_usage(
+        &format_probe.output_formats,
+        picture_format,
+        &["video-decode-dst"],
+    );
+    let sampled_output_required_usage: &[&str] = if capabilities
+        .decode_capability_flags
+        .contains(vk::VideoDecodeCapabilityFlagsKHR::DPB_AND_OUTPUT_COINCIDE)
+    {
+        &["video-decode-dst", "video-decode-dpb", "sampled"]
+    } else {
+        &["video-decode-dst", "sampled"]
+    };
+    let target_picture_sampled_output_supported =
+        native_vulkan_video_formats_include_format_with_usage(
+            &format_probe.sampled_output_formats,
+            picture_format,
+            sampled_output_required_usage,
+        );
+    if !target_picture_dpb_supported
+        || !target_picture_output_supported
+        || !target_picture_sampled_output_supported
     {
         return Err(NativeVulkanError::Video(format!(
-            "{} lacks NV12 decode+sampled format support for direct Vulkan composition{}",
+            "{} lacks {} decode+sampled format support for direct Vulkan composition{}",
             options.codec.label(),
+            native_vulkan_format_label(picture_format),
             format_probe
                 .query_error
                 .as_ref()
@@ -8723,7 +8808,6 @@ fn native_vulkan_video_session_create_and_bind(
                 capabilities.max_active_reference_pictures,
                 session_max_dpb_slots,
             );
-        let picture_format = vk::Format::G8_B8R8_2PLANE_420_UNORM;
         let create_info = vk::VideoSessionCreateInfoKHR::default()
             .queue_family_index(selection.queue_family_index)
             .video_profile(profile_info)
@@ -8816,6 +8900,7 @@ fn native_vulkan_video_session_create_and_bind(
                 profile_info,
                 requested_extent,
                 session_max_dpb_slots.max(1),
+                picture_format,
                 capabilities.decode_capability_flags,
                 if options.decode_first_frame || options.decode_h265_ready_prefix_frames > 0 {
                     vk::ImageUsageFlags::TRANSFER_SRC
@@ -8869,16 +8954,20 @@ fn native_vulkan_video_session_create_and_bind(
             );
         }
         let session_parameters_requested = match options.codec {
-            NativeVulkanVideoSessionCodec::H265Main8 => bitstream_extract
+            NativeVulkanVideoSessionCodec::H265Main8
+            | NativeVulkanVideoSessionCodec::H265Main10 => bitstream_extract
                 .as_ref()
                 .is_some_and(|extract| extract.snapshot.h265_parameter_sets.is_some()),
-            NativeVulkanVideoSessionCodec::Av1Main8 => bitstream_extract
-                .as_ref()
-                .is_some_and(|extract| extract.snapshot.av1_sequence_header.is_some()),
+            NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => {
+                bitstream_extract
+                    .as_ref()
+                    .is_some_and(|extract| extract.snapshot.av1_sequence_header.is_some())
+            }
         };
         let mut session_parameters_error = None::<String>;
         let session_parameters = match options.codec {
-            NativeVulkanVideoSessionCodec::H265Main8 => {
+            NativeVulkanVideoSessionCodec::H265Main8
+            | NativeVulkanVideoSessionCodec::H265Main10 => {
                 match bitstream_extract
                     .as_ref()
                     .and_then(|extract| extract.snapshot.h265_parameter_sets.as_ref())
@@ -8898,7 +8987,7 @@ fn native_vulkan_video_session_create_and_bind(
                     None => None,
                 }
             }
-            NativeVulkanVideoSessionCodec::Av1Main8 => {
+            NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => {
                 match bitstream_extract
                     .as_ref()
                     .and_then(|extract| extract.snapshot.av1_sequence_header.as_ref())
@@ -9079,6 +9168,9 @@ fn native_vulkan_video_session_create_and_bind(
             profile: options.codec.profile_label(),
             picture_format: native_vulkan_format_label(picture_format),
             reference_picture_format: native_vulkan_format_label(picture_format),
+            target_picture_dpb_supported,
+            target_picture_output_supported,
+            target_picture_sampled_output_supported,
             nv12_dpb_supported: format_probe.nv12_dpb_supported,
             nv12_output_supported: format_probe.nv12_output_supported,
             nv12_sampled_output_supported: format_probe.nv12_sampled_output_supported,
@@ -9188,6 +9280,7 @@ fn native_vulkan_create_video_session_resource_image(
     profile_info: &vk::VideoProfileInfoKHR<'_>,
     extent: vk::Extent2D,
     array_layers: u32,
+    picture_format: vk::Format,
     decode_capability_flags: vk::VideoDecodeCapabilityFlagsKHR,
     additional_usage: vk::ImageUsageFlags,
     queue_family_indices: &[u32],
@@ -9211,13 +9304,13 @@ fn native_vulkan_create_video_session_resource_image(
     )?
     .into_iter()
     .find(|format| {
-        format.format == vk::Format::G8_B8R8_2PLANE_420_UNORM
-            && format.image_usage_flags.contains(image_usage)
+        format.format == picture_format && format.image_usage_flags.contains(image_usage)
     })
     .ok_or_else(|| {
-        NativeVulkanError::Video(
-            "NV12 video decode dst+dpb+sampled image format is unavailable".to_owned(),
-        )
+        NativeVulkanError::Video(format!(
+            "{} video decode dst+dpb+sampled image format is unavailable",
+            native_vulkan_format_label(picture_format)
+        ))
     })?;
     if separate_images {
         return native_vulkan_create_video_session_separate_resource_images(
@@ -9348,7 +9441,7 @@ fn native_vulkan_create_video_session_resource_image(
             layer_views,
             separate_slots: Vec::new(),
             snapshot: NativeVulkanVideoSessionResourceImageSnapshot {
-                role: "coincident-dpb-output-sampled-nv12",
+                role: "coincident-dpb-output-sampled-video",
                 format: native_vulkan_format_label(format.format),
                 image_type: native_vulkan_image_type_label(format.image_type),
                 image_tiling: native_vulkan_image_tiling_label(format.image_tiling),
@@ -9521,7 +9614,7 @@ fn native_vulkan_create_video_session_separate_resource_images(
             layer_views: Vec::new(),
             separate_slots: std::mem::take(&mut slots),
             snapshot: NativeVulkanVideoSessionResourceImageSnapshot {
-                role: "separate-coincident-dpb-output-sampled-nv12",
+                role: "separate-coincident-dpb-output-sampled-video",
                 format: native_vulkan_format_label(format.format),
                 image_type: native_vulkan_image_type_label(format.image_type),
                 image_tiling: native_vulkan_image_tiling_label(format.image_tiling),
@@ -13426,7 +13519,7 @@ fn native_vulkan_extract_video_bitstream(
         )));
     }
     match options.codec {
-        NativeVulkanVideoSessionCodec::H265Main8 => {
+        NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10 => {
             let extract = native_vulkan_extract_h265_bitstream(
                 source,
                 options.bitstream_extract_max_samples.max(1),
@@ -13437,10 +13530,12 @@ fn native_vulkan_extract_video_bitstream(
             )?;
             Ok(extract)
         }
-        NativeVulkanVideoSessionCodec::Av1Main8 => native_vulkan_extract_av1_bitstream(
-            source,
-            options.bitstream_extract_max_samples.max(1),
-        ),
+        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => {
+            native_vulkan_extract_av1_bitstream(
+                source,
+                options.bitstream_extract_max_samples.max(1),
+            )
+        }
     }
 }
 
@@ -15018,11 +15113,15 @@ fn native_vulkan_parse_h265_parameter_sets(
     let vps = native_vulkan_parse_h265_vps(vps_payload.payload)?;
     let sps = native_vulkan_parse_h265_sps(sps_payload.payload)?;
     let pps = native_vulkan_parse_h265_pps(pps_payload.payload)?;
-    let requested_profile_compatible = sps.chroma_format_idc == 1
-        && !sps.separate_colour_plane_flag
-        && sps.bit_depth_luma_minus8 == 0
+    let h265_main8_compatible = sps.bit_depth_luma_minus8 == 0
         && sps.bit_depth_chroma_minus8 == 0
         && sps.profile.main_compatible();
+    let h265_main10_compatible = sps.bit_depth_luma_minus8 == 2
+        && sps.bit_depth_chroma_minus8 == 2
+        && sps.profile.main10_compatible();
+    let requested_profile_compatible = sps.chroma_format_idc == 1
+        && !sps.separate_colour_plane_flag
+        && (h265_main8_compatible || h265_main10_compatible);
     let vulkan_std_session_parameters_ready = requested_profile_compatible
         && vps.id == sps.vps_id
         && sps.id == pps.sps_id
@@ -15527,6 +15626,10 @@ struct NativeVulkanH265ParsedProfileTierLevel {
 impl NativeVulkanH265ParsedProfileTierLevel {
     fn main_compatible(&self) -> bool {
         self.profile_idc == 1 || self.profile_compatibility_flags[1]
+    }
+
+    fn main10_compatible(&self) -> bool {
+        self.profile_idc == 2 || self.profile_compatibility_flags[2]
     }
 }
 
@@ -16879,7 +16982,7 @@ fn native_vulkan_parse_av1_sequence_header(
     let film_grain_params_present = bits.read_bool("film_grain_params_present")?;
 
     let requested_profile_compatible = seq_profile == 0
-        && color_config.bit_depth == 8
+        && matches!(color_config.bit_depth, 8 | 10)
         && color_config.num_planes == 3
         && color_config.subsampling_x
         && color_config.subsampling_y;
@@ -17486,6 +17589,28 @@ fn native_vulkan_bind_video_session_memory(
     })
 }
 
+fn native_vulkan_h265_parameter_sets_codec_label(
+    parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
+) -> &'static str {
+    if parameter_sets.sps.bit_depth_luma_minus8 == 2
+        && parameter_sets.sps.bit_depth_chroma_minus8 == 2
+        && parameter_sets.sps.profile_idc == 2
+    {
+        "h265-main-10"
+    } else {
+        "h265-main-8"
+    }
+}
+
+fn native_vulkan_av1_sequence_header_codec_label(
+    sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
+) -> &'static str {
+    match sequence_header.color_config.bit_depth {
+        10 => "av1-main-10",
+        _ => "av1-main-8",
+    }
+}
+
 fn native_vulkan_create_h265_video_session_parameters(
     video_queue_device: &ash::khr::video_queue::Device,
     session: vk::VideoSessionKHR,
@@ -17867,7 +17992,7 @@ fn native_vulkan_create_h265_video_session_parameters(
     Ok(NativeVulkanVideoSessionParameters {
         parameters,
         snapshot: NativeVulkanVideoSessionParametersSnapshot {
-            codec: "h265-main-8",
+            codec: native_vulkan_h265_parameter_sets_codec_label(parameter_sets),
             source: "native-rust-h265-vps-sps-pps-to-vulkan-std",
             max_std_vps_count,
             max_std_sps_count,
@@ -17986,7 +18111,7 @@ fn native_vulkan_create_av1_video_session_parameters(
     Ok(NativeVulkanVideoSessionParameters {
         parameters,
         snapshot: NativeVulkanVideoSessionParametersSnapshot {
-            codec: "av1-main-8",
+            codec: native_vulkan_av1_sequence_header_codec_label(sequence_header),
             source: "native-rust-av1-sequence-header-to-vulkan-std",
             max_std_vps_count: 0,
             max_std_sps_count: 1,
@@ -19281,8 +19406,20 @@ fn native_vulkan_video_formats_include_nv12_with_usage(
     formats: &[NativeVulkanVideoFormatPropertiesSnapshot],
     required_usage: &[&str],
 ) -> bool {
+    native_vulkan_video_formats_include_format_with_usage(
+        formats,
+        vk::Format::G8_B8R8_2PLANE_420_UNORM,
+        required_usage,
+    )
+}
+
+fn native_vulkan_video_formats_include_format_with_usage(
+    formats: &[NativeVulkanVideoFormatPropertiesSnapshot],
+    target_format: vk::Format,
+    required_usage: &[&str],
+) -> bool {
     formats.iter().any(|format| {
-        format.format_raw == vk::Format::G8_B8R8_2PLANE_420_UNORM.as_raw()
+        format.format_raw == target_format.as_raw()
             && required_usage
                 .iter()
                 .all(|usage| format.image_usage_flags.contains(usage))
@@ -20645,6 +20782,34 @@ mod tests {
     }
 
     #[test]
+    fn parses_native_vulkan_video_session_main10_codecs() {
+        assert_eq!(
+            "h265-main-10".parse::<NativeVulkanVideoSessionCodec>(),
+            Ok(NativeVulkanVideoSessionCodec::H265Main10)
+        );
+        assert_eq!(
+            "hevc-main-10".parse::<NativeVulkanVideoSessionCodec>(),
+            Ok(NativeVulkanVideoSessionCodec::H265Main10)
+        );
+        assert_eq!(
+            "av1-main-10".parse::<NativeVulkanVideoSessionCodec>(),
+            Ok(NativeVulkanVideoSessionCodec::Av1Main10)
+        );
+        assert_eq!(
+            NativeVulkanVideoSessionCodec::H265Main10.picture_format(),
+            vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
+        );
+        assert_eq!(
+            NativeVulkanVideoSessionCodec::Av1Main10.bit_depth_flags(),
+            vk::VideoComponentBitDepthFlagsKHR::TYPE_10
+        );
+        assert_eq!(
+            NativeVulkanVideoSessionCodec::Av1Main10.profile_label(),
+            "main-10"
+        );
+    }
+
+    #[test]
     fn parses_av1_sequence_header_obu_for_vulkan_std_subset() {
         fn push_bits(bits: &mut Vec<bool>, value: u32, count: u32) {
             for shift in (0..count).rev() {
@@ -20731,6 +20896,84 @@ mod tests {
             Some(frame_obu_offset)
         );
         assert!(stats_with_frame.decode_candidate());
+    }
+
+    #[test]
+    fn parses_av1_main10_sequence_header_obu_for_vulkan_std_subset() {
+        fn push_bits(bits: &mut Vec<bool>, value: u32, count: u32) {
+            for shift in (0..count).rev() {
+                bits.push(((value >> shift) & 1) != 0);
+            }
+        }
+        fn pack_bits(bits: &[bool]) -> Vec<u8> {
+            let mut bytes = vec![0u8; bits.len().div_ceil(8)];
+            for (index, bit) in bits.iter().copied().enumerate() {
+                if bit {
+                    bytes[index / 8] |= 1 << (7 - (index % 8));
+                }
+            }
+            bytes
+        }
+
+        let mut bits = Vec::new();
+        push_bits(&mut bits, 0, 3); // seq_profile Main
+        push_bits(&mut bits, 0, 1); // still_picture
+        push_bits(&mut bits, 0, 1); // reduced_still_picture_header
+        push_bits(&mut bits, 0, 1); // timing_info_present_flag
+        push_bits(&mut bits, 0, 1); // initial_display_delay_present_flag
+        push_bits(&mut bits, 0, 5); // operating_points_cnt_minus_1
+        push_bits(&mut bits, 0, 12); // operating_point_idc
+        push_bits(&mut bits, 4, 5); // seq_level_idx 3.0
+        push_bits(&mut bits, 9, 4); // frame_width_bits_minus_1
+        push_bits(&mut bits, 8, 4); // frame_height_bits_minus_1
+        push_bits(&mut bits, 639, 10); // max_frame_width_minus_1
+        push_bits(&mut bits, 367, 9); // max_frame_height_minus_1
+        push_bits(&mut bits, 0, 1); // frame_id_numbers_present_flag
+        push_bits(&mut bits, 0, 1); // use_128x128_superblock
+        push_bits(&mut bits, 1, 1); // enable_filter_intra
+        push_bits(&mut bits, 1, 1); // enable_intra_edge_filter
+        push_bits(&mut bits, 1, 1); // enable_interintra_compound
+        push_bits(&mut bits, 1, 1); // enable_masked_compound
+        push_bits(&mut bits, 1, 1); // enable_warped_motion
+        push_bits(&mut bits, 1, 1); // enable_dual_filter
+        push_bits(&mut bits, 1, 1); // enable_order_hint
+        push_bits(&mut bits, 1, 1); // enable_jnt_comp
+        push_bits(&mut bits, 1, 1); // enable_ref_frame_mvs
+        push_bits(&mut bits, 1, 1); // seq_choose_screen_content_tools
+        push_bits(&mut bits, 1, 1); // seq_choose_integer_mv
+        push_bits(&mut bits, 6, 3); // order_hint_bits_minus_1
+        push_bits(&mut bits, 0, 1); // enable_superres
+        push_bits(&mut bits, 1, 1); // enable_cdef
+        push_bits(&mut bits, 1, 1); // enable_restoration
+        push_bits(&mut bits, 1, 1); // high_bitdepth
+        push_bits(&mut bits, 0, 1); // mono_chrome
+        push_bits(&mut bits, 0, 1); // color_description_present_flag
+        push_bits(&mut bits, 0, 1); // color_range
+        push_bits(&mut bits, 0, 2); // chroma_sample_position
+        push_bits(&mut bits, 0, 1); // separate_uv_delta_q
+        push_bits(&mut bits, 0, 1); // film_grain_params_present
+
+        let payload = pack_bits(&bits);
+        let mut obu = Vec::with_capacity(payload.len() + 2);
+        obu.push(0x0a);
+        obu.push(payload.len() as u8);
+        obu.extend_from_slice(&payload);
+
+        let stats = native_vulkan_av1_obu_stats(&obu).unwrap();
+        let sequence_header = stats.sequence_header.as_ref().unwrap();
+
+        assert_eq!(stats.sequence_header_count, 1);
+        assert_eq!(sequence_header.seq_profile_label, "main");
+        assert_eq!(sequence_header.max_frame_width, 640);
+        assert_eq!(sequence_header.max_frame_height, 368);
+        assert_eq!(sequence_header.color_config.bit_depth, 10);
+        assert!(sequence_header.color_config.subsampling_x);
+        assert!(sequence_header.color_config.subsampling_y);
+        assert!(sequence_header.vulkan_std_session_parameters_ready);
+        assert_eq!(
+            native_vulkan_av1_sequence_header_codec_label(sequence_header),
+            "av1-main-10"
+        );
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]

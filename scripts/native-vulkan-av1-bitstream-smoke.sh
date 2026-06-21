@@ -18,6 +18,7 @@ Options:
   --height <px>         Generated/probed height. Default: 368.
   --target-fps <fps>    Generated source FPS. Default: 60.
   --frames <count>      Generated frame count. Default: target-fps.
+  --bit-depth <8|10>    Generated/probed AV1 Main bit depth. Default: 8.
   --bitstream-samples <n>
                         Parsed temporal units to collect. Default: 8.
   --no-build            Reuse existing target/release/gilder-native-vulkan.
@@ -34,6 +35,7 @@ width=640
 height=368
 target_fps=60
 frames=0
+bit_depth=8
 bitstream_samples=8
 no_build=0
 generated_source=0
@@ -70,6 +72,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --frames)
       frames="${2:-}"
+      shift 2
+      ;;
+    --bit-depth)
+      bit_depth="${2:-}"
       shift 2
       ;;
     --bitstream-samples)
@@ -109,9 +115,20 @@ if [[ "$width" -lt 128 || "$height" -lt 128 || "$target_fps" -lt 1 || "$bitstrea
   printf 'FAIL: width/height/target-fps/bitstream-samples must be valid\n' >&2
   exit 1
 fi
+if [[ "$bit_depth" != "8" && "$bit_depth" != "10" ]]; then
+  printf 'FAIL: --bit-depth must be 8 or 10\n' >&2
+  exit 1
+fi
 if (( width % 16 != 0 || height % 16 != 0 )); then
   printf 'FAIL: AV1 Vulkan Video source dimensions must be 16-pixel aligned; got %sx%s\n' "$width" "$height" >&2
   exit 1
+fi
+if [[ "$bit_depth" == "10" ]]; then
+  pix_fmt="yuv420p10le"
+  video_codec="av1-main-10"
+else
+  pix_fmt="yuv420p"
+  video_codec="av1-main-8"
 fi
 
 if [[ -z "$report_dir" ]]; then
@@ -132,11 +149,11 @@ if [[ -z "$source" ]]; then
   if [[ "$frames" -eq 0 ]]; then
     frames="$target_fps"
   fi
-  source="$generated_dir/av1-main-${width}x${height}-${target_fps}fps-${frames}frames.webm"
+  source="$generated_dir/${video_codec}-${width}x${height}-${target_fps}fps-${frames}frames.webm"
   ffmpeg -hide_banner -loglevel error -y \
     -f lavfi -i "testsrc2=size=${width}x${height}:rate=${target_fps}:duration=$(( (frames + target_fps - 1) / target_fps ))" \
     -frames:v "$frames" -an \
-    -c:v libaom-av1 -cpu-used 8 -crf 45 -b:v 0 -row-mt 1 -pix_fmt yuv420p \
+    -c:v libaom-av1 -cpu-used 8 -crf 45 -b:v 0 -row-mt 1 -pix_fmt "$pix_fmt" \
     "$source"
 fi
 
@@ -153,7 +170,7 @@ set +e
 env WAYLAND_DISPLAY="$display" \
   target/release/gilder-native-vulkan \
   --probe-video-session \
-  --video-codec av1 \
+  --video-codec "$video_codec" \
   --source "$source" \
   --width "$width" \
   --height "$height" \
@@ -190,11 +207,12 @@ sequence_width="$(jq -r '.bitstream_extract.av1_sequence_header.max_frame_width 
 sequence_height="$(jq -r '.bitstream_extract.av1_sequence_header.max_frame_height // 0' "$probe_json")"
 sequence_std_ready="$(jq -r '.bitstream_extract.av1_sequence_header.vulkan_std_session_parameters_ready // false' "$probe_json")"
 session_parameters_created="$(jq -r '.session_parameters_created // false' "$probe_json")"
+session_parameters_codec="$(jq -r '.session_parameters.codec // "none"' "$probe_json")"
 session_parameters_source="$(jq -r '.session_parameters.source // "none"' "$probe_json")"
 mapped_write_source="$(jq -r '.bitstream_buffer.mapped_write_source // "none"' "$probe_json")"
 mapped_write_bytes="$(jq -r '.bitstream_buffer.mapped_write_bytes // 0' "$probe_json")"
 
-if [[ "$codec" != "av1-main-8" || "$samples" -lt 1 || "$frontend" != "gstreamer-demux-av1parse-appsink" || "$stream_format" != "obu-stream" || "$alignment" != "tu" || "$sequence_header_present" != "true" || "$obu_count" -lt 1 || "$sequence_header_count" -lt 1 || "$frame_count" -lt 1 || "$decode_candidate" != "true" || "$sequence_profile" != "main" || "$sequence_bit_depth" -ne 8 || "$sequence_width" -ne "$width" || "$sequence_height" -ne "$height" || "$sequence_std_ready" != "true" || "$session_parameters_created" != "true" || "$session_parameters_source" != "native-rust-av1-sequence-header-to-vulkan-std" || "$mapped_write_source" != "extracted-encoded-video-unit" || "$mapped_write_bytes" -le 0 ]]; then
+if [[ "$codec" != "$video_codec" || "$samples" -lt 1 || "$frontend" != "gstreamer-demux-av1parse-appsink" || "$stream_format" != "obu-stream" || "$alignment" != "tu" || "$sequence_header_present" != "true" || "$obu_count" -lt 1 || "$sequence_header_count" -lt 1 || "$frame_count" -lt 1 || "$decode_candidate" != "true" || "$sequence_profile" != "main" || "$sequence_bit_depth" -ne "$bit_depth" || "$sequence_width" -ne "$width" || "$sequence_height" -ne "$height" || "$sequence_std_ready" != "true" || "$session_parameters_created" != "true" || "$session_parameters_codec" != "$video_codec" || "$session_parameters_source" != "native-rust-av1-sequence-header-to-vulkan-std" || "$mapped_write_source" != "extracted-encoded-video-unit" || "$mapped_write_bytes" -le 0 ]]; then
   {
     printf 'FAIL: native Vulkan AV1 bitstream output was not valid\n'
     printf 'codec: %s\n' "$codec"
@@ -215,6 +233,7 @@ if [[ "$codec" != "av1-main-8" || "$samples" -lt 1 || "$frontend" != "gstreamer-
     printf 'sequence_height: %s\n' "$sequence_height"
     printf 'sequence_std_ready: %s\n' "$sequence_std_ready"
     printf 'session_parameters_created: %s\n' "$session_parameters_created"
+    printf 'session_parameters_codec: %s\n' "$session_parameters_codec"
     printf 'session_parameters_source: %s\n' "$session_parameters_source"
     printf 'mapped_write_source: %s\n' "$mapped_write_source"
     printf 'mapped_write_bytes: %s\n' "$mapped_write_bytes"
@@ -230,6 +249,7 @@ fi
   printf 'requested_extent: %s\n' "$(jq -c '.requested_extent' "$probe_json")"
   printf 'result: %s\n' "$(jq -r '.result' "$probe_json")"
   printf 'requested_codec: %s\n' "$codec"
+  printf 'requested_bit_depth: %s\n' "$bit_depth"
   printf 'samples: %s\n' "$samples"
   printf 'frontend: %s\n' "$frontend"
   printf 'stream_format: %s\n' "$stream_format"
@@ -252,6 +272,7 @@ fi
   printf 'av1_sequence_extent: %sx%s\n' "$sequence_width" "$sequence_height"
   printf 'av1_vulkan_std_session_parameters_ready: %s\n' "$sequence_std_ready"
   printf 'session_parameters_created: %s\n' "$session_parameters_created"
+  printf 'session_parameters_codec: %s\n' "$session_parameters_codec"
   printf 'session_parameters_source: %s\n' "$session_parameters_source"
   printf 'av1_obus_head: %s\n' "$(jq -c '[.bitstream_extract.av1_obus[0:8][]?]' "$probe_json")"
   printf 'mapped_write_source: %s\n' "$mapped_write_source"
