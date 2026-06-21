@@ -29,6 +29,8 @@ Options:
   --gop-size <frames>   Generated H.264 keyint/min-keyint. Default: target-fps.
   --refs <count>        Generated active reference frames. Default: 2.
   --bframes <count>     Generated B-frame count. Default: 0.
+  --weightp <0|1|2>     Generated x264 P-frame weighted prediction mode. Default: 0.
+  --weightb <0|1>       Generated x264 B-frame weighted prediction mode. Default: 0.
   --level <level>       Generated H.264 level. Default: 6.2.
   --width <px>          Generated/probed width. Default: 3840.
   --height <px>         Generated/probed height. Default: 2160.
@@ -54,6 +56,8 @@ target_fps=240
 gop_size=0
 refs=2
 bframes=0
+weightp=0
+weightb=0
 level=6.2
 width=3840
 height=2160
@@ -116,6 +120,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --bframes)
       bframes="${2:-}"
+      shift 2
+      ;;
+    --weightp)
+      weightp="${2:-}"
+      shift 2
+      ;;
+    --weightb)
+      weightb="${2:-}"
       shift 2
       ;;
     --level)
@@ -199,8 +211,8 @@ fi
 if [[ "$decode_prefix_explicit" -eq 0 && "$playback_frames" -gt "$decode_prefix" ]]; then
   decode_prefix="$playback_frames"
 fi
-if [[ "$decode_prefix" -lt 2 || "$playback_frames" -lt 0 || "$target_fps" -lt 1 || "$gop_size" -lt 2 || "$refs" -lt 1 || "$refs" -gt 16 || "$bframes" -lt 0 || "$bframes" -gt 16 || "$width" -lt 128 || "$height" -lt 128 ]]; then
-  printf 'FAIL: decode-prefix/playback-frames/target-fps/gop-size/refs/bframes must be valid and width/height must be at least 128\n' >&2
+if [[ "$decode_prefix" -lt 2 || "$playback_frames" -lt 0 || "$target_fps" -lt 1 || "$gop_size" -lt 2 || "$refs" -lt 1 || "$refs" -gt 16 || "$bframes" -lt 0 || "$bframes" -gt 16 || "$weightp" -lt 0 || "$weightp" -gt 2 || "$weightb" -lt 0 || "$weightb" -gt 1 || "$width" -lt 128 || "$height" -lt 128 ]]; then
+  printf 'FAIL: decode-prefix/playback-frames/target-fps/gop-size/refs/bframes/weightp/weightb must be valid and width/height must be at least 128\n' >&2
   exit 1
 fi
 if (( width % 16 != 0 || height % 16 != 0 )); then
@@ -246,12 +258,12 @@ if [[ -z "$source" ]]; then
     gop_size=$((decode_prefix + 1))
   fi
   source_duration_seconds=$(( (frames + target_fps - 1) / target_fps ))
-  source="$generated_dir/h264-high-b${bframes}-ref${refs}-${width}x${height}-${target_fps}fps-${frames}frames-${decode_prefix}au.mp4"
+  source="$generated_dir/h264-high-b${bframes}-ref${refs}-weightp${weightp}-weightb${weightb}-${width}x${height}-${target_fps}fps-${frames}frames-${decode_prefix}au.mp4"
   ffmpeg -hide_banner -loglevel error -y \
     -f lavfi -i "testsrc2=size=${width}x${height}:rate=${target_fps}:duration=${source_duration_seconds}" \
     -frames:v "$frames" -an \
     -c:v libx264 -profile:v high -level:v "$level" -preset veryfast -tune zerolatency -pix_fmt yuv420p \
-    -x264-params "keyint=${gop_size}:min-keyint=${gop_size}:scenecut=0:open-gop=0:bframes=${bframes}:b-adapt=0:ref=${refs}:repeat-headers=1:cabac=1:8x8dct=1:weightp=0:weightb=0" \
+    -x264-params "keyint=${gop_size}:min-keyint=${gop_size}:scenecut=0:open-gop=0:bframes=${bframes}:b-adapt=0:ref=${refs}:repeat-headers=1:cabac=1:8x8dct=1:weightp=${weightp}:weightb=${weightb}" \
     "$source"
 fi
 
@@ -435,9 +447,11 @@ fi
   printf 'generated_source_frames: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$frames" || printf none)"
   printf 'generated_source_duration_seconds: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$source_duration_seconds" || printf none)"
   printf 'generated_source_frames_explicit: %s\n' "$([[ "$frames_explicit" -eq 1 ]] && printf yes || printf no)"
-  printf 'generated_source_pattern: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf 'testsrc2-continuous-closed-gop-h264-high-b%s' "$bframes" || printf none)"
+  printf 'generated_source_pattern: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf 'testsrc2-continuous-closed-gop-h264-high-b%s-weightp%s-weightb%s' "$bframes" "$weightp" "$weightb" || printf none)"
   printf 'generated_source_refs: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$refs" || printf none)"
   printf 'generated_source_bframes: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$bframes" || printf none)"
+  printf 'generated_source_weightp: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$weightp" || printf none)"
+  printf 'generated_source_weightb: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$weightb" || printf none)"
   printf 'generated_source_level: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$level" || printf none)"
   printf 'decode_prefix_explicit: %s\n' "$([[ "$decode_prefix_explicit" -eq 1 ]] && printf yes || printf no)"
   printf 'selected_device: %s\n' "$(jq -r '.selected_physical_device_name' "$runtime_json")"

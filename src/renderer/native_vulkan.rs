@@ -21156,6 +21156,78 @@ impl<'a> NativeVulkanH264BitReader<'a> {
     }
 }
 
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h264_chroma_array_type(sps: &NativeVulkanH264SpsSnapshot) -> u32 {
+    if sps.separate_colour_plane_flag {
+        0
+    } else {
+        sps.chroma_format_idc
+    }
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h264_skip_pred_weight_table(
+    bits: &mut NativeVulkanH264BitReader<'_>,
+    parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
+    is_p: bool,
+    is_b: bool,
+    num_ref_idx_l0_active_minus1: Option<u32>,
+    num_ref_idx_l1_active_minus1: Option<u32>,
+) -> Result<(), String> {
+    let weighted_p = parameter_sets.pps.weighted_pred_flag && is_p;
+    let explicit_weighted_b = parameter_sets.pps.weighted_bipred_idc == 1 && is_b;
+    if !weighted_p && !explicit_weighted_b {
+        return Ok(());
+    }
+
+    bits.read_ue("luma_log2_weight_denom")?;
+    let has_chroma = native_vulkan_h264_chroma_array_type(&parameter_sets.sps) != 0;
+    if has_chroma {
+        bits.read_ue("chroma_log2_weight_denom")?;
+    }
+    let l0_count = num_ref_idx_l0_active_minus1
+        .ok_or_else(|| "H.264 weighted prediction table is missing L0 ref count".to_owned())?
+        .checked_add(1)
+        .ok_or_else(|| "H.264 weighted prediction L0 ref count overflow".to_owned())?;
+    native_vulkan_h264_skip_pred_weight_table_entries(bits, l0_count, has_chroma)?;
+    if explicit_weighted_b {
+        let l1_count = num_ref_idx_l1_active_minus1
+            .ok_or_else(|| "H.264 weighted prediction table is missing L1 ref count".to_owned())?
+            .checked_add(1)
+            .ok_or_else(|| "H.264 weighted prediction L1 ref count overflow".to_owned())?;
+        native_vulkan_h264_skip_pred_weight_table_entries(bits, l1_count, has_chroma)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_h264_skip_pred_weight_table_entries(
+    bits: &mut NativeVulkanH264BitReader<'_>,
+    count: u32,
+    has_chroma: bool,
+) -> Result<(), String> {
+    if count > 32 {
+        return Err(format!(
+            "H.264 weighted prediction ref count {count} exceeds supported parser bound"
+        ));
+    }
+    for _ in 0..count {
+        if bits.read_bool("luma_weight_flag")? {
+            bits.read_se("luma_weight")?;
+            bits.read_se("luma_offset")?;
+        }
+        if has_chroma && bits.read_bool("chroma_weight_flag")? {
+            for _ in 0..2 {
+                bits.read_se("chroma_weight")?;
+                bits.read_se("chroma_offset")?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 struct NativeVulkanH265NalPayload<'a> {
     nal_type: u8,
@@ -21472,11 +21544,14 @@ fn native_vulkan_h264_slice_decode_info(
             }
         }
     }
-    if (parameter_sets.pps.weighted_pred_flag && is_p)
-        || (parameter_sets.pps.weighted_bipred_idc == 1 && is_b)
-    {
-        return Err("H.264 weighted prediction table is not supported yet".to_owned());
-    }
+    native_vulkan_h264_skip_pred_weight_table(
+        &mut bits,
+        parameter_sets,
+        is_p,
+        is_b,
+        num_ref_idx_l0_active_minus1,
+        num_ref_idx_l1_active_minus1,
+    )?;
     let mut long_term_reference_flag = false;
     let mut adaptive_ref_pic_marking_mode_flag = false;
     let mut memory_management_control_operations =
@@ -28393,6 +28468,96 @@ mod tests {
             first_frame.slice_offsets,
             vec![(slice_start_code_offset + 1) as u32]
         );
+    }
+
+    #[test]
+    fn parses_h264_weighted_p_slice_header_for_streaming_queue() {
+        fn push_bits(bits: &mut Vec<bool>, value: u32, count: u32) {
+            for shift in (0..count).rev() {
+                bits.push(((value >> shift) & 1) != 0);
+            }
+        }
+        fn push_ue(bits: &mut Vec<bool>, value: u32) {
+            let code_num = value + 1;
+            let bit_count = 32 - code_num.leading_zeros();
+            for _ in 0..bit_count.saturating_sub(1) {
+                bits.push(false);
+            }
+            push_bits(bits, code_num, bit_count);
+        }
+        fn push_se(bits: &mut Vec<bool>, value: i32) {
+            let code_num = if value <= 0 {
+                value.unsigned_abs() * 2
+            } else {
+                value as u32 * 2 - 1
+            };
+            push_ue(bits, code_num);
+        }
+        fn pack_rbsp(mut bits: Vec<bool>) -> Vec<u8> {
+            bits.push(true);
+            while !bits.len().is_multiple_of(8) {
+                bits.push(false);
+            }
+            let mut bytes = vec![0u8; bits.len() / 8];
+            for (index, bit) in bits.into_iter().enumerate() {
+                if bit {
+                    bytes[index / 8] |= 1 << (7 - (index % 8));
+                }
+            }
+            bytes
+        }
+
+        let mut access_unit = vec![
+            0x00, 0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x2a, 0xac, 0xb4, 0x02, 0x80, 0x2d, 0xd8,
+            0x08, 0x80, 0x00, 0x00, 0x03, 0x00, 0x80, 0x00, 0x00, 0x3c, 0x47, 0x8c, 0x19, 0x50,
+            0x00, 0x00, 0x00, 0x01, 0x68, 0xef, 0x0f, 0xcb,
+        ];
+        let parameter_sets = native_vulkan_parse_h264_parameter_sets(&access_unit).unwrap();
+        assert!(parameter_sets.pps.weighted_pred_flag);
+        assert_eq!(parameter_sets.sps.pic_order_cnt_type, 2);
+
+        let mut slice_bits = Vec::new();
+        push_ue(&mut slice_bits, 0); // first_mb_in_slice
+        push_ue(&mut slice_bits, 0); // P-slice
+        push_ue(&mut slice_bits, parameter_sets.pps.id);
+        push_bits(
+            &mut slice_bits,
+            1,
+            parameter_sets.sps.log2_max_frame_num_minus4 + 4,
+        );
+        if parameter_sets.pps.redundant_pic_cnt_present_flag {
+            push_ue(&mut slice_bits, 0);
+        }
+        slice_bits.push(true); // num_ref_idx_active_override_flag
+        push_ue(&mut slice_bits, 0); // num_ref_idx_l0_active_minus1
+        slice_bits.push(false); // ref_pic_list_modification_flag_l0
+        push_ue(&mut slice_bits, 0); // luma_log2_weight_denom
+        if native_vulkan_h264_chroma_array_type(&parameter_sets.sps) != 0 {
+            push_ue(&mut slice_bits, 0); // chroma_log2_weight_denom
+        }
+        slice_bits.push(true); // luma_weight_l0_flag
+        push_se(&mut slice_bits, 1); // luma_weight_l0[0]
+        push_se(&mut slice_bits, 0); // luma_offset_l0[0]
+        if native_vulkan_h264_chroma_array_type(&parameter_sets.sps) != 0 {
+            slice_bits.push(true); // chroma_weight_l0_flag
+            push_se(&mut slice_bits, 1); // chroma_weight_l0[0][0]
+            push_se(&mut slice_bits, 0); // chroma_offset_l0[0][0]
+            push_se(&mut slice_bits, 1); // chroma_weight_l0[0][1]
+            push_se(&mut slice_bits, 0); // chroma_offset_l0[0][1]
+        }
+        slice_bits.push(false); // adaptive_ref_pic_marking_mode_flag
+        access_unit.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x61]);
+        access_unit.extend_from_slice(&pack_rbsp(slice_bits));
+
+        let picture = native_vulkan_h264_picture_decode_info(&access_unit, &parameter_sets)
+            .expect("weighted P-slice header should parse");
+
+        assert!(picture.is_p);
+        assert_eq!(picture.frame_num, 1);
+        assert_eq!(picture.num_ref_idx_l0_active_minus1, Some(0));
+        assert!(!picture.ref_pic_list_modification_l0);
+        assert!(!picture.adaptive_ref_pic_marking_mode_flag);
+        assert_eq!(picture.pic_order_cnt, [1, 1]);
     }
 
     #[test]
