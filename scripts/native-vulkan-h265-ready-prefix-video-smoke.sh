@@ -291,6 +291,8 @@ frame_sleep_count_value="$(jq -r '.frame_sleep_count // 0' "$runtime_json")"
 bitstream_strategy="$(jq -r '.bitstream_buffer_strategy // "none"' "$runtime_json")"
 bitstream_slot_count="$(jq -r '.bitstream_buffer_slot_count // 0' "$runtime_json")"
 bitstream_slot_bytes="$(jq -r '.bitstream_buffer_slot_bytes // 0' "$runtime_json")"
+bitstream_ring_capacity_bytes="$(jq -r '.bitstream_ring_capacity_bytes // 0' "$runtime_json")"
+bitstream_ring_wrap_count="$(jq -r '.bitstream_ring_wrap_count // 0' "$runtime_json")"
 bitstream_window_payload_bytes="$(jq -r '.bitstream_window_payload_bytes // 0' "$runtime_json")"
 bitstream_upload_count="$(jq -r '.bitstream_upload_count // 0' "$runtime_json")"
 bitstream_uploaded_bytes="$(jq -r '.bitstream_uploaded_bytes // 0' "$runtime_json")"
@@ -301,10 +303,13 @@ if [[ "$expected_frames" -gt "$decode_prefix" && ( "$playback_loop_count" -le 1 
   loop_gate_failed=1
 fi
 bitstream_gate_failed=0
-if [[ "$bitstream_strategy" != "single-persistent-mapped-reusable-slot" || "$bitstream_slot_count" -ne 1 || "$bitstream_slot_bytes" -le 0 || "$bitstream_window_payload_bytes" -le 0 || "$bitstream_upload_count" -ne "$expected_frames" || "$bitstream_uploaded_bytes" -le 0 ]]; then
+if [[ "$bitstream_strategy" != "fixed-capacity-persistent-mapped-ring" || "$bitstream_slot_count" -le 0 || "$bitstream_slot_bytes" -le 0 || "$bitstream_ring_capacity_bytes" -lt "$bitstream_slot_bytes" || "$bitstream_window_payload_bytes" -le 0 || "$bitstream_upload_count" -ne "$expected_frames" || "$bitstream_uploaded_bytes" -le 0 ]]; then
   bitstream_gate_failed=1
 fi
-if [[ "$decode_prefix" -gt 1 && "$bitstream_slot_bytes" -ge "$bitstream_window_payload_bytes" ]]; then
+if [[ "$decode_prefix" -gt 1 && ( "$bitstream_slot_count" -le 1 || "$bitstream_ring_capacity_bytes" -le "$bitstream_slot_bytes" ) ]]; then
+  bitstream_gate_failed=1
+fi
+if [[ "$decode_prefix" -gt 1 && "$bitstream_ring_capacity_bytes" -ge "$bitstream_window_payload_bytes" ]]; then
   bitstream_gate_failed=1
 fi
 pacing_gate_failed=0
@@ -347,6 +352,8 @@ if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expect
     printf 'bitstream_buffer_strategy: %s\n' "$bitstream_strategy"
     printf 'bitstream_buffer_slot_count: %s\n' "$bitstream_slot_count"
     printf 'bitstream_buffer_slot_bytes: %s\n' "$bitstream_slot_bytes"
+    printf 'bitstream_ring_capacity_bytes: %s\n' "$bitstream_ring_capacity_bytes"
+    printf 'bitstream_ring_wrap_count: %s\n' "$bitstream_ring_wrap_count"
     printf 'bitstream_window_payload_bytes: %s\n' "$bitstream_window_payload_bytes"
     printf 'bitstream_upload_count: %s\n' "$bitstream_upload_count"
     printf 'bitstream_uploaded_bytes: %s\n' "$bitstream_uploaded_bytes"
@@ -403,6 +410,10 @@ fi
   printf 'bitstream_buffer_strategy: %s\n' "$bitstream_strategy"
   printf 'bitstream_buffer_slot_count: %s\n' "$bitstream_slot_count"
   printf 'bitstream_buffer_slot_bytes: %s\n' "$bitstream_slot_bytes"
+  printf 'bitstream_ring_capacity_bytes: %s\n' "$bitstream_ring_capacity_bytes"
+  printf 'bitstream_ring_min_offset_alignment: %s\n' "$(jq -r '.bitstream_ring_min_offset_alignment // 0' "$runtime_json")"
+  printf 'bitstream_ring_min_size_alignment: %s\n' "$(jq -r '.bitstream_ring_min_size_alignment // 0' "$runtime_json")"
+  printf 'bitstream_ring_wrap_count: %s\n' "$bitstream_ring_wrap_count"
   printf 'bitstream_window_payload_bytes: %s\n' "$bitstream_window_payload_bytes"
   printf 'bitstream_upload_count: %s\n' "$bitstream_upload_count"
   printf 'bitstream_uploaded_bytes: %s\n' "$bitstream_uploaded_bytes"
@@ -412,6 +423,10 @@ fi
   printf 'frame_access_units_tail: %s\n' "$(jq -c '[.frames[-32:][]?.access_unit_index]' "$runtime_json")"
   printf 'frame_loop_indices_head: %s\n' "$(jq -c '[.frames[0:32][]?.playback_loop_index]' "$runtime_json")"
   printf 'frame_loop_indices_tail: %s\n' "$(jq -c '[.frames[-32:][]?.playback_loop_index]' "$runtime_json")"
+  printf 'frame_bitstream_offsets_head: %s\n' "$(jq -c '[.frames[0:32][]?.src_buffer_offset]' "$runtime_json")"
+  printf 'frame_bitstream_offsets_tail: %s\n' "$(jq -c '[.frames[-32:][]?.src_buffer_offset]' "$runtime_json")"
+  printf 'frame_bitstream_wraps_head: %s\n' "$(jq -c '[.frames[0:32][]?.bitstream_ring_wrap_count]' "$runtime_json")"
+  printf 'frame_bitstream_wraps_tail: %s\n' "$(jq -c '[.frames[-32:][]?.bitstream_ring_wrap_count]' "$runtime_json")"
   printf 'pts_delta_min_ms: %s\n' "$pts_delta_min"
   printf 'pts_delta_max_ms: %s\n' "$pts_delta_max"
   printf 'max_bitstream_upload_elapsed_us: %s\n' "$(jq -r '[.frames[]?.bitstream_upload_elapsed_us] | max' "$runtime_json")"
