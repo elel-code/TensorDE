@@ -62,7 +62,7 @@ pub fn runtime_capabilities() -> VideoRuntimeCapabilities {
     }
 }
 
-const VIDEO_RUNTIME_ELEMENTS: &[&str] = &["playbin", "fakesink", "gtk4paintablesink", "glsinkbin"];
+const VIDEO_RUNTIME_ELEMENTS: &[&str] = &["playbin", "fakesink", "appsink", "decodebin"];
 const MUTED_PLAYBIN_FLAGS: &str = "video";
 const AUDIBLE_PLAYBIN_FLAGS: &str = "video+audio";
 const VIDEO_DIAGNOSTICS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
@@ -2151,7 +2151,7 @@ pub struct VideoFrameStats {
     pub gtk_frame_timings_refresh_interval_us_latest: Option<u64>,
 }
 
-#[cfg_attr(not(feature = "gtk-renderer"), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) enum GtkFrameClockPhase {
     BeforePaint,
     Update,
@@ -2187,7 +2187,7 @@ impl VideoFrameStats {
         }
     }
 
-    #[cfg_attr(not(feature = "gtk-renderer"), allow(dead_code))]
+    #[allow(dead_code)]
     pub(crate) fn record_gtk_frame_clock_tick_minimal(
         &mut self,
         frame_counter: i64,
@@ -2209,7 +2209,7 @@ impl VideoFrameStats {
         }
     }
 
-    #[cfg_attr(not(feature = "gtk-renderer"), allow(dead_code))]
+    #[allow(dead_code)]
     pub(crate) fn record_gtk_frame_clock_tick(
         &mut self,
         frame_counter: i64,
@@ -2230,7 +2230,7 @@ impl VideoFrameStats {
             non_negative_u64(predicted_presentation_time_us);
     }
 
-    #[cfg_attr(not(feature = "gtk-renderer"), allow(dead_code))]
+    #[allow(dead_code)]
     pub(crate) fn record_gtk_frame_clock_phase(&mut self, phase: GtkFrameClockPhase) {
         match phase {
             GtkFrameClockPhase::BeforePaint => {
@@ -2252,7 +2252,7 @@ impl VideoFrameStats {
         }
     }
 
-    #[cfg_attr(not(feature = "gtk-renderer"), allow(dead_code))]
+    #[allow(dead_code)]
     pub(crate) fn record_gtk_frame_timing(
         &mut self,
         frame_counter: i64,
@@ -2923,7 +2923,7 @@ mod tests {
             zero_copy_evidence(
                 std::slice::from_ref(&software),
                 &[caps_report(
-                    "gtk4paintablesink0",
+                    "video_sink0",
                     "sink",
                     "sink",
                     "memory:GLMemory"
@@ -2935,12 +2935,7 @@ mod tests {
         assert_eq!(
             zero_copy_evidence(
                 &[hardware],
-                &[caps_report(
-                    "gtk4paintablesink0",
-                    "sink",
-                    "sink",
-                    "memory:DMABuf"
-                )]
+                &[caps_report("video_sink0", "sink", "sink", "memory:DMABuf")]
             )
             .level,
             VideoZeroCopyEvidenceLevel::SinkDmabufCaps
@@ -3007,7 +3002,7 @@ mod tests {
             video_memory_path(
                 std::slice::from_ref(&software),
                 &[caps_report(
-                    "gtk4paintablesink0",
+                    "video_sink0",
                     "sink",
                     "sink",
                     "memory:GLMemory"
@@ -3019,12 +3014,7 @@ mod tests {
         assert_eq!(
             video_memory_path(
                 &[hardware],
-                &[caps_report(
-                    "gtk4paintablesink0",
-                    "sink",
-                    "sink",
-                    "memory:DMABuf"
-                )]
+                &[caps_report("video_sink0", "sink", "sink", "memory:DMABuf")]
             )
             .level,
             VideoMemoryPathLevel::SinkDmabuf
@@ -3039,12 +3029,7 @@ mod tests {
         };
         let memory_path = video_memory_path(
             &[hardware],
-            &[caps_report(
-                "gtk4paintablesink0",
-                "sink",
-                "sink",
-                "memory:DMABuf",
-            )],
+            &[caps_report("video_sink0", "sink", "sink", "memory:DMABuf")],
         );
         let sink_tuning = VideoSinkTuningReport {
             last_sample_enabled: Some(false),
@@ -3160,7 +3145,7 @@ mod tests {
         let memory_path = video_memory_path(
             &[hardware],
             &[caps_report(
-                "gtk4paintablesink0",
+                "video_sink0",
                 "sink",
                 "sink",
                 "memory:GLMemory",
@@ -3459,7 +3444,7 @@ mod tests {
             .map(|element| element.name.as_str())
             .collect::<Vec<_>>();
 
-        for expected in ["playbin", "fakesink", "gtk4paintablesink", "glsinkbin"] {
+        for expected in ["playbin", "fakesink", "appsink", "decodebin"] {
             assert!(element_names.contains(&expected));
         }
     }

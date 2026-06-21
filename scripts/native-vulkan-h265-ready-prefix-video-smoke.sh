@@ -9,6 +9,9 @@ Generate or use a 4K/240 H.265 Main source, then run the native Vulkan direct
 H.265 ready-prefix path on a real Wayland background surface. Each ready AU is
 decoded with Vulkan Video into a sampled NV12 array layer and presented through
 the native Vulkan swapchain. It does not use a GStreamer display sink.
+This smoke loops a ready-prefix window; visual loop boundaries can jump unless
+the source is authored to be seamless. Use it for decode/present/resource
+evidence, not final playback smoothness.
 
 Options:
   --display <name>      Wayland display name. Default: WAYLAND_DISPLAY.
@@ -260,7 +263,9 @@ present_queue="$(jq -r '.present_queue_family_index // "none"' "$runtime_json")"
 video_queue="$(jq -r '.video_decode_queue_family_index // "none"' "$runtime_json")"
 sync_strategy="$(jq -r '.cross_queue_sync_strategy // "none"' "$runtime_json")"
 driver_max_dpb_slots="$(jq -r '.driver_max_dpb_slots // "none"' "$runtime_json")"
+stream_sps_dpb_slots="$(jq -r '.stream_sps_dpb_slots // 0' "$runtime_json")"
 stream_dpb_slots="$(jq -r '.stream_dpb_slots // 0' "$runtime_json")"
+stream_max_active_reference_pictures="$(jq -r '.stream_max_active_reference_pictures // 0' "$runtime_json")"
 session_max_dpb_slots="$(jq -r '.session_max_dpb_slots // 0' "$runtime_json")"
 session_max_active_reference_pictures="$(jq -r '.session_max_active_reference_pictures // 0' "$runtime_json")"
 pacing_strategy="$(jq -r '.pacing_strategy // "none"' "$runtime_json")"
@@ -289,7 +294,7 @@ if [[ "$(jq -r '.present_mode // "none"' "$runtime_json")" == "fifo" && ( "$paci
   pacing_gate_failed=1
 fi
 dpb_gate_failed=0
-if [[ "$driver_max_dpb_slots" == "none" || "$stream_dpb_slots" -le 0 || "$session_max_dpb_slots" -ne "$stream_dpb_slots" || "$session_max_active_reference_pictures" -le 0 || "$distinct_layers" -gt "$session_max_dpb_slots" ]]; then
+if [[ "$driver_max_dpb_slots" == "none" || "$stream_sps_dpb_slots" -le 0 || "$stream_dpb_slots" -le 0 || "$session_max_dpb_slots" -ne "$stream_dpb_slots" || "$session_max_active_reference_pictures" -le 0 || "$session_max_active_reference_pictures" -gt "$session_max_dpb_slots" || "$session_max_active_reference_pictures" -lt "$stream_max_active_reference_pictures" || "$distinct_layers" -gt "$session_max_dpb_slots" ]]; then
   dpb_gate_failed=1
 fi
 
@@ -314,7 +319,9 @@ if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expect
     printf 'video_queue: %s\n' "$video_queue"
     printf 'cross_queue_sync_strategy: %s\n' "$sync_strategy"
     printf 'driver_max_dpb_slots: %s\n' "$driver_max_dpb_slots"
+    printf 'stream_sps_dpb_slots: %s\n' "$stream_sps_dpb_slots"
     printf 'stream_dpb_slots: %s\n' "$stream_dpb_slots"
+    printf 'stream_max_active_reference_pictures: %s\n' "$stream_max_active_reference_pictures"
     printf 'session_max_dpb_slots: %s\n' "$session_max_dpb_slots"
     printf 'session_max_active_reference_pictures: %s\n' "$session_max_active_reference_pictures"
     printf 'pacing_strategy: %s\n' "$pacing_strategy"
@@ -364,7 +371,9 @@ fi
   printf 'video_decode_queue_codec_operations: %s\n' "$(jq -c '.video_decode_queue_codec_operations' "$runtime_json")"
   printf 'cross_queue_sync_strategy: %s\n' "$(jq -r '.cross_queue_sync_strategy' "$runtime_json")"
   printf 'driver_max_dpb_slots: %s\n' "$driver_max_dpb_slots"
+  printf 'stream_sps_dpb_slots: %s\n' "$stream_sps_dpb_slots"
   printf 'stream_dpb_slots: %s\n' "$stream_dpb_slots"
+  printf 'stream_max_active_reference_pictures: %s\n' "$stream_max_active_reference_pictures"
   printf 'session_max_dpb_slots: %s\n' "$session_max_dpb_slots"
   printf 'session_max_active_reference_pictures: %s\n' "$session_max_active_reference_pictures"
   printf 'bitstream_buffer_strategy: %s\n' "$bitstream_strategy"

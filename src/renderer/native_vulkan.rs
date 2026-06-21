@@ -1,9 +1,8 @@
 //! Hand-rolled Vulkan renderer spike.
 //!
-//! This module is intentionally separate from the existing wgpu path. The first
-//! step is a concrete backend contract: native Wayland layer-shell ownership,
-//! Vulkan surface/swapchain ownership, and direct video texture interop are
-//! represented here before any default renderer switch is attempted.
+//! This module owns the native Wayland/Vulkan renderer path. The backend
+//! contract covers native Wayland layer-shell ownership, Vulkan
+//! surface/swapchain ownership, and direct video texture interop.
 
 #![allow(unsafe_code)]
 
@@ -1515,7 +1514,9 @@ pub struct NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
     pub video_decode_queue_codec_operations: Vec<String>,
     pub cross_queue_sync_strategy: &'static str,
     pub driver_max_dpb_slots: u32,
+    pub stream_sps_dpb_slots: u32,
     pub stream_dpb_slots: u32,
+    pub stream_max_active_reference_pictures: u32,
     pub session_max_dpb_slots: u32,
     pub session_max_active_reference_pictures: u32,
     pub swapchain_extent: (u32, u32),
@@ -3468,13 +3469,40 @@ pub fn run_h265_ready_prefix_video(
                                 .to_owned(),
                         )
                     })?;
-            let stream_dpb_slots = native_vulkan_h265_sps_dpb_slot_count(&parameter_sets.sps);
-            let session_max_dpb_slots =
-                native_vulkan_h265_session_dpb_slots(capabilities.max_dpb_slots, parameter_sets);
+            let access_units = extract
+                .snapshot
+                .h265_access_units
+                .get(..ready_prefix_frame_count as usize)
+                .ok_or_else(|| {
+                    NativeVulkanError::Video(format!(
+                        "H.265 access unit snapshot has {} frames but {ready_prefix_frame_count} were requested",
+                        extract.snapshot.h265_access_units.len()
+                    ))
+                })?;
+            let stream_sps_dpb_slots = native_vulkan_h265_sps_dpb_slot_count(&parameter_sets.sps);
+            let stream_max_active_reference_pictures =
+                native_vulkan_h265_access_units_max_active_references(access_units);
+            let (stream_dpb_slots, optimized_reference_plan) =
+                native_vulkan_h265_min_decodable_dpb_plan(access_units, stream_sps_dpb_slots);
+            if let Some(first_unready) = optimized_reference_plan
+                .iter()
+                .find(|entry| !entry.ready_for_decode_submit)
+            {
+                return Err(NativeVulkanError::Video(format!(
+                    "H.265 ready-prefix AU {} is not decodable with optimized DPB slot count {stream_dpb_slots}; missing POCs {:?}",
+                    first_unready.access_unit_index, first_unready.missing_reference_pocs
+                )));
+            }
+            let plan = optimized_reference_plan.as_slice();
+            let session_max_dpb_slots = native_vulkan_h265_session_dpb_slots_for_count(
+                capabilities.max_dpb_slots,
+                stream_dpb_slots,
+            );
             let session_max_active_reference_pictures =
-                native_vulkan_video_session_max_active_reference_pictures(
+                native_vulkan_video_session_max_active_reference_pictures_for_stream(
                     capabilities.max_active_reference_pictures,
                     session_max_dpb_slots,
+                    stream_max_active_reference_pictures,
                 );
             let picture_format = vk::Format::G8_B8R8_2PLANE_420_UNORM;
             let create_info = vk::VideoSessionCreateInfoKHR::default()
@@ -3592,26 +3620,6 @@ pub fn run_h265_ready_prefix_video(
             )?);
             let renderer_ref = renderer.as_mut().expect("video renderer was just created");
 
-            let plan = extract
-                .snapshot
-                .h265_decode_reference_plan
-                .get(..ready_prefix_frame_count as usize)
-                .ok_or_else(|| {
-                    NativeVulkanError::Video(format!(
-                        "H.265 reference plan has {} frames but {ready_prefix_frame_count} were requested",
-                        extract.snapshot.h265_decode_reference_plan.len()
-                    ))
-                })?;
-            let access_units = extract
-                .snapshot
-                .h265_access_units
-                .get(..ready_prefix_frame_count as usize)
-                .ok_or_else(|| {
-                    NativeVulkanError::Video(format!(
-                        "H.265 access unit snapshot has {} frames but {ready_prefix_frame_count} were requested",
-                        extract.snapshot.h265_access_units.len()
-                    ))
-                })?;
             let mut image_layer_layouts =
                 vec![vk::ImageLayout::UNDEFINED; image.snapshot.array_layers as usize];
             let mut active_dpb_pocs = vec![None::<i32>; image.snapshot.array_layers as usize];
@@ -3891,7 +3899,9 @@ pub fn run_h265_ready_prefix_video(
                 ),
                 cross_queue_sync_strategy: "per-frame-binary-semaphore-decode-signal-present-wait",
                 driver_max_dpb_slots: capabilities.max_dpb_slots,
+                stream_sps_dpb_slots,
                 stream_dpb_slots,
+                stream_max_active_reference_pictures,
                 session_max_dpb_slots,
                 session_max_active_reference_pictures,
                 swapchain_extent: (swapchain_plan.extent.width, swapchain_plan.extent.height),
@@ -13592,10 +13602,11 @@ fn native_vulkan_h265_decode_reference_plan(
                     .map(|delta_poc| {
                         let poc = current_poc.saturating_add(delta_poc);
                         let source = poc_to_decoded_slot.get(&poc).copied();
+                        let available = source.is_some_and(|(_, slot)| slot != planned_output_slot);
                         NativeVulkanH265DecodeReferenceSnapshot {
                             delta_poc,
                             poc,
-                            available: source.is_some(),
+                            available,
                             source_access_unit_index: source.map(|(index, _)| index),
                             dpb_slot: source.map(|(_, slot)| slot),
                         }
@@ -13644,6 +13655,36 @@ fn native_vulkan_h265_decode_reference_plan(
     }
 
     plan
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_min_decodable_dpb_plan(
+    access_units: &[NativeVulkanH265AccessUnitSnapshot],
+    max_dpb_slots: u32,
+) -> (u32, Vec<NativeVulkanH265DecodeReferencePlanEntrySnapshot>) {
+    let max_dpb_slots = max_dpb_slots.max(1);
+    let mut last_plan = Vec::new();
+    for dpb_slots in 1..=max_dpb_slots {
+        let plan = native_vulkan_h265_decode_reference_plan(access_units, dpb_slots);
+        if plan.iter().all(|entry| entry.ready_for_decode_submit) {
+            return (dpb_slots, plan);
+        }
+        last_plan = plan;
+    }
+    (max_dpb_slots, last_plan)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_access_units_max_active_references(
+    access_units: &[NativeVulkanH265AccessUnitSnapshot],
+) -> u32 {
+    access_units
+        .iter()
+        .filter_map(|access_unit| access_unit.first_slice.as_ref())
+        .filter_map(|slice| slice.short_term_ref_pic_set.as_ref())
+        .map(|rps| rps.used_by_current_count)
+        .max()
+        .unwrap_or(0)
 }
 
 #[cfg(any(feature = "native-vulkan-gst-video", test))]
@@ -15465,8 +15506,16 @@ fn native_vulkan_h265_session_dpb_slots(
     driver_max_dpb_slots: u32,
     parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
 ) -> u32 {
-    let driver_slots = native_vulkan_video_session_max_dpb_slots(driver_max_dpb_slots);
     let stream_slots = native_vulkan_h265_sps_dpb_slot_count(&parameter_sets.sps);
+    native_vulkan_h265_session_dpb_slots_for_count(driver_max_dpb_slots, stream_slots)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_session_dpb_slots_for_count(
+    driver_max_dpb_slots: u32,
+    stream_slots: u32,
+) -> u32 {
+    let driver_slots = native_vulkan_video_session_max_dpb_slots(driver_max_dpb_slots);
     if driver_slots == 0 {
         0
     } else {
@@ -15478,10 +15527,24 @@ fn native_vulkan_video_session_max_active_reference_pictures(
     driver_max_active_reference_pictures: u32,
     session_max_dpb_slots: u32,
 ) -> u32 {
+    native_vulkan_video_session_max_active_reference_pictures_for_stream(
+        driver_max_active_reference_pictures,
+        session_max_dpb_slots,
+        session_max_dpb_slots,
+    )
+}
+
+fn native_vulkan_video_session_max_active_reference_pictures_for_stream(
+    driver_max_active_reference_pictures: u32,
+    session_max_dpb_slots: u32,
+    stream_max_active_reference_pictures: u32,
+) -> u32 {
     if driver_max_active_reference_pictures == 0 || session_max_dpb_slots == 0 {
         0
     } else {
-        driver_max_active_reference_pictures.min(session_max_dpb_slots)
+        driver_max_active_reference_pictures
+            .min(session_max_dpb_slots)
+            .min(stream_max_active_reference_pictures.max(1))
     }
 }
 
@@ -18312,7 +18375,7 @@ pub struct NativeVulkanVideoInteropContract {
 pub fn video_interop_contract() -> NativeVulkanVideoInteropContract {
     NativeVulkanVideoInteropContract {
         target_memory_flow: "decoder GPU memory -> importable DMABuf/EGLImage/Vulkan image -> Vulkan YUV sampling",
-        current_baseline: "native-wgpu GStreamer CUDAMemory -> CUDA copy -> external Vulkan image planes -> wgpu present",
+        current_baseline: "retired native-wgpu evidence: GStreamer CUDAMemory -> CUDA copy -> external Vulkan image planes -> wgpu present",
         target_sampling: "NV12/P010/YUV planes sampled directly in Vulkan before RGB composition",
         avoids_default_rgba_upload: true,
         decoder_policy: "prefer GStreamer for codec/audio coverage; allow Vulkan Video or libavcodec import paths when they win evidence",
@@ -18320,7 +18383,7 @@ pub fn video_interop_contract() -> NativeVulkanVideoInteropContract {
         known_blockers: &[
             "direct gst_cuda_memory_export fd import returned zero Vulkan memory_type_bits on NVIDIA",
             "GLMemory DMABuf export may require libnvrtc on nvcodec systems",
-            "default switch requires real Wayland evidence beating the current 4K/240 native-wgpu baseline",
+            "native Vulkan import/decode must be judged against the retired 4K/240 native-wgpu evidence",
         ],
     }
 }
@@ -18478,6 +18541,113 @@ mod tests {
         assert_eq!(payloads[1].start_code_offset, 7);
         assert_eq!(payloads[1].slice_segment_offset, 7);
         assert_eq!(payloads[1].payload_offset, 10);
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    fn h265_test_access_unit(
+        index: u32,
+        poc: u32,
+        idr: bool,
+        used_delta_pocs: &[i32],
+    ) -> NativeVulkanH265AccessUnitSnapshot {
+        let negative_delta_pocs = used_delta_pocs
+            .iter()
+            .copied()
+            .filter(|delta| *delta < 0)
+            .collect::<Vec<_>>();
+        let positive_delta_pocs = used_delta_pocs
+            .iter()
+            .copied()
+            .filter(|delta| *delta > 0)
+            .collect::<Vec<_>>();
+        let short_term_ref_pic_set = (!idr).then(|| NativeVulkanH265ShortTermRefPicSetSnapshot {
+            inter_ref_pic_set_prediction_flag: false,
+            num_negative_pics: negative_delta_pocs.len() as u32,
+            num_positive_pics: positive_delta_pocs.len() as u32,
+            negative_delta_pocs: negative_delta_pocs.clone(),
+            negative_used_by_curr_pic: vec![true; negative_delta_pocs.len()],
+            used_negative_delta_pocs: negative_delta_pocs,
+            positive_delta_pocs: positive_delta_pocs.clone(),
+            positive_used_by_curr_pic: vec![true; positive_delta_pocs.len()],
+            used_positive_delta_pocs: positive_delta_pocs,
+            used_by_current_count: used_delta_pocs.len() as u32,
+        });
+
+        NativeVulkanH265AccessUnitSnapshot {
+            index,
+            bytes: 0,
+            byte_hash: 0,
+            pts_ms: Some(u64::from(index) * 4),
+            duration_ms: Some(4),
+            has_annex_b_start_codes: true,
+            has_parameter_sets: idr,
+            h265_vps_count: u32::from(idr),
+            h265_sps_count: u32::from(idr),
+            h265_pps_count: u32::from(idr),
+            h265_idr_count: u32::from(idr),
+            h265_slice_count: 1,
+            first_slice: Some(NativeVulkanH265AccessUnitSliceSnapshot {
+                nal_type: if idr { 19 } else { 1 },
+                nal_type_label: if idr { "idr-w-radl" } else { "trail-r" },
+                slice_segment_offset: 0,
+                first_slice_segment_in_pic_flag: true,
+                slice_type: if idr { 2 } else { 1 },
+                pps_id: 0,
+                pic_order_cnt_lsb: (!idr).then_some(poc),
+                short_term_ref_pic_set_sps_flag: false,
+                short_term_ref_pic_set_idx: None,
+                num_delta_pocs_of_ref_rps_idx: 0,
+                num_bits_for_st_ref_pic_set_in_slice: 0,
+                short_term_ref_pic_set,
+                idr,
+                irap: idr,
+            }),
+            first_slice_parse_error: None,
+        }
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn marks_h265_self_evicted_reference_unready() {
+        let access_units = vec![
+            h265_test_access_unit(0, 0, true, &[]),
+            h265_test_access_unit(1, 1, false, &[-1]),
+        ];
+
+        let plan = native_vulkan_h265_decode_reference_plan(&access_units, 1);
+
+        assert!(plan[0].ready_for_decode_submit);
+        assert!(!plan[1].ready_for_decode_submit);
+        assert_eq!(plan[1].planned_output_slot, 0);
+        assert_eq!(plan[1].evicted_poc, Some(0));
+        assert_eq!(plan[1].missing_reference_pocs, vec![0]);
+        assert_eq!(plan[1].references[0].dpb_slot, Some(0));
+        assert!(!plan[1].references[0].available);
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn chooses_minimum_h265_dpb_slots_by_reference_distance() {
+        let access_units = vec![
+            h265_test_access_unit(0, 0, true, &[]),
+            h265_test_access_unit(1, 1, false, &[-1]),
+            h265_test_access_unit(2, 2, false, &[-2]),
+        ];
+
+        assert_eq!(
+            native_vulkan_h265_access_units_max_active_references(&access_units),
+            1
+        );
+        let (dpb_slots, plan) = native_vulkan_h265_min_decodable_dpb_plan(&access_units, 3);
+
+        assert_eq!(dpb_slots, 3);
+        assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.planned_output_slot)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
     }
 
     #[test]

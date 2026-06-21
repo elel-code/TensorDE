@@ -1,13 +1,9 @@
-//! Rendering plans and optional GTK/layer-shell renderer.
+//! Rendering plans and native renderer backends.
 
-#[cfg(feature = "gtk-renderer")]
-pub mod gtk;
 #[cfg(feature = "native-vulkan-renderer")]
 pub mod native_vulkan;
 #[cfg(feature = "native-wayland-renderer")]
 pub mod native_wayland;
-#[cfg(feature = "native-wgpu-renderer")]
-pub mod native_wgpu;
 #[cfg(feature = "video-renderer")]
 pub mod video;
 

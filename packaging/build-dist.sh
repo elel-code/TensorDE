@@ -11,7 +11,7 @@ completions, and the systemd user service.
 Options:
   --dest <dir>        Output directory. Default: dist
   --profile <name>   Cargo profile to package. Default: release
-  --features <list>  Cargo feature list. Default: gtk-renderer,video-renderer
+  --features <list>  Cargo feature list. Default: native-vulkan-gst-video
   --no-build         Do not run cargo build; package existing target artifacts
   -h, --help         Show this help text
 EOF
@@ -19,7 +19,7 @@ EOF
 
 dest_dir="dist"
 profile="release"
-features="${GILDER_DIST_FEATURES:-gtk-renderer,video-renderer}"
+features="${GILDER_DIST_FEATURES:-native-vulkan-gst-video}"
 build=1
 
 while [[ $# -gt 0 ]]; do
@@ -94,7 +94,7 @@ mkdir -p \
   "$stage_dir/share/doc/gilder" \
   "$stage_dir/share/doc/gilder/scripts"
 
-for binary in gilderd gilderctl gilder-convert; do
+for binary in gilderd gilderctl gilder-convert gilder-native-vulkan; do
   source_path="target/${target_profile_dir}/${binary}"
   if [[ ! -x "$source_path" ]]; then
     echo "missing built binary: ${source_path}" >&2
@@ -109,12 +109,12 @@ install -m 0644 completions/zsh/* "$stage_dir/share/zsh/site-functions/"
 install -m 0644 packaging/systemd/gilder.service "$stage_dir/lib/systemd/user/gilder.service"
 install -m 0644 README.md docs/packaging.md docs/todo.md docs/video-validation.md "$stage_dir/share/doc/gilder/"
 install -m 0755 scripts/video-codec-smoke.sh "$stage_dir/share/doc/gilder/scripts/video-codec-smoke.sh"
-install -m 0755 scripts/wayland-video-surface-smoke.sh "$stage_dir/share/doc/gilder/scripts/wayland-video-surface-smoke.sh"
-install -m 0755 scripts/wayland-baseline-matrix.sh "$stage_dir/share/doc/gilder/scripts/wayland-baseline-matrix.sh"
+install -m 0755 scripts/native-vulkan-h265-ready-prefix-video-smoke.sh "$stage_dir/share/doc/gilder/scripts/native-vulkan-h265-ready-prefix-video-smoke.sh"
+install -m 0755 scripts/native-vulkan-h265-first-frame-video-smoke.sh "$stage_dir/share/doc/gilder/scripts/native-vulkan-h265-first-frame-video-smoke.sh"
+install -m 0755 scripts/native-vulkan-surface-video-queue-smoke.sh "$stage_dir/share/doc/gilder/scripts/native-vulkan-surface-video-queue-smoke.sh"
 install -m 0755 scripts/performance-snapshot.sh "$stage_dir/share/doc/gilder/scripts/performance-snapshot.sh"
 install -m 0755 scripts/install-video-codec-smoke-deps-ubuntu.sh "$stage_dir/share/doc/gilder/scripts/install-video-codec-smoke-deps-ubuntu.sh"
 install -m 0755 scripts/install-video-codec-smoke-deps-arch.sh "$stage_dir/share/doc/gilder/scripts/install-video-codec-smoke-deps-arch.sh"
-install -m 0755 scripts/install-wayland-video-smoke-deps-arch.sh "$stage_dir/share/doc/gilder/scripts/install-wayland-video-smoke-deps-arch.sh"
 install -m 0644 scripts/performance-decision-summary.awk "$stage_dir/share/doc/gilder/scripts/performance-decision-summary.awk"
 
 cat > "$stage_dir/MANIFEST.txt" <<EOF
@@ -128,6 +128,7 @@ contents:
   bin/gilderd
   bin/gilderctl
   bin/gilder-convert
+  bin/gilder-native-vulkan
   share/man/man1/gilderd.1
   share/man/man1/gilderctl.1
   share/man/man1/gilder-convert.1
@@ -141,12 +142,12 @@ contents:
   share/doc/gilder/todo.md
   share/doc/gilder/video-validation.md
   share/doc/gilder/scripts/video-codec-smoke.sh
-  share/doc/gilder/scripts/wayland-video-surface-smoke.sh
-  share/doc/gilder/scripts/wayland-baseline-matrix.sh
+  share/doc/gilder/scripts/native-vulkan-h265-ready-prefix-video-smoke.sh
+  share/doc/gilder/scripts/native-vulkan-h265-first-frame-video-smoke.sh
+  share/doc/gilder/scripts/native-vulkan-surface-video-queue-smoke.sh
   share/doc/gilder/scripts/performance-snapshot.sh
   share/doc/gilder/scripts/install-video-codec-smoke-deps-ubuntu.sh
   share/doc/gilder/scripts/install-video-codec-smoke-deps-arch.sh
-  share/doc/gilder/scripts/install-wayland-video-smoke-deps-arch.sh
   share/doc/gilder/scripts/performance-decision-summary.awk
 EOF
 

@@ -1,12 +1,14 @@
 # Gilder
 
-Gilder is a planned GTK-rs based Wayland wallpaper engine for independent
-compositors such as niri and Hyprland. The project aims to cover the gap
+Gilder is a native Wayland wallpaper engine for independent compositors such as
+niri and Hyprland. The project aims to cover the gap
 between simple static wallpaper tools and richer Wallpaper Engine style
 packages on Linux.
 
-Current status: daemon IPC, state persistence, static GTK renderer planning, and
-early feature-gated GTK/GStreamer renderer paths.
+Current status: daemon IPC, state persistence, wallpaper planning, and
+feature-gated native Wayland/Vulkan renderer paths. Video work is converging on
+GStreamer demux/parser/appsink feeding native Vulkan import/decode/render; the
+old GTK and native waylandsink/playbin display paths have been removed.
 
 ## Project Layout
 
@@ -14,7 +16,7 @@ early feature-gated GTK/GStreamer renderer paths.
 - `src/core/`: wallpaper package format primitives.
 - `src/ipc.rs`: IPC module entry and re-exports.
 - `src/ipc/`: command, protocol, and socket helpers.
-- `src/bin/gilderd.rs`: daemon entry point; later owns GTK/Wayland rendering.
+- `src/bin/gilderd.rs`: daemon entry point for IPC, state, and renderer updates.
 - `src/bin/gilderctl.rs`: CLI client for daemon control.
 - `src/bin/gilder-convert.rs`: conversion tool for Wallpaper Engine projects.
 - `docs/design.md`: system design.
@@ -35,12 +37,12 @@ early feature-gated GTK/GStreamer renderer paths.
   helper for codec smoke validation.
 - `scripts/install-video-codec-smoke-deps-arch.sh`: Arch-like dependency
   helper for codec smoke validation.
-- `scripts/wayland-video-surface-smoke.sh`: interactive Wayland video surface
-  validation helper.
-- `scripts/wayland-baseline-matrix.sh`: interactive Wayland active/paused,
-  fullscreen, hidden, battery, unfocused, and session baseline aggregator.
-- `scripts/install-wayland-video-smoke-deps-arch.sh`: Arch-like dependency
-  helper for interactive video surface validation.
+- `scripts/native-vulkan-h265-ready-prefix-video-smoke.sh`: real Wayland native
+  Vulkan H.265 decode/present evidence helper.
+- `scripts/native-vulkan-h265-first-frame-video-smoke.sh`: real Wayland native
+  Vulkan first-frame video helper.
+- `scripts/native-vulkan-surface-video-queue-smoke.sh`: native Vulkan surface
+  queue helper.
 - `scripts/performance-snapshot.sh`: daemon CPU/RSS/PSS/USS/status sampling
   helper.
 - `scripts/desktop-policy-smoke.sh`: headless desktop-state performance policy
@@ -50,9 +52,9 @@ early feature-gated GTK/GStreamer renderer paths.
 
 ```sh
 cargo check
-cargo check --features gtk-renderer
 cargo check --features video-renderer
-cargo check --features gtk-renderer,video-renderer
+cargo check --features native-vulkan-renderer
+cargo check --features native-vulkan-gst-video --bin gilder-native-vulkan
 cargo run --bin gilderd
 cargo run --bin gilderctl -- ping
 cargo run --bin gilderctl -- outputs
@@ -73,15 +75,13 @@ is available at `packaging/build-dist.sh`.
 `manifest.gilder.json`.
 
 The daemon currently provides JSON-RPC over a Unix socket, persistent state, and
-policy decisions for desktop-state-based throttling. Rendering,
-GTK-layer-shell integration, and Hyprland/niri output discovery are tracked in
-`docs/todo.md`.
-
-The optional `gtk-renderer` feature builds the GTK 4 + gtk4-layer-shell static
-renderer path. It expects system GTK 4 and gtk4-layer-shell development files;
-CI builds gtk4-layer-shell from source because Ubuntu Noble does not ship a
-`libgtk4-layer-shell-dev` package.
+policy decisions for desktop-state-based throttling. Rendering, native Vulkan
+integration, and Hyprland/niri output discovery are tracked in `docs/todo.md`.
 
 The optional `video-renderer` feature builds the GStreamer controller for video
 wallpaper pipeline lifecycle. It expects GStreamer 1.0 development files and
 plugins from the host system.
+
+The optional `native-vulkan-gst-video` feature builds the native Wayland/Vulkan
+video helper. GStreamer owns container parsing and appsink handoff; native
+Vulkan owns the GPU/display side.
