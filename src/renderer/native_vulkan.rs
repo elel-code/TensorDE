@@ -2123,6 +2123,8 @@ pub struct NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
     pub h265_packet_queue_pulled_count: u32,
     pub h265_packet_queue_eos_count: u32,
     pub h265_packet_queue_loop_count: u32,
+    pub h265_packet_queue_loop_skip_access_units: u32,
+    pub h265_packet_queue_bootstrap_discarded_access_units: u32,
     pub h265_packet_queue_max_payload_bytes: u64,
     pub h265_packet_queue_retained_payload_bytes: u64,
     pub pts_delta_min_ms: Option<u64>,
@@ -2230,6 +2232,8 @@ pub struct NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot {
     pub h264_packet_queue_pulled_count: u32,
     pub h264_packet_queue_eos_count: u32,
     pub h264_packet_queue_loop_count: u32,
+    pub h264_packet_queue_loop_skip_access_units: u32,
+    pub h264_packet_queue_bootstrap_discarded_access_units: u32,
     pub h264_packet_queue_max_payload_bytes: u64,
     pub h264_packet_queue_retained_payload_bytes: u64,
     pub pts_delta_min_ms: Option<u64>,
@@ -4198,37 +4202,14 @@ pub fn run_h264_ready_prefix_video(
             let mut streaming_queue =
                 native_vulkan_start_h264_streaming_packet_queue(&source, queue_capacity)?;
             let parameter_sets = streaming_queue.parameter_sets.clone();
-            let bootstrap_access_units = streaming_queue.bootstrap_access_units();
-            let stream_sps_dpb_slots = native_vulkan_h264_sps_dpb_slot_count(&parameter_sets.sps);
-            let max_frame_num = native_vulkan_h264_sps_max_frame_num(&parameter_sets.sps);
-            let stream_max_active_reference_pictures = parameter_sets
-                .sps
-                .max_num_ref_frames
-                .max(native_vulkan_h264_access_units_max_active_references(
-                    &bootstrap_access_units,
-                ))
-                .max(1);
-            let (stream_dpb_slots, bootstrap_plan) =
-                native_vulkan_h264_min_decodable_dpb_plan_with_gaps(
-                    &bootstrap_access_units,
-                    stream_sps_dpb_slots,
-                    stream_max_active_reference_pictures,
-                    max_frame_num,
-                    parameter_sets.sps.gaps_in_frame_num_value_allowed_flag,
-                );
-            if let Some(first_unready) = bootstrap_plan
-                .iter()
-                .find(|entry| !entry.ready_for_decode_submit)
-            {
-                return Err(NativeVulkanError::Video(format!(
-                    "H.264 streaming bootstrap AU {} is not decodable with optimized DPB slot count {stream_dpb_slots}: {}",
-                    first_unready.access_unit_index,
-                    first_unready
-                        .unsupported_reason
-                        .as_deref()
-                        .unwrap_or("missing references")
-                )));
-            }
+            let streaming_bootstrap = native_vulkan_h264_align_streaming_bootstrap(
+                &mut streaming_queue,
+                &parameter_sets,
+            )?;
+            let stream_sps_dpb_slots = streaming_bootstrap.stream_sps_dpb_slots;
+            let stream_dpb_slots = streaming_bootstrap.stream_dpb_slots;
+            let stream_max_active_reference_pictures =
+                streaming_bootstrap.stream_max_active_reference_pictures;
             let streaming_bitstream = native_vulkan_h264_streaming_queue_bitstream_plan(
                 &streaming_queue,
                 width,
@@ -4236,7 +4217,7 @@ pub fn run_h264_ready_prefix_video(
                 capabilities.min_bitstream_buffer_offset_alignment,
                 capabilities.min_bitstream_buffer_size_alignment,
             )?;
-            let stream_max_frame_num = native_vulkan_h264_sps_max_frame_num(&parameter_sets.sps);
+            let stream_max_frame_num = streaming_bootstrap.max_frame_num;
             let session_max_dpb_slots = native_vulkan_h265_session_dpb_slots_for_count(
                 capabilities.max_dpb_slots,
                 stream_dpb_slots,
@@ -4765,6 +4746,9 @@ pub fn run_h264_ready_prefix_video(
                 h264_packet_queue_pulled_count: streaming_queue.pulled_count,
                 h264_packet_queue_eos_count: streaming_queue.eos_count,
                 h264_packet_queue_loop_count: streaming_queue.loop_count,
+                h264_packet_queue_loop_skip_access_units: streaming_queue.loop_skip_access_units,
+                h264_packet_queue_bootstrap_discarded_access_units: streaming_queue
+                    .bootstrap_discarded_access_units,
                 h264_packet_queue_max_payload_bytes: streaming_queue.max_payload_bytes,
                 h264_packet_queue_retained_payload_bytes: streaming_queue.retained_payload_bytes(),
                 pts_delta_min_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).min(),
@@ -5152,27 +5136,15 @@ pub fn run_h265_ready_prefix_video(
             let mut streaming_queue =
                 native_vulkan_start_h265_streaming_packet_queue(&source, queue_capacity)?;
             let parameter_sets = streaming_queue.parameter_sets.clone();
-            let bootstrap_access_units = streaming_queue.bootstrap_access_units();
-            let stream_sps_dpb_slots = native_vulkan_h265_sps_dpb_slot_count(&parameter_sets.sps);
-            let stream_max_pic_order_cnt_lsb =
-                native_vulkan_h265_sps_max_pic_order_cnt_lsb(&parameter_sets.sps);
+            let streaming_bootstrap = native_vulkan_h265_align_streaming_bootstrap(
+                &mut streaming_queue,
+                &parameter_sets,
+            )?;
+            let stream_sps_dpb_slots = streaming_bootstrap.stream_sps_dpb_slots;
+            let stream_max_pic_order_cnt_lsb = streaming_bootstrap.stream_max_pic_order_cnt_lsb;
+            let stream_dpb_slots = streaming_bootstrap.stream_dpb_slots;
             let stream_max_active_reference_pictures =
-                native_vulkan_h265_access_units_max_active_references(&bootstrap_access_units)
-                    .max(1);
-            let (stream_dpb_slots, bootstrap_plan) = native_vulkan_h265_min_decodable_dpb_plan(
-                &bootstrap_access_units,
-                stream_sps_dpb_slots,
-                stream_max_pic_order_cnt_lsb,
-            );
-            if let Some(first_unready) = bootstrap_plan
-                .iter()
-                .find(|entry| !entry.ready_for_decode_submit)
-            {
-                return Err(NativeVulkanError::Video(format!(
-                    "H.265 streaming bootstrap AU {} is not decodable with optimized DPB slot count {stream_dpb_slots}; missing POCs {:?}",
-                    first_unready.access_unit_index, first_unready.missing_reference_pocs
-                )));
-            }
+                streaming_bootstrap.stream_max_active_reference_pictures;
             let streaming_bitstream = native_vulkan_h265_streaming_queue_bitstream_plan(
                 &streaming_queue,
                 width,
@@ -5340,7 +5312,7 @@ pub fn run_h265_ready_prefix_video(
             let mut bitstream_ring = NativeVulkanVideoBitstreamRing::new(&streaming_bitstream);
             let mut streaming_reference_planner = NativeVulkanH265DecodeReferencePlanner::new(
                 stream_dpb_slots,
-                native_vulkan_h265_sps_max_pic_order_cnt_lsb(&parameter_sets.sps),
+                stream_max_pic_order_cnt_lsb,
             );
             let mut previous_source_loop_index = 0u32;
 
@@ -5653,6 +5625,9 @@ pub fn run_h265_ready_prefix_video(
                 h265_packet_queue_pulled_count: streaming_queue.pulled_count,
                 h265_packet_queue_eos_count: streaming_queue.eos_count,
                 h265_packet_queue_loop_count: streaming_queue.loop_count,
+                h265_packet_queue_loop_skip_access_units: streaming_queue.loop_skip_access_units,
+                h265_packet_queue_bootstrap_discarded_access_units: streaming_queue
+                    .bootstrap_discarded_access_units,
                 h265_packet_queue_max_payload_bytes: streaming_queue.max_payload_bytes,
                 h265_packet_queue_retained_payload_bytes: streaming_queue.retained_payload_bytes(),
                 pts_delta_min_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).min(),
@@ -10062,6 +10037,7 @@ trait NativeVulkanStreamingAccessUnit: Sized {
     ) -> Self::Snapshot;
     fn bytes(&self) -> &[u8];
     fn has_parameter_sets(&self) -> bool;
+    fn is_random_access(&self) -> bool;
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -10083,6 +10059,8 @@ struct NativeVulkanStreamingPacketQueue<A: NativeVulkanStreamingAccessUnit> {
     pulled_count: u32,
     eos_count: u32,
     loop_count: u32,
+    loop_skip_access_units: u32,
+    bootstrap_discarded_access_units: u32,
     max_payload_bytes: u64,
 }
 
@@ -10125,23 +10103,66 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
         })
     }
 
-    fn fill_one(&mut self, loop_on_eos: bool) -> Result<(), NativeVulkanError> {
-        if self.queued.len() >= self.capacity {
-            return Ok(());
+    fn discard_front_for_bootstrap(
+        &mut self,
+    ) -> Result<Option<NativeVulkanStreamingPacket<A>>, NativeVulkanError> {
+        let dropped = self.queued.pop_front();
+        if dropped.is_some() {
+            self.bootstrap_discarded_access_units =
+                self.bootstrap_discarded_access_units.saturating_add(1);
+            let _ = self.try_fill_one(false)?;
         }
-        let Some(access_unit) = native_vulkan_pull_streaming_access_unit::<A>(
-            &self.pipeline,
-            &self.sink,
-            &self.bus,
-            loop_on_eos,
-            &mut self.eos_count,
-            &mut self.loop_count,
-        )?
-        else {
-            return Err(NativeVulkanError::Video(format!(
-                "{} streaming packet queue reached EOS",
-                A::CODEC_LABEL
-            )));
+        Ok(dropped)
+    }
+
+    fn set_loop_skip_access_units(&mut self, skip_access_units: u32) {
+        self.loop_skip_access_units = skip_access_units;
+    }
+
+    fn pull_next_access_unit(&mut self, loop_on_eos: bool) -> Result<Option<A>, NativeVulkanError> {
+        loop {
+            let before_loop_count = self.loop_count;
+            let Some(access_unit) = native_vulkan_pull_streaming_access_unit::<A>(
+                &self.pipeline,
+                &self.sink,
+                &self.bus,
+                loop_on_eos,
+                &mut self.eos_count,
+                &mut self.loop_count,
+            )?
+            else {
+                return Ok(None);
+            };
+            if loop_on_eos
+                && self.loop_skip_access_units > 0
+                && self.loop_count != before_loop_count
+                && !access_unit.is_random_access()
+            {
+                for _ in 1..self.loop_skip_access_units {
+                    let Some(_) = native_vulkan_pull_streaming_access_unit::<A>(
+                        &self.pipeline,
+                        &self.sink,
+                        &self.bus,
+                        loop_on_eos,
+                        &mut self.eos_count,
+                        &mut self.loop_count,
+                    )?
+                    else {
+                        return Ok(None);
+                    };
+                }
+                continue;
+            }
+            return Ok(Some(access_unit));
+        }
+    }
+
+    fn try_fill_one(&mut self, loop_on_eos: bool) -> Result<bool, NativeVulkanError> {
+        if self.queued.len() >= self.capacity {
+            return Ok(true);
+        }
+        let Some(access_unit) = self.pull_next_access_unit(loop_on_eos)? else {
+            return Ok(false);
         };
         self.pulled_count = self.pulled_count.saturating_add(1);
         self.max_payload_bytes = self.max_payload_bytes.max(access_unit.bytes().len() as u64);
@@ -10156,6 +10177,16 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
             snapshot,
             source_loop_index: self.loop_count,
         });
+        Ok(true)
+    }
+
+    fn fill_one(&mut self, loop_on_eos: bool) -> Result<(), NativeVulkanError> {
+        if !self.try_fill_one(loop_on_eos)? {
+            return Err(NativeVulkanError::Video(format!(
+                "{} streaming packet queue reached EOS",
+                A::CODEC_LABEL
+            )));
+        }
         Ok(())
     }
 }
@@ -17528,14 +17559,25 @@ fn native_vulkan_start_streaming_packet_queue<A: NativeVulkanStreamingAccessUnit
         .set_state(gst::State::Playing)
         .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
 
-    let mut pending = Vec::<A>::new();
+    let mut pending = VecDeque::<A>::with_capacity(capacity);
     let mut selected_parameter_sets_access_unit = None::<Vec<u8>>;
     let mut pulled_count = 0u32;
     let mut eos_count = 0u32;
     let mut loop_count = 0u32;
     let mut max_payload_bytes = 0u64;
+    let mut bootstrap_discarded_access_units = 0u32;
+    let bootstrap_scan_limit = native_vulkan_streaming_bootstrap_scan_limit(capacity);
 
-    while pending.len() < capacity {
+    while pending.len() < capacity || selected_parameter_sets_access_unit.is_none() {
+        if selected_parameter_sets_access_unit.is_none()
+            && usize::try_from(pulled_count).unwrap_or(usize::MAX) >= bootstrap_scan_limit
+        {
+            return Err(NativeVulkanError::Video(format!(
+                "{} streaming packet queue scanned {bootstrap_scan_limit} bootstrap packet(s) without finding {}",
+                A::CODEC_LABEL,
+                A::PARAMETER_SETS_LABEL,
+            )));
+        }
         let Some(access_unit) = native_vulkan_pull_streaming_access_unit::<A>(
             &pipeline,
             &sink,
@@ -17552,7 +17594,11 @@ fn native_vulkan_start_streaming_packet_queue<A: NativeVulkanStreamingAccessUnit
         if selected_parameter_sets_access_unit.is_none() && access_unit.has_parameter_sets() {
             selected_parameter_sets_access_unit = Some(access_unit.bytes().to_vec());
         }
-        pending.push(access_unit);
+        pending.push_back(access_unit);
+        while pending.len() > capacity {
+            let _ = pending.pop_front();
+            bootstrap_discarded_access_units = bootstrap_discarded_access_units.saturating_add(1);
+        }
     }
 
     if pending.is_empty() {
@@ -17567,7 +17613,7 @@ fn native_vulkan_start_streaming_packet_queue<A: NativeVulkanStreamingAccessUnit
                 "{} streaming packet queue did not find {} in {} bootstrap packet(s)",
                 A::CODEC_LABEL,
                 A::PARAMETER_SETS_LABEL,
-                pending.len()
+                pulled_count
             ))
         })?;
     let parameter_sets = A::parse_parameter_sets(&selected_parameter_sets_access_unit)
@@ -17595,6 +17641,8 @@ fn native_vulkan_start_streaming_packet_queue<A: NativeVulkanStreamingAccessUnit
         pulled_count,
         eos_count,
         loop_count,
+        loop_skip_access_units: 0,
+        bootstrap_discarded_access_units,
         max_payload_bytes,
     })
 }
@@ -19156,6 +19204,10 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH264AccessUnitExtract {
     fn has_parameter_sets(&self) -> bool {
         self.stats.parameter_sets_present()
     }
+
+    fn is_random_access(&self) -> bool {
+        self.stats.idr_count > 0
+    }
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -19197,6 +19249,10 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
 
     fn has_parameter_sets(&self) -> bool {
         self.stats.parameter_sets_present()
+    }
+
+    fn is_random_access(&self) -> bool {
+        self.stats.idr_count > 0
     }
 }
 
@@ -20727,6 +20783,114 @@ fn native_vulkan_h264_access_units_max_active_references(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+struct NativeVulkanH264StreamingBootstrap {
+    stream_sps_dpb_slots: u32,
+    stream_dpb_slots: u32,
+    stream_max_active_reference_pictures: u32,
+    max_frame_num: u32,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_streaming_bootstrap_scan_limit(capacity: usize) -> usize {
+    std::env::var("GILDER_VULKAN_STREAMING_BOOTSTRAP_SCAN_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| capacity.max(1).saturating_mul(128).max(4096))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_align_streaming_bootstrap(
+    queue: &mut NativeVulkanH264StreamingPacketQueue,
+    parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
+) -> Result<NativeVulkanH264StreamingBootstrap, NativeVulkanError> {
+    let scan_limit = native_vulkan_streaming_bootstrap_scan_limit(queue.capacity);
+    let mut skipped_access_unit_indices = Vec::<u32>::new();
+    loop {
+        let bootstrap_access_units = queue.bootstrap_access_units();
+        if bootstrap_access_units.is_empty() {
+            return Err(NativeVulkanError::Video(format!(
+                "H.264 streaming bootstrap could not find a decodable AU window after skipping {} leading AU(s)",
+                skipped_access_unit_indices.len()
+            )));
+        }
+        let stream_sps_dpb_slots = native_vulkan_h264_sps_dpb_slot_count(&parameter_sets.sps);
+        let max_frame_num = native_vulkan_h264_sps_max_frame_num(&parameter_sets.sps);
+        let stream_max_active_reference_pictures = parameter_sets
+            .sps
+            .max_num_ref_frames
+            .max(native_vulkan_h264_access_units_max_active_references(
+                &bootstrap_access_units,
+            ))
+            .max(1);
+        let (stream_dpb_slots, bootstrap_plan) =
+            native_vulkan_h264_min_decodable_dpb_plan_with_gaps(
+                &bootstrap_access_units,
+                stream_sps_dpb_slots,
+                stream_max_active_reference_pictures,
+                max_frame_num,
+                parameter_sets.sps.gaps_in_frame_num_value_allowed_flag,
+            );
+        let Some(first_unready_offset) = bootstrap_plan
+            .iter()
+            .position(|entry| !entry.ready_for_decode_submit)
+        else {
+            queue.set_loop_skip_access_units(queue.bootstrap_discarded_access_units.min(u32::MAX));
+            return Ok(NativeVulkanH264StreamingBootstrap {
+                stream_sps_dpb_slots,
+                stream_dpb_slots,
+                stream_max_active_reference_pictures,
+                max_frame_num,
+            });
+        };
+        let first_unready = &bootstrap_plan[first_unready_offset];
+        let random_access_offset = bootstrap_access_units.iter().position(|access_unit| {
+            access_unit
+                .first_slice
+                .as_ref()
+                .is_some_and(|slice| slice.idr)
+        });
+        let discard_count = random_access_offset
+            .filter(|offset| *offset > 0)
+            .unwrap_or(usize::from(first_unready_offset == 0));
+        if discard_count == 0 {
+            return Err(NativeVulkanError::Video(format!(
+                "H.264 streaming bootstrap AU {} is not decodable with optimized DPB slot count {stream_dpb_slots} after skipping {} leading AU(s): {}",
+                first_unready.access_unit_index,
+                queue.bootstrap_discarded_access_units,
+                first_unready
+                    .unsupported_reason
+                    .as_deref()
+                    .unwrap_or("missing references")
+            )));
+        }
+        if usize::try_from(queue.bootstrap_discarded_access_units)
+            .unwrap_or(usize::MAX)
+            .saturating_add(discard_count)
+            > scan_limit
+        {
+            return Err(NativeVulkanError::Video(format!(
+                "H.264 streaming bootstrap exceeded scan limit {scan_limit} while looking for a decodable AU window; last leading AU {} was not decodable: {}",
+                first_unready.access_unit_index,
+                first_unready
+                    .unsupported_reason
+                    .as_deref()
+                    .unwrap_or("missing references")
+            )));
+        }
+        for _ in 0..discard_count {
+            let Some(dropped) = queue.discard_front_for_bootstrap()? else {
+                return Err(NativeVulkanError::Video(format!(
+                    "H.264 streaming bootstrap reached EOS after skipping {} leading AU(s) without finding a decodable window",
+                    queue.bootstrap_discarded_access_units
+                )));
+            };
+            skipped_access_unit_indices.push(dropped.snapshot.index);
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 #[allow(dead_code)]
 fn native_vulkan_h264_min_decodable_dpb_plan(
     access_units: &[NativeVulkanH264AccessUnitSnapshot],
@@ -20956,6 +21120,91 @@ fn native_vulkan_h265_min_decodable_dpb_plan(
         last_plan = plan;
     }
     (max_dpb_slots, last_plan)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+struct NativeVulkanH265StreamingBootstrap {
+    stream_sps_dpb_slots: u32,
+    stream_dpb_slots: u32,
+    stream_max_active_reference_pictures: u32,
+    stream_max_pic_order_cnt_lsb: u32,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_align_streaming_bootstrap(
+    queue: &mut NativeVulkanH265StreamingPacketQueue,
+    parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
+) -> Result<NativeVulkanH265StreamingBootstrap, NativeVulkanError> {
+    let scan_limit = native_vulkan_streaming_bootstrap_scan_limit(queue.capacity);
+    let mut skipped_access_unit_indices = Vec::<u32>::new();
+    loop {
+        let bootstrap_access_units = queue.bootstrap_access_units();
+        if bootstrap_access_units.is_empty() {
+            return Err(NativeVulkanError::Video(format!(
+                "H.265 streaming bootstrap could not find a decodable AU window after skipping {} leading AU(s)",
+                skipped_access_unit_indices.len()
+            )));
+        }
+        let stream_sps_dpb_slots = native_vulkan_h265_sps_dpb_slot_count(&parameter_sets.sps);
+        let stream_max_pic_order_cnt_lsb =
+            native_vulkan_h265_sps_max_pic_order_cnt_lsb(&parameter_sets.sps);
+        let stream_max_active_reference_pictures =
+            native_vulkan_h265_access_units_max_active_references(&bootstrap_access_units).max(1);
+        let (stream_dpb_slots, bootstrap_plan) = native_vulkan_h265_min_decodable_dpb_plan(
+            &bootstrap_access_units,
+            stream_sps_dpb_slots,
+            stream_max_pic_order_cnt_lsb,
+        );
+        let Some(first_unready_offset) = bootstrap_plan
+            .iter()
+            .position(|entry| !entry.ready_for_decode_submit)
+        else {
+            queue.set_loop_skip_access_units(queue.bootstrap_discarded_access_units.min(u32::MAX));
+            return Ok(NativeVulkanH265StreamingBootstrap {
+                stream_sps_dpb_slots,
+                stream_dpb_slots,
+                stream_max_active_reference_pictures,
+                stream_max_pic_order_cnt_lsb,
+            });
+        };
+        let first_unready = &bootstrap_plan[first_unready_offset];
+        let random_access_offset = bootstrap_access_units.iter().position(|access_unit| {
+            access_unit
+                .first_slice
+                .as_ref()
+                .is_some_and(|slice| slice.idr)
+        });
+        let discard_count = random_access_offset
+            .filter(|offset| *offset > 0)
+            .unwrap_or(usize::from(first_unready_offset == 0));
+        if discard_count == 0 {
+            return Err(NativeVulkanError::Video(format!(
+                "H.265 streaming bootstrap AU {} is not decodable with optimized DPB slot count {stream_dpb_slots} after skipping {} leading AU(s); missing POCs {:?}",
+                first_unready.access_unit_index,
+                queue.bootstrap_discarded_access_units,
+                first_unready.missing_reference_pocs
+            )));
+        }
+        if usize::try_from(queue.bootstrap_discarded_access_units)
+            .unwrap_or(usize::MAX)
+            .saturating_add(discard_count)
+            > scan_limit
+        {
+            return Err(NativeVulkanError::Video(format!(
+                "H.265 streaming bootstrap exceeded scan limit {scan_limit} while looking for a decodable AU window; last leading AU {} was missing POCs {:?}",
+                first_unready.access_unit_index, first_unready.missing_reference_pocs
+            )));
+        }
+        for _ in 0..discard_count {
+            let Some(dropped) = queue.discard_front_for_bootstrap()? else {
+                return Err(NativeVulkanError::Video(format!(
+                    "H.265 streaming bootstrap reached EOS after skipping {} leading AU(s) without finding a decodable window",
+                    queue.bootstrap_discarded_access_units
+                )));
+            };
+            skipped_access_unit_indices.push(dropped.snapshot.index);
+        }
+    }
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]

@@ -35,6 +35,10 @@ Options:
   --width <px>          Generated/probed width. Default: 3840.
   --height <px>         Generated/probed height. Default: 2160.
   --frames <count>      Generated frame count. Default: decode-prefix + 2.
+  --arbitrary-entry-offset <seconds>
+                        Copy the source from a non-keyframe entry with -copyinkf,
+                        then require streaming bootstrap to discard the broken
+                        prefix and resume from the next decodable IDR.
   --allow-short-loop    Allow looped visible playback with a ready-prefix shorter than 1 second.
   --layer <layer>       Wayland layer. Default: background.
   --fit <mode>          Render fit. Default: cover.
@@ -63,6 +67,8 @@ width=3840
 height=2160
 frames=0
 frames_explicit=0
+arbitrary_entry_offset=""
+arbitrary_entry_source=0
 allow_short_loop=0
 layer="background"
 fit="cover"
@@ -145,6 +151,10 @@ while [[ $# -gt 0 ]]; do
     --frames)
       frames="${2:-}"
       frames_explicit=1
+      shift 2
+      ;;
+    --arbitrary-entry-offset)
+      arbitrary_entry_offset="${2:-}"
       shift 2
       ;;
     --allow-short-loop)
@@ -272,6 +282,22 @@ if [[ ! -f "$source" ]]; then
   exit 1
 fi
 
+if [[ -n "$arbitrary_entry_offset" ]]; then
+  arbitrary_entry_source=1
+  shifted_dir="$report_dir/source"
+  mkdir -p "$shifted_dir"
+  shifted_source="$shifted_dir/h264-arbitrary-entry-${arbitrary_entry_offset}s.mp4"
+  ffmpeg -hide_banner -loglevel error -y \
+    -i "$source" -ss "$arbitrary_entry_offset" \
+    -c copy -copyinkf -avoid_negative_ts make_zero \
+    "$shifted_source"
+  source="$shifted_source"
+  if [[ ! -s "$source" ]]; then
+    printf 'FAIL: arbitrary-entry shifted source was not created: %s\n' "$source" >&2
+    exit 1
+  fi
+fi
+
 runtime_json="$report_dir/runtime.json"
 runtime_stderr="$report_dir/runtime.stderr"
 summary="$report_dir/summary.txt"
@@ -345,7 +371,10 @@ bitstream_uploaded_bytes="$(jq -r '.bitstream_uploaded_bytes // 0' "$runtime_jso
 h264_input_mode="$(jq -r '.h264_input_mode // "none"' "$runtime_json")"
 h264_packet_queue_capacity="$(jq -r '.h264_packet_queue_capacity // 0' "$runtime_json")"
 h264_packet_queue_pulled_count="$(jq -r '.h264_packet_queue_pulled_count // 0' "$runtime_json")"
+h264_packet_queue_loop_skip_access_units="$(jq -r '.h264_packet_queue_loop_skip_access_units // 0' "$runtime_json")"
+h264_packet_queue_bootstrap_discarded_access_units="$(jq -r '.h264_packet_queue_bootstrap_discarded_access_units // 0' "$runtime_json")"
 h264_packet_queue_max_payload_bytes="$(jq -r '.h264_packet_queue_max_payload_bytes // 0' "$runtime_json")"
+first_frame_idr="$(jq -r '.frames[0].idr // false' "$runtime_json")"
 swapchain_images="$(jq -r '.swapchain_image_count // 0' "$runtime_json")"
 resource_bytes="$(jq -r '.video_resource_memory_bytes // 0' "$runtime_json")"
 idr_frames="$(jq -r '[.frames[]? | select(.idr == true)] | length' "$runtime_json")"
@@ -373,6 +402,10 @@ input_gate_failed=0
 if [[ "$h264_input_mode" != "streaming-queue" || "$h264_packet_queue_capacity" -le 0 || "$h264_packet_queue_pulled_count" -lt "$expected_frames" || "$h264_packet_queue_max_payload_bytes" -le 0 ]]; then
   input_gate_failed=1
 fi
+arbitrary_entry_gate_failed=0
+if [[ "$arbitrary_entry_source" -eq 1 && ( "$h264_packet_queue_bootstrap_discarded_access_units" -le 0 || "$h264_packet_queue_loop_skip_access_units" -le 0 || "$first_frame_idr" != "true" ) ]]; then
+  arbitrary_entry_gate_failed=1
+fi
 if [[ "$decode_prefix" -gt 1 && ( "$bitstream_slot_count" -le 1 || "$bitstream_ring_capacity_bytes" -le "$bitstream_slot_bytes" ) ]]; then
   bitstream_gate_failed=1
 fi
@@ -388,7 +421,7 @@ if [[ "$driver_max_dpb_slots" == "none" || "$stream_sps_dpb_slots" -le 0 || "$st
   dpb_gate_failed=1
 fi
 
-if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$ready_prefix_count" -ne "$decode_prefix" || "$requested_playback_count" -ne "$expected_frames" || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$reference_gate_failed" -ne 0 || "$b_frame_gate_failed" -ne 0 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$pts_delta_min" == "none" || "$pts_delta_max" == "none" || "$present_queue" == "none" || "$video_queue" == "none" || "$sync_strategy" != "per-frame-binary-semaphore-decode-signal-present-wait" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
+if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$ready_prefix_count" -ne "$decode_prefix" || "$requested_playback_count" -ne "$expected_frames" || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$reference_gate_failed" -ne 0 || "$b_frame_gate_failed" -ne 0 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$arbitrary_entry_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$pts_delta_min" == "none" || "$pts_delta_max" == "none" || "$present_queue" == "none" || "$video_queue" == "none" || "$sync_strategy" != "per-frame-binary-semaphore-decode-signal-present-wait" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
   {
     printf 'FAIL: native Vulkan direct H.264 ready-prefix video output was not valid\n'
     printf 'decoded_count: %s\n' "$decoded_count"
@@ -433,7 +466,13 @@ if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expect
     printf 'h264_input_mode: %s\n' "$h264_input_mode"
     printf 'h264_packet_queue_capacity: %s\n' "$h264_packet_queue_capacity"
     printf 'h264_packet_queue_pulled_count: %s\n' "$h264_packet_queue_pulled_count"
+    printf 'h264_packet_queue_loop_skip_access_units: %s\n' "$h264_packet_queue_loop_skip_access_units"
+    printf 'h264_packet_queue_bootstrap_discarded_access_units: %s\n' "$h264_packet_queue_bootstrap_discarded_access_units"
     printf 'h264_packet_queue_max_payload_bytes: %s\n' "$h264_packet_queue_max_payload_bytes"
+    printf 'arbitrary_entry_source: %s\n' "$([[ "$arbitrary_entry_source" -eq 1 ]] && printf yes || printf no)"
+    printf 'arbitrary_entry_offset: %s\n' "${arbitrary_entry_offset:-none}"
+    printf 'arbitrary_entry_gate_failed: %s\n' "$arbitrary_entry_gate_failed"
+    printf 'first_frame_idr: %s\n' "$first_frame_idr"
     printf 'swapchain_images: %s\n' "$swapchain_images"
     printf 'video_resource_memory_bytes: %s\n' "$resource_bytes"
     printf 'runtime JSON: %s\n' "$runtime_json"
@@ -453,6 +492,8 @@ fi
   printf 'generated_source_weightp: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$weightp" || printf none)"
   printf 'generated_source_weightb: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$weightb" || printf none)"
   printf 'generated_source_level: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$level" || printf none)"
+  printf 'arbitrary_entry_source: %s\n' "$([[ "$arbitrary_entry_source" -eq 1 ]] && printf yes || printf no)"
+  printf 'arbitrary_entry_offset: %s\n' "${arbitrary_entry_offset:-none}"
   printf 'decode_prefix_explicit: %s\n' "$([[ "$decode_prefix_explicit" -eq 1 ]] && printf yes || printf no)"
   printf 'selected_device: %s\n' "$(jq -r '.selected_physical_device_name' "$runtime_json")"
   printf 'requested_output_name: %s\n' "${output_name:-auto}"
@@ -509,8 +550,11 @@ fi
   printf 'h264_packet_queue_pulled_count: %s\n' "$h264_packet_queue_pulled_count"
   printf 'h264_packet_queue_eos_count: %s\n' "$(jq -r '.h264_packet_queue_eos_count // 0' "$runtime_json")"
   printf 'h264_packet_queue_loop_count: %s\n' "$(jq -r '.h264_packet_queue_loop_count // 0' "$runtime_json")"
+  printf 'h264_packet_queue_loop_skip_access_units: %s\n' "$h264_packet_queue_loop_skip_access_units"
+  printf 'h264_packet_queue_bootstrap_discarded_access_units: %s\n' "$h264_packet_queue_bootstrap_discarded_access_units"
   printf 'h264_packet_queue_max_payload_bytes: %s\n' "$h264_packet_queue_max_payload_bytes"
   printf 'h264_packet_queue_retained_payload_bytes: %s\n' "$(jq -r '.h264_packet_queue_retained_payload_bytes // 0' "$runtime_json")"
+  printf 'first_frame_idr: %s\n' "$first_frame_idr"
   printf 'frame_layers_head: %s\n' "$(jq -c '[.frames[0:32][]?.dst_base_array_layer]' "$runtime_json")"
   printf 'frame_layers_tail: %s\n' "$(jq -c '[.frames[-32:][]?.dst_base_array_layer]' "$runtime_json")"
   printf 'frame_access_units_head: %s\n' "$(jq -c '[.frames[0:32][]?.access_unit_index]' "$runtime_json")"
