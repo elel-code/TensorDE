@@ -13,6 +13,7 @@ fi
   libgstreamer1.0-dev \
   libwayland-bin \
   libwayland-dev \
+  libxkbcommon-dev \
   pkg-config \
   wayland-protocols
 
