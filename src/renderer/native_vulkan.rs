@@ -2220,6 +2220,7 @@ pub struct NativeVulkanDirectH264ReadyPrefixFrameSnapshot {
     pub pic_order_cnt_val: i32,
     pub idr: bool,
     pub irap: bool,
+    pub is_reference: bool,
     pub requested_reference_count: u32,
     pub reset_before_decode: bool,
     pub src_buffer_offset: u64,
@@ -4625,10 +4626,14 @@ pub fn run_h264_ready_prefix_video(
                 )?;
                 frame.fence_wait_elapsed_us = fence_wait_elapsed_us;
                 if let Some(slot) = active_dpb_refs.get_mut(frame.dst_base_array_layer as usize) {
-                    *slot = Some(NativeVulkanH264ActiveDpbReference {
-                        frame_num: frame.frame_num,
-                        pic_order_cnt_val: frame.pic_order_cnt_val,
-                    });
+                    if frame.is_reference {
+                        *slot = Some(NativeVulkanH264ActiveDpbReference {
+                            frame_num: frame.frame_num,
+                            pic_order_cnt_val: frame.pic_order_cnt_val,
+                        });
+                    } else {
+                        *slot = None;
+                    }
                 }
 
                 let present_started_at = Instant::now();
@@ -15315,13 +15320,17 @@ fn native_vulkan_decode_h264_ready_prefix_frame_to_image(
     };
     let mut setup_h264_slot_info =
         vk::VideoDecodeH264DpbSlotInfoKHR::default().std_reference_info(&std_setup_reference_info);
-    let setup_slot_index = entry
-        .setup_slot_index
-        .unwrap_or(entry.planned_output_slot as i32);
-    let setup_reference_slot = vk::VideoReferenceSlotInfoKHR::default()
-        .picture_resource(&dst_picture_resource)
-        .slot_index(setup_slot_index)
-        .push_next(&mut setup_h264_slot_info);
+    let setup_slot_index = entry.setup_slot_index.unwrap_or(if picture.is_reference {
+        entry.planned_output_slot as i32
+    } else {
+        -1
+    });
+    let setup_reference_slot = picture.is_reference.then(|| {
+        vk::VideoReferenceSlotInfoKHR::default()
+            .picture_resource(&dst_picture_resource)
+            .slot_index(setup_slot_index)
+            .push_next(&mut setup_h264_slot_info)
+    });
 
     let reference_resources = available_references
         .iter()
@@ -15459,14 +15468,16 @@ fn native_vulkan_decode_h264_ready_prefix_frame_to_image(
     let mut h264_picture_info = vk::VideoDecodeH264PictureInfoKHR::default()
         .std_picture_info(&std_picture_info)
         .slice_offsets(&slice_segment_offsets);
-    let decode_info = vk::VideoDecodeInfoKHR::default()
+    let mut decode_info = vk::VideoDecodeInfoKHR::default()
         .src_buffer(buffer.buffer)
         .src_buffer_offset(span.offset)
         .src_buffer_range(span.range)
         .dst_picture_resource(dst_picture_resource)
-        .setup_reference_slot(&setup_reference_slot)
-        .reference_slots(&reference_slots)
-        .push_next(&mut h264_picture_info);
+        .reference_slots(&reference_slots);
+    if let Some(setup_reference_slot) = setup_reference_slot.as_ref() {
+        decode_info = decode_info.setup_reference_slot(setup_reference_slot);
+    }
+    let decode_info = decode_info.push_next(&mut h264_picture_info);
     let begin_info = vk::VideoBeginCodingInfoKHR::default()
         .video_session(session)
         .video_session_parameters(session_parameters)
@@ -15559,6 +15570,7 @@ fn native_vulkan_decode_h264_ready_prefix_frame_to_image(
         pic_order_cnt_val: picture.pic_order_cnt[0],
         idr: picture.idr,
         irap: picture.irap,
+        is_reference: picture.is_reference,
         requested_reference_count: entry.requested_reference_count,
         reset_before_decode,
         src_buffer_offset: span.offset,
@@ -21005,6 +21017,23 @@ impl NativeVulkanH264DecodeReferencePlanner {
         }
     }
 
+    fn choose_output_slot(&mut self) -> u32 {
+        for offset in 0..self.dpb_slots {
+            let slot = (self.next_output_slot + offset) % self.dpb_slots;
+            if self
+                .slot_to_frame_num
+                .get(slot as usize)
+                .is_none_or(Option::is_none)
+            {
+                self.next_output_slot = (slot + 1) % self.dpb_slots;
+                return slot;
+            }
+        }
+        let slot = self.next_output_slot % self.dpb_slots;
+        self.next_output_slot = (slot + 1) % self.dpb_slots;
+        slot
+    }
+
     fn plan_next(
         &mut self,
         access_unit: &NativeVulkanH264AccessUnitSnapshot,
@@ -21020,10 +21049,11 @@ impl NativeVulkanH264DecodeReferencePlanner {
 
         let current_frame_num = first_slice.map(|slice| slice.frame_num);
         let current_pic_order_cnt_val = first_slice.map(|slice| slice.pic_order_cnt[0]);
-        let planned_output_slot = self.next_output_slot % self.dpb_slots;
-        if current_frame_num.is_some() {
-            self.next_output_slot = self.next_output_slot.saturating_add(1);
-        }
+        let planned_output_slot = if current_frame_num.is_some() {
+            self.choose_output_slot()
+        } else {
+            self.next_output_slot % self.dpb_slots
+        };
         let evicted_frame_num = self
             .slot_to_frame_num
             .get(planned_output_slot as usize)
@@ -21046,8 +21076,6 @@ impl NativeVulkanH264DecodeReferencePlanner {
             if let Some(slice) = first_slice {
                 unsupported_reason = if slice.field_pic_flag {
                     Some("H.264 field pictures are not supported by the first continuous direct gate".to_owned())
-                } else if !slice.is_reference {
-                    Some("H.264 non-reference pictures are not supported by the first continuous direct gate".to_owned())
                 } else if slice.is_b {
                     Some(
                         "H.264 B-slices are not supported by the first continuous direct gate"
@@ -21133,43 +21161,50 @@ impl NativeVulkanH264DecodeReferencePlanner {
             && unsupported_reason.is_none()
             && missing_reference_count == 0;
 
-        if ready_for_decode_submit
-            && let (Some(slice), Some(current_frame_num), Some(current_pic_order_cnt_val)) =
-                (first_slice, current_frame_num, current_pic_order_cnt_val)
-            && slice.is_reference
-        {
+        if ready_for_decode_submit {
             if let Some(evicted_frame_num) = evicted_frame_num {
                 self.frame_to_decoded_slot.remove(&evicted_frame_num);
                 self.short_term_reference_order
                     .retain(|frame_num| *frame_num != evicted_frame_num);
             }
             if let Some(slot) = self.slot_to_frame_num.get_mut(planned_output_slot as usize) {
-                *slot = Some(current_frame_num);
+                *slot = None;
             }
-            self.frame_to_decoded_slot.insert(
-                current_frame_num,
-                (
-                    access_unit.index,
-                    planned_output_slot,
-                    current_pic_order_cnt_val,
-                ),
-            );
-            self.short_term_reference_order
-                .retain(|frame_num| *frame_num != current_frame_num);
-            self.short_term_reference_order.push(current_frame_num);
-            while self.short_term_reference_order.len() > self.max_short_term_references as usize {
-                let old_frame_num = self.short_term_reference_order.remove(0);
-                if let Some((_, old_slot, _)) = self.frame_to_decoded_slot.remove(&old_frame_num)
-                    && self
-                        .slot_to_frame_num
-                        .get(old_slot as usize)
-                        .copied()
-                        .flatten()
-                        == Some(old_frame_num)
-                    && old_slot != planned_output_slot
-                    && let Some(slot) = self.slot_to_frame_num.get_mut(old_slot as usize)
+            if let (Some(slice), Some(current_frame_num), Some(current_pic_order_cnt_val)) =
+                (first_slice, current_frame_num, current_pic_order_cnt_val)
+                && slice.is_reference
+            {
+                if let Some(slot) = self.slot_to_frame_num.get_mut(planned_output_slot as usize) {
+                    *slot = Some(current_frame_num);
+                }
+                self.frame_to_decoded_slot.insert(
+                    current_frame_num,
+                    (
+                        access_unit.index,
+                        planned_output_slot,
+                        current_pic_order_cnt_val,
+                    ),
+                );
+                self.short_term_reference_order
+                    .retain(|frame_num| *frame_num != current_frame_num);
+                self.short_term_reference_order.push(current_frame_num);
+                while self.short_term_reference_order.len()
+                    > self.max_short_term_references as usize
                 {
-                    *slot = None;
+                    let old_frame_num = self.short_term_reference_order.remove(0);
+                    if let Some((_, old_slot, _)) =
+                        self.frame_to_decoded_slot.remove(&old_frame_num)
+                        && self
+                            .slot_to_frame_num
+                            .get(old_slot as usize)
+                            .copied()
+                            .flatten()
+                            == Some(old_frame_num)
+                        && old_slot != planned_output_slot
+                        && let Some(slot) = self.slot_to_frame_num.get_mut(old_slot as usize)
+                    {
+                        *slot = None;
+                    }
                 }
             }
         }
@@ -21181,7 +21216,9 @@ impl NativeVulkanH264DecodeReferencePlanner {
             current_frame_num,
             current_pic_order_cnt_val,
             planned_output_slot,
-            setup_slot_index: current_frame_num.map(|_| planned_output_slot as i32),
+            setup_slot_index: first_slice
+                .filter(|slice| slice.is_reference)
+                .map(|_| planned_output_slot as i32),
             evicted_frame_num,
             requested_reference_count,
             references,
@@ -30172,6 +30209,40 @@ mod tests {
         assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
         assert_eq!(plan[2].references[0].frame_num, 0);
         assert_eq!(plan[2].references[0].source_access_unit_index, Some(0));
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn plans_h264_non_reference_pictures_as_scratch_outputs() {
+        let mut access_units = vec![
+            h264_test_access_unit(0, 0, true),
+            h264_test_access_unit(1, 1, false),
+            h264_test_access_unit(2, 2, false),
+            h264_test_access_unit(3, 3, false),
+        ];
+        let non_reference = access_units[2].first_slice.as_mut().unwrap();
+        non_reference.nal_ref_idc = 0;
+        non_reference.is_reference = false;
+
+        let (dpb_slots, plan) = native_vulkan_h264_min_decodable_dpb_plan(&access_units, 2, 1, 16);
+
+        assert_eq!(dpb_slots, 2);
+        assert!(plan.iter().all(|entry| entry.ready_for_decode_submit));
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.planned_output_slot)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 0, 0]
+        );
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.setup_slot_index)
+                .collect::<Vec<_>>(),
+            vec![Some(0), Some(1), None, Some(0)]
+        );
+        assert_eq!(plan[2].references[0].frame_num, 1);
+        assert_eq!(plan[3].references[0].frame_num, 1);
+        assert_eq!(plan[3].references[0].source_access_unit_index, Some(1));
     }
 
     #[test]
