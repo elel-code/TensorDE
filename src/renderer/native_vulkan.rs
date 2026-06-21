@@ -2385,6 +2385,7 @@ pub struct NativeVulkanVideoRuntimeSnapshot {
     pub last_import_error: Option<String>,
     pub last_import_elapsed_us: Option<u64>,
     pub max_import_elapsed_us: Option<u64>,
+    pub last_dmabuf_import: Option<NativeVulkanDmabufImportSnapshot>,
     pub last_sample_caps: Option<String>,
     pub last_sample_format: Option<String>,
     pub last_sample_size: Option<(u32, u32)>,
@@ -2408,6 +2409,24 @@ pub struct NativeVulkanVideoCapsSnapshot {
     pub caps: String,
     pub source: String,
     pub memory_features: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanDmabufImportSnapshot {
+    pub source: String,
+    pub format: &'static str,
+    pub drm_fourcc: u32,
+    pub drm_fourcc_hex: String,
+    pub modifier: u64,
+    pub modifier_hex: String,
+    pub available_plane_count: u32,
+    pub drm_object_count: u32,
+    pub y_uv_same_fd: bool,
+    pub driver_modifier_plane_count: Option<u32>,
+    pub y_offset: u64,
+    pub y_stride: u32,
+    pub uv_offset: u64,
+    pub uv_stride: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2441,6 +2460,7 @@ struct NativeVulkanVideoImportSnapshot {
     last_import_error: Option<String>,
     last_import_elapsed_us: Option<u64>,
     max_import_elapsed_us: Option<u64>,
+    last_dmabuf_import: Option<NativeVulkanDmabufImportSnapshot>,
 }
 
 #[cfg(not(feature = "native-vulkan-gst-video"))]
@@ -2453,6 +2473,7 @@ struct NativeVulkanVideoImportSnapshot {
     last_import_error: Option<String>,
     last_import_elapsed_us: Option<u64>,
     max_import_elapsed_us: Option<u64>,
+    last_dmabuf_import: Option<NativeVulkanDmabufImportSnapshot>,
 }
 
 pub struct NativeVulkanSession {
@@ -3067,6 +3088,7 @@ impl NativeVulkanSession {
     #[cfg(feature = "native-vulkan-gst-video")]
     fn import_video_sample(&mut self, sample: gst::Sample) {
         let started_at = Instant::now();
+        self.video_import_status.clear_dmabuf_contract();
         let import_result = self.import_video_sample_inner(&sample);
         match import_result {
             Ok(mut report) => {
@@ -3177,6 +3199,7 @@ impl NativeVulkanSession {
             height: meta.height,
             memory_path: "CUDAMemory->CUDA->Vulkan external image planes".to_owned(),
             elapsed_us: 0,
+            dmabuf_contract: None,
         })
     }
 
@@ -3186,6 +3209,16 @@ impl NativeVulkanSession {
         frame: &NativeVulkanDmabufVideoFrame,
         memory_path: &'static str,
     ) -> Result<NativeVulkanVideoImportReport, NativeVulkanError> {
+        let driver_modifier_plane_count = native_vulkan_dmabuf_modifier_plane_count(
+            &self.instance,
+            self.physical_device,
+            frame.format.vulkan_image_format(),
+            frame.modifier,
+        );
+        let contract =
+            native_vulkan_dmabuf_import_snapshot(frame, memory_path, driver_modifier_plane_count);
+        self.video_import_status
+            .record_dmabuf_contract(contract.clone());
         let texture = NativeVulkanDmabufVideoTexture::new(
             &self.instance,
             self.physical_device,
@@ -3194,6 +3227,7 @@ impl NativeVulkanSession {
             &self.device,
             self.queue_family_index,
             frame,
+            driver_modifier_plane_count,
         )?;
         if let Some(old_texture) = self.video_texture.take() {
             old_texture.destroy(&self.device);
@@ -3213,6 +3247,7 @@ impl NativeVulkanSession {
             height: frame.height,
             memory_path: memory_path.to_owned(),
             elapsed_us: 0,
+            dmabuf_contract: Some(contract),
         })
     }
 
@@ -6745,6 +6780,7 @@ struct NativeVulkanVideoImportReport {
     height: u32,
     memory_path: String,
     elapsed_us: u64,
+    dmabuf_contract: Option<NativeVulkanDmabufImportSnapshot>,
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -6756,6 +6792,7 @@ struct NativeVulkanVideoImportStatus {
     last_import_error: Option<String>,
     last_import_elapsed_us: Option<u64>,
     max_import_elapsed_us: Option<u64>,
+    last_dmabuf_import: Option<NativeVulkanDmabufImportSnapshot>,
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -6766,11 +6803,20 @@ impl NativeVulkanVideoImportStatus {
         self.last_import_memory_path = Some(report.memory_path);
         self.last_import_error = None;
         self.last_import_elapsed_us = Some(report.elapsed_us);
+        self.last_dmabuf_import = report.dmabuf_contract;
         self.max_import_elapsed_us = Some(
             self.max_import_elapsed_us
                 .map(|current| current.max(report.elapsed_us))
                 .unwrap_or(report.elapsed_us),
         );
+    }
+
+    fn clear_dmabuf_contract(&mut self) {
+        self.last_dmabuf_import = None;
+    }
+
+    fn record_dmabuf_contract(&mut self, contract: NativeVulkanDmabufImportSnapshot) {
+        self.last_dmabuf_import = Some(contract);
     }
 
     fn record_error(&mut self, error: String) {
@@ -6796,6 +6842,7 @@ impl NativeVulkanVideoImportStatus {
             last_import_error: self.last_import_error.clone(),
             last_import_elapsed_us: self.last_import_elapsed_us,
             max_import_elapsed_us: self.max_import_elapsed_us,
+            last_dmabuf_import: self.last_dmabuf_import.clone(),
         }
     }
 }
@@ -7700,6 +7747,75 @@ struct NativeVulkanDmabufVideoFrame {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_dmabuf_modifier_plane_count(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    format: vk::Format,
+    modifier: u64,
+) -> Option<u32> {
+    if modifier == DRM_FORMAT_MOD_INVALID {
+        return None;
+    }
+
+    let mut modifier_list = vk::DrmFormatModifierPropertiesListEXT::default();
+    let mut format_properties = vk::FormatProperties2::default().push_next(&mut modifier_list);
+    unsafe {
+        instance.get_physical_device_format_properties2(
+            physical_device,
+            format,
+            &mut format_properties,
+        );
+    }
+    if modifier_list.drm_format_modifier_count == 0 {
+        return None;
+    }
+
+    let mut modifiers = vec![
+        vk::DrmFormatModifierPropertiesEXT::default();
+        modifier_list.drm_format_modifier_count as usize
+    ];
+    let mut modifier_list = vk::DrmFormatModifierPropertiesListEXT::default()
+        .drm_format_modifier_properties(&mut modifiers);
+    let mut format_properties = vk::FormatProperties2::default().push_next(&mut modifier_list);
+    unsafe {
+        instance.get_physical_device_format_properties2(
+            physical_device,
+            format,
+            &mut format_properties,
+        );
+    }
+
+    modifiers
+        .iter()
+        .find(|properties| properties.drm_format_modifier == modifier)
+        .map(|properties| properties.drm_format_modifier_plane_count)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_dmabuf_import_snapshot(
+    frame: &NativeVulkanDmabufVideoFrame,
+    source: &'static str,
+    driver_modifier_plane_count: Option<u32>,
+) -> NativeVulkanDmabufImportSnapshot {
+    NativeVulkanDmabufImportSnapshot {
+        source: source.to_owned(),
+        format: frame.format.label(),
+        drm_fourcc: frame.format.drm_format(),
+        drm_fourcc_hex: format!("0x{:08x}", frame.format.drm_format()),
+        modifier: frame.modifier,
+        modifier_hex: format!("0x{:016x}", frame.modifier),
+        available_plane_count: 2,
+        drm_object_count: if frame.y.fd == frame.uv.fd { 1 } else { 2 },
+        y_uv_same_fd: frame.y.fd == frame.uv.fd,
+        driver_modifier_plane_count,
+        y_offset: frame.y.offset,
+        y_stride: frame.y.stride,
+        uv_offset: frame.uv.offset,
+        uv_stride: frame.uv.stride,
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 struct NativeVulkanDmabufVideoTexture {
     width: u32,
     height: u32,
@@ -7720,6 +7836,7 @@ impl NativeVulkanDmabufVideoTexture {
         device: &ash::Device,
         _queue_family_index: u32,
         frame: &NativeVulkanDmabufVideoFrame,
+        driver_modifier_plane_count: Option<u32>,
     ) -> Result<Self, NativeVulkanError> {
         if frame.width == 0 || frame.height == 0 {
             return Err(NativeVulkanError::Video(
@@ -7743,6 +7860,15 @@ impl NativeVulkanDmabufVideoTexture {
             native_vulkan_dmabuf_plane_layout(frame.y),
             native_vulkan_dmabuf_plane_layout(frame.uv),
         ];
+        if let Some(driver_modifier_plane_count) = driver_modifier_plane_count
+            && driver_modifier_plane_count as usize != plane_layouts.len()
+        {
+            return Err(NativeVulkanError::Video(format!(
+                "native Vulkan DMABuf importer exposes {} Y/UV plane layouts, but driver expects {driver_modifier_plane_count} plane layouts for modifier 0x{:016x}",
+                plane_layouts.len(),
+                frame.modifier
+            )));
+        }
         let handle_type = vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT;
         let mut external_image_info =
             vk::ExternalMemoryImageCreateInfo::default().handle_types(handle_type);
@@ -30030,6 +30156,9 @@ fn native_vulkan_video_runtime_snapshot(
         max_import_elapsed_us: import
             .as_ref()
             .and_then(|import| import.max_import_elapsed_us),
+        last_dmabuf_import: import
+            .as_ref()
+            .and_then(|import| import.last_dmabuf_import.clone()),
         last_sample_caps: frontend
             .as_ref()
             .and_then(|frontend| frontend.last_sample_caps.clone()),
@@ -32344,6 +32473,7 @@ mod tests {
         assert_eq!(snapshot.last_import_error, None);
         assert_eq!(snapshot.last_import_elapsed_us, None);
         assert_eq!(snapshot.max_import_elapsed_us, None);
+        assert_eq!(snapshot.last_dmabuf_import, None);
         assert_eq!(snapshot.start_offset_ms, 1500);
         assert_eq!(snapshot.gst_state, None);
         assert_eq!(snapshot.decoder_policy_status, None);
@@ -32402,6 +32532,7 @@ mod tests {
             last_import_error: None,
             last_import_elapsed_us: Some(900),
             max_import_elapsed_us: Some(1200),
+            last_dmabuf_import: None,
         };
 
         let snapshot =
@@ -32426,6 +32557,7 @@ mod tests {
         );
         assert_eq!(snapshot.last_import_elapsed_us, Some(900));
         assert_eq!(snapshot.max_import_elapsed_us, Some(1200));
+        assert_eq!(snapshot.last_dmabuf_import, None);
         assert_eq!(snapshot.last_sample_format.as_deref(), Some("NV12"));
         assert_eq!(snapshot.last_sample_pts_ms, Some(8));
         assert_eq!(snapshot.last_sample_duration_ms, Some(4));
@@ -32434,6 +32566,56 @@ mod tests {
         assert_eq!(snapshot.actual_decoders, vec!["nvh264dec"]);
         assert_eq!(snapshot.decoder_policy_status.as_deref(), Some("Satisfied"));
         assert_eq!(snapshot.caps_memory_features, vec!["memory:CUDAMemory"]);
+    }
+
+    #[test]
+    fn video_runtime_snapshot_reports_dmabuf_contract() {
+        let item = NativeVulkanRenderItem::Video {
+            output_name: "HDMI-A-1".to_owned(),
+            source: PathBuf::from("/tmp/video.mp4"),
+            poster: None,
+            fit: FitMode::Cover,
+            loop_playback: true,
+            muted: true,
+            manifest_max_fps: None,
+            target_max_fps: Some(240),
+            decoder_policy: crate::config::VideoDecoderPolicy::HardwarePreferred,
+            start_offset_ms: 0,
+            renderer_status: "vulkan-lifecycle-video-placeholder",
+        };
+        let contract = NativeVulkanDmabufImportSnapshot {
+            source: "GstDmaBufMemory->Vulkan external DRM modifier image planes".to_owned(),
+            format: "NV12",
+            drm_fourcc: DRM_FORMAT_NV12,
+            drm_fourcc_hex: "0x3231564e".to_owned(),
+            modifier: DRM_FORMAT_MOD_LINEAR,
+            modifier_hex: "0x0000000000000000".to_owned(),
+            available_plane_count: 2,
+            drm_object_count: 1,
+            y_uv_same_fd: true,
+            driver_modifier_plane_count: Some(2),
+            y_offset: 0,
+            y_stride: 3840,
+            uv_offset: 8294400,
+            uv_stride: 3840,
+        };
+        let import = NativeVulkanVideoImportSnapshot {
+            texture_import_status: "importing-dmabuf-vulkan-image",
+            frames_imported: 1,
+            last_import_size: Some((3840, 2160)),
+            last_import_memory_path: Some(
+                "GstDmaBufMemory->Vulkan external DRM modifier image planes".to_owned(),
+            ),
+            last_import_error: None,
+            last_import_elapsed_us: Some(200),
+            max_import_elapsed_us: Some(200),
+            last_dmabuf_import: Some(contract.clone()),
+        };
+
+        let snapshot = native_vulkan_video_runtime_snapshot(&item, None, Some(import), 1, None)
+            .expect("video snapshot");
+
+        assert_eq!(snapshot.last_dmabuf_import, Some(contract));
     }
 
     #[test]
