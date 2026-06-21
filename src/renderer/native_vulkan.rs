@@ -3920,6 +3920,19 @@ pub fn run_h264_ready_prefix_video(
         ));
     }
     let target_max_fps = options.target_max_fps;
+    let queue_capacity =
+        native_vulkan_h264_streaming_packet_queue_capacity(ready_prefix_frame_count);
+    let mut streaming_queue =
+        native_vulkan_start_h264_streaming_packet_queue(&source, queue_capacity)?;
+    let parameter_sets = streaming_queue.parameter_sets.clone();
+    let streaming_bootstrap =
+        native_vulkan_h264_align_streaming_bootstrap(&mut streaming_queue, &parameter_sets)?;
+    native_vulkan_require_streaming_bootstrap_window(&streaming_queue, ready_prefix_frame_count)?;
+    let stream_sps_dpb_slots = streaming_bootstrap.stream_sps_dpb_slots;
+    let stream_dpb_slots = streaming_bootstrap.stream_dpb_slots;
+    let stream_max_active_reference_pictures =
+        streaming_bootstrap.stream_max_active_reference_pictures;
+    let stream_max_frame_num = streaming_bootstrap.max_frame_num;
     let mut probe = NativeVulkanSurfaceProbe::connect(NativeVulkanSurfaceProbeOptions {
         host: options.host,
         wait_configure_roundtrips: options.wait_configure_roundtrips,
@@ -4197,19 +4210,6 @@ pub fn run_h264_ready_prefix_video(
                     }
                 })?;
 
-            let queue_capacity =
-                native_vulkan_h264_streaming_packet_queue_capacity(ready_prefix_frame_count);
-            let mut streaming_queue =
-                native_vulkan_start_h264_streaming_packet_queue(&source, queue_capacity)?;
-            let parameter_sets = streaming_queue.parameter_sets.clone();
-            let streaming_bootstrap = native_vulkan_h264_align_streaming_bootstrap(
-                &mut streaming_queue,
-                &parameter_sets,
-            )?;
-            let stream_sps_dpb_slots = streaming_bootstrap.stream_sps_dpb_slots;
-            let stream_dpb_slots = streaming_bootstrap.stream_dpb_slots;
-            let stream_max_active_reference_pictures =
-                streaming_bootstrap.stream_max_active_reference_pictures;
             let streaming_bitstream = native_vulkan_h264_streaming_queue_bitstream_plan(
                 &streaming_queue,
                 width,
@@ -4217,7 +4217,6 @@ pub fn run_h264_ready_prefix_video(
                 capabilities.min_bitstream_buffer_offset_alignment,
                 capabilities.min_bitstream_buffer_size_alignment,
             )?;
-            let stream_max_frame_num = streaming_bootstrap.max_frame_num;
             let session_max_dpb_slots = native_vulkan_h265_session_dpb_slots_for_count(
                 capabilities.max_dpb_slots,
                 stream_dpb_slots,
@@ -4855,6 +4854,19 @@ pub fn run_h265_ready_prefix_video(
         ));
     }
     let target_max_fps = options.target_max_fps;
+    let queue_capacity =
+        native_vulkan_h265_streaming_packet_queue_capacity(ready_prefix_frame_count);
+    let mut streaming_queue =
+        native_vulkan_start_h265_streaming_packet_queue(&source, queue_capacity)?;
+    let parameter_sets = streaming_queue.parameter_sets.clone();
+    let streaming_bootstrap =
+        native_vulkan_h265_align_streaming_bootstrap(&mut streaming_queue, &parameter_sets)?;
+    native_vulkan_require_streaming_bootstrap_window(&streaming_queue, ready_prefix_frame_count)?;
+    let stream_sps_dpb_slots = streaming_bootstrap.stream_sps_dpb_slots;
+    let stream_max_pic_order_cnt_lsb = streaming_bootstrap.stream_max_pic_order_cnt_lsb;
+    let stream_dpb_slots = streaming_bootstrap.stream_dpb_slots;
+    let stream_max_active_reference_pictures =
+        streaming_bootstrap.stream_max_active_reference_pictures;
     let mut probe = NativeVulkanSurfaceProbe::connect(NativeVulkanSurfaceProbeOptions {
         host: options.host,
         wait_configure_roundtrips: options.wait_configure_roundtrips,
@@ -5131,20 +5143,6 @@ pub fn run_h265_ready_prefix_video(
                     }
                 })?;
 
-            let queue_capacity =
-                native_vulkan_h265_streaming_packet_queue_capacity(ready_prefix_frame_count);
-            let mut streaming_queue =
-                native_vulkan_start_h265_streaming_packet_queue(&source, queue_capacity)?;
-            let parameter_sets = streaming_queue.parameter_sets.clone();
-            let streaming_bootstrap = native_vulkan_h265_align_streaming_bootstrap(
-                &mut streaming_queue,
-                &parameter_sets,
-            )?;
-            let stream_sps_dpb_slots = streaming_bootstrap.stream_sps_dpb_slots;
-            let stream_max_pic_order_cnt_lsb = streaming_bootstrap.stream_max_pic_order_cnt_lsb;
-            let stream_dpb_slots = streaming_bootstrap.stream_dpb_slots;
-            let stream_max_active_reference_pictures =
-                streaming_bootstrap.stream_max_active_reference_pictures;
             let streaming_bitstream = native_vulkan_h265_streaming_queue_bitstream_plan(
                 &streaming_queue,
                 width,
@@ -10110,7 +10108,9 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
         if dropped.is_some() {
             self.bootstrap_discarded_access_units =
                 self.bootstrap_discarded_access_units.saturating_add(1);
-            let _ = self.try_fill_one(false)?;
+            if self.eos_count == 0 {
+                let _ = self.try_fill_one(false)?;
+            }
         }
         Ok(dropped)
     }
@@ -10206,6 +10206,25 @@ type NativeVulkanH265StreamingPacket =
 #[cfg(feature = "native-vulkan-gst-video")]
 type NativeVulkanH265StreamingPacketQueue =
     NativeVulkanStreamingPacketQueue<NativeVulkanH265AccessUnitExtract>;
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_require_streaming_bootstrap_window<A: NativeVulkanStreamingAccessUnit>(
+    queue: &NativeVulkanStreamingPacketQueue<A>,
+    requested_access_units: u32,
+) -> Result<(), NativeVulkanError> {
+    if queue.queued.len() >= queue.capacity {
+        return Ok(());
+    }
+
+    Err(NativeVulkanError::Video(format!(
+        "{} streaming bootstrap found a decodable entry, but the source ended after {}/{} queued AU(s); requested {requested_access_units} ready-prefix AU(s), discarded {} leading AU(s), eos_count={}. Use a longer post-entry source window or a smaller decode prefix.",
+        A::CODEC_LABEL,
+        queue.queued.len(),
+        queue.capacity,
+        queue.bootstrap_discarded_access_units,
+        queue.eos_count
+    )))
+}
 
 #[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
 struct NativeVulkanH265ReadyPrefixBitstreamPayload {
@@ -17701,12 +17720,35 @@ fn native_vulkan_pull_streaming_access_unit<A: NativeVulkanStreamingAccessUnit>(
         if let Some(sample) = sample {
             return A::from_sample(&sample).map(Some);
         }
+        if native_vulkan_streaming_sink_is_eos(sink) {
+            *eos_count = eos_count.saturating_add(1);
+            if !loop_on_eos {
+                return Ok(None);
+            }
+            pipeline
+                .seek_simple(
+                    gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                    gst::ClockTime::ZERO,
+                )
+                .map_err(|err| {
+                    NativeVulkanError::Video(format!(
+                        "seek {} streaming packet queue to start: {err}",
+                        A::CODEC_LABEL
+                    ))
+                })?;
+            *loop_count = loop_count.saturating_add(1);
+        }
     }
 
     Err(NativeVulkanError::Video(format!(
         "{} streaming packet queue timed out waiting for an AU",
         A::CODEC_LABEL
     )))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_streaming_sink_is_eos(sink: &gst::Element) -> bool {
+    sink.find_property("eos").is_some() && sink.property::<bool>("eos")
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
