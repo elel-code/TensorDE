@@ -1797,11 +1797,16 @@ impl NativeVulkanSession {
             .queue_family_index(selection.queue_family_index)
             .queue_priorities(&priorities);
         let queue_create_infos = [queue_create_info];
-        let mut device_extensions = vec![ash::khr::swapchain::NAME.as_ptr()];
         #[cfg(feature = "native-vulkan-gst-video")]
-        if video_enabled {
-            device_extensions.push(ash::khr::external_memory_fd::NAME.as_ptr());
-        }
+        let device_extensions = {
+            let mut extensions = vec![ash::khr::swapchain::NAME.as_ptr()];
+            if video_enabled {
+                extensions.push(ash::khr::external_memory_fd::NAME.as_ptr());
+            }
+            extensions
+        };
+        #[cfg(not(feature = "native-vulkan-gst-video"))]
+        let device_extensions = vec![ash::khr::swapchain::NAME.as_ptr()];
         let device_create_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_create_infos)
             .enabled_extension_names(&device_extensions);
@@ -12531,6 +12536,8 @@ fn native_vulkan_decode_h265_ready_prefix_smoke(
     _frame_count: u32,
     _sample_decoded_output: bool,
     _sample_decoded_sequence: bool,
+    _decode_query_status_enabled: bool,
+    _profile_info: &vk::VideoProfileInfoKHR<'_>,
 ) -> Result<NativeVulkanH265ReadyPrefixDecodeSnapshot, NativeVulkanError> {
     Err(NativeVulkanError::Video(
         "--decode-h265-ready-prefix requires the native-vulkan-gst-video feature".to_owned(),
@@ -13100,7 +13107,6 @@ enum NativeVulkanH265ReadyPrefixBitstreamWindowMode {
     SliceHeader,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_h265_ready_prefix_bitstream_window_mode()
 -> NativeVulkanH265ReadyPrefixBitstreamWindowMode {
     match std::env::var("GILDER_VULKAN_H265_BITSTREAM_WINDOW")
@@ -13115,7 +13121,6 @@ fn native_vulkan_h265_ready_prefix_bitstream_window_mode()
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_h265_ready_prefix_bitstream_window(
     payload: &[u8],
     mode: NativeVulkanH265ReadyPrefixBitstreamWindowMode,
@@ -14036,7 +14041,6 @@ fn native_vulkan_h265_vui_snapshot(vui: &NativeVulkanH265ParsedVui) -> NativeVul
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
 #[derive(Debug, Clone, Copy)]
 struct NativeVulkanH265NalPayload<'a> {
     nal_type: u8,
@@ -14044,10 +14048,10 @@ struct NativeVulkanH265NalPayload<'a> {
     start_code_offset: usize,
     slice_segment_offset: usize,
     payload_offset: usize,
+    #[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
     payload: &'a [u8],
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
 fn native_vulkan_h265_nal_payloads(bytes: &[u8]) -> Vec<NativeVulkanH265NalPayload<'_>> {
     let mut payloads = Vec::new();
     let mut offset = 0usize;
@@ -14076,7 +14080,6 @@ fn native_vulkan_h265_nal_payloads(bytes: &[u8]) -> Vec<NativeVulkanH265NalPaylo
     payloads
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
 fn native_vulkan_h265_annex_b_slice_segment_offset(
     start_code_offset: usize,
     payload_offset: usize,
@@ -15367,7 +15370,6 @@ fn native_vulkan_h265_nal_stats(bytes: &[u8]) -> NativeVulkanH265NalStats {
     stats
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
 fn native_vulkan_next_annex_b_start_code(bytes: &[u8], from: usize) -> Option<(usize, usize)> {
     let mut index = from;
     while index + 3 <= bytes.len() {
@@ -15487,7 +15489,6 @@ fn native_vulkan_video_session_max_dpb_slots(driver_max_dpb_slots: u32) -> u32 {
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_h265_sps_dpb_slot_count(sps: &NativeVulkanH265SpsSnapshot) -> u32 {
     let layer_count = usize::from(sps.max_sub_layers_minus1).saturating_add(1);
     sps.dec_pic_buf_mgr
@@ -15501,7 +15502,6 @@ fn native_vulkan_h265_sps_dpb_slot_count(sps: &NativeVulkanH265SpsSnapshot) -> u
         .max(1)
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_h265_session_dpb_slots(
     driver_max_dpb_slots: u32,
     parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
@@ -15510,7 +15510,6 @@ fn native_vulkan_h265_session_dpb_slots(
     native_vulkan_h265_session_dpb_slots_for_count(driver_max_dpb_slots, stream_slots)
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_h265_session_dpb_slots_for_count(
     driver_max_dpb_slots: u32,
     stream_slots: u32,

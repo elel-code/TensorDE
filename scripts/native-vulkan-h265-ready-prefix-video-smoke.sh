@@ -9,17 +9,20 @@ Generate or use a 4K/240 H.265 Main source, then run the native Vulkan direct
 H.265 ready-prefix path on a real Wayland background surface. Each ready AU is
 decoded with Vulkan Video into a sampled NV12 array layer and presented through
 the native Vulkan swapchain. It does not use a GStreamer display sink.
-This smoke loops a ready-prefix window; visual loop boundaries can jump unless
-the source is authored to be seamless. Use it for decode/present/resource
-evidence, not final playback smoothness.
+By default, --playback-frames also expands the decoded ready prefix so the
+generated source is a continuous 4K/240 stream comparable with the
+GStreamer/appsink video source. Passing an explicit shorter --decode-prefix keeps
+the old loop-window diagnostic mode.
 
 Options:
   --display <name>      Wayland display name. Default: WAYLAND_DISPLAY.
   --output-name <name>  Target Wayland output name, for example HDMI-A-1.
-  --source <path>       Existing H.265 source. Default: generate short-GOP source.
+  --output <name>       Alias for --output-name.
+  --source <path>       Existing H.265 source. Default: generate continuous H.265 source.
   --report-dir <dir>    Exact evidence directory. Created and kept.
   --work-dir <dir>      Parent directory for generated evidence. Default: /tmp.
-  --decode-prefix <n>   Ready-prefix AU count to decode/present. Default: target-fps.
+  --decode-prefix <n>   Ready-prefix AU count to decode/present. Default:
+                        playback-frames when playback-frames is set, otherwise target-fps.
   --playback-frames <n> Decode/present frames by looping the ready prefix. Default: decode-prefix.
   --target-fps <fps>    Presentation target FPS. Default: 240.
   --gop-size <frames>   Generated H.265 keyint/min-keyint. Default: target-fps.
@@ -30,6 +33,7 @@ Options:
   --layer <layer>       Wayland layer. Default: background.
   --fit <mode>          Render fit. Default: cover.
   --no-build            Reuse existing target/release/gilder-native-vulkan.
+  --keep                Compatibility no-op; evidence directories are always kept.
   -h, --help            Show this help text.
 EOF
 }
@@ -40,16 +44,20 @@ source=""
 report_dir=""
 work_parent="${TMPDIR:-/tmp}"
 decode_prefix=0
+decode_prefix_explicit=0
 playback_frames=0
 target_fps=240
 gop_size=0
 width=3840
 height=2160
 frames=0
+frames_explicit=0
 allow_short_loop=0
 layer="background"
 fit="cover"
 no_build=0
+generated_source=0
+source_duration_seconds=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -57,7 +65,7 @@ while [[ $# -gt 0 ]]; do
       display="${2:-}"
       shift 2
       ;;
-    --output-name)
+    --output-name|--output)
       output_name="${2:-}"
       shift 2
       ;;
@@ -75,6 +83,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --decode-prefix)
       decode_prefix="${2:-}"
+      decode_prefix_explicit=1
       shift 2
       ;;
     --playback-frames)
@@ -99,6 +108,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --frames)
       frames="${2:-}"
+      frames_explicit=1
       shift 2
       ;;
     --allow-short-loop)
@@ -115,6 +125,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-build)
       no_build=1
+      shift
+      ;;
+    --keep)
       shift
       ;;
     -h|--help)
@@ -159,6 +172,9 @@ fi
 if [[ "$decode_prefix" -eq 0 ]]; then
   decode_prefix="$target_fps"
 fi
+if [[ "$decode_prefix_explicit" -eq 0 && "$playback_frames" -gt "$decode_prefix" ]]; then
+  decode_prefix="$playback_frames"
+fi
 if [[ "$decode_prefix" -lt 1 || "$playback_frames" -lt 0 || "$target_fps" -lt 1 || "$gop_size" -lt 1 || "$width" -lt 2 || "$height" -lt 2 ]]; then
   printf 'FAIL: decode-prefix/playback-frames/target-fps/gop-size must be valid and width/height must be at least 2\n' >&2
   exit 1
@@ -192,14 +208,16 @@ if [[ "$no_build" -eq 0 ]]; then
 fi
 
 if [[ -z "$source" ]]; then
+  generated_source=1
   generated_dir="$report_dir/source"
   mkdir -p "$generated_dir"
-  source="$generated_dir/h265-main-short-gop-${width}x${height}-${target_fps}fps.mp4"
   if [[ "$frames" -eq 0 || "$frames" -lt $((decode_prefix + 2)) ]]; then
     frames=$((decode_prefix + 2))
   fi
+  source_duration_seconds=$(( (frames + target_fps - 1) / target_fps ))
+  source="$generated_dir/h265-main-continuous-${width}x${height}-${target_fps}fps-${frames}frames-${decode_prefix}au.mp4"
   ffmpeg -hide_banner -loglevel error -y \
-    -f lavfi -i "testsrc2=size=${width}x${height}:rate=${target_fps}" \
+    -f lavfi -i "testsrc2=size=${width}x${height}:rate=${target_fps}:duration=${source_duration_seconds}" \
     -frames:v "$frames" -an \
     -c:v libx265 -profile:v main -preset ultrafast -tune zerolatency -pix_fmt yuv420p \
     -x265-params "keyint=${gop_size}:min-keyint=${gop_size}:scenecut=0:open-gop=0:bframes=0:ref=1:repeat-headers=1:hrd=0:rc-lookahead=0" \
@@ -341,6 +359,12 @@ fi
 
 {
   printf 'source: %s\n' "$source"
+  printf 'generated_source: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf yes || printf no)"
+  printf 'generated_source_frames: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$frames" || printf none)"
+  printf 'generated_source_duration_seconds: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$source_duration_seconds" || printf none)"
+  printf 'generated_source_frames_explicit: %s\n' "$([[ "$frames_explicit" -eq 1 ]] && printf yes || printf no)"
+  printf 'generated_source_pattern: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf 'testsrc2-continuous-closed-gop-h265-main' || printf none)"
+  printf 'decode_prefix_explicit: %s\n' "$([[ "$decode_prefix_explicit" -eq 1 ]] && printf yes || printf no)"
   printf 'selected_device: %s\n' "$(jq -r '.selected_physical_device_name' "$runtime_json")"
   printf 'requested_output_name: %s\n' "${output_name:-auto}"
   printf 'surface_logical_size: %s\n' "$(jq -c '.wayland_surface_logical_size' "$runtime_json")"
