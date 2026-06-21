@@ -2386,6 +2386,7 @@ pub struct NativeVulkanVideoRuntimeSnapshot {
     pub last_import_elapsed_us: Option<u64>,
     pub max_import_elapsed_us: Option<u64>,
     pub last_dmabuf_import: Option<NativeVulkanDmabufImportSnapshot>,
+    pub memory_route: NativeVulkanVideoMemoryRouteSnapshot,
     pub last_sample_caps: Option<String>,
     pub last_sample_format: Option<String>,
     pub last_sample_size: Option<(u32, u32)>,
@@ -2399,6 +2400,15 @@ pub struct NativeVulkanVideoRuntimeSnapshot {
     pub caps_memory_features: Vec<String>,
     pub caps_reports: Vec<NativeVulkanVideoCapsSnapshot>,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVideoMemoryRouteSnapshot {
+    pub route: &'static str,
+    pub direct_candidate: bool,
+    pub direct_import_confirmed: bool,
+    pub copy_risk: &'static str,
+    pub notes: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -30185,6 +30195,8 @@ fn native_vulkan_video_runtime_snapshot(
         .map(|import| import.frames_imported)
         .unwrap_or(0);
     let received_placeholder_frames = rendered_frames.saturating_sub(frames_imported);
+    let memory_route =
+        native_vulkan_video_memory_route_snapshot(frontend.as_ref(), import.as_ref());
 
     Some(NativeVulkanVideoRuntimeSnapshot {
         source: source.clone(),
@@ -30243,6 +30255,7 @@ fn native_vulkan_video_runtime_snapshot(
         last_dmabuf_import: import
             .as_ref()
             .and_then(|import| import.last_dmabuf_import.clone()),
+        memory_route,
         last_sample_caps: frontend
             .as_ref()
             .and_then(|frontend| frontend.last_sample_caps.clone()),
@@ -30288,6 +30301,154 @@ fn native_vulkan_video_runtime_snapshot(
             .as_ref()
             .and_then(|frontend| frontend.last_error.clone()),
     })
+}
+
+fn native_vulkan_video_memory_route_snapshot(
+    frontend: Option<&NativeVulkanGstVideoFrontendSnapshot>,
+    import: Option<&NativeVulkanVideoImportSnapshot>,
+) -> NativeVulkanVideoMemoryRouteSnapshot {
+    let import_path = import.and_then(|import| import.last_import_memory_path.as_deref());
+    let has_dmabuf_contract = import
+        .and_then(|import| import.last_dmabuf_import.as_ref())
+        .is_some();
+    let has_import_error = import
+        .and_then(|import| import.last_import_error.as_ref())
+        .is_some();
+    let has_dmabuf_signal = native_vulkan_video_frontend_has_memory(frontend, "DMABuf")
+        || native_vulkan_video_frontend_has_memory(frontend, "DmaBuf")
+        || native_vulkan_video_frontend_has_memory(frontend, "dmabuf");
+    let has_va_signal = native_vulkan_video_frontend_has_memory(frontend, "VAMemory");
+    let has_cuda_signal = native_vulkan_video_frontend_has_memory(frontend, "CUDAMemory");
+    let has_gl_signal = native_vulkan_video_frontend_has_memory(frontend, "GLMemory");
+    let has_sample = frontend
+        .map(|frontend| frontend.frames_received > 0)
+        .unwrap_or(false);
+
+    if has_dmabuf_contract {
+        let route = match import_path {
+            Some(path) if path.contains("GstVAMemory") => "direct-va-drm-prime-import",
+            _ => "direct-dmabuf-import",
+        };
+        return NativeVulkanVideoMemoryRouteSnapshot {
+            route,
+            direct_candidate: true,
+            direct_import_confirmed: true,
+            copy_risk: "low-confirmed-external-memory-import",
+            notes: vec![
+                "DRM format/modifier/plane layout was checked against the target Vulkan device",
+            ],
+        };
+    }
+
+    if let Some(path) = import_path {
+        if path.contains("CUDAMemory") {
+            return NativeVulkanVideoMemoryRouteSnapshot {
+                route: "cuda-vulkan-copy",
+                direct_candidate: false,
+                direct_import_confirmed: false,
+                copy_risk: "gpu-copy-or-sync-risk",
+                notes: vec![
+                    "CUDAMemory is GPU memory but not a confirmed DMABUF/Vulkan direct import",
+                    "Sunshine-style routing treats this separately from direct DMABUF",
+                ],
+            };
+        }
+        if path.contains("GstDmaBufMemory") || path.contains("GstVAMemory") {
+            return NativeVulkanVideoMemoryRouteSnapshot {
+                route: "dmabuf-import-unverified",
+                direct_candidate: true,
+                direct_import_confirmed: false,
+                copy_risk: "unknown-until-import-contract",
+                notes: vec![
+                    "import path names DMABUF/DRM PRIME but no contract snapshot was recorded",
+                ],
+            };
+        }
+    }
+
+    if has_dmabuf_signal || has_va_signal {
+        let route = if has_va_signal {
+            "va-memory-pending-drm-prime-export"
+        } else {
+            "dmabuf-caps-pending-import"
+        };
+        let mut notes = vec![
+            "caps or sample memory advertise a direct-memory candidate",
+            "zero-copy is not proven until the Vulkan importer records a DMABUF contract",
+        ];
+        if has_import_error {
+            notes.push("last importer attempt failed");
+        }
+        return NativeVulkanVideoMemoryRouteSnapshot {
+            route,
+            direct_candidate: true,
+            direct_import_confirmed: false,
+            copy_risk: "unknown-until-import-contract",
+            notes,
+        };
+    }
+
+    if has_cuda_signal {
+        return NativeVulkanVideoMemoryRouteSnapshot {
+            route: "cuda-memory-pending-import",
+            direct_candidate: false,
+            direct_import_confirmed: false,
+            copy_risk: "gpu-copy-or-sync-risk",
+            notes: vec!["CUDAMemory is vendor GPU memory, not a portable DMABUF contract"],
+        };
+    }
+
+    if has_gl_signal {
+        return NativeVulkanVideoMemoryRouteSnapshot {
+            route: "gl-memory-intermediate",
+            direct_candidate: false,
+            direct_import_confirmed: false,
+            copy_risk: "gpu-copy-or-export-risk",
+            notes: vec!["GLMemory may still need EGL/export conversion before Vulkan sampling"],
+        };
+    }
+
+    if has_sample {
+        return NativeVulkanVideoMemoryRouteSnapshot {
+            route: "system-memory-or-unsupported",
+            direct_candidate: false,
+            direct_import_confirmed: false,
+            copy_risk: "high-cpu-copy-risk",
+            notes: vec!["appsink is receiving samples without a supported GPU memory signal"],
+        };
+    }
+
+    NativeVulkanVideoMemoryRouteSnapshot {
+        route: "not-negotiated",
+        direct_candidate: false,
+        direct_import_confirmed: false,
+        copy_risk: "unknown",
+        notes: Vec::new(),
+    }
+}
+
+fn native_vulkan_video_frontend_has_memory(
+    frontend: Option<&NativeVulkanGstVideoFrontendSnapshot>,
+    needle: &str,
+) -> bool {
+    let Some(frontend) = frontend else {
+        return false;
+    };
+    frontend
+        .last_sample_memory_types
+        .iter()
+        .any(|memory| memory.contains(needle))
+        || frontend
+            .caps_memory_features
+            .iter()
+            .any(|feature| feature.contains(needle))
+        || frontend.caps_reports.iter().any(|report| {
+            report.caps.contains(needle)
+                || report
+                    .memory_features
+                    .iter()
+                    .any(|feature| feature.contains(needle))
+        })
 }
 
 fn native_vulkan_slideshow_item(plan: &SlideshowWallpaperPlan) -> NativeVulkanRenderItem {
@@ -32599,6 +32760,9 @@ mod tests {
         assert_eq!(snapshot.last_import_elapsed_us, None);
         assert_eq!(snapshot.max_import_elapsed_us, None);
         assert_eq!(snapshot.last_dmabuf_import, None);
+        assert_eq!(snapshot.memory_route.route, "not-negotiated");
+        assert!(!snapshot.memory_route.direct_candidate);
+        assert!(!snapshot.memory_route.direct_import_confirmed);
         assert_eq!(snapshot.start_offset_ms, 1500);
         assert_eq!(snapshot.gst_state, None);
         assert_eq!(snapshot.decoder_policy_status, None);
@@ -32683,6 +32847,10 @@ mod tests {
         assert_eq!(snapshot.last_import_elapsed_us, Some(900));
         assert_eq!(snapshot.max_import_elapsed_us, Some(1200));
         assert_eq!(snapshot.last_dmabuf_import, None);
+        assert_eq!(snapshot.memory_route.route, "cuda-vulkan-copy");
+        assert!(!snapshot.memory_route.direct_candidate);
+        assert!(!snapshot.memory_route.direct_import_confirmed);
+        assert_eq!(snapshot.memory_route.copy_risk, "gpu-copy-or-sync-risk");
         assert_eq!(snapshot.last_sample_format.as_deref(), Some("NV12"));
         assert_eq!(snapshot.last_sample_pts_ms, Some(8));
         assert_eq!(snapshot.last_sample_duration_ms, Some(4));
@@ -32741,6 +32909,67 @@ mod tests {
             .expect("video snapshot");
 
         assert_eq!(snapshot.last_dmabuf_import, Some(contract));
+        assert_eq!(snapshot.memory_route.route, "direct-dmabuf-import");
+        assert!(snapshot.memory_route.direct_candidate);
+        assert!(snapshot.memory_route.direct_import_confirmed);
+        assert_eq!(
+            snapshot.memory_route.copy_risk,
+            "low-confirmed-external-memory-import"
+        );
+    }
+
+    #[test]
+    fn video_runtime_snapshot_separates_dmabuf_caps_from_confirmed_direct_import() {
+        let item = NativeVulkanRenderItem::Video {
+            output_name: "HDMI-A-1".to_owned(),
+            source: PathBuf::from("/tmp/video.mp4"),
+            poster: None,
+            fit: FitMode::Cover,
+            loop_playback: true,
+            muted: true,
+            manifest_max_fps: None,
+            target_max_fps: Some(240),
+            decoder_policy: crate::config::VideoDecoderPolicy::HardwarePreferred,
+            start_offset_ms: 0,
+            renderer_status: "vulkan-lifecycle-video-placeholder",
+        };
+        let frontend = NativeVulkanGstVideoFrontendSnapshot {
+            gst_state: Some("Playing".to_owned()),
+            eos_messages: 0,
+            segment_done_messages: 0,
+            frames_received: 1,
+            last_sample_caps: Some("video/x-raw(memory:DMABuf), format=(string)NV12".to_owned()),
+            last_sample_format: Some("NV12".to_owned()),
+            last_sample_size: Some((1920, 1080)),
+            last_sample_pts_ms: Some(0),
+            last_sample_duration_ms: Some(16),
+            last_sample_pts_delta_ms: None,
+            last_sample_memory_types: vec!["DMABuf".to_owned()],
+            actual_decoders: vec!["vah264dec".to_owned()],
+            decoder_policy_status: Some("Satisfied".to_owned()),
+            caps_report_count: 1,
+            caps_memory_features: vec!["memory:DMABuf".to_owned()],
+            caps_reports: vec![NativeVulkanVideoCapsSnapshot {
+                element: "appsink0".to_owned(),
+                pad: "sink".to_owned(),
+                direction: "sink".to_owned(),
+                caps: "video/x-raw(memory:DMABuf)".to_owned(),
+                source: "current".to_owned(),
+                memory_features: vec!["memory:DMABuf".to_owned()],
+            }],
+            last_error: None,
+        };
+
+        let snapshot =
+            native_vulkan_video_runtime_snapshot(&item, Some(frontend), None, 1, None).unwrap();
+
+        assert_eq!(snapshot.memory_route.route, "dmabuf-caps-pending-import");
+        assert!(snapshot.memory_route.direct_candidate);
+        assert!(!snapshot.memory_route.direct_import_confirmed);
+        assert_eq!(
+            snapshot.memory_route.copy_risk,
+            "unknown-until-import-contract"
+        );
     }
 
     #[test]
