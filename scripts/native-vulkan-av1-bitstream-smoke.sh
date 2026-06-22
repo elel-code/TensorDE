@@ -7,7 +7,7 @@ usage: scripts/native-vulkan-av1-bitstream-smoke.sh [options]
 
 Generate or use an AV1 Main source, then verify the native Vulkan Video AV1
 session can ingest parsed encoded temporal units through GStreamer demux/parser
-without using a GStreamer display sink.
+and submit the first shown key frame without using a GStreamer display sink.
 
 Options:
   --display <name>      Wayland display name. Default: WAYLAND_DISPLAY.
@@ -21,6 +21,11 @@ Options:
   --bit-depth <8|10>    Generated/probed AV1 Main bit depth. Default: 8.
   --bitstream-samples <n>
                         Parsed temporal units to collect. Default: 8.
+  --decode-first-frame  Require first-frame Vulkan Video decode/readback. Default.
+  --no-decode-first-frame
+                        Only validate bitstream/session-parameter extraction.
+  --sample-decoded-first-frame
+                        Also render decoded first frame through Vulkan YUV sampling and read back RGBA.
   --no-build            Reuse existing target/release/gilder-native-vulkan.
   --keep                Compatibility no-op; evidence directories are always kept.
   -h, --help            Show this help text.
@@ -37,6 +42,8 @@ target_fps=60
 frames=0
 bit_depth=8
 bitstream_samples=8
+decode_first_frame=1
+sample_decoded_first_frame=0
 no_build=0
 generated_source=0
 
@@ -82,6 +89,20 @@ while [[ $# -gt 0 ]]; do
       bitstream_samples="${2:-}"
       shift 2
       ;;
+    --decode-first-frame)
+      decode_first_frame=1
+      shift
+      ;;
+    --no-decode-first-frame)
+      decode_first_frame=0
+      sample_decoded_first_frame=0
+      shift
+      ;;
+    --sample-decoded-first-frame)
+      decode_first_frame=1
+      sample_decoded_first_frame=1
+      shift
+      ;;
     --no-build)
       no_build=1
       shift
@@ -126,9 +147,11 @@ fi
 if [[ "$bit_depth" == "10" ]]; then
   pix_fmt="yuv420p10le"
   video_codec="av1-main-10"
+  expected_readback_format="G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16"
 else
   pix_fmt="yuv420p"
   video_codec="av1-main-8"
+  expected_readback_format="G8_B8R8_2PLANE_420_UNORM"
 fi
 
 if [[ -z "$report_dir" ]]; then
@@ -166,17 +189,27 @@ probe_json="$report_dir/probe.json"
 probe_stderr="$report_dir/probe.stderr"
 summary="$report_dir/summary.txt"
 
+probe_args=(
+  --probe-video-session
+  --video-codec "$video_codec"
+  --source "$source"
+  --width "$width"
+  --height "$height"
+  --extract-bitstream
+  --allocate-bitstream-buffer
+  --bitstream-samples "$bitstream_samples"
+)
+if [[ "$decode_first_frame" -eq 1 ]]; then
+  probe_args+=(--allocate-video-images --decode-first-frame)
+  if [[ "$sample_decoded_first_frame" -eq 1 ]]; then
+    probe_args+=(--sample-decoded-first-frame)
+  fi
+fi
+
 set +e
 env WAYLAND_DISPLAY="$display" \
   target/release/gilder-native-vulkan \
-  --probe-video-session \
-  --video-codec "$video_codec" \
-  --source "$source" \
-  --width "$width" \
-  --height "$height" \
-  --extract-bitstream \
-  --allocate-bitstream-buffer \
-  --bitstream-samples "$bitstream_samples" \
+  "${probe_args[@]}" \
   >"$probe_json" 2>"$probe_stderr"
 status=$?
 set -e
@@ -220,8 +253,30 @@ first_frame_tile_rows="$(jq -r '.bitstream_extract.av1_first_frame_submit.tile_r
 first_frame_tile_size_bytes="$(jq -r '.bitstream_extract.av1_first_frame_submit.tile_size_bytes // 0' "$probe_json")"
 first_frame_submit_candidate="$(jq -r '.bitstream_extract.av1_first_frame_submit.vulkan_submit_candidate // false' "$probe_json")"
 first_frame_submit_reason="$(jq -r '.bitstream_extract.av1_first_frame_submit.unsupported_reason // "none"' "$probe_json")"
+first_frame_decode_requested="$(jq -r '.first_frame_decode_requested // false' "$probe_json")"
+first_frame_decode_completed="$(jq -r '.first_frame_decode.completed // false' "$probe_json")"
+first_frame_decode_codec="$(jq -r '.first_frame_decode.codec // "none"' "$probe_json")"
+first_frame_readback_format="$(jq -r '.first_frame_decode.output_readback.format // "none"' "$probe_json")"
+first_frame_readback_copied="$(jq -r '.first_frame_decode.output_readback.copied // false' "$probe_json")"
+first_frame_readback_bytes="$(jq -r '.first_frame_decode.output_readback.total_bytes // 0' "$probe_json")"
+first_frame_readback_y_nonzero="$(jq -r '.first_frame_decode.output_readback.y_plane_nonzero_bytes // 0' "$probe_json")"
+first_frame_readback_uv_nonzero="$(jq -r '.first_frame_decode.output_readback.uv_plane_nonzero_bytes // 0' "$probe_json")"
+first_frame_sampling_rendered="$(jq -r '.first_frame_decode.output_sampling.rendered // false' "$probe_json")"
+first_frame_sampling_bytes="$(jq -r '.first_frame_decode.output_sampling.total_bytes // 0' "$probe_json")"
+first_frame_sampling_rgba_nonzero="$(jq -r '.first_frame_decode.output_sampling.rgba_nonzero_bytes // 0' "$probe_json")"
+first_frame_sampling_rgba_unique="$(jq -r '.first_frame_decode.output_sampling.rgba_unique_values // 0' "$probe_json")"
 
-if [[ "$codec" != "$video_codec" || "$samples" -lt 1 || "$frontend" != "gstreamer-demux-av1parse-appsink" || "$stream_format" != "obu-stream" || "$alignment" != "tu" || "$sequence_header_present" != "true" || "$obu_count" -lt 1 || "$sequence_header_count" -lt 1 || "$frame_count" -lt 1 || "$decode_candidate" != "true" || "$sequence_profile" != "main" || "$sequence_bit_depth" -ne "$bit_depth" || "$sequence_width" -ne "$width" || "$sequence_height" -ne "$height" || "$sequence_std_ready" != "true" || "$session_parameters_created" != "true" || "$session_parameters_codec" != "$video_codec" || "$session_parameters_source" != "native-rust-av1-sequence-header-to-vulkan-std" || "$mapped_write_source" != "extracted-encoded-video-unit" || "$mapped_write_bytes" -le 0 || "$first_frame_submit_present" != "true" || "$first_frame_header_found" != "true" || "$first_frame_type" != "key" || "$first_frame_tile_count" -lt 1 ]]; then
+decode_valid=1
+if [[ "$decode_first_frame" -eq 1 ]]; then
+  if [[ "$first_frame_decode_requested" != "true" || "$first_frame_decode_completed" != "true" || "$first_frame_decode_codec" != "$video_codec" || "$first_frame_readback_format" != "$expected_readback_format" || "$first_frame_readback_copied" != "true" || "$first_frame_readback_bytes" -le 0 || "$first_frame_readback_y_nonzero" -le 0 || "$first_frame_readback_uv_nonzero" -le 0 ]]; then
+    decode_valid=0
+  fi
+  if [[ "$sample_decoded_first_frame" -eq 1 && ( "$first_frame_sampling_rendered" != "true" || "$first_frame_sampling_bytes" -le 0 || "$first_frame_sampling_rgba_nonzero" -le 0 || "$first_frame_sampling_rgba_unique" -le 1 ) ]]; then
+    decode_valid=0
+  fi
+fi
+
+if [[ "$codec" != "$video_codec" || "$samples" -lt 1 || "$frontend" != "gstreamer-demux-av1parse-appsink" || "$stream_format" != "obu-stream" || "$alignment" != "tu" || "$sequence_header_present" != "true" || "$obu_count" -lt 1 || "$sequence_header_count" -lt 1 || "$frame_count" -lt 1 || "$decode_candidate" != "true" || "$sequence_profile" != "main" || "$sequence_bit_depth" -ne "$bit_depth" || "$sequence_width" -ne "$width" || "$sequence_height" -ne "$height" || "$sequence_std_ready" != "true" || "$session_parameters_created" != "true" || "$session_parameters_codec" != "$video_codec" || "$session_parameters_source" != "native-rust-av1-sequence-header-to-vulkan-std" || "$mapped_write_source" != "extracted-encoded-video-unit" || "$mapped_write_bytes" -le 0 || "$first_frame_submit_present" != "true" || "$first_frame_header_found" != "true" || "$first_frame_type" != "key" || "$first_frame_tile_count" -lt 1 || "$decode_valid" -ne 1 ]]; then
   {
     printf 'FAIL: native Vulkan AV1 bitstream output was not valid\n'
     printf 'codec: %s\n' "$codec"
@@ -252,6 +307,21 @@ if [[ "$codec" != "$video_codec" || "$samples" -lt 1 || "$frontend" != "gstreame
     printf 'first_frame_tile_count: %s\n' "$first_frame_tile_count"
     printf 'first_frame_submit_candidate: %s\n' "$first_frame_submit_candidate"
     printf 'first_frame_submit_reason: %s\n' "$first_frame_submit_reason"
+    printf 'decode_first_frame: %s\n' "$decode_first_frame"
+    printf 'sample_decoded_first_frame: %s\n' "$sample_decoded_first_frame"
+    printf 'first_frame_decode_requested: %s\n' "$first_frame_decode_requested"
+    printf 'first_frame_decode_completed: %s\n' "$first_frame_decode_completed"
+    printf 'first_frame_decode_codec: %s\n' "$first_frame_decode_codec"
+    printf 'first_frame_readback_format: %s\n' "$first_frame_readback_format"
+    printf 'expected_readback_format: %s\n' "$expected_readback_format"
+    printf 'first_frame_readback_copied: %s\n' "$first_frame_readback_copied"
+    printf 'first_frame_readback_bytes: %s\n' "$first_frame_readback_bytes"
+    printf 'first_frame_readback_y_nonzero: %s\n' "$first_frame_readback_y_nonzero"
+    printf 'first_frame_readback_uv_nonzero: %s\n' "$first_frame_readback_uv_nonzero"
+    printf 'first_frame_sampling_rendered: %s\n' "$first_frame_sampling_rendered"
+    printf 'first_frame_sampling_bytes: %s\n' "$first_frame_sampling_bytes"
+    printf 'first_frame_sampling_rgba_nonzero: %s\n' "$first_frame_sampling_rgba_nonzero"
+    printf 'first_frame_sampling_rgba_unique: %s\n' "$first_frame_sampling_rgba_unique"
     printf 'probe JSON: %s\n' "$probe_json"
   } | tee "$summary"
   exit 1
@@ -291,6 +361,21 @@ fi
   printf 'av1_first_frame_tile_size_bytes: %s\n' "$first_frame_tile_size_bytes"
   printf 'av1_first_frame_submit_candidate: %s\n' "$first_frame_submit_candidate"
   printf 'av1_first_frame_submit_reason: %s\n' "$first_frame_submit_reason"
+  printf 'decode_first_frame: %s\n' "$decode_first_frame"
+  printf 'sample_decoded_first_frame: %s\n' "$sample_decoded_first_frame"
+  printf 'first_frame_decode_requested: %s\n' "$first_frame_decode_requested"
+  printf 'first_frame_decode_completed: %s\n' "$first_frame_decode_completed"
+  printf 'first_frame_decode_codec: %s\n' "$first_frame_decode_codec"
+  printf 'first_frame_readback_format: %s\n' "$first_frame_readback_format"
+  printf 'first_frame_readback_bytes: %s\n' "$first_frame_readback_bytes"
+  printf 'first_frame_readback_y_nonzero: %s\n' "$first_frame_readback_y_nonzero"
+  printf 'first_frame_readback_uv_nonzero: %s\n' "$first_frame_readback_uv_nonzero"
+  printf 'first_frame_readback_hash: %s\n' "$(jq -r '.first_frame_decode.output_readback.combined_hash // "none"' "$probe_json")"
+  printf 'first_frame_sampling_rendered: %s\n' "$first_frame_sampling_rendered"
+  printf 'first_frame_sampling_bytes: %s\n' "$first_frame_sampling_bytes"
+  printf 'first_frame_sampling_rgba_nonzero: %s\n' "$first_frame_sampling_rgba_nonzero"
+  printf 'first_frame_sampling_rgba_unique: %s\n' "$first_frame_sampling_rgba_unique"
+  printf 'first_frame_sampling_hash: %s\n' "$(jq -r '.first_frame_decode.output_sampling.rgba_hash // "none"' "$probe_json")"
   printf 'av1_sequence_profile: %s\n' "$sequence_profile"
   printf 'av1_sequence_bit_depth: %s\n' "$sequence_bit_depth"
   printf 'av1_sequence_extent: %sx%s\n' "$sequence_width" "$sequence_height"

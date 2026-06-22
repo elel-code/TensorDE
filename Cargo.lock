@@ -296,7 +296,6 @@ dependencies = [
  "gstreamer-video",
  "image",
  "jiff",
- "libc",
  "rustix",
  "serde",
  "serde_json",
