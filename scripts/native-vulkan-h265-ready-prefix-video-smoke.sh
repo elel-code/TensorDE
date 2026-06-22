@@ -5,10 +5,10 @@ usage() {
   cat <<'EOF'
 usage: scripts/native-vulkan-h265-ready-prefix-video-smoke.sh [options]
 
-Generate or use a 4K/240 H.265 Main source, then run the native Vulkan direct
+Generate or use a 4K/240 H.265 Main/Main10 source, then run the native Vulkan direct
 H.265 ready-prefix path on a real Wayland background surface. Each ready AU is
-decoded with Vulkan Video into a sampled NV12 array layer and presented through
-the native Vulkan swapchain. It does not use a GStreamer display sink.
+decoded with Vulkan Video into a sampled NV12/P010 array layer and presented
+through the native Vulkan swapchain. It does not use a GStreamer display sink.
 By default, --playback-frames also expands the decoded ready prefix so the
 generated source is a continuous 4K/240 stream comparable with the
 GStreamer/appsink video source. Passing an explicit shorter --decode-prefix keeps
@@ -29,6 +29,7 @@ Options:
   --gop-size <frames>   Generated H.265 keyint/min-keyint. Default: target-fps.
   --refs <count>        Generated H.265 reference frames. Default: 1.
   --bframes <count>     Generated B-frame count. Default: 0.
+  --bit-depth <8|10>    Generated/probed H.265 Main bit depth. Default: 8.
   --width <px>          Generated/probed width. Default: 3840.
   --height <px>         Generated/probed height. Default: 2160.
   --frames <count>      Generated frame count. Default: decode-prefix + 2.
@@ -67,6 +68,7 @@ target_fps=240
 gop_size=0
 refs=1
 bframes=0
+bit_depth=8
 width=3840
 height=2160
 frames=0
@@ -134,6 +136,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --bframes)
       bframes="${2:-}"
+      shift 2
+      ;;
+    --bit-depth)
+      bit_depth="${2:-}"
       shift 2
       ;;
     --width)
@@ -237,6 +243,24 @@ if [[ "$decode_prefix" -lt 1 || "$playback_frames" -lt 0 || "$target_fps" -lt 1 
   printf 'FAIL: decode-prefix/playback-frames/target-fps/gop-size/refs/bframes must be valid and width/height must be at least 2\n' >&2
   exit 1
 fi
+case "$bit_depth" in
+  8)
+    video_codec="h265-main-8"
+    x265_profile="main"
+    x265_pix_fmt="yuv420p"
+    expected_picture_format="G8_B8R8_2PLANE_420_UNORM"
+    ;;
+  10)
+    video_codec="h265-main-10"
+    x265_profile="main10"
+    x265_pix_fmt="yuv420p10le"
+    expected_picture_format="G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16"
+    ;;
+  *)
+    printf 'FAIL: --bit-depth must be 8 or 10\n' >&2
+    exit 1
+    ;;
+esac
 expected_frames="$decode_prefix"
 if [[ "$playback_frames" -gt 0 ]]; then
   expected_frames="$playback_frames"
@@ -273,7 +297,7 @@ if [[ -z "$source" ]]; then
     frames=$((decode_prefix + 2))
   fi
   source_duration_seconds=$(( (frames + target_fps - 1) / target_fps ))
-  source="$generated_dir/h265-main-b${bframes}-ref${refs}-${width}x${height}-${target_fps}fps-${frames}frames-${decode_prefix}au.mp4"
+  source="$generated_dir/${video_codec}-b${bframes}-ref${refs}-${width}x${height}-${target_fps}fps-${frames}frames-${decode_prefix}au.mp4"
   rc_lookahead=0
   if [[ "$bframes" -gt 0 ]]; then
     rc_lookahead=$((bframes + 2))
@@ -286,7 +310,7 @@ if [[ -z "$source" ]]; then
     -hide_banner -loglevel error -y
     -f lavfi -i "testsrc2=size=${width}x${height}:rate=${target_fps}:duration=${source_duration_seconds}"
     -frames:v "$frames" -an
-    -c:v libx265 -profile:v main -preset ultrafast "${codec_extra_args[@]}" -pix_fmt yuv420p
+    -c:v libx265 -profile:v "$x265_profile" -preset ultrafast "${codec_extra_args[@]}" -pix_fmt "$x265_pix_fmt"
     -x265-params "keyint=${gop_size}:min-keyint=${gop_size}:scenecut=0:open-gop=0:bframes=${bframes}:ref=${refs}:repeat-headers=1:hrd=0:rc-lookahead=${rc_lookahead}"
     "$source"
   )
@@ -324,6 +348,7 @@ performance_dir="$report_dir/performance"
 performance_log="$report_dir/performance.log"
 args=(
   --run-h265-ready-prefix-video
+  --video-codec "$video_codec"
   --source "$source"
   --width "$width"
   --height "$height"
@@ -407,6 +432,8 @@ pts_delta_max="$(jq -r '.pts_delta_max_ms // "none"' "$runtime_json")"
 present_queue="$(jq -r '.present_queue_family_index // "none"' "$runtime_json")"
 video_queue="$(jq -r '.video_decode_queue_family_index // "none"' "$runtime_json")"
 sync_strategy="$(jq -r '.cross_queue_sync_strategy // "none"' "$runtime_json")"
+runtime_codec="$(jq -r '.requested_codec // "none"' "$runtime_json")"
+picture_format="$(jq -r '.picture_format // "none"' "$runtime_json")"
 driver_max_dpb_slots="$(jq -r '.driver_max_dpb_slots // "none"' "$runtime_json")"
 stream_sps_dpb_slots="$(jq -r '.stream_sps_dpb_slots // 0' "$runtime_json")"
 stream_dpb_slots="$(jq -r '.stream_dpb_slots // 0' "$runtime_json")"
@@ -481,7 +508,7 @@ if [[ "$driver_max_dpb_slots" == "none" || "$stream_sps_dpb_slots" -le 0 || "$st
   dpb_gate_failed=1
 fi
 
-if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$ready_prefix_count" -ne "$decode_prefix" || "$requested_playback_count" -ne "$expected_frames" || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$arbitrary_entry_gate_failed" -ne 0 || "$reference_gate_failed" -ne 0 || "$b_frame_gate_failed" -ne 0 || "$loop_skip_replay_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$pts_delta_min" == "none" || "$pts_delta_max" == "none" || "$present_queue" == "none" || "$video_queue" == "none" || "$sync_strategy" != "per-frame-binary-semaphore-decode-signal-present-wait" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
+if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$runtime_codec" != "$video_codec" || "$picture_format" != "$expected_picture_format" || "$ready_prefix_count" -ne "$decode_prefix" || "$requested_playback_count" -ne "$expected_frames" || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$arbitrary_entry_gate_failed" -ne 0 || "$reference_gate_failed" -ne 0 || "$b_frame_gate_failed" -ne 0 || "$loop_skip_replay_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$pts_delta_min" == "none" || "$pts_delta_max" == "none" || "$present_queue" == "none" || "$video_queue" == "none" || "$sync_strategy" != "per-frame-binary-semaphore-decode-signal-present-wait" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
   {
     printf 'FAIL: native Vulkan direct H.265 ready-prefix video output was not valid\n'
     printf 'decoded_count: %s\n' "$decoded_count"
@@ -489,6 +516,10 @@ if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expect
     printf 'requested_decode_prefix: %s\n' "$decode_prefix"
     printf 'expected_playback_frames: %s\n' "$expected_frames"
     printf 'ready_prefix_loop_period_ms: %s\n' "$ready_prefix_loop_period_ms"
+    printf 'runtime_codec: %s\n' "$runtime_codec"
+    printf 'expected_codec: %s\n' "$video_codec"
+    printf 'picture_format: %s\n' "$picture_format"
+    printf 'expected_picture_format: %s\n' "$expected_picture_format"
     printf 'frame_count: %s\n' "$frame_count"
     printf 'ready_prefix_frame_count: %s\n' "$ready_prefix_count"
     printf 'requested_playback_frame_count: %s\n' "$requested_playback_count"
@@ -551,7 +582,10 @@ fi
   printf 'generated_source_frames: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$frames" || printf none)"
   printf 'generated_source_duration_seconds: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$source_duration_seconds" || printf none)"
   printf 'generated_source_frames_explicit: %s\n' "$([[ "$frames_explicit" -eq 1 ]] && printf yes || printf no)"
-  printf 'generated_source_pattern: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf 'testsrc2-continuous-closed-gop-h265-main-b%s' "$bframes" || printf none)"
+  printf 'generated_source_pattern: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf 'testsrc2-continuous-closed-gop-%s-b%s' "$video_codec" "$bframes" || printf none)"
+  printf 'requested_codec: %s\n' "$runtime_codec"
+  printf 'requested_bit_depth: %s\n' "$bit_depth"
+  printf 'picture_format: %s\n' "$picture_format"
   printf 'generated_source_refs: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$refs" || printf none)"
   printf 'generated_source_bframes: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$bframes" || printf none)"
   printf 'arbitrary_entry_source: %s\n' "$([[ "$arbitrary_entry_source" -eq 1 ]] && printf yes || printf no)"

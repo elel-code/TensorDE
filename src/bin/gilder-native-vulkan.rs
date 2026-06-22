@@ -492,6 +492,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 json!(run_h265_ready_prefix_video(
                     options,
+                    video_session_options.codec,
                     source,
                     video_session_options.width,
                     video_session_options.height,
@@ -506,6 +507,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             {
                 let _ = (
                     options,
+                    video_session_options.codec,
                     source,
                     video_session_options.width,
                     video_session_options.height,
