@@ -4618,11 +4618,21 @@ pub fn run_h264_ready_prefix_video(
             let buffer = bitstream_buffer
                 .as_ref()
                 .expect("bitstream buffer was just created");
-            renderer = Some(NativeVulkanVideoRenderer::new(
+            let renderer_descriptor_set_count = if h264_direct_sample_decoded_output {
+                1
+            } else {
+                display_image
+                    .as_ref()
+                    .map(|image| image.plane_views.len().max(1) as u32)
+                    .unwrap_or(1)
+            };
+            renderer = Some(NativeVulkanVideoRenderer::new_with_descriptor_set_count(
                 &device,
                 swapchain_plan.format.format,
                 swapchain_plan.extent,
                 &swapchain_image_views,
+                vk::ImageLayout::PRESENT_SRC_KHR,
+                renderer_descriptor_set_count,
             )?);
             let renderer_ref = renderer.as_mut().expect("video renderer was just created");
 
@@ -5074,6 +5084,26 @@ pub fn run_h264_ready_prefix_video(
             let display_image_ref = display_image
                 .as_mut()
                 .expect("decoded video display image was just created");
+            let mut h264_display_textures =
+                Vec::<NativeVulkanVideoTexture>::with_capacity(display_image_ref.plane_views.len());
+            for (display_slot, display_views) in
+                display_image_ref.plane_views.iter().copied().enumerate()
+            {
+                let texture = NativeVulkanVideoTexture::Decoded(
+                    NativeVulkanDecodedVideoTexture::from_cached_views(
+                        display_image_ref.image,
+                        picture_format,
+                        width,
+                        height,
+                        display_slot as u32,
+                        display_views,
+                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        vk::AccessFlags::SHADER_READ,
+                    )?,
+                );
+                renderer_ref.update_descriptors_for_set_index(&device, display_slot, &texture)?;
+                h264_display_textures.push(texture);
+            }
             struct H264PreparedVisibleFrame {
                 frame: NativeVulkanDirectH264ReadyPrefixFrameSnapshot,
                 duration_ms: Option<u64>,
@@ -5363,33 +5393,14 @@ pub fn run_h264_ready_prefix_video(
                         let display_slot = prepared_frame.display_slot;
 
                         let present_started_at = Instant::now();
-                        let display_views = display_image_ref
-                    .plane_views
-                    .get(display_slot)
-                    .copied()
-                    .ok_or_else(|| {
-                        NativeVulkanError::Video(format!(
-                            "H.264 display view cache has {} layers but layer {} was requested",
-                            display_image_ref.plane_views.len(),
-                            display_slot
-                        ))
-                    })?;
-                        let texture = NativeVulkanVideoTexture::Decoded(
-                            NativeVulkanDecodedVideoTexture::from_cached_views(
-                                display_image_ref.image,
-                                picture_format,
-                                width,
-                                height,
-                                display_slot as u32,
-                                display_views,
-                                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                                vk::AccessFlags::SHADER_READ,
-                            )?,
-                        );
-                        let descriptor_update_started_at = Instant::now();
-                        renderer_ref.update_descriptors(&device, &texture);
-                        frame.descriptor_update_elapsed_us =
-                            native_vulkan_elapsed_us(descriptor_update_started_at.elapsed());
+                        let texture = h264_display_textures.get(display_slot).ok_or_else(|| {
+                            NativeVulkanError::Video(format!(
+                                "H.264 display texture cache has {} slots but slot {} was requested",
+                                h264_display_textures.len(),
+                                display_slot
+                            ))
+                        })?;
+                        frame.descriptor_update_elapsed_us = 0;
                         let acquire_started_at = Instant::now();
                         let (image_index, _) = unsafe {
                             swapchain_loader_ref.acquire_next_image(
@@ -5561,14 +5572,15 @@ pub fn run_h264_ready_prefix_video(
                                     native_vulkan_elapsed_us(copy_submit_started_at.elapsed()),
                                 );
                         }
-                        renderer_ref.record_frame(
+                        renderer_ref.record_frame_with_descriptor_set_index(
                             &device,
                             present_command_buffers[image_index],
                             image_index,
                             swapchain_images[image_index],
                             swapchain_image_layouts[image_index],
-                            &texture,
+                            texture,
                             fit,
+                            display_slot,
                         )?;
                         frame.record_elapsed_us =
                             native_vulkan_elapsed_us(record_started_at.elapsed());
@@ -5876,7 +5888,6 @@ pub fn run_h264_ready_prefix_video(
                         previous_duration_ms = frame_duration_ms;
                         previous_source_loop_index = frame.playback_loop_index;
                         available_decode_semaphore_index = frame_decode_semaphore_index;
-                        retired_textures.push(texture);
                         frames.push(frame);
 
                         if let Some(interval) = frame_interval
@@ -8121,7 +8132,7 @@ struct NativeVulkanVideoRenderer {
     framebuffers: Vec<vk::Framebuffer>,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
-    descriptor_set: vk::DescriptorSet,
+    descriptor_sets: Vec<vk::DescriptorSet>,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
     sampler: vk::Sampler,
@@ -8153,6 +8164,25 @@ impl NativeVulkanVideoRenderer {
         target_image_views: &[vk::ImageView],
         target_final_layout: vk::ImageLayout,
     ) -> Result<Self, NativeVulkanError> {
+        Self::new_with_descriptor_set_count(
+            device,
+            target_format,
+            extent,
+            target_image_views,
+            target_final_layout,
+            1,
+        )
+    }
+
+    fn new_with_descriptor_set_count(
+        device: &ash::Device,
+        target_format: vk::Format,
+        extent: vk::Extent2D,
+        target_image_views: &[vk::ImageView],
+        target_final_layout: vk::ImageLayout,
+        descriptor_set_count: u32,
+    ) -> Result<Self, NativeVulkanError> {
+        let descriptor_set_count = descriptor_set_count.max(1);
         let render_pass =
             native_vulkan_create_video_render_pass(device, target_format, target_final_layout)?;
         let framebuffers = native_vulkan_create_video_framebuffers(
@@ -8175,10 +8205,10 @@ impl NativeVulkanVideoRenderer {
                 })?;
         let pool_sizes = [vk::DescriptorPoolSize {
             ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            descriptor_count: 2,
+            descriptor_count: descriptor_set_count.saturating_mul(2),
         }];
         let descriptor_pool_info = vk::DescriptorPoolCreateInfo::default()
-            .max_sets(1)
+            .max_sets(descriptor_set_count)
             .pool_sizes(&pool_sizes);
         let descriptor_pool =
             match unsafe { device.create_descriptor_pool(&descriptor_pool_info, None) } {
@@ -8197,13 +8227,13 @@ impl NativeVulkanVideoRenderer {
                     });
                 }
             };
-        let set_layouts = [descriptor_set_layout];
+        let set_layouts = vec![descriptor_set_layout; descriptor_set_count as usize];
         let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&set_layouts);
-        let descriptor_set =
+        let descriptor_sets =
             match unsafe { device.allocate_descriptor_sets(&descriptor_set_allocate_info) } {
-                Ok(sets) => sets[0],
+                Ok(sets) => sets,
                 Err(result) => {
                     unsafe {
                         device.destroy_descriptor_pool(descriptor_pool, None);
@@ -8295,7 +8325,7 @@ impl NativeVulkanVideoRenderer {
             framebuffers,
             descriptor_set_layout,
             descriptor_pool,
-            descriptor_set,
+            descriptor_sets,
             pipeline_layout,
             pipeline,
             sampler,
@@ -8309,6 +8339,26 @@ impl NativeVulkanVideoRenderer {
     }
 
     fn update_descriptors(&mut self, device: &ash::Device, texture: &NativeVulkanVideoTexture) {
+        self.update_descriptors_for_set_index(device, 0, texture)
+            .expect("video renderer always has descriptor set 0");
+    }
+
+    fn update_descriptors_for_set_index(
+        &mut self,
+        device: &ash::Device,
+        descriptor_set_index: usize,
+        texture: &NativeVulkanVideoTexture,
+    ) -> Result<(), NativeVulkanError> {
+        let descriptor_set = self
+            .descriptor_sets
+            .get(descriptor_set_index)
+            .copied()
+            .ok_or_else(|| {
+                NativeVulkanError::Video(format!(
+                    "video renderer descriptor set index {descriptor_set_index} is out of range for {} sets",
+                    self.descriptor_sets.len()
+                ))
+            })?;
         let image_infos = [
             vk::DescriptorImageInfo::default()
                 .sampler(self.sampler)
@@ -8321,12 +8371,12 @@ impl NativeVulkanVideoRenderer {
         ];
         let writes = [
             vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_set)
+                .dst_set(descriptor_set)
                 .dst_binding(0)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(&image_infos[0..1]),
             vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_set)
+                .dst_set(descriptor_set)
                 .dst_binding(1)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(&image_infos[1..2]),
@@ -8334,6 +8384,7 @@ impl NativeVulkanVideoRenderer {
         unsafe {
             device.update_descriptor_sets(&writes, &[]);
         }
+        Ok(())
     }
 
     fn record_frame(
@@ -8346,6 +8397,40 @@ impl NativeVulkanVideoRenderer {
         texture: &NativeVulkanVideoTexture,
         fit: FitMode,
     ) -> Result<(), NativeVulkanError> {
+        self.record_frame_with_descriptor_set_index(
+            device,
+            command_buffer,
+            image_index,
+            swapchain_image,
+            swapchain_old_layout,
+            texture,
+            fit,
+            0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_frame_with_descriptor_set_index(
+        &self,
+        device: &ash::Device,
+        command_buffer: vk::CommandBuffer,
+        image_index: usize,
+        swapchain_image: vk::Image,
+        swapchain_old_layout: vk::ImageLayout,
+        texture: &NativeVulkanVideoTexture,
+        fit: FitMode,
+        descriptor_set_index: usize,
+    ) -> Result<(), NativeVulkanError> {
+        let descriptor_set = self
+            .descriptor_sets
+            .get(descriptor_set_index)
+            .copied()
+            .ok_or_else(|| {
+                NativeVulkanError::Video(format!(
+                    "video renderer descriptor set index {descriptor_set_index} is out of range for {} sets",
+                    self.descriptor_sets.len()
+                ))
+            })?;
         unsafe {
             device
                 .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
@@ -8415,7 +8500,7 @@ impl NativeVulkanVideoRenderer {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline_layout,
                 0,
-                &[self.descriptor_set],
+                &[descriptor_set],
                 &[],
             );
             let push = native_vulkan_video_fit_push_constants(
