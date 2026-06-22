@@ -7540,7 +7540,7 @@ pub fn run_av1_ready_prefix_video(
     let streaming_bootstrap =
         native_vulkan_av1_align_streaming_bootstrap(&mut streaming_queue, &sequence_header)?;
     native_vulkan_require_streaming_bootstrap_window(&streaming_queue, ready_prefix_frame_count)?;
-    let stream_dpb_slots = streaming_bootstrap.stream_dpb_slots.max(1);
+    let stream_dpb_slots = streaming_bootstrap.stream_dpb_slots.max(9);
     let stream_max_active_reference_pictures = streaming_bootstrap
         .stream_max_active_reference_pictures
         .max(1);
@@ -7854,8 +7854,7 @@ pub fn run_av1_ready_prefix_video(
                 capabilities.min_bitstream_buffer_offset_alignment,
                 capabilities.min_bitstream_buffer_size_alignment,
             )?;
-            let driver_dpb_slots =
-                native_vulkan_video_session_max_dpb_slots(capabilities.max_dpb_slots);
+            let driver_dpb_slots = capabilities.max_dpb_slots;
             if driver_dpb_slots == 0 || driver_dpb_slots < stream_dpb_slots {
                 return Err(NativeVulkanError::Video(format!(
                     "direct AV1 ready-prefix needs {stream_dpb_slots} DPB slots but driver reports {}",
@@ -8194,9 +8193,15 @@ pub fn run_av1_ready_prefix_video(
                         bitstream_upload_elapsed_us,
                     )?;
                     frame.fence_wait_elapsed_us = fence_wait_elapsed_us;
-                    if let Some(output_slot) = frame.dst_base_array_layer {
-                        if let Some(slot) = active_dpb_refs.get_mut(output_slot as usize) {
-                            *slot = Some(NativeVulkanAv1ActiveDpbReference {
+                    let active_slots_after = entry
+                        .map_slot_indices_after
+                        .iter()
+                        .filter_map(|slot| u32::try_from(*slot).ok())
+                        .collect::<Vec<_>>();
+                    let current_reference = frame.dst_base_array_layer.and_then(|output_slot| {
+                        (!entry.refreshed_reference_names.is_empty()).then_some((
+                            output_slot,
+                            NativeVulkanAv1ActiveDpbReference {
                                 frame_type: frame.frame_type,
                                 order_hint: frame.order_hint.unwrap_or(0),
                                 saved_order_hints: native_vulkan_av1_order_hints_array(
@@ -8204,7 +8209,19 @@ pub fn run_av1_ready_prefix_video(
                                 ),
                                 disable_frame_end_update_cdf: frame.disable_frame_end_update_cdf,
                                 segmentation_enabled: frame.segmentation_enabled,
-                            });
+                            },
+                        ))
+                    });
+                    for (slot_index, slot) in active_dpb_refs.iter_mut().enumerate() {
+                        let slot_index = slot_index as u32;
+                        if !active_slots_after.contains(&slot_index) {
+                            *slot = None;
+                            continue;
+                        }
+                        if let Some((output_slot, reference)) = current_reference
+                            && output_slot == slot_index
+                        {
+                            *slot = Some(reference);
                         }
                     }
                     frame
@@ -25746,7 +25763,7 @@ impl NativeVulkanAv1DecodeReferencePlanner {
             .collect()
     }
 
-    fn allocate_output_slot(&mut self, protected_slots: &[u32]) -> u32 {
+    fn allocate_output_slot(&mut self, protected_slots: &[u32]) -> Option<u32> {
         for offset in 0..self.dpb_slots {
             let slot = (self.next_output_slot + offset) % self.dpb_slots;
             if protected_slots.contains(&slot) {
@@ -25759,19 +25776,17 @@ impl NativeVulkanAv1DecodeReferencePlanner {
                 .any(|entry| entry.slot == slot)
             {
                 self.next_output_slot = (slot + 1) % self.dpb_slots;
-                return slot;
+                return Some(slot);
             }
         }
         for offset in 0..self.dpb_slots {
             let slot = (self.next_output_slot + offset) % self.dpb_slots;
             if !protected_slots.contains(&slot) {
                 self.next_output_slot = (slot + 1) % self.dpb_slots;
-                return slot;
+                return Some(slot);
             }
         }
-        let slot = self.next_output_slot % self.dpb_slots;
-        self.next_output_slot = (slot + 1) % self.dpb_slots;
-        slot
+        None
     }
 
     fn plan_next(
@@ -25887,22 +25902,29 @@ impl NativeVulkanAv1DecodeReferencePlanner {
                 protected_slots.push(entry.slot);
             }
         }
-        let output_slot = Some(self.allocate_output_slot(&protected_slots));
-        let output_slot_value = output_slot.expect("output slot just allocated");
-
-        for index in &refreshed_reference_names {
-            self.reference_map[*index as usize] = Some(NativeVulkanAv1ReferenceMapEntry {
-                slot: output_slot_value,
-                order_hint: submit.order_hint,
-            });
+        let output_slot = self.allocate_output_slot(&protected_slots);
+        if let Some(output_slot_value) = output_slot {
+            for index in &refreshed_reference_names {
+                self.reference_map[*index as usize] = Some(NativeVulkanAv1ReferenceMapEntry {
+                    slot: output_slot_value,
+                    order_hint: submit.order_hint,
+                });
+            }
         }
 
         let submit_fields_ready = submit.vulkan_submit_candidate;
-        let ready_for_decode_submit = references_resolved && submit_fields_ready;
+        let output_slot_available = output_slot.is_some();
+        let ready_for_decode_submit =
+            references_resolved && submit_fields_ready && output_slot_available;
         let unsupported_reason = if !references_resolved {
             Some(format!(
                 "AV1 reference map is missing reference name(s) {:?}",
                 missing_reference_names
+            ))
+        } else if !output_slot_available {
+            Some(format!(
+                "AV1 reference map has no free DPB output slot with {} slot(s); protected slots {:?}",
+                self.dpb_slots, protected_slots
             ))
         } else if !submit_fields_ready {
             submit.unsupported_reason.clone().or_else(|| {
@@ -25952,7 +25974,7 @@ fn native_vulkan_av1_decode_reference_plan(
         .collect()
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
 fn native_vulkan_av1_min_decodable_dpb_plan(
     temporal_units: &[NativeVulkanAv1TemporalUnitSnapshot],
     max_dpb_slots: u32,
@@ -26012,7 +26034,10 @@ fn native_vulkan_av1_align_streaming_bootstrap(
                 skipped_temporal_unit_indices.len()
             )));
         }
-        let stream_max_dpb_slots = 8;
+        // AV1 has eight named reference slots. Real streams can also contain
+        // showable non-reference frames (`refresh_frame_flags == 0`), which need
+        // a transient output slot when DPB and output coincide.
+        let stream_max_dpb_slots = 16;
         let stream_max_active_reference_pictures =
             native_vulkan_av1_temporal_units_max_active_references(&bootstrap_temporal_units)
                 .max(1);
@@ -38485,6 +38510,44 @@ mod tests {
         assert_eq!(plan[3].frame_to_show_map_idx, Some(2));
         assert_eq!(plan[3].displayed_slot, Some(0));
         assert_eq!(plan[3].missing_reference_count, 0);
+
+        let ready_units = vec![
+            temporal_unit(
+                0,
+                submit(0, "key", false, None, true, Some(0), 0xff, Vec::new(), true),
+            ),
+            temporal_unit(
+                1,
+                submit(
+                    1,
+                    "inter",
+                    false,
+                    None,
+                    true,
+                    Some(1),
+                    0x02,
+                    vec![0, 0, 0, 0, 0, 0, 0],
+                    true,
+                ),
+            ),
+        ];
+        let one_slot_plan = native_vulkan_av1_decode_reference_plan(&ready_units, 1);
+        assert!(!one_slot_plan[1].ready_for_decode_submit);
+        assert!(
+            one_slot_plan[1]
+                .unsupported_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("no free DPB output slot")
+        );
+        let (min_slots, min_plan) = native_vulkan_av1_min_decodable_dpb_plan(&ready_units, 8);
+        assert_eq!(min_slots, 2);
+        assert!(min_plan[1].ready_for_decode_submit);
+        assert_eq!(min_plan[1].output_slot, Some(1));
+        assert_eq!(
+            min_plan[1].decode_reference_slots,
+            vec![0, 0, 0, 0, 0, 0, 0]
+        );
     }
 
     #[test]

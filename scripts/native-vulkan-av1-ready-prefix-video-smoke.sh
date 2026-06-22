@@ -236,7 +236,7 @@ if [[ "$require_loop_skip_replay" -eq 1 && ( "$queue_eos_count" -le 0 || "$queue
   loop_replay_gate_failed=1
 fi
 
-if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_picture_format" || "$presented_count" -ne "$expected_frames" || "$requested_playback_count" -ne "$expected_frames" || $((decoded_count + handoff_count)) -ne "$expected_frames" || "$configured" != "true" || "$queue_capacity" -le 0 || "$queue_pulled_count" -lt "$expected_frames" || "$queue_retained_payload_bytes" -ne 0 || "$distinct_layers" -le 0 || "$bad_frames" -ne 0 || "$loop_replay_gate_failed" -ne 0 ]]; then
+if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_picture_format" || "$presented_count" -ne "$expected_frames" || "$requested_playback_count" -ne "$expected_frames" || $((decoded_count + handoff_count)) -ne "$expected_frames" || "$configured" != "true" || "$queue_capacity" -le 0 || "$queue_pulled_count" -lt "$expected_frames" || "$queue_retained_payload_bytes" -ne 0 || "$distinct_layers" -le 1 || "$bad_frames" -ne 0 || "$loop_replay_gate_failed" -ne 0 ]]; then
   {
     printf 'FAIL: native Vulkan AV1 ready-prefix visible runtime output was not valid\n'
     printf 'requested_codec: %s\n' "$requested_codec"
