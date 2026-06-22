@@ -11046,8 +11046,23 @@ trait NativeVulkanStreamingAccessUnit: Sized {
         parameter_sets: &Self::ParameterSets,
     ) -> Self::Snapshot;
     fn bytes(&self) -> &[u8];
+    fn pts_ms(&self) -> Option<u64>;
+    fn duration_ms(&self) -> Option<u64>;
     fn has_parameter_sets(&self) -> bool;
     fn is_random_access(&self) -> bool;
+    fn is_random_access_with_parameter_sets(&self, _parameter_sets: &Self::ParameterSets) -> bool {
+        self.is_random_access()
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeVulkanStreamingPacketTimeline {
+    access_unit_index: u32,
+    source_loop_index: u32,
+    pts_ms: Option<u64>,
+    duration_ms: Option<u64>,
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -11055,6 +11070,8 @@ struct NativeVulkanStreamingPacket<A: NativeVulkanStreamingAccessUnit> {
     access_unit: A,
     snapshot: A::Snapshot,
     source_loop_index: u32,
+    #[allow(dead_code)]
+    timeline: NativeVulkanStreamingPacketTimeline,
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -11161,7 +11178,7 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
             if loop_on_eos
                 && self.loop_skip_access_units > 0
                 && self.loop_count != before_loop_count
-                && !access_unit.is_random_access()
+                && !access_unit.is_random_access_with_parameter_sets(&self.parameter_sets)
             {
                 for _ in 1..self.loop_skip_access_units {
                     let Some(_) = native_vulkan_pull_streaming_access_unit::<A>(
@@ -11191,13 +11208,16 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
         };
         self.pulled_count = self.pulled_count.saturating_add(1);
         self.max_payload_bytes = self.max_payload_bytes.max(access_unit.bytes().len() as u64);
-        let snapshot = A::snapshot(
-            self.next_access_unit_index,
-            &access_unit,
-            &self.parameter_sets,
-        );
+        let access_unit_index = self.next_access_unit_index;
+        let snapshot = A::snapshot(access_unit_index, &access_unit, &self.parameter_sets);
         self.next_access_unit_index = self.next_access_unit_index.saturating_add(1);
         self.queued.push_back(NativeVulkanStreamingPacket {
+            timeline: NativeVulkanStreamingPacketTimeline {
+                access_unit_index,
+                source_loop_index: self.loop_count,
+                pts_ms: access_unit.pts_ms(),
+                duration_ms: access_unit.duration_ms(),
+            },
             access_unit,
             snapshot,
             source_loop_index: self.loop_count,
@@ -11231,6 +11251,16 @@ type NativeVulkanH265StreamingPacket =
 #[cfg(feature = "native-vulkan-gst-video")]
 type NativeVulkanH265StreamingPacketQueue =
     NativeVulkanStreamingPacketQueue<NativeVulkanH265AccessUnitExtract>;
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[allow(dead_code)]
+type NativeVulkanAv1StreamingPacket =
+    NativeVulkanStreamingPacket<NativeVulkanAv1TemporalUnitExtract>;
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[allow(dead_code)]
+type NativeVulkanAv1StreamingPacketQueue =
+    NativeVulkanStreamingPacketQueue<NativeVulkanAv1TemporalUnitExtract>;
 
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_require_streaming_bootstrap_window<A: NativeVulkanStreamingAccessUnit>(
@@ -19016,6 +19046,17 @@ fn native_vulkan_start_h265_streaming_packet_queue(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+#[allow(dead_code)]
+fn native_vulkan_start_av1_streaming_packet_queue(
+    source: &Path,
+    capacity: usize,
+) -> Result<NativeVulkanAv1StreamingPacketQueue, NativeVulkanError> {
+    native_vulkan_start_streaming_packet_queue::<NativeVulkanAv1TemporalUnitExtract>(
+        source, capacity,
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_start_streaming_packet_queue<A: NativeVulkanStreamingAccessUnit>(
     source: &Path,
     capacity: usize,
@@ -19096,8 +19137,15 @@ fn native_vulkan_start_streaming_packet_queue<A: NativeVulkanStreamingAccessUnit
 
     let mut queued = VecDeque::with_capacity(capacity);
     for (index, access_unit) in pending.into_iter().enumerate() {
-        let snapshot = A::snapshot(index as u32, &access_unit, &parameter_sets);
+        let access_unit_index = index as u32;
+        let snapshot = A::snapshot(access_unit_index, &access_unit, &parameter_sets);
         queued.push_back(NativeVulkanStreamingPacket {
+            timeline: NativeVulkanStreamingPacketTimeline {
+                access_unit_index,
+                source_loop_index: loop_count,
+                pts_ms: access_unit.pts_ms(),
+                duration_ms: access_unit.duration_ms(),
+            },
             access_unit,
             snapshot,
             source_loop_index: loop_count,
@@ -19522,6 +19570,24 @@ fn native_vulkan_h264_streaming_queue_bitstream_plan(
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_h265_streaming_queue_bitstream_plan(
     queue: &NativeVulkanH265StreamingPacketQueue,
+    width: u32,
+    height: u32,
+    min_offset_alignment: u64,
+    min_size_alignment: u64,
+) -> Result<NativeVulkanH265ReadyPrefixStreamingBitstreamPlan, NativeVulkanError> {
+    native_vulkan_streaming_queue_bitstream_plan(
+        queue,
+        width,
+        height,
+        min_offset_alignment,
+        min_size_alignment,
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[allow(dead_code)]
+fn native_vulkan_av1_streaming_queue_bitstream_plan(
+    queue: &NativeVulkanAv1StreamingPacketQueue,
     width: u32,
     height: u32,
     min_offset_alignment: u64,
@@ -20541,7 +20607,11 @@ fn native_vulkan_collect_av1_bitstream_samples(
         .iter()
         .enumerate()
         .map(|(index, temporal_unit)| {
-            native_vulkan_av1_temporal_unit_snapshot(index as u32, temporal_unit)
+            native_vulkan_av1_temporal_unit_snapshot(
+                index as u32,
+                temporal_unit,
+                selected.stats.sequence_header.as_ref(),
+            )
         })
         .collect::<Vec<_>>();
 
@@ -20699,6 +20769,14 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH264AccessUnitExtract {
         &self.bytes
     }
 
+    fn pts_ms(&self) -> Option<u64> {
+        self.pts_ms
+    }
+
+    fn duration_ms(&self) -> Option<u64> {
+        self.duration_ms
+    }
+
     fn has_parameter_sets(&self) -> bool {
         self.stats.parameter_sets_present()
     }
@@ -20745,12 +20823,97 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
         &self.bytes
     }
 
+    fn pts_ms(&self) -> Option<u64> {
+        self.pts_ms
+    }
+
+    fn duration_ms(&self) -> Option<u64> {
+        self.duration_ms
+    }
+
     fn has_parameter_sets(&self) -> bool {
         self.stats.parameter_sets_present()
     }
 
     fn is_random_access(&self) -> bool {
         self.stats.idr_count > 0
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
+    type ParameterSets = NativeVulkanAv1SequenceHeaderSnapshot;
+    type Snapshot = NativeVulkanAv1TemporalUnitSnapshot;
+
+    const CODEC_LABEL: &'static str = "AV1";
+    const PARAMETER_SETS_LABEL: &'static str = "sequence header";
+    const RING_SLOT_BYTES_ENV: &'static str = "GILDER_VULKAN_AV1_STREAMING_RING_SLOT_BYTES";
+
+    fn pipeline(source: &Path) -> Result<gst::Pipeline, NativeVulkanError> {
+        native_vulkan_av1_bitstream_pipeline(source)
+    }
+
+    fn sink_name() -> &'static str {
+        "gilder-native-vulkan-av1-bitstream-appsink"
+    }
+
+    fn from_sample(sample: &gst::Sample) -> Result<Self, NativeVulkanError> {
+        native_vulkan_av1_temporal_unit_from_sample(sample)
+    }
+
+    fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String> {
+        native_vulkan_av1_obu_stats(bytes)?
+            .sequence_header
+            .ok_or_else(|| "AV1 temporal unit has no sequence header".to_owned())
+    }
+
+    fn snapshot(
+        index: u32,
+        access_unit: &Self,
+        parameter_sets: &Self::ParameterSets,
+    ) -> Self::Snapshot {
+        native_vulkan_av1_temporal_unit_snapshot(index, access_unit, Some(parameter_sets))
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    fn pts_ms(&self) -> Option<u64> {
+        self.pts_ms
+    }
+
+    fn duration_ms(&self) -> Option<u64> {
+        self.duration_ms
+    }
+
+    fn has_parameter_sets(&self) -> bool {
+        self.stats.sequence_header_present()
+    }
+
+    fn is_random_access(&self) -> bool {
+        self.stats
+            .first_frame_submit
+            .as_ref()
+            .is_some_and(|submit| {
+                submit.frame_type == 0 && submit.show_frame && submit.vulkan_submit_candidate
+            })
+    }
+
+    fn is_random_access_with_parameter_sets(&self, parameter_sets: &Self::ParameterSets) -> bool {
+        self.stats
+            .first_frame_submit
+            .clone()
+            .or_else(|| {
+                native_vulkan_av1_first_frame_submit_snapshot(
+                    &self.bytes,
+                    &self.stats.obus,
+                    parameter_sets,
+                )
+            })
+            .is_some_and(|submit| {
+                submit.frame_type == 0 && submit.show_frame && submit.vulkan_submit_candidate
+            })
     }
 }
 
@@ -20832,7 +20995,21 @@ fn native_vulkan_av1_temporal_unit_metadata_from_sample(
 fn native_vulkan_av1_temporal_unit_snapshot(
     index: u32,
     temporal_unit: &NativeVulkanAv1TemporalUnitExtract,
+    active_sequence_header: Option<&NativeVulkanAv1SequenceHeaderSnapshot>,
 ) -> NativeVulkanAv1TemporalUnitSnapshot {
+    let first_frame_submit = temporal_unit.stats.first_frame_submit.clone().or_else(|| {
+        let sequence_header = temporal_unit
+            .stats
+            .sequence_header
+            .as_ref()
+            .or(active_sequence_header)?;
+        native_vulkan_av1_first_frame_submit_snapshot(
+            &temporal_unit.bytes,
+            &temporal_unit.stats.obus,
+            sequence_header,
+        )
+    });
+
     NativeVulkanAv1TemporalUnitSnapshot {
         index,
         bytes: temporal_unit.stats.bytes,
@@ -20852,7 +21029,7 @@ fn native_vulkan_av1_temporal_unit_snapshot(
         first_tile_group_obu_offset: temporal_unit.stats.first_tile_group_obu_offset,
         sequence_header_present: temporal_unit.stats.sequence_header_present(),
         sequence_header: temporal_unit.stats.sequence_header.clone(),
-        first_frame_submit: temporal_unit.stats.first_frame_submit.clone(),
+        first_frame_submit,
         obus: temporal_unit.stats.obus.clone(),
     }
 }
@@ -32787,6 +32964,165 @@ mod tests {
         assert_eq!(submit.tile_sizes, vec![3]);
         assert_eq!(submit.frame_width, Some(640));
         assert_eq!(submit.frame_height, Some(368));
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn av1_temporal_unit_snapshot_uses_bootstrap_sequence_header_for_frame_only_tu() {
+        fn push_bits(bits: &mut Vec<bool>, value: u32, count: u32) {
+            for shift in (0..count).rev() {
+                bits.push(((value >> shift) & 1) != 0);
+            }
+        }
+        fn pack_bits(bits: &[bool]) -> Vec<u8> {
+            let mut bytes = vec![0u8; bits.len().div_ceil(8)];
+            for (index, bit) in bits.iter().copied().enumerate() {
+                if bit {
+                    bytes[index / 8] |= 1 << (7 - (index % 8));
+                }
+            }
+            bytes
+        }
+        fn push_obu(bytes: &mut Vec<u8>, obu_type: u8, payload: &[u8]) {
+            bytes.push((obu_type << 3) | 0x02);
+            bytes.push(payload.len() as u8);
+            bytes.extend_from_slice(payload);
+        }
+
+        let sequence_header = NativeVulkanAv1SequenceHeaderSnapshot {
+            parser: "test",
+            seq_profile: 0,
+            seq_profile_label: "main",
+            still_picture: false,
+            reduced_still_picture_header: false,
+            timing_info_present_flag: false,
+            timing_info: None,
+            decoder_model_info_present_flag: false,
+            buffer_delay_length_minus_1: 0,
+            frame_presentation_time_length_minus_1: 0,
+            initial_display_delay_present_flag: false,
+            operating_points_cnt_minus_1: 0,
+            operating_points: vec![NativeVulkanAv1OperatingPointSnapshot {
+                index: 0,
+                idc: 0,
+                seq_level_idx: 4,
+                seq_level_label: Some("3.0"),
+                seq_tier: false,
+                decoder_model_present_for_this_op: false,
+                initial_display_delay_present_for_this_op: false,
+                initial_display_delay_minus_1: None,
+            }],
+            frame_width_bits_minus_1: 9,
+            frame_height_bits_minus_1: 8,
+            max_frame_width_minus_1: 639,
+            max_frame_height_minus_1: 367,
+            max_frame_width: 640,
+            max_frame_height: 368,
+            frame_id_numbers_present_flag: false,
+            delta_frame_id_length_minus_2: None,
+            additional_frame_id_length_minus_1: None,
+            use_128x128_superblock: false,
+            enable_filter_intra: true,
+            enable_intra_edge_filter: true,
+            enable_interintra_compound: false,
+            enable_masked_compound: false,
+            enable_warped_motion: false,
+            enable_dual_filter: false,
+            enable_order_hint: false,
+            enable_jnt_comp: false,
+            enable_ref_frame_mvs: false,
+            seq_force_screen_content_tools: 0,
+            seq_force_integer_mv: 2,
+            order_hint_bits_minus_1: None,
+            enable_superres: false,
+            enable_cdef: false,
+            enable_restoration: false,
+            film_grain_params_present: false,
+            color_config: NativeVulkanAv1ColorConfigSnapshot {
+                high_bitdepth: false,
+                twelve_bit: false,
+                mono_chrome: false,
+                color_description_present_flag: false,
+                color_primaries: 2,
+                transfer_characteristics: 2,
+                matrix_coefficients: 2,
+                color_range: false,
+                subsampling_x: true,
+                subsampling_y: true,
+                chroma_sample_position: 0,
+                separate_uv_delta_q: false,
+                bit_depth: 8,
+                num_planes: 3,
+            },
+            requested_profile_compatible: true,
+            vulkan_std_session_parameters_ready: true,
+        };
+
+        let mut frame_bits = Vec::new();
+        push_bits(&mut frame_bits, 0, 1); // show_existing_frame
+        push_bits(&mut frame_bits, 0, 2); // frame_type key
+        push_bits(&mut frame_bits, 1, 1); // show_frame
+        push_bits(&mut frame_bits, 0, 1); // disable_cdf_update
+        push_bits(&mut frame_bits, 0, 1); // frame_size_override_flag
+        push_bits(&mut frame_bits, 0, 1); // render_and_frame_size_different
+        push_bits(&mut frame_bits, 0, 1); // disable_frame_end_update_cdf
+        push_bits(&mut frame_bits, 1, 1); // uniform_tile_spacing_flag
+        push_bits(&mut frame_bits, 0, 1); // stop tile column increments
+        push_bits(&mut frame_bits, 0, 1); // stop tile row increments
+        push_bits(&mut frame_bits, 1, 8); // base_q_idx
+        push_bits(&mut frame_bits, 0, 1); // delta_q_y_dc
+        push_bits(&mut frame_bits, 0, 1); // delta_q_u_dc
+        push_bits(&mut frame_bits, 0, 1); // delta_q_u_ac
+        push_bits(&mut frame_bits, 0, 1); // using_qmatrix
+        push_bits(&mut frame_bits, 0, 1); // segmentation_enabled
+        push_bits(&mut frame_bits, 0, 1); // delta_q_present
+        push_bits(&mut frame_bits, 0, 6); // loop_filter_level_0
+        push_bits(&mut frame_bits, 0, 6); // loop_filter_level_1
+        push_bits(&mut frame_bits, 0, 3); // loop_filter_sharpness
+        push_bits(&mut frame_bits, 0, 1); // loop_filter_delta_enabled
+        push_bits(&mut frame_bits, 0, 1); // tx_mode_select
+        push_bits(&mut frame_bits, 0, 1); // reduced_tx_set
+        while !frame_bits.len().is_multiple_of(8) {
+            frame_bits.push(false);
+        }
+
+        let mut frame_payload = pack_bits(&frame_bits);
+        let expected_tile_offset_in_payload = frame_payload.len() as u32;
+        frame_payload.extend_from_slice(&[0xaa, 0xbb, 0xcc]);
+
+        let mut frame_only_obu = Vec::new();
+        let frame_obu_payload_offset = 2u32;
+        push_obu(&mut frame_only_obu, 6, &frame_payload);
+        let frame_only_stats = native_vulkan_av1_obu_stats(&frame_only_obu).unwrap();
+        assert_eq!(frame_only_stats.sequence_header_count, 0);
+        assert!(frame_only_stats.first_frame_submit.is_none());
+
+        let temporal_unit = NativeVulkanAv1TemporalUnitExtract {
+            bytes: frame_only_obu,
+            pts_ms: Some(4),
+            duration_ms: Some(4),
+            caps: None,
+            stream_format: Some("obu-stream".to_owned()),
+            alignment: Some("tu".to_owned()),
+            width: Some(640),
+            height: Some(368),
+            framerate: Some("60/1".to_owned()),
+            stats: frame_only_stats,
+        };
+
+        let snapshot =
+            native_vulkan_av1_temporal_unit_snapshot(1, &temporal_unit, Some(&sequence_header));
+        let submit = snapshot.first_frame_submit.as_ref().unwrap();
+
+        assert!(!snapshot.sequence_header_present);
+        assert!(submit.vulkan_submit_candidate, "{submit:?}");
+        assert_eq!(snapshot.pts_ms, Some(4));
+        assert_eq!(snapshot.duration_ms, Some(4));
+        assert_eq!(
+            submit.tile_offsets,
+            vec![frame_obu_payload_offset + expected_tile_offset_in_payload]
+        );
+        assert_eq!(submit.tile_sizes, vec![3]);
     }
 
     #[test]
