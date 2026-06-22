@@ -213,9 +213,12 @@ fi
 requested_codec="$(jq -r '.requested_codec // "none"' "$runtime_json")"
 picture_format="$(jq -r '.picture_format // "none"' "$runtime_json")"
 decoded_count="$(jq -r '.decoded_frame_count // 0' "$runtime_json")"
+hidden_decoded_count="$(jq -r '.hidden_decoded_frame_count // 0' "$runtime_json")"
+total_decoded_count="$(jq -r '.total_decoded_frame_count // 0' "$runtime_json")"
 handoff_count="$(jq -r '.displayed_handoff_frame_count // 0' "$runtime_json")"
 presented_count="$(jq -r '.presented_frame_count // 0' "$runtime_json")"
 requested_playback_count="$(jq -r '.requested_playback_frame_count // 0' "$runtime_json")"
+processed_temporal_unit_count="$(jq -r '.processed_temporal_unit_count // 0' "$runtime_json")"
 average_present_fps="$(jq -r '.average_present_fps // 0' "$runtime_json")"
 configured="$(jq -r '.configured // false' "$runtime_json")"
 queue_capacity="$(jq -r '.av1_packet_queue_capacity // 0' "$runtime_json")"
@@ -227,6 +230,10 @@ queue_bootstrap_discarded_temporal_units="$(jq -r '.av1_packet_queue_bootstrap_d
 queue_retained_payload_bytes="$(jq -r '.av1_packet_queue_retained_payload_bytes // 0' "$runtime_json")"
 distinct_layers="$(jq -r '[.frames[]?.displayed_base_array_layer] | unique | length' "$runtime_json")"
 bad_frames="$(jq -r '[.frames[]? | select((.show_existing_frame | not) and ((.tile_count <= 0) or (.src_buffer_range <= 0)))] | length' "$runtime_json")"
+hidden_presented_frames="$(jq -r '[.frames[]? | select((.show_existing_frame | not) and (.show_frame == false))] | length' "$runtime_json")"
+readback_frame_count="$(jq -r '[.frames[]? | select(.readback_y_hash != null and .readback_uv_hash != null)] | length' "$runtime_json")"
+readback_y_distinct="$(jq -r '[.frames[]?.readback_y_hash | select(. != null)] | unique | length' "$runtime_json")"
+readback_uv_distinct="$(jq -r '[.frames[]?.readback_uv_hash | select(. != null)] | unique | length' "$runtime_json")"
 loop_boundary_reset_count="$(jq -r '.loop_boundary_reset_count // 0' "$runtime_json")"
 playback_loop_count="$(jq -r '.playback_loop_count // 0' "$runtime_json")"
 
@@ -236,15 +243,23 @@ if [[ "$require_loop_skip_replay" -eq 1 && ( "$queue_eos_count" -le 0 || "$queue
   loop_replay_gate_failed=1
 fi
 
-if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_picture_format" || "$presented_count" -ne "$expected_frames" || "$requested_playback_count" -ne "$expected_frames" || $((decoded_count + handoff_count)) -ne "$expected_frames" || "$configured" != "true" || "$queue_capacity" -le 0 || "$queue_pulled_count" -lt "$expected_frames" || "$queue_retained_payload_bytes" -ne 0 || "$distinct_layers" -le 1 || "$bad_frames" -ne 0 || "$loop_replay_gate_failed" -ne 0 ]]; then
+readback_gate_failed=0
+if [[ "$readback_frame_count" -gt 1 && ( "$readback_y_distinct" -le 1 || "$readback_uv_distinct" -le 1 ) ]]; then
+  readback_gate_failed=1
+fi
+
+if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_picture_format" || "$presented_count" -ne "$expected_frames" || "$requested_playback_count" -ne "$expected_frames" || $((decoded_count + handoff_count)) -ne "$expected_frames" || "$total_decoded_count" -ne $((decoded_count + hidden_decoded_count)) || "$configured" != "true" || "$queue_capacity" -le 0 || "$queue_pulled_count" -lt "$expected_frames" || "$processed_temporal_unit_count" -lt "$expected_frames" || "$queue_retained_payload_bytes" -ne 0 || "$distinct_layers" -le 1 || "$bad_frames" -ne 0 || "$hidden_presented_frames" -ne 0 || "$loop_replay_gate_failed" -ne 0 || "$readback_gate_failed" -ne 0 ]]; then
   {
     printf 'FAIL: native Vulkan AV1 ready-prefix visible runtime output was not valid\n'
     printf 'requested_codec: %s\n' "$requested_codec"
     printf 'picture_format: %s\n' "$picture_format"
     printf 'decoded_frame_count: %s\n' "$decoded_count"
+    printf 'hidden_decoded_frame_count: %s\n' "$hidden_decoded_count"
+    printf 'total_decoded_frame_count: %s\n' "$total_decoded_count"
     printf 'displayed_handoff_frame_count: %s\n' "$handoff_count"
     printf 'presented_frame_count: %s\n' "$presented_count"
     printf 'requested_playback_frame_count: %s\n' "$requested_playback_count"
+    printf 'processed_temporal_unit_count: %s\n' "$processed_temporal_unit_count"
     printf 'average_present_fps: %s\n' "$average_present_fps"
     printf 'configured: %s\n' "$configured"
     printf 'av1_packet_queue_capacity: %s\n' "$queue_capacity"
@@ -256,7 +271,12 @@ if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_pi
     printf 'av1_packet_queue_retained_payload_bytes: %s\n' "$queue_retained_payload_bytes"
     printf 'distinct_displayed_layers: %s\n' "$distinct_layers"
     printf 'bad_frames: %s\n' "$bad_frames"
+    printf 'hidden_presented_frames: %s\n' "$hidden_presented_frames"
     printf 'loop_replay_gate_failed: %s\n' "$loop_replay_gate_failed"
+    printf 'readback_frame_count: %s\n' "$readback_frame_count"
+    printf 'readback_y_distinct: %s\n' "$readback_y_distinct"
+    printf 'readback_uv_distinct: %s\n' "$readback_uv_distinct"
+    printf 'readback_gate_failed: %s\n' "$readback_gate_failed"
   } | tee "$summary"
   exit 1
 fi
@@ -267,9 +287,15 @@ fi
   printf 'requested_codec: %s\n' "$requested_codec"
   printf 'picture_format: %s\n' "$picture_format"
   printf 'decoded_frame_count: %s\n' "$decoded_count"
+  printf 'hidden_decoded_frame_count: %s\n' "$hidden_decoded_count"
+  printf 'total_decoded_frame_count: %s\n' "$total_decoded_count"
   printf 'displayed_handoff_frame_count: %s\n' "$handoff_count"
   printf 'presented_frame_count: %s\n' "$presented_count"
+  printf 'processed_temporal_unit_count: %s\n' "$processed_temporal_unit_count"
   printf 'average_present_fps: %s\n' "$average_present_fps"
+  printf 'readback_frame_count: %s\n' "$readback_frame_count"
+  printf 'readback_y_distinct: %s\n' "$readback_y_distinct"
+  printf 'readback_uv_distinct: %s\n' "$readback_uv_distinct"
   printf 'av1_packet_queue_eos_count: %s\n' "$queue_eos_count"
   printf 'av1_packet_queue_loop_count: %s\n' "$queue_loop_count"
   printf 'av1_packet_queue_loop_skip_temporal_units: %s\n' "$queue_loop_skip_temporal_units"
