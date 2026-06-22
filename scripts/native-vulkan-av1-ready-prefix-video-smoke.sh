@@ -436,6 +436,16 @@ hidden_decode_fence_wait_elapsed_us="$(jq -r '.av1_hidden_decode_fence_wait_elap
 hidden_decode_fence_wait_max_us="$(jq -r '.av1_hidden_decode_fence_wait_max_us // 0' "$runtime_json")"
 hidden_decode_queue_wait_count="$(jq -r '.av1_hidden_decode_queue_wait_count // 0' "$runtime_json")"
 hidden_decode_queue_wait_elapsed_us="$(jq -r '.av1_hidden_decode_queue_wait_elapsed_us // 0' "$runtime_json")"
+frame_context_count="$(jq -r '.av1_frame_context_count // 0' "$runtime_json")"
+decode_command_ring_depth="$(jq -r '.av1_decode_command_ring_depth // 0' "$runtime_json")"
+decode_pending_max_count="$(jq -r '.av1_decode_pending_max_count // 0' "$runtime_json")"
+decode_deferred_hidden_count="$(jq -r '.av1_decode_deferred_hidden_count // 0' "$runtime_json")"
+decode_slot_wait_count="$(jq -r '.av1_decode_slot_wait_count // 0' "$runtime_json")"
+decode_slot_wait_elapsed_us="$(jq -r '.av1_decode_slot_wait_elapsed_us // 0' "$runtime_json")"
+decode_slot_wait_max_us="$(jq -r '.av1_decode_slot_wait_max_us // 0' "$runtime_json")"
+decode_hidden_slot_wait_count="$(jq -r '.av1_decode_hidden_slot_wait_count // 0' "$runtime_json")"
+decode_hidden_slot_wait_elapsed_us="$(jq -r '.av1_decode_hidden_slot_wait_elapsed_us // 0' "$runtime_json")"
+decode_hidden_slot_wait_max_us="$(jq -r '.av1_decode_hidden_slot_wait_max_us // 0' "$runtime_json")"
 distinct_layers="$(jq -r '[.frames[]?.displayed_base_array_layer] | unique | length' "$runtime_json")"
 bad_frames="$(jq -r '[.frames[]? | select((.show_existing_frame | not) and ((.tile_count <= 0) or (.src_buffer_range <= 0)))] | length' "$runtime_json")"
 hidden_presented_frames="$(jq -r '[.frames[]? | select((.show_existing_frame | not) and (.show_frame == false))] | length' "$runtime_json")"
@@ -526,8 +536,13 @@ dpb_gate_failed=0
 if [[ "$driver_max_dpb_slots" == "none" || "$stream_dpb_slots" -le 0 || "$session_max_dpb_slots" -ne "$stream_dpb_slots" || "$session_max_active_reference_pictures" -le 0 || "$session_max_active_reference_pictures" -gt "$session_max_dpb_slots" || "$session_max_active_reference_pictures" -lt "$stream_max_active_reference_pictures" || "$distinct_layers" -gt "$session_max_dpb_slots" ]]; then
   dpb_gate_failed=1
 fi
+sync_strategy_gate_failed=0
+case "$sync_strategy" in
+  per-frame-binary-semaphore-decode-signal-present-wait|frame-context-ring-binary-semaphore-decode-signal-present-wait) ;;
+  *) sync_strategy_gate_failed=1 ;;
+esac
 
-if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_picture_format" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$ready_prefix_count" -ne "$decode_prefix" || "$requested_playback_count" -ne "$expected_frames" || $((decoded_count + handoff_count)) -ne "$expected_frames" || "$total_decoded_count" -ne $((decoded_count + hidden_decoded_count)) || "$configured" != "true" || "$processed_temporal_unit_count" -lt "$expected_frames" || "$distinct_layers" -le 1 || "$bad_frames" -ne 0 || "$hidden_presented_frames" -ne 0 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$arbitrary_entry_gate_failed" -ne 0 || "$loop_replay_gate_failed" -ne 0 || "$readback_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$present_queue" == "none" || "$video_queue" == "none" || "$sync_strategy" != "per-frame-binary-semaphore-decode-signal-present-wait" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
+if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_picture_format" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$ready_prefix_count" -ne "$decode_prefix" || "$requested_playback_count" -ne "$expected_frames" || $((decoded_count + handoff_count)) -ne "$expected_frames" || "$total_decoded_count" -ne $((decoded_count + hidden_decoded_count)) || "$configured" != "true" || "$processed_temporal_unit_count" -lt "$expected_frames" || "$distinct_layers" -le 1 || "$bad_frames" -ne 0 || "$hidden_presented_frames" -ne 0 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$arbitrary_entry_gate_failed" -ne 0 || "$loop_replay_gate_failed" -ne 0 || "$readback_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$sync_strategy_gate_failed" -ne 0 || "$present_queue" == "none" || "$video_queue" == "none" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
   {
     printf 'FAIL: native Vulkan AV1 ready-prefix visible runtime output was not valid\n'
     printf 'requested_codec: %s\n' "$requested_codec"
@@ -561,6 +576,16 @@ if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_pi
     printf 'av1_hidden_decode_fence_wait_max_us: %s\n' "$hidden_decode_fence_wait_max_us"
     printf 'av1_hidden_decode_queue_wait_count: %s\n' "$hidden_decode_queue_wait_count"
     printf 'av1_hidden_decode_queue_wait_elapsed_us: %s\n' "$hidden_decode_queue_wait_elapsed_us"
+    printf 'av1_frame_context_count: %s\n' "$frame_context_count"
+    printf 'av1_decode_command_ring_depth: %s\n' "$decode_command_ring_depth"
+    printf 'av1_decode_pending_max_count: %s\n' "$decode_pending_max_count"
+    printf 'av1_decode_deferred_hidden_count: %s\n' "$decode_deferred_hidden_count"
+    printf 'av1_decode_slot_wait_count: %s\n' "$decode_slot_wait_count"
+    printf 'av1_decode_slot_wait_elapsed_us: %s\n' "$decode_slot_wait_elapsed_us"
+    printf 'av1_decode_slot_wait_max_us: %s\n' "$decode_slot_wait_max_us"
+    printf 'av1_decode_hidden_slot_wait_count: %s\n' "$decode_hidden_slot_wait_count"
+    printf 'av1_decode_hidden_slot_wait_elapsed_us: %s\n' "$decode_hidden_slot_wait_elapsed_us"
+    printf 'av1_decode_hidden_slot_wait_max_us: %s\n' "$decode_hidden_slot_wait_max_us"
     printf 'distinct_displayed_layers: %s\n' "$distinct_layers"
     printf 'bad_frames: %s\n' "$bad_frames"
     printf 'hidden_presented_frames: %s\n' "$hidden_presented_frames"
@@ -712,6 +737,16 @@ fi
   printf 'av1_hidden_decode_fence_wait_max_us: %s\n' "$hidden_decode_fence_wait_max_us"
   printf 'av1_hidden_decode_queue_wait_count: %s\n' "$hidden_decode_queue_wait_count"
   printf 'av1_hidden_decode_queue_wait_elapsed_us: %s\n' "$hidden_decode_queue_wait_elapsed_us"
+  printf 'av1_frame_context_count: %s\n' "$frame_context_count"
+  printf 'av1_decode_command_ring_depth: %s\n' "$decode_command_ring_depth"
+  printf 'av1_decode_pending_max_count: %s\n' "$decode_pending_max_count"
+  printf 'av1_decode_deferred_hidden_count: %s\n' "$decode_deferred_hidden_count"
+  printf 'av1_decode_slot_wait_count: %s\n' "$decode_slot_wait_count"
+  printf 'av1_decode_slot_wait_elapsed_us: %s\n' "$decode_slot_wait_elapsed_us"
+  printf 'av1_decode_slot_wait_max_us: %s\n' "$decode_slot_wait_max_us"
+  printf 'av1_decode_hidden_slot_wait_count: %s\n' "$decode_hidden_slot_wait_count"
+  printf 'av1_decode_hidden_slot_wait_elapsed_us: %s\n' "$decode_hidden_slot_wait_elapsed_us"
+  printf 'av1_decode_hidden_slot_wait_max_us: %s\n' "$decode_hidden_slot_wait_max_us"
   printf 'frame_layers_head: %s\n' "$(jq -c '[.frames[0:32][]?.displayed_base_array_layer]' "$runtime_json")"
   printf 'frame_layers_tail: %s\n' "$(jq -c '[.frames[-32:][]?.displayed_base_array_layer]' "$runtime_json")"
   printf 'frame_temporal_units_head: %s\n' "$(jq -c '[.frames[0:32][]?.temporal_unit_index]' "$runtime_json")"

@@ -2390,6 +2390,16 @@ pub struct NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot {
     pub av1_hidden_decode_fence_wait_max_us: u64,
     pub av1_hidden_decode_queue_wait_count: u32,
     pub av1_hidden_decode_queue_wait_elapsed_us: u64,
+    pub av1_frame_context_count: u32,
+    pub av1_decode_command_ring_depth: u32,
+    pub av1_decode_pending_max_count: u32,
+    pub av1_decode_deferred_hidden_count: u32,
+    pub av1_decode_slot_wait_count: u32,
+    pub av1_decode_slot_wait_elapsed_us: u64,
+    pub av1_decode_slot_wait_max_us: u64,
+    pub av1_decode_hidden_slot_wait_count: u32,
+    pub av1_decode_hidden_slot_wait_elapsed_us: u64,
+    pub av1_decode_hidden_slot_wait_max_us: u64,
     pub av1_bootstrap_temporal_units: Vec<NativeVulkanAv1TemporalUnitSnapshot>,
     pub pts_delta_min_ms: Option<u64>,
     pub pts_delta_max_ms: Option<u64>,
@@ -4137,6 +4147,7 @@ pub fn run_h265_first_frame_video(
                     .filter(|fps| *fps > 0)
                     .map(|fps| Duration::from_secs_f64(1.0 / fps as f64))
             };
+            let frame_pacing_spin_margin = native_vulkan_frame_pacing_spin_margin(target_max_fps);
             let mut next_frame = Instant::now();
             let mut frames_rendered = 0u64;
             let mut swapchain_image_layouts =
@@ -4225,7 +4236,16 @@ pub fn run_h265_first_frame_video(
                     next_frame += interval;
                     let now = Instant::now();
                     if next_frame > now {
-                        thread::sleep(next_frame - now);
+                        let sleep_duration = next_frame - now;
+                        let sleep_for = sleep_duration
+                            .checked_sub(frame_pacing_spin_margin)
+                            .unwrap_or_default();
+                        if !sleep_for.is_zero() {
+                            thread::sleep(sleep_for);
+                        }
+                        while Instant::now() < next_frame {
+                            std::hint::spin_loop();
+                        }
                     } else {
                         next_frame = now;
                     }
@@ -4982,6 +5002,7 @@ pub fn run_h264_ready_prefix_video(
                     .filter(|fps| *fps > 0)
                     .map(|fps| Duration::from_secs_f64(1.0 / fps as f64))
             };
+            let frame_pacing_spin_margin = native_vulkan_frame_pacing_spin_margin(target_max_fps);
             let mut next_frame = Instant::now();
             let started_at = Instant::now();
             let mut previous_pts_ms = None::<u64>;
@@ -5265,7 +5286,15 @@ pub fn run_h264_ready_prefix_video(
                             frame_sleep_count = frame_sleep_count.saturating_add(1);
                             total_frame_sleep_us = total_frame_sleep_us
                                 .saturating_add(native_vulkan_elapsed_us(sleep_duration));
-                            thread::sleep(sleep_duration);
+                            let sleep_for = sleep_duration
+                                .checked_sub(frame_pacing_spin_margin)
+                                .unwrap_or_default();
+                            if !sleep_for.is_zero() {
+                                thread::sleep(sleep_for);
+                            }
+                            while Instant::now() < next_frame {
+                                std::hint::spin_loop();
+                            }
                         } else {
                             missed_frame_pacing_count = missed_frame_pacing_count.saturating_add(1);
                             max_frame_pacing_late_us = max_frame_pacing_late_us
@@ -6397,7 +6426,15 @@ pub fn run_h264_ready_prefix_video(
                                 frame_sleep_count = frame_sleep_count.saturating_add(1);
                                 total_frame_sleep_us = total_frame_sleep_us
                                     .saturating_add(native_vulkan_elapsed_us(sleep_duration));
-                                thread::sleep(sleep_duration);
+                                let sleep_for = sleep_duration
+                                    .checked_sub(frame_pacing_spin_margin)
+                                    .unwrap_or_default();
+                                if !sleep_for.is_zero() {
+                                    thread::sleep(sleep_for);
+                                }
+                                while Instant::now() < next_frame {
+                                    std::hint::spin_loop();
+                                }
                             } else {
                                 missed_frame_pacing_count =
                                     missed_frame_pacing_count.saturating_add(1);
@@ -7183,6 +7220,7 @@ pub fn run_h265_ready_prefix_video(
                     .filter(|fps| *fps > 0)
                     .map(|fps| Duration::from_secs_f64(1.0 / fps as f64))
             };
+            let frame_pacing_spin_margin = native_vulkan_frame_pacing_spin_margin(target_max_fps);
             let mut next_frame = Instant::now();
             let started_at = Instant::now();
             let mut previous_pts_ms = None::<u64>;
@@ -7417,7 +7455,15 @@ pub fn run_h265_ready_prefix_video(
                         frame_sleep_count = frame_sleep_count.saturating_add(1);
                         total_frame_sleep_us = total_frame_sleep_us
                             .saturating_add(native_vulkan_elapsed_us(sleep_duration));
-                        thread::sleep(sleep_duration);
+                        let sleep_for = sleep_duration
+                            .checked_sub(frame_pacing_spin_margin)
+                            .unwrap_or_default();
+                        if !sleep_for.is_zero() {
+                            thread::sleep(sleep_for);
+                        }
+                        while Instant::now() < next_frame {
+                            std::hint::spin_loop();
+                        }
                     } else {
                         missed_frame_pacing_count = missed_frame_pacing_count.saturating_add(1);
                         max_frame_pacing_late_us = max_frame_pacing_late_us
@@ -7960,12 +8006,9 @@ pub fn run_av1_ready_prefix_video(
     let mut present_command_pool = vk::CommandPool::null();
     let mut present_command_buffers = Vec::<vk::CommandBuffer>::new();
     let mut video_command_pool = vk::CommandPool::null();
-    let mut image_available = vk::Semaphore::null();
-    let mut decode_finished = vk::Semaphore::null();
     let mut hidden_decode_finished = vk::Semaphore::null();
-    let mut render_finished = vk::Semaphore::null();
-    let mut in_flight = vk::Fence::null();
-    let mut hidden_decode_fence = vk::Fence::null();
+    let mut av1_frame_contexts = Vec::<NativeVulkanAv1FrameContext>::new();
+    let mut av1_decode_command_slots = Vec::<NativeVulkanAv1DecodeCommandSlot>::new();
     let mut renderer = None::<NativeVulkanVideoRenderer>;
     let mut retired_textures = Vec::<NativeVulkanVideoTexture>::new();
     let mut decoded_plane_view_cache = Vec::<NativeVulkanDecodedVideoPlaneViews>::new();
@@ -8061,17 +8104,19 @@ pub fn run_av1_ready_prefix_video(
                         result,
                     },
                 )?;
+            let av1_decode_command_ring_depth =
+                native_vulkan_av1_decode_command_ring_depth(stream_dpb_slots);
             let video_command_buffer_info = vk::CommandBufferAllocateInfo::default()
                 .command_pool(video_command_pool)
                 .level(vk::CommandBufferLevel::PRIMARY)
-                .command_buffer_count(1);
-            let video_command_buffer =
+                .command_buffer_count(av1_decode_command_ring_depth);
+            let video_command_buffers =
                 unsafe { device.allocate_command_buffers(&video_command_buffer_info) }.map_err(
                     |result| NativeVulkanError::Vulkan {
                         operation: "vkAllocateCommandBuffers(direct av1 ready-prefix decode)",
                         result,
                     },
-                )?[0];
+                )?;
             if decode_query_status_enabled {
                 decode_query_pool = native_vulkan_create_video_decode_status_query_pool(
                     &device,
@@ -8080,16 +8125,6 @@ pub fn run_av1_ready_prefix_video(
                 )?;
             }
             let semaphore_create_info = vk::SemaphoreCreateInfo::default();
-            image_available = unsafe { device.create_semaphore(&semaphore_create_info, None) }
-                .map_err(|result| NativeVulkanError::Vulkan {
-                    operation: "vkCreateSemaphore(direct av1 ready-prefix image_available)",
-                    result,
-                })?;
-            decode_finished = unsafe { device.create_semaphore(&semaphore_create_info, None) }
-                .map_err(|result| NativeVulkanError::Vulkan {
-                    operation: "vkCreateSemaphore(direct av1 ready-prefix decode_finished)",
-                    result,
-                })?;
             hidden_decode_finished = unsafe {
                 device.create_semaphore(&semaphore_create_info, None)
             }
@@ -8097,28 +8132,63 @@ pub fn run_av1_ready_prefix_video(
                 operation: "vkCreateSemaphore(direct av1 ready-prefix hidden_decode_finished)",
                 result,
             })?;
-            render_finished = unsafe { device.create_semaphore(&semaphore_create_info, None) }
-                .map_err(|result| NativeVulkanError::Vulkan {
-                    operation: "vkCreateSemaphore(direct av1 ready-prefix render_finished)",
-                    result,
-                })?;
             let fence_create_info =
                 vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-            in_flight =
-                unsafe { device.create_fence(&fence_create_info, None) }.map_err(|result| {
-                    NativeVulkanError::Vulkan {
-                        operation: "vkCreateFence(direct av1 ready-prefix)",
-                        result,
-                    }
+            let av1_frame_context_count =
+                native_vulkan_av1_frame_context_count(swapchain_images.len());
+            av1_frame_contexts.reserve(av1_frame_context_count);
+            for _ in 0..av1_frame_context_count {
+                let image_available = unsafe {
+                    device.create_semaphore(&semaphore_create_info, None)
+                }
+                .map_err(|result| NativeVulkanError::Vulkan {
+                    operation: "vkCreateSemaphore(direct av1 frame context image_available)",
+                    result,
                 })?;
-            hidden_decode_fence =
-                unsafe { device.create_fence(&vk::FenceCreateInfo::default(), None) }.map_err(
-                    |result| NativeVulkanError::Vulkan {
-                        operation: "vkCreateFence(direct av1 hidden decode)",
+                let decode_finished = unsafe {
+                    device.create_semaphore(&semaphore_create_info, None)
+                }
+                .map_err(|result| NativeVulkanError::Vulkan {
+                    operation: "vkCreateSemaphore(direct av1 frame context decode_finished)",
+                    result,
+                })?;
+                let render_finished = unsafe {
+                    device.create_semaphore(&semaphore_create_info, None)
+                }
+                .map_err(|result| NativeVulkanError::Vulkan {
+                    operation: "vkCreateSemaphore(direct av1 frame context render_finished)",
+                    result,
+                })?;
+                let in_flight =
+                    unsafe { device.create_fence(&fence_create_info, None) }.map_err(|result| {
+                        NativeVulkanError::Vulkan {
+                            operation: "vkCreateFence(direct av1 frame context)",
+                            result,
+                        }
+                    })?;
+                av1_frame_contexts.push(NativeVulkanAv1FrameContext {
+                    image_available,
+                    decode_finished,
+                    render_finished,
+                    in_flight,
+                    pending_present_result: false,
+                    sampled_resource: None,
+                });
+            }
+            let decode_slot_fence_create_info =
+                vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+            for command_buffer in video_command_buffers {
+                let fence = unsafe { device.create_fence(&decode_slot_fence_create_info, None) }
+                    .map_err(|result| NativeVulkanError::Vulkan {
+                        operation: "vkCreateFence(direct av1 decode command slot)",
                         result,
-                    },
-                )?;
-
+                    })?;
+                av1_decode_command_slots.push(NativeVulkanAv1DecodeCommandSlot {
+                    command_buffer,
+                    fence,
+                    in_flight: false,
+                });
+            }
             let streaming_bitstream = native_vulkan_av1_streaming_queue_bitstream_plan(
                 &streaming_queue,
                 width,
@@ -8269,14 +8339,6 @@ pub fn run_av1_ready_prefix_video(
                         source_extent,
                     )?);
             }
-            renderer = Some(NativeVulkanVideoRenderer::new(
-                &device,
-                swapchain_plan.format.format,
-                swapchain_plan.extent,
-                &swapchain_image_views,
-            )?);
-            let renderer_ref = renderer.as_mut().expect("video renderer was just created");
-
             let output_image = av1_output_image.as_ref();
             let mut image_layer_layouts =
                 vec![vk::ImageLayout::UNDEFINED; image.snapshot.array_layers as usize];
@@ -8297,6 +8359,72 @@ pub fn run_av1_ready_prefix_video(
                         output_image.format,
                         output_image.snapshot.array_layers,
                     )?;
+            }
+            let av1_output_descriptor_set_count = usize::from(output_image.is_some());
+            let av1_resource_descriptor_set_base = av1_output_descriptor_set_count;
+            let av1_display_descriptor_set_count =
+                av1_resource_descriptor_set_base.saturating_add(decoded_plane_view_cache.len());
+            let av1_display_descriptor_set_count_u32 =
+                u32::try_from(av1_display_descriptor_set_count).map_err(|_| {
+                    NativeVulkanError::Video(format!(
+                        "AV1 display descriptor set count {} exceeds u32",
+                        av1_display_descriptor_set_count
+                    ))
+                })?;
+            renderer = Some(NativeVulkanVideoRenderer::new_with_descriptor_set_count(
+                &device,
+                swapchain_plan.format.format,
+                swapchain_plan.extent,
+                &swapchain_image_views,
+                vk::ImageLayout::PRESENT_SRC_KHR,
+                av1_display_descriptor_set_count_u32,
+            )?);
+            let renderer_ref = renderer.as_mut().expect("video renderer was just created");
+            if let Some(output_image) = output_image {
+                let output_views = av1_output_decoded_plane_view_cache
+                    .first()
+                    .copied()
+                    .ok_or_else(|| {
+                        NativeVulkanError::Video(
+                            "AV1 dedicated output view cache is empty".to_owned(),
+                        )
+                    })?;
+                let output_texture = NativeVulkanVideoTexture::Decoded(
+                    NativeVulkanDecodedVideoTexture::from_cached_views(
+                        output_image.image,
+                        output_image.format,
+                        width,
+                        height,
+                        0,
+                        output_views,
+                        vk::ImageLayout::VIDEO_DECODE_DST_KHR,
+                        vk::AccessFlags::MEMORY_WRITE,
+                    )?,
+                );
+                renderer_ref.update_descriptors_for_set_index(&device, 0, &output_texture)?;
+            }
+            for (displayed_slot, decoded_views) in
+                decoded_plane_view_cache.iter().copied().enumerate()
+            {
+                let descriptor_set_index =
+                    av1_resource_descriptor_set_base.saturating_add(displayed_slot);
+                let texture = NativeVulkanVideoTexture::Decoded(
+                    NativeVulkanDecodedVideoTexture::from_cached_views(
+                        image.image,
+                        image.format,
+                        width,
+                        height,
+                        displayed_slot as u32,
+                        decoded_views,
+                        vk::ImageLayout::VIDEO_DECODE_DPB_KHR,
+                        vk::AccessFlags::MEMORY_WRITE,
+                    )?,
+                );
+                renderer_ref.update_descriptors_for_set_index(
+                    &device,
+                    descriptor_set_index,
+                    &texture,
+                )?;
             }
             let mut active_dpb_refs = vec![
                 None::<NativeVulkanAv1ActiveDpbReference>;
@@ -8319,6 +8447,7 @@ pub fn run_av1_ready_prefix_video(
                     .filter(|fps| *fps > 0)
                     .map(|fps| Duration::from_secs_f64(1.0 / fps as f64))
             };
+            let frame_pacing_spin_margin = native_vulkan_frame_pacing_spin_margin(target_max_fps);
             let mut next_frame = Instant::now();
             let started_at = Instant::now();
             let mut previous_pts_ns = None::<u64>;
@@ -8344,10 +8473,13 @@ pub fn run_av1_ready_prefix_video(
             let av1_hidden_decode_fence_wait_enabled =
                 native_vulkan_av1_hidden_decode_fence_wait_enabled();
             let mut pending_hidden_decode_handoff = false;
+            let mut pending_av1_decode_submissions =
+                Vec::<NativeVulkanAv1PendingDecodeSubmission>::new();
+            let mut next_av1_decode_command_slot = 0usize;
+            let mut av1_decode_pending_max_count = 0u32;
+            let mut av1_decode_deferred_hidden_count = 0u32;
+            let mut av1_decode_wait_stats = NativeVulkanAv1DecodeWaitStats::default();
             let mut av1_hidden_decode_async_handoff_count = 0u32;
-            let mut av1_hidden_decode_fence_wait_count = 0u32;
-            let mut av1_hidden_decode_fence_wait_elapsed_us = 0u64;
-            let mut av1_hidden_decode_fence_wait_max_us = 0u64;
             let mut av1_hidden_decode_queue_wait_count = 0u32;
             let mut av1_hidden_decode_queue_wait_elapsed_us = 0u64;
             native_vulkan_av1_trace(
@@ -8362,9 +8494,67 @@ pub fn run_av1_ready_prefix_video(
                     av1_hidden_decode_fence_wait_enabled
                 ),
             );
+            let av1_async_present_enabled = native_vulkan_av1_async_present_enabled();
+            let (av1_present_job_tx, av1_present_job_rx) =
+                mpsc::channel::<NativeVulkanAv1PresentJob>();
+            let (av1_present_result_tx, av1_present_result_rx) =
+                mpsc::channel::<Result<NativeVulkanAv1PresentWorkerResult, NativeVulkanError>>();
+            let present_queue_mutex = std::sync::Arc::new(std::sync::Mutex::new(()));
+            let mut av1_present_worker = if av1_async_present_enabled {
+                let swapchain_loader_for_worker = swapchain_loader_ref.clone();
+                let present_queue_mutex_for_worker = present_queue_mutex.clone();
+                Some(thread::spawn(move || -> Result<(), NativeVulkanError> {
+                    while let Ok(job) = av1_present_job_rx.recv() {
+                        let _present_queue_guard =
+                            present_queue_mutex_for_worker.lock().map_err(|_| {
+                                NativeVulkanError::Video(
+                                    "AV1 present queue mutex was poisoned".to_owned(),
+                                )
+                            })?;
+                        let queue_present_started_at = Instant::now();
+                        let result = native_vulkan_queue_present_frame(
+                            &swapchain_loader_for_worker,
+                            present_queue,
+                            swapchain,
+                            job.image_index,
+                            job.wait_semaphore,
+                            "vkQueuePresentKHR(direct av1 ready-prefix worker)",
+                        )
+                        .map(|_| NativeVulkanAv1PresentWorkerResult {
+                            frame_index: job.frame_index,
+                            frame_context_index: job.frame_context_index,
+                            queue_present_elapsed_us: native_vulkan_elapsed_us(
+                                queue_present_started_at.elapsed(),
+                            ),
+                            present_elapsed_us: native_vulkan_elapsed_us(
+                                job.present_started_at.elapsed(),
+                            ),
+                        });
+                        if av1_present_result_tx.send(result).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(())
+                }))
+            } else {
+                None
+            };
+            let av1_begin_reference_slot_strategy =
+                NativeVulkanAv1BeginReferenceSlotStrategy::from_env();
+            let mut next_av1_frame_context = 0usize;
+            let runtime_result =
+                (|| -> Result<NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot, NativeVulkanError> {
 
             while frames.len() < playback_frame_count as usize {
-                probe.host.pump_events()?;
+                // Decode/present can overlap, but the Wayland display queue must stay single-owner.
+                {
+                    let _present_queue_guard = present_queue_mutex.lock().map_err(|_| {
+                        NativeVulkanError::Video(
+                            "AV1 present queue mutex was poisoned".to_owned(),
+                        )
+                    })?;
+                    probe.host.pump_events()?;
+                }
                 if probe.host.is_closed() {
                     break;
                 }
@@ -8460,23 +8650,49 @@ pub fn run_av1_ready_prefix_video(
                         let predicted_entry = predicted_planner.plan_next(&front_packet.snapshot);
                         predicted_entry.ready_for_display_handoff
                     };
-                let use_hidden_decode_handoff =
-                    signal_hidden_decode_handoff && !diagnostic_readback_hidden;
+                let use_hidden_decode_handoff = signal_hidden_decode_handoff
+                    && !diagnostic_readback_hidden
+                    && av1_decode_command_ring_depth <= 1;
                 let use_hidden_decode_fence_wait = !entry.ready_for_display_handoff
                     && !decode_will_present
                     && !use_hidden_decode_handoff
                     && av1_hidden_decode_fence_wait_enabled
-                    && hidden_decode_fence != vk::Fence::null();
-                let wait_for_present_fence = will_present || !entry.ready_for_display_handoff;
+                    && !av1_decode_command_slots.is_empty();
+                let frame_context_index = if will_present {
+                    if av1_frame_contexts.is_empty() {
+                        return Err(NativeVulkanError::Video(
+                            "AV1 frame context pool is empty".to_owned(),
+                        ));
+                    }
+                    let context_index = next_av1_frame_context % av1_frame_contexts.len();
+                    next_av1_frame_context = (context_index + 1) % av1_frame_contexts.len();
+                    Some(context_index)
+                } else {
+                    None
+                };
                 let mut fence_wait_elapsed_us = 0u64;
-                if wait_for_present_fence {
-                    let fences = [in_flight];
+                if let Some(frame_context_index) = frame_context_index {
+                    while av1_frame_contexts
+                        .get(frame_context_index)
+                        .map(|context| context.pending_present_result)
+                        .unwrap_or(false)
+                    {
+                        native_vulkan_recv_av1_present_worker_result(
+                            &av1_present_result_rx,
+                            &mut frames,
+                            &mut av1_frame_contexts,
+                            "AV1 present worker exited before returning a present result",
+                        )?;
+                    }
                     let fence_wait_started_at = Instant::now();
+                    let frame_fence = av1_frame_contexts[frame_context_index].in_flight;
+                    let fences = [frame_fence];
                     native_vulkan_av1_trace(
                         av1_trace_enabled,
                         format!(
-                            "wait fence begin tu={} will_present={} display_handoff={}",
+                            "wait fence begin tu={} frame_context={} will_present={} display_handoff={}",
                             entry.temporal_unit_index,
+                            frame_context_index,
                             will_present,
                             entry.ready_for_display_handoff
                         ),
@@ -8491,15 +8707,14 @@ pub fn run_av1_ready_prefix_video(
                         for texture in retired_textures.drain(..) {
                             texture.destroy(&device);
                         }
-                        if will_present {
-                            device.reset_fences(&fences).map_err(|result| {
-                                NativeVulkanError::Vulkan {
-                                    operation: "vkResetFences(direct av1 ready-prefix)",
-                                    result,
-                                }
-                            })?;
-                        }
+                        device.reset_fences(&fences).map_err(|result| {
+                            NativeVulkanError::Vulkan {
+                                operation: "vkResetFences(direct av1 ready-prefix)",
+                                result,
+                            }
+                        })?;
                     }
+                    av1_frame_contexts[frame_context_index].sampled_resource = None;
                     fence_wait_elapsed_us =
                         native_vulkan_elapsed_us(fence_wait_started_at.elapsed());
                     native_vulkan_av1_trace(
@@ -8510,6 +8725,31 @@ pub fn run_av1_ready_prefix_video(
                         ),
                     );
                 }
+                if !entry.ready_for_display_handoff {
+                    let resource_wait_stats = native_vulkan_wait_av1_frame_context_resource_hazards(
+                        &device,
+                        &mut av1_frame_contexts,
+                        &entry,
+                        av1_begin_reference_slot_strategy,
+                        output_image.is_some(),
+                    )?;
+                    av1_decode_wait_stats.merge(resource_wait_stats);
+                }
+                let (frame_image_available, frame_decode_finished, frame_render_finished) =
+                    if let Some(frame_context_index) = frame_context_index {
+                        let context = &av1_frame_contexts[frame_context_index];
+                        (
+                            context.image_available,
+                            context.decode_finished,
+                            context.render_finished,
+                        )
+                    } else {
+                        (
+                            vk::Semaphore::null(),
+                            vk::Semaphore::null(),
+                            vk::Semaphore::null(),
+                        )
+                    };
                 let reset_before_decode = processed_temporal_unit_index == 0
                     || loop_boundary_reset
                     || frame_submit.is_some_and(|submit| submit.frame_type == 0);
@@ -8533,6 +8773,14 @@ pub fn run_av1_ready_prefix_video(
                             entry.temporal_unit_index, displayed_slot, image.snapshot.array_layers
                         )));
                     }
+                    let display_wait_stats = native_vulkan_wait_av1_pending_decode_submissions(
+                        &device,
+                        &mut av1_decode_command_slots,
+                        &mut pending_av1_decode_submissions,
+                        |pending| pending.output_slot == Some(displayed_slot),
+                        "vkWaitForFences(direct av1 show-existing pending decode)",
+                    )?;
+                    av1_decode_wait_stats.merge(display_wait_stats);
                     let signal_started_at = Instant::now();
                     NativeVulkanDirectAv1ReadyPrefixFrameSnapshot {
                         playback_frame_index,
@@ -8647,38 +8895,79 @@ pub fn run_av1_ready_prefix_video(
                     }
                 } else {
                     let bitstream_upload_started_at = Instant::now();
-                    let span = native_vulkan_write_av1_streaming_packet_to_bitstream_ring(
+                    let payload = native_vulkan_prepare_av1_streaming_packet_bitstream_payload(
                         &packet,
-                        &device,
-                        buffer,
-                        &mut bitstream_ring,
                         &sequence_header,
                         &entry,
                         &active_dpb_refs,
                     )?;
+                    let payload = payload.as_slice();
+                    let span = bitstream_ring.allocate(payload.len() as u64, 0)?;
+                    let bitstream_wait_stats = native_vulkan_wait_av1_pending_decode_submissions(
+                        &device,
+                        &mut av1_decode_command_slots,
+                        &mut pending_av1_decode_submissions,
+                        |pending| {
+                            native_vulkan_byte_ranges_overlap(
+                                pending.src_buffer_offset,
+                                pending.src_buffer_range,
+                                span.offset,
+                                span.range,
+                            )
+                        },
+                        "vkWaitForFences(direct av1 bitstream ring pending decode)",
+                    )?;
+                    av1_decode_wait_stats.merge(bitstream_wait_stats);
+                    native_vulkan_write_video_session_bitstream_buffer(
+                        &device,
+                        buffer,
+                        span.offset,
+                        span.range,
+                        payload,
+                    )?;
                     let bitstream_upload_elapsed_us =
                         native_vulkan_elapsed_us(bitstream_upload_started_at.elapsed());
+                    let command_slot_index =
+                        next_av1_decode_command_slot % av1_decode_command_slots.len().max(1);
+                    next_av1_decode_command_slot =
+                        (command_slot_index + 1) % av1_decode_command_slots.len().max(1);
+                    let command_slot_wait_stats = native_vulkan_wait_av1_decode_command_slot(
+                        &device,
+                        &mut av1_decode_command_slots,
+                        &mut pending_av1_decode_submissions,
+                        command_slot_index,
+                        "vkWaitForFences(direct av1 decode command slot reuse)",
+                    )?;
+                    av1_decode_wait_stats.merge(command_slot_wait_stats);
+                    let command_slot = av1_decode_command_slots
+                        .get(command_slot_index)
+                        .ok_or_else(|| {
+                            NativeVulkanError::Video(
+                                "AV1 decode command ring has no command slots".to_owned(),
+                            )
+                        })?;
+                    let video_command_buffer = command_slot.command_buffer;
+                    let submit_fence = command_slot.fence;
                     native_vulkan_av1_trace(
                         av1_trace_enabled,
                         format!(
-                            "decode call begin tu={} show_frame={} span_offset={} span_range={} upload_us={} submit_fence={}",
+                            "decode call begin tu={} show_frame={} span_offset={} span_range={} upload_us={} command_slot={} deferred_hidden={}",
                             entry.temporal_unit_index,
                             decode_will_present,
                             span.offset,
                             span.range,
                             bitstream_upload_elapsed_us,
+                            command_slot_index,
                             use_hidden_decode_fence_wait
                         ),
                     );
-                    if use_hidden_decode_fence_wait {
-                        unsafe {
-                            device
-                                .reset_fences(&[hidden_decode_fence])
-                                .map_err(|result| NativeVulkanError::Vulkan {
-                                    operation: "vkResetFences(direct av1 hidden decode)",
-                                    result,
-                                })?;
-                        }
+                    unsafe {
+                        device.reset_fences(&[submit_fence]).map_err(|result| {
+                            NativeVulkanError::Vulkan {
+                                operation: "vkResetFences(direct av1 decode command slot)",
+                                result,
+                            }
+                        })?;
                     }
                     let mut frame = native_vulkan_decode_av1_ready_prefix_frame_to_image(
                         &device,
@@ -8709,23 +8998,22 @@ pub fn run_av1_ready_prefix_video(
                         pts_delta_ms,
                         pts_delta_ns,
                         if decode_will_present {
-                            decode_finished
+                            frame_decode_finished
                         } else if use_hidden_decode_handoff {
                             hidden_decode_finished
                         } else {
                             vk::Semaphore::null()
                         },
-                        if use_hidden_decode_fence_wait {
-                            hidden_decode_fence
-                        } else {
-                            vk::Fence::null()
-                        },
+                        submit_fence,
                         playback_frame_index,
                         playback_loop_index,
                         ready_prefix_frame_index,
                         loop_boundary_reset,
                         bitstream_upload_elapsed_us,
                     )?;
+                    if let Some(slot) = av1_decode_command_slots.get_mut(command_slot_index) {
+                        slot.in_flight = true;
+                    }
                     native_vulkan_av1_trace(
                         av1_trace_enabled,
                         format!(
@@ -8738,6 +9026,24 @@ pub fn run_av1_ready_prefix_video(
                         ),
                     );
                     frame.fence_wait_elapsed_us = fence_wait_elapsed_us;
+                    let submitted_hidden_frame = !frame.show_frame;
+                    let submitted_output_slot = frame.dst_base_array_layer;
+                    if frame.show_frame || use_hidden_decode_fence_wait || use_hidden_decode_handoff
+                    {
+                        pending_av1_decode_submissions.push(
+                            NativeVulkanAv1PendingDecodeSubmission {
+                                command_slot_index,
+                                output_slot: submitted_output_slot,
+                                src_buffer_offset: frame.src_buffer_offset,
+                                src_buffer_range: frame.src_buffer_range,
+                                hidden: submitted_hidden_frame,
+                            },
+                        );
+                        av1_decode_pending_max_count =
+                            av1_decode_pending_max_count
+                                .max(pending_av1_decode_submissions.len().min(u32::MAX as usize)
+                                    as u32);
+                    }
                     let active_slots_after = entry
                         .map_slot_indices_after
                         .iter()
@@ -8810,24 +9116,8 @@ pub fn run_av1_ready_prefix_video(
                             av1_hidden_decode_async_handoff_count =
                                 av1_hidden_decode_async_handoff_count.saturating_add(1);
                         } else if use_hidden_decode_fence_wait {
-                            let hidden_wait_started_at = Instant::now();
-                            unsafe {
-                                device
-                                    .wait_for_fences(&[hidden_decode_fence], true, u64::MAX)
-                                    .map_err(|result| NativeVulkanError::Vulkan {
-                                        operation: "vkWaitForFences(direct av1 hidden frame decode)",
-                                        result,
-                                    })?;
-                            }
-                            let hidden_wait_elapsed_us =
-                                native_vulkan_elapsed_us(hidden_wait_started_at.elapsed());
-                            av1_hidden_decode_fence_wait_count =
-                                av1_hidden_decode_fence_wait_count.saturating_add(1);
-                            av1_hidden_decode_fence_wait_elapsed_us =
-                                av1_hidden_decode_fence_wait_elapsed_us
-                                    .saturating_add(hidden_wait_elapsed_us);
-                            av1_hidden_decode_fence_wait_max_us =
-                                av1_hidden_decode_fence_wait_max_us.max(hidden_wait_elapsed_us);
+                            av1_decode_deferred_hidden_count =
+                                av1_decode_deferred_hidden_count.saturating_add(1);
                         } else {
                             let hidden_wait_started_at = Instant::now();
                             unsafe {
@@ -8844,6 +9134,10 @@ pub fn run_av1_ready_prefix_video(
                                 av1_hidden_decode_queue_wait_elapsed_us.saturating_add(
                                     native_vulkan_elapsed_us(hidden_wait_started_at.elapsed()),
                                 );
+                            if let Some(slot) = av1_decode_command_slots.get_mut(command_slot_index)
+                            {
+                                slot.in_flight = false;
+                            }
                         }
                         if diagnostic_readback_hidden
                             && hidden_decoded_frame_count < diagnostic_readback_frame_limit
@@ -8852,6 +9146,15 @@ pub fn run_av1_ready_prefix_video(
                                 diagnostic_readback_buffer.as_ref(),
                             )
                         {
+                            let readback_wait_stats =
+                                native_vulkan_wait_av1_pending_decode_submissions(
+                                    &device,
+                                    &mut av1_decode_command_slots,
+                                    &mut pending_av1_decode_submissions,
+                                    |pending| pending.output_slot == Some(output_slot),
+                                    "vkWaitForFences(direct av1 hidden diagnostic readback)",
+                                )?;
+                            av1_decode_wait_stats.merge(readback_wait_stats);
                             let readback_image = output_image.unwrap_or(image);
                             let readback_layer = if output_image.is_some() {
                                 0
@@ -8933,6 +9236,15 @@ pub fn run_av1_ready_prefix_video(
                                 .copied()
                                 .unwrap_or(vk::ImageLayout::VIDEO_DECODE_DPB_KHR)
                         };
+                        let readback_wait_stats =
+                            native_vulkan_wait_av1_pending_decode_submissions(
+                                &device,
+                                &mut av1_decode_command_slots,
+                                &mut pending_av1_decode_submissions,
+                                |_| true,
+                                "vkWaitForFences(direct av1 diagnostic readback pending decode)",
+                            )?;
+                        av1_decode_wait_stats.merge(readback_wait_stats);
                         let readback_started_at = Instant::now();
                         unsafe {
                             device.queue_wait_idle(video_queue).map_err(|result| {
@@ -9036,6 +9348,14 @@ pub fn run_av1_ready_prefix_video(
                 }
 
                 let present_started_at = Instant::now();
+                let present_frame_context_index = frame_context_index.ok_or_else(|| {
+                    NativeVulkanError::Video(format!(
+                        "AV1 TU {} reached present without a frame context",
+                        entry.temporal_unit_index
+                    ))
+                })?;
+                let present_frame_fence =
+                    av1_frame_contexts[present_frame_context_index].in_flight;
                 let dedicated_decode_output = output_image.is_some() && !frame.show_existing_frame;
                 let displayed_slot = if dedicated_decode_output {
                     0
@@ -9083,6 +9403,11 @@ pub fn run_av1_ready_prefix_video(
                     vk::ImageLayout::TRANSFER_SRC_OPTIMAL => vk::AccessFlags::TRANSFER_READ,
                     _ => vk::AccessFlags::MEMORY_WRITE,
                 };
+                let descriptor_set_index = if dedicated_decode_output {
+                    0
+                } else {
+                    av1_resource_descriptor_set_base.saturating_add(displayed_slot as usize)
+                };
                 let texture = NativeVulkanVideoTexture::Decoded(
                     NativeVulkanDecodedVideoTexture::from_cached_views(
                         texture_image,
@@ -9103,10 +9428,7 @@ pub fn run_av1_ready_prefix_video(
                         source_access,
                     )?,
                 );
-                let descriptor_update_started_at = Instant::now();
-                renderer_ref.update_descriptors(&device, &texture);
-                frame.descriptor_update_elapsed_us =
-                    native_vulkan_elapsed_us(descriptor_update_started_at.elapsed());
+                frame.descriptor_update_elapsed_us = 0;
                 let acquire_started_at = Instant::now();
                 native_vulkan_av1_trace(
                     av1_trace_enabled,
@@ -9117,18 +9439,26 @@ pub fn run_av1_ready_prefix_video(
                         frame.show_existing_frame
                     ),
                 );
-                let (image_index, _) = unsafe {
-                    swapchain_loader_ref.acquire_next_image(
-                        swapchain,
-                        u64::MAX,
-                        image_available,
-                        vk::Fence::null(),
-                    )
-                }
-                .map_err(|result| NativeVulkanError::Vulkan {
-                    operation: "vkAcquireNextImageKHR(direct av1 ready-prefix)",
-                    result,
-                })?;
+                let (image_index, _) = {
+                    // Pair acquire with queue-present serialization; wl_display is not a free-threaded queue.
+                    let _present_queue_guard = present_queue_mutex.lock().map_err(|_| {
+                        NativeVulkanError::Video(
+                            "AV1 present queue mutex was poisoned".to_owned(),
+                        )
+                    })?;
+                    unsafe {
+                        swapchain_loader_ref.acquire_next_image(
+                            swapchain,
+                            u64::MAX,
+                            frame_image_available,
+                            vk::Fence::null(),
+                        )
+                    }
+                    .map_err(|result| NativeVulkanError::Vulkan {
+                        operation: "vkAcquireNextImageKHR(direct av1 ready-prefix)",
+                        result,
+                    })?
+                };
                 frame.acquire_elapsed_us = native_vulkan_elapsed_us(acquire_started_at.elapsed());
                 native_vulkan_av1_trace(
                     av1_trace_enabled,
@@ -9139,7 +9469,7 @@ pub fn run_av1_ready_prefix_video(
                 );
                 let image_index = image_index as usize;
                 let record_started_at = Instant::now();
-                renderer_ref.record_frame(
+                renderer_ref.record_frame_with_descriptor_set_index(
                     &device,
                     present_command_buffers[image_index],
                     image_index,
@@ -9147,13 +9477,14 @@ pub fn run_av1_ready_prefix_video(
                     swapchain_image_layouts[image_index],
                     &texture,
                     fit,
+                    descriptor_set_index,
                 )?;
                 frame.record_elapsed_us = native_vulkan_elapsed_us(record_started_at.elapsed());
                 swapchain_image_layouts[image_index] = renderer_ref.target_final_layout();
                 let (wait_semaphores, wait_stages) = if frame.show_existing_frame {
                     if pending_hidden_decode_handoff {
                         (
-                            vec![image_available, hidden_decode_finished],
+                            vec![frame_image_available, hidden_decode_finished],
                             vec![
                                 vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                                 vk::PipelineStageFlags::ALL_COMMANDS,
@@ -9161,13 +9492,13 @@ pub fn run_av1_ready_prefix_video(
                         )
                     } else {
                         (
-                            vec![image_available],
+                            vec![frame_image_available],
                             vec![vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT],
                         )
                     }
                 } else {
                     (
-                        vec![image_available, decode_finished],
+                        vec![frame_image_available, frame_decode_finished],
                         vec![
                             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
                             vk::PipelineStageFlags::ALL_COMMANDS,
@@ -9175,7 +9506,7 @@ pub fn run_av1_ready_prefix_video(
                     )
                 };
                 let command_buffers_for_submit = [present_command_buffers[image_index]];
-                let signal_semaphores = [render_finished];
+                let signal_semaphores = [frame_render_finished];
                 let submit_info = vk::SubmitInfo::default()
                     .wait_semaphores(&wait_semaphores)
                     .wait_dst_stage_mask(&wait_stages)
@@ -9191,8 +9522,13 @@ pub fn run_av1_ready_prefix_video(
                     ),
                 );
                 unsafe {
+                    let _present_queue_guard = present_queue_mutex.lock().map_err(|_| {
+                        NativeVulkanError::Video(
+                            "AV1 present queue mutex was poisoned".to_owned(),
+                        )
+                    })?;
                     device
-                        .queue_submit(present_queue, &[submit_info], in_flight)
+                        .queue_submit(present_queue, &[submit_info], present_frame_fence)
                         .map_err(|result| NativeVulkanError::Vulkan {
                             operation: "vkQueueSubmit(direct av1 ready-prefix present)",
                             result,
@@ -9209,27 +9545,54 @@ pub fn run_av1_ready_prefix_video(
                         frame.temporal_unit_index, frame.submit_elapsed_us
                     ),
                 );
-                let swapchains = [swapchain];
-                let image_indices = [image_index as u32];
-                let present_info = vk::PresentInfoKHR::default()
-                    .wait_semaphores(&signal_semaphores)
-                    .swapchains(&swapchains)
-                    .image_indices(&image_indices);
-                let queue_present_started_at = Instant::now();
-                native_vulkan_av1_trace(
-                    av1_trace_enabled,
-                    format!("queue present begin tu={}", frame.temporal_unit_index),
-                );
-                unsafe {
-                    swapchain_loader_ref
-                        .queue_present(present_queue, &present_info)
-                        .map_err(|result| NativeVulkanError::Vulkan {
-                            operation: "vkQueuePresentKHR(direct av1 ready-prefix)",
-                            result,
+                let frame_index = frames.len();
+                if av1_async_present_enabled {
+                    av1_present_job_tx
+                        .send(NativeVulkanAv1PresentJob {
+                            frame_index,
+                            frame_context_index: present_frame_context_index,
+                            image_index: image_index as u32,
+                            wait_semaphore: frame_render_finished,
+                            present_started_at,
+                        })
+                        .map_err(|_| {
+                            NativeVulkanError::Video(
+                                "AV1 present worker exited before accepting a present job"
+                                    .to_owned(),
+                            )
                         })?;
+                    av1_frame_contexts[present_frame_context_index].pending_present_result = true;
+                    frame.queue_present_elapsed_us = 0;
+                    frame.present_elapsed_us =
+                        native_vulkan_elapsed_us(present_started_at.elapsed());
+                } else {
+                    let queue_present_started_at = Instant::now();
+                    native_vulkan_av1_trace(
+                        av1_trace_enabled,
+                        format!("queue present begin tu={}", frame.temporal_unit_index),
+                    );
+                    let _present_queue_guard = present_queue_mutex.lock().map_err(|_| {
+                        NativeVulkanError::Video(
+                            "AV1 present queue mutex was poisoned".to_owned(),
+                        )
+                    })?;
+                    native_vulkan_queue_present_frame(
+                        swapchain_loader_ref,
+                        present_queue,
+                        swapchain,
+                        image_index as u32,
+                        frame_render_finished,
+                        "vkQueuePresentKHR(direct av1 ready-prefix)",
+                    )?;
+                    frame.queue_present_elapsed_us =
+                        native_vulkan_elapsed_us(queue_present_started_at.elapsed());
+                    frame.present_elapsed_us = native_vulkan_elapsed_us(present_started_at.elapsed());
                 }
-                frame.queue_present_elapsed_us =
-                    native_vulkan_elapsed_us(queue_present_started_at.elapsed());
+                av1_frame_contexts[present_frame_context_index].sampled_resource =
+                    Some(NativeVulkanAv1SampledResource {
+                        displayed_slot,
+                        dedicated_output: dedicated_decode_output,
+                    });
                 native_vulkan_av1_trace(
                     av1_trace_enabled,
                     format!(
@@ -9244,12 +9607,10 @@ pub fn run_av1_ready_prefix_video(
                     image_layer_layouts[displayed_slot as usize] =
                         vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
                 }
-                frame.present_elapsed_us = native_vulkan_elapsed_us(present_started_at.elapsed());
                 previous_pts_ms = temporal_unit.pts_ms;
                 previous_duration_ms = temporal_unit.duration_ms;
                 previous_pts_ns = temporal_unit.pts_ns;
                 previous_duration_ns = temporal_unit.duration_ns;
-                retired_textures.push(texture);
                 frames.push(frame);
 
                 if let Some(interval) = frame_interval
@@ -9262,7 +9623,15 @@ pub fn run_av1_ready_prefix_video(
                         frame_sleep_count = frame_sleep_count.saturating_add(1);
                         total_frame_sleep_us = total_frame_sleep_us
                             .saturating_add(native_vulkan_elapsed_us(sleep_duration));
-                        thread::sleep(sleep_duration);
+                        let sleep_for = sleep_duration
+                            .checked_sub(frame_pacing_spin_margin)
+                            .unwrap_or_default();
+                        if !sleep_for.is_zero() {
+                            thread::sleep(sleep_for);
+                        }
+                        while Instant::now() < next_frame {
+                            std::hint::spin_loop();
+                        }
                     } else {
                         missed_frame_pacing_count = missed_frame_pacing_count.saturating_add(1);
                         max_frame_pacing_late_us = max_frame_pacing_late_us
@@ -9272,15 +9641,33 @@ pub fn run_av1_ready_prefix_video(
                 }
             }
             native_vulkan_av1_trace(av1_trace_enabled, "final fence wait begin");
-            unsafe {
-                device
-                    .wait_for_fences(&[in_flight], true, u64::MAX)
-                    .map_err(|result| NativeVulkanError::Vulkan {
-                        operation: "vkWaitForFences(direct av1 ready-prefix final)",
-                        result,
-                    })?;
+            let submitted_frame_fences = av1_frame_contexts
+                .iter()
+                .map(|context| context.in_flight)
+                .filter(|fence| *fence != vk::Fence::null())
+                .collect::<Vec<_>>();
+            if !submitted_frame_fences.is_empty() {
+                unsafe {
+                    device
+                        .wait_for_fences(&submitted_frame_fences, true, u64::MAX)
+                        .map_err(|result| NativeVulkanError::Vulkan {
+                            operation: "vkWaitForFences(direct av1 ready-prefix final)",
+                            result,
+                        })?;
+                }
             }
             native_vulkan_av1_trace(av1_trace_enabled, "final fence wait end");
+            while av1_frame_contexts
+                .iter()
+                .any(|context| context.pending_present_result)
+            {
+                native_vulkan_recv_av1_present_worker_result(
+                    &av1_present_result_rx,
+                    &mut frames,
+                    &mut av1_frame_contexts,
+                    "AV1 present worker exited before returning final present result",
+                )?;
+            }
             native_vulkan_av1_trace(
                 av1_trace_enabled,
                 format!("retire textures begin count={}", retired_textures.len()),
@@ -9289,6 +9676,22 @@ pub fn run_av1_ready_prefix_video(
                 texture.destroy(&device);
             }
             native_vulkan_av1_trace(av1_trace_enabled, "retire textures end");
+            native_vulkan_av1_trace(
+                av1_trace_enabled,
+                format!(
+                    "pending decode final wait begin count={}",
+                    pending_av1_decode_submissions.len()
+                ),
+            );
+            let final_decode_wait_stats = native_vulkan_wait_av1_pending_decode_submissions(
+                &device,
+                &mut av1_decode_command_slots,
+                &mut pending_av1_decode_submissions,
+                |_| true,
+                "vkWaitForFences(direct av1 final pending decode)",
+            )?;
+            av1_decode_wait_stats.merge(final_decode_wait_stats);
+            native_vulkan_av1_trace(av1_trace_enabled, "pending decode final wait end");
             if decode_query_pool != vk::QueryPool::null() {
                 native_vulkan_av1_trace(av1_trace_enabled, "decode query wait begin");
                 unsafe {
@@ -9382,7 +9785,8 @@ pub fn run_av1_ready_prefix_video(
                 video_decode_queue_codec_operations: native_vulkan_video_codec_operation_labels(
                     video_queue_family.video_codec_operations,
                 ),
-                cross_queue_sync_strategy: "per-frame-binary-semaphore-decode-signal-present-wait",
+                cross_queue_sync_strategy:
+                    "frame-context-ring-binary-semaphore-decode-signal-present-wait",
                 driver_max_dpb_slots: capabilities.max_dpb_slots,
                 av1_order_hint_offset_enabled,
                 av1_initial_sequence_header: initial_sequence_header.clone(),
@@ -9428,8 +9832,11 @@ pub fn run_av1_ready_prefix_video(
                     .bootstrap_discarded_access_units,
                 av1_packet_queue_max_payload_bytes: streaming_queue.max_payload_bytes,
                 av1_packet_queue_retained_payload_bytes: streaming_queue.retained_payload_bytes(),
-                av1_hidden_decode_sync_strategy: if av1_hidden_decode_handoff_enabled
-                    && av1_hidden_decode_fence_wait_enabled
+                av1_hidden_decode_sync_strategy: if av1_hidden_decode_fence_wait_enabled
+                    && av1_decode_command_ring_depth > 0
+                {
+                    "decode-command-ring-deferred-hidden-fence-wait"
+                } else if av1_hidden_decode_handoff_enabled && av1_hidden_decode_fence_wait_enabled
                 {
                     "fence-wait-after-hidden-decode+immediate-show-existing-semaphore-handoff"
                 } else if av1_hidden_decode_fence_wait_enabled {
@@ -9440,11 +9847,21 @@ pub fn run_av1_ready_prefix_video(
                     "queue-wait-idle-after-hidden-decode"
                 },
                 av1_hidden_decode_async_handoff_count,
-                av1_hidden_decode_fence_wait_count,
-                av1_hidden_decode_fence_wait_elapsed_us,
-                av1_hidden_decode_fence_wait_max_us,
+                av1_hidden_decode_fence_wait_count: av1_decode_wait_stats.hidden_wait_count,
+                av1_hidden_decode_fence_wait_elapsed_us: av1_decode_wait_stats.hidden_elapsed_us,
+                av1_hidden_decode_fence_wait_max_us: av1_decode_wait_stats.hidden_max_us,
                 av1_hidden_decode_queue_wait_count,
                 av1_hidden_decode_queue_wait_elapsed_us,
+                av1_frame_context_count: av1_frame_contexts.len().min(u32::MAX as usize) as u32,
+                av1_decode_command_ring_depth,
+                av1_decode_pending_max_count,
+                av1_decode_deferred_hidden_count,
+                av1_decode_slot_wait_count: av1_decode_wait_stats.wait_count,
+                av1_decode_slot_wait_elapsed_us: av1_decode_wait_stats.elapsed_us,
+                av1_decode_slot_wait_max_us: av1_decode_wait_stats.max_us,
+                av1_decode_hidden_slot_wait_count: av1_decode_wait_stats.hidden_wait_count,
+                av1_decode_hidden_slot_wait_elapsed_us: av1_decode_wait_stats.hidden_elapsed_us,
+                av1_decode_hidden_slot_wait_max_us: av1_decode_wait_stats.hidden_max_us,
                 av1_bootstrap_temporal_units,
                 pts_delta_min_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).min(),
                 pts_delta_max_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).max(),
@@ -9452,6 +9869,17 @@ pub fn run_av1_ready_prefix_video(
                 frames,
                 last_render_error: None,
             })
+                })();
+            drop(av1_present_job_tx);
+            if let Some(worker) = av1_present_worker.take() {
+                let worker_result = worker.join().map_err(|_| {
+                    NativeVulkanError::Video(
+                        "AV1 present worker panicked while presenting a frame".to_owned(),
+                    )
+                })?;
+                worker_result?;
+            }
+            runtime_result
         })();
 
     unsafe {
@@ -9466,26 +9894,30 @@ pub fn run_av1_ready_prefix_video(
             &device,
             std::mem::take(&mut decoded_plane_view_cache),
         );
-        if image_available != vk::Semaphore::null() {
-            device.destroy_semaphore(image_available, None);
+        for context in av1_frame_contexts.drain(..) {
+            if context.image_available != vk::Semaphore::null() {
+                device.destroy_semaphore(context.image_available, None);
+            }
+            if context.decode_finished != vk::Semaphore::null() {
+                device.destroy_semaphore(context.decode_finished, None);
+            }
+            if context.render_finished != vk::Semaphore::null() {
+                device.destroy_semaphore(context.render_finished, None);
+            }
+            if context.in_flight != vk::Fence::null() {
+                device.destroy_fence(context.in_flight, None);
+            }
         }
-        if decode_finished != vk::Semaphore::null() {
-            device.destroy_semaphore(decode_finished, None);
-        }
-        if render_finished != vk::Semaphore::null() {
-            device.destroy_semaphore(render_finished, None);
-        }
-        if in_flight != vk::Fence::null() {
-            device.destroy_fence(in_flight, None);
+        for slot in av1_decode_command_slots.drain(..) {
+            if slot.fence != vk::Fence::null() {
+                device.destroy_fence(slot.fence, None);
+            }
         }
         if video_command_pool != vk::CommandPool::null() {
             device.destroy_command_pool(video_command_pool, None);
         }
         if present_command_pool != vk::CommandPool::null() {
             device.destroy_command_pool(present_command_pool, None);
-        }
-        if hidden_decode_fence != vk::Fence::null() {
-            device.destroy_fence(hidden_decode_fence, None);
         }
         if hidden_decode_finished != vk::Semaphore::null() {
             device.destroy_semaphore(hidden_decode_finished, None);
@@ -14734,6 +15166,314 @@ fn native_vulkan_byte_ranges_overlap(
         return true;
     };
     a_offset < b_end && b_offset < a_end
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug)]
+struct NativeVulkanAv1DecodeCommandSlot {
+    command_buffer: vk::CommandBuffer,
+    fence: vk::Fence,
+    in_flight: bool,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone)]
+struct NativeVulkanAv1PendingDecodeSubmission {
+    command_slot_index: usize,
+    output_slot: Option<u32>,
+    src_buffer_offset: u64,
+    src_buffer_range: u64,
+    hidden: bool,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, Copy)]
+struct NativeVulkanAv1SampledResource {
+    displayed_slot: u32,
+    dedicated_output: bool,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug)]
+struct NativeVulkanAv1FrameContext {
+    image_available: vk::Semaphore,
+    decode_finished: vk::Semaphore,
+    render_finished: vk::Semaphore,
+    in_flight: vk::Fence,
+    pending_present_result: bool,
+    sampled_resource: Option<NativeVulkanAv1SampledResource>,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, Copy)]
+struct NativeVulkanAv1PresentJob {
+    frame_index: usize,
+    frame_context_index: usize,
+    image_index: u32,
+    wait_semaphore: vk::Semaphore,
+    present_started_at: Instant,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, Copy)]
+struct NativeVulkanAv1PresentWorkerResult {
+    frame_index: usize,
+    frame_context_index: usize,
+    queue_present_elapsed_us: u64,
+    present_elapsed_us: u64,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Default, Clone, Copy)]
+struct NativeVulkanAv1DecodeWaitStats {
+    wait_count: u32,
+    elapsed_us: u64,
+    max_us: u64,
+    hidden_wait_count: u32,
+    hidden_elapsed_us: u64,
+    hidden_max_us: u64,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanAv1DecodeWaitStats {
+    fn add_wait(&mut self, elapsed_us: u64, hidden: bool) {
+        self.wait_count = self.wait_count.saturating_add(1);
+        self.elapsed_us = self.elapsed_us.saturating_add(elapsed_us);
+        self.max_us = self.max_us.max(elapsed_us);
+        if hidden {
+            self.hidden_wait_count = self.hidden_wait_count.saturating_add(1);
+            self.hidden_elapsed_us = self.hidden_elapsed_us.saturating_add(elapsed_us);
+            self.hidden_max_us = self.hidden_max_us.max(elapsed_us);
+        }
+    }
+
+    fn merge(&mut self, other: NativeVulkanAv1DecodeWaitStats) {
+        self.wait_count = self.wait_count.saturating_add(other.wait_count);
+        self.elapsed_us = self.elapsed_us.saturating_add(other.elapsed_us);
+        self.max_us = self.max_us.max(other.max_us);
+        self.hidden_wait_count = self
+            .hidden_wait_count
+            .saturating_add(other.hidden_wait_count);
+        self.hidden_elapsed_us = self
+            .hidden_elapsed_us
+            .saturating_add(other.hidden_elapsed_us);
+        self.hidden_max_us = self.hidden_max_us.max(other.hidden_max_us);
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_wait_av1_decode_command_slot(
+    device: &ash::Device,
+    command_slots: &mut [NativeVulkanAv1DecodeCommandSlot],
+    pending_submissions: &mut Vec<NativeVulkanAv1PendingDecodeSubmission>,
+    slot_index: usize,
+    operation: &'static str,
+) -> Result<NativeVulkanAv1DecodeWaitStats, NativeVulkanError> {
+    let hidden = pending_submissions
+        .iter()
+        .any(|pending| pending.command_slot_index == slot_index && pending.hidden);
+    let mut stats = NativeVulkanAv1DecodeWaitStats::default();
+    let command_slot_count = command_slots.len();
+    let slot = command_slots.get_mut(slot_index).ok_or_else(|| {
+        NativeVulkanError::Video(format!(
+            "AV1 decode command slot {slot_index} exceeds {command_slot_count} slots"
+        ))
+    })?;
+    if slot.in_flight {
+        let started_at = Instant::now();
+        unsafe {
+            device
+                .wait_for_fences(&[slot.fence], true, u64::MAX)
+                .map_err(|result| NativeVulkanError::Vulkan { operation, result })?;
+        }
+        slot.in_flight = false;
+        stats.add_wait(native_vulkan_elapsed_us(started_at.elapsed()), hidden);
+    }
+    pending_submissions.retain(|pending| pending.command_slot_index != slot_index);
+    Ok(stats)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_wait_av1_pending_decode_submissions(
+    device: &ash::Device,
+    command_slots: &mut [NativeVulkanAv1DecodeCommandSlot],
+    pending_submissions: &mut Vec<NativeVulkanAv1PendingDecodeSubmission>,
+    mut predicate: impl FnMut(&NativeVulkanAv1PendingDecodeSubmission) -> bool,
+    operation: &'static str,
+) -> Result<NativeVulkanAv1DecodeWaitStats, NativeVulkanError> {
+    let mut slot_indices = pending_submissions
+        .iter()
+        .filter(|pending| predicate(pending))
+        .map(|pending| pending.command_slot_index)
+        .collect::<Vec<_>>();
+    slot_indices.sort_unstable();
+    slot_indices.dedup();
+    let mut stats = NativeVulkanAv1DecodeWaitStats::default();
+    for slot_index in slot_indices {
+        let slot_stats = native_vulkan_wait_av1_decode_command_slot(
+            device,
+            command_slots,
+            pending_submissions,
+            slot_index,
+            operation,
+        )?;
+        stats.wait_count = stats.wait_count.saturating_add(slot_stats.wait_count);
+        stats.elapsed_us = stats.elapsed_us.saturating_add(slot_stats.elapsed_us);
+        stats.max_us = stats.max_us.max(slot_stats.max_us);
+        stats.hidden_wait_count = stats
+            .hidden_wait_count
+            .saturating_add(slot_stats.hidden_wait_count);
+        stats.hidden_elapsed_us = stats
+            .hidden_elapsed_us
+            .saturating_add(slot_stats.hidden_elapsed_us);
+        stats.hidden_max_us = stats.hidden_max_us.max(slot_stats.hidden_max_us);
+    }
+    Ok(stats)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_decode_command_ring_depth(default_depth: u32) -> u32 {
+    std::env::var("GILDER_VULKAN_AV1_DECODE_COMMAND_RING")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default_depth.max(16))
+        .clamp(1, 32)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_async_present_enabled() -> bool {
+    !matches!(
+        std::env::var("GILDER_VULKAN_AV1_ASYNC_PRESENT")
+            .ok()
+            .as_deref(),
+        Some("0") | Some("false") | Some("off") | Some("no")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_frame_context_count(swapchain_image_count: usize) -> usize {
+    std::env::var("GILDER_VULKAN_AV1_FRAME_CONTEXTS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(2)
+        .clamp(1, swapchain_image_count.max(1))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_apply_av1_present_worker_result(
+    frames: &mut [NativeVulkanDirectAv1ReadyPrefixFrameSnapshot],
+    result: Result<NativeVulkanAv1PresentWorkerResult, NativeVulkanError>,
+) -> Result<(), NativeVulkanError> {
+    let result = result?;
+    let frame_count = frames.len();
+    let frame = frames.get_mut(result.frame_index).ok_or_else(|| {
+        NativeVulkanError::Video(format!(
+            "AV1 present worker returned frame index {} but only {} frame(s) are recorded",
+            result.frame_index, frame_count
+        ))
+    })?;
+    frame.queue_present_elapsed_us = result.queue_present_elapsed_us;
+    frame.present_elapsed_us = result.present_elapsed_us;
+    Ok(())
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_recv_av1_present_worker_result(
+    result_rx: &mpsc::Receiver<Result<NativeVulkanAv1PresentWorkerResult, NativeVulkanError>>,
+    frames: &mut [NativeVulkanDirectAv1ReadyPrefixFrameSnapshot],
+    frame_contexts: &mut [NativeVulkanAv1FrameContext],
+    operation: &'static str,
+) -> Result<(), NativeVulkanError> {
+    let result = result_rx
+        .recv()
+        .map_err(|_| NativeVulkanError::Video(operation.to_owned()))?;
+    let context_index = result
+        .as_ref()
+        .ok()
+        .map(|result| result.frame_context_index);
+    native_vulkan_apply_av1_present_worker_result(frames, result)?;
+    if let Some(context_index) = context_index {
+        let context_count = frame_contexts.len();
+        let context = frame_contexts.get_mut(context_index).ok_or_else(|| {
+            NativeVulkanError::Video(format!(
+                "AV1 present worker returned context index {context_index} but only {context_count} context(s) exist"
+            ))
+        })?;
+        context.pending_present_result = false;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_decode_entry_touches_sampled_resource(
+    entry: &NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
+    begin_reference_slot_strategy: NativeVulkanAv1BeginReferenceSlotStrategy,
+    has_dedicated_output_image: bool,
+    resource: NativeVulkanAv1SampledResource,
+) -> bool {
+    if resource.dedicated_output {
+        return has_dedicated_output_image;
+    }
+    begin_reference_slot_strategy == NativeVulkanAv1BeginReferenceSlotStrategy::FullDpbGeneric
+        || entry.output_slot == Some(resource.displayed_slot)
+        || entry
+            .decode_reference_slots
+            .iter()
+            .any(|slot| u32::try_from(*slot).ok() == Some(resource.displayed_slot))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_wait_av1_frame_context_resource_hazards(
+    device: &ash::Device,
+    frame_contexts: &mut [NativeVulkanAv1FrameContext],
+    entry: &NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
+    begin_reference_slot_strategy: NativeVulkanAv1BeginReferenceSlotStrategy,
+    has_dedicated_output_image: bool,
+) -> Result<NativeVulkanAv1DecodeWaitStats, NativeVulkanError> {
+    let mut stats = NativeVulkanAv1DecodeWaitStats::default();
+    for context in frame_contexts.iter_mut() {
+        let Some(sampled_resource) = context.sampled_resource else {
+            continue;
+        };
+        if !native_vulkan_av1_decode_entry_touches_sampled_resource(
+            entry,
+            begin_reference_slot_strategy,
+            has_dedicated_output_image,
+            sampled_resource,
+        ) {
+            continue;
+        }
+        let started_at = Instant::now();
+        unsafe {
+            device
+                .wait_for_fences(&[context.in_flight], true, u64::MAX)
+                .map_err(|result| NativeVulkanError::Vulkan {
+                    operation: "vkWaitForFences(direct av1 sampled resource frame context)",
+                    result,
+                })?;
+        }
+        stats.add_wait(native_vulkan_elapsed_us(started_at.elapsed()), false);
+        context.sampled_resource = None;
+    }
+    Ok(stats)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+enum NativeVulkanAv1StreamingBitstreamPayload<'a> {
+    Borrowed(&'a [u8]),
+    Owned(Vec<u8>),
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl<'a> NativeVulkanAv1StreamingBitstreamPayload<'a> {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(bytes) => bytes,
+            Self::Owned(bytes) => bytes.as_slice(),
+        }
+    }
 }
 
 fn native_vulkan_create_video_decode_status_query_pool(
@@ -21194,6 +21934,14 @@ fn native_vulkan_decode_av1_ready_prefix_frame_to_image(
         .setup_reference_slot(&setup_reference_slot)
         .reference_slots(&reference_slots)
         .push_next(&mut av1_picture_info);
+    let mut prepare_dpb_slots = if begin_reference_slot_strategy
+        == NativeVulkanAv1BeginReferenceSlotStrategy::FullDpbGeneric
+    {
+        (0..image.snapshot.array_layers).collect::<Vec<_>>()
+    } else {
+        decode_reference_slot_ids.clone()
+    };
+    prepare_dpb_slots.push(output_slot);
 
     let started_at = Instant::now();
     unsafe {
@@ -21218,13 +21966,15 @@ fn native_vulkan_decode_av1_ready_prefix_frame_to_image(
                 operation: "vkBeginCommandBuffer(direct av1 visible frame decode)",
                 result,
             })?;
-        native_vulkan_video_decode_prepare_frame_barriers(
+        native_vulkan_video_decode_prepare_selected_layer_barriers_to_layout(
             device,
             command_buffer,
             image,
             buffer.buffer,
             bitstream_buffer_barrier_size,
             image_layer_layouts,
+            &prepare_dpb_slots,
+            vk::ImageLayout::VIDEO_DECODE_DPB_KHR,
         )?;
         native_vulkan_video_decode_reference_access_barriers(
             device,
@@ -21246,13 +21996,14 @@ fn native_vulkan_decode_av1_ready_prefix_frame_to_image(
         if let (Some(output_image), Some(output_image_layer_layouts)) =
             (output_image, output_image_layer_layouts)
         {
-            native_vulkan_video_decode_prepare_frame_barriers_to_layout(
+            native_vulkan_video_decode_prepare_selected_layer_barriers_to_layout(
                 device,
                 command_buffer,
                 output_image,
                 buffer.buffer,
                 bitstream_buffer_barrier_size,
                 output_image_layer_layouts,
+                &[output_base_array_layer],
                 vk::ImageLayout::VIDEO_DECODE_DST_KHR,
             )?;
         }
@@ -24364,6 +25115,77 @@ unsafe fn native_vulkan_video_decode_prepare_frame_barriers_to_layout(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+unsafe fn native_vulkan_video_decode_prepare_selected_layer_barriers_to_layout(
+    device: &ash::Device,
+    command_buffer: vk::CommandBuffer,
+    image: &NativeVulkanVideoResourceImage,
+    buffer: vk::Buffer,
+    buffer_size: u64,
+    layer_layouts: &mut [vk::ImageLayout],
+    layers: &[u32],
+    target_layout: vk::ImageLayout,
+) -> Result<(), NativeVulkanError> {
+    let buffer_barrier = vk::BufferMemoryBarrier2::default()
+        .src_stage_mask(vk::PipelineStageFlags2::HOST)
+        .src_access_mask(vk::AccessFlags2::HOST_WRITE)
+        .dst_stage_mask(vk::PipelineStageFlags2::VIDEO_DECODE_KHR)
+        .dst_access_mask(vk::AccessFlags2::VIDEO_DECODE_READ_KHR)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .buffer(buffer)
+        .offset(0)
+        .size(buffer_size);
+    let mut selected_layers = layers.to_vec();
+    selected_layers.sort_unstable();
+    selected_layers.dedup();
+
+    let mut image_barriers = Vec::with_capacity(selected_layers.len());
+    for layer in selected_layers {
+        let layer_count = layer_layouts.len();
+        let layout = layer_layouts.get_mut(layer as usize).ok_or_else(|| {
+            NativeVulkanError::Video(format!(
+                "video decode selected layer {layer} exceeds layout table with {layer_count} layers"
+            ))
+        })?;
+        if *layout == target_layout {
+            continue;
+        }
+        let resource_image = image.slot_image(layer)?;
+        let base_array_layer = image.slot_base_array_layer(layer);
+        let (src_stage, src_access) = native_vulkan_video_decode_layout_src_scope(*layout);
+        image_barriers.push(
+            vk::ImageMemoryBarrier2::default()
+                .src_stage_mask(src_stage)
+                .src_access_mask(src_access)
+                .dst_stage_mask(vk::PipelineStageFlags2::VIDEO_DECODE_KHR)
+                .dst_access_mask(
+                    vk::AccessFlags2::VIDEO_DECODE_READ_KHR
+                        | vk::AccessFlags2::VIDEO_DECODE_WRITE_KHR,
+                )
+                .old_layout(*layout)
+                .new_layout(target_layout)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(resource_image)
+                .subresource_range(native_vulkan_video_decode_image_subresource_range(
+                    base_array_layer,
+                    1,
+                )),
+        );
+        *layout = target_layout;
+    }
+
+    let buffer_barriers = [buffer_barrier];
+    let dependency_info = vk::DependencyInfo::default()
+        .buffer_memory_barriers(&buffer_barriers)
+        .image_memory_barriers(&image_barriers);
+    unsafe {
+        device.cmd_pipeline_barrier2(command_buffer, &dependency_info);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 unsafe fn native_vulkan_video_decode_reference_access_barriers(
     device: &ash::Device,
     command_buffer: vk::CommandBuffer,
@@ -25895,15 +26717,12 @@ fn native_vulkan_write_h265_streaming_packet_to_bitstream_ring(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_write_av1_streaming_packet_to_bitstream_ring(
-    packet: &NativeVulkanAv1StreamingPacket,
-    device: &ash::Device,
-    buffer: &NativeVulkanVideoBitstreamBuffer,
-    ring: &mut NativeVulkanVideoBitstreamRing,
+fn native_vulkan_prepare_av1_streaming_packet_bitstream_payload<'a>(
+    packet: &'a NativeVulkanAv1StreamingPacket,
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
     entry: &NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
     active_dpb_refs: &[Option<NativeVulkanAv1ActiveDpbReference>],
-) -> Result<NativeVulkanH265ReadyPrefixBitstreamSpan, NativeVulkanError> {
+) -> Result<NativeVulkanAv1StreamingBitstreamPayload<'a>, NativeVulkanError> {
     if native_vulkan_av1_tile_payload_bitstream_enabled() {
         let prepared_reference_context =
             native_vulkan_av1_prepared_reference_context(entry, active_dpb_refs);
@@ -25951,24 +26770,39 @@ fn native_vulkan_write_av1_streaming_packet_to_bitstream_ring(
             })?;
             payload.extend_from_slice(tile);
         }
-        let span = ring.allocate(payload.len() as u64, 0)?;
-        native_vulkan_write_video_session_bitstream_buffer(
-            device,
-            buffer,
-            span.offset,
-            span.range,
-            &payload,
-        )?;
-        return Ok(span);
+        return Ok(NativeVulkanAv1StreamingBitstreamPayload::Owned(payload));
     }
 
-    let span = ring.allocate(packet.access_unit.bytes.len() as u64, 0)?;
+    Ok(NativeVulkanAv1StreamingBitstreamPayload::Borrowed(
+        &packet.access_unit.bytes,
+    ))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[allow(dead_code)]
+fn native_vulkan_write_av1_streaming_packet_to_bitstream_ring(
+    packet: &NativeVulkanAv1StreamingPacket,
+    device: &ash::Device,
+    buffer: &NativeVulkanVideoBitstreamBuffer,
+    ring: &mut NativeVulkanVideoBitstreamRing,
+    sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
+    entry: &NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
+    active_dpb_refs: &[Option<NativeVulkanAv1ActiveDpbReference>],
+) -> Result<NativeVulkanH265ReadyPrefixBitstreamSpan, NativeVulkanError> {
+    let payload = native_vulkan_prepare_av1_streaming_packet_bitstream_payload(
+        packet,
+        sequence_header,
+        entry,
+        active_dpb_refs,
+    )?;
+    let payload = payload.as_slice();
+    let span = ring.allocate(payload.len() as u64, 0)?;
     native_vulkan_write_video_session_bitstream_buffer(
         device,
         buffer,
         span.offset,
         span.range,
-        &packet.access_unit.bytes,
+        payload,
     )?;
     Ok(span)
 }
@@ -26981,7 +27815,7 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
     const CODEC_LABEL: &'static str = "AV1";
     const PARAMETER_SETS_LABEL: &'static str = "sequence header";
     const RING_SLOT_BYTES_ENV: &'static str = "GILDER_VULKAN_AV1_STREAMING_RING_SLOT_BYTES";
-    const DEFAULT_RING_SLOT_COUNT: u32 = 8;
+    const DEFAULT_RING_SLOT_COUNT: u32 = 16;
 
     fn pipeline(source: &Path) -> Result<gst::Pipeline, NativeVulkanError> {
         native_vulkan_av1_bitstream_pipeline(source)
@@ -39530,6 +40364,13 @@ fn choose_native_vulkan_surface_format(
 }
 
 fn choose_native_vulkan_present_mode(present_modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
+    if let Some(requested) = std::env::var("GILDER_VULKAN_PRESENT_MODE")
+        .ok()
+        .and_then(|value| native_vulkan_present_mode_from_label(value.as_str()))
+        && present_modes.contains(&requested)
+    {
+        return requested;
+    }
     if present_modes.contains(&vk::PresentModeKHR::FIFO) {
         vk::PresentModeKHR::FIFO
     } else {
@@ -39538,6 +40379,30 @@ fn choose_native_vulkan_present_mode(present_modes: &[vk::PresentModeKHR]) -> vk
             .copied()
             .unwrap_or(vk::PresentModeKHR::FIFO)
     }
+}
+
+fn native_vulkan_present_mode_from_label(label: &str) -> Option<vk::PresentModeKHR> {
+    match label {
+        "immediate" | "IMMEDIATE" => Some(vk::PresentModeKHR::IMMEDIATE),
+        "mailbox" | "MAILBOX" => Some(vk::PresentModeKHR::MAILBOX),
+        "fifo" | "FIFO" => Some(vk::PresentModeKHR::FIFO),
+        "fifo-relaxed" | "fifo_relaxed" | "FIFO_RELAXED" => Some(vk::PresentModeKHR::FIFO_RELAXED),
+        _ => None,
+    }
+}
+
+#[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
+fn native_vulkan_frame_pacing_spin_margin(target_max_fps: Option<u32>) -> Duration {
+    let default_us = if target_max_fps.is_some_and(|fps| fps >= 120) {
+        500
+    } else {
+        0
+    };
+    let margin_us = std::env::var("GILDER_VULKAN_FRAME_PACING_SPIN_US")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(default_us);
+    Duration::from_micros(margin_us)
 }
 
 fn choose_native_vulkan_swapchain_extent(
