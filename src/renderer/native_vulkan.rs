@@ -1314,6 +1314,9 @@ pub struct NativeVulkanAv1FrameSubmitSnapshot {
     pub frame_obu_payload_bytes: u64,
     pub frame_type: u8,
     pub frame_type_label: &'static str,
+    pub show_existing_frame: bool,
+    pub frame_to_show_map_idx: Option<u8>,
+    pub display_frame_id: Option<u32>,
     pub show_frame: bool,
     pub showable_frame: bool,
     pub error_resilient_mode: bool,
@@ -28562,8 +28565,10 @@ fn native_vulkan_av1_frame_submit_from_split_obus(
                     Vec::new(),
                     false,
                 );
-                snapshot.unsupported_reason =
-                    Some("AV1 frame-header OBU has no following tile-group OBU".to_owned());
+                if !snapshot.show_existing_frame {
+                    snapshot.unsupported_reason =
+                        Some("AV1 frame-header OBU has no following tile-group OBU".to_owned());
+                }
                 snapshot.vulkan_submit_candidate = false;
                 return snapshot;
             };
@@ -28670,6 +28675,9 @@ fn native_vulkan_av1_frame_submit_snapshot_from_header(
         frame_obu_payload_bytes,
         frame_type: header.frame_type,
         frame_type_label: native_vulkan_av1_frame_type_label(header.frame_type),
+        show_existing_frame: header.show_existing_frame,
+        frame_to_show_map_idx: header.frame_to_show_map_idx,
+        display_frame_id: header.display_frame_id,
         show_frame: header.show_frame,
         showable_frame: header.showable_frame,
         error_resilient_mode: header.error_resilient_mode,
@@ -28719,6 +28727,9 @@ fn native_vulkan_av1_unsupported_frame_submit_snapshot(
         frame_obu_payload_bytes,
         frame_type: u8::MAX,
         frame_type_label: "unknown",
+        show_existing_frame: false,
+        frame_to_show_map_idx: None,
+        display_frame_id: None,
         show_frame: false,
         showable_frame: false,
         error_resilient_mode: false,
@@ -28756,6 +28767,9 @@ struct NativeVulkanAv1ParsedFrameHeader {
     tile_bits: u32,
     tile_info: NativeVulkanAv1ParsedTileInfo,
     frame_type: u8,
+    show_existing_frame: bool,
+    frame_to_show_map_idx: Option<u8>,
+    display_frame_id: Option<u32>,
     show_frame: bool,
     showable_frame: bool,
     error_resilient_mode: bool,
@@ -28793,6 +28807,9 @@ struct NativeVulkanAv1ParsedFrameHeader {
 #[derive(Debug, Clone, Copy)]
 struct NativeVulkanAv1ParsedFrameHeaderPrefix {
     frame_type: u8,
+    show_existing_frame: bool,
+    frame_to_show_map_idx: Option<u8>,
+    display_frame_id: Option<u32>,
     show_frame: bool,
     showable_frame: bool,
     error_resilient_mode: bool,
@@ -28838,6 +28855,9 @@ fn native_vulkan_av1_partial_frame_header(
             height_in_sbs_minus_1: Vec::new(),
         },
         frame_type: prefix.frame_type,
+        show_existing_frame: prefix.show_existing_frame,
+        frame_to_show_map_idx: prefix.frame_to_show_map_idx,
+        display_frame_id: prefix.display_frame_id,
         show_frame: prefix.show_frame,
         showable_frame: prefix.showable_frame,
         error_resilient_mode: prefix.error_resilient_mode,
@@ -29017,12 +29037,53 @@ fn native_vulkan_parse_av1_frame_header_for_submit(
     }
 
     let mut bits = NativeVulkanAv1BitReader::new(payload);
+    let mut show_existing_frame = false;
+    let mut frame_to_show_map_idx = None;
+    let mut display_frame_id = None;
     if !sequence_header.reduced_still_picture_header {
-        let show_existing_frame = bits.read_bool("show_existing_frame")?;
+        show_existing_frame = bits.read_bool("show_existing_frame")?;
         if show_existing_frame {
-            return Err(
-                "AV1 show_existing_frame cannot seed a direct first-frame decode".to_owned(),
-            );
+            frame_to_show_map_idx = Some(native_vulkan_av1_u8(
+                bits.read_bits(3, "frame_to_show_map_idx")?,
+                "frame_to_show_map_idx",
+            )?);
+            if sequence_header.frame_id_numbers_present_flag {
+                let frame_id_bits = u32::from(
+                    sequence_header
+                        .additional_frame_id_length_minus_1
+                        .unwrap_or(0),
+                ) + u32::from(
+                    sequence_header.delta_frame_id_length_minus_2.unwrap_or(0),
+                ) + 3;
+                display_frame_id = Some(bits.read_bits(frame_id_bits, "display_frame_id")?);
+            }
+            let prefix = NativeVulkanAv1ParsedFrameHeaderPrefix {
+                frame_type: u8::MAX,
+                show_existing_frame,
+                frame_to_show_map_idx,
+                display_frame_id,
+                show_frame: true,
+                showable_frame: false,
+                error_resilient_mode: false,
+                disable_cdf_update: true,
+                disable_frame_end_update_cdf: true,
+                allow_screen_content_tools: 0,
+                force_integer_mv: 2,
+                frame_size_override_flag: false,
+                order_hint: None,
+                primary_ref_frame: None,
+                refresh_frame_flags: 0,
+            };
+            return Ok(native_vulkan_av1_partial_frame_header(
+                &bits,
+                prefix,
+                Vec::new(),
+                false,
+                None,
+                None,
+                Vec::new(),
+                "AV1 show_existing_frame map index parsed; display handoff needs reference slot planning".to_owned(),
+            ));
         }
     }
 
@@ -29126,6 +29187,9 @@ fn native_vulkan_parse_av1_frame_header_for_submit(
 
     let prefix = NativeVulkanAv1ParsedFrameHeaderPrefix {
         frame_type,
+        show_existing_frame,
+        frame_to_show_map_idx,
+        display_frame_id,
         show_frame,
         showable_frame,
         error_resilient_mode,
@@ -29254,6 +29318,9 @@ fn native_vulkan_parse_av1_frame_header_for_submit(
         tile_bits: tile_info.tile_bits,
         tile_info,
         frame_type,
+        show_existing_frame,
+        frame_to_show_map_idx,
+        display_frame_id,
         show_frame,
         showable_frame,
         error_resilient_mode,
@@ -35382,6 +35449,116 @@ mod tests {
                 .as_deref()
                 .unwrap_or_default()
                 .contains("reference indices parsed")
+        );
+    }
+
+    #[test]
+    fn parses_av1_show_existing_frame_for_display_planning() {
+        fn push_bits(bits: &mut Vec<bool>, value: u32, count: u32) {
+            for shift in (0..count).rev() {
+                bits.push(((value >> shift) & 1) != 0);
+            }
+        }
+        fn pack_bits(bits: &[bool]) -> Vec<u8> {
+            let mut bytes = vec![0u8; bits.len().div_ceil(8)];
+            for (index, bit) in bits.iter().copied().enumerate() {
+                if bit {
+                    bytes[index / 8] |= 1 << (7 - (index % 8));
+                }
+            }
+            bytes
+        }
+        fn push_obu(bytes: &mut Vec<u8>, obu_type: u8, payload: &[u8]) {
+            bytes.push((obu_type << 3) | 0x02);
+            bytes.push(payload.len() as u8);
+            bytes.extend_from_slice(payload);
+        }
+
+        let mut sequence_bits = Vec::new();
+        push_bits(&mut sequence_bits, 0, 3); // seq_profile Main
+        push_bits(&mut sequence_bits, 0, 1); // still_picture
+        push_bits(&mut sequence_bits, 0, 1); // reduced_still_picture_header
+        push_bits(&mut sequence_bits, 0, 1); // timing_info_present_flag
+        push_bits(&mut sequence_bits, 0, 1); // initial_display_delay_present_flag
+        push_bits(&mut sequence_bits, 0, 5); // operating_points_cnt_minus_1
+        push_bits(&mut sequence_bits, 0, 12); // operating_point_idc
+        push_bits(&mut sequence_bits, 4, 5); // seq_level_idx 3.0
+        push_bits(&mut sequence_bits, 9, 4); // frame_width_bits_minus_1
+        push_bits(&mut sequence_bits, 8, 4); // frame_height_bits_minus_1
+        push_bits(&mut sequence_bits, 639, 10); // max_frame_width_minus_1
+        push_bits(&mut sequence_bits, 367, 9); // max_frame_height_minus_1
+        push_bits(&mut sequence_bits, 0, 1); // frame_id_numbers_present_flag
+        push_bits(&mut sequence_bits, 0, 1); // use_128x128_superblock
+        push_bits(&mut sequence_bits, 1, 1); // enable_filter_intra
+        push_bits(&mut sequence_bits, 1, 1); // enable_intra_edge_filter
+        push_bits(&mut sequence_bits, 0, 1); // enable_interintra_compound
+        push_bits(&mut sequence_bits, 0, 1); // enable_masked_compound
+        push_bits(&mut sequence_bits, 0, 1); // enable_warped_motion
+        push_bits(&mut sequence_bits, 0, 1); // enable_dual_filter
+        push_bits(&mut sequence_bits, 1, 1); // enable_order_hint
+        push_bits(&mut sequence_bits, 0, 1); // enable_jnt_comp
+        push_bits(&mut sequence_bits, 0, 1); // enable_ref_frame_mvs
+        push_bits(&mut sequence_bits, 0, 1); // seq_choose_screen_content_tools
+        push_bits(&mut sequence_bits, 0, 1); // seq_force_screen_content_tools
+        push_bits(&mut sequence_bits, 6, 3); // order_hint_bits_minus_1
+        push_bits(&mut sequence_bits, 0, 1); // enable_superres
+        push_bits(&mut sequence_bits, 0, 1); // enable_cdef
+        push_bits(&mut sequence_bits, 0, 1); // enable_restoration
+        push_bits(&mut sequence_bits, 0, 1); // high_bitdepth
+        push_bits(&mut sequence_bits, 0, 1); // mono_chrome
+        push_bits(&mut sequence_bits, 0, 1); // color_description_present_flag
+        push_bits(&mut sequence_bits, 0, 1); // color_range
+        push_bits(&mut sequence_bits, 0, 2); // chroma_sample_position
+        push_bits(&mut sequence_bits, 0, 1); // separate_uv_delta_q
+        push_bits(&mut sequence_bits, 0, 1); // film_grain_params_present
+
+        let mut frame_bits = Vec::new();
+        push_bits(&mut frame_bits, 1, 1); // show_existing_frame
+        push_bits(&mut frame_bits, 5, 3); // frame_to_show_map_idx
+
+        let mut obu = Vec::new();
+        push_obu(&mut obu, 1, &pack_bits(&sequence_bits));
+        push_obu(&mut obu, 6, &pack_bits(&frame_bits));
+
+        let stats = native_vulkan_av1_obu_stats(&obu).unwrap();
+        let submit = stats.first_frame_submit.as_ref().unwrap();
+
+        assert!(submit.show_existing_frame);
+        assert_eq!(submit.frame_to_show_map_idx, Some(5));
+        assert_eq!(submit.frame_type_label, "unknown");
+        assert!(submit.show_frame);
+        assert!(!submit.vulkan_submit_candidate);
+        assert!(
+            submit
+                .unsupported_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("show_existing_frame map index parsed")
+        );
+
+        let mut split_obu = Vec::new();
+        push_obu(&mut split_obu, 1, &pack_bits(&sequence_bits));
+        push_obu(&mut split_obu, 3, &pack_bits(&frame_bits));
+
+        let split_stats = native_vulkan_av1_obu_stats(&split_obu).unwrap();
+        let split_submit = split_stats.first_frame_submit.as_ref().unwrap();
+
+        assert!(split_submit.show_existing_frame);
+        assert_eq!(split_submit.frame_to_show_map_idx, Some(5));
+        assert!(!split_submit.vulkan_submit_candidate);
+        assert!(
+            split_submit
+                .unsupported_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("show_existing_frame map index parsed")
+        );
+        assert!(
+            !split_submit
+                .unsupported_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("no following tile-group")
         );
     }
 
