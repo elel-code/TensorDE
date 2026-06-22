@@ -265,6 +265,10 @@ first_frame_sampling_rendered="$(jq -r '.first_frame_decode.output_sampling.rend
 first_frame_sampling_bytes="$(jq -r '.first_frame_decode.output_sampling.total_bytes // 0' "$probe_json")"
 first_frame_sampling_rgba_nonzero="$(jq -r '.first_frame_decode.output_sampling.rgba_nonzero_bytes // 0' "$probe_json")"
 first_frame_sampling_rgba_unique="$(jq -r '.first_frame_decode.output_sampling.rgba_unique_values // 0' "$probe_json")"
+av1_decode_ready_count="$(jq -r '.bitstream_extract.av1_decode_ready_count // 0' "$probe_json")"
+av1_decode_ready_prefix_count="$(jq -r '.bitstream_extract.av1_decode_ready_prefix_count // 0' "$probe_json")"
+av1_decode_first_unready_temporal_unit_index="$(jq -r '.bitstream_extract.av1_decode_first_unready_temporal_unit_index // "none"' "$probe_json")"
+av1_decode_first_unready_reason="$(jq -r '.bitstream_extract.av1_decode_first_unready_reason // "none"' "$probe_json")"
 
 decode_valid=1
 if [[ "$decode_first_frame" -eq 1 ]]; then
@@ -276,7 +280,7 @@ if [[ "$decode_first_frame" -eq 1 ]]; then
   fi
 fi
 
-if [[ "$codec" != "$video_codec" || "$samples" -lt 1 || "$frontend" != "gstreamer-demux-av1parse-appsink" || "$stream_format" != "obu-stream" || "$alignment" != "tu" || "$sequence_header_present" != "true" || "$obu_count" -lt 1 || "$sequence_header_count" -lt 1 || "$frame_count" -lt 1 || "$decode_candidate" != "true" || "$sequence_profile" != "main" || "$sequence_bit_depth" -ne "$bit_depth" || "$sequence_width" -ne "$width" || "$sequence_height" -ne "$height" || "$sequence_std_ready" != "true" || "$session_parameters_created" != "true" || "$session_parameters_codec" != "$video_codec" || "$session_parameters_source" != "native-rust-av1-sequence-header-to-vulkan-std" || "$mapped_write_source" != "extracted-encoded-video-unit" || "$mapped_write_bytes" -le 0 || "$first_frame_submit_present" != "true" || "$first_frame_header_found" != "true" || "$first_frame_type" != "key" || "$first_frame_tile_count" -lt 1 || "$decode_valid" -ne 1 ]]; then
+if [[ "$codec" != "$video_codec" || "$samples" -lt 1 || "$frontend" != "gstreamer-demux-av1parse-appsink" || "$stream_format" != "obu-stream" || "$alignment" != "tu" || "$sequence_header_present" != "true" || "$obu_count" -lt 1 || "$sequence_header_count" -lt 1 || "$frame_count" -lt 1 || "$decode_candidate" != "true" || "$sequence_profile" != "main" || "$sequence_bit_depth" -ne "$bit_depth" || "$sequence_width" -ne "$width" || "$sequence_height" -ne "$height" || "$sequence_std_ready" != "true" || "$session_parameters_created" != "true" || "$session_parameters_codec" != "$video_codec" || "$session_parameters_source" != "native-rust-av1-sequence-header-to-vulkan-std" || "$mapped_write_source" != "extracted-encoded-video-unit" || "$mapped_write_bytes" -le 0 || "$first_frame_submit_present" != "true" || "$first_frame_header_found" != "true" || "$first_frame_type" != "key" || "$first_frame_tile_count" -lt 1 || "$decode_valid" -ne 1 || "$av1_decode_ready_count" -lt "$samples" || "$av1_decode_ready_prefix_count" -lt "$samples" ]]; then
   {
     printf 'FAIL: native Vulkan AV1 bitstream output was not valid\n'
     printf 'codec: %s\n' "$codec"
@@ -318,6 +322,10 @@ if [[ "$codec" != "$video_codec" || "$samples" -lt 1 || "$frontend" != "gstreame
     printf 'first_frame_readback_bytes: %s\n' "$first_frame_readback_bytes"
     printf 'first_frame_readback_y_nonzero: %s\n' "$first_frame_readback_y_nonzero"
     printf 'first_frame_readback_uv_nonzero: %s\n' "$first_frame_readback_uv_nonzero"
+    printf 'av1_decode_ready_count: %s\n' "$av1_decode_ready_count"
+    printf 'av1_decode_ready_prefix_count: %s\n' "$av1_decode_ready_prefix_count"
+    printf 'av1_decode_first_unready_temporal_unit_index: %s\n' "$av1_decode_first_unready_temporal_unit_index"
+    printf 'av1_decode_first_unready_reason: %s\n' "$av1_decode_first_unready_reason"
     printf 'first_frame_sampling_rendered: %s\n' "$first_frame_sampling_rendered"
     printf 'first_frame_sampling_bytes: %s\n' "$first_frame_sampling_bytes"
     printf 'first_frame_sampling_rgba_nonzero: %s\n' "$first_frame_sampling_rgba_nonzero"
@@ -385,6 +393,12 @@ fi
   printf 'session_parameters_source: %s\n' "$session_parameters_source"
   printf 'av1_obus_head: %s\n' "$(jq -c '[.bitstream_extract.av1_obus[0:8][]?]' "$probe_json")"
   printf 'av1_temporal_units_head: %s\n' "$(jq -c '[.bitstream_extract.av1_temporal_units[0:8][]? | {index, pts_ms, frame_count, frame_header_count, tile_group_count, frame_type: (.first_frame_submit.frame_type_label // "none"), show_existing_frame: (.first_frame_submit.show_existing_frame // false), frame_to_show_map_idx: (.first_frame_submit.frame_to_show_map_idx // null), show_frame: (.first_frame_submit.show_frame // false), order_hint: (.first_frame_submit.order_hint // null), refresh_frame_flags: (.first_frame_submit.refresh_frame_flags // 0), ref_frame_indices: (.first_frame_submit.ref_frame_indices // []), reference_order_hints: (.first_frame_submit.reference_order_hints // []), submit_candidate: (.first_frame_submit.vulkan_submit_candidate // false), unsupported_reason: (.first_frame_submit.unsupported_reason // "none")}]' "$probe_json")"
+  printf 'av1_reference_plan_dpb_slots: %s\n' "$(jq -r '.bitstream_extract.av1_reference_plan_dpb_slots // 0' "$probe_json")"
+  printf 'av1_decode_ready_count: %s\n' "$(jq -r '.bitstream_extract.av1_decode_ready_count // 0' "$probe_json")"
+  printf 'av1_decode_ready_prefix_count: %s\n' "$(jq -r '.bitstream_extract.av1_decode_ready_prefix_count // 0' "$probe_json")"
+  printf 'av1_decode_first_unready_temporal_unit_index: %s\n' "$(jq -r '.bitstream_extract.av1_decode_first_unready_temporal_unit_index // "none"' "$probe_json")"
+  printf 'av1_decode_first_unready_reason: %s\n' "$(jq -r '.bitstream_extract.av1_decode_first_unready_reason // "none"' "$probe_json")"
+  printf 'av1_reference_plan_head: %s\n' "$(jq -c '[.bitstream_extract.av1_decode_reference_plan[0:8][]? | {temporal_unit_index, frame_type: .frame_type_label, show_existing_frame, frame_to_show_map_idx, show_frame, order_hint, refresh_frame_flags, output_slot, displayed_slot, reference_name_slot_indices, ref_frame_indices, decode_reference_slots, refreshed_reference_names, missing_reference_names, references_resolved, submit_fields_ready, ready_for_decode_submit, ready_for_display_handoff, unsupported_reason, map_slot_indices_after}]' "$probe_json")"
   printf 'mapped_write_source: %s\n' "$mapped_write_source"
   printf 'mapped_write_bytes: %s\n' "$mapped_write_bytes"
   printf 'bitstream_buffer_bytes: %s\n' "$(jq -r '.bitstream_buffer.size' "$probe_json")"

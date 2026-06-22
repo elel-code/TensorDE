@@ -296,6 +296,17 @@ if [[ -z "$source" ]]; then
   if [[ "$frames" -eq 0 || "$frames" -lt $((decode_prefix + 2)) ]]; then
     frames=$((decode_prefix + 2))
   fi
+  if [[ "$frames_explicit" -eq 0 && -n "$arbitrary_entry_offset" ]]; then
+    offset_frames="$(awk -v offset="$arbitrary_entry_offset" -v fps="$target_fps" 'BEGIN { value = offset * fps; printf "%d", (value == int(value)) ? value : int(value) + 1 }')"
+    arbitrary_window_frames="$expected_frames"
+    if [[ "$require_loop_skip_replay" -eq 1 || "$expected_frames" -gt "$decode_prefix" ]]; then
+      arbitrary_window_frames="$decode_prefix"
+    fi
+    arbitrary_min_frames=$((offset_frames + gop_size + arbitrary_window_frames + 2))
+    if [[ "$frames" -lt "$arbitrary_min_frames" ]]; then
+      frames="$arbitrary_min_frames"
+    fi
+  fi
   source_duration_seconds=$(( (frames + target_fps - 1) / target_fps ))
   source="$generated_dir/${video_codec}-b${bframes}-ref${refs}-${width}x${height}-${target_fps}fps-${frames}frames-${decode_prefix}au.mp4"
   rc_lookahead=0

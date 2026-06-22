@@ -19,7 +19,7 @@ fn main() {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "native-vulkan-gst-video")]
     use gilder::renderer::native_vulkan::{
-        NativeVulkanH264VideoInputMode, NativeVulkanH265VideoInputMode,
+        NativeVulkanH264VideoInputMode, NativeVulkanH265VideoInputMode, run_av1_ready_prefix_video,
         run_h264_ready_prefix_video, run_h265_first_frame_video, run_h265_ready_prefix_video,
     };
     use gilder::renderer::native_vulkan::{
@@ -48,6 +48,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut allow_foreground_layer = false;
     let mut video_session_options = NativeVulkanVideoSessionSmokeOptions::default();
     let mut ready_prefix_playback_frames = 0u32;
+    let mut av1_ready_prefix_frames = 0u32;
     #[cfg(feature = "native-vulkan-gst-video")]
     let mut h264_video_input = NativeVulkanH264VideoInputMode::StreamingQueue;
     #[cfg(feature = "native-vulkan-gst-video")]
@@ -64,6 +65,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--run-h265-first-frame-video" => mode = NativeVulkanCliMode::RunH265FirstFrameVideo,
             "--run-h264-ready-prefix-video" => mode = NativeVulkanCliMode::RunH264ReadyPrefixVideo,
             "--run-h265-ready-prefix-video" => mode = NativeVulkanCliMode::RunH265ReadyPrefixVideo,
+            "--run-av1-ready-prefix-video" => mode = NativeVulkanCliMode::RunAv1ReadyPrefixVideo,
             "--allocate-video-images" => video_session_options.allocate_video_images = true,
             "--allocate-bitstream-buffer" => video_session_options.allocate_bitstream_buffer = true,
             "--extract-bitstream" => {
@@ -115,6 +117,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .ok_or("--decode-h265-ready-prefix requires a count")?;
                 video_session_options.decode_h265_ready_prefix_frames = count;
                 video_session_options.h265_required_ready_prefix_access_units = count;
+                video_session_options.extract_bitstream = true;
+                video_session_options.allocate_bitstream_buffer = true;
+                video_session_options.allocate_video_images = true;
+            }
+            "--decode-av1-ready-prefix" => {
+                let count = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()?
+                    .ok_or("--decode-av1-ready-prefix requires a count")?;
+                av1_ready_prefix_frames = count;
+                video_session_options.bitstream_extract_max_samples = video_session_options
+                    .bitstream_extract_max_samples
+                    .max(count);
                 video_session_options.extract_bitstream = true;
                 video_session_options.allocate_bitstream_buffer = true;
                 video_session_options.allocate_video_images = true;
@@ -521,6 +537,52 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        NativeVulkanCliMode::RunAv1ReadyPrefixVideo => {
+            let source = source.ok_or("--run-av1-ready-prefix-video requires --source")?;
+            if !source.is_file() {
+                return Err(format!("video source does not exist: {}", source.display()).into());
+            }
+            if av1_ready_prefix_frames == 0 {
+                return Err(
+                    "--run-av1-ready-prefix-video requires --decode-av1-ready-prefix N".into(),
+                );
+            }
+            #[cfg(feature = "native-vulkan-gst-video")]
+            {
+                let playback_frames = if ready_prefix_playback_frames == 0 {
+                    av1_ready_prefix_frames
+                } else {
+                    ready_prefix_playback_frames
+                };
+                json!(run_av1_ready_prefix_video(
+                    options,
+                    video_session_options.codec,
+                    source,
+                    video_session_options.width,
+                    video_session_options.height,
+                    fit,
+                    video_session_options.bitstream_extract_max_samples,
+                    av1_ready_prefix_frames,
+                    playback_frames,
+                )?)
+            }
+            #[cfg(not(feature = "native-vulkan-gst-video"))]
+            {
+                let _ = (
+                    options,
+                    video_session_options.codec,
+                    source,
+                    video_session_options.width,
+                    video_session_options.height,
+                    fit,
+                    av1_ready_prefix_frames,
+                    ready_prefix_playback_frames,
+                );
+                return Err(
+                    "--run-av1-ready-prefix-video requires native-vulkan-gst-video feature".into(),
+                );
+            }
+        }
     };
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
@@ -646,12 +708,13 @@ enum NativeVulkanCliMode {
     RunH265FirstFrameVideo,
     RunH264ReadyPrefixVideo,
     RunH265ReadyPrefixVideo,
+    RunAv1ReadyPrefixVideo,
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-video-session|--run-clear|--run-static|--run-video|--run-h265-first-frame-video|--run-h264-ready-prefix-video|--run-h265-ready-prefix-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-video-session|--run-clear|--run-static|--run-video|--run-h265-first-frame-video|--run-h264-ready-prefix-video|--run-h265-ready-prefix-video|--run-av1-ready-prefix-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
@@ -665,6 +728,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --decode-h264-idr-prefix N extends --probe-video-session with N H.264 IDR AU Vulkan Video decode submits and final-frame readback.\n\
 --decode-h264-ready-prefix N extends --probe-video-session with N reference-ready H.264 AU Vulkan Video decode submits and final-frame readback.\n\
 --decode-h265-ready-prefix N extends --probe-video-session with N ready H.265 AU Vulkan Video decode submits and final-frame readback.\n\
+--decode-av1-ready-prefix N selects an AV1 ready TU window for direct visible AV1 decode/present.\n\
 --sample-h265-ready-prefix extends --decode-h265-ready-prefix with final-frame NV12 shader sampling into an offscreen RGBA target.\n\
 --sample-h265-ready-prefix-sequence samples each ready-prefix decoded frame before the next AU can overwrite its DPB/output layer.\n\
 --playback-frames N repeats the ready-prefix AU window for N direct Vulkan Video decode/present frames.\n\
@@ -676,6 +740,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --h264-input streaming-queue selects bounded streaming packet queue input for H.264 visible video; ready-prefix spool is no longer maintained.\n\
 --run-h265-ready-prefix-video decodes a ready H.265 AU prefix with Vulkan Video and samples each decoded NV12 layer to the swapchain.\n\
 --h265-input streaming-queue selects bounded streaming packet queue input for H.265 visible video; ready-prefix spool is no longer maintained.\n\
+--run-av1-ready-prefix-video decodes a ready AV1 TU prefix with Vulkan Video and samples each decoded layer to the swapchain.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
@@ -686,6 +751,7 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--decode-h264-idr-prefix N] [--require-h264-idr-prefix N]\n\
          [--decode-h264-ready-prefix N] [--require-h264-ready-prefix N]\n\
          [--decode-h265-ready-prefix N] [--sample-h265-ready-prefix] [--sample-h265-ready-prefix-sequence]\n\
+         [--decode-av1-ready-prefix N]\n\
          [--require-h265-ready-prefix N] [--playback-frames N]\n\
          [--start-offset-ms MS]"
     );
