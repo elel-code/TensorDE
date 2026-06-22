@@ -2371,6 +2371,7 @@ pub struct NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot {
     pub bitstream_ring_min_offset_alignment: u64,
     pub bitstream_ring_min_size_alignment: u64,
     pub bitstream_ring_wrap_count: u32,
+    pub bitstream_ring_allocation_count: u64,
     pub bitstream_window_payload_bytes: u64,
     pub bitstream_upload_count: u32,
     pub bitstream_uploaded_bytes: u64,
@@ -2384,6 +2385,9 @@ pub struct NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot {
     pub av1_packet_queue_retained_payload_bytes: u64,
     pub av1_hidden_decode_sync_strategy: &'static str,
     pub av1_hidden_decode_async_handoff_count: u32,
+    pub av1_hidden_decode_fence_wait_count: u32,
+    pub av1_hidden_decode_fence_wait_elapsed_us: u64,
+    pub av1_hidden_decode_fence_wait_max_us: u64,
     pub av1_hidden_decode_queue_wait_count: u32,
     pub av1_hidden_decode_queue_wait_elapsed_us: u64,
     pub av1_bootstrap_temporal_units: Vec<NativeVulkanAv1TemporalUnitSnapshot>,
@@ -7961,6 +7965,7 @@ pub fn run_av1_ready_prefix_video(
     let mut hidden_decode_finished = vk::Semaphore::null();
     let mut render_finished = vk::Semaphore::null();
     let mut in_flight = vk::Fence::null();
+    let mut hidden_decode_fence = vk::Fence::null();
     let mut renderer = None::<NativeVulkanVideoRenderer>;
     let mut retired_textures = Vec::<NativeVulkanVideoTexture>::new();
     let mut decoded_plane_view_cache = Vec::<NativeVulkanDecodedVideoPlaneViews>::new();
@@ -8106,6 +8111,13 @@ pub fn run_av1_ready_prefix_video(
                         result,
                     }
                 })?;
+            hidden_decode_fence =
+                unsafe { device.create_fence(&vk::FenceCreateInfo::default(), None) }.map_err(
+                    |result| NativeVulkanError::Vulkan {
+                        operation: "vkCreateFence(direct av1 hidden decode)",
+                        result,
+                    },
+                )?;
 
             let streaming_bitstream = native_vulkan_av1_streaming_queue_bitstream_plan(
                 &streaming_queue,
@@ -8329,19 +8341,25 @@ pub fn run_av1_ready_prefix_video(
             let mut hidden_bitstream_uploaded_bytes = 0u64;
             let av1_hidden_decode_handoff_enabled =
                 native_vulkan_av1_hidden_decode_handoff_enabled();
+            let av1_hidden_decode_fence_wait_enabled =
+                native_vulkan_av1_hidden_decode_fence_wait_enabled();
             let mut pending_hidden_decode_handoff = false;
             let mut av1_hidden_decode_async_handoff_count = 0u32;
+            let mut av1_hidden_decode_fence_wait_count = 0u32;
+            let mut av1_hidden_decode_fence_wait_elapsed_us = 0u64;
+            let mut av1_hidden_decode_fence_wait_max_us = 0u64;
             let mut av1_hidden_decode_queue_wait_count = 0u32;
             let mut av1_hidden_decode_queue_wait_elapsed_us = 0u64;
             native_vulkan_av1_trace(
                 av1_trace_enabled,
                 format!(
-                    "runtime loop begin present_mode={} swapchain_images={} image_layers={} output_image={} hidden_decode_handoff={}",
+                    "runtime loop begin present_mode={} swapchain_images={} image_layers={} output_image={} hidden_decode_handoff={} hidden_decode_fence_wait={}",
                     native_vulkan_present_mode_label(swapchain_plan.present_mode),
                     swapchain_images.len(),
                     image.snapshot.array_layers,
                     output_image.is_some(),
-                    av1_hidden_decode_handoff_enabled
+                    av1_hidden_decode_handoff_enabled,
+                    av1_hidden_decode_fence_wait_enabled
                 ),
             );
 
@@ -8444,6 +8462,11 @@ pub fn run_av1_ready_prefix_video(
                     };
                 let use_hidden_decode_handoff =
                     signal_hidden_decode_handoff && !diagnostic_readback_hidden;
+                let use_hidden_decode_fence_wait = !entry.ready_for_display_handoff
+                    && !decode_will_present
+                    && !use_hidden_decode_handoff
+                    && av1_hidden_decode_fence_wait_enabled
+                    && hidden_decode_fence != vk::Fence::null();
                 let wait_for_present_fence = will_present || !entry.ready_for_display_handoff;
                 let mut fence_wait_elapsed_us = 0u64;
                 if wait_for_present_fence {
@@ -8638,14 +8661,25 @@ pub fn run_av1_ready_prefix_video(
                     native_vulkan_av1_trace(
                         av1_trace_enabled,
                         format!(
-                            "decode call begin tu={} show_frame={} span_offset={} span_range={} upload_us={}",
+                            "decode call begin tu={} show_frame={} span_offset={} span_range={} upload_us={} submit_fence={}",
                             entry.temporal_unit_index,
                             decode_will_present,
                             span.offset,
                             span.range,
-                            bitstream_upload_elapsed_us
+                            bitstream_upload_elapsed_us,
+                            use_hidden_decode_fence_wait
                         ),
                     );
+                    if use_hidden_decode_fence_wait {
+                        unsafe {
+                            device
+                                .reset_fences(&[hidden_decode_fence])
+                                .map_err(|result| NativeVulkanError::Vulkan {
+                                    operation: "vkResetFences(direct av1 hidden decode)",
+                                    result,
+                                })?;
+                        }
+                    }
                     let mut frame = native_vulkan_decode_av1_ready_prefix_frame_to_image(
                         &device,
                         &video_queue_device,
@@ -8680,6 +8714,11 @@ pub fn run_av1_ready_prefix_video(
                             hidden_decode_finished
                         } else {
                             vk::Semaphore::null()
+                        },
+                        if use_hidden_decode_fence_wait {
+                            hidden_decode_fence
+                        } else {
+                            vk::Fence::null()
                         },
                         playback_frame_index,
                         playback_loop_index,
@@ -8759,16 +8798,36 @@ pub fn run_av1_ready_prefix_video(
                         native_vulkan_av1_trace(
                             av1_trace_enabled,
                             format!(
-                                "hidden sync begin tu={} dst={:?} async_handoff={}",
+                                "hidden sync begin tu={} dst={:?} async_handoff={} fence_wait={}",
                                 entry.temporal_unit_index,
                                 frame.dst_base_array_layer,
-                                use_hidden_decode_handoff
+                                use_hidden_decode_handoff,
+                                use_hidden_decode_fence_wait
                             ),
                         );
                         if use_hidden_decode_handoff {
                             pending_hidden_decode_handoff = true;
                             av1_hidden_decode_async_handoff_count =
                                 av1_hidden_decode_async_handoff_count.saturating_add(1);
+                        } else if use_hidden_decode_fence_wait {
+                            let hidden_wait_started_at = Instant::now();
+                            unsafe {
+                                device
+                                    .wait_for_fences(&[hidden_decode_fence], true, u64::MAX)
+                                    .map_err(|result| NativeVulkanError::Vulkan {
+                                        operation: "vkWaitForFences(direct av1 hidden frame decode)",
+                                        result,
+                                    })?;
+                            }
+                            let hidden_wait_elapsed_us =
+                                native_vulkan_elapsed_us(hidden_wait_started_at.elapsed());
+                            av1_hidden_decode_fence_wait_count =
+                                av1_hidden_decode_fence_wait_count.saturating_add(1);
+                            av1_hidden_decode_fence_wait_elapsed_us =
+                                av1_hidden_decode_fence_wait_elapsed_us
+                                    .saturating_add(hidden_wait_elapsed_us);
+                            av1_hidden_decode_fence_wait_max_us =
+                                av1_hidden_decode_fence_wait_max_us.max(hidden_wait_elapsed_us);
                         } else {
                             let hidden_wait_started_at = Instant::now();
                             unsafe {
@@ -9356,6 +9415,7 @@ pub fn run_av1_ready_prefix_video(
                 bitstream_ring_min_offset_alignment: streaming_bitstream.min_offset_alignment,
                 bitstream_ring_min_size_alignment: streaming_bitstream.min_size_alignment,
                 bitstream_ring_wrap_count: bitstream_ring.wrap_count(),
+                bitstream_ring_allocation_count: bitstream_ring.allocation_count(),
                 bitstream_window_payload_bytes: streaming_bitstream.window_payload_bytes,
                 bitstream_upload_count: total_decoded_frame_count,
                 bitstream_uploaded_bytes,
@@ -9368,12 +9428,21 @@ pub fn run_av1_ready_prefix_video(
                     .bootstrap_discarded_access_units,
                 av1_packet_queue_max_payload_bytes: streaming_queue.max_payload_bytes,
                 av1_packet_queue_retained_payload_bytes: streaming_queue.retained_payload_bytes(),
-                av1_hidden_decode_sync_strategy: if av1_hidden_decode_handoff_enabled {
+                av1_hidden_decode_sync_strategy: if av1_hidden_decode_handoff_enabled
+                    && av1_hidden_decode_fence_wait_enabled
+                {
+                    "fence-wait-after-hidden-decode+immediate-show-existing-semaphore-handoff"
+                } else if av1_hidden_decode_fence_wait_enabled {
+                    "fence-wait-after-hidden-decode"
+                } else if av1_hidden_decode_handoff_enabled {
                     "semaphore-handoff-for-immediate-show-existing"
                 } else {
                     "queue-wait-idle-after-hidden-decode"
                 },
                 av1_hidden_decode_async_handoff_count,
+                av1_hidden_decode_fence_wait_count,
+                av1_hidden_decode_fence_wait_elapsed_us,
+                av1_hidden_decode_fence_wait_max_us,
                 av1_hidden_decode_queue_wait_count,
                 av1_hidden_decode_queue_wait_elapsed_us,
                 av1_bootstrap_temporal_units,
@@ -9414,6 +9483,9 @@ pub fn run_av1_ready_prefix_video(
         }
         if present_command_pool != vk::CommandPool::null() {
             device.destroy_command_pool(present_command_pool, None);
+        }
+        if hidden_decode_fence != vk::Fence::null() {
+            device.destroy_fence(hidden_decode_fence, None);
         }
         if hidden_decode_finished != vk::Semaphore::null() {
             device.destroy_semaphore(hidden_decode_finished, None);
@@ -19842,6 +19914,16 @@ fn native_vulkan_av1_hidden_decode_handoff_enabled() -> bool {
     )
 }
 
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_hidden_decode_fence_wait_enabled() -> bool {
+    !matches!(
+        std::env::var("GILDER_VULKAN_AV1_HIDDEN_DECODE_SYNC")
+            .ok()
+            .as_deref(),
+        Some("queue-wait") | Some("queue-wait-idle") | Some("idle") | Some("legacy")
+    )
+}
+
 #[cfg(any(feature = "native-vulkan-gst-video", test))]
 fn native_vulkan_av1_skip_mode_parse_disabled() -> bool {
     matches!(
@@ -20605,6 +20687,7 @@ fn native_vulkan_decode_av1_ready_prefix_frame_to_image(
     pts_delta_ms: Option<u64>,
     pts_delta_ns: Option<u64>,
     signal_semaphore: vk::Semaphore,
+    submit_fence: vk::Fence,
     playback_frame_index: u32,
     playback_loop_index: u32,
     ready_prefix_frame_index: u32,
@@ -21228,7 +21311,7 @@ fn native_vulkan_decode_av1_ready_prefix_frame_to_image(
             ),
         );
         device
-            .queue_submit(video_queue, &[submit_info], vk::Fence::null())
+            .queue_submit(video_queue, &[submit_info], submit_fence)
             .map_err(|result| NativeVulkanError::Vulkan {
                 operation: "vkQueueSubmit(direct av1 visible frame decode)",
                 result,
