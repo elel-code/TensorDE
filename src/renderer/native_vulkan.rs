@@ -2577,6 +2577,7 @@ pub struct NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot {
     pub h264_input_mode: &'static str,
     pub h264_display_handoff_strategy: &'static str,
     pub h264_resource_image_layout: &'static str,
+    pub h264_video_queue_sync_strategy: &'static str,
     pub h264_present_queue_count: u32,
     pub h264_async_present_depth: u32,
     pub h264_present_result_wait_count: u32,
@@ -2645,6 +2646,10 @@ pub struct NativeVulkanDirectH264ReadyPrefixFrameSnapshot {
     pub bitstream_upload_elapsed_us: u64,
     pub fence_wait_elapsed_us: u64,
     pub dst_base_array_layer: u32,
+    pub display_slot: Option<u32>,
+    pub display_slot_wait_elapsed_us: u64,
+    pub display_copy_record_elapsed_us: u64,
+    pub display_copy_submit_elapsed_us: u64,
     pub setup_slot_index: i32,
     pub decode_reference_slot_count: u32,
     pub references: Vec<NativeVulkanH264DecodedFrameReferenceSnapshot>,
@@ -4583,8 +4588,8 @@ pub fn run_h264_ready_prefix_video(
     let mut image_available_by_frame = Vec::<vk::Semaphore>::new();
     let mut decode_finished = vk::Semaphore::null();
     let mut decode_ahead_finished = vk::Semaphore::null();
-    let mut display_copy_render_finished = [vk::Semaphore::null(); 2];
-    let mut display_copy_decode_finished = [vk::Semaphore::null(); 2];
+    let mut display_copy_render_finished = Vec::<vk::Semaphore>::new();
+    let mut display_copy_decode_finished = Vec::<vk::Semaphore>::new();
     let mut render_finished = vk::Semaphore::null();
     let mut render_finished_by_image = Vec::<vk::Semaphore>::new();
     let mut in_flight = vk::Fence::null();
@@ -4640,6 +4645,17 @@ pub fn run_h264_ready_prefix_video(
                     operation: "vkGetSwapchainImagesKHR(direct h264 ready-prefix video)",
                     result,
                 })?;
+            let h264_direct_sample_decoded_output = std::env::var("GILDER_H264_DISPLAY_HANDOFF")
+                .map(|value| {
+                    value.eq_ignore_ascii_case("direct")
+                        || value.eq_ignore_ascii_case("direct-sampled-dpb-output")
+                })
+                .unwrap_or(false);
+            let h264_display_ring_slot_count = if h264_direct_sample_decoded_output {
+                0
+            } else {
+                native_vulkan_h264_display_ring_slot_count(swapchain_images.len())
+            };
             swapchain_image_views = create_native_vulkan_swapchain_image_views(
                 &device,
                 &swapchain_images,
@@ -4690,13 +4706,16 @@ pub fn run_h264_ready_prefix_video(
                         result,
                     },
                 )?;
+            let display_copy_command_buffer_info = vk::CommandBufferAllocateInfo::default()
+                .command_pool(video_command_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(h264_display_ring_slot_count.max(1));
             display_copy_command_buffers =
-                unsafe { device.allocate_command_buffers(&video_command_buffer_info) }.map_err(
-                    |result| NativeVulkanError::Vulkan {
+                unsafe { device.allocate_command_buffers(&display_copy_command_buffer_info) }
+                    .map_err(|result| NativeVulkanError::Vulkan {
                         operation: "vkAllocateCommandBuffers(direct h264 display copy)",
                         result,
-                    },
-                )?;
+                    })?;
             let semaphore_create_info = vk::SemaphoreCreateInfo::default();
             image_available = unsafe { device.create_semaphore(&semaphore_create_info, None) }
                 .map_err(|result| NativeVulkanError::Vulkan {
@@ -4715,25 +4734,31 @@ pub fn run_h264_ready_prefix_video(
                 operation: "vkCreateSemaphore(direct h264 ready-prefix decode_ahead_finished)",
                 result,
             })?;
-            for (index, semaphore) in display_copy_render_finished.iter_mut().enumerate() {
-                *semaphore = unsafe { device.create_semaphore(&semaphore_create_info, None) }
+            display_copy_render_finished.reserve(h264_display_ring_slot_count as usize);
+            for index in 0..h264_display_ring_slot_count {
+                let semaphore = unsafe { device.create_semaphore(&semaphore_create_info, None) }
                     .map_err(|result| NativeVulkanError::Vulkan {
                         operation: match index {
                             0 => "vkCreateSemaphore(direct h264 display_copy_render_finished[0])",
-                            _ => "vkCreateSemaphore(direct h264 display_copy_render_finished[1])",
+                            1 => "vkCreateSemaphore(direct h264 display_copy_render_finished[1])",
+                            _ => "vkCreateSemaphore(direct h264 display_copy_render_finished[n])",
                         },
                         result,
                     })?;
+                display_copy_render_finished.push(semaphore);
             }
-            for (index, semaphore) in display_copy_decode_finished.iter_mut().enumerate() {
-                *semaphore = unsafe { device.create_semaphore(&semaphore_create_info, None) }
+            display_copy_decode_finished.reserve(h264_display_ring_slot_count as usize);
+            for index in 0..h264_display_ring_slot_count {
+                let semaphore = unsafe { device.create_semaphore(&semaphore_create_info, None) }
                     .map_err(|result| NativeVulkanError::Vulkan {
                         operation: match index {
                             0 => "vkCreateSemaphore(direct h264 display_copy_decode_finished[0])",
-                            _ => "vkCreateSemaphore(direct h264 display_copy_decode_finished[1])",
+                            1 => "vkCreateSemaphore(direct h264 display_copy_decode_finished[1])",
+                            _ => "vkCreateSemaphore(direct h264 display_copy_decode_finished[n])",
                         },
                         result,
                     })?;
+                display_copy_decode_finished.push(semaphore);
             }
             render_finished = unsafe { device.create_semaphore(&semaphore_create_info, None) }
                 .map_err(|result| NativeVulkanError::Vulkan {
@@ -4798,19 +4823,17 @@ pub fn run_h264_ready_prefix_video(
                 capabilities.min_bitstream_buffer_offset_alignment,
                 capabilities.min_bitstream_buffer_size_alignment,
             )?;
-            let h264_direct_sample_decoded_output = std::env::var("GILDER_H264_DISPLAY_HANDOFF")
-                .map(|value| {
-                    value.eq_ignore_ascii_case("direct")
-                        || value.eq_ignore_ascii_case("direct-sampled-dpb-output")
-                })
-                .unwrap_or(false);
-            let h264_resource_general_layout = std::env::var("GILDER_H264_RESOURCE_LAYOUT")
+            let h264_graphics_display_copy = !h264_direct_sample_decoded_output
+                && native_vulkan_h264_graphics_display_copy_enabled();
+            let h264_resource_general_layout_env = std::env::var("GILDER_H264_RESOURCE_LAYOUT")
                 .map(|value| {
                     value.eq_ignore_ascii_case("general")
                         || value.eq_ignore_ascii_case("1")
                         || value.eq_ignore_ascii_case("true")
                 })
                 .unwrap_or(false);
+            let h264_resource_general_layout =
+                h264_resource_general_layout_env || h264_graphics_display_copy;
             let h264_decode_image_layout = if h264_resource_general_layout {
                 vk::ImageLayout::GENERAL
             } else {
@@ -4820,6 +4843,18 @@ pub fn run_h264_ready_prefix_video(
                 vk::ImageLayout::GENERAL
             } else {
                 vk::ImageLayout::TRANSFER_SRC_OPTIMAL
+            };
+            let h264_video_queue_semaphore_chain =
+                native_vulkan_h264_video_queue_semaphore_chain_enabled();
+            let h264_video_queue_sync_strategy = if h264_video_queue_semaphore_chain {
+                "binary-semaphore-chain-within-video-queue"
+            } else {
+                "single-video-queue-submit-order-no-intra-queue-semaphore"
+            };
+            let h264_display_copy_queue_strategy = if h264_graphics_display_copy {
+                "graphics-present-queue-copy-merged-with-render"
+            } else {
+                "video-queue-copy-submit-before-render"
             };
             let session_max_dpb_slots = native_vulkan_h265_session_dpb_slots_for_count(
                 capabilities.max_dpb_slots,
@@ -4927,7 +4962,7 @@ pub fn run_h264_ready_prefix_video(
                     &memory_properties,
                     source_extent,
                     picture_format,
-                    2,
+                    h264_display_ring_slot_count,
                     &device_queue_family_indices,
                 )?);
             }
@@ -5397,6 +5432,7 @@ pub fn run_h264_ready_prefix_video(
                     h264_resource_image_layout: native_vulkan_image_layout_label(
                         h264_decode_image_layout,
                     ),
+                    h264_video_queue_sync_strategy,
                     h264_present_queue_count: requested_present_queue_count,
                     h264_async_present_depth: 0,
                     h264_present_result_wait_count: 0,
@@ -5471,8 +5507,8 @@ pub fn run_h264_ready_prefix_video(
                 candidate_span: NativeVulkanH264ReadyPrefixBitstreamSpan,
             }
             let decode_semaphores = [decode_finished, decode_ahead_finished];
-            let display_copy_render_semaphores = display_copy_render_finished;
-            let display_copy_decode_semaphores = display_copy_decode_finished;
+            let display_copy_render_semaphores = display_copy_render_finished.as_slice();
+            let display_copy_decode_semaphores = display_copy_decode_finished.as_slice();
             let mut available_decode_semaphore_index = 0usize;
             let mut predecoded_h264_frame = None::<H264PreparedVisibleFrame>;
             let mut h264_display_copy_count = 0u32;
@@ -5502,6 +5538,7 @@ pub fn run_h264_ready_prefix_video(
 
             #[derive(Clone, Copy)]
             struct H264PresentJob {
+                frame_index: usize,
                 image_index: u32,
                 wait_semaphores: [vk::Semaphore; 3],
                 wait_stages: [vk::PipelineStageFlags; 3],
@@ -5509,10 +5546,35 @@ pub fn run_h264_ready_prefix_video(
                 command_buffer: vk::CommandBuffer,
                 signal_semaphore: vk::Semaphore,
                 fence: vk::Fence,
+                present_started_at: Instant,
+            }
+            #[derive(Clone, Copy)]
+            struct H264PresentWorkerResult {
+                frame_index: usize,
+                queue_submit_elapsed_us: u64,
+                queue_present_elapsed_us: u64,
+                present_elapsed_us: u64,
             }
             let (present_job_tx, present_job_rx) = mpsc::channel::<H264PresentJob>();
             let (present_result_tx, present_result_rx) =
-                mpsc::channel::<Result<(), NativeVulkanError>>();
+                mpsc::channel::<Result<H264PresentWorkerResult, NativeVulkanError>>();
+            let apply_h264_present_result =
+                |frames: &mut [NativeVulkanDirectH264ReadyPrefixFrameSnapshot],
+                 result: Result<H264PresentWorkerResult, NativeVulkanError>|
+                 -> Result<(), NativeVulkanError> {
+                    let result = result?;
+                    let frame_count = frames.len();
+                    let frame = frames.get_mut(result.frame_index).ok_or_else(|| {
+                    NativeVulkanError::Video(format!(
+                        "H.264 present worker returned frame index {} but only {} frame(s) are recorded",
+                        result.frame_index, frame_count
+                    ))
+                })?;
+                    frame.submit_elapsed_us = result.queue_submit_elapsed_us;
+                    frame.queue_present_elapsed_us = result.queue_present_elapsed_us;
+                    frame.present_elapsed_us = result.present_elapsed_us;
+                    Ok(())
+                };
             let present_queue_mutex = std::sync::Mutex::new(());
             let default_pending_present_results = if requested_present_queue_count > 1 {
                 2
@@ -5546,16 +5608,18 @@ pub fn run_h264_ready_prefix_video(
                             .wait_dst_stage_mask(wait_stages)
                             .command_buffers(&command_buffers)
                             .signal_semaphores(&signal_semaphores);
-                        let present_result = unsafe {
-                            device_ref
-                                .queue_submit(present_worker_queue, &[submit_info], job.fence)
-                                .map_err(|result| NativeVulkanError::Vulkan {
-                                    operation:
-                                        "vkQueueSubmit(direct h264 ready-prefix present worker)",
-                                    result,
-                                })
+                        let queue_submit_started_at = Instant::now();
+                        let submit_result = unsafe {
+                            device_ref.queue_submit(present_worker_queue, &[submit_info], job.fence)
                         }
-                        .and_then(|_| {
+                        .map_err(|result| NativeVulkanError::Vulkan {
+                            operation: "vkQueueSubmit(direct h264 ready-prefix present worker)",
+                            result,
+                        });
+                        let queue_submit_elapsed_us =
+                            native_vulkan_elapsed_us(queue_submit_started_at.elapsed());
+                        let present_result = submit_result.and_then(|_| {
+                            let queue_present_started_at = Instant::now();
                             native_vulkan_queue_present_frame(
                                 swapchain_loader_ref,
                                 present_worker_queue,
@@ -5564,6 +5628,16 @@ pub fn run_h264_ready_prefix_video(
                                 job.signal_semaphore,
                                 "vkQueuePresentKHR(direct h264 ready-prefix)",
                             )
+                            .map(|_| H264PresentWorkerResult {
+                                frame_index: job.frame_index,
+                                queue_submit_elapsed_us,
+                                queue_present_elapsed_us: native_vulkan_elapsed_us(
+                                    queue_present_started_at.elapsed(),
+                                ),
+                                present_elapsed_us: native_vulkan_elapsed_us(
+                                    job.present_started_at.elapsed(),
+                                ),
+                            })
                         });
                         if present_result_tx.send(present_result).is_err() {
                             break;
@@ -5594,14 +5668,14 @@ pub fn run_h264_ready_prefix_video(
                             h264_present_result_wait_max_us =
                                 h264_present_result_wait_max_us.max(present_result_wait_elapsed_us);
                             pending_present_results = pending_present_results.saturating_sub(1);
-                            present_result?;
+                            apply_h264_present_result(&mut frames, present_result)?;
                         }
                         loop {
                             match present_result_rx.try_recv() {
                                 Ok(present_result) => {
                                     pending_present_results =
                                         pending_present_results.saturating_sub(1);
-                                    present_result?;
+                                    apply_h264_present_result(&mut frames, present_result)?;
                                 }
                                 Err(mpsc::TryRecvError::Empty) => break,
                                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -5649,7 +5723,7 @@ pub fn run_h264_ready_prefix_video(
                             predecoded_h264_frame.take()
                         {
                             prepared.frame.fence_wait_elapsed_us = fence_wait_elapsed_us;
-                            display_copy_already_submitted = true;
+                            display_copy_already_submitted = !h264_graphics_display_copy;
                             prepared
                         } else {
                             let packet = streaming_queue.next_packet(true)?;
@@ -5723,6 +5797,12 @@ pub fn run_h264_ready_prefix_video(
                                     });
                                 }
                             }
+                            let decode_signal_semaphore =
+                                if h264_graphics_display_copy || h264_video_queue_semaphore_chain {
+                                    decode_semaphores[available_decode_semaphore_index]
+                                } else {
+                                    vk::Semaphore::null()
+                                };
                             let mut frame = native_vulkan_decode_h264_ready_prefix_frame_to_image(
                                 &device,
                                 &video_queue_device,
@@ -5745,7 +5825,7 @@ pub fn run_h264_ready_prefix_video(
                                 reset_before_decode,
                                 pts_delta_ms,
                                 vk::Semaphore::null(),
-                                decode_semaphores[available_decode_semaphore_index],
+                                decode_signal_semaphore,
                                 playback_frame_index,
                                 playback_loop_index,
                                 ready_prefix_frame_index,
@@ -5801,6 +5881,7 @@ pub fn run_h264_ready_prefix_video(
                         let frame_duration_ms = prepared_frame.duration_ms;
                         let frame_decode_semaphore_index = prepared_frame.decode_semaphore_index;
                         let display_slot = prepared_frame.display_slot;
+                        frame.display_slot = Some(display_slot as u32);
 
                         let present_started_at = Instant::now();
                         let texture = h264_display_textures.get(display_slot).ok_or_else(|| {
@@ -5934,6 +6015,8 @@ pub fn run_h264_ready_prefix_video(
                         let current_display_decode_semaphore =
                             display_copy_decode_semaphores[display_slot];
                         let record_started_at = Instant::now();
+                        let mut display_copy_before_render =
+                            None::<NativeVulkanDecodedVideoDisplayCopyBeforeRender<'_>>;
                         if !display_copy_already_submitted {
                             let previous_display_slot_fence =
                                 display_slot_in_flight_fences[display_slot];
@@ -5941,6 +6024,7 @@ pub fn run_h264_ready_prefix_video(
                                 && previous_display_slot_fence != frame_fence
                             {
                                 let previous_display_slot_fences = [previous_display_slot_fence];
+                                let display_slot_wait_started_at = Instant::now();
                                 unsafe {
                                     device
                                         .wait_for_fences(
@@ -5954,80 +6038,119 @@ pub fn run_h264_ready_prefix_video(
                                             result,
                                         })?;
                                 }
+                                frame.display_slot_wait_elapsed_us = native_vulkan_elapsed_us(
+                                    display_slot_wait_started_at.elapsed(),
+                                );
                             }
                             display_slot_in_flight_fences[display_slot] = vk::Fence::null();
                             let source_old_layout = image_layer_layouts
-                        .get(frame.dst_base_array_layer as usize)
-                        .copied()
-                        .ok_or_else(|| {
-                            NativeVulkanError::Video(format!(
-                                "H.264 image layout cache has {} layers but layer {} was requested",
-                                image_layer_layouts.len(),
-                                frame.dst_base_array_layer
-                            ))
-                        })?;
+                                .get(frame.dst_base_array_layer as usize)
+                                .copied()
+                                .ok_or_else(|| {
+                                    NativeVulkanError::Video(format!(
+                                        "H.264 image layout cache has {} layers but layer {} was requested",
+                                        image_layer_layouts.len(),
+                                        frame.dst_base_array_layer
+                                    ))
+                                })?;
                             let display_old_layout = display_image_ref.layouts[display_slot];
-                            let copy_record_started_at = Instant::now();
-                            native_vulkan_record_decoded_video_display_copy(
-                                &device,
-                                display_copy_command_buffers[display_slot],
-                                image,
-                                frame.dst_base_array_layer,
-                                source_old_layout,
-                                h264_display_copy_source_layout,
-                                h264_decode_image_layout,
-                                display_image_ref.image,
-                                display_slot as u32,
-                                display_old_layout,
-                                source_extent,
-                            )?;
-                            let copy_record_elapsed_us =
-                                native_vulkan_elapsed_us(copy_record_started_at.elapsed());
+                            if h264_graphics_display_copy {
+                                if source_old_layout != vk::ImageLayout::GENERAL {
+                                    return Err(NativeVulkanError::Video(format!(
+                                        "H.264 graphics display-copy requires GENERAL source layout, got {}",
+                                        native_vulkan_image_layout_label(source_old_layout)
+                                    )));
+                                }
+                                display_copy_before_render =
+                                    Some(NativeVulkanDecodedVideoDisplayCopyBeforeRender {
+                                        source_image: image,
+                                        source_base_array_layer: frame.dst_base_array_layer,
+                                        display_image: display_image_ref.image,
+                                        display_base_array_layer: display_slot as u32,
+                                        display_old_layout,
+                                        extent: source_extent,
+                                    });
+                                display_image_ref.layouts[display_slot] =
+                                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+                                h264_display_copy_count = h264_display_copy_count.saturating_add(1);
+                            } else {
+                                let copy_record_started_at = Instant::now();
+                                native_vulkan_record_decoded_video_display_copy(
+                                    &device,
+                                    display_copy_command_buffers[display_slot],
+                                    image,
+                                    frame.dst_base_array_layer,
+                                    source_old_layout,
+                                    h264_display_copy_source_layout,
+                                    h264_decode_image_layout,
+                                    display_image_ref.image,
+                                    display_slot as u32,
+                                    display_old_layout,
+                                    source_extent,
+                                )?;
+                                let copy_record_elapsed_us =
+                                    native_vulkan_elapsed_us(copy_record_started_at.elapsed());
+                                frame.display_copy_record_elapsed_us = copy_record_elapsed_us;
+                                h264_display_copy_record_elapsed_us =
+                                    h264_display_copy_record_elapsed_us
+                                        .saturating_add(copy_record_elapsed_us);
+                                let copy_wait_semaphore_values =
+                                    [decode_semaphores[frame_decode_semaphore_index]];
+                                let copy_wait_stage_values = [vk::PipelineStageFlags::ALL_COMMANDS];
+                                let copy_wait_semaphores: &[vk::Semaphore] =
+                                    if h264_video_queue_semaphore_chain {
+                                        &copy_wait_semaphore_values
+                                    } else {
+                                        &[]
+                                    };
+                                let copy_wait_stages: &[vk::PipelineStageFlags] =
+                                    if h264_video_queue_semaphore_chain {
+                                        &copy_wait_stage_values
+                                    } else {
+                                        &[]
+                                    };
+                                let copy_command_buffers =
+                                    [display_copy_command_buffers[display_slot]];
+                                let copy_signal_one = [current_display_render_semaphore];
+                                let copy_signal_two = [
+                                    current_display_render_semaphore,
+                                    current_display_decode_semaphore,
+                                ];
+                                let copy_signal_semaphores: &[vk::Semaphore] =
+                                    if h264_video_queue_semaphore_chain
+                                        && decode_ahead_plan.is_some()
+                                    {
+                                        &copy_signal_two
+                                    } else {
+                                        &copy_signal_one
+                                    };
+                                let copy_submit_info = vk::SubmitInfo::default()
+                                    .wait_semaphores(&copy_wait_semaphores)
+                                    .wait_dst_stage_mask(&copy_wait_stages)
+                                    .command_buffers(&copy_command_buffers)
+                                    .signal_semaphores(&copy_signal_semaphores);
+                                let copy_submit_started_at = Instant::now();
+                                unsafe {
+                                    device
+                                        .queue_submit(
+                                            video_queue,
+                                            &[copy_submit_info],
+                                            vk::Fence::null(),
+                                        )
+                                        .map_err(|result| NativeVulkanError::Vulkan {
+                                            operation: "vkQueueSubmit(direct h264 display copy)",
+                                            result,
+                                        })?;
+                                }
+                                let copy_submit_elapsed_us =
+                                    native_vulkan_elapsed_us(copy_submit_started_at.elapsed());
+                                frame.display_copy_submit_elapsed_us = copy_submit_elapsed_us;
+                                h264_display_copy_submit_elapsed_us =
+                                    h264_display_copy_submit_elapsed_us
+                                        .saturating_add(copy_submit_elapsed_us);
+                            }
                             image_layer_layouts[frame.dst_base_array_layer as usize] =
                                 h264_decode_image_layout;
-                            display_image_ref.layouts[display_slot] =
-                                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
-                            h264_display_copy_count = h264_display_copy_count.saturating_add(1);
-                            h264_display_copy_record_elapsed_us =
-                                h264_display_copy_record_elapsed_us
-                                    .saturating_add(copy_record_elapsed_us);
-                            let copy_wait_semaphores =
-                                [decode_semaphores[frame_decode_semaphore_index]];
-                            let copy_wait_stages = [vk::PipelineStageFlags::ALL_COMMANDS];
-                            let copy_command_buffers = [display_copy_command_buffers[display_slot]];
-                            let copy_signal_one = [current_display_render_semaphore];
-                            let copy_signal_two = [
-                                current_display_render_semaphore,
-                                current_display_decode_semaphore,
-                            ];
-                            let copy_signal_semaphores: &[vk::Semaphore] =
-                                if decode_ahead_plan.is_some() {
-                                    &copy_signal_two
-                                } else {
-                                    &copy_signal_one
-                                };
-                            let copy_submit_info = vk::SubmitInfo::default()
-                                .wait_semaphores(&copy_wait_semaphores)
-                                .wait_dst_stage_mask(&copy_wait_stages)
-                                .command_buffers(&copy_command_buffers)
-                                .signal_semaphores(&copy_signal_semaphores);
-                            let copy_submit_started_at = Instant::now();
-                            unsafe {
-                                device
-                                    .queue_submit(
-                                        video_queue,
-                                        &[copy_submit_info],
-                                        vk::Fence::null(),
-                                    )
-                                    .map_err(|result| NativeVulkanError::Vulkan {
-                                        operation: "vkQueueSubmit(direct h264 display copy)",
-                                        result,
-                                    })?;
-                            }
-                            h264_display_copy_submit_elapsed_us =
-                                h264_display_copy_submit_elapsed_us.saturating_add(
-                                    native_vulkan_elapsed_us(copy_submit_started_at.elapsed()),
-                                );
                         }
                         renderer_ref.record_frame_with_descriptor_set_index(
                             &device,
@@ -6038,10 +6161,19 @@ pub fn run_h264_ready_prefix_video(
                             texture,
                             fit,
                             display_slot,
+                            display_copy_before_render,
                         )?;
                         frame.record_elapsed_us =
                             native_vulkan_elapsed_us(record_started_at.elapsed());
                         swapchain_image_layouts[image_index] = renderer_ref.target_final_layout();
+                        let wait_semaphores_graphics_copy = [
+                            frame_image_available,
+                            decode_semaphores[frame_decode_semaphore_index],
+                        ];
+                        let wait_stages_graphics_copy = [
+                            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                            vk::PipelineStageFlags::TRANSFER,
+                        ];
                         let wait_semaphores_two =
                             [frame_image_available, current_display_render_semaphore];
                         let wait_stages_two = [
@@ -6058,14 +6190,19 @@ pub fn run_h264_ready_prefix_video(
                             vk::PipelineStageFlags::FRAGMENT_SHADER,
                             vk::PipelineStageFlags::ALL_COMMANDS,
                         ];
-                        let wait_for_predecoded_copy =
-                            display_copy_already_submitted && decode_ahead_plan.is_none();
-                        let wait_semaphores: &[vk::Semaphore] = if wait_for_predecoded_copy {
+                        let wait_for_predecoded_copy = h264_video_queue_semaphore_chain
+                            && display_copy_already_submitted
+                            && decode_ahead_plan.is_none();
+                        let wait_semaphores: &[vk::Semaphore] = if h264_graphics_display_copy {
+                            &wait_semaphores_graphics_copy
+                        } else if wait_for_predecoded_copy {
                             &wait_semaphores_three
                         } else {
                             &wait_semaphores_two
                         };
-                        let wait_stages: &[vk::PipelineStageFlags] = if wait_for_predecoded_copy {
+                        let wait_stages: &[vk::PipelineStageFlags] = if h264_graphics_display_copy {
+                            &wait_stages_graphics_copy
+                        } else if wait_for_predecoded_copy {
                             &wait_stages_three
                         } else {
                             &wait_stages_two
@@ -6075,7 +6212,7 @@ pub fn run_h264_ready_prefix_video(
                         let overlap_present_with_decode_ahead = decode_ahead_plan.is_some();
                         let submit_started_at = Instant::now();
                         let queue_present_elapsed_us = if overlap_present_with_decode_ahead {
-                            let queue_present_started_at = Instant::now();
+                            let frame_index = frames.len();
                             let mut job_wait_semaphores = [vk::Semaphore::null(); 3];
                             let mut job_wait_stages = [vk::PipelineStageFlags::empty(); 3];
                             for (index, semaphore) in wait_semaphores.iter().copied().enumerate() {
@@ -6086,6 +6223,7 @@ pub fn run_h264_ready_prefix_video(
                             }
                             present_job_tx
                                 .send(H264PresentJob {
+                                    frame_index,
                                     image_index: image_index as u32,
                                     wait_semaphores: job_wait_semaphores,
                                     wait_stages: job_wait_stages,
@@ -6093,6 +6231,7 @@ pub fn run_h264_ready_prefix_video(
                                     command_buffer: command_buffer_for_submit,
                                     signal_semaphore,
                                     fence: frame_fence,
+                                    present_started_at,
                                 })
                                 .map_err(|_| {
                                     NativeVulkanError::Video(
@@ -6101,8 +6240,7 @@ pub fn run_h264_ready_prefix_video(
                             )
                                 })?;
                             display_slot_in_flight_fences[display_slot] = frame_fence;
-                            frame.submit_elapsed_us =
-                                native_vulkan_elapsed_us(submit_started_at.elapsed());
+                            frame.submit_elapsed_us = 0;
                             if let Some(plan) = decode_ahead_plan {
                                 let decode_ahead_semaphore_index = plan.decode_semaphore_index;
                                 let candidate_ring = plan.candidate_ring;
@@ -6178,7 +6316,21 @@ pub fn run_h264_ready_prefix_video(
                                         });
                                     }
                                 }
-                                let next_frame =
+                                let decode_ahead_wait_semaphore = if !h264_graphics_display_copy
+                                    && h264_video_queue_semaphore_chain
+                                {
+                                    current_display_decode_semaphore
+                                } else {
+                                    vk::Semaphore::null()
+                                };
+                                let decode_ahead_signal_semaphore = if h264_graphics_display_copy
+                                    || h264_video_queue_semaphore_chain
+                                {
+                                    decode_semaphores[decode_ahead_semaphore_index]
+                                } else {
+                                    vk::Semaphore::null()
+                                };
+                                let mut next_frame =
                                     native_vulkan_decode_h264_ready_prefix_frame_to_image(
                                         &device,
                                         &video_queue_device,
@@ -6200,8 +6352,8 @@ pub fn run_h264_ready_prefix_video(
                                         h264_decode_image_layout,
                                         reset_before_decode,
                                         pts_delta_ms,
-                                        current_display_decode_semaphore,
-                                        decode_semaphores[decode_ahead_semaphore_index],
+                                        decode_ahead_wait_semaphore,
+                                        decode_ahead_signal_semaphore,
                                         next_playback_frame_index,
                                         playback_loop_index,
                                         next_playback_frame_index,
@@ -6244,97 +6396,135 @@ pub fn run_h264_ready_prefix_video(
                                         *slot = None;
                                     }
                                 }
-                                let next_display_slot = 1usize - display_slot;
-                                let previous_display_slot_fence =
-                                    display_slot_in_flight_fences[next_display_slot];
-                                if previous_display_slot_fence != vk::Fence::null()
-                                    && previous_display_slot_fence != frame_fence
-                                {
-                                    let previous_display_slot_fences =
-                                        [previous_display_slot_fence];
+                                let next_display_slot = native_vulkan_next_h264_display_ring_slot(
+                                    display_slot,
+                                    display_image_ref.layouts.len(),
+                                )?;
+                                if !h264_graphics_display_copy {
+                                    let previous_display_slot_fence =
+                                        display_slot_in_flight_fences[next_display_slot];
+                                    if previous_display_slot_fence != vk::Fence::null()
+                                        && previous_display_slot_fence != frame_fence
+                                    {
+                                        let previous_display_slot_fences =
+                                            [previous_display_slot_fence];
+                                        let display_slot_wait_started_at = Instant::now();
+                                        unsafe {
+                                            device
+                                                .wait_for_fences(
+                                                    &previous_display_slot_fences,
+                                                    true,
+                                                    u64::MAX,
+                                                )
+                                                .map_err(|result| NativeVulkanError::Vulkan {
+                                                    operation:
+                                                        "vkWaitForFences(direct h264 copy-ahead display slot reuse)",
+                                                    result,
+                                                })?;
+                                        }
+                                        next_frame.display_slot_wait_elapsed_us =
+                                            native_vulkan_elapsed_us(
+                                                display_slot_wait_started_at.elapsed(),
+                                            );
+                                    }
+                                    display_slot_in_flight_fences[next_display_slot] =
+                                        vk::Fence::null();
+                                    let next_source_old_layout = image_layer_layouts
+                                        .get(next_frame.dst_base_array_layer as usize)
+                                        .copied()
+                                        .ok_or_else(|| {
+                                            NativeVulkanError::Video(format!(
+                                                "H.264 image layout cache has {} layers but layer {} was requested for copy-ahead",
+                                                image_layer_layouts.len(),
+                                                next_frame.dst_base_array_layer
+                                            ))
+                                        })?;
+                                    let next_display_old_layout =
+                                        display_image_ref.layouts[next_display_slot];
+                                    let copy_record_started_at = Instant::now();
+                                    native_vulkan_record_decoded_video_display_copy(
+                                        &device,
+                                        display_copy_command_buffers[next_display_slot],
+                                        image,
+                                        next_frame.dst_base_array_layer,
+                                        next_source_old_layout,
+                                        h264_display_copy_source_layout,
+                                        h264_decode_image_layout,
+                                        display_image_ref.image,
+                                        next_display_slot as u32,
+                                        next_display_old_layout,
+                                        source_extent,
+                                    )?;
+                                    let copy_record_elapsed_us =
+                                        native_vulkan_elapsed_us(copy_record_started_at.elapsed());
+                                    next_frame.display_copy_record_elapsed_us =
+                                        copy_record_elapsed_us;
+                                    image_layer_layouts[next_frame.dst_base_array_layer as usize] =
+                                        h264_decode_image_layout;
+                                    display_image_ref.layouts[next_display_slot] =
+                                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+                                    h264_display_copy_count =
+                                        h264_display_copy_count.saturating_add(1);
+                                    h264_display_copy_record_elapsed_us =
+                                        h264_display_copy_record_elapsed_us
+                                            .saturating_add(copy_record_elapsed_us);
+                                    let copy_wait_semaphore_values =
+                                        [decode_semaphores[decode_ahead_semaphore_index]];
+                                    let copy_wait_stage_values =
+                                        [vk::PipelineStageFlags::ALL_COMMANDS];
+                                    let copy_wait_semaphores: &[vk::Semaphore] =
+                                        if h264_video_queue_semaphore_chain {
+                                            &copy_wait_semaphore_values
+                                        } else {
+                                            &[]
+                                        };
+                                    let copy_wait_stages: &[vk::PipelineStageFlags] =
+                                        if h264_video_queue_semaphore_chain {
+                                            &copy_wait_stage_values
+                                        } else {
+                                            &[]
+                                        };
+                                    let copy_command_buffers =
+                                        [display_copy_command_buffers[next_display_slot]];
+                                    let copy_signal_one =
+                                        [display_copy_render_semaphores[next_display_slot]];
+                                    let copy_signal_two = [
+                                        display_copy_render_semaphores[next_display_slot],
+                                        display_copy_decode_semaphores[next_display_slot],
+                                    ];
+                                    let copy_signal_semaphores: &[vk::Semaphore] =
+                                        if h264_video_queue_semaphore_chain {
+                                            &copy_signal_two
+                                        } else {
+                                            &copy_signal_one
+                                        };
+                                    let copy_submit_info = vk::SubmitInfo::default()
+                                        .wait_semaphores(&copy_wait_semaphores)
+                                        .wait_dst_stage_mask(&copy_wait_stages)
+                                        .command_buffers(&copy_command_buffers)
+                                        .signal_semaphores(&copy_signal_semaphores);
+                                    let copy_submit_started_at = Instant::now();
                                     unsafe {
                                         device
-                                            .wait_for_fences(
-                                                &previous_display_slot_fences,
-                                                true,
-                                                u64::MAX,
+                                            .queue_submit(
+                                                video_queue,
+                                                &[copy_submit_info],
+                                                vk::Fence::null(),
                                             )
                                             .map_err(|result| NativeVulkanError::Vulkan {
                                                 operation:
-                                                    "vkWaitForFences(direct h264 copy-ahead display slot reuse)",
+                                                    "vkQueueSubmit(direct h264 display copy-ahead)",
                                                 result,
                                             })?;
                                     }
+                                    let copy_submit_elapsed_us =
+                                        native_vulkan_elapsed_us(copy_submit_started_at.elapsed());
+                                    next_frame.display_copy_submit_elapsed_us =
+                                        copy_submit_elapsed_us;
+                                    h264_display_copy_submit_elapsed_us =
+                                        h264_display_copy_submit_elapsed_us
+                                            .saturating_add(copy_submit_elapsed_us);
                                 }
-                                display_slot_in_flight_fences[next_display_slot] =
-                                    vk::Fence::null();
-                                let next_source_old_layout = image_layer_layouts
-                                .get(next_frame.dst_base_array_layer as usize)
-                                .copied()
-                                .ok_or_else(|| {
-                                    NativeVulkanError::Video(format!(
-                                        "H.264 image layout cache has {} layers but layer {} was requested for copy-ahead",
-                                        image_layer_layouts.len(),
-                                        next_frame.dst_base_array_layer
-                                    ))
-                                })?;
-                                let next_display_old_layout =
-                                    display_image_ref.layouts[next_display_slot];
-                                let copy_record_started_at = Instant::now();
-                                native_vulkan_record_decoded_video_display_copy(
-                                    &device,
-                                    display_copy_command_buffers[next_display_slot],
-                                    image,
-                                    next_frame.dst_base_array_layer,
-                                    next_source_old_layout,
-                                    h264_display_copy_source_layout,
-                                    h264_decode_image_layout,
-                                    display_image_ref.image,
-                                    next_display_slot as u32,
-                                    next_display_old_layout,
-                                    source_extent,
-                                )?;
-                                let copy_record_elapsed_us =
-                                    native_vulkan_elapsed_us(copy_record_started_at.elapsed());
-                                image_layer_layouts[next_frame.dst_base_array_layer as usize] =
-                                    h264_decode_image_layout;
-                                display_image_ref.layouts[next_display_slot] =
-                                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
-                                h264_display_copy_count = h264_display_copy_count.saturating_add(1);
-                                h264_display_copy_record_elapsed_us =
-                                    h264_display_copy_record_elapsed_us
-                                        .saturating_add(copy_record_elapsed_us);
-                                let copy_wait_semaphores =
-                                    [decode_semaphores[decode_ahead_semaphore_index]];
-                                let copy_wait_stages = [vk::PipelineStageFlags::ALL_COMMANDS];
-                                let copy_command_buffers =
-                                    [display_copy_command_buffers[next_display_slot]];
-                                let copy_signal_semaphores = [
-                                    display_copy_render_semaphores[next_display_slot],
-                                    display_copy_decode_semaphores[next_display_slot],
-                                ];
-                                let copy_submit_info = vk::SubmitInfo::default()
-                                    .wait_semaphores(&copy_wait_semaphores)
-                                    .wait_dst_stage_mask(&copy_wait_stages)
-                                    .command_buffers(&copy_command_buffers)
-                                    .signal_semaphores(&copy_signal_semaphores);
-                                let copy_submit_started_at = Instant::now();
-                                unsafe {
-                                    device
-                                    .queue_submit(
-                                        video_queue,
-                                        &[copy_submit_info],
-                                        vk::Fence::null(),
-                                    )
-                                    .map_err(|result| NativeVulkanError::Vulkan {
-                                        operation: "vkQueueSubmit(direct h264 display copy-ahead)",
-                                        result,
-                                    })?;
-                                }
-                                h264_display_copy_submit_elapsed_us =
-                                    h264_display_copy_submit_elapsed_us.saturating_add(
-                                        native_vulkan_elapsed_us(copy_submit_started_at.elapsed()),
-                                    );
                                 predecoded_h264_frame = Some(H264PreparedVisibleFrame {
                                     frame: next_frame,
                                     duration_ms: access_unit.duration_ms,
@@ -6345,9 +6535,7 @@ pub fn run_h264_ready_prefix_video(
                                     h264_decode_ahead_submit_count.saturating_add(1);
                             }
                             pending_present_results = pending_present_results.saturating_add(1);
-                            Ok::<u64, NativeVulkanError>(native_vulkan_elapsed_us(
-                                queue_present_started_at.elapsed(),
-                            ))
+                            Ok::<u64, NativeVulkanError>(0)
                         } else {
                             let command_buffers_for_submit = [command_buffer_for_submit];
                             let signal_semaphores = [signal_semaphore];
@@ -6461,7 +6649,7 @@ pub fn run_h264_ready_prefix_video(
                         h264_present_result_wait_max_us =
                             h264_present_result_wait_max_us.max(present_result_wait_elapsed_us);
                         pending_present_results = pending_present_results.saturating_sub(1);
-                        present_result?;
+                        apply_h264_present_result(&mut frames, present_result)?;
                     }
                     let submitted_fences = swapchain_image_in_flight_fences
                         .iter()
@@ -6567,10 +6755,11 @@ pub fn run_h264_ready_prefix_video(
                 bitstream_upload_count: frames.len() as u32,
                 bitstream_uploaded_bytes: frames.iter().map(|frame| frame.src_buffer_range).sum(),
                 h264_input_mode: input_mode.as_str(),
-                h264_display_handoff_strategy: "gpu-copy-to-dual-slot-nv12-display-ring",
+                h264_display_handoff_strategy: h264_display_copy_queue_strategy,
                 h264_resource_image_layout: native_vulkan_image_layout_label(
                     h264_decode_image_layout,
                 ),
+                h264_video_queue_sync_strategy,
                 h264_present_queue_count: requested_present_queue_count,
                 h264_async_present_depth,
                 h264_present_result_wait_count,
@@ -6639,12 +6828,12 @@ pub fn run_h264_ready_prefix_video(
         if decode_ahead_finished != vk::Semaphore::null() {
             device.destroy_semaphore(decode_ahead_finished, None);
         }
-        for semaphore in display_copy_render_finished {
+        for semaphore in display_copy_render_finished.drain(..) {
             if semaphore != vk::Semaphore::null() {
                 device.destroy_semaphore(semaphore, None);
             }
         }
-        for semaphore in display_copy_decode_finished {
+        for semaphore in display_copy_decode_finished.drain(..) {
             if semaphore != vk::Semaphore::null() {
                 device.destroy_semaphore(semaphore, None);
             }
@@ -9478,6 +9667,7 @@ pub fn run_av1_ready_prefix_video(
                     &texture,
                     fit,
                     descriptor_set_index,
+                    None,
                 )?;
                 frame.record_elapsed_us = native_vulkan_elapsed_us(record_started_at.elapsed());
                 swapchain_image_layouts[image_index] = renderer_ref.target_final_layout();
@@ -11057,6 +11247,16 @@ struct NativeVulkanVideoRenderer {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+struct NativeVulkanDecodedVideoDisplayCopyBeforeRender<'a> {
+    source_image: &'a NativeVulkanVideoResourceImage,
+    source_base_array_layer: u32,
+    display_image: vk::Image,
+    display_base_array_layer: u32,
+    display_old_layout: vk::ImageLayout,
+    extent: vk::Extent2D,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 impl NativeVulkanVideoRenderer {
     fn new(
         device: &ash::Device,
@@ -11322,6 +11522,7 @@ impl NativeVulkanVideoRenderer {
             texture,
             fit,
             0,
+            None,
         )
     }
 
@@ -11336,6 +11537,7 @@ impl NativeVulkanVideoRenderer {
         texture: &NativeVulkanVideoTexture,
         fit: FitMode,
         descriptor_set_index: usize,
+        display_copy_before_render: Option<NativeVulkanDecodedVideoDisplayCopyBeforeRender<'_>>,
     ) -> Result<(), NativeVulkanError> {
         let descriptor_set = self
             .descriptor_sets
@@ -11362,6 +11564,19 @@ impl NativeVulkanVideoRenderer {
                     operation: "vkBeginCommandBuffer(video)",
                     result,
                 })?;
+
+            if let Some(copy) = display_copy_before_render {
+                native_vulkan_cmd_decoded_video_display_copy_for_graphics(
+                    device,
+                    command_buffer,
+                    copy.source_image,
+                    copy.source_base_array_layer,
+                    copy.display_image,
+                    copy.display_base_array_layer,
+                    copy.display_old_layout,
+                    copy.extent,
+                )?;
+            }
 
             let swapchain_to_attachment = vk::ImageMemoryBarrier::default()
                 .old_layout(swapchain_old_layout)
@@ -11495,7 +11710,7 @@ fn native_vulkan_create_video_render_pass(
     let color_attachment = vk::AttachmentDescription::default()
         .format(swapchain_format)
         .samples(vk::SampleCountFlags::TYPE_1)
-        .load_op(vk::AttachmentLoadOp::CLEAR)
+        .load_op(vk::AttachmentLoadOp::DONT_CARE)
         .store_op(vk::AttachmentStoreOp::STORE)
         .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
         .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -22601,6 +22816,55 @@ struct NativeVulkanH264ActiveDpbReference {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_display_ring_slot_count(swapchain_image_count: usize) -> u32 {
+    let max_slots = swapchain_image_count.max(2).min(8) as u32;
+    std::env::var("GILDER_H264_DISPLAY_RING_SLOTS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(2)
+        .clamp(2, max_slots)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_video_queue_semaphore_chain_enabled() -> bool {
+    !matches!(
+        std::env::var("GILDER_H264_VIDEO_QUEUE_SEMAPHORE_CHAIN")
+            .ok()
+            .as_deref(),
+        Some("0") | Some("false") | Some("no") | Some("off")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_graphics_display_copy_enabled() -> bool {
+    !matches!(
+        std::env::var("GILDER_H264_DISPLAY_COPY_QUEUE")
+            .ok()
+            .as_deref(),
+        Some("video") | Some("video-queue") | Some("0") | Some("false") | Some("off") | Some("no")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_next_h264_display_ring_slot(
+    current_slot: usize,
+    slot_count: usize,
+) -> Result<usize, NativeVulkanError> {
+    if slot_count < 2 {
+        return Err(NativeVulkanError::Video(format!(
+            "H.264 display ring requires at least 2 slots, got {slot_count}"
+        )));
+    }
+    if current_slot >= slot_count {
+        return Err(NativeVulkanError::Video(format!(
+            "H.264 display slot {current_slot} exceeds {slot_count} display ring slots"
+        )));
+    }
+    Ok((current_slot + 1) % slot_count)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeVulkanH265ActiveDpbReference {
     poc: i32,
@@ -22998,7 +23262,7 @@ fn native_vulkan_decode_h264_ready_prefix_frame_to_image(
                 result,
             })?;
         let command_buffers = [command_buffer];
-        let signal_semaphores = [signal_semaphore];
+        let signal_semaphore_values = [signal_semaphore];
         let wait_semaphore_values = [wait_semaphore];
         let wait_stage_values = [vk::PipelineStageFlags::ALL_COMMANDS];
         let wait_semaphores: &[vk::Semaphore] = if wait_semaphore == vk::Semaphore::null() {
@@ -23011,11 +23275,16 @@ fn native_vulkan_decode_h264_ready_prefix_frame_to_image(
         } else {
             &wait_stage_values
         };
+        let signal_semaphores: &[vk::Semaphore] = if signal_semaphore == vk::Semaphore::null() {
+            &[]
+        } else {
+            &signal_semaphore_values
+        };
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(&wait_semaphores)
             .wait_dst_stage_mask(&wait_stages)
             .command_buffers(&command_buffers)
-            .signal_semaphores(&signal_semaphores);
+            .signal_semaphores(signal_semaphores);
         device
             .queue_submit(video_queue, &[submit_info], vk::Fence::null())
             .map_err(|result| NativeVulkanError::Vulkan {
@@ -23080,6 +23349,10 @@ fn native_vulkan_decode_h264_ready_prefix_frame_to_image(
         bitstream_upload_elapsed_us,
         fence_wait_elapsed_us: 0,
         dst_base_array_layer: entry.planned_output_slot,
+        display_slot: None,
+        display_slot_wait_elapsed_us: 0,
+        display_copy_record_elapsed_us: 0,
+        display_copy_submit_elapsed_us: 0,
         setup_slot_index,
         decode_reference_slot_count: reference_slots.len() as u32,
         references,
@@ -25337,6 +25610,113 @@ fn native_vulkan_video_display_layout_src_scope(
             vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
         ),
     }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn native_vulkan_cmd_decoded_video_display_copy_for_graphics(
+    device: &ash::Device,
+    command_buffer: vk::CommandBuffer,
+    source_image: &NativeVulkanVideoResourceImage,
+    source_base_array_layer: u32,
+    display_image: vk::Image,
+    display_base_array_layer: u32,
+    display_old_layout: vk::ImageLayout,
+    extent: vk::Extent2D,
+) -> Result<(), NativeVulkanError> {
+    let resource_image = source_image.slot_image(source_base_array_layer)?;
+    let resource_base_array_layer = source_image.slot_base_array_layer(source_base_array_layer);
+    let (display_src_stage, display_src_access) =
+        native_vulkan_video_display_layout_src_scope(display_old_layout);
+    unsafe {
+        let display_before_copy = [vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(display_src_stage)
+            .src_access_mask(display_src_access)
+            .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .old_layout(display_old_layout)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(display_image)
+            .subresource_range(native_vulkan_video_decode_image_subresource_range(
+                display_base_array_layer,
+                1,
+            ))];
+        let display_before_copy_dependency =
+            vk::DependencyInfo::default().image_memory_barriers(&display_before_copy);
+        device.cmd_pipeline_barrier2(command_buffer, &display_before_copy_dependency);
+
+        let regions = [
+            vk::ImageCopy::default()
+                .src_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::PLANE_0,
+                    mip_level: 0,
+                    base_array_layer: resource_base_array_layer,
+                    layer_count: 1,
+                })
+                .src_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                .dst_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::PLANE_0,
+                    mip_level: 0,
+                    base_array_layer: display_base_array_layer,
+                    layer_count: 1,
+                })
+                .dst_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                .extent(vk::Extent3D {
+                    width: extent.width,
+                    height: extent.height,
+                    depth: 1,
+                }),
+            vk::ImageCopy::default()
+                .src_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::PLANE_1,
+                    mip_level: 0,
+                    base_array_layer: resource_base_array_layer,
+                    layer_count: 1,
+                })
+                .src_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                .dst_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::PLANE_1,
+                    mip_level: 0,
+                    base_array_layer: display_base_array_layer,
+                    layer_count: 1,
+                })
+                .dst_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                .extent(vk::Extent3D {
+                    width: extent.width / 2,
+                    height: extent.height / 2,
+                    depth: 1,
+                }),
+        ];
+        device.cmd_copy_image(
+            command_buffer,
+            resource_image,
+            vk::ImageLayout::GENERAL,
+            display_image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &regions,
+        );
+
+        let display_after_copy = [vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+            .dst_access_mask(vk::AccessFlags2::SHADER_READ)
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(display_image)
+            .subresource_range(native_vulkan_video_decode_image_subresource_range(
+                display_base_array_layer,
+                1,
+            ))];
+        let display_after_copy_dependency =
+            vk::DependencyInfo::default().image_memory_barriers(&display_after_copy);
+        device.cmd_pipeline_barrier2(command_buffer, &display_after_copy_dependency);
+    }
+    Ok(())
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
