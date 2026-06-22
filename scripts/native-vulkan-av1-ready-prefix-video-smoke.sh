@@ -9,8 +9,11 @@ Generate or use an AV1 source, then verify native Vulkan Video AV1 direct
 decode/present on a real Wayland output.
 
 Options:
+  --display <name>                Wayland display name. Default: WAYLAND_DISPLAY.
   --source <path>                 Existing AV1 source. Default: generate source.
   --output-name <name>            Wayland output name, for example HDMI-A-1.
+  --output <name>                 Alias for --output-name.
+  --work-dir <path>               Parent directory for generated evidence. Default: /tmp.
   --width <px>                    Source width. Default: 640.
   --height <px>                   Source height. Default: 368.
   --target-fps <fps>              Decode/present target FPS. Default: 60.
@@ -20,8 +23,18 @@ Options:
   --bit-depth <8|10>              Generated/probed AV1 Main bit depth. Default: 10.
   --arbitrary-entry-offset <sec>  Generate a non-keyframe entry source with ffmpeg -copyinkf.
   --require-loop-skip-replay      Require EOS loop replay to skip leading non-key TUs.
+  --require-readback-diversity    Require visible diagnostic readback hashes to change.
+  --readback-frames <n>           Diagnostic visible readback frame count. Default: 16 when required.
+  --readback-hidden               Also read back hidden decode outputs.
+  --performance-snapshot          Capture process CPU/RSS/PSS/USS/Private_Dirty/smaps.
+  --performance-duration <sec>    Performance sampling duration. Default: 10.
+  --performance-interval <sec>    Performance sampling interval. Default: 1.
+  --layer <layer>                 Wayland layer. Default: background.
+  --fit <mode>                    Render fit. Default: cover.
+  --allow-short-loop              Allow looped playback with a ready-prefix shorter than 1 second.
   --report-dir <path>             Report directory. Default: mktemp under /tmp.
   --no-build                      Reuse target/release/gilder-native-vulkan.
+  --keep                          Compatibility no-op; evidence directories are always kept.
   -h, --help                      Show this help.
 USAGE
 }
@@ -31,7 +44,9 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 cd "$repo_root"
 
 source=""
+display="${WAYLAND_DISPLAY:-}"
 output_name="${GILDER_WAYLAND_OUTPUT:-}"
+work_parent="${TMPDIR:-/tmp}"
 width=640
 height=368
 target_fps=60
@@ -41,18 +56,44 @@ decode_prefix=60
 playback_frames=0
 bit_depth=10
 arbitrary_entry_offset=""
+arbitrary_entry_source=0
+arbitrary_entry_demux_dropped_prefix=0
+arbitrary_entry_first_decodable_pts="none"
+arbitrary_entry_first_key_pts="none"
+arbitrary_entry_probe_log=""
+arbitrary_entry_probe_frames=""
+arbitrary_entry_probe_status=0
 require_loop_skip_replay=0
+require_readback_diversity=0
+readback_frames=0
+readback_hidden=0
+performance_snapshot=0
+performance_duration=10
+performance_interval=1
+layer="background"
+fit="cover"
+allow_short_loop=0
 report_dir=""
 no_build=0
+generated_source=0
+source_duration_seconds=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --display)
+      display="${2:?--display requires a value}"
+      shift 2
+      ;;
     --source)
       source="${2:?--source requires a path}"
       shift 2
       ;;
-    --output-name)
+    --output-name|--output)
       output_name="${2:?--output-name requires a value}"
+      shift 2
+      ;;
+    --work-dir)
+      work_parent="${2:?--work-dir requires a path}"
       shift 2
       ;;
     --width)
@@ -92,12 +133,51 @@ while [[ $# -gt 0 ]]; do
       require_loop_skip_replay=1
       shift
       ;;
+    --require-readback-diversity)
+      require_readback_diversity=1
+      shift
+      ;;
+    --readback-frames)
+      readback_frames="${2:?--readback-frames requires a value}"
+      shift 2
+      ;;
+    --readback-hidden)
+      readback_hidden=1
+      shift
+      ;;
+    --performance-snapshot)
+      performance_snapshot=1
+      shift
+      ;;
+    --performance-duration)
+      performance_duration="${2:?--performance-duration requires seconds}"
+      shift 2
+      ;;
+    --performance-interval)
+      performance_interval="${2:?--performance-interval requires seconds}"
+      shift 2
+      ;;
+    --layer)
+      layer="${2:?--layer requires a value}"
+      shift 2
+      ;;
+    --fit)
+      fit="${2:?--fit requires a value}"
+      shift 2
+      ;;
+    --allow-short-loop)
+      allow_short_loop=1
+      shift
+      ;;
     --report-dir)
       report_dir="${2:?--report-dir requires a path}"
       shift 2
       ;;
     --no-build)
       no_build=1
+      shift
+      ;;
+    --keep)
       shift
       ;;
     -h|--help)
@@ -112,6 +192,27 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -z "$display" ]]; then
+  printf 'FAIL: WAYLAND_DISPLAY is empty; pass --display\n' >&2
+  exit 1
+fi
+for tool in ffmpeg ffprobe jq; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    printf 'FAIL: missing required tool: %s\n' "$tool" >&2
+    exit 1
+  fi
+done
+case "$layer" in
+  background|bottom) ;;
+  top|overlay)
+    printf 'FAIL: foreground layer "%s" is not allowed by this smoke\n' "$layer" >&2
+    exit 1
+    ;;
+  *)
+    printf 'FAIL: unsupported layer: %s\n' "$layer" >&2
+    exit 1
+    ;;
+esac
 if [[ "$width" -le 0 || "$height" -le 0 || "$target_fps" -le 0 || "$decode_prefix" -le 0 ]]; then
   printf 'FAIL: width/height/target-fps/decode-prefix must be positive\n' >&2
   exit 1
@@ -128,6 +229,25 @@ fi
 if [[ "$playback_frames" -eq 0 ]]; then
   playback_frames="$decode_prefix"
 fi
+if [[ "$readback_frames" -lt 0 || "$performance_duration" -lt 1 || "$performance_interval" -lt 1 ]]; then
+  printf 'FAIL: readback-frames/performance-duration/performance-interval must be valid\n' >&2
+  exit 1
+fi
+if [[ "$require_readback_diversity" -eq 1 && "$readback_frames" -eq 0 ]]; then
+  readback_frames=16
+fi
+ready_prefix_loop_period_ms=$((decode_prefix * 1000 / target_fps))
+if [[ "$playback_frames" -gt "$decode_prefix" && "$decode_prefix" -lt "$target_fps" && "$allow_short_loop" -eq 0 ]]; then
+  {
+    printf 'FAIL: visible AV1 ready-prefix loop is too short for smoothness\n'
+    printf 'decode_prefix: %s\n' "$decode_prefix"
+    printf 'target_fps: %s\n' "$target_fps"
+    printf 'ready_prefix_loop_period_ms: %s\n' "$ready_prefix_loop_period_ms"
+    printf 'expected_playback_frames: %s\n' "$playback_frames"
+    printf 'Pass --allow-short-loop only for deliberate short-loop diagnostics.\n'
+  } >&2
+  exit 1
+fi
 
 video_codec="av1-main-8"
 pix_fmt="yuv420p"
@@ -139,7 +259,7 @@ if [[ "$bit_depth" -eq 10 ]]; then
 fi
 
 if [[ -z "$report_dir" ]]; then
-  report_dir="$(mktemp -d /tmp/gilder-vulkan-av1-ready-prefix-video.XXXXXX)"
+  report_dir="$(mktemp -d "${work_parent%/}/gilder-vulkan-av1-ready-prefix-video.XXXXXX")"
 else
   mkdir -p "$report_dir"
 fi
@@ -147,6 +267,8 @@ summary="$report_dir/summary.txt"
 runtime_json="$report_dir/runtime.json"
 stderr_log="$report_dir/stderr.log"
 generated_dir="$report_dir/source"
+performance_dir="$report_dir/performance"
+performance_log="$report_dir/performance.log"
 mkdir -p "$generated_dir"
 
 if [[ "$no_build" -eq 0 ]]; then
@@ -154,6 +276,7 @@ if [[ "$no_build" -eq 0 ]]; then
 fi
 
 if [[ -z "$source" ]]; then
+  generated_source=1
   if [[ "$frames" -eq 0 || "$frames" -lt $((decode_prefix + 2)) ]]; then
     frames=$((decode_prefix + 2))
   fi
@@ -175,14 +298,44 @@ if [[ -z "$source" ]]; then
     -frames:v "$frames" -an -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -row-mt 1 \
     -g "$decode_prefix" -pix_fmt "$pix_fmt" "$base_source"
   source="$base_source"
-  if [[ -n "$arbitrary_entry_offset" ]]; then
-    arbitrary_source="$generated_dir/av1-main${bit_depth}-${width}x${height}-${target_fps}fps-arbitrary-${arbitrary_entry_offset}s.webm"
-    ffmpeg -hide_banner -loglevel error -y \
-      -i "$base_source" -ss "$arbitrary_entry_offset" \
-      -c copy -copyinkf -avoid_negative_ts make_zero \
-      "$arbitrary_source"
-    source="$arbitrary_source"
+fi
+
+if [[ ! -f "$source" ]]; then
+  printf 'FAIL: source does not exist: %s\n' "$source" >&2
+  exit 1
+fi
+
+if [[ -n "$arbitrary_entry_offset" ]]; then
+  arbitrary_entry_source=1
+  arbitrary_source="$generated_dir/av1-main${bit_depth}-${width}x${height}-${target_fps}fps-arbitrary-${arbitrary_entry_offset}s.webm"
+  ffmpeg -hide_banner -loglevel error -y \
+    -i "$source" -ss "$arbitrary_entry_offset" \
+    -c copy -copyinkf -avoid_negative_ts make_zero \
+    "$arbitrary_source"
+  source="$arbitrary_source"
+  if [[ ! -s "$source" ]]; then
+    printf 'FAIL: arbitrary-entry shifted source was not created: %s\n' "$source" >&2
+    exit 1
   fi
+  arbitrary_entry_probe_log="$report_dir/arbitrary-entry-ffprobe.log"
+  arbitrary_entry_probe_frames="$report_dir/arbitrary-entry-frames.csv"
+  set +e
+  ffprobe -hide_banner -loglevel error \
+    -select_streams v -show_frames \
+    -show_entries frame=key_frame,best_effort_timestamp_time,pict_type \
+    -of csv=p=0 "$source" >"$arbitrary_entry_probe_frames" 2>"$arbitrary_entry_probe_log"
+  arbitrary_entry_probe_status=$?
+  set -e
+  arbitrary_entry_first_decodable_pts="$(awk -F, 'NF >= 2 { print $2; exit }' "$arbitrary_entry_probe_frames")"
+  arbitrary_entry_first_key_pts="$(awk -F, '$1 == 1 && NF >= 2 { print $2; exit }' "$arbitrary_entry_probe_frames")"
+  arbitrary_entry_first_decodable_pts="${arbitrary_entry_first_decodable_pts:-none}"
+  arbitrary_entry_first_key_pts="${arbitrary_entry_first_key_pts:-none}"
+  if awk -v pts="$arbitrary_entry_first_key_pts" 'BEGIN { exit !((pts + 0) > 0.001) }'; then
+    arbitrary_entry_demux_dropped_prefix=1
+  fi
+fi
+if [[ "$arbitrary_entry_source" -eq 1 && "$playback_frames" -gt "$decode_prefix" ]]; then
+  require_loop_skip_replay=1
 fi
 
 cmd=(
@@ -193,6 +346,8 @@ cmd=(
   --width "$width"
   --height "$height"
   --target-fps "$target_fps"
+  --layer "$layer"
+  --fit "$fit"
   --decode-av1-ready-prefix "$decode_prefix"
   --playback-frames "$playback_frames"
 )
@@ -200,14 +355,60 @@ if [[ -n "$output_name" ]]; then
   cmd+=(--output-name "$output_name")
 fi
 
-if ! "${cmd[@]}" >"$runtime_json" 2>"$stderr_log"; then
+runtime_status=0
+performance_status=0
+runtime_env=(WAYLAND_DISPLAY="$display")
+if [[ "$readback_frames" -gt 0 ]]; then
+  runtime_env+=(GILDER_VULKAN_AV1_READBACK_FRAMES="$readback_frames")
+fi
+if [[ "$readback_hidden" -eq 1 ]]; then
+  runtime_env+=(GILDER_VULKAN_AV1_READBACK_HIDDEN=1)
+fi
+if [[ "$performance_snapshot" -eq 1 ]]; then
+  if [[ ! -x scripts/performance-snapshot.sh ]]; then
+    printf 'FAIL: missing executable scripts/performance-snapshot.sh\n' | tee "$summary"
+    exit 1
+  fi
+  set +e
+  env "${runtime_env[@]}" "${cmd[@]}" >"$runtime_json" 2>"$stderr_log" &
+  runtime_pid=$!
+  scripts/performance-snapshot.sh \
+    --pid "$runtime_pid" \
+    --label "native-vulkan-av1-ready-prefix-video" \
+    --duration "$performance_duration" \
+    --interval "$performance_interval" \
+    --output-dir "$performance_dir" \
+    --allow-missing \
+    --keep \
+    >"$performance_log" 2>&1
+  performance_status=$?
+  wait "$runtime_pid"
+  runtime_status=$?
+  set -e
+else
+  set +e
+  env "${runtime_env[@]}" "${cmd[@]}" >"$runtime_json" 2>"$stderr_log"
+  runtime_status=$?
+  set -e
+fi
+
+if [[ "$runtime_status" -ne 0 ]]; then
   {
     printf 'FAIL: native Vulkan AV1 ready-prefix visible runtime failed\n'
     printf 'source: %s\n' "$source"
     printf 'stderr:\n'
     sed -n '1,120p' "$stderr_log"
   } | tee "$summary"
-  exit 1
+  exit "$runtime_status"
+fi
+if [[ "$performance_snapshot" -eq 1 && "$performance_status" -ne 0 ]]; then
+  {
+    printf 'FAIL: native Vulkan AV1 performance snapshot failed\n'
+    printf 'source: %s\n' "$source"
+    printf 'performance log: %s\n' "$performance_log"
+  } | tee "$summary"
+  sed -n '1,200p' "$performance_log" >&2
+  exit "$performance_status"
 fi
 
 requested_codec="$(jq -r '.requested_codec // "none"' "$runtime_json")"
@@ -236,10 +437,69 @@ readback_y_distinct="$(jq -r '[.frames[]?.readback_y_hash | select(. != null)] |
 readback_uv_distinct="$(jq -r '[.frames[]?.readback_uv_hash | select(. != null)] | unique | length' "$runtime_json")"
 loop_boundary_reset_count="$(jq -r '.loop_boundary_reset_count // 0' "$runtime_json")"
 playback_loop_count="$(jq -r '.playback_loop_count // 0' "$runtime_json")"
+frame_count="$(jq -r '(.frames // []) | length' "$runtime_json")"
+ready_prefix_count="$(jq -r '.ready_prefix_frame_count // 0' "$runtime_json")"
+present_queue="$(jq -r '.present_queue_family_index // "none"' "$runtime_json")"
+video_queue="$(jq -r '.video_decode_queue_family_index // "none"' "$runtime_json")"
+sync_strategy="$(jq -r '.cross_queue_sync_strategy // "none"' "$runtime_json")"
+driver_max_dpb_slots="$(jq -r '.driver_max_dpb_slots // "none"' "$runtime_json")"
+stream_dpb_slots="$(jq -r '.stream_dpb_slots // 0' "$runtime_json")"
+stream_max_active_reference_pictures="$(jq -r '.stream_max_active_reference_pictures // 0' "$runtime_json")"
+session_max_dpb_slots="$(jq -r '.session_max_dpb_slots // 0' "$runtime_json")"
+session_max_active_reference_pictures="$(jq -r '.session_max_active_reference_pictures // 0' "$runtime_json")"
+pacing_strategy="$(jq -r '.pacing_strategy // "none"' "$runtime_json")"
+frame_sleep_count_value="$(jq -r '.frame_sleep_count // 0' "$runtime_json")"
+bitstream_strategy="$(jq -r '.bitstream_buffer_strategy // "none"' "$runtime_json")"
+bitstream_slot_count="$(jq -r '.bitstream_buffer_slot_count // 0' "$runtime_json")"
+bitstream_slot_bytes="$(jq -r '.bitstream_buffer_slot_bytes // 0' "$runtime_json")"
+bitstream_ring_capacity_bytes="$(jq -r '.bitstream_ring_capacity_bytes // 0' "$runtime_json")"
+bitstream_ring_wrap_count="$(jq -r '.bitstream_ring_wrap_count // 0' "$runtime_json")"
+bitstream_window_payload_bytes="$(jq -r '.bitstream_window_payload_bytes // 0' "$runtime_json")"
+bitstream_upload_count="$(jq -r '.bitstream_upload_count // 0' "$runtime_json")"
+bitstream_uploaded_bytes="$(jq -r '.bitstream_uploaded_bytes // 0' "$runtime_json")"
+queue_max_payload_bytes="$(jq -r '.av1_packet_queue_max_payload_bytes // 0' "$runtime_json")"
+first_frame_key="$(jq -r '.frames[0].frame_type_label == "key"' "$runtime_json")"
+key_frames="$(jq -r '[.frames[]? | select(.frame_type_label == "key")] | length' "$runtime_json")"
+inter_frames="$(jq -r '[.frames[]? | select(.frame_type_label == "inter")] | length' "$runtime_json")"
+show_existing_frames="$(jq -r '[.frames[]? | select(.show_existing_frame == true)] | length' "$runtime_json")"
+max_reference_count="$(jq -r '[.frames[]? | .decode_reference_slot_count] | max // 0' "$runtime_json")"
+loop_first_non_key_count="$(jq -r 'reduce (.frames // [])[] as $frame ({}; ($frame.playback_loop_index | tostring) as $loop | if has($loop) then . else .[$loop] = ($frame.frame_type_label == "key") end) | [to_entries[] | select(.value != true)] | length' "$runtime_json")"
+swapchain_images="$(jq -r '.swapchain_image_count // 0' "$runtime_json")"
+resource_bytes="$(jq -r '.video_resource_memory_bytes // 0' "$runtime_json")"
 
 expected_frames="$playback_frames"
+loop_gate_failed=0
+if [[ "$expected_frames" -gt "$decode_prefix" && ( "$playback_loop_count" -le 1 || "$loop_boundary_reset_count" -lt 1 ) ]]; then
+  loop_gate_failed=1
+fi
+bitstream_gate_failed=0
+if [[ "$bitstream_strategy" != "fixed-capacity-persistent-mapped-ring" || "$bitstream_slot_count" -le 0 || "$bitstream_slot_bytes" -le 0 || "$bitstream_ring_capacity_bytes" -lt "$bitstream_slot_bytes" || "$bitstream_window_payload_bytes" -le 0 || "$bitstream_upload_count" -ne "$total_decoded_count" || "$bitstream_uploaded_bytes" -le 0 ]]; then
+  bitstream_gate_failed=1
+fi
+if [[ "$decode_prefix" -gt 1 && ( "$bitstream_slot_count" -le 1 || "$bitstream_ring_capacity_bytes" -le "$bitstream_slot_bytes" ) ]]; then
+  bitstream_gate_failed=1
+fi
+if [[ "$decode_prefix" -gt 8 && "$bitstream_slot_count" -ge "$decode_prefix" ]]; then
+  bitstream_gate_failed=1
+fi
+input_gate_failed=0
+if [[ "$queue_capacity" -le 0 || "$queue_pulled_count" -lt "$expected_frames" || "$queue_max_payload_bytes" -le 0 || "$queue_retained_payload_bytes" -ne 0 ]]; then
+  input_gate_failed=1
+fi
+runtime_skipped_arbitrary_prefix=0
+if [[ "$queue_bootstrap_discarded_temporal_units" -gt 0 || "$queue_loop_skip_temporal_units" -gt 0 ]]; then
+  runtime_skipped_arbitrary_prefix=1
+fi
+arbitrary_prefix_handled=0
+if [[ "$runtime_skipped_arbitrary_prefix" -eq 1 || "$arbitrary_entry_demux_dropped_prefix" -eq 1 ]]; then
+  arbitrary_prefix_handled=1
+fi
+arbitrary_entry_gate_failed=0
+if [[ "$arbitrary_entry_source" -eq 1 && ( "$arbitrary_prefix_handled" -ne 1 || "$first_frame_key" != "true" ) ]]; then
+  arbitrary_entry_gate_failed=1
+fi
 loop_replay_gate_failed=0
-if [[ "$require_loop_skip_replay" -eq 1 && ( "$queue_eos_count" -le 0 || "$queue_loop_count" -le 0 || "$playback_loop_count" -le 1 || "$loop_boundary_reset_count" -le 0 ) ]]; then
+if [[ "$require_loop_skip_replay" -eq 1 && ( "$queue_eos_count" -le 0 || "$queue_loop_count" -le 0 || "$playback_loop_count" -le 1 || "$loop_boundary_reset_count" -le 0 || "$arbitrary_prefix_handled" -ne 1 || "$first_frame_key" != "true" || "$loop_first_non_key_count" -ne 0 ) ]]; then
   loop_replay_gate_failed=1
 fi
 
@@ -247,17 +507,34 @@ readback_gate_failed=0
 if [[ "$readback_frame_count" -gt 1 && ( "$readback_y_distinct" -le 1 || "$readback_uv_distinct" -le 1 ) ]]; then
   readback_gate_failed=1
 fi
+if [[ "$require_readback_diversity" -eq 1 && ( "$readback_frame_count" -lt 2 || "$readback_y_distinct" -le 1 || "$readback_uv_distinct" -le 1 ) ]]; then
+  readback_gate_failed=1
+fi
+pacing_gate_failed=0
+if [[ "$(jq -r '.present_mode // "none"' "$runtime_json")" == "fifo" && ( "$pacing_strategy" != "fifo-present-blocking-no-cpu-sleep" || "$frame_sleep_count_value" -ne 0 ) ]]; then
+  pacing_gate_failed=1
+fi
+dpb_gate_failed=0
+if [[ "$driver_max_dpb_slots" == "none" || "$stream_dpb_slots" -le 0 || "$session_max_dpb_slots" -ne "$stream_dpb_slots" || "$session_max_active_reference_pictures" -le 0 || "$session_max_active_reference_pictures" -gt "$session_max_dpb_slots" || "$session_max_active_reference_pictures" -lt "$stream_max_active_reference_pictures" || "$distinct_layers" -gt "$session_max_dpb_slots" ]]; then
+  dpb_gate_failed=1
+fi
 
-if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_picture_format" || "$presented_count" -ne "$expected_frames" || "$requested_playback_count" -ne "$expected_frames" || $((decoded_count + handoff_count)) -ne "$expected_frames" || "$total_decoded_count" -ne $((decoded_count + hidden_decoded_count)) || "$configured" != "true" || "$queue_capacity" -le 0 || "$queue_pulled_count" -lt "$expected_frames" || "$processed_temporal_unit_count" -lt "$expected_frames" || "$queue_retained_payload_bytes" -ne 0 || "$distinct_layers" -le 1 || "$bad_frames" -ne 0 || "$hidden_presented_frames" -ne 0 || "$loop_replay_gate_failed" -ne 0 || "$readback_gate_failed" -ne 0 ]]; then
+if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_picture_format" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$ready_prefix_count" -ne "$decode_prefix" || "$requested_playback_count" -ne "$expected_frames" || $((decoded_count + handoff_count)) -ne "$expected_frames" || "$total_decoded_count" -ne $((decoded_count + hidden_decoded_count)) || "$configured" != "true" || "$processed_temporal_unit_count" -lt "$expected_frames" || "$distinct_layers" -le 1 || "$bad_frames" -ne 0 || "$hidden_presented_frames" -ne 0 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$arbitrary_entry_gate_failed" -ne 0 || "$loop_replay_gate_failed" -ne 0 || "$readback_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$present_queue" == "none" || "$video_queue" == "none" || "$sync_strategy" != "per-frame-binary-semaphore-decode-signal-present-wait" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
   {
     printf 'FAIL: native Vulkan AV1 ready-prefix visible runtime output was not valid\n'
     printf 'requested_codec: %s\n' "$requested_codec"
     printf 'picture_format: %s\n' "$picture_format"
+    printf 'expected_picture_format: %s\n' "$expected_picture_format"
     printf 'decoded_frame_count: %s\n' "$decoded_count"
     printf 'hidden_decoded_frame_count: %s\n' "$hidden_decoded_count"
     printf 'total_decoded_frame_count: %s\n' "$total_decoded_count"
     printf 'displayed_handoff_frame_count: %s\n' "$handoff_count"
     printf 'presented_frame_count: %s\n' "$presented_count"
+    printf 'frame_count: %s\n' "$frame_count"
+    printf 'ready_prefix_frame_count: %s\n' "$ready_prefix_count"
+    printf 'requested_decode_prefix: %s\n' "$decode_prefix"
+    printf 'expected_playback_frames: %s\n' "$expected_frames"
+    printf 'ready_prefix_loop_period_ms: %s\n' "$ready_prefix_loop_period_ms"
     printf 'requested_playback_frame_count: %s\n' "$requested_playback_count"
     printf 'processed_temporal_unit_count: %s\n' "$processed_temporal_unit_count"
     printf 'average_present_fps: %s\n' "$average_present_fps"
@@ -272,11 +549,55 @@ if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_pi
     printf 'distinct_displayed_layers: %s\n' "$distinct_layers"
     printf 'bad_frames: %s\n' "$bad_frames"
     printf 'hidden_presented_frames: %s\n' "$hidden_presented_frames"
+    printf 'loop_gate_failed: %s\n' "$loop_gate_failed"
+    printf 'bitstream_gate_failed: %s\n' "$bitstream_gate_failed"
+    printf 'input_gate_failed: %s\n' "$input_gate_failed"
+    printf 'arbitrary_entry_source: %s\n' "$([[ "$arbitrary_entry_source" -eq 1 ]] && printf yes || printf no)"
+    printf 'arbitrary_entry_offset: %s\n' "${arbitrary_entry_offset:-none}"
+    printf 'arbitrary_entry_demux_dropped_prefix: %s\n' "$([[ "$arbitrary_entry_demux_dropped_prefix" -eq 1 ]] && printf yes || printf no)"
+    printf 'arbitrary_entry_first_decodable_pts: %s\n' "$arbitrary_entry_first_decodable_pts"
+    printf 'arbitrary_entry_first_key_pts: %s\n' "$arbitrary_entry_first_key_pts"
+    printf 'arbitrary_entry_probe_status: %s\n' "$arbitrary_entry_probe_status"
+    printf 'arbitrary_entry_probe_log: %s\n' "${arbitrary_entry_probe_log:-none}"
+    printf 'runtime_skipped_arbitrary_prefix: %s\n' "$([[ "$runtime_skipped_arbitrary_prefix" -eq 1 ]] && printf yes || printf no)"
+    printf 'arbitrary_prefix_handled: %s\n' "$([[ "$arbitrary_prefix_handled" -eq 1 ]] && printf yes || printf no)"
+    printf 'arbitrary_entry_gate_failed: %s\n' "$arbitrary_entry_gate_failed"
     printf 'loop_replay_gate_failed: %s\n' "$loop_replay_gate_failed"
+    printf 'require_loop_skip_replay: %s\n' "$([[ "$require_loop_skip_replay" -eq 1 ]] && printf yes || printf no)"
+    printf 'first_frame_key: %s\n' "$first_frame_key"
+    printf 'loop_first_non_key_count: %s\n' "$loop_first_non_key_count"
     printf 'readback_frame_count: %s\n' "$readback_frame_count"
     printf 'readback_y_distinct: %s\n' "$readback_y_distinct"
     printf 'readback_uv_distinct: %s\n' "$readback_uv_distinct"
     printf 'readback_gate_failed: %s\n' "$readback_gate_failed"
+    printf 'require_readback_diversity: %s\n' "$([[ "$require_readback_diversity" -eq 1 ]] && printf yes || printf no)"
+    printf 'key_frames: %s\n' "$key_frames"
+    printf 'inter_frames: %s\n' "$inter_frames"
+    printf 'show_existing_frames: %s\n' "$show_existing_frames"
+    printf 'max_reference_count: %s\n' "$max_reference_count"
+    printf 'present_queue: %s\n' "$present_queue"
+    printf 'video_queue: %s\n' "$video_queue"
+    printf 'cross_queue_sync_strategy: %s\n' "$sync_strategy"
+    printf 'driver_max_dpb_slots: %s\n' "$driver_max_dpb_slots"
+    printf 'stream_dpb_slots: %s\n' "$stream_dpb_slots"
+    printf 'stream_max_active_reference_pictures: %s\n' "$stream_max_active_reference_pictures"
+    printf 'session_max_dpb_slots: %s\n' "$session_max_dpb_slots"
+    printf 'session_max_active_reference_pictures: %s\n' "$session_max_active_reference_pictures"
+    printf 'pacing_strategy: %s\n' "$pacing_strategy"
+    printf 'frame_sleep_count: %s\n' "$frame_sleep_count_value"
+    printf 'pacing_gate_failed: %s\n' "$pacing_gate_failed"
+    printf 'dpb_gate_failed: %s\n' "$dpb_gate_failed"
+    printf 'bitstream_buffer_strategy: %s\n' "$bitstream_strategy"
+    printf 'bitstream_buffer_slot_count: %s\n' "$bitstream_slot_count"
+    printf 'bitstream_buffer_slot_bytes: %s\n' "$bitstream_slot_bytes"
+    printf 'bitstream_ring_capacity_bytes: %s\n' "$bitstream_ring_capacity_bytes"
+    printf 'bitstream_ring_wrap_count: %s\n' "$bitstream_ring_wrap_count"
+    printf 'bitstream_window_payload_bytes: %s\n' "$bitstream_window_payload_bytes"
+    printf 'bitstream_upload_count: %s\n' "$bitstream_upload_count"
+    printf 'bitstream_uploaded_bytes: %s\n' "$bitstream_uploaded_bytes"
+    printf 'swapchain_images: %s\n' "$swapchain_images"
+    printf 'video_resource_memory_bytes: %s\n' "$resource_bytes"
+    printf 'runtime_json: %s\n' "$runtime_json"
   } | tee "$summary"
   exit 1
 fi
@@ -284,15 +605,80 @@ fi
 {
   printf 'PASS: native Vulkan AV1 ready-prefix visible runtime passed\n'
   printf 'source: %s\n' "$source"
+  printf 'generated_source: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf yes || printf no)"
+  printf 'generated_source_frames: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$frames" || printf none)"
+  printf 'generated_source_duration_seconds: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$source_duration_seconds" || printf none)"
+  printf 'generated_source_frames_explicit: %s\n' "$([[ "$frames_explicit" -eq 1 ]] && printf yes || printf no)"
+  printf 'generated_source_pattern: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf 'testsrc2-continuous-av1-main%s' "$bit_depth" || printf none)"
+  printf 'arbitrary_entry_source: %s\n' "$([[ "$arbitrary_entry_source" -eq 1 ]] && printf yes || printf no)"
+  printf 'arbitrary_entry_offset: %s\n' "${arbitrary_entry_offset:-none}"
+  printf 'arbitrary_entry_demux_dropped_prefix: %s\n' "$([[ "$arbitrary_entry_demux_dropped_prefix" -eq 1 ]] && printf yes || printf no)"
+  printf 'arbitrary_entry_first_decodable_pts: %s\n' "$arbitrary_entry_first_decodable_pts"
+  printf 'arbitrary_entry_first_key_pts: %s\n' "$arbitrary_entry_first_key_pts"
+  printf 'arbitrary_entry_probe_status: %s\n' "$arbitrary_entry_probe_status"
+  printf 'arbitrary_entry_probe_log: %s\n' "${arbitrary_entry_probe_log:-none}"
+  printf 'runtime_skipped_arbitrary_prefix: %s\n' "$([[ "$runtime_skipped_arbitrary_prefix" -eq 1 ]] && printf yes || printf no)"
+  printf 'arbitrary_prefix_handled: %s\n' "$([[ "$arbitrary_prefix_handled" -eq 1 ]] && printf yes || printf no)"
+  printf 'require_loop_skip_replay: %s\n' "$([[ "$require_loop_skip_replay" -eq 1 ]] && printf yes || printf no)"
+  printf 'require_readback_diversity: %s\n' "$([[ "$require_readback_diversity" -eq 1 ]] && printf yes || printf no)"
+  printf 'selected_device: %s\n' "$(jq -r '.selected_physical_device_name' "$runtime_json")"
+  printf 'requested_output_name: %s\n' "${output_name:-auto}"
+  printf 'surface_logical_size: %s\n' "$(jq -c '.wayland_surface_logical_size' "$runtime_json")"
+  printf 'surface_buffer_size: %s\n' "$(jq -c '.wayland_surface_buffer_size' "$runtime_json")"
+  printf 'source_extent: %s\n' "$(jq -c '.source_extent' "$runtime_json")"
+  printf 'swapchain_extent: %s\n' "$(jq -c '.swapchain_extent' "$runtime_json")"
+  printf 'swapchain_format: %s\n' "$(jq -r '.swapchain_format' "$runtime_json")"
+  printf 'present_mode: %s\n' "$(jq -r '.present_mode' "$runtime_json")"
+  printf 'runtime_elapsed_ms: %s\n' "$(jq -r '.runtime_elapsed_ms' "$runtime_json")"
   printf 'requested_codec: %s\n' "$requested_codec"
   printf 'picture_format: %s\n' "$picture_format"
+  printf 'ready_prefix_frame_count: %s\n' "$ready_prefix_count"
+  printf 'ready_prefix_loop_period_ms: %s\n' "$ready_prefix_loop_period_ms"
+  printf 'requested_playback_frame_count: %s\n' "$requested_playback_count"
   printf 'decoded_frame_count: %s\n' "$decoded_count"
   printf 'hidden_decoded_frame_count: %s\n' "$hidden_decoded_count"
   printf 'total_decoded_frame_count: %s\n' "$total_decoded_count"
   printf 'displayed_handoff_frame_count: %s\n' "$handoff_count"
   printf 'presented_frame_count: %s\n' "$presented_count"
   printf 'processed_temporal_unit_count: %s\n' "$processed_temporal_unit_count"
+  printf 'playback_loop_count: %s\n' "$playback_loop_count"
+  printf 'loop_boundary_reset_count: %s\n' "$loop_boundary_reset_count"
+  printf 'key_frames: %s\n' "$key_frames"
+  printf 'inter_frames: %s\n' "$inter_frames"
+  printf 'show_existing_frames: %s\n' "$show_existing_frames"
+  printf 'max_reference_count: %s\n' "$max_reference_count"
+  printf 'first_frame_key: %s\n' "$first_frame_key"
+  printf 'loop_first_non_key_count: %s\n' "$loop_first_non_key_count"
+  printf 'pacing_strategy: %s\n' "$pacing_strategy"
+  printf 'frame_sleep_count: %s\n' "$frame_sleep_count_value"
+  printf 'missed_frame_pacing_count: %s\n' "$(jq -r '.missed_frame_pacing_count // 0' "$runtime_json")"
+  printf 'total_frame_sleep_us: %s\n' "$(jq -r '.total_frame_sleep_us // 0' "$runtime_json")"
+  printf 'max_frame_pacing_late_us: %s\n' "$(jq -r '.max_frame_pacing_late_us // 0' "$runtime_json")"
   printf 'average_present_fps: %s\n' "$average_present_fps"
+  printf 'target_max_fps: %s\n' "$(jq -r '.target_max_fps // "none"' "$runtime_json")"
+  printf 'present_queue_family_index: %s\n' "$present_queue"
+  printf 'present_queue_flags: %s\n' "$(jq -c '.present_queue_flags' "$runtime_json")"
+  printf 'video_decode_queue_family_index: %s\n' "$video_queue"
+  printf 'video_decode_queue_flags: %s\n' "$(jq -c '.video_decode_queue_flags' "$runtime_json")"
+  printf 'video_decode_queue_codec_operations: %s\n' "$(jq -c '.video_decode_queue_codec_operations' "$runtime_json")"
+  printf 'cross_queue_sync_strategy: %s\n' "$sync_strategy"
+  printf 'driver_max_dpb_slots: %s\n' "$driver_max_dpb_slots"
+  printf 'stream_dpb_slots: %s\n' "$stream_dpb_slots"
+  printf 'stream_max_active_reference_pictures: %s\n' "$stream_max_active_reference_pictures"
+  printf 'session_max_dpb_slots: %s\n' "$session_max_dpb_slots"
+  printf 'session_max_active_reference_pictures: %s\n' "$session_max_active_reference_pictures"
+  printf 'bitstream_buffer_strategy: %s\n' "$bitstream_strategy"
+  printf 'bitstream_buffer_slot_count: %s\n' "$bitstream_slot_count"
+  printf 'bitstream_buffer_slot_bytes: %s\n' "$bitstream_slot_bytes"
+  printf 'bitstream_ring_capacity_bytes: %s\n' "$bitstream_ring_capacity_bytes"
+  printf 'bitstream_ring_min_offset_alignment: %s\n' "$(jq -r '.bitstream_ring_min_offset_alignment // 0' "$runtime_json")"
+  printf 'bitstream_ring_min_size_alignment: %s\n' "$(jq -r '.bitstream_ring_min_size_alignment // 0' "$runtime_json")"
+  printf 'bitstream_ring_wrap_count: %s\n' "$bitstream_ring_wrap_count"
+  printf 'bitstream_window_payload_bytes: %s\n' "$bitstream_window_payload_bytes"
+  printf 'bitstream_upload_count: %s\n' "$bitstream_upload_count"
+  printf 'bitstream_uploaded_bytes: %s\n' "$bitstream_uploaded_bytes"
+  printf 'av1_packet_queue_capacity: %s\n' "$queue_capacity"
+  printf 'av1_packet_queue_pulled_count: %s\n' "$queue_pulled_count"
   printf 'readback_frame_count: %s\n' "$readback_frame_count"
   printf 'readback_y_distinct: %s\n' "$readback_y_distinct"
   printf 'readback_uv_distinct: %s\n' "$readback_uv_distinct"
@@ -300,5 +686,36 @@ fi
   printf 'av1_packet_queue_loop_count: %s\n' "$queue_loop_count"
   printf 'av1_packet_queue_loop_skip_temporal_units: %s\n' "$queue_loop_skip_temporal_units"
   printf 'av1_packet_queue_bootstrap_discarded_temporal_units: %s\n' "$queue_bootstrap_discarded_temporal_units"
+  printf 'av1_packet_queue_max_payload_bytes: %s\n' "$queue_max_payload_bytes"
+  printf 'av1_packet_queue_retained_payload_bytes: %s\n' "$queue_retained_payload_bytes"
+  printf 'frame_layers_head: %s\n' "$(jq -c '[.frames[0:32][]?.displayed_base_array_layer]' "$runtime_json")"
+  printf 'frame_layers_tail: %s\n' "$(jq -c '[.frames[-32:][]?.displayed_base_array_layer]' "$runtime_json")"
+  printf 'frame_temporal_units_head: %s\n' "$(jq -c '[.frames[0:32][]?.temporal_unit_index]' "$runtime_json")"
+  printf 'frame_temporal_units_tail: %s\n' "$(jq -c '[.frames[-32:][]?.temporal_unit_index]' "$runtime_json")"
+  printf 'frame_loop_indices_head: %s\n' "$(jq -c '[.frames[0:32][]?.playback_loop_index]' "$runtime_json")"
+  printf 'frame_loop_indices_tail: %s\n' "$(jq -c '[.frames[-32:][]?.playback_loop_index]' "$runtime_json")"
+  printf 'frame_types_head: %s\n' "$(jq -c '[.frames[0:32][]?.frame_type_label]' "$runtime_json")"
+  printf 'frame_types_tail: %s\n' "$(jq -c '[.frames[-32:][]?.frame_type_label]' "$runtime_json")"
+  printf 'max_bitstream_upload_elapsed_us: %s\n' "$(jq -r '[.frames[]?.bitstream_upload_elapsed_us] | max // 0' "$runtime_json")"
+  printf 'max_decode_elapsed_us: %s\n' "$(jq -r '[.frames[]?.decode_elapsed_us] | max // 0' "$runtime_json")"
+  printf 'max_present_elapsed_us: %s\n' "$(jq -r '[.frames[]?.present_elapsed_us] | max // 0' "$runtime_json")"
+  printf 'video_resource_memory_bytes: %s\n' "$resource_bytes"
+  printf 'session_memory_bytes: %s\n' "$(jq -r '.session_memory_bytes' "$runtime_json")"
+  printf 'bitstream_buffer_bytes: %s\n' "$(jq -r '.bitstream_buffer_bytes' "$runtime_json")"
+  printf 'performance_snapshot: %s\n' "$([[ "$performance_snapshot" -eq 1 ]] && printf yes || printf no)"
+  if [[ "$performance_snapshot" -eq 1 ]]; then
+    printf 'performance_dir: %s\n' "$performance_dir"
+    printf 'performance_log: %s\n' "$performance_log"
+    if [[ -s "$performance_dir/summary.txt" ]]; then
+      printf 'performance_summary: %s\n' "$performance_dir/summary.txt"
+      printf 'performance_samples: %s\n' "$(awk -F': ' '$1 == "samples" { print $2 }' "$performance_dir/summary.txt")"
+      printf 'performance_avg_cpu_percent: %s\n' "$(awk -F': ' '$1 == "avg_cpu_percent" { print $2 }' "$performance_dir/summary.txt")"
+      printf 'performance_max_rss_kib: %s\n' "$(awk -F': ' '$1 == "max_rss_kib" { print $2 }' "$performance_dir/summary.txt")"
+      printf 'performance_max_pss_kib: %s\n' "$(awk -F': ' '$1 == "max_pss_kib" { print $2 }' "$performance_dir/summary.txt")"
+      printf 'performance_max_uss_kib: %s\n' "$(awk -F': ' '$1 == "max_uss_kib" { print $2 }' "$performance_dir/summary.txt")"
+      printf 'performance_max_private_dirty_kib: %s\n' "$(awk -F': ' '$1 == "max_private_dirty_kib" { print $2 }' "$performance_dir/summary.txt")"
+      printf 'performance_max_nvidia_process_gpu_memory_mib: %s\n' "$(awk -F': ' '$1 == "max_nvidia_process_gpu_memory_mib" { print $2 }' "$performance_dir/summary.txt")"
+    fi
+  fi
   printf 'runtime_json: %s\n' "$runtime_json"
 } | tee "$summary"
