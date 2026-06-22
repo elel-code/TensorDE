@@ -1323,6 +1323,11 @@ pub struct NativeVulkanAv1FrameSubmitSnapshot {
     pub order_hint: Option<u8>,
     pub primary_ref_frame: Option<u8>,
     pub refresh_frame_flags: u8,
+    pub reference_order_hints: Vec<u8>,
+    pub frame_refs_short_signaling: bool,
+    pub last_frame_idx: Option<u8>,
+    pub gold_frame_idx: Option<u8>,
+    pub ref_frame_indices: Vec<i8>,
     pub render_and_frame_size_different: Option<bool>,
     pub frame_width: Option<u32>,
     pub frame_height: Option<u32>,
@@ -28516,9 +28521,11 @@ fn native_vulkan_av1_frame_submit_from_frame_obu(
                         Vec::new(),
                         false,
                     );
-                    snapshot.unsupported_reason = Some(format!(
-                        "AV1 frame OBU tile table is not submit-ready: {reason}"
-                    ));
+                    if snapshot.unsupported_reason.is_none() {
+                        snapshot.unsupported_reason = Some(format!(
+                            "AV1 frame OBU tile table is not submit-ready: {reason}"
+                        ));
+                    }
                     snapshot.vulkan_submit_candidate = false;
                     snapshot
                 }
@@ -28593,9 +28600,11 @@ fn native_vulkan_av1_frame_submit_from_split_obus(
                         Vec::new(),
                         false,
                     );
-                    snapshot.unsupported_reason = Some(format!(
-                        "AV1 tile-group OBU table is not submit-ready: {reason}"
-                    ));
+                    if snapshot.unsupported_reason.is_none() {
+                        snapshot.unsupported_reason = Some(format!(
+                            "AV1 tile-group OBU table is not submit-ready: {reason}"
+                        ));
+                    }
                     snapshot.vulkan_submit_candidate = false;
                     snapshot
                 }
@@ -28670,6 +28679,11 @@ fn native_vulkan_av1_frame_submit_snapshot_from_header(
         order_hint: header.order_hint,
         primary_ref_frame: header.primary_ref_frame,
         refresh_frame_flags: header.refresh_frame_flags,
+        reference_order_hints: header.reference_order_hints,
+        frame_refs_short_signaling: header.frame_refs_short_signaling,
+        last_frame_idx: header.last_frame_idx,
+        gold_frame_idx: header.gold_frame_idx,
+        ref_frame_indices: header.ref_frame_indices,
         render_and_frame_size_different: header.render_and_frame_size_different,
         frame_width: header.frame_width,
         frame_height: header.frame_height,
@@ -28714,6 +28728,11 @@ fn native_vulkan_av1_unsupported_frame_submit_snapshot(
         order_hint: None,
         primary_ref_frame: None,
         refresh_frame_flags: 0,
+        reference_order_hints: Vec::new(),
+        frame_refs_short_signaling: false,
+        last_frame_idx: None,
+        gold_frame_idx: None,
+        ref_frame_indices: Vec::new(),
         render_and_frame_size_different: None,
         frame_width: None,
         frame_height: None,
@@ -28748,6 +28767,11 @@ struct NativeVulkanAv1ParsedFrameHeader {
     order_hint: Option<u8>,
     primary_ref_frame: Option<u8>,
     refresh_frame_flags: u8,
+    reference_order_hints: Vec<u8>,
+    frame_refs_short_signaling: bool,
+    last_frame_idx: Option<u8>,
+    gold_frame_idx: Option<u8>,
+    ref_frame_indices: Vec<i8>,
     render_and_frame_size_different: Option<bool>,
     frame_width: Option<u32>,
     frame_height: Option<u32>,
@@ -28763,6 +28787,140 @@ struct NativeVulkanAv1ParsedFrameHeader {
     tx_mode_select: bool,
     reduced_tx_set: bool,
     unsupported_reason: Option<String>,
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[derive(Debug, Clone, Copy)]
+struct NativeVulkanAv1ParsedFrameHeaderPrefix {
+    frame_type: u8,
+    show_frame: bool,
+    showable_frame: bool,
+    error_resilient_mode: bool,
+    disable_cdf_update: bool,
+    disable_frame_end_update_cdf: bool,
+    allow_screen_content_tools: u8,
+    force_integer_mv: u8,
+    frame_size_override_flag: bool,
+    order_hint: Option<u8>,
+    primary_ref_frame: Option<u8>,
+    refresh_frame_flags: u8,
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_av1_partial_frame_header(
+    bits: &NativeVulkanAv1BitReader<'_>,
+    prefix: NativeVulkanAv1ParsedFrameHeaderPrefix,
+    reference_order_hints: Vec<u8>,
+    frame_refs_short_signaling: bool,
+    last_frame_idx: Option<u8>,
+    gold_frame_idx: Option<u8>,
+    ref_frame_indices: Vec<i8>,
+    reason: String,
+) -> NativeVulkanAv1ParsedFrameHeader {
+    NativeVulkanAv1ParsedFrameHeader {
+        frame_header_bytes: bits.byte_offset(),
+        tile_count: 0,
+        tile_columns: 0,
+        tile_rows: 0,
+        tile_size_bytes: 0,
+        tile_bits: 0,
+        tile_info: NativeVulkanAv1ParsedTileInfo {
+            tile_count: 0,
+            tile_columns: 0,
+            tile_rows: 0,
+            tile_size_bytes: 0,
+            tile_bits: 0,
+            uniform_tile_spacing_flag: false,
+            context_update_tile_id: 0,
+            mi_col_starts: Vec::new(),
+            mi_row_starts: Vec::new(),
+            width_in_sbs_minus_1: Vec::new(),
+            height_in_sbs_minus_1: Vec::new(),
+        },
+        frame_type: prefix.frame_type,
+        show_frame: prefix.show_frame,
+        showable_frame: prefix.showable_frame,
+        error_resilient_mode: prefix.error_resilient_mode,
+        disable_cdf_update: prefix.disable_cdf_update,
+        disable_frame_end_update_cdf: prefix.disable_frame_end_update_cdf,
+        allow_screen_content_tools: prefix.allow_screen_content_tools,
+        force_integer_mv: prefix.force_integer_mv,
+        frame_size_override_flag: prefix.frame_size_override_flag,
+        order_hint: prefix.order_hint,
+        primary_ref_frame: prefix.primary_ref_frame,
+        refresh_frame_flags: prefix.refresh_frame_flags,
+        reference_order_hints,
+        frame_refs_short_signaling,
+        last_frame_idx,
+        gold_frame_idx,
+        ref_frame_indices,
+        render_and_frame_size_different: None,
+        frame_width: None,
+        frame_height: None,
+        render_width: None,
+        render_height: None,
+        quantization: NativeVulkanAv1ParsedQuantization {
+            base_q_idx: 0,
+            delta_q_y_dc: 0,
+            delta_q_u_dc: 0,
+            delta_q_u_ac: 0,
+            delta_q_v_dc: 0,
+            delta_q_v_ac: 0,
+            using_qmatrix: false,
+            diff_uv_delta: false,
+            qm_y: 0,
+            qm_u: 0,
+            qm_v: 0,
+        },
+        segmentation: NativeVulkanAv1ParsedSegmentation {
+            enabled: false,
+            update_map: false,
+            temporal_update: false,
+            update_data: false,
+            feature_enabled: [0; 8],
+            feature_data: [[0; 8]; 8],
+        },
+        delta_q: NativeVulkanAv1ParsedDeltaQ {
+            present: false,
+            res: 0,
+        },
+        delta_lf: NativeVulkanAv1ParsedDeltaLf {
+            present: false,
+            res: 0,
+            multi: false,
+        },
+        loop_filter: NativeVulkanAv1ParsedLoopFilter {
+            level: [0; 4],
+            sharpness: 0,
+            delta_enabled: false,
+            delta_update: false,
+            update_ref_delta: 0,
+            ref_deltas: [1, 0, 0, 0, -1, 0, -1, -1],
+            update_mode_delta: 0,
+            mode_deltas: [0, 0],
+        },
+        cdef: NativeVulkanAv1ParsedCdef {
+            damping_minus_3: 0,
+            bits: 0,
+            y_pri_strength: [0; 8],
+            y_sec_strength: [0; 8],
+            uv_pri_strength: [0; 8],
+            uv_sec_strength: [0; 8],
+        },
+        loop_restoration: NativeVulkanAv1ParsedLoopRestoration {
+            frame_restoration_type: [
+                vk::native::StdVideoAV1FrameRestorationType_STD_VIDEO_AV1_FRAME_RESTORATION_TYPE_NONE,
+                vk::native::StdVideoAV1FrameRestorationType_STD_VIDEO_AV1_FRAME_RESTORATION_TYPE_NONE,
+                vk::native::StdVideoAV1FrameRestorationType_STD_VIDEO_AV1_FRAME_RESTORATION_TYPE_NONE,
+            ],
+            loop_restoration_size: [0; 3],
+            uses_lr: false,
+            uses_chroma_lr: false,
+        },
+        tx_mode_select: false,
+        reduced_tx_set: false,
+        unsupported_reason: Some(reason),
+    }
 }
 
 #[cfg(any(feature = "native-vulkan-gst-video", test))]
@@ -28952,15 +29110,34 @@ fn native_vulkan_parse_av1_frame_header_for_submit(
         )?
     };
 
+    let mut reference_order_hints = Vec::new();
     if !frame_is_intra || refresh_frame_flags != 0xff {
         if error_resilient_mode && sequence_header.enable_order_hint {
             let order_hint_bits =
                 u32::from(sequence_header.order_hint_bits_minus_1.unwrap_or(0)) + 1;
             for _ in 0..8 {
-                bits.skip_bits(order_hint_bits, "ref_order_hint")?;
+                reference_order_hints.push(native_vulkan_av1_u8(
+                    bits.read_bits(order_hint_bits, "ref_order_hint")?,
+                    "ref_order_hint",
+                )?);
             }
         }
     }
+
+    let prefix = NativeVulkanAv1ParsedFrameHeaderPrefix {
+        frame_type,
+        show_frame,
+        showable_frame,
+        error_resilient_mode,
+        disable_cdf_update,
+        disable_frame_end_update_cdf: true,
+        allow_screen_content_tools,
+        force_integer_mv,
+        frame_size_override_flag,
+        order_hint,
+        primary_ref_frame,
+        refresh_frame_flags,
+    };
 
     let (
         frame_width,
@@ -28986,7 +29163,57 @@ fn native_vulkan_parse_av1_frame_header_for_submit(
             allow_intrabc,
         )
     } else {
-        return Err("AV1 inter frame direct submit is not parsed yet".to_owned());
+        let mut frame_refs_short_signaling = false;
+        let mut last_frame_idx = None;
+        let mut gold_frame_idx = None;
+        let mut ref_frame_indices = Vec::with_capacity(7);
+        if sequence_header.enable_order_hint {
+            frame_refs_short_signaling = bits.read_bool("frame_refs_short_signaling")?;
+            if frame_refs_short_signaling {
+                last_frame_idx = Some(native_vulkan_av1_u8(
+                    bits.read_bits(3, "last_frame_idx")?,
+                    "last_frame_idx",
+                )?);
+                gold_frame_idx = Some(native_vulkan_av1_u8(
+                    bits.read_bits(3, "gold_frame_idx")?,
+                    "gold_frame_idx",
+                )?);
+            }
+        }
+        if frame_refs_short_signaling {
+            return Ok(native_vulkan_av1_partial_frame_header(
+                &bits,
+                prefix,
+                reference_order_hints,
+                frame_refs_short_signaling,
+                last_frame_idx,
+                gold_frame_idx,
+                ref_frame_indices,
+                "AV1 inter frame short reference signaling needs set_frame_refs slot expansion"
+                    .to_owned(),
+            ));
+        }
+        for _ in 0..7 {
+            ref_frame_indices.push(native_vulkan_av1_i8(
+                bits.read_bits(3, "ref_frame_idx")?,
+                "ref_frame_idx",
+            )?);
+            if sequence_header.frame_id_numbers_present_flag {
+                let delta_frame_id_bits =
+                    u32::from(sequence_header.delta_frame_id_length_minus_2.unwrap_or(0)) + 2;
+                bits.skip_bits(delta_frame_id_bits, "delta_frame_id_minus_1")?;
+            }
+        }
+        return Ok(native_vulkan_av1_partial_frame_header(
+            &bits,
+            prefix,
+            reference_order_hints,
+            frame_refs_short_signaling,
+            last_frame_idx,
+            gold_frame_idx,
+            ref_frame_indices,
+            "AV1 inter frame reference indices parsed; decode submit still needs reference slot planning".to_owned(),
+        ));
     };
     if allow_intrabc {
         return Err(
@@ -29038,6 +29265,11 @@ fn native_vulkan_parse_av1_frame_header_for_submit(
         order_hint,
         primary_ref_frame,
         refresh_frame_flags,
+        reference_order_hints,
+        frame_refs_short_signaling: false,
+        last_frame_idx: None,
+        gold_frame_idx: None,
+        ref_frame_indices: Vec::new(),
         render_and_frame_size_different,
         frame_width,
         frame_height,
@@ -30361,6 +30593,11 @@ impl<'a> NativeVulkanAv1BitReader<'a> {
 #[cfg(any(feature = "native-vulkan-gst-video", test))]
 fn native_vulkan_av1_u8(value: u32, label: &'static str) -> Result<u8, String> {
     u8::try_from(value).map_err(|_| format!("{label}={value} exceeds u8 range"))
+}
+
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+fn native_vulkan_av1_i8(value: u32, label: &'static str) -> Result<i8, String> {
+    i8::try_from(value).map_err(|_| format!("{label}={value} exceeds i8 range"))
 }
 
 #[cfg(any(feature = "native-vulkan-gst-video", test))]
@@ -35044,6 +35281,107 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .vulkan_submit_candidate
+        );
+    }
+
+    #[test]
+    fn parses_av1_inter_frame_reference_indices_for_planning() {
+        fn push_bits(bits: &mut Vec<bool>, value: u32, count: u32) {
+            for shift in (0..count).rev() {
+                bits.push(((value >> shift) & 1) != 0);
+            }
+        }
+        fn pack_bits(bits: &[bool]) -> Vec<u8> {
+            let mut bytes = vec![0u8; bits.len().div_ceil(8)];
+            for (index, bit) in bits.iter().copied().enumerate() {
+                if bit {
+                    bytes[index / 8] |= 1 << (7 - (index % 8));
+                }
+            }
+            bytes
+        }
+        fn push_obu(bytes: &mut Vec<u8>, obu_type: u8, payload: &[u8]) {
+            bytes.push((obu_type << 3) | 0x02);
+            bytes.push(payload.len() as u8);
+            bytes.extend_from_slice(payload);
+        }
+
+        let mut sequence_bits = Vec::new();
+        push_bits(&mut sequence_bits, 0, 3); // seq_profile Main
+        push_bits(&mut sequence_bits, 0, 1); // still_picture
+        push_bits(&mut sequence_bits, 0, 1); // reduced_still_picture_header
+        push_bits(&mut sequence_bits, 0, 1); // timing_info_present_flag
+        push_bits(&mut sequence_bits, 0, 1); // initial_display_delay_present_flag
+        push_bits(&mut sequence_bits, 0, 5); // operating_points_cnt_minus_1
+        push_bits(&mut sequence_bits, 0, 12); // operating_point_idc
+        push_bits(&mut sequence_bits, 4, 5); // seq_level_idx 3.0
+        push_bits(&mut sequence_bits, 9, 4); // frame_width_bits_minus_1
+        push_bits(&mut sequence_bits, 8, 4); // frame_height_bits_minus_1
+        push_bits(&mut sequence_bits, 639, 10); // max_frame_width_minus_1
+        push_bits(&mut sequence_bits, 367, 9); // max_frame_height_minus_1
+        push_bits(&mut sequence_bits, 0, 1); // frame_id_numbers_present_flag
+        push_bits(&mut sequence_bits, 0, 1); // use_128x128_superblock
+        push_bits(&mut sequence_bits, 1, 1); // enable_filter_intra
+        push_bits(&mut sequence_bits, 1, 1); // enable_intra_edge_filter
+        push_bits(&mut sequence_bits, 0, 1); // enable_interintra_compound
+        push_bits(&mut sequence_bits, 0, 1); // enable_masked_compound
+        push_bits(&mut sequence_bits, 0, 1); // enable_warped_motion
+        push_bits(&mut sequence_bits, 0, 1); // enable_dual_filter
+        push_bits(&mut sequence_bits, 1, 1); // enable_order_hint
+        push_bits(&mut sequence_bits, 0, 1); // enable_jnt_comp
+        push_bits(&mut sequence_bits, 0, 1); // enable_ref_frame_mvs
+        push_bits(&mut sequence_bits, 0, 1); // seq_choose_screen_content_tools
+        push_bits(&mut sequence_bits, 0, 1); // seq_force_screen_content_tools
+        push_bits(&mut sequence_bits, 6, 3); // order_hint_bits_minus_1
+        push_bits(&mut sequence_bits, 0, 1); // enable_superres
+        push_bits(&mut sequence_bits, 0, 1); // enable_cdef
+        push_bits(&mut sequence_bits, 0, 1); // enable_restoration
+        push_bits(&mut sequence_bits, 0, 1); // high_bitdepth
+        push_bits(&mut sequence_bits, 0, 1); // mono_chrome
+        push_bits(&mut sequence_bits, 0, 1); // color_description_present_flag
+        push_bits(&mut sequence_bits, 0, 1); // color_range
+        push_bits(&mut sequence_bits, 0, 2); // chroma_sample_position
+        push_bits(&mut sequence_bits, 0, 1); // separate_uv_delta_q
+        push_bits(&mut sequence_bits, 0, 1); // film_grain_params_present
+
+        let mut frame_bits = Vec::new();
+        push_bits(&mut frame_bits, 0, 1); // show_existing_frame
+        push_bits(&mut frame_bits, 1, 2); // frame_type inter
+        push_bits(&mut frame_bits, 1, 1); // show_frame
+        push_bits(&mut frame_bits, 1, 1); // error_resilient_mode
+        push_bits(&mut frame_bits, 1, 1); // disable_cdf_update
+        push_bits(&mut frame_bits, 0, 1); // frame_size_override_flag
+        push_bits(&mut frame_bits, 5, 7); // order_hint
+        push_bits(&mut frame_bits, 0x01, 8); // refresh_frame_flags
+        for value in 0..8 {
+            push_bits(&mut frame_bits, value, 7); // ref_order_hint
+        }
+        push_bits(&mut frame_bits, 0, 1); // frame_refs_short_signaling
+        for value in 0..7 {
+            push_bits(&mut frame_bits, value, 3); // ref_frame_idx
+        }
+
+        let mut obu = Vec::new();
+        push_obu(&mut obu, 1, &pack_bits(&sequence_bits));
+        push_obu(&mut obu, 6, &pack_bits(&frame_bits));
+
+        let stats = native_vulkan_av1_obu_stats(&obu).unwrap();
+        let submit = stats.first_frame_submit.as_ref().unwrap();
+
+        assert_eq!(submit.frame_type_label, "inter");
+        assert!(submit.found_frame_header);
+        assert!(!submit.vulkan_submit_candidate);
+        assert_eq!(submit.order_hint, Some(5));
+        assert_eq!(submit.refresh_frame_flags, 0x01);
+        assert_eq!(submit.reference_order_hints, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        assert!(!submit.frame_refs_short_signaling);
+        assert_eq!(submit.ref_frame_indices, vec![0, 1, 2, 3, 4, 5, 6]);
+        assert!(
+            submit
+                .unsupported_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("reference indices parsed")
         );
     }
 

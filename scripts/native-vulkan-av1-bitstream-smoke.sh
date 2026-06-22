@@ -384,6 +384,7 @@ fi
   printf 'session_parameters_codec: %s\n' "$session_parameters_codec"
   printf 'session_parameters_source: %s\n' "$session_parameters_source"
   printf 'av1_obus_head: %s\n' "$(jq -c '[.bitstream_extract.av1_obus[0:8][]?]' "$probe_json")"
+  printf 'av1_temporal_units_head: %s\n' "$(jq -c '[.bitstream_extract.av1_temporal_units[0:8][]? | {index, pts_ms, frame_count, frame_header_count, tile_group_count, frame_type: (.first_frame_submit.frame_type_label // "none"), show_frame: (.first_frame_submit.show_frame // false), order_hint: (.first_frame_submit.order_hint // null), refresh_frame_flags: (.first_frame_submit.refresh_frame_flags // 0), ref_frame_indices: (.first_frame_submit.ref_frame_indices // []), reference_order_hints: (.first_frame_submit.reference_order_hints // []), submit_candidate: (.first_frame_submit.vulkan_submit_candidate // false), unsupported_reason: (.first_frame_submit.unsupported_reason // "none")}]' "$probe_json")"
   printf 'mapped_write_source: %s\n' "$mapped_write_source"
   printf 'mapped_write_bytes: %s\n' "$mapped_write_bytes"
   printf 'bitstream_buffer_bytes: %s\n' "$(jq -r '.bitstream_buffer.size' "$probe_json")"
