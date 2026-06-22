@@ -26972,6 +26972,9 @@ fn native_vulkan_parse_av1_frame_header_for_submit(
             "AV1 intra block copy is not supported by the first direct submit gate".to_owned(),
         );
     }
+    if !disable_cdf_update {
+        bits.read_bool("disable_frame_end_update_cdf")?;
+    }
 
     let tile_info = native_vulkan_parse_av1_tile_info(
         &mut bits,
@@ -27091,29 +27094,71 @@ fn native_vulkan_parse_av1_tile_info(
     };
     let sb_cols = frame_width.div_ceil(sb_size);
     let sb_rows = frame_height.div_ceil(sb_size);
-    let max_tile_width_sb = if sequence_header.use_128x128_superblock {
+    let max_tile_width_sb: u32 = if sequence_header.use_128x128_superblock {
         32
     } else {
         64
     };
-    let max_tile_area_sb = if sequence_header.use_128x128_superblock {
+    let max_tile_area_sb: u32 = if sequence_header.use_128x128_superblock {
         576
     } else {
         2304
     };
     let uniform_tile_spacing_flag = bits.read_bool("uniform_tile_spacing_flag")?;
     if uniform_tile_spacing_flag {
-        if sb_cols > max_tile_width_sb || sb_cols.saturating_mul(sb_rows) > max_tile_area_sb {
-            return Err(format!(
-                "AV1 uniform multi-tile layouts are not parsed yet: sb_cols={sb_cols}, sb_rows={sb_rows}"
-            ));
+        let mut min_log2_tile_cols = 0u32;
+        while (max_tile_width_sb << min_log2_tile_cols) < sb_cols {
+            min_log2_tile_cols = min_log2_tile_cols.saturating_add(1);
         }
+        let max_log2_tile_cols = native_vulkan_av1_ceil_log2(sb_cols);
+        let mut tile_cols_log2 = min_log2_tile_cols;
+        while tile_cols_log2 < max_log2_tile_cols && bits.read_bool("increment_tile_cols_log2")? {
+            tile_cols_log2 = tile_cols_log2.saturating_add(1);
+        }
+        let tile_width_divisor = 1u32
+            .checked_shl(tile_cols_log2)
+            .ok_or_else(|| "AV1 tile_cols_log2 overflow".to_owned())?;
+        let tile_width_sb =
+            sb_cols.saturating_add(tile_width_divisor).saturating_sub(1) / tile_width_divisor;
+        let tile_columns = sb_cols.div_ceil(tile_width_sb.max(1));
+
+        let mut min_log2_tile_rows = 0u32;
+        while max_tile_area_sb
+            .checked_shr(tile_cols_log2.saturating_add(min_log2_tile_rows))
+            .unwrap_or(0)
+            < tile_width_sb.saturating_mul(sb_rows)
+        {
+            min_log2_tile_rows = min_log2_tile_rows.saturating_add(1);
+        }
+        let max_log2_tile_rows = native_vulkan_av1_ceil_log2(sb_rows);
+        let mut tile_rows_log2 = min_log2_tile_rows.min(max_log2_tile_rows);
+        while tile_rows_log2 < max_log2_tile_rows && bits.read_bool("increment_tile_rows_log2")? {
+            tile_rows_log2 = tile_rows_log2.saturating_add(1);
+        }
+        let tile_height_divisor = 1u32
+            .checked_shl(tile_rows_log2)
+            .ok_or_else(|| "AV1 tile_rows_log2 overflow".to_owned())?;
+        let tile_height_sb = sb_rows
+            .saturating_add(tile_height_divisor)
+            .saturating_sub(1)
+            / tile_height_divisor;
+        let tile_rows = sb_rows.div_ceil(tile_height_sb.max(1));
+        let tile_count = tile_columns.saturating_mul(tile_rows);
+        let tile_bits = native_vulkan_av1_ceil_log2(tile_columns)
+            .saturating_add(native_vulkan_av1_ceil_log2(tile_rows));
+        let tile_size_bytes = if tile_count > 1 {
+            bits.skip_bits(tile_bits, "context_update_tile_id")?;
+            bits.read_bits(2, "tile_size_bytes_minus_1")?
+                .saturating_add(1)
+        } else {
+            0
+        };
         return Ok(NativeVulkanAv1ParsedTileInfo {
-            tile_count: 1,
-            tile_columns: 1,
-            tile_rows: 1,
-            tile_size_bytes: 0,
-            tile_bits: 0,
+            tile_count,
+            tile_columns,
+            tile_rows,
+            tile_size_bytes,
+            tile_bits,
         });
     }
 
@@ -32691,10 +32736,13 @@ mod tests {
         push_bits(&mut frame_bits, 0, 1); // show_existing_frame
         push_bits(&mut frame_bits, 0, 2); // frame_type key
         push_bits(&mut frame_bits, 1, 1); // show_frame
-        push_bits(&mut frame_bits, 1, 1); // disable_cdf_update
+        push_bits(&mut frame_bits, 0, 1); // disable_cdf_update
         push_bits(&mut frame_bits, 0, 1); // frame_size_override_flag
         push_bits(&mut frame_bits, 0, 1); // render_and_frame_size_different
+        push_bits(&mut frame_bits, 0, 1); // disable_frame_end_update_cdf
         push_bits(&mut frame_bits, 1, 1); // uniform_tile_spacing_flag
+        push_bits(&mut frame_bits, 0, 1); // stop tile column increments
+        push_bits(&mut frame_bits, 0, 1); // stop tile row increments
         push_bits(&mut frame_bits, 1, 8); // base_q_idx
         push_bits(&mut frame_bits, 0, 1); // delta_q_y_dc
         push_bits(&mut frame_bits, 0, 1); // delta_q_u_dc
@@ -32739,6 +32787,128 @@ mod tests {
         assert_eq!(submit.tile_sizes, vec![3]);
         assert_eq!(submit.frame_width, Some(640));
         assert_eq!(submit.frame_height, Some(368));
+    }
+
+    #[test]
+    fn parses_av1_uniform_multi_tile_key_frame_submit_candidate() {
+        fn push_bits(bits: &mut Vec<bool>, value: u32, count: u32) {
+            for shift in (0..count).rev() {
+                bits.push(((value >> shift) & 1) != 0);
+            }
+        }
+        fn pack_bits(bits: &[bool]) -> Vec<u8> {
+            let mut bytes = vec![0u8; bits.len().div_ceil(8)];
+            for (index, bit) in bits.iter().copied().enumerate() {
+                if bit {
+                    bytes[index / 8] |= 1 << (7 - (index % 8));
+                }
+            }
+            bytes
+        }
+        fn push_obu(bytes: &mut Vec<u8>, obu_type: u8, payload: &[u8]) {
+            bytes.push((obu_type << 3) | 0x02);
+            bytes.push(payload.len() as u8);
+            bytes.extend_from_slice(payload);
+        }
+
+        let mut sequence_bits = Vec::new();
+        push_bits(&mut sequence_bits, 0, 3); // seq_profile Main
+        push_bits(&mut sequence_bits, 0, 1); // still_picture
+        push_bits(&mut sequence_bits, 0, 1); // reduced_still_picture_header
+        push_bits(&mut sequence_bits, 0, 1); // timing_info_present_flag
+        push_bits(&mut sequence_bits, 0, 1); // initial_display_delay_present_flag
+        push_bits(&mut sequence_bits, 0, 5); // operating_points_cnt_minus_1
+        push_bits(&mut sequence_bits, 0, 12); // operating_point_idc
+        push_bits(&mut sequence_bits, 4, 5); // seq_level_idx 3.0
+        push_bits(&mut sequence_bits, 9, 4); // frame_width_bits_minus_1
+        push_bits(&mut sequence_bits, 8, 4); // frame_height_bits_minus_1
+        push_bits(&mut sequence_bits, 639, 10); // max_frame_width_minus_1
+        push_bits(&mut sequence_bits, 367, 9); // max_frame_height_minus_1
+        push_bits(&mut sequence_bits, 0, 1); // frame_id_numbers_present_flag
+        push_bits(&mut sequence_bits, 0, 1); // use_128x128_superblock
+        push_bits(&mut sequence_bits, 1, 1); // enable_filter_intra
+        push_bits(&mut sequence_bits, 1, 1); // enable_intra_edge_filter
+        push_bits(&mut sequence_bits, 0, 1); // enable_interintra_compound
+        push_bits(&mut sequence_bits, 0, 1); // enable_masked_compound
+        push_bits(&mut sequence_bits, 0, 1); // enable_warped_motion
+        push_bits(&mut sequence_bits, 0, 1); // enable_dual_filter
+        push_bits(&mut sequence_bits, 0, 1); // enable_order_hint
+        push_bits(&mut sequence_bits, 0, 1); // seq_choose_screen_content_tools
+        push_bits(&mut sequence_bits, 0, 1); // seq_force_screen_content_tools
+        push_bits(&mut sequence_bits, 0, 1); // enable_superres
+        push_bits(&mut sequence_bits, 0, 1); // enable_cdef
+        push_bits(&mut sequence_bits, 0, 1); // enable_restoration
+        push_bits(&mut sequence_bits, 0, 1); // high_bitdepth
+        push_bits(&mut sequence_bits, 0, 1); // mono_chrome
+        push_bits(&mut sequence_bits, 0, 1); // color_description_present_flag
+        push_bits(&mut sequence_bits, 0, 1); // color_range
+        push_bits(&mut sequence_bits, 0, 2); // chroma_sample_position
+        push_bits(&mut sequence_bits, 0, 1); // separate_uv_delta_q
+        push_bits(&mut sequence_bits, 0, 1); // film_grain_params_present
+
+        let mut frame_bits = Vec::new();
+        push_bits(&mut frame_bits, 0, 1); // show_existing_frame
+        push_bits(&mut frame_bits, 0, 2); // frame_type key
+        push_bits(&mut frame_bits, 1, 1); // show_frame
+        push_bits(&mut frame_bits, 1, 1); // disable_cdf_update
+        push_bits(&mut frame_bits, 0, 1); // frame_size_override_flag
+        push_bits(&mut frame_bits, 0, 1); // render_and_frame_size_different
+        push_bits(&mut frame_bits, 1, 1); // uniform_tile_spacing_flag
+        push_bits(&mut frame_bits, 1, 1); // increment_tile_cols_log2 -> 1
+        push_bits(&mut frame_bits, 0, 1); // stop tile column increments
+        push_bits(&mut frame_bits, 1, 1); // increment_tile_rows_log2 -> 1
+        push_bits(&mut frame_bits, 0, 1); // stop tile row increments
+        push_bits(&mut frame_bits, 0, 2); // context_update_tile_id
+        push_bits(&mut frame_bits, 0, 2); // tile_size_bytes_minus_1
+        push_bits(&mut frame_bits, 1, 8); // base_q_idx
+        push_bits(&mut frame_bits, 0, 1); // delta_q_y_dc
+        push_bits(&mut frame_bits, 0, 1); // delta_q_u_dc
+        push_bits(&mut frame_bits, 0, 1); // delta_q_u_ac
+        push_bits(&mut frame_bits, 0, 1); // using_qmatrix
+        push_bits(&mut frame_bits, 0, 1); // segmentation_enabled
+        push_bits(&mut frame_bits, 0, 1); // delta_q_present
+        push_bits(&mut frame_bits, 0, 6); // loop_filter_level_0
+        push_bits(&mut frame_bits, 0, 6); // loop_filter_level_1
+        push_bits(&mut frame_bits, 0, 3); // loop_filter_sharpness
+        push_bits(&mut frame_bits, 0, 1); // loop_filter_delta_enabled
+        push_bits(&mut frame_bits, 0, 1); // tx_mode_select
+        push_bits(&mut frame_bits, 0, 1); // reduced_tx_set
+        while !frame_bits.len().is_multiple_of(8) {
+            frame_bits.push(false);
+        }
+
+        let mut frame_payload = pack_bits(&frame_bits);
+        let frame_header_len = frame_payload.len() as u32;
+        frame_payload.push(0); // tile_start_and_end_present_flag + alignment padding
+        frame_payload.extend_from_slice(&[1, 0xaa, 0xab]);
+        frame_payload.extend_from_slice(&[2, 0xba, 0xbb, 0xbc]);
+        frame_payload.extend_from_slice(&[0, 0xca]);
+        frame_payload.extend_from_slice(&[0xda, 0xdb, 0xdc, 0xdd]);
+
+        let mut obu = Vec::new();
+        push_obu(&mut obu, 1, &pack_bits(&sequence_bits));
+        let frame_obu_payload_offset = obu.len() as u32 + 2;
+        push_obu(&mut obu, 6, &frame_payload);
+
+        let stats = native_vulkan_av1_obu_stats(&obu).unwrap();
+        let submit = stats.first_frame_submit.as_ref().unwrap();
+
+        assert!(submit.vulkan_submit_candidate, "{submit:?}");
+        assert_eq!(submit.tile_count, 4);
+        assert_eq!(submit.tile_columns, 2);
+        assert_eq!(submit.tile_rows, 2);
+        assert_eq!(submit.tile_size_bytes, 1);
+        assert_eq!(
+            submit.tile_offsets,
+            vec![
+                frame_obu_payload_offset + frame_header_len + 2,
+                frame_obu_payload_offset + frame_header_len + 5,
+                frame_obu_payload_offset + frame_header_len + 9,
+                frame_obu_payload_offset + frame_header_len + 10,
+            ]
+        );
+        assert_eq!(submit.tile_sizes, vec![2, 3, 1, 4]);
+        assert_eq!(submit.tile_payload_total_bytes, 10);
     }
 
     #[test]
