@@ -297,6 +297,17 @@ if [[ -z "$source" ]]; then
   if [[ "$gop_size" -le "$decode_prefix" ]]; then
     gop_size=$((decode_prefix + 1))
   fi
+  if [[ "$frames_explicit" -eq 0 && -n "$arbitrary_entry_offset" ]]; then
+    offset_frames="$(awk -v offset="$arbitrary_entry_offset" -v fps="$target_fps" 'BEGIN { value = offset * fps; printf "%d", (value == int(value)) ? value : int(value) + 1 }')"
+    arbitrary_window_frames="$expected_frames"
+    if [[ "$require_loop_skip_replay" -eq 1 || "$expected_frames" -gt "$decode_prefix" ]]; then
+      arbitrary_window_frames="$decode_prefix"
+    fi
+    arbitrary_min_frames=$((offset_frames + gop_size + arbitrary_window_frames + 2))
+    if [[ "$frames" -lt "$arbitrary_min_frames" ]]; then
+      frames="$arbitrary_min_frames"
+    fi
+  fi
   source_duration_seconds=$(( (frames + target_fps - 1) / target_fps ))
   source="$generated_dir/h264-high-b${bframes}-ref${refs}-weightp${weightp}-weightb${weightb}-${width}x${height}-${target_fps}fps-${frames}frames-${decode_prefix}au.mp4"
   ffmpeg -hide_banner -loglevel error -y \
@@ -490,6 +501,8 @@ h264_decode_ahead_copy_wait_output_hazard_count="$(jq -r '.h264_decode_ahead_cop
 h264_decode_ahead_copy_wait_reference_hazard_count="$(jq -r '.h264_decode_ahead_copy_wait_reference_hazard_count // 0' "$runtime_json")"
 first_frame_idr="$(jq -r '.frames[0].idr // false' "$runtime_json")"
 loop_first_non_idr_count="$(jq -r 'reduce (.frames // [])[] as $frame ({}; ($frame.playback_loop_index | tostring) as $loop | if has($loop) then . else .[$loop] = ($frame.idr == true) end) | [to_entries[] | select(.value != true)] | length' "$runtime_json")"
+first_frame_recovery="$(jq -r '(.frames[0].reset_before_decode == true) and ((.frames[0].idr == true) or ((.frames[0].decode_reference_slot_count // 0) == 0))' "$runtime_json")"
+loop_first_unrecovered_count="$(jq -r 'reduce (.frames // [])[] as $frame ({}; ($frame.playback_loop_index | tostring) as $loop | if has($loop) then . else .[$loop] = (($frame.reset_before_decode == true) and (($frame.idr == true) or (($frame.decode_reference_slot_count // 0) == 0))) end) | [to_entries[] | select(.value != true)] | length' "$runtime_json")"
 swapchain_images="$(jq -r '.swapchain_image_count // 0' "$runtime_json")"
 resource_bytes="$(jq -r '.video_resource_memory_bytes // 0' "$runtime_json")"
 idr_frames="$(jq -r '[.frames[]? | select(.idr == true)] | length' "$runtime_json")"
@@ -518,11 +531,11 @@ if [[ "$h264_input_mode" != "streaming-queue" || "$h264_packet_queue_capacity" -
   input_gate_failed=1
 fi
 arbitrary_entry_gate_failed=0
-if [[ "$arbitrary_entry_source" -eq 1 && ( "$h264_packet_queue_bootstrap_discarded_access_units" -le 0 || "$h264_packet_queue_loop_skip_access_units" -le 0 || "$first_frame_idr" != "true" ) ]]; then
+if [[ "$arbitrary_entry_source" -eq 1 && ( "$h264_packet_queue_bootstrap_discarded_access_units" -le 0 || "$h264_packet_queue_loop_skip_access_units" -le 0 || "$first_frame_recovery" != "true" ) ]]; then
   arbitrary_entry_gate_failed=1
 fi
 loop_skip_replay_gate_failed=0
-if [[ "$require_loop_skip_replay" -eq 1 && ( "$h264_packet_queue_eos_count" -le 0 || "$h264_packet_queue_loop_count" -le 0 || "$playback_loop_count" -le 1 || "$loop_boundary_reset_count" -le 0 || "$h264_packet_queue_bootstrap_discarded_access_units" -le 0 || "$h264_packet_queue_loop_skip_access_units" -le 0 || "$first_frame_idr" != "true" || "$loop_first_non_idr_count" -ne 0 ) ]]; then
+if [[ "$require_loop_skip_replay" -eq 1 && ( "$h264_packet_queue_eos_count" -le 0 || "$h264_packet_queue_loop_count" -le 0 || "$playback_loop_count" -le 1 || "$loop_boundary_reset_count" -le 0 || "$h264_packet_queue_bootstrap_discarded_access_units" -le 0 || "$h264_packet_queue_loop_skip_access_units" -le 0 || "$first_frame_recovery" != "true" || "$loop_first_unrecovered_count" -ne 0 ) ]]; then
   loop_skip_replay_gate_failed=1
 fi
 if [[ "$decode_prefix" -gt 1 && ( "$bitstream_slot_count" -le 1 || "$bitstream_ring_capacity_bytes" -le "$bitstream_slot_bytes" ) ]]; then
@@ -636,6 +649,8 @@ if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expect
     printf 'loop_skip_replay_gate_failed: %s\n' "$loop_skip_replay_gate_failed"
     printf 'first_frame_idr: %s\n' "$first_frame_idr"
     printf 'loop_first_non_idr_count: %s\n' "$loop_first_non_idr_count"
+    printf 'first_frame_recovery: %s\n' "$first_frame_recovery"
+    printf 'loop_first_unrecovered_count: %s\n' "$loop_first_unrecovered_count"
     printf 'swapchain_images: %s\n' "$swapchain_images"
     printf 'video_resource_memory_bytes: %s\n' "$resource_bytes"
     printf 'runtime JSON: %s\n' "$runtime_json"
@@ -758,6 +773,8 @@ fi
   printf 'h264_decode_ahead_copy_wait_reference_hazard_count: %s\n' "$h264_decode_ahead_copy_wait_reference_hazard_count"
   printf 'first_frame_idr: %s\n' "$first_frame_idr"
   printf 'loop_first_non_idr_count: %s\n' "$loop_first_non_idr_count"
+  printf 'first_frame_recovery: %s\n' "$first_frame_recovery"
+  printf 'loop_first_unrecovered_count: %s\n' "$loop_first_unrecovered_count"
   printf 'frame_layers_head: %s\n' "$(jq -c '[.frames[0:32][]?.dst_base_array_layer]' "$runtime_json")"
   printf 'frame_layers_tail: %s\n' "$(jq -c '[.frames[-32:][]?.dst_base_array_layer]' "$runtime_json")"
   printf 'frame_display_slots_head: %s\n' "$(jq -c '[.frames[0:32][]?.display_slot]' "$runtime_json")"

@@ -4680,24 +4680,76 @@ pub fn run_h264_ready_prefix_video(
             "direct H.264 ready-prefix video requires at least one playback frame".to_owned(),
         ));
     }
+    let h264_trace_enabled = native_vulkan_h264_trace_enabled();
+    native_vulkan_h264_trace(
+        h264_trace_enabled,
+        format!(
+            "start source={} extent={}x{} ready_prefix={} playback_frames={}",
+            source.display(),
+            width,
+            height,
+            ready_prefix_frame_count,
+            playback_frame_count
+        ),
+    );
     let target_max_fps = options.target_max_fps;
+    let mut probe = NativeVulkanSurfaceProbe::connect(NativeVulkanSurfaceProbeOptions {
+        host: options.host,
+        wait_configure_roundtrips: options.wait_configure_roundtrips,
+    })?;
+    native_vulkan_h264_trace(
+        h264_trace_enabled,
+        "surface connected before streaming bootstrap",
+    );
+    probe.pump_events()?;
     let queue_capacity =
         native_vulkan_h264_streaming_packet_queue_capacity(ready_prefix_frame_count);
+    native_vulkan_h264_trace(
+        h264_trace_enabled,
+        format!("streaming queue start capacity={queue_capacity}"),
+    );
     let mut streaming_queue =
         native_vulkan_start_h264_streaming_packet_queue(&source, queue_capacity)?;
+    native_vulkan_h264_trace(
+        h264_trace_enabled,
+        format!(
+            "streaming queue ready queued={} pulled={} eos={} discarded={} max_payload_bytes={}",
+            streaming_queue.queued.len(),
+            streaming_queue.pulled_count,
+            streaming_queue.eos_count,
+            streaming_queue.bootstrap_discarded_access_units,
+            streaming_queue.max_payload_bytes
+        ),
+    );
     let parameter_sets = streaming_queue.parameter_sets.clone();
     let streaming_bootstrap =
         native_vulkan_h264_align_streaming_bootstrap(&mut streaming_queue, &parameter_sets)?;
+    native_vulkan_h264_trace(
+        h264_trace_enabled,
+        format!(
+            "bootstrap aligned queued={} discarded={} loop_skip={} stream_dpb_slots={} active_refs={} max_frame_num={}",
+            streaming_queue.queued.len(),
+            streaming_queue.bootstrap_discarded_access_units,
+            streaming_queue.loop_skip_access_units,
+            streaming_bootstrap.stream_dpb_slots,
+            streaming_bootstrap.stream_max_active_reference_pictures,
+            streaming_bootstrap.max_frame_num
+        ),
+    );
     native_vulkan_require_streaming_bootstrap_window(&streaming_queue, ready_prefix_frame_count)?;
+    native_vulkan_h264_trace(
+        h264_trace_enabled,
+        format!(
+            "bootstrap window ready queued={} requested={}",
+            streaming_queue.queued.len(),
+            ready_prefix_frame_count
+        ),
+    );
     let stream_sps_dpb_slots = streaming_bootstrap.stream_sps_dpb_slots;
     let stream_dpb_slots = streaming_bootstrap.stream_dpb_slots;
     let stream_max_active_reference_pictures =
         streaming_bootstrap.stream_max_active_reference_pictures;
     let stream_max_frame_num = streaming_bootstrap.max_frame_num;
-    let mut probe = NativeVulkanSurfaceProbe::connect(NativeVulkanSurfaceProbeOptions {
-        host: options.host,
-        wait_configure_roundtrips: options.wait_configure_roundtrips,
-    })?;
     probe.pump_events()?;
     let surface_snapshot = probe.snapshot();
     let present_query =
@@ -4733,6 +4785,15 @@ pub fn run_h264_ready_prefix_video(
             present_selection.physical_device_name
         ))
     })?;
+    native_vulkan_h264_trace(
+        h264_trace_enabled,
+        format!(
+            "queue selection present_family={} video_family={} device={}",
+            present_queue_family_index,
+            video_queue_family.queue_family_index,
+            present_selection.physical_device_name
+        ),
+    );
 
     ensure_native_vulkan_device_extension(
         &probe.instance,
@@ -4863,6 +4924,7 @@ pub fn run_h264_ready_prefix_video(
         operation: "vkCreateDevice(direct h264 ready-prefix video)",
         result,
     })?;
+    native_vulkan_h264_trace(h264_trace_enabled, "device created");
 
     let mut swapchain_loader = None::<ash::khr::swapchain::Device>;
     let mut swapchain = vk::SwapchainKHR::null();
@@ -4893,6 +4955,7 @@ pub fn run_h264_ready_prefix_video(
 
     let result =
         (|| -> Result<NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot, NativeVulkanError> {
+            native_vulkan_h264_trace(h264_trace_enabled, "resource setup begin");
             let present_queue = unsafe { device.get_device_queue(present_queue_family_index, 0) };
             let present_worker_queue = if requested_present_queue_count > 1 {
                 unsafe { device.get_device_queue(present_queue_family_index, 1) }
@@ -5294,6 +5357,15 @@ pub fn run_h264_ready_prefix_video(
                 renderer_descriptor_set_count,
             )?);
             let renderer_ref = renderer.as_mut().expect("video renderer was just created");
+            native_vulkan_h264_trace(
+                h264_trace_enabled,
+                format!(
+                    "resource setup complete swapchain_images={} display_ring_slots={} bitstream_bytes={}",
+                    swapchain_images.len(),
+                    h264_display_ring_slot_count,
+                    buffer.snapshot.size
+                ),
+            );
 
             let mut image_layer_layouts =
                 vec![vk::ImageLayout::UNDEFINED; image.snapshot.array_layers as usize];
@@ -5344,13 +5416,25 @@ pub fn run_h264_ready_prefix_video(
             );
             let mut previous_source_loop_index = 0u32;
             if h264_direct_sample_decoded_output {
+                native_vulkan_h264_trace(
+                    h264_trace_enabled,
+                    "enter direct sampled DPB output loop",
+                );
                 for playback_frame_index in 0..playback_frame_count {
+                    native_vulkan_h264_trace(
+                        h264_trace_enabled,
+                        format!("direct-sampled frame {playback_frame_index} begin"),
+                    );
                     probe.host.pump_events()?;
                     if probe.host.is_closed() {
                         break;
                     }
                     let fences = [in_flight];
                     let fence_wait_started_at = Instant::now();
+                    native_vulkan_h264_trace(
+                        h264_trace_enabled,
+                        format!("direct-sampled frame {playback_frame_index} fence wait begin"),
+                    );
                     unsafe {
                         device
                             .wait_for_fences(&fences, true, u64::MAX)
@@ -5370,9 +5454,61 @@ pub fn run_h264_ready_prefix_video(
                     }
                     let fence_wait_elapsed_us =
                         native_vulkan_elapsed_us(fence_wait_started_at.elapsed());
-                    let packet = streaming_queue.next_packet(true)?;
-                    let access_unit = packet.snapshot.clone();
-                    let entry = streaming_reference_planner.plan_next(&access_unit);
+                    native_vulkan_h264_trace(
+                        h264_trace_enabled,
+                        format!(
+                            "direct-sampled frame {playback_frame_index} fence wait end elapsed_us={fence_wait_elapsed_us}"
+                        ),
+                    );
+                    native_vulkan_h264_trace(
+                        h264_trace_enabled,
+                        format!("direct-sampled frame {playback_frame_index} next packet begin"),
+                    );
+                    let mut packet = streaming_queue.next_packet(true)?;
+                    let mut access_unit = packet.snapshot.clone();
+                    native_vulkan_h264_trace(
+                        h264_trace_enabled,
+                        format!(
+                            "direct-sampled frame {playback_frame_index} packet au={} loop={}",
+                            access_unit.index, packet.source_loop_index
+                        ),
+                    );
+                    let mut playback_loop_index = packet.source_loop_index;
+                    let mut loop_boundary_reset = playback_frame_index > 0
+                        && playback_loop_index != previous_source_loop_index;
+                    if loop_boundary_reset {
+                        streaming_reference_planner.reset();
+                    }
+                    let mut entry = streaming_reference_planner.plan_next(&access_unit);
+                    let mut resync_discarded_access_units = 0u32;
+                    let resync_scan_limit =
+                        native_vulkan_streaming_bootstrap_scan_limit(streaming_queue.capacity);
+                    while loop_boundary_reset
+                        && !entry.ready_for_decode_submit
+                        && usize::try_from(resync_discarded_access_units).unwrap_or(usize::MAX)
+                            < resync_scan_limit
+                    {
+                        native_vulkan_h264_trace(
+                            h264_trace_enabled,
+                            format!(
+                                "direct-sampled frame {playback_frame_index} loop resync discard au={} reason={}",
+                                access_unit.index,
+                                entry
+                                    .unsupported_reason
+                                    .as_deref()
+                                    .unwrap_or("missing references")
+                            ),
+                        );
+                        resync_discarded_access_units =
+                            resync_discarded_access_units.saturating_add(1);
+                        streaming_reference_planner.reset();
+                        packet = streaming_queue.next_packet(true)?;
+                        access_unit = packet.snapshot.clone();
+                        playback_loop_index = packet.source_loop_index;
+                        loop_boundary_reset = playback_frame_index > 0
+                            && playback_loop_index != previous_source_loop_index;
+                        entry = streaming_reference_planner.plan_next(&access_unit);
+                    }
                     if !entry.ready_for_decode_submit {
                         return Err(NativeVulkanError::Video(format!(
                             "H.264 streaming AU {} is not decodable: {}",
@@ -5383,10 +5519,7 @@ pub fn run_h264_ready_prefix_video(
                                 .unwrap_or("missing references")
                         )));
                     }
-                    let playback_loop_index = packet.source_loop_index;
                     let ready_prefix_frame_index = playback_frame_index;
-                    let loop_boundary_reset = playback_frame_index > 0
-                        && playback_loop_index != previous_source_loop_index;
                     previous_source_loop_index = playback_loop_index;
                     let pts_delta_ms = if loop_boundary_reset {
                         previous_duration_ms
@@ -5438,6 +5571,10 @@ pub fn run_h264_ready_prefix_video(
                             });
                         }
                     }
+                    native_vulkan_h264_trace(
+                        h264_trace_enabled,
+                        format!("direct-sampled frame {playback_frame_index} decode begin"),
+                    );
                     let mut frame = native_vulkan_decode_h264_ready_prefix_frame_to_image(
                         &device,
                         &video_queue_device,
@@ -5467,6 +5604,10 @@ pub fn run_h264_ready_prefix_video(
                         loop_boundary_reset,
                         bitstream_upload_elapsed_us,
                     )?;
+                    native_vulkan_h264_trace(
+                        h264_trace_enabled,
+                        format!("direct-sampled frame {playback_frame_index} decode end"),
+                    );
                     frame.fence_wait_elapsed_us = fence_wait_elapsed_us;
                     for dropped_slot in &entry.dropped_reference_slots {
                         if *dropped_slot != frame.dst_base_array_layer
@@ -5579,6 +5720,10 @@ pub fn run_h264_ready_prefix_video(
                     }
                     frame.submit_elapsed_us = native_vulkan_elapsed_us(submit_started_at.elapsed());
                     let queue_present_started_at = Instant::now();
+                    native_vulkan_h264_trace(
+                        h264_trace_enabled,
+                        format!("direct-sampled frame {playback_frame_index} present begin"),
+                    );
                     native_vulkan_queue_present_frame(
                         swapchain_loader_ref,
                         present_queue,
@@ -5587,6 +5732,10 @@ pub fn run_h264_ready_prefix_video(
                         render_finished,
                         "vkQueuePresentKHR(direct h264 ready-prefix)",
                     )?;
+                    native_vulkan_h264_trace(
+                        h264_trace_enabled,
+                        format!("direct-sampled frame {playback_frame_index} present end"),
+                    );
                     frame.queue_present_elapsed_us =
                         native_vulkan_elapsed_us(queue_present_started_at.elapsed());
                     image_layer_layouts[frame.dst_base_array_layer as usize] =
@@ -5626,12 +5775,20 @@ pub fn run_h264_ready_prefix_video(
                     }
                 }
                 unsafe {
+                    native_vulkan_h264_trace(
+                        h264_trace_enabled,
+                        "direct-sampled final fence wait begin",
+                    );
                     device
                         .wait_for_fences(&[in_flight], true, u64::MAX)
                         .map_err(|result| NativeVulkanError::Vulkan {
                             operation: "vkWaitForFences(direct h264 ready-prefix final)",
                             result,
                         })?;
+                    native_vulkan_h264_trace(
+                        h264_trace_enabled,
+                        "direct-sampled final fence wait end",
+                    );
                 }
                 for texture in retired_textures.drain(..) {
                     texture.destroy(&device);
@@ -5831,14 +5988,20 @@ pub fn run_h264_ready_prefix_video(
             let mut h264_decode_ahead_skip_bitstream_overlap_count = 0u32;
             let mut h264_decode_ahead_copy_wait_output_hazard_count = 0u32;
             let mut h264_decode_ahead_copy_wait_reference_hazard_count = 0u32;
-            let h264_decode_ahead_enabled = std::env::var("GILDER_H264_DECODE_AHEAD")
+            let h264_decode_ahead_requested = std::env::var("GILDER_H264_DECODE_AHEAD")
                 .map(|value| {
                     !matches!(
                         value.to_ascii_lowercase().as_str(),
                         "0" | "false" | "off" | "no"
                     )
                 })
-                .unwrap_or(true);
+                .unwrap_or(false);
+            let h264_recovery_bootstrap_stream =
+                streaming_queue.bootstrap_discarded_access_units > 0;
+            let h264_looped_playback = playback_frame_count > ready_prefix_frame_count;
+            let h264_decode_ahead_enabled = h264_decode_ahead_requested
+                && !h264_recovery_bootstrap_stream
+                && !h264_looped_playback;
             let mut swapchain_image_in_flight_fences =
                 vec![vk::Fence::null(); swapchain_images.len()];
 
@@ -5918,7 +6081,12 @@ pub fn run_h264_ready_prefix_video(
                 let present_queue_mutex_ref = &present_queue_mutex;
                 let device_ref = &device;
                 let present_worker = scope.spawn(move || -> Result<(), NativeVulkanError> {
+                    native_vulkan_h264_trace(h264_trace_enabled, "present worker start");
                     while let Ok(job) = present_job_rx.recv() {
+                        native_vulkan_h264_trace(
+                            h264_trace_enabled,
+                            format!("present worker job frame={} acquire begin", job.frame_index),
+                        );
                         let present_result =
                             (|| -> Result<H264PresentWorkerResult, NativeVulkanError> {
                                 let acquire_started_at = Instant::now();
@@ -5948,6 +6116,16 @@ pub fn run_h264_ready_prefix_video(
                                 };
                                 let acquire_elapsed_us =
                                     native_vulkan_elapsed_us(acquire_started_at.elapsed());
+                                native_vulkan_h264_trace(
+                                    h264_trace_enabled,
+                                    format!(
+                                        "present worker frame={} acquired image={} elapsed_us={} not_ready={}",
+                                        job.frame_index,
+                                        image_index,
+                                        acquire_elapsed_us,
+                                        acquire_not_ready_count
+                                    ),
+                                );
                                 let previous_image_fence =
                                     *swapchain_image_in_flight_fences_for_worker
                                         .get(image_index)
@@ -5961,6 +6139,13 @@ pub fn run_h264_ready_prefix_video(
                                 if previous_image_fence != vk::Fence::null()
                                     && previous_image_fence != job.fence
                                 {
+                                    native_vulkan_h264_trace(
+                                        h264_trace_enabled,
+                                        format!(
+                                            "present worker frame={} swapchain image fence wait begin",
+                                            job.frame_index
+                                        ),
+                                    );
                                     unsafe {
                                         device_ref
                                             .wait_for_fences(
@@ -5974,6 +6159,13 @@ pub fn run_h264_ready_prefix_video(
                                                 result,
                                             })?;
                                     }
+                                    native_vulkan_h264_trace(
+                                        h264_trace_enabled,
+                                        format!(
+                                            "present worker frame={} swapchain image fence wait end",
+                                            job.frame_index
+                                        ),
+                                    );
                                 }
                                 let command_buffer = present_command_buffers_for_worker
                                     .get(image_index)
@@ -6049,6 +6241,14 @@ pub fn run_h264_ready_prefix_video(
                                     .command_buffers(&command_buffers)
                                     .signal_semaphores(&signal_semaphores);
                                 let queue_submit_started_at = Instant::now();
+                                native_vulkan_h264_trace(
+                                    h264_trace_enabled,
+                                    format!(
+                                        "present worker frame={} queue submit begin wait_count={}",
+                                        job.frame_index,
+                                        wait_count
+                                    ),
+                                );
                                 unsafe {
                                     device_ref
                                         .queue_submit(
@@ -6066,18 +6266,42 @@ pub fn run_h264_ready_prefix_video(
                                     job.fence;
                                 let queue_submit_elapsed_us =
                                     native_vulkan_elapsed_us(queue_submit_started_at.elapsed());
-                            let queue_present_started_at = Instant::now();
-                            native_vulkan_queue_present_frame(
-                                swapchain_loader_ref,
-                                present_worker_queue,
-                                swapchain,
-                                image_index as u32,
-                                signal_semaphore,
-                                "vkQueuePresentKHR(direct h264 ready-prefix)",
-                            )
-                            .map(|_| {
+                                native_vulkan_h264_trace(
+                                    h264_trace_enabled,
+                                    format!(
+                                        "present worker frame={} queue submit end elapsed_us={}",
+                                        job.frame_index, queue_submit_elapsed_us
+                                    ),
+                                );
+                                let queue_present_started_at = Instant::now();
+                                native_vulkan_h264_trace(
+                                    h264_trace_enabled,
+                                    format!(
+                                        "present worker frame={} queue present begin",
+                                        job.frame_index
+                                    ),
+                                );
+                                native_vulkan_queue_present_frame(
+                                    swapchain_loader_ref,
+                                    present_worker_queue,
+                                    swapchain,
+                                    image_index as u32,
+                                    signal_semaphore,
+                                    "vkQueuePresentKHR(direct h264 ready-prefix)",
+                                )?;
                                 let present_result_at = Instant::now();
-                                H264PresentWorkerResult {
+                                native_vulkan_h264_trace(
+                                    h264_trace_enabled,
+                                    format!(
+                                        "present worker frame={} queue present end elapsed_us={}",
+                                        job.frame_index,
+                                        native_vulkan_elapsed_us(
+                                            present_result_at
+                                                .duration_since(queue_present_started_at)
+                                        )
+                                    ),
+                                );
+                                Ok(H264PresentWorkerResult {
                                     frame_index: job.frame_index,
                                     acquire_elapsed_us,
                                     acquire_not_ready_count,
@@ -6092,8 +6316,7 @@ pub fn run_h264_ready_prefix_video(
                                     present_result_since_start_us: native_vulkan_elapsed_us(
                                         present_result_at.duration_since(started_at),
                                     ),
-                                }
-                            })
+                                })
                             })();
                         let present_failed = present_result.is_err();
                         if present_result_tx.send(present_result).is_err() {
@@ -6109,6 +6332,13 @@ pub fn run_h264_ready_prefix_video(
                         .filter(|fence| *fence != vk::Fence::null())
                         .collect::<Vec<_>>();
                     if !submitted_fences.is_empty() {
+                        native_vulkan_h264_trace(
+                            h264_trace_enabled,
+                            format!(
+                                "present worker final fence wait begin count={}",
+                                submitted_fences.len()
+                            ),
+                        );
                         unsafe {
                             device_ref
                                 .wait_for_fences(&submitted_fences, true, u64::MAX)
@@ -6118,16 +6348,40 @@ pub fn run_h264_ready_prefix_video(
                                     result,
                                 })?;
                         }
+                        native_vulkan_h264_trace(
+                            h264_trace_enabled,
+                            "present worker final fence wait end",
+                        );
                     }
+                    native_vulkan_h264_trace(h264_trace_enabled, "present worker exit");
                     Ok(())
                 });
 
                 let loop_result = (|| -> Result<(), NativeVulkanError> {
+                    native_vulkan_h264_trace(
+                        h264_trace_enabled,
+                        format!(
+                            "display-ring loop begin frames={} async_present_depth={}",
+                            playback_frame_count, h264_async_present_depth
+                        ),
+                    );
                     let max_pending_present_results = h264_async_present_depth;
                     let mut pending_present_results = 0u32;
                     for playback_frame_index in 0..playback_frame_count {
+                        native_vulkan_h264_trace(
+                            h264_trace_enabled,
+                            format!(
+                                "frame {playback_frame_index} begin pending_present={pending_present_results}"
+                            ),
+                        );
                         while pending_present_results >= max_pending_present_results {
                             let present_result_wait_started_at = Instant::now();
+                            native_vulkan_h264_trace(
+                                h264_trace_enabled,
+                                format!(
+                                    "frame {playback_frame_index} present result wait begin pending={pending_present_results}"
+                                ),
+                            );
                             let present_result = present_result_rx.recv().map_err(|_| {
                                 NativeVulkanError::Video(
                                     "H.264 present worker exited before returning a present result"
@@ -6144,6 +6398,12 @@ pub fn run_h264_ready_prefix_video(
                             h264_present_result_wait_max_us =
                                 h264_present_result_wait_max_us.max(present_result_wait_elapsed_us);
                             pending_present_results = pending_present_results.saturating_sub(1);
+                            native_vulkan_h264_trace(
+                                h264_trace_enabled,
+                                format!(
+                                    "frame {playback_frame_index} present result wait end elapsed_us={present_result_wait_elapsed_us} pending={pending_present_results}"
+                                ),
+                            );
                             apply_h264_present_result(
                                 &mut frames,
                                 &mut h264_acquire_not_ready_count,
@@ -6183,6 +6443,10 @@ pub fn run_h264_ready_prefix_video(
                         let frame_image_available = image_available_by_frame[frame_sync_slot];
                         let fences = [frame_fence];
                         let fence_wait_started_at = Instant::now();
+                        native_vulkan_h264_trace(
+                            h264_trace_enabled,
+                            format!("frame {playback_frame_index} frame fence wait begin"),
+                        );
                         unsafe {
                             device
                                 .wait_for_fences(&fences, true, u64::MAX)
@@ -6202,6 +6466,12 @@ pub fn run_h264_ready_prefix_video(
                         }
                         let fence_wait_elapsed_us =
                             native_vulkan_elapsed_us(fence_wait_started_at.elapsed());
+                        native_vulkan_h264_trace(
+                            h264_trace_enabled,
+                            format!(
+                                "frame {playback_frame_index} frame fence wait end elapsed_us={fence_wait_elapsed_us}"
+                            ),
+                        );
                         let mut display_copy_already_submitted = false;
                         let prepared_frame = if let Some(mut prepared) =
                             predecoded_h264_frame.take()
@@ -6210,9 +6480,57 @@ pub fn run_h264_ready_prefix_video(
                             display_copy_already_submitted = !h264_graphics_display_copy;
                             prepared
                         } else {
-                            let packet = streaming_queue.next_packet(true)?;
-                            let access_unit = packet.snapshot.clone();
-                            let entry = streaming_reference_planner.plan_next(&access_unit);
+                            native_vulkan_h264_trace(
+                                h264_trace_enabled,
+                                format!("frame {playback_frame_index} next packet begin"),
+                            );
+                            let mut packet = streaming_queue.next_packet(true)?;
+                            let mut access_unit = packet.snapshot.clone();
+                            native_vulkan_h264_trace(
+                                h264_trace_enabled,
+                                format!(
+                                    "frame {playback_frame_index} packet au={} loop={}",
+                                    access_unit.index, packet.source_loop_index
+                                ),
+                            );
+                            let mut playback_loop_index = packet.source_loop_index;
+                            let mut loop_boundary_reset = playback_frame_index > 0
+                                && playback_loop_index != previous_source_loop_index;
+                            if loop_boundary_reset {
+                                streaming_reference_planner.reset();
+                            }
+                            let mut entry = streaming_reference_planner.plan_next(&access_unit);
+                            let mut resync_discarded_access_units = 0u32;
+                            let resync_scan_limit = native_vulkan_streaming_bootstrap_scan_limit(
+                                streaming_queue.capacity,
+                            );
+                            while loop_boundary_reset
+                                && !entry.ready_for_decode_submit
+                                && usize::try_from(resync_discarded_access_units)
+                                    .unwrap_or(usize::MAX)
+                                    < resync_scan_limit
+                            {
+                                native_vulkan_h264_trace(
+                                    h264_trace_enabled,
+                                    format!(
+                                        "frame {playback_frame_index} loop resync discard au={} reason={}",
+                                        access_unit.index,
+                                        entry
+                                            .unsupported_reason
+                                            .as_deref()
+                                            .unwrap_or("missing references")
+                                    ),
+                                );
+                                resync_discarded_access_units =
+                                    resync_discarded_access_units.saturating_add(1);
+                                streaming_reference_planner.reset();
+                                packet = streaming_queue.next_packet(true)?;
+                                access_unit = packet.snapshot.clone();
+                                playback_loop_index = packet.source_loop_index;
+                                loop_boundary_reset = playback_frame_index > 0
+                                    && playback_loop_index != previous_source_loop_index;
+                                entry = streaming_reference_planner.plan_next(&access_unit);
+                            }
                             if !entry.ready_for_decode_submit {
                                 return Err(NativeVulkanError::Video(format!(
                                     "H.264 streaming AU {} is not decodable: {}",
@@ -6223,10 +6541,7 @@ pub fn run_h264_ready_prefix_video(
                                         .unwrap_or("missing references")
                                 )));
                             }
-                            let playback_loop_index = packet.source_loop_index;
                             let ready_prefix_frame_index = playback_frame_index;
-                            let loop_boundary_reset = playback_frame_index > 0
-                                && playback_loop_index != previous_source_loop_index;
                             let pts_delta_ms = if loop_boundary_reset {
                                 previous_duration_ms
                                     .or(access_unit.duration_ms)
@@ -6287,6 +6602,10 @@ pub fn run_h264_ready_prefix_video(
                                 } else {
                                     vk::Semaphore::null()
                                 };
+                            native_vulkan_h264_trace(
+                                h264_trace_enabled,
+                                format!("frame {playback_frame_index} decode begin"),
+                            );
                             let mut frame = native_vulkan_decode_h264_ready_prefix_frame_to_image(
                                 &device,
                                 &video_queue_device,
@@ -6316,6 +6635,10 @@ pub fn run_h264_ready_prefix_video(
                                 loop_boundary_reset,
                                 bitstream_upload_elapsed_us,
                             )?;
+                            native_vulkan_h264_trace(
+                                h264_trace_enabled,
+                                format!("frame {playback_frame_index} decode end"),
+                            );
                             frame.fence_wait_elapsed_us = fence_wait_elapsed_us;
                             for dropped_slot in &entry.dropped_reference_slots {
                                 if *dropped_slot != frame.dst_base_array_layer
@@ -6381,76 +6704,93 @@ pub fn run_h264_ready_prefix_video(
                         if h264_decode_ahead_enabled
                             && playback_frame_index + 1 < playback_frame_count
                             && predecoded_h264_frame.is_none()
+                            && !frame.reset_before_decode
                             && streaming_queue.ensure_front_packet(true)?
                         {
                             h264_decode_ahead_attempt_count =
                                 h264_decode_ahead_attempt_count.saturating_add(1);
                             let decode_ahead_semaphore_index =
                                 1usize - frame_decode_semaphore_index;
-                            let prediction = {
-                                let front_packet =
-                                    streaming_queue.front_packet().ok_or_else(|| {
-                                        NativeVulkanError::Video(
-                                "H.264 streaming packet queue lost front packet after prefetch"
-                                    .to_owned(),
-                            )
-                                    })?;
-                                let mut predicted_planner = streaming_reference_planner.clone();
-                                let predicted_entry =
-                                    predicted_planner.plan_next(&front_packet.snapshot);
-                                let first_slice =
-                                    front_packet.snapshot.first_slice.as_ref().ok_or_else(
-                                        || {
+                            let front_packet = streaming_queue.front_packet().ok_or_else(|| {
+                                NativeVulkanError::Video(
+                                    "H.264 streaming packet queue lost front packet after prefetch"
+                                        .to_owned(),
+                                )
+                            })?;
+                            if front_packet.source_loop_index != frame.playback_loop_index {
+                                h264_decode_ahead_skip_unready_count =
+                                    h264_decode_ahead_skip_unready_count.saturating_add(1);
+                                native_vulkan_h264_trace(
+                                    h264_trace_enabled,
+                                    format!(
+                                        "frame {playback_frame_index} decode-ahead skip loop boundary current_loop={} next_loop={} au={}",
+                                        frame.playback_loop_index,
+                                        front_packet.source_loop_index,
+                                        front_packet.snapshot.index
+                                    ),
+                                );
+                            } else {
+                                let prediction = {
+                                    let front_packet = front_packet;
+                                    let mut predicted_planner = streaming_reference_planner.clone();
+                                    let predicted_entry =
+                                        predicted_planner.plan_next(&front_packet.snapshot);
+                                    let first_slice = front_packet
+                                        .snapshot
+                                        .first_slice
+                                        .as_ref()
+                                        .ok_or_else(|| {
                                             NativeVulkanError::Video(format!(
                                                 "H.264 streaming AU {} has no parsed first slice",
                                                 front_packet.snapshot.index
                                             ))
-                                        },
+                                        })?;
+                                    let mut candidate_ring = bitstream_ring.clone();
+                                    let candidate_span = candidate_ring.allocate_h264(
+                                        front_packet.access_unit.bytes.len() as u64,
+                                        first_slice.slice_offsets.clone(),
                                     )?;
-                                let mut candidate_ring = bitstream_ring.clone();
-                                let candidate_span = candidate_ring.allocate_h264(
-                                    front_packet.access_unit.bytes.len() as u64,
-                                    first_slice.slice_offsets.clone(),
-                                )?;
-                                (predicted_entry, candidate_ring, candidate_span)
-                            };
-                            let (predicted_entry, candidate_ring, candidate_span) = prediction;
-                            let output_hazard =
-                                predicted_entry.planned_output_slot == frame.dst_base_array_layer;
-                            let reference_hazard =
-                                predicted_entry.references.iter().any(|reference| {
-                                    reference.available
-                                        && reference.dpb_slot == Some(frame.dst_base_array_layer)
-                                });
-                            let bitstream_overlap = native_vulkan_byte_ranges_overlap(
-                                candidate_span.offset,
-                                candidate_span.range,
-                                frame.src_buffer_offset,
-                                frame.src_buffer_range,
-                            );
-                            if !predicted_entry.ready_for_decode_submit {
-                                h264_decode_ahead_skip_unready_count =
-                                    h264_decode_ahead_skip_unready_count.saturating_add(1);
-                            } else if bitstream_overlap {
-                                h264_decode_ahead_skip_bitstream_overlap_count =
-                                    h264_decode_ahead_skip_bitstream_overlap_count
-                                        .saturating_add(1);
-                            } else {
-                                if output_hazard {
-                                    h264_decode_ahead_copy_wait_output_hazard_count =
-                                        h264_decode_ahead_copy_wait_output_hazard_count
+                                    (predicted_entry, candidate_ring, candidate_span)
+                                };
+                                let (predicted_entry, candidate_ring, candidate_span) = prediction;
+                                let output_hazard = predicted_entry.planned_output_slot
+                                    == frame.dst_base_array_layer;
+                                let reference_hazard =
+                                    predicted_entry.references.iter().any(|reference| {
+                                        reference.available
+                                            && reference.dpb_slot
+                                                == Some(frame.dst_base_array_layer)
+                                    });
+                                let bitstream_overlap = native_vulkan_byte_ranges_overlap(
+                                    candidate_span.offset,
+                                    candidate_span.range,
+                                    frame.src_buffer_offset,
+                                    frame.src_buffer_range,
+                                );
+                                if !predicted_entry.ready_for_decode_submit {
+                                    h264_decode_ahead_skip_unready_count =
+                                        h264_decode_ahead_skip_unready_count.saturating_add(1);
+                                } else if bitstream_overlap {
+                                    h264_decode_ahead_skip_bitstream_overlap_count =
+                                        h264_decode_ahead_skip_bitstream_overlap_count
                                             .saturating_add(1);
+                                } else {
+                                    if output_hazard {
+                                        h264_decode_ahead_copy_wait_output_hazard_count =
+                                            h264_decode_ahead_copy_wait_output_hazard_count
+                                                .saturating_add(1);
+                                    }
+                                    if reference_hazard {
+                                        h264_decode_ahead_copy_wait_reference_hazard_count =
+                                            h264_decode_ahead_copy_wait_reference_hazard_count
+                                                .saturating_add(1);
+                                    }
+                                    decode_ahead_plan = Some(H264DecodeAheadCopyPlan {
+                                        decode_semaphore_index: decode_ahead_semaphore_index,
+                                        candidate_ring,
+                                        candidate_span,
+                                    });
                                 }
-                                if reference_hazard {
-                                    h264_decode_ahead_copy_wait_reference_hazard_count =
-                                        h264_decode_ahead_copy_wait_reference_hazard_count
-                                            .saturating_add(1);
-                                }
-                                decode_ahead_plan = Some(H264DecodeAheadCopyPlan {
-                                    decode_semaphore_index: decode_ahead_semaphore_index,
-                                    candidate_ring,
-                                    candidate_span,
-                                });
                             }
                         }
                         let current_display_render_semaphore =
@@ -6669,6 +7009,10 @@ pub fn run_h264_ready_prefix_video(
                                         .to_owned(),
                                 )
                             })?;
+                        native_vulkan_h264_trace(
+                            h264_trace_enabled,
+                            format!("frame {playback_frame_index} present job sent"),
+                        );
                         display_slot_in_flight_fences[display_slot] = frame_fence;
                         frame.submit_elapsed_us = 0;
                         pending_present_results = pending_present_results.saturating_add(1);
@@ -6681,6 +7025,12 @@ pub fn run_h264_ready_prefix_video(
                             let next_playback_frame_index = playback_frame_index + 1;
                             let packet = streaming_queue.next_packet(true)?;
                             let access_unit = packet.snapshot.clone();
+                            let playback_loop_index = packet.source_loop_index;
+                            let loop_boundary_reset =
+                                playback_loop_index != frame.playback_loop_index;
+                            if loop_boundary_reset {
+                                streaming_reference_planner.reset();
+                            }
                             let entry = streaming_reference_planner.plan_next(&access_unit);
                             if !entry.ready_for_decode_submit {
                                 return Err(NativeVulkanError::Video(format!(
@@ -6692,9 +7042,6 @@ pub fn run_h264_ready_prefix_video(
                                         .unwrap_or("missing references")
                                 )));
                             }
-                            let playback_loop_index = packet.source_loop_index;
-                            let loop_boundary_reset =
-                                playback_loop_index != frame.playback_loop_index;
                             let pts_delta_ms = if loop_boundary_reset {
                                 frame_duration_ms.or(access_unit.duration_ms).or_else(|| {
                                     frame_interval.map(|interval| interval.as_millis() as u64)
@@ -7005,6 +7352,12 @@ pub fn run_h264_ready_prefix_video(
                     }
                     while pending_present_results > 0 {
                         let present_result_wait_started_at = Instant::now();
+                        native_vulkan_h264_trace(
+                            h264_trace_enabled,
+                            format!(
+                                "final present result wait begin pending={pending_present_results}"
+                            ),
+                        );
                         let present_result = present_result_rx.recv().map_err(|_| {
                             NativeVulkanError::Video(
                                 "H.264 present worker exited before returning a present result"
@@ -7020,6 +7373,12 @@ pub fn run_h264_ready_prefix_video(
                         h264_present_result_wait_max_us =
                             h264_present_result_wait_max_us.max(present_result_wait_elapsed_us);
                         pending_present_results = pending_present_results.saturating_sub(1);
+                        native_vulkan_h264_trace(
+                            h264_trace_enabled,
+                            format!(
+                                "final present result wait end elapsed_us={present_result_wait_elapsed_us} pending={pending_present_results}"
+                            ),
+                        );
                         apply_h264_present_result(
                             &mut frames,
                             &mut h264_acquire_not_ready_count,
@@ -7032,11 +7391,13 @@ pub fn run_h264_ready_prefix_video(
                     Ok(())
                 })();
                 drop(present_job_tx);
+                native_vulkan_h264_trace(h264_trace_enabled, "present worker join begin");
                 let worker_result = present_worker.join().map_err(|_| {
                     NativeVulkanError::Video(
                         "H.264 present worker panicked while presenting a frame".to_owned(),
                     )
                 })?;
+                native_vulkan_h264_trace(h264_trace_enabled, "present worker join end");
                 loop_result?;
                 worker_result?;
                 Ok(())
@@ -7250,6 +7611,12 @@ pub fn run_h264_ready_prefix_video(
                 h264_packet_queue_retained_payload_bytes: streaming_queue.retained_payload_bytes(),
                 h264_decode_ahead_strategy: if h264_decode_ahead_enabled {
                     "opportunistic-one-frame-present-overlap-dpb-read-guard"
+                } else if h264_recovery_bootstrap_stream {
+                    "disabled-recovery-bootstrap"
+                } else if h264_looped_playback {
+                    "disabled-looped-playback"
+                } else if !h264_decode_ahead_requested {
+                    "disabled-default-sequential-present"
                 } else {
                     "disabled-env-sequential-present"
                 },
@@ -7406,6 +7773,11 @@ pub fn run_h265_ready_prefix_video(
         ));
     }
     let target_max_fps = options.target_max_fps;
+    let mut probe = NativeVulkanSurfaceProbe::connect(NativeVulkanSurfaceProbeOptions {
+        host: options.host,
+        wait_configure_roundtrips: options.wait_configure_roundtrips,
+    })?;
+    probe.pump_events()?;
     let queue_capacity =
         native_vulkan_h265_streaming_packet_queue_capacity(ready_prefix_frame_count);
     let mut streaming_queue =
@@ -7419,10 +7791,6 @@ pub fn run_h265_ready_prefix_video(
     let stream_dpb_slots = streaming_bootstrap.stream_dpb_slots;
     let stream_max_active_reference_pictures =
         streaming_bootstrap.stream_max_active_reference_pictures;
-    let mut probe = NativeVulkanSurfaceProbe::connect(NativeVulkanSurfaceProbeOptions {
-        host: options.host,
-        wait_configure_roundtrips: options.wait_configure_roundtrips,
-    })?;
     probe.pump_events()?;
     let surface_snapshot = probe.snapshot();
     let present_query =
@@ -8349,6 +8717,22 @@ pub fn run_av1_ready_prefix_video(
         ),
     );
     let target_max_fps = options.target_max_fps;
+    native_vulkan_av1_trace(
+        av1_trace_enabled,
+        format!(
+            "surface connect env WAYLAND_DISPLAY={} XDG_RUNTIME_DIR={} layer={} output={} namespace={}",
+            std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "<unset>".to_owned()),
+            std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "<unset>".to_owned()),
+            options.host.layer.as_str(),
+            options.host.output_name.as_deref().unwrap_or("<none>"),
+            options.host.namespace
+        ),
+    );
+    let mut probe = NativeVulkanSurfaceProbe::connect(NativeVulkanSurfaceProbeOptions {
+        host: options.host,
+        wait_configure_roundtrips: options.wait_configure_roundtrips,
+    })?;
+    probe.pump_events()?;
     let queue_capacity =
         native_vulkan_av1_streaming_packet_queue_capacity(ready_prefix_frame_count);
     let mut streaming_queue =
@@ -8427,10 +8811,6 @@ pub fn run_av1_ready_prefix_video(
     );
     let av1_bootstrap_temporal_units = streaming_queue.bootstrap_access_units();
 
-    let mut probe = NativeVulkanSurfaceProbe::connect(NativeVulkanSurfaceProbeOptions {
-        host: options.host,
-        wait_configure_roundtrips: options.wait_configure_roundtrips,
-    })?;
     probe.pump_events()?;
     let surface_snapshot = probe.snapshot();
     let present_query =
@@ -27057,6 +27437,21 @@ fn native_vulkan_av1_trace(enabled: bool, message: impl AsRef<str>) {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_trace_enabled() -> bool {
+    matches!(
+        std::env::var("GILDER_VULKAN_H264_TRACE").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_trace(enabled: bool, message: impl AsRef<str>) {
+    if enabled {
+        eprintln!("gilder-h264-trace: {}", message.as_ref());
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 #[allow(clippy::too_many_arguments)]
 fn native_vulkan_av1_diagnostic_readback_layer(
     device: &ash::Device,
@@ -36061,6 +36456,15 @@ impl NativeVulkanH264DecodeReferencePlanner {
         }
     }
 
+    fn reset(&mut self) {
+        self.previous_reference_frame_num = None;
+        self.short_term_references.clear();
+        self.long_term_references.clear();
+        self.slot_to_reference_key.fill(None);
+        self.short_term_reference_order.clear();
+        self.next_output_slot = 0;
+    }
+
     fn choose_output_slot(&mut self) -> u32 {
         for offset in 0..self.dpb_slots {
             let slot = (self.next_output_slot + offset) % self.dpb_slots;
@@ -36336,12 +36740,7 @@ impl NativeVulkanH264DecodeReferencePlanner {
         let first_slice = access_unit.first_slice.as_ref();
         let idr = first_slice.is_some_and(|slice| slice.idr);
         if idr {
-            self.short_term_references.clear();
-            self.long_term_references.clear();
-            self.slot_to_reference_key.fill(None);
-            self.short_term_reference_order.clear();
-            self.next_output_slot = 0;
-            self.previous_reference_frame_num = None;
+            self.reset();
         }
 
         let current_frame_num = first_slice.map(|slice| slice.frame_num);

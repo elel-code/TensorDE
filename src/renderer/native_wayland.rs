@@ -28,7 +28,9 @@ use smithay_client_toolkit::{
         slot::{Buffer, SlotPool},
     },
 };
-use std::{collections::BTreeSet, ffi::c_void, fmt, io::ErrorKind, ptr::NonNull};
+use std::{
+    collections::BTreeSet, ffi::c_void, fmt, io::ErrorKind, ptr::NonNull, thread, time::Duration,
+};
 use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle,
     backend::WaylandError,
@@ -276,6 +278,30 @@ impl fmt::Display for NativeWaylandError {
 
 impl std::error::Error for NativeWaylandError {}
 
+fn native_wayland_connect_to_env() -> Result<Connection, NativeWaylandError> {
+    const RETRY_DELAYS_MS: [u64; 3] = [5, 20, 50];
+    let mut last_error = None::<String>;
+
+    for attempt in 0..=RETRY_DELAYS_MS.len() {
+        match Connection::connect_to_env() {
+            Ok(connection) => return Ok(connection),
+            Err(err) => {
+                let message = err.to_string();
+                let retryable = message.contains("Could not find wayland compositor");
+                last_error = Some(message);
+                if !retryable || attempt == RETRY_DELAYS_MS.len() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(RETRY_DELAYS_MS[attempt]));
+            }
+        }
+    }
+
+    Err(NativeWaylandError::Wayland(last_error.unwrap_or_else(
+        || "failed to connect to Wayland compositor".to_owned(),
+    )))
+}
+
 pub struct NativeWaylandHost {
     connection: Connection,
     event_queue: EventQueue<NativeWaylandState>,
@@ -284,8 +310,7 @@ pub struct NativeWaylandHost {
 
 impl NativeWaylandHost {
     pub fn connect(options: NativeWaylandHostOptions) -> Result<Self, NativeWaylandError> {
-        let connection = Connection::connect_to_env()
-            .map_err(|err| NativeWaylandError::Wayland(err.to_string()))?;
+        let connection = native_wayland_connect_to_env()?;
         let (globals, mut event_queue) = registry_queue_init(&connection)
             .map_err(|err| NativeWaylandError::Wayland(err.to_string()))?;
         let qh = event_queue.handle();
