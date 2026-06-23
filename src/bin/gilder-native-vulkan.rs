@@ -605,6 +605,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     video_session_options.bitstream_extract_max_samples,
                     av1_ready_prefix_frames,
                     playback_frames,
+                    audio_clock_probe_with_video,
                 )?)
             }
             #[cfg(not(feature = "native-vulkan-gst-video"))]
@@ -618,6 +619,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     fit,
                     av1_ready_prefix_frames,
                     ready_prefix_playback_frames,
+                    audio_clock_probe_with_video,
                 );
                 return Err(
                     "--run-av1-ready-prefix-video requires native-vulkan-gst-video feature".into(),
