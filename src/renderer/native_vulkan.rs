@@ -34,8 +34,8 @@ use crate::renderer::video::{
     actual_decoder_reports, apply_decoder_rank_policy, decoder_policy_status, video_caps_reports,
 };
 use crate::renderer::{
-    SceneLiteDisplayPlan, SceneLiteWallpaperPlan, SlideshowWallpaperPlan, StaticRenderSyncPlan,
-    StaticWallpaperPlan, VideoWallpaperPlan,
+    SceneLiteDisplayPlan, SceneLiteRenderLayer, SceneLiteWallpaperPlan, SlideshowWallpaperPlan,
+    StaticRenderSyncPlan, StaticWallpaperPlan, VideoWallpaperPlan,
 };
 use ash::vk;
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -48474,7 +48474,7 @@ pub fn wallpaper_type_support_matrix() -> Vec<NativeVulkanWallpaperTypeSupport> 
         NativeVulkanWallpaperTypeSupport {
             wallpaper_type: NativeVulkanWallpaperType::SceneLite,
             current_vulkan_item: true,
-            current_renderer_status: "render item mapped; scene draw pass not implemented yet",
+            current_renderer_status: "deterministic scene snapshot layers carried by Vulkan render item; scene draw pass not implemented yet",
             target_vulkan_path: "deterministic scene snapshot -> Vulkan shape/image/text passes",
         },
         NativeVulkanWallpaperTypeSupport {
@@ -48529,9 +48529,16 @@ pub enum NativeVulkanRenderItem {
     },
     SceneLite {
         output_name: String,
+        scene_source: Option<PathBuf>,
         fallback: Option<PathBuf>,
+        display: Option<SceneLiteDisplayPlan>,
         display_image: Option<PathBuf>,
+        display_color: Option<String>,
+        manifest_max_fps: Option<u32>,
         layer_count: usize,
+        layers: Vec<SceneLiteRenderLayer>,
+        bound_properties: Vec<String>,
+        snapshot_time_ms: u64,
         target_max_fps: Option<u32>,
         renderer_status: &'static str,
     },
@@ -48909,14 +48916,24 @@ fn native_vulkan_slideshow_item(plan: &SlideshowWallpaperPlan) -> NativeVulkanRe
 fn native_vulkan_scene_lite_item(plan: &SceneLiteWallpaperPlan) -> NativeVulkanRenderItem {
     NativeVulkanRenderItem::SceneLite {
         output_name: plan.output_name.clone(),
+        scene_source: plan.source.clone(),
         fallback: plan.fallback.clone(),
+        display: plan.display.clone(),
         display_image: match &plan.display {
             Some(SceneLiteDisplayPlan::Image { source, .. }) => Some(source.clone()),
             Some(SceneLiteDisplayPlan::Color { .. }) | None => None,
         },
+        display_color: match &plan.display {
+            Some(SceneLiteDisplayPlan::Color { color }) => Some(color.clone()),
+            Some(SceneLiteDisplayPlan::Image { .. }) | None => None,
+        },
+        manifest_max_fps: plan.manifest_max_fps,
         layer_count: plan.layers.len(),
+        layers: plan.layers.clone(),
+        bound_properties: plan.bound_properties.clone(),
+        snapshot_time_ms: 0,
         target_max_fps: plan.target_max_fps,
-        renderer_status: "planned-scene-lite-vulkan-passes",
+        renderer_status: "deterministic-scene-lite-snapshot-ready-for-vulkan-passes",
     }
 }
 
@@ -52699,7 +52716,41 @@ mod tests {
                 start_offset_ms: 0,
             }],
             slideshow_plans: Vec::new(),
-            scene_lite_plans: Vec::new(),
+            scene_lite_plans: vec![SceneLiteWallpaperPlan {
+                output_name: "HDMI-A-1".to_owned(),
+                source: Some(PathBuf::from("/tmp/scene-lite.json")),
+                fallback: Some(PathBuf::from("/tmp/scene-fallback.svg")),
+                manifest_max_fps: Some(60),
+                target_max_fps: Some(30),
+                bound_properties: vec!["scene_opacity".to_owned()],
+                display: Some(SceneLiteDisplayPlan::Color {
+                    color: "#102030".to_owned(),
+                }),
+                layers: vec![SceneLiteRenderLayer {
+                    id: "panel".to_owned(),
+                    kind: crate::core::SceneLiteLayerKind::Rectangle,
+                    source: None,
+                    color: Some("#102030".to_owned()),
+                    stroke_color: Some("#ffffff".to_owned()),
+                    stroke_width: Some(2.0),
+                    corner_radius: Some(8.0),
+                    width: Some(320.0),
+                    height: Some(180.0),
+                    text: None,
+                    font_size: None,
+                    font_family: None,
+                    font_weight: None,
+                    text_align: None,
+                    path_data: None,
+                    fit: FitMode::Cover,
+                    opacity: 0.75,
+                    transform: crate::core::SceneLiteTransform {
+                        x: 12.0,
+                        y: 24.0,
+                        ..Default::default()
+                    },
+                }],
+            }],
             removals: Vec::new(),
             errors: Vec::new(),
             decisions: Vec::new(),
@@ -52709,7 +52760,7 @@ mod tests {
 
         let items = render_items_from_sync_plan(&sync_plan);
 
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 3);
         assert!(matches!(
             items[0],
             NativeVulkanRenderItem::StaticImage { .. }
@@ -52733,6 +52784,51 @@ mod tests {
         );
         assert_eq!(*start_offset_ms, 0);
         assert_eq!(*renderer_status, "vulkan-lifecycle-video-placeholder");
+        assert_eq!(
+            items[2].wallpaper_type(),
+            NativeVulkanWallpaperType::SceneLite
+        );
+        let NativeVulkanRenderItem::SceneLite {
+            scene_source,
+            fallback,
+            display,
+            display_image,
+            display_color,
+            manifest_max_fps,
+            layer_count,
+            layers,
+            bound_properties,
+            snapshot_time_ms,
+            target_max_fps,
+            renderer_status,
+            ..
+        } = &items[2]
+        else {
+            unreachable!("item already matched as scene-lite");
+        };
+        assert_eq!(scene_source, &Some(PathBuf::from("/tmp/scene-lite.json")));
+        assert_eq!(fallback, &Some(PathBuf::from("/tmp/scene-fallback.svg")));
+        assert_eq!(display_image, &None);
+        assert_eq!(display_color.as_deref(), Some("#102030"));
+        assert!(matches!(
+            display,
+            Some(SceneLiteDisplayPlan::Color { color }) if color == "#102030"
+        ));
+        assert_eq!(*manifest_max_fps, Some(60));
+        assert_eq!(*target_max_fps, Some(30));
+        assert_eq!(*layer_count, 1);
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].id, "panel");
+        assert_eq!(layers[0].kind, crate::core::SceneLiteLayerKind::Rectangle);
+        assert_eq!(layers[0].opacity, 0.75);
+        assert_eq!(layers[0].transform.x, 12.0);
+        assert_eq!(layers[0].transform.y, 24.0);
+        assert_eq!(bound_properties, &vec!["scene_opacity".to_owned()]);
+        assert_eq!(*snapshot_time_ms, 0);
+        assert_eq!(
+            *renderer_status,
+            "deterministic-scene-lite-snapshot-ready-for-vulkan-passes"
+        );
     }
 
     #[test]
