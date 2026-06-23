@@ -2461,6 +2461,7 @@ pub struct NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
     pub pts_delta_expected_min_ms: Option<u64>,
     pub pts_delta_expected_max_ms: Option<u64>,
     pub pts_delta_in_expected_range: Option<bool>,
+    pub audio_clock_probe: Option<NativeVulkanAudioClockRuntimeSnapshot>,
     pub frames: Vec<NativeVulkanDirectH265ReadyPrefixFrameSnapshot>,
     pub last_render_error: Option<String>,
 }
@@ -8403,6 +8404,7 @@ pub fn run_h265_ready_prefix_video(
     ready_prefix_frame_count: u32,
     input_mode: NativeVulkanH265VideoInputMode,
     playback_frame_count: u32,
+    audio_clock_probe_enabled: bool,
 ) -> Result<NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot, NativeVulkanError> {
     if !matches!(
         codec,
@@ -8980,6 +8982,13 @@ pub fn run_h265_ready_prefix_video(
             let mut previous_pts_ms = None::<u64>;
             let mut previous_duration_ms = None::<u64>;
             let mut frames = Vec::with_capacity(playback_frame_count as usize);
+            let mut audio_clock_probe = if audio_clock_probe_enabled {
+                Some(audio_clock::NativeVulkanAudioClockRuntimeProbe::start(
+                    &source,
+                )?)
+            } else {
+                None
+            };
             let mut loop_boundary_reset_count = 0u32;
             let mut frame_sleep_count = 0u32;
             let mut missed_frame_pacing_count = 0u32;
@@ -9557,6 +9566,19 @@ pub fn run_h265_ready_prefix_video(
                     frame.present_elapsed_us = 0;
                     previous_pts_ms = access_unit.pts_ms;
                     previous_duration_ms = access_unit.duration_ms;
+                    if let Some(audio_clock_probe) = audio_clock_probe.as_mut() {
+                        if frame.loop_boundary_reset {
+                            audio_clock_probe.seek_for_video_loop(frame.pts_ms.unwrap_or(0))?;
+                        }
+                        audio_clock_probe.sample_video_pts_ms(
+                            frame.pts_ms,
+                            native_vulkan_audio_probe_video_clock_ns(
+                                frame.playback_frame_index,
+                                target_max_fps,
+                                frame.pts_ms,
+                            ),
+                        )?;
+                    }
                     frames.push(frame);
 
                     let pace_result = frame_pacer
@@ -9614,6 +9636,11 @@ pub fn run_h265_ready_prefix_video(
                 target_max_fps,
                 frames.iter().map(|frame| frame.pts_delta_ms),
             );
+            let audio_clock_probe = if let Some(audio_clock_probe) = audio_clock_probe.as_mut() {
+                Some(audio_clock_probe.snapshot()?)
+            } else {
+                None
+            };
             Ok(NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
                 runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
                 requested_codec: codec,
@@ -9707,6 +9734,7 @@ pub fn run_h265_ready_prefix_video(
                 pts_delta_expected_min_ms: pts_delta_summary.expected_min_ms,
                 pts_delta_expected_max_ms: pts_delta_summary.expected_max_ms,
                 pts_delta_in_expected_range: pts_delta_summary.in_expected_range,
+                audio_clock_probe,
                 frames,
                 last_render_error: None,
             })

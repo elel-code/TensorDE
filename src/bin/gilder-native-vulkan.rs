@@ -556,6 +556,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     video_session_options.decode_h265_ready_prefix_frames,
                     h265_video_input,
                     playback_frames,
+                    audio_clock_probe_with_video,
                 )?)
             }
             #[cfg(not(feature = "native-vulkan-gst-video"))]
@@ -570,6 +571,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     video_session_options.bitstream_extract_max_samples,
                     video_session_options.decode_h265_ready_prefix_frames,
                     ready_prefix_playback_frames,
+                    audio_clock_probe_with_video,
                 );
                 return Err(
                     "--run-h265-ready-prefix-video requires native-vulkan-gst-video feature".into(),
