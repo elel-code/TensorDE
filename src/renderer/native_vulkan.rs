@@ -5471,8 +5471,10 @@ pub fn run_h264_ready_prefix_video(
             );
             let pacing_strategy = pacing_plan.strategy;
             let frame_interval = pacing_plan.frame_interval;
-            let frame_pacing_spin_margin = native_vulkan_frame_pacing_spin_margin(target_max_fps);
-            let mut next_frame = Instant::now();
+            let mut frame_pacer = pacing::NativeVulkanVideoClockPacer::new(
+                target_max_fps,
+                native_vulkan_frame_pacing_spin_margin(target_max_fps),
+            );
             let started_at = Instant::now();
             let mut previous_pts_ms = None::<u64>;
             let mut previous_duration_ms = None::<u64>;
@@ -5560,8 +5562,9 @@ pub fn run_h264_ready_prefix_video(
                         h264_present_frame_preroll_count =
                             h264_present_frame_preroll_count.saturating_add(1);
                     }
-                    next_frame = Instant::now();
-                    started_at = next_frame;
+                    let reset_at = Instant::now();
+                    frame_pacer.reset(reset_at);
+                    started_at = reset_at;
                 }
                 let (present_job_tx, present_job_rx) = mpsc::channel::<H264DirectPresentJob>();
                 let (present_result_tx, present_result_rx) =
@@ -6182,32 +6185,18 @@ pub fn run_h264_ready_prefix_video(
                         previous_duration_ms = access_unit.duration_ms;
                         frames.push(frame);
 
-                        if let Some(interval) = frame_interval
-                            && playback_frame_index + 1 < playback_frame_count
-                        {
-                            next_frame += interval;
-                            let now = Instant::now();
-                            if next_frame > now {
-                                let sleep_duration = next_frame - now;
-                                frame_sleep_count = frame_sleep_count.saturating_add(1);
-                                total_frame_sleep_us = total_frame_sleep_us
-                                    .saturating_add(native_vulkan_elapsed_us(sleep_duration));
-                                let sleep_for = sleep_duration
-                                    .checked_sub(frame_pacing_spin_margin)
-                                    .unwrap_or_default();
-                                if !sleep_for.is_zero() {
-                                    thread::sleep(sleep_for);
-                                }
-                                while Instant::now() < next_frame {
-                                    std::hint::spin_loop();
-                                }
-                            } else {
-                                missed_frame_pacing_count =
-                                    missed_frame_pacing_count.saturating_add(1);
-                                max_frame_pacing_late_us = max_frame_pacing_late_us
-                                    .max(native_vulkan_elapsed_us(now.duration_since(next_frame)));
-                                next_frame = now;
-                            }
+                        let pace_result = frame_pacer
+                            .pace_after_frame(playback_frame_index + 1 >= playback_frame_count);
+                        if pace_result.slept {
+                            frame_sleep_count = frame_sleep_count.saturating_add(1);
+                            total_frame_sleep_us = total_frame_sleep_us.saturating_add(
+                                native_vulkan_elapsed_us(pace_result.sleep_duration),
+                            );
+                        }
+                        if let Some(late_duration) = pace_result.late_duration {
+                            missed_frame_pacing_count = missed_frame_pacing_count.saturating_add(1);
+                            max_frame_pacing_late_us = max_frame_pacing_late_us
+                                .max(native_vulkan_elapsed_us(late_duration));
                         }
                     }
                     while pending_present_results > 0 {
@@ -7880,32 +7869,18 @@ pub fn run_h264_ready_prefix_video(
                         available_decode_semaphore_index = next_available_decode_semaphore_index;
                         frames.push(frame);
 
-                        if let Some(interval) = frame_interval
-                            && playback_frame_index + 1 < playback_frame_count
-                        {
-                            next_frame += interval;
-                            let now = Instant::now();
-                            if next_frame > now {
-                                let sleep_duration = next_frame - now;
-                                frame_sleep_count = frame_sleep_count.saturating_add(1);
-                                total_frame_sleep_us = total_frame_sleep_us
-                                    .saturating_add(native_vulkan_elapsed_us(sleep_duration));
-                                let sleep_for = sleep_duration
-                                    .checked_sub(frame_pacing_spin_margin)
-                                    .unwrap_or_default();
-                                if !sleep_for.is_zero() {
-                                    thread::sleep(sleep_for);
-                                }
-                                while Instant::now() < next_frame {
-                                    std::hint::spin_loop();
-                                }
-                            } else {
-                                missed_frame_pacing_count =
-                                    missed_frame_pacing_count.saturating_add(1);
-                                max_frame_pacing_late_us = max_frame_pacing_late_us
-                                    .max(native_vulkan_elapsed_us(now.duration_since(next_frame)));
-                                next_frame = now;
-                            }
+                        let pace_result = frame_pacer
+                            .pace_after_frame(playback_frame_index + 1 >= playback_frame_count);
+                        if pace_result.slept {
+                            frame_sleep_count = frame_sleep_count.saturating_add(1);
+                            total_frame_sleep_us = total_frame_sleep_us.saturating_add(
+                                native_vulkan_elapsed_us(pace_result.sleep_duration),
+                            );
+                        }
+                        if let Some(late_duration) = pace_result.late_duration {
+                            missed_frame_pacing_count = missed_frame_pacing_count.saturating_add(1);
+                            max_frame_pacing_late_us = max_frame_pacing_late_us
+                                .max(native_vulkan_elapsed_us(late_duration));
                         }
                     }
                     while pending_present_results > 0 {
@@ -8885,8 +8860,10 @@ pub fn run_h265_ready_prefix_video(
             );
             let pacing_strategy = pacing_plan.strategy;
             let frame_interval = pacing_plan.frame_interval;
-            let frame_pacing_spin_margin = native_vulkan_frame_pacing_spin_margin(target_max_fps);
-            let mut next_frame = Instant::now();
+            let mut frame_pacer = pacing::NativeVulkanVideoClockPacer::new(
+                target_max_fps,
+                native_vulkan_frame_pacing_spin_margin(target_max_fps),
+            );
             let started_at = Instant::now();
             let mut previous_pts_ms = None::<u64>;
             let mut previous_duration_ms = None::<u64>;
@@ -8963,8 +8940,9 @@ pub fn run_h265_ready_prefix_video(
                     h265_present_frame_preroll_count =
                         h265_present_frame_preroll_count.saturating_add(1);
                 }
-                next_frame = Instant::now();
-                started_at = next_frame;
+                let reset_at = Instant::now();
+                frame_pacer.reset(reset_at);
+                started_at = reset_at;
             }
             let (present_job_tx, present_job_rx) = mpsc::channel::<H265PresentJob>();
             let (present_result_tx, present_result_rx) =
@@ -9433,31 +9411,17 @@ pub fn run_h265_ready_prefix_video(
                     previous_duration_ms = access_unit.duration_ms;
                     frames.push(frame);
 
-                    if let Some(interval) = frame_interval
-                        && playback_frame_index + 1 < playback_frame_count
-                    {
-                        next_frame += interval;
-                        let now = Instant::now();
-                        if next_frame > now {
-                            let sleep_duration = next_frame - now;
-                            frame_sleep_count = frame_sleep_count.saturating_add(1);
-                            total_frame_sleep_us = total_frame_sleep_us
-                                .saturating_add(native_vulkan_elapsed_us(sleep_duration));
-                            let sleep_for = sleep_duration
-                                .checked_sub(frame_pacing_spin_margin)
-                                .unwrap_or_default();
-                            if !sleep_for.is_zero() {
-                                thread::sleep(sleep_for);
-                            }
-                            while Instant::now() < next_frame {
-                                std::hint::spin_loop();
-                            }
-                        } else {
-                            missed_frame_pacing_count = missed_frame_pacing_count.saturating_add(1);
-                            max_frame_pacing_late_us = max_frame_pacing_late_us
-                                .max(native_vulkan_elapsed_us(now.duration_since(next_frame)));
-                            next_frame = now;
-                        }
+                    let pace_result = frame_pacer
+                        .pace_after_frame(playback_frame_index + 1 >= playback_frame_count);
+                    if pace_result.slept {
+                        frame_sleep_count = frame_sleep_count.saturating_add(1);
+                        total_frame_sleep_us = total_frame_sleep_us
+                            .saturating_add(native_vulkan_elapsed_us(pace_result.sleep_duration));
+                    }
+                    if let Some(late_duration) = pace_result.late_duration {
+                        missed_frame_pacing_count = missed_frame_pacing_count.saturating_add(1);
+                        max_frame_pacing_late_us =
+                            max_frame_pacing_late_us.max(native_vulkan_elapsed_us(late_duration));
                     }
                 }
                 while pending_present_results > 0 {
@@ -10763,8 +10727,10 @@ pub fn run_av1_ready_prefix_video(
             );
             let pacing_strategy = pacing_plan.strategy;
             let frame_interval = pacing_plan.frame_interval;
-            let frame_pacing_spin_margin = native_vulkan_frame_pacing_spin_margin(target_max_fps);
-            let mut next_frame = Instant::now();
+            let mut frame_pacer = pacing::NativeVulkanVideoClockPacer::new(
+                target_max_fps,
+                native_vulkan_frame_pacing_spin_margin(target_max_fps),
+            );
             let mut started_at = Instant::now();
             let mut previous_pts_ns = None::<u64>;
             let mut previous_duration_ns = None::<u64>;
@@ -11886,8 +11852,9 @@ pub fn run_av1_ready_prefix_video(
                 NativeVulkanAv1BeginReferenceSlotStrategy::from_env();
             let mut next_av1_frame_context = 0usize;
             if av1_present_frame_preroll_count > 0 {
-                next_frame = Instant::now();
-                started_at = next_frame;
+                let reset_at = Instant::now();
+                frame_pacer.reset(reset_at);
+                started_at = reset_at;
             }
             let runtime_result =
                 (|| -> Result<NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot, NativeVulkanError> {
@@ -14349,8 +14316,9 @@ pub fn run_av1_ready_prefix_video(
                         }
                         av1_present_frame_video_prerolled = true;
                         av1_skip_counted_frame_after_present_preroll = true;
-                        next_frame = Instant::now();
-                        started_at = next_frame;
+                        let reset_at = Instant::now();
+                        frame_pacer.reset(reset_at);
+                        started_at = reset_at;
                     } else if let Some(display_slot) = av1_display_ring_slot_index {
                         if let Some(slot_fence) =
                             av1_display_slot_in_flight_fences.get_mut(display_slot)
@@ -15330,31 +15298,17 @@ pub fn run_av1_ready_prefix_video(
                 }
                 frames.push(frame);
 
-                if let Some(interval) = frame_interval
-                    && frames.len() < playback_frame_count as usize
-                {
-                    next_frame += interval;
-                    let now = Instant::now();
-                    if next_frame > now {
-                        let sleep_duration = next_frame - now;
-                        frame_sleep_count = frame_sleep_count.saturating_add(1);
-                        total_frame_sleep_us = total_frame_sleep_us
-                            .saturating_add(native_vulkan_elapsed_us(sleep_duration));
-                        let sleep_for = sleep_duration
-                            .checked_sub(frame_pacing_spin_margin)
-                            .unwrap_or_default();
-                        if !sleep_for.is_zero() {
-                            thread::sleep(sleep_for);
-                        }
-                        while Instant::now() < next_frame {
-                            std::hint::spin_loop();
-                        }
-                    } else {
-                        missed_frame_pacing_count = missed_frame_pacing_count.saturating_add(1);
-                        max_frame_pacing_late_us = max_frame_pacing_late_us
-                            .max(native_vulkan_elapsed_us(now.duration_since(next_frame)));
-                        next_frame = now;
-                    }
+                let pace_result =
+                    frame_pacer.pace_after_frame(frames.len() >= playback_frame_count as usize);
+                if pace_result.slept {
+                    frame_sleep_count = frame_sleep_count.saturating_add(1);
+                    total_frame_sleep_us = total_frame_sleep_us
+                        .saturating_add(native_vulkan_elapsed_us(pace_result.sleep_duration));
+                }
+                if let Some(late_duration) = pace_result.late_duration {
+                    missed_frame_pacing_count = missed_frame_pacing_count.saturating_add(1);
+                    max_frame_pacing_late_us =
+                        max_frame_pacing_late_us.max(native_vulkan_elapsed_us(late_duration));
                 }
             }
             while av1_frame_contexts
