@@ -3200,6 +3200,77 @@ struct NativeVulkanVideoImportSnapshot {
     last_dmabuf_import: Option<NativeVulkanDmabufImportSnapshot>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeVulkanStaticUploadPlan {
+    source: PathBuf,
+    fit: FitMode,
+    background: Option<String>,
+}
+
+fn native_vulkan_static_upload_plan(
+    render_item: &NativeVulkanRenderItem,
+) -> Option<NativeVulkanStaticUploadPlan> {
+    match render_item {
+        NativeVulkanRenderItem::StaticImage {
+            source,
+            fit,
+            background,
+            ..
+        } => Some(NativeVulkanStaticUploadPlan {
+            source: source.clone(),
+            fit: *fit,
+            background: background.clone(),
+        }),
+        NativeVulkanRenderItem::Video {
+            poster: Some(poster),
+            fit,
+            ..
+        } => Some(NativeVulkanStaticUploadPlan {
+            source: poster.clone(),
+            fit: *fit,
+            background: None,
+        }),
+        NativeVulkanRenderItem::SceneLite {
+            display:
+                Some(SceneLiteDisplayPlan::Image {
+                    source,
+                    fit,
+                    background,
+                }),
+            ..
+        } => Some(NativeVulkanStaticUploadPlan {
+            source: source.clone(),
+            fit: *fit,
+            background: background.clone(),
+        }),
+        _ => None,
+    }
+}
+
+fn native_vulkan_render_item_clear_color(
+    render_item: &NativeVulkanRenderItem,
+    fallback: NativeVulkanClearColor,
+) -> NativeVulkanClearColor {
+    match render_item {
+        NativeVulkanRenderItem::SceneLite {
+            display: Some(SceneLiteDisplayPlan::Color { color }),
+            ..
+        } => native_vulkan_clear_color_from_hex(color).unwrap_or(fallback),
+        _ => fallback,
+    }
+}
+
+fn native_vulkan_clear_color_from_hex(value: &str) -> Option<NativeVulkanClearColor> {
+    let hex = value.trim().strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()? as f32 / 255.0;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()? as f32 / 255.0;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()? as f32 / 255.0;
+    Some(NativeVulkanClearColor { r, g, b, a: 1.0 })
+}
+
 pub struct NativeVulkanSession {
     host: NativeWaylandHost,
     _entry: ash::Entry,
@@ -3387,38 +3458,21 @@ impl NativeVulkanSession {
                     result,
                 }
             })?;
-        let static_upload = match &render_item {
-            NativeVulkanRenderItem::StaticImage {
-                source,
-                fit,
-                background,
-                ..
-            } => Some(NativeVulkanStaticImageUpload::new(
+        let static_upload_plan = native_vulkan_static_upload_plan(&render_item);
+        let static_upload = match static_upload_plan.as_ref() {
+            Some(plan) => Some(NativeVulkanStaticImageUpload::new(
                 &instance,
                 selection.physical_device,
                 &device,
-                source,
-                *fit,
-                background.as_deref(),
+                &plan.source,
+                plan.fit,
+                plan.background.as_deref(),
                 swapchain_plan.format.format,
                 swapchain_plan.extent,
             )?),
-            NativeVulkanRenderItem::Video {
-                poster: Some(poster),
-                fit,
-                ..
-            } => Some(NativeVulkanStaticImageUpload::new(
-                &instance,
-                selection.physical_device,
-                &device,
-                poster,
-                *fit,
-                None,
-                swapchain_plan.format.format,
-                swapchain_plan.extent,
-            )?),
-            _ => None,
+            None => None,
         };
+        let clear_color = native_vulkan_render_item_clear_color(&render_item, options.clear_color);
         #[cfg(feature = "native-vulkan-gst-video")]
         let video_frontend = match &render_item {
             NativeVulkanRenderItem::Video { .. } => {
@@ -3475,7 +3529,7 @@ impl NativeVulkanSession {
             video_texture: None,
             #[cfg(feature = "native-vulkan-gst-video")]
             video_import_status: NativeVulkanVideoImportStatus::default(),
-            clear_color: options.clear_color,
+            clear_color,
             render_item,
             started_at: Instant::now(),
             frames_rendered: 0,
@@ -52829,6 +52883,69 @@ mod tests {
             *renderer_status,
             "deterministic-scene-lite-snapshot-ready-for-vulkan-passes"
         );
+    }
+
+    #[test]
+    fn scene_lite_image_display_uses_static_upload_plan() {
+        let item = NativeVulkanRenderItem::SceneLite {
+            output_name: "HDMI-A-1".to_owned(),
+            scene_source: Some(PathBuf::from("/tmp/scene-lite.json")),
+            fallback: Some(PathBuf::from("/tmp/scene-fallback.svg")),
+            display: Some(SceneLiteDisplayPlan::Image {
+                source: PathBuf::from("/tmp/scene-snapshot.png"),
+                fit: FitMode::Contain,
+                background: Some("#010203".to_owned()),
+            }),
+            display_image: Some(PathBuf::from("/tmp/scene-snapshot.png")),
+            display_color: None,
+            manifest_max_fps: Some(60),
+            layer_count: 0,
+            layers: Vec::new(),
+            bound_properties: Vec::new(),
+            snapshot_time_ms: 0,
+            target_max_fps: Some(60),
+            renderer_status: "deterministic-scene-lite-snapshot-ready-for-vulkan-passes",
+        };
+
+        let plan = native_vulkan_static_upload_plan(&item).expect("scene-lite image display plan");
+
+        assert_eq!(plan.source, PathBuf::from("/tmp/scene-snapshot.png"));
+        assert_eq!(plan.fit, FitMode::Contain);
+        assert_eq!(plan.background.as_deref(), Some("#010203"));
+    }
+
+    #[test]
+    fn scene_lite_color_display_overrides_default_clear_color() {
+        let fallback = NativeVulkanClearColor {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        };
+        let item = NativeVulkanRenderItem::SceneLite {
+            output_name: "HDMI-A-1".to_owned(),
+            scene_source: Some(PathBuf::from("/tmp/scene-lite.json")),
+            fallback: None,
+            display: Some(SceneLiteDisplayPlan::Color {
+                color: "#102030".to_owned(),
+            }),
+            display_image: None,
+            display_color: Some("#102030".to_owned()),
+            manifest_max_fps: Some(60),
+            layer_count: 0,
+            layers: Vec::new(),
+            bound_properties: Vec::new(),
+            snapshot_time_ms: 0,
+            target_max_fps: Some(60),
+            renderer_status: "deterministic-scene-lite-snapshot-ready-for-vulkan-passes",
+        };
+
+        let color = native_vulkan_render_item_clear_color(&item, fallback);
+
+        assert!((color.r - 16.0 / 255.0).abs() < f32::EPSILON);
+        assert!((color.g - 32.0 / 255.0).abs() < f32::EPSILON);
+        assert!((color.b - 48.0 / 255.0).abs() < f32::EPSILON);
+        assert_eq!(color.a, 1.0);
     }
 
     #[test]
