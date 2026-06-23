@@ -72,6 +72,9 @@ mod sampling;
 #[path = "native_vulkan/pacing.rs"]
 mod pacing;
 
+#[path = "native_vulkan/pipeline.rs"]
+mod pipeline;
+
 #[cfg(feature = "native-vulkan-gst-video")]
 #[path = "native_vulkan/audio_clock.rs"]
 mod audio_clock;
@@ -49294,6 +49297,7 @@ pub struct NativeVulkanBackendContract {
     pub resource_telemetry_boundary: &'static str,
     pub required_instance_extensions: Vec<&'static str>,
     pub required_device_extensions: Vec<&'static str>,
+    pub video_pipeline: pipeline::NativeVulkanVideoPipelineContract,
     pub video_interop: NativeVulkanVideoInteropContract,
     pub web_interop: NativeVulkanWebInteropContract,
 }
@@ -49310,6 +49314,7 @@ pub fn backend_contract() -> NativeVulkanBackendContract {
         resource_telemetry_boundary: "report CPU/RSS/PSS/private_dirty/GPU resource counts through stable renderer telemetry",
         required_instance_extensions: required_instance_extensions(),
         required_device_extensions: required_device_extensions(),
+        video_pipeline: pipeline::native_vulkan_video_pipeline_contract(),
         video_interop: video_interop_contract(),
         web_interop: web_interop_contract(),
     }
@@ -52991,6 +52996,18 @@ mod tests {
             ]
         );
         assert!(contract.video_interop.avoids_default_rgba_upload);
+        assert_eq!(
+            contract.video_pipeline.first_reference,
+            "FFmpeg packet/frame/clock model"
+        );
+        assert_eq!(contract.video_pipeline.stages.len(), 10);
+        assert!(
+            contract
+                .video_pipeline
+                .stages
+                .iter()
+                .any(|stage| stage.owner == "native-vulkan-demux-boundary")
+        );
         assert_eq!(contract.wallpaper_type_support.len(), 6);
     }
 
