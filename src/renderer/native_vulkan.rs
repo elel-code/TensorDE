@@ -56,7 +56,11 @@ unsafe extern "C" {
 
 const NATIVE_VULKAN_VIDEO_CODEC_OPERATION_DECODE_VP9: u32 = 0x0000_0008;
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(
+    feature = "native-vulkan-renderer",
+    feature = "native-vulkan-gst-video",
+    test
+))]
 #[path = "native_vulkan/h264.rs"]
 mod h264;
 
@@ -69,8 +73,18 @@ mod sampling;
 mod pacing;
 
 #[cfg(feature = "native-vulkan-gst-video")]
+#[path = "native_vulkan/audio_clock.rs"]
+mod audio_clock;
+
+#[cfg(feature = "native-vulkan-gst-video")]
 #[path = "native_vulkan/timeline.rs"]
 mod timeline;
+
+#[cfg(feature = "native-vulkan-gst-video")]
+pub use audio_clock::{
+    NativeVulkanAudioClockProbeOptions, NativeVulkanAudioClockProbeSnapshot,
+    NativeVulkanAudioClockRuntimeSnapshot, probe_native_vulkan_audio_clock,
+};
 
 #[cfg(feature = "native-vulkan-gst-video")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2932,6 +2946,7 @@ pub struct NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot {
     pub pts_delta_expected_min_ms: Option<u64>,
     pub pts_delta_expected_max_ms: Option<u64>,
     pub pts_delta_in_expected_range: Option<bool>,
+    pub audio_clock_probe: Option<NativeVulkanAudioClockRuntimeSnapshot>,
     pub frames: Vec<NativeVulkanDirectH264ReadyPrefixFrameSnapshot>,
     pub last_render_error: Option<String>,
 }
@@ -4712,6 +4727,7 @@ pub fn run_h264_ready_prefix_video(
     ready_prefix_frame_count: u32,
     input_mode: NativeVulkanH264VideoInputMode,
     playback_frame_count: u32,
+    audio_clock_probe_enabled: bool,
 ) -> Result<NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot, NativeVulkanError> {
     if width == 0 || height == 0 {
         return Err(NativeVulkanError::Video(
@@ -5479,6 +5495,13 @@ pub fn run_h264_ready_prefix_video(
             let mut previous_pts_ms = None::<u64>;
             let mut previous_duration_ms = None::<u64>;
             let mut frames = Vec::with_capacity(playback_frame_count as usize);
+            let mut audio_clock_probe = if audio_clock_probe_enabled {
+                Some(audio_clock::NativeVulkanAudioClockRuntimeProbe::start(
+                    &source,
+                )?)
+            } else {
+                None
+            };
             let mut loop_boundary_reset_count = 0u32;
             let mut frame_sleep_count = 0u32;
             let mut missed_frame_pacing_count = 0u32;
@@ -6204,6 +6227,19 @@ pub fn run_h264_ready_prefix_video(
                         frame.present_elapsed_us = 0;
                         previous_pts_ms = access_unit.pts_ms;
                         previous_duration_ms = access_unit.duration_ms;
+                        if let Some(audio_clock_probe) = audio_clock_probe.as_mut() {
+                            if frame.loop_boundary_reset {
+                                audio_clock_probe.seek_for_video_loop(frame.pts_ms.unwrap_or(0))?;
+                            }
+                            audio_clock_probe.sample_video_pts_ms(
+                                frame.pts_ms,
+                                native_vulkan_audio_probe_video_clock_ns(
+                                    frame.playback_frame_index,
+                                    target_max_fps,
+                                    frame.pts_ms,
+                                ),
+                            )?;
+                        }
                         frames.push(frame);
 
                         let pace_result = frame_pacer
@@ -6357,6 +6393,12 @@ pub fn run_h264_ready_prefix_video(
                     target_max_fps,
                     frames.iter().map(|frame| frame.pts_delta_ms),
                 );
+                let audio_clock_probe = if let Some(audio_clock_probe) = audio_clock_probe.as_mut()
+                {
+                    Some(audio_clock_probe.snapshot()?)
+                } else {
+                    None
+                };
                 return Ok(NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot {
                     runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
                     requested_frame_count: playback_frame_count,
@@ -6493,6 +6535,7 @@ pub fn run_h264_ready_prefix_video(
                     pts_delta_expected_min_ms: pts_delta_summary.expected_min_ms,
                     pts_delta_expected_max_ms: pts_delta_summary.expected_max_ms,
                     pts_delta_in_expected_range: pts_delta_summary.in_expected_range,
+                    audio_clock_probe,
                     frames,
                     last_render_error: None,
                 });
@@ -7917,6 +7960,19 @@ pub fn run_h264_ready_prefix_video(
                         previous_duration_ms = frame_duration_ms;
                         previous_source_loop_index = frame.playback_loop_index;
                         available_decode_semaphore_index = next_available_decode_semaphore_index;
+                        if let Some(audio_clock_probe) = audio_clock_probe.as_mut() {
+                            if frame.loop_boundary_reset {
+                                audio_clock_probe.seek_for_video_loop(frame.pts_ms.unwrap_or(0))?;
+                            }
+                            audio_clock_probe.sample_video_pts_ms(
+                                frame.pts_ms,
+                                native_vulkan_audio_probe_video_clock_ns(
+                                    frame.playback_frame_index,
+                                    target_max_fps,
+                                    frame.pts_ms,
+                                ),
+                            )?;
+                        }
                         frames.push(frame);
 
                         let pace_result = frame_pacer
@@ -8086,6 +8142,11 @@ pub fn run_h264_ready_prefix_video(
                 target_max_fps,
                 frames.iter().map(|frame| frame.pts_delta_ms),
             );
+            let audio_clock_probe = if let Some(audio_clock_probe) = audio_clock_probe.as_mut() {
+                Some(audio_clock_probe.snapshot()?)
+            } else {
+                None
+            };
             Ok(NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot {
                 runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
                 requested_frame_count: playback_frame_count,
@@ -8224,6 +8285,7 @@ pub fn run_h264_ready_prefix_video(
                 pts_delta_expected_min_ms: pts_delta_summary.expected_min_ms,
                 pts_delta_expected_max_ms: pts_delta_summary.expected_max_ms,
                 pts_delta_in_expected_range: pts_delta_summary.in_expected_range,
+                audio_clock_probe,
                 frames,
                 last_render_error: None,
             })
@@ -16649,6 +16711,21 @@ fn native_vulkan_clock_time_ns(value: Option<gst::ClockTime>) -> Option<u64> {
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_elapsed_us(value: Duration) -> u64 {
     value.as_micros().min(u128::from(u64::MAX)) as u64
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_audio_probe_video_clock_ns(
+    playback_frame_index: u32,
+    target_max_fps: Option<u32>,
+    fallback_pts_ms: Option<u64>,
+) -> Option<u64> {
+    target_max_fps
+        .filter(|fps| *fps > 0)
+        .map(|fps| {
+            let ns = (u128::from(playback_frame_index) * 1_000_000_000u128) / u128::from(fps);
+            u64::try_from(ns).unwrap_or(u64::MAX)
+        })
+        .or_else(|| fallback_pts_ms.map(|pts_ms| pts_ms.saturating_mul(1_000_000)))
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]

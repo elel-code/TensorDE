@@ -1,5 +1,6 @@
 use ash::vk;
 
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
 pub(super) fn native_vulkan_h264_profile_has_high_syntax(profile_idc: u8) -> bool {
     matches!(
         profile_idc,
@@ -7,6 +8,7 @@ pub(super) fn native_vulkan_h264_profile_has_high_syntax(profile_idc: u8) -> boo
     )
 }
 
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
 pub(super) fn native_vulkan_h264_profile_idc_label(profile_idc: u8) -> &'static str {
     match profile_idc {
         66 => "baseline",
@@ -20,6 +22,7 @@ pub(super) fn native_vulkan_h264_profile_idc_label(profile_idc: u8) -> &'static 
     }
 }
 
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
 pub(super) fn native_vulkan_h264_profile_is_8bit_420_decode_candidate(profile_idc: u8) -> bool {
     matches!(profile_idc, 66 | 77 | 100)
 }
