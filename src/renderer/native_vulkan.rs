@@ -2661,6 +2661,7 @@ pub struct NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot {
     pub av1_show_existing_precopy_stale_count: u32,
     pub av1_show_existing_precopy_invalidate_count: u32,
     pub av1_show_existing_direct_dpb_count: u32,
+    pub av1_displayed_direct_dpb_count: u32,
     pub av1_hidden_decode_queue_wait_count: u32,
     pub av1_hidden_decode_queue_wait_elapsed_us: u64,
     pub av1_frame_context_count: u32,
@@ -10336,8 +10337,12 @@ pub fn run_av1_ready_prefix_video(
                 capabilities.min_bitstream_buffer_offset_alignment,
                 capabilities.min_bitstream_buffer_size_alignment,
             )?;
-            let av1_graphics_display_copy =
+            let av1_graphics_display_copy_requested =
                 !av1_dedicated_output && native_vulkan_av1_graphics_display_copy_enabled();
+            let av1_displayed_direct_dpb_enabled = av1_graphics_display_copy_requested
+                && native_vulkan_av1_displayed_direct_dpb_enabled();
+            let av1_graphics_display_copy =
+                av1_graphics_display_copy_requested && !av1_displayed_direct_dpb_enabled;
             let av1_display_ring_slot_count = if av1_graphics_display_copy {
                 native_vulkan_av1_display_ring_slot_count(
                     codec,
@@ -10398,8 +10403,10 @@ pub fn run_av1_ready_prefix_video(
                         },
                     )?;
             }
-            let av1_resource_general_layout =
-                native_vulkan_av1_resource_general_layout_enabled() || av1_graphics_display_copy;
+            let av1_direct_dpb_general_layout = !av1_graphics_display_copy && !av1_dedicated_output;
+            let av1_resource_general_layout = native_vulkan_av1_resource_general_layout_enabled()
+                || av1_graphics_display_copy
+                || av1_direct_dpb_general_layout;
             let av1_decode_image_layout = if av1_resource_general_layout {
                 vk::ImageLayout::GENERAL
             } else {
@@ -10668,11 +10675,12 @@ pub fn run_av1_ready_prefix_video(
                 renderer_ref.update_descriptors_for_set_index(&device, 0, &output_texture)?;
             }
             if !av1_graphics_display_copy || av1_show_existing_direct_dpb_enabled {
-                let resource_shader_layout = if av1_show_existing_direct_dpb_enabled {
-                    vk::ImageLayout::GENERAL
-                } else {
-                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
-                };
+                let resource_shader_layout =
+                    if av1_show_existing_direct_dpb_enabled || av1_direct_dpb_general_layout {
+                        vk::ImageLayout::GENERAL
+                    } else {
+                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+                    };
                 for (displayed_slot, decoded_views) in
                     decoded_plane_view_cache.iter().copied().enumerate()
                 {
@@ -10857,6 +10865,7 @@ pub fn run_av1_ready_prefix_video(
             let mut av1_show_existing_precopy_stale_count = 0u32;
             let mut av1_show_existing_precopy_invalidate_count = 0u32;
             let mut av1_show_existing_direct_dpb_count = 0u32;
+            let mut av1_displayed_direct_dpb_count = 0u32;
             let mut pending_av1_show_existing_prepared_display_by_output_slot =
                 vec![
                     None::<NativeVulkanAv1PreparedShowExistingDisplayCopy>;
@@ -13999,7 +14008,14 @@ pub fn run_av1_ready_prefix_video(
                         })?,
                     )
                 } else {
-                    if av1_show_existing_direct_dpb {
+                    let av1_sampled_direct_dpb =
+                        !dedicated_decode_output && (!av1_graphics_display_copy
+                            || av1_show_existing_direct_dpb);
+                    if av1_sampled_direct_dpb {
+                        av1_displayed_direct_dpb_count =
+                            av1_displayed_direct_dpb_count.saturating_add(1);
+                    }
+                    if av1_sampled_direct_dpb && frame.show_existing_frame {
                         av1_show_existing_direct_dpb_count =
                             av1_show_existing_direct_dpb_count.saturating_add(1);
                     }
@@ -14034,7 +14050,9 @@ pub fn run_av1_ready_prefix_video(
                         av1_resource_descriptor_set_base
                             .saturating_add(decoded_displayed_slot as usize)
                     };
-                    let shader_layout = if av1_show_existing_direct_dpb {
+                    let shader_layout = if av1_sampled_direct_dpb
+                        && (av1_show_existing_direct_dpb || av1_direct_dpb_general_layout)
+                    {
                         vk::ImageLayout::GENERAL
                     } else {
                         vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
@@ -14805,6 +14823,9 @@ pub fn run_av1_ready_prefix_video(
                     }
                 }
                 }
+                let av1_sampled_direct_dpb_for_frame =
+                    !dedicated_decode_output && (!av1_graphics_display_copy
+                        || av1_show_existing_direct_dpb);
                 av1_frame_contexts[present_frame_context_index].sampled_resource =
                     if av1_graphics_display_copy && !av1_show_existing_direct_dpb {
                         None
@@ -14812,7 +14833,8 @@ pub fn run_av1_ready_prefix_video(
                         Some(NativeVulkanAv1SampledResource {
                             displayed_slot: decoded_displayed_slot,
                             dedicated_output: dedicated_decode_output,
-                            shared_general_layout: av1_show_existing_direct_dpb,
+                            shared_general_layout: av1_sampled_direct_dpb_for_frame
+                                && (av1_show_existing_direct_dpb || av1_direct_dpb_general_layout),
                         })
                     };
                 if av1_visible_decode_ahead_enabled
@@ -15254,7 +15276,9 @@ pub fn run_av1_ready_prefix_video(
                     ),
                 );
                 if !av1_graphics_display_copy || av1_show_existing_direct_dpb {
-                    let sampled_layout = if av1_show_existing_direct_dpb {
+                    let sampled_layout = if av1_sampled_direct_dpb_for_frame
+                        && (av1_show_existing_direct_dpb || av1_direct_dpb_general_layout)
+                    {
                         vk::ImageLayout::GENERAL
                     } else {
                         vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
@@ -15633,7 +15657,9 @@ pub fn run_av1_ready_prefix_video(
                     .bootstrap_discarded_access_units,
                 av1_packet_queue_max_payload_bytes: streaming_queue.max_payload_bytes,
                 av1_packet_queue_retained_payload_bytes: streaming_queue.retained_payload_bytes(),
-                av1_display_handoff_strategy: if av1_show_existing_direct_dpb_enabled {
+                av1_display_handoff_strategy: if av1_displayed_direct_dpb_enabled {
+                    "direct-sampled-dpb-general-layout+frame-context-retire"
+                } else if av1_show_existing_direct_dpb_enabled {
                     "video-queue-early-keep-last-copy-display-ring+show-existing-direct-dpb"
                 } else if av1_early_display_copy_show_existing {
                     "video-queue-early-keep-last-copy-display-ring+show-existing"
@@ -15641,6 +15667,8 @@ pub fn run_av1_ready_prefix_video(
                     "video-queue-early-keep-last-copy-display-ring"
                 } else if av1_graphics_display_copy {
                     "graphics-present-queue-copy-merged-with-render-display-ring"
+                } else if av1_direct_dpb_general_layout {
+                    "direct-sampled-dpb-general-layout+frame-context-retire"
                 } else {
                     "direct-sampled-dpb-output"
                 },
@@ -15863,6 +15891,7 @@ pub fn run_av1_ready_prefix_video(
                 av1_show_existing_precopy_stale_count,
                 av1_show_existing_precopy_invalidate_count,
                 av1_show_existing_direct_dpb_count,
+                av1_displayed_direct_dpb_count,
                 av1_hidden_decode_queue_wait_count,
                 av1_hidden_decode_queue_wait_elapsed_us,
                 av1_frame_context_count: av1_frame_contexts.len().min(u32::MAX as usize) as u32,
@@ -21762,11 +21791,11 @@ fn native_vulkan_av1_present_frame_queue_enabled() -> bool {
 
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_av1_present_frame_clear_preroll_enabled() -> bool {
-    matches!(
+    !matches!(
         std::env::var("GILDER_VULKAN_AV1_PRESENT_FRAME_CLEAR_PREROLL")
             .ok()
             .as_deref(),
-        Some("1") | Some("true") | Some("on") | Some("yes")
+        Some("0") | Some("false") | Some("off") | Some("no") | Some("disabled")
     )
 }
 
@@ -21776,7 +21805,7 @@ fn native_vulkan_av1_present_frame_clear_preroll_count() -> u32 {
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(1)
+        .unwrap_or(2)
         .clamp(1, 8)
 }
 
@@ -28315,6 +28344,17 @@ fn native_vulkan_av1_show_existing_precopy_enabled() -> bool {
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_av1_show_existing_direct_dpb_enabled() -> bool {
     match std::env::var("GILDER_VULKAN_AV1_SHOW_EXISTING_DIRECT_DPB")
+        .ok()
+        .as_deref()
+    {
+        Some("0") | Some("false") | Some("off") | Some("no") | Some("disabled") => false,
+        _ => true,
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_displayed_direct_dpb_enabled() -> bool {
+    match std::env::var("GILDER_VULKAN_AV1_DISPLAYED_DIRECT_DPB")
         .ok()
         .as_deref()
     {
