@@ -21791,11 +21791,11 @@ fn native_vulkan_av1_present_frame_queue_enabled() -> bool {
 
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_av1_present_frame_clear_preroll_enabled() -> bool {
-    !matches!(
+    matches!(
         std::env::var("GILDER_VULKAN_AV1_PRESENT_FRAME_CLEAR_PREROLL")
             .ok()
             .as_deref(),
-        Some("0") | Some("false") | Some("off") | Some("no") | Some("disabled")
+        Some("1") | Some("true") | Some("on") | Some("yes")
     )
 }
 

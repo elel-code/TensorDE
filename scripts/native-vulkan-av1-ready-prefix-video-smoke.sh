@@ -14,6 +14,7 @@ Options:
   --output-name <name>            Wayland output name, for example HDMI-A-1.
   --output <name>                 Alias for --output-name.
   --work-dir <path>               Parent directory for generated evidence. Default: /tmp.
+  --source-cache-dir <path>       Persistent generated source cache. Default: artifacts/video-sources/av1.
   --width <px>                    Source width. Default: 640.
   --height <px>                   Source height. Default: 368.
   --target-fps <fps>              Decode/present target FPS. Default: 60.
@@ -74,6 +75,7 @@ layer="background"
 fit="cover"
 allow_short_loop=0
 report_dir=""
+source_cache_dir="artifacts/video-sources/av1"
 no_build=0
 generated_source=0
 source_duration_seconds=0
@@ -94,6 +96,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --work-dir)
       work_parent="${2:?--work-dir requires a path}"
+      shift 2
+      ;;
+    --source-cache-dir)
+      source_cache_dir="${2:?--source-cache-dir requires a path}"
       shift 2
       ;;
     --width)
@@ -266,7 +272,7 @@ fi
 summary="$report_dir/summary.txt"
 runtime_json="$report_dir/runtime.json"
 stderr_log="$report_dir/stderr.log"
-generated_dir="$report_dir/source"
+generated_dir="$source_cache_dir"
 performance_dir="$report_dir/performance"
 performance_log="$report_dir/performance.log"
 mkdir -p "$generated_dir"
@@ -292,11 +298,13 @@ if [[ -z "$source" ]]; then
     fi
   fi
   source_duration_seconds=$(( (frames + target_fps - 1) / target_fps ))
-  base_source="$generated_dir/av1-main${bit_depth}-${width}x${height}-${target_fps}fps-${frames}frames.webm"
-  ffmpeg -hide_banner -loglevel error -y \
-    -f lavfi -i "testsrc2=size=${width}x${height}:rate=${target_fps}:duration=${source_duration_seconds}" \
-    -frames:v "$frames" -an -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -row-mt 1 \
-    -g "$decode_prefix" -pix_fmt "$pix_fmt" "$base_source"
+  base_source="$generated_dir/av1-main${bit_depth}-${width}x${height}-${target_fps}fps-${frames}frames-g${decode_prefix}.webm"
+  if [[ ! -s "$base_source" ]]; then
+    ffmpeg -hide_banner -loglevel error -y \
+      -f lavfi -i "testsrc2=size=${width}x${height}:rate=${target_fps}:duration=${source_duration_seconds}" \
+      -frames:v "$frames" -an -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -row-mt 1 \
+      -g "$decode_prefix" -pix_fmt "$pix_fmt" "$base_source"
+  fi
   source="$base_source"
 fi
 
@@ -307,11 +315,15 @@ fi
 
 if [[ -n "$arbitrary_entry_offset" ]]; then
   arbitrary_entry_source=1
-  arbitrary_source="$generated_dir/av1-main${bit_depth}-${width}x${height}-${target_fps}fps-arbitrary-${arbitrary_entry_offset}s.webm"
-  ffmpeg -hide_banner -loglevel error -y \
-    -i "$source" -ss "$arbitrary_entry_offset" \
-    -c copy -copyinkf -avoid_negative_ts make_zero \
-    "$arbitrary_source"
+  arbitrary_stem="$(basename "$source")"
+  arbitrary_stem="${arbitrary_stem%.*}"
+  arbitrary_source="$generated_dir/${arbitrary_stem}-arbitrary-${arbitrary_entry_offset}s.webm"
+  if [[ ! -s "$arbitrary_source" ]]; then
+    ffmpeg -hide_banner -loglevel error -y \
+      -i "$source" -ss "$arbitrary_entry_offset" \
+      -c copy -copyinkf -avoid_negative_ts make_zero \
+      "$arbitrary_source"
+  fi
   source="$arbitrary_source"
   if [[ ! -s "$source" ]]; then
     printf 'FAIL: arbitrary-entry shifted source was not created: %s\n' "$source" >&2
@@ -432,6 +444,8 @@ present_result_over_budget_after_warmup_count="$(jq -r '.present_result_over_bud
 present_result_missed_vblank_threshold_us="$(jq -r '.present_result_missed_vblank_threshold_us // 0' "$runtime_json")"
 present_result_missed_vblank_count="$(jq -r '.present_result_missed_vblank_count // 0' "$runtime_json")"
 present_result_missed_vblank_after_warmup_count="$(jq -r '.present_result_missed_vblank_after_warmup_count // 0' "$runtime_json")"
+pts_delta_min="$(jq -r '.pts_delta_min_ms // "none"' "$runtime_json")"
+pts_delta_max="$(jq -r '.pts_delta_max_ms // "none"' "$runtime_json")"
 present_budget_us=$(((1000000 + target_fps - 1) / target_fps))
 acquire_over_budget_count="$(jq -r --argjson budget "$present_budget_us" '[.frames[]?.acquire_elapsed_us // 0 | select(. > $budget)] | length' "$runtime_json")"
 queue_present_over_budget_count="$(jq -r --argjson budget "$present_budget_us" '[.frames[]?.queue_present_elapsed_us // 0 | select(. > $budget)] | length' "$runtime_json")"
@@ -656,7 +670,7 @@ case "$sync_strategy" in
   *) sync_strategy_gate_failed=1 ;;
 esac
 
-if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_picture_format" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$ready_prefix_count" -ne "$decode_prefix" || "$requested_playback_count" -ne "$expected_frames" || $((decoded_count + handoff_count)) -ne "$expected_frames" || "$total_decoded_count" -ne $((decoded_count + hidden_decoded_count)) || "$configured" != "true" || "$processed_temporal_unit_count" -lt "$expected_frames" || "$distinct_layers" -le 1 || "$bad_frames" -ne 0 || "$hidden_presented_frames" -ne 0 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$arbitrary_entry_gate_failed" -ne 0 || "$loop_replay_gate_failed" -ne 0 || "$readback_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$sync_strategy_gate_failed" -ne 0 || "$present_queue" == "none" || "$video_queue" == "none" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
+if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_picture_format" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$ready_prefix_count" -ne "$decode_prefix" || "$requested_playback_count" -ne "$expected_frames" || $((decoded_count + handoff_count)) -ne "$expected_frames" || "$total_decoded_count" -ne $((decoded_count + hidden_decoded_count)) || "$configured" != "true" || "$processed_temporal_unit_count" -lt "$expected_frames" || "$distinct_layers" -le 1 || "$bad_frames" -ne 0 || "$hidden_presented_frames" -ne 0 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$arbitrary_entry_gate_failed" -ne 0 || "$loop_replay_gate_failed" -ne 0 || "$readback_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$sync_strategy_gate_failed" -ne 0 || "$pts_delta_min" == "none" || "$pts_delta_max" == "none" || "$present_queue" == "none" || "$video_queue" == "none" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
   {
     printf 'FAIL: native Vulkan AV1 ready-prefix visible runtime output was not valid\n'
     printf 'requested_codec: %s\n' "$requested_codec"
@@ -686,6 +700,8 @@ if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_pi
     printf 'present_result_missed_vblank_threshold_us: %s\n' "$present_result_missed_vblank_threshold_us"
     printf 'present_result_missed_vblank_count: %s\n' "$present_result_missed_vblank_count"
     printf 'present_result_missed_vblank_after_warmup_count: %s\n' "$present_result_missed_vblank_after_warmup_count"
+    printf 'pts_delta_min_ms: %s\n' "$pts_delta_min"
+    printf 'pts_delta_max_ms: %s\n' "$pts_delta_max"
     printf 'configured: %s\n' "$configured"
     printf 'av1_packet_queue_capacity: %s\n' "$queue_capacity"
     printf 'av1_packet_queue_pulled_count: %s\n' "$queue_pulled_count"
@@ -823,6 +839,7 @@ if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_pi
     printf 'arbitrary_entry_first_key_pts: %s\n' "$arbitrary_entry_first_key_pts"
     printf 'arbitrary_entry_probe_status: %s\n' "$arbitrary_entry_probe_status"
     printf 'arbitrary_entry_probe_log: %s\n' "${arbitrary_entry_probe_log:-none}"
+    printf 'generated_source_cache_dir: %s\n' "$generated_dir"
     printf 'runtime_skipped_arbitrary_prefix: %s\n' "$([[ "$runtime_skipped_arbitrary_prefix" -eq 1 ]] && printf yes || printf no)"
     printf 'arbitrary_prefix_handled: %s\n' "$([[ "$arbitrary_prefix_handled" -eq 1 ]] && printf yes || printf no)"
     printf 'arbitrary_entry_gate_failed: %s\n' "$arbitrary_entry_gate_failed"
@@ -875,6 +892,7 @@ fi
   printf 'generated_source_duration_seconds: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$source_duration_seconds" || printf none)"
   printf 'generated_source_frames_explicit: %s\n' "$([[ "$frames_explicit" -eq 1 ]] && printf yes || printf no)"
   printf 'generated_source_pattern: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf 'testsrc2-continuous-av1-main%s' "$bit_depth" || printf none)"
+  printf 'generated_source_cache_dir: %s\n' "$generated_dir"
   printf 'arbitrary_entry_source: %s\n' "$([[ "$arbitrary_entry_source" -eq 1 ]] && printf yes || printf no)"
   printf 'arbitrary_entry_offset: %s\n' "${arbitrary_entry_offset:-none}"
   printf 'arbitrary_entry_demux_dropped_prefix: %s\n' "$([[ "$arbitrary_entry_demux_dropped_prefix" -eq 1 ]] && printf yes || printf no)"
@@ -1089,6 +1107,8 @@ fi
   printf 'frame_loop_indices_tail: %s\n' "$(jq -c '[.frames[-32:][]?.playback_loop_index]' "$runtime_json")"
   printf 'frame_types_head: %s\n' "$(jq -c '[.frames[0:32][]?.frame_type_label]' "$runtime_json")"
   printf 'frame_types_tail: %s\n' "$(jq -c '[.frames[-32:][]?.frame_type_label]' "$runtime_json")"
+  printf 'pts_delta_min_ms: %s\n' "$pts_delta_min"
+  printf 'pts_delta_max_ms: %s\n' "$pts_delta_max"
   printf 'max_bitstream_upload_elapsed_us: %s\n' "$(jq -r '[.frames[]?.bitstream_upload_elapsed_us] | max // 0' "$runtime_json")"
   printf 'max_decode_elapsed_us: %s\n' "$(jq -r '[.frames[]?.decode_elapsed_us] | max // 0' "$runtime_json")"
   printf 'avg_acquire_elapsed_us: %s\n' "$(jq -r '[.frames[]?.acquire_elapsed_us] | add / length' "$runtime_json")"

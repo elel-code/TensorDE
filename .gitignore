@@ -1,4 +1,5 @@
 /target/
+/artifacts/video-sources/
 **/*.rs.bk
 *.gwp
 *.gwp.tmp
