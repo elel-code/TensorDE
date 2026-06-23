@@ -2553,6 +2553,8 @@ pub struct NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot {
     pub av1_display_handoff_strategy: &'static str,
     pub av1_display_ring_slot_count: u32,
     pub av1_display_ring_memory_bytes: u64,
+    pub av1_display_copy_count: u32,
+    pub av1_display_copy_elided_count: u32,
     pub av1_present_command_buffer_strategy: &'static str,
     pub av1_present_queue_count: u32,
     pub av1_async_present_depth: u32,
@@ -9862,6 +9864,8 @@ pub fn run_av1_ready_prefix_video(
             let mut av1_show_existing_display_cache_stale_count = 0u32;
             let mut av1_show_existing_display_cache_update_count = 0u32;
             let mut av1_show_existing_display_cache_invalidate_count = 0u32;
+            let mut av1_display_copy_count = 0u32;
+            let mut av1_display_copy_elided_count = 0u32;
             let mut av1_display_cache_slot_sources = vec![None::<u32>; av1_display_textures.len()];
             let mut av1_display_cache_dpb_slots =
                 vec![None::<usize>; image.snapshot.array_layers as usize];
@@ -12070,6 +12074,8 @@ pub fn run_av1_ready_prefix_video(
                             if display_slot_ready {
                                 av1_show_existing_display_cache_hit_count =
                                     av1_show_existing_display_cache_hit_count.saturating_add(1);
+                                av1_display_copy_elided_count =
+                                    av1_display_copy_elided_count.saturating_add(1);
                                 av1_display_cache_reused = true;
                                 av1_early_display_ring_slot_index = Some(display_slot);
                             } else {
@@ -12223,6 +12229,7 @@ pub fn run_av1_ready_prefix_video(
                         display_old_layout,
                         source_extent,
                     )?;
+                    av1_display_copy_count = av1_display_copy_count.saturating_add(1);
                     let mut copy_wait_semaphores = Vec::new();
                     let mut copy_wait_stages = Vec::new();
                     let mut copy_wait_timeline_values = Vec::new();
@@ -12460,6 +12467,8 @@ pub fn run_av1_ready_prefix_video(
                                         display_old_layout,
                                         source_extent,
                                     )?;
+                                    av1_display_copy_count =
+                                        av1_display_copy_count.saturating_add(1);
                                     let copy_wait_semaphores =
                                         [av1_hidden_decode_handoff_timeline];
                                     let copy_wait_stages = [vk::PipelineStageFlags::ALL_COMMANDS];
@@ -12988,6 +12997,7 @@ pub fn run_av1_ready_prefix_video(
                                 display_old_layout,
                                 extent: source_extent,
                         });
+                        av1_display_copy_count = av1_display_copy_count.saturating_add(1);
                         display_image.layouts[display_slot] =
                             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
                         if native_vulkan_av1_display_cache_update(
@@ -14188,6 +14198,8 @@ pub fn run_av1_ready_prefix_video(
                                         display_old_layout,
                                         source_extent,
                                     )?;
+                                    av1_display_copy_count =
+                                        av1_display_copy_count.saturating_add(1);
                                     let copy_wait_semaphores =
                                         vec![visible_decode_ahead_signal_semaphore];
                                     let copy_wait_stages =
@@ -14660,6 +14672,8 @@ pub fn run_av1_ready_prefix_video(
                     .as_ref()
                     .map(|image| image.memory_size)
                     .unwrap_or(0),
+                av1_display_copy_count,
+                av1_display_copy_elided_count,
                 av1_present_command_buffer_strategy: if av1_frame_context_present_command_buffer {
                     "frame-context"
                 } else {
@@ -27294,12 +27308,13 @@ fn native_vulkan_av1_early_display_copy_show_existing_enabled() -> bool {
 
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_av1_show_existing_display_cache_enabled() -> bool {
-    matches!(
-        std::env::var("GILDER_VULKAN_AV1_SHOW_EXISTING_DISPLAY_CACHE")
-            .ok()
-            .as_deref(),
-        Some("1") | Some("true") | Some("on") | Some("yes") | Some("keep-last") | Some("cache")
-    )
+    match std::env::var("GILDER_VULKAN_AV1_SHOW_EXISTING_DISPLAY_CACHE")
+        .ok()
+        .as_deref()
+    {
+        Some("0") | Some("false") | Some("off") | Some("no") | Some("disabled") => false,
+        _ => true,
+    }
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -27321,18 +27336,13 @@ fn native_vulkan_av1_show_existing_precopy_enabled() -> bool {
 
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_av1_show_existing_direct_dpb_enabled() -> bool {
-    matches!(
-        std::env::var("GILDER_VULKAN_AV1_SHOW_EXISTING_DIRECT_DPB")
-            .ok()
-            .as_deref(),
-        Some("1")
-            | Some("true")
-            | Some("on")
-            | Some("yes")
-            | Some("direct")
-            | Some("direct-dpb")
-            | Some("direct_dpb")
-    )
+    match std::env::var("GILDER_VULKAN_AV1_SHOW_EXISTING_DIRECT_DPB")
+        .ok()
+        .as_deref()
+    {
+        Some("0") | Some("false") | Some("off") | Some("no") | Some("disabled") => false,
+        _ => true,
+    }
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
