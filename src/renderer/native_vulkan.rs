@@ -5035,6 +5035,7 @@ pub fn run_h264_ready_prefix_video(
     let mut image_available_by_frame = Vec::<vk::Semaphore>::new();
     let mut decode_finished = vk::Semaphore::null();
     let mut decode_ahead_finished = vk::Semaphore::null();
+    let mut direct_decode_finished_by_frame = Vec::<vk::Semaphore>::new();
     let mut display_copy_render_finished = Vec::<vk::Semaphore>::new();
     let mut display_copy_decode_finished = Vec::<vk::Semaphore>::new();
     let mut render_finished = vk::Semaphore::null();
@@ -5140,7 +5141,11 @@ pub fn run_h264_ready_prefix_video(
             let video_command_buffer_info = vk::CommandBufferAllocateInfo::default()
                 .command_pool(video_command_pool)
                 .level(vk::CommandBufferLevel::PRIMARY)
-                .command_buffer_count(2);
+                .command_buffer_count(if h264_direct_sample_decoded_output {
+                    swapchain_images.len().max(1) as u32
+                } else {
+                    2
+                });
             let video_command_buffers =
                 unsafe { device.allocate_command_buffers(&video_command_buffer_info) }.map_err(
                     |result| NativeVulkanError::Vulkan {
@@ -5232,6 +5237,29 @@ pub fn run_h264_ready_prefix_video(
                         result,
                     })?;
                 image_available_by_frame.push(semaphore);
+            }
+            if h264_direct_sample_decoded_output {
+                direct_decode_finished_by_frame.reserve(swapchain_images.len());
+                for index in 0..swapchain_images.len() {
+                    let semaphore =
+                        unsafe { device.create_semaphore(&semaphore_create_info, None) }.map_err(
+                            |result| NativeVulkanError::Vulkan {
+                                operation: match index {
+                                    0 => {
+                                        "vkCreateSemaphore(direct h264 decode_finished_by_frame[0])"
+                                    }
+                                    1 => {
+                                        "vkCreateSemaphore(direct h264 decode_finished_by_frame[1])"
+                                    }
+                                    _ => {
+                                        "vkCreateSemaphore(direct h264 decode_finished_by_frame[n])"
+                                    }
+                                },
+                                result,
+                            },
+                        )?;
+                    direct_decode_finished_by_frame.push(semaphore);
+                }
             }
             let fence_create_info =
                 vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
@@ -5556,14 +5584,22 @@ pub fn run_h264_ready_prefix_video(
                     present_result_since_start_us: u64,
                 }
                 let mut started_at = started_at;
-                let direct_decode_semaphores = [decode_finished, decode_ahead_finished];
-                let direct_async_present_depth = render_finished_by_image
-                    .len()
-                    .saturating_sub(1)
-                    .max(1)
-                    .min(2)
-                    .min(direct_decode_semaphores.len().max(1))
-                    as u32;
+                let fallback_direct_decode_semaphores = [decode_finished, decode_ahead_finished];
+                let direct_decode_semaphores = if direct_decode_finished_by_frame.is_empty() {
+                    fallback_direct_decode_semaphores.as_slice()
+                } else {
+                    direct_decode_finished_by_frame.as_slice()
+                };
+                let default_direct_async_present_depth = render_finished_by_image.len().max(1);
+                let direct_async_present_depth =
+                    std::env::var("GILDER_H264_DIRECT_ASYNC_PRESENT_DEPTH")
+                        .or_else(|_| std::env::var("GILDER_H264_ASYNC_PRESENT_DEPTH"))
+                        .ok()
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .filter(|value| *value > 0)
+                        .unwrap_or(default_direct_async_present_depth as u32)
+                        .min(render_finished_by_image.len().max(1) as u32)
+                        .min(direct_decode_semaphores.len().max(1) as u32);
                 let mut h264_present_frame_preroll_count = 0u32;
                 let mut h264_present_result_wait_count = 0u32;
                 let mut h264_present_result_wait_elapsed_us = 0u64;
@@ -8334,6 +8370,11 @@ pub fn run_h264_ready_prefix_video(
         }
         if decode_ahead_finished != vk::Semaphore::null() {
             device.destroy_semaphore(decode_ahead_finished, None);
+        }
+        for semaphore in direct_decode_finished_by_frame.drain(..) {
+            if semaphore != vk::Semaphore::null() {
+                device.destroy_semaphore(semaphore, None);
+            }
         }
         for semaphore in display_copy_render_finished.drain(..) {
             if semaphore != vk::Semaphore::null() {
@@ -30399,11 +30440,20 @@ fn native_vulkan_h264_graphics_display_copy_enabled() -> bool {
 fn native_vulkan_h264_direct_sample_decoded_output_requested() -> bool {
     std::env::var("GILDER_H264_DISPLAY_HANDOFF")
         .map(|value| {
-            value.eq_ignore_ascii_case("direct")
-                || value.eq_ignore_ascii_case("direct-dpb")
-                || value.eq_ignore_ascii_case("direct-sampled-dpb-output")
+            let value = value.to_ascii_lowercase();
+            !matches!(
+                value.as_str(),
+                "copy"
+                    | "display-copy"
+                    | "display-ring"
+                    | "graphics-present-queue-copy-merged-with-render"
+                    | "0"
+                    | "false"
+                    | "off"
+                    | "no"
+            )
         })
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
