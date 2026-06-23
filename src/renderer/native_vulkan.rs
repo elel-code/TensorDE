@@ -5928,15 +5928,19 @@ pub fn run_h264_ready_prefix_video(
                         let mut playback_loop_index = packet.source_loop_index;
                         let mut loop_boundary_reset = playback_frame_index > 0
                             && playback_loop_index != previous_source_loop_index;
-                        if loop_boundary_reset {
+                        let mut reset_recovery_required =
+                            playback_frame_index == 0 || loop_boundary_reset;
+                        if reset_recovery_required {
                             streaming_reference_planner.reset();
                         }
                         let mut entry = streaming_reference_planner.plan_next(&access_unit);
+                        let mut starts_recovery =
+                            native_vulkan_h264_access_unit_starts_recovery(&access_unit);
                         let mut resync_discarded_access_units = 0u32;
                         let resync_scan_limit =
                             native_vulkan_streaming_bootstrap_scan_limit(streaming_queue.capacity);
-                        while loop_boundary_reset
-                            && !entry.ready_for_decode_submit
+                        while reset_recovery_required
+                            && (!starts_recovery || !entry.ready_for_decode_submit)
                             && usize::try_from(resync_discarded_access_units).unwrap_or(usize::MAX)
                                 < resync_scan_limit
                         {
@@ -5945,10 +5949,14 @@ pub fn run_h264_ready_prefix_video(
                                 format!(
                                     "direct-sampled frame {playback_frame_index} loop resync discard au={} reason={}",
                                     access_unit.index,
-                                    entry
-                                        .unsupported_reason
-                                        .as_deref()
-                                        .unwrap_or("missing references")
+                                    if starts_recovery {
+                                        entry
+                                            .unsupported_reason
+                                            .as_deref()
+                                            .unwrap_or("missing references")
+                                    } else {
+                                        "not a recovery AU"
+                                    }
                                 ),
                             );
                             resync_discarded_access_units =
@@ -5959,7 +5967,20 @@ pub fn run_h264_ready_prefix_video(
                             playback_loop_index = packet.source_loop_index;
                             loop_boundary_reset = playback_frame_index > 0
                                 && playback_loop_index != previous_source_loop_index;
+                            reset_recovery_required =
+                                playback_frame_index == 0 || loop_boundary_reset;
+                            if reset_recovery_required {
+                                streaming_reference_planner.reset();
+                            }
                             entry = streaming_reference_planner.plan_next(&access_unit);
+                            starts_recovery =
+                                native_vulkan_h264_access_unit_starts_recovery(&access_unit);
+                        }
+                        if reset_recovery_required && !starts_recovery {
+                            return Err(NativeVulkanError::Video(format!(
+                                "H.264 streaming AU {} is not a recovery point after reset",
+                                access_unit.index
+                            )));
                         }
                         if !entry.ready_for_decode_submit {
                             return Err(NativeVulkanError::Video(format!(
@@ -7043,16 +7064,20 @@ pub fn run_h264_ready_prefix_video(
                             let mut playback_loop_index = packet.source_loop_index;
                             let mut loop_boundary_reset = playback_frame_index > 0
                                 && playback_loop_index != previous_source_loop_index;
-                            if loop_boundary_reset {
+                            let mut reset_recovery_required =
+                                playback_frame_index == 0 || loop_boundary_reset;
+                            if reset_recovery_required {
                                 streaming_reference_planner.reset();
                             }
                             let mut entry = streaming_reference_planner.plan_next(&access_unit);
+                            let mut starts_recovery =
+                                native_vulkan_h264_access_unit_starts_recovery(&access_unit);
                             let mut resync_discarded_access_units = 0u32;
                             let resync_scan_limit = native_vulkan_streaming_bootstrap_scan_limit(
                                 streaming_queue.capacity,
                             );
-                            while loop_boundary_reset
-                                && !entry.ready_for_decode_submit
+                            while reset_recovery_required
+                                && (!starts_recovery || !entry.ready_for_decode_submit)
                                 && usize::try_from(resync_discarded_access_units)
                                     .unwrap_or(usize::MAX)
                                     < resync_scan_limit
@@ -7062,10 +7087,14 @@ pub fn run_h264_ready_prefix_video(
                                     format!(
                                         "frame {playback_frame_index} loop resync discard au={} reason={}",
                                         access_unit.index,
-                                        entry
-                                            .unsupported_reason
-                                            .as_deref()
-                                            .unwrap_or("missing references")
+                                        if starts_recovery {
+                                            entry
+                                                .unsupported_reason
+                                                .as_deref()
+                                                .unwrap_or("missing references")
+                                        } else {
+                                            "not a recovery AU"
+                                        }
                                     ),
                                 );
                                 resync_discarded_access_units =
@@ -7076,7 +7105,20 @@ pub fn run_h264_ready_prefix_video(
                                 playback_loop_index = packet.source_loop_index;
                                 loop_boundary_reset = playback_frame_index > 0
                                     && playback_loop_index != previous_source_loop_index;
+                                reset_recovery_required =
+                                    playback_frame_index == 0 || loop_boundary_reset;
+                                if reset_recovery_required {
+                                    streaming_reference_planner.reset();
+                                }
                                 entry = streaming_reference_planner.plan_next(&access_unit);
+                                starts_recovery =
+                                    native_vulkan_h264_access_unit_starts_recovery(&access_unit);
+                            }
+                            if reset_recovery_required && !starts_recovery {
+                                return Err(NativeVulkanError::Video(format!(
+                                    "H.264 streaming AU {} is not a recovery point after reset",
+                                    access_unit.index
+                                )));
                             }
                             if !entry.ready_for_decode_submit {
                                 return Err(NativeVulkanError::Video(format!(
@@ -7579,6 +7621,14 @@ pub fn run_h264_ready_prefix_video(
                                 streaming_reference_planner.reset();
                             }
                             let entry = streaming_reference_planner.plan_next(&access_unit);
+                            if loop_boundary_reset
+                                && !native_vulkan_h264_access_unit_starts_recovery(&access_unit)
+                            {
+                                return Err(NativeVulkanError::Video(format!(
+                                    "H.264 decode-ahead AU {} is not a recovery point after reset",
+                                    access_unit.index
+                                )));
+                            }
                             if !entry.ready_for_decode_submit {
                                 return Err(NativeVulkanError::Video(format!(
                                     "H.264 decode-ahead AU {} became undecodable: {}",
@@ -9228,19 +9278,55 @@ pub fn run_h265_ready_prefix_video(
                     if probe.host.is_closed() {
                         break;
                     }
-                    let packet = streaming_queue.next_packet(true)?;
-                    let access_unit = packet.snapshot.clone();
-                    let entry = streaming_reference_planner.plan_next(&access_unit);
+                    let mut packet = streaming_queue.next_packet(true)?;
+                    let mut access_unit = packet.snapshot.clone();
+                    let mut playback_loop_index = packet.source_loop_index;
+                    let mut loop_boundary_reset = playback_frame_index > 0
+                        && playback_loop_index != previous_source_loop_index;
+                    let mut reset_recovery_required =
+                        playback_frame_index == 0 || loop_boundary_reset;
+                    if reset_recovery_required {
+                        streaming_reference_planner.reset_for_idr();
+                    }
+                    let mut entry = streaming_reference_planner.plan_next(&access_unit);
+                    let mut starts_recovery =
+                        native_vulkan_h265_access_unit_starts_recovery(&access_unit);
+                    let mut resync_discarded_access_units = 0u32;
+                    let resync_scan_limit =
+                        native_vulkan_streaming_bootstrap_scan_limit(streaming_queue.capacity);
+                    while reset_recovery_required
+                        && (!starts_recovery || !entry.ready_for_decode_submit)
+                        && usize::try_from(resync_discarded_access_units).unwrap_or(usize::MAX)
+                            < resync_scan_limit
+                    {
+                        resync_discarded_access_units =
+                            resync_discarded_access_units.saturating_add(1);
+                        packet = streaming_queue.next_packet(true)?;
+                        access_unit = packet.snapshot.clone();
+                        playback_loop_index = packet.source_loop_index;
+                        loop_boundary_reset = playback_frame_index > 0
+                            && playback_loop_index != previous_source_loop_index;
+                        reset_recovery_required = playback_frame_index == 0 || loop_boundary_reset;
+                        if reset_recovery_required {
+                            streaming_reference_planner.reset_for_idr();
+                        }
+                        entry = streaming_reference_planner.plan_next(&access_unit);
+                        starts_recovery =
+                            native_vulkan_h265_access_unit_starts_recovery(&access_unit);
+                    }
+                    if reset_recovery_required && !starts_recovery {
+                        return Err(NativeVulkanError::Video(format!(
+                            "H.265 streaming AU {} is not a recovery point after reset",
+                            access_unit.index
+                        )));
+                    }
                     if !entry.ready_for_decode_submit {
                         return Err(NativeVulkanError::Video(format!(
                             "H.265 streaming AU {} is not decodable; missing POCs {:?}",
                             entry.access_unit_index, entry.missing_reference_pocs
                         )));
                     }
-                    let playback_loop_index = packet.source_loop_index;
                     let ready_prefix_frame_index = playback_frame_index;
-                    let loop_boundary_reset = playback_frame_index > 0
-                        && playback_loop_index != previous_source_loop_index;
                     previous_source_loop_index = playback_loop_index;
                     let frame_sync_slot = playback_frame_index as usize % in_flight_by_frame.len();
                     let frame_fence = in_flight_by_frame[frame_sync_slot];
@@ -37356,6 +37442,26 @@ fn native_vulkan_av1_temporal_units_max_active_references(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_temporal_unit_starts_recovery(
+    temporal_unit: &NativeVulkanAv1TemporalUnitSnapshot,
+    sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
+) -> bool {
+    temporal_unit
+        .first_frame_submit
+        .as_ref()
+        .is_some_and(|submit| {
+            submit.frame_type == 0
+                && submit.show_frame
+                && submit.vulkan_submit_candidate
+                && temporal_unit
+                    .sequence_header
+                    .as_ref()
+                    .unwrap_or(sequence_header)
+                    .vulkan_std_session_parameters_ready
+        })
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 struct NativeVulkanAv1StreamingBootstrap {
     stream_dpb_slots: u32,
     stream_max_active_reference_pictures: u32,
@@ -37387,33 +37493,46 @@ fn native_vulkan_av1_align_streaming_bootstrap(
             &bootstrap_temporal_units,
             stream_max_dpb_slots,
         );
+        let recovery_offset = bootstrap_temporal_units.iter().position(|temporal_unit| {
+            native_vulkan_av1_temporal_unit_starts_recovery(temporal_unit, sequence_header)
+        });
         let Some(first_unready_offset) = bootstrap_plan
             .iter()
             .position(|entry| !(entry.ready_for_decode_submit || entry.ready_for_display_handoff))
         else {
-            queue.set_loop_skip_access_units(queue.bootstrap_discarded_access_units.min(u32::MAX));
-            return Ok(NativeVulkanAv1StreamingBootstrap {
-                stream_dpb_slots,
-                stream_max_active_reference_pictures,
-            });
+            if recovery_offset == Some(0) {
+                queue.set_loop_skip_access_units(
+                    queue.bootstrap_discarded_access_units.min(u32::MAX),
+                );
+                return Ok(NativeVulkanAv1StreamingBootstrap {
+                    stream_dpb_slots,
+                    stream_max_active_reference_pictures,
+                });
+            }
+            let discard_count = recovery_offset.filter(|offset| *offset > 0).unwrap_or(1);
+            if usize::try_from(queue.bootstrap_discarded_access_units)
+                .unwrap_or(usize::MAX)
+                .saturating_add(discard_count)
+                > scan_limit
+            {
+                return Err(NativeVulkanError::Video(format!(
+                    "AV1 streaming bootstrap exceeded scan limit {scan_limit} while looking for a recovery TU after skipping {} leading TU(s)",
+                    queue.bootstrap_discarded_access_units
+                )));
+            }
+            for _ in 0..discard_count {
+                let Some(dropped) = queue.discard_front_for_bootstrap()? else {
+                    return Err(NativeVulkanError::Video(format!(
+                        "AV1 streaming bootstrap reached EOS after skipping {} leading TU(s) without finding a recovery TU",
+                        queue.bootstrap_discarded_access_units
+                    )));
+                };
+                skipped_temporal_unit_indices.push(dropped.snapshot.index);
+            }
+            continue;
         };
         let first_unready = &bootstrap_plan[first_unready_offset];
-        let random_access_offset = bootstrap_temporal_units.iter().position(|temporal_unit| {
-            temporal_unit
-                .first_frame_submit
-                .as_ref()
-                .is_some_and(|submit| {
-                    submit.frame_type == 0
-                        && submit.show_frame
-                        && submit.vulkan_submit_candidate
-                        && temporal_unit
-                            .sequence_header
-                            .as_ref()
-                            .unwrap_or(sequence_header)
-                            .vulkan_std_session_parameters_ready
-                })
-        });
-        let discard_count = random_access_offset
+        let discard_count = recovery_offset
             .filter(|offset| *offset > 0)
             .unwrap_or(usize::from(first_unready_offset == 0));
         if discard_count == 0 {
@@ -38261,6 +38380,25 @@ fn native_vulkan_h264_picture_layout_candidates(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_access_unit_starts_recovery(
+    access_unit: &NativeVulkanH264AccessUnitSnapshot,
+) -> bool {
+    access_unit
+        .first_slice
+        .as_ref()
+        .is_some_and(|slice| slice.idr)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h264_first_recovery_access_unit_offset(
+    access_units: &[NativeVulkanH264AccessUnitSnapshot],
+) -> Option<usize> {
+    access_units
+        .iter()
+        .position(native_vulkan_h264_access_unit_starts_recovery)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_select_h264_picture_layout_capabilities(
     video_queue_loader: &ash::khr::video_queue::Instance,
     physical_device: vk::PhysicalDevice,
@@ -38335,26 +38473,47 @@ fn native_vulkan_h264_align_streaming_bootstrap(
                 max_frame_num,
                 parameter_sets.sps.gaps_in_frame_num_value_allowed_flag,
             );
+        let recovery_offset =
+            native_vulkan_h264_first_recovery_access_unit_offset(&bootstrap_access_units);
         let Some(first_unready_offset) = bootstrap_plan
             .iter()
             .position(|entry| !entry.ready_for_decode_submit)
         else {
-            queue.set_loop_skip_access_units(queue.bootstrap_discarded_access_units.min(u32::MAX));
-            return Ok(NativeVulkanH264StreamingBootstrap {
-                stream_sps_dpb_slots,
-                stream_dpb_slots,
-                stream_max_active_reference_pictures,
-                max_frame_num,
-            });
+            if recovery_offset == Some(0) {
+                queue.set_loop_skip_access_units(
+                    queue.bootstrap_discarded_access_units.min(u32::MAX),
+                );
+                return Ok(NativeVulkanH264StreamingBootstrap {
+                    stream_sps_dpb_slots,
+                    stream_dpb_slots,
+                    stream_max_active_reference_pictures,
+                    max_frame_num,
+                });
+            }
+            let discard_count = recovery_offset.filter(|offset| *offset > 0).unwrap_or(1);
+            if usize::try_from(queue.bootstrap_discarded_access_units)
+                .unwrap_or(usize::MAX)
+                .saturating_add(discard_count)
+                > scan_limit
+            {
+                return Err(NativeVulkanError::Video(format!(
+                    "H.264 streaming bootstrap exceeded scan limit {scan_limit} while looking for a recovery AU after skipping {} leading AU(s)",
+                    queue.bootstrap_discarded_access_units
+                )));
+            }
+            for _ in 0..discard_count {
+                let Some(dropped) = queue.discard_front_for_bootstrap()? else {
+                    return Err(NativeVulkanError::Video(format!(
+                        "H.264 streaming bootstrap reached EOS after skipping {} leading AU(s) without finding a recovery AU",
+                        queue.bootstrap_discarded_access_units
+                    )));
+                };
+                skipped_access_unit_indices.push(dropped.snapshot.index);
+            }
+            continue;
         };
         let first_unready = &bootstrap_plan[first_unready_offset];
-        let random_access_offset = bootstrap_access_units.iter().position(|access_unit| {
-            access_unit
-                .first_slice
-                .as_ref()
-                .is_some_and(|slice| slice.idr)
-        });
-        let discard_count = random_access_offset
+        let discard_count = recovery_offset
             .filter(|offset| *offset > 0)
             .unwrap_or(usize::from(first_unready_offset == 0));
         if discard_count == 0 {
@@ -38718,6 +38877,16 @@ fn native_vulkan_h265_min_decodable_dpb_plan(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_access_unit_starts_recovery(
+    access_unit: &NativeVulkanH265AccessUnitSnapshot,
+) -> bool {
+    access_unit
+        .first_slice
+        .as_ref()
+        .is_some_and(|slice| slice.idr)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 struct NativeVulkanH265StreamingBootstrap {
     stream_sps_dpb_slots: u32,
     stream_dpb_slots: u32,
@@ -38750,26 +38919,48 @@ fn native_vulkan_h265_align_streaming_bootstrap(
             stream_sps_dpb_slots,
             stream_max_pic_order_cnt_lsb,
         );
+        let recovery_offset = bootstrap_access_units
+            .iter()
+            .position(native_vulkan_h265_access_unit_starts_recovery);
         let Some(first_unready_offset) = bootstrap_plan
             .iter()
             .position(|entry| !entry.ready_for_decode_submit)
         else {
-            queue.set_loop_skip_access_units(queue.bootstrap_discarded_access_units.min(u32::MAX));
-            return Ok(NativeVulkanH265StreamingBootstrap {
-                stream_sps_dpb_slots,
-                stream_dpb_slots,
-                stream_max_active_reference_pictures,
-                stream_max_pic_order_cnt_lsb,
-            });
+            if recovery_offset == Some(0) {
+                queue.set_loop_skip_access_units(
+                    queue.bootstrap_discarded_access_units.min(u32::MAX),
+                );
+                return Ok(NativeVulkanH265StreamingBootstrap {
+                    stream_sps_dpb_slots,
+                    stream_dpb_slots,
+                    stream_max_active_reference_pictures,
+                    stream_max_pic_order_cnt_lsb,
+                });
+            }
+            let discard_count = recovery_offset.filter(|offset| *offset > 0).unwrap_or(1);
+            if usize::try_from(queue.bootstrap_discarded_access_units)
+                .unwrap_or(usize::MAX)
+                .saturating_add(discard_count)
+                > scan_limit
+            {
+                return Err(NativeVulkanError::Video(format!(
+                    "H.265 streaming bootstrap exceeded scan limit {scan_limit} while looking for a recovery AU after skipping {} leading AU(s)",
+                    queue.bootstrap_discarded_access_units
+                )));
+            }
+            for _ in 0..discard_count {
+                let Some(dropped) = queue.discard_front_for_bootstrap()? else {
+                    return Err(NativeVulkanError::Video(format!(
+                        "H.265 streaming bootstrap reached EOS after skipping {} leading AU(s) without finding a recovery AU",
+                        queue.bootstrap_discarded_access_units
+                    )));
+                };
+                skipped_access_unit_indices.push(dropped.snapshot.index);
+            }
+            continue;
         };
         let first_unready = &bootstrap_plan[first_unready_offset];
-        let random_access_offset = bootstrap_access_units.iter().position(|access_unit| {
-            access_unit
-                .first_slice
-                .as_ref()
-                .is_some_and(|slice| slice.idr)
-        });
-        let discard_count = random_access_offset
+        let discard_count = recovery_offset
             .filter(|offset| *offset > 0)
             .unwrap_or(usize::from(first_unready_offset == 0));
         if discard_count == 0 {
@@ -51274,6 +51465,27 @@ mod tests {
                 vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_INTERLEAVED_LINES,
                 vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_SEPARATE_PLANES,
             ]
+        );
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn finds_h264_recovery_offset_after_non_idr_prefix() {
+        let access_units = vec![
+            h264_test_access_unit(0, 21, false),
+            h264_test_access_unit(1, 22, false),
+            h264_test_access_unit(2, 0, true),
+        ];
+
+        assert!(!native_vulkan_h264_access_unit_starts_recovery(
+            &access_units[0]
+        ));
+        assert!(native_vulkan_h264_access_unit_starts_recovery(
+            &access_units[2]
+        ));
+        assert_eq!(
+            native_vulkan_h264_first_recovery_access_unit_offset(&access_units),
+            Some(2)
         );
     }
 
