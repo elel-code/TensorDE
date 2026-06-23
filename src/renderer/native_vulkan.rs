@@ -2383,11 +2383,89 @@ pub struct NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot {
     pub av1_packet_queue_bootstrap_discarded_temporal_units: u32,
     pub av1_packet_queue_max_payload_bytes: u64,
     pub av1_packet_queue_retained_payload_bytes: u64,
+    pub av1_display_handoff_strategy: &'static str,
+    pub av1_display_ring_slot_count: u32,
+    pub av1_display_ring_memory_bytes: u64,
+    pub av1_present_command_buffer_strategy: &'static str,
+    pub av1_async_present_depth: u32,
+    pub av1_present_result_wait_count: u32,
+    pub av1_present_result_wait_elapsed_us: u64,
+    pub av1_present_result_wait_max_us: u64,
+    pub av1_frame_context_selection_strategy: &'static str,
+    pub av1_frame_context_ready_probe_count: u32,
+    pub av1_frame_context_ready_hit_count: u32,
+    pub av1_frame_context_fallback_count: u32,
+    pub av1_frame_context_fence_wait_count: u32,
+    pub av1_frame_context_fence_wait_elapsed_us: u64,
+    pub av1_frame_context_fence_wait_max_us: u64,
+    pub av1_display_ring_slot_wait_count: u32,
+    pub av1_display_ring_slot_wait_elapsed_us: u64,
+    pub av1_display_ring_slot_wait_max_us: u64,
+    pub av1_display_ring_slot_reuse_sync_strategy: &'static str,
+    pub av1_display_ring_slot_gpu_wait_count: u32,
+    pub av1_display_ring_slot_gpu_signal_count: u32,
+    pub av1_display_ring_slot_selection_strategy: &'static str,
+    pub av1_display_ring_ready_probe_count: u32,
+    pub av1_display_ring_ready_hit_count: u32,
+    pub av1_display_ring_ready_fallback_count: u32,
+    pub av1_swapchain_image_wait_count: u32,
+    pub av1_swapchain_image_wait_elapsed_us: u64,
+    pub av1_swapchain_image_wait_max_us: u64,
+    pub av1_acquire_not_ready_count: u32,
+    pub av1_acquire_wait_present_result_count: u32,
+    pub av1_acquire_wait_present_result_elapsed_us: u64,
+    pub av1_acquire_wait_present_result_max_us: u64,
+    pub av1_preacquire_target_depth: u32,
+    pub av1_preacquire_attempt_count: u32,
+    pub av1_preacquire_hit_count: u32,
+    pub av1_preacquire_not_ready_count: u32,
+    pub av1_preacquire_elapsed_us: u64,
+    pub av1_preacquire_max_us: u64,
     pub av1_hidden_decode_sync_strategy: &'static str,
+    pub av1_hidden_decode_handoff_slot_count: u32,
     pub av1_hidden_decode_async_handoff_count: u32,
+    pub av1_hidden_decode_handoff_unavailable_count: u32,
     pub av1_hidden_decode_fence_wait_count: u32,
     pub av1_hidden_decode_fence_wait_elapsed_us: u64,
     pub av1_hidden_decode_fence_wait_max_us: u64,
+    pub av1_hidden_decode_process_elapsed_us: u64,
+    pub av1_hidden_decode_process_max_us: u64,
+    pub av1_hidden_decode_before_display_gap_count: u32,
+    pub av1_hidden_decode_before_display_elapsed_us: u64,
+    pub av1_hidden_decode_before_display_max_count: u32,
+    pub av1_hidden_decode_before_display_max_elapsed_us: u64,
+    pub av1_hidden_lookahead_decode_count: u32,
+    pub av1_hidden_lookahead_stop_present_count: u32,
+    pub av1_hidden_lookahead_stop_output_hazard_count: u32,
+    pub av1_hidden_lookahead_stop_unready_count: u32,
+    pub av1_visible_decode_ahead_strategy: &'static str,
+    pub av1_visible_decode_ahead_attempt_count: u32,
+    pub av1_visible_decode_ahead_ready_count: u32,
+    pub av1_visible_decode_ahead_submit_count: u32,
+    pub av1_visible_decode_ahead_skip_show_existing_count: u32,
+    pub av1_visible_decode_ahead_skip_unready_count: u32,
+    pub av1_visible_decode_ahead_skip_output_hazard_count: u32,
+    pub av1_visible_decode_ahead_skip_bitstream_overlap_count: u32,
+    pub av1_visible_decode_ahead_skip_display_slot_hazard_count: u32,
+    pub av1_show_existing_display_cache_strategy: &'static str,
+    pub av1_show_existing_display_cache_lookup_count: u32,
+    pub av1_show_existing_display_cache_hit_count: u32,
+    pub av1_show_existing_display_cache_miss_count: u32,
+    pub av1_show_existing_display_cache_busy_count: u32,
+    pub av1_show_existing_display_cache_stale_count: u32,
+    pub av1_show_existing_display_cache_update_count: u32,
+    pub av1_show_existing_display_cache_invalidate_count: u32,
+    pub av1_show_existing_precopy_strategy: &'static str,
+    pub av1_show_existing_precopy_attempt_count: u32,
+    pub av1_show_existing_precopy_submit_count: u32,
+    pub av1_show_existing_precopy_hit_count: u32,
+    pub av1_show_existing_precopy_miss_count: u32,
+    pub av1_show_existing_precopy_skip_no_handoff_count: u32,
+    pub av1_show_existing_precopy_skip_source_layout_count: u32,
+    pub av1_show_existing_precopy_skip_display_slot_busy_count: u32,
+    pub av1_show_existing_precopy_stale_count: u32,
+    pub av1_show_existing_precopy_invalidate_count: u32,
+    pub av1_show_existing_direct_dpb_count: u32,
     pub av1_hidden_decode_queue_wait_count: u32,
     pub av1_hidden_decode_queue_wait_elapsed_us: u64,
     pub av1_frame_context_count: u32,
@@ -7348,7 +7426,6 @@ pub fn run_h265_ready_prefix_video(
                 &device_queue_family_indices,
                 false,
             )?);
-
             bitstream_buffer = Some(
                 native_vulkan_create_video_session_bitstream_buffer_with_mapping(
                     &device,
@@ -8134,6 +8211,21 @@ pub fn run_av1_ready_prefix_video(
         &available_extensions,
         ash_extension_name(vk::KHR_VIDEO_MAINTENANCE1_NAME),
     );
+    let mut timeline_semaphore_feature_query =
+        vk::PhysicalDeviceTimelineSemaphoreFeatures::default();
+    let mut feature_query =
+        vk::PhysicalDeviceFeatures2::default().push_next(&mut timeline_semaphore_feature_query);
+    unsafe {
+        probe
+            .instance
+            .get_physical_device_features2(present_selection.physical_device, &mut feature_query);
+    }
+    let av1_hidden_decode_handoff_requested = native_vulkan_av1_hidden_decode_handoff_enabled();
+    let av1_hidden_decode_handoff_timeline_enabled = av1_hidden_decode_handoff_requested
+        && timeline_semaphore_feature_query.timeline_semaphore == vk::TRUE;
+    let av1_display_slot_gpu_wait_requested = native_vulkan_av1_display_slot_gpu_wait_enabled();
+    let av1_display_slot_gpu_wait_timeline_enabled = av1_display_slot_gpu_wait_requested
+        && timeline_semaphore_feature_query.timeline_semaphore == vk::TRUE;
     if video_maintenance1_enabled
         && !enabled_extension_names
             .iter()
@@ -8170,12 +8262,18 @@ pub fn run_av1_ready_prefix_video(
         .collect::<Vec<_>>();
     let mut synchronization2_features =
         vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
+    let mut timeline_semaphore_features = vk::PhysicalDeviceTimelineSemaphoreFeatures::default()
+        .timeline_semaphore(
+            av1_hidden_decode_handoff_timeline_enabled
+                || av1_display_slot_gpu_wait_timeline_enabled,
+        );
     let mut video_maintenance1_features =
         vk::PhysicalDeviceVideoMaintenance1FeaturesKHR::default().video_maintenance1(true);
     let mut device_create_info = vk::DeviceCreateInfo::default()
         .queue_create_infos(&queue_create_infos)
         .enabled_extension_names(&enabled_extensions)
-        .push_next(&mut synchronization2_features);
+        .push_next(&mut synchronization2_features)
+        .push_next(&mut timeline_semaphore_features);
     if video_maintenance1_enabled {
         device_create_info = device_create_info.push_next(&mut video_maintenance1_features);
     }
@@ -8195,9 +8293,13 @@ pub fn run_av1_ready_prefix_video(
     let mut present_command_pool = vk::CommandPool::null();
     let mut present_command_buffers = Vec::<vk::CommandBuffer>::new();
     let mut video_command_pool = vk::CommandPool::null();
-    let mut hidden_decode_finished = vk::Semaphore::null();
+    let mut av1_display_copy_command_buffers = Vec::<vk::CommandBuffer>::new();
+    let mut av1_display_copy_finished = Vec::<vk::Semaphore>::new();
+    let mut av1_hidden_decode_handoff_timeline = vk::Semaphore::null();
+    let mut av1_display_slot_reuse_timeline = vk::Semaphore::null();
     let mut av1_frame_contexts = Vec::<NativeVulkanAv1FrameContext>::new();
     let mut av1_decode_command_slots = Vec::<NativeVulkanAv1DecodeCommandSlot>::new();
+    let mut av1_display_image = None::<NativeVulkanDecodedVideoDisplayImage>;
     let mut renderer = None::<NativeVulkanVideoRenderer>;
     let mut retired_textures = Vec::<NativeVulkanVideoTexture>::new();
     let mut decoded_plane_view_cache = Vec::<NativeVulkanDecodedVideoPlaneViews>::new();
@@ -8269,10 +8371,22 @@ pub fn run_av1_ready_prefix_video(
                         result,
                     },
                 )?;
+            let av1_frame_context_count =
+                native_vulkan_av1_frame_context_count(swapchain_images.len());
+            let av1_frame_context_present_command_buffer =
+                native_vulkan_av1_frame_context_present_command_buffer_enabled(matches!(
+                    codec,
+                    NativeVulkanVideoSessionCodec::Av1Main8
+                ));
+            let present_command_buffer_count = if av1_frame_context_present_command_buffer {
+                swapchain_images.len().max(av1_frame_context_count)
+            } else {
+                swapchain_images.len()
+            };
             let present_command_buffer_info = vk::CommandBufferAllocateInfo::default()
                 .command_pool(present_command_pool)
                 .level(vk::CommandBufferLevel::PRIMARY)
-                .command_buffer_count(swapchain_images.len() as u32);
+                .command_buffer_count(present_command_buffer_count as u32);
             present_command_buffers =
                 unsafe { device.allocate_command_buffers(&present_command_buffer_info) }.map_err(
                     |result| NativeVulkanError::Vulkan {
@@ -8314,17 +8428,22 @@ pub fn run_av1_ready_prefix_video(
                 )?;
             }
             let semaphore_create_info = vk::SemaphoreCreateInfo::default();
-            hidden_decode_finished = unsafe {
-                device.create_semaphore(&semaphore_create_info, None)
+            if av1_hidden_decode_handoff_timeline_enabled {
+                let mut timeline_type_info = vk::SemaphoreTypeCreateInfo::default()
+                    .semaphore_type(vk::SemaphoreType::TIMELINE)
+                    .initial_value(0);
+                let timeline_create_info =
+                    vk::SemaphoreCreateInfo::default().push_next(&mut timeline_type_info);
+                av1_hidden_decode_handoff_timeline = unsafe {
+                    device.create_semaphore(&timeline_create_info, None)
+                }
+                .map_err(|result| NativeVulkanError::Vulkan {
+                    operation: "vkCreateSemaphore(direct av1 hidden decode handoff timeline)",
+                    result,
+                })?;
             }
-            .map_err(|result| NativeVulkanError::Vulkan {
-                operation: "vkCreateSemaphore(direct av1 ready-prefix hidden_decode_finished)",
-                result,
-            })?;
             let fence_create_info =
                 vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-            let av1_frame_context_count =
-                native_vulkan_av1_frame_context_count(swapchain_images.len());
             av1_frame_contexts.reserve(av1_frame_context_count);
             for _ in 0..av1_frame_context_count {
                 let image_available = unsafe {
@@ -8361,6 +8480,8 @@ pub fn run_av1_ready_prefix_video(
                     render_finished,
                     in_flight,
                     pending_present_result: false,
+                    preacquire_pending: false,
+                    preacquired_image_index: None,
                     sampled_resource: None,
                 });
             }
@@ -8385,6 +8506,71 @@ pub fn run_av1_ready_prefix_video(
                 capabilities.min_bitstream_buffer_offset_alignment,
                 capabilities.min_bitstream_buffer_size_alignment,
             )?;
+            let av1_graphics_display_copy =
+                !av1_dedicated_output && native_vulkan_av1_graphics_display_copy_enabled();
+            let av1_display_ring_slot_count = if av1_graphics_display_copy {
+                native_vulkan_av1_display_ring_slot_count(swapchain_images.len())
+            } else {
+                0
+            };
+            let av1_early_display_copy =
+                av1_graphics_display_copy && native_vulkan_av1_early_display_copy_enabled();
+            let av1_early_display_copy_show_existing = av1_early_display_copy
+                && native_vulkan_av1_early_display_copy_show_existing_enabled();
+            let av1_show_existing_direct_dpb_enabled = av1_graphics_display_copy
+                && !av1_dedicated_output
+                && native_vulkan_av1_show_existing_direct_dpb_enabled();
+            if av1_early_display_copy {
+                let display_copy_command_buffer_info = vk::CommandBufferAllocateInfo::default()
+                    .command_pool(video_command_pool)
+                    .level(vk::CommandBufferLevel::PRIMARY)
+                    .command_buffer_count(av1_display_ring_slot_count.max(1));
+                av1_display_copy_command_buffers =
+                    unsafe { device.allocate_command_buffers(&display_copy_command_buffer_info) }
+                        .map_err(|result| NativeVulkanError::Vulkan {
+                        operation: "vkAllocateCommandBuffers(direct av1 early display copy)",
+                        result,
+                    })?;
+                av1_display_copy_finished.reserve(av1_display_ring_slot_count as usize);
+                for index in 0..av1_display_ring_slot_count {
+                    let semaphore =
+                        unsafe { device.create_semaphore(&semaphore_create_info, None) }.map_err(
+                            |result| NativeVulkanError::Vulkan {
+                                operation: match index {
+                                    0 => "vkCreateSemaphore(direct av1 early display copy[0])",
+                                    1 => "vkCreateSemaphore(direct av1 early display copy[1])",
+                                    _ => "vkCreateSemaphore(direct av1 early display copy[n])",
+                                },
+                                result,
+                            },
+                        )?;
+                    av1_display_copy_finished.push(semaphore);
+                }
+            }
+            let av1_display_slot_gpu_wait = av1_display_slot_gpu_wait_timeline_enabled
+                && av1_graphics_display_copy
+                && av1_display_ring_slot_count > 0;
+            if av1_display_slot_gpu_wait {
+                let mut timeline_type_info = vk::SemaphoreTypeCreateInfo::default()
+                    .semaphore_type(vk::SemaphoreType::TIMELINE)
+                    .initial_value(0);
+                let timeline_create_info =
+                    vk::SemaphoreCreateInfo::default().push_next(&mut timeline_type_info);
+                av1_display_slot_reuse_timeline =
+                    unsafe { device.create_semaphore(&timeline_create_info, None) }.map_err(
+                        |result| NativeVulkanError::Vulkan {
+                            operation: "vkCreateSemaphore(direct av1 display slot reuse timeline)",
+                            result,
+                        },
+                    )?;
+            }
+            let av1_resource_general_layout =
+                native_vulkan_av1_resource_general_layout_enabled() || av1_graphics_display_copy;
+            let av1_decode_image_layout = if av1_resource_general_layout {
+                vk::ImageLayout::GENERAL
+            } else {
+                vk::ImageLayout::VIDEO_DECODE_DPB_KHR
+            };
             let driver_dpb_slots = capabilities.max_dpb_slots;
             if driver_dpb_slots == 0 || driver_dpb_slots < stream_dpb_slots {
                 return Err(NativeVulkanError::Video(format!(
@@ -8478,6 +8664,16 @@ pub fn run_av1_ready_prefix_video(
                 &device_queue_family_indices,
                 false,
             )?);
+            if av1_graphics_display_copy {
+                av1_display_image = Some(native_vulkan_create_decoded_video_display_image(
+                    &device,
+                    &memory_properties,
+                    source_extent,
+                    picture_format,
+                    av1_display_ring_slot_count,
+                    &device_queue_family_indices,
+                )?);
+            }
 
             bitstream_buffer = Some(
                 native_vulkan_create_video_session_bitstream_buffer_with_mapping(
@@ -8549,10 +8745,31 @@ pub fn run_av1_ready_prefix_video(
                         output_image.snapshot.array_layers,
                     )?;
             }
-            let av1_output_descriptor_set_count = usize::from(output_image.is_some());
-            let av1_resource_descriptor_set_base = av1_output_descriptor_set_count;
-            let av1_display_descriptor_set_count =
-                av1_resource_descriptor_set_base.saturating_add(decoded_plane_view_cache.len());
+            let display_image_ref = av1_display_image.as_ref();
+            let mut av1_display_textures = Vec::<NativeVulkanVideoTexture>::new();
+            let av1_display_ring_descriptor_set_count = display_image_ref
+                .map(|display_image| display_image.plane_views.len())
+                .unwrap_or(0);
+            let av1_output_descriptor_set_count = if av1_graphics_display_copy {
+                0
+            } else {
+                usize::from(output_image.is_some())
+            };
+            let av1_resource_descriptor_set_base = if av1_show_existing_direct_dpb_enabled {
+                av1_display_ring_descriptor_set_count
+            } else {
+                av1_output_descriptor_set_count
+            };
+            let av1_display_descriptor_set_count = if let Some(display_image) = display_image_ref {
+                display_image.plane_views.len()
+                    + if av1_show_existing_direct_dpb_enabled {
+                        decoded_plane_view_cache.len()
+                    } else {
+                        0
+                    }
+            } else {
+                av1_resource_descriptor_set_base.saturating_add(decoded_plane_view_cache.len())
+            };
             let av1_display_descriptor_set_count_u32 =
                 u32::try_from(av1_display_descriptor_set_count).map_err(|_| {
                     NativeVulkanError::Video(format!(
@@ -8569,7 +8786,31 @@ pub fn run_av1_ready_prefix_video(
                 av1_display_descriptor_set_count_u32,
             )?);
             let renderer_ref = renderer.as_mut().expect("video renderer was just created");
-            if let Some(output_image) = output_image {
+            if let Some(display_image) = display_image_ref {
+                av1_display_textures.reserve(display_image.plane_views.len());
+                for (display_slot, display_views) in
+                    display_image.plane_views.iter().copied().enumerate()
+                {
+                    let texture = NativeVulkanVideoTexture::Decoded(
+                        NativeVulkanDecodedVideoTexture::from_cached_views(
+                            display_image.image,
+                            image.format,
+                            width,
+                            height,
+                            display_slot as u32,
+                            display_views,
+                            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                            vk::AccessFlags::SHADER_READ,
+                        )?,
+                    );
+                    renderer_ref.update_descriptors_for_set_index(
+                        &device,
+                        display_slot,
+                        &texture,
+                    )?;
+                    av1_display_textures.push(texture);
+                }
+            } else if let Some(output_image) = output_image {
                 let output_views = av1_output_decoded_plane_view_cache
                     .first()
                     .copied()
@@ -8592,28 +8833,30 @@ pub fn run_av1_ready_prefix_video(
                 );
                 renderer_ref.update_descriptors_for_set_index(&device, 0, &output_texture)?;
             }
-            for (displayed_slot, decoded_views) in
-                decoded_plane_view_cache.iter().copied().enumerate()
-            {
-                let descriptor_set_index =
-                    av1_resource_descriptor_set_base.saturating_add(displayed_slot);
-                let texture = NativeVulkanVideoTexture::Decoded(
-                    NativeVulkanDecodedVideoTexture::from_cached_views(
-                        image.image,
-                        image.format,
-                        width,
-                        height,
-                        displayed_slot as u32,
-                        decoded_views,
-                        vk::ImageLayout::VIDEO_DECODE_DPB_KHR,
-                        vk::AccessFlags::MEMORY_WRITE,
-                    )?,
-                );
-                renderer_ref.update_descriptors_for_set_index(
-                    &device,
-                    descriptor_set_index,
-                    &texture,
-                )?;
+            if !av1_graphics_display_copy || av1_show_existing_direct_dpb_enabled {
+                for (displayed_slot, decoded_views) in
+                    decoded_plane_view_cache.iter().copied().enumerate()
+                {
+                    let descriptor_set_index =
+                        av1_resource_descriptor_set_base.saturating_add(displayed_slot);
+                    let texture = NativeVulkanVideoTexture::Decoded(
+                        NativeVulkanDecodedVideoTexture::from_cached_views(
+                            image.image,
+                            image.format,
+                            width,
+                            height,
+                            displayed_slot as u32,
+                            decoded_views,
+                            av1_decode_image_layout,
+                            vk::AccessFlags::MEMORY_WRITE,
+                        )?,
+                    );
+                    renderer_ref.update_descriptors_for_set_index(
+                        &device,
+                        descriptor_set_index,
+                        &texture,
+                    )?;
+                }
             }
             let mut active_dpb_refs = vec![
                 None::<NativeVulkanAv1ActiveDpbReference>;
@@ -8621,6 +8864,10 @@ pub fn run_av1_ready_prefix_video(
             ];
             let mut swapchain_image_layouts =
                 vec![vk::ImageLayout::UNDEFINED; swapchain_images.len()];
+            let mut av1_display_slot_in_flight_fences =
+                vec![vk::Fence::null(); av1_display_textures.len()];
+            let mut av1_display_slot_reuse_timeline_values = vec![0u64; av1_display_textures.len()];
+            let mut next_av1_display_slot_reuse_timeline_value = 0u64;
             let fifo_present_paced = swapchain_plan.present_mode == vk::PresentModeKHR::FIFO;
             let pacing_strategy = if fifo_present_paced {
                 "fifo-present-blocking-no-cpu-sleep"
@@ -8661,7 +8908,25 @@ pub fn run_av1_ready_prefix_video(
                 native_vulkan_av1_hidden_decode_handoff_enabled();
             let av1_hidden_decode_fence_wait_enabled =
                 native_vulkan_av1_hidden_decode_fence_wait_enabled();
-            let mut pending_hidden_decode_handoff = false;
+            let av1_hidden_lookahead_enabled = native_vulkan_av1_hidden_lookahead_enabled();
+            let av1_hidden_lookahead_show_existing =
+                native_vulkan_av1_hidden_lookahead_show_existing_enabled();
+            let av1_show_existing_display_cache_enabled = av1_graphics_display_copy
+                && native_vulkan_av1_show_existing_display_cache_enabled();
+            let av1_show_existing_precopy_enabled =
+                av1_graphics_display_copy && native_vulkan_av1_show_existing_precopy_enabled();
+            let av1_visible_decode_ahead_enabled = native_vulkan_av1_visible_decode_ahead_enabled();
+            let av1_visible_decode_ahead_probe = av1_visible_decode_ahead_enabled
+                || native_vulkan_av1_visible_decode_ahead_probe_enabled();
+            struct NativeVulkanAv1PreparedVisibleFrame {
+                frame: NativeVulkanDirectAv1ReadyPrefixFrameSnapshot,
+                temporal_unit: NativeVulkanAv1TemporalUnitSnapshot,
+                entry: NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
+                source_loop_index: u32,
+                display_slot: usize,
+                display_copy_wait_semaphore: vk::Semaphore,
+            }
+            let mut predecoded_av1_visible_frame = None::<NativeVulkanAv1PreparedVisibleFrame>;
             let mut pending_av1_decode_submissions =
                 Vec::<NativeVulkanAv1PendingDecodeSubmission>::new();
             let mut next_av1_decode_command_slot = 0usize;
@@ -8669,8 +8934,86 @@ pub fn run_av1_ready_prefix_video(
             let mut av1_decode_deferred_hidden_count = 0u32;
             let mut av1_decode_wait_stats = NativeVulkanAv1DecodeWaitStats::default();
             let mut av1_hidden_decode_async_handoff_count = 0u32;
+            let av1_hidden_decode_handoff_unavailable_count = 0u32;
+            let mut av1_present_result_wait_count = 0u32;
+            let mut av1_present_result_wait_elapsed_us = 0u64;
+            let mut av1_present_result_wait_max_us = 0u64;
+            let mut av1_frame_context_ready_probe_count = 0u32;
+            let mut av1_frame_context_ready_hit_count = 0u32;
+            let mut av1_frame_context_fallback_count = 0u32;
+            let mut av1_frame_context_fence_wait_count = 0u32;
+            let mut av1_frame_context_fence_wait_elapsed_us = 0u64;
+            let mut av1_frame_context_fence_wait_max_us = 0u64;
+            let mut av1_display_ring_slot_wait_count = 0u32;
+            let mut av1_display_ring_slot_wait_elapsed_us = 0u64;
+            let mut av1_display_ring_slot_wait_max_us = 0u64;
+            let mut av1_display_ring_slot_gpu_wait_count = 0u32;
+            let mut av1_display_ring_slot_gpu_signal_count = 0u32;
+            let mut av1_display_ring_ready_probe_count = 0u32;
+            let mut av1_display_ring_ready_hit_count = 0u32;
+            let mut av1_display_ring_ready_fallback_count = 0u32;
+            let mut av1_swapchain_image_wait_count = 0u32;
+            let mut av1_swapchain_image_wait_elapsed_us = 0u64;
+            let mut av1_swapchain_image_wait_max_us = 0u64;
+            let mut av1_acquire_not_ready_count = 0u32;
+            let mut av1_acquire_wait_present_result_count = 0u32;
+            let mut av1_acquire_wait_present_result_elapsed_us = 0u64;
+            let mut av1_acquire_wait_present_result_max_us = 0u64;
+            let mut av1_preacquire_attempt_count = 0u32;
+            let mut av1_preacquire_hit_count = 0u32;
+            let mut av1_preacquire_not_ready_count = 0u32;
+            let mut av1_preacquire_elapsed_us = 0u64;
+            let mut av1_preacquire_max_us = 0u64;
+            let mut av1_hidden_decode_process_elapsed_us = 0u64;
+            let mut av1_hidden_decode_process_max_us = 0u64;
+            let mut av1_pending_display_hidden_decode_count = 0u32;
+            let mut av1_pending_display_hidden_decode_elapsed_us = 0u64;
+            let mut av1_hidden_decode_before_display_gap_count = 0u32;
+            let mut av1_hidden_decode_before_display_elapsed_us = 0u64;
+            let mut av1_hidden_decode_before_display_max_count = 0u32;
+            let mut av1_hidden_decode_before_display_max_elapsed_us = 0u64;
+            let mut av1_hidden_lookahead_decode_count = 0u32;
+            let mut av1_hidden_lookahead_stop_present_count = 0u32;
+            let mut av1_hidden_lookahead_stop_output_hazard_count = 0u32;
+            let mut av1_hidden_lookahead_stop_unready_count = 0u32;
+            let mut av1_visible_decode_ahead_attempt_count = 0u32;
+            let mut av1_visible_decode_ahead_ready_count = 0u32;
+            let mut av1_visible_decode_ahead_submit_count = 0u32;
+            let mut av1_visible_decode_ahead_skip_show_existing_count = 0u32;
+            let mut av1_visible_decode_ahead_skip_unready_count = 0u32;
+            let mut av1_visible_decode_ahead_skip_output_hazard_count = 0u32;
+            let mut av1_visible_decode_ahead_skip_bitstream_overlap_count = 0u32;
+            let mut av1_visible_decode_ahead_skip_display_slot_hazard_count = 0u32;
+            let mut av1_show_existing_display_cache_lookup_count = 0u32;
+            let mut av1_show_existing_display_cache_hit_count = 0u32;
+            let mut av1_show_existing_display_cache_miss_count = 0u32;
+            let mut av1_show_existing_display_cache_busy_count = 0u32;
+            let mut av1_show_existing_display_cache_stale_count = 0u32;
+            let mut av1_show_existing_display_cache_update_count = 0u32;
+            let mut av1_show_existing_display_cache_invalidate_count = 0u32;
+            let mut av1_display_cache_slot_sources = vec![None::<u32>; av1_display_textures.len()];
+            let mut av1_display_cache_dpb_slots =
+                vec![None::<usize>; image.snapshot.array_layers as usize];
+            let mut av1_show_existing_precopy_attempt_count = 0u32;
+            let mut av1_show_existing_precopy_submit_count = 0u32;
+            let mut av1_show_existing_precopy_hit_count = 0u32;
+            let mut av1_show_existing_precopy_miss_count = 0u32;
+            let mut av1_show_existing_precopy_skip_no_handoff_count = 0u32;
+            let mut av1_show_existing_precopy_skip_source_layout_count = 0u32;
+            let mut av1_show_existing_precopy_skip_display_slot_busy_count = 0u32;
+            let mut av1_show_existing_precopy_stale_count = 0u32;
+            let mut av1_show_existing_precopy_invalidate_count = 0u32;
+            let mut av1_show_existing_direct_dpb_count = 0u32;
+            let mut pending_av1_show_existing_prepared_display_by_output_slot =
+                vec![
+                    None::<NativeVulkanAv1PreparedShowExistingDisplayCopy>;
+                    image.snapshot.array_layers as usize
+                ];
             let mut av1_hidden_decode_queue_wait_count = 0u32;
             let mut av1_hidden_decode_queue_wait_elapsed_us = 0u64;
+            let mut next_av1_hidden_decode_handoff_value = 0u64;
+            let mut pending_hidden_decode_handoff_values_by_output_slot =
+                vec![None::<u64>; image.snapshot.array_layers as usize];
             native_vulkan_av1_trace(
                 av1_trace_enabled,
                 format!(
@@ -8684,43 +9027,247 @@ pub fn run_av1_ready_prefix_video(
                 ),
             );
             let av1_async_present_enabled = native_vulkan_av1_async_present_enabled();
+            let av1_async_present_depth = if av1_async_present_enabled {
+                native_vulkan_av1_async_present_depth(
+                    av1_frame_contexts.len(),
+                    swapchain_images.len(),
+                )
+            } else {
+                0
+            };
+            let av1_ready_frame_context_selection =
+                native_vulkan_av1_ready_frame_context_selection_enabled();
+            let av1_ready_display_slot_selection =
+                native_vulkan_av1_ready_display_slot_selection_enabled();
+            let av1_preacquire_enabled = av1_async_present_enabled
+                && native_vulkan_av1_preacquire_enabled()
+                && av1_frame_contexts.len() > 1;
+            let av1_preacquire_target_depth = if av1_preacquire_enabled {
+                native_vulkan_av1_preacquire_target_depth(
+                    av1_frame_contexts.len(),
+                    swapchain_images.len(),
+                )
+            } else {
+                0
+            };
+            let av1_present_result_after_preacquire =
+                native_vulkan_av1_present_result_after_preacquire_enabled();
+            let av1_acquire_present_mutex_enabled =
+                native_vulkan_av1_acquire_present_mutex_enabled();
+            let av1_wait_present_before_acquire =
+                native_vulkan_av1_wait_present_before_acquire_enabled();
+            let av1_decoupled_acquire_worker_enabled =
+                av1_preacquire_enabled && native_vulkan_av1_decoupled_acquire_worker_enabled();
+            let mut av1_swapchain_image_in_flight_fences =
+                vec![vk::Fence::null(); swapchain_images.len()];
             let (av1_present_job_tx, av1_present_job_rx) =
-                mpsc::channel::<NativeVulkanAv1PresentJob>();
+                mpsc::channel::<NativeVulkanAv1PresentWorkerJob>();
             let (av1_present_result_tx, av1_present_result_rx) =
                 mpsc::channel::<Result<NativeVulkanAv1PresentWorkerResult, NativeVulkanError>>();
+            let (av1_acquire_job_tx, av1_acquire_job_rx) =
+                mpsc::channel::<NativeVulkanAv1AcquireWorkerRequest>();
+            let (av1_acquire_result_tx, av1_acquire_result_rx) =
+                mpsc::channel::<Result<NativeVulkanAv1AcquireWorkerResult, NativeVulkanError>>();
+            let av1_acquire_result_tx_for_present_worker = av1_acquire_result_tx.clone();
             let present_queue_mutex = std::sync::Arc::new(std::sync::Mutex::new(()));
-            let mut av1_present_worker = if av1_async_present_enabled {
+            let mut av1_acquire_worker = if av1_decoupled_acquire_worker_enabled {
                 let swapchain_loader_for_worker = swapchain_loader_ref.clone();
                 let present_queue_mutex_for_worker = present_queue_mutex.clone();
                 Some(thread::spawn(move || -> Result<(), NativeVulkanError> {
+                    while let Ok(request) = av1_acquire_job_rx.recv() {
+                        let request_started_at = Instant::now();
+                        loop {
+                            let acquire_timeout = if request.timeout_ns == u64::MAX {
+                                0
+                            } else {
+                                request.timeout_ns
+                            };
+                            let acquire_result = if av1_acquire_present_mutex_enabled {
+                                let _present_queue_guard =
+                                    present_queue_mutex_for_worker.lock().map_err(|_| {
+                                        NativeVulkanError::Video(
+                                            "AV1 present queue mutex was poisoned".to_owned(),
+                                        )
+                                    })?;
+                                unsafe {
+                                    swapchain_loader_for_worker.acquire_next_image(
+                                        swapchain,
+                                        acquire_timeout,
+                                        request.image_available,
+                                        vk::Fence::null(),
+                                    )
+                                }
+                            } else {
+                                unsafe {
+                                    swapchain_loader_for_worker.acquire_next_image(
+                                        swapchain,
+                                        acquire_timeout,
+                                        request.image_available,
+                                        vk::Fence::null(),
+                                    )
+                                }
+                            };
+                            let acquire_elapsed_us =
+                                native_vulkan_elapsed_us(request_started_at.elapsed());
+                            let result = match acquire_result {
+                                Ok((image_index, _)) => Ok(NativeVulkanAv1AcquireWorkerResult {
+                                    frame_context_index: request.frame_context_index,
+                                    image_index: Some(image_index),
+                                    acquire_elapsed_us,
+                                    not_ready: false,
+                                }),
+                                Err(vk::Result::NOT_READY) | Err(vk::Result::TIMEOUT)
+                                    if request.timeout_ns == u64::MAX =>
+                                {
+                                    thread::yield_now();
+                                    continue;
+                                }
+                                Err(vk::Result::NOT_READY) | Err(vk::Result::TIMEOUT) => {
+                                    Ok(NativeVulkanAv1AcquireWorkerResult {
+                                        frame_context_index: request.frame_context_index,
+                                        image_index: None,
+                                        acquire_elapsed_us,
+                                        not_ready: true,
+                                    })
+                                }
+                                Err(result) => Err(NativeVulkanError::Vulkan {
+                                    operation: "vkAcquireNextImageKHR(direct av1 acquire worker)",
+                                    result,
+                                }),
+                            };
+                            if av1_acquire_result_tx.send(result).is_err() {
+                                return Ok(());
+                            }
+                            break;
+                        }
+                    }
+                    Ok(())
+                }))
+            } else {
+                None
+            };
+            let mut av1_present_worker = if av1_async_present_enabled {
+                let device_for_worker = device.clone();
+                let swapchain_loader_for_worker = swapchain_loader_ref.clone();
+                let present_queue_mutex_for_worker = present_queue_mutex.clone();
+                let av1_acquire_job_tx_for_worker = av1_acquire_job_tx.clone();
+                let av1_acquire_result_tx_for_worker =
+                    av1_acquire_result_tx_for_present_worker.clone();
+                Some(thread::spawn(move || -> Result<(), NativeVulkanError> {
                     while let Ok(job) = av1_present_job_rx.recv() {
+                        let job = match job {
+                            NativeVulkanAv1PresentWorkerJob::Present(job) => job,
+                        };
                         let _present_queue_guard =
                             present_queue_mutex_for_worker.lock().map_err(|_| {
                                 NativeVulkanError::Video(
                                     "AV1 present queue mutex was poisoned".to_owned(),
                                 )
                             })?;
-                        let queue_present_started_at = Instant::now();
-                        let result = native_vulkan_queue_present_frame(
-                            &swapchain_loader_for_worker,
-                            present_queue,
-                            swapchain,
-                            job.image_index,
-                            job.wait_semaphore,
-                            "vkQueuePresentKHR(direct av1 ready-prefix worker)",
-                        )
-                        .map(|_| NativeVulkanAv1PresentWorkerResult {
-                            frame_index: job.frame_index,
-                            frame_context_index: job.frame_context_index,
-                            queue_present_elapsed_us: native_vulkan_elapsed_us(
-                                queue_present_started_at.elapsed(),
-                            ),
-                            present_elapsed_us: native_vulkan_elapsed_us(
-                                job.present_started_at.elapsed(),
-                            ),
+                        let command_buffers = [job.command_buffer];
+                        let mut timeline_submit_info = vk::TimelineSemaphoreSubmitInfo::default()
+                            .wait_semaphore_values(&job.wait_timeline_values)
+                            .signal_semaphore_values(&job.signal_timeline_values);
+                        let mut submit_info = vk::SubmitInfo::default()
+                            .wait_semaphores(&job.wait_semaphores)
+                            .wait_dst_stage_mask(&job.wait_stages)
+                            .command_buffers(&command_buffers)
+                            .signal_semaphores(&job.signal_semaphores);
+                        if job.wait_timeline_values.iter().any(|value| *value != 0)
+                            || job.signal_timeline_values.iter().any(|value| *value != 0)
+                        {
+                            submit_info = submit_info.push_next(&mut timeline_submit_info);
+                        }
+                        let queue_submit_started_at = Instant::now();
+                        let submit_result = unsafe {
+                            device_for_worker.queue_submit(present_queue, &[submit_info], job.fence)
+                        }
+                        .map_err(|result| NativeVulkanError::Vulkan {
+                            operation: "vkQueueSubmit(direct av1 ready-prefix present worker)",
+                            result,
                         });
+                        let queue_submit_elapsed_us =
+                            native_vulkan_elapsed_us(queue_submit_started_at.elapsed());
+                        let queue_present_started_at = Instant::now();
+                        let result = submit_result.and_then(|_| {
+                            native_vulkan_queue_present_frame(
+                                &swapchain_loader_for_worker,
+                                present_queue,
+                                swapchain,
+                                job.image_index,
+                                job.wait_semaphore,
+                                "vkQueuePresentKHR(direct av1 ready-prefix worker)",
+                            )
+                            .map(|_| {
+                                NativeVulkanAv1PresentWorkerResult {
+                                    frame_index: job.frame_index,
+                                    frame_context_index: job.frame_context_index,
+                                    queue_submit_elapsed_us,
+                                    queue_present_elapsed_us: native_vulkan_elapsed_us(
+                                        queue_present_started_at.elapsed(),
+                                    ),
+                                    present_elapsed_us: native_vulkan_elapsed_us(
+                                        job.present_started_at.elapsed(),
+                                    ),
+                                }
+                            })
+                        });
+                        let present_succeeded = result.is_ok();
+                        let send_acquire_requests =
+                            |requests: &[NativeVulkanAv1AcquireWorkerRequest]| {
+                                requests.iter().copied().all(|request| {
+                                    if av1_decoupled_acquire_worker_enabled {
+                                        return av1_acquire_job_tx_for_worker.send(request).is_ok();
+                                    }
+                                    let acquire_started_at = Instant::now();
+                                    let acquire_result = unsafe {
+                                        swapchain_loader_for_worker.acquire_next_image(
+                                            swapchain,
+                                            request.timeout_ns,
+                                            request.image_available,
+                                            vk::Fence::null(),
+                                        )
+                                    };
+                                    let acquire_elapsed_us =
+                                        native_vulkan_elapsed_us(acquire_started_at.elapsed());
+                                    let result = match acquire_result {
+                                        Ok((image_index, _)) => {
+                                            Ok(NativeVulkanAv1AcquireWorkerResult {
+                                                frame_context_index: request.frame_context_index,
+                                                image_index: Some(image_index),
+                                                acquire_elapsed_us,
+                                                not_ready: false,
+                                            })
+                                        }
+                                        Err(vk::Result::NOT_READY) | Err(vk::Result::TIMEOUT) => {
+                                            Ok(NativeVulkanAv1AcquireWorkerResult {
+                                                frame_context_index: request.frame_context_index,
+                                                image_index: None,
+                                                acquire_elapsed_us,
+                                                not_ready: true,
+                                            })
+                                        }
+                                        Err(result) => Err(NativeVulkanError::Vulkan {
+                                            operation:
+                                                "vkAcquireNextImageKHR(direct av1 post-present acquire)",
+                                            result,
+                                        }),
+                                    };
+                                    av1_acquire_result_tx_for_worker.send(result).is_ok()
+                                })
+                            };
+                        if present_succeeded && av1_present_result_after_preacquire {
+                            if !send_acquire_requests(&job.post_present_acquire_requests) {
+                                break;
+                            }
+                        }
                         if av1_present_result_tx.send(result).is_err() {
                             break;
+                        }
+                        if present_succeeded && !av1_present_result_after_preacquire {
+                            if !send_acquire_requests(&job.post_present_acquire_requests) {
+                                break;
+                            }
                         }
                     }
                     Ok(())
@@ -8735,18 +9282,6 @@ pub fn run_av1_ready_prefix_video(
                 (|| -> Result<NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot, NativeVulkanError> {
 
             while frames.len() < playback_frame_count as usize {
-                // Decode/present can overlap, but the Wayland display queue must stay single-owner.
-                {
-                    let _present_queue_guard = present_queue_mutex.lock().map_err(|_| {
-                        NativeVulkanError::Video(
-                            "AV1 present queue mutex was poisoned".to_owned(),
-                        )
-                    })?;
-                    probe.host.pump_events()?;
-                }
-                if probe.host.is_closed() {
-                    break;
-                }
                 native_vulkan_av1_trace(
                     av1_trace_enabled,
                     format!(
@@ -8755,21 +9290,46 @@ pub fn run_av1_ready_prefix_video(
                         processed_temporal_unit_count
                     ),
                 );
-                let packet = streaming_queue.next_packet(true)?;
-                let temporal_unit = packet.snapshot.clone();
-                let loop_boundary_reset = processed_temporal_unit_count > 0
-                    && packet.source_loop_index != previous_source_loop_index;
-                if loop_boundary_reset {
+                let mut prepared_visible_frame = predecoded_av1_visible_frame.take();
+                let packet = if prepared_visible_frame.is_none() {
+                    Some(streaming_queue.next_packet(true)?)
+                } else {
+                    None
+                };
+                let temporal_unit = prepared_visible_frame
+                    .as_ref()
+                    .map(|prepared| prepared.temporal_unit.clone())
+                    .or_else(|| packet.as_ref().map(|packet| packet.snapshot.clone()))
+                    .ok_or_else(|| {
+                        NativeVulkanError::Video("AV1 loop has neither packet nor prepared frame".to_owned())
+                    })?;
+                let playback_loop_index = prepared_visible_frame
+                    .as_ref()
+                    .map(|prepared| prepared.source_loop_index)
+                    .or_else(|| packet.as_ref().map(|packet| packet.source_loop_index))
+                    .ok_or_else(|| {
+                        NativeVulkanError::Video("AV1 loop has no source loop index".to_owned())
+                    })?;
+                let loop_boundary_reset = if let Some(prepared) = prepared_visible_frame.as_ref() {
+                    prepared.frame.loop_boundary_reset
+                } else {
+                    processed_temporal_unit_count > 0
+                        && playback_loop_index != previous_source_loop_index
+                };
+                if loop_boundary_reset && prepared_visible_frame.is_none() {
                     streaming_reference_planner =
                         NativeVulkanAv1DecodeReferencePlanner::new(stream_dpb_slots);
                 }
-                let entry = streaming_reference_planner.plan_next(&temporal_unit);
+                let entry = prepared_visible_frame
+                    .as_ref()
+                    .map(|prepared| prepared.entry.clone())
+                    .unwrap_or_else(|| streaming_reference_planner.plan_next(&temporal_unit));
                 native_vulkan_av1_trace(
                     av1_trace_enabled,
                     format!(
                         "tu plan tu={} source_loop={} show_existing={} show_frame={} ready_decode={} ready_handoff={} output_slot={:?} displayed_slot={:?} refs={:?} refresh={:?} reason={}",
                         entry.temporal_unit_index,
-                        packet.source_loop_index,
+                        playback_loop_index,
                         entry.show_existing_frame,
                         entry.show_frame,
                         entry.ready_for_decode_submit,
@@ -8781,23 +9341,36 @@ pub fn run_av1_ready_prefix_video(
                         entry.unsupported_reason.as_deref().unwrap_or("none")
                     ),
                 );
-                if !(entry.ready_for_decode_submit || entry.ready_for_display_handoff) {
+                if prepared_visible_frame.is_none()
+                    && !(entry.ready_for_decode_submit || entry.ready_for_display_handoff)
+                {
                     return Err(NativeVulkanError::Video(format!(
                         "AV1 streaming TU {} is not usable; {}",
                         entry.temporal_unit_index,
                         entry
                             .unsupported_reason
                             .as_deref()
-                            .unwrap_or("missing references")
+                        .unwrap_or("missing references")
                     )));
                 }
-                let processed_temporal_unit_index = processed_temporal_unit_count;
-                processed_temporal_unit_count = processed_temporal_unit_count.saturating_add(1);
-                let playback_frame_index = frames.len() as u32;
-                let playback_loop_index = packet.source_loop_index;
+                let processed_temporal_unit_index =
+                    prepared_visible_frame
+                        .as_ref()
+                        .map(|prepared| prepared.frame.ready_prefix_frame_index)
+                        .unwrap_or(processed_temporal_unit_count);
+                if prepared_visible_frame.is_none() {
+                    processed_temporal_unit_count =
+                        processed_temporal_unit_count.saturating_add(1);
+                }
+                let playback_frame_index = prepared_visible_frame
+                    .as_ref()
+                    .map(|prepared| prepared.frame.playback_frame_index)
+                    .unwrap_or(frames.len() as u32);
                 let ready_prefix_frame_index = processed_temporal_unit_index;
                 previous_source_loop_index = playback_loop_index;
-                let pts_delta_ms = if loop_boundary_reset {
+                let pts_delta_ms = if let Some(prepared) = prepared_visible_frame.as_ref() {
+                    prepared.frame.pts_delta_ms
+                } else if loop_boundary_reset {
                     previous_duration_ms
                         .or(temporal_unit.duration_ms)
                         .or_else(|| frame_interval.map(|interval| interval.as_millis() as u64))
@@ -8806,7 +9379,9 @@ pub fn run_av1_ready_prefix_video(
                         previous_pts_ms.map(|previous| pts_ms.saturating_sub(previous))
                     })
                 };
-                let pts_delta_ns = if loop_boundary_reset {
+                let pts_delta_ns = if let Some(prepared) = prepared_visible_frame.as_ref() {
+                    prepared.frame.pts_delta_ns
+                } else if loop_boundary_reset {
                     previous_duration_ns
                         .or(temporal_unit.duration_ns)
                         .or_else(|| {
@@ -8823,25 +9398,51 @@ pub fn run_av1_ready_prefix_video(
                 let decode_will_present = !entry.ready_for_display_handoff
                     && frame_submit.is_some_and(|submit| submit.show_frame);
                 let will_present = entry.ready_for_display_handoff || decode_will_present;
-                let signal_hidden_decode_handoff = av1_hidden_decode_handoff_enabled
+                if will_present {
+                    probe.host.pump_events()?;
+                    if probe.host.is_closed() {
+                        break;
+                    }
+                    if av1_async_present_enabled {
+                        native_vulkan_drain_av1_present_worker_results(
+                            &av1_present_result_rx,
+                            &mut frames,
+                            &mut av1_frame_contexts,
+                        )?;
+                    }
+                    if av1_preacquire_enabled {
+                        for acquire_result in native_vulkan_drain_av1_acquire_worker_results(
+                            &av1_acquire_result_rx,
+                            &mut av1_frame_contexts,
+                        )? {
+                            av1_preacquire_elapsed_us = av1_preacquire_elapsed_us
+                                .saturating_add(acquire_result.acquire_elapsed_us);
+                            av1_preacquire_max_us =
+                                av1_preacquire_max_us.max(acquire_result.acquire_elapsed_us);
+                            if acquire_result.not_ready {
+                                av1_preacquire_not_ready_count =
+                                    av1_preacquire_not_ready_count.saturating_add(1);
+                            } else if acquire_result.image_index.is_some() {
+                                av1_preacquire_hit_count =
+                                    av1_preacquire_hit_count.saturating_add(1);
+                            }
+                        }
+                    }
+                }
+                let hidden_decode_handoff_signal_value = if av1_hidden_decode_handoff_enabled
+                    && av1_hidden_decode_handoff_timeline != vk::Semaphore::null()
                     && !entry.ready_for_display_handoff
                     && !decode_will_present
                     && entry.output_slot.is_some()
-                    && streaming_queue.ensure_front_packet(true)?
-                    && {
-                        let front_packet = streaming_queue.front_packet().ok_or_else(|| {
-                            NativeVulkanError::Video(
-                                "AV1 streaming packet queue lost front packet after hidden handoff prefetch"
-                                    .to_owned(),
-                            )
-                        })?;
-                        let mut predicted_planner = streaming_reference_planner.clone();
-                        let predicted_entry = predicted_planner.plan_next(&front_packet.snapshot);
-                        predicted_entry.ready_for_display_handoff
-                    };
-                let use_hidden_decode_handoff = signal_hidden_decode_handoff
                     && !diagnostic_readback_hidden
-                    && av1_decode_command_ring_depth <= 1;
+                {
+                    next_av1_hidden_decode_handoff_value =
+                        next_av1_hidden_decode_handoff_value.saturating_add(1);
+                    Some(next_av1_hidden_decode_handoff_value)
+                } else {
+                    None
+                };
+                let use_hidden_decode_handoff = hidden_decode_handoff_signal_value.is_some();
                 let use_hidden_decode_fence_wait = !entry.ready_for_display_handoff
                     && !decode_will_present
                     && !use_hidden_decode_handoff
@@ -8853,7 +9454,29 @@ pub fn run_av1_ready_prefix_video(
                             "AV1 frame context pool is empty".to_owned(),
                         ));
                     }
-                    let context_index = next_av1_frame_context % av1_frame_contexts.len();
+                    let context_index = if av1_ready_frame_context_selection {
+                        native_vulkan_choose_av1_ready_frame_context(
+                            &device,
+                            &av1_frame_contexts,
+                            next_av1_frame_context,
+                            av1_preacquire_enabled,
+                            &mut av1_frame_context_ready_probe_count,
+                            &mut av1_frame_context_ready_hit_count,
+                            &mut av1_frame_context_fallback_count,
+                        )?
+                    } else if av1_preacquire_enabled {
+                        av1_frame_contexts
+                            .iter()
+                            .position(|context| context.preacquired_image_index.is_some())
+                            .or_else(|| {
+                                av1_frame_contexts.iter().position(|context| {
+                                    !context.pending_present_result && !context.preacquire_pending
+                                })
+                            })
+                            .unwrap_or(next_av1_frame_context % av1_frame_contexts.len())
+                    } else {
+                        next_av1_frame_context % av1_frame_contexts.len()
+                    };
                     next_av1_frame_context = (context_index + 1) % av1_frame_contexts.len();
                     Some(context_index)
                 } else {
@@ -8906,6 +9529,15 @@ pub fn run_av1_ready_prefix_video(
                     av1_frame_contexts[frame_context_index].sampled_resource = None;
                     fence_wait_elapsed_us =
                         native_vulkan_elapsed_us(fence_wait_started_at.elapsed());
+                    if fence_wait_elapsed_us > 0 {
+                        av1_frame_context_fence_wait_count =
+                            av1_frame_context_fence_wait_count.saturating_add(1);
+                        av1_frame_context_fence_wait_elapsed_us =
+                            av1_frame_context_fence_wait_elapsed_us
+                                .saturating_add(fence_wait_elapsed_us);
+                        av1_frame_context_fence_wait_max_us =
+                            av1_frame_context_fence_wait_max_us.max(fence_wait_elapsed_us);
+                    }
                     native_vulkan_av1_trace(
                         av1_trace_enabled,
                         format!(
@@ -8949,7 +9581,14 @@ pub fn run_av1_ready_prefix_video(
                     active_dpb_refs.fill(None);
                 }
 
-                let mut frame = if entry.ready_for_display_handoff {
+                let mut frame_hidden_decode_handoff_wait_value = None::<u64>;
+                let mut prepared_visible_display_copy = None::<(usize, vk::Semaphore)>;
+                let mut frame = if let Some(mut prepared) = prepared_visible_frame.take() {
+                    prepared.frame.fence_wait_elapsed_us = fence_wait_elapsed_us;
+                    prepared_visible_display_copy =
+                        Some((prepared.display_slot, prepared.display_copy_wait_semaphore));
+                    prepared.frame
+                } else if entry.ready_for_display_handoff {
                     let displayed_slot = entry.displayed_slot.ok_or_else(|| {
                         NativeVulkanError::Video(format!(
                             "AV1 show-existing TU {} has no displayed slot",
@@ -8962,14 +9601,21 @@ pub fn run_av1_ready_prefix_video(
                             entry.temporal_unit_index, displayed_slot, image.snapshot.array_layers
                         )));
                     }
-                    let display_wait_stats = native_vulkan_wait_av1_pending_decode_submissions(
-                        &device,
-                        &mut av1_decode_command_slots,
-                        &mut pending_av1_decode_submissions,
-                        |pending| pending.output_slot == Some(displayed_slot),
-                        "vkWaitForFences(direct av1 show-existing pending decode)",
-                    )?;
-                    av1_decode_wait_stats.merge(display_wait_stats);
+                    frame_hidden_decode_handoff_wait_value =
+                        pending_hidden_decode_handoff_values_by_output_slot
+                            .get(displayed_slot as usize)
+                            .copied()
+                            .flatten();
+                    if frame_hidden_decode_handoff_wait_value.is_none() {
+                        let display_wait_stats = native_vulkan_wait_av1_pending_decode_submissions(
+                            &device,
+                            &mut av1_decode_command_slots,
+                            &mut pending_av1_decode_submissions,
+                            |pending| pending.output_slot == Some(displayed_slot),
+                            "vkWaitForFences(direct av1 show-existing pending decode)",
+                        )?;
+                        av1_decode_wait_stats.merge(display_wait_stats);
+                    }
                     let signal_started_at = Instant::now();
                     NativeVulkanDirectAv1ReadyPrefixFrameSnapshot {
                         playback_frame_index,
@@ -9083,6 +9729,13 @@ pub fn run_av1_ready_prefix_video(
                         readback_elapsed_us: None,
                     }
                 } else {
+                    let packet = packet.as_ref().ok_or_else(|| {
+                        NativeVulkanError::Video(format!(
+                            "AV1 TU {} needs decode but no streaming packet is available",
+                            entry.temporal_unit_index
+                        ))
+                    })?;
+                    let hidden_process_started_at = (!decode_will_present).then(Instant::now);
                     let bitstream_upload_started_at = Instant::now();
                     let payload = native_vulkan_prepare_av1_streaming_packet_bitstream_payload(
                         &packet,
@@ -9183,16 +9836,18 @@ pub fn run_av1_ready_prefix_video(
                         output_image.map(|_| output_image_layer_layouts.as_mut_slice()),
                         av1_order_hint_offset_enabled,
                         av1_trace_enabled,
+                        av1_decode_image_layout,
                         reset_before_decode,
                         pts_delta_ms,
                         pts_delta_ns,
                         if decode_will_present {
                             frame_decode_finished
-                        } else if use_hidden_decode_handoff {
-                            hidden_decode_finished
+                        } else if hidden_decode_handoff_signal_value.is_some() {
+                            av1_hidden_decode_handoff_timeline
                         } else {
                             vk::Semaphore::null()
                         },
+                        hidden_decode_handoff_signal_value,
                         submit_fence,
                         playback_frame_index,
                         playback_loop_index,
@@ -9233,55 +9888,30 @@ pub fn run_av1_ready_prefix_video(
                                 .max(pending_av1_decode_submissions.len().min(u32::MAX as usize)
                                     as u32);
                     }
-                    let active_slots_after = entry
-                        .map_slot_indices_after
-                        .iter()
-                        .filter_map(|slot| u32::try_from(*slot).ok())
-                        .collect::<Vec<_>>();
-                    let current_reference = frame.dst_base_array_layer.and_then(|output_slot| {
-                        (!entry.refreshed_reference_names.is_empty()).then_some((
+                    native_vulkan_update_av1_active_dpb_refs_after_decode(
+                        &mut active_dpb_refs,
+                        &entry,
+                        &frame,
+                        source_extent,
+                    );
+                    if let Some(output_slot) = frame.dst_base_array_layer
+                        && native_vulkan_av1_display_cache_invalidate(
+                            &mut av1_display_cache_slot_sources,
+                            &mut av1_display_cache_dpb_slots,
                             output_slot,
-                            NativeVulkanAv1ActiveDpbReference {
-                                frame_type: frame.frame_type,
-                                order_hint: frame.order_hint.unwrap_or(0),
-                                ref_frame_sign_bias: frame.ref_frame_sign_bias,
-                                saved_order_hints: native_vulkan_av1_setup_saved_order_hints(
-                                    native_vulkan_av1_order_hints_array(
-                                        &entry.reference_name_order_hints,
-                                    ),
-                                    frame.refresh_frame_flags,
-                                    frame.order_hint.unwrap_or(0),
-                                ),
-                                frame_width: frame.frame_width.unwrap_or(source_extent.width),
-                                frame_height: frame.frame_height.unwrap_or(source_extent.height),
-                                render_width: frame.render_width.unwrap_or(source_extent.width),
-                                render_height: frame.render_height.unwrap_or(source_extent.height),
-                                disable_frame_end_update_cdf: frame.disable_frame_end_update_cdf,
-                                segmentation_enabled: frame.segmentation_enabled,
-                                segmentation: NativeVulkanAv1ParsedSegmentation {
-                                    enabled: frame.segmentation_enabled,
-                                    update_map: frame.segmentation_update_map,
-                                    temporal_update: frame.segmentation_temporal_update,
-                                    update_data: frame.segmentation_update_data,
-                                    feature_enabled: frame.segmentation_feature_enabled,
-                                    feature_data: frame.segmentation_feature_data,
-                                },
-                                loop_filter_ref_deltas: frame.loop_filter_ref_deltas,
-                                loop_filter_mode_deltas: frame.loop_filter_mode_deltas,
-                            },
-                        ))
-                    });
-                    for (slot_index, slot) in active_dpb_refs.iter_mut().enumerate() {
-                        let slot_index = slot_index as u32;
-                        if !active_slots_after.contains(&slot_index) {
-                            *slot = None;
-                            continue;
-                        }
-                        if let Some((output_slot, reference)) = current_reference
-                            && output_slot == slot_index
-                        {
-                            *slot = Some(reference);
-                        }
+                        )
+                    {
+                        av1_show_existing_display_cache_invalidate_count =
+                            av1_show_existing_display_cache_invalidate_count.saturating_add(1);
+                    }
+                    if let Some(output_slot) = frame.dst_base_array_layer
+                        && native_vulkan_av1_prepared_show_existing_display_invalidate_dpb_slot(
+                            &mut pending_av1_show_existing_prepared_display_by_output_slot,
+                            output_slot,
+                        )
+                    {
+                        av1_show_existing_precopy_invalidate_count =
+                            av1_show_existing_precopy_invalidate_count.saturating_add(1);
                     }
                     if frame.show_frame != decode_will_present {
                         return Err(NativeVulkanError::Video(format!(
@@ -9301,7 +9931,29 @@ pub fn run_av1_ready_prefix_video(
                             ),
                         );
                         if use_hidden_decode_handoff {
-                            pending_hidden_decode_handoff = true;
+                            let output_slot = frame.dst_base_array_layer.ok_or_else(|| {
+                                NativeVulkanError::Video(format!(
+                                    "AV1 hidden TU {} requested timeline handoff without an output slot",
+                                    entry.temporal_unit_index
+                                ))
+                            })?;
+                            let handoff_value = hidden_decode_handoff_signal_value.ok_or_else(|| {
+                                NativeVulkanError::Video(format!(
+                                    "AV1 hidden TU {} requested timeline handoff without a signal value",
+                                    entry.temporal_unit_index
+                                ))
+                            })?;
+                            let tracked_slot_count =
+                                pending_hidden_decode_handoff_values_by_output_slot.len();
+                            let pending_value =
+                                pending_hidden_decode_handoff_values_by_output_slot
+                                    .get_mut(output_slot as usize)
+                                    .ok_or_else(|| {
+                                        NativeVulkanError::Video(format!(
+                                            "AV1 hidden handoff output slot {output_slot} exceeds {tracked_slot_count} tracked slots"
+                                        ))
+                                    })?;
+                            *pending_value = Some(handoff_value);
                             av1_hidden_decode_async_handoff_count =
                                 av1_hidden_decode_async_handoff_count.saturating_add(1);
                         } else if use_hidden_decode_fence_wait {
@@ -9391,13 +10043,27 @@ pub fn run_av1_ready_prefix_video(
                         hidden_decoded_frame_count = hidden_decoded_frame_count.saturating_add(1);
                         hidden_bitstream_uploaded_bytes =
                             hidden_bitstream_uploaded_bytes.saturating_add(frame.src_buffer_range);
+                        if let Some(hidden_process_started_at) = hidden_process_started_at {
+                            let hidden_process_elapsed_us =
+                                native_vulkan_elapsed_us(hidden_process_started_at.elapsed());
+                            av1_hidden_decode_process_elapsed_us =
+                                av1_hidden_decode_process_elapsed_us
+                                    .saturating_add(hidden_process_elapsed_us);
+                            av1_hidden_decode_process_max_us =
+                                av1_hidden_decode_process_max_us.max(hidden_process_elapsed_us);
+                            av1_pending_display_hidden_decode_count =
+                                av1_pending_display_hidden_decode_count.saturating_add(1);
+                            av1_pending_display_hidden_decode_elapsed_us =
+                                av1_pending_display_hidden_decode_elapsed_us
+                                    .saturating_add(hidden_process_elapsed_us);
+                        }
                         native_vulkan_av1_trace(
                             av1_trace_enabled,
                             format!(
                                 "hidden sync end tu={} hidden_decoded={} pending_handoff={}",
                                 entry.temporal_unit_index,
                                 hidden_decoded_frame_count,
-                                pending_hidden_decode_handoff
+                                use_hidden_decode_handoff
                             ),
                         );
                         continue;
@@ -9536,7 +10202,22 @@ pub fn run_av1_ready_prefix_video(
                     }
                 }
 
-                let present_started_at = Instant::now();
+                if av1_pending_display_hidden_decode_count > 0 {
+                    av1_hidden_decode_before_display_gap_count =
+                        av1_hidden_decode_before_display_gap_count.saturating_add(1);
+                    av1_hidden_decode_before_display_elapsed_us =
+                        av1_hidden_decode_before_display_elapsed_us
+                            .saturating_add(av1_pending_display_hidden_decode_elapsed_us);
+                    av1_hidden_decode_before_display_max_count =
+                        av1_hidden_decode_before_display_max_count
+                            .max(av1_pending_display_hidden_decode_count);
+                    av1_hidden_decode_before_display_max_elapsed_us =
+                        av1_hidden_decode_before_display_max_elapsed_us
+                            .max(av1_pending_display_hidden_decode_elapsed_us);
+                    av1_pending_display_hidden_decode_count = 0;
+                    av1_pending_display_hidden_decode_elapsed_us = 0;
+                }
+
                 let present_frame_context_index = frame_context_index.ok_or_else(|| {
                     NativeVulkanError::Video(format!(
                         "AV1 TU {} reached present without a frame context",
@@ -9546,78 +10227,1196 @@ pub fn run_av1_ready_prefix_video(
                 let present_frame_fence =
                     av1_frame_contexts[present_frame_context_index].in_flight;
                 let dedicated_decode_output = output_image.is_some() && !frame.show_existing_frame;
-                let displayed_slot = if dedicated_decode_output {
+                let decoded_displayed_slot = if dedicated_decode_output {
                     0
                 } else {
                     frame.displayed_base_array_layer
                 };
-                let texture_image = if dedicated_decode_output {
-                    output_image.expect("dedicated output image exists").image
-                } else {
-                    image.image
-                };
-                let texture_format = if dedicated_decode_output {
-                    output_image.expect("dedicated output image exists").format
-                } else {
-                    image.format
-                };
-                let decoded_views_cache = if dedicated_decode_output {
-                    &av1_output_decoded_plane_view_cache
-                } else {
-                    &decoded_plane_view_cache
-                };
-                let decoded_views = decoded_views_cache
-                    .get(displayed_slot as usize)
-                    .copied()
-                    .ok_or_else(|| {
-                        NativeVulkanError::Video(format!(
-                            "AV1 decoded view cache has {} layers but layer {} was requested",
-                            decoded_views_cache.len(),
-                            displayed_slot
-                        ))
-                    })?;
                 let source_layout = if dedicated_decode_output {
                     output_image_layer_layouts
-                        .get(displayed_slot as usize)
+                        .get(decoded_displayed_slot as usize)
                         .copied()
                         .unwrap_or(vk::ImageLayout::VIDEO_DECODE_DST_KHR)
                 } else {
                     image_layer_layouts
-                        .get(displayed_slot as usize)
+                        .get(decoded_displayed_slot as usize)
                         .copied()
-                        .unwrap_or(vk::ImageLayout::VIDEO_DECODE_DPB_KHR)
+                        .unwrap_or(av1_decode_image_layout)
                 };
                 let source_access = match source_layout {
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => vk::AccessFlags::SHADER_READ,
                     vk::ImageLayout::TRANSFER_SRC_OPTIMAL => vk::AccessFlags::TRANSFER_READ,
                     _ => vk::AccessFlags::MEMORY_WRITE,
                 };
-                let descriptor_set_index = if dedicated_decode_output {
-                    0
-                } else {
-                    av1_resource_descriptor_set_base.saturating_add(displayed_slot as usize)
-                };
-                let texture = NativeVulkanVideoTexture::Decoded(
-                    NativeVulkanDecodedVideoTexture::from_cached_views(
-                        texture_image,
-                        texture_format,
-                        width,
-                        height,
-                        displayed_slot,
-                        decoded_views,
-                        if source_layout == vk::ImageLayout::UNDEFINED {
-                            if dedicated_decode_output {
-                                vk::ImageLayout::VIDEO_DECODE_DST_KHR
-                            } else {
-                                vk::ImageLayout::VIDEO_DECODE_DPB_KHR
+                let av1_show_existing_direct_dpb = frame.show_existing_frame
+                    && av1_show_existing_direct_dpb_enabled
+                    && output_image.is_none();
+                let mut av1_early_display_copy_submitted = false;
+                let mut av1_early_display_copy_wait_semaphore = vk::Semaphore::null();
+                let mut av1_early_display_ring_slot_index = None::<usize>;
+                let mut av1_display_cache_reused = false;
+                if let Some((display_slot, wait_semaphore)) = prepared_visible_display_copy.take() {
+                    av1_early_display_copy_submitted = true;
+                    av1_early_display_copy_wait_semaphore = wait_semaphore;
+                    av1_early_display_ring_slot_index = Some(display_slot);
+                }
+                if !av1_early_display_copy_submitted
+                    && !av1_show_existing_direct_dpb
+                    && av1_show_existing_precopy_enabled
+                    && frame.show_existing_frame
+                    && av1_graphics_display_copy
+                    && !av1_display_textures.is_empty()
+                {
+                    let prepared_show_existing = pending_av1_show_existing_prepared_display_by_output_slot
+                        .get_mut(decoded_displayed_slot as usize)
+                        .and_then(Option::take);
+                    if let Some(prepared) = prepared_show_existing {
+                        let source_matches = av1_display_cache_slot_sources
+                            .get(prepared.display_slot)
+                            .copied()
+                            .flatten()
+                            == Some(decoded_displayed_slot);
+                        let layout_ready = av1_display_image
+                            .as_ref()
+                            .and_then(|display_image| display_image.layouts.get(prepared.display_slot))
+                            .copied()
+                            == Some(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+                        let handoff_matches =
+                            frame_hidden_decode_handoff_wait_value == Some(prepared.handoff_value);
+                        if source_matches && layout_ready && handoff_matches {
+                            av1_show_existing_precopy_hit_count =
+                                av1_show_existing_precopy_hit_count.saturating_add(1);
+                            av1_early_display_copy_submitted = true;
+                            av1_early_display_copy_wait_semaphore = prepared.wait_semaphore;
+                            av1_early_display_ring_slot_index = Some(prepared.display_slot);
+                            if let Some(pending_value) =
+                                pending_hidden_decode_handoff_values_by_output_slot
+                                    .get_mut(frame.displayed_base_array_layer as usize)
+                                && *pending_value == Some(prepared.handoff_value)
+                            {
+                                *pending_value = None;
+                            }
+                            frame_hidden_decode_handoff_wait_value = None;
+                        } else {
+                            av1_show_existing_precopy_stale_count =
+                                av1_show_existing_precopy_stale_count.saturating_add(1);
+                        }
+                    } else {
+                        av1_show_existing_precopy_miss_count =
+                            av1_show_existing_precopy_miss_count.saturating_add(1);
+                    }
+                }
+                if !av1_early_display_copy_submitted
+                    && !av1_show_existing_direct_dpb
+                    && av1_show_existing_display_cache_enabled
+                    && frame.show_existing_frame
+                    && av1_graphics_display_copy
+                    && !av1_display_textures.is_empty()
+                {
+                    av1_show_existing_display_cache_lookup_count =
+                        av1_show_existing_display_cache_lookup_count.saturating_add(1);
+                    let cached_display_slot = av1_display_cache_dpb_slots
+                        .get(decoded_displayed_slot as usize)
+                        .copied()
+                        .flatten();
+                    if let Some(display_slot) = cached_display_slot {
+                        let source_matches = av1_display_cache_slot_sources
+                            .get(display_slot)
+                            .copied()
+                            .flatten()
+                            == Some(decoded_displayed_slot);
+                        let layout_ready = av1_display_image
+                            .as_ref()
+                            .and_then(|display_image| display_image.layouts.get(display_slot))
+                            .copied()
+                            == Some(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+                        if frame_hidden_decode_handoff_wait_value.is_some()
+                            || !source_matches
+                            || !layout_ready
+                        {
+                            av1_show_existing_display_cache_stale_count =
+                                av1_show_existing_display_cache_stale_count.saturating_add(1);
+                            if native_vulkan_av1_display_cache_invalidate(
+                                &mut av1_display_cache_slot_sources,
+                                &mut av1_display_cache_dpb_slots,
+                                decoded_displayed_slot,
+                            ) {
+                                av1_show_existing_display_cache_invalidate_count =
+                                    av1_show_existing_display_cache_invalidate_count
+                                        .saturating_add(1);
                             }
                         } else {
-                            source_layout
+                            let display_slot_fence =
+                                av1_display_slot_in_flight_fences[display_slot];
+                            let display_slot_ready = if display_slot_fence == vk::Fence::null()
+                                || display_slot_fence == present_frame_fence
+                            {
+                                true
+                            } else {
+                                unsafe { device.get_fence_status(display_slot_fence) }.map_err(
+                                    |result| NativeVulkanError::Vulkan {
+                                        operation:
+                                            "vkGetFenceStatus(direct av1 show-existing display cache)",
+                                        result,
+                                    },
+                                )?
+                            };
+                            if display_slot_ready {
+                                av1_show_existing_display_cache_hit_count =
+                                    av1_show_existing_display_cache_hit_count.saturating_add(1);
+                                av1_display_cache_reused = true;
+                                av1_early_display_ring_slot_index = Some(display_slot);
+                            } else {
+                                av1_show_existing_display_cache_busy_count =
+                                    av1_show_existing_display_cache_busy_count.saturating_add(1);
+                            }
+                        }
+                    } else {
+                        av1_show_existing_display_cache_miss_count =
+                            av1_show_existing_display_cache_miss_count.saturating_add(1);
+                    }
+                }
+                if !av1_early_display_copy_submitted
+                    && !av1_display_cache_reused
+                    && !av1_show_existing_direct_dpb
+                    && av1_early_display_copy
+                    && av1_graphics_display_copy
+                    && (!frame.show_existing_frame || av1_early_display_copy_show_existing)
+                    && frame.show_frame
+                    && !av1_display_textures.is_empty()
+                {
+                    let preferred_display_slot =
+                        frame.playback_frame_index as usize % av1_display_textures.len().max(1);
+                    let display_slot = if av1_ready_display_slot_selection {
+                        native_vulkan_choose_av1_display_ring_slot(
+                            &device,
+                            &av1_display_slot_in_flight_fences,
+                            preferred_display_slot,
+                            present_frame_fence,
+                            &mut av1_display_ring_ready_probe_count,
+                            &mut av1_display_ring_ready_hit_count,
+                            &mut av1_display_ring_ready_fallback_count,
+                        )?
+                    } else {
+                        preferred_display_slot
+                    };
+                    let mut display_slot_reuse_wait_value = 0u64;
+                    let previous_display_slot_fence =
+                        av1_display_slot_in_flight_fences[display_slot];
+                    if previous_display_slot_fence != vk::Fence::null()
+                        && previous_display_slot_fence != present_frame_fence
+                    {
+                        display_slot_reuse_wait_value =
+                            av1_display_slot_reuse_timeline_values
+                                .get(display_slot)
+                                .copied()
+                                .unwrap_or(0);
+                        if av1_display_slot_gpu_wait
+                            && av1_display_slot_reuse_timeline != vk::Semaphore::null()
+                            && display_slot_reuse_wait_value != 0
+                        {
+                            av1_display_ring_slot_gpu_wait_count =
+                                av1_display_ring_slot_gpu_wait_count.saturating_add(1);
+                        } else {
+                            display_slot_reuse_wait_value = 0;
+                            let display_slot_wait_started_at = Instant::now();
+                            unsafe {
+                                device
+                                    .wait_for_fences(
+                                        &[previous_display_slot_fence],
+                                        true,
+                                        u64::MAX,
+                                    )
+                                    .map_err(|result| NativeVulkanError::Vulkan {
+                                        operation:
+                                            "vkWaitForFences(direct av1 early display ring slot)",
+                                        result,
+                                    })?;
+                            }
+                            let display_slot_wait_elapsed_us =
+                                native_vulkan_elapsed_us(display_slot_wait_started_at.elapsed());
+                            frame.fence_wait_elapsed_us = frame
+                                .fence_wait_elapsed_us
+                                .saturating_add(display_slot_wait_elapsed_us);
+                            av1_display_ring_slot_wait_count =
+                                av1_display_ring_slot_wait_count.saturating_add(1);
+                            av1_display_ring_slot_wait_elapsed_us =
+                                av1_display_ring_slot_wait_elapsed_us
+                                    .saturating_add(display_slot_wait_elapsed_us);
+                            av1_display_ring_slot_wait_max_us =
+                                av1_display_ring_slot_wait_max_us.max(display_slot_wait_elapsed_us);
+                        }
+                    }
+                    if native_vulkan_av1_prepared_show_existing_display_invalidate_display_slot(
+                        &mut pending_av1_show_existing_prepared_display_by_output_slot,
+                        display_slot,
+                    ) {
+                        av1_show_existing_precopy_invalidate_count =
+                            av1_show_existing_precopy_invalidate_count.saturating_add(1);
+                    }
+                    av1_display_slot_in_flight_fences[display_slot] = vk::Fence::null();
+                    let display_image = av1_display_image.as_mut().ok_or_else(|| {
+                        NativeVulkanError::Video(
+                            "AV1 early display copy is enabled without a display image".to_owned(),
+                        )
+                    })?;
+                    let display_old_layout = display_image
+                        .layouts
+                        .get(display_slot)
+                        .copied()
+                        .ok_or_else(|| {
+                            NativeVulkanError::Video(format!(
+                                "AV1 display ring has {} layouts but slot {} was requested for early copy",
+                                display_image.layouts.len(),
+                                display_slot
+                            ))
+                        })?;
+                    let copy_source_layout = if source_layout == vk::ImageLayout::UNDEFINED {
+                        av1_decode_image_layout
+                    } else {
+                        source_layout
+                    };
+                    if copy_source_layout != vk::ImageLayout::GENERAL {
+                        return Err(NativeVulkanError::Video(format!(
+                            "AV1 early display-copy requires GENERAL source layout, got {}",
+                            native_vulkan_image_layout_label(copy_source_layout)
+                        )));
+                    }
+                    let copy_command_buffer = av1_display_copy_command_buffers
+                        .get(display_slot)
+                        .copied()
+                        .ok_or_else(|| {
+                            NativeVulkanError::Video(format!(
+                                "AV1 early display copy command buffer slot {display_slot} exceeds {} slots",
+                                av1_display_copy_command_buffers.len()
+                            ))
+                        })?;
+                    let copy_signal = av1_display_copy_finished
+                        .get(display_slot)
+                        .copied()
+                        .ok_or_else(|| {
+                            NativeVulkanError::Video(format!(
+                                "AV1 early display copy semaphore slot {display_slot} exceeds {} slots",
+                                av1_display_copy_finished.len()
+                            ))
+                        })?;
+                    native_vulkan_record_decoded_video_display_copy(
+                        &device,
+                        copy_command_buffer,
+                        if dedicated_decode_output {
+                            output_image.expect("dedicated output image exists")
+                        } else {
+                            image
                         },
-                        source_access,
-                    )?,
-                );
+                        decoded_displayed_slot,
+                        copy_source_layout,
+                        copy_source_layout,
+                        copy_source_layout,
+                        display_image.image,
+                        display_slot as u32,
+                        display_old_layout,
+                        source_extent,
+                    )?;
+                    let mut copy_wait_semaphores = Vec::new();
+                    let mut copy_wait_stages = Vec::new();
+                    let mut copy_wait_timeline_values = Vec::new();
+                    if !frame.show_existing_frame {
+                        copy_wait_semaphores.push(frame_decode_finished);
+                        copy_wait_stages.push(vk::PipelineStageFlags::ALL_COMMANDS);
+                        copy_wait_timeline_values.push(0);
+                    } else if let Some(handoff_value) = frame_hidden_decode_handoff_wait_value {
+                        copy_wait_semaphores.push(av1_hidden_decode_handoff_timeline);
+                        copy_wait_stages.push(vk::PipelineStageFlags::ALL_COMMANDS);
+                        copy_wait_timeline_values.push(handoff_value);
+                    }
+                    if display_slot_reuse_wait_value != 0 {
+                        copy_wait_semaphores.push(av1_display_slot_reuse_timeline);
+                        copy_wait_stages.push(vk::PipelineStageFlags::ALL_COMMANDS);
+                        copy_wait_timeline_values.push(display_slot_reuse_wait_value);
+                    }
+                    let copy_command_buffers = [copy_command_buffer];
+                    let copy_signal_semaphores = [copy_signal];
+                    let mut copy_timeline_submit_info =
+                        vk::TimelineSemaphoreSubmitInfo::default()
+                            .wait_semaphore_values(&copy_wait_timeline_values);
+                    let mut copy_submit_info = vk::SubmitInfo::default()
+                        .wait_semaphores(&copy_wait_semaphores)
+                        .wait_dst_stage_mask(&copy_wait_stages)
+                        .command_buffers(&copy_command_buffers)
+                        .signal_semaphores(&copy_signal_semaphores);
+                    if copy_wait_timeline_values.iter().any(|value| *value != 0) {
+                        copy_submit_info =
+                            copy_submit_info.push_next(&mut copy_timeline_submit_info);
+                    }
+                    unsafe {
+                        device
+                            .queue_submit(video_queue, &[copy_submit_info], vk::Fence::null())
+                            .map_err(|result| NativeVulkanError::Vulkan {
+                                operation: "vkQueueSubmit(direct av1 early display copy)",
+                                result,
+                            })?;
+                    }
+                    display_image.layouts[display_slot] = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+                    if native_vulkan_av1_display_cache_update(
+                        &mut av1_display_cache_slot_sources,
+                        &mut av1_display_cache_dpb_slots,
+                        decoded_displayed_slot,
+                        display_slot,
+                    ) {
+                        av1_show_existing_display_cache_update_count =
+                            av1_show_existing_display_cache_update_count.saturating_add(1);
+                    }
+                    if frame.show_existing_frame {
+                        if let Some(handoff_value) = frame_hidden_decode_handoff_wait_value
+                            && let Some(pending_value) =
+                                pending_hidden_decode_handoff_values_by_output_slot
+                                    .get_mut(frame.displayed_base_array_layer as usize)
+                            && *pending_value == Some(handoff_value)
+                        {
+                            *pending_value = None;
+                        }
+                        frame_hidden_decode_handoff_wait_value = None;
+                    }
+                    av1_early_display_copy_submitted = true;
+                    av1_early_display_copy_wait_semaphore = copy_signal;
+                    av1_early_display_ring_slot_index = Some(display_slot);
+                }
+
+                if av1_hidden_lookahead_enabled
+                    && av1_graphics_display_copy
+                    && output_image.is_none()
+                    && frame.show_frame
+                    && (!frame.show_existing_frame
+                        || av1_hidden_lookahead_show_existing
+                        || (av1_early_display_copy_show_existing
+                            && av1_early_display_copy_submitted))
+                    && frames.len() + 1 < playback_frame_count as usize
+                    && av1_hidden_decode_handoff_timeline != vk::Semaphore::null()
+                    && !diagnostic_readback_hidden
+                    && diagnostic_readback_frame_limit == 0
+                {
+                    let protected_display_slot =
+                        (!av1_early_display_copy_submitted).then_some(frame.displayed_base_array_layer);
+                    loop {
+                        if !streaming_queue.ensure_front_packet(true)? {
+                            break;
+                        }
+                        let Some(front_packet) = streaming_queue.front_packet() else {
+                            break;
+                        };
+                        if front_packet.source_loop_index != previous_source_loop_index {
+                            break;
+                        }
+                        let mut lookahead_planner = streaming_reference_planner.clone();
+                        let lookahead_entry = lookahead_planner.plan_next(&front_packet.snapshot);
+                        let lookahead_frame_submit =
+                            front_packet.snapshot.first_frame_submit.as_ref();
+                        let lookahead_decode_will_present =
+                            !lookahead_entry.ready_for_display_handoff
+                                && lookahead_frame_submit
+                                    .is_some_and(|submit| submit.show_frame);
+                        if lookahead_entry.ready_for_display_handoff
+                            || lookahead_decode_will_present
+                        {
+                            if lookahead_entry.ready_for_display_handoff
+                                && av1_show_existing_precopy_enabled
+                                && av1_early_display_copy_submitted
+                                && !av1_display_slot_in_flight_fences.is_empty()
+                            {
+                                av1_show_existing_precopy_attempt_count =
+                                    av1_show_existing_precopy_attempt_count.saturating_add(1);
+                                'show_existing_precopy: {
+                                let Some(show_existing_displayed_slot) =
+                                    lookahead_entry.displayed_slot
+                                else {
+                                    av1_show_existing_precopy_stale_count =
+                                        av1_show_existing_precopy_stale_count.saturating_add(1);
+                                    break 'show_existing_precopy;
+                                };
+                                let already_prepared =
+                                    pending_av1_show_existing_prepared_display_by_output_slot
+                                        .get(show_existing_displayed_slot as usize)
+                                        .map(Option::is_some)
+                                        .unwrap_or(false);
+                                if !already_prepared {
+                                    let handoff_value = pending_hidden_decode_handoff_values_by_output_slot
+                                        .get(show_existing_displayed_slot as usize)
+                                        .copied()
+                                        .flatten();
+                                    let Some(handoff_value) = handoff_value else {
+                                        av1_show_existing_precopy_skip_no_handoff_count =
+                                            av1_show_existing_precopy_skip_no_handoff_count
+                                                .saturating_add(1);
+                                        break 'show_existing_precopy;
+                                    };
+                                    let source_old_layout = image_layer_layouts
+                                        .get(show_existing_displayed_slot as usize)
+                                        .copied()
+                                        .unwrap_or(av1_decode_image_layout);
+                                    if source_old_layout != vk::ImageLayout::GENERAL {
+                                        av1_show_existing_precopy_skip_source_layout_count =
+                                            av1_show_existing_precopy_skip_source_layout_count
+                                                .saturating_add(1);
+                                        break 'show_existing_precopy;
+                                    }
+                                    let current_display_slot = av1_early_display_ring_slot_index;
+                                    let preferred_display_slot =
+                                        (frame.playback_frame_index as usize + 1)
+                                            % av1_display_slot_in_flight_fences.len();
+                                    let mut selected_display_slot = None::<usize>;
+                                    for offset in 0..av1_display_slot_in_flight_fences.len() {
+                                        let display_slot = (preferred_display_slot + offset)
+                                            % av1_display_slot_in_flight_fences.len();
+                                        if current_display_slot == Some(display_slot) {
+                                            continue;
+                                        }
+                                        let display_slot_fence =
+                                            av1_display_slot_in_flight_fences[display_slot];
+                                        if display_slot_fence == vk::Fence::null()
+                                            || display_slot_fence == present_frame_fence
+                                        {
+                                            selected_display_slot = Some(display_slot);
+                                            break;
+                                        }
+                                        let ready =
+                                            unsafe { device.get_fence_status(display_slot_fence) }
+                                                .map_err(|result| NativeVulkanError::Vulkan {
+                                                    operation:
+                                                        "vkGetFenceStatus(direct av1 show-existing precopy display slot)",
+                                                    result,
+                                                })?;
+                                        if ready {
+                                            selected_display_slot = Some(display_slot);
+                                            break;
+                                        }
+                                    }
+                                    let Some(display_slot) = selected_display_slot else {
+                                        av1_show_existing_precopy_skip_display_slot_busy_count =
+                                            av1_show_existing_precopy_skip_display_slot_busy_count
+                                                .saturating_add(1);
+                                        break 'show_existing_precopy;
+                                    };
+                                    if native_vulkan_av1_prepared_show_existing_display_invalidate_display_slot(
+                                        &mut pending_av1_show_existing_prepared_display_by_output_slot,
+                                        display_slot,
+                                    ) {
+                                        av1_show_existing_precopy_invalidate_count =
+                                            av1_show_existing_precopy_invalidate_count
+                                                .saturating_add(1);
+                                    }
+                                    av1_display_slot_in_flight_fences[display_slot] =
+                                        vk::Fence::null();
+                                    let display_image = av1_display_image.as_mut().ok_or_else(|| {
+                                        NativeVulkanError::Video(
+                                            "AV1 show-existing precopy requires a display image"
+                                                .to_owned(),
+                                        )
+                                    })?;
+                                    let display_old_layout = display_image
+                                        .layouts
+                                        .get(display_slot)
+                                        .copied()
+                                        .ok_or_else(|| {
+                                            NativeVulkanError::Video(format!(
+                                                "AV1 display ring has {} layouts but slot {} was requested for show-existing precopy",
+                                                display_image.layouts.len(),
+                                                display_slot
+                                            ))
+                                        })?;
+                                    let copy_command_buffer = av1_display_copy_command_buffers
+                                        .get(display_slot)
+                                        .copied()
+                                        .ok_or_else(|| {
+                                            NativeVulkanError::Video(format!(
+                                                "AV1 show-existing precopy command buffer slot {display_slot} exceeds {} slots",
+                                                av1_display_copy_command_buffers.len()
+                                            ))
+                                        })?;
+                                    let copy_signal = av1_display_copy_finished
+                                        .get(display_slot)
+                                        .copied()
+                                        .ok_or_else(|| {
+                                            NativeVulkanError::Video(format!(
+                                                "AV1 show-existing precopy semaphore slot {display_slot} exceeds {} slots",
+                                                av1_display_copy_finished.len()
+                                            ))
+                                        })?;
+                                    native_vulkan_record_decoded_video_display_copy(
+                                        &device,
+                                        copy_command_buffer,
+                                        image,
+                                        show_existing_displayed_slot,
+                                        source_old_layout,
+                                        source_old_layout,
+                                        source_old_layout,
+                                        display_image.image,
+                                        display_slot as u32,
+                                        display_old_layout,
+                                        source_extent,
+                                    )?;
+                                    let copy_wait_semaphores =
+                                        [av1_hidden_decode_handoff_timeline];
+                                    let copy_wait_stages = [vk::PipelineStageFlags::ALL_COMMANDS];
+                                    let copy_wait_timeline_values = [handoff_value];
+                                    let copy_command_buffers = [copy_command_buffer];
+                                    let copy_signal_semaphores = [copy_signal];
+                                    let mut copy_timeline_submit_info =
+                                        vk::TimelineSemaphoreSubmitInfo::default()
+                                            .wait_semaphore_values(&copy_wait_timeline_values);
+                                    let mut copy_submit_info = vk::SubmitInfo::default()
+                                        .wait_semaphores(&copy_wait_semaphores)
+                                        .wait_dst_stage_mask(&copy_wait_stages)
+                                        .command_buffers(&copy_command_buffers)
+                                        .signal_semaphores(&copy_signal_semaphores);
+                                    copy_submit_info =
+                                        copy_submit_info.push_next(&mut copy_timeline_submit_info);
+                                    unsafe {
+                                        device
+                                            .queue_submit(
+                                                video_queue,
+                                                &[copy_submit_info],
+                                                vk::Fence::null(),
+                                            )
+                                            .map_err(|result| NativeVulkanError::Vulkan {
+                                                operation:
+                                                    "vkQueueSubmit(direct av1 show-existing precopy)",
+                                                result,
+                                            })?;
+                                    }
+                                    display_image.layouts[display_slot] =
+                                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+                                    if native_vulkan_av1_display_cache_update(
+                                        &mut av1_display_cache_slot_sources,
+                                        &mut av1_display_cache_dpb_slots,
+                                        show_existing_displayed_slot,
+                                        display_slot,
+                                    ) {
+                                        av1_show_existing_display_cache_update_count =
+                                            av1_show_existing_display_cache_update_count
+                                                .saturating_add(1);
+                                    }
+                                    let tracked_slot_count =
+                                        pending_av1_show_existing_prepared_display_by_output_slot
+                                            .len();
+                                    let prepared_slot =
+                                        pending_av1_show_existing_prepared_display_by_output_slot
+                                            .get_mut(show_existing_displayed_slot as usize)
+                                            .ok_or_else(|| {
+                                                NativeVulkanError::Video(format!(
+                                                    "AV1 show-existing precopy displayed slot {show_existing_displayed_slot} exceeds {tracked_slot_count} tracked slots"
+                                                ))
+                                            })?;
+                                    *prepared_slot =
+                                        Some(NativeVulkanAv1PreparedShowExistingDisplayCopy {
+                                            display_slot,
+                                            wait_semaphore: copy_signal,
+                                            handoff_value,
+                                        });
+                                    av1_show_existing_precopy_submit_count =
+                                        av1_show_existing_precopy_submit_count.saturating_add(1);
+                                }
+                                }
+                            }
+                            av1_hidden_lookahead_stop_present_count =
+                                av1_hidden_lookahead_stop_present_count.saturating_add(1);
+                            if av1_visible_decode_ahead_probe {
+                                av1_visible_decode_ahead_attempt_count =
+                                    av1_visible_decode_ahead_attempt_count.saturating_add(1);
+                                if lookahead_entry.ready_for_display_handoff {
+                                    av1_visible_decode_ahead_skip_show_existing_count =
+                                        av1_visible_decode_ahead_skip_show_existing_count
+                                            .saturating_add(1);
+                                } else if !lookahead_entry.ready_for_decode_submit
+                                    || lookahead_entry.output_slot.is_none()
+                                {
+                                    av1_visible_decode_ahead_skip_unready_count =
+                                        av1_visible_decode_ahead_skip_unready_count
+                                            .saturating_add(1);
+                                } else if lookahead_entry.output_slot == protected_display_slot {
+                                    av1_visible_decode_ahead_skip_output_hazard_count =
+                                        av1_visible_decode_ahead_skip_output_hazard_count
+                                            .saturating_add(1);
+                                } else {
+                                    let mut skip_candidate = false;
+                                    if !av1_early_display_copy
+                                        || av1_display_slot_in_flight_fences.is_empty()
+                                    {
+                                        av1_visible_decode_ahead_skip_display_slot_hazard_count =
+                                            av1_visible_decode_ahead_skip_display_slot_hazard_count
+                                                .saturating_add(1);
+                                        skip_candidate = true;
+                                    } else {
+                                        let preferred_display_slot =
+                                            (frame.playback_frame_index as usize + 1)
+                                                % av1_display_slot_in_flight_fences.len();
+                                        let mut display_slot_ready = false;
+                                        for offset in 0..av1_display_slot_in_flight_fences.len() {
+                                            let display_slot = (preferred_display_slot + offset)
+                                                % av1_display_slot_in_flight_fences.len();
+                                            let display_slot_fence =
+                                                av1_display_slot_in_flight_fences[display_slot];
+                                            if display_slot_fence == vk::Fence::null()
+                                                || display_slot_fence == present_frame_fence
+                                            {
+                                                display_slot_ready = true;
+                                                break;
+                                            }
+                                            let ready = unsafe {
+                                                device.get_fence_status(display_slot_fence)
+                                            }
+                                            .map_err(|result| NativeVulkanError::Vulkan {
+                                                operation:
+                                                    "vkGetFenceStatus(direct av1 visible decode-ahead display slot probe)",
+                                                result,
+                                            })?;
+                                            if ready {
+                                                display_slot_ready = true;
+                                                break;
+                                            }
+                                        }
+                                        if !display_slot_ready {
+                                            av1_visible_decode_ahead_skip_display_slot_hazard_count =
+                                                av1_visible_decode_ahead_skip_display_slot_hazard_count
+                                                    .saturating_add(1);
+                                            skip_candidate = true;
+                                        }
+                                    }
+                                    if !skip_candidate {
+                                        let payload =
+                                            native_vulkan_prepare_av1_streaming_packet_bitstream_payload(
+                                                front_packet,
+                                                &sequence_header,
+                                                &lookahead_entry,
+                                                &active_dpb_refs,
+                                            )?;
+                                        let mut candidate_ring = bitstream_ring.clone();
+                                        let candidate_span =
+                                            candidate_ring.allocate(payload.as_slice().len() as u64, 0)?;
+                                        if pending_av1_decode_submissions.iter().any(|pending| {
+                                            native_vulkan_byte_ranges_overlap(
+                                                pending.src_buffer_offset,
+                                                pending.src_buffer_range,
+                                                candidate_span.offset,
+                                                candidate_span.range,
+                                            )
+                                        }) {
+                                            av1_visible_decode_ahead_skip_bitstream_overlap_count =
+                                                av1_visible_decode_ahead_skip_bitstream_overlap_count
+                                                    .saturating_add(1);
+                                        } else {
+                                            av1_visible_decode_ahead_ready_count =
+                                                av1_visible_decode_ahead_ready_count
+                                                    .saturating_add(1);
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                        if !lookahead_entry.ready_for_decode_submit
+                            || lookahead_entry.output_slot.is_none()
+                        {
+                            av1_hidden_lookahead_stop_unready_count =
+                                av1_hidden_lookahead_stop_unready_count.saturating_add(1);
+                            break;
+                        }
+                        if lookahead_entry.output_slot == protected_display_slot {
+                            av1_hidden_lookahead_stop_output_hazard_count =
+                                av1_hidden_lookahead_stop_output_hazard_count.saturating_add(1);
+                            break;
+                        }
+
+                        let hidden_process_started_at = Instant::now();
+                        let packet = streaming_queue.next_packet(true)?;
+                        let temporal_unit = packet.snapshot.clone();
+                        let processed_temporal_unit_index = processed_temporal_unit_count;
+                        processed_temporal_unit_count =
+                            processed_temporal_unit_count.saturating_add(1);
+                        let playback_frame_index = frames.len() as u32;
+                        let playback_loop_index = packet.source_loop_index;
+                        let ready_prefix_frame_index = processed_temporal_unit_index;
+                        previous_source_loop_index = playback_loop_index;
+                        streaming_reference_planner = lookahead_planner;
+                        let pts_delta_ms = temporal_unit.pts_ms.and_then(|pts_ms| {
+                            previous_pts_ms.map(|previous| pts_ms.saturating_sub(previous))
+                        });
+                        let pts_delta_ns = temporal_unit.pts_ns.and_then(|pts_ns| {
+                            previous_pts_ns.map(|previous| pts_ns.saturating_sub(previous))
+                        });
+                        let reset_before_decode = temporal_unit
+                            .first_frame_submit
+                            .as_ref()
+                            .is_some_and(|submit| submit.frame_type == 0);
+                        if reset_before_decode {
+                            active_dpb_refs.fill(None);
+                        }
+                        let hidden_decode_handoff_signal_value = {
+                            next_av1_hidden_decode_handoff_value =
+                                next_av1_hidden_decode_handoff_value.saturating_add(1);
+                            Some(next_av1_hidden_decode_handoff_value)
+                        };
+                        let resource_wait_stats =
+                            native_vulkan_wait_av1_frame_context_resource_hazards(
+                                &device,
+                                &mut av1_frame_contexts,
+                                &lookahead_entry,
+                                av1_begin_reference_slot_strategy,
+                                output_image.is_some(),
+                            )?;
+                        av1_decode_wait_stats.merge(resource_wait_stats);
+
+                        let bitstream_upload_started_at = Instant::now();
+                        let payload = native_vulkan_prepare_av1_streaming_packet_bitstream_payload(
+                            &packet,
+                            &sequence_header,
+                            &lookahead_entry,
+                            &active_dpb_refs,
+                        )?;
+                        let payload = payload.as_slice();
+                        let span = bitstream_ring.allocate(payload.len() as u64, 0)?;
+                        let bitstream_wait_stats =
+                            native_vulkan_wait_av1_pending_decode_submissions(
+                                &device,
+                                &mut av1_decode_command_slots,
+                                &mut pending_av1_decode_submissions,
+                                |pending| {
+                                    native_vulkan_byte_ranges_overlap(
+                                        pending.src_buffer_offset,
+                                        pending.src_buffer_range,
+                                        span.offset,
+                                        span.range,
+                                    )
+                                },
+                                "vkWaitForFences(direct av1 hidden lookahead bitstream)",
+                            )?;
+                        av1_decode_wait_stats.merge(bitstream_wait_stats);
+                        native_vulkan_write_video_session_bitstream_buffer(
+                            &device,
+                            buffer,
+                            span.offset,
+                            span.range,
+                            payload,
+                        )?;
+                        let bitstream_upload_elapsed_us =
+                            native_vulkan_elapsed_us(bitstream_upload_started_at.elapsed());
+                        let command_slot_index =
+                            next_av1_decode_command_slot % av1_decode_command_slots.len().max(1);
+                        next_av1_decode_command_slot =
+                            (command_slot_index + 1) % av1_decode_command_slots.len().max(1);
+                        let command_slot_wait_stats = native_vulkan_wait_av1_decode_command_slot(
+                            &device,
+                            &mut av1_decode_command_slots,
+                            &mut pending_av1_decode_submissions,
+                            command_slot_index,
+                            "vkWaitForFences(direct av1 hidden lookahead command slot)",
+                        )?;
+                        av1_decode_wait_stats.merge(command_slot_wait_stats);
+                        let command_slot =
+                            av1_decode_command_slots.get(command_slot_index).ok_or_else(|| {
+                                NativeVulkanError::Video(
+                                    "AV1 decode command ring has no command slots".to_owned(),
+                                )
+                            })?;
+                        unsafe {
+                            device.reset_fences(&[command_slot.fence]).map_err(|result| {
+                                NativeVulkanError::Vulkan {
+                                    operation:
+                                        "vkResetFences(direct av1 hidden lookahead command slot)",
+                                    result,
+                                }
+                            })?;
+                        }
+                        let lookahead_frame =
+                            native_vulkan_decode_av1_ready_prefix_frame_to_image(
+                                &device,
+                                &video_queue_device,
+                                &video_decode_queue_device,
+                                video_queue,
+                                command_slot.command_buffer,
+                                video_session,
+                                video_session_parameters,
+                                decode_query_pool,
+                                playback_frame_index,
+                                source_extent,
+                                image,
+                                output_image,
+                                buffer,
+                                buffer.snapshot.size,
+                                &sequence_header,
+                                &lookahead_entry,
+                                &temporal_unit,
+                                &packet.access_unit.bytes,
+                                &span,
+                                &active_dpb_refs,
+                                &mut image_layer_layouts,
+                                output_image.map(|_| output_image_layer_layouts.as_mut_slice()),
+                                av1_order_hint_offset_enabled,
+                                av1_trace_enabled,
+                                av1_decode_image_layout,
+                                reset_before_decode,
+                                pts_delta_ms,
+                                pts_delta_ns,
+                                av1_hidden_decode_handoff_timeline,
+                                hidden_decode_handoff_signal_value,
+                                command_slot.fence,
+                                playback_frame_index,
+                                playback_loop_index,
+                                ready_prefix_frame_index,
+                                false,
+                                bitstream_upload_elapsed_us,
+                            )?;
+                        if lookahead_frame.show_frame {
+                            return Err(NativeVulkanError::Video(format!(
+                                "AV1 hidden lookahead TU {} unexpectedly produced a visible frame",
+                                lookahead_entry.temporal_unit_index
+                            )));
+                        }
+                        if let Some(slot) = av1_decode_command_slots.get_mut(command_slot_index) {
+                            slot.in_flight = true;
+                        }
+                        pending_av1_decode_submissions.push(
+                            NativeVulkanAv1PendingDecodeSubmission {
+                                command_slot_index,
+                                output_slot: lookahead_frame.dst_base_array_layer,
+                                src_buffer_offset: lookahead_frame.src_buffer_offset,
+                                src_buffer_range: lookahead_frame.src_buffer_range,
+                                hidden: true,
+                            },
+                        );
+                        av1_decode_pending_max_count =
+                            av1_decode_pending_max_count.max(
+                                pending_av1_decode_submissions.len().min(u32::MAX as usize) as u32,
+                            );
+                        native_vulkan_update_av1_active_dpb_refs_after_decode(
+                            &mut active_dpb_refs,
+                            &lookahead_entry,
+                            &lookahead_frame,
+                            source_extent,
+                        );
+                        if let Some(output_slot) = lookahead_frame.dst_base_array_layer
+                            && native_vulkan_av1_display_cache_invalidate(
+                                &mut av1_display_cache_slot_sources,
+                                &mut av1_display_cache_dpb_slots,
+                                output_slot,
+                            )
+                        {
+                            av1_show_existing_display_cache_invalidate_count =
+                                av1_show_existing_display_cache_invalidate_count.saturating_add(1);
+                        }
+                        if let Some(output_slot) = lookahead_frame.dst_base_array_layer
+                            && native_vulkan_av1_prepared_show_existing_display_invalidate_dpb_slot(
+                                &mut pending_av1_show_existing_prepared_display_by_output_slot,
+                                output_slot,
+                            )
+                        {
+                            av1_show_existing_precopy_invalidate_count =
+                                av1_show_existing_precopy_invalidate_count.saturating_add(1);
+                        }
+                        let output_slot = lookahead_frame.dst_base_array_layer.ok_or_else(|| {
+                            NativeVulkanError::Video(format!(
+                                "AV1 hidden lookahead TU {} had no output slot",
+                                lookahead_entry.temporal_unit_index
+                            ))
+                        })?;
+                        let handoff_value = hidden_decode_handoff_signal_value.ok_or_else(|| {
+                            NativeVulkanError::Video(format!(
+                                "AV1 hidden lookahead TU {} had no handoff value",
+                                lookahead_entry.temporal_unit_index
+                            ))
+                        })?;
+                        let tracked_slot_count =
+                            pending_hidden_decode_handoff_values_by_output_slot.len();
+                        let pending_value =
+                            pending_hidden_decode_handoff_values_by_output_slot
+                                .get_mut(output_slot as usize)
+                                .ok_or_else(|| {
+                                    NativeVulkanError::Video(format!(
+                                        "AV1 hidden lookahead output slot {output_slot} exceeds {tracked_slot_count} tracked slots"
+                                    ))
+                                })?;
+                        *pending_value = Some(handoff_value);
+                        av1_hidden_decode_async_handoff_count =
+                            av1_hidden_decode_async_handoff_count.saturating_add(1);
+                        hidden_decoded_frame_count = hidden_decoded_frame_count.saturating_add(1);
+                        hidden_bitstream_uploaded_bytes = hidden_bitstream_uploaded_bytes
+                            .saturating_add(lookahead_frame.src_buffer_range);
+                        let hidden_process_elapsed_us =
+                            native_vulkan_elapsed_us(hidden_process_started_at.elapsed());
+                        av1_hidden_decode_process_elapsed_us =
+                            av1_hidden_decode_process_elapsed_us
+                                .saturating_add(hidden_process_elapsed_us);
+                        av1_hidden_decode_process_max_us =
+                            av1_hidden_decode_process_max_us.max(hidden_process_elapsed_us);
+                        av1_pending_display_hidden_decode_count =
+                            av1_pending_display_hidden_decode_count.saturating_add(1);
+                        av1_pending_display_hidden_decode_elapsed_us =
+                            av1_pending_display_hidden_decode_elapsed_us
+                                .saturating_add(hidden_process_elapsed_us);
+                        av1_hidden_lookahead_decode_count =
+                            av1_hidden_lookahead_decode_count.saturating_add(1);
+                    }
+                }
+
+                let present_started_at = Instant::now();
+                let mut display_copy_before_render =
+                    None::<NativeVulkanDecodedVideoDisplayCopyBeforeRender<'_>>;
+                let mut av1_display_ring_slot_index = None::<usize>;
+                let mut present_display_slot_reuse_wait_value = 0u64;
+                let texture_storage;
+                let (descriptor_set_index, texture) =
+                    if av1_graphics_display_copy && !av1_show_existing_direct_dpb {
+                    let display_slot = av1_early_display_ring_slot_index.unwrap_or_else(|| {
+                        frame.playback_frame_index as usize % av1_display_textures.len().max(1)
+                    });
+                    let display_slot = if av1_early_display_ring_slot_index.is_none()
+                        && av1_ready_display_slot_selection
+                    {
+                        native_vulkan_choose_av1_display_ring_slot(
+                            &device,
+                            &av1_display_slot_in_flight_fences,
+                            display_slot,
+                            present_frame_fence,
+                            &mut av1_display_ring_ready_probe_count,
+                            &mut av1_display_ring_ready_hit_count,
+                            &mut av1_display_ring_ready_fallback_count,
+                        )?
+                    } else {
+                        display_slot
+                    };
+                    av1_display_ring_slot_index = Some(display_slot);
+                    if !av1_early_display_copy_submitted && !av1_display_cache_reused {
+                        let previous_display_slot_fence =
+                            av1_display_slot_in_flight_fences[display_slot];
+                        if previous_display_slot_fence != vk::Fence::null()
+                            && previous_display_slot_fence != present_frame_fence
+                        {
+                            present_display_slot_reuse_wait_value =
+                                av1_display_slot_reuse_timeline_values
+                                    .get(display_slot)
+                                    .copied()
+                                    .unwrap_or(0);
+                            if av1_display_slot_gpu_wait
+                                && av1_display_slot_reuse_timeline != vk::Semaphore::null()
+                                && present_display_slot_reuse_wait_value != 0
+                            {
+                                av1_display_ring_slot_gpu_wait_count =
+                                    av1_display_ring_slot_gpu_wait_count.saturating_add(1);
+                            } else {
+                                present_display_slot_reuse_wait_value = 0;
+                                let display_slot_wait_started_at = Instant::now();
+                                unsafe {
+                                    device
+                                        .wait_for_fences(
+                                            &[previous_display_slot_fence],
+                                            true,
+                                            u64::MAX,
+                                        )
+                                        .map_err(|result| NativeVulkanError::Vulkan {
+                                            operation:
+                                                "vkWaitForFences(direct av1 display ring slot)",
+                                            result,
+                                        })?;
+                                }
+                                let display_slot_wait_elapsed_us =
+                                    native_vulkan_elapsed_us(display_slot_wait_started_at.elapsed());
+                                frame.fence_wait_elapsed_us = frame
+                                    .fence_wait_elapsed_us
+                                    .saturating_add(display_slot_wait_elapsed_us);
+                                av1_display_ring_slot_wait_count =
+                                    av1_display_ring_slot_wait_count.saturating_add(1);
+                                av1_display_ring_slot_wait_elapsed_us =
+                                    av1_display_ring_slot_wait_elapsed_us
+                                        .saturating_add(display_slot_wait_elapsed_us);
+                                av1_display_ring_slot_wait_max_us =
+                                    av1_display_ring_slot_wait_max_us
+                                        .max(display_slot_wait_elapsed_us);
+                            }
+                        }
+                        if native_vulkan_av1_prepared_show_existing_display_invalidate_display_slot(
+                            &mut pending_av1_show_existing_prepared_display_by_output_slot,
+                            display_slot,
+                        ) {
+                            av1_show_existing_precopy_invalidate_count =
+                                av1_show_existing_precopy_invalidate_count.saturating_add(1);
+                        }
+                        let display_image = av1_display_image.as_mut().ok_or_else(|| {
+                            NativeVulkanError::Video(
+                                "AV1 graphics display copy is enabled without a display image"
+                                    .to_owned(),
+                            )
+                        })?;
+                        let display_old_layout = display_image
+                            .layouts
+                            .get(display_slot)
+                            .copied()
+                            .ok_or_else(|| {
+                                NativeVulkanError::Video(format!(
+                                    "AV1 display ring has {} layouts but slot {} was requested",
+                                    display_image.layouts.len(),
+                                    display_slot
+                                ))
+                            })?;
+                        let copy_source_layout = if source_layout == vk::ImageLayout::UNDEFINED {
+                            av1_decode_image_layout
+                        } else {
+                            source_layout
+                        };
+                        if copy_source_layout != vk::ImageLayout::GENERAL {
+                            return Err(NativeVulkanError::Video(format!(
+                                "AV1 graphics display-copy requires GENERAL source layout, got {}",
+                                native_vulkan_image_layout_label(copy_source_layout)
+                            )));
+                        }
+                        display_copy_before_render =
+                            Some(NativeVulkanDecodedVideoDisplayCopyBeforeRender {
+                                source_image: if dedicated_decode_output {
+                                    output_image.expect("dedicated output image exists")
+                                } else {
+                                    image
+                                },
+                                source_base_array_layer: decoded_displayed_slot,
+                                display_image: display_image.image,
+                                display_base_array_layer: display_slot as u32,
+                                display_old_layout,
+                                extent: source_extent,
+                        });
+                        display_image.layouts[display_slot] =
+                            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+                        if native_vulkan_av1_display_cache_update(
+                            &mut av1_display_cache_slot_sources,
+                            &mut av1_display_cache_dpb_slots,
+                            decoded_displayed_slot,
+                            display_slot,
+                        ) {
+                            av1_show_existing_display_cache_update_count =
+                                av1_show_existing_display_cache_update_count.saturating_add(1);
+                        }
+                    }
+                    (
+                        display_slot,
+                        av1_display_textures.get(display_slot).ok_or_else(|| {
+                            NativeVulkanError::Video(format!(
+                                "AV1 display texture cache has {} slots but slot {} was requested",
+                                av1_display_textures.len(),
+                                display_slot
+                            ))
+                        })?,
+                    )
+                } else {
+                    if av1_show_existing_direct_dpb {
+                        av1_show_existing_direct_dpb_count =
+                            av1_show_existing_direct_dpb_count.saturating_add(1);
+                    }
+                    let texture_image = if dedicated_decode_output {
+                        output_image.expect("dedicated output image exists").image
+                    } else {
+                        image.image
+                    };
+                    let texture_format = if dedicated_decode_output {
+                        output_image.expect("dedicated output image exists").format
+                    } else {
+                        image.format
+                    };
+                    let decoded_views_cache = if dedicated_decode_output {
+                        &av1_output_decoded_plane_view_cache
+                    } else {
+                        &decoded_plane_view_cache
+                    };
+                    let decoded_views = decoded_views_cache
+                        .get(decoded_displayed_slot as usize)
+                        .copied()
+                        .ok_or_else(|| {
+                            NativeVulkanError::Video(format!(
+                                "AV1 decoded view cache has {} layers but layer {} was requested",
+                                decoded_views_cache.len(),
+                                decoded_displayed_slot
+                            ))
+                        })?;
+                    let descriptor_set_index = if dedicated_decode_output {
+                        0
+                    } else {
+                        av1_resource_descriptor_set_base
+                            .saturating_add(decoded_displayed_slot as usize)
+                    };
+                    texture_storage = NativeVulkanVideoTexture::Decoded(
+                        NativeVulkanDecodedVideoTexture::from_cached_views(
+                            texture_image,
+                            texture_format,
+                            width,
+                            height,
+                            decoded_displayed_slot,
+                            decoded_views,
+                            if source_layout == vk::ImageLayout::UNDEFINED {
+                                if dedicated_decode_output {
+                                    vk::ImageLayout::VIDEO_DECODE_DST_KHR
+                                } else {
+                                    av1_decode_image_layout
+                                }
+                            } else {
+                                source_layout
+                            },
+                            source_access,
+                        )?,
+                    );
+                    (descriptor_set_index, &texture_storage)
+                };
                 frame.descriptor_update_elapsed_us = 0;
+                if av1_async_present_enabled && av1_async_present_depth > 0 {
+                    while av1_frame_contexts
+                        .iter()
+                        .filter(|context| context.pending_present_result)
+                        .count()
+                        >= av1_async_present_depth
+                    {
+                        let present_wait_started_at = Instant::now();
+                        native_vulkan_recv_av1_present_worker_result(
+                            &av1_present_result_rx,
+                            &mut frames,
+                            &mut av1_frame_contexts,
+                            "AV1 present worker exited before async present depth wait returned a present result",
+                        )?;
+                        let present_wait_elapsed_us =
+                            native_vulkan_elapsed_us(present_wait_started_at.elapsed());
+                        av1_present_result_wait_count =
+                            av1_present_result_wait_count.saturating_add(1);
+                        av1_present_result_wait_elapsed_us =
+                            av1_present_result_wait_elapsed_us
+                                .saturating_add(present_wait_elapsed_us);
+                        av1_present_result_wait_max_us =
+                            av1_present_result_wait_max_us.max(present_wait_elapsed_us);
+                    }
+                }
+                let has_preacquired_image = av1_preacquire_enabled
+                    && av1_frame_contexts
+                        .get(present_frame_context_index)
+                        .and_then(|context| context.preacquired_image_index)
+                        .is_some();
+                if av1_wait_present_before_acquire
+                    && av1_async_present_enabled
+                    && !has_preacquired_image
+                {
+                    while av1_frame_contexts
+                        .iter()
+                        .any(|context| context.pending_present_result)
+                    {
+                        let present_wait_started_at = Instant::now();
+                        native_vulkan_recv_av1_present_worker_result(
+                            &av1_present_result_rx,
+                            &mut frames,
+                            &mut av1_frame_contexts,
+                            "AV1 present worker exited before acquire wait returned a present result",
+                        )?;
+                        let present_wait_elapsed_us =
+                            native_vulkan_elapsed_us(present_wait_started_at.elapsed());
+                        av1_acquire_wait_present_result_count =
+                            av1_acquire_wait_present_result_count.saturating_add(1);
+                        av1_acquire_wait_present_result_elapsed_us =
+                            av1_acquire_wait_present_result_elapsed_us
+                                .saturating_add(present_wait_elapsed_us);
+                        av1_acquire_wait_present_result_max_us =
+                            av1_acquire_wait_present_result_max_us.max(present_wait_elapsed_us);
+                    }
+                }
                 let acquire_started_at = Instant::now();
                 native_vulkan_av1_trace(
                     av1_trace_enabled,
@@ -9628,25 +11427,93 @@ pub fn run_av1_ready_prefix_video(
                         frame.show_existing_frame
                     ),
                 );
-                let (image_index, _) = {
-                    // Pair acquire with queue-present serialization; wl_display is not a free-threaded queue.
-                    let _present_queue_guard = present_queue_mutex.lock().map_err(|_| {
-                        NativeVulkanError::Video(
-                            "AV1 present queue mutex was poisoned".to_owned(),
-                        )
-                    })?;
-                    unsafe {
-                        swapchain_loader_ref.acquire_next_image(
-                            swapchain,
-                            u64::MAX,
-                            frame_image_available,
-                            vk::Fence::null(),
-                        )
+                if av1_preacquire_enabled
+                    && av1_frame_contexts
+                        .get(present_frame_context_index)
+                        .map(|context| context.preacquire_pending)
+                        .unwrap_or(false)
+                {
+                    for acquire_result in native_vulkan_wait_av1_acquire_worker_result_for_context(
+                        &av1_acquire_result_rx,
+                        &mut av1_frame_contexts,
+                        present_frame_context_index,
+                    )? {
+                        av1_preacquire_elapsed_us = av1_preacquire_elapsed_us
+                            .saturating_add(acquire_result.acquire_elapsed_us);
+                        av1_preacquire_max_us =
+                            av1_preacquire_max_us.max(acquire_result.acquire_elapsed_us);
+                        if acquire_result.not_ready {
+                            av1_preacquire_not_ready_count =
+                                av1_preacquire_not_ready_count.saturating_add(1);
+                        } else if acquire_result.image_index.is_some() {
+                            av1_preacquire_hit_count =
+                                av1_preacquire_hit_count.saturating_add(1);
+                        }
                     }
-                    .map_err(|result| NativeVulkanError::Vulkan {
-                        operation: "vkAcquireNextImageKHR(direct av1 ready-prefix)",
-                        result,
-                    })?
+                }
+                let (image_index, _) = loop {
+                    if let Some(image_index) = av1_preacquire_enabled
+                        .then(|| {
+                            av1_frame_contexts[present_frame_context_index]
+                                .preacquired_image_index
+                                .take()
+                        })
+                        .flatten()
+                    {
+                        break (image_index, false);
+                    }
+                    let acquire_result = if av1_acquire_present_mutex_enabled {
+                        // Pair acquire with queue-present serialization; wl_display is not always a free-threaded queue.
+                        let _present_queue_guard = present_queue_mutex.lock().map_err(|_| {
+                            NativeVulkanError::Video(
+                                "AV1 present queue mutex was poisoned".to_owned(),
+                            )
+                        })?;
+                        unsafe {
+                            swapchain_loader_ref.acquire_next_image(
+                                swapchain,
+                                u64::MAX,
+                                frame_image_available,
+                                vk::Fence::null(),
+                            )
+                        }
+                    } else {
+                        unsafe {
+                            swapchain_loader_ref.acquire_next_image(
+                                swapchain,
+                                u64::MAX,
+                                frame_image_available,
+                                vk::Fence::null(),
+                            )
+                        }
+                    };
+                    match acquire_result {
+                        Ok(acquired) => break acquired,
+                        Err(vk::Result::NOT_READY) => {
+                            av1_acquire_not_ready_count =
+                                av1_acquire_not_ready_count.saturating_add(1);
+                            if av1_async_present_enabled
+                                && av1_frame_contexts
+                                    .iter()
+                                    .any(|context| context.pending_present_result)
+                            {
+                                native_vulkan_recv_av1_present_worker_result(
+                                    &av1_present_result_rx,
+                                    &mut frames,
+                                    &mut av1_frame_contexts,
+                                    "AV1 present worker exited while handling acquire NOT_READY",
+                                )?;
+                            } else {
+                                thread::yield_now();
+                            }
+                        }
+                        Err(result) => {
+                            return Err(NativeVulkanError::Vulkan {
+                                operation: "vkAcquireNextImageKHR(direct av1 ready-prefix)",
+                                result,
+                            });
+                        }
+                    }
                 };
                 frame.acquire_elapsed_us = native_vulkan_elapsed_us(acquire_started_at.elapsed());
                 native_vulkan_av1_trace(
@@ -9657,35 +11524,67 @@ pub fn run_av1_ready_prefix_video(
                     ),
                 );
                 let image_index = image_index as usize;
+                let previous_image_fence = av1_swapchain_image_in_flight_fences[image_index];
+                if !av1_frame_context_present_command_buffer
+                    && previous_image_fence != vk::Fence::null()
+                    && previous_image_fence != present_frame_fence
+                {
+                    let previous_image_wait_started_at = Instant::now();
+                    unsafe {
+                        device
+                            .wait_for_fences(&[previous_image_fence], true, u64::MAX)
+                            .map_err(|result| NativeVulkanError::Vulkan {
+                                operation: "vkWaitForFences(direct av1 swapchain image)",
+                                result,
+                            })?;
+                    }
+                    let previous_image_wait_elapsed_us =
+                        native_vulkan_elapsed_us(previous_image_wait_started_at.elapsed());
+                    frame.fence_wait_elapsed_us = frame
+                        .fence_wait_elapsed_us
+                        .saturating_add(previous_image_wait_elapsed_us);
+                    av1_swapchain_image_wait_count =
+                        av1_swapchain_image_wait_count.saturating_add(1);
+                    av1_swapchain_image_wait_elapsed_us = av1_swapchain_image_wait_elapsed_us
+                        .saturating_add(previous_image_wait_elapsed_us);
+                    av1_swapchain_image_wait_max_us =
+                        av1_swapchain_image_wait_max_us.max(previous_image_wait_elapsed_us);
+                }
+                let present_command_buffer_index = if av1_frame_context_present_command_buffer {
+                    present_frame_context_index
+                } else {
+                    image_index
+                };
                 let record_started_at = Instant::now();
                 renderer_ref.record_frame_with_descriptor_set_index(
                     &device,
-                    present_command_buffers[image_index],
+                    present_command_buffers[present_command_buffer_index],
                     image_index,
                     swapchain_images[image_index],
                     swapchain_image_layouts[image_index],
-                    &texture,
+                    texture,
                     fit,
                     descriptor_set_index,
-                    None,
+                    display_copy_before_render,
                 )?;
                 frame.record_elapsed_us = native_vulkan_elapsed_us(record_started_at.elapsed());
                 swapchain_image_layouts[image_index] = renderer_ref.target_final_layout();
-                let (wait_semaphores, wait_stages) = if frame.show_existing_frame {
-                    if pending_hidden_decode_handoff {
-                        (
-                            vec![frame_image_available, hidden_decode_finished],
-                            vec![
-                                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                                vk::PipelineStageFlags::ALL_COMMANDS,
-                            ],
-                        )
-                    } else {
-                        (
-                            vec![frame_image_available],
-                            vec![vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT],
-                        )
-                    }
+                let (mut wait_semaphores, mut wait_stages) = if av1_early_display_copy_submitted {
+                    (
+                        vec![
+                            frame_image_available,
+                            av1_early_display_copy_wait_semaphore,
+                        ],
+                        vec![
+                            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                            vk::PipelineStageFlags::FRAGMENT_SHADER,
+                        ],
+                    )
+                } else if frame.show_existing_frame {
+                    (
+                        vec![frame_image_available],
+                        vec![vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT],
+                    )
                 } else {
                     (
                         vec![frame_image_available, frame_decode_finished],
@@ -9695,13 +11594,34 @@ pub fn run_av1_ready_prefix_video(
                         ],
                     )
                 };
-                let command_buffers_for_submit = [present_command_buffers[image_index]];
-                let signal_semaphores = [frame_render_finished];
-                let submit_info = vk::SubmitInfo::default()
-                    .wait_semaphores(&wait_semaphores)
-                    .wait_dst_stage_mask(&wait_stages)
-                    .command_buffers(&command_buffers_for_submit)
-                    .signal_semaphores(&signal_semaphores);
+                let mut wait_timeline_values = vec![0u64; wait_semaphores.len()];
+                if let Some(handoff_value) = frame_hidden_decode_handoff_wait_value {
+                    wait_semaphores.push(av1_hidden_decode_handoff_timeline);
+                    wait_stages.push(vk::PipelineStageFlags::ALL_COMMANDS);
+                    wait_timeline_values.push(handoff_value);
+                }
+                if present_display_slot_reuse_wait_value != 0 {
+                    wait_semaphores.push(av1_display_slot_reuse_timeline);
+                    wait_stages.push(vk::PipelineStageFlags::ALL_COMMANDS);
+                    wait_timeline_values.push(present_display_slot_reuse_wait_value);
+                }
+                let command_buffers_for_submit =
+                    [present_command_buffers[present_command_buffer_index]];
+                let mut signal_semaphores = vec![frame_render_finished];
+                let mut signal_timeline_values = vec![0u64];
+                let display_slot_reuse_signal = if av1_display_slot_gpu_wait
+                    && av1_display_slot_reuse_timeline != vk::Semaphore::null()
+                {
+                    av1_display_ring_slot_index.map(|display_slot| {
+                        next_av1_display_slot_reuse_timeline_value =
+                            next_av1_display_slot_reuse_timeline_value.saturating_add(1);
+                        signal_semaphores.push(av1_display_slot_reuse_timeline);
+                        signal_timeline_values.push(next_av1_display_slot_reuse_timeline_value);
+                        (display_slot, next_av1_display_slot_reuse_timeline_value)
+                    })
+                } else {
+                    None
+                };
                 let submit_started_at = Instant::now();
                 native_vulkan_av1_trace(
                     av1_trace_enabled,
@@ -9711,51 +11631,123 @@ pub fn run_av1_ready_prefix_video(
                         wait_semaphores.len()
                     ),
                 );
-                unsafe {
-                    let _present_queue_guard = present_queue_mutex.lock().map_err(|_| {
-                        NativeVulkanError::Video(
-                            "AV1 present queue mutex was poisoned".to_owned(),
-                        )
-                    })?;
-                    device
-                        .queue_submit(present_queue, &[submit_info], present_frame_fence)
-                        .map_err(|result| NativeVulkanError::Vulkan {
-                            operation: "vkQueueSubmit(direct av1 ready-prefix present)",
-                            result,
-                        })?;
-                }
-                if frame.show_existing_frame && pending_hidden_decode_handoff {
-                    pending_hidden_decode_handoff = false;
-                }
-                frame.submit_elapsed_us = native_vulkan_elapsed_us(submit_started_at.elapsed());
-                native_vulkan_av1_trace(
-                    av1_trace_enabled,
-                    format!(
-                        "present submit end tu={} elapsed_us={}",
-                        frame.temporal_unit_index, frame.submit_elapsed_us
-                    ),
-                );
                 let frame_index = frames.len();
                 if av1_async_present_enabled {
+                    native_vulkan_drain_av1_present_worker_results(
+                        &av1_present_result_rx,
+                        &mut frames,
+                        &mut av1_frame_contexts,
+                    )?;
+                    let mut post_present_acquire_requests =
+                        Vec::<NativeVulkanAv1AcquireWorkerRequest>::new();
+                    if av1_preacquire_enabled
+                        && frame_index + 1 < playback_frame_count as usize
+                        && !av1_frame_contexts.is_empty()
+                    {
+                        native_vulkan_fill_av1_post_present_preacquire_requests(
+                            &mut av1_frame_contexts,
+                            present_frame_context_index,
+                            av1_preacquire_target_depth,
+                            &mut post_present_acquire_requests,
+                            &mut av1_preacquire_attempt_count,
+                        );
+                    }
                     av1_present_job_tx
-                        .send(NativeVulkanAv1PresentJob {
+                        .send(NativeVulkanAv1PresentWorkerJob::Present(NativeVulkanAv1PresentJob {
                             frame_index,
                             frame_context_index: present_frame_context_index,
                             image_index: image_index as u32,
+                            post_present_acquire_requests,
+                            wait_semaphores,
+                            wait_stages,
+                            wait_timeline_values,
+                            command_buffer: command_buffers_for_submit[0],
                             wait_semaphore: frame_render_finished,
+                            signal_semaphores,
+                            signal_timeline_values,
+                            fence: present_frame_fence,
                             present_started_at,
-                        })
+                        }))
                         .map_err(|_| {
                             NativeVulkanError::Video(
                                 "AV1 present worker exited before accepting a present job"
                                     .to_owned(),
                             )
                         })?;
+                    if let Some(handoff_value) = frame_hidden_decode_handoff_wait_value
+                        && let Some(pending_value) =
+                            pending_hidden_decode_handoff_values_by_output_slot
+                                .get_mut(frame.displayed_base_array_layer as usize)
+                        && *pending_value == Some(handoff_value)
+                    {
+                        *pending_value = None;
+                    }
                     av1_frame_contexts[present_frame_context_index].pending_present_result = true;
+                    if let Some((display_slot, signal_value)) = display_slot_reuse_signal {
+                        if let Some(slot_value) =
+                            av1_display_slot_reuse_timeline_values.get_mut(display_slot)
+                        {
+                            *slot_value = signal_value;
+                        }
+                        av1_display_ring_slot_gpu_signal_count =
+                            av1_display_ring_slot_gpu_signal_count.saturating_add(1);
+                    }
+                    frame.submit_elapsed_us = 0;
                     frame.queue_present_elapsed_us = 0;
                     frame.present_elapsed_us =
                         native_vulkan_elapsed_us(present_started_at.elapsed());
                 } else {
+                    let mut timeline_submit_info = vk::TimelineSemaphoreSubmitInfo::default()
+                        .wait_semaphore_values(&wait_timeline_values)
+                        .signal_semaphore_values(&signal_timeline_values);
+                    let mut submit_info = vk::SubmitInfo::default()
+                        .wait_semaphores(&wait_semaphores)
+                        .wait_dst_stage_mask(&wait_stages)
+                        .command_buffers(&command_buffers_for_submit)
+                        .signal_semaphores(&signal_semaphores);
+                    if wait_timeline_values.iter().any(|value| *value != 0)
+                        || signal_timeline_values.iter().any(|value| *value != 0)
+                    {
+                        submit_info = submit_info.push_next(&mut timeline_submit_info);
+                    }
+                    unsafe {
+                        let _present_queue_guard = present_queue_mutex.lock().map_err(|_| {
+                            NativeVulkanError::Video(
+                                "AV1 present queue mutex was poisoned".to_owned(),
+                            )
+                        })?;
+                        device
+                            .queue_submit(present_queue, &[submit_info], present_frame_fence)
+                            .map_err(|result| NativeVulkanError::Vulkan {
+                                operation: "vkQueueSubmit(direct av1 ready-prefix present)",
+                                result,
+                            })?;
+                    }
+                    if let Some((display_slot, signal_value)) = display_slot_reuse_signal {
+                        if let Some(slot_value) =
+                            av1_display_slot_reuse_timeline_values.get_mut(display_slot)
+                        {
+                            *slot_value = signal_value;
+                        }
+                        av1_display_ring_slot_gpu_signal_count =
+                            av1_display_ring_slot_gpu_signal_count.saturating_add(1);
+                    }
+                    if let Some(handoff_value) = frame_hidden_decode_handoff_wait_value
+                        && let Some(pending_value) =
+                            pending_hidden_decode_handoff_values_by_output_slot
+                                .get_mut(frame.displayed_base_array_layer as usize)
+                        && *pending_value == Some(handoff_value)
+                    {
+                        *pending_value = None;
+                    }
+                    frame.submit_elapsed_us = native_vulkan_elapsed_us(submit_started_at.elapsed());
+                    native_vulkan_av1_trace(
+                        av1_trace_enabled,
+                        format!(
+                            "present submit end tu={} elapsed_us={}",
+                            frame.temporal_unit_index, frame.submit_elapsed_us
+                        ),
+                    );
                     let queue_present_started_at = Instant::now();
                     native_vulkan_av1_trace(
                         av1_trace_enabled,
@@ -9778,11 +11770,410 @@ pub fn run_av1_ready_prefix_video(
                         native_vulkan_elapsed_us(queue_present_started_at.elapsed());
                     frame.present_elapsed_us = native_vulkan_elapsed_us(present_started_at.elapsed());
                 }
+                av1_swapchain_image_in_flight_fences[image_index] = present_frame_fence;
+                if let Some(display_slot) = av1_display_ring_slot_index {
+                    if let Some(slot_fence) = av1_display_slot_in_flight_fences.get_mut(display_slot)
+                    {
+                        *slot_fence = present_frame_fence;
+                    }
+                }
                 av1_frame_contexts[present_frame_context_index].sampled_resource =
-                    Some(NativeVulkanAv1SampledResource {
-                        displayed_slot,
-                        dedicated_output: dedicated_decode_output,
-                    });
+                    if av1_graphics_display_copy && !av1_show_existing_direct_dpb {
+                        None
+                    } else {
+                        Some(NativeVulkanAv1SampledResource {
+                            displayed_slot: decoded_displayed_slot,
+                            dedicated_output: dedicated_decode_output,
+                        })
+                    };
+                if av1_visible_decode_ahead_enabled
+                    && av1_async_present_enabled
+                    && predecoded_av1_visible_frame.is_none()
+                    && av1_early_display_copy
+                    && av1_early_display_copy_submitted
+                    && av1_graphics_display_copy
+                    && output_image.is_none()
+                    && frame.show_frame
+                    && !frame.show_existing_frame
+                    && frames.len() + 1 < playback_frame_count as usize
+                    && !diagnostic_readback_hidden
+                    && diagnostic_readback_frame_limit == 0
+                    && streaming_queue.ensure_front_packet(true)?
+                {
+                    let front_packet = streaming_queue.front_packet().ok_or_else(|| {
+                        NativeVulkanError::Video(
+                            "AV1 visible decode-ahead lost front packet after prefetch".to_owned(),
+                        )
+                    })?;
+                    if front_packet.source_loop_index == previous_source_loop_index {
+                        let mut lookahead_planner = streaming_reference_planner.clone();
+                        let lookahead_entry = lookahead_planner.plan_next(&front_packet.snapshot);
+                        let lookahead_decode_will_present =
+                            !lookahead_entry.ready_for_display_handoff
+                                && front_packet
+                                    .snapshot
+                                    .first_frame_submit
+                                    .as_ref()
+                                    .is_some_and(|submit| submit.show_frame);
+                        let lookahead_reset_before_decode = front_packet
+                            .snapshot
+                            .first_frame_submit
+                            .as_ref()
+                            .is_some_and(|submit| submit.frame_type == 0);
+                        if lookahead_decode_will_present
+                            && lookahead_entry.ready_for_decode_submit
+                            && lookahead_entry.output_slot.is_some()
+                            && !lookahead_reset_before_decode
+                            && !av1_display_slot_in_flight_fences.is_empty()
+                        {
+                            let preferred_display_slot = (frame.playback_frame_index as usize + 1)
+                                % av1_display_slot_in_flight_fences.len();
+                            let mut selected_display_slot = None::<usize>;
+                            for offset in 0..av1_display_slot_in_flight_fences.len() {
+                                let display_slot = (preferred_display_slot + offset)
+                                    % av1_display_slot_in_flight_fences.len();
+                                let display_slot_fence =
+                                    av1_display_slot_in_flight_fences[display_slot];
+                                if display_slot_fence == vk::Fence::null() {
+                                    selected_display_slot = Some(display_slot);
+                                    break;
+                                }
+                                let ready =
+                                    unsafe { device.get_fence_status(display_slot_fence) }.map_err(
+                                        |result| NativeVulkanError::Vulkan {
+                                            operation:
+                                                "vkGetFenceStatus(direct av1 visible decode-ahead display slot)",
+                                            result,
+                                        },
+                                    )?;
+                                if ready {
+                                    selected_display_slot = Some(display_slot);
+                                    break;
+                                }
+                            }
+                            if let Some(display_slot) = selected_display_slot {
+                                let candidate_payload =
+                                    native_vulkan_prepare_av1_streaming_packet_bitstream_payload(
+                                        front_packet,
+                                        &sequence_header,
+                                        &lookahead_entry,
+                                        &active_dpb_refs,
+                                    )?;
+                                let mut candidate_ring = bitstream_ring.clone();
+                                let candidate_span = candidate_ring
+                                    .allocate(candidate_payload.as_slice().len() as u64, 0)?;
+                                if pending_av1_decode_submissions.iter().any(|pending| {
+                                    native_vulkan_byte_ranges_overlap(
+                                        pending.src_buffer_offset,
+                                        pending.src_buffer_range,
+                                        candidate_span.offset,
+                                        candidate_span.range,
+                                    )
+                                }) {
+                                    av1_visible_decode_ahead_skip_bitstream_overlap_count =
+                                        av1_visible_decode_ahead_skip_bitstream_overlap_count
+                                            .saturating_add(1);
+                                } else {
+                                    let packet = streaming_queue.next_packet(true)?;
+                                    let temporal_unit = packet.snapshot.clone();
+                                    let processed_temporal_unit_index =
+                                        processed_temporal_unit_count;
+                                    processed_temporal_unit_count =
+                                        processed_temporal_unit_count.saturating_add(1);
+                                    let next_playback_frame_index = frames.len() as u32 + 1;
+                                    let playback_loop_index = packet.source_loop_index;
+                                    let ready_prefix_frame_index = processed_temporal_unit_index;
+                                    previous_source_loop_index = playback_loop_index;
+                                    streaming_reference_planner = lookahead_planner;
+                                    let pts_delta_ms =
+                                        temporal_unit.pts_ms.and_then(|pts_ms| {
+                                            frame
+                                                .pts_ms
+                                                .map(|previous| pts_ms.saturating_sub(previous))
+                                        });
+                                    let pts_delta_ns =
+                                        temporal_unit.pts_ns.and_then(|pts_ns| {
+                                            frame
+                                                .pts_ns
+                                                .map(|previous| pts_ns.saturating_sub(previous))
+                                        });
+                                    let resource_wait_stats =
+                                        native_vulkan_wait_av1_frame_context_resource_hazards(
+                                            &device,
+                                            &mut av1_frame_contexts,
+                                            &lookahead_entry,
+                                            av1_begin_reference_slot_strategy,
+                                            output_image.is_some(),
+                                        )?;
+                                    av1_decode_wait_stats.merge(resource_wait_stats);
+                                    let payload =
+                                        native_vulkan_prepare_av1_streaming_packet_bitstream_payload(
+                                            &packet,
+                                            &sequence_header,
+                                            &lookahead_entry,
+                                            &active_dpb_refs,
+                                        )?;
+                                    let payload = payload.as_slice();
+                                    bitstream_ring = candidate_ring;
+                                    let bitstream_upload_started_at = Instant::now();
+                                    native_vulkan_write_video_session_bitstream_buffer(
+                                        &device,
+                                        buffer,
+                                        candidate_span.offset,
+                                        candidate_span.range,
+                                        payload,
+                                    )?;
+                                    let bitstream_upload_elapsed_us =
+                                        native_vulkan_elapsed_us(
+                                            bitstream_upload_started_at.elapsed(),
+                                        );
+                                    let command_slot_index = next_av1_decode_command_slot
+                                        % av1_decode_command_slots.len().max(1);
+                                    next_av1_decode_command_slot = (command_slot_index + 1)
+                                        % av1_decode_command_slots.len().max(1);
+                                    let command_slot_wait_stats =
+                                        native_vulkan_wait_av1_decode_command_slot(
+                                            &device,
+                                            &mut av1_decode_command_slots,
+                                            &mut pending_av1_decode_submissions,
+                                            command_slot_index,
+                                            "vkWaitForFences(direct av1 visible decode-ahead command slot)",
+                                        )?;
+                                    av1_decode_wait_stats.merge(command_slot_wait_stats);
+                                    let command_slot = av1_decode_command_slots
+                                        .get(command_slot_index)
+                                        .ok_or_else(|| {
+                                            NativeVulkanError::Video(
+                                                "AV1 decode command ring has no command slots"
+                                                    .to_owned(),
+                                            )
+                                        })?;
+                                    unsafe {
+                                        device.reset_fences(&[command_slot.fence]).map_err(
+                                            |result| NativeVulkanError::Vulkan {
+                                                operation:
+                                                    "vkResetFences(direct av1 visible decode-ahead command slot)",
+                                                result,
+                                            },
+                                        )?;
+                                    }
+                                    let mut lookahead_frame =
+                                        native_vulkan_decode_av1_ready_prefix_frame_to_image(
+                                            &device,
+                                            &video_queue_device,
+                                            &video_decode_queue_device,
+                                            video_queue,
+                                            command_slot.command_buffer,
+                                            video_session,
+                                            video_session_parameters,
+                                            decode_query_pool,
+                                            next_playback_frame_index,
+                                            source_extent,
+                                            image,
+                                            output_image,
+                                            buffer,
+                                            buffer.snapshot.size,
+                                            &sequence_header,
+                                            &lookahead_entry,
+                                            &temporal_unit,
+                                            &packet.access_unit.bytes,
+                                            &candidate_span,
+                                            &active_dpb_refs,
+                                            &mut image_layer_layouts,
+                                            output_image
+                                                .map(|_| output_image_layer_layouts.as_mut_slice()),
+                                            av1_order_hint_offset_enabled,
+                                            av1_trace_enabled,
+                                            av1_decode_image_layout,
+                                            false,
+                                            pts_delta_ms,
+                                            pts_delta_ns,
+                                            frame_decode_finished,
+                                            None,
+                                            command_slot.fence,
+                                            next_playback_frame_index,
+                                            playback_loop_index,
+                                            ready_prefix_frame_index,
+                                            false,
+                                            bitstream_upload_elapsed_us,
+                                        )?;
+                                    if !lookahead_frame.show_frame {
+                                        return Err(NativeVulkanError::Video(format!(
+                                            "AV1 visible decode-ahead TU {} produced a hidden frame",
+                                            lookahead_entry.temporal_unit_index
+                                        )));
+                                    }
+                                    if let Some(slot) =
+                                        av1_decode_command_slots.get_mut(command_slot_index)
+                                    {
+                                        slot.in_flight = true;
+                                    }
+                                    pending_av1_decode_submissions.push(
+                                        NativeVulkanAv1PendingDecodeSubmission {
+                                            command_slot_index,
+                                            output_slot: lookahead_frame.dst_base_array_layer,
+                                            src_buffer_offset: lookahead_frame.src_buffer_offset,
+                                            src_buffer_range: lookahead_frame.src_buffer_range,
+                                            hidden: false,
+                                        },
+                                    );
+                                    av1_decode_pending_max_count =
+                                        av1_decode_pending_max_count.max(
+                                            pending_av1_decode_submissions
+                                                .len()
+                                                .min(u32::MAX as usize)
+                                                as u32,
+                                        );
+                                    native_vulkan_update_av1_active_dpb_refs_after_decode(
+                                        &mut active_dpb_refs,
+                                        &lookahead_entry,
+                                        &lookahead_frame,
+                                        source_extent,
+                                    );
+                                    if let Some(output_slot) = lookahead_frame.dst_base_array_layer
+                                        && native_vulkan_av1_display_cache_invalidate(
+                                            &mut av1_display_cache_slot_sources,
+                                            &mut av1_display_cache_dpb_slots,
+                                            output_slot,
+                                        )
+                                    {
+                                        av1_show_existing_display_cache_invalidate_count =
+                                            av1_show_existing_display_cache_invalidate_count
+                                                .saturating_add(1);
+                                    }
+                                    if let Some(output_slot) = lookahead_frame.dst_base_array_layer
+                                        && native_vulkan_av1_prepared_show_existing_display_invalidate_dpb_slot(
+                                            &mut pending_av1_show_existing_prepared_display_by_output_slot,
+                                            output_slot,
+                                        )
+                                    {
+                                        av1_show_existing_precopy_invalidate_count =
+                                            av1_show_existing_precopy_invalidate_count
+                                                .saturating_add(1);
+                                    }
+                                    let lookahead_displayed_slot =
+                                        lookahead_frame.displayed_base_array_layer;
+                                    let source_old_layout = image_layer_layouts
+                                        .get(lookahead_displayed_slot as usize)
+                                        .copied()
+                                        .unwrap_or(av1_decode_image_layout);
+                                    if source_old_layout != vk::ImageLayout::GENERAL {
+                                        return Err(NativeVulkanError::Video(format!(
+                                            "AV1 visible decode-ahead display-copy requires GENERAL source layout, got {}",
+                                            native_vulkan_image_layout_label(source_old_layout)
+                                        )));
+                                    }
+                                    let display_image = av1_display_image.as_mut().ok_or_else(|| {
+                                        NativeVulkanError::Video(
+                                            "AV1 visible decode-ahead requires a display image"
+                                                .to_owned(),
+                                        )
+                                    })?;
+                                    let display_old_layout = display_image
+                                        .layouts
+                                        .get(display_slot)
+                                        .copied()
+                                        .ok_or_else(|| {
+                                            NativeVulkanError::Video(format!(
+                                                "AV1 display ring has {} layouts but slot {} was requested for visible decode-ahead",
+                                                display_image.layouts.len(),
+                                                display_slot
+                                            ))
+                                        })?;
+                                    let copy_command_buffer = av1_display_copy_command_buffers
+                                        .get(display_slot)
+                                        .copied()
+                                        .ok_or_else(|| {
+                                            NativeVulkanError::Video(format!(
+                                                "AV1 visible decode-ahead copy command buffer slot {display_slot} exceeds {} slots",
+                                                av1_display_copy_command_buffers.len()
+                                            ))
+                                        })?;
+                                    let copy_signal = av1_display_copy_finished
+                                        .get(display_slot)
+                                        .copied()
+                                        .ok_or_else(|| {
+                                            NativeVulkanError::Video(format!(
+                                                "AV1 visible decode-ahead copy semaphore slot {display_slot} exceeds {} slots",
+                                                av1_display_copy_finished.len()
+                                            ))
+                                        })?;
+                                    if native_vulkan_av1_prepared_show_existing_display_invalidate_display_slot(
+                                        &mut pending_av1_show_existing_prepared_display_by_output_slot,
+                                        display_slot,
+                                    ) {
+                                        av1_show_existing_precopy_invalidate_count =
+                                            av1_show_existing_precopy_invalidate_count
+                                                .saturating_add(1);
+                                    }
+                                    native_vulkan_record_decoded_video_display_copy(
+                                        &device,
+                                        copy_command_buffer,
+                                        image,
+                                        lookahead_displayed_slot,
+                                        source_old_layout,
+                                        source_old_layout,
+                                        source_old_layout,
+                                        display_image.image,
+                                        display_slot as u32,
+                                        display_old_layout,
+                                        source_extent,
+                                    )?;
+                                    let copy_wait_semaphores = [frame_decode_finished];
+                                    let copy_wait_stages = [vk::PipelineStageFlags::ALL_COMMANDS];
+                                    let copy_command_buffers = [copy_command_buffer];
+                                    let copy_signal_semaphores = [copy_signal];
+                                    let copy_submit_info = vk::SubmitInfo::default()
+                                        .wait_semaphores(&copy_wait_semaphores)
+                                        .wait_dst_stage_mask(&copy_wait_stages)
+                                        .command_buffers(&copy_command_buffers)
+                                        .signal_semaphores(&copy_signal_semaphores);
+                                    unsafe {
+                                        device
+                                            .queue_submit(
+                                                video_queue,
+                                                &[copy_submit_info],
+                                                vk::Fence::null(),
+                                            )
+                                            .map_err(|result| NativeVulkanError::Vulkan {
+                                                operation:
+                                                    "vkQueueSubmit(direct av1 visible decode-ahead display copy)",
+                                                result,
+                                            })?;
+                                    }
+                                    display_image.layouts[display_slot] =
+                                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+                                    if native_vulkan_av1_display_cache_update(
+                                        &mut av1_display_cache_slot_sources,
+                                        &mut av1_display_cache_dpb_slots,
+                                        lookahead_displayed_slot,
+                                        display_slot,
+                                    ) {
+                                        av1_show_existing_display_cache_update_count =
+                                            av1_show_existing_display_cache_update_count
+                                                .saturating_add(1);
+                                    }
+                                    lookahead_frame.fence_wait_elapsed_us = 0;
+                                    predecoded_av1_visible_frame =
+                                        Some(NativeVulkanAv1PreparedVisibleFrame {
+                                            frame: lookahead_frame,
+                                            temporal_unit,
+                                            entry: lookahead_entry,
+                                            source_loop_index: playback_loop_index,
+                                            display_slot,
+                                            display_copy_wait_semaphore: copy_signal,
+                                        });
+                                    av1_visible_decode_ahead_submit_count =
+                                        av1_visible_decode_ahead_submit_count.saturating_add(1);
+                                }
+                            } else {
+                                av1_visible_decode_ahead_skip_display_slot_hazard_count =
+                                    av1_visible_decode_ahead_skip_display_slot_hazard_count
+                                        .saturating_add(1);
+                            }
+                        }
+                    }
+                }
                 native_vulkan_av1_trace(
                     av1_trace_enabled,
                     format!(
@@ -9790,12 +12181,14 @@ pub fn run_av1_ready_prefix_video(
                         frame.temporal_unit_index, frame.queue_present_elapsed_us
                     ),
                 );
-                if dedicated_decode_output {
-                    output_image_layer_layouts[displayed_slot as usize] =
-                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
-                } else {
-                    image_layer_layouts[displayed_slot as usize] =
-                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+                if !av1_graphics_display_copy || av1_show_existing_direct_dpb {
+                    if dedicated_decode_output {
+                        output_image_layer_layouts[decoded_displayed_slot as usize] =
+                            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+                    } else {
+                        image_layer_layouts[decoded_displayed_slot as usize] =
+                            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+                    }
                 }
                 previous_pts_ms = temporal_unit.pts_ms;
                 previous_duration_ms = temporal_unit.duration_ms;
@@ -9827,6 +12220,32 @@ pub fn run_av1_ready_prefix_video(
                         max_frame_pacing_late_us = max_frame_pacing_late_us
                             .max(native_vulkan_elapsed_us(now.duration_since(next_frame)));
                         next_frame = now;
+                    }
+                }
+            }
+            while av1_frame_contexts
+                .iter()
+                .any(|context| context.preacquire_pending)
+            {
+                let pending_preacquire_context = av1_frame_contexts
+                    .iter()
+                    .position(|context| context.preacquire_pending)
+                    .unwrap_or(0);
+                for acquire_result in native_vulkan_wait_av1_acquire_worker_result_for_context(
+                    &av1_acquire_result_rx,
+                    &mut av1_frame_contexts,
+                    pending_preacquire_context,
+                )? {
+                    av1_preacquire_elapsed_us = av1_preacquire_elapsed_us
+                        .saturating_add(acquire_result.acquire_elapsed_us);
+                    av1_preacquire_max_us =
+                        av1_preacquire_max_us.max(acquire_result.acquire_elapsed_us);
+                    if acquire_result.not_ready {
+                        av1_preacquire_not_ready_count =
+                            av1_preacquire_not_ready_count.saturating_add(1);
+                    } else if acquire_result.image_index.is_some() {
+                        av1_preacquire_hit_count =
+                            av1_preacquire_hit_count.saturating_add(1);
                     }
                 }
             }
@@ -9995,11 +12414,20 @@ pub fn run_av1_ready_prefix_video(
                     .to_owned(),
                 present_mode: native_vulkan_present_mode_label(swapchain_plan.present_mode),
                 pacing_strategy,
-                video_resource_memory_bytes: image.snapshot.memory_size.saturating_add(
-                    output_image
-                        .map(|image| image.snapshot.memory_size)
-                        .unwrap_or(0),
-                ),
+                video_resource_memory_bytes: image
+                    .snapshot
+                    .memory_size
+                    .saturating_add(
+                        output_image
+                            .map(|image| image.snapshot.memory_size)
+                            .unwrap_or(0),
+                    )
+                    .saturating_add(
+                        av1_display_image
+                            .as_ref()
+                            .map(|image| image.memory_size)
+                            .unwrap_or(0),
+                    ),
                 session_memory_bytes,
                 bitstream_buffer_bytes: buffer.snapshot.size,
                 bitstream_buffer_strategy: "fixed-capacity-persistent-mapped-ring",
@@ -10022,8 +12450,84 @@ pub fn run_av1_ready_prefix_video(
                     .bootstrap_discarded_access_units,
                 av1_packet_queue_max_payload_bytes: streaming_queue.max_payload_bytes,
                 av1_packet_queue_retained_payload_bytes: streaming_queue.retained_payload_bytes(),
-                av1_hidden_decode_sync_strategy: if av1_hidden_decode_fence_wait_enabled
+                av1_display_handoff_strategy: if av1_show_existing_direct_dpb_enabled {
+                    "video-queue-early-keep-last-copy-display-ring+show-existing-direct-dpb"
+                } else if av1_early_display_copy_show_existing {
+                    "video-queue-early-keep-last-copy-display-ring+show-existing"
+                } else if av1_early_display_copy {
+                    "video-queue-early-keep-last-copy-display-ring"
+                } else if av1_graphics_display_copy {
+                    "graphics-present-queue-copy-merged-with-render-display-ring"
+                } else {
+                    "direct-sampled-dpb-output"
+                },
+                av1_display_ring_slot_count: av1_display_textures.len().min(u32::MAX as usize)
+                    as u32,
+                av1_display_ring_memory_bytes: av1_display_image
+                    .as_ref()
+                    .map(|image| image.memory_size)
+                    .unwrap_or(0),
+                av1_present_command_buffer_strategy: if av1_frame_context_present_command_buffer {
+                    "frame-context"
+                } else {
+                    "swapchain-image"
+                },
+                av1_async_present_depth: av1_async_present_depth.min(u32::MAX as usize) as u32,
+                av1_present_result_wait_count,
+                av1_present_result_wait_elapsed_us,
+                av1_present_result_wait_max_us,
+                av1_frame_context_selection_strategy: if av1_ready_frame_context_selection {
+                    "ready-fence-probe-preacquire-aware"
+                } else if av1_preacquire_enabled {
+                    "preacquire-first-round-robin"
+                } else {
+                    "round-robin"
+                },
+                av1_frame_context_ready_probe_count,
+                av1_frame_context_ready_hit_count,
+                av1_frame_context_fallback_count,
+                av1_frame_context_fence_wait_count,
+                av1_frame_context_fence_wait_elapsed_us,
+                av1_frame_context_fence_wait_max_us,
+                av1_display_ring_slot_wait_count,
+                av1_display_ring_slot_wait_elapsed_us,
+                av1_display_ring_slot_wait_max_us,
+                av1_display_ring_slot_reuse_sync_strategy: if av1_display_slot_gpu_wait {
+                    "timeline-gpu-wait"
+                } else {
+                    "cpu-fence-wait"
+                },
+                av1_display_ring_slot_gpu_wait_count,
+                av1_display_ring_slot_gpu_signal_count,
+                av1_display_ring_slot_selection_strategy: if av1_ready_display_slot_selection {
+                    "ready-fence-probe"
+                } else {
+                    "frame-index-modulo"
+                },
+                av1_display_ring_ready_probe_count,
+                av1_display_ring_ready_hit_count,
+                av1_display_ring_ready_fallback_count,
+                av1_swapchain_image_wait_count,
+                av1_swapchain_image_wait_elapsed_us,
+                av1_swapchain_image_wait_max_us,
+                av1_acquire_not_ready_count,
+                av1_acquire_wait_present_result_count,
+                av1_acquire_wait_present_result_elapsed_us,
+                av1_acquire_wait_present_result_max_us,
+                av1_preacquire_target_depth: av1_preacquire_target_depth.min(u32::MAX as usize)
+                    as u32,
+                av1_preacquire_attempt_count,
+                av1_preacquire_hit_count,
+                av1_preacquire_not_ready_count,
+                av1_preacquire_elapsed_us,
+                av1_preacquire_max_us,
+                av1_hidden_decode_sync_strategy: if av1_hidden_decode_handoff_timeline
+                    != vk::Semaphore::null()
+                    && av1_hidden_decode_fence_wait_enabled
                     && av1_decode_command_ring_depth > 0
+                {
+                    "timeline-semaphore-handoff-for-hidden-display+deferred-hidden-fence-wait"
+                } else if av1_hidden_decode_fence_wait_enabled && av1_decode_command_ring_depth > 0
                 {
                     "decode-command-ring-deferred-hidden-fence-wait"
                 } else if av1_hidden_decode_handoff_enabled && av1_hidden_decode_fence_wait_enabled
@@ -10036,10 +12540,71 @@ pub fn run_av1_ready_prefix_video(
                 } else {
                     "queue-wait-idle-after-hidden-decode"
                 },
+                av1_hidden_decode_handoff_slot_count: if av1_hidden_decode_handoff_timeline
+                    == vk::Semaphore::null()
+                {
+                    0
+                } else {
+                    1
+                },
                 av1_hidden_decode_async_handoff_count,
+                av1_hidden_decode_handoff_unavailable_count,
                 av1_hidden_decode_fence_wait_count: av1_decode_wait_stats.hidden_wait_count,
                 av1_hidden_decode_fence_wait_elapsed_us: av1_decode_wait_stats.hidden_elapsed_us,
                 av1_hidden_decode_fence_wait_max_us: av1_decode_wait_stats.hidden_max_us,
+                av1_hidden_decode_process_elapsed_us,
+                av1_hidden_decode_process_max_us,
+                av1_hidden_decode_before_display_gap_count,
+                av1_hidden_decode_before_display_elapsed_us,
+                av1_hidden_decode_before_display_max_count,
+                av1_hidden_decode_before_display_max_elapsed_us,
+                av1_hidden_lookahead_decode_count,
+                av1_hidden_lookahead_stop_present_count,
+                av1_hidden_lookahead_stop_output_hazard_count,
+                av1_hidden_lookahead_stop_unready_count,
+                av1_visible_decode_ahead_strategy: if av1_visible_decode_ahead_enabled {
+                    "prepared-visible-display-copy"
+                } else if av1_visible_decode_ahead_probe {
+                    "probe-only"
+                } else {
+                    "disabled"
+                },
+                av1_visible_decode_ahead_attempt_count,
+                av1_visible_decode_ahead_ready_count,
+                av1_visible_decode_ahead_submit_count,
+                av1_visible_decode_ahead_skip_show_existing_count,
+                av1_visible_decode_ahead_skip_unready_count,
+                av1_visible_decode_ahead_skip_output_hazard_count,
+                av1_visible_decode_ahead_skip_bitstream_overlap_count,
+                av1_visible_decode_ahead_skip_display_slot_hazard_count,
+                av1_show_existing_display_cache_strategy: if av1_show_existing_display_cache_enabled
+                {
+                    "keep-last-display-ring-slot"
+                } else {
+                    "disabled"
+                },
+                av1_show_existing_display_cache_lookup_count,
+                av1_show_existing_display_cache_hit_count,
+                av1_show_existing_display_cache_miss_count,
+                av1_show_existing_display_cache_busy_count,
+                av1_show_existing_display_cache_stale_count,
+                av1_show_existing_display_cache_update_count,
+                av1_show_existing_display_cache_invalidate_count,
+                av1_show_existing_precopy_strategy: if av1_show_existing_precopy_enabled {
+                    "hidden-lookahead-prepared-display-copy"
+                } else {
+                    "disabled"
+                },
+                av1_show_existing_precopy_attempt_count,
+                av1_show_existing_precopy_submit_count,
+                av1_show_existing_precopy_hit_count,
+                av1_show_existing_precopy_miss_count,
+                av1_show_existing_precopy_skip_no_handoff_count,
+                av1_show_existing_precopy_skip_source_layout_count,
+                av1_show_existing_precopy_skip_display_slot_busy_count,
+                av1_show_existing_precopy_stale_count,
+                av1_show_existing_precopy_invalidate_count,
+                av1_show_existing_direct_dpb_count,
                 av1_hidden_decode_queue_wait_count,
                 av1_hidden_decode_queue_wait_elapsed_us,
                 av1_frame_context_count: av1_frame_contexts.len().min(u32::MAX as usize) as u32,
@@ -10069,6 +12634,15 @@ pub fn run_av1_ready_prefix_video(
                 })?;
                 worker_result?;
             }
+            drop(av1_acquire_job_tx);
+            if let Some(worker) = av1_acquire_worker.take() {
+                let worker_result = worker.join().map_err(|_| {
+                    NativeVulkanError::Video(
+                        "AV1 acquire worker panicked while acquiring a swapchain image".to_owned(),
+                    )
+                })?;
+                worker_result?;
+            }
             runtime_result
         })();
 
@@ -10084,6 +12658,9 @@ pub fn run_av1_ready_prefix_video(
             &device,
             std::mem::take(&mut decoded_plane_view_cache),
         );
+        if let Some(image) = av1_display_image.take() {
+            native_vulkan_destroy_decoded_video_display_image(&device, image);
+        }
         for context in av1_frame_contexts.drain(..) {
             if context.image_available != vk::Semaphore::null() {
                 device.destroy_semaphore(context.image_available, None);
@@ -10103,14 +12680,22 @@ pub fn run_av1_ready_prefix_video(
                 device.destroy_fence(slot.fence, None);
             }
         }
+        for semaphore in av1_display_copy_finished.drain(..) {
+            if semaphore != vk::Semaphore::null() {
+                device.destroy_semaphore(semaphore, None);
+            }
+        }
         if video_command_pool != vk::CommandPool::null() {
             device.destroy_command_pool(video_command_pool, None);
         }
         if present_command_pool != vk::CommandPool::null() {
             device.destroy_command_pool(present_command_pool, None);
         }
-        if hidden_decode_finished != vk::Semaphore::null() {
-            device.destroy_semaphore(hidden_decode_finished, None);
+        if av1_hidden_decode_handoff_timeline != vk::Semaphore::null() {
+            device.destroy_semaphore(av1_hidden_decode_handoff_timeline, None);
+        }
+        if av1_display_slot_reuse_timeline != vk::Semaphore::null() {
+            device.destroy_semaphore(av1_display_slot_reuse_timeline, None);
         }
         native_vulkan_destroy_decoded_video_plane_view_cache(
             &device,
@@ -15416,17 +18001,50 @@ struct NativeVulkanAv1FrameContext {
     render_finished: vk::Semaphore,
     in_flight: vk::Fence,
     pending_present_result: bool,
+    preacquire_pending: bool,
+    preacquired_image_index: Option<u32>,
     sampled_resource: Option<NativeVulkanAv1SampledResource>,
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct NativeVulkanAv1PresentJob {
     frame_index: usize,
     frame_context_index: usize,
     image_index: u32,
+    post_present_acquire_requests: Vec<NativeVulkanAv1AcquireWorkerRequest>,
+    wait_semaphores: Vec<vk::Semaphore>,
+    wait_stages: Vec<vk::PipelineStageFlags>,
+    wait_timeline_values: Vec<u64>,
+    command_buffer: vk::CommandBuffer,
     wait_semaphore: vk::Semaphore,
+    signal_semaphores: Vec<vk::Semaphore>,
+    signal_timeline_values: Vec<u64>,
+    fence: vk::Fence,
     present_started_at: Instant,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, Copy)]
+struct NativeVulkanAv1AcquireWorkerRequest {
+    frame_context_index: usize,
+    image_available: vk::Semaphore,
+    timeout_ns: u64,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, Copy)]
+struct NativeVulkanAv1AcquireWorkerResult {
+    frame_context_index: usize,
+    image_index: Option<u32>,
+    acquire_elapsed_us: u64,
+    not_ready: bool,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone)]
+enum NativeVulkanAv1PresentWorkerJob {
+    Present(NativeVulkanAv1PresentJob),
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -15434,6 +18052,7 @@ struct NativeVulkanAv1PresentJob {
 struct NativeVulkanAv1PresentWorkerResult {
     frame_index: usize,
     frame_context_index: usize,
+    queue_submit_elapsed_us: u64,
     queue_present_elapsed_us: u64,
     present_elapsed_us: u64,
 }
@@ -15567,13 +18186,441 @@ fn native_vulkan_av1_async_present_enabled() -> bool {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_async_present_depth(
+    frame_context_count: usize,
+    swapchain_image_count: usize,
+) -> usize {
+    let max_depth = frame_context_count.max(1).min(swapchain_image_count.max(1));
+    std::env::var("GILDER_VULKAN_AV1_ASYNC_PRESENT_DEPTH")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(max_depth)
+        .clamp(1, max_depth)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_ready_frame_context_selection_enabled() -> bool {
+    matches!(
+        std::env::var("GILDER_VULKAN_AV1_READY_CONTEXT_SELECTION")
+            .ok()
+            .as_deref(),
+        Some("1") | Some("true") | Some("on") | Some("yes")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_ready_display_slot_selection_enabled() -> bool {
+    matches!(
+        std::env::var("GILDER_VULKAN_AV1_READY_DISPLAY_SLOT")
+            .ok()
+            .as_deref(),
+        Some("1") | Some("true") | Some("on") | Some("yes")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_display_slot_gpu_wait_enabled() -> bool {
+    matches!(
+        std::env::var("GILDER_VULKAN_AV1_DISPLAY_SLOT_GPU_WAIT")
+            .ok()
+            .as_deref(),
+        Some("1")
+            | Some("true")
+            | Some("on")
+            | Some("yes")
+            | Some("timeline")
+            | Some("gpu")
+            | Some("gpu-wait")
+            | Some("gpu_wait")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_frame_context_present_command_buffer_enabled(default_enabled: bool) -> bool {
+    match std::env::var("GILDER_VULKAN_AV1_PRESENT_COMMAND_BUFFER")
+        .ok()
+        .as_deref()
+    {
+        Some("frame-context")
+        | Some("frame_context")
+        | Some("context")
+        | Some("1")
+        | Some("true")
+        | Some("on")
+        | Some("yes") => true,
+        Some("0")
+        | Some("false")
+        | Some("off")
+        | Some("no")
+        | Some("swapchain")
+        | Some("swapchain-image")
+        | Some("swapchain_image") => false,
+        _ => default_enabled,
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_choose_av1_display_ring_slot(
+    device: &ash::Device,
+    slot_fences: &[vk::Fence],
+    preferred_slot: usize,
+    current_frame_fence: vk::Fence,
+    ready_probe_count: &mut u32,
+    ready_hit_count: &mut u32,
+    ready_fallback_count: &mut u32,
+) -> Result<usize, NativeVulkanError> {
+    if slot_fences.is_empty() {
+        return Err(NativeVulkanError::Video(
+            "AV1 display ring has no slots".to_owned(),
+        ));
+    }
+    let preferred_slot = preferred_slot % slot_fences.len();
+    for offset in 0..slot_fences.len() {
+        let slot = (preferred_slot + offset) % slot_fences.len();
+        let fence = slot_fences[slot];
+        if fence == vk::Fence::null() || fence == current_frame_fence {
+            *ready_hit_count = ready_hit_count.saturating_add(1);
+            return Ok(slot);
+        }
+        *ready_probe_count = ready_probe_count.saturating_add(1);
+        let ready = unsafe { device.get_fence_status(fence) }.map_err(|result| {
+            NativeVulkanError::Vulkan {
+                operation: "vkGetFenceStatus(direct av1 display ring slot)",
+                result,
+            }
+        })?;
+        if ready {
+            *ready_hit_count = ready_hit_count.saturating_add(1);
+            return Ok(slot);
+        }
+    }
+    *ready_fallback_count = ready_fallback_count.saturating_add(1);
+    Ok(preferred_slot)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Clone, Copy)]
+struct NativeVulkanAv1PreparedShowExistingDisplayCopy {
+    display_slot: usize,
+    wait_semaphore: vk::Semaphore,
+    handoff_value: u64,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_prepared_show_existing_display_invalidate_dpb_slot(
+    prepared_by_dpb_slot: &mut [Option<NativeVulkanAv1PreparedShowExistingDisplayCopy>],
+    dpb_slot: u32,
+) -> bool {
+    prepared_by_dpb_slot
+        .get_mut(dpb_slot as usize)
+        .and_then(Option::take)
+        .is_some()
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_prepared_show_existing_display_invalidate_display_slot(
+    prepared_by_dpb_slot: &mut [Option<NativeVulkanAv1PreparedShowExistingDisplayCopy>],
+    display_slot: usize,
+) -> bool {
+    let mut invalidated = false;
+    for prepared in prepared_by_dpb_slot.iter_mut() {
+        if matches!(*prepared, Some(prepared_copy) if prepared_copy.display_slot == display_slot) {
+            *prepared = None;
+            invalidated = true;
+        }
+    }
+    invalidated
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_display_cache_invalidate(
+    display_slot_sources: &mut [Option<u32>],
+    dpb_display_slots: &mut [Option<usize>],
+    dpb_slot: u32,
+) -> bool {
+    let Some(mapped_display_slot) = dpb_display_slots
+        .get_mut(dpb_slot as usize)
+        .and_then(Option::take)
+    else {
+        return false;
+    };
+    if let Some(source) = display_slot_sources.get_mut(mapped_display_slot)
+        && *source == Some(dpb_slot)
+    {
+        *source = None;
+    }
+    true
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_display_cache_update(
+    display_slot_sources: &mut [Option<u32>],
+    dpb_display_slots: &mut [Option<usize>],
+    dpb_slot: u32,
+    display_slot: usize,
+) -> bool {
+    if display_slot >= display_slot_sources.len() || dpb_slot as usize >= dpb_display_slots.len() {
+        return false;
+    }
+    if let Some(previous_dpb_slot) = display_slot_sources[display_slot]
+        && let Some(mapped_display_slot) = dpb_display_slots.get_mut(previous_dpb_slot as usize)
+        && *mapped_display_slot == Some(display_slot)
+    {
+        *mapped_display_slot = None;
+    }
+    if let Some(previous_display_slot) = dpb_display_slots[dpb_slot as usize]
+        && previous_display_slot != display_slot
+        && let Some(source) = display_slot_sources.get_mut(previous_display_slot)
+        && *source == Some(dpb_slot)
+    {
+        *source = None;
+    }
+    display_slot_sources[display_slot] = Some(dpb_slot);
+    dpb_display_slots[dpb_slot as usize] = Some(display_slot);
+    true
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_frame_context_selectable(context: &NativeVulkanAv1FrameContext) -> bool {
+    !context.pending_present_result && !context.preacquire_pending
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_find_ready_av1_frame_context(
+    device: &ash::Device,
+    frame_contexts: &[NativeVulkanAv1FrameContext],
+    start_index: usize,
+    mut predicate: impl FnMut(&NativeVulkanAv1FrameContext) -> bool,
+    ready_probe_count: &mut u32,
+    ready_hit_count: &mut u32,
+) -> Result<Option<usize>, NativeVulkanError> {
+    if frame_contexts.is_empty() {
+        return Ok(None);
+    }
+    for offset in 0..frame_contexts.len() {
+        let context_index = (start_index + offset) % frame_contexts.len();
+        let context = &frame_contexts[context_index];
+        if !predicate(context) {
+            continue;
+        }
+        *ready_probe_count = ready_probe_count.saturating_add(1);
+        let ready = unsafe { device.get_fence_status(context.in_flight) }.map_err(|result| {
+            NativeVulkanError::Vulkan {
+                operation: "vkGetFenceStatus(direct av1 frame context)",
+                result,
+            }
+        })?;
+        if ready {
+            *ready_hit_count = ready_hit_count.saturating_add(1);
+            return Ok(Some(context_index));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_find_selectable_av1_frame_context(
+    frame_contexts: &[NativeVulkanAv1FrameContext],
+    start_index: usize,
+    mut predicate: impl FnMut(&NativeVulkanAv1FrameContext) -> bool,
+) -> Option<usize> {
+    if frame_contexts.is_empty() {
+        return None;
+    }
+    (0..frame_contexts.len())
+        .map(|offset| (start_index + offset) % frame_contexts.len())
+        .find(|context_index| predicate(&frame_contexts[*context_index]))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_choose_av1_ready_frame_context(
+    device: &ash::Device,
+    frame_contexts: &[NativeVulkanAv1FrameContext],
+    start_index: usize,
+    preacquire_enabled: bool,
+    ready_probe_count: &mut u32,
+    ready_hit_count: &mut u32,
+    fallback_count: &mut u32,
+) -> Result<usize, NativeVulkanError> {
+    if frame_contexts.is_empty() {
+        return Err(NativeVulkanError::Video(
+            "AV1 frame context pool is empty".to_owned(),
+        ));
+    }
+    let start_index = start_index % frame_contexts.len();
+    if preacquire_enabled
+        && let Some(context_index) = native_vulkan_find_ready_av1_frame_context(
+            device,
+            frame_contexts,
+            start_index,
+            |context| {
+                native_vulkan_av1_frame_context_selectable(context)
+                    && context.preacquired_image_index.is_some()
+            },
+            ready_probe_count,
+            ready_hit_count,
+        )?
+    {
+        return Ok(context_index);
+    }
+    if let Some(context_index) = native_vulkan_find_ready_av1_frame_context(
+        device,
+        frame_contexts,
+        start_index,
+        |context| {
+            native_vulkan_av1_frame_context_selectable(context)
+                && (!preacquire_enabled || context.preacquired_image_index.is_none())
+        },
+        ready_probe_count,
+        ready_hit_count,
+    )? {
+        return Ok(context_index);
+    }
+    *fallback_count = fallback_count.saturating_add(1);
+    if preacquire_enabled
+        && let Some(context_index) = native_vulkan_find_selectable_av1_frame_context(
+            frame_contexts,
+            start_index,
+            |context| {
+                native_vulkan_av1_frame_context_selectable(context)
+                    && context.preacquired_image_index.is_some()
+            },
+        )
+    {
+        return Ok(context_index);
+    }
+    Ok(
+        native_vulkan_find_selectable_av1_frame_context(frame_contexts, start_index, |context| {
+            native_vulkan_av1_frame_context_selectable(context)
+        })
+        .unwrap_or(start_index),
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_preacquire_enabled() -> bool {
+    !matches!(
+        std::env::var("GILDER_VULKAN_AV1_PREACQUIRE")
+            .ok()
+            .as_deref(),
+        Some("0") | Some("false") | Some("off") | Some("no")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_preacquire_target_depth(
+    frame_context_count: usize,
+    swapchain_image_count: usize,
+) -> usize {
+    let max_depth = swapchain_image_count
+        .saturating_sub(1)
+        .max(1)
+        .min(frame_context_count.saturating_sub(1).max(1));
+    std::env::var("GILDER_VULKAN_AV1_PREACQUIRE_DEPTH")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1)
+        .clamp(1, max_depth)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_fill_av1_post_present_preacquire_requests(
+    frame_contexts: &mut [NativeVulkanAv1FrameContext],
+    present_frame_context_index: usize,
+    target_depth: usize,
+    post_present_acquire_requests: &mut Vec<NativeVulkanAv1AcquireWorkerRequest>,
+    attempt_count: &mut u32,
+) {
+    if frame_contexts.is_empty() || target_depth == 0 {
+        return;
+    }
+    let current_depth = frame_contexts
+        .iter()
+        .enumerate()
+        .filter(|(context_index, context)| {
+            *context_index != present_frame_context_index
+                && (context.preacquire_pending || context.preacquired_image_index.is_some())
+        })
+        .count();
+    let mut remaining_depth = target_depth.saturating_sub(current_depth);
+    if remaining_depth == 0 {
+        return;
+    }
+    let mut blocking_request_available = current_depth == 0;
+    let start_context = (present_frame_context_index + 1) % frame_contexts.len();
+    for offset in 0..frame_contexts.len() {
+        if remaining_depth == 0 {
+            break;
+        }
+        let context_index = (start_context + offset) % frame_contexts.len();
+        if context_index == present_frame_context_index {
+            continue;
+        }
+        let context = &mut frame_contexts[context_index];
+        if context.pending_present_result
+            || context.preacquire_pending
+            || context.preacquired_image_index.is_some()
+        {
+            continue;
+        }
+        let timeout_ns = if blocking_request_available {
+            blocking_request_available = false;
+            u64::MAX
+        } else {
+            0
+        };
+        context.preacquire_pending = true;
+        post_present_acquire_requests.push(NativeVulkanAv1AcquireWorkerRequest {
+            frame_context_index: context_index,
+            image_available: context.image_available,
+            timeout_ns,
+        });
+        *attempt_count = attempt_count.saturating_add(1);
+        remaining_depth = remaining_depth.saturating_sub(1);
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_decoupled_acquire_worker_enabled() -> bool {
+    matches!(
+        std::env::var("GILDER_VULKAN_AV1_DECOUPLED_ACQUIRE_WORKER")
+            .ok()
+            .as_deref(),
+        Some("1") | Some("true") | Some("on") | Some("yes")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_wait_present_before_acquire_enabled() -> bool {
+    matches!(
+        std::env::var("GILDER_VULKAN_AV1_WAIT_PRESENT_BEFORE_ACQUIRE")
+            .ok()
+            .as_deref(),
+        Some("1") | Some("true") | Some("on") | Some("yes")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_present_result_after_preacquire_enabled() -> bool {
+    matches!(
+        std::env::var("GILDER_VULKAN_AV1_PRESENT_RESULT_AFTER_PREACQUIRE")
+            .ok()
+            .as_deref(),
+        Some("1") | Some("true") | Some("on") | Some("yes")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_av1_frame_context_count(swapchain_image_count: usize) -> usize {
+    let max_contexts = swapchain_image_count.saturating_add(1).max(1).min(8);
     std::env::var("GILDER_VULKAN_AV1_FRAME_CONTEXTS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(2)
-        .clamp(1, swapchain_image_count.max(1))
+        .unwrap_or(3)
+        .clamp(1, max_contexts)
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -15589,6 +18636,7 @@ fn native_vulkan_apply_av1_present_worker_result(
             result.frame_index, frame_count
         ))
     })?;
+    frame.submit_elapsed_us = result.queue_submit_elapsed_us;
     frame.queue_present_elapsed_us = result.queue_present_elapsed_us;
     frame.present_elapsed_us = result.present_elapsed_us;
     Ok(())
@@ -15619,6 +18667,123 @@ fn native_vulkan_recv_av1_present_worker_result(
         context.pending_present_result = false;
     }
     Ok(())
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_drain_av1_present_worker_results(
+    result_rx: &mpsc::Receiver<Result<NativeVulkanAv1PresentWorkerResult, NativeVulkanError>>,
+    frames: &mut [NativeVulkanDirectAv1ReadyPrefixFrameSnapshot],
+    frame_contexts: &mut [NativeVulkanAv1FrameContext],
+) -> Result<(), NativeVulkanError> {
+    loop {
+        match result_rx.try_recv() {
+            Ok(result) => {
+                let context_index = result
+                    .as_ref()
+                    .ok()
+                    .map(|result| result.frame_context_index);
+                native_vulkan_apply_av1_present_worker_result(frames, result)?;
+                if let Some(context_index) = context_index {
+                    let context_count = frame_contexts.len();
+                    let context = frame_contexts.get_mut(context_index).ok_or_else(|| {
+                        NativeVulkanError::Video(format!(
+                            "AV1 present worker returned context index {context_index} but only {context_count} context(s) exist"
+                        ))
+                    })?;
+                    context.pending_present_result = false;
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => return Ok(()),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                if frame_contexts
+                    .iter()
+                    .any(|context| context.pending_present_result)
+                {
+                    return Err(NativeVulkanError::Video(
+                        "AV1 present worker exited with pending present results".to_owned(),
+                    ));
+                }
+                return Ok(());
+            }
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_apply_av1_acquire_worker_result(
+    frame_contexts: &mut [NativeVulkanAv1FrameContext],
+    result: Result<NativeVulkanAv1AcquireWorkerResult, NativeVulkanError>,
+) -> Result<NativeVulkanAv1AcquireWorkerResult, NativeVulkanError> {
+    let result = result?;
+    let context_count = frame_contexts.len();
+    let context = frame_contexts
+        .get_mut(result.frame_context_index)
+        .ok_or_else(|| {
+            NativeVulkanError::Video(format!(
+                "AV1 acquire worker returned context index {} but only {} context(s) exist",
+                result.frame_context_index, context_count
+            ))
+        })?;
+    context.preacquire_pending = false;
+    if let Some(image_index) = result.image_index {
+        context.preacquired_image_index = Some(image_index);
+    }
+    Ok(result)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_drain_av1_acquire_worker_results(
+    result_rx: &mpsc::Receiver<Result<NativeVulkanAv1AcquireWorkerResult, NativeVulkanError>>,
+    frame_contexts: &mut [NativeVulkanAv1FrameContext],
+) -> Result<Vec<NativeVulkanAv1AcquireWorkerResult>, NativeVulkanError> {
+    let mut results = Vec::new();
+    loop {
+        match result_rx.try_recv() {
+            Ok(result) => {
+                results.push(native_vulkan_apply_av1_acquire_worker_result(
+                    frame_contexts,
+                    result,
+                )?);
+            }
+            Err(mpsc::TryRecvError::Empty) => return Ok(results),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                if frame_contexts
+                    .iter()
+                    .any(|context| context.preacquire_pending)
+                {
+                    return Err(NativeVulkanError::Video(
+                        "AV1 acquire worker exited with pending acquire requests".to_owned(),
+                    ));
+                }
+                return Ok(results);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_wait_av1_acquire_worker_result_for_context(
+    result_rx: &mpsc::Receiver<Result<NativeVulkanAv1AcquireWorkerResult, NativeVulkanError>>,
+    frame_contexts: &mut [NativeVulkanAv1FrameContext],
+    frame_context_index: usize,
+) -> Result<Vec<NativeVulkanAv1AcquireWorkerResult>, NativeVulkanError> {
+    let mut results = native_vulkan_drain_av1_acquire_worker_results(result_rx, frame_contexts)?;
+    while frame_contexts
+        .get(frame_context_index)
+        .map(|context| context.preacquire_pending)
+        .unwrap_or(false)
+    {
+        let result = result_rx.recv().map_err(|_| {
+            NativeVulkanError::Video(
+                "AV1 acquire worker exited before returning an acquire result".to_owned(),
+            )
+        })?;
+        results.push(native_vulkan_apply_av1_acquire_worker_result(
+            frame_contexts,
+            result,
+        )?);
+    }
+    Ok(results)
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -20831,6 +23996,63 @@ fn native_vulkan_av1_order_hints_array(hints: &[Option<u8>]) -> [u8; 8] {
     values
 }
 
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_update_av1_active_dpb_refs_after_decode(
+    active_dpb_refs: &mut [Option<NativeVulkanAv1ActiveDpbReference>],
+    entry: &NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
+    frame: &NativeVulkanDirectAv1ReadyPrefixFrameSnapshot,
+    source_extent: vk::Extent2D,
+) {
+    let active_slots_after = entry
+        .map_slot_indices_after
+        .iter()
+        .filter_map(|slot| u32::try_from(*slot).ok())
+        .collect::<Vec<_>>();
+    let current_reference = frame.dst_base_array_layer.and_then(|output_slot| {
+        (!entry.refreshed_reference_names.is_empty()).then_some((
+            output_slot,
+            NativeVulkanAv1ActiveDpbReference {
+                frame_type: frame.frame_type,
+                order_hint: frame.order_hint.unwrap_or(0),
+                ref_frame_sign_bias: frame.ref_frame_sign_bias,
+                saved_order_hints: native_vulkan_av1_setup_saved_order_hints(
+                    native_vulkan_av1_order_hints_array(&entry.reference_name_order_hints),
+                    frame.refresh_frame_flags,
+                    frame.order_hint.unwrap_or(0),
+                ),
+                frame_width: frame.frame_width.unwrap_or(source_extent.width),
+                frame_height: frame.frame_height.unwrap_or(source_extent.height),
+                render_width: frame.render_width.unwrap_or(source_extent.width),
+                render_height: frame.render_height.unwrap_or(source_extent.height),
+                disable_frame_end_update_cdf: frame.disable_frame_end_update_cdf,
+                segmentation_enabled: frame.segmentation_enabled,
+                segmentation: NativeVulkanAv1ParsedSegmentation {
+                    enabled: frame.segmentation_enabled,
+                    update_map: frame.segmentation_update_map,
+                    temporal_update: frame.segmentation_temporal_update,
+                    update_data: frame.segmentation_update_data,
+                    feature_enabled: frame.segmentation_feature_enabled,
+                    feature_data: frame.segmentation_feature_data,
+                },
+                loop_filter_ref_deltas: frame.loop_filter_ref_deltas,
+                loop_filter_mode_deltas: frame.loop_filter_mode_deltas,
+            },
+        ))
+    });
+    for (slot_index, slot) in active_dpb_refs.iter_mut().enumerate() {
+        let slot_index = slot_index as u32;
+        if !active_slots_after.contains(&slot_index) {
+            *slot = None;
+            continue;
+        }
+        if let Some((output_slot, reference)) = current_reference
+            && output_slot == slot_index
+        {
+            *slot = Some(reference);
+        }
+    }
+}
+
 #[cfg(any(feature = "native-vulkan-gst-video", test))]
 fn native_vulkan_av1_primary_ref_none(primary_ref_frame: Option<u8>) -> bool {
     primary_ref_frame.is_none_or(|primary_ref_frame| primary_ref_frame == 7)
@@ -20876,6 +24098,154 @@ fn native_vulkan_av1_hidden_decode_fence_wait_enabled() -> bool {
             .ok()
             .as_deref(),
         Some("queue-wait") | Some("queue-wait-idle") | Some("idle") | Some("legacy")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_hidden_lookahead_enabled() -> bool {
+    !matches!(
+        std::env::var("GILDER_VULKAN_AV1_HIDDEN_LOOKAHEAD")
+            .ok()
+            .as_deref(),
+        Some("0") | Some("false") | Some("off") | Some("no")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_hidden_lookahead_show_existing_enabled() -> bool {
+    matches!(
+        std::env::var("GILDER_VULKAN_AV1_HIDDEN_LOOKAHEAD_SHOW_EXISTING")
+            .ok()
+            .as_deref(),
+        Some("1") | Some("true") | Some("on") | Some("yes")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_visible_decode_ahead_enabled() -> bool {
+    matches!(
+        std::env::var("GILDER_VULKAN_AV1_VISIBLE_DECODE_AHEAD")
+            .ok()
+            .as_deref(),
+        Some("prepared")
+            | Some("decode")
+            | Some("decode-ahead")
+            | Some("decode_ahead")
+            | Some("submit")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_visible_decode_ahead_probe_enabled() -> bool {
+    matches!(
+        std::env::var("GILDER_VULKAN_AV1_VISIBLE_DECODE_AHEAD")
+            .ok()
+            .as_deref(),
+        Some("probe") | Some("probe-only") | Some("1") | Some("true") | Some("on") | Some("yes")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_early_display_copy_enabled() -> bool {
+    !matches!(
+        std::env::var("GILDER_VULKAN_AV1_EARLY_DISPLAY_COPY")
+            .ok()
+            .as_deref(),
+        Some("0") | Some("false") | Some("off") | Some("no")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_early_display_copy_show_existing_enabled() -> bool {
+    matches!(
+        std::env::var("GILDER_VULKAN_AV1_EARLY_DISPLAY_COPY_SHOW_EXISTING")
+            .ok()
+            .as_deref(),
+        Some("1") | Some("true") | Some("on") | Some("yes")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_show_existing_display_cache_enabled() -> bool {
+    matches!(
+        std::env::var("GILDER_VULKAN_AV1_SHOW_EXISTING_DISPLAY_CACHE")
+            .ok()
+            .as_deref(),
+        Some("1") | Some("true") | Some("on") | Some("yes") | Some("keep-last") | Some("cache")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_show_existing_precopy_enabled() -> bool {
+    matches!(
+        std::env::var("GILDER_VULKAN_AV1_SHOW_EXISTING_PRECOPY")
+            .ok()
+            .as_deref(),
+        Some("1")
+            | Some("true")
+            | Some("on")
+            | Some("yes")
+            | Some("precopy")
+            | Some("prepared")
+            | Some("display-copy")
+            | Some("display_copy")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_show_existing_direct_dpb_enabled() -> bool {
+    matches!(
+        std::env::var("GILDER_VULKAN_AV1_SHOW_EXISTING_DIRECT_DPB")
+            .ok()
+            .as_deref(),
+        Some("1")
+            | Some("true")
+            | Some("on")
+            | Some("yes")
+            | Some("direct")
+            | Some("direct-dpb")
+            | Some("direct_dpb")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_resource_general_layout_enabled() -> bool {
+    matches!(
+        std::env::var("GILDER_VULKAN_AV1_RESOURCE_LAYOUT")
+            .ok()
+            .as_deref(),
+        Some("general") | Some("1") | Some("true") | Some("yes") | Some("on")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_graphics_display_copy_enabled() -> bool {
+    !matches!(
+        std::env::var("GILDER_VULKAN_AV1_DISPLAY_HANDOFF")
+            .ok()
+            .as_deref(),
+        Some("direct") | Some("direct-dpb") | Some("0") | Some("false") | Some("off") | Some("no")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_display_ring_slot_count(_swapchain_image_count: usize) -> u32 {
+    let max_slots = 8;
+    std::env::var("GILDER_VULKAN_AV1_DISPLAY_RING_SLOTS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(2)
+        .clamp(2, max_slots)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_av1_acquire_present_mutex_enabled() -> bool {
+    !matches!(
+        std::env::var("GILDER_VULKAN_AV1_ACQUIRE_PRESENT_MUTEX")
+            .ok()
+            .as_deref(),
+        Some("0") | Some("false") | Some("off") | Some("no")
     )
 }
 
@@ -21638,10 +25008,12 @@ fn native_vulkan_decode_av1_ready_prefix_frame_to_image(
     output_image_layer_layouts: Option<&mut [vk::ImageLayout]>,
     order_hint_offset_enabled: bool,
     av1_trace_enabled: bool,
+    decode_image_layout: vk::ImageLayout,
     reset_before_decode: bool,
     pts_delta_ms: Option<u64>,
     pts_delta_ns: Option<u64>,
     signal_semaphore: vk::Semaphore,
+    signal_timeline_value: Option<u64>,
     submit_fence: vk::Fence,
     playback_frame_index: u32,
     playback_loop_index: u32,
@@ -22189,7 +25561,7 @@ fn native_vulkan_decode_av1_ready_prefix_frame_to_image(
             bitstream_buffer_barrier_size,
             image_layer_layouts,
             &prepare_dpb_slots,
-            vk::ImageLayout::VIDEO_DECODE_DPB_KHR,
+            decode_image_layout,
         )?;
         native_vulkan_video_decode_reference_access_barriers(
             device,
@@ -22198,7 +25570,10 @@ fn native_vulkan_decode_av1_ready_prefix_frame_to_image(
             image_layer_layouts,
             &decode_reference_slot_ids,
         )?;
-        if output_image.is_none() && native_vulkan_av1_coincident_output_dst_layout_enabled() {
+        if output_image.is_none()
+            && decode_image_layout != vk::ImageLayout::GENERAL
+            && native_vulkan_av1_coincident_output_dst_layout_enabled()
+        {
             native_vulkan_video_decode_transition_layer_layout(
                 device,
                 command_buffer,
@@ -22265,9 +25640,17 @@ fn native_vulkan_decode_av1_ready_prefix_frame_to_image(
         } else {
             Vec::new()
         };
-        let submit_info = vk::SubmitInfo::default()
+        let signal_timeline_values = signal_timeline_value
+            .map(|value| vec![value])
+            .unwrap_or_default();
+        let mut timeline_submit_info = vk::TimelineSemaphoreSubmitInfo::default()
+            .signal_semaphore_values(&signal_timeline_values);
+        let mut submit_info = vk::SubmitInfo::default()
             .command_buffers(&command_buffers)
             .signal_semaphores(&signal_semaphores);
+        if signal_timeline_value.is_some() {
+            submit_info = submit_info.push_next(&mut timeline_submit_info);
+        }
         native_vulkan_av1_trace(
             av1_trace_enabled,
             format!(
