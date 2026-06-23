@@ -43,6 +43,7 @@ USAGE
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 cd "$repo_root"
+source "$script_dir/native-vulkan-ready-prefix-video-common.sh"
 
 source=""
 display="${WAYLAND_DISPLAY:-}"
@@ -75,7 +76,7 @@ layer="background"
 fit="cover"
 allow_short_loop=0
 report_dir=""
-source_cache_dir="artifacts/video-sources/av1"
+source_cache_dir="$(gilder_default_source_cache_dir av1)"
 no_build=0
 generated_source=0
 source_duration_seconds=0
@@ -275,7 +276,7 @@ stderr_log="$report_dir/stderr.log"
 generated_dir="$source_cache_dir"
 performance_dir="$report_dir/performance"
 performance_log="$report_dir/performance.log"
-mkdir -p "$generated_dir"
+gilder_ensure_source_cache_dir "$generated_dir"
 
 if [[ "$no_build" -eq 0 ]]; then
   cargo build --release --features native-vulkan-gst-video --bin gilder-native-vulkan
@@ -446,6 +447,14 @@ present_result_missed_vblank_count="$(jq -r '.present_result_missed_vblank_count
 present_result_missed_vblank_after_warmup_count="$(jq -r '.present_result_missed_vblank_after_warmup_count // 0' "$runtime_json")"
 pts_delta_min="$(jq -r '.pts_delta_min_ms // "none"' "$runtime_json")"
 pts_delta_max="$(jq -r '.pts_delta_max_ms // "none"' "$runtime_json")"
+pts_delta_expected_min="$(jq -r '.pts_delta_expected_min_ms // "none"' "$runtime_json")"
+pts_delta_expected_max="$(jq -r '.pts_delta_expected_max_ms // "none"' "$runtime_json")"
+pts_delta_in_expected_range="$(jq -r '.pts_delta_in_expected_range // "none"' "$runtime_json")"
+read -r script_pts_delta_expected_min script_pts_delta_expected_max < <(gilder_pts_delta_expected_bounds_ms "$target_fps")
+pts_delta_script_in_expected_range=false
+if gilder_pts_delta_in_expected_range "$pts_delta_min" "$pts_delta_max" "$target_fps"; then
+  pts_delta_script_in_expected_range=true
+fi
 present_budget_us=$(((1000000 + target_fps - 1) / target_fps))
 acquire_over_budget_count="$(jq -r --argjson budget "$present_budget_us" '[.frames[]?.acquire_elapsed_us // 0 | select(. > $budget)] | length' "$runtime_json")"
 queue_present_over_budget_count="$(jq -r --argjson budget "$present_budget_us" '[.frames[]?.queue_present_elapsed_us // 0 | select(. > $budget)] | length' "$runtime_json")"
@@ -592,7 +601,9 @@ stream_dpb_slots="$(jq -r '.stream_dpb_slots // 0' "$runtime_json")"
 stream_max_active_reference_pictures="$(jq -r '.stream_max_active_reference_pictures // 0' "$runtime_json")"
 session_max_dpb_slots="$(jq -r '.session_max_dpb_slots // 0' "$runtime_json")"
 session_max_active_reference_pictures="$(jq -r '.session_max_active_reference_pictures // 0' "$runtime_json")"
+present_mode="$(jq -r '.present_mode // "none"' "$runtime_json")"
 pacing_strategy="$(jq -r '.pacing_strategy // "none"' "$runtime_json")"
+expected_pacing_strategy="$(gilder_expected_pacing_strategy "$present_mode" "$target_fps")"
 frame_sleep_count_value="$(jq -r '.frame_sleep_count // 0' "$runtime_json")"
 bitstream_strategy="$(jq -r '.bitstream_buffer_strategy // "none"' "$runtime_json")"
 bitstream_slot_count="$(jq -r '.bitstream_buffer_slot_count // 0' "$runtime_json")"
@@ -657,7 +668,7 @@ if [[ "$require_readback_diversity" -eq 1 && ( "$readback_frame_count" -lt 2 || 
   readback_gate_failed=1
 fi
 pacing_gate_failed=0
-if [[ "$(jq -r '.present_mode // "none"' "$runtime_json")" == "fifo" && ( "$pacing_strategy" != "fifo-present-blocking-no-cpu-sleep" || "$frame_sleep_count_value" -ne 0 ) ]]; then
+if [[ "$pacing_strategy" != "$expected_pacing_strategy" ]]; then
   pacing_gate_failed=1
 fi
 dpb_gate_failed=0
@@ -669,8 +680,12 @@ case "$sync_strategy" in
   per-frame-binary-semaphore-decode-signal-present-wait|frame-context-ring-binary-semaphore-decode-signal-present-wait) ;;
   *) sync_strategy_gate_failed=1 ;;
 esac
+pts_delta_gate_failed=0
+if [[ "$pts_delta_in_expected_range" != "true" || "$pts_delta_script_in_expected_range" != "true" || "$pts_delta_expected_min" != "$script_pts_delta_expected_min" || "$pts_delta_expected_max" != "$script_pts_delta_expected_max" ]]; then
+  pts_delta_gate_failed=1
+fi
 
-if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_picture_format" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$ready_prefix_count" -ne "$decode_prefix" || "$requested_playback_count" -ne "$expected_frames" || $((decoded_count + handoff_count)) -ne "$expected_frames" || "$total_decoded_count" -ne $((decoded_count + hidden_decoded_count)) || "$configured" != "true" || "$processed_temporal_unit_count" -lt "$expected_frames" || "$distinct_layers" -le 1 || "$bad_frames" -ne 0 || "$hidden_presented_frames" -ne 0 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$arbitrary_entry_gate_failed" -ne 0 || "$loop_replay_gate_failed" -ne 0 || "$readback_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$sync_strategy_gate_failed" -ne 0 || "$pts_delta_min" == "none" || "$pts_delta_max" == "none" || "$present_queue" == "none" || "$video_queue" == "none" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
+if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_picture_format" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$ready_prefix_count" -ne "$decode_prefix" || "$requested_playback_count" -ne "$expected_frames" || $((decoded_count + handoff_count)) -ne "$expected_frames" || "$total_decoded_count" -ne $((decoded_count + hidden_decoded_count)) || "$configured" != "true" || "$processed_temporal_unit_count" -lt "$expected_frames" || "$distinct_layers" -le 1 || "$bad_frames" -ne 0 || "$hidden_presented_frames" -ne 0 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$arbitrary_entry_gate_failed" -ne 0 || "$loop_replay_gate_failed" -ne 0 || "$readback_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$sync_strategy_gate_failed" -ne 0 || "$pts_delta_gate_failed" -ne 0 || "$present_queue" == "none" || "$video_queue" == "none" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
   {
     printf 'FAIL: native Vulkan AV1 ready-prefix visible runtime output was not valid\n'
     printf 'requested_codec: %s\n' "$requested_codec"
@@ -702,6 +717,13 @@ if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_pi
     printf 'present_result_missed_vblank_after_warmup_count: %s\n' "$present_result_missed_vblank_after_warmup_count"
     printf 'pts_delta_min_ms: %s\n' "$pts_delta_min"
     printf 'pts_delta_max_ms: %s\n' "$pts_delta_max"
+    printf 'pts_delta_expected_min_ms: %s\n' "$pts_delta_expected_min"
+    printf 'pts_delta_expected_max_ms: %s\n' "$pts_delta_expected_max"
+    printf 'pts_delta_in_expected_range: %s\n' "$pts_delta_in_expected_range"
+    printf 'pts_delta_script_expected_min_ms: %s\n' "$script_pts_delta_expected_min"
+    printf 'pts_delta_script_expected_max_ms: %s\n' "$script_pts_delta_expected_max"
+    printf 'pts_delta_script_in_expected_range: %s\n' "$pts_delta_script_in_expected_range"
+    printf 'pts_delta_gate_failed: %s\n' "$pts_delta_gate_failed"
     printf 'configured: %s\n' "$configured"
     printf 'av1_packet_queue_capacity: %s\n' "$queue_capacity"
     printf 'av1_packet_queue_pulled_count: %s\n' "$queue_pulled_count"
@@ -864,7 +886,9 @@ if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_pi
     printf 'stream_max_active_reference_pictures: %s\n' "$stream_max_active_reference_pictures"
     printf 'session_max_dpb_slots: %s\n' "$session_max_dpb_slots"
     printf 'session_max_active_reference_pictures: %s\n' "$session_max_active_reference_pictures"
+    printf 'present_mode: %s\n' "$present_mode"
     printf 'pacing_strategy: %s\n' "$pacing_strategy"
+    printf 'expected_pacing_strategy: %s\n' "$expected_pacing_strategy"
     printf 'frame_sleep_count: %s\n' "$frame_sleep_count_value"
     printf 'pacing_gate_failed: %s\n' "$pacing_gate_failed"
     printf 'dpb_gate_failed: %s\n' "$dpb_gate_failed"
@@ -911,7 +935,7 @@ fi
   printf 'source_extent: %s\n' "$(jq -c '.source_extent' "$runtime_json")"
   printf 'swapchain_extent: %s\n' "$(jq -c '.swapchain_extent' "$runtime_json")"
   printf 'swapchain_format: %s\n' "$(jq -r '.swapchain_format' "$runtime_json")"
-  printf 'present_mode: %s\n' "$(jq -r '.present_mode' "$runtime_json")"
+  printf 'present_mode: %s\n' "$present_mode"
   printf 'runtime_elapsed_ms: %s\n' "$(jq -r '.runtime_elapsed_ms' "$runtime_json")"
   printf 'requested_codec: %s\n' "$requested_codec"
   printf 'picture_format: %s\n' "$picture_format"
@@ -933,6 +957,7 @@ fi
   printf 'first_frame_key: %s\n' "$first_frame_key"
   printf 'loop_first_non_key_count: %s\n' "$loop_first_non_key_count"
   printf 'pacing_strategy: %s\n' "$pacing_strategy"
+  printf 'expected_pacing_strategy: %s\n' "$expected_pacing_strategy"
   printf 'frame_sleep_count: %s\n' "$frame_sleep_count_value"
   printf 'missed_frame_pacing_count: %s\n' "$(jq -r '.missed_frame_pacing_count // 0' "$runtime_json")"
   printf 'total_frame_sleep_us: %s\n' "$(jq -r '.total_frame_sleep_us // 0' "$runtime_json")"
@@ -1109,6 +1134,11 @@ fi
   printf 'frame_types_tail: %s\n' "$(jq -c '[.frames[-32:][]?.frame_type_label]' "$runtime_json")"
   printf 'pts_delta_min_ms: %s\n' "$pts_delta_min"
   printf 'pts_delta_max_ms: %s\n' "$pts_delta_max"
+  printf 'pts_delta_expected_min_ms: %s\n' "$pts_delta_expected_min"
+  printf 'pts_delta_expected_max_ms: %s\n' "$pts_delta_expected_max"
+  printf 'pts_delta_in_expected_range: %s\n' "$pts_delta_in_expected_range"
+  printf 'pts_delta_script_expected_min_ms: %s\n' "$script_pts_delta_expected_min"
+  printf 'pts_delta_script_expected_max_ms: %s\n' "$script_pts_delta_expected_max"
   printf 'max_bitstream_upload_elapsed_us: %s\n' "$(jq -r '[.frames[]?.bitstream_upload_elapsed_us] | max // 0' "$runtime_json")"
   printf 'max_decode_elapsed_us: %s\n' "$(jq -r '[.frames[]?.decode_elapsed_us] | max // 0' "$runtime_json")"
   printf 'avg_acquire_elapsed_us: %s\n' "$(jq -r '[.frames[]?.acquire_elapsed_us] | add / length' "$runtime_json")"

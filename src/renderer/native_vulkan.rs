@@ -56,6 +56,22 @@ unsafe extern "C" {
 
 const NATIVE_VULKAN_VIDEO_CODEC_OPERATION_DECODE_VP9: u32 = 0x0000_0008;
 
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[path = "native_vulkan/h264.rs"]
+mod h264;
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[path = "native_vulkan/sampling.rs"]
+mod sampling;
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[path = "native_vulkan/pacing.rs"]
+mod pacing;
+
+#[cfg(feature = "native-vulkan-gst-video")]
+#[path = "native_vulkan/timeline.rs"]
+mod timeline;
+
 #[cfg(feature = "native-vulkan-gst-video")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeVulkanH264VideoInputMode {
@@ -2428,6 +2444,9 @@ pub struct NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
     pub h265_packet_queue_retained_payload_bytes: u64,
     pub pts_delta_min_ms: Option<u64>,
     pub pts_delta_max_ms: Option<u64>,
+    pub pts_delta_expected_min_ms: Option<u64>,
+    pub pts_delta_expected_max_ms: Option<u64>,
+    pub pts_delta_in_expected_range: Option<bool>,
     pub frames: Vec<NativeVulkanDirectH265ReadyPrefixFrameSnapshot>,
     pub last_render_error: Option<String>,
 }
@@ -2677,6 +2696,9 @@ pub struct NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot {
     pub av1_bootstrap_temporal_units: Vec<NativeVulkanAv1TemporalUnitSnapshot>,
     pub pts_delta_min_ms: Option<u64>,
     pub pts_delta_max_ms: Option<u64>,
+    pub pts_delta_expected_min_ms: Option<u64>,
+    pub pts_delta_expected_max_ms: Option<u64>,
+    pub pts_delta_in_expected_range: Option<bool>,
     pub diagnostic_hidden_frames: Vec<NativeVulkanDirectAv1ReadyPrefixFrameSnapshot>,
     pub frames: Vec<NativeVulkanDirectAv1ReadyPrefixFrameSnapshot>,
     pub last_render_error: Option<String>,
@@ -2849,6 +2871,9 @@ pub struct NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot {
     pub session_max_dpb_slots: u32,
     pub session_max_active_reference_pictures: u32,
     pub h264_picture_layout: &'static str,
+    pub h264_stream_profile: &'static str,
+    pub h264_stream_profile_idc: u8,
+    pub h264_vulkan_std_profile_idc: u32,
     pub swapchain_extent: (u32, u32),
     pub swapchain_image_count: usize,
     pub swapchain_format: String,
@@ -2904,6 +2929,9 @@ pub struct NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot {
     pub h264_decode_ahead_copy_wait_reference_hazard_count: u32,
     pub pts_delta_min_ms: Option<u64>,
     pub pts_delta_max_ms: Option<u64>,
+    pub pts_delta_expected_min_ms: Option<u64>,
+    pub pts_delta_expected_max_ms: Option<u64>,
+    pub pts_delta_in_expected_range: Option<bool>,
     pub frames: Vec<NativeVulkanDirectH264ReadyPrefixFrameSnapshot>,
     pub last_render_error: Option<String>,
 }
@@ -4453,21 +4481,12 @@ pub fn run_h265_first_frame_video(
 
             let started_at = Instant::now();
             let deadline = started_at + duration;
-            let fifo_present_paced = swapchain_plan.present_mode == vk::PresentModeKHR::FIFO;
-            let pacing_strategy = if fifo_present_paced {
-                "fifo-present-blocking-no-cpu-sleep"
-            } else if target_max_fps.is_some_and(|fps| fps > 0) {
-                "target-fps-cpu-sleep"
-            } else {
-                "unlimited"
-            };
-            let frame_interval = if fifo_present_paced {
-                None
-            } else {
-                target_max_fps
-                    .filter(|fps| *fps > 0)
-                    .map(|fps| Duration::from_secs_f64(1.0 / fps as f64))
-            };
+            let pacing_plan = pacing::native_vulkan_video_pacing_plan(
+                swapchain_plan.present_mode,
+                target_max_fps,
+            );
+            let pacing_strategy = pacing_plan.strategy;
+            let frame_interval = pacing_plan.frame_interval;
             let frame_pacing_spin_margin = native_vulkan_frame_pacing_spin_margin(target_max_fps);
             let mut next_frame = Instant::now();
             let mut frames_rendered = 0u64;
@@ -4845,15 +4864,27 @@ pub fn run_h264_ready_prefix_video(
         &parameter_sets.sps,
         stream_has_field_pictures,
     );
+    let h264_stream_profile = parameter_sets.sps.profile_label;
+    let h264_std_profile_idc = h264::native_vulkan_h264_std_profile_idc(
+        parameter_sets.sps.profile_idc,
+    )
+    .ok_or_else(|| {
+        NativeVulkanError::Video(format!(
+            "H.264 {} profile_idc {} is not supported by the direct Vulkan STD profile mapper",
+            h264_stream_profile, parameter_sets.sps.profile_idc
+        ))
+    })?;
     let video_queue_loader = ash::khr::video_queue::Instance::new(&probe._entry, &probe.instance);
     let (h264_picture_layout, capabilities) =
         native_vulkan_select_h264_picture_layout_capabilities(
             &video_queue_loader,
             present_selection.physical_device,
+            h264_std_profile_idc,
+            h264_stream_profile,
             &h264_picture_layout_candidates,
         )?;
     let mut h264_profile_info = vk::VideoDecodeH264ProfileInfoKHR::default()
-        .std_profile_idc(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH)
+        .std_profile_idc(h264_std_profile_idc)
         .picture_layout(h264_picture_layout);
     let profile_info = vk::VideoProfileInfoKHR::default()
         .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_H264)
@@ -5434,21 +5465,12 @@ pub fn run_h264_ready_prefix_video(
             ];
             let mut swapchain_image_layouts =
                 vec![vk::ImageLayout::UNDEFINED; swapchain_images.len()];
-            let fifo_present_paced = swapchain_plan.present_mode == vk::PresentModeKHR::FIFO;
-            let pacing_strategy = if fifo_present_paced {
-                "fifo-present-blocking-no-cpu-sleep"
-            } else if target_max_fps.is_some_and(|fps| fps > 0) {
-                "target-fps-cpu-sleep"
-            } else {
-                "unlimited"
-            };
-            let frame_interval = if fifo_present_paced {
-                None
-            } else {
-                target_max_fps
-                    .filter(|fps| *fps > 0)
-                    .map(|fps| Duration::from_secs_f64(1.0 / fps as f64))
-            };
+            let pacing_plan = pacing::native_vulkan_video_pacing_plan(
+                swapchain_plan.present_mode,
+                target_max_fps,
+            );
+            let pacing_strategy = pacing_plan.strategy;
+            let frame_interval = pacing_plan.frame_interval;
             let frame_pacing_spin_margin = native_vulkan_frame_pacing_spin_margin(target_max_fps);
             let mut next_frame = Instant::now();
             let started_at = Instant::now();
@@ -6321,6 +6343,10 @@ pub fn run_h264_ready_prefix_video(
                     } else {
                         0.0
                     };
+                let pts_delta_summary = timeline::native_vulkan_timeline_pts_delta_summary(
+                    target_max_fps,
+                    frames.iter().map(|frame| frame.pts_delta_ms),
+                );
                 return Ok(NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot {
                     runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
                     requested_frame_count: playback_frame_count,
@@ -6386,6 +6412,9 @@ pub fn run_h264_ready_prefix_video(
                     h264_picture_layout: native_vulkan_h264_picture_layout_label(
                         h264_picture_layout,
                     ),
+                    h264_stream_profile,
+                    h264_stream_profile_idc: parameter_sets.sps.profile_idc,
+                    h264_vulkan_std_profile_idc: h264_std_profile_idc,
                     swapchain_extent: (swapchain_plan.extent.width, swapchain_plan.extent.height),
                     swapchain_image_count: swapchain_images.len(),
                     swapchain_format: native_vulkan_format_label(swapchain_plan.format.format)
@@ -6449,8 +6478,11 @@ pub fn run_h264_ready_prefix_video(
                     h264_decode_ahead_skip_bitstream_overlap_count: 0,
                     h264_decode_ahead_copy_wait_output_hazard_count: 0,
                     h264_decode_ahead_copy_wait_reference_hazard_count: 0,
-                    pts_delta_min_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).min(),
-                    pts_delta_max_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).max(),
+                    pts_delta_min_ms: pts_delta_summary.actual_min_ms,
+                    pts_delta_max_ms: pts_delta_summary.actual_max_ms,
+                    pts_delta_expected_min_ms: pts_delta_summary.expected_min_ms,
+                    pts_delta_expected_max_ms: pts_delta_summary.expected_max_ms,
+                    pts_delta_in_expected_range: pts_delta_summary.in_expected_range,
                     frames,
                     last_render_error: None,
                 });
@@ -8025,6 +8057,10 @@ pub fn run_h264_ready_prefix_video(
             } else {
                 0.0
             };
+            let pts_delta_summary = timeline::native_vulkan_timeline_pts_delta_summary(
+                target_max_fps,
+                frames.iter().map(|frame| frame.pts_delta_ms),
+            );
             Ok(NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot {
                 runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
                 requested_frame_count: playback_frame_count,
@@ -8088,6 +8124,9 @@ pub fn run_h264_ready_prefix_video(
                 session_max_dpb_slots,
                 session_max_active_reference_pictures,
                 h264_picture_layout: native_vulkan_h264_picture_layout_label(h264_picture_layout),
+                h264_stream_profile,
+                h264_stream_profile_idc: parameter_sets.sps.profile_idc,
+                h264_vulkan_std_profile_idc: h264_std_profile_idc,
                 swapchain_extent: (swapchain_plan.extent.width, swapchain_plan.extent.height),
                 swapchain_image_count: swapchain_images.len(),
                 swapchain_format: native_vulkan_format_label(swapchain_plan.format.format)
@@ -8155,8 +8194,11 @@ pub fn run_h264_ready_prefix_video(
                 h264_decode_ahead_skip_bitstream_overlap_count,
                 h264_decode_ahead_copy_wait_output_hazard_count,
                 h264_decode_ahead_copy_wait_reference_hazard_count,
-                pts_delta_min_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).min(),
-                pts_delta_max_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).max(),
+                pts_delta_min_ms: pts_delta_summary.actual_min_ms,
+                pts_delta_max_ms: pts_delta_summary.actual_max_ms,
+                pts_delta_expected_min_ms: pts_delta_summary.expected_min_ms,
+                pts_delta_expected_max_ms: pts_delta_summary.expected_max_ms,
+                pts_delta_in_expected_range: pts_delta_summary.in_expected_range,
                 frames,
                 last_render_error: None,
             })
@@ -8837,21 +8879,12 @@ pub fn run_h265_ready_prefix_video(
             ];
             let mut swapchain_image_layouts =
                 vec![vk::ImageLayout::UNDEFINED; swapchain_images.len()];
-            let fifo_present_paced = swapchain_plan.present_mode == vk::PresentModeKHR::FIFO;
-            let pacing_strategy = if fifo_present_paced {
-                "fifo-present-blocking-no-cpu-sleep"
-            } else if target_max_fps.is_some_and(|fps| fps > 0) {
-                "target-fps-cpu-sleep"
-            } else {
-                "unlimited"
-            };
-            let frame_interval = if fifo_present_paced {
-                None
-            } else {
-                target_max_fps
-                    .filter(|fps| *fps > 0)
-                    .map(|fps| Duration::from_secs_f64(1.0 / fps as f64))
-            };
+            let pacing_plan = pacing::native_vulkan_video_pacing_plan(
+                swapchain_plan.present_mode,
+                target_max_fps,
+            );
+            let pacing_strategy = pacing_plan.strategy;
+            let frame_interval = pacing_plan.frame_interval;
             let frame_pacing_spin_margin = native_vulkan_frame_pacing_spin_margin(target_max_fps);
             let mut next_frame = Instant::now();
             let started_at = Instant::now();
@@ -9465,6 +9498,10 @@ pub fn run_h265_ready_prefix_video(
 
             let elapsed = started_at.elapsed();
             let presented_frame_count = frames.len() as u32;
+            let pts_delta_summary = timeline::native_vulkan_timeline_pts_delta_summary(
+                target_max_fps,
+                frames.iter().map(|frame| frame.pts_delta_ms),
+            );
             Ok(NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
                 runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
                 requested_codec: codec,
@@ -9553,8 +9590,11 @@ pub fn run_h265_ready_prefix_video(
                     .bootstrap_discarded_access_units,
                 h265_packet_queue_max_payload_bytes: streaming_queue.max_payload_bytes,
                 h265_packet_queue_retained_payload_bytes: streaming_queue.retained_payload_bytes(),
-                pts_delta_min_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).min(),
-                pts_delta_max_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).max(),
+                pts_delta_min_ms: pts_delta_summary.actual_min_ms,
+                pts_delta_max_ms: pts_delta_summary.actual_max_ms,
+                pts_delta_expected_min_ms: pts_delta_summary.expected_min_ms,
+                pts_delta_expected_max_ms: pts_delta_summary.expected_max_ms,
+                pts_delta_in_expected_range: pts_delta_summary.in_expected_range,
                 frames,
                 last_render_error: None,
             })
@@ -10717,21 +10757,12 @@ pub fn run_av1_ready_prefix_video(
             let mut av1_display_slot_reuse_timeline_values = vec![0u64; av1_display_textures.len()];
             let mut next_av1_display_slot_reuse_timeline_value = 0u64;
             let mut next_av1_visible_decode_ahead_timeline_value = 0u64;
-            let fifo_present_paced = swapchain_plan.present_mode == vk::PresentModeKHR::FIFO;
-            let pacing_strategy = if fifo_present_paced {
-                "fifo-present-blocking-no-cpu-sleep"
-            } else if target_max_fps.is_some_and(|fps| fps > 0) {
-                "target-fps-cpu-sleep"
-            } else {
-                "unlimited"
-            };
-            let frame_interval = if fifo_present_paced {
-                None
-            } else {
-                target_max_fps
-                    .filter(|fps| *fps > 0)
-                    .map(|fps| Duration::from_secs_f64(1.0 / fps as f64))
-            };
+            let pacing_plan = pacing::native_vulkan_video_pacing_plan(
+                swapchain_plan.present_mode,
+                target_max_fps,
+            );
+            let pacing_strategy = pacing_plan.strategy;
+            let frame_interval = pacing_plan.frame_interval;
             let frame_pacing_spin_margin = native_vulkan_frame_pacing_spin_margin(target_max_fps);
             let mut next_frame = Instant::now();
             let mut started_at = Instant::now();
@@ -15541,6 +15572,10 @@ pub fn run_av1_ready_prefix_video(
                 .map(|frame| frame.src_buffer_range)
                 .sum::<u64>()
                 .saturating_add(hidden_bitstream_uploaded_bytes);
+            let pts_delta_summary = timeline::native_vulkan_timeline_pts_delta_summary(
+                target_max_fps,
+                frames.iter().map(|frame| frame.pts_delta_ms),
+            );
             Ok(NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot {
                 runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
                 requested_codec: codec,
@@ -15905,8 +15940,11 @@ pub fn run_av1_ready_prefix_video(
                 av1_decode_hidden_slot_wait_elapsed_us: av1_decode_wait_stats.hidden_elapsed_us,
                 av1_decode_hidden_slot_wait_max_us: av1_decode_wait_stats.hidden_max_us,
                 av1_bootstrap_temporal_units,
-                pts_delta_min_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).min(),
-                pts_delta_max_ms: frames.iter().filter_map(|frame| frame.pts_delta_ms).max(),
+                pts_delta_min_ms: pts_delta_summary.actual_min_ms,
+                pts_delta_max_ms: pts_delta_summary.actual_max_ms,
+                pts_delta_expected_min_ms: pts_delta_summary.expected_min_ms,
+                pts_delta_expected_max_ms: pts_delta_summary.expected_max_ms,
+                pts_delta_in_expected_range: pts_delta_summary.in_expected_range,
                 diagnostic_hidden_frames,
                 frames,
                 last_render_error: None,
@@ -17690,7 +17728,7 @@ impl NativeVulkanVideoRenderer {
                 &[descriptor_set],
                 &[],
             );
-            let push = native_vulkan_video_fit_push_constants(
+            let push = sampling::native_vulkan_video_fit_push_constants(
                 fit,
                 (texture.width(), texture.height()),
                 (self.extent.width, self.extent.height),
@@ -17938,36 +17976,6 @@ fn native_vulkan_create_shader_module(
             result,
         }
     })
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_video_fit_push_constants(
-    fit: FitMode,
-    source_size: (u32, u32),
-    surface_size: (u32, u32),
-) -> [f32; 4] {
-    let (offset, scale) = native_vulkan_video_uv_transform(fit, source_size, surface_size);
-    [offset[0], offset[1], scale[0], scale[1]]
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_video_uv_transform(
-    fit: FitMode,
-    source_size: (u32, u32),
-    surface_size: (u32, u32),
-) -> ([f32; 2], [f32; 2]) {
-    if matches!(fit, FitMode::Stretch | FitMode::Contain | FitMode::Center) {
-        return ([0.0, 0.0], [1.0, 1.0]);
-    }
-    let source_aspect = source_size.0.max(1) as f32 / source_size.1.max(1) as f32;
-    let surface_aspect = surface_size.0.max(1) as f32 / surface_size.1.max(1) as f32;
-    if source_aspect > surface_aspect {
-        let width = (surface_aspect / source_aspect).clamp(0.0, 1.0);
-        ([(1.0 - width) * 0.5, 0.0], [width, 1.0])
-    } else {
-        let height = (source_aspect / surface_aspect).clamp(0.0, 1.0);
-        ([0.0, (1.0 - height) * 0.5], [1.0, height])
-    }
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -38302,6 +38310,8 @@ fn native_vulkan_h264_picture_layout_candidates(
 fn native_vulkan_select_h264_picture_layout_capabilities(
     video_queue_loader: &ash::khr::video_queue::Instance,
     physical_device: vk::PhysicalDevice,
+    std_profile_idc: vk::native::StdVideoH264ProfileIdc,
+    profile_label: &'static str,
     picture_layouts: &[vk::VideoDecodeH264PictureLayoutFlagsKHR],
 ) -> Result<
     (
@@ -38313,7 +38323,7 @@ fn native_vulkan_select_h264_picture_layout_capabilities(
     let mut failures = Vec::<String>::new();
     for picture_layout in picture_layouts {
         let mut h264_profile_info = vk::VideoDecodeH264ProfileInfoKHR::default()
-            .std_profile_idc(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH)
+            .std_profile_idc(std_profile_idc)
             .picture_layout(*picture_layout);
         let profile_info = vk::VideoProfileInfoKHR::default()
             .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_H264)
@@ -38334,7 +38344,7 @@ fn native_vulkan_select_h264_picture_layout_capabilities(
         }
     }
     Err(NativeVulkanError::Video(format!(
-        "direct H.264 ready-prefix video could not find a supported picture layout: {}",
+        "direct H.264 {profile_label} ready-prefix video could not find a supported picture layout: {}",
         failures.join("; ")
     )))
 }
@@ -39339,11 +39349,12 @@ fn native_vulkan_parse_h264_parameter_sets(
 
     let sps = native_vulkan_parse_h264_sps(sps_payload.payload)?;
     let pps = native_vulkan_parse_h264_pps(pps_payload.payload, &sps)?;
-    let requested_profile_compatible = sps.profile_idc == 100
-        && sps.chroma_format_idc == 1
-        && !sps.separate_colour_plane_flag
-        && sps.bit_depth_luma_minus8 == 0
-        && sps.bit_depth_chroma_minus8 == 0;
+    let requested_profile_compatible =
+        h264::native_vulkan_h264_profile_is_8bit_420_decode_candidate(sps.profile_idc)
+            && sps.chroma_format_idc == 1
+            && !sps.separate_colour_plane_flag
+            && sps.bit_depth_luma_minus8 == 0
+            && sps.bit_depth_chroma_minus8 == 0;
     let vulkan_std_session_parameters_ready = requested_profile_compatible
         && sps.id == pps.sps_id
         && pps.num_slice_groups_minus1 == 0
@@ -39388,7 +39399,7 @@ fn native_vulkan_parse_h264_sps(payload: &[u8]) -> Result<NativeVulkanH264SpsSna
     let mut bit_depth_chroma_minus8 = 0;
     let mut qpprime_y_zero_transform_bypass_flag = false;
     let mut seq_scaling_matrix_present_flag = false;
-    if native_vulkan_h264_profile_has_high_syntax(profile_idc) {
+    if h264::native_vulkan_h264_profile_has_high_syntax(profile_idc) {
         chroma_format_idc = bits.read_ue("chroma_format_idc")?;
         if chroma_format_idc > 3 {
             return Err(format!(
@@ -39494,7 +39505,7 @@ fn native_vulkan_parse_h264_sps(payload: &[u8]) -> Result<NativeVulkanH264SpsSna
     Ok(NativeVulkanH264SpsSnapshot {
         id,
         profile_idc,
-        profile_label: native_vulkan_h264_profile_idc_label(profile_idc),
+        profile_label: h264::native_vulkan_h264_profile_idc_label(profile_idc),
         constraint_set0_flag,
         constraint_set1_flag,
         constraint_set2_flag,
@@ -39695,28 +39706,6 @@ fn native_vulkan_h264_skip_scaling_list(
 }
 
 #[cfg(any(feature = "native-vulkan-gst-video", test))]
-fn native_vulkan_h264_profile_has_high_syntax(profile_idc: u8) -> bool {
-    matches!(
-        profile_idc,
-        100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
-    )
-}
-
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
-fn native_vulkan_h264_profile_idc_label(profile_idc: u8) -> &'static str {
-    match profile_idc {
-        66 => "baseline",
-        77 => "main",
-        88 => "extended",
-        100 => "high",
-        110 => "high-10",
-        122 => "high-422",
-        244 => "high-444-predictive",
-        _ => "unknown",
-    }
-}
-
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
 fn native_vulkan_h264_chroma_format_label(chroma_format_idc: u32) -> &'static str {
     match chroma_format_idc {
         0 => "monochrome",
@@ -39764,22 +39753,6 @@ fn native_vulkan_h264_u16(value: u32, label: &'static str) -> Result<u16, String
 
 fn native_vulkan_h264_i8(value: i32, label: &'static str) -> Result<i8, String> {
     i8::try_from(value).map_err(|_| format!("{label}={value} exceeds i8 range"))
-}
-
-fn native_vulkan_h264_std_profile_idc(
-    profile_idc: u8,
-) -> Result<vk::native::StdVideoH264ProfileIdc, NativeVulkanError> {
-    match profile_idc {
-        66 => Ok(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_BASELINE),
-        77 => Ok(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_MAIN),
-        100 => Ok(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH),
-        244 => {
-            Ok(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH_444_PREDICTIVE)
-        }
-        _ => Err(NativeVulkanError::Video(format!(
-            "H.264 profile_idc {profile_idc} is not supported by the Vulkan STD mapper"
-        ))),
-    }
 }
 
 fn native_vulkan_h264_std_level_idc(
@@ -45529,7 +45502,13 @@ fn native_vulkan_create_h264_video_session_parameters(
             ),
             __bindgen_padding_0: 0,
         },
-        profile_idc: native_vulkan_h264_std_profile_idc(parameter_sets.sps.profile_idc)?,
+        profile_idc: h264::native_vulkan_h264_std_profile_idc(parameter_sets.sps.profile_idc)
+            .ok_or_else(|| {
+                NativeVulkanError::Video(format!(
+                    "H.264 {} profile_idc {} is not supported by the Vulkan STD mapper",
+                    parameter_sets.sps.profile_label, parameter_sets.sps.profile_idc
+                ))
+            })?,
         level_idc: native_vulkan_h264_std_level_idc(parameter_sets.sps.level_idc)?,
         chroma_format_idc: native_vulkan_h264_std_chroma_format_idc(
             parameter_sets.sps.chroma_format_idc,
