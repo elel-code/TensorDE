@@ -125,6 +125,7 @@ pub struct NativeVulkanVulkanaliaH264ReadyPrefixCommandSmokeSnapshot {
     pub uses_submit2: bool,
     pub wait_idle_after_submit: bool,
     pub wait_fence_after_submit: bool,
+    pub batch_wait_fence_after_submit: bool,
     pub uses_submit_fence: bool,
     pub submit_sync_model: &'static str,
     pub submit_command_order: Vec<&'static str>,
