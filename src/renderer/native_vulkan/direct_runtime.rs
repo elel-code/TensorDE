@@ -82,6 +82,21 @@ pub(super) trait NativeVulkanDirectOptionalPresentTimedFrame {
     );
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct NativeVulkanDirectPresentWaitStats {
+    pub(super) wait_count: u32,
+    pub(super) elapsed_us: u64,
+    pub(super) max_us: u64,
+}
+
+impl NativeVulkanDirectPresentWaitStats {
+    pub(super) fn record_wait_elapsed_us(&mut self, elapsed_us: u64) {
+        self.wait_count = self.wait_count.saturating_add(1);
+        self.elapsed_us = self.elapsed_us.saturating_add(elapsed_us);
+        self.max_us = self.max_us.max(elapsed_us);
+    }
+}
+
 pub(super) fn native_vulkan_direct_apply_present_result<F>(
     codec_label: &'static str,
     frames: &mut [F],
@@ -358,6 +373,19 @@ mod tests {
         assert_eq!(summary.present_result_first_interval_us, 16_667);
         assert_eq!(summary.present_result_over_budget_count, 0);
         assert_eq!(summary.present_result_missed_vblank_count, 0);
+    }
+
+    #[test]
+    fn present_wait_stats_accumulate_waits_and_keep_max() {
+        let mut stats = NativeVulkanDirectPresentWaitStats::default();
+
+        stats.record_wait_elapsed_us(120);
+        stats.record_wait_elapsed_us(30);
+        stats.record_wait_elapsed_us(500);
+
+        assert_eq!(stats.wait_count, 3);
+        assert_eq!(stats.elapsed_us, 650);
+        assert_eq!(stats.max_us, 500);
     }
 
     #[test]

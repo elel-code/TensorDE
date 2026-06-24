@@ -139,9 +139,9 @@ pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolic
 use direct_runtime::{
     NativeVulkanDirectDisplayHandoffMetrics, NativeVulkanDirectOptionalPresentTimedFrame,
     NativeVulkanDirectOptionalPresentTiming, NativeVulkanDirectPresentTimedFrame,
-    NativeVulkanDirectPresentTiming, native_vulkan_direct_apply_optional_present_result,
-    native_vulkan_direct_apply_present_result, native_vulkan_direct_present_result_summary,
-    native_vulkan_direct_runtime_summary,
+    NativeVulkanDirectPresentTiming, NativeVulkanDirectPresentWaitStats,
+    native_vulkan_direct_apply_optional_present_result, native_vulkan_direct_apply_present_result,
+    native_vulkan_direct_present_result_summary, native_vulkan_direct_runtime_summary,
 };
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
@@ -5672,9 +5672,8 @@ pub fn run_h264_ready_prefix_video(
                         .min(render_finished_by_image.len().max(1) as u32)
                         .min(direct_decode_semaphores.len().max(1) as u32);
                 let mut h264_present_frame_preroll_count = 0u32;
-                let mut h264_present_result_wait_count = 0u32;
-                let mut h264_present_result_wait_elapsed_us = 0u64;
-                let mut h264_present_result_wait_max_us = 0u64;
+                let mut h264_present_result_wait_stats =
+                    NativeVulkanDirectPresentWaitStats::default();
                 let mut h264_acquire_not_ready_count = 0u32;
                 let mut pending_present_results = 0u32;
                 let mut dpb_slot_in_flight_fences =
@@ -5973,13 +5972,8 @@ pub fn run_h264_ready_prefix_video(
                         })?;
                             let present_result_wait_elapsed_us =
                                 native_vulkan_elapsed_us(present_result_wait_started_at.elapsed());
-                            h264_present_result_wait_count =
-                                h264_present_result_wait_count.saturating_add(1);
-                            h264_present_result_wait_elapsed_us =
-                                h264_present_result_wait_elapsed_us
-                                    .saturating_add(present_result_wait_elapsed_us);
-                            h264_present_result_wait_max_us =
-                                h264_present_result_wait_max_us.max(present_result_wait_elapsed_us);
+                            h264_present_result_wait_stats
+                                .record_wait_elapsed_us(present_result_wait_elapsed_us);
                             pending_present_results = pending_present_results.saturating_sub(1);
                             apply_h264_direct_present_result(
                                 &mut frames,
@@ -6417,12 +6411,8 @@ pub fn run_h264_ready_prefix_video(
                     })?;
                         let present_result_wait_elapsed_us =
                             native_vulkan_elapsed_us(present_result_wait_started_at.elapsed());
-                        h264_present_result_wait_count =
-                            h264_present_result_wait_count.saturating_add(1);
-                        h264_present_result_wait_elapsed_us = h264_present_result_wait_elapsed_us
-                            .saturating_add(present_result_wait_elapsed_us);
-                        h264_present_result_wait_max_us =
-                            h264_present_result_wait_max_us.max(present_result_wait_elapsed_us);
+                        h264_present_result_wait_stats
+                            .record_wait_elapsed_us(present_result_wait_elapsed_us);
                         pending_present_results = pending_present_results.saturating_sub(1);
                         apply_h264_direct_present_result(
                             &mut frames,
@@ -6578,9 +6568,9 @@ pub fn run_h264_ready_prefix_video(
                     h264_video_queue_sync_strategy,
                     h264_present_queue_count: requested_present_queue_count,
                     h264_async_present_depth: direct_async_present_depth,
-                    h264_present_result_wait_count,
-                    h264_present_result_wait_elapsed_us,
-                    h264_present_result_wait_max_us,
+                    h264_present_result_wait_count: h264_present_result_wait_stats.wait_count,
+                    h264_present_result_wait_elapsed_us: h264_present_result_wait_stats.elapsed_us,
+                    h264_present_result_wait_max_us: h264_present_result_wait_stats.max_us,
                     h264_acquire_not_ready_count,
                     h264_acquire_wait_present_result_count: 0,
                     h264_acquire_wait_present_result_elapsed_us: 0,
@@ -6665,9 +6655,7 @@ pub fn run_h264_ready_prefix_video(
             let mut h264_display_copy_count = 0u32;
             let mut h264_display_copy_record_elapsed_us = 0u64;
             let mut h264_display_copy_submit_elapsed_us = 0u64;
-            let mut h264_present_result_wait_count = 0u32;
-            let mut h264_present_result_wait_elapsed_us = 0u64;
-            let mut h264_present_result_wait_max_us = 0u64;
+            let mut h264_present_result_wait_stats = NativeVulkanDirectPresentWaitStats::default();
             let mut h264_acquire_not_ready_count = 0u32;
             let h264_acquire_wait_present_result_count = 0u32;
             let h264_acquire_wait_present_result_elapsed_us = 0u64;
@@ -7080,13 +7068,8 @@ pub fn run_h264_ready_prefix_video(
                             })?;
                             let present_result_wait_elapsed_us =
                                 native_vulkan_elapsed_us(present_result_wait_started_at.elapsed());
-                            h264_present_result_wait_count =
-                                h264_present_result_wait_count.saturating_add(1);
-                            h264_present_result_wait_elapsed_us =
-                                h264_present_result_wait_elapsed_us
-                                    .saturating_add(present_result_wait_elapsed_us);
-                            h264_present_result_wait_max_us =
-                                h264_present_result_wait_max_us.max(present_result_wait_elapsed_us);
+                            h264_present_result_wait_stats
+                                .record_wait_elapsed_us(present_result_wait_elapsed_us);
                             pending_present_results = pending_present_results.saturating_sub(1);
                             native_vulkan_h264_trace(
                                 h264_trace_enabled,
@@ -8121,12 +8104,8 @@ pub fn run_h264_ready_prefix_video(
                         })?;
                         let present_result_wait_elapsed_us =
                             native_vulkan_elapsed_us(present_result_wait_started_at.elapsed());
-                        h264_present_result_wait_count =
-                            h264_present_result_wait_count.saturating_add(1);
-                        h264_present_result_wait_elapsed_us = h264_present_result_wait_elapsed_us
-                            .saturating_add(present_result_wait_elapsed_us);
-                        h264_present_result_wait_max_us =
-                            h264_present_result_wait_max_us.max(present_result_wait_elapsed_us);
+                        h264_present_result_wait_stats
+                            .record_wait_elapsed_us(present_result_wait_elapsed_us);
                         pending_present_results = pending_present_results.saturating_sub(1);
                         native_vulkan_h264_trace(
                             h264_trace_enabled,
@@ -8286,9 +8265,9 @@ pub fn run_h264_ready_prefix_video(
                 h264_video_queue_sync_strategy,
                 h264_present_queue_count: requested_present_queue_count,
                 h264_async_present_depth,
-                h264_present_result_wait_count,
-                h264_present_result_wait_elapsed_us,
-                h264_present_result_wait_max_us,
+                h264_present_result_wait_count: h264_present_result_wait_stats.wait_count,
+                h264_present_result_wait_elapsed_us: h264_present_result_wait_stats.elapsed_us,
+                h264_present_result_wait_max_us: h264_present_result_wait_stats.max_us,
                 h264_acquire_not_ready_count,
                 h264_acquire_wait_present_result_count,
                 h264_acquire_wait_present_result_elapsed_us,
@@ -9091,9 +9070,7 @@ pub fn run_h265_ready_prefix_video(
                 render_finished_by_image.len().max(1) as u32,
             );
             let mut h265_present_frame_preroll_count = 0u32;
-            let mut h265_present_result_wait_count = 0u32;
-            let mut h265_present_result_wait_elapsed_us = 0u64;
-            let mut h265_present_result_wait_max_us = 0u64;
+            let mut h265_present_result_wait_stats = NativeVulkanDirectPresentWaitStats::default();
             let mut h265_acquire_not_ready_count = 0u32;
             let mut pending_present_results = 0u32;
             let mut dpb_slot_in_flight_fences =
@@ -9378,12 +9355,8 @@ pub fn run_h265_ready_prefix_video(
                         })?;
                         let present_result_wait_elapsed_us =
                             native_vulkan_elapsed_us(present_result_wait_started_at.elapsed());
-                        h265_present_result_wait_count =
-                            h265_present_result_wait_count.saturating_add(1);
-                        h265_present_result_wait_elapsed_us = h265_present_result_wait_elapsed_us
-                            .saturating_add(present_result_wait_elapsed_us);
-                        h265_present_result_wait_max_us =
-                            h265_present_result_wait_max_us.max(present_result_wait_elapsed_us);
+                        h265_present_result_wait_stats
+                            .record_wait_elapsed_us(present_result_wait_elapsed_us);
                         pending_present_results = pending_present_results.saturating_sub(1);
                         apply_h265_present_result(
                             &mut frames,
@@ -9702,12 +9675,8 @@ pub fn run_h265_ready_prefix_video(
                     })?;
                     let present_result_wait_elapsed_us =
                         native_vulkan_elapsed_us(present_result_wait_started_at.elapsed());
-                    h265_present_result_wait_count =
-                        h265_present_result_wait_count.saturating_add(1);
-                    h265_present_result_wait_elapsed_us = h265_present_result_wait_elapsed_us
-                        .saturating_add(present_result_wait_elapsed_us);
-                    h265_present_result_wait_max_us =
-                        h265_present_result_wait_max_us.max(present_result_wait_elapsed_us);
+                    h265_present_result_wait_stats
+                        .record_wait_elapsed_us(present_result_wait_elapsed_us);
                     pending_present_results = pending_present_results.saturating_sub(1);
                     apply_h265_present_result(
                         &mut frames,
@@ -9857,9 +9826,9 @@ pub fn run_h265_ready_prefix_video(
                 h265_displayed_direct_dpb_count,
                 h265_present_queue_count: requested_present_queue_count,
                 h265_async_present_depth,
-                h265_present_result_wait_count,
-                h265_present_result_wait_elapsed_us,
-                h265_present_result_wait_max_us,
+                h265_present_result_wait_count: h265_present_result_wait_stats.wait_count,
+                h265_present_result_wait_elapsed_us: h265_present_result_wait_stats.elapsed_us,
+                h265_present_result_wait_max_us: h265_present_result_wait_stats.max_us,
                 h265_acquire_not_ready_count,
                 h265_packet_queue_capacity: streaming_queue.capacity.min(u32::MAX as usize) as u32,
                 h265_packet_queue_pulled_count: streaming_queue.pulled_count,
@@ -11117,9 +11086,7 @@ pub fn run_av1_ready_prefix_video(
             let mut av1_decode_wait_stats = NativeVulkanAv1DecodeWaitStats::default();
             let mut av1_hidden_decode_async_handoff_count = 0u32;
             let av1_hidden_decode_handoff_unavailable_count = 0u32;
-            let mut av1_present_result_wait_count = 0u32;
-            let mut av1_present_result_wait_elapsed_us = 0u64;
-            let mut av1_present_result_wait_max_us = 0u64;
+            let mut av1_present_result_wait_stats = NativeVulkanDirectPresentWaitStats::default();
             let mut av1_frame_context_ready_probe_count = 0u32;
             let mut av1_frame_context_ready_hit_count = 0u32;
             let mut av1_frame_context_fallback_count = 0u32;
@@ -11138,9 +11105,8 @@ pub fn run_av1_ready_prefix_video(
             let mut av1_swapchain_image_wait_elapsed_us = 0u64;
             let mut av1_swapchain_image_wait_max_us = 0u64;
             let mut av1_acquire_not_ready_count = 0u32;
-            let mut av1_acquire_wait_present_result_count = 0u32;
-            let mut av1_acquire_wait_present_result_elapsed_us = 0u64;
-            let mut av1_acquire_wait_present_result_max_us = 0u64;
+            let mut av1_acquire_wait_present_result_stats =
+                NativeVulkanDirectPresentWaitStats::default();
             let mut av1_present_frame_preroll_count = 0u32;
             let mut av1_present_frame_queue_submit_count = 0u32;
             let mut av1_acquired_image_queue_attempt_count = 0u32;
@@ -14437,13 +14403,8 @@ pub fn run_av1_ready_prefix_video(
                         )?;
                         let present_wait_elapsed_us =
                             native_vulkan_elapsed_us(present_wait_started_at.elapsed());
-                        av1_present_result_wait_count =
-                            av1_present_result_wait_count.saturating_add(1);
-                        av1_present_result_wait_elapsed_us =
-                            av1_present_result_wait_elapsed_us
-                                .saturating_add(present_wait_elapsed_us);
-                        av1_present_result_wait_max_us =
-                            av1_present_result_wait_max_us.max(present_wait_elapsed_us);
+                        av1_present_result_wait_stats
+                            .record_wait_elapsed_us(present_wait_elapsed_us);
                     }
                 }
                 if av1_acquired_image_queue_enabled {
@@ -14486,13 +14447,8 @@ pub fn run_av1_ready_prefix_video(
                         )?;
                         let present_wait_elapsed_us =
                             native_vulkan_elapsed_us(present_wait_started_at.elapsed());
-                        av1_acquire_wait_present_result_count =
-                            av1_acquire_wait_present_result_count.saturating_add(1);
-                        av1_acquire_wait_present_result_elapsed_us =
-                            av1_acquire_wait_present_result_elapsed_us
-                                .saturating_add(present_wait_elapsed_us);
-                        av1_acquire_wait_present_result_max_us =
-                            av1_acquire_wait_present_result_max_us.max(present_wait_elapsed_us);
+                        av1_acquire_wait_present_result_stats
+                            .record_wait_elapsed_us(present_wait_elapsed_us);
                         if av1_wait_present_before_acquire
                             == NativeVulkanAv1WaitPresentBeforeAcquire::One
                         {
@@ -16032,9 +15988,9 @@ pub fn run_av1_ready_prefix_video(
                 } else {
                     0
                 },
-                av1_present_result_wait_count,
-                av1_present_result_wait_elapsed_us,
-                av1_present_result_wait_max_us,
+                av1_present_result_wait_count: av1_present_result_wait_stats.wait_count,
+                av1_present_result_wait_elapsed_us: av1_present_result_wait_stats.elapsed_us,
+                av1_present_result_wait_max_us: av1_present_result_wait_stats.max_us,
                 av1_frame_context_selection_strategy: if av1_acquired_image_queue_enabled
                     && av1_ready_frame_context_selection
                 {
@@ -16076,9 +16032,12 @@ pub fn run_av1_ready_prefix_video(
                 av1_swapchain_image_wait_elapsed_us,
                 av1_swapchain_image_wait_max_us,
                 av1_acquire_not_ready_count,
-                av1_acquire_wait_present_result_count,
-                av1_acquire_wait_present_result_elapsed_us,
-                av1_acquire_wait_present_result_max_us,
+                av1_acquire_wait_present_result_count: av1_acquire_wait_present_result_stats
+                    .wait_count,
+                av1_acquire_wait_present_result_elapsed_us: av1_acquire_wait_present_result_stats
+                    .elapsed_us,
+                av1_acquire_wait_present_result_max_us: av1_acquire_wait_present_result_stats
+                    .max_us,
                 av1_acquired_image_queue_slot_count: if av1_acquired_image_queue_enabled {
                     av1_acquired_image_queue_slots
                         .len()
