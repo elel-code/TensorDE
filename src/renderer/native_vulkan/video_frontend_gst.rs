@@ -12,10 +12,8 @@ use super::video_frontend::{
     NativeVulkanVideoFrontendMemoryPreference, NativeVulkanVideoFrontendProvider,
     NativeVulkanVideoFrontendRoute, NativeVulkanVideoFrontendSnapshot,
 };
-use super::{
-    NativeVulkanError, NativeVulkanRenderItem, native_vulkan_clock_time_ms,
-    native_vulkan_gst_memory_types,
-};
+use super::video_memory_gst::native_vulkan_gst_memory_types;
+use super::{NativeVulkanError, NativeVulkanRenderItem, native_vulkan_clock_time_ms};
 
 pub(super) struct NativeVulkanGstVideoFrontend {
     pipeline: gst::Element,

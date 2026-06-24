@@ -97,6 +97,10 @@ mod video_frontend;
 mod video_frontend_gst;
 
 #[cfg(feature = "native-vulkan-gst-video")]
+#[path = "native_vulkan/video_memory_gst.rs"]
+mod video_memory_gst;
+
+#[cfg(feature = "native-vulkan-gst-video")]
 #[path = "native_vulkan/audio_clock.rs"]
 mod audio_clock;
 
@@ -129,6 +133,8 @@ pub use video_import::NativeVulkanDmabufImportSnapshot;
 use video_import::NativeVulkanVideoImportSnapshot;
 #[cfg(feature = "native-vulkan-gst-video")]
 use video_import::{NativeVulkanVideoImportReport, NativeVulkanVideoImportStatus};
+#[cfg(feature = "native-vulkan-gst-video")]
+use video_memory_gst::{native_vulkan_gst_memory_type, native_vulkan_gst_memory_types};
 use video_runtime::{NativeVulkanVideoAudioRuntimeTelemetry, native_vulkan_video_runtime_snapshot};
 pub use video_runtime::{NativeVulkanVideoMemoryRouteSnapshot, NativeVulkanVideoRuntimeSnapshot};
 
@@ -16466,48 +16472,6 @@ fn native_vulkan_pace_video_after_frame(
         pacing::NativeVulkanVideoPacingMaster::TargetFps => {
             frame_pacer.pace_after_frame(is_last_frame)
         }
-    }
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_gst_memory_types(buffer: &gst::BufferRef) -> Vec<String> {
-    (0..buffer.n_memory())
-        .map(|index| native_vulkan_gst_memory_type(buffer.peek_memory(index)))
-        .collect()
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_gst_memory_type(memory: &gst::MemoryRef) -> String {
-    for memory_type in [
-        "CUDAMemory",
-        "GLMemory",
-        "DMABuf",
-        "VAMemory",
-        "SystemMemory",
-    ] {
-        if memory.is_type(memory_type) {
-            return memory_type.to_owned();
-        }
-    }
-    let Some(memory_type) = memory
-        .allocator()
-        .map(|allocator| allocator.memory_type().to_string())
-    else {
-        return "unknown".to_owned();
-    };
-    let lower = memory_type.to_ascii_lowercase();
-    if lower.contains("cuda") {
-        "CUDAMemory".to_owned()
-    } else if lower.contains("gl") {
-        "GLMemory".to_owned()
-    } else if lower.contains("dmabuf") || lower.contains("dma-buf") {
-        "DMABuf".to_owned()
-    } else if lower.contains("va") {
-        "VAMemory".to_owned()
-    } else if lower.contains("system") {
-        "SystemMemory".to_owned()
-    } else {
-        memory_type
     }
 }
 
