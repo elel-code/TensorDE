@@ -137,6 +137,31 @@ impl NativeVulkanDirectPresentBackpressure {
     }
 }
 
+pub(super) fn native_vulkan_direct_pending_flag_count<I>(pending_flags: I) -> usize
+where
+    I: IntoIterator<Item = bool>,
+{
+    pending_flags.into_iter().filter(|pending| *pending).count()
+}
+
+pub(super) fn native_vulkan_direct_has_pending_flags<I>(pending_flags: I) -> bool
+where
+    I: IntoIterator<Item = bool>,
+{
+    pending_flags.into_iter().any(|pending| pending)
+}
+
+pub(super) fn native_vulkan_direct_pending_flags_reached_limit<I>(
+    pending_flags: I,
+    max_pending_results: usize,
+) -> bool
+where
+    I: IntoIterator<Item = bool>,
+{
+    max_pending_results > 0
+        && native_vulkan_direct_pending_flag_count(pending_flags) >= max_pending_results
+}
+
 pub(super) fn native_vulkan_direct_recv_present_result<T>(
     present_result_rx: &mpsc::Receiver<T>,
     wait_stats: &mut NativeVulkanDirectPresentWaitStats,
@@ -502,6 +527,28 @@ mod tests {
         backpressure.record_completed_result();
         assert_eq!(backpressure.pending_results(), 0);
         assert!(!backpressure.has_pending_results());
+    }
+
+    #[test]
+    fn pending_flag_helpers_count_any_and_limit() {
+        assert_eq!(
+            native_vulkan_direct_pending_flag_count([true, false, true]),
+            2
+        );
+        assert!(native_vulkan_direct_has_pending_flags([false, true]));
+        assert!(!native_vulkan_direct_has_pending_flags([false, false]));
+        assert!(native_vulkan_direct_pending_flags_reached_limit(
+            [true, false, true],
+            2
+        ));
+        assert!(!native_vulkan_direct_pending_flags_reached_limit(
+            [true, false],
+            2
+        ));
+        assert!(!native_vulkan_direct_pending_flags_reached_limit(
+            [true, false],
+            0
+        ));
     }
 
     #[test]

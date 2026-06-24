@@ -141,7 +141,8 @@ use direct_runtime::{
     NativeVulkanDirectOptionalPresentTiming, NativeVulkanDirectPresentBackpressure,
     NativeVulkanDirectPresentTimedFrame, NativeVulkanDirectPresentTiming,
     NativeVulkanDirectPresentWaitStats, native_vulkan_direct_apply_optional_present_result,
-    native_vulkan_direct_apply_present_result, native_vulkan_direct_present_result_summary,
+    native_vulkan_direct_apply_present_result, native_vulkan_direct_has_pending_flags,
+    native_vulkan_direct_pending_flags_reached_limit, native_vulkan_direct_present_result_summary,
     native_vulkan_direct_recv_pending_present_result, native_vulkan_direct_runtime_summary,
     native_vulkan_direct_try_recv_pending_present_result,
 };
@@ -14343,13 +14344,13 @@ pub fn run_av1_ready_prefix_video(
                     (descriptor_set_index, &texture_storage)
                 };
                 frame.descriptor_update_elapsed_us = 0;
-                if av1_async_present_enabled && av1_async_present_depth > 0 {
-                    while av1_frame_contexts
-                        .iter()
-                        .filter(|context| context.pending_present_result)
-                        .count()
-                        >= av1_async_present_depth
-                    {
+                if av1_async_present_enabled {
+                    while native_vulkan_direct_pending_flags_reached_limit(
+                        av1_frame_contexts
+                            .iter()
+                            .map(|context| context.pending_present_result),
+                        av1_async_present_depth,
+                    ) {
                         let present_wait_started_at = Instant::now();
                         native_vulkan_recv_av1_present_worker_result(
                             &av1_present_result_rx,
@@ -14390,10 +14391,11 @@ pub fn run_av1_ready_prefix_video(
                     && !av1_present_frame_queue_enabled
                     && !has_preacquired_image
                 {
-                    while av1_frame_contexts
-                        .iter()
-                        .any(|context| context.pending_present_result)
-                    {
+                    while native_vulkan_direct_has_pending_flags(
+                        av1_frame_contexts
+                            .iter()
+                            .map(|context| context.pending_present_result),
+                    ) {
                         let present_wait_started_at = Instant::now();
                         native_vulkan_recv_av1_present_worker_result(
                             &av1_present_result_rx,
@@ -14739,9 +14741,11 @@ pub fn run_av1_ready_prefix_video(
                             av1_acquire_not_ready_count =
                                 av1_acquire_not_ready_count.saturating_add(1);
                             if av1_async_present_enabled
-                                && av1_frame_contexts
-                                    .iter()
-                                    .any(|context| context.pending_present_result)
+                                && native_vulkan_direct_has_pending_flags(
+                                    av1_frame_contexts
+                                        .iter()
+                                        .map(|context| context.pending_present_result),
+                                )
                             {
                                 native_vulkan_recv_av1_present_worker_result(
                                     &av1_present_result_rx,
@@ -15646,10 +15650,11 @@ pub fn run_av1_ready_prefix_video(
                 }
             }
             native_vulkan_av1_trace(av1_trace_enabled, "final fence wait end");
-            while av1_frame_contexts
-                .iter()
-                .any(|context| context.pending_present_result)
-            {
+            while native_vulkan_direct_has_pending_flags(
+                av1_frame_contexts
+                    .iter()
+                    .map(|context| context.pending_present_result),
+            ) {
                 native_vulkan_recv_av1_present_worker_result(
                     &av1_present_result_rx,
                     &mut frames,
@@ -21928,10 +21933,11 @@ fn native_vulkan_drain_av1_present_worker_results(
             }
             Err(mpsc::TryRecvError::Empty) => return Ok(()),
             Err(mpsc::TryRecvError::Disconnected) => {
-                if frame_contexts
-                    .iter()
-                    .any(|context| context.pending_present_result)
-                {
+                if native_vulkan_direct_has_pending_flags(
+                    frame_contexts
+                        .iter()
+                        .map(|context| context.pending_present_result),
+                ) {
                     return Err(NativeVulkanError::Video(
                         "AV1 present worker exited with pending present results".to_owned(),
                     ));
