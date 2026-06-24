@@ -100,6 +100,7 @@ pub use profiles::{
 };
 #[allow(unused_imports)]
 pub use render_present::{
+    NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot,
     NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot,
     NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot,
 };

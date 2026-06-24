@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
-use vulkanalia::vk::{self, HasBuilder};
+use vulkanalia::vk::{self, HasBuilder, KhrSwapchainExtensionDeviceCommands};
 
 use super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE;
 use super::video_session_images::VulkanaliaVideoSessionResourceImage;
@@ -70,6 +70,31 @@ pub(super) struct VulkanaliaDecodedImagePresentPipelineResources {
     pub(super) pipeline_layout: vk::PipelineLayout,
     pub(super) pipeline: vk::Pipeline,
     pub(super) snapshot: NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
+    pub binding: &'static str,
+    pub route: &'static str,
+    pub sampled_array_layer: u32,
+    pub sampled_array_layer_source: &'static str,
+    pub swapchain_image_index: u32,
+    pub swapchain_image_view_count: usize,
+    pub target_format: String,
+    pub extent: (u32, u32),
+    pub command_buffer_recorded: bool,
+    pub submitted: bool,
+    pub presented: bool,
+    pub decoded_image_layout_transition: &'static str,
+    pub swapchain_layout_transition: &'static str,
+    pub render_model: &'static str,
+    pub command_order: Vec<&'static str>,
+    pub uses_pipeline_rendering_create_info: bool,
+    pub uses_dynamic_rendering: bool,
+    pub uses_synchronization2: bool,
+    pub uses_submit2: bool,
+    pub zero_copy_presented: bool,
+    pub ffmpeg_reference: &'static str,
 }
 
 pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_pipeline_resources(
@@ -241,6 +266,194 @@ pub(super) fn native_vulkan_vulkanalia_destroy_decoded_image_present_pipeline_re
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(super) fn native_vulkan_vulkanalia_present_decoded_image_once(
+    device: &Device,
+    queue: vk::Queue,
+    queue_family_index: u32,
+    swapchain: vk::SwapchainKHR,
+    swapchain_images: &[vk::Image],
+    swapchain_format: vk::Format,
+    swapchain_extent: vk::Extent2D,
+    resource_image: &VulkanaliaVideoSessionResourceImage,
+    sampler: &VulkanaliaDecodedImagePresentSamplerResources,
+    pipeline: &VulkanaliaDecodedImagePresentPipelineResources,
+) -> Result<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot, String> {
+    if swapchain_images.is_empty() {
+        return Err("decoded image present requires at least one swapchain image".to_owned());
+    }
+    if swapchain_extent.width == 0 || swapchain_extent.height == 0 {
+        return Err("decoded image present requires non-zero swapchain extent".to_owned());
+    }
+    if sampler.snapshot.sampled_array_layer >= resource_image.snapshot.array_layers {
+        return Err(format!(
+            "decoded image present sampled layer {} exceeds {} image layers",
+            sampler.snapshot.sampled_array_layer, resource_image.snapshot.array_layers
+        ));
+    }
+
+    let mut swapchain_image_views = Vec::new();
+    let mut command_pool = vk::CommandPool::null();
+    let mut image_available = vk::Semaphore::null();
+    let mut render_finished = vk::Semaphore::null();
+    let mut in_flight = vk::Fence::null();
+
+    let result = (|| -> Result<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot, String> {
+        swapchain_image_views = native_vulkan_vulkanalia_create_present_swapchain_image_views(
+            device,
+            swapchain_images,
+            swapchain_format,
+        )?;
+
+        let command_pool_info = vk::CommandPoolCreateInfo::builder()
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+            .queue_family_index(queue_family_index);
+        command_pool =
+            unsafe { device.create_command_pool(&command_pool_info, None) }.map_err(|err| {
+                format!("vkCreateCommandPool(vulkanalia decoded image present): {err:?}")
+            })?;
+        let command_buffer_info = vk::CommandBufferAllocateInfo::builder()
+            .command_pool(command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(swapchain_images.len() as u32);
+        let command_buffers = unsafe { device.allocate_command_buffers(&command_buffer_info) }
+            .map_err(|err| {
+                format!("vkAllocateCommandBuffers(vulkanalia decoded image present): {err:?}")
+            })?;
+
+        let semaphore_info = vk::SemaphoreCreateInfo::builder();
+        image_available =
+            unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(|err| {
+                format!(
+                    "vkCreateSemaphore(image_available vulkanalia decoded image present): {err:?}"
+                )
+            })?;
+        render_finished =
+            unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(|err| {
+                format!(
+                    "vkCreateSemaphore(render_finished vulkanalia decoded image present): {err:?}"
+                )
+            })?;
+        let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
+        in_flight = unsafe { device.create_fence(&fence_info, None) }
+            .map_err(|err| format!("vkCreateFence(vulkanalia decoded image present): {err:?}"))?;
+
+        unsafe {
+            device
+                .wait_for_fences(&[in_flight], true, u64::MAX)
+                .map_err(|err| {
+                    format!("vkWaitForFences(vulkanalia decoded image present): {err:?}")
+                })?;
+            device.reset_fences(&[in_flight]).map_err(|err| {
+                format!("vkResetFences(vulkanalia decoded image present): {err:?}")
+            })?;
+        }
+        let (image_index, _) = unsafe {
+            device.acquire_next_image_khr(swapchain, u64::MAX, image_available, vk::Fence::null())
+        }
+        .map_err(|err| {
+            format!("vkAcquireNextImageKHR(vulkanalia decoded image present): {err:?}")
+        })?;
+        let image_index_usize = image_index as usize;
+        let command_buffer = command_buffers
+            .get(image_index_usize)
+            .copied()
+            .ok_or_else(|| {
+                format!("swapchain image index {image_index_usize} has no command buffer")
+            })?;
+        let swapchain_image = *swapchain_images
+            .get(image_index_usize)
+            .ok_or_else(|| format!("swapchain image index {image_index_usize} is unavailable"))?;
+        let swapchain_view = *swapchain_image_views
+            .get(image_index_usize)
+            .ok_or_else(|| format!("swapchain view index {image_index_usize} is unavailable"))?;
+
+        native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
+            device,
+            command_buffer,
+            swapchain_image,
+            swapchain_view,
+            swapchain_extent,
+            resource_image.image,
+            sampler.snapshot.sampled_array_layer,
+            sampler.descriptor_set,
+            pipeline.pipeline_layout,
+            pipeline.pipeline,
+        )?;
+        native_vulkan_vulkanalia_submit_decoded_image_present_command_buffer2(
+            device,
+            queue,
+            command_buffer,
+            image_available,
+            render_finished,
+            in_flight,
+        )?;
+
+        let swapchains = [swapchain];
+        let image_indices = [image_index];
+        let wait_semaphores = [render_finished];
+        let present_info = vk::PresentInfoKHR::builder()
+            .wait_semaphores(&wait_semaphores)
+            .swapchains(&swapchains)
+            .image_indices(&image_indices);
+        unsafe {
+            device
+                .queue_present_khr(queue, &present_info)
+                .map_err(|err| {
+                    format!("vkQueuePresentKHR(vulkanalia decoded image present): {err:?}")
+                })?;
+            device.queue_wait_idle(queue).map_err(|err| {
+                format!("vkQueueWaitIdle(vulkanalia decoded image present): {err:?}")
+            })?;
+        }
+
+        Ok(NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
+            binding: "vulkanalia",
+            route: "decoded-image-dynamic-rendering-present-draw",
+            sampled_array_layer: sampler.snapshot.sampled_array_layer,
+            sampled_array_layer_source: "latest-submitted-dst-base-array-layer",
+            swapchain_image_index: image_index,
+            swapchain_image_view_count: swapchain_image_views.len(),
+            target_format: format!("{swapchain_format:?}"),
+            extent: (swapchain_extent.width, swapchain_extent.height),
+            command_buffer_recorded: true,
+            submitted: true,
+            presented: true,
+            decoded_image_layout_transition: "video-decode-dpb -> shader-read-only-optimal for sampled decoded image layer",
+            swapchain_layout_transition: "undefined -> color-attachment-optimal -> present-src-khr",
+            render_model: "immutable YCbCr combined image sampler -> Vulkan 1.3/1.4 dynamic rendering fullscreen triangle -> Wayland swapchain",
+            command_order: native_vulkan_vulkanalia_decoded_image_present_command_order(true)
+                .to_vec(),
+            uses_pipeline_rendering_create_info: true,
+            uses_dynamic_rendering: true,
+            uses_synchronization2: true,
+            uses_submit2: true,
+            zero_copy_presented: true,
+            ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,
+        })
+    })();
+
+    unsafe {
+        if in_flight != vk::Fence::null() {
+            device.destroy_fence(in_flight, None);
+        }
+        if render_finished != vk::Semaphore::null() {
+            device.destroy_semaphore(render_finished, None);
+        }
+        if image_available != vk::Semaphore::null() {
+            device.destroy_semaphore(image_available, None);
+        }
+        if command_pool != vk::CommandPool::null() {
+            device.destroy_command_pool(command_pool, None);
+        }
+        for view in swapchain_image_views {
+            device.destroy_image_view(view, None);
+        }
+    }
+
+    result
+}
+
 pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources(
     device: &Device,
     resource_image: &VulkanaliaVideoSessionResourceImage,
@@ -306,24 +519,14 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_reso
             let mut view_conversion_info = vk::SamplerYcbcrConversionInfo::builder()
                 .conversion(conversion)
                 .build();
-            let subresource_range = vk::ImageSubresourceRange::builder()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                .base_mip_level(0)
-                .level_count(1)
-                .base_array_layer(sampled_array_layer)
-                .layer_count(1)
-                .build();
-            let sampled_view_info = vk::ImageViewCreateInfo::builder()
-                .image(resource_image.image)
-                .view_type(vk::ImageViewType::_2D)
-                .format(picture_format)
-                .subresource_range(subresource_range)
-                .push_next(&mut view_usage_info)
-                .push_next(&mut view_conversion_info);
-            let sampled_view = unsafe { device.create_image_view(&sampled_view_info, None) }
-                .map_err(|err| {
-                    format!("vkCreateImageView(vulkanalia decoded present ycbcr): {err:?}")
-                })?;
+            let sampled_view = native_vulkan_vulkanalia_create_decoded_image_sampled_view(
+                device,
+                resource_image.image,
+                picture_format,
+                sampled_array_layer,
+                &mut view_usage_info,
+                &mut view_conversion_info,
+            )?;
 
             let result = (|| -> Result<VulkanaliaDecodedImagePresentSamplerResources, String> {
                 let immutable_samplers = [sampler];
@@ -481,6 +684,276 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_reso
     result
 }
 
+pub(super) fn native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_layer(
+    device: &Device,
+    resource_image: &VulkanaliaVideoSessionResourceImage,
+    picture_format: vk::Format,
+    resources: &mut VulkanaliaDecodedImagePresentSamplerResources,
+    sampled_array_layer: u32,
+) -> Result<(), String> {
+    if sampled_array_layer >= resource_image.snapshot.array_layers {
+        return Err(format!(
+            "decoded image present sampler layer {sampled_array_layer} is outside {} image layers",
+            resource_image.snapshot.array_layers
+        ));
+    }
+    if sampled_array_layer == resources.snapshot.sampled_array_layer {
+        return Ok(());
+    }
+
+    let mut view_usage_info = vk::ImageViewUsageCreateInfo::builder()
+        .usage(vk::ImageUsageFlags::SAMPLED)
+        .build();
+    let mut view_conversion_info = vk::SamplerYcbcrConversionInfo::builder()
+        .conversion(resources.conversion)
+        .build();
+    let sampled_view = native_vulkan_vulkanalia_create_decoded_image_sampled_view(
+        device,
+        resource_image.image,
+        picture_format,
+        sampled_array_layer,
+        &mut view_usage_info,
+        &mut view_conversion_info,
+    )?;
+
+    let descriptor_image = vk::DescriptorImageInfo::builder()
+        .sampler(resources.sampler)
+        .image_view(sampled_view)
+        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .build();
+    let descriptor_images = [descriptor_image];
+    let write = vk::WriteDescriptorSet::builder()
+        .dst_set(resources.descriptor_set)
+        .dst_binding(0)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .image_info(&descriptor_images)
+        .build();
+    let descriptor_copies: [vk::CopyDescriptorSet; 0] = [];
+    unsafe {
+        device.update_descriptor_sets(&[write], &descriptor_copies);
+        device.destroy_image_view(resources.sampled_view, None);
+    }
+
+    resources.sampled_view = sampled_view;
+    resources.snapshot.sampled_array_layer = sampled_array_layer;
+    Ok(())
+}
+
+fn native_vulkan_vulkanalia_create_decoded_image_sampled_view(
+    device: &Device,
+    image: vk::Image,
+    picture_format: vk::Format,
+    sampled_array_layer: u32,
+    view_usage_info: &mut vk::ImageViewUsageCreateInfo,
+    view_conversion_info: &mut vk::SamplerYcbcrConversionInfo,
+) -> Result<vk::ImageView, String> {
+    let subresource_range = vk::ImageSubresourceRange::builder()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .base_mip_level(0)
+        .level_count(1)
+        .base_array_layer(sampled_array_layer)
+        .layer_count(1)
+        .build();
+    let sampled_view_info = vk::ImageViewCreateInfo::builder()
+        .image(image)
+        .view_type(vk::ImageViewType::_2D)
+        .format(picture_format)
+        .subresource_range(subresource_range)
+        .push_next(view_usage_info)
+        .push_next(view_conversion_info);
+    unsafe { device.create_image_view(&sampled_view_info, None) }
+        .map_err(|err| format!("vkCreateImageView(vulkanalia decoded present ycbcr): {err:?}"))
+}
+
+fn native_vulkan_vulkanalia_create_present_swapchain_image_views(
+    device: &Device,
+    images: &[vk::Image],
+    format: vk::Format,
+) -> Result<Vec<vk::ImageView>, String> {
+    let mut views = Vec::with_capacity(images.len());
+    for image in images {
+        let create_info = vk::ImageViewCreateInfo::builder()
+            .image(*image)
+            .view_type(vk::ImageViewType::_2D)
+            .format(format)
+            .subresource_range(native_vulkan_vulkanalia_color_subresource_range());
+        match unsafe { device.create_image_view(&create_info, None) } {
+            Ok(view) => views.push(view),
+            Err(err) => {
+                for view in views {
+                    unsafe {
+                        device.destroy_image_view(view, None);
+                    }
+                }
+                return Err(format!(
+                    "vkCreateImageView(vulkanalia decoded image present swapchain): {err:?}"
+                ));
+            }
+        }
+    }
+    Ok(views)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    swapchain_image: vk::Image,
+    swapchain_view: vk::ImageView,
+    extent: vk::Extent2D,
+    decoded_image: vk::Image,
+    sampled_array_layer: u32,
+    descriptor_set: vk::DescriptorSet,
+    pipeline_layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
+) -> Result<(), String> {
+    unsafe {
+        device
+            .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
+            .map_err(|err| {
+                format!("vkResetCommandBuffer(vulkanalia decoded image present): {err:?}")
+            })?;
+        let begin_info = vk::CommandBufferBeginInfo::builder()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
+            .build();
+        device
+            .begin_command_buffer(command_buffer, &begin_info)
+            .map_err(|err| {
+                format!("vkBeginCommandBuffer(vulkanalia decoded image present): {err:?}")
+            })?;
+
+        let decoded_to_shader = vk::ImageMemoryBarrier2::builder()
+            .src_stage_mask(vk::PipelineStageFlags2::VIDEO_DECODE_KHR)
+            .src_access_mask(
+                vk::AccessFlags2::VIDEO_DECODE_READ_KHR | vk::AccessFlags2::VIDEO_DECODE_WRITE_KHR,
+            )
+            .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .old_layout(vk::ImageLayout::VIDEO_DECODE_DPB_KHR)
+            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(decoded_image)
+            .subresource_range(
+                native_vulkan_vulkanalia_decoded_image_layer_subresource_range(sampled_array_layer),
+            )
+            .build();
+        let swapchain_to_attachment = vk::ImageMemoryBarrier2::builder()
+            .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+            .src_access_mask(vk::AccessFlags2::empty())
+            .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+            .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(swapchain_image)
+            .subresource_range(native_vulkan_vulkanalia_color_subresource_range())
+            .build();
+        let image_barriers = [decoded_to_shader, swapchain_to_attachment];
+        let dependency = vk::DependencyInfo::builder()
+            .image_memory_barriers(&image_barriers)
+            .build();
+        device.cmd_pipeline_barrier2(command_buffer, &dependency);
+
+        let clear_value = vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
+        };
+        let color_attachment = vk::RenderingAttachmentInfo::builder()
+            .image_view(swapchain_view)
+            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .clear_value(clear_value)
+            .build();
+        let color_attachments = [color_attachment];
+        let render_area = vk::Rect2D::builder()
+            .offset(vk::Offset2D { x: 0, y: 0 })
+            .extent(extent)
+            .build();
+        let rendering_info = vk::RenderingInfo::builder()
+            .render_area(render_area)
+            .layer_count(1)
+            .color_attachments(&color_attachments)
+            .build();
+        device.cmd_begin_rendering(command_buffer, &rendering_info);
+        device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+        device.cmd_bind_descriptor_sets(
+            command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            pipeline_layout,
+            0,
+            &[descriptor_set],
+            &[],
+        );
+        device.cmd_draw(command_buffer, 3, 1, 0, 0);
+        device.cmd_end_rendering(command_buffer);
+
+        let swapchain_to_present = vk::ImageMemoryBarrier2::builder()
+            .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+            .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+            .dst_stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE)
+            .dst_access_mask(vk::AccessFlags2::empty())
+            .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(swapchain_image)
+            .subresource_range(native_vulkan_vulkanalia_color_subresource_range())
+            .build();
+        let present_barriers = [swapchain_to_present];
+        let present_dependency = vk::DependencyInfo::builder()
+            .image_memory_barriers(&present_barriers)
+            .build();
+        device.cmd_pipeline_barrier2(command_buffer, &present_dependency);
+
+        device.end_command_buffer(command_buffer).map_err(|err| {
+            format!("vkEndCommandBuffer(vulkanalia decoded image present): {err:?}")
+        })?;
+    }
+
+    Ok(())
+}
+
+fn native_vulkan_vulkanalia_submit_decoded_image_present_command_buffer2(
+    device: &Device,
+    queue: vk::Queue,
+    command_buffer: vk::CommandBuffer,
+    image_available: vk::Semaphore,
+    render_finished: vk::Semaphore,
+    fence: vk::Fence,
+) -> Result<(), String> {
+    let wait = vk::SemaphoreSubmitInfo::builder()
+        .semaphore(image_available)
+        .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+        .build();
+    let waits = [wait];
+    let command_buffer_info = vk::CommandBufferSubmitInfo::builder()
+        .command_buffer(command_buffer)
+        .build();
+    let command_buffer_infos = [command_buffer_info];
+    let signal = vk::SemaphoreSubmitInfo::builder()
+        .semaphore(render_finished)
+        .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+        .build();
+    let signals = [signal];
+    let submit_info = vk::SubmitInfo2::builder()
+        .wait_semaphore_infos(&waits)
+        .command_buffer_infos(&command_buffer_infos)
+        .signal_semaphore_infos(&signals)
+        .build();
+
+    unsafe {
+        device
+            .queue_submit2(queue, &[submit_info], fence)
+            .map_err(|err| format!("vkQueueSubmit2(vulkanalia decoded image present): {err:?}"))?;
+    }
+
+    Ok(())
+}
+
 pub(super) fn native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_resources(
     device: &Device,
     resources: VulkanaliaDecodedImagePresentSamplerResources,
@@ -571,6 +1044,28 @@ fn native_vulkan_vulkanalia_create_shader_module(
 
 fn native_vulkan_vulkanalia_shader_code_size_bytes(code: &[u32]) -> usize {
     std::mem::size_of_val(code)
+}
+
+fn native_vulkan_vulkanalia_color_subresource_range() -> vk::ImageSubresourceRange {
+    vk::ImageSubresourceRange::builder()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .base_mip_level(0)
+        .level_count(1)
+        .base_array_layer(0)
+        .layer_count(1)
+        .build()
+}
+
+fn native_vulkan_vulkanalia_decoded_image_layer_subresource_range(
+    sampled_array_layer: u32,
+) -> vk::ImageSubresourceRange {
+    vk::ImageSubresourceRange::builder()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .base_mip_level(0)
+        .level_count(1)
+        .base_array_layer(sampled_array_layer)
+        .layer_count(1)
+        .build()
 }
 
 fn sampler_ycbcr_model_label(model: vk::SamplerYcbcrModelConversion) -> &'static str {

@@ -9,7 +9,9 @@ use super::audio_policy::NativeVulkanAudioOutputMode;
 use super::video_codec::NativeVulkanVideoSessionCodec;
 use super::vulkanalia_backend::{
     NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput, NativeVulkanVulkanaliaClearPresentOptions,
-    NativeVulkanVulkanaliaClearPresentSnapshot, NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput,
+    NativeVulkanVulkanaliaClearPresentSnapshot,
+    NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot,
+    NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput,
     NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput,
     NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot,
@@ -59,6 +61,9 @@ pub struct NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
     pub h265_retained_video_present_decode:
         Option<NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot>,
     pub h265_retained_video_present_decode_error: Option<String>,
+    pub decoded_image_present_draw_requested: bool,
+    pub decoded_image_present_draw: Option<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
+    pub decoded_image_present_draw_error: Option<String>,
     pub present_runtime_requested: bool,
     pub present_runtime: Option<NativeVulkanVulkanaliaClearPresentSnapshot>,
     pub present_runtime_error: Option<String>,
@@ -165,20 +170,42 @@ pub fn run_vulkanalia_ready_prefix_video(
     } else {
         None
     };
-    let present_runtime =
-        run_native_vulkan_vulkanalia_clear_present(NativeVulkanVulkanaliaClearPresentOptions {
-            host: options.host.clone(),
-            wait_configure_roundtrips: options.wait_configure_roundtrips,
-            duration: native_vulkan_vulkanalia_visible_present_duration(
-                playback_frame_count,
-                options.target_max_fps,
-            ),
-            target_max_fps: options.target_max_fps,
-            clear_color: options.clear_color,
-        });
-    let (present_runtime, present_runtime_error) = match present_runtime {
-        Ok(snapshot) => (Some(snapshot), None),
-        Err(err) => (None, Some(err)),
+    let decoded_image_present_draw_requested = h265_retained_video_present_decode
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.decoded_image_present_draw_requested);
+    let decoded_image_present_draw = h265_retained_video_present_decode
+        .as_ref()
+        .and_then(|snapshot| snapshot.decoded_image_present_draw.clone());
+    let decoded_image_present_draw_error = h265_retained_video_present_decode
+        .as_ref()
+        .and_then(|snapshot| snapshot.decoded_image_present_draw_error.clone());
+    let decoded_image_zero_copy_presented = h265_retained_video_present_decode
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.decoded_image_zero_copy_presented);
+    let present_runtime_requested = !decoded_image_zero_copy_presented;
+    let (present_runtime, present_runtime_error) = if present_runtime_requested {
+        let present_runtime =
+            run_native_vulkan_vulkanalia_clear_present(NativeVulkanVulkanaliaClearPresentOptions {
+                host: options.host.clone(),
+                wait_configure_roundtrips: options.wait_configure_roundtrips,
+                duration: native_vulkan_vulkanalia_visible_present_duration(
+                    playback_frame_count,
+                    options.target_max_fps,
+                ),
+                target_max_fps: options.target_max_fps,
+                clear_color: options.clear_color,
+            });
+        match present_runtime {
+            Ok(snapshot) => (Some(snapshot), None),
+            Err(err) => (None, Some(err)),
+        }
+    } else {
+        (None, None)
+    };
+    let present_backend = if decoded_image_zero_copy_presented {
+        "vulkanalia-decoded-image-dynamic-rendering-present"
+    } else {
+        "vulkanalia-clear-present-runtime-visible-placeholder"
     };
 
     Ok(NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
@@ -195,7 +222,7 @@ pub fn run_vulkanalia_ready_prefix_video(
         audio_output_mode: audio_output_mode.as_str(),
         decode_submit_backend: "vulkanalia-video-session-bind",
         command_submit_model: "CmdPipelineBarrier2 -> CmdBeginVideoCodingKHR -> CmdDecodeVideoKHR -> CmdEndVideoCodingKHR -> QueueSubmit2",
-        present_backend: "vulkanalia-clear-present-runtime-visible-placeholder",
+        present_backend,
         present_probe_requested: false,
         present_probe: None,
         present_probe_error: None,
@@ -208,12 +235,17 @@ pub fn run_vulkanalia_ready_prefix_video(
         h265_retained_video_present_decode_requested: retained_h265_ready_prefix_decode.is_some(),
         h265_retained_video_present_decode,
         h265_retained_video_present_decode_error,
-        present_runtime_requested: true,
+        decoded_image_present_draw_requested,
+        decoded_image_present_draw,
+        decoded_image_present_draw_error,
+        present_runtime_requested,
         present_runtime,
         present_runtime_error,
-        decoded_image_zero_copy_presented: false,
-        decoded_image_present_boundary: if retained_h265_ready_prefix_decode.is_some() {
-            "H.265 ready-prefix decode writes into the retained Vulkanalia video-present DPB/output image and creates a Vulkanalia YCbCr sampler/descriptor resource for that image; next gate records the dynamic-rendering fullscreen draw into the swapchain instead of the clear placeholder"
+        decoded_image_zero_copy_presented,
+        decoded_image_present_boundary: if decoded_image_zero_copy_presented {
+            "H.265 ready-prefix decode writes into the retained Vulkanalia DPB/output image, then Vulkanalia samples that decoded image through an immutable YCbCr descriptor in a dynamic-rendering fullscreen pass and presents it to the Wayland swapchain"
+        } else if retained_h265_ready_prefix_decode.is_some() {
+            "H.265 ready-prefix decode writes into the retained Vulkanalia video-present DPB/output image and creates a Vulkanalia YCbCr sampler/descriptor/pipeline resource for that image; decoded-image present falls back to the clear placeholder until the draw/present gate succeeds"
         } else {
             "Vulkanalia decodes the real ready-prefix source and presents a Vulkanalia-owned visible swapchain placeholder; next gate replaces the clear image with decoded DPB/output image sampling/import"
         },
