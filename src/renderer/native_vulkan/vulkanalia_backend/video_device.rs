@@ -261,7 +261,7 @@ fn native_vulkan_vulkanalia_video_decode_device_extensions(
     enabled_device_extensions
 }
 
-fn native_vulkan_vulkanalia_video_device_feature_selection(
+pub(super) fn native_vulkan_vulkanalia_video_device_feature_selection(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     device_extensions: &[String],

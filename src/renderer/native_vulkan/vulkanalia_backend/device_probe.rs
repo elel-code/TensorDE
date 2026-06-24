@@ -8,6 +8,11 @@ use super::instance::{
     native_vulkan_vulkanalia_destroy_instance,
 };
 use super::queue_probe::native_vulkan_vulkanalia_video_decode_queue_family_indices;
+use super::video_device::{
+    VIDEO_MAINTENANCE1_EXTENSION_NAME, VIDEO_MAINTENANCE2_EXTENSION_NAME,
+    native_vulkan_vulkanalia_video_device_extension_available,
+    native_vulkan_vulkanalia_video_device_feature_selection,
+};
 use super::video_format_probe::{
     NativeVulkanVulkanaliaVideoFormatProbeSnapshot, native_vulkan_vulkanalia_video_format_probe,
 };
@@ -254,66 +259,35 @@ fn query_vulkanalia_video_maintenance_features(
     device_extensions: &[String],
 ) -> NativeVulkanVulkanaliaVideoMaintenanceFeatureSnapshot {
     let video_maintenance1_extension_available =
-        has_extension(device_extensions, "VK_KHR_video_maintenance1");
+        native_vulkan_vulkanalia_video_device_extension_available(
+            device_extensions,
+            VIDEO_MAINTENANCE1_EXTENSION_NAME,
+        );
     let video_maintenance2_extension_available =
-        has_extension(device_extensions, "VK_KHR_video_maintenance2");
-    let video_maintenance1_feature = video_maintenance1_extension_available
-        && query_vulkanalia_video_maintenance1_feature(instance, physical_device);
-    let video_maintenance2_feature = video_maintenance1_feature
-        && video_maintenance2_extension_available
-        && query_vulkanalia_video_maintenance2_feature(instance, physical_device);
-    let inline_session_parameter_codecs = if video_maintenance2_feature {
-        vec!["h264", "h265", "av1"]
-    } else {
-        Vec::new()
-    };
+        native_vulkan_vulkanalia_video_device_extension_available(
+            device_extensions,
+            VIDEO_MAINTENANCE2_EXTENSION_NAME,
+        );
+    let feature_selection = native_vulkan_vulkanalia_video_device_feature_selection(
+        instance,
+        physical_device,
+        device_extensions,
+    );
 
     NativeVulkanVulkanaliaVideoMaintenanceFeatureSnapshot {
         video_maintenance1_extension_available,
         video_maintenance2_extension_available,
-        video_maintenance1_feature,
-        video_maintenance2_feature,
-        inline_session_parameters_supported: video_maintenance2_feature,
-        inline_session_parameter_codecs,
+        video_maintenance1_feature: feature_selection.video_maintenance1_enabled,
+        video_maintenance2_feature: feature_selection.video_maintenance2_enabled,
+        inline_session_parameters_supported: feature_selection.inline_session_parameters_enabled,
+        inline_session_parameter_codecs: feature_selection.inline_session_parameter_codecs(),
     }
-}
-
-fn query_vulkanalia_video_maintenance1_feature(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
-) -> bool {
-    let mut feature = vk::PhysicalDeviceVideoMaintenance1FeaturesKHR::default();
-    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
-        .push_next(&mut feature)
-        .build();
-    unsafe {
-        instance.get_physical_device_features2(physical_device, &mut features2);
-    }
-    feature.video_maintenance1 != 0
-}
-
-fn query_vulkanalia_video_maintenance2_feature(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
-) -> bool {
-    let mut feature = vk::PhysicalDeviceVideoMaintenance2FeaturesKHR::default();
-    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
-        .push_next(&mut feature)
-        .build();
-    unsafe {
-        instance.get_physical_device_features2(physical_device, &mut features2);
-    }
-    feature.video_maintenance2 != 0
 }
 
 fn has_all_extensions(available: &[String], required: &[&str]) -> bool {
     required
         .iter()
         .all(|required| available.iter().any(|available| available == required))
-}
-
-fn has_extension(available: &[String], required: &str) -> bool {
-    available.iter().any(|available| available == required)
 }
 
 fn sorted_strings(mut values: Vec<String>) -> Vec<String> {
