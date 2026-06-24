@@ -113,6 +113,29 @@ pub(super) fn native_vulkan_direct_recv_present_result<T>(
     Ok((present_result, present_result_wait_elapsed_us))
 }
 
+pub(super) fn native_vulkan_direct_try_recv_pending_present_result<T>(
+    present_result_rx: &mpsc::Receiver<T>,
+    pending_present_results: &mut u32,
+    disconnected_pending_message: &'static str,
+) -> Result<Option<T>, NativeVulkanError> {
+    match present_result_rx.try_recv() {
+        Ok(present_result) => {
+            *pending_present_results = pending_present_results.saturating_sub(1);
+            Ok(Some(present_result))
+        }
+        Err(mpsc::TryRecvError::Empty) => Ok(None),
+        Err(mpsc::TryRecvError::Disconnected) => {
+            if *pending_present_results == 0 {
+                Ok(None)
+            } else {
+                Err(NativeVulkanError::Video(
+                    disconnected_pending_message.to_owned(),
+                ))
+            }
+        }
+    }
+}
+
 pub(super) fn native_vulkan_direct_apply_present_result<F>(
     codec_label: &'static str,
     frames: &mut [F],
@@ -436,6 +459,76 @@ mod tests {
 
         assert_eq!(stats, NativeVulkanDirectPresentWaitStats::default());
         assert!(err.to_string().contains("present worker exited"));
+    }
+
+    #[test]
+    fn try_recv_pending_present_result_decrements_pending_for_payload() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(7u32).expect("send present result");
+        let mut pending = 2;
+
+        let payload = native_vulkan_direct_try_recv_pending_present_result(
+            &rx,
+            &mut pending,
+            "present worker exited with pending results",
+        )
+        .expect("try recv present result");
+
+        assert_eq!(payload, Some(7));
+        assert_eq!(pending, 1);
+    }
+
+    #[test]
+    fn try_recv_pending_present_result_keeps_pending_when_empty() {
+        let (_tx, rx) = mpsc::channel::<u32>();
+        let mut pending = 2;
+
+        let payload = native_vulkan_direct_try_recv_pending_present_result(
+            &rx,
+            &mut pending,
+            "present worker exited with pending results",
+        )
+        .expect("try recv empty channel");
+
+        assert_eq!(payload, None);
+        assert_eq!(pending, 2);
+    }
+
+    #[test]
+    fn try_recv_pending_present_result_treats_disconnected_zero_pending_as_drained() {
+        let (tx, rx) = mpsc::channel::<u32>();
+        drop(tx);
+        let mut pending = 0;
+
+        let payload = native_vulkan_direct_try_recv_pending_present_result(
+            &rx,
+            &mut pending,
+            "present worker exited with pending results",
+        )
+        .expect("disconnected without pending results");
+
+        assert_eq!(payload, None);
+        assert_eq!(pending, 0);
+    }
+
+    #[test]
+    fn try_recv_pending_present_result_errors_when_disconnected_with_pending() {
+        let (tx, rx) = mpsc::channel::<u32>();
+        drop(tx);
+        let mut pending = 1;
+
+        let err = native_vulkan_direct_try_recv_pending_present_result(
+            &rx,
+            &mut pending,
+            "present worker exited with pending results",
+        )
+        .expect_err("disconnected with pending results must fail");
+
+        assert_eq!(pending, 1);
+        assert!(
+            err.to_string()
+                .contains("present worker exited with pending results")
+        );
     }
 
     #[test]

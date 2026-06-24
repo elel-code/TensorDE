@@ -142,7 +142,7 @@ use direct_runtime::{
     NativeVulkanDirectPresentTiming, NativeVulkanDirectPresentWaitStats,
     native_vulkan_direct_apply_optional_present_result, native_vulkan_direct_apply_present_result,
     native_vulkan_direct_present_result_summary, native_vulkan_direct_recv_present_result,
-    native_vulkan_direct_runtime_summary,
+    native_vulkan_direct_runtime_summary, native_vulkan_direct_try_recv_pending_present_result,
 };
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
@@ -5977,27 +5977,20 @@ pub fn run_h264_ready_prefix_video(
                             )?;
                         }
                         loop {
-                            match present_result_rx.try_recv() {
-                                Ok(present_result) => {
-                                    pending_present_results =
-                                        pending_present_results.saturating_sub(1);
-                                    apply_h264_direct_present_result(
-                                        &mut frames,
-                                        &mut h264_acquire_not_ready_count,
-                                        present_result,
-                                    )?;
-                                }
-                                Err(mpsc::TryRecvError::Empty) => break,
-                                Err(mpsc::TryRecvError::Disconnected) => {
-                                    if pending_present_results == 0 {
-                                        break;
-                                    }
-                                    return Err(NativeVulkanError::Video(
-                                    "H.264 direct present worker exited with pending present results"
-                                        .to_owned(),
-                                ));
-                                }
-                            }
+                            let Some(present_result) =
+                                native_vulkan_direct_try_recv_pending_present_result(
+                                    &present_result_rx,
+                                    &mut pending_present_results,
+                                    "H.264 direct present worker exited with pending present results",
+                                )?
+                            else {
+                                break;
+                            };
+                            apply_h264_direct_present_result(
+                                &mut frames,
+                                &mut h264_acquire_not_ready_count,
+                                present_result,
+                            )?;
                         }
                         probe.host.pump_events()?;
                         if probe.host.is_closed() {
@@ -7068,27 +7061,20 @@ pub fn run_h264_ready_prefix_video(
                             )?;
                         }
                         loop {
-                            match present_result_rx.try_recv() {
-                                Ok(present_result) => {
-                                    pending_present_results =
-                                        pending_present_results.saturating_sub(1);
-                                    apply_h264_present_result(
-                                        &mut frames,
-                                        &mut h264_acquire_not_ready_count,
-                                        present_result,
-                                    )?;
-                                }
-                                Err(mpsc::TryRecvError::Empty) => break,
-                                Err(mpsc::TryRecvError::Disconnected) => {
-                                    if pending_present_results == 0 {
-                                        break;
-                                    }
-                                    return Err(NativeVulkanError::Video(
-                                        "H.264 present worker exited with pending present results"
-                                            .to_owned(),
-                                    ));
-                                }
-                            }
+                            let Some(present_result) =
+                                native_vulkan_direct_try_recv_pending_present_result(
+                                    &present_result_rx,
+                                    &mut pending_present_results,
+                                    "H.264 present worker exited with pending present results",
+                                )?
+                            else {
+                                break;
+                            };
+                            apply_h264_present_result(
+                                &mut frames,
+                                &mut h264_acquire_not_ready_count,
+                                present_result,
+                            )?;
                         }
                         probe.host.pump_events()?;
                         if probe.host.is_closed() {
@@ -9338,26 +9324,20 @@ pub fn run_h265_ready_prefix_video(
                         )?;
                     }
                     loop {
-                        match present_result_rx.try_recv() {
-                            Ok(present_result) => {
-                                pending_present_results = pending_present_results.saturating_sub(1);
-                                apply_h265_present_result(
-                                    &mut frames,
-                                    &mut h265_acquire_not_ready_count,
-                                    present_result,
-                                )?;
-                            }
-                            Err(mpsc::TryRecvError::Empty) => break,
-                            Err(mpsc::TryRecvError::Disconnected) => {
-                                if pending_present_results == 0 {
-                                    break;
-                                }
-                                return Err(NativeVulkanError::Video(
-                                    "H.265 present worker exited with pending present results"
-                                        .to_owned(),
-                                ));
-                            }
-                        }
+                        let Some(present_result) =
+                            native_vulkan_direct_try_recv_pending_present_result(
+                                &present_result_rx,
+                                &mut pending_present_results,
+                                "H.265 present worker exited with pending present results",
+                            )?
+                        else {
+                            break;
+                        };
+                        apply_h265_present_result(
+                            &mut frames,
+                            &mut h265_acquire_not_ready_count,
+                            present_result,
+                        )?;
                     }
                     probe.host.pump_events()?;
                     if probe.host.is_closed() {
