@@ -51608,6 +51608,7 @@ mod tests {
         assert_eq!(snapshot.frontend_route, "decoded-provider");
         assert_eq!(snapshot.frontend_decode_owner, "gstreamer");
         assert_eq!(snapshot.frontend_memory_preference, "auto");
+        assert_eq!(snapshot.frontend_sample_queue_policy, "keep-last");
         assert_eq!(snapshot.frontend_status, "not-started-poster-placeholder");
         assert_eq!(
             snapshot.handoff_status,
@@ -51717,6 +51718,7 @@ mod tests {
             route: NativeVulkanVideoFrontendRoute::DecodedProvider,
             decode_owner: NativeVulkanVideoDecodeOwner::Gstreamer,
             memory_preference: NativeVulkanVideoFrontendMemoryPreference::Auto,
+            sample_queue_policy: "keep-last",
             provider_state: Some("Playing".to_owned()),
             eos_messages: 0,
             segment_done_messages: 1,
@@ -51772,6 +51774,7 @@ mod tests {
         assert_eq!(snapshot.frontend_route, "decoded-provider");
         assert_eq!(snapshot.frontend_decode_owner, "gstreamer");
         assert_eq!(snapshot.frontend_memory_preference, "auto");
+        assert_eq!(snapshot.frontend_sample_queue_policy, "keep-last");
         assert_eq!(snapshot.audio_status, "muted-no-audio-pipeline");
         assert_eq!(snapshot.audio_output_policy, "plan");
         assert_eq!(snapshot.audio_output_mode, "clock-only");
@@ -51904,6 +51907,7 @@ mod tests {
             route: NativeVulkanVideoFrontendRoute::DecodedProvider,
             decode_owner: NativeVulkanVideoDecodeOwner::Gstreamer,
             memory_preference: NativeVulkanVideoFrontendMemoryPreference::DirectDmabuf,
+            sample_queue_policy: "keep-last",
             provider_state: Some("Playing".to_owned()),
             eos_messages: 0,
             segment_done_messages: 0,
@@ -51946,6 +51950,7 @@ mod tests {
         assert_eq!(snapshot.frontend_route, "decoded-provider");
         assert_eq!(snapshot.frontend_decode_owner, "gstreamer");
         assert_eq!(snapshot.frontend_memory_preference, "direct-dmabuf");
+        assert_eq!(snapshot.frontend_sample_queue_policy, "keep-last");
         assert!(snapshot.memory_route.direct_candidate);
         assert!(!snapshot.memory_route.direct_import_confirmed);
         assert_eq!(

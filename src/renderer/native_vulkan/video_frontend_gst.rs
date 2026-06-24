@@ -231,6 +231,7 @@ impl NativeVulkanGstVideoFrontend {
             route: NativeVulkanVideoFrontendRoute::DecodedProvider,
             decode_owner: NativeVulkanVideoDecodeOwner::Gstreamer,
             memory_preference: native_vulkan_gst_memory_preference(),
+            sample_queue_policy: native_vulkan_gst_sample_queue_policy().as_str(),
             provider_state,
             eos_messages: self.eos_messages,
             segment_done_messages: self.segment_done_messages,
@@ -374,6 +375,7 @@ fn native_vulkan_gst_nvdec_output_surfaces() -> u32 {
 }
 
 fn native_vulkan_configure_appsink(sink: &gst::Element) {
+    let sample_queue_policy = native_vulkan_gst_sample_queue_policy();
     if let Some(caps) = native_vulkan_gst_forced_sink_caps() {
         sink.set_property("caps", &caps);
     }
@@ -396,7 +398,7 @@ fn native_vulkan_configure_appsink(sink: &gst::Element) {
         sink.set_property("max-buffers", native_vulkan_gst_video_queue_frames());
     }
     if sink.find_property("drop").is_some() {
-        sink.set_property("drop", false);
+        sink.set_property("drop", sample_queue_policy.drops_old_buffers());
     }
     if sink.find_property("qos").is_some() {
         sink.set_property("qos", false);
@@ -414,6 +416,42 @@ fn native_vulkan_configure_appsink(sink: &gst::Element) {
 
 fn native_vulkan_gst_video_queue_frames() -> u32 {
     1
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeVulkanGstSampleQueuePolicy {
+    KeepLast,
+    Backpressure,
+}
+
+impl NativeVulkanGstSampleQueuePolicy {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::KeepLast => "keep-last",
+            Self::Backpressure => "backpressure",
+        }
+    }
+
+    fn drops_old_buffers(self) -> bool {
+        matches!(self, Self::KeepLast)
+    }
+}
+
+fn native_vulkan_gst_sample_queue_policy() -> NativeVulkanGstSampleQueuePolicy {
+    native_vulkan_gst_sample_queue_policy_from_value(
+        std::env::var("GILDER_VULKAN_GST_SAMPLE_QUEUE_POLICY").ok(),
+    )
+}
+
+fn native_vulkan_gst_sample_queue_policy_from_value(
+    value: Option<String>,
+) -> NativeVulkanGstSampleQueuePolicy {
+    match value.as_deref() {
+        Some("backpressure" | "bounded" | "blocking") => {
+            NativeVulkanGstSampleQueuePolicy::Backpressure
+        }
+        _ => NativeVulkanGstSampleQueuePolicy::KeepLast,
+    }
 }
 
 fn native_vulkan_gst_forced_sink_caps() -> Option<gst::Caps> {
@@ -494,5 +532,34 @@ fn native_vulkan_gst_memory_preference() -> NativeVulkanVideoFrontendMemoryPrefe
         NativeVulkanVideoFrontendMemoryPreference::DirectDmabuf
     } else {
         NativeVulkanVideoFrontendMemoryPreference::Auto
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gst_sample_queue_policy_defaults_to_keep_last() {
+        assert_eq!(
+            native_vulkan_gst_sample_queue_policy_from_value(None),
+            NativeVulkanGstSampleQueuePolicy::KeepLast
+        );
+        assert_eq!(
+            native_vulkan_gst_sample_queue_policy_from_value(Some("keep-last".to_owned())),
+            NativeVulkanGstSampleQueuePolicy::KeepLast
+        );
+    }
+
+    #[test]
+    fn gst_sample_queue_policy_allows_backpressure_for_diagnostics() {
+        assert_eq!(
+            native_vulkan_gst_sample_queue_policy_from_value(Some("backpressure".to_owned())),
+            NativeVulkanGstSampleQueuePolicy::Backpressure
+        );
+        assert_eq!(
+            native_vulkan_gst_sample_queue_policy_from_value(Some("blocking".to_owned())),
+            NativeVulkanGstSampleQueuePolicy::Backpressure
+        );
     }
 }

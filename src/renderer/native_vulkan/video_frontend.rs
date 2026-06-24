@@ -91,6 +91,7 @@ pub(super) struct NativeVulkanVideoFrontendSnapshot {
     pub(super) route: NativeVulkanVideoFrontendRoute,
     pub(super) decode_owner: NativeVulkanVideoDecodeOwner,
     pub(super) memory_preference: NativeVulkanVideoFrontendMemoryPreference,
+    pub(super) sample_queue_policy: &'static str,
     pub(super) provider_state: Option<String>,
     pub(super) eos_messages: u64,
     pub(super) segment_done_messages: u64,
