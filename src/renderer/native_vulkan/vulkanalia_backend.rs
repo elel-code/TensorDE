@@ -103,6 +103,7 @@ pub use render_present::{
     NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot,
     NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot,
     NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot,
+    NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot,
 };
 #[allow(unused_imports)]
 pub use swapchain::{

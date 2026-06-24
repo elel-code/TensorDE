@@ -72,10 +72,20 @@ pub(super) struct VulkanaliaDecodedImagePresentPipelineResources {
     pub(super) snapshot: NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot,
 }
 
+pub(super) struct VulkanaliaDecodedImagePresentFrameResources {
+    swapchain_image_views: Vec<vk::ImageView>,
+    command_pool: vk::CommandPool,
+    command_buffers: Vec<vk::CommandBuffer>,
+    image_available: vk::Semaphore,
+    render_finished: vk::Semaphore,
+    in_flight: vk::Fence,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
     pub binding: &'static str,
     pub route: &'static str,
+    pub present_frame_index: u32,
     pub sampled_array_layer: u32,
     pub sampled_array_layer_source: &'static str,
     pub swapchain_image_index: u32,
@@ -94,6 +104,24 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
     pub uses_synchronization2: bool,
     pub uses_submit2: bool,
     pub zero_copy_presented: bool,
+    pub ffmpeg_reference: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
+    pub binding: &'static str,
+    pub route: &'static str,
+    pub requested_present_frame_count: u32,
+    pub submitted_present_frame_count: u32,
+    pub presented_frame_count: u32,
+    pub sampled_array_layers: Vec<u32>,
+    pub draws: Vec<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
+    pub frame_order_model: &'static str,
+    pub present_resource_reuse_model: &'static str,
+    pub all_zero_copy_presented: bool,
+    pub uses_dynamic_rendering: bool,
+    pub uses_synchronization2: bool,
+    pub uses_submit2: bool,
     pub ffmpeg_reference: &'static str,
 }
 
@@ -266,30 +294,14 @@ pub(super) fn native_vulkan_vulkanalia_destroy_decoded_image_present_pipeline_re
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn native_vulkan_vulkanalia_present_decoded_image_once(
+pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_frame_resources(
     device: &Device,
-    queue: vk::Queue,
-    queue_family_index: u32,
-    swapchain: vk::SwapchainKHR,
     swapchain_images: &[vk::Image],
     swapchain_format: vk::Format,
-    swapchain_extent: vk::Extent2D,
-    resource_image: &VulkanaliaVideoSessionResourceImage,
-    sampler: &VulkanaliaDecodedImagePresentSamplerResources,
-    pipeline: &VulkanaliaDecodedImagePresentPipelineResources,
-) -> Result<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot, String> {
+    queue_family_index: u32,
+) -> Result<VulkanaliaDecodedImagePresentFrameResources, String> {
     if swapchain_images.is_empty() {
         return Err("decoded image present requires at least one swapchain image".to_owned());
-    }
-    if swapchain_extent.width == 0 || swapchain_extent.height == 0 {
-        return Err("decoded image present requires non-zero swapchain extent".to_owned());
-    }
-    if sampler.snapshot.sampled_array_layer >= resource_image.snapshot.array_layers {
-        return Err(format!(
-            "decoded image present sampled layer {} exceeds {} image layers",
-            sampler.snapshot.sampled_array_layer, resource_image.snapshot.array_layers
-        ));
     }
 
     let mut swapchain_image_views = Vec::new();
@@ -298,7 +310,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_once(
     let mut render_finished = vk::Semaphore::null();
     let mut in_flight = vk::Fence::null();
 
-    let result = (|| -> Result<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot, String> {
+    let result = (|| -> Result<VulkanaliaDecodedImagePresentFrameResources, String> {
         swapchain_image_views = native_vulkan_vulkanalia_create_present_swapchain_image_views(
             device,
             swapchain_images,
@@ -338,101 +350,222 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_once(
         in_flight = unsafe { device.create_fence(&fence_info, None) }
             .map_err(|err| format!("vkCreateFence(vulkanalia decoded image present): {err:?}"))?;
 
-        unsafe {
-            device
-                .wait_for_fences(&[in_flight], true, u64::MAX)
-                .map_err(|err| {
-                    format!("vkWaitForFences(vulkanalia decoded image present): {err:?}")
-                })?;
-            device.reset_fences(&[in_flight]).map_err(|err| {
-                format!("vkResetFences(vulkanalia decoded image present): {err:?}")
-            })?;
-        }
-        let (image_index, _) = unsafe {
-            device.acquire_next_image_khr(swapchain, u64::MAX, image_available, vk::Fence::null())
-        }
-        .map_err(|err| {
-            format!("vkAcquireNextImageKHR(vulkanalia decoded image present): {err:?}")
-        })?;
-        let image_index_usize = image_index as usize;
-        let command_buffer = command_buffers
-            .get(image_index_usize)
-            .copied()
-            .ok_or_else(|| {
-                format!("swapchain image index {image_index_usize} has no command buffer")
-            })?;
-        let swapchain_image = *swapchain_images
-            .get(image_index_usize)
-            .ok_or_else(|| format!("swapchain image index {image_index_usize} is unavailable"))?;
-        let swapchain_view = *swapchain_image_views
-            .get(image_index_usize)
-            .ok_or_else(|| format!("swapchain view index {image_index_usize} is unavailable"))?;
-
-        native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
-            device,
-            command_buffer,
-            swapchain_image,
-            swapchain_view,
-            swapchain_extent,
-            resource_image.image,
-            sampler.snapshot.sampled_array_layer,
-            sampler.descriptor_set,
-            pipeline.pipeline_layout,
-            pipeline.pipeline,
-        )?;
-        native_vulkan_vulkanalia_submit_decoded_image_present_command_buffer2(
-            device,
-            queue,
-            command_buffer,
+        Ok(VulkanaliaDecodedImagePresentFrameResources {
+            swapchain_image_views: std::mem::take(&mut swapchain_image_views),
+            command_pool,
+            command_buffers,
             image_available,
             render_finished,
             in_flight,
-        )?;
-
-        let swapchains = [swapchain];
-        let image_indices = [image_index];
-        let wait_semaphores = [render_finished];
-        let present_info = vk::PresentInfoKHR::builder()
-            .wait_semaphores(&wait_semaphores)
-            .swapchains(&swapchains)
-            .image_indices(&image_indices);
-        unsafe {
-            device
-                .queue_present_khr(queue, &present_info)
-                .map_err(|err| {
-                    format!("vkQueuePresentKHR(vulkanalia decoded image present): {err:?}")
-                })?;
-            device.queue_wait_idle(queue).map_err(|err| {
-                format!("vkQueueWaitIdle(vulkanalia decoded image present): {err:?}")
-            })?;
-        }
-
-        Ok(NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
-            binding: "vulkanalia",
-            route: "decoded-image-dynamic-rendering-present-draw",
-            sampled_array_layer: sampler.snapshot.sampled_array_layer,
-            sampled_array_layer_source: "latest-submitted-dst-base-array-layer",
-            swapchain_image_index: image_index,
-            swapchain_image_view_count: swapchain_image_views.len(),
-            target_format: format!("{swapchain_format:?}"),
-            extent: (swapchain_extent.width, swapchain_extent.height),
-            command_buffer_recorded: true,
-            submitted: true,
-            presented: true,
-            decoded_image_layout_transition: "video-decode-dpb -> shader-read-only-optimal for sampled decoded image layer",
-            swapchain_layout_transition: "undefined -> color-attachment-optimal -> present-src-khr",
-            render_model: "immutable YCbCr combined image sampler -> Vulkan 1.3/1.4 dynamic rendering fullscreen triangle -> Wayland swapchain",
-            command_order: native_vulkan_vulkanalia_decoded_image_present_command_order(true)
-                .to_vec(),
-            uses_pipeline_rendering_create_info: true,
-            uses_dynamic_rendering: true,
-            uses_synchronization2: true,
-            uses_submit2: true,
-            zero_copy_presented: true,
-            ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,
         })
     })();
 
+    if result.is_err() {
+        native_vulkan_vulkanalia_destroy_partial_decoded_image_present_frame_resources(
+            device,
+            swapchain_image_views,
+            command_pool,
+            image_available,
+            render_finished,
+            in_flight,
+        );
+    }
+
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn native_vulkan_vulkanalia_present_decoded_image_once(
+    device: &Device,
+    queue: vk::Queue,
+    queue_family_index: u32,
+    swapchain: vk::SwapchainKHR,
+    swapchain_images: &[vk::Image],
+    swapchain_format: vk::Format,
+    swapchain_extent: vk::Extent2D,
+    resource_image: &VulkanaliaVideoSessionResourceImage,
+    sampler: &VulkanaliaDecodedImagePresentSamplerResources,
+    pipeline: &VulkanaliaDecodedImagePresentPipelineResources,
+) -> Result<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot, String> {
+    let frame_resources = native_vulkan_vulkanalia_create_decoded_image_present_frame_resources(
+        device,
+        swapchain_images,
+        swapchain_format,
+        queue_family_index,
+    )?;
+    let result = native_vulkan_vulkanalia_present_decoded_image_frame(
+        device,
+        queue,
+        swapchain,
+        swapchain_images,
+        swapchain_format,
+        swapchain_extent,
+        resource_image,
+        sampler,
+        pipeline,
+        &frame_resources,
+        sampler.snapshot.sampled_array_layer,
+        0,
+    );
+    native_vulkan_vulkanalia_destroy_decoded_image_present_frame_resources(device, frame_resources);
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
+    device: &Device,
+    queue: vk::Queue,
+    swapchain: vk::SwapchainKHR,
+    swapchain_images: &[vk::Image],
+    swapchain_format: vk::Format,
+    swapchain_extent: vk::Extent2D,
+    resource_image: &VulkanaliaVideoSessionResourceImage,
+    sampler: &VulkanaliaDecodedImagePresentSamplerResources,
+    pipeline: &VulkanaliaDecodedImagePresentPipelineResources,
+    frame_resources: &VulkanaliaDecodedImagePresentFrameResources,
+    sampled_array_layer: u32,
+    present_frame_index: u32,
+) -> Result<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot, String> {
+    if swapchain_images.is_empty() {
+        return Err("decoded image present requires at least one swapchain image".to_owned());
+    }
+    if swapchain_extent.width == 0 || swapchain_extent.height == 0 {
+        return Err("decoded image present requires non-zero swapchain extent".to_owned());
+    }
+    if sampled_array_layer >= resource_image.snapshot.array_layers {
+        return Err(format!(
+            "decoded image present sampled layer {sampled_array_layer} exceeds {} image layers",
+            resource_image.snapshot.array_layers
+        ));
+    }
+    if frame_resources.swapchain_image_views.len() != swapchain_images.len() {
+        return Err(format!(
+            "decoded image present frame resource image-view count {} does not match swapchain image count {}",
+            frame_resources.swapchain_image_views.len(),
+            swapchain_images.len()
+        ));
+    }
+
+    unsafe {
+        device
+            .wait_for_fences(&[frame_resources.in_flight], true, u64::MAX)
+            .map_err(|err| format!("vkWaitForFences(vulkanalia decoded image present): {err:?}"))?;
+        device
+            .reset_fences(&[frame_resources.in_flight])
+            .map_err(|err| format!("vkResetFences(vulkanalia decoded image present): {err:?}"))?;
+    }
+    let (image_index, _) = unsafe {
+        device.acquire_next_image_khr(
+            swapchain,
+            u64::MAX,
+            frame_resources.image_available,
+            vk::Fence::null(),
+        )
+    }
+    .map_err(|err| format!("vkAcquireNextImageKHR(vulkanalia decoded image present): {err:?}"))?;
+    let image_index_usize = image_index as usize;
+    let command_buffer = frame_resources
+        .command_buffers
+        .get(image_index_usize)
+        .copied()
+        .ok_or_else(|| {
+            format!("swapchain image index {image_index_usize} has no command buffer")
+        })?;
+    let swapchain_image = *swapchain_images
+        .get(image_index_usize)
+        .ok_or_else(|| format!("swapchain image index {image_index_usize} is unavailable"))?;
+    let swapchain_view = *frame_resources
+        .swapchain_image_views
+        .get(image_index_usize)
+        .ok_or_else(|| format!("swapchain view index {image_index_usize} is unavailable"))?;
+
+    native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
+        device,
+        command_buffer,
+        swapchain_image,
+        swapchain_view,
+        swapchain_extent,
+        resource_image.image,
+        sampled_array_layer,
+        sampler.descriptor_set,
+        pipeline.pipeline_layout,
+        pipeline.pipeline,
+    )?;
+    native_vulkan_vulkanalia_submit_decoded_image_present_command_buffer2(
+        device,
+        queue,
+        command_buffer,
+        frame_resources.image_available,
+        frame_resources.render_finished,
+        frame_resources.in_flight,
+    )?;
+
+    let swapchains = [swapchain];
+    let image_indices = [image_index];
+    let wait_semaphores = [frame_resources.render_finished];
+    let present_info = vk::PresentInfoKHR::builder()
+        .wait_semaphores(&wait_semaphores)
+        .swapchains(&swapchains)
+        .image_indices(&image_indices);
+    unsafe {
+        device
+            .queue_present_khr(queue, &present_info)
+            .map_err(|err| {
+                format!("vkQueuePresentKHR(vulkanalia decoded image present): {err:?}")
+            })?;
+        device
+            .queue_wait_idle(queue)
+            .map_err(|err| format!("vkQueueWaitIdle(vulkanalia decoded image present): {err:?}"))?;
+    }
+
+    Ok(NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
+        binding: "vulkanalia",
+        route: "decoded-image-dynamic-rendering-present-draw",
+        present_frame_index,
+        sampled_array_layer,
+        sampled_array_layer_source: "submitted-dst-base-array-layer",
+        swapchain_image_index: image_index,
+        swapchain_image_view_count: frame_resources.swapchain_image_views.len(),
+        target_format: format!("{swapchain_format:?}"),
+        extent: (swapchain_extent.width, swapchain_extent.height),
+        command_buffer_recorded: true,
+        submitted: true,
+        presented: true,
+        decoded_image_layout_transition: "video-decode-dpb -> shader-read-only-optimal -> video-decode-dpb",
+        swapchain_layout_transition: "undefined -> color-attachment-optimal -> present-src-khr",
+        render_model: "immutable YCbCr combined image sampler -> Vulkan 1.3/1.4 dynamic rendering fullscreen triangle -> Wayland swapchain",
+        command_order: native_vulkan_vulkanalia_decoded_image_present_command_order(true).to_vec(),
+        uses_pipeline_rendering_create_info: true,
+        uses_dynamic_rendering: true,
+        uses_synchronization2: true,
+        uses_submit2: true,
+        zero_copy_presented: true,
+        ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,
+    })
+}
+
+pub(super) fn native_vulkan_vulkanalia_destroy_decoded_image_present_frame_resources(
+    device: &Device,
+    resources: VulkanaliaDecodedImagePresentFrameResources,
+) {
+    native_vulkan_vulkanalia_destroy_partial_decoded_image_present_frame_resources(
+        device,
+        resources.swapchain_image_views,
+        resources.command_pool,
+        resources.image_available,
+        resources.render_finished,
+        resources.in_flight,
+    );
+}
+
+fn native_vulkan_vulkanalia_destroy_partial_decoded_image_present_frame_resources(
+    device: &Device,
+    swapchain_image_views: Vec<vk::ImageView>,
+    command_pool: vk::CommandPool,
+    image_available: vk::Semaphore,
+    render_finished: vk::Semaphore,
+    in_flight: vk::Fence,
+) {
     unsafe {
         if in_flight != vk::Fence::null() {
             device.destroy_fence(in_flight, None);
@@ -450,8 +583,6 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_once(
             device.destroy_image_view(view, None);
         }
     }
-
-    result
 }
 
 pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources(
@@ -891,6 +1022,22 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
         device.cmd_draw(command_buffer, 3, 1, 0, 0);
         device.cmd_end_rendering(command_buffer);
 
+        let decoded_to_decode = vk::ImageMemoryBarrier2::builder()
+            .src_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+            .src_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .dst_stage_mask(vk::PipelineStageFlags2::VIDEO_DECODE_KHR)
+            .dst_access_mask(
+                vk::AccessFlags2::VIDEO_DECODE_READ_KHR | vk::AccessFlags2::VIDEO_DECODE_WRITE_KHR,
+            )
+            .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .new_layout(vk::ImageLayout::VIDEO_DECODE_DPB_KHR)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(decoded_image)
+            .subresource_range(
+                native_vulkan_vulkanalia_decoded_image_layer_subresource_range(sampled_array_layer),
+            )
+            .build();
         let swapchain_to_present = vk::ImageMemoryBarrier2::builder()
             .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
             .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
@@ -903,7 +1050,7 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
             .image(swapchain_image)
             .subresource_range(native_vulkan_vulkanalia_color_subresource_range())
             .build();
-        let present_barriers = [swapchain_to_present];
+        let present_barriers = [decoded_to_decode, swapchain_to_present];
         let present_dependency = vk::DependencyInfo::builder()
             .image_memory_barriers(&present_barriers)
             .build();
@@ -978,6 +1125,7 @@ pub(super) fn native_vulkan_vulkanalia_decoded_image_present_command_order(
             "cmd_bind_ycbcr_descriptor",
             "cmd_draw_fullscreen_triangle",
             "cmd_end_rendering",
+            "cmd_pipeline_barrier2_decoded_restore",
             "cmd_pipeline_barrier2_present",
             "queue_submit2_present",
             "queue_present_khr",
@@ -991,6 +1139,7 @@ pub(super) fn native_vulkan_vulkanalia_decoded_image_present_command_order(
             "cmd_bind_ycbcr_descriptor",
             "cmd_draw_fullscreen_triangle",
             "cmd_end_rendering",
+            "cmd_pipeline_barrier2_decoded_restore",
             "cmd_pipeline_barrier2_present",
             "queue_submit2_present",
             "queue_present_khr",
@@ -1151,6 +1300,7 @@ mod tests {
         assert!(split.contains(&"cmd_pipeline_barrier2_video_release"));
         assert!(split.contains(&"cmd_pipeline_barrier2_graphics_acquire_shader_read"));
         assert!(split.contains(&"cmd_begin_rendering"));
+        assert!(split.contains(&"cmd_pipeline_barrier2_decoded_restore"));
         assert!(split.contains(&"queue_submit2_present"));
 
         let same = native_vulkan_vulkanalia_decoded_image_present_command_order(true);
