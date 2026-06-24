@@ -2,9 +2,11 @@
 //!
 //! This module follows the same broad split as FFmpeg: demux/parser output is
 //! retained as codec access units, while decode/render code consumes packets
-//! with explicit timestamps, loop serials, and parameter-set snapshots.
+//! with explicit timestamps, loop serials, and parameter-set snapshots. The
+//! packet queue is frontend-agnostic; GStreamer is only the current provider.
 
 use std::collections::VecDeque;
+use std::marker::PhantomData;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -22,9 +24,6 @@ pub(super) trait NativeVulkanStreamingAccessUnit: Sized {
     const RING_SLOT_BYTES_ENV: &'static str;
     const DEFAULT_RING_SLOT_COUNT: u32;
 
-    fn pipeline(source: &Path) -> Result<gst::Pipeline, NativeVulkanError>;
-    fn sink_name() -> &'static str;
-    fn from_sample(sample: &gst::Sample) -> Result<Self, NativeVulkanError>;
     fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String>;
     fn snapshot(
         index: u32,
@@ -39,6 +38,20 @@ pub(super) trait NativeVulkanStreamingAccessUnit: Sized {
     fn is_random_access_with_parameter_sets(&self, _parameter_sets: &Self::ParameterSets) -> bool {
         self.is_random_access()
     }
+}
+
+pub(super) trait NativeVulkanGstStreamingAccessUnit:
+    NativeVulkanStreamingAccessUnit
+{
+    fn pipeline(source: &Path) -> Result<gst::Pipeline, NativeVulkanError>;
+    fn sink_name() -> &'static str;
+    fn from_sample(sample: &gst::Sample) -> Result<Self, NativeVulkanError>;
+}
+
+pub(super) trait NativeVulkanStreamingPacketFrontend<A: NativeVulkanStreamingAccessUnit> {
+    fn pull_next_access_unit(&mut self, loop_on_eos: bool) -> Result<Option<A>, NativeVulkanError>;
+    fn eos_count(&self) -> u32;
+    fn loop_count(&self) -> u32;
 }
 
 #[allow(dead_code)]
@@ -59,9 +72,7 @@ pub(super) struct NativeVulkanStreamingPacket<A: NativeVulkanStreamingAccessUnit
 }
 
 pub(super) struct NativeVulkanStreamingPacketQueue<A: NativeVulkanStreamingAccessUnit> {
-    pipeline: gst::Pipeline,
-    sink: gst::Element,
-    bus: gst::Bus,
+    frontend: Box<dyn NativeVulkanStreamingPacketFrontend<A>>,
     pub(super) parameter_sets: A::ParameterSets,
     pub(super) queued: VecDeque<NativeVulkanStreamingPacket<A>>,
     pub(super) capacity: usize,
@@ -72,13 +83,6 @@ pub(super) struct NativeVulkanStreamingPacketQueue<A: NativeVulkanStreamingAcces
     pub(super) loop_skip_access_units: u32,
     pub(super) bootstrap_discarded_access_units: u32,
     pub(super) max_payload_bytes: u64,
-}
-
-impl<A: NativeVulkanStreamingAccessUnit> Drop for NativeVulkanStreamingPacketQueue<A> {
-    fn drop(&mut self) {
-        let _ = self.pipeline.set_state(gst::State::Null);
-        let _ = self.pipeline.state(gst::ClockTime::from_mseconds(500));
-    }
 }
 
 impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
@@ -159,15 +163,9 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
     fn pull_next_access_unit(&mut self, loop_on_eos: bool) -> Result<Option<A>, NativeVulkanError> {
         loop {
             let before_loop_count = self.loop_count;
-            let Some(access_unit) = native_vulkan_pull_streaming_access_unit::<A>(
-                &self.pipeline,
-                &self.sink,
-                &self.bus,
-                loop_on_eos,
-                &mut self.eos_count,
-                &mut self.loop_count,
-            )?
-            else {
+            let access_unit = self.frontend.pull_next_access_unit(loop_on_eos)?;
+            self.sync_frontend_counters();
+            let Some(access_unit) = access_unit else {
                 return Ok(None);
             };
             if loop_on_eos
@@ -176,22 +174,21 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
                 && !access_unit.is_random_access_with_parameter_sets(&self.parameter_sets)
             {
                 for _ in 1..self.loop_skip_access_units {
-                    let Some(_) = native_vulkan_pull_streaming_access_unit::<A>(
-                        &self.pipeline,
-                        &self.sink,
-                        &self.bus,
-                        loop_on_eos,
-                        &mut self.eos_count,
-                        &mut self.loop_count,
-                    )?
-                    else {
+                    let skipped = self.frontend.pull_next_access_unit(loop_on_eos)?;
+                    self.sync_frontend_counters();
+                    if skipped.is_none() {
                         return Ok(None);
-                    };
+                    }
                 }
                 continue;
             }
             return Ok(Some(access_unit));
         }
+    }
+
+    fn sync_frontend_counters(&mut self) {
+        self.eos_count = self.frontend.eos_count();
+        self.loop_count = self.frontend.loop_count();
     }
 
     fn try_fill_one(&mut self, loop_on_eos: bool) -> Result<bool, NativeVulkanError> {
@@ -251,29 +248,35 @@ pub(super) fn native_vulkan_require_streaming_bootstrap_window<
     )))
 }
 
-pub(super) fn native_vulkan_start_streaming_packet_queue<A: NativeVulkanStreamingAccessUnit>(
+pub(super) fn native_vulkan_start_streaming_packet_queue<
+    A: NativeVulkanGstStreamingAccessUnit + 'static,
+>(
     source: &Path,
     capacity: usize,
 ) -> Result<NativeVulkanStreamingPacketQueue<A>, NativeVulkanError> {
+    native_vulkan_start_gst_streaming_packet_queue::<A>(source, capacity)
+}
+
+pub(super) fn native_vulkan_start_gst_streaming_packet_queue<
+    A: NativeVulkanGstStreamingAccessUnit + 'static,
+>(
+    source: &Path,
+    capacity: usize,
+) -> Result<NativeVulkanStreamingPacketQueue<A>, NativeVulkanError> {
+    let frontend = NativeVulkanGstStreamingPacketFrontend::<A>::new(source)?;
+    native_vulkan_start_streaming_packet_queue_from_frontend(Box::new(frontend), capacity)
+}
+
+pub(super) fn native_vulkan_start_streaming_packet_queue_from_frontend<
+    A: NativeVulkanStreamingAccessUnit,
+>(
+    mut frontend: Box<dyn NativeVulkanStreamingPacketFrontend<A>>,
+    capacity: usize,
+) -> Result<NativeVulkanStreamingPacketQueue<A>, NativeVulkanError> {
     let capacity = capacity.max(1);
-    gst::init().map_err(|err| NativeVulkanError::Video(err.to_string()))?;
-    let pipeline = A::pipeline(source)?;
-    let sink = pipeline.by_name(A::sink_name()).ok_or_else(|| {
-        NativeVulkanError::Video(format!("{} bitstream appsink not found", A::CODEC_LABEL))
-    })?;
-    let bus = pipeline.bus().ok_or_else(|| {
-        NativeVulkanError::Video(format!("{} bitstream pipeline has no bus", A::CODEC_LABEL))
-    })?;
-
-    pipeline
-        .set_state(gst::State::Playing)
-        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
-
     let mut pending = VecDeque::<A>::with_capacity(capacity);
     let mut selected_parameter_sets_access_unit = None::<Vec<u8>>;
     let mut pulled_count = 0u32;
-    let mut eos_count = 0u32;
-    let mut loop_count = 0u32;
     let mut max_payload_bytes = 0u64;
     let mut bootstrap_discarded_access_units = 0u32;
     let bootstrap_scan_limit = native_vulkan_streaming_bootstrap_scan_limit(capacity);
@@ -288,15 +291,7 @@ pub(super) fn native_vulkan_start_streaming_packet_queue<A: NativeVulkanStreamin
                 A::PARAMETER_SETS_LABEL,
             )));
         }
-        let Some(access_unit) = native_vulkan_pull_streaming_access_unit::<A>(
-            &pipeline,
-            &sink,
-            &bus,
-            false,
-            &mut eos_count,
-            &mut loop_count,
-        )?
-        else {
+        let Some(access_unit) = frontend.pull_next_access_unit(false)? else {
             break;
         };
         pulled_count = pulled_count.saturating_add(1);
@@ -336,21 +331,21 @@ pub(super) fn native_vulkan_start_streaming_packet_queue<A: NativeVulkanStreamin
         queued.push_back(NativeVulkanStreamingPacket {
             timeline: NativeVulkanStreamingPacketTimeline {
                 access_unit_index,
-                source_loop_index: loop_count,
+                source_loop_index: frontend.loop_count(),
                 pts_ms: access_unit.pts_ms(),
                 duration_ms: access_unit.duration_ms(),
             },
             access_unit,
             snapshot,
-            source_loop_index: loop_count,
+            source_loop_index: frontend.loop_count(),
         });
     }
     let next_access_unit_index = queued.len().min(u32::MAX as usize) as u32;
+    let eos_count = frontend.eos_count();
+    let loop_count = frontend.loop_count();
 
     Ok(NativeVulkanStreamingPacketQueue {
-        pipeline,
-        sink,
-        bus,
+        frontend,
         parameter_sets,
         queued,
         capacity,
@@ -364,7 +359,72 @@ pub(super) fn native_vulkan_start_streaming_packet_queue<A: NativeVulkanStreamin
     })
 }
 
-fn native_vulkan_pull_streaming_access_unit<A: NativeVulkanStreamingAccessUnit>(
+struct NativeVulkanGstStreamingPacketFrontend<A: NativeVulkanGstStreamingAccessUnit> {
+    pipeline: gst::Pipeline,
+    sink: gst::Element,
+    bus: gst::Bus,
+    eos_count: u32,
+    loop_count: u32,
+    _access_unit: PhantomData<A>,
+}
+
+impl<A: NativeVulkanGstStreamingAccessUnit> NativeVulkanGstStreamingPacketFrontend<A> {
+    fn new(source: &Path) -> Result<Self, NativeVulkanError> {
+        gst::init().map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+        let pipeline = A::pipeline(source)?;
+        let sink = pipeline.by_name(A::sink_name()).ok_or_else(|| {
+            NativeVulkanError::Video(format!("{} bitstream appsink not found", A::CODEC_LABEL))
+        })?;
+        let bus = pipeline.bus().ok_or_else(|| {
+            NativeVulkanError::Video(format!("{} bitstream pipeline has no bus", A::CODEC_LABEL))
+        })?;
+
+        pipeline
+            .set_state(gst::State::Playing)
+            .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+
+        Ok(Self {
+            pipeline,
+            sink,
+            bus,
+            eos_count: 0,
+            loop_count: 0,
+            _access_unit: PhantomData,
+        })
+    }
+}
+
+impl<A: NativeVulkanGstStreamingAccessUnit> Drop for NativeVulkanGstStreamingPacketFrontend<A> {
+    fn drop(&mut self) {
+        let _ = self.pipeline.set_state(gst::State::Null);
+        let _ = self.pipeline.state(gst::ClockTime::from_mseconds(500));
+    }
+}
+
+impl<A: NativeVulkanGstStreamingAccessUnit> NativeVulkanStreamingPacketFrontend<A>
+    for NativeVulkanGstStreamingPacketFrontend<A>
+{
+    fn pull_next_access_unit(&mut self, loop_on_eos: bool) -> Result<Option<A>, NativeVulkanError> {
+        native_vulkan_pull_gst_streaming_access_unit::<A>(
+            &self.pipeline,
+            &self.sink,
+            &self.bus,
+            loop_on_eos,
+            &mut self.eos_count,
+            &mut self.loop_count,
+        )
+    }
+
+    fn eos_count(&self) -> u32 {
+        self.eos_count
+    }
+
+    fn loop_count(&self) -> u32 {
+        self.loop_count
+    }
+}
+
+fn native_vulkan_pull_gst_streaming_access_unit<A: NativeVulkanGstStreamingAccessUnit>(
     pipeline: &gst::Pipeline,
     sink: &gst::Element,
     bus: &gst::Bus,

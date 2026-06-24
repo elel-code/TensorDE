@@ -24,8 +24,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "native-vulkan-gst-video")]
 use crate::config::VideoDecoderPolicy;
-use crate::core::{FitMode, Transition};
+use crate::core::FitMode;
 use crate::renderer::native_wayland::{
     NativeWaylandError, NativeWaylandHost, NativeWaylandHostOptions, NativeWaylandSurfaceHandles,
 };
@@ -33,10 +34,7 @@ use crate::renderer::native_wayland::{
 use crate::renderer::video::{
     actual_decoder_reports, apply_decoder_rank_policy, decoder_policy_status, video_caps_reports,
 };
-use crate::renderer::{
-    SceneLiteDisplayPlan, SceneLiteRenderLayer, SceneLiteWallpaperPlan, SlideshowWallpaperPlan,
-    StaticRenderSyncPlan, StaticWallpaperPlan, VideoWallpaperPlan,
-};
+use crate::renderer::{SceneLiteDisplayPlan, StaticWallpaperPlan, VideoWallpaperPlan};
 use ash::vk;
 #[cfg(feature = "native-vulkan-gst-video")]
 use gst::prelude::*;
@@ -75,6 +73,9 @@ mod pacing;
 #[path = "native_vulkan/pipeline.rs"]
 mod pipeline;
 
+#[path = "native_vulkan/render_item.rs"]
+mod render_item;
+
 #[path = "native_vulkan/audio_policy.rs"]
 mod audio_policy;
 
@@ -97,6 +98,8 @@ mod timeline;
 mod demux;
 
 pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy};
+pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
+use render_item::{native_vulkan_static_item, native_vulkan_video_item};
 use video_runtime::{NativeVulkanVideoAudioRuntimeTelemetry, native_vulkan_video_runtime_snapshot};
 pub use video_runtime::{NativeVulkanVideoMemoryRouteSnapshot, NativeVulkanVideoRuntimeSnapshot};
 
@@ -108,7 +111,8 @@ pub use audio_clock::{
 
 #[cfg(feature = "native-vulkan-gst-video")]
 use demux::{
-    NativeVulkanStreamingAccessUnit, NativeVulkanStreamingPacket, NativeVulkanStreamingPacketQueue,
+    NativeVulkanGstStreamingAccessUnit, NativeVulkanStreamingAccessUnit,
+    NativeVulkanStreamingPacket, NativeVulkanStreamingPacketQueue,
     native_vulkan_require_streaming_bootstrap_window, native_vulkan_start_streaming_packet_queue,
 };
 
@@ -35747,18 +35751,6 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH264AccessUnitExtract {
     const RING_SLOT_BYTES_ENV: &'static str = "GILDER_VULKAN_H264_STREAMING_RING_SLOT_BYTES";
     const DEFAULT_RING_SLOT_COUNT: u32 = 2;
 
-    fn pipeline(source: &Path) -> Result<gst::Pipeline, NativeVulkanError> {
-        native_vulkan_h264_bitstream_pipeline(source)
-    }
-
-    fn sink_name() -> &'static str {
-        "gilder-native-vulkan-h264-bitstream-appsink"
-    }
-
-    fn from_sample(sample: &gst::Sample) -> Result<Self, NativeVulkanError> {
-        native_vulkan_h264_access_unit_from_sample(sample)
-    }
-
     fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String> {
         native_vulkan_parse_h264_parameter_sets(bytes)
     }
@@ -35793,6 +35785,21 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH264AccessUnitExtract {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanGstStreamingAccessUnit for NativeVulkanH264AccessUnitExtract {
+    fn pipeline(source: &Path) -> Result<gst::Pipeline, NativeVulkanError> {
+        native_vulkan_h264_bitstream_pipeline(source)
+    }
+
+    fn sink_name() -> &'static str {
+        "gilder-native-vulkan-h264-bitstream-appsink"
+    }
+
+    fn from_sample(sample: &gst::Sample) -> Result<Self, NativeVulkanError> {
+        native_vulkan_h264_access_unit_from_sample(sample)
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 impl NativeVulkanStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
     type ParameterSets = NativeVulkanH265ParameterSetSnapshot;
     type Snapshot = NativeVulkanH265AccessUnitSnapshot;
@@ -35801,18 +35808,6 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
     const PARAMETER_SETS_LABEL: &'static str = "VPS/SPS/PPS";
     const RING_SLOT_BYTES_ENV: &'static str = "GILDER_VULKAN_H265_STREAMING_RING_SLOT_BYTES";
     const DEFAULT_RING_SLOT_COUNT: u32 = 2;
-
-    fn pipeline(source: &Path) -> Result<gst::Pipeline, NativeVulkanError> {
-        native_vulkan_h265_bitstream_pipeline(source)
-    }
-
-    fn sink_name() -> &'static str {
-        "gilder-native-vulkan-h265-bitstream-appsink"
-    }
-
-    fn from_sample(sample: &gst::Sample) -> Result<Self, NativeVulkanError> {
-        native_vulkan_h265_access_unit_from_sample(sample)
-    }
 
     fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String> {
         native_vulkan_parse_h265_parameter_sets(bytes)
@@ -35848,6 +35843,21 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanGstStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
+    fn pipeline(source: &Path) -> Result<gst::Pipeline, NativeVulkanError> {
+        native_vulkan_h265_bitstream_pipeline(source)
+    }
+
+    fn sink_name() -> &'static str {
+        "gilder-native-vulkan-h265-bitstream-appsink"
+    }
+
+    fn from_sample(sample: &gst::Sample) -> Result<Self, NativeVulkanError> {
+        native_vulkan_h265_access_unit_from_sample(sample)
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 impl NativeVulkanStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
     type ParameterSets = NativeVulkanAv1SequenceHeaderSnapshot;
     type Snapshot = NativeVulkanAv1TemporalUnitSnapshot;
@@ -35856,18 +35866,6 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
     const PARAMETER_SETS_LABEL: &'static str = "sequence header";
     const RING_SLOT_BYTES_ENV: &'static str = "GILDER_VULKAN_AV1_STREAMING_RING_SLOT_BYTES";
     const DEFAULT_RING_SLOT_COUNT: u32 = 16;
-
-    fn pipeline(source: &Path) -> Result<gst::Pipeline, NativeVulkanError> {
-        native_vulkan_av1_bitstream_pipeline(source)
-    }
-
-    fn sink_name() -> &'static str {
-        "gilder-native-vulkan-av1-bitstream-appsink"
-    }
-
-    fn from_sample(sample: &gst::Sample) -> Result<Self, NativeVulkanError> {
-        native_vulkan_av1_temporal_unit_from_sample(sample)
-    }
 
     fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String> {
         native_vulkan_av1_obu_stats(bytes)?
@@ -35922,6 +35920,21 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
             .is_some_and(|submit| {
                 submit.frame_type == 0 && submit.show_frame && submit.vulkan_submit_candidate
             })
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanGstStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
+    fn pipeline(source: &Path) -> Result<gst::Pipeline, NativeVulkanError> {
+        native_vulkan_av1_bitstream_pipeline(source)
+    }
+
+    fn sink_name() -> &'static str {
+        "gilder-native-vulkan-av1-bitstream-appsink"
+    }
+
+    fn from_sample(sample: &gst::Sample) -> Result<Self, NativeVulkanError> {
+        native_vulkan_av1_temporal_unit_from_sample(sample)
     }
 }
 
@@ -48710,150 +48723,6 @@ pub fn wallpaper_type_support_matrix() -> Vec<NativeVulkanWallpaperTypeSupport> 
     ]
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-pub enum NativeVulkanRenderItem {
-    Clear {
-        output_name: String,
-    },
-    StaticImage {
-        output_name: String,
-        source: PathBuf,
-        fit: FitMode,
-        background: Option<String>,
-        renderer_status: &'static str,
-    },
-    Video {
-        output_name: String,
-        source: PathBuf,
-        poster: Option<PathBuf>,
-        fit: FitMode,
-        loop_playback: bool,
-        muted: bool,
-        manifest_max_fps: Option<u32>,
-        target_max_fps: Option<u32>,
-        decoder_policy: VideoDecoderPolicy,
-        start_offset_ms: u64,
-        renderer_status: &'static str,
-    },
-    Slideshow {
-        output_name: String,
-        sources: Vec<PathBuf>,
-        interval_ms: u64,
-        transition: Transition,
-        fit: FitMode,
-        target_max_fps: Option<u32>,
-        renderer_status: &'static str,
-    },
-    SceneLite {
-        output_name: String,
-        scene_source: Option<PathBuf>,
-        fallback: Option<PathBuf>,
-        display: Option<SceneLiteDisplayPlan>,
-        display_image: Option<PathBuf>,
-        display_color: Option<String>,
-        manifest_max_fps: Option<u32>,
-        layer_count: usize,
-        layers: Vec<SceneLiteRenderLayer>,
-        bound_properties: Vec<String>,
-        snapshot_time_ms: u64,
-        target_max_fps: Option<u32>,
-        renderer_status: &'static str,
-    },
-}
-
-impl NativeVulkanRenderItem {
-    pub fn wallpaper_type(&self) -> NativeVulkanWallpaperType {
-        match self {
-            Self::Clear { .. } => NativeVulkanWallpaperType::StaticImage,
-            Self::StaticImage { .. } => NativeVulkanWallpaperType::StaticImage,
-            Self::Video { .. } => NativeVulkanWallpaperType::Video,
-            Self::Slideshow { .. } => NativeVulkanWallpaperType::Playlist,
-            Self::SceneLite { .. } => NativeVulkanWallpaperType::SceneLite,
-        }
-    }
-}
-
-pub fn render_items_from_sync_plan(plan: &StaticRenderSyncPlan) -> Vec<NativeVulkanRenderItem> {
-    plan.plans
-        .iter()
-        .map(native_vulkan_static_item)
-        .chain(plan.video_plans.iter().map(native_vulkan_video_item))
-        .chain(
-            plan.slideshow_plans
-                .iter()
-                .map(native_vulkan_slideshow_item),
-        )
-        .chain(
-            plan.scene_lite_plans
-                .iter()
-                .map(native_vulkan_scene_lite_item),
-        )
-        .collect()
-}
-
-fn native_vulkan_static_item(plan: &StaticWallpaperPlan) -> NativeVulkanRenderItem {
-    NativeVulkanRenderItem::StaticImage {
-        output_name: plan.output_name.clone(),
-        source: plan.source.clone(),
-        fit: plan.fit,
-        background: plan.background.clone(),
-        renderer_status: "cpu-fit-staging-copy",
-    }
-}
-
-fn native_vulkan_video_item(plan: &VideoWallpaperPlan) -> NativeVulkanRenderItem {
-    NativeVulkanRenderItem::Video {
-        output_name: plan.output_name.clone(),
-        source: plan.source.clone(),
-        poster: plan.poster.clone(),
-        fit: plan.fit,
-        loop_playback: plan.loop_playback,
-        muted: plan.muted,
-        manifest_max_fps: plan.manifest_max_fps,
-        target_max_fps: plan.target_max_fps,
-        decoder_policy: plan.decoder_policy,
-        start_offset_ms: plan.start_offset_ms,
-        renderer_status: "vulkan-lifecycle-video-placeholder",
-    }
-}
-
-fn native_vulkan_slideshow_item(plan: &SlideshowWallpaperPlan) -> NativeVulkanRenderItem {
-    NativeVulkanRenderItem::Slideshow {
-        output_name: plan.output_name.clone(),
-        sources: plan.sources.clone(),
-        interval_ms: plan.interval_ms,
-        transition: plan.transition,
-        fit: plan.fit,
-        target_max_fps: plan.target_max_fps,
-        renderer_status: "planned-slideshow-static-texture-sequence",
-    }
-}
-
-fn native_vulkan_scene_lite_item(plan: &SceneLiteWallpaperPlan) -> NativeVulkanRenderItem {
-    NativeVulkanRenderItem::SceneLite {
-        output_name: plan.output_name.clone(),
-        scene_source: plan.source.clone(),
-        fallback: plan.fallback.clone(),
-        display: plan.display.clone(),
-        display_image: match &plan.display {
-            Some(SceneLiteDisplayPlan::Image { source, .. }) => Some(source.clone()),
-            Some(SceneLiteDisplayPlan::Color { .. }) | None => None,
-        },
-        display_color: match &plan.display {
-            Some(SceneLiteDisplayPlan::Color { color }) => Some(color.clone()),
-            Some(SceneLiteDisplayPlan::Image { .. }) | None => None,
-        },
-        manifest_max_fps: plan.manifest_max_fps,
-        layer_count: plan.layers.len(),
-        layers: plan.layers.clone(),
-        bound_properties: plan.bound_properties.clone(),
-        snapshot_time_ms: 0,
-        target_max_fps: plan.target_max_fps,
-        renderer_status: "deterministic-scene-lite-snapshot-ready-for-vulkan-passes",
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanBackendContract {
     pub backend_name: &'static str,
@@ -48964,6 +48833,7 @@ pub fn web_interop_contract() -> NativeVulkanWebInteropContract {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::renderer::{SceneLiteRenderLayer, SceneLiteWallpaperPlan, StaticRenderSyncPlan};
     use std::path::PathBuf;
 
     #[test]

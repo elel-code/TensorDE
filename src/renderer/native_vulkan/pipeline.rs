@@ -36,7 +36,7 @@ pub struct NativeVulkanVideoPipelineContract {
 pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContract {
     NativeVulkanVideoPipelineContract {
         first_reference: "FFmpeg packet/frame/clock model",
-        second_reference: "GStreamer demux/parser/appsink/audio frontend",
+        second_reference: "replaceable GStreamer demux/parser/appsink/audio frontend",
         stages: vec![
             NativeVulkanVideoPipelineStageContract {
                 order: 0,
@@ -49,7 +49,7 @@ pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContr
             NativeVulkanVideoPipelineStageContract {
                 order: 1,
                 kind: NativeVulkanVideoPipelineStageKind::Demux,
-                owner: "frontend",
+                owner: "replaceable-frontend",
                 boundary: "container packets are selected by codec stream without instantiating video display sinks",
                 ffmpeg_reference: "av_read_frame packet ownership and stream_index filtering",
                 gstreamer_reference: "qtdemux/matroskademux pad-added filtering",
@@ -57,7 +57,7 @@ pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContr
             NativeVulkanVideoPipelineStageContract {
                 order: 2,
                 kind: NativeVulkanVideoPipelineStageKind::Parse,
-                owner: "frontend",
+                owner: "replaceable-frontend",
                 boundary: "codec parser normalizes access units/temporal units and preserves timestamps",
                 ffmpeg_reference: "parser/bitstream filter normalization before decoder submit",
                 gstreamer_reference: "h264parse/h265parse/av1parse appsink handoff",
@@ -121,7 +121,8 @@ pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContr
         ],
         invariants: &[
             "FFmpeg is the first reference for codec packet/frame/clock semantics",
-            "GStreamer is the second reference and active container/parser/audio frontend",
+            "GStreamer is the second reference and current replaceable container/parser/audio frontend",
+            "frontend implementations may be replaced by libav/ffmpeg or native demux as long as the packet/audio/clock contracts remain stable",
             "demux/parser ownership must not imply display-sink ownership",
             "compressed payload retention must stay bounded by the packet queue and bitstream ring",
             "decode, render and present telemetry must be independently attributable",
@@ -140,6 +141,7 @@ mod tests {
 
         assert!(contract.first_reference.contains("FFmpeg"));
         assert!(contract.second_reference.contains("GStreamer"));
+        assert!(contract.second_reference.contains("replaceable"));
         assert_eq!(contract.stages.len(), 10);
         assert_eq!(
             contract.stages[0].kind,
@@ -152,5 +154,11 @@ mod tests {
         assert!(contract.stages.iter().any(|stage| stage.kind
             == NativeVulkanVideoPipelineStageKind::PacketQueue
             && stage.ffmpeg_reference.contains("PacketQueue")));
+        assert!(
+            contract
+                .invariants
+                .iter()
+                .any(|invariant| invariant.contains("packet/audio/clock contracts remain stable"))
+        );
     }
 }
