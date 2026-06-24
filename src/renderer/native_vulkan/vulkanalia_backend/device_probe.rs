@@ -6,6 +6,9 @@ use vulkanalia::loader::LibloadingLoader;
 use vulkanalia::prelude::v1_4::*;
 
 use super::queue_probe::native_vulkan_vulkanalia_has_video_decode_queue_family;
+use super::video_profile_probe::{
+    NativeVulkanVulkanaliaVideoProfileProbeSnapshot, native_vulkan_vulkanalia_video_profile_probe,
+};
 
 const LOADER_CANDIDATES: &[&str] = &["libvulkan.so.1", "libvulkan.so"];
 const REQUIRED_INSTANCE_EXTENSIONS: &[&str] = &["VK_KHR_surface", "VK_KHR_wayland_surface"];
@@ -61,6 +64,7 @@ pub struct NativeVulkanVulkanaliaPhysicalDeviceSnapshot {
     pub has_required_video_device_extensions: bool,
     pub has_required_external_memory_device_extensions: bool,
     pub has_video_decode_queue_family: bool,
+    pub video_profile_capabilities: NativeVulkanVulkanaliaVideoProfileProbeSnapshot,
     pub vulkan_1_4_features: NativeVulkanVulkanaliaVulkan14FeatureSnapshot,
 }
 
@@ -199,6 +203,21 @@ fn probe_vulkanalia_instance_devices(
                     .map(|property| property.extension_name.to_string_lossy().into_owned())
                     .collect::<Vec<_>>();
 
+            let has_required_video_device_extensions =
+                has_all_extensions(&device_extensions, REQUIRED_VIDEO_DEVICE_EXTENSIONS);
+            let has_required_external_memory_device_extensions = has_all_extensions(
+                &device_extensions,
+                REQUIRED_EXTERNAL_MEMORY_DEVICE_EXTENSIONS,
+            );
+            let has_video_decode_queue_family =
+                native_vulkan_vulkanalia_has_video_decode_queue_family(instance, physical_device);
+            let video_profile_capabilities = native_vulkan_vulkanalia_video_profile_probe(
+                instance,
+                physical_device,
+                &device_extensions,
+                has_video_decode_queue_family,
+            );
+
             Ok(NativeVulkanVulkanaliaPhysicalDeviceSnapshot {
                 physical_device_index,
                 physical_device_name: properties.device_name.to_string_lossy().into_owned(),
@@ -207,19 +226,10 @@ fn probe_vulkanalia_instance_devices(
                 device_id: properties.device_id,
                 api_version: Version::from(properties.api_version).to_string(),
                 driver_version: properties.driver_version,
-                has_required_video_device_extensions: has_all_extensions(
-                    &device_extensions,
-                    REQUIRED_VIDEO_DEVICE_EXTENSIONS,
-                ),
-                has_required_external_memory_device_extensions: has_all_extensions(
-                    &device_extensions,
-                    REQUIRED_EXTERNAL_MEMORY_DEVICE_EXTENSIONS,
-                ),
-                has_video_decode_queue_family:
-                    native_vulkan_vulkanalia_has_video_decode_queue_family(
-                        instance,
-                        physical_device,
-                    ),
+                has_required_video_device_extensions,
+                has_required_external_memory_device_extensions,
+                has_video_decode_queue_family,
+                video_profile_capabilities,
                 device_extensions: sorted_strings(device_extensions),
                 vulkan_1_4_features: NativeVulkanVulkanaliaVulkan14FeatureSnapshot {
                     dynamic_rendering_local_read: vulkan14_features.dynamic_rendering_local_read

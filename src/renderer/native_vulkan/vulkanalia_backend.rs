@@ -14,6 +14,12 @@ mod plan;
 mod profiles;
 #[path = "vulkanalia_backend/queue_probe.rs"]
 mod queue_probe;
+#[path = "vulkanalia_backend/video_profile_gate.rs"]
+mod video_profile_gate;
+#[path = "vulkanalia_backend/video_profile_labels.rs"]
+mod video_profile_labels;
+#[path = "vulkanalia_backend/video_profile_probe.rs"]
+mod video_profile_probe;
 
 pub use device_probe::{
     NativeVulkanVulkanaliaDeviceProbeSnapshot, NativeVulkanVulkanaliaDeviceProbeTemplate,
@@ -25,4 +31,9 @@ pub use features::{
 pub use plan::{NativeVulkanVulkanaliaBackendPlan, native_vulkan_vulkanalia_backend_plan};
 pub use profiles::{
     NativeVulkanVulkanaliaVideoProfileTemplate, native_vulkan_vulkanalia_video_profile_templates,
+};
+#[allow(unused_imports)]
+pub use video_profile_probe::{
+    NativeVulkanVulkanaliaVideoProfileCapabilitySnapshot,
+    NativeVulkanVulkanaliaVideoProfileProbeSnapshot,
 };
