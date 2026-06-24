@@ -8,6 +8,8 @@
 mod device_probe;
 #[path = "vulkanalia_backend/features.rs"]
 mod features;
+#[path = "vulkanalia_backend/instance.rs"]
+mod instance;
 #[path = "vulkanalia_backend/migration.rs"]
 mod migration;
 #[path = "vulkanalia_backend/plan.rs"]

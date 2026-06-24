@@ -4,10 +4,12 @@ use crate::renderer::native_vulkan::{
 };
 use serde::Serialize;
 use vulkanalia::Version;
-use vulkanalia::loader::LibloadingLoader;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder, KhrVideoQueueExtensionInstanceCommands};
 
+use super::instance::{
+    native_vulkan_vulkanalia_create_instance, native_vulkan_vulkanalia_destroy_instance,
+};
 use super::video_bitstream_buffer::{
     NativeVulkanVulkanaliaVideoSessionBitstreamBufferSmokeSnapshot,
     native_vulkan_vulkanalia_create_video_session_bitstream_buffer,
@@ -93,8 +95,6 @@ use super::video_session_parameters_h265::{
     native_vulkan_vulkanalia_create_h265_video_session_parameters,
     native_vulkan_vulkanalia_smoke_create_h265_video_session_parameters,
 };
-
-const LOADER_CANDIDATES: &[&str] = &["libvulkan.so.1", "libvulkan.so"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
@@ -201,25 +201,13 @@ pub struct NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot {
 pub fn probe_native_vulkan_vulkanalia_video_session_bind(
     options: NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
 ) -> Result<NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot, String> {
-    let (loader, loader_name) = load_vulkanalia_loader()?;
-    let entry = unsafe { Entry::new(loader) }
-        .map_err(|err| format!("vulkanalia Entry::new({loader_name}): {err}"))?;
-
-    let app_info = vk::ApplicationInfo::builder()
-        .application_name(b"gilder-native-vulkan\0")
-        .application_version(1)
-        .engine_name(b"gilder\0")
-        .engine_version(1)
-        .api_version(u32::from(Version::V1_4_0));
-    let create_info = vk::InstanceCreateInfo::builder().application_info(&app_info);
-    let instance = unsafe { entry.create_instance(&create_info, None) }
-        .map_err(|err| format!("vkCreateInstance(vulkanalia video session bind): {err:?}"))?;
-
-    let result =
-        probe_native_vulkan_vulkanalia_video_session_bind_inner(&instance, loader_name, options);
-    unsafe {
-        instance.destroy_instance(None);
-    }
+    let vulkan = native_vulkan_vulkanalia_create_instance()?;
+    let result = probe_native_vulkan_vulkanalia_video_session_bind_inner(
+        &vulkan.instance,
+        vulkan.loader_name,
+        options,
+    );
+    native_vulkan_vulkanalia_destroy_instance(vulkan);
     result
 }
 
@@ -1767,20 +1755,6 @@ fn query_vulkanalia_av1_video_session_capabilities(
         codec_max_level: av1_level_label(av1_capabilities.max_level),
         codec_max_level_raw: Some(av1_capabilities.max_level.0),
     })
-}
-
-fn load_vulkanalia_loader() -> Result<(LibloadingLoader, &'static str), String> {
-    let mut errors = Vec::new();
-    for candidate in LOADER_CANDIDATES {
-        match unsafe { LibloadingLoader::new(candidate) } {
-            Ok(loader) => return Ok((loader, candidate)),
-            Err(err) => errors.push(format!("{candidate}: {err}")),
-        }
-    }
-    Err(format!(
-        "failed to load Vulkan loader via vulkanalia: {}",
-        errors.join("; ")
-    ))
 }
 
 fn vulkanalia_video_session_codec_name(codec: NativeVulkanVideoSessionCodec) -> &'static str {
