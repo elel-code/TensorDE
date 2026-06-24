@@ -1,6 +1,8 @@
 use std::ffi::CString;
 
-use crate::renderer::native_vulkan::NativeVulkanVideoSessionCodec;
+use crate::renderer::native_vulkan::{
+    NativeVulkanH265ParameterSetSnapshot, NativeVulkanVideoSessionCodec,
+};
 use serde::Serialize;
 use vulkanalia::Version;
 use vulkanalia::loader::LibloadingLoader;
@@ -35,6 +37,7 @@ use super::video_session_parameters::{
     NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot,
     native_vulkan_vulkanalia_smoke_create_empty_video_session_parameters,
 };
+use super::video_session_parameters_h265::native_vulkan_vulkanalia_smoke_create_h265_video_session_parameters;
 
 const LOADER_CANDIDATES: &[&str] = &["libvulkan.so.1", "libvulkan.so"];
 const VIDEO_QUEUE_EXTENSION_NAME: &str = "VK_KHR_video_queue";
@@ -52,6 +55,8 @@ pub struct NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
     pub allocate_bitstream_buffer: bool,
     pub bitstream_buffer_size: u64,
     pub create_empty_session_parameters: bool,
+    pub create_session_parameters: bool,
+    pub h265_parameter_sets: Option<NativeVulkanH265ParameterSetSnapshot>,
 }
 
 impl Default for NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
@@ -64,6 +69,8 @@ impl Default for NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
             allocate_bitstream_buffer: false,
             bitstream_buffer_size: 8 * 1024 * 1024,
             create_empty_session_parameters: false,
+            create_session_parameters: false,
+            h265_parameter_sets: None,
         }
     }
 }
@@ -456,7 +463,29 @@ fn smoke_bind_vulkanalia_video_session_profile(
         } else {
             None
         };
-        let session_parameters = if options.create_empty_session_parameters {
+        let session_parameters = if options.create_session_parameters {
+            Some(match options.codec {
+                NativeVulkanVideoSessionCodec::H265Main8
+                | NativeVulkanVideoSessionCodec::H265Main10 => {
+                    let parameter_sets = options.h265_parameter_sets.as_ref().ok_or_else(|| {
+                        "Vulkanalia real H.265 session parameters require parsed H.265 parameter sets"
+                            .to_owned()
+                    })?;
+                    native_vulkan_vulkanalia_smoke_create_h265_video_session_parameters(
+                        device,
+                        session,
+                        options.codec,
+                        parameter_sets,
+                    )
+                }
+                _ => {
+                    return Err(
+                        "Vulkanalia real session parameters currently support H.265 only"
+                            .to_owned(),
+                    );
+                }
+            })
+        } else if options.create_empty_session_parameters {
             Some(
                 native_vulkan_vulkanalia_smoke_create_empty_video_session_parameters(
                     device,
@@ -538,7 +567,8 @@ fn smoke_bind_vulkanalia_video_session_profile(
             resource_image,
             bitstream_buffer_requested: options.allocate_bitstream_buffer,
             bitstream_buffer,
-            session_parameters_requested: options.create_empty_session_parameters,
+            session_parameters_requested: options.create_empty_session_parameters
+                || options.create_session_parameters,
             session_parameters,
         })
     })();

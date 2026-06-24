@@ -1089,6 +1089,37 @@ pub fn probe_vulkan_video_session(
     result
 }
 
+#[cfg(feature = "native-vulkan-gst-video")]
+pub fn native_vulkan_extract_h265_parameter_sets_for_vulkanalia(
+    source: PathBuf,
+    codec: NativeVulkanVideoSessionCodec,
+    max_samples: u32,
+) -> Result<NativeVulkanH265ParameterSetSnapshot, NativeVulkanError> {
+    if !matches!(
+        codec,
+        NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10
+    ) {
+        return Err(NativeVulkanError::Video(
+            "Vulkanalia real session-parameter extraction currently supports H.265 only".to_owned(),
+        ));
+    }
+
+    let mut options = NativeVulkanVideoSessionSmokeOptions {
+        codec,
+        extract_bitstream: true,
+        bitstream_source: Some(source),
+        bitstream_extract_max_samples: max_samples.max(1),
+        ..NativeVulkanVideoSessionSmokeOptions::default()
+    };
+    options.allocate_bitstream_buffer = false;
+    let extract = native_vulkan_extract_video_bitstream(&options)?;
+    extract.snapshot.h265_parameter_sets.ok_or_else(|| {
+        NativeVulkanError::Video(
+            "Vulkanalia real H.265 session parameters require parsed VPS/SPS/PPS".to_owned(),
+        )
+    })
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeVulkanOptions {
     pub host: NativeWaylandHostOptions,

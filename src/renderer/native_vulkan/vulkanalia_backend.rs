@@ -34,6 +34,8 @@ mod video_session_bind;
 mod video_session_images;
 #[path = "vulkanalia_backend/video_session_parameters.rs"]
 mod video_session_parameters;
+#[path = "vulkanalia_backend/video_session_parameters_h265.rs"]
+mod video_session_parameters_h265;
 
 pub use device_probe::{
     NativeVulkanVulkanaliaDeviceProbeSnapshot, NativeVulkanVulkanaliaDeviceProbeTemplate,

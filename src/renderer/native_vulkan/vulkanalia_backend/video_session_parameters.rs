@@ -96,6 +96,7 @@ fn native_vulkan_vulkanalia_smoke_create_empty_h264_video_session_parameters(
             std_sps_count: 0,
             std_pps_count: 0,
         },
+        "vulkanalia empty h264 session parameters",
     )
 }
 
@@ -129,13 +130,15 @@ fn native_vulkan_vulkanalia_smoke_create_empty_h265_video_session_parameters(
             std_sps_count: 0,
             std_pps_count: 0,
         },
+        "vulkanalia empty h265 session parameters",
     )
 }
 
-fn native_vulkan_vulkanalia_smoke_create_video_session_parameters(
+pub(super) fn native_vulkan_vulkanalia_smoke_create_video_session_parameters(
     device: &Device,
     create_info: &vk::VideoSessionParametersCreateInfoKHR,
     parameters_snapshot: NativeVulkanVulkanaliaVideoSessionParametersSnapshot,
+    operation: &'static str,
 ) -> NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot {
     match unsafe { device.create_video_session_parameters_khr(create_info, None) } {
         Ok(parameters) => {
@@ -157,14 +160,16 @@ fn native_vulkan_vulkanalia_smoke_create_video_session_parameters(
             created: false,
             destroyed: false,
             error: Some(format!(
-                "vkCreateVideoSessionParametersKHR(vulkanalia empty): {err:?}"
+                "vkCreateVideoSessionParametersKHR({operation}): {err:?}"
             )),
             parameters: parameters_snapshot,
         },
     }
 }
 
-fn vulkanalia_session_parameters_codec_label(codec: NativeVulkanVideoSessionCodec) -> &'static str {
+pub(super) fn vulkanalia_session_parameters_codec_label(
+    codec: NativeVulkanVideoSessionCodec,
+) -> &'static str {
     match codec {
         NativeVulkanVideoSessionCodec::H264High8 => "h264-high-8",
         NativeVulkanVideoSessionCodec::H265Main8 => "h265-main-8",
