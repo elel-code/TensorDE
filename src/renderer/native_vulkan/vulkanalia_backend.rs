@@ -18,6 +18,10 @@ mod profiles;
 mod queue_probe;
 #[path = "vulkanalia_backend/video_bitstream_buffer.rs"]
 mod video_bitstream_buffer;
+#[path = "vulkanalia_backend/video_decode_submit.rs"]
+mod video_decode_submit;
+#[path = "vulkanalia_backend/video_decode_submit_h265.rs"]
+mod video_decode_submit_h265;
 #[path = "vulkanalia_backend/video_format_probe.rs"]
 mod video_format_probe;
 #[path = "vulkanalia_backend/video_profile_gate.rs"]
