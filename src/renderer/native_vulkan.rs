@@ -83,6 +83,9 @@ mod audio_runtime;
 #[path = "native_vulkan/audio_frontend.rs"]
 mod audio_frontend;
 
+#[path = "native_vulkan/video_import.rs"]
+mod video_import;
+
 #[path = "native_vulkan/video_runtime.rs"]
 mod video_runtime;
 
@@ -122,6 +125,10 @@ use video_frontend::{
 };
 #[cfg(feature = "native-vulkan-gst-video")]
 use video_frontend::{NativeVulkanVideoFrontend, NativeVulkanVideoFrontendSample};
+pub use video_import::NativeVulkanDmabufImportSnapshot;
+use video_import::NativeVulkanVideoImportSnapshot;
+#[cfg(feature = "native-vulkan-gst-video")]
+use video_import::{NativeVulkanVideoImportReport, NativeVulkanVideoImportStatus};
 use video_runtime::{NativeVulkanVideoAudioRuntimeTelemetry, native_vulkan_video_runtime_snapshot};
 pub use video_runtime::{NativeVulkanVideoMemoryRouteSnapshot, NativeVulkanVideoRuntimeSnapshot};
 
@@ -3105,58 +3112,6 @@ pub struct NativeVulkanDrmDeviceSnapshot {
     pub render_minor: Option<i64>,
     pub render_dev_t: Option<u64>,
     pub render_node: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NativeVulkanDmabufImportSnapshot {
-    pub source: String,
-    pub format: &'static str,
-    pub drm_fourcc: u32,
-    pub drm_fourcc_hex: String,
-    pub modifier: u64,
-    pub modifier_hex: String,
-    pub available_plane_count: u32,
-    pub drm_object_count: u32,
-    pub y_uv_same_fd: bool,
-    pub driver_modifier_plane_count: Option<u32>,
-    pub y_offset: u64,
-    pub y_stride: u32,
-    pub uv_offset: u64,
-    pub uv_stride: u32,
-    pub image_memory_type_bits: Option<u32>,
-    pub image_memory_type_bits_hex: Option<String>,
-    pub fd_memory_type_bits: Option<u32>,
-    pub fd_memory_type_bits_hex: Option<String>,
-    pub compatible_memory_type_bits: Option<u32>,
-    pub compatible_memory_type_bits_hex: Option<String>,
-    pub selected_memory_type_index: Option<u32>,
-    pub memory_allocation_size: Option<u64>,
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NativeVulkanVideoImportSnapshot {
-    texture_import_status: &'static str,
-    frames_imported: u64,
-    last_import_size: Option<(u32, u32)>,
-    last_import_memory_path: Option<String>,
-    last_import_error: Option<String>,
-    last_import_elapsed_us: Option<u64>,
-    max_import_elapsed_us: Option<u64>,
-    last_dmabuf_import: Option<NativeVulkanDmabufImportSnapshot>,
-}
-
-#[cfg(not(feature = "native-vulkan-gst-video"))]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NativeVulkanVideoImportSnapshot {
-    texture_import_status: &'static str,
-    frames_imported: u64,
-    last_import_size: Option<(u32, u32)>,
-    last_import_memory_path: Option<String>,
-    last_import_error: Option<String>,
-    last_import_elapsed_us: Option<u64>,
-    max_import_elapsed_us: Option<u64>,
-    last_dmabuf_import: Option<NativeVulkanDmabufImportSnapshot>,
 }
 
 pub struct NativeVulkanSession {
@@ -16998,80 +16953,6 @@ fn native_vulkan_va_check(
         }
     };
     Err(NativeVulkanError::Video(message))
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NativeVulkanVideoImportReport {
-    width: u32,
-    height: u32,
-    memory_path: String,
-    elapsed_us: u64,
-    dmabuf_contract: Option<NativeVulkanDmabufImportSnapshot>,
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct NativeVulkanVideoImportStatus {
-    frames_imported: u64,
-    last_import_size: Option<(u32, u32)>,
-    last_import_memory_path: Option<String>,
-    last_import_error: Option<String>,
-    last_import_elapsed_us: Option<u64>,
-    max_import_elapsed_us: Option<u64>,
-    last_dmabuf_import: Option<NativeVulkanDmabufImportSnapshot>,
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-impl NativeVulkanVideoImportStatus {
-    fn record_import(&mut self, report: NativeVulkanVideoImportReport) {
-        self.frames_imported = self.frames_imported.saturating_add(1);
-        self.last_import_size = Some((report.width, report.height));
-        self.last_import_memory_path = Some(report.memory_path);
-        self.last_import_error = None;
-        self.last_import_elapsed_us = Some(report.elapsed_us);
-        self.last_dmabuf_import = report.dmabuf_contract;
-        self.max_import_elapsed_us = Some(
-            self.max_import_elapsed_us
-                .map(|current| current.max(report.elapsed_us))
-                .unwrap_or(report.elapsed_us),
-        );
-    }
-
-    fn clear_dmabuf_contract(&mut self) {
-        self.last_dmabuf_import = None;
-    }
-
-    fn record_dmabuf_contract(&mut self, contract: NativeVulkanDmabufImportSnapshot) {
-        self.last_dmabuf_import = Some(contract);
-    }
-
-    fn record_error(&mut self, error: String) {
-        self.last_import_error = Some(error);
-    }
-
-    fn snapshot(&self) -> NativeVulkanVideoImportSnapshot {
-        let texture_import_status = if self.frames_imported > 0 {
-            match self.last_import_memory_path.as_deref() {
-                Some(path) if path.contains("GstDmaBufMemory") => "importing-dmabuf-vulkan-image",
-                _ => "importing-cuda-vulkan-image-planes",
-            }
-        } else if self.last_import_error.is_some() {
-            "waiting-for-supported-importer"
-        } else {
-            "waiting-for-importable-sample"
-        };
-        NativeVulkanVideoImportSnapshot {
-            texture_import_status,
-            frames_imported: self.frames_imported,
-            last_import_size: self.last_import_size,
-            last_import_memory_path: self.last_import_memory_path.clone(),
-            last_import_error: self.last_import_error.clone(),
-            last_import_elapsed_us: self.last_import_elapsed_us,
-            max_import_elapsed_us: self.max_import_elapsed_us,
-            last_dmabuf_import: self.last_dmabuf_import.clone(),
-        }
-    }
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]

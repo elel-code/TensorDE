@@ -6,9 +6,10 @@ use crate::config::VideoDecoderPolicy;
 use crate::core::FitMode;
 
 use super::video_frontend::{NativeVulkanVideoCapsSnapshot, NativeVulkanVideoFrontendSnapshot};
+use super::video_import::{NativeVulkanDmabufImportSnapshot, NativeVulkanVideoImportSnapshot};
 use super::{
-    NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy, NativeVulkanDmabufImportSnapshot,
-    NativeVulkanDrmDeviceSnapshot, NativeVulkanRenderItem, NativeVulkanVideoImportSnapshot,
+    NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy, NativeVulkanDrmDeviceSnapshot,
+    NativeVulkanRenderItem,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
