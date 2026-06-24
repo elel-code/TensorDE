@@ -1761,6 +1761,9 @@ fn scene_lite_display_plan(
     render_target: Option<RenderTargetSize>,
     scene_lite_snapshot_cache: Option<&mut SceneLiteSnapshotCacheContext<'_>>,
 ) -> Option<SceneLiteDisplayPlan> {
+    if let Some(color) = scene_lite_direct_display_color(layers) {
+        return Some(SceneLiteDisplayPlan::Color { color });
+    }
     if let Some(snapshot) = scene_lite_snapshot_display(
         source_path,
         document,
@@ -1785,6 +1788,25 @@ fn scene_lite_display_plan(
         });
     }
     scene_lite_background_color(layers).map(|color| SceneLiteDisplayPlan::Color { color })
+}
+
+fn scene_lite_direct_display_color(layers: &[SceneLiteRenderLayer]) -> Option<String> {
+    let mut renderable_layers = layers
+        .iter()
+        .filter(|layer| scene_lite_layer_is_snapshot_renderable(layer));
+    let layer = renderable_layers.next()?;
+    if renderable_layers.next().is_some()
+        || layer.kind != SceneLiteLayerKind::Color
+        || layer.opacity < 1.0
+        || layer.transform != SceneLiteTransform::default()
+    {
+        return None;
+    }
+    layer
+        .color
+        .as_deref()
+        .filter(|color| !color.is_empty())
+        .map(str::to_owned)
 }
 
 fn scene_lite_snapshot_display(
@@ -4942,7 +4964,7 @@ exit 0
     }
 
     #[test]
-    fn scene_lite_color_layer_builds_snapshot_without_fallback() {
+    fn scene_lite_color_layer_uses_direct_display_without_snapshot() {
         let test_dir = TestDir::new("gilder-scene-lite-color-plan");
         let package_dir = test_dir.path.join("scene-color.gwpdir");
         write_minimal_scene_lite_color_gwpdir(&package_dir);
@@ -4962,20 +4984,16 @@ exit 0
         assert_eq!(sync.scene_lite_plans.len(), 1);
         let plan = &sync.scene_lite_plans[0];
         assert!(plan.fallback.is_none());
-        let display_source = match &plan.display {
-            Some(SceneLiteDisplayPlan::Image {
-                source, background, ..
-            }) => {
-                assert_eq!(background.as_deref(), Some("#203040"));
-                source
-            }
-            _ => panic!("expected scene-lite color snapshot image display"),
-        };
-        let snapshot = fs::read_to_string(display_source).unwrap();
-        assert!(snapshot.contains("<rect"));
-        assert!(snapshot.contains("#203040"));
-        assert_eq!(sync.cache.scene_lite_snapshot_cache_generations, 1);
-        assert_eq!(sync.cache.planned_scene_lite_image_resources, 1);
+        assert!(matches!(
+            &plan.display,
+            Some(SceneLiteDisplayPlan::Color { color }) if color == "#203040"
+        ));
+        assert_eq!(sync.cache.scene_lite_snapshot_cache_generations, 0);
+        assert_eq!(sync.cache.scene_lite_snapshot_cache_reuses, 0);
+        assert_eq!(sync.cache.scene_lite_snapshot_cache_entries, 0);
+        assert_eq!(sync.cache.scene_lite_snapshot_cache_bytes, 0);
+        assert_eq!(sync.cache.planned_scene_lite_image_resources, 0);
+        assert_eq!(sync.cache.planned_image_resource_references, 0);
     }
 
     #[test]
