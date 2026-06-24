@@ -63,6 +63,144 @@ pub(super) fn native_vulkan_run_gst_bitstream_pipeline<T>(
     result
 }
 
+pub(super) fn native_vulkan_h264_bitstream_pipeline(
+    source: &Path,
+) -> Result<gst::Pipeline, NativeVulkanError> {
+    let pipeline = gst::Pipeline::new();
+    let filesrc = native_vulkan_gst_bitstream_element("filesrc")?;
+    filesrc.set_property("location", source.to_string_lossy().as_ref());
+    let demux = native_vulkan_gst_bitstream_element("qtdemux")?;
+    let queue = native_vulkan_gst_bitstream_element("queue")?;
+    native_vulkan_configure_bitstream_queue(&queue);
+    let parser = native_vulkan_gst_bitstream_element("h264parse")?;
+    if parser.find_property("config-interval").is_some() {
+        parser.set_property("config-interval", -1i32);
+    }
+    if parser.find_property("disable-passthrough").is_some() {
+        parser.set_property("disable-passthrough", true);
+    }
+    let capsfilter = native_vulkan_gst_bitstream_element("capsfilter")?;
+    let caps = "video/x-h264,stream-format=byte-stream,alignment=au"
+        .parse::<gst::Caps>()
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    capsfilter.set_property("caps", &caps);
+    let sink = native_vulkan_gst_bitstream_element("appsink")?;
+    sink.set_property("name", "gilder-native-vulkan-h264-bitstream-appsink");
+    native_vulkan_configure_bitstream_appsink(&sink);
+
+    pipeline
+        .add_many([&filesrc, &demux, &queue, &parser, &capsfilter, &sink])
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    filesrc
+        .link(&demux)
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    gst::Element::link_many([&queue, &parser, &capsfilter, &sink])
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+
+    let queue_sink = queue.static_pad("sink").ok_or_else(|| {
+        NativeVulkanError::Video("H.264 bitstream queue has no sink pad".to_owned())
+    })?;
+    demux.connect_pad_added(move |_, pad| {
+        if queue_sink.is_linked() || !native_vulkan_gst_pad_is_h264(pad) {
+            return;
+        }
+        let _ = pad.link(&queue_sink);
+    });
+
+    Ok(pipeline)
+}
+
+pub(super) fn native_vulkan_h265_bitstream_pipeline(
+    source: &Path,
+) -> Result<gst::Pipeline, NativeVulkanError> {
+    let pipeline = gst::Pipeline::new();
+    let filesrc = native_vulkan_gst_bitstream_element("filesrc")?;
+    filesrc.set_property("location", source.to_string_lossy().as_ref());
+    let demux = native_vulkan_gst_bitstream_element("qtdemux")?;
+    let queue = native_vulkan_gst_bitstream_element("queue")?;
+    native_vulkan_configure_bitstream_queue(&queue);
+    let parser = native_vulkan_gst_bitstream_element("h265parse")?;
+    if parser.find_property("config-interval").is_some() {
+        parser.set_property("config-interval", -1i32);
+    }
+    if parser.find_property("disable-passthrough").is_some() {
+        parser.set_property("disable-passthrough", true);
+    }
+    let capsfilter = native_vulkan_gst_bitstream_element("capsfilter")?;
+    let caps = "video/x-h265,stream-format=byte-stream,alignment=au"
+        .parse::<gst::Caps>()
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    capsfilter.set_property("caps", &caps);
+    let sink = native_vulkan_gst_bitstream_element("appsink")?;
+    sink.set_property("name", "gilder-native-vulkan-h265-bitstream-appsink");
+    native_vulkan_configure_bitstream_appsink(&sink);
+
+    pipeline
+        .add_many([&filesrc, &demux, &queue, &parser, &capsfilter, &sink])
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    filesrc
+        .link(&demux)
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    gst::Element::link_many([&queue, &parser, &capsfilter, &sink])
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+
+    let queue_sink = queue.static_pad("sink").ok_or_else(|| {
+        NativeVulkanError::Video("H.265 bitstream queue has no sink pad".to_owned())
+    })?;
+    demux.connect_pad_added(move |_, pad| {
+        if queue_sink.is_linked() || !native_vulkan_gst_pad_is_h265(pad) {
+            return;
+        }
+        let _ = pad.link(&queue_sink);
+    });
+
+    Ok(pipeline)
+}
+
+pub(super) fn native_vulkan_av1_bitstream_pipeline(
+    source: &Path,
+) -> Result<gst::Pipeline, NativeVulkanError> {
+    let pipeline = gst::Pipeline::new();
+    let filesrc = native_vulkan_gst_bitstream_element("filesrc")?;
+    filesrc.set_property("location", source.to_string_lossy().as_ref());
+    let demux = native_vulkan_gst_bitstream_element(native_vulkan_av1_demux_element_name(source))?;
+    let queue = native_vulkan_gst_bitstream_element("queue")?;
+    native_vulkan_configure_bitstream_queue(&queue);
+    let parser = native_vulkan_gst_bitstream_element("av1parse")?;
+    if parser.find_property("disable-passthrough").is_some() {
+        parser.set_property("disable-passthrough", true);
+    }
+    let capsfilter = native_vulkan_gst_bitstream_element("capsfilter")?;
+    let caps = "video/x-av1,stream-format=obu-stream,alignment=frame"
+        .parse::<gst::Caps>()
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    capsfilter.set_property("caps", &caps);
+    let sink = native_vulkan_gst_bitstream_element("appsink")?;
+    sink.set_property("name", "gilder-native-vulkan-av1-bitstream-appsink");
+    native_vulkan_configure_bitstream_appsink(&sink);
+
+    pipeline
+        .add_many([&filesrc, &demux, &queue, &parser, &capsfilter, &sink])
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    filesrc
+        .link(&demux)
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    gst::Element::link_many([&queue, &parser, &capsfilter, &sink])
+        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+
+    let queue_sink = queue.static_pad("sink").ok_or_else(|| {
+        NativeVulkanError::Video("AV1 bitstream queue has no sink pad".to_owned())
+    })?;
+    demux.connect_pad_added(move |_, pad| {
+        if queue_sink.is_linked() || !native_vulkan_gst_pad_is_av1(pad) {
+            return;
+        }
+        let _ = pad.link(&queue_sink);
+    });
+
+    Ok(pipeline)
+}
+
 struct NativeVulkanGstStreamingPacketFrontend<A: NativeVulkanGstStreamingAccessUnit> {
     pipeline: gst::Pipeline,
     sink: gst::Element,
@@ -195,4 +333,80 @@ fn native_vulkan_pull_gst_streaming_access_unit<A: NativeVulkanGstStreamingAcces
 
 fn native_vulkan_streaming_sink_is_eos(sink: &gst::Element) -> bool {
     sink.find_property("eos").is_some() && sink.property::<bool>("eos")
+}
+
+fn native_vulkan_av1_demux_element_name(source: &Path) -> &'static str {
+    match source
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("webm") | Some("mkv") | Some("mka") => "matroskademux",
+        _ => "qtdemux",
+    }
+}
+
+fn native_vulkan_gst_bitstream_element(name: &str) -> Result<gst::Element, NativeVulkanError> {
+    gst::ElementFactory::make(name)
+        .build()
+        .map_err(|err| NativeVulkanError::Video(format!("create {name}: {err}")))
+}
+
+fn native_vulkan_configure_bitstream_queue(queue: &gst::Element) {
+    if queue.find_property("max-size-buffers").is_some() {
+        queue.set_property("max-size-buffers", 1u32);
+    }
+    if queue.find_property("max-size-bytes").is_some() {
+        queue.set_property("max-size-bytes", 0u32);
+    }
+    if queue.find_property("max-size-time").is_some() {
+        queue.set_property("max-size-time", 0u64);
+    }
+}
+
+fn native_vulkan_configure_bitstream_appsink(sink: &gst::Element) {
+    if sink.find_property("sync").is_some() {
+        sink.set_property("sync", false);
+    }
+    if sink.find_property("async").is_some() {
+        sink.set_property("async", false);
+    }
+    if sink.find_property("emit-signals").is_some() {
+        sink.set_property("emit-signals", false);
+    }
+    if sink.find_property("enable-last-sample").is_some() {
+        sink.set_property("enable-last-sample", false);
+    }
+    if sink.find_property("wait-on-eos").is_some() {
+        sink.set_property("wait-on-eos", false);
+    }
+    if sink.find_property("max-buffers").is_some() {
+        sink.set_property("max-buffers", 1u32);
+    }
+    if sink.find_property("drop").is_some() {
+        sink.set_property("drop", false);
+    }
+}
+
+fn native_vulkan_gst_pad_is_h264(pad: &gst::Pad) -> bool {
+    native_vulkan_gst_pad_media_type_is(pad, "video/x-h264")
+}
+
+fn native_vulkan_gst_pad_is_h265(pad: &gst::Pad) -> bool {
+    native_vulkan_gst_pad_media_type_is(pad, "video/x-h265")
+}
+
+fn native_vulkan_gst_pad_is_av1(pad: &gst::Pad) -> bool {
+    native_vulkan_gst_pad_media_type_is(pad, "video/x-av1")
+}
+
+fn native_vulkan_gst_pad_media_type_is(pad: &gst::Pad, expected: &str) -> bool {
+    pad.current_caps()
+        .or_else(|| Some(pad.query_caps(None)))
+        .and_then(|caps| {
+            caps.structure(0)
+                .map(|structure| structure.name() == expected)
+        })
+        .unwrap_or(false)
 }
