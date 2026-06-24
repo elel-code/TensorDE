@@ -231,7 +231,7 @@ pub(super) fn native_vulkan_vulkanalia_video_decode_required_device_extensions(
     extensions
 }
 
-fn native_vulkan_vulkanalia_video_decode_device_extensions(
+pub(super) fn native_vulkan_vulkanalia_video_decode_device_extensions(
     codec: NativeVulkanVideoSessionCodec,
     feature_selection: NativeVulkanVulkanaliaVideoDeviceFeatureSelection,
 ) -> Vec<&'static str> {

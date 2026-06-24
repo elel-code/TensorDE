@@ -46,6 +46,8 @@ mod video_device;
 mod video_direct_runtime;
 #[path = "vulkanalia_backend/video_format_probe.rs"]
 mod video_format_probe;
+#[path = "vulkanalia_backend/video_present_device.rs"]
+mod video_present_device;
 #[path = "vulkanalia_backend/video_profile_gate.rs"]
 mod video_profile_gate;
 #[path = "vulkanalia_backend/video_profile_info.rs"]
@@ -137,6 +139,13 @@ pub use video_format_probe::{
     NativeVulkanVulkanaliaVideoFormatProbeSnapshot,
     NativeVulkanVulkanaliaVideoFormatPropertySnapshot,
     NativeVulkanVulkanaliaVideoFormatQuerySnapshot,
+};
+pub use video_present_device::{
+    NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions,
+    NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot,
+    NativeVulkanVulkanaliaVideoPresentFeatureSnapshot,
+    NativeVulkanVulkanaliaVideoPresentQueueSnapshot,
+    probe_native_vulkan_vulkanalia_video_present_device,
 };
 #[allow(unused_imports)]
 pub use video_profile_probe::{

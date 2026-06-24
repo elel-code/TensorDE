@@ -161,11 +161,11 @@ pub(super) struct NativeVulkanVulkanaliaSwapchainPlan {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct NativeVulkanVulkanaliaPresentFeatureSelection {
     pub(super) synchronization2_enabled: bool,
-    present_id_enabled: bool,
-    present_id2_enabled: bool,
-    present_wait_enabled: bool,
-    present_wait2_enabled: bool,
-    swapchain_maintenance1_enabled: bool,
+    pub(super) present_id_enabled: bool,
+    pub(super) present_id2_enabled: bool,
+    pub(super) present_wait_enabled: bool,
+    pub(super) present_wait2_enabled: bool,
+    pub(super) swapchain_maintenance1_enabled: bool,
 }
 
 pub(super) struct NativeVulkanVulkanaliaPresentDeviceContext {
@@ -559,7 +559,7 @@ pub(super) fn create_vulkanalia_present_device(
     })
 }
 
-fn query_vulkanalia_present_feature_selection(
+pub(super) fn query_vulkanalia_present_feature_selection(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     device_extensions: &[String],
@@ -589,7 +589,7 @@ fn query_vulkanalia_present_feature_selection(
     }
 }
 
-fn enabled_present_device_extensions(
+pub(super) fn enabled_present_device_extensions(
     feature_selection: &NativeVulkanVulkanaliaPresentFeatureSelection,
 ) -> Vec<&'static str> {
     let mut extensions = vec!["VK_KHR_swapchain"];
