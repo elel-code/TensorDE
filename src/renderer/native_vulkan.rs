@@ -111,6 +111,9 @@ mod audio_policy;
 
 #[path = "native_vulkan/audio_runtime.rs"]
 mod audio_runtime;
+#[cfg(feature = "native-vulkan-gst-video")]
+#[path = "native_vulkan/audio_worker.rs"]
+mod audio_worker;
 
 #[cfg(feature = "native-vulkan-gst-video")]
 #[path = "native_vulkan/audio_frontend.rs"]
