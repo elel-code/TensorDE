@@ -76,9 +76,9 @@ pub(super) struct VulkanaliaDecodedImagePresentFrameResources {
     swapchain_image_views: Vec<vk::ImageView>,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
-    image_available: vk::Semaphore,
-    render_finished: vk::Semaphore,
-    in_flight: vk::Fence,
+    image_available: Vec<vk::Semaphore>,
+    render_finished: Vec<vk::Semaphore>,
+    in_flight: Vec<vk::Fence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -94,6 +94,9 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
     pub display_order_key_source: &'static str,
     pub pacing_sleep_micros: u64,
     pub pacing_clock_model: &'static str,
+    pub present_frame_slot: u32,
+    pub present_sync_model: &'static str,
+    pub wait_idle_after_present: bool,
     pub swapchain_image_index: u32,
     pub swapchain_image_view_count: usize,
     pub target_format: String,
@@ -319,9 +322,9 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_frame_resour
 
     let mut swapchain_image_views = Vec::new();
     let mut command_pool = vk::CommandPool::null();
-    let mut image_available = vk::Semaphore::null();
-    let mut render_finished = vk::Semaphore::null();
-    let mut in_flight = vk::Fence::null();
+    let mut image_available = Vec::new();
+    let mut render_finished = Vec::new();
+    let mut in_flight = Vec::new();
 
     let result = (|| -> Result<VulkanaliaDecodedImagePresentFrameResources, String> {
         swapchain_image_views = native_vulkan_vulkanalia_create_present_swapchain_image_views(
@@ -347,29 +350,38 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_frame_resour
             })?;
 
         let semaphore_info = vk::SemaphoreCreateInfo::builder();
-        image_available =
-            unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(|err| {
-                format!(
-                    "vkCreateSemaphore(image_available vulkanalia decoded image present): {err:?}"
-                )
-            })?;
-        render_finished =
-            unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(|err| {
-                format!(
-                    "vkCreateSemaphore(render_finished vulkanalia decoded image present): {err:?}"
-                )
-            })?;
         let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
-        in_flight = unsafe { device.create_fence(&fence_info, None) }
-            .map_err(|err| format!("vkCreateFence(vulkanalia decoded image present): {err:?}"))?;
+        for frame_slot in 0..swapchain_images.len() {
+            image_available.push(
+                unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(|err| {
+                    format!(
+                        "vkCreateSemaphore(image_available slot {frame_slot} vulkanalia decoded image present): {err:?}"
+                    )
+                })?,
+            );
+            render_finished.push(
+                unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(|err| {
+                    format!(
+                        "vkCreateSemaphore(render_finished slot {frame_slot} vulkanalia decoded image present): {err:?}"
+                    )
+                })?,
+            );
+            in_flight.push(
+                unsafe { device.create_fence(&fence_info, None) }.map_err(|err| {
+                    format!(
+                        "vkCreateFence(slot {frame_slot} vulkanalia decoded image present): {err:?}"
+                    )
+                })?,
+            );
+        }
 
         Ok(VulkanaliaDecodedImagePresentFrameResources {
             swapchain_image_views: std::mem::take(&mut swapchain_image_views),
             command_pool,
             command_buffers,
-            image_available,
-            render_finished,
-            in_flight,
+            image_available: std::mem::take(&mut image_available),
+            render_finished: std::mem::take(&mut render_finished),
+            in_flight: std::mem::take(&mut in_flight),
         })
     })();
 
@@ -470,22 +482,33 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
             swapchain_images.len()
         ));
     }
+    let frame_slot_count = frame_resources.in_flight.len();
+    if frame_slot_count == 0
+        || frame_resources.image_available.len() != frame_slot_count
+        || frame_resources.render_finished.len() != frame_slot_count
+    {
+        return Err(format!(
+            "decoded image present frame slots are inconsistent: image_available={}, render_finished={}, in_flight={}",
+            frame_resources.image_available.len(),
+            frame_resources.render_finished.len(),
+            frame_resources.in_flight.len()
+        ));
+    }
+    let present_frame_slot = present_frame_index as usize % frame_slot_count;
+    let image_available = frame_resources.image_available[present_frame_slot];
+    let render_finished = frame_resources.render_finished[present_frame_slot];
+    let in_flight = frame_resources.in_flight[present_frame_slot];
 
     unsafe {
         device
-            .wait_for_fences(&[frame_resources.in_flight], true, u64::MAX)
+            .wait_for_fences(&[in_flight], true, u64::MAX)
             .map_err(|err| format!("vkWaitForFences(vulkanalia decoded image present): {err:?}"))?;
         device
-            .reset_fences(&[frame_resources.in_flight])
+            .reset_fences(&[in_flight])
             .map_err(|err| format!("vkResetFences(vulkanalia decoded image present): {err:?}"))?;
     }
     let (image_index, _) = unsafe {
-        device.acquire_next_image_khr(
-            swapchain,
-            u64::MAX,
-            frame_resources.image_available,
-            vk::Fence::null(),
-        )
+        device.acquire_next_image_khr(swapchain, u64::MAX, image_available, vk::Fence::null())
     }
     .map_err(|err| format!("vkAcquireNextImageKHR(vulkanalia decoded image present): {err:?}"))?;
     let image_index_usize = image_index as usize;
@@ -520,14 +543,14 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         device,
         queue,
         command_buffer,
-        frame_resources.image_available,
-        frame_resources.render_finished,
-        frame_resources.in_flight,
+        image_available,
+        render_finished,
+        in_flight,
     )?;
 
     let swapchains = [swapchain];
     let image_indices = [image_index];
-    let wait_semaphores = [frame_resources.render_finished];
+    let wait_semaphores = [render_finished];
     let present_info = vk::PresentInfoKHR::builder()
         .wait_semaphores(&wait_semaphores)
         .swapchains(&swapchains)
@@ -538,9 +561,6 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
             .map_err(|err| {
                 format!("vkQueuePresentKHR(vulkanalia decoded image present): {err:?}")
             })?;
-        device
-            .queue_wait_idle(queue)
-            .map_err(|err| format!("vkQueueWaitIdle(vulkanalia decoded image present): {err:?}"))?;
     }
 
     Ok(NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
@@ -555,6 +575,9 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         display_order_key_source,
         pacing_sleep_micros,
         pacing_clock_model,
+        present_frame_slot: present_frame_slot as u32,
+        present_sync_model: "frame-slot semaphore/fence reuse; no per-present queue_wait_idle",
+        wait_idle_after_present: false,
         swapchain_image_index: image_index,
         swapchain_image_view_count: frame_resources.swapchain_image_views.len(),
         target_format: format!("{swapchain_format:?}"),
@@ -579,6 +602,7 @@ pub(super) fn native_vulkan_vulkanalia_destroy_decoded_image_present_frame_resou
     device: &Device,
     resources: VulkanaliaDecodedImagePresentFrameResources,
 ) {
+    let _ = unsafe { device.device_wait_idle() };
     native_vulkan_vulkanalia_destroy_partial_decoded_image_present_frame_resources(
         device,
         resources.swapchain_image_views,
@@ -593,19 +617,25 @@ fn native_vulkan_vulkanalia_destroy_partial_decoded_image_present_frame_resource
     device: &Device,
     swapchain_image_views: Vec<vk::ImageView>,
     command_pool: vk::CommandPool,
-    image_available: vk::Semaphore,
-    render_finished: vk::Semaphore,
-    in_flight: vk::Fence,
+    image_available: Vec<vk::Semaphore>,
+    render_finished: Vec<vk::Semaphore>,
+    in_flight: Vec<vk::Fence>,
 ) {
     unsafe {
-        if in_flight != vk::Fence::null() {
-            device.destroy_fence(in_flight, None);
+        for fence in in_flight {
+            if fence != vk::Fence::null() {
+                device.destroy_fence(fence, None);
+            }
         }
-        if render_finished != vk::Semaphore::null() {
-            device.destroy_semaphore(render_finished, None);
+        for semaphore in render_finished {
+            if semaphore != vk::Semaphore::null() {
+                device.destroy_semaphore(semaphore, None);
+            }
         }
-        if image_available != vk::Semaphore::null() {
-            device.destroy_semaphore(image_available, None);
+        for semaphore in image_available {
+            if semaphore != vk::Semaphore::null() {
+                device.destroy_semaphore(semaphore, None);
+            }
         }
         if command_pool != vk::CommandPool::null() {
             device.destroy_command_pool(command_pool, None);
@@ -1160,6 +1190,8 @@ pub(super) fn native_vulkan_vulkanalia_decoded_image_present_command_order(
             "cmd_pipeline_barrier2_present",
             "queue_submit2_present",
             "queue_present_khr",
+            "defer_frame_slot_reuse_until_fence",
+            "no_queue_wait_idle_after_present",
         ]
     } else {
         &[
@@ -1174,6 +1206,8 @@ pub(super) fn native_vulkan_vulkanalia_decoded_image_present_command_order(
             "cmd_pipeline_barrier2_present",
             "queue_submit2_present",
             "queue_present_khr",
+            "defer_frame_slot_reuse_until_fence",
+            "no_queue_wait_idle_after_present",
         ]
     }
 }
@@ -1333,6 +1367,7 @@ mod tests {
         assert!(split.contains(&"cmd_begin_rendering"));
         assert!(split.contains(&"cmd_pipeline_barrier2_decoded_restore"));
         assert!(split.contains(&"queue_submit2_present"));
+        assert!(split.contains(&"no_queue_wait_idle_after_present"));
 
         let same = native_vulkan_vulkanalia_decoded_image_present_command_order(true);
         assert!(!same.contains(&"cmd_pipeline_barrier2_video_release"));
