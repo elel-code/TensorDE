@@ -24,6 +24,8 @@ mod video_command_pool;
 mod video_decode_commands;
 #[path = "vulkanalia_backend/video_decode_submit.rs"]
 mod video_decode_submit;
+#[path = "vulkanalia_backend/video_decode_submit_h264.rs"]
+mod video_decode_submit_h264;
 #[path = "vulkanalia_backend/video_decode_submit_h265.rs"]
 mod video_decode_submit_h265;
 #[path = "vulkanalia_backend/video_format_probe.rs"]
