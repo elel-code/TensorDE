@@ -123,6 +123,7 @@ pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContr
             "FFmpeg is the first reference for codec packet/frame/clock semantics",
             "GStreamer is the second reference and current replaceable container/parser/audio frontend",
             "frontend implementations may be replaced by libav/ffmpeg or native demux as long as the packet/audio/clock contracts remain stable",
+            "decoded video frontends must expose provider-neutral telemetry and samples before render/import",
             "demux/parser ownership must not imply display-sink ownership",
             "compressed payload retention must stay bounded by the packet queue and bitstream ring",
             "decode, render and present telemetry must be independently attributable",
@@ -170,6 +171,12 @@ mod tests {
                 .invariants
                 .iter()
                 .any(|invariant| invariant.contains("packet/audio/clock contracts remain stable"))
+        );
+        assert!(
+            contract
+                .invariants
+                .iter()
+                .any(|invariant| invariant.contains("provider-neutral telemetry and samples"))
         );
     }
 }

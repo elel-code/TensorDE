@@ -5,10 +5,10 @@ use serde::Serialize;
 use crate::config::VideoDecoderPolicy;
 use crate::core::FitMode;
 
+use super::video_frontend::{NativeVulkanVideoCapsSnapshot, NativeVulkanVideoFrontendSnapshot};
 use super::{
     NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy, NativeVulkanDmabufImportSnapshot,
-    NativeVulkanDrmDeviceSnapshot, NativeVulkanGstVideoFrontendSnapshot, NativeVulkanRenderItem,
-    NativeVulkanVideoCapsSnapshot, NativeVulkanVideoImportSnapshot,
+    NativeVulkanDrmDeviceSnapshot, NativeVulkanRenderItem, NativeVulkanVideoImportSnapshot,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -23,6 +23,7 @@ pub struct NativeVulkanVideoRuntimeSnapshot {
     pub decoder_policy: VideoDecoderPolicy,
     pub start_offset_ms: u64,
     pub frontend: &'static str,
+    pub frontend_provider: &'static str,
     pub frontend_status: &'static str,
     pub handoff_status: &'static str,
     pub texture_import_status: &'static str,
@@ -99,7 +100,7 @@ pub struct NativeVulkanVideoMemoryRouteSnapshot {
 
 pub(super) fn native_vulkan_video_runtime_snapshot(
     item: &NativeVulkanRenderItem,
-    frontend: Option<NativeVulkanGstVideoFrontendSnapshot>,
+    frontend: Option<NativeVulkanVideoFrontendSnapshot>,
     import: Option<NativeVulkanVideoImportSnapshot>,
     audio_runtime: Option<NativeVulkanVideoAudioRuntimeTelemetry>,
     audio_runtime_last_error: Option<String>,
@@ -191,10 +192,17 @@ pub(super) fn native_vulkan_video_runtime_snapshot(
         decoder_policy: *decoder_policy,
         start_offset_ms: *start_offset_ms,
         frontend: if frontend.is_some() {
-            "gstreamer-appsink"
+            frontend
+                .as_ref()
+                .map(|frontend| frontend.provider.active_frontend_label())
+                .unwrap_or("replaceable-frontend-active")
         } else {
             "gstreamer-planned"
         },
+        frontend_provider: frontend
+            .as_ref()
+            .map(|frontend| frontend.provider.as_str())
+            .unwrap_or("gstreamer"),
         frontend_status,
         handoff_status,
         texture_import_status: import
@@ -217,7 +225,7 @@ pub(super) fn native_vulkan_video_runtime_snapshot(
         audio_runtime_last_error,
         gst_state: frontend
             .as_ref()
-            .and_then(|frontend| frontend.gst_state.clone()),
+            .and_then(|frontend| frontend.provider_state.clone()),
         eos_messages: frontend
             .as_ref()
             .map(|frontend| frontend.eos_messages)
@@ -296,7 +304,7 @@ pub(super) fn native_vulkan_video_runtime_snapshot(
 }
 
 fn native_vulkan_video_memory_route_snapshot(
-    frontend: Option<&NativeVulkanGstVideoFrontendSnapshot>,
+    frontend: Option<&NativeVulkanVideoFrontendSnapshot>,
     import: Option<&NativeVulkanVideoImportSnapshot>,
 ) -> NativeVulkanVideoMemoryRouteSnapshot {
     let import_path = import.and_then(|import| import.last_import_memory_path.as_deref());
@@ -420,7 +428,7 @@ fn native_vulkan_video_memory_route_snapshot(
 }
 
 fn native_vulkan_video_frontend_has_memory(
-    frontend: Option<&NativeVulkanGstVideoFrontendSnapshot>,
+    frontend: Option<&NativeVulkanVideoFrontendSnapshot>,
     needle: &str,
 ) -> bool {
     let Some(frontend) = frontend else {

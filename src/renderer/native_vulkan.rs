@@ -85,6 +85,9 @@ mod audio_runtime;
 #[path = "native_vulkan/video_runtime.rs"]
 mod video_runtime;
 
+#[path = "native_vulkan/video_frontend.rs"]
+mod video_frontend;
+
 #[cfg(feature = "native-vulkan-gst-video")]
 #[path = "native_vulkan/audio_clock.rs"]
 mod audio_clock;
@@ -104,6 +107,10 @@ mod demux_gst;
 pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy};
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
 use render_item::{native_vulkan_static_item, native_vulkan_video_item};
+pub use video_frontend::NativeVulkanVideoCapsSnapshot;
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+use video_frontend::NativeVulkanVideoFrontendProvider;
+use video_frontend::NativeVulkanVideoFrontendSnapshot;
 use video_runtime::{NativeVulkanVideoAudioRuntimeTelemetry, native_vulkan_video_runtime_snapshot};
 pub use video_runtime::{NativeVulkanVideoMemoryRouteSnapshot, NativeVulkanVideoRuntimeSnapshot};
 
@@ -3090,16 +3097,6 @@ pub struct NativeVulkanDrmDeviceSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NativeVulkanVideoCapsSnapshot {
-    pub element: String,
-    pub pad: String,
-    pub direction: String,
-    pub caps: String,
-    pub source: String,
-    pub memory_features: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanDmabufImportSnapshot {
     pub source: String,
     pub format: &'static str,
@@ -3123,27 +3120,6 @@ pub struct NativeVulkanDmabufImportSnapshot {
     pub compatible_memory_type_bits_hex: Option<String>,
     pub selected_memory_type_index: Option<u32>,
     pub memory_allocation_size: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NativeVulkanGstVideoFrontendSnapshot {
-    gst_state: Option<String>,
-    eos_messages: u64,
-    segment_done_messages: u64,
-    frames_received: u64,
-    last_sample_caps: Option<String>,
-    last_sample_format: Option<String>,
-    last_sample_size: Option<(u32, u32)>,
-    last_sample_pts_ms: Option<u64>,
-    last_sample_duration_ms: Option<u64>,
-    last_sample_pts_delta_ms: Option<u64>,
-    last_sample_memory_types: Vec<String>,
-    actual_decoders: Vec<String>,
-    decoder_policy_status: Option<String>,
-    caps_report_count: usize,
-    caps_memory_features: Vec<String>,
-    caps_reports: Vec<NativeVulkanVideoCapsSnapshot>,
-    last_error: Option<String>,
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -3272,7 +3248,7 @@ pub struct NativeVulkanSession {
     in_flight: vk::Fence,
     static_upload: Option<NativeVulkanStaticImageUpload>,
     #[cfg(feature = "native-vulkan-gst-video")]
-    video_frontend: Option<NativeVulkanGstVideoFrontend>,
+    video_frontend: Option<NativeVulkanVideoFrontend>,
     #[cfg(feature = "native-vulkan-gst-video")]
     video_renderer: Option<NativeVulkanVideoRenderer>,
     #[cfg(feature = "native-vulkan-gst-video")]
@@ -3449,7 +3425,7 @@ impl NativeVulkanSession {
         #[cfg(feature = "native-vulkan-gst-video")]
         let video_frontend = match &render_item {
             NativeVulkanRenderItem::Video { .. } => {
-                Some(NativeVulkanGstVideoFrontend::new(&render_item)?)
+                Some(NativeVulkanVideoFrontend::new_gst(&render_item)?)
             }
             _ => None,
         };
@@ -3829,7 +3805,7 @@ impl NativeVulkanSession {
         if let Some(frontend) = self.video_frontend.as_mut() {
             frontend.poll()?;
             if let Some(sample) = frontend.take_latest_sample() {
-                self.import_video_sample(sample);
+                self.import_video_frontend_sample(sample);
             }
         }
         Ok(())
@@ -3849,16 +3825,23 @@ impl NativeVulkanSession {
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
-    fn video_frontend_snapshot(&self) -> Option<NativeVulkanGstVideoFrontendSnapshot> {
+    fn video_frontend_snapshot(&self) -> Option<NativeVulkanVideoFrontendSnapshot> {
         self.video_frontend
             .as_ref()
-            .map(NativeVulkanGstVideoFrontend::snapshot)
+            .map(NativeVulkanVideoFrontend::snapshot)
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
     fn video_import_snapshot(&self) -> Option<NativeVulkanVideoImportSnapshot> {
         matches!(self.render_item, NativeVulkanRenderItem::Video { .. })
             .then(|| self.video_import_status.snapshot())
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    fn import_video_frontend_sample(&mut self, sample: NativeVulkanVideoFrontendSample) {
+        match sample {
+            NativeVulkanVideoFrontendSample::Gst(sample) => self.import_video_sample(sample),
+        }
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
@@ -4031,7 +4014,7 @@ impl NativeVulkanSession {
     }
 
     #[cfg(not(feature = "native-vulkan-gst-video"))]
-    fn video_frontend_snapshot(&self) -> Option<NativeVulkanGstVideoFrontendSnapshot> {
+    fn video_frontend_snapshot(&self) -> Option<NativeVulkanVideoFrontendSnapshot> {
         None
     }
 
@@ -16477,6 +16460,43 @@ pub fn run_av1_ready_prefix_video(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+enum NativeVulkanVideoFrontend {
+    Gst(NativeVulkanGstVideoFrontend),
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanVideoFrontend {
+    fn new_gst(item: &NativeVulkanRenderItem) -> Result<Self, NativeVulkanError> {
+        Ok(Self::Gst(NativeVulkanGstVideoFrontend::new(item)?))
+    }
+
+    fn poll(&mut self) -> Result<(), NativeVulkanError> {
+        match self {
+            Self::Gst(frontend) => frontend.poll(),
+        }
+    }
+
+    fn take_latest_sample(&mut self) -> Option<NativeVulkanVideoFrontendSample> {
+        match self {
+            Self::Gst(frontend) => frontend
+                .take_latest_sample()
+                .map(NativeVulkanVideoFrontendSample::Gst),
+        }
+    }
+
+    fn snapshot(&self) -> NativeVulkanVideoFrontendSnapshot {
+        match self {
+            Self::Gst(frontend) => frontend.snapshot(),
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+enum NativeVulkanVideoFrontendSample {
+    Gst(gst::Sample),
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 struct NativeVulkanGstVideoFrontend {
     pipeline: gst::Element,
     sink: gst::Element,
@@ -16652,8 +16672,8 @@ impl NativeVulkanGstVideoFrontend {
         self.latest_sample.take()
     }
 
-    fn snapshot(&self) -> NativeVulkanGstVideoFrontendSnapshot {
-        let gst_state = Some(
+    fn snapshot(&self) -> NativeVulkanVideoFrontendSnapshot {
+        let provider_state = Some(
             self.pipeline
                 .state(gst::ClockTime::ZERO)
                 .1
@@ -16689,8 +16709,9 @@ impl NativeVulkanGstVideoFrontend {
             })
             .collect();
 
-        NativeVulkanGstVideoFrontendSnapshot {
-            gst_state,
+        NativeVulkanVideoFrontendSnapshot {
+            provider: NativeVulkanVideoFrontendProvider::Gstreamer,
+            provider_state,
             eos_messages: self.eos_messages,
             segment_done_messages: self.segment_done_messages,
             frames_received: self.frames_received,
@@ -52539,6 +52560,7 @@ mod tests {
         .expect("video snapshot");
 
         assert_eq!(snapshot.frontend, "gstreamer-planned");
+        assert_eq!(snapshot.frontend_provider, "gstreamer");
         assert_eq!(snapshot.frontend_status, "not-started-poster-placeholder");
         assert_eq!(
             snapshot.handoff_status,
@@ -52640,8 +52662,9 @@ mod tests {
             start_offset_ms: 0,
             renderer_status: "vulkan-lifecycle-video-placeholder",
         };
-        let frontend = NativeVulkanGstVideoFrontendSnapshot {
-            gst_state: Some("Playing".to_owned()),
+        let frontend = NativeVulkanVideoFrontendSnapshot {
+            provider: NativeVulkanVideoFrontendProvider::Gstreamer,
+            provider_state: Some("Playing".to_owned()),
             eos_messages: 0,
             segment_done_messages: 1,
             frames_received: 3,
@@ -52692,6 +52715,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(snapshot.frontend, "gstreamer-appsink");
+        assert_eq!(snapshot.frontend_provider, "gstreamer");
         assert_eq!(snapshot.audio_status, "muted-no-audio-pipeline");
         assert_eq!(snapshot.audio_output_policy, "plan");
         assert_eq!(snapshot.audio_output_mode, "clock-only");
@@ -52818,8 +52842,9 @@ mod tests {
             start_offset_ms: 0,
             renderer_status: "vulkan-lifecycle-video-placeholder",
         };
-        let frontend = NativeVulkanGstVideoFrontendSnapshot {
-            gst_state: Some("Playing".to_owned()),
+        let frontend = NativeVulkanVideoFrontendSnapshot {
+            provider: NativeVulkanVideoFrontendProvider::Gstreamer,
+            provider_state: Some("Playing".to_owned()),
             eos_messages: 0,
             segment_done_messages: 0,
             frames_received: 1,
