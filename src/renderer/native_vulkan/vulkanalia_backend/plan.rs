@@ -2,8 +2,9 @@ use serde::Serialize;
 
 use super::{
     NativeVulkanVulkanaliaDeviceProbeTemplate, NativeVulkanVulkanaliaFeatureChainTemplate,
-    NativeVulkanVulkanaliaVideoProfileTemplate, native_vulkan_vulkanalia_device_probe_template,
-    native_vulkan_vulkanalia_feature_chain_template,
+    NativeVulkanVulkanaliaMigrationContract, NativeVulkanVulkanaliaVideoProfileTemplate,
+    native_vulkan_vulkanalia_device_probe_template,
+    native_vulkan_vulkanalia_feature_chain_template, native_vulkan_vulkanalia_migration_contract,
     native_vulkan_vulkanalia_video_profile_templates,
 };
 
@@ -16,6 +17,7 @@ pub struct NativeVulkanVulkanaliaBackendPlan {
     pub feature_chain_template: NativeVulkanVulkanaliaFeatureChainTemplate,
     pub device_probe_template: NativeVulkanVulkanaliaDeviceProbeTemplate,
     pub video_profile_templates: Vec<NativeVulkanVulkanaliaVideoProfileTemplate>,
+    pub migration_contract: NativeVulkanVulkanaliaMigrationContract,
     pub required_instance_extensions: &'static [&'static str],
     pub required_device_extensions: &'static [&'static str],
     pub prioritized_vulkan_1_4_features: &'static [&'static str],
@@ -25,7 +27,7 @@ pub struct NativeVulkanVulkanaliaBackendPlan {
 pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendPlan {
     NativeVulkanVulkanaliaBackendPlan {
         binding: "vulkanalia",
-        phase: "early-parallel-backend-spike",
+        phase: "primary-migration-backend",
         api_baseline: "Vulkan 1.4 binding surface plus Vulkan Video/Wayland/Swapchain extensions",
         api_type_evidence: vec![
             std::any::type_name::<vulkanalia::Version>(),
@@ -39,6 +41,7 @@ pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendP
         feature_chain_template: native_vulkan_vulkanalia_feature_chain_template(),
         device_probe_template: native_vulkan_vulkanalia_device_probe_template(),
         video_profile_templates: native_vulkan_vulkanalia_video_profile_templates(),
+        migration_contract: native_vulkan_vulkanalia_migration_contract(),
         required_instance_extensions: &["VK_KHR_surface", "VK_KHR_wayland_surface"],
         required_device_extensions: &[
             "VK_KHR_swapchain",
@@ -63,11 +66,13 @@ pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendP
             "larger-portable-limits",
         ],
         migration_gates: &[
+            "make Vulkanalia visible through ordinary native-vulkan-renderer builds",
             "create Vulkan 1.4 instance/device and report PhysicalDeviceVulkan14Features",
             "probe Wayland surface and swapchain parity with the ash backend",
             "probe Vulkan Video H.264/H.265/AV1 profile and format parity",
             "port one H.265 first-frame submit path without raw FFI regressions",
             "port direct present timing telemetry before replacing the ash main path",
+            "remove ash only after all native Vulkan renderer smoke/probe paths pass through Vulkanalia",
         ],
     }
 }
@@ -80,6 +85,7 @@ mod tests {
     fn backend_plan_names_vulkan_1_4_and_video_gates() {
         let plan = native_vulkan_vulkanalia_backend_plan();
         assert_eq!(plan.binding, "vulkanalia");
+        assert_eq!(plan.phase, "primary-migration-backend");
         assert!(plan.api_baseline.contains("Vulkan 1.4"));
         assert!(
             plan.required_device_extensions
@@ -106,5 +112,12 @@ mod tests {
         assert_eq!(plan.feature_chain_template.api, "Vulkan 1.4");
         assert_eq!(plan.device_probe_template.requested_api_version, "1.4.0");
         assert_eq!(plan.video_profile_templates.len(), 7);
+        assert_eq!(plan.migration_contract.primary_binding, "vulkanalia");
+        assert_eq!(plan.migration_contract.compatibility_binding, "ash");
+        assert!(
+            plan.migration_gates
+                .iter()
+                .any(|gate| gate.contains("ordinary native-vulkan-renderer"))
+        );
     }
 }

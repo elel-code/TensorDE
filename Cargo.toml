@@ -15,11 +15,16 @@ native-wayland-renderer = [
     "dep:wayland-client",
     "dep:wayland-protocols",
 ]
-native-vulkan-renderer = ["native-wayland-renderer", "dep:ash", "dep:image"]
+native-vulkan-renderer = [
+    "native-wayland-renderer",
+    "dep:ash",
+    "dep:image",
+    "dep:vulkanalia",
+]
 native-vulkan-gst-video = ["native-vulkan-renderer", "video-renderer"]
 native-vulkan-gst-cuda = ["native-vulkan-gst-video"]
 native-vulkan-gst-va = ["native-vulkan-gst-video"]
-native-vulkan-vulkanalia = ["native-vulkan-renderer", "dep:vulkanalia"]
+native-vulkan-vulkanalia = ["native-vulkan-renderer"]
 video-renderer = ["dep:gstreamer", "dep:gstreamer-video"]
 
 [[bin]]

@@ -22,7 +22,6 @@ fn main() {
 
 #[cfg(feature = "native-vulkan-renderer")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(feature = "native-vulkan-vulkanalia")]
     use gilder::renderer::native_vulkan::probe_native_vulkan_vulkanalia_devices;
     #[cfg(feature = "native-vulkan-gst-video")]
     use gilder::renderer::native_vulkan::{
@@ -377,16 +376,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             })?)
         }
         NativeVulkanCliMode::ProbeVideo => json!(probe_vulkan_video_decode()?),
-        NativeVulkanCliMode::ProbeVulkanalia => {
-            #[cfg(feature = "native-vulkan-vulkanalia")]
-            {
-                json!(probe_native_vulkan_vulkanalia_devices()?)
-            }
-            #[cfg(not(feature = "native-vulkan-vulkanalia"))]
-            {
-                return Err("--probe-vulkanalia requires native-vulkan-vulkanalia feature".into());
-            }
-        }
+        NativeVulkanCliMode::ProbeVulkanalia => json!(probe_native_vulkan_vulkanalia_devices()?),
         NativeVulkanCliMode::ProbeVideoSession => {
             if video_session_options.sample_h265_ready_prefix_output
                 && video_session_options.decode_h265_ready_prefix_frames == 0

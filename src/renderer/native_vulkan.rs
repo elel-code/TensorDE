@@ -67,13 +67,15 @@ mod pacing;
 #[path = "native_vulkan/pipeline.rs"]
 mod pipeline;
 
+#[path = "native_vulkan/video_flow.rs"]
+mod video_flow;
+
 #[path = "native_vulkan/present.rs"]
 mod present;
 
 #[path = "native_vulkan/interop.rs"]
 mod interop;
 
-#[cfg(feature = "native-vulkan-vulkanalia")]
 #[path = "native_vulkan/vulkanalia_backend.rs"]
 mod vulkanalia_backend;
 
@@ -264,7 +266,6 @@ use video_sample_gst::{
 use video_session_parameters::*;
 use video_session_resources::*;
 pub use video_session_snapshots::*;
-#[cfg(feature = "native-vulkan-vulkanalia")]
 pub use vulkanalia_backend::{
     NativeVulkanVulkanaliaBackendPlan, NativeVulkanVulkanaliaDeviceProbeSnapshot,
     NativeVulkanVulkanaliaDeviceProbeTemplate, native_vulkan_vulkanalia_backend_plan,
@@ -37437,9 +37438,9 @@ pub struct NativeVulkanBackendContract {
     pub required_instance_extensions: Vec<&'static str>,
     pub required_device_extensions: Vec<&'static str>,
     pub video_pipeline: pipeline::NativeVulkanVideoPipelineContract,
+    pub video_flow: video_flow::NativeVulkanVideoFlowContract,
     pub video_interop: NativeVulkanVideoInteropContract,
     pub web_interop: NativeVulkanWebInteropContract,
-    #[cfg(feature = "native-vulkan-vulkanalia")]
     pub vulkanalia_backend: NativeVulkanVulkanaliaBackendPlan,
 }
 
@@ -37456,9 +37457,9 @@ pub fn backend_contract() -> NativeVulkanBackendContract {
         required_instance_extensions: required_instance_extensions(),
         required_device_extensions: required_device_extensions(),
         video_pipeline: pipeline::native_vulkan_video_pipeline_contract(),
+        video_flow: video_flow::native_vulkan_video_flow_contract(),
         video_interop: video_interop_contract(),
         web_interop: web_interop_contract(),
-        #[cfg(feature = "native-vulkan-vulkanalia")]
         vulkanalia_backend: native_vulkan_vulkanalia_backend_plan(),
     }
 }
@@ -41292,7 +41293,7 @@ mod tests {
             contract
                 .video_interop
                 .vulkanalia_replacement_policy
-                .contains("feature flag")
+                .contains("primary migration")
         );
         assert!(
             contract
@@ -41318,15 +41319,12 @@ mod tests {
                 .ash_mainline_value
                 .contains("external-memory")
         );
-        #[cfg(feature = "native-vulkan-vulkanalia")]
-        {
-            assert_eq!(contract.vulkanalia_backend.binding, "vulkanalia");
-            assert!(
-                contract
-                    .vulkanalia_backend
-                    .api_baseline
-                    .contains("Vulkan 1.4")
-            );
-        }
+        assert_eq!(contract.vulkanalia_backend.binding, "vulkanalia");
+        assert!(
+            contract
+                .vulkanalia_backend
+                .api_baseline
+                .contains("Vulkan 1.4")
+        );
     }
 }

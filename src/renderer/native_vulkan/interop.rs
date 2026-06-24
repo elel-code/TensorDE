@@ -26,10 +26,10 @@ pub fn video_interop_contract() -> NativeVulkanVideoInteropContract {
     NativeVulkanVideoInteropContract {
         target_memory_flow: "decoder GPU memory -> importable DMABuf/EGLImage/Vulkan image -> Vulkan YUV sampling",
         current_baseline: "retired native-wgpu evidence: GStreamer CUDAMemory -> CUDA copy -> external Vulkan image planes -> wgpu present",
-        vulkan_binding_policy: "vulkanalia is the prioritized replacement binding; ash remains the current stable runtime baseline until a Vulkan 1.4/video/present parity spike wins evidence; zero-copy evidence still comes from device extension/capability/import telemetry, not from the binding choice alone",
-        vulkanalia_replacement_policy: "start the vulkanalia backend early behind a feature flag, then move instance/device capability probing, Vulkan Video submit helpers and present telemetry across one boundary at a time",
+        vulkan_binding_policy: "vulkanalia is the primary migration binding for native Vulkan; ash remains the current compatibility/runtime baseline only until Vulkan 1.4 video, memory import and present parity land; zero-copy evidence still comes from device extension/capability/import telemetry, not from the binding choice alone",
+        vulkanalia_replacement_policy: "run vulkanalia as the primary migration surface in native-vulkan-renderer, then move instance/device ownership, Vulkan Video submit helpers, image/import resources and present telemetry across one boundary at a time",
         vulkan_1_4_value: "Vulkan 1.4 is valuable for dynamic-rendering-local-read, push descriptors, maintenance5/6, scalar block layout, synchronization2 and stronger portable limits; it does not by itself prove Vulkan Video or zero-copy support",
-        ash_mainline_value: "ash remains useful as a working comparison backend while vulkanalia proves Vulkan 1.4, Vulkan Video and external-memory parity",
+        ash_mainline_value: "ash remains useful as a working comparison backend while vulkanalia takes over Vulkan 1.4, Vulkan Video and external-memory parity",
         target_sampling: "NV12/P010/YUV planes sampled directly in Vulkan before RGB composition",
         avoids_default_rgba_upload: true,
         decoder_policy: "prefer GStreamer for codec/audio coverage; allow Vulkan Video or libavcodec import paths when they win evidence",

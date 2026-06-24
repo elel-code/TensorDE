@@ -6,6 +6,9 @@ use vulkanalia::loader::LibloadingLoader;
 use vulkanalia::prelude::v1_4::*;
 
 use super::queue_probe::native_vulkan_vulkanalia_has_video_decode_queue_family;
+use super::video_format_probe::{
+    NativeVulkanVulkanaliaVideoFormatProbeSnapshot, native_vulkan_vulkanalia_video_format_probe,
+};
 use super::video_profile_probe::{
     NativeVulkanVulkanaliaVideoProfileProbeSnapshot, native_vulkan_vulkanalia_video_profile_probe,
 };
@@ -65,6 +68,7 @@ pub struct NativeVulkanVulkanaliaPhysicalDeviceSnapshot {
     pub has_required_external_memory_device_extensions: bool,
     pub has_video_decode_queue_family: bool,
     pub video_profile_capabilities: NativeVulkanVulkanaliaVideoProfileProbeSnapshot,
+    pub video_format_capabilities: NativeVulkanVulkanaliaVideoFormatProbeSnapshot,
     pub vulkan_1_4_features: NativeVulkanVulkanaliaVulkan14FeatureSnapshot,
 }
 
@@ -217,6 +221,12 @@ fn probe_vulkanalia_instance_devices(
                 &device_extensions,
                 has_video_decode_queue_family,
             );
+            let video_format_capabilities = native_vulkan_vulkanalia_video_format_probe(
+                instance,
+                physical_device,
+                &device_extensions,
+                has_video_decode_queue_family,
+            );
 
             Ok(NativeVulkanVulkanaliaPhysicalDeviceSnapshot {
                 physical_device_index,
@@ -230,6 +240,7 @@ fn probe_vulkanalia_instance_devices(
                 has_required_external_memory_device_extensions,
                 has_video_decode_queue_family,
                 video_profile_capabilities,
+                video_format_capabilities,
                 device_extensions: sorted_strings(device_extensions),
                 vulkan_1_4_features: NativeVulkanVulkanaliaVulkan14FeatureSnapshot {
                     dynamic_rendering_local_read: vulkan14_features.dynamic_rendering_local_read

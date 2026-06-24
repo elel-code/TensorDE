@@ -8,12 +8,16 @@
 mod device_probe;
 #[path = "vulkanalia_backend/features.rs"]
 mod features;
+#[path = "vulkanalia_backend/migration.rs"]
+mod migration;
 #[path = "vulkanalia_backend/plan.rs"]
 mod plan;
 #[path = "vulkanalia_backend/profiles.rs"]
 mod profiles;
 #[path = "vulkanalia_backend/queue_probe.rs"]
 mod queue_probe;
+#[path = "vulkanalia_backend/video_format_probe.rs"]
+mod video_format_probe;
 #[path = "vulkanalia_backend/video_profile_gate.rs"]
 mod video_profile_gate;
 #[path = "vulkanalia_backend/video_profile_labels.rs"]
@@ -28,9 +32,20 @@ pub use device_probe::{
 pub use features::{
     NativeVulkanVulkanaliaFeatureChainTemplate, native_vulkan_vulkanalia_feature_chain_template,
 };
+#[allow(unused_imports)]
+pub use migration::{
+    NativeVulkanVulkanaliaMigrationContract, NativeVulkanVulkanaliaMigrationStage,
+    NativeVulkanVulkanaliaMigrationStageKind, native_vulkan_vulkanalia_migration_contract,
+};
 pub use plan::{NativeVulkanVulkanaliaBackendPlan, native_vulkan_vulkanalia_backend_plan};
 pub use profiles::{
     NativeVulkanVulkanaliaVideoProfileTemplate, native_vulkan_vulkanalia_video_profile_templates,
+};
+#[allow(unused_imports)]
+pub use video_format_probe::{
+    NativeVulkanVulkanaliaVideoFormatProbeSnapshot,
+    NativeVulkanVulkanaliaVideoFormatPropertySnapshot,
+    NativeVulkanVulkanaliaVideoFormatQuerySnapshot,
 };
 #[allow(unused_imports)]
 pub use video_profile_probe::{

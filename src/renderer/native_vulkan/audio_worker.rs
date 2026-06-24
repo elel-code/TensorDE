@@ -97,10 +97,16 @@ fn native_vulkan_audio_runtime_worker_loop(
 ) {
     let mut active_serial = 0u32;
     while let Ok(command) = command_rx.recv() {
-        let Some(command) = native_vulkan_audio_runtime_command_for_active_serial(
-            &mut active_serial,
-            native_vulkan_audio_runtime_coalesced_command(command, &command_rx),
+        let Some(command) = native_vulkan_audio_runtime_coalesced_command_for_active_serial(
+            active_serial,
+            command,
+            &command_rx,
         ) else {
+            continue;
+        };
+        let Some(command) =
+            native_vulkan_audio_runtime_command_for_active_serial(&mut active_serial, command)
+        else {
             continue;
         };
         match command {
@@ -144,6 +150,65 @@ fn native_vulkan_audio_runtime_worker_loop(
     }
 }
 
+fn native_vulkan_audio_runtime_coalesced_command_for_active_serial(
+    active_serial: u32,
+    command: NativeVulkanPlanAudioRuntimeWorkerCommand,
+    command_rx: &mpsc::Receiver<NativeVulkanPlanAudioRuntimeWorkerCommand>,
+) -> Option<NativeVulkanPlanAudioRuntimeWorkerCommand> {
+    let mut latest_current_sample = None::<u64>;
+    let mut latest_seek_position_ms = None::<(u64, u32)>;
+
+    let mut apply_command = |command: NativeVulkanPlanAudioRuntimeWorkerCommand| match command {
+        NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock {
+            video_clock_ns,
+            serial,
+        } => {
+            if latest_seek_position_ms.is_none() && serial == active_serial {
+                latest_current_sample = Some(video_clock_ns);
+            }
+            None
+        }
+        NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop {
+            position_ms,
+            serial,
+        } => {
+            if serial >= active_serial {
+                latest_seek_position_ms = Some((position_ms, serial));
+                latest_current_sample = None;
+            }
+            None
+        }
+        NativeVulkanPlanAudioRuntimeWorkerCommand::Stop => {
+            Some(NativeVulkanPlanAudioRuntimeWorkerCommand::Stop)
+        }
+    };
+
+    if let Some(stop) = apply_command(command) {
+        return Some(stop);
+    }
+    while let Ok(next_command) = command_rx.try_recv() {
+        if let Some(stop) = apply_command(next_command) {
+            return Some(stop);
+        }
+    }
+
+    latest_seek_position_ms
+        .map(
+            |(position_ms, serial)| NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop {
+                position_ms,
+                serial,
+            },
+        )
+        .or_else(|| {
+            latest_current_sample.map(|video_clock_ns| {
+                NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock {
+                    video_clock_ns,
+                    serial: active_serial,
+                }
+            })
+        })
+}
+
 fn native_vulkan_audio_runtime_command_for_active_serial(
     active_serial: &mut u32,
     command: NativeVulkanPlanAudioRuntimeWorkerCommand,
@@ -162,45 +227,6 @@ fn native_vulkan_audio_runtime_command_for_active_serial(
         }
         NativeVulkanPlanAudioRuntimeWorkerCommand::Stop => Some(command),
     }
-}
-
-fn native_vulkan_audio_runtime_coalesced_command(
-    mut command: NativeVulkanPlanAudioRuntimeWorkerCommand,
-    command_rx: &mpsc::Receiver<NativeVulkanPlanAudioRuntimeWorkerCommand>,
-) -> NativeVulkanPlanAudioRuntimeWorkerCommand {
-    let mut latest_seek_position_ms = match command {
-        NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop {
-            position_ms,
-            serial,
-        } => Some((position_ms, serial)),
-        _ => None,
-    };
-    while let Ok(next_command) = command_rx.try_recv() {
-        match next_command {
-            NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock { .. } => {
-                if latest_seek_position_ms.is_none() {
-                    command = next_command;
-                }
-            }
-            NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop {
-                position_ms,
-                serial,
-            } => {
-                latest_seek_position_ms = Some((position_ms, serial));
-            }
-            NativeVulkanPlanAudioRuntimeWorkerCommand::Stop => {
-                return NativeVulkanPlanAudioRuntimeWorkerCommand::Stop;
-            }
-        }
-    }
-    latest_seek_position_ms
-        .map(
-            |(position_ms, serial)| NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop {
-                position_ms,
-                serial,
-            },
-        )
-        .unwrap_or(command)
 }
 
 #[cfg(test)]
@@ -225,7 +251,8 @@ mod tests {
         )
         .unwrap();
 
-        let command = native_vulkan_audio_runtime_coalesced_command(
+        let command = native_vulkan_audio_runtime_coalesced_command_for_active_serial(
+            0,
             NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock {
                 video_clock_ns: 1,
                 serial: 0,
@@ -234,15 +261,17 @@ mod tests {
         );
 
         match command {
-            NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock {
-                video_clock_ns, ..
-            } => {
+            Some(NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock {
+                video_clock_ns,
+                ..
+            }) => {
                 assert_eq!(video_clock_ns, 3);
             }
-            NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop { .. } => {
+            Some(NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop { .. }) => {
                 panic!("unexpected loop seek")
             }
-            NativeVulkanPlanAudioRuntimeWorkerCommand::Stop => panic!("unexpected stop"),
+            Some(NativeVulkanPlanAudioRuntimeWorkerCommand::Stop) => panic!("unexpected stop"),
+            None => panic!("unexpected empty coalesced command"),
         }
     }
 
@@ -271,7 +300,8 @@ mod tests {
         )
         .unwrap();
 
-        let command = native_vulkan_audio_runtime_coalesced_command(
+        let command = native_vulkan_audio_runtime_coalesced_command_for_active_serial(
+            0,
             NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock {
                 video_clock_ns: 1,
                 serial: 0,
@@ -280,17 +310,18 @@ mod tests {
         );
 
         match command {
-            NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop {
+            Some(NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop {
                 position_ms,
                 serial,
-            } => {
+            }) => {
                 assert_eq!(position_ms, 250);
                 assert_eq!(serial, 2);
             }
-            NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock { .. } => {
+            Some(NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock { .. }) => {
                 panic!("unexpected clock sample")
             }
-            NativeVulkanPlanAudioRuntimeWorkerCommand::Stop => panic!("unexpected stop"),
+            Some(NativeVulkanPlanAudioRuntimeWorkerCommand::Stop) => panic!("unexpected stop"),
+            None => panic!("unexpected empty coalesced command"),
         }
     }
 
@@ -305,7 +336,8 @@ mod tests {
         )
         .unwrap();
 
-        let command = native_vulkan_audio_runtime_coalesced_command(
+        let command = native_vulkan_audio_runtime_coalesced_command_for_active_serial(
+            1,
             NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop {
                 position_ms: 125,
                 serial: 1,
@@ -314,17 +346,18 @@ mod tests {
         );
 
         match command {
-            NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop {
+            Some(NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop {
                 position_ms,
                 serial,
-            } => {
+            }) => {
                 assert_eq!(position_ms, 125);
                 assert_eq!(serial, 1);
             }
-            NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock { .. } => {
+            Some(NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock { .. }) => {
                 panic!("clock sample must not override loop seek")
             }
-            NativeVulkanPlanAudioRuntimeWorkerCommand::Stop => panic!("unexpected stop"),
+            Some(NativeVulkanPlanAudioRuntimeWorkerCommand::Stop) => panic!("unexpected stop"),
+            None => panic!("unexpected empty coalesced command"),
         }
     }
 
@@ -341,7 +374,8 @@ mod tests {
         tx.send(NativeVulkanPlanAudioRuntimeWorkerCommand::Stop)
             .unwrap();
 
-        let command = native_vulkan_audio_runtime_coalesced_command(
+        let command = native_vulkan_audio_runtime_coalesced_command_for_active_serial(
+            0,
             NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock {
                 video_clock_ns: 1,
                 serial: 0,
@@ -351,7 +385,92 @@ mod tests {
 
         assert!(matches!(
             command,
-            NativeVulkanPlanAudioRuntimeWorkerCommand::Stop
+            Some(NativeVulkanPlanAudioRuntimeWorkerCommand::Stop)
+        ));
+    }
+
+    #[test]
+    fn worker_active_coalescing_ignores_stale_seek_when_current_sample_exists() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(
+            NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop {
+                position_ms: 125,
+                serial: 1,
+            },
+        )
+        .unwrap();
+
+        let command = native_vulkan_audio_runtime_coalesced_command_for_active_serial(
+            2,
+            NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock {
+                video_clock_ns: 8,
+                serial: 2,
+            },
+            &rx,
+        );
+
+        assert!(matches!(
+            command,
+            Some(
+                NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock {
+                    video_clock_ns: 8,
+                    serial: 2,
+                }
+            )
+        ));
+    }
+
+    #[test]
+    fn worker_active_coalescing_drops_stale_batch() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(
+            NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop {
+                position_ms: 125,
+                serial: 1,
+            },
+        )
+        .unwrap();
+
+        let command = native_vulkan_audio_runtime_coalesced_command_for_active_serial(
+            2,
+            NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock {
+                video_clock_ns: 8,
+                serial: 1,
+            },
+            &rx,
+        );
+
+        assert!(command.is_none());
+    }
+
+    #[test]
+    fn worker_active_coalescing_keeps_new_seek_over_current_sample() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(
+            NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop {
+                position_ms: 250,
+                serial: 2,
+            },
+        )
+        .unwrap();
+
+        let command = native_vulkan_audio_runtime_coalesced_command_for_active_serial(
+            1,
+            NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock {
+                video_clock_ns: 8,
+                serial: 1,
+            },
+            &rx,
+        );
+
+        assert!(matches!(
+            command,
+            Some(
+                NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop {
+                    position_ms: 250,
+                    serial: 2,
+                }
+            )
         ));
     }
 
