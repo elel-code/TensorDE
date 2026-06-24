@@ -83,6 +83,10 @@ mod vulkanalia_backend;
 #[path = "native_vulkan/vulkanalia_extract.rs"]
 mod vulkanalia_extract;
 
+#[cfg(feature = "native-vulkan-gst-video")]
+#[path = "native_vulkan/vulkanalia_direct.rs"]
+mod vulkanalia_direct;
+
 #[path = "native_vulkan/labels.rs"]
 mod labels;
 
@@ -278,6 +282,10 @@ use video_session_parameters::*;
 use video_session_resources::*;
 pub use video_session_snapshots::*;
 pub use vulkanalia_backend::*;
+#[cfg(feature = "native-vulkan-gst-video")]
+pub use vulkanalia_direct::{
+    NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot, run_vulkanalia_ready_prefix_video,
+};
 #[cfg(feature = "native-vulkan-gst-video")]
 pub use vulkanalia_extract::{
     native_vulkan_extract_av1_ready_prefix_for_vulkanalia,
