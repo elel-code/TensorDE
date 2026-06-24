@@ -6,7 +6,8 @@
 use std::path::PathBuf;
 
 use super::codec_snapshots::{
-    NativeVulkanH264ParameterSetSnapshot, NativeVulkanH265ParameterSetSnapshot,
+    NativeVulkanAv1SequenceHeaderSnapshot, NativeVulkanH264ParameterSetSnapshot,
+    NativeVulkanH265ParameterSetSnapshot,
 };
 use super::{
     NativeVulkanError, NativeVulkanVideoSessionCodec, NativeVulkanVideoSessionSmokeOptions,
@@ -29,6 +30,36 @@ pub fn native_vulkan_extract_h264_parameter_sets_for_vulkanalia(
     extract.snapshot.h264_parameter_sets.ok_or_else(|| {
         NativeVulkanError::Video(
             "Vulkanalia real H.264 session parameters require parsed SPS/PPS".to_owned(),
+        )
+    })
+}
+
+pub fn native_vulkan_extract_av1_sequence_header_for_vulkanalia(
+    source: PathBuf,
+    codec: NativeVulkanVideoSessionCodec,
+    max_samples: u32,
+) -> Result<NativeVulkanAv1SequenceHeaderSnapshot, NativeVulkanError> {
+    if !matches!(
+        codec,
+        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10
+    ) {
+        return Err(NativeVulkanError::Video(
+            "Vulkanalia real session-parameter extraction currently supports AV1 only".to_owned(),
+        ));
+    }
+
+    let mut options = NativeVulkanVideoSessionSmokeOptions {
+        codec,
+        extract_bitstream: true,
+        bitstream_source: Some(source),
+        bitstream_extract_max_samples: max_samples.max(1),
+        ..NativeVulkanVideoSessionSmokeOptions::default()
+    };
+    options.allocate_bitstream_buffer = false;
+    let extract = native_vulkan_extract_video_bitstream(&options)?;
+    extract.snapshot.av1_sequence_header.ok_or_else(|| {
+        NativeVulkanError::Video(
+            "Vulkanalia real AV1 session parameters require parsed sequence header".to_owned(),
         )
     })
 }

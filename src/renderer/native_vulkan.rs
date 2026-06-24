@@ -273,6 +273,7 @@ pub use video_session_snapshots::*;
 pub use vulkanalia_backend::*;
 #[cfg(feature = "native-vulkan-gst-video")]
 pub use vulkanalia_extract::{
+    native_vulkan_extract_av1_sequence_header_for_vulkanalia,
     native_vulkan_extract_h264_parameter_sets_for_vulkanalia,
     native_vulkan_extract_h265_parameter_sets_for_vulkanalia,
 };

@@ -1,8 +1,8 @@
 use std::ffi::CString;
 
 use crate::renderer::native_vulkan::{
-    NativeVulkanH264ParameterSetSnapshot, NativeVulkanH265ParameterSetSnapshot,
-    NativeVulkanVideoSessionCodec,
+    NativeVulkanAv1SequenceHeaderSnapshot, NativeVulkanH264ParameterSetSnapshot,
+    NativeVulkanH265ParameterSetSnapshot, NativeVulkanVideoSessionCodec,
 };
 use serde::Serialize;
 use vulkanalia::Version;
@@ -38,6 +38,11 @@ use super::video_session_parameters::{
     NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot,
     native_vulkan_vulkanalia_smoke_create_empty_video_session_parameters,
 };
+use super::video_session_parameters_av1::{
+    native_vulkan_vulkanalia_av1_sequence_header_bit_depth,
+    native_vulkan_vulkanalia_av1_sequence_header_profile_label,
+    native_vulkan_vulkanalia_smoke_create_av1_video_session_parameters,
+};
 use super::video_session_parameters_h264::{
     native_vulkan_vulkanalia_h264_std_profile_idc, native_vulkan_vulkanalia_h264_std_profile_label,
     native_vulkan_vulkanalia_smoke_create_h264_video_session_parameters,
@@ -63,6 +68,7 @@ pub struct NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
     pub create_session_parameters: bool,
     pub h264_parameter_sets: Option<NativeVulkanH264ParameterSetSnapshot>,
     pub h265_parameter_sets: Option<NativeVulkanH265ParameterSetSnapshot>,
+    pub av1_sequence_header: Option<NativeVulkanAv1SequenceHeaderSnapshot>,
 }
 
 impl Default for NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
@@ -78,6 +84,7 @@ impl Default for NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
             create_session_parameters: false,
             h264_parameter_sets: None,
             h265_parameter_sets: None,
+            av1_sequence_header: None,
         }
     }
 }
@@ -168,7 +175,7 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
         width: options.width,
         height: options.height,
     };
-    let picture_format = vulkanalia_video_session_picture_format(options.codec);
+    let picture_format = vulkanalia_video_session_effective_picture_format(&options);
     let picture_format_label = format!("{picture_format:?}");
     let video_format_capabilities = native_vulkan_vulkanalia_video_format_probe(
         instance,
@@ -323,7 +330,7 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
                 .std_profile(vk::video::STD_VIDEO_AV1_PROFILE_MAIN)
                 .film_grain_support(false)
                 .build();
-            let bit_depth = vulkanalia_video_session_bit_depth(options.codec);
+            let bit_depth = vulkanalia_video_session_effective_bit_depth(&options);
             let profile_info = vk::VideoProfileInfoKHR::builder()
                 .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_AV1)
                 .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::_420)
@@ -502,10 +509,16 @@ fn smoke_bind_vulkanalia_video_session_profile(
                 }
                 NativeVulkanVideoSessionCodec::Av1Main8
                 | NativeVulkanVideoSessionCodec::Av1Main10 => {
-                    return Err(
-                        "Vulkanalia real session parameters currently support H.264/H.265 only"
-                            .to_owned(),
-                    );
+                    let sequence_header = options.av1_sequence_header.as_ref().ok_or_else(|| {
+                        "Vulkanalia real AV1 session parameters require parsed AV1 sequence header"
+                            .to_owned()
+                    })?;
+                    native_vulkan_vulkanalia_smoke_create_av1_video_session_parameters(
+                        device,
+                        session,
+                        options.codec,
+                        sequence_header,
+                    )
                 }
             })
         } else if options.create_empty_session_parameters {
@@ -847,6 +860,15 @@ fn vulkanalia_video_session_effective_profile_label(
                 Ok(vulkanalia_video_session_profile_label(options.codec))
             }
         }
+        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => {
+            if let Some(sequence_header) = options.av1_sequence_header.as_ref() {
+                Ok(native_vulkan_vulkanalia_av1_sequence_header_profile_label(
+                    sequence_header,
+                ))
+            } else {
+                Ok(vulkanalia_video_session_profile_label(options.codec))
+            }
+        }
         _ => Ok(vulkanalia_video_session_profile_label(options.codec)),
     }
 }
@@ -877,6 +899,13 @@ fn vulkanalia_video_session_effective_format_probe_profile(
             })
             .transpose()
             .map(|profile| profile.unwrap_or("high")),
+        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => {
+            Ok(options
+                .av1_sequence_header
+                .as_ref()
+                .map(native_vulkan_vulkanalia_av1_sequence_header_profile_label)
+                .unwrap_or_else(|| vulkanalia_video_session_format_probe_profile(options.codec)))
+        }
         _ => Ok(vulkanalia_video_session_format_probe_profile(options.codec)),
     }
 }
@@ -907,6 +936,22 @@ fn vulkanalia_video_session_bit_depth(
     }
 }
 
+fn vulkanalia_video_session_effective_bit_depth(
+    options: &NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
+) -> vk::VideoComponentBitDepthFlagsKHR {
+    if matches!(
+        options.codec,
+        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10
+    ) && let Some(sequence_header) = options.av1_sequence_header.as_ref()
+    {
+        return match native_vulkan_vulkanalia_av1_sequence_header_bit_depth(sequence_header) {
+            10 => vk::VideoComponentBitDepthFlagsKHR::_10,
+            _ => vk::VideoComponentBitDepthFlagsKHR::_8,
+        };
+    }
+    vulkanalia_video_session_bit_depth(options.codec)
+}
+
 fn vulkanalia_video_session_picture_format(codec: NativeVulkanVideoSessionCodec) -> vk::Format {
     match codec {
         NativeVulkanVideoSessionCodec::H264High8
@@ -916,6 +961,22 @@ fn vulkanalia_video_session_picture_format(codec: NativeVulkanVideoSessionCodec)
             vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
         }
     }
+}
+
+fn vulkanalia_video_session_effective_picture_format(
+    options: &NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
+) -> vk::Format {
+    if matches!(
+        options.codec,
+        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10
+    ) && let Some(sequence_header) = options.av1_sequence_header.as_ref()
+    {
+        return match native_vulkan_vulkanalia_av1_sequence_header_bit_depth(sequence_header) {
+            10 => vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16,
+            _ => vk::Format::G8_B8R8_2PLANE_420_UNORM,
+        };
+    }
+    vulkanalia_video_session_picture_format(options.codec)
 }
 
 fn vulkanalia_video_session_codec_operation(
@@ -1021,6 +1082,10 @@ fn video_codec_operation_labels(flags: vk::VideoCodecOperationFlagsKHR) -> Vec<&
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::renderer::native_vulkan::{
+        NativeVulkanAv1ColorConfigSnapshot, NativeVulkanAv1OperatingPointSnapshot,
+        NativeVulkanAv1SequenceHeaderSnapshot,
+    };
 
     #[test]
     fn session_bind_smoke_maps_codec_extensions_and_formats() {
@@ -1045,6 +1110,38 @@ mod tests {
         assert_eq!(
             vulkanalia_video_session_profile_label(NativeVulkanVideoSessionCodec::H264High8),
             "high-8"
+        );
+    }
+
+    #[test]
+    fn session_bind_applies_av1_stream_bit_depth_only_to_av1() {
+        let av1_main10_header = test_av1_sequence_header(10);
+        let av1_options = NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
+            codec: NativeVulkanVideoSessionCodec::Av1Main8,
+            av1_sequence_header: Some(av1_main10_header.clone()),
+            ..NativeVulkanVulkanaliaVideoSessionBindSmokeOptions::default()
+        };
+        assert_eq!(
+            vulkanalia_video_session_effective_bit_depth(&av1_options),
+            vk::VideoComponentBitDepthFlagsKHR::_10
+        );
+        assert_eq!(
+            vulkanalia_video_session_effective_picture_format(&av1_options),
+            vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
+        );
+
+        let h265_options = NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
+            codec: NativeVulkanVideoSessionCodec::H265Main8,
+            av1_sequence_header: Some(av1_main10_header),
+            ..NativeVulkanVulkanaliaVideoSessionBindSmokeOptions::default()
+        };
+        assert_eq!(
+            vulkanalia_video_session_effective_bit_depth(&h265_options),
+            vk::VideoComponentBitDepthFlagsKHR::_8
+        );
+        assert_eq!(
+            vulkanalia_video_session_effective_picture_format(&h265_options),
+            vk::Format::G8_B8R8_2PLANE_420_UNORM
         );
     }
 
@@ -1079,5 +1176,76 @@ mod tests {
             },
             capabilities
         ));
+    }
+
+    fn test_av1_sequence_header(bit_depth: u8) -> NativeVulkanAv1SequenceHeaderSnapshot {
+        NativeVulkanAv1SequenceHeaderSnapshot {
+            parser: "test",
+            seq_profile: 0,
+            seq_profile_label: "main",
+            still_picture: false,
+            reduced_still_picture_header: false,
+            timing_info_present_flag: false,
+            timing_info: None,
+            decoder_model_info_present_flag: false,
+            buffer_delay_length_minus_1: 0,
+            frame_presentation_time_length_minus_1: 0,
+            initial_display_delay_present_flag: false,
+            operating_points_cnt_minus_1: 0,
+            operating_points: vec![NativeVulkanAv1OperatingPointSnapshot {
+                index: 0,
+                idc: 0,
+                seq_level_idx: 0,
+                seq_level_label: None,
+                seq_tier: false,
+                decoder_model_present_for_this_op: false,
+                initial_display_delay_present_for_this_op: false,
+                initial_display_delay_minus_1: None,
+            }],
+            frame_width_bits_minus_1: 15,
+            frame_height_bits_minus_1: 15,
+            max_frame_width_minus_1: 639,
+            max_frame_height_minus_1: 367,
+            max_frame_width: 640,
+            max_frame_height: 368,
+            frame_id_numbers_present_flag: false,
+            delta_frame_id_length_minus_2: None,
+            additional_frame_id_length_minus_1: None,
+            use_128x128_superblock: false,
+            enable_filter_intra: true,
+            enable_intra_edge_filter: true,
+            enable_interintra_compound: true,
+            enable_masked_compound: true,
+            enable_warped_motion: true,
+            enable_dual_filter: true,
+            enable_order_hint: true,
+            enable_jnt_comp: true,
+            enable_ref_frame_mvs: true,
+            seq_force_screen_content_tools: 2,
+            seq_force_integer_mv: 2,
+            order_hint_bits_minus_1: Some(6),
+            enable_superres: false,
+            enable_cdef: true,
+            enable_restoration: true,
+            film_grain_params_present: false,
+            color_config: NativeVulkanAv1ColorConfigSnapshot {
+                high_bitdepth: bit_depth > 8,
+                twelve_bit: bit_depth == 12,
+                mono_chrome: false,
+                color_description_present_flag: false,
+                color_primaries: 2,
+                transfer_characteristics: 2,
+                matrix_coefficients: 2,
+                color_range: false,
+                subsampling_x: true,
+                subsampling_y: true,
+                chroma_sample_position: 0,
+                separate_uv_delta_q: false,
+                bit_depth,
+                num_planes: 3,
+            },
+            requested_profile_compatible: matches!(bit_depth, 8 | 10),
+            vulkan_std_session_parameters_ready: matches!(bit_depth, 8 | 10),
+        }
     }
 }
