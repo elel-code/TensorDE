@@ -253,7 +253,7 @@ if [[ "${#sources[@]}" -eq 0 && "${#source_dirs[@]}" -eq 0 ]]; then
 fi
 
 if [[ -z "$report_dir" ]]; then
-  report_dir="$repo_root/artifacts/video-real-source-matrix/$(date +%Y%m%d-%H%M%S)"
+  report_dir="$repo_root/artifacts/video-real-source-matrix/$(date +%Y%m%d-%H%M%S)-$$"
 fi
 mkdir -p "$report_dir/probes" "$report_dir/runs"
 

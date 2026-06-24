@@ -17,10 +17,20 @@ Options:
   --appid <id>          Workshop app id. Default: 431960 (Wallpaper Engine).
   --download-root <dir> SteamCMD install/download root. Default:
                         artifacts/wallpaper-engine-workshop/steamcmd-root.
-  --steamcmd <path>     SteamCMD executable. Default: STEAMCMD or steamcmd.
-  --anonymous           Use anonymous SteamCMD login. Default.
+  --steamcmd <path>     SteamCMD executable. Default: STEAMCMD,
+                        artifacts/tools/steamcmd/steamcmd.sh, then steamcmd.
+  --steamcmd-dir <dir>  Repository-local SteamCMD install dir. Default:
+                        artifacts/tools/steamcmd.
+  --install-steamcmd    Download and install SteamCMD into --steamcmd-dir when
+                        the executable is missing. Requires curl and tar.
+  --install-steamcmd-only
+                        Install SteamCMD into --steamcmd-dir, then exit without
+                        downloading Workshop items.
+  --anonymous           Use anonymous SteamCMD login, ignoring GILDER_STEAM_USER.
   --steam-user <name>   Use a Steam account login. SteamCMD may prompt for
                         password/Steam Guard; this script never stores them.
+                        Default: GILDER_STEAM_USER when set, otherwise
+                        anonymous.
   --probe-after-download
                         Run scripts/native-vulkan-real-source-matrix.sh against
                         the downloaded Workshop content after SteamCMD exits.
@@ -43,8 +53,11 @@ appid=431960
 item_ids=()
 item_list=""
 download_root="$repo_root/artifacts/wallpaper-engine-workshop/steamcmd-root"
-steamcmd="${STEAMCMD:-steamcmd}"
-steam_user=""
+steamcmd="${STEAMCMD:-}"
+steamcmd_dir="$repo_root/artifacts/tools/steamcmd"
+install_steamcmd=0
+install_steamcmd_only=0
+steam_user="${GILDER_STEAM_USER:-}"
 probe_after_download=0
 matrix_report_dir=""
 dry_run=0
@@ -71,6 +84,19 @@ while [[ $# -gt 0 ]]; do
     --steamcmd)
       steamcmd="${2:?--steamcmd requires a path}"
       shift 2
+      ;;
+    --steamcmd-dir)
+      steamcmd_dir="${2:?--steamcmd-dir requires a directory}"
+      shift 2
+      ;;
+    --install-steamcmd)
+      install_steamcmd=1
+      shift
+      ;;
+    --install-steamcmd-only)
+      install_steamcmd=1
+      install_steamcmd_only=1
+      shift
       ;;
     --anonymous)
       steam_user=""
@@ -113,6 +139,47 @@ if [[ ! "$appid" =~ ^[0-9]+$ ]]; then
   printf 'FAIL: --appid must be numeric\n' >&2
   exit 2
 fi
+
+install_repository_steamcmd() {
+  local install_dir="${1:?install dir is required}"
+  local archive="$install_dir/steamcmd_linux.tar.gz"
+
+  for tool in curl tar; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      printf 'FAIL: --install-steamcmd requires %s\n' "$tool" >&2
+      exit 1
+    fi
+  done
+
+  mkdir -p "$install_dir"
+  curl -L "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" \
+    -o "$archive"
+  tar -xzf "$archive" -C "$install_dir"
+  if [[ ! -x "$install_dir/steamcmd.sh" ]]; then
+    printf 'FAIL: SteamCMD install did not produce %s\n' "$install_dir/steamcmd.sh" >&2
+    exit 1
+  fi
+}
+
+if [[ -z "$steamcmd" ]]; then
+  if [[ -x "$steamcmd_dir/steamcmd.sh" || "$install_steamcmd" -eq 1 ]]; then
+    steamcmd="$steamcmd_dir/steamcmd.sh"
+  else
+    steamcmd="steamcmd"
+  fi
+fi
+
+if [[ "$install_steamcmd_only" -eq 1 ]]; then
+  if [[ "$dry_run" -eq 1 ]]; then
+    printf 'DRY-RUN: install SteamCMD into %s\n' "$steamcmd_dir"
+    exit 0
+  fi
+  install_repository_steamcmd "$steamcmd_dir"
+  printf 'PASS: SteamCMD installed\n'
+  printf 'steamcmd: %s\n' "$steamcmd_dir/steamcmd.sh"
+  exit 0
+fi
+
 if [[ -n "$item_list" ]]; then
   if [[ ! -f "$item_list" ]]; then
     printf 'FAIL: item list does not exist: %s\n' "$item_list" >&2
@@ -154,13 +221,18 @@ done
 
 if [[ "$dry_run" -eq 0 ]]; then
   if ! command -v "$steamcmd" >/dev/null 2>&1 && [[ ! -x "$steamcmd" ]]; then
-    printf 'FAIL: missing SteamCMD executable: %s\n' "$steamcmd" >&2
-    printf 'Install steamcmd or pass --steamcmd /path/to/steamcmd.\n' >&2
-    exit 1
+    if [[ "$install_steamcmd" -eq 1 ]]; then
+      install_repository_steamcmd "$steamcmd_dir"
+      steamcmd="$steamcmd_dir/steamcmd.sh"
+    else
+      printf 'FAIL: missing SteamCMD executable: %s\n' "$steamcmd" >&2
+      printf 'Install steamcmd, pass --steamcmd /path/to/steamcmd, or pass --install-steamcmd.\n' >&2
+      exit 1
+    fi
   fi
 fi
 
-timestamp="$(date +%Y%m%d-%H%M%S)"
+timestamp="$(date +%Y%m%d-%H%M%S)-$$"
 if [[ -z "$matrix_report_dir" ]]; then
   matrix_report_dir="$repo_root/artifacts/video-real-source-matrix/we-$timestamp"
 fi
@@ -214,6 +286,9 @@ chmod +x "$commands_file"
   printf 'item_count: %s\n' "${#unique_ids[@]}"
   printf 'download_root: %s\n' "$download_root"
   printf 'content_dir: %s\n' "$content_dir"
+  printf 'steamcmd: %s\n' "$steamcmd"
+  printf 'steamcmd_dir: %s\n' "$steamcmd_dir"
+  printf 'install_steamcmd: %s\n' "$([[ "$install_steamcmd" -eq 1 ]] && printf yes || printf no)"
   printf 'steam_user: %s\n' "$([[ -n "$steam_user" ]] && printf '%s' "$steam_user" || printf anonymous)"
   printf 'probe_after_download: %s\n' "$([[ "$probe_after_download" -eq 1 ]] && printf yes || printf no)"
   printf 'matrix_report_dir: %s\n' "$matrix_report_dir"
