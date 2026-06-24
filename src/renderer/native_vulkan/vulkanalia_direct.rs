@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::Serialize;
 
@@ -7,15 +8,13 @@ use crate::core::FitMode;
 use super::audio_policy::NativeVulkanAudioOutputMode;
 use super::video_codec::NativeVulkanVideoSessionCodec;
 use super::vulkanalia_backend::{
-    NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput,
-    NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput,
+    NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput, NativeVulkanVulkanaliaClearPresentOptions,
+    NativeVulkanVulkanaliaClearPresentSnapshot, NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput,
     NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput,
-    NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions,
     NativeVulkanVulkanaliaSurfaceSwapchainProbeSnapshot,
     NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
     NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot,
-    probe_native_vulkan_vulkanalia_surface_swapchain,
-    probe_native_vulkan_vulkanalia_video_session_bind,
+    probe_native_vulkan_vulkanalia_video_session_bind, run_native_vulkan_vulkanalia_clear_present,
 };
 use super::vulkanalia_extract::{
     native_vulkan_extract_av1_ready_prefix_for_vulkanalia,
@@ -43,6 +42,11 @@ pub struct NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
     pub present_probe_requested: bool,
     pub present_probe: Option<NativeVulkanVulkanaliaSurfaceSwapchainProbeSnapshot>,
     pub present_probe_error: Option<String>,
+    pub present_runtime_requested: bool,
+    pub present_runtime: Option<NativeVulkanVulkanaliaClearPresentSnapshot>,
+    pub present_runtime_error: Option<String>,
+    pub decoded_image_zero_copy_presented: bool,
+    pub decoded_image_present_boundary: &'static str,
     pub ffmpeg_reference: &'static str,
     pub session: NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot,
 }
@@ -87,13 +91,18 @@ pub fn run_vulkanalia_ready_prefix_video(
         ready_prefix.into_session_options(codec, width, height, bitstream_samples);
     let session = probe_native_vulkan_vulkanalia_video_session_bind(session_options)
         .map_err(NativeVulkanError::Video)?;
-    let present_probe = probe_native_vulkan_vulkanalia_surface_swapchain(
-        NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions {
+    let present_runtime =
+        run_native_vulkan_vulkanalia_clear_present(NativeVulkanVulkanaliaClearPresentOptions {
             host: options.host.clone(),
             wait_configure_roundtrips: options.wait_configure_roundtrips,
-        },
-    );
-    let (present_probe, present_probe_error) = match present_probe {
+            duration: native_vulkan_vulkanalia_visible_present_duration(
+                playback_frame_count,
+                options.target_max_fps,
+            ),
+            target_max_fps: options.target_max_fps,
+            clear_color: options.clear_color,
+        });
+    let (present_runtime, present_runtime_error) = match present_runtime {
         Ok(snapshot) => (Some(snapshot), None),
         Err(err) => (None, Some(err)),
     };
@@ -112,13 +121,28 @@ pub fn run_vulkanalia_ready_prefix_video(
         audio_output_mode: audio_output_mode.as_str(),
         decode_submit_backend: "vulkanalia-video-session-bind",
         command_submit_model: "CmdPipelineBarrier2 -> CmdBeginVideoCodingKHR -> CmdDecodeVideoKHR -> CmdEndVideoCodingKHR -> QueueSubmit2",
-        present_backend: "vulkanalia-surface-swapchain-probe-with-ash-runtime-compatibility",
-        present_probe_requested: true,
-        present_probe,
-        present_probe_error,
+        present_backend: "vulkanalia-clear-present-runtime-visible-placeholder",
+        present_probe_requested: false,
+        present_probe: None,
+        present_probe_error: None,
+        present_runtime_requested: true,
+        present_runtime,
+        present_runtime_error,
+        decoded_image_zero_copy_presented: false,
+        decoded_image_present_boundary: "Vulkanalia decodes the real ready-prefix source and presents a Vulkanalia-owned visible swapchain placeholder; next gate replaces the clear image with decoded DPB/output image sampling/import",
         ffmpeg_reference: "references/ffmpeg/libavcodec/vulkan_decode.c",
         session,
     })
+}
+
+fn native_vulkan_vulkanalia_visible_present_duration(
+    playback_frame_count: u32,
+    target_max_fps: Option<u32>,
+) -> Duration {
+    let fps = u64::from(target_max_fps.unwrap_or(240).max(1));
+    let frames = u128::from(playback_frame_count.max(1));
+    let nanos = frames.saturating_mul(1_000_000_000u128) / u128::from(fps);
+    Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
 }
 
 enum NativeVulkanVulkanaliaReadyPrefixInput {
