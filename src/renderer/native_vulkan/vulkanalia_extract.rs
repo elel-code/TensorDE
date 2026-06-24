@@ -10,6 +10,8 @@ use super::codec_snapshots::{
     NativeVulkanH265ParameterSetSnapshot,
 };
 use super::vulkanalia_backend::{
+    NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput,
+    NativeVulkanVulkanaliaH264ReadyPrefixFrameInput,
     NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput,
     NativeVulkanVulkanaliaH265ReadyPrefixFrameInput,
 };
@@ -17,7 +19,7 @@ use super::{
     NativeVulkanError, NativeVulkanVideoSessionCodec, NativeVulkanVideoSessionSmokeOptions,
     native_vulkan_extract_video_bitstream, native_vulkan_h265_ready_prefix_bitstream_window,
     native_vulkan_h265_ready_prefix_bitstream_window_mode,
-    native_vulkan_validate_h265_ready_prefix,
+    native_vulkan_validate_h264_ready_prefix, native_vulkan_validate_h265_ready_prefix,
 };
 
 pub fn native_vulkan_extract_h264_parameter_sets_for_vulkanalia(
@@ -37,6 +39,102 @@ pub fn native_vulkan_extract_h264_parameter_sets_for_vulkanalia(
         NativeVulkanError::Video(
             "Vulkanalia real H.264 session parameters require parsed SPS/PPS".to_owned(),
         )
+    })
+}
+
+pub fn native_vulkan_extract_h264_ready_prefix_for_vulkanalia(
+    source: PathBuf,
+    max_samples: u32,
+    frame_count: u32,
+) -> Result<NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput, NativeVulkanError> {
+    if frame_count == 0 {
+        return Err(NativeVulkanError::Video(
+            "Vulkanalia H.264 ready-prefix extraction requires at least one frame".to_owned(),
+        ));
+    }
+
+    let mut options = NativeVulkanVideoSessionSmokeOptions {
+        codec: NativeVulkanVideoSessionCodec::H264High8,
+        extract_bitstream: true,
+        bitstream_source: Some(source),
+        bitstream_extract_max_samples: max_samples.max(frame_count).max(1),
+        ..NativeVulkanVideoSessionSmokeOptions::default()
+    };
+    options.allocate_bitstream_buffer = false;
+    let extract = native_vulkan_extract_video_bitstream(&options)?;
+    native_vulkan_validate_h264_ready_prefix(&extract.snapshot, frame_count)?;
+
+    let parameter_sets = extract
+        .snapshot
+        .h264_parameter_sets
+        .clone()
+        .ok_or_else(|| {
+            NativeVulkanError::Video(
+                "Vulkanalia H.264 ready-prefix extraction requires parsed SPS/PPS".to_owned(),
+            )
+        })?;
+    let entries = extract
+        .snapshot
+        .h264_decode_reference_plan
+        .get(..frame_count as usize)
+        .ok_or_else(|| {
+            NativeVulkanError::Video(format!(
+                "H.264 reference plan has {} frames but {frame_count} were requested",
+                extract.snapshot.h264_decode_reference_plan.len()
+            ))
+        })?;
+    let access_units = extract
+        .snapshot
+        .h264_access_units
+        .get(..frame_count as usize)
+        .ok_or_else(|| {
+            NativeVulkanError::Video(format!(
+                "H.264 access unit snapshot has {} frames but {frame_count} were requested",
+                extract.snapshot.h264_access_units.len()
+            ))
+        })?;
+    let payloads = extract
+        .h264_access_unit_payloads
+        .get(..frame_count as usize)
+        .ok_or_else(|| {
+            NativeVulkanError::Video(format!(
+                "H.264 bitstream has {} payloads but {frame_count} ready-prefix frames were requested",
+                extract.h264_access_unit_payloads.len()
+            ))
+        })?;
+
+    let mut frames = Vec::with_capacity(frame_count as usize);
+    for ((entry, access_unit), payload) in entries.iter().zip(access_units).zip(payloads) {
+        let first_slice = access_unit.first_slice.clone().ok_or_else(|| {
+            NativeVulkanError::Video(format!(
+                "H.264 AU {} has no parsed first slice",
+                access_unit.index
+            ))
+        })?;
+        if let Some(err) = &access_unit.first_slice_parse_error {
+            return Err(NativeVulkanError::Video(format!(
+                "H.264 AU {} first slice parse failed: {err}",
+                access_unit.index
+            )));
+        }
+        if first_slice.slice_offsets.is_empty() {
+            return Err(NativeVulkanError::Video(format!(
+                "H.264 AU {} has no slice offsets",
+                access_unit.index
+            )));
+        }
+        frames.push(NativeVulkanVulkanaliaH264ReadyPrefixFrameInput {
+            entry: entry.clone(),
+            slice_offsets: first_slice.slice_offsets.clone(),
+            first_slice,
+            access_unit_payload: payload.clone(),
+        });
+    }
+
+    Ok(NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput {
+        parameter_sets,
+        requested_frame_count: frame_count,
+        frames,
     })
 }
 

@@ -28,6 +28,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         NativeVulkanH265VideoInputMode, NativeVulkanVideoSessionCodec,
         native_vulkan_extract_av1_sequence_header_for_vulkanalia,
         native_vulkan_extract_h264_parameter_sets_for_vulkanalia,
+        native_vulkan_extract_h264_ready_prefix_for_vulkanalia,
         native_vulkan_extract_h265_parameter_sets_for_vulkanalia,
         native_vulkan_extract_h265_ready_prefix_for_vulkanalia, probe_native_vulkan_audio_clock,
         run_av1_ready_prefix_video, run_h264_ready_prefix_video, run_h265_first_frame_video,
@@ -394,18 +395,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         NativeVulkanCliMode::ProbeVideo => json!(probe_vulkan_video_decode()?),
         NativeVulkanCliMode::ProbeVulkanalia => json!(probe_native_vulkan_vulkanalia_devices()?),
         NativeVulkanCliMode::ProbeVulkanaliaVideoSession => {
+            let decode_h264_ready_prefix =
+                video_session_options.decode_h264_ready_prefix_frames > 0;
             let decode_h265_ready_prefix =
                 video_session_options.decode_h265_ready_prefix_frames > 0;
-            let create_parameters =
-                vulkanalia_create_session_parameters || decode_h265_ready_prefix;
+            let create_parameters = vulkanalia_create_session_parameters
+                || decode_h264_ready_prefix
+                || decode_h265_ready_prefix;
             let (
                 h264_parameter_sets,
                 h265_parameter_sets,
                 av1_sequence_header,
+                h264_ready_prefix_decode,
                 h265_ready_prefix_decode,
             ) = if create_parameters {
                 let source = source.clone().ok_or(
-                    "--create-session-parameters/--decode-h265-ready-prefix requires --source",
+                    "--create-session-parameters/--decode-*-ready-prefix requires --source",
                 )?;
                 if !source.is_file() {
                     return Err(
@@ -416,12 +421,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     match video_session_options.codec {
                         NativeVulkanVideoSessionCodec::H264High8 => {
-                            let parameter_sets =
-                                native_vulkan_extract_h264_parameter_sets_for_vulkanalia(
-                                    source,
-                                    video_session_options.bitstream_extract_max_samples,
-                                )?;
-                            (Some(parameter_sets), None, None, None)
+                            if decode_h264_ready_prefix {
+                                let ready_prefix =
+                                    native_vulkan_extract_h264_ready_prefix_for_vulkanalia(
+                                        source,
+                                        video_session_options.bitstream_extract_max_samples,
+                                        video_session_options.decode_h264_ready_prefix_frames,
+                                    )?;
+                                (
+                                    Some(ready_prefix.parameter_sets.clone()),
+                                    None,
+                                    None,
+                                    Some(ready_prefix),
+                                    None,
+                                )
+                            } else {
+                                let parameter_sets =
+                                    native_vulkan_extract_h264_parameter_sets_for_vulkanalia(
+                                        source,
+                                        video_session_options.bitstream_extract_max_samples,
+                                    )?;
+                                (Some(parameter_sets), None, None, None, None)
+                            }
                         }
                         NativeVulkanVideoSessionCodec::H265Main8
                         | NativeVulkanVideoSessionCodec::H265Main10 => {
@@ -437,6 +458,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     None,
                                     Some(ready_prefix.parameter_sets.clone()),
                                     None,
+                                    None,
                                     Some(ready_prefix),
                                 )
                             } else {
@@ -446,7 +468,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                         video_session_options.codec,
                                         video_session_options.bitstream_extract_max_samples,
                                     )?;
-                                (None, Some(parameter_sets), None, None)
+                                (None, Some(parameter_sets), None, None, None)
                             }
                         }
                         NativeVulkanVideoSessionCodec::Av1Main8
@@ -457,7 +479,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     video_session_options.codec,
                                     video_session_options.bitstream_extract_max_samples,
                                 )?;
-                            (None, None, Some(sequence_header), None)
+                            (None, None, Some(sequence_header), None, None)
                         }
                     }
                 }
@@ -470,7 +492,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             } else {
-                (None, None, None, None)
+                (None, None, None, None, None)
             };
             json!(probe_native_vulkan_vulkanalia_video_session_bind(
                 NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
@@ -485,6 +507,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     h264_parameter_sets,
                     h265_parameter_sets,
                     av1_sequence_header,
+                    h264_ready_prefix_decode,
                     h265_ready_prefix_decode,
                 }
             )?)

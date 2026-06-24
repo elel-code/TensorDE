@@ -72,6 +72,12 @@ pub use video_bitstream_buffer::{
     NativeVulkanVulkanaliaVideoSessionBitstreamBufferSmokeSnapshot,
     NativeVulkanVulkanaliaVideoSessionBitstreamBufferSnapshot,
 };
+pub use video_decode_submit_h264::{
+    NativeVulkanVulkanaliaH264ReadyPrefixCommandFrameSnapshot,
+    NativeVulkanVulkanaliaH264ReadyPrefixCommandSmokeSnapshot,
+    NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput,
+    NativeVulkanVulkanaliaH264ReadyPrefixFrameInput,
+};
 pub use video_decode_submit_h265::{
     NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot,
     NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput,

@@ -275,6 +275,7 @@ pub use vulkanalia_backend::*;
 pub use vulkanalia_extract::{
     native_vulkan_extract_av1_sequence_header_for_vulkanalia,
     native_vulkan_extract_h264_parameter_sets_for_vulkanalia,
+    native_vulkan_extract_h264_ready_prefix_for_vulkanalia,
     native_vulkan_extract_h265_parameter_sets_for_vulkanalia,
     native_vulkan_extract_h265_ready_prefix_for_vulkanalia,
 };
