@@ -57,6 +57,7 @@ pub use video_profile_probe::{
 #[allow(unused_imports)]
 pub use video_session::{
     NativeVulkanVulkanaliaMemoryTypeCandidate, NativeVulkanVulkanaliaVideoSessionMemoryBindPlan,
+    NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot,
     NativeVulkanVulkanaliaVideoSessionMemoryRequirementSnapshot,
     NativeVulkanVulkanaliaVideoSessionResourceProbePlan,
     NativeVulkanVulkanaliaVideoSessionResourceStep,

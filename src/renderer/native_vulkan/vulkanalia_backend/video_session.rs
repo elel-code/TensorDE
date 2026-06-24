@@ -3,7 +3,7 @@ use std::ptr;
 
 use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
-use vulkanalia::vk;
+use vulkanalia::vk::{self, HasBuilder};
 
 use super::video_format_probe::{
     NativeVulkanVulkanaliaVideoFormatProbeSnapshot, NativeVulkanVulkanaliaVideoFormatQuerySnapshot,
@@ -78,6 +78,15 @@ pub struct NativeVulkanVulkanaliaVideoSessionMemoryBindPlan {
     pub selected_memory_property_flags: Vec<&'static str>,
     pub preferred_device_local: bool,
     pub dedicated_allocation: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot {
+    pub session_created: bool,
+    pub memory_bound: bool,
+    pub memory_requirements: Vec<NativeVulkanVulkanaliaVideoSessionMemoryRequirementSnapshot>,
+    pub bind_plans: Vec<NativeVulkanVulkanaliaVideoSessionMemoryBindPlan>,
+    pub total_bound_memory_bytes: u64,
 }
 
 pub fn native_vulkan_vulkanalia_video_session_template()
@@ -250,6 +259,76 @@ pub(super) fn native_vulkan_vulkanalia_destroy_video_session(
     unsafe {
         (device.commands().destroy_video_session_khr)(device.handle(), session, ptr::null());
     }
+}
+
+#[allow(dead_code)]
+pub(super) fn native_vulkan_vulkanalia_smoke_bind_video_session_memory(
+    device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    create_info: &vk::VideoSessionCreateInfoKHR,
+) -> Result<NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot, String> {
+    let session = native_vulkan_vulkanalia_create_video_session(device, create_info)?;
+    let mut allocated_memories = Vec::new();
+    let result = (|| {
+        let memory_requirements =
+            native_vulkan_vulkanalia_video_session_memory_requirements(device, session)?;
+        let memory_requirement_snapshots =
+            native_vulkan_vulkanalia_video_session_memory_requirement_snapshots(
+                &memory_requirements,
+            );
+        let memory_type_candidates =
+            native_vulkan_vulkanalia_memory_type_candidates(memory_properties);
+        let bind_plans = native_vulkan_vulkanalia_video_session_memory_bind_plans(
+            &memory_requirements,
+            &memory_type_candidates,
+        )?;
+        let mut bind_infos = Vec::with_capacity(bind_plans.len());
+        let mut total_bound_memory_bytes = 0u64;
+
+        for plan in bind_plans.iter() {
+            let allocation_info = vk::MemoryAllocateInfo::builder()
+                .allocation_size(plan.size)
+                .memory_type_index(plan.selected_memory_type_index);
+            let memory =
+                unsafe { device.allocate_memory(&allocation_info, None) }.map_err(|err| {
+                    format!(
+                        "vkAllocateMemory(vulkanalia video session bind {}): {err:?}",
+                        plan.memory_bind_index
+                    )
+                })?;
+            allocated_memories.push(memory);
+            bind_infos.push(
+                vk::BindVideoSessionMemoryInfoKHR::builder()
+                    .memory_bind_index(plan.memory_bind_index)
+                    .memory(memory)
+                    .memory_offset(0)
+                    .memory_size(plan.size)
+                    .build(),
+            );
+            total_bound_memory_bytes = total_bound_memory_bytes.saturating_add(plan.size);
+        }
+
+        native_vulkan_vulkanalia_bind_video_session_memory(device, session, &bind_infos)?;
+
+        Ok(
+            NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot {
+                session_created: true,
+                memory_bound: true,
+                memory_requirements: memory_requirement_snapshots,
+                bind_plans,
+                total_bound_memory_bytes,
+            },
+        )
+    })();
+
+    for memory in allocated_memories.drain(..) {
+        unsafe {
+            device.free_memory(memory, None);
+        }
+    }
+    native_vulkan_vulkanalia_destroy_video_session(device, session);
+
+    result
 }
 
 pub fn native_vulkan_vulkanalia_memory_type_candidates(
