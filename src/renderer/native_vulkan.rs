@@ -51648,8 +51648,18 @@ mod tests {
         assert!(!snapshot.audio_runtime_reached_clocked_playback);
         assert_eq!(snapshot.audio_runtime_buffer_count, 0);
         assert_eq!(snapshot.audio_runtime_output_sink_count, 0);
+        assert_eq!(snapshot.audio_runtime_loop_seek_count, 0);
+        assert_eq!(snapshot.audio_runtime_loop_seek_error_count, 0);
+        assert_eq!(snapshot.audio_runtime_loop_restart_count, 0);
+        assert_eq!(snapshot.audio_runtime_last_loop_seek_position_ms, None);
         assert_eq!(snapshot.audio_runtime_clock_serial, 0);
+        assert_eq!(snapshot.audio_runtime_segment_start_position_ns, None);
+        assert_eq!(snapshot.audio_runtime_segment_elapsed_ns, None);
+        assert_eq!(snapshot.audio_runtime_position_stale_count, 0);
+        assert_eq!(snapshot.audio_runtime_sample_stale_count, 0);
         assert_eq!(snapshot.audio_runtime_master_clock_estimate_ns, None);
+        assert_eq!(snapshot.audio_runtime_sampled_video_frame_count, 0);
+        assert_eq!(snapshot.audio_runtime_position_query_count, 0);
         assert_eq!(snapshot.audio_runtime_position_query_hit_count, 0);
         assert_eq!(snapshot.audio_runtime_video_clock_drift_latest_ns, None);
         assert_eq!(
@@ -51702,8 +51712,18 @@ mod tests {
             reached_clocked_playback: true,
             audio_buffer_count: 18,
             audio_output_sink_count: 2,
+            audio_loop_seek_count: 2,
+            audio_loop_seek_error_count: 0,
+            audio_loop_restart_count: 2,
+            audio_last_loop_seek_position_ms: Some(1500),
             audio_clock_serial: 3,
+            audio_segment_start_position_ns: Some(1_500_000_000),
+            audio_segment_elapsed_ns: Some(250_000_000),
+            audio_position_stale_count: 1,
+            audio_sample_stale_count: 2,
             audio_master_clock_estimate_ns: Some(1_240_000_000),
+            sampled_video_frame_count: 14,
+            audio_position_query_count: 15,
             audio_position_query_hit_count: 12,
             audio_video_clock_drift_latest_ns: Some(-20_000),
             audio_video_master_clock_drift_latest_ns: Some(15_000),
@@ -51729,11 +51749,27 @@ mod tests {
         assert!(snapshot.audio_runtime_reached_clocked_playback);
         assert_eq!(snapshot.audio_runtime_buffer_count, 18);
         assert_eq!(snapshot.audio_runtime_output_sink_count, 2);
+        assert_eq!(snapshot.audio_runtime_loop_seek_count, 2);
+        assert_eq!(snapshot.audio_runtime_loop_seek_error_count, 0);
+        assert_eq!(snapshot.audio_runtime_loop_restart_count, 2);
+        assert_eq!(
+            snapshot.audio_runtime_last_loop_seek_position_ms,
+            Some(1500)
+        );
         assert_eq!(snapshot.audio_runtime_clock_serial, 3);
+        assert_eq!(
+            snapshot.audio_runtime_segment_start_position_ns,
+            Some(1_500_000_000)
+        );
+        assert_eq!(snapshot.audio_runtime_segment_elapsed_ns, Some(250_000_000));
+        assert_eq!(snapshot.audio_runtime_position_stale_count, 1);
+        assert_eq!(snapshot.audio_runtime_sample_stale_count, 2);
         assert_eq!(
             snapshot.audio_runtime_master_clock_estimate_ns,
             Some(1_240_000_000)
         );
+        assert_eq!(snapshot.audio_runtime_sampled_video_frame_count, 14);
+        assert_eq!(snapshot.audio_runtime_position_query_count, 15);
         assert_eq!(snapshot.audio_runtime_position_query_hit_count, 12);
         assert_eq!(
             snapshot.audio_runtime_video_clock_drift_latest_ns,
@@ -51833,7 +51869,12 @@ mod tests {
         assert_eq!(snapshot.audio_output_status, "disabled-by-muted-plan");
         assert_eq!(snapshot.audio_runtime_status, "disabled-by-muted-plan");
         assert_eq!(snapshot.audio_runtime_provider, "none");
+        assert_eq!(snapshot.audio_runtime_loop_seek_count, 0);
+        assert_eq!(snapshot.audio_runtime_loop_restart_count, 0);
+        assert_eq!(snapshot.audio_runtime_position_stale_count, 0);
+        assert_eq!(snapshot.audio_runtime_sample_stale_count, 0);
         assert_eq!(snapshot.audio_runtime_clock_serial, 0);
+        assert_eq!(snapshot.audio_runtime_position_query_count, 0);
         assert_eq!(snapshot.audio_runtime_master_clock_estimate_ns, None);
         assert_eq!(snapshot.frontend_status, "appsink-receiving-samples");
         assert_eq!(snapshot.handoff_status, "appsink-sample-handoff-active");

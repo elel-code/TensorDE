@@ -41,8 +41,18 @@ pub struct NativeVulkanVideoRuntimeSnapshot {
     pub audio_runtime_reached_clocked_playback: bool,
     pub audio_runtime_buffer_count: u32,
     pub audio_runtime_output_sink_count: usize,
+    pub audio_runtime_loop_seek_count: u32,
+    pub audio_runtime_loop_seek_error_count: u32,
+    pub audio_runtime_loop_restart_count: u32,
+    pub audio_runtime_last_loop_seek_position_ms: Option<u64>,
     pub audio_runtime_clock_serial: u32,
+    pub audio_runtime_segment_start_position_ns: Option<u64>,
+    pub audio_runtime_segment_elapsed_ns: Option<u64>,
+    pub audio_runtime_position_stale_count: u32,
+    pub audio_runtime_sample_stale_count: u32,
     pub audio_runtime_master_clock_estimate_ns: Option<u64>,
+    pub audio_runtime_sampled_video_frame_count: u32,
+    pub audio_runtime_position_query_count: u32,
     pub audio_runtime_position_query_hit_count: u32,
     pub audio_runtime_video_clock_drift_latest_ns: Option<i64>,
     pub audio_runtime_video_master_clock_drift_latest_ns: Option<i64>,
@@ -84,8 +94,18 @@ pub(super) struct NativeVulkanVideoAudioRuntimeTelemetry {
     pub(super) reached_clocked_playback: bool,
     pub(super) audio_buffer_count: u32,
     pub(super) audio_output_sink_count: usize,
+    pub(super) audio_loop_seek_count: u32,
+    pub(super) audio_loop_seek_error_count: u32,
+    pub(super) audio_loop_restart_count: u32,
+    pub(super) audio_last_loop_seek_position_ms: Option<u64>,
     pub(super) audio_clock_serial: u32,
+    pub(super) audio_segment_start_position_ns: Option<u64>,
+    pub(super) audio_segment_elapsed_ns: Option<u64>,
+    pub(super) audio_position_stale_count: u32,
+    pub(super) audio_sample_stale_count: u32,
     pub(super) audio_master_clock_estimate_ns: Option<u64>,
+    pub(super) sampled_video_frame_count: u32,
+    pub(super) audio_position_query_count: u32,
     pub(super) audio_position_query_hit_count: u32,
     pub(super) audio_video_clock_drift_latest_ns: Option<i64>,
     pub(super) audio_video_master_clock_drift_latest_ns: Option<i64>,
@@ -103,8 +123,18 @@ impl NativeVulkanVideoAudioRuntimeTelemetry {
             reached_clocked_playback: value.reached_clocked_playback,
             audio_buffer_count: value.audio_buffer_count,
             audio_output_sink_count: value.audio_output_sink_count,
+            audio_loop_seek_count: value.audio_loop_seek_count,
+            audio_loop_seek_error_count: value.audio_loop_seek_error_count,
+            audio_loop_restart_count: value.audio_loop_restart_count,
+            audio_last_loop_seek_position_ms: value.audio_last_loop_seek_position_ms,
             audio_clock_serial: value.audio_clock_serial,
+            audio_segment_start_position_ns: value.audio_segment_start_position_ns,
+            audio_segment_elapsed_ns: value.audio_segment_elapsed_ns,
+            audio_position_stale_count: value.audio_position_stale_count,
+            audio_sample_stale_count: value.audio_sample_stale_count,
             audio_master_clock_estimate_ns: value.audio_master_clock_estimate_ns,
+            sampled_video_frame_count: value.sampled_video_frame_count,
+            audio_position_query_count: value.audio_position_query_count,
             audio_position_query_hit_count: value.audio_position_query_hit_count,
             audio_video_clock_drift_latest_ns: value.audio_video_clock_drift_latest_ns,
             audio_video_master_clock_drift_latest_ns: value
@@ -214,11 +244,38 @@ pub(super) fn native_vulkan_video_runtime_snapshot(
     let audio_runtime_output_sink_count = audio_runtime
         .map(|runtime| runtime.audio_output_sink_count)
         .unwrap_or(0);
+    let audio_runtime_loop_seek_count = audio_runtime
+        .map(|runtime| runtime.audio_loop_seek_count)
+        .unwrap_or(0);
+    let audio_runtime_loop_seek_error_count = audio_runtime
+        .map(|runtime| runtime.audio_loop_seek_error_count)
+        .unwrap_or(0);
+    let audio_runtime_loop_restart_count = audio_runtime
+        .map(|runtime| runtime.audio_loop_restart_count)
+        .unwrap_or(0);
+    let audio_runtime_last_loop_seek_position_ms =
+        audio_runtime.and_then(|runtime| runtime.audio_last_loop_seek_position_ms);
     let audio_runtime_clock_serial = audio_runtime
         .map(|runtime| runtime.audio_clock_serial)
         .unwrap_or(0);
+    let audio_runtime_segment_start_position_ns =
+        audio_runtime.and_then(|runtime| runtime.audio_segment_start_position_ns);
+    let audio_runtime_segment_elapsed_ns =
+        audio_runtime.and_then(|runtime| runtime.audio_segment_elapsed_ns);
+    let audio_runtime_position_stale_count = audio_runtime
+        .map(|runtime| runtime.audio_position_stale_count)
+        .unwrap_or(0);
+    let audio_runtime_sample_stale_count = audio_runtime
+        .map(|runtime| runtime.audio_sample_stale_count)
+        .unwrap_or(0);
     let audio_runtime_master_clock_estimate_ns =
         audio_runtime.and_then(|runtime| runtime.audio_master_clock_estimate_ns);
+    let audio_runtime_sampled_video_frame_count = audio_runtime
+        .map(|runtime| runtime.sampled_video_frame_count)
+        .unwrap_or(0);
+    let audio_runtime_position_query_count = audio_runtime
+        .map(|runtime| runtime.audio_position_query_count)
+        .unwrap_or(0);
     let audio_runtime_position_query_hit_count = audio_runtime
         .map(|runtime| runtime.audio_position_query_hit_count)
         .unwrap_or(0);
@@ -286,8 +343,18 @@ pub(super) fn native_vulkan_video_runtime_snapshot(
         audio_runtime_reached_clocked_playback,
         audio_runtime_buffer_count,
         audio_runtime_output_sink_count,
+        audio_runtime_loop_seek_count,
+        audio_runtime_loop_seek_error_count,
+        audio_runtime_loop_restart_count,
+        audio_runtime_last_loop_seek_position_ms,
         audio_runtime_clock_serial,
+        audio_runtime_segment_start_position_ns,
+        audio_runtime_segment_elapsed_ns,
+        audio_runtime_position_stale_count,
+        audio_runtime_sample_stale_count,
         audio_runtime_master_clock_estimate_ns,
+        audio_runtime_sampled_video_frame_count,
+        audio_runtime_position_query_count,
         audio_runtime_position_query_hit_count,
         audio_runtime_video_clock_drift_latest_ns,
         audio_runtime_video_master_clock_drift_latest_ns,
