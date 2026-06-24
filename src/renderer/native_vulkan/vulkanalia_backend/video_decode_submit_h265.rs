@@ -79,6 +79,44 @@ pub(super) struct NativeVulkanVulkanaliaH265VkSubmitInfo<'a> {
     pub decode_reference_slots: &'a [vk::VideoReferenceSlotInfoKHR],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput {
+    pub parameter_sets: NativeVulkanH265ParameterSetSnapshot,
+    pub requested_frame_count: u32,
+    pub frames: Vec<NativeVulkanVulkanaliaH265ReadyPrefixFrameInput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeVulkanVulkanaliaH265ReadyPrefixFrameInput {
+    pub entry: NativeVulkanH265DecodeReferencePlanEntrySnapshot,
+    pub first_slice: NativeVulkanH265AccessUnitSliceSnapshot,
+    pub access_unit_payload: Vec<u8>,
+    pub slice_segment_offset: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot {
+    pub requested_frame_count: u32,
+    pub recorded_frame_count: u32,
+    pub submitted_frame_count: u32,
+    pub ffmpeg_reference: &'static str,
+    pub command_buffer_recorded: bool,
+    pub submitted: bool,
+    pub uses_synchronization2: bool,
+    pub uses_submit2: bool,
+    pub queue_family_index: u32,
+    pub src_buffer_total_bytes: u64,
+    pub src_buffer_offset: u64,
+    pub src_buffer_range: u64,
+    pub dst_base_array_layer: u32,
+    pub setup_slot_index: i32,
+    pub begin_reference_slot_count: u32,
+    pub decode_reference_slot_count: u32,
+    pub reset_control_recorded: bool,
+    pub slice_segment_count: u32,
+    pub slice_segment_offsets: Vec<u32>,
+}
+
 pub(super) fn native_vulkan_vulkanalia_h265_ready_prefix_decode_submit_plan(
     extent: vk::Extent2D,
     parameter_ids: NativeVulkanVulkanaliaH265ParameterIds,

@@ -25,6 +25,11 @@ pub struct NativeVulkanVulkanaliaVideoSessionParametersSnapshot {
     pub std_pps_count: u32,
 }
 
+pub(super) struct VulkanaliaVideoSessionParameters {
+    pub(super) parameters: vk::VideoSessionParametersKHR,
+    pub(super) snapshot: NativeVulkanVulkanaliaVideoSessionParametersSnapshot,
+}
+
 pub(super) fn native_vulkan_vulkanalia_smoke_create_empty_video_session_parameters(
     device: &Device,
     session: vk::VideoSessionKHR,
@@ -140,30 +145,67 @@ pub(super) fn native_vulkan_vulkanalia_smoke_create_video_session_parameters(
     parameters_snapshot: NativeVulkanVulkanaliaVideoSessionParametersSnapshot,
     operation: &'static str,
 ) -> NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot {
-    match unsafe { device.create_video_session_parameters_khr(create_info, None) } {
+    match native_vulkan_vulkanalia_create_video_session_parameters(
+        device,
+        create_info,
+        parameters_snapshot,
+        operation,
+    ) {
         Ok(parameters) => {
-            unsafe {
-                device.destroy_video_session_parameters_khr(parameters, None);
-            }
+            let snapshot = parameters.snapshot.clone();
+            native_vulkan_vulkanalia_destroy_video_session_parameters(device, parameters);
             NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot {
                 requested: true,
                 supported: true,
                 created: true,
                 destroyed: true,
                 error: None,
-                parameters: parameters_snapshot,
+                parameters: snapshot,
             }
         }
-        Err(err) => NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot {
-            requested: true,
-            supported: true,
-            created: false,
-            destroyed: false,
-            error: Some(format!(
-                "vkCreateVideoSessionParametersKHR({operation}): {err:?}"
-            )),
-            parameters: parameters_snapshot,
-        },
+        Err(err) => {
+            let error = err.error;
+            NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot {
+                requested: true,
+                supported: true,
+                created: false,
+                destroyed: false,
+                error: Some(error),
+                parameters: err.snapshot,
+            }
+        }
+    }
+}
+
+pub(super) struct VulkanaliaVideoSessionParametersCreateError {
+    pub(super) error: String,
+    pub(super) snapshot: NativeVulkanVulkanaliaVideoSessionParametersSnapshot,
+}
+
+pub(super) fn native_vulkan_vulkanalia_create_video_session_parameters(
+    device: &Device,
+    create_info: &vk::VideoSessionParametersCreateInfoKHR,
+    parameters_snapshot: NativeVulkanVulkanaliaVideoSessionParametersSnapshot,
+    operation: &'static str,
+) -> Result<VulkanaliaVideoSessionParameters, VulkanaliaVideoSessionParametersCreateError> {
+    match unsafe { device.create_video_session_parameters_khr(create_info, None) } {
+        Ok(parameters) => Ok(VulkanaliaVideoSessionParameters {
+            parameters,
+            snapshot: parameters_snapshot,
+        }),
+        Err(err) => Err(VulkanaliaVideoSessionParametersCreateError {
+            error: format!("vkCreateVideoSessionParametersKHR({operation}): {err:?}"),
+            snapshot: parameters_snapshot,
+        }),
+    }
+}
+
+pub(super) fn native_vulkan_vulkanalia_destroy_video_session_parameters(
+    device: &Device,
+    parameters: VulkanaliaVideoSessionParameters,
+) {
+    unsafe {
+        device.destroy_video_session_parameters_khr(parameters.parameters, None);
     }
 }
 
