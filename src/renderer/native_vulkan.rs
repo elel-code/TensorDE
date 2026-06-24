@@ -97,6 +97,10 @@ mod timeline;
 #[path = "native_vulkan/demux.rs"]
 mod demux;
 
+#[cfg(feature = "native-vulkan-gst-video")]
+#[path = "native_vulkan/demux_gst.rs"]
+mod demux_gst;
+
 pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy};
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
 use render_item::{native_vulkan_static_item, native_vulkan_video_item};
@@ -111,9 +115,13 @@ pub use audio_clock::{
 
 #[cfg(feature = "native-vulkan-gst-video")]
 use demux::{
-    NativeVulkanGstStreamingAccessUnit, NativeVulkanStreamingAccessUnit,
-    NativeVulkanStreamingPacket, NativeVulkanStreamingPacketQueue,
-    native_vulkan_require_streaming_bootstrap_window, native_vulkan_start_streaming_packet_queue,
+    NativeVulkanStreamingAccessUnit, NativeVulkanStreamingPacket, NativeVulkanStreamingPacketQueue,
+    native_vulkan_require_streaming_bootstrap_window,
+};
+#[cfg(feature = "native-vulkan-gst-video")]
+use demux_gst::{
+    NativeVulkanGstStreamingAccessUnit,
+    native_vulkan_start_gst_streaming_packet_queue as native_vulkan_start_streaming_packet_queue,
 };
 
 #[cfg(feature = "native-vulkan-gst-video")]

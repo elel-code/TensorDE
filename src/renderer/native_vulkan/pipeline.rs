@@ -151,6 +151,17 @@ mod tests {
             contract.stages[9].kind,
             NativeVulkanVideoPipelineStageKind::AudioClock
         );
+        assert!(
+            contract
+                .stages
+                .iter()
+                .filter(|stage| matches!(
+                    stage.kind,
+                    NativeVulkanVideoPipelineStageKind::Demux
+                        | NativeVulkanVideoPipelineStageKind::Parse
+                ))
+                .all(|stage| stage.owner == "replaceable-frontend")
+        );
         assert!(contract.stages.iter().any(|stage| stage.kind
             == NativeVulkanVideoPipelineStageKind::PacketQueue
             && stage.ffmpeg_reference.contains("PacketQueue")));
