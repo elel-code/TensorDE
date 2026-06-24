@@ -35,6 +35,34 @@ pub(super) fn native_vulkan_start_gst_streaming_packet_queue<
     native_vulkan_start_streaming_packet_queue_from_frontend(Box::new(frontend), capacity)
 }
 
+pub(super) fn native_vulkan_run_gst_bitstream_pipeline<T>(
+    source: &Path,
+    codec_label: &'static str,
+    sink_name: &'static str,
+    pipeline: impl FnOnce(&Path) -> Result<gst::Pipeline, NativeVulkanError>,
+    collect: impl FnOnce(&gst::Element, &gst::Bus) -> Result<T, NativeVulkanError>,
+) -> Result<T, NativeVulkanError> {
+    gst::init().map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    let pipeline = pipeline(source)?;
+    let sink = pipeline.by_name(sink_name).ok_or_else(|| {
+        NativeVulkanError::Video(format!("{codec_label} bitstream appsink not found"))
+    })?;
+    let bus = pipeline.bus().ok_or_else(|| {
+        NativeVulkanError::Video(format!("{codec_label} bitstream pipeline has no bus"))
+    })?;
+
+    let result = (|| -> Result<T, NativeVulkanError> {
+        pipeline
+            .set_state(gst::State::Playing)
+            .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+        collect(&sink, &bus)
+    })();
+
+    let _ = pipeline.set_state(gst::State::Null);
+    let _ = pipeline.state(gst::ClockTime::from_mseconds(500));
+    result
+}
+
 struct NativeVulkanGstStreamingPacketFrontend<A: NativeVulkanGstStreamingAccessUnit> {
     pipeline: gst::Pipeline,
     sink: gst::Element,

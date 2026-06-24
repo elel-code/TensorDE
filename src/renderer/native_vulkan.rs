@@ -120,7 +120,7 @@ use demux::{
 };
 #[cfg(feature = "native-vulkan-gst-video")]
 use demux_gst::{
-    NativeVulkanGstStreamingAccessUnit,
+    NativeVulkanGstStreamingAccessUnit, native_vulkan_run_gst_bitstream_pipeline,
     native_vulkan_start_gst_streaming_packet_queue as native_vulkan_start_streaming_packet_queue,
 };
 
@@ -34090,25 +34090,13 @@ fn native_vulkan_extract_h264_bitstream(
     source: &Path,
     max_samples: u32,
 ) -> Result<NativeVulkanVideoBitstreamExtract, NativeVulkanError> {
-    gst::init().map_err(|err| NativeVulkanError::Video(err.to_string()))?;
-    let pipeline = native_vulkan_h264_bitstream_pipeline(source)?;
-    let sink = pipeline
-        .by_name("gilder-native-vulkan-h264-bitstream-appsink")
-        .ok_or_else(|| NativeVulkanError::Video("H.264 bitstream appsink not found".to_owned()))?;
-    let bus = pipeline.bus().ok_or_else(|| {
-        NativeVulkanError::Video("H.264 bitstream pipeline has no bus".to_owned())
-    })?;
-
-    let result = (|| -> Result<NativeVulkanVideoBitstreamExtract, NativeVulkanError> {
-        pipeline
-            .set_state(gst::State::Playing)
-            .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
-        native_vulkan_collect_h264_bitstream_samples(source, &sink, &bus, max_samples)
-    })();
-
-    let _ = pipeline.set_state(gst::State::Null);
-    let _ = pipeline.state(gst::ClockTime::from_mseconds(500));
-    result
+    native_vulkan_run_gst_bitstream_pipeline(
+        source,
+        "H.264",
+        "gilder-native-vulkan-h264-bitstream-appsink",
+        native_vulkan_h264_bitstream_pipeline,
+        |sink, bus| native_vulkan_collect_h264_bitstream_samples(source, sink, bus, max_samples),
+    )
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -34147,25 +34135,13 @@ fn native_vulkan_extract_h265_bitstream(
     source: &Path,
     max_samples: u32,
 ) -> Result<NativeVulkanVideoBitstreamExtract, NativeVulkanError> {
-    gst::init().map_err(|err| NativeVulkanError::Video(err.to_string()))?;
-    let pipeline = native_vulkan_h265_bitstream_pipeline(source)?;
-    let sink = pipeline
-        .by_name("gilder-native-vulkan-h265-bitstream-appsink")
-        .ok_or_else(|| NativeVulkanError::Video("H.265 bitstream appsink not found".to_owned()))?;
-    let bus = pipeline.bus().ok_or_else(|| {
-        NativeVulkanError::Video("H.265 bitstream pipeline has no bus".to_owned())
-    })?;
-
-    let result = (|| -> Result<NativeVulkanVideoBitstreamExtract, NativeVulkanError> {
-        pipeline
-            .set_state(gst::State::Playing)
-            .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
-        native_vulkan_collect_h265_bitstream_samples(source, &sink, &bus, max_samples)
-    })();
-
-    let _ = pipeline.set_state(gst::State::Null);
-    let _ = pipeline.state(gst::ClockTime::from_mseconds(500));
-    result
+    native_vulkan_run_gst_bitstream_pipeline(
+        source,
+        "H.265",
+        "gilder-native-vulkan-h265-bitstream-appsink",
+        native_vulkan_h265_bitstream_pipeline,
+        |sink, bus| native_vulkan_collect_h265_bitstream_samples(source, sink, bus, max_samples),
+    )
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -34173,25 +34149,13 @@ fn native_vulkan_extract_av1_bitstream(
     source: &Path,
     max_samples: u32,
 ) -> Result<NativeVulkanVideoBitstreamExtract, NativeVulkanError> {
-    gst::init().map_err(|err| NativeVulkanError::Video(err.to_string()))?;
-    let pipeline = native_vulkan_av1_bitstream_pipeline(source)?;
-    let sink = pipeline
-        .by_name("gilder-native-vulkan-av1-bitstream-appsink")
-        .ok_or_else(|| NativeVulkanError::Video("AV1 bitstream appsink not found".to_owned()))?;
-    let bus = pipeline
-        .bus()
-        .ok_or_else(|| NativeVulkanError::Video("AV1 bitstream pipeline has no bus".to_owned()))?;
-
-    let result = (|| -> Result<NativeVulkanVideoBitstreamExtract, NativeVulkanError> {
-        pipeline
-            .set_state(gst::State::Playing)
-            .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
-        native_vulkan_collect_av1_bitstream_samples(source, &sink, &bus, max_samples)
-    })();
-
-    let _ = pipeline.set_state(gst::State::Null);
-    let _ = pipeline.state(gst::ClockTime::from_mseconds(500));
-    result
+    native_vulkan_run_gst_bitstream_pipeline(
+        source,
+        "AV1",
+        "gilder-native-vulkan-av1-bitstream-appsink",
+        native_vulkan_av1_bitstream_pipeline,
+        |sink, bus| native_vulkan_collect_av1_bitstream_samples(source, sink, bus, max_samples),
+    )
 }
 
 fn native_vulkan_validate_h265_ready_prefix(
