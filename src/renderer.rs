@@ -1761,7 +1761,9 @@ fn scene_lite_display_plan(
     render_target: Option<RenderTargetSize>,
     scene_lite_snapshot_cache: Option<&mut SceneLiteSnapshotCacheContext<'_>>,
 ) -> Option<SceneLiteDisplayPlan> {
-    if let Some(color) = scene_lite_direct_display_color(layers) {
+    if let Some(color) =
+        scene_lite_direct_display_color(layers, scene_lite_snapshot_size(document, render_target))
+    {
         return Some(SceneLiteDisplayPlan::Color { color });
     }
     if let Some(snapshot) = scene_lite_snapshot_display(
@@ -1790,23 +1792,57 @@ fn scene_lite_display_plan(
     scene_lite_background_color(layers).map(|color| SceneLiteDisplayPlan::Color { color })
 }
 
-fn scene_lite_direct_display_color(layers: &[SceneLiteRenderLayer]) -> Option<String> {
+fn scene_lite_direct_display_color(
+    layers: &[SceneLiteRenderLayer],
+    size: RenderTargetSize,
+) -> Option<String> {
     let mut renderable_layers = layers
         .iter()
         .filter(|layer| scene_lite_layer_is_snapshot_renderable(layer));
     let layer = renderable_layers.next()?;
     if renderable_layers.next().is_some()
-        || layer.kind != SceneLiteLayerKind::Color
         || layer.opacity < 1.0
         || layer.transform != SceneLiteTransform::default()
     {
         return None;
     }
-    layer
-        .color
+    match layer.kind {
+        SceneLiteLayerKind::Color => layer
+            .color
+            .as_deref()
+            .filter(|color| !color.is_empty())
+            .map(str::to_owned),
+        SceneLiteLayerKind::Rectangle
+            if scene_lite_rectangle_covers_target_without_shape_effects(layer, size) =>
+        {
+            layer
+                .color
+                .as_deref()
+                .filter(|color| !color.is_empty())
+                .map(str::to_owned)
+        }
+        _ => None,
+    }
+}
+
+fn scene_lite_rectangle_covers_target_without_shape_effects(
+    layer: &SceneLiteRenderLayer,
+    size: RenderTargetSize,
+) -> bool {
+    let has_stroke = layer
+        .stroke_color
         .as_deref()
-        .filter(|color| !color.is_empty())
-        .map(str::to_owned)
+        .is_some_and(|color| !color.is_empty())
+        && layer.stroke_width.unwrap_or(1.0) > 0.0;
+    let has_corner_radius = layer.corner_radius.unwrap_or(0.0) > 0.0;
+    let width = layer.width.unwrap_or(f64::from(size.width));
+    let height = layer.height.unwrap_or(f64::from(size.height));
+    !has_stroke
+        && !has_corner_radius
+        && width.is_finite()
+        && height.is_finite()
+        && width >= f64::from(size.width)
+        && height >= f64::from(size.height)
 }
 
 fn scene_lite_snapshot_display(
@@ -4997,6 +5033,38 @@ exit 0
     }
 
     #[test]
+    fn scene_lite_full_rectangle_layer_uses_direct_display_without_snapshot() {
+        let test_dir = TestDir::new("gilder-scene-lite-full-rect-plan");
+        let package_dir = test_dir.path.join("scene-full-rect.gwpdir");
+        write_minimal_scene_lite_full_rect_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.scene_lite_plans.len(), 1);
+        let plan = &sync.scene_lite_plans[0];
+        assert_eq!(plan.layers.len(), 1);
+        assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Rectangle);
+        assert!(matches!(
+            &plan.display,
+            Some(SceneLiteDisplayPlan::Color { color }) if color == "#304050"
+        ));
+        assert_eq!(sync.cache.scene_lite_snapshot_cache_generations, 0);
+        assert_eq!(sync.cache.scene_lite_snapshot_cache_entries, 0);
+        assert_eq!(sync.cache.planned_scene_lite_image_resources, 0);
+        assert_eq!(sync.cache.planned_image_resource_references, 0);
+    }
+
+    #[test]
     fn scene_lite_shape_layers_build_snapshot() {
         let test_dir = TestDir::new("gilder-scene-lite-shape-plan");
         let package_dir = test_dir.path.join("scene-shapes.gwpdir");
@@ -6435,6 +6503,44 @@ void main() {}
             "id": "org.example.scene-color",
             "version": "1.0.0",
             "title": "Scene Color",
+            "kind": "scene-lite",
+            "entry": {
+                "type": "scene-lite",
+                "source": "assets/scene-lite.json",
+                "max_fps": 60
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_minimal_scene_lite_full_rect_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(
+            path.join("assets/scene-lite.json"),
+            br##"{
+              "size": { "width": 1280, "height": 720 },
+              "layers": [
+                {
+                  "id": "background",
+                  "type": "rectangle",
+                  "color": "#304050",
+                  "width": 1280,
+                  "height": 720
+                }
+              ]
+            }"##,
+        )
+        .unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.scene-full-rect",
+            "version": "1.0.0",
+            "title": "Scene Full Rect",
             "kind": "scene-lite",
             "entry": {
                 "type": "scene-lite",
