@@ -340,12 +340,13 @@ impl NativeVulkanAudioClockRuntimeProbe {
             .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
         self.playback_started = true;
         let _ = self.pipeline.state(gst::ClockTime::from_mseconds(500));
+        self.seek_clocked_playback_to(position_ms)?;
         self.poll_bus()?;
-        self.begin_segment(0);
+        self.begin_segment(position_ms);
         self.poll()
     }
 
-    fn restart_clocked_playback_from_stream_start(&mut self) -> Result<(), NativeVulkanError> {
+    fn restart_clocked_playback_at(&mut self, position_ms: u64) -> Result<(), NativeVulkanError> {
         let _ = self.pipeline.set_state(gst::State::Null);
         let pipeline = native_vulkan_audio_clock_aac_pipeline(&self.source)?;
         let sink = pipeline
@@ -362,7 +363,26 @@ impl NativeVulkanAudioClockRuntimeProbe {
             .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
         self.playback_started = true;
         let _ = self.pipeline.state(gst::ClockTime::from_mseconds(500));
+        self.seek_clocked_playback_to(position_ms)?;
         self.poll_bus()
+    }
+
+    fn seek_clocked_playback_to(&self, position_ms: u64) -> Result<(), NativeVulkanError> {
+        if position_ms == 0 {
+            return Ok(());
+        }
+        self.pipeline
+            .seek_simple(
+                gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
+                gst::ClockTime::from_mseconds(position_ms),
+            )
+            .map_err(|err| {
+                NativeVulkanError::Video(format!(
+                    "seek audio clock runtime to {position_ms}ms: {err}"
+                ))
+            })?;
+        let _ = self.pipeline.state(gst::ClockTime::from_mseconds(500));
+        Ok(())
     }
 
     fn begin_segment(&mut self, position_ms: u64) {
@@ -410,18 +430,14 @@ impl NativeVulkanAudioClockRuntimeProbe {
     }
 
     fn audio_position_belongs_to_current_segment(&self, position_ns: u64) -> bool {
-        let Some(segment) = self.audio_segment else {
-            return true;
-        };
-        let elapsed_ns = native_vulkan_audio_duration_ns(segment.started_at.elapsed());
-        let lower = segment
-            .start_position_ns
-            .saturating_sub(NATIVE_VULKAN_AUDIO_POSITION_EARLY_TOLERANCE_NS);
-        let upper = segment
-            .start_position_ns
-            .saturating_add(elapsed_ns)
-            .saturating_add(NATIVE_VULKAN_AUDIO_POSITION_LATE_TOLERANCE_NS);
-        position_ns >= lower && position_ns <= upper
+        match self.audio_segment {
+            Some(segment) => native_vulkan_audio_position_belongs_to_segment(
+                position_ns,
+                segment.start_position_ns,
+                native_vulkan_audio_duration_ns(segment.started_at.elapsed()),
+            ),
+            None => true,
+        }
     }
 
     fn audio_segment_elapsed_ns(&self) -> Option<u64> {
@@ -540,8 +556,11 @@ impl NativeVulkanAudioClockRuntimeProbe {
         self.poll()?;
         self.audio_loop_seek_count = self.audio_loop_seek_count.saturating_add(1);
         self.audio_last_loop_seek_position_ms = Some(position_ms);
+        if let Err(err) = self.restart_clocked_playback_at(position_ms) {
+            self.audio_loop_seek_error_count = self.audio_loop_seek_error_count.saturating_add(1);
+            return Err(err);
+        }
         self.audio_loop_restart_count = self.audio_loop_restart_count.saturating_add(1);
-        self.restart_clocked_playback_from_stream_start()?;
         self.begin_segment(position_ms);
         self.poll()
     }
@@ -891,6 +910,19 @@ fn native_vulkan_audio_clock_time_ns(value: Option<gst::ClockTime>) -> Option<u6
     value.map(|value| value.nseconds())
 }
 
+fn native_vulkan_audio_position_belongs_to_segment(
+    position_ns: u64,
+    segment_start_position_ns: u64,
+    segment_elapsed_ns: u64,
+) -> bool {
+    let lower =
+        segment_start_position_ns.saturating_sub(NATIVE_VULKAN_AUDIO_POSITION_EARLY_TOLERANCE_NS);
+    let upper = segment_start_position_ns
+        .saturating_add(segment_elapsed_ns)
+        .saturating_add(NATIVE_VULKAN_AUDIO_POSITION_LATE_TOLERANCE_NS);
+    position_ns >= lower && position_ns <= upper
+}
+
 fn native_vulkan_audio_duration_ms(value: Duration) -> u64 {
     value.as_millis().min(u128::from(u64::MAX)) as u64
 }
@@ -980,4 +1012,48 @@ fn native_vulkan_audio_child_factory_names(element: &gst::Element) -> Vec<String
     names.sort();
     names.dedup();
     names
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn segment_window_rejects_old_audio_after_nonzero_seek() {
+        let segment_start_ns = 5_000_000_000;
+        let elapsed_ns = 100_000_000;
+
+        assert!(!native_vulkan_audio_position_belongs_to_segment(
+            0,
+            segment_start_ns,
+            elapsed_ns
+        ));
+        assert!(!native_vulkan_audio_position_belongs_to_segment(
+            4_700_000_000,
+            segment_start_ns,
+            elapsed_ns
+        ));
+    }
+
+    #[test]
+    fn segment_window_accepts_seek_target_and_elapsed_audio() {
+        let segment_start_ns = 5_000_000_000;
+        let elapsed_ns = 100_000_000;
+
+        assert!(native_vulkan_audio_position_belongs_to_segment(
+            4_750_000_000,
+            segment_start_ns,
+            elapsed_ns
+        ));
+        assert!(native_vulkan_audio_position_belongs_to_segment(
+            5_600_000_000,
+            segment_start_ns,
+            elapsed_ns
+        ));
+        assert!(!native_vulkan_audio_position_belongs_to_segment(
+            5_700_000_000,
+            segment_start_ns,
+            elapsed_ns
+        ));
+    }
 }
