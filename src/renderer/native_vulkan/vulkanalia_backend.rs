@@ -26,6 +26,8 @@ mod video_profile_labels;
 mod video_profile_probe;
 #[path = "vulkanalia_backend/video_session.rs"]
 mod video_session;
+#[path = "vulkanalia_backend/video_session_bind.rs"]
+mod video_session_bind;
 
 pub use device_probe::{
     NativeVulkanVulkanaliaDeviceProbeSnapshot, NativeVulkanVulkanaliaDeviceProbeTemplate,
@@ -56,9 +58,7 @@ pub use video_profile_probe::{
 };
 #[allow(unused_imports)]
 pub use video_session::{
-    NativeVulkanVulkanaliaMemoryTypeCandidate, NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
-    NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot,
-    NativeVulkanVulkanaliaVideoSessionMemoryBindPlan,
+    NativeVulkanVulkanaliaMemoryTypeCandidate, NativeVulkanVulkanaliaVideoSessionMemoryBindPlan,
     NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot,
     NativeVulkanVulkanaliaVideoSessionMemoryRequirementSnapshot,
     NativeVulkanVulkanaliaVideoSessionResourceProbePlan,
@@ -69,5 +69,10 @@ pub use video_session::{
     native_vulkan_vulkanalia_video_session_memory_requirement_snapshots,
     native_vulkan_vulkanalia_video_session_resource_plans_from_format_probe,
     native_vulkan_vulkanalia_video_session_template,
+};
+#[allow(unused_imports)]
+pub use video_session_bind::{
+    NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
+    NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot,
     probe_native_vulkan_vulkanalia_video_session_bind,
 };
