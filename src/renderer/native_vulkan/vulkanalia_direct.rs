@@ -8,10 +8,14 @@ use crate::core::FitMode;
 use super::audio_policy::NativeVulkanAudioOutputMode;
 use super::video_codec::NativeVulkanVideoSessionCodec;
 use super::vulkanalia_backend::{
-    NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput, NativeVulkanVulkanaliaClearPresentOptions,
-    NativeVulkanVulkanaliaClearPresentSnapshot,
+    NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput,
+    NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeOptions,
+    NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeSnapshot,
+    NativeVulkanVulkanaliaClearPresentOptions, NativeVulkanVulkanaliaClearPresentSnapshot,
     NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot,
     NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput,
+    NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeOptions,
+    NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot,
     NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput,
     NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot,
@@ -22,7 +26,10 @@ use super::vulkanalia_backend::{
     NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
     NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot,
     probe_native_vulkan_vulkanalia_video_present_session,
-    probe_native_vulkan_vulkanalia_video_session_bind, run_native_vulkan_vulkanalia_clear_present,
+    probe_native_vulkan_vulkanalia_video_session_bind,
+    run_native_vulkan_vulkanalia_av1_retained_video_present_decode,
+    run_native_vulkan_vulkanalia_clear_present,
+    run_native_vulkan_vulkanalia_h264_retained_video_present_decode,
     run_native_vulkan_vulkanalia_h265_retained_video_present_decode,
 };
 use super::vulkanalia_extract::{
@@ -57,6 +64,14 @@ pub struct NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
     pub video_present_session_probe_requested: bool,
     pub video_present_session_probe: Option<NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot>,
     pub video_present_session_probe_error: Option<String>,
+    pub av1_retained_video_present_decode_requested: bool,
+    pub av1_retained_video_present_decode:
+        Option<NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeSnapshot>,
+    pub av1_retained_video_present_decode_error: Option<String>,
+    pub h264_retained_video_present_decode_requested: bool,
+    pub h264_retained_video_present_decode:
+        Option<NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot>,
+    pub h264_retained_video_present_decode_error: Option<String>,
     pub h265_retained_video_present_decode_requested: bool,
     pub h265_retained_video_present_decode:
         Option<NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot>,
@@ -109,6 +124,14 @@ pub fn run_vulkanalia_ready_prefix_video(
         bitstream_samples,
         ready_prefix_frame_count,
     )?;
+    let retained_h264_ready_prefix_decode = match &ready_prefix {
+        NativeVulkanVulkanaliaReadyPrefixInput::H264(input) => Some(input.clone()),
+        _ => None,
+    };
+    let retained_av1_ready_prefix_decode = match &ready_prefix {
+        NativeVulkanVulkanaliaReadyPrefixInput::Av1(input) => Some(input.clone()),
+        _ => None,
+    };
     let retained_h265_ready_prefix_decode = match &ready_prefix {
         NativeVulkanVulkanaliaReadyPrefixInput::H265(input) => Some(input.clone()),
         _ => None,
@@ -125,6 +148,30 @@ pub fn run_vulkanalia_ready_prefix_video(
         width,
         height,
     };
+    let h264_retained_video_present_decode =
+        retained_h264_ready_prefix_decode
+            .as_ref()
+            .map(|ready_prefix| {
+                run_native_vulkan_vulkanalia_h264_retained_video_present_decode(
+                    NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeOptions {
+                        session: video_present_session_options.clone(),
+                        ready_prefix: ready_prefix.clone(),
+                        bitstream_buffer_size,
+                    },
+                )
+            });
+    let av1_retained_video_present_decode =
+        retained_av1_ready_prefix_decode
+            .as_ref()
+            .map(|ready_prefix| {
+                run_native_vulkan_vulkanalia_av1_retained_video_present_decode(
+                    NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeOptions {
+                        session: video_present_session_options.clone(),
+                        ready_prefix: ready_prefix.clone(),
+                        bitstream_buffer_size,
+                    },
+                )
+            });
     let h265_retained_video_present_decode =
         retained_h265_ready_prefix_decode
             .as_ref()
@@ -140,12 +187,80 @@ pub fn run_vulkanalia_ready_prefix_video(
     let (
         video_present_session_probe,
         video_present_session_probe_error,
+        av1_retained_video_present_decode,
+        av1_retained_video_present_decode_error,
+        h264_retained_video_present_decode,
+        h264_retained_video_present_decode_error,
         h265_retained_video_present_decode,
         h265_retained_video_present_decode_error,
-    ) = if let Some(retained_decode) = h265_retained_video_present_decode {
+    ) = if let Some(retained_decode) = av1_retained_video_present_decode {
         match retained_decode {
-            Ok(snapshot) => (Some(snapshot.session.clone()), None, Some(snapshot), None),
-            Err(err) => (None, Some(err.clone()), None, Some(err)),
+            Ok(snapshot) => (
+                Some(snapshot.session.clone()),
+                None,
+                Some(snapshot),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            Err(err) => (
+                None,
+                Some(err.clone()),
+                None,
+                Some(err),
+                None,
+                None,
+                None,
+                None,
+            ),
+        }
+    } else if let Some(retained_decode) = h264_retained_video_present_decode {
+        match retained_decode {
+            Ok(snapshot) => (
+                Some(snapshot.session.clone()),
+                None,
+                None,
+                None,
+                Some(snapshot),
+                None,
+                None,
+                None,
+            ),
+            Err(err) => (
+                None,
+                Some(err.clone()),
+                None,
+                None,
+                None,
+                Some(err),
+                None,
+                None,
+            ),
+        }
+    } else if let Some(retained_decode) = h265_retained_video_present_decode {
+        match retained_decode {
+            Ok(snapshot) => (
+                Some(snapshot.session.clone()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(snapshot),
+                None,
+            ),
+            Err(err) => (
+                None,
+                Some(err.clone()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(err),
+            ),
         }
     } else {
         let video_present_session_probe =
@@ -160,6 +275,10 @@ pub fn run_vulkanalia_ready_prefix_video(
             video_present_session_probe_error,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
         )
     };
     let video_present_device_probe = video_present_session_probe
@@ -170,18 +289,50 @@ pub fn run_vulkanalia_ready_prefix_video(
     } else {
         None
     };
-    let decoded_image_present_draw_requested = h265_retained_video_present_decode
+    let decoded_image_present_draw_requested = av1_retained_video_present_decode
         .as_ref()
-        .is_some_and(|snapshot| snapshot.decoded_image_present_draw_requested);
-    let decoded_image_present_draw = h265_retained_video_present_decode
+        .is_some_and(|snapshot| snapshot.decoded_image_present_draw_requested)
+        || h264_retained_video_present_decode
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.decoded_image_present_draw_requested)
+        || h265_retained_video_present_decode
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.decoded_image_present_draw_requested);
+    let decoded_image_present_draw = av1_retained_video_present_decode
         .as_ref()
-        .and_then(|snapshot| snapshot.decoded_image_present_draw.clone());
-    let decoded_image_present_draw_error = h265_retained_video_present_decode
+        .and_then(|snapshot| snapshot.decoded_image_present_draw.clone())
+        .or_else(|| {
+            h264_retained_video_present_decode
+                .as_ref()
+                .and_then(|snapshot| snapshot.decoded_image_present_draw.clone())
+        })
+        .or_else(|| {
+            h265_retained_video_present_decode
+                .as_ref()
+                .and_then(|snapshot| snapshot.decoded_image_present_draw.clone())
+        });
+    let decoded_image_present_draw_error = av1_retained_video_present_decode
         .as_ref()
-        .and_then(|snapshot| snapshot.decoded_image_present_draw_error.clone());
-    let decoded_image_zero_copy_presented = h265_retained_video_present_decode
+        .and_then(|snapshot| snapshot.decoded_image_present_draw_error.clone())
+        .or_else(|| {
+            h264_retained_video_present_decode
+                .as_ref()
+                .and_then(|snapshot| snapshot.decoded_image_present_draw_error.clone())
+        })
+        .or_else(|| {
+            h265_retained_video_present_decode
+                .as_ref()
+                .and_then(|snapshot| snapshot.decoded_image_present_draw_error.clone())
+        });
+    let decoded_image_zero_copy_presented = av1_retained_video_present_decode
         .as_ref()
-        .is_some_and(|snapshot| snapshot.decoded_image_zero_copy_presented);
+        .is_some_and(|snapshot| snapshot.decoded_image_zero_copy_presented)
+        || h264_retained_video_present_decode
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.decoded_image_zero_copy_presented)
+        || h265_retained_video_present_decode
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.decoded_image_zero_copy_presented);
     let present_runtime_requested = !decoded_image_zero_copy_presented;
     let (present_runtime, present_runtime_error) = if present_runtime_requested {
         let present_runtime =
@@ -232,6 +383,12 @@ pub fn run_vulkanalia_ready_prefix_video(
         video_present_session_probe_requested: true,
         video_present_session_probe,
         video_present_session_probe_error,
+        av1_retained_video_present_decode_requested: retained_av1_ready_prefix_decode.is_some(),
+        av1_retained_video_present_decode,
+        av1_retained_video_present_decode_error,
+        h264_retained_video_present_decode_requested: retained_h264_ready_prefix_decode.is_some(),
+        h264_retained_video_present_decode,
+        h264_retained_video_present_decode_error,
         h265_retained_video_present_decode_requested: retained_h265_ready_prefix_decode.is_some(),
         h265_retained_video_present_decode,
         h265_retained_video_present_decode_error,
@@ -243,7 +400,11 @@ pub fn run_vulkanalia_ready_prefix_video(
         present_runtime_error,
         decoded_image_zero_copy_presented,
         decoded_image_present_boundary: if decoded_image_zero_copy_presented {
-            "H.265 ready-prefix decode writes into the retained Vulkanalia DPB/output image, then Vulkanalia samples that decoded image through an immutable YCbCr descriptor in a dynamic-rendering fullscreen pass and presents it to the Wayland swapchain"
+            "ready-prefix decode writes into the retained Vulkanalia DPB/output image, then Vulkanalia samples that decoded image through an immutable YCbCr descriptor in a dynamic-rendering fullscreen pass and presents it to the Wayland swapchain"
+        } else if retained_av1_ready_prefix_decode.is_some() {
+            "AV1 ready-prefix decode writes into the retained Vulkanalia video-present DPB/output image and creates a Vulkanalia YCbCr sampler/descriptor/pipeline resource for that image; decoded-image present falls back to the clear placeholder until the draw/present gate succeeds"
+        } else if retained_h264_ready_prefix_decode.is_some() {
+            "H.264 ready-prefix decode writes into the retained Vulkanalia video-present DPB/output image and creates a Vulkanalia YCbCr sampler/descriptor/pipeline resource for that image; decoded-image present falls back to the clear placeholder until the draw/present gate succeeds"
         } else if retained_h265_ready_prefix_decode.is_some() {
             "H.265 ready-prefix decode writes into the retained Vulkanalia video-present DPB/output image and creates a Vulkanalia YCbCr sampler/descriptor/pipeline resource for that image; decoded-image present falls back to the clear placeholder until the draw/present gate succeeds"
         } else {

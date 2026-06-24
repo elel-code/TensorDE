@@ -161,8 +161,14 @@ pub use video_present_device::{
     probe_native_vulkan_vulkanalia_video_present_session,
 };
 pub use video_present_runtime::{
+    NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeOptions,
+    NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeSnapshot,
+    NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeOptions,
+    NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot,
     NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot,
+    run_native_vulkan_vulkanalia_av1_retained_video_present_decode,
+    run_native_vulkan_vulkanalia_h264_retained_video_present_decode,
     run_native_vulkan_vulkanalia_h265_retained_video_present_decode,
 };
 #[allow(unused_imports)]
