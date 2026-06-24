@@ -18,6 +18,11 @@ pub struct NativeVulkanSceneLiteRuntimeSnapshot {
     pub draw_pass_blocking_reason: Option<&'static str>,
     pub draw_pass_recordable_op_count: usize,
     pub draw_pass_recordable_quads: Vec<NativeVulkanSceneLiteRecordableQuadSnapshot>,
+    pub draw_pass_quad_recording_ready: bool,
+    pub draw_pass_quad_recording_step_count: usize,
+    pub draw_pass_quad_recording_steps: Vec<NativeVulkanSceneLiteQuadRecordingStepSnapshot>,
+    pub draw_pass_quad_vertex_buffer_bytes: u64,
+    pub draw_pass_quad_index_buffer_bytes: u64,
     pub draw_pass_color_op_count: usize,
     pub draw_pass_sampled_image_op_count: usize,
     pub draw_pass_vector_shape_op_count: usize,
@@ -68,6 +73,22 @@ pub struct NativeVulkanSceneLiteRecordableQuadSnapshot {
     pub transform: SceneLiteTransform,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneLiteQuadRecordingStepSnapshot {
+    pub layer_index: usize,
+    pub layer_id: String,
+    pub kind: &'static str,
+    pub pipeline: &'static str,
+    pub first_vertex: u32,
+    pub vertex_count: u32,
+    pub first_index: u32,
+    pub index_count: u32,
+    pub vertex_buffer_offset_bytes: u64,
+    pub vertex_buffer_size_bytes: u64,
+    pub index_buffer_offset_bytes: u64,
+    pub index_buffer_size_bytes: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanSceneLiteUnsupportedLayerSnapshot {
     pub layer_index: usize,
@@ -103,6 +124,28 @@ pub(super) fn native_vulkan_scene_lite_runtime_snapshot(
                 transform: quad.transform,
             })
             .collect(),
+        draw_pass_quad_recording_ready: pass_plan.quad_recording_ready,
+        draw_pass_quad_recording_step_count: pass_plan.quad_recording_steps.len(),
+        draw_pass_quad_recording_steps: pass_plan
+            .quad_recording_steps
+            .into_iter()
+            .map(|step| NativeVulkanSceneLiteQuadRecordingStepSnapshot {
+                layer_index: step.layer_index,
+                layer_id: step.layer_id,
+                kind: step.kind,
+                pipeline: step.pipeline,
+                first_vertex: step.first_vertex,
+                vertex_count: step.vertex_count,
+                first_index: step.first_index,
+                index_count: step.index_count,
+                vertex_buffer_offset_bytes: step.vertex_buffer_offset_bytes,
+                vertex_buffer_size_bytes: step.vertex_buffer_size_bytes,
+                index_buffer_offset_bytes: step.index_buffer_offset_bytes,
+                index_buffer_size_bytes: step.index_buffer_size_bytes,
+            })
+            .collect(),
+        draw_pass_quad_vertex_buffer_bytes: pass_plan.quad_vertex_buffer_bytes,
+        draw_pass_quad_index_buffer_bytes: pass_plan.quad_index_buffer_bytes,
         draw_pass_color_op_count: pass_plan.color_op_count,
         draw_pass_sampled_image_op_count: pass_plan.sampled_image_op_count,
         draw_pass_vector_shape_op_count: pass_plan.vector_shape_op_count,

@@ -206,8 +206,8 @@ use render_item::{native_vulkan_static_item, native_vulkan_video_item};
 use render_plan::{native_vulkan_render_item_clear_color, native_vulkan_static_upload_plan};
 use scene_lite_runtime::native_vulkan_scene_lite_runtime_snapshot;
 pub use scene_lite_runtime::{
-    NativeVulkanSceneLiteDrawOpSnapshot, NativeVulkanSceneLiteRuntimeSnapshot,
-    NativeVulkanSceneLiteUnsupportedLayerSnapshot,
+    NativeVulkanSceneLiteDrawOpSnapshot, NativeVulkanSceneLiteQuadRecordingStepSnapshot,
+    NativeVulkanSceneLiteRuntimeSnapshot, NativeVulkanSceneLiteUnsupportedLayerSnapshot,
 };
 pub use video_frontend::NativeVulkanVideoCapsSnapshot;
 use video_frontend::NativeVulkanVideoFrontendSnapshot;
@@ -45640,17 +45640,24 @@ mod tests {
 
         assert!(snapshot.native_draw_ready);
         assert!(snapshot.draw_pass_plan_ready);
-        assert!(!snapshot.draw_pass_backend_ready);
+        assert!(snapshot.draw_pass_backend_ready);
         assert_eq!(
             snapshot.draw_pass_backend_status,
-            "quad-payload-ready-recording-pending"
+            "solid-quad-recording-ready"
         );
-        assert_eq!(
-            snapshot.draw_pass_blocking_reason,
-            Some("vulkan-quad-recording-not-implemented")
-        );
+        assert_eq!(snapshot.draw_pass_blocking_reason, None);
         assert_eq!(snapshot.draw_pass_recordable_op_count, 1);
         assert_eq!(snapshot.draw_pass_recordable_quads.len(), 1);
+        assert!(snapshot.draw_pass_quad_recording_ready);
+        assert_eq!(snapshot.draw_pass_quad_recording_step_count, 1);
+        assert_eq!(snapshot.draw_pass_quad_vertex_buffer_bytes, 96);
+        assert_eq!(snapshot.draw_pass_quad_index_buffer_bytes, 12);
+        assert_eq!(
+            snapshot.draw_pass_quad_recording_steps[0].pipeline,
+            "solid-quad-alpha-blend"
+        );
+        assert_eq!(snapshot.draw_pass_quad_recording_steps[0].vertex_count, 4);
+        assert_eq!(snapshot.draw_pass_quad_recording_steps[0].index_count, 6);
         let quad = &snapshot.draw_pass_recordable_quads[0];
         assert_eq!(quad.layer_id, "panel");
         assert_eq!(quad.kind, "rectangle");

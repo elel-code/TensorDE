@@ -6,6 +6,11 @@ use super::render_plan::{
     NativeVulkanSceneLiteDrawOp, NativeVulkanSceneLiteDrawOpKind, NativeVulkanSceneLiteDrawPlan,
 };
 
+const SCENE_LITE_SOLID_QUAD_VERTEX_COUNT: u32 = 4;
+const SCENE_LITE_SOLID_QUAD_INDEX_COUNT: u32 = 6;
+const SCENE_LITE_SOLID_QUAD_VERTEX_BYTES: u64 = 24;
+const SCENE_LITE_SOLID_QUAD_INDEX_BYTES: u64 = 2;
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct NativeVulkanSceneLiteRecordableQuad {
     pub(super) layer_index: usize,
@@ -19,6 +24,22 @@ pub(super) struct NativeVulkanSceneLiteRecordableQuad {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub(super) struct NativeVulkanSceneLiteQuadRecordingStep {
+    pub(super) layer_index: usize,
+    pub(super) layer_id: String,
+    pub(super) kind: &'static str,
+    pub(super) pipeline: &'static str,
+    pub(super) first_vertex: u32,
+    pub(super) vertex_count: u32,
+    pub(super) first_index: u32,
+    pub(super) index_count: u32,
+    pub(super) vertex_buffer_offset_bytes: u64,
+    pub(super) vertex_buffer_size_bytes: u64,
+    pub(super) index_buffer_offset_bytes: u64,
+    pub(super) index_buffer_size_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct NativeVulkanSceneLiteDrawPassPlan {
     pub(super) plan_ready: bool,
     pub(super) backend_ready: bool,
@@ -26,6 +47,10 @@ pub(super) struct NativeVulkanSceneLiteDrawPassPlan {
     pub(super) blocking_reason: Option<&'static str>,
     pub(super) recordable_op_count: usize,
     pub(super) recordable_quads: Vec<NativeVulkanSceneLiteRecordableQuad>,
+    pub(super) quad_recording_ready: bool,
+    pub(super) quad_recording_steps: Vec<NativeVulkanSceneLiteQuadRecordingStep>,
+    pub(super) quad_vertex_buffer_bytes: u64,
+    pub(super) quad_index_buffer_bytes: u64,
     pub(super) color_op_count: usize,
     pub(super) sampled_image_op_count: usize,
     pub(super) vector_shape_op_count: usize,
@@ -78,8 +103,15 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         .filter_map(native_vulkan_scene_lite_recordable_quad)
         .collect::<Vec<_>>();
     let recordable_op_count = recordable_quads.len();
+    let quad_recording_steps = native_vulkan_scene_lite_quad_recording_steps(&recordable_quads);
+    let quad_recording_ready =
+        !quad_recording_steps.is_empty() && quad_recording_steps.len() == draw_plan.draw_ops.len();
+    let quad_vertex_buffer_bytes =
+        native_vulkan_scene_lite_quad_vertex_buffer_bytes(quad_recording_steps.len());
+    let quad_index_buffer_bytes =
+        native_vulkan_scene_lite_quad_index_buffer_bytes(quad_recording_steps.len());
     let plan_ready = draw_plan.native_draw_ready();
-    let backend_ready = plan_ready && fast_clear_color.is_some();
+    let backend_ready = plan_ready && (fast_clear_color.is_some() || quad_recording_ready);
     let (backend_status, blocking_reason) = if !plan_ready {
         (
             "blocked-by-unsupported-scene-lite-layers",
@@ -91,7 +123,16 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
             Some("empty-draw-plan"),
         )
     } else if backend_ready {
-        ("fast-clear-color-ready", None)
+        if fast_clear_color.is_some() {
+            ("fast-clear-color-ready", None)
+        } else {
+            ("solid-quad-recording-ready", None)
+        }
+    } else if !quad_recording_steps.is_empty() {
+        (
+            "partial-solid-quad-recording-ready",
+            Some("non-quad-draw-ops-need-recording-backend"),
+        )
     } else if !recordable_quads.is_empty() {
         (
             "quad-payload-ready-recording-pending",
@@ -111,6 +152,10 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         blocking_reason,
         recordable_op_count,
         recordable_quads,
+        quad_recording_ready,
+        quad_recording_steps,
+        quad_vertex_buffer_bytes,
+        quad_index_buffer_bytes,
         color_op_count,
         sampled_image_op_count,
         vector_shape_op_count,
@@ -139,6 +184,62 @@ fn native_vulkan_scene_lite_fast_clear_color(
         .as_deref()
         .filter(|color| !color.is_empty())
         .map(str::to_owned)
+}
+
+fn native_vulkan_scene_lite_quad_recording_steps(
+    quads: &[NativeVulkanSceneLiteRecordableQuad],
+) -> Vec<NativeVulkanSceneLiteQuadRecordingStep> {
+    quads
+        .iter()
+        .filter(|quad| native_vulkan_scene_lite_quad_has_recordable_geometry(quad))
+        .enumerate()
+        .map(|(index, quad)| {
+            let first_vertex = (index as u32).saturating_mul(SCENE_LITE_SOLID_QUAD_VERTEX_COUNT);
+            let first_index = (index as u32).saturating_mul(SCENE_LITE_SOLID_QUAD_INDEX_COUNT);
+            NativeVulkanSceneLiteQuadRecordingStep {
+                layer_index: quad.layer_index,
+                layer_id: quad.layer_id.clone(),
+                kind: quad.kind,
+                pipeline: "solid-quad-alpha-blend",
+                first_vertex,
+                vertex_count: SCENE_LITE_SOLID_QUAD_VERTEX_COUNT,
+                first_index,
+                index_count: SCENE_LITE_SOLID_QUAD_INDEX_COUNT,
+                vertex_buffer_offset_bytes: u64::from(first_vertex)
+                    .saturating_mul(SCENE_LITE_SOLID_QUAD_VERTEX_BYTES),
+                vertex_buffer_size_bytes: u64::from(SCENE_LITE_SOLID_QUAD_VERTEX_COUNT)
+                    .saturating_mul(SCENE_LITE_SOLID_QUAD_VERTEX_BYTES),
+                index_buffer_offset_bytes: u64::from(first_index)
+                    .saturating_mul(SCENE_LITE_SOLID_QUAD_INDEX_BYTES),
+                index_buffer_size_bytes: u64::from(SCENE_LITE_SOLID_QUAD_INDEX_COUNT)
+                    .saturating_mul(SCENE_LITE_SOLID_QUAD_INDEX_BYTES),
+            }
+        })
+        .collect()
+}
+
+fn native_vulkan_scene_lite_quad_has_recordable_geometry(
+    quad: &NativeVulkanSceneLiteRecordableQuad,
+) -> bool {
+    matches!(quad.kind, "rectangle")
+        && quad
+            .width
+            .is_some_and(|width| width.is_finite() && width > 0.0)
+        && quad
+            .height
+            .is_some_and(|height| height.is_finite() && height > 0.0)
+}
+
+fn native_vulkan_scene_lite_quad_vertex_buffer_bytes(quad_count: usize) -> u64 {
+    (quad_count as u64)
+        .saturating_mul(u64::from(SCENE_LITE_SOLID_QUAD_VERTEX_COUNT))
+        .saturating_mul(SCENE_LITE_SOLID_QUAD_VERTEX_BYTES)
+}
+
+fn native_vulkan_scene_lite_quad_index_buffer_bytes(quad_count: usize) -> u64 {
+    (quad_count as u64)
+        .saturating_mul(u64::from(SCENE_LITE_SOLID_QUAD_INDEX_COUNT))
+        .saturating_mul(SCENE_LITE_SOLID_QUAD_INDEX_BYTES)
 }
 
 fn native_vulkan_scene_lite_recordable_quad(
@@ -252,6 +353,10 @@ mod tests {
         assert_eq!(pass_plan.recordable_op_count, 1);
         assert_eq!(pass_plan.recordable_quads.len(), 1);
         assert_eq!(pass_plan.recordable_quads[0].kind, "color-quad");
+        assert!(!pass_plan.quad_recording_ready);
+        assert_eq!(pass_plan.quad_recording_steps.len(), 0);
+        assert_eq!(pass_plan.quad_vertex_buffer_bytes, 0);
+        assert_eq!(pass_plan.quad_index_buffer_bytes, 0);
         assert_eq!(
             pass_plan.recordable_quads[0].rgba,
             [16.0 / 255.0, 32.0 / 255.0, 48.0 / 255.0, 1.0]
@@ -316,15 +421,23 @@ mod tests {
         assert!(!pass_plan.backend_ready);
         assert_eq!(
             pass_plan.backend_status,
-            "quad-payload-ready-recording-pending"
+            "partial-solid-quad-recording-ready"
         );
         assert_eq!(
             pass_plan.blocking_reason,
-            Some("vulkan-quad-recording-not-implemented")
+            Some("non-quad-draw-ops-need-recording-backend")
         );
         assert_eq!(pass_plan.vector_shape_op_count, 2);
         assert_eq!(pass_plan.recordable_op_count, 1);
         assert_eq!(pass_plan.recordable_quads.len(), 1);
+        assert!(!pass_plan.quad_recording_ready);
+        assert_eq!(pass_plan.quad_recording_steps.len(), 1);
+        assert_eq!(pass_plan.quad_vertex_buffer_bytes, 96);
+        assert_eq!(pass_plan.quad_index_buffer_bytes, 12);
+        assert_eq!(
+            pass_plan.quad_recording_steps[0].pipeline,
+            "solid-quad-alpha-blend"
+        );
         let quad = &pass_plan.recordable_quads[0];
         assert_eq!(quad.kind, "rectangle");
         assert_eq!(quad.color, "#336699");
@@ -332,5 +445,44 @@ mod tests {
         assert_eq!(quad.width, Some(640.0));
         assert_eq!(quad.height, Some(360.0));
         assert_eq!(quad.transform.x, 24.0);
+    }
+
+    #[test]
+    fn draw_pass_plan_reports_solid_rectangle_quad_backend_ready() {
+        let mut rectangle = draw_op(0, NativeVulkanSceneLiteDrawOpKind::Rectangle);
+        rectangle.color = Some("#336699".to_owned());
+        rectangle.opacity = 0.5;
+        rectangle.width = Some(640.0);
+        rectangle.height = Some(360.0);
+        rectangle.transform.x = 24.0;
+        let draw_plan = NativeVulkanSceneLiteDrawPlan {
+            snapshot_time_ms: 0,
+            draw_ops: vec![rectangle],
+            unsupported_layers: Vec::new(),
+            fallback_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.backend_status, "solid-quad-recording-ready");
+        assert_eq!(pass_plan.blocking_reason, None);
+        assert!(pass_plan.quad_recording_ready);
+        assert_eq!(pass_plan.quad_recording_steps.len(), 1);
+        assert_eq!(pass_plan.quad_vertex_buffer_bytes, 96);
+        assert_eq!(pass_plan.quad_index_buffer_bytes, 12);
+        let step = &pass_plan.quad_recording_steps[0];
+        assert_eq!(step.layer_id, "layer-0");
+        assert_eq!(step.kind, "rectangle");
+        assert_eq!(step.pipeline, "solid-quad-alpha-blend");
+        assert_eq!(step.first_vertex, 0);
+        assert_eq!(step.vertex_count, 4);
+        assert_eq!(step.first_index, 0);
+        assert_eq!(step.index_count, 6);
+        assert_eq!(step.vertex_buffer_offset_bytes, 0);
+        assert_eq!(step.vertex_buffer_size_bytes, 96);
+        assert_eq!(step.index_buffer_offset_bytes, 0);
+        assert_eq!(step.index_buffer_size_bytes, 12);
     }
 }
