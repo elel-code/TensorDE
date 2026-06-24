@@ -1,6 +1,8 @@
 use crate::renderer::native_vulkan::{
-    NativeVulkanAv1SequenceHeaderSnapshot, NativeVulkanH264ParameterSetSnapshot,
-    NativeVulkanH265ParameterSetSnapshot, NativeVulkanVideoSessionCodec,
+    NativeVulkanAv1DecodeReferencePlanEntrySnapshot, NativeVulkanAv1SequenceHeaderSnapshot,
+    NativeVulkanH264DecodeReferencePlanEntrySnapshot, NativeVulkanH264ParameterSetSnapshot,
+    NativeVulkanH265DecodeReferencePlanEntrySnapshot, NativeVulkanH265ParameterSetSnapshot,
+    NativeVulkanVideoSessionCodec,
 };
 use serde::Serialize;
 use vulkanalia::Version;
@@ -109,6 +111,49 @@ use super::video_session_parameters_h265::{
     native_vulkan_vulkanalia_create_h265_video_session_parameters,
     native_vulkan_vulkanalia_smoke_create_h265_video_session_parameters,
 };
+
+type NativeVulkanVulkanaliaAfterFrameSubmitted<'a> =
+    &'a mut dyn FnMut(u32, u32, Option<u64>, Option<u64>, i64, &'static str) -> Result<(), String>;
+
+fn native_vulkan_vulkanalia_h264_display_order_key(
+    entry: &NativeVulkanH264DecodeReferencePlanEntrySnapshot,
+    frame_index: u32,
+) -> (i64, &'static str) {
+    if let Some(pts_ms) = entry.pts_ms {
+        (i64::try_from(pts_ms).unwrap_or(i64::MAX), "pts-ms")
+    } else if let Some(poc) = entry.current_pic_order_cnt_val {
+        (i64::from(poc), "h264-pic-order-count")
+    } else {
+        (i64::from(frame_index), "decode-submit-index")
+    }
+}
+
+fn native_vulkan_vulkanalia_h265_display_order_key(
+    entry: &NativeVulkanH265DecodeReferencePlanEntrySnapshot,
+    frame_index: u32,
+) -> (i64, &'static str) {
+    if let Some(pts_ms) = entry.pts_ms {
+        (i64::try_from(pts_ms).unwrap_or(i64::MAX), "pts-ms")
+    } else if let Some(poc) = entry.current_poc {
+        (i64::from(poc), "h265-pic-order-count")
+    } else {
+        (i64::from(frame_index), "decode-submit-index")
+    }
+}
+
+fn native_vulkan_vulkanalia_av1_display_order_key(
+    entry: &NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
+    pts_ms: Option<u64>,
+    frame_index: u32,
+) -> (i64, &'static str) {
+    if let Some(pts_ms) = pts_ms {
+        (i64::try_from(pts_ms).unwrap_or(i64::MAX), "pts-ms")
+    } else if let Some(order_hint) = entry.order_hint {
+        (i64::from(order_hint), "av1-order-hint")
+    } else {
+        (i64::from(frame_index), "decode-submit-index")
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
@@ -751,7 +796,7 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_ready_prefix_decode_into_imag
     requested_bitstream_buffer_size: u64,
     input: &NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput,
     image: &super::video_session_images::VulkanaliaVideoSessionResourceImage,
-    mut after_frame_submitted: Option<&mut dyn FnMut(u32, u32) -> Result<(), String>>,
+    mut after_frame_submitted: Option<NativeVulkanVulkanaliaAfterFrameSubmitted<'_>>,
 ) -> Result<NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot, String> {
     if !matches!(
         codec,
@@ -889,17 +934,27 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_ready_prefix_decode_into_imag
                 submitted &= submit_plan.command_order.contains(&"queue_submit2");
                 uses_synchronization2 &= record_plan.uses_synchronization2;
                 uses_submit2 &= submit_plan.uses_submit2;
+                let (display_order_key, display_order_key_source) =
+                    native_vulkan_vulkanalia_h265_display_order_key(&frame.entry, frame_index_u32);
 
                 if let Some(after_frame_submitted) = after_frame_submitted.as_deref_mut() {
                     after_frame_submitted(
                         frame_index_u32,
                         plan.common.dst_picture_resource.base_array_layer,
+                        frame.entry.pts_ms,
+                        frame.duration_ms,
+                        display_order_key,
+                        display_order_key_source,
                     )?;
                 }
 
                 frame_snapshots.push(NativeVulkanVulkanaliaH265ReadyPrefixCommandFrameSnapshot {
                     frame_index: frame_index_u32,
                     access_unit_index: frame.entry.access_unit_index,
+                    pts_ms: frame.entry.pts_ms,
+                    duration_ms: frame.duration_ms,
+                    display_order_key,
+                    display_order_key_source,
                     src_buffer_offset: plan.common.src_buffer_offset,
                     src_buffer_range: plan.common.src_buffer_range,
                     dst_base_array_layer: plan.common.dst_picture_resource.base_array_layer,
@@ -968,7 +1023,7 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_ready_prefix_decode_into_imag
     requested_bitstream_buffer_size: u64,
     input: &NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput,
     image: &super::video_session_images::VulkanaliaVideoSessionResourceImage,
-    mut after_frame_submitted: Option<&mut dyn FnMut(u32, u32) -> Result<(), String>>,
+    mut after_frame_submitted: Option<NativeVulkanVulkanaliaAfterFrameSubmitted<'_>>,
 ) -> Result<NativeVulkanVulkanaliaH264ReadyPrefixCommandSmokeSnapshot, String> {
     if codec != NativeVulkanVideoSessionCodec::H264High8 {
         return Err("Vulkanalia H.264 ready-prefix decode smoke requires H.264 high-8".into());
@@ -1102,17 +1157,27 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_ready_prefix_decode_into_imag
                 submitted &= submit_plan.command_order.contains(&"queue_submit2");
                 uses_synchronization2 &= record_plan.uses_synchronization2;
                 uses_submit2 &= submit_plan.uses_submit2;
+                let (display_order_key, display_order_key_source) =
+                    native_vulkan_vulkanalia_h264_display_order_key(&frame.entry, frame_index_u32);
 
                 if let Some(after_frame_submitted) = after_frame_submitted.as_deref_mut() {
                     after_frame_submitted(
                         frame_index_u32,
                         plan.common.dst_picture_resource.base_array_layer,
+                        frame.entry.pts_ms,
+                        frame.duration_ms,
+                        display_order_key,
+                        display_order_key_source,
                     )?;
                 }
 
                 frame_snapshots.push(NativeVulkanVulkanaliaH264ReadyPrefixCommandFrameSnapshot {
                     frame_index: frame_index_u32,
                     access_unit_index: frame.entry.access_unit_index,
+                    pts_ms: frame.entry.pts_ms,
+                    duration_ms: frame.duration_ms,
+                    display_order_key,
+                    display_order_key_source,
                     src_buffer_offset: plan.common.src_buffer_offset,
                     src_buffer_range: plan.common.src_buffer_range,
                     dst_base_array_layer: plan.common.dst_picture_resource.base_array_layer,
@@ -1287,6 +1352,8 @@ fn native_vulkan_vulkanalia_record_h264_ready_prefix_decode_smoke(
             for (frame_index, (frame, frame_bitstream)) in
                 frames.iter().zip(frame_bitstreams.iter()).enumerate()
             {
+                let frame_index_u32 = u32::try_from(frame_index)
+                    .map_err(|_| "Vulkanalia H.264 frame index exceeds u32".to_owned())?;
                 let reset_control_recorded = frame.first_slice.idr;
                 let plan = native_vulkan_vulkanalia_h264_ready_prefix_decode_submit_plan(
                     extent,
@@ -1332,11 +1399,16 @@ fn native_vulkan_vulkanalia_record_h264_ready_prefix_decode_smoke(
                 submitted &= submit_plan.command_order.contains(&"queue_submit2");
                 uses_synchronization2 &= record_plan.uses_synchronization2;
                 uses_submit2 &= submit_plan.uses_submit2;
+                let (display_order_key, display_order_key_source) =
+                    native_vulkan_vulkanalia_h264_display_order_key(&frame.entry, frame_index_u32);
 
                 frame_snapshots.push(NativeVulkanVulkanaliaH264ReadyPrefixCommandFrameSnapshot {
-                    frame_index: u32::try_from(frame_index)
-                        .map_err(|_| "Vulkanalia H.264 frame index exceeds u32".to_owned())?,
+                    frame_index: frame_index_u32,
                     access_unit_index: frame.entry.access_unit_index,
+                    pts_ms: frame.entry.pts_ms,
+                    duration_ms: frame.duration_ms,
+                    display_order_key,
+                    display_order_key_source,
                     src_buffer_offset: plan.common.src_buffer_offset,
                     src_buffer_range: plan.common.src_buffer_range,
                     dst_base_array_layer: plan.common.dst_picture_resource.base_array_layer,
@@ -1408,7 +1480,7 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_ready_prefix_decode_into_image
     requested_bitstream_buffer_size: u64,
     input: &NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput,
     image: &super::video_session_images::VulkanaliaVideoSessionResourceImage,
-    mut after_frame_submitted: Option<&mut dyn FnMut(u32, u32) -> Result<(), String>>,
+    mut after_frame_submitted: Option<NativeVulkanVulkanaliaAfterFrameSubmitted<'_>>,
 ) -> Result<NativeVulkanVulkanaliaAv1ReadyPrefixCommandSmokeSnapshot, String> {
     if !matches!(
         codec,
@@ -1557,17 +1629,31 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_ready_prefix_decode_into_image
                 submitted &= submit_plan.command_order.contains(&"queue_submit2");
                 uses_synchronization2 &= record_plan.uses_synchronization2;
                 uses_submit2 &= submit_plan.uses_submit2;
+                let (display_order_key, display_order_key_source) =
+                    native_vulkan_vulkanalia_av1_display_order_key(
+                        &frame.entry,
+                        frame.pts_ms,
+                        frame_index_u32,
+                    );
 
                 if let Some(after_frame_submitted) = after_frame_submitted.as_deref_mut() {
                     after_frame_submitted(
                         frame_index_u32,
                         plan.common.dst_picture_resource.base_array_layer,
+                        frame.pts_ms,
+                        frame.duration_ms,
+                        display_order_key,
+                        display_order_key_source,
                     )?;
                 }
 
                 frame_snapshots.push(NativeVulkanVulkanaliaAv1ReadyPrefixCommandFrameSnapshot {
                     frame_index: frame_index_u32,
                     temporal_unit_index: frame.entry.temporal_unit_index,
+                    pts_ms: frame.pts_ms,
+                    duration_ms: frame.duration_ms,
+                    display_order_key,
+                    display_order_key_source,
                     src_buffer_offset: plan.common.src_buffer_offset,
                     src_buffer_range: plan.common.src_buffer_range,
                     dst_base_array_layer: plan.common.dst_picture_resource.base_array_layer,
@@ -1760,6 +1846,8 @@ fn native_vulkan_vulkanalia_record_av1_ready_prefix_decode_smoke(
             for (frame_index, (frame, frame_bitstream)) in
                 frames.iter().zip(frame_bitstreams.iter()).enumerate()
             {
+                let frame_index_u32 = u32::try_from(frame_index)
+                    .map_err(|_| "Vulkanalia AV1 frame index exceeds u32".to_owned())?;
                 let reset_control_recorded = frame_index == 0 || frame.frame.frame_type == 0;
                 let plan = native_vulkan_vulkanalia_av1_ready_prefix_decode_submit_plan(
                     extent,
@@ -1804,11 +1892,20 @@ fn native_vulkan_vulkanalia_record_av1_ready_prefix_decode_smoke(
                 submitted &= submit_plan.command_order.contains(&"queue_submit2");
                 uses_synchronization2 &= record_plan.uses_synchronization2;
                 uses_submit2 &= submit_plan.uses_submit2;
+                let (display_order_key, display_order_key_source) =
+                    native_vulkan_vulkanalia_av1_display_order_key(
+                        &frame.entry,
+                        frame.pts_ms,
+                        frame_index_u32,
+                    );
 
                 frame_snapshots.push(NativeVulkanVulkanaliaAv1ReadyPrefixCommandFrameSnapshot {
-                    frame_index: u32::try_from(frame_index)
-                        .map_err(|_| "Vulkanalia AV1 frame index exceeds u32".to_owned())?,
+                    frame_index: frame_index_u32,
                     temporal_unit_index: frame.entry.temporal_unit_index,
+                    pts_ms: frame.pts_ms,
+                    duration_ms: frame.duration_ms,
+                    display_order_key,
+                    display_order_key_source,
                     src_buffer_offset: plan.common.src_buffer_offset,
                     src_buffer_range: plan.common.src_buffer_range,
                     dst_base_array_layer: plan.common.dst_picture_resource.base_array_layer,

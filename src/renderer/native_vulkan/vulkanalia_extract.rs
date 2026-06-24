@@ -133,6 +133,7 @@ pub fn native_vulkan_extract_h264_ready_prefix_for_vulkanalia(
             entry: entry.clone(),
             slice_offsets: first_slice.slice_offsets.clone(),
             first_slice,
+            duration_ms: access_unit.duration_ms,
             access_unit_payload: payload.clone(),
         });
     }
@@ -503,6 +504,8 @@ pub fn native_vulkan_extract_av1_ready_prefix_for_vulkanalia(
         frames.push(NativeVulkanVulkanaliaAv1ReadyPrefixFrameInput {
             entry: entry.clone(),
             frame,
+            pts_ms: temporal_unit.pts_ms,
+            duration_ms: temporal_unit.duration_ms,
             access_unit_payload: payload.clone(),
         });
     }
@@ -764,6 +767,7 @@ pub fn native_vulkan_extract_h265_ready_prefix_for_vulkanalia(
         frames.push(NativeVulkanVulkanaliaH265ReadyPrefixFrameInput {
             entry: entry.clone(),
             first_slice,
+            duration_ms: access_unit.duration_ms,
             access_unit_payload: window_payload.to_vec(),
             slice_segment_offset,
         });

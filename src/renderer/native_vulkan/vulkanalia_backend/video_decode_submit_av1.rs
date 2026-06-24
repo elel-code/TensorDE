@@ -31,6 +31,8 @@ pub struct NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput {
 pub struct NativeVulkanVulkanaliaAv1ReadyPrefixFrameInput {
     pub entry: NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
     pub frame: NativeVulkanVulkanaliaAv1FrameSubmitInput,
+    pub pts_ms: Option<u64>,
+    pub duration_ms: Option<u64>,
     pub access_unit_payload: Vec<u8>,
 }
 
@@ -38,6 +40,10 @@ pub struct NativeVulkanVulkanaliaAv1ReadyPrefixFrameInput {
 pub struct NativeVulkanVulkanaliaAv1ReadyPrefixCommandFrameSnapshot {
     pub frame_index: u32,
     pub temporal_unit_index: u32,
+    pub pts_ms: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub display_order_key: i64,
+    pub display_order_key_source: &'static str,
     pub src_buffer_offset: u64,
     pub src_buffer_range: u64,
     pub dst_base_array_layer: u32,

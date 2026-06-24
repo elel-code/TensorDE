@@ -90,6 +90,7 @@ pub struct NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput {
 pub struct NativeVulkanVulkanaliaH265ReadyPrefixFrameInput {
     pub entry: NativeVulkanH265DecodeReferencePlanEntrySnapshot,
     pub first_slice: NativeVulkanH265AccessUnitSliceSnapshot,
+    pub duration_ms: Option<u64>,
     pub access_unit_payload: Vec<u8>,
     pub slice_segment_offset: u32,
 }
@@ -98,6 +99,10 @@ pub struct NativeVulkanVulkanaliaH265ReadyPrefixFrameInput {
 pub struct NativeVulkanVulkanaliaH265ReadyPrefixCommandFrameSnapshot {
     pub frame_index: u32,
     pub access_unit_index: u32,
+    pub pts_ms: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub display_order_key: i64,
+    pub display_order_key_source: &'static str,
     pub src_buffer_offset: u64,
     pub src_buffer_range: u64,
     pub dst_base_array_layer: u32,

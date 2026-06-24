@@ -56,6 +56,7 @@ pub struct NativeVulkanVulkanaliaVideoPresentSessionProbeOptions {
     pub codec: NativeVulkanVideoSessionCodec,
     pub width: u32,
     pub height: u32,
+    pub target_max_fps: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

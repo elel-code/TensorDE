@@ -439,6 +439,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     codec: video_session_options.codec,
                     width: video_session_options.width,
                     height: video_session_options.height,
+                    target_max_fps: options.target_max_fps,
                 }
             )?)
         }

@@ -152,6 +152,7 @@ pub fn run_vulkanalia_ready_prefix_video(
         codec,
         width,
         height,
+        target_max_fps: options.target_max_fps,
     };
     let h264_retained_video_present_decode =
         retained_h264_ready_prefix_decode

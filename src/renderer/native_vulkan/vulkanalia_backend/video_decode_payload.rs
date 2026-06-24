@@ -196,6 +196,7 @@ mod tests {
                 idr: false,
                 irap: false,
             },
+            duration_ms: None,
             access_unit_payload,
             slice_segment_offset: 0,
         }
