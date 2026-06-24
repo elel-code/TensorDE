@@ -32,6 +32,8 @@ mod video_session;
 mod video_session_bind;
 #[path = "vulkanalia_backend/video_session_images.rs"]
 mod video_session_images;
+#[path = "vulkanalia_backend/video_session_parameters.rs"]
+mod video_session_parameters;
 
 pub use device_probe::{
     NativeVulkanVulkanaliaDeviceProbeSnapshot, NativeVulkanVulkanaliaDeviceProbeTemplate,
@@ -89,4 +91,9 @@ pub use video_session_bind::{
 pub use video_session_images::{
     NativeVulkanVulkanaliaVideoSessionResourceImageSmokeSnapshot,
     NativeVulkanVulkanaliaVideoSessionResourceImageSnapshot,
+};
+#[allow(unused_imports)]
+pub use video_session_parameters::{
+    NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot,
+    NativeVulkanVulkanaliaVideoSessionParametersSnapshot,
 };

@@ -89,6 +89,11 @@ pub struct NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot {
     pub total_bound_memory_bytes: u64,
 }
 
+pub(super) struct NativeVulkanVulkanaliaVideoSessionMemoryBindingResources {
+    pub snapshot: NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot,
+    allocated_memories: Vec<vk::DeviceMemory>,
+}
+
 pub fn native_vulkan_vulkanalia_video_session_template()
 -> NativeVulkanVulkanaliaVideoSessionTemplate {
     NativeVulkanVulkanaliaVideoSessionTemplate {
@@ -268,6 +273,27 @@ pub(super) fn native_vulkan_vulkanalia_smoke_bind_video_session_memory(
     create_info: &vk::VideoSessionCreateInfoKHR,
 ) -> Result<NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot, String> {
     let session = native_vulkan_vulkanalia_create_video_session(device, create_info)?;
+    let result = native_vulkan_vulkanalia_bind_video_session_memory_resources(
+        device,
+        memory_properties,
+        session,
+    )
+    .map(|resources| {
+        let snapshot = resources.snapshot.clone();
+        native_vulkan_vulkanalia_destroy_video_session_memory_binding_resources(device, resources);
+        snapshot
+    });
+
+    native_vulkan_vulkanalia_destroy_video_session(device, session);
+
+    result
+}
+
+pub(super) fn native_vulkan_vulkanalia_bind_video_session_memory_resources(
+    device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    session: vk::VideoSessionKHR,
+) -> Result<NativeVulkanVulkanaliaVideoSessionMemoryBindingResources, String> {
     let mut allocated_memories = Vec::new();
     let result = (|| {
         let memory_requirements =
@@ -310,25 +336,38 @@ pub(super) fn native_vulkan_vulkanalia_smoke_bind_video_session_memory(
 
         native_vulkan_vulkanalia_bind_video_session_memory(device, session, &bind_infos)?;
 
-        Ok(
-            NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot {
+        Ok(NativeVulkanVulkanaliaVideoSessionMemoryBindingResources {
+            snapshot: NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot {
                 session_created: true,
                 memory_bound: true,
                 memory_requirements: memory_requirement_snapshots,
                 bind_plans,
                 total_bound_memory_bytes,
             },
-        )
+            allocated_memories: std::mem::take(&mut allocated_memories),
+        })
     })();
 
-    native_vulkan_vulkanalia_destroy_video_session(device, session);
-    for memory in allocated_memories.drain(..) {
-        unsafe {
-            device.free_memory(memory, None);
+    if result.is_err() {
+        for memory in allocated_memories.drain(..) {
+            unsafe {
+                device.free_memory(memory, None);
+            }
         }
     }
 
     result
+}
+
+pub(super) fn native_vulkan_vulkanalia_destroy_video_session_memory_binding_resources(
+    device: &Device,
+    mut resources: NativeVulkanVulkanaliaVideoSessionMemoryBindingResources,
+) {
+    for memory in resources.allocated_memories.drain(..) {
+        unsafe {
+            device.free_memory(memory, None);
+        }
+    }
 }
 
 pub fn native_vulkan_vulkanalia_memory_type_candidates(

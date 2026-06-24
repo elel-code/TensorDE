@@ -62,6 +62,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut start_offset_ms = 0u64;
     let mut allow_foreground_layer = false;
     let mut video_session_options = NativeVulkanVideoSessionSmokeOptions::default();
+    let mut vulkanalia_create_empty_session_parameters = false;
     let mut ready_prefix_playback_frames = 0u32;
     let mut av1_ready_prefix_frames = 0u32;
     #[cfg(feature = "native-vulkan-gst-video")]
@@ -103,6 +104,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--run-av1-ready-prefix-video" => mode = NativeVulkanCliMode::RunAv1ReadyPrefixVideo,
             "--allocate-video-images" => video_session_options.allocate_video_images = true,
             "--allocate-bitstream-buffer" => video_session_options.allocate_bitstream_buffer = true,
+            "--create-empty-session-parameters" => {
+                vulkanalia_create_empty_session_parameters = true
+            }
             "--extract-bitstream" => {
                 video_session_options.extract_bitstream = true;
                 video_session_options.allocate_bitstream_buffer = true;
@@ -392,6 +396,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     allocate_video_images: video_session_options.allocate_video_images,
                     allocate_bitstream_buffer: video_session_options.allocate_bitstream_buffer,
                     bitstream_buffer_size: video_session_options.bitstream_buffer_size,
+                    create_empty_session_parameters: vulkanalia_create_empty_session_parameters,
                 }
             )?)
         }
@@ -821,6 +826,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --audio-output plan|clock-only|auto selects plan-following, clock-only telemetry, or tee-to-autoaudiosink output for --audio-clock-probe.\n\
 --allocate-video-images extends --probe-video-session and --probe-vulkanalia-video-session with codec-matching 2-plane 4:2:0 DPB/output sampled image allocation.\n\
 --allocate-bitstream-buffer extends --probe-video-session and --probe-vulkanalia-video-session with a mapped VIDEO_DECODE_SRC bitstream buffer.\n\
+--create-empty-session-parameters extends --probe-vulkanalia-video-session with an H.264/H.265 empty capacity VkVideoSessionParametersKHR smoke.\n\
 --extract-bitstream extends --probe-video-session with parser/appsink encoded AU extraction and writes the selected AU to the bitstream buffer.\n\
 --decode-first-frame extends --probe-video-session with a real H.264/H.265 IDR Vulkan Video command buffer submit.\n\
 --sample-decoded-first-frame extends --decode-first-frame with NV12 shader sampling into an offscreen Vulkan color target.\n\

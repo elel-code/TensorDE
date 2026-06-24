@@ -22,12 +22,18 @@ use super::video_profile_labels::{
 use super::video_session::{
     NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot,
     NativeVulkanVulkanaliaVideoSessionResourceProbePlan,
-    native_vulkan_vulkanalia_smoke_bind_video_session_memory,
+    native_vulkan_vulkanalia_bind_video_session_memory_resources,
+    native_vulkan_vulkanalia_create_video_session, native_vulkan_vulkanalia_destroy_video_session,
+    native_vulkan_vulkanalia_destroy_video_session_memory_binding_resources,
     native_vulkan_vulkanalia_video_session_resource_plans_from_format_probe,
 };
 use super::video_session_images::{
     NativeVulkanVulkanaliaVideoSessionResourceImageSmokeSnapshot,
     native_vulkan_vulkanalia_smoke_create_video_session_resource_image,
+};
+use super::video_session_parameters::{
+    NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot,
+    native_vulkan_vulkanalia_smoke_create_empty_video_session_parameters,
 };
 
 const LOADER_CANDIDATES: &[&str] = &["libvulkan.so.1", "libvulkan.so"];
@@ -45,6 +51,7 @@ pub struct NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
     pub allocate_video_images: bool,
     pub allocate_bitstream_buffer: bool,
     pub bitstream_buffer_size: u64,
+    pub create_empty_session_parameters: bool,
 }
 
 impl Default for NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
@@ -56,6 +63,7 @@ impl Default for NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
             allocate_video_images: false,
             allocate_bitstream_buffer: false,
             bitstream_buffer_size: 8 * 1024 * 1024,
+            create_empty_session_parameters: false,
         }
     }
 }
@@ -107,6 +115,8 @@ pub struct NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot {
     pub resource_image: Option<NativeVulkanVulkanaliaVideoSessionResourceImageSmokeSnapshot>,
     pub bitstream_buffer_requested: bool,
     pub bitstream_buffer: Option<NativeVulkanVulkanaliaVideoSessionBitstreamBufferSmokeSnapshot>,
+    pub session_parameters_requested: bool,
+    pub session_parameters: Option<NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot>,
 }
 
 pub fn probe_native_vulkan_vulkanalia_video_session_bind(
@@ -403,115 +413,142 @@ fn smoke_bind_vulkanalia_video_session_profile(
         .max_active_reference_pictures(session_max_active_reference_pictures)
         .std_header_version(&capabilities.std_header_version)
         .build();
-    let memory_binding = native_vulkan_vulkanalia_smoke_bind_video_session_memory(
-        device,
-        memory_properties,
-        &create_info,
-    )?;
-    let resource_image = if options.allocate_video_images {
-        Some(
-            native_vulkan_vulkanalia_smoke_create_video_session_resource_image(
-                instance,
-                device,
-                memory_properties,
-                selection.physical_device,
-                profile_info,
-                requested_extent,
-                session_max_dpb_slots.max(1),
-                picture_format,
-                queried.decode_capability_flags,
-                &[selection.queue_family_index],
-            )?,
-        )
-    } else {
-        None
-    };
-    let bitstream_buffer = if options.allocate_bitstream_buffer {
-        Some(
-            native_vulkan_vulkanalia_smoke_create_video_session_bitstream_buffer(
-                device,
-                memory_properties,
-                profile_info,
-                options.bitstream_buffer_size,
-                capabilities.min_bitstream_buffer_size_alignment,
-                None,
-                false,
-            )?,
-        )
-    } else {
-        None
-    };
+    let session = native_vulkan_vulkanalia_create_video_session(device, &create_info)?;
+    let mut memory_resources = None;
+    let result = (|| -> Result<NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot, String> {
+        let resources = native_vulkan_vulkanalia_bind_video_session_memory_resources(
+            device,
+            memory_properties,
+            session,
+        )?;
+        let memory_binding = resources.snapshot.clone();
+        memory_resources = Some(resources);
+        let resource_image = if options.allocate_video_images {
+            Some(
+                native_vulkan_vulkanalia_smoke_create_video_session_resource_image(
+                    instance,
+                    device,
+                    memory_properties,
+                    selection.physical_device,
+                    profile_info,
+                    requested_extent,
+                    session_max_dpb_slots.max(1),
+                    picture_format,
+                    queried.decode_capability_flags,
+                    &[selection.queue_family_index],
+                )?,
+            )
+        } else {
+            None
+        };
+        let bitstream_buffer = if options.allocate_bitstream_buffer {
+            Some(
+                native_vulkan_vulkanalia_smoke_create_video_session_bitstream_buffer(
+                    device,
+                    memory_properties,
+                    profile_info,
+                    options.bitstream_buffer_size,
+                    capabilities.min_bitstream_buffer_size_alignment,
+                    None,
+                    false,
+                )?,
+            )
+        } else {
+            None
+        };
+        let session_parameters = if options.create_empty_session_parameters {
+            Some(
+                native_vulkan_vulkanalia_smoke_create_empty_video_session_parameters(
+                    device,
+                    session,
+                    options.codec,
+                ),
+            )
+        } else {
+            None
+        };
 
-    Ok(NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot {
-        binding: "vulkanalia",
-        loader: loader_name.to_owned(),
-        requested_api_version: Version::V1_4_0.to_string(),
-        requested_codec: options.codec,
-        requested_extent: (requested_extent.width, requested_extent.height),
-        selected_physical_device_index: selection.physical_device_index,
-        selected_physical_device_name: selection
-            .properties
-            .device_name
-            .to_string_lossy()
-            .into_owned(),
-        selected_physical_device_type: format!("{:?}", selection.properties.device_type),
-        vendor_id: selection.properties.vendor_id,
-        device_id: selection.properties.device_id,
-        api_version: Version::from(selection.properties.api_version).to_string(),
-        driver_version: selection.properties.driver_version,
-        selected_queue_family_index: selection.queue_family_index,
-        selected_queue_count: selection.queue_count,
-        selected_queue_flags: queue_flag_labels(selection.queue_flags),
-        enabled_device_extensions: vulkanalia_video_session_required_device_extensions(
-            options.codec,
-        ),
-        video_codec_operation: video_codec_operation_labels(
-            vulkanalia_video_session_codec_operation(options.codec),
-        ),
-        profile: vulkanalia_video_session_profile_label(options.codec),
-        format_probe_profile: vulkanalia_video_session_format_probe_profile(options.codec),
-        picture_format: format!("{picture_format:?}"),
-        reference_picture_format: format!("{picture_format:?}"),
-        target_picture_dpb_supported,
-        target_picture_sampled_output_supported,
-        target_resource_plan,
-        capability_flags: video_capability_flag_labels(capabilities.flags),
-        decode_capability_flags: video_decode_capability_flag_labels(
-            queried.decode_capability_flags,
-        ),
-        min_bitstream_buffer_offset_alignment: capabilities.min_bitstream_buffer_offset_alignment,
-        min_bitstream_buffer_size_alignment: capabilities.min_bitstream_buffer_size_alignment,
-        picture_access_granularity: (
-            capabilities.picture_access_granularity.width,
-            capabilities.picture_access_granularity.height,
-        ),
-        min_coded_extent: (
-            capabilities.min_coded_extent.width,
-            capabilities.min_coded_extent.height,
-        ),
-        max_coded_extent: (
-            capabilities.max_coded_extent.width,
-            capabilities.max_coded_extent.height,
-        ),
-        requested_extent_supported,
-        driver_max_dpb_slots: capabilities.max_dpb_slots,
-        driver_max_active_reference_pictures: capabilities.max_active_reference_pictures,
-        session_max_dpb_slots,
-        session_max_active_reference_pictures,
-        codec_max_level: queried.codec_max_level,
-        codec_max_level_raw: queried.codec_max_level_raw,
-        std_header_version_name: capabilities
-            .std_header_version
-            .extension_name
-            .to_string_lossy()
-            .into_owned(),
-        std_header_version_spec_version: capabilities.std_header_version.spec_version,
-        memory_binding,
-        resource_image_requested: options.allocate_video_images,
-        resource_image,
-        bitstream_buffer_requested: options.allocate_bitstream_buffer,
-        bitstream_buffer,
-    })
+        Ok(NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot {
+            binding: "vulkanalia",
+            loader: loader_name.to_owned(),
+            requested_api_version: Version::V1_4_0.to_string(),
+            requested_codec: options.codec,
+            requested_extent: (requested_extent.width, requested_extent.height),
+            selected_physical_device_index: selection.physical_device_index,
+            selected_physical_device_name: selection
+                .properties
+                .device_name
+                .to_string_lossy()
+                .into_owned(),
+            selected_physical_device_type: format!("{:?}", selection.properties.device_type),
+            vendor_id: selection.properties.vendor_id,
+            device_id: selection.properties.device_id,
+            api_version: Version::from(selection.properties.api_version).to_string(),
+            driver_version: selection.properties.driver_version,
+            selected_queue_family_index: selection.queue_family_index,
+            selected_queue_count: selection.queue_count,
+            selected_queue_flags: queue_flag_labels(selection.queue_flags),
+            enabled_device_extensions: vulkanalia_video_session_required_device_extensions(
+                options.codec,
+            ),
+            video_codec_operation: video_codec_operation_labels(
+                vulkanalia_video_session_codec_operation(options.codec),
+            ),
+            profile: vulkanalia_video_session_profile_label(options.codec),
+            format_probe_profile: vulkanalia_video_session_format_probe_profile(options.codec),
+            picture_format: format!("{picture_format:?}"),
+            reference_picture_format: format!("{picture_format:?}"),
+            target_picture_dpb_supported,
+            target_picture_sampled_output_supported,
+            target_resource_plan,
+            capability_flags: video_capability_flag_labels(capabilities.flags),
+            decode_capability_flags: video_decode_capability_flag_labels(
+                queried.decode_capability_flags,
+            ),
+            min_bitstream_buffer_offset_alignment: capabilities
+                .min_bitstream_buffer_offset_alignment,
+            min_bitstream_buffer_size_alignment: capabilities.min_bitstream_buffer_size_alignment,
+            picture_access_granularity: (
+                capabilities.picture_access_granularity.width,
+                capabilities.picture_access_granularity.height,
+            ),
+            min_coded_extent: (
+                capabilities.min_coded_extent.width,
+                capabilities.min_coded_extent.height,
+            ),
+            max_coded_extent: (
+                capabilities.max_coded_extent.width,
+                capabilities.max_coded_extent.height,
+            ),
+            requested_extent_supported,
+            driver_max_dpb_slots: capabilities.max_dpb_slots,
+            driver_max_active_reference_pictures: capabilities.max_active_reference_pictures,
+            session_max_dpb_slots,
+            session_max_active_reference_pictures,
+            codec_max_level: queried.codec_max_level,
+            codec_max_level_raw: queried.codec_max_level_raw,
+            std_header_version_name: capabilities
+                .std_header_version
+                .extension_name
+                .to_string_lossy()
+                .into_owned(),
+            std_header_version_spec_version: capabilities.std_header_version.spec_version,
+            memory_binding,
+            resource_image_requested: options.allocate_video_images,
+            resource_image,
+            bitstream_buffer_requested: options.allocate_bitstream_buffer,
+            bitstream_buffer,
+            session_parameters_requested: options.create_empty_session_parameters,
+            session_parameters,
+        })
+    })();
+
+    if let Some(resources) = memory_resources.take() {
+        native_vulkan_vulkanalia_destroy_video_session_memory_binding_resources(device, resources);
+    }
+    native_vulkan_vulkanalia_destroy_video_session(device, session);
+
+    result
 }
 
 fn query_vulkanalia_h264_video_session_capabilities(
