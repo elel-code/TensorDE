@@ -10,6 +10,28 @@ use super::NativeVulkanError;
 const NATIVE_VULKAN_AUDIO_POSITION_EARLY_TOLERANCE_NS: u64 = 250_000_000;
 const NATIVE_VULKAN_AUDIO_POSITION_LATE_TOLERANCE_NS: u64 = 500_000_000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum NativeVulkanAudioOutputMode {
+    ClockOnly,
+    Auto,
+}
+
+impl NativeVulkanAudioOutputMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ClockOnly => "clock-only",
+            Self::Auto => "auto",
+        }
+    }
+
+    fn pipeline_label(self) -> &'static str {
+        match self {
+            Self::ClockOnly => "qtdemux-aacparse-avdec_aac-appsink-clock-probe",
+            Self::Auto => "qtdemux-aacparse-avdec_aac-tee-appsink-autoaudiosink",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanAudioClockProbeOptions {
     pub source: PathBuf,
@@ -22,6 +44,8 @@ pub struct NativeVulkanAudioClockProbeSnapshot {
     pub probe_duration_ms: u64,
     pub runtime_elapsed_ms: u64,
     pub pipeline: &'static str,
+    pub audio_output_mode: &'static str,
+    pub audio_output_sinks: Vec<String>,
     pub audio_stream_codec: Option<String>,
     pub audio_raw_caps: Option<String>,
     pub audio_sample_format: Option<String>,
@@ -58,6 +82,8 @@ pub struct NativeVulkanAudioClockRuntimeSnapshot {
     pub source: PathBuf,
     pub runtime_elapsed_ms: u64,
     pub pipeline: &'static str,
+    pub audio_output_mode: &'static str,
+    pub audio_output_sinks: Vec<String>,
     pub audio_raw_caps: Option<String>,
     pub audio_sample_format: Option<String>,
     pub audio_sample_rate: Option<u32>,
@@ -157,6 +183,7 @@ struct NativeVulkanAudioClockSegment {
 
 pub(super) struct NativeVulkanAudioClockRuntimeProbe {
     source: PathBuf,
+    output_mode: NativeVulkanAudioOutputMode,
     pipeline: gst::Pipeline,
     sink: gst::Element,
     bus: gst::Bus,
@@ -245,7 +272,10 @@ impl NativeVulkanAudioClockProbeStats {
 }
 
 impl NativeVulkanAudioClockRuntimeProbe {
-    pub(super) fn start(source: &PathBuf) -> Result<Self, NativeVulkanError> {
+    pub(super) fn start(
+        source: &PathBuf,
+        output_mode: NativeVulkanAudioOutputMode,
+    ) -> Result<Self, NativeVulkanError> {
         if !source.is_file() {
             return Err(NativeVulkanError::Video(format!(
                 "audio clock runtime source does not exist: {}",
@@ -253,7 +283,7 @@ impl NativeVulkanAudioClockRuntimeProbe {
             )));
         }
         gst::init().map_err(|err| NativeVulkanError::Video(err.to_string()))?;
-        let pipeline = native_vulkan_audio_clock_aac_pipeline(source)?;
+        let pipeline = native_vulkan_audio_clock_aac_pipeline(source, output_mode)?;
         let sink = pipeline
             .by_name("gilder-native-vulkan-audio-appsink")
             .ok_or_else(|| NativeVulkanError::Video("audio appsink not found".to_owned()))?;
@@ -262,6 +292,7 @@ impl NativeVulkanAudioClockRuntimeProbe {
         })?;
         Ok(Self {
             source: source.clone(),
+            output_mode,
             pipeline,
             sink,
             bus,
@@ -348,7 +379,7 @@ impl NativeVulkanAudioClockRuntimeProbe {
 
     fn restart_clocked_playback_at(&mut self, position_ms: u64) -> Result<(), NativeVulkanError> {
         let _ = self.pipeline.set_state(gst::State::Null);
-        let pipeline = native_vulkan_audio_clock_aac_pipeline(&self.source)?;
+        let pipeline = native_vulkan_audio_clock_aac_pipeline(&self.source, self.output_mode)?;
         let sink = pipeline
             .by_name("gilder-native-vulkan-audio-appsink")
             .ok_or_else(|| NativeVulkanError::Video("audio appsink not found".to_owned()))?;
@@ -586,6 +617,8 @@ impl NativeVulkanAudioClockRuntimeProbe {
             .map(|value| value.nseconds());
         let audio_decoders = native_vulkan_audio_decoder_elements(self.pipeline.upcast_ref());
         let video_decoders = native_vulkan_video_decoder_elements(self.pipeline.upcast_ref());
+        let audio_output_sinks =
+            native_vulkan_audio_output_sink_elements(self.pipeline.upcast_ref());
         let reached_clocked_playback = self.stats.new_clock_count > 0
             && self.stats.stream_start_count > 0
             && self.stats.state_playing_count > 0
@@ -595,7 +628,9 @@ impl NativeVulkanAudioClockRuntimeProbe {
         Ok(NativeVulkanAudioClockRuntimeSnapshot {
             source: self.source.clone(),
             runtime_elapsed_ms: native_vulkan_audio_duration_ms(self.started_at.elapsed()),
-            pipeline: "qtdemux-aacparse-avdec_aac-appsink-clock-probe",
+            pipeline: self.output_mode.pipeline_label(),
+            audio_output_mode: self.output_mode.as_str(),
+            audio_output_sinks,
             audio_raw_caps: self.stats.audio_raw_caps.clone(),
             audio_sample_format: self.stats.audio_sample_format.clone(),
             audio_sample_rate: self.stats.audio_sample_rate,
@@ -688,7 +723,10 @@ pub fn probe_native_vulkan_audio_clock(
         ));
     }
 
-    let mut runtime = NativeVulkanAudioClockRuntimeProbe::start(&options.source)?;
+    let mut runtime = NativeVulkanAudioClockRuntimeProbe::start(
+        &options.source,
+        NativeVulkanAudioOutputMode::ClockOnly,
+    )?;
     runtime.ensure_clocked_playback(0)?;
     runtime.started_at = Instant::now();
     let started_at = runtime.started_at;
@@ -719,7 +757,9 @@ pub fn probe_native_vulkan_audio_clock(
         source: options.source,
         probe_duration_ms: native_vulkan_audio_duration_ms(options.duration),
         runtime_elapsed_ms,
-        pipeline: "qtdemux-aacparse-avdec_aac-appsink-clock-probe",
+        pipeline: NativeVulkanAudioOutputMode::ClockOnly.pipeline_label(),
+        audio_output_mode: NativeVulkanAudioOutputMode::ClockOnly.as_str(),
+        audio_output_sinks: runtime_snapshot.audio_output_sinks,
         audio_stream_codec: None,
         audio_raw_caps: runtime_snapshot.audio_raw_caps,
         audio_sample_format: runtime_snapshot.audio_sample_format,
@@ -754,6 +794,7 @@ pub fn probe_native_vulkan_audio_clock(
 
 fn native_vulkan_audio_clock_aac_pipeline(
     source: &PathBuf,
+    output_mode: NativeVulkanAudioOutputMode,
 ) -> Result<gst::Pipeline, NativeVulkanError> {
     let pipeline = gst::Pipeline::new();
     let filesrc = native_vulkan_audio_gst_element("filesrc")?;
@@ -769,16 +810,58 @@ fn native_vulkan_audio_clock_aac_pipeline(
     let sink = native_vulkan_audio_gst_element("appsink")?;
     native_vulkan_audio_configure_appsink(&sink);
 
-    pipeline
-        .add_many([
-            &filesrc, &demux, &queue, &parser, &decoder, &convert, &resample, &sink,
-        ])
-        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
-    filesrc
-        .link(&demux)
-        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
-    gst::Element::link_many([&queue, &parser, &decoder, &convert, &resample, &sink])
-        .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+    match output_mode {
+        NativeVulkanAudioOutputMode::ClockOnly => {
+            pipeline
+                .add_many([
+                    &filesrc, &demux, &queue, &parser, &decoder, &convert, &resample, &sink,
+                ])
+                .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+            filesrc
+                .link(&demux)
+                .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+            gst::Element::link_many([&queue, &parser, &decoder, &convert, &resample, &sink])
+                .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+        }
+        NativeVulkanAudioOutputMode::Auto => {
+            let tee = native_vulkan_audio_gst_element("tee")?;
+            tee.set_property("name", "gilder-native-vulkan-audio-tee");
+            let monitor_queue = native_vulkan_audio_gst_element("queue")?;
+            native_vulkan_audio_configure_queue(&monitor_queue);
+            let output_queue = native_vulkan_audio_gst_element("queue")?;
+            native_vulkan_audio_configure_queue(&output_queue);
+            let output_sink = native_vulkan_audio_gst_element("autoaudiosink")?;
+            native_vulkan_audio_configure_output_sink(&output_sink);
+
+            pipeline
+                .add_many([
+                    &filesrc,
+                    &demux,
+                    &queue,
+                    &parser,
+                    &decoder,
+                    &convert,
+                    &resample,
+                    &tee,
+                    &monitor_queue,
+                    &sink,
+                    &output_queue,
+                    &output_sink,
+                ])
+                .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+            filesrc
+                .link(&demux)
+                .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+            gst::Element::link_many([&queue, &parser, &decoder, &convert, &resample, &tee])
+                .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+            gst::Element::link_many([&monitor_queue, &sink])
+                .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+            gst::Element::link_many([&output_queue, &output_sink])
+                .map_err(|err| NativeVulkanError::Video(err.to_string()))?;
+            native_vulkan_audio_link_tee_to_queue(&tee, &monitor_queue, "appsink monitor")?;
+            native_vulkan_audio_link_tee_to_queue(&tee, &output_queue, "auto audio output")?;
+        }
+    }
 
     let queue_sink = queue
         .static_pad("sink")
@@ -906,6 +989,39 @@ fn native_vulkan_audio_configure_appsink(sink: &gst::Element) {
     }
 }
 
+fn native_vulkan_audio_configure_output_sink(sink: &gst::Element) {
+    sink.set_property("name", "gilder-native-vulkan-audio-output-sink");
+    if sink.find_property("sync").is_some() {
+        sink.set_property("sync", true);
+    }
+    if sink.find_property("async").is_some() {
+        sink.set_property("async", false);
+    }
+    if sink.find_property("enable-last-sample").is_some() {
+        sink.set_property("enable-last-sample", false);
+    }
+    if sink.find_property("qos").is_some() {
+        sink.set_property("qos", true);
+    }
+}
+
+fn native_vulkan_audio_link_tee_to_queue(
+    tee: &gst::Element,
+    queue: &gst::Element,
+    label: &'static str,
+) -> Result<(), NativeVulkanError> {
+    let tee_src = tee.request_pad_simple("src_%u").ok_or_else(|| {
+        NativeVulkanError::Video(format!("audio tee has no request src pad for {label}"))
+    })?;
+    let queue_sink = queue.static_pad("sink").ok_or_else(|| {
+        NativeVulkanError::Video(format!("audio queue has no sink pad for {label}"))
+    })?;
+    tee_src.link(&queue_sink).map_err(|err| {
+        NativeVulkanError::Video(format!("link audio tee to {label} queue: {err}"))
+    })?;
+    Ok(())
+}
+
 fn native_vulkan_audio_clock_time_ns(value: Option<gst::ClockTime>) -> Option<u64> {
     value.map(|value| value.nseconds())
 }
@@ -986,6 +1102,23 @@ fn native_vulkan_video_decoder_elements(element: &gst::Element) -> Vec<String> {
                     | "vaav1dec"
                     | "vaapiav1dec"
                     | "nvav1dec"
+            )
+        })
+        .collect()
+}
+
+fn native_vulkan_audio_output_sink_elements(element: &gst::Element) -> Vec<String> {
+    native_vulkan_audio_child_factory_names(element)
+        .into_iter()
+        .filter(|name| {
+            matches!(
+                name.as_str(),
+                "autoaudiosink"
+                    | "pipewiresink"
+                    | "pulsesink"
+                    | "alsasink"
+                    | "osssink"
+                    | "jackaudiosink"
             )
         })
         .collect()

@@ -19,10 +19,10 @@ fn main() {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "native-vulkan-gst-video")]
     use gilder::renderer::native_vulkan::{
-        NativeVulkanAudioClockProbeOptions, NativeVulkanH264VideoInputMode,
-        NativeVulkanH265VideoInputMode, probe_native_vulkan_audio_clock,
-        run_av1_ready_prefix_video, run_h264_ready_prefix_video, run_h265_first_frame_video,
-        run_h265_ready_prefix_video,
+        NativeVulkanAudioClockProbeOptions, NativeVulkanAudioOutputMode,
+        NativeVulkanH264VideoInputMode, NativeVulkanH265VideoInputMode,
+        probe_native_vulkan_audio_clock, run_av1_ready_prefix_video, run_h264_ready_prefix_video,
+        run_h265_first_frame_video, run_h265_ready_prefix_video,
     };
     use gilder::renderer::native_vulkan::{
         NativeVulkanOptions, NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionSmokeOptions,
@@ -41,6 +41,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut duration = Duration::from_secs(5);
     let mut audio_probe_duration = Duration::from_secs(10);
     let mut audio_clock_probe_with_video = false;
+    #[cfg(feature = "native-vulkan-gst-video")]
+    let mut audio_output_mode = NativeVulkanAudioOutputMode::ClockOnly;
     let mut source = None::<PathBuf>;
     let mut poster = None::<PathBuf>;
     let mut fit = gilder::core::FitMode::Cover;
@@ -68,6 +70,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--probe-video-session" => mode = NativeVulkanCliMode::ProbeVideoSession,
             "--probe-audio-clock" => mode = NativeVulkanCliMode::ProbeAudioClock,
             "--audio-clock-probe" => audio_clock_probe_with_video = true,
+            "--audio-output" => {
+                let value = args
+                    .next()
+                    .ok_or("--audio-output requires clock-only or auto")?;
+                #[cfg(feature = "native-vulkan-gst-video")]
+                {
+                    audio_output_mode = parse_audio_output_mode(&value)?;
+                }
+                #[cfg(not(feature = "native-vulkan-gst-video"))]
+                {
+                    let _ = value;
+                    return Err("--audio-output requires native-vulkan-gst-video feature".into());
+                }
+            }
             "--run-h265-first-frame-video" => mode = NativeVulkanCliMode::RunH265FirstFrameVideo,
             "--run-h264-ready-prefix-video" => mode = NativeVulkanCliMode::RunH264ReadyPrefixVideo,
             "--run-h265-ready-prefix-video" => mode = NativeVulkanCliMode::RunH265ReadyPrefixVideo,
@@ -508,6 +524,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     h264_video_input,
                     playback_frames,
                     audio_clock_probe_with_video,
+                    audio_output_mode,
                 )?)
             }
             #[cfg(not(feature = "native-vulkan-gst-video"))]
@@ -522,6 +539,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     video_session_options.decode_h264_ready_prefix_frames,
                     ready_prefix_playback_frames,
                     audio_clock_probe_with_video,
+                    #[cfg(feature = "native-vulkan-gst-video")]
+                    audio_output_mode,
                 );
                 return Err(
                     "--run-h264-ready-prefix-video requires native-vulkan-gst-video feature".into(),
@@ -557,6 +576,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     h265_video_input,
                     playback_frames,
                     audio_clock_probe_with_video,
+                    audio_output_mode,
                 )?)
             }
             #[cfg(not(feature = "native-vulkan-gst-video"))]
@@ -572,6 +592,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     video_session_options.decode_h265_ready_prefix_frames,
                     ready_prefix_playback_frames,
                     audio_clock_probe_with_video,
+                    #[cfg(feature = "native-vulkan-gst-video")]
+                    audio_output_mode,
                 );
                 return Err(
                     "--run-h265-ready-prefix-video requires native-vulkan-gst-video feature".into(),
@@ -606,6 +628,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     av1_ready_prefix_frames,
                     playback_frames,
                     audio_clock_probe_with_video,
+                    audio_output_mode,
                 )?)
             }
             #[cfg(not(feature = "native-vulkan-gst-video"))]
@@ -620,6 +643,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     av1_ready_prefix_frames,
                     ready_prefix_playback_frames,
                     audio_clock_probe_with_video,
+                    #[cfg(feature = "native-vulkan-gst-video")]
+                    audio_output_mode,
                 );
                 return Err(
                     "--run-av1-ready-prefix-video requires native-vulkan-gst-video feature".into(),
@@ -735,6 +760,23 @@ fn parse_decoder_policy(
     }
 }
 
+#[cfg(all(
+    feature = "native-vulkan-renderer",
+    feature = "native-vulkan-gst-video"
+))]
+fn parse_audio_output_mode(
+    value: &str,
+) -> Result<gilder::renderer::native_vulkan::NativeVulkanAudioOutputMode, Box<dyn std::error::Error>>
+{
+    use gilder::renderer::native_vulkan::NativeVulkanAudioOutputMode;
+
+    match value {
+        "clock-only" | "clock" | "probe" | "silent" => Ok(NativeVulkanAudioOutputMode::ClockOnly),
+        "auto" | "autoaudiosink" | "audible" => Ok(NativeVulkanAudioOutputMode::Auto),
+        _ => Err(format!("unsupported --audio-output: {value}").into()),
+    }
+}
+
 #[cfg(feature = "native-vulkan-renderer")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeVulkanCliMode {
@@ -766,6 +808,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --probe-video-session creates and binds a Vulkan Video H.264/H.265/AV1 decode session, then exits.\n\
 --probe-audio-clock runs an explicit audio-only GStreamer clock probe for --source, then exits.\n\
 --audio-clock-probe runs the explicit audio-only clock probe beside H.264 visible video and reports A/V drift.\n\
+--audio-output clock-only|auto selects clock-only telemetry or tee-to-autoaudiosink output for --audio-clock-probe.\n\
 --allocate-video-images extends --probe-video-session with codec-matching 2-plane 4:2:0 DPB/output sampled image allocation.\n\
 --allocate-bitstream-buffer extends --probe-video-session with a mapped VIDEO_DECODE_SRC bitstream buffer.\n\
 --extract-bitstream extends --probe-video-session with parser/appsink encoded AU extraction and writes the selected AU to the bitstream buffer.\n\

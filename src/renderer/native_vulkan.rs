@@ -90,7 +90,8 @@ mod demux;
 #[cfg(feature = "native-vulkan-gst-video")]
 pub use audio_clock::{
     NativeVulkanAudioClockProbeOptions, NativeVulkanAudioClockProbeSnapshot,
-    NativeVulkanAudioClockRuntimeSnapshot, probe_native_vulkan_audio_clock,
+    NativeVulkanAudioClockRuntimeSnapshot, NativeVulkanAudioOutputMode,
+    probe_native_vulkan_audio_clock,
 };
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -4797,6 +4798,7 @@ pub fn run_h264_ready_prefix_video(
     input_mode: NativeVulkanH264VideoInputMode,
     playback_frame_count: u32,
     audio_clock_probe_enabled: bool,
+    audio_output_mode: NativeVulkanAudioOutputMode,
 ) -> Result<NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot, NativeVulkanError> {
     if width == 0 || height == 0 {
         return Err(NativeVulkanError::Video(
@@ -5600,6 +5602,7 @@ pub fn run_h264_ready_prefix_video(
             let mut audio_clock_probe = if audio_clock_probe_enabled {
                 Some(audio_clock::NativeVulkanAudioClockRuntimeProbe::start(
                     &source,
+                    audio_output_mode,
                 )?)
             } else {
                 None
@@ -8565,6 +8568,7 @@ pub fn run_h265_ready_prefix_video(
     input_mode: NativeVulkanH265VideoInputMode,
     playback_frame_count: u32,
     audio_clock_probe_enabled: bool,
+    audio_output_mode: NativeVulkanAudioOutputMode,
 ) -> Result<NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot, NativeVulkanError> {
     if !matches!(
         codec,
@@ -9150,6 +9154,7 @@ pub fn run_h265_ready_prefix_video(
             let mut audio_clock_probe = if audio_clock_probe_enabled {
                 Some(audio_clock::NativeVulkanAudioClockRuntimeProbe::start(
                     &source,
+                    audio_output_mode,
                 )?)
             } else {
                 None
@@ -10029,6 +10034,7 @@ pub fn run_av1_ready_prefix_video(
     ready_prefix_frame_count: u32,
     playback_frame_count: u32,
     audio_clock_probe_enabled: bool,
+    audio_output_mode: NativeVulkanAudioOutputMode,
 ) -> Result<NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot, NativeVulkanError> {
     if !matches!(
         codec,
@@ -11112,6 +11118,7 @@ pub fn run_av1_ready_prefix_video(
             let mut audio_clock_probe = if audio_clock_probe_enabled {
                 Some(audio_clock::NativeVulkanAudioClockRuntimeProbe::start(
                     &source,
+                    audio_output_mode,
                 )?)
             } else {
                 None
