@@ -73,6 +73,10 @@ mod present;
 #[path = "native_vulkan/interop.rs"]
 mod interop;
 
+#[cfg(feature = "native-vulkan-vulkanalia")]
+#[path = "native_vulkan/vulkanalia_backend.rs"]
+mod vulkanalia_backend;
+
 #[path = "native_vulkan/labels.rs"]
 mod labels;
 
@@ -260,6 +264,10 @@ use video_sample_gst::{
 use video_session_parameters::*;
 use video_session_resources::*;
 pub use video_session_snapshots::*;
+#[cfg(feature = "native-vulkan-vulkanalia")]
+pub use vulkanalia_backend::{
+    NativeVulkanVulkanaliaBackendPlan, native_vulkan_vulkanalia_backend_plan,
+};
 
 #[cfg(feature = "native-vulkan-gst-video")]
 pub use audio_clock::{
@@ -37429,6 +37437,8 @@ pub struct NativeVulkanBackendContract {
     pub video_pipeline: pipeline::NativeVulkanVideoPipelineContract,
     pub video_interop: NativeVulkanVideoInteropContract,
     pub web_interop: NativeVulkanWebInteropContract,
+    #[cfg(feature = "native-vulkan-vulkanalia")]
+    pub vulkanalia_backend: NativeVulkanVulkanaliaBackendPlan,
 }
 
 pub fn backend_contract() -> NativeVulkanBackendContract {
@@ -37446,6 +37456,8 @@ pub fn backend_contract() -> NativeVulkanBackendContract {
         video_pipeline: pipeline::native_vulkan_video_pipeline_contract(),
         video_interop: video_interop_contract(),
         web_interop: web_interop_contract(),
+        #[cfg(feature = "native-vulkan-vulkanalia")]
+        vulkanalia_backend: native_vulkan_vulkanalia_backend_plan(),
     }
 }
 
@@ -38324,6 +38336,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "native-vulkan-gst-video")]
     #[test]
     fn plans_av1_reference_map_for_inter_and_show_existing_frames() {
         fn submit(
@@ -41267,7 +41280,24 @@ mod tests {
                 .required_device_extensions
                 .contains(&"VK_EXT_image_drm_format_modifier")
         );
-        assert!(contract.video_interop.vulkan_binding_policy.contains("ash"));
+        assert!(
+            contract
+                .video_interop
+                .vulkan_binding_policy
+                .contains("vulkanalia")
+        );
+        assert!(
+            contract
+                .video_interop
+                .vulkanalia_replacement_policy
+                .contains("feature flag")
+        );
+        assert!(
+            contract
+                .video_interop
+                .vulkan_1_4_value
+                .contains("dynamic-rendering-local-read")
+        );
         assert!(
             contract
                 .video_interop
@@ -41286,5 +41316,15 @@ mod tests {
                 .ash_mainline_value
                 .contains("external-memory")
         );
+        #[cfg(feature = "native-vulkan-vulkanalia")]
+        {
+            assert_eq!(contract.vulkanalia_backend.binding, "vulkanalia");
+            assert!(
+                contract
+                    .vulkanalia_backend
+                    .api_baseline
+                    .contains("Vulkan 1.4")
+            );
+        }
     }
 }
