@@ -204,6 +204,14 @@ pub(super) struct NativeVulkanAudioClockRuntimeProbe {
     raw_drift_latest_ns: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct NativeVulkanAudioClockRuntimeTelemetry {
+    pub(super) reached_clocked_playback: bool,
+    pub(super) audio_buffer_count: u32,
+    pub(super) audio_output_sink_count: usize,
+    pub(super) audio_position_query_hit_count: u32,
+}
+
 impl NativeVulkanAudioClockProbeStats {
     fn record_caps(&mut self, caps: &gst::CapsRef) {
         self.audio_raw_caps = Some(caps.to_string());
@@ -318,6 +326,20 @@ impl NativeVulkanAudioClockRuntimeProbe {
         self.poll_bus()?;
         self.drain_audio_samples();
         Ok(())
+    }
+
+    pub(super) fn telemetry(&self) -> NativeVulkanAudioClockRuntimeTelemetry {
+        let audio_output_sink_count =
+            native_vulkan_audio_output_sink_elements(self.pipeline.upcast_ref()).len();
+        NativeVulkanAudioClockRuntimeTelemetry {
+            reached_clocked_playback: self.stats.new_clock_count > 0
+                && self.stats.stream_start_count > 0
+                && self.stats.state_playing_count > 0
+                && self.stats.audio_buffer_count > 0,
+            audio_buffer_count: self.stats.audio_buffer_count,
+            audio_output_sink_count,
+            audio_position_query_hit_count: self.audio_position_query_hit_count,
+        }
     }
 
     fn poll_bus(&mut self) -> Result<(), NativeVulkanError> {

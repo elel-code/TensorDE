@@ -3071,6 +3071,12 @@ pub struct NativeVulkanVideoRuntimeSnapshot {
     pub audio_output_policy: &'static str,
     pub audio_output_mode: &'static str,
     pub audio_output_status: &'static str,
+    pub audio_runtime_status: &'static str,
+    pub audio_runtime_reached_clocked_playback: bool,
+    pub audio_runtime_buffer_count: u32,
+    pub audio_runtime_output_sink_count: usize,
+    pub audio_runtime_position_query_hit_count: u32,
+    pub audio_runtime_last_error: Option<String>,
     pub gst_state: Option<String>,
     pub eos_messages: u64,
     pub segment_done_messages: u64,
@@ -3099,6 +3105,28 @@ pub struct NativeVulkanVideoRuntimeSnapshot {
     pub caps_memory_features: Vec<String>,
     pub caps_reports: Vec<NativeVulkanVideoCapsSnapshot>,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeVulkanVideoAudioRuntimeTelemetry {
+    reached_clocked_playback: bool,
+    audio_buffer_count: u32,
+    audio_output_sink_count: usize,
+    audio_position_query_hit_count: u32,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl From<audio_clock::NativeVulkanAudioClockRuntimeTelemetry>
+    for NativeVulkanVideoAudioRuntimeTelemetry
+{
+    fn from(value: audio_clock::NativeVulkanAudioClockRuntimeTelemetry) -> Self {
+        Self {
+            reached_clocked_playback: value.reached_clocked_playback,
+            audio_buffer_count: value.audio_buffer_count,
+            audio_output_sink_count: value.audio_output_sink_count,
+            audio_position_query_hit_count: value.audio_position_query_hit_count,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -3315,6 +3343,10 @@ pub struct NativeVulkanSession {
     video_texture: Option<NativeVulkanVideoTexture>,
     #[cfg(feature = "native-vulkan-gst-video")]
     video_import_status: NativeVulkanVideoImportStatus,
+    #[cfg(feature = "native-vulkan-gst-video")]
+    audio_runtime: Option<audio_clock::NativeVulkanAudioClockRuntimeProbe>,
+    #[cfg(feature = "native-vulkan-gst-video")]
+    audio_runtime_last_error: Option<String>,
     clear_color: NativeVulkanClearColor,
     render_item: NativeVulkanRenderItem,
     started_at: Instant,
@@ -3498,6 +3530,24 @@ impl NativeVulkanSession {
             )?),
             _ => None,
         };
+        #[cfg(feature = "native-vulkan-gst-video")]
+        let (audio_runtime, audio_runtime_last_error) = match &render_item {
+            NativeVulkanRenderItem::Video { source, muted, .. } => {
+                let output_mode = NativeVulkanAudioOutputPolicy::Plan.resolve(*muted);
+                if output_mode == NativeVulkanAudioOutputMode::Auto {
+                    match audio_clock::NativeVulkanAudioClockRuntimeProbe::start(
+                        source,
+                        output_mode,
+                    ) {
+                        Ok(runtime) => (Some(runtime), None),
+                        Err(err) => (None, Some(err.to_string())),
+                    }
+                } else {
+                    (None, None)
+                }
+            }
+            _ => (None, None),
+        };
         let selected_vulkan_drm_device =
             native_vulkan_physical_device_drm_snapshot(&instance, selection.physical_device);
 
@@ -3537,6 +3587,10 @@ impl NativeVulkanSession {
             video_texture: None,
             #[cfg(feature = "native-vulkan-gst-video")]
             video_import_status: NativeVulkanVideoImportStatus::default(),
+            #[cfg(feature = "native-vulkan-gst-video")]
+            audio_runtime,
+            #[cfg(feature = "native-vulkan-gst-video")]
+            audio_runtime_last_error,
             clear_color,
             render_item,
             started_at: Instant::now(),
@@ -3567,6 +3621,7 @@ impl NativeVulkanSession {
                     return Err(err);
                 }
             }
+            self.poll_audio_runtime();
             self.trim_allocator_after_frame();
 
             if let Some(interval) = frame_interval {
@@ -3619,6 +3674,8 @@ impl NativeVulkanSession {
                 &self.render_item,
                 self.video_frontend_snapshot(),
                 self.video_import_snapshot(),
+                self.audio_runtime_telemetry(),
+                self.audio_runtime_last_error(),
                 self.selected_vulkan_drm_device.clone(),
                 self.frames_rendered,
                 self.static_upload
@@ -3862,6 +3919,42 @@ impl NativeVulkanSession {
             }
         }
         Ok(())
+    }
+
+    fn poll_audio_runtime(&mut self) {
+        #[cfg(feature = "native-vulkan-gst-video")]
+        if let Some(runtime) = self.audio_runtime.as_mut() {
+            let video_clock_ns = native_vulkan_elapsed_ns(self.started_at.elapsed());
+            if let Err(err) = runtime.sample_video_pts_ms(None, Some(video_clock_ns)) {
+                self.audio_runtime_last_error = Some(err.to_string());
+                self.audio_runtime = None;
+            }
+        }
+    }
+
+    fn audio_runtime_telemetry(&self) -> Option<NativeVulkanVideoAudioRuntimeTelemetry> {
+        #[cfg(feature = "native-vulkan-gst-video")]
+        {
+            return self
+                .audio_runtime
+                .as_ref()
+                .map(|runtime| runtime.telemetry().into());
+        }
+        #[cfg(not(feature = "native-vulkan-gst-video"))]
+        {
+            None
+        }
+    }
+
+    fn audio_runtime_last_error(&self) -> Option<String> {
+        #[cfg(feature = "native-vulkan-gst-video")]
+        {
+            return self.audio_runtime_last_error.clone();
+        }
+        #[cfg(not(feature = "native-vulkan-gst-video"))]
+        {
+            None
+        }
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
@@ -16998,6 +17091,11 @@ fn native_vulkan_clock_time_ns(value: Option<gst::ClockTime>) -> Option<u64> {
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_elapsed_us(value: Duration) -> u64 {
     value.as_micros().min(u128::from(u64::MAX)) as u64
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_elapsed_ns(value: Duration) -> u64 {
+    value.as_nanos().min(u128::from(u64::MAX)) as u64
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -48848,6 +48946,8 @@ fn native_vulkan_video_runtime_snapshot(
     item: &NativeVulkanRenderItem,
     frontend: Option<NativeVulkanGstVideoFrontendSnapshot>,
     import: Option<NativeVulkanVideoImportSnapshot>,
+    audio_runtime: Option<NativeVulkanVideoAudioRuntimeTelemetry>,
+    audio_runtime_last_error: Option<String>,
     selected_vulkan_drm_device: Option<NativeVulkanDrmDeviceSnapshot>,
     rendered_frames: u64,
     poster_upload_bytes: Option<u64>,
@@ -48898,6 +48998,32 @@ fn native_vulkan_video_runtime_snapshot(
     } else {
         "auto-output-ready-for-audio-clock-runtime"
     };
+    let audio_runtime_status = if audio_runtime_last_error.is_some() {
+        "audio-runtime-error"
+    } else if audio_output_mode == NativeVulkanAudioOutputMode::ClockOnly {
+        "disabled-by-muted-plan"
+    } else if audio_runtime
+        .map(|runtime| runtime.reached_clocked_playback)
+        .unwrap_or(false)
+    {
+        "clocked-playback-active"
+    } else if audio_runtime.is_some() {
+        "audio-runtime-started-waiting-for-clocked-playback"
+    } else {
+        "auto-output-ready-for-audio-clock-runtime"
+    };
+    let audio_runtime_reached_clocked_playback = audio_runtime
+        .map(|runtime| runtime.reached_clocked_playback)
+        .unwrap_or(false);
+    let audio_runtime_buffer_count = audio_runtime
+        .map(|runtime| runtime.audio_buffer_count)
+        .unwrap_or(0);
+    let audio_runtime_output_sink_count = audio_runtime
+        .map(|runtime| runtime.audio_output_sink_count)
+        .unwrap_or(0);
+    let audio_runtime_position_query_hit_count = audio_runtime
+        .map(|runtime| runtime.audio_position_query_hit_count)
+        .unwrap_or(0);
 
     Some(NativeVulkanVideoRuntimeSnapshot {
         source: source.clone(),
@@ -48928,6 +49054,12 @@ fn native_vulkan_video_runtime_snapshot(
         audio_output_policy: audio_output_policy.as_str(),
         audio_output_mode: audio_output_mode.as_str(),
         audio_output_status,
+        audio_runtime_status,
+        audio_runtime_reached_clocked_playback,
+        audio_runtime_buffer_count,
+        audio_runtime_output_sink_count,
+        audio_runtime_position_query_hit_count,
+        audio_runtime_last_error,
         gst_state: frontend
             .as_ref()
             .and_then(|frontend| frontend.gst_state.clone()),
@@ -53230,8 +53362,17 @@ mod tests {
             renderer_status: "vulkan-lifecycle-video-placeholder",
         };
 
-        let snapshot = native_vulkan_video_runtime_snapshot(&item, None, None, None, 9, Some(1024))
-            .expect("video snapshot");
+        let snapshot = native_vulkan_video_runtime_snapshot(
+            &item,
+            None,
+            None,
+            None,
+            None,
+            None,
+            9,
+            Some(1024),
+        )
+        .expect("video snapshot");
 
         assert_eq!(snapshot.frontend, "gstreamer-planned");
         assert_eq!(snapshot.frontend_status, "not-started-poster-placeholder");
@@ -53246,6 +53387,15 @@ mod tests {
             snapshot.audio_output_status,
             "auto-output-ready-for-audio-clock-runtime"
         );
+        assert_eq!(
+            snapshot.audio_runtime_status,
+            "auto-output-ready-for-audio-clock-runtime"
+        );
+        assert!(!snapshot.audio_runtime_reached_clocked_playback);
+        assert_eq!(snapshot.audio_runtime_buffer_count, 0);
+        assert_eq!(snapshot.audio_runtime_output_sink_count, 0);
+        assert_eq!(snapshot.audio_runtime_position_query_hit_count, 0);
+        assert_eq!(snapshot.audio_runtime_last_error, None);
         assert_eq!(snapshot.frames_received, 0);
         assert_eq!(snapshot.frames_imported, 0);
         assert_eq!(snapshot.rendered_placeholder_frames, 9);
@@ -53265,6 +53415,50 @@ mod tests {
         assert_eq!(snapshot.decoder_policy_status, None);
         assert_eq!(snapshot.caps_report_count, 0);
         assert_eq!(snapshot.segment_done_messages, 0);
+    }
+
+    #[test]
+    fn video_runtime_snapshot_reports_audio_runtime_active() {
+        let item = NativeVulkanRenderItem::Video {
+            output_name: "HDMI-A-1".to_owned(),
+            source: PathBuf::from("/tmp/video.mp4"),
+            poster: None,
+            fit: FitMode::Cover,
+            loop_playback: true,
+            muted: false,
+            manifest_max_fps: Some(240),
+            target_max_fps: Some(240),
+            decoder_policy: crate::config::VideoDecoderPolicy::HardwarePreferred,
+            start_offset_ms: 0,
+            renderer_status: "vulkan-lifecycle-video-placeholder",
+        };
+        let audio_runtime = NativeVulkanVideoAudioRuntimeTelemetry {
+            reached_clocked_playback: true,
+            audio_buffer_count: 18,
+            audio_output_sink_count: 2,
+            audio_position_query_hit_count: 12,
+        };
+
+        let snapshot = native_vulkan_video_runtime_snapshot(
+            &item,
+            None,
+            None,
+            Some(audio_runtime),
+            None,
+            None,
+            24,
+            None,
+        )
+        .expect("video snapshot");
+
+        assert_eq!(snapshot.audio_output_policy, "plan");
+        assert_eq!(snapshot.audio_output_mode, "auto");
+        assert_eq!(snapshot.audio_runtime_status, "clocked-playback-active");
+        assert!(snapshot.audio_runtime_reached_clocked_playback);
+        assert_eq!(snapshot.audio_runtime_buffer_count, 18);
+        assert_eq!(snapshot.audio_runtime_output_sink_count, 2);
+        assert_eq!(snapshot.audio_runtime_position_query_hit_count, 12);
+        assert_eq!(snapshot.audio_runtime_last_error, None);
     }
 
     #[test]
@@ -53326,6 +53520,8 @@ mod tests {
             Some(frontend),
             Some(import),
             None,
+            None,
+            None,
             12,
             None,
         )
@@ -53336,6 +53532,7 @@ mod tests {
         assert_eq!(snapshot.audio_output_policy, "plan");
         assert_eq!(snapshot.audio_output_mode, "clock-only");
         assert_eq!(snapshot.audio_output_status, "disabled-by-muted-plan");
+        assert_eq!(snapshot.audio_runtime_status, "disabled-by-muted-plan");
         assert_eq!(snapshot.frontend_status, "appsink-receiving-samples");
         assert_eq!(snapshot.handoff_status, "appsink-sample-handoff-active");
         assert_eq!(snapshot.frames_received, 3);
@@ -53420,9 +53617,17 @@ mod tests {
             last_dmabuf_import: Some(contract.clone()),
         };
 
-        let snapshot =
-            native_vulkan_video_runtime_snapshot(&item, None, Some(import), None, 1, None)
-                .expect("video snapshot");
+        let snapshot = native_vulkan_video_runtime_snapshot(
+            &item,
+            None,
+            Some(import),
+            None,
+            None,
+            None,
+            1,
+            None,
+        )
+        .expect("video snapshot");
 
         assert_eq!(snapshot.last_dmabuf_import, Some(contract));
         assert_eq!(snapshot.memory_route.route, "direct-dmabuf-import");
@@ -53476,9 +53681,17 @@ mod tests {
             last_error: None,
         };
 
-        let snapshot =
-            native_vulkan_video_runtime_snapshot(&item, Some(frontend), None, None, 1, None)
-                .unwrap();
+        let snapshot = native_vulkan_video_runtime_snapshot(
+            &item,
+            Some(frontend),
+            None,
+            None,
+            None,
+            None,
+            1,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(snapshot.memory_route.route, "dmabuf-caps-pending-import");
         assert!(snapshot.memory_route.direct_candidate);
