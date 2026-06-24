@@ -576,3 +576,488 @@ fn native_vulkan_video_frontend_has_memory(
                     .any(|feature| feature.contains(needle))
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::video_frontend::{
+        NativeVulkanVideoDecodeOwner, NativeVulkanVideoFrontendMemoryPreference,
+        NativeVulkanVideoFrontendProvider, NativeVulkanVideoFrontendRoute,
+    };
+    use super::super::video_import::{
+        NativeVulkanDmabufImportSnapshot, NativeVulkanVideoImportSnapshot,
+    };
+    use super::super::{DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_NV12, NativeVulkanRenderItem};
+    use super::*;
+    use crate::config::VideoDecoderPolicy;
+    use crate::core::FitMode;
+    use std::path::PathBuf;
+
+    #[test]
+    fn video_runtime_snapshot_reports_pending_gstreamer_handoff() {
+        let item = NativeVulkanRenderItem::Video {
+            output_name: "HDMI-A-1".to_owned(),
+            source: PathBuf::from("/tmp/video.mp4"),
+            poster: Some(PathBuf::from("/tmp/poster.png")),
+            fit: FitMode::Contain,
+            loop_playback: true,
+            muted: false,
+            manifest_max_fps: Some(240),
+            target_max_fps: Some(120),
+            decoder_policy: VideoDecoderPolicy::HardwareRequired,
+            start_offset_ms: 1500,
+            renderer_status: "vulkan-lifecycle-video-placeholder",
+        };
+
+        let snapshot = native_vulkan_video_runtime_snapshot(
+            &item,
+            None,
+            None,
+            None,
+            None,
+            None,
+            9,
+            Some(1024),
+        )
+        .expect("video snapshot");
+
+        assert_eq!(snapshot.frontend, "gstreamer-planned");
+        assert_eq!(snapshot.frontend_provider, "gstreamer");
+        assert_eq!(snapshot.frontend_route, "decoded-provider");
+        assert_eq!(snapshot.frontend_decode_owner, "gstreamer");
+        assert_eq!(snapshot.frontend_memory_preference, "auto");
+        assert_eq!(snapshot.frontend_sample_queue_policy, "keep-last");
+        assert_eq!(snapshot.frontend_status, "not-started-poster-placeholder");
+        assert_eq!(
+            snapshot.handoff_status,
+            "pending-appsink-dmabuf-or-gpu-memory-handoff"
+        );
+        assert_eq!(snapshot.audio_status, "planned-auto-audio-output-pipeline");
+        assert_eq!(snapshot.audio_output_policy, "plan");
+        assert_eq!(snapshot.audio_output_mode, "auto");
+        assert_eq!(
+            snapshot.audio_output_status,
+            "auto-output-ready-for-audio-clock-runtime"
+        );
+        assert_eq!(
+            snapshot.audio_runtime_status,
+            "auto-output-ready-for-audio-clock-runtime"
+        );
+        assert_eq!(snapshot.audio_runtime_provider, "gstreamer");
+        assert!(!snapshot.audio_runtime_reached_clocked_playback);
+        assert_eq!(snapshot.audio_runtime_buffer_count, 0);
+        assert_eq!(snapshot.audio_runtime_output_sink_count, 0);
+        assert_eq!(snapshot.audio_runtime_loop_seek_count, 0);
+        assert_eq!(snapshot.audio_runtime_loop_seek_error_count, 0);
+        assert_eq!(snapshot.audio_runtime_loop_restart_count, 0);
+        assert_eq!(snapshot.audio_runtime_last_loop_seek_position_ms, None);
+        assert_eq!(snapshot.audio_runtime_clock_serial, 0);
+        assert_eq!(snapshot.audio_runtime_segment_start_position_ns, None);
+        assert_eq!(snapshot.audio_runtime_segment_elapsed_ns, None);
+        assert_eq!(snapshot.audio_runtime_position_stale_count, 0);
+        assert_eq!(snapshot.audio_runtime_sample_stale_count, 0);
+        assert_eq!(snapshot.audio_runtime_master_clock_estimate_ns, None);
+        assert_eq!(snapshot.audio_runtime_sampled_video_frame_count, 0);
+        assert_eq!(snapshot.audio_runtime_position_query_count, 0);
+        assert_eq!(snapshot.audio_runtime_position_query_hit_count, 0);
+        assert_eq!(snapshot.audio_runtime_video_clock_drift_latest_ns, None);
+        assert_eq!(
+            snapshot.audio_runtime_video_master_clock_drift_latest_ns,
+            None
+        );
+        assert_eq!(
+            snapshot.audio_runtime_video_master_clock_drift_abs_max_ns,
+            None
+        );
+        assert_eq!(snapshot.audio_runtime_last_error, None);
+        assert_eq!(snapshot.frames_received, 0);
+        assert_eq!(snapshot.frames_imported, 0);
+        assert_eq!(snapshot.rendered_placeholder_frames, 9);
+        assert_eq!(snapshot.poster_upload_bytes, Some(1024));
+        assert_eq!(snapshot.texture_import_status, "not-importing-yet");
+        assert_eq!(snapshot.last_import_size, None);
+        assert_eq!(snapshot.last_import_memory_path, None);
+        assert_eq!(snapshot.last_import_error, None);
+        assert_eq!(snapshot.last_import_elapsed_us, None);
+        assert_eq!(snapshot.max_import_elapsed_us, None);
+        assert_eq!(snapshot.last_dmabuf_import, None);
+        assert_eq!(snapshot.memory_route.route, "not-negotiated");
+        assert!(!snapshot.memory_route.direct_candidate);
+        assert!(!snapshot.memory_route.direct_import_confirmed);
+        assert_eq!(snapshot.start_offset_ms, 1500);
+        assert_eq!(snapshot.gst_state, None);
+        assert_eq!(snapshot.decoder_policy_status, None);
+        assert_eq!(snapshot.caps_report_count, 0);
+        assert_eq!(snapshot.segment_done_messages, 0);
+    }
+
+    #[test]
+    fn video_runtime_snapshot_reports_audio_runtime_active() {
+        let item = NativeVulkanRenderItem::Video {
+            output_name: "HDMI-A-1".to_owned(),
+            source: PathBuf::from("/tmp/video.mp4"),
+            poster: None,
+            fit: FitMode::Cover,
+            loop_playback: true,
+            muted: false,
+            manifest_max_fps: Some(240),
+            target_max_fps: Some(240),
+            decoder_policy: VideoDecoderPolicy::HardwarePreferred,
+            start_offset_ms: 0,
+            renderer_status: "vulkan-lifecycle-video-placeholder",
+        };
+        let audio_runtime = NativeVulkanVideoAudioRuntimeTelemetry {
+            audio_provider: "gstreamer",
+            reached_clocked_playback: true,
+            audio_buffer_count: 18,
+            audio_output_sink_count: 2,
+            audio_loop_seek_count: 2,
+            audio_loop_seek_error_count: 0,
+            audio_loop_restart_count: 2,
+            audio_last_loop_seek_position_ms: Some(1500),
+            audio_clock_serial: 3,
+            audio_segment_start_position_ns: Some(1_500_000_000),
+            audio_segment_elapsed_ns: Some(250_000_000),
+            audio_position_stale_count: 1,
+            audio_sample_stale_count: 2,
+            audio_master_clock_estimate_ns: Some(1_240_000_000),
+            sampled_video_frame_count: 14,
+            audio_position_query_count: 15,
+            audio_position_query_hit_count: 12,
+            audio_video_clock_drift_latest_ns: Some(-20_000),
+            audio_video_master_clock_drift_latest_ns: Some(15_000),
+            audio_video_master_clock_drift_abs_max_ns: Some(40_000),
+        };
+
+        let snapshot = native_vulkan_video_runtime_snapshot(
+            &item,
+            None,
+            None,
+            Some(audio_runtime),
+            None,
+            None,
+            24,
+            None,
+        )
+        .expect("video snapshot");
+
+        assert_eq!(snapshot.audio_output_policy, "plan");
+        assert_eq!(snapshot.audio_output_mode, "auto");
+        assert_eq!(snapshot.audio_runtime_status, "clocked-playback-active");
+        assert_eq!(snapshot.audio_runtime_provider, "gstreamer");
+        assert!(snapshot.audio_runtime_reached_clocked_playback);
+        assert_eq!(snapshot.audio_runtime_buffer_count, 18);
+        assert_eq!(snapshot.audio_runtime_output_sink_count, 2);
+        assert_eq!(snapshot.audio_runtime_loop_seek_count, 2);
+        assert_eq!(snapshot.audio_runtime_loop_seek_error_count, 0);
+        assert_eq!(snapshot.audio_runtime_loop_restart_count, 2);
+        assert_eq!(
+            snapshot.audio_runtime_last_loop_seek_position_ms,
+            Some(1500)
+        );
+        assert_eq!(snapshot.audio_runtime_clock_serial, 3);
+        assert_eq!(
+            snapshot.audio_runtime_segment_start_position_ns,
+            Some(1_500_000_000)
+        );
+        assert_eq!(snapshot.audio_runtime_segment_elapsed_ns, Some(250_000_000));
+        assert_eq!(snapshot.audio_runtime_position_stale_count, 1);
+        assert_eq!(snapshot.audio_runtime_sample_stale_count, 2);
+        assert_eq!(
+            snapshot.audio_runtime_master_clock_estimate_ns,
+            Some(1_240_000_000)
+        );
+        assert_eq!(snapshot.audio_runtime_sampled_video_frame_count, 14);
+        assert_eq!(snapshot.audio_runtime_position_query_count, 15);
+        assert_eq!(snapshot.audio_runtime_position_query_hit_count, 12);
+        assert_eq!(
+            snapshot.audio_runtime_video_clock_drift_latest_ns,
+            Some(-20_000)
+        );
+        assert_eq!(
+            snapshot.audio_runtime_video_master_clock_drift_latest_ns,
+            Some(15_000)
+        );
+        assert_eq!(
+            snapshot.audio_runtime_video_master_clock_drift_abs_max_ns,
+            Some(40_000)
+        );
+        assert_eq!(snapshot.audio_runtime_last_error, None);
+    }
+
+    #[test]
+    fn video_runtime_snapshot_reports_active_appsink_frontend() {
+        let item = NativeVulkanRenderItem::Video {
+            output_name: "HDMI-A-1".to_owned(),
+            source: PathBuf::from("/tmp/video.mp4"),
+            poster: None,
+            fit: FitMode::Cover,
+            loop_playback: true,
+            muted: true,
+            manifest_max_fps: None,
+            target_max_fps: Some(240),
+            decoder_policy: VideoDecoderPolicy::HardwarePreferred,
+            start_offset_ms: 0,
+            renderer_status: "vulkan-lifecycle-video-placeholder",
+        };
+        let frontend = NativeVulkanVideoFrontendSnapshot {
+            provider: NativeVulkanVideoFrontendProvider::Gstreamer,
+            route: NativeVulkanVideoFrontendRoute::DecodedProvider,
+            decode_owner: NativeVulkanVideoDecodeOwner::Gstreamer,
+            memory_preference: NativeVulkanVideoFrontendMemoryPreference::Auto,
+            sample_queue_policy: "keep-last",
+            provider_state: Some("Playing".to_owned()),
+            eos_messages: 0,
+            segment_done_messages: 1,
+            frames_received: 3,
+            last_sample_caps: Some("video/x-raw, format=(string)NV12".to_owned()),
+            last_sample_format: Some("NV12".to_owned()),
+            last_sample_size: Some((3840, 2160)),
+            last_sample_pts_ms: Some(8),
+            last_sample_duration_ms: Some(4),
+            last_sample_pts_delta_ms: Some(4),
+            last_sample_memory_types: vec!["CUDAMemory".to_owned()],
+            actual_decoders: vec!["nvh264dec".to_owned()],
+            decoder_policy_status: Some("Satisfied".to_owned()),
+            caps_report_count: 1,
+            caps_memory_features: vec!["memory:CUDAMemory".to_owned()],
+            caps_reports: vec![NativeVulkanVideoCapsSnapshot {
+                element: "appsink0".to_owned(),
+                pad: "sink".to_owned(),
+                direction: "sink".to_owned(),
+                caps: "video/x-raw(memory:CUDAMemory)".to_owned(),
+                source: "current".to_owned(),
+                memory_features: vec!["memory:CUDAMemory".to_owned()],
+            }],
+            last_error: None,
+        };
+        let import = NativeVulkanVideoImportSnapshot {
+            texture_import_status: "importing-cuda-vulkan-image-planes",
+            frames_imported: 2,
+            last_import_size: Some((3840, 2160)),
+            last_import_memory_path: Some(
+                "CUDAMemory->CUDA->Vulkan external image planes".to_owned(),
+            ),
+            last_import_error: None,
+            last_import_elapsed_us: Some(900),
+            max_import_elapsed_us: Some(1200),
+            last_dmabuf_import: None,
+        };
+
+        let snapshot = native_vulkan_video_runtime_snapshot(
+            &item,
+            Some(frontend),
+            Some(import),
+            None,
+            None,
+            None,
+            12,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.frontend, "gstreamer-appsink");
+        assert_eq!(snapshot.frontend_provider, "gstreamer");
+        assert_eq!(snapshot.frontend_route, "decoded-provider");
+        assert_eq!(snapshot.frontend_decode_owner, "gstreamer");
+        assert_eq!(snapshot.frontend_memory_preference, "auto");
+        assert_eq!(snapshot.frontend_sample_queue_policy, "keep-last");
+        assert_eq!(
+            snapshot.audio_status,
+            "muted-clock-only-audio-clock-pipeline"
+        );
+        assert_eq!(snapshot.audio_output_policy, "plan");
+        assert_eq!(snapshot.audio_output_mode, "clock-only");
+        assert_eq!(
+            snapshot.audio_output_status,
+            "clock-only-output-ready-for-audio-clock-runtime"
+        );
+        assert_eq!(
+            snapshot.audio_runtime_status,
+            "clock-only-output-ready-for-audio-clock-runtime"
+        );
+        assert_eq!(snapshot.audio_runtime_provider, "gstreamer");
+        assert_eq!(snapshot.audio_runtime_loop_seek_count, 0);
+        assert_eq!(snapshot.audio_runtime_loop_restart_count, 0);
+        assert_eq!(snapshot.audio_runtime_position_stale_count, 0);
+        assert_eq!(snapshot.audio_runtime_sample_stale_count, 0);
+        assert_eq!(snapshot.audio_runtime_clock_serial, 0);
+        assert_eq!(snapshot.audio_runtime_position_query_count, 0);
+        assert_eq!(snapshot.audio_runtime_master_clock_estimate_ns, None);
+        assert_eq!(snapshot.frontend_status, "appsink-receiving-samples");
+        assert_eq!(snapshot.handoff_status, "appsink-sample-handoff-active");
+        assert_eq!(snapshot.frames_received, 3);
+        assert_eq!(snapshot.frames_imported, 2);
+        assert_eq!(snapshot.segment_done_messages, 1);
+        assert_eq!(snapshot.rendered_placeholder_frames, 10);
+        assert_eq!(
+            snapshot.texture_import_status,
+            "importing-cuda-vulkan-image-planes"
+        );
+        assert_eq!(snapshot.last_import_size, Some((3840, 2160)));
+        assert_eq!(
+            snapshot.last_import_memory_path.as_deref(),
+            Some("CUDAMemory->CUDA->Vulkan external image planes")
+        );
+        assert_eq!(snapshot.last_import_elapsed_us, Some(900));
+        assert_eq!(snapshot.max_import_elapsed_us, Some(1200));
+        assert_eq!(snapshot.last_dmabuf_import, None);
+        assert_eq!(snapshot.memory_route.route, "cuda-vulkan-copy");
+        assert!(!snapshot.memory_route.direct_candidate);
+        assert!(!snapshot.memory_route.direct_import_confirmed);
+        assert_eq!(snapshot.memory_route.copy_risk, "gpu-copy-or-sync-risk");
+        assert_eq!(snapshot.last_sample_format.as_deref(), Some("NV12"));
+        assert_eq!(snapshot.last_sample_pts_ms, Some(8));
+        assert_eq!(snapshot.last_sample_duration_ms, Some(4));
+        assert_eq!(snapshot.last_sample_pts_delta_ms, Some(4));
+        assert_eq!(snapshot.last_sample_memory_types, vec!["CUDAMemory"]);
+        assert_eq!(snapshot.actual_decoders, vec!["nvh264dec"]);
+        assert_eq!(snapshot.decoder_policy_status.as_deref(), Some("Satisfied"));
+        assert_eq!(snapshot.caps_memory_features, vec!["memory:CUDAMemory"]);
+    }
+
+    #[test]
+    fn video_runtime_snapshot_reports_dmabuf_contract() {
+        let item = NativeVulkanRenderItem::Video {
+            output_name: "HDMI-A-1".to_owned(),
+            source: PathBuf::from("/tmp/video.mp4"),
+            poster: None,
+            fit: FitMode::Cover,
+            loop_playback: true,
+            muted: true,
+            manifest_max_fps: None,
+            target_max_fps: Some(240),
+            decoder_policy: VideoDecoderPolicy::HardwarePreferred,
+            start_offset_ms: 0,
+            renderer_status: "vulkan-lifecycle-video-placeholder",
+        };
+        let contract = NativeVulkanDmabufImportSnapshot {
+            source: "GstDmaBufMemory->Vulkan external DRM modifier image planes".to_owned(),
+            format: "NV12",
+            drm_fourcc: DRM_FORMAT_NV12,
+            drm_fourcc_hex: "0x3231564e".to_owned(),
+            modifier: DRM_FORMAT_MOD_LINEAR,
+            modifier_hex: "0x0000000000000000".to_owned(),
+            available_plane_count: 2,
+            drm_object_count: 1,
+            y_uv_same_fd: true,
+            driver_modifier_plane_count: Some(2),
+            y_offset: 0,
+            y_stride: 3840,
+            uv_offset: 8294400,
+            uv_stride: 3840,
+            image_memory_type_bits: Some(0x0000_0080),
+            image_memory_type_bits_hex: Some("0x00000080".to_owned()),
+            fd_memory_type_bits: Some(0x0000_00c0),
+            fd_memory_type_bits_hex: Some("0x000000c0".to_owned()),
+            compatible_memory_type_bits: Some(0x0000_0080),
+            compatible_memory_type_bits_hex: Some("0x00000080".to_owned()),
+            selected_memory_type_index: Some(7),
+            memory_allocation_size: Some(12_451_840),
+        };
+        let import = NativeVulkanVideoImportSnapshot {
+            texture_import_status: "importing-dmabuf-vulkan-image",
+            frames_imported: 1,
+            last_import_size: Some((3840, 2160)),
+            last_import_memory_path: Some(
+                "GstDmaBufMemory->Vulkan external DRM modifier image planes".to_owned(),
+            ),
+            last_import_error: None,
+            last_import_elapsed_us: Some(200),
+            max_import_elapsed_us: Some(200),
+            last_dmabuf_import: Some(contract.clone()),
+        };
+
+        let snapshot = native_vulkan_video_runtime_snapshot(
+            &item,
+            None,
+            Some(import),
+            None,
+            None,
+            None,
+            1,
+            None,
+        )
+        .expect("video snapshot");
+
+        assert_eq!(snapshot.last_dmabuf_import, Some(contract));
+        assert_eq!(snapshot.memory_route.route, "direct-dmabuf-import");
+        assert!(snapshot.memory_route.direct_candidate);
+        assert!(snapshot.memory_route.direct_import_confirmed);
+        assert_eq!(
+            snapshot.memory_route.copy_risk,
+            "low-confirmed-external-memory-import"
+        );
+    }
+
+    #[test]
+    fn video_runtime_snapshot_separates_dmabuf_caps_from_confirmed_direct_import() {
+        let item = NativeVulkanRenderItem::Video {
+            output_name: "HDMI-A-1".to_owned(),
+            source: PathBuf::from("/tmp/video.mp4"),
+            poster: None,
+            fit: FitMode::Cover,
+            loop_playback: true,
+            muted: true,
+            manifest_max_fps: None,
+            target_max_fps: Some(240),
+            decoder_policy: VideoDecoderPolicy::HardwarePreferred,
+            start_offset_ms: 0,
+            renderer_status: "vulkan-lifecycle-video-placeholder",
+        };
+        let frontend = NativeVulkanVideoFrontendSnapshot {
+            provider: NativeVulkanVideoFrontendProvider::Gstreamer,
+            route: NativeVulkanVideoFrontendRoute::DecodedProvider,
+            decode_owner: NativeVulkanVideoDecodeOwner::Gstreamer,
+            memory_preference: NativeVulkanVideoFrontendMemoryPreference::DirectDmabuf,
+            sample_queue_policy: "keep-last",
+            provider_state: Some("Playing".to_owned()),
+            eos_messages: 0,
+            segment_done_messages: 0,
+            frames_received: 1,
+            last_sample_caps: Some("video/x-raw(memory:DMABuf), format=(string)NV12".to_owned()),
+            last_sample_format: Some("NV12".to_owned()),
+            last_sample_size: Some((1920, 1080)),
+            last_sample_pts_ms: Some(0),
+            last_sample_duration_ms: Some(16),
+            last_sample_pts_delta_ms: None,
+            last_sample_memory_types: vec!["DMABuf".to_owned()],
+            actual_decoders: vec!["vah264dec".to_owned()],
+            decoder_policy_status: Some("Satisfied".to_owned()),
+            caps_report_count: 1,
+            caps_memory_features: vec!["memory:DMABuf".to_owned()],
+            caps_reports: vec![NativeVulkanVideoCapsSnapshot {
+                element: "appsink0".to_owned(),
+                pad: "sink".to_owned(),
+                direction: "sink".to_owned(),
+                caps: "video/x-raw(memory:DMABuf)".to_owned(),
+                source: "current".to_owned(),
+                memory_features: vec!["memory:DMABuf".to_owned()],
+            }],
+            last_error: None,
+        };
+
+        let snapshot = native_vulkan_video_runtime_snapshot(
+            &item,
+            Some(frontend),
+            None,
+            None,
+            None,
+            None,
+            1,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.memory_route.route, "dmabuf-caps-pending-import");
+        assert_eq!(snapshot.frontend_route, "decoded-provider");
+        assert_eq!(snapshot.frontend_decode_owner, "gstreamer");
+        assert_eq!(snapshot.frontend_memory_preference, "direct-dmabuf");
+        assert_eq!(snapshot.frontend_sample_queue_policy, "keep-last");
+        assert!(snapshot.memory_route.direct_candidate);
+        assert!(!snapshot.memory_route.direct_import_confirmed);
+        assert_eq!(
+            snapshot.memory_route.copy_risk,
+            "unknown-until-import-contract"
+        );
+    }
+}

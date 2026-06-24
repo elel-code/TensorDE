@@ -415,3 +415,91 @@ pub(super) fn native_vulkan_api_version_label(version: u32) -> String {
         vk::api_version_patch(version)
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::{
+        NativeVulkanVideoFormatPropertiesSnapshot,
+        native_vulkan_video_formats_include_nv12_with_usage,
+    };
+    use super::*;
+
+    #[test]
+    fn labels_vulkan_video_decode_codec_operations() {
+        let operations = vk::VideoCodecOperationFlagsKHR::from_raw(
+            vk::VideoCodecOperationFlagsKHR::DECODE_H264.as_raw()
+                | NATIVE_VULKAN_VIDEO_CODEC_OPERATION_DECODE_VP9,
+        );
+
+        let labels = native_vulkan_video_codec_operation_labels(operations);
+
+        assert!(labels.contains(&"decode-h264".to_owned()));
+        assert!(labels.contains(&"decode-vp9".to_owned()));
+    }
+
+    #[test]
+    fn labels_h264_probe_format_requirements() {
+        assert_eq!(
+            native_vulkan_h264_level_label(
+                vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_5_2
+            ),
+            Some("5.2")
+        );
+        assert_eq!(
+            native_vulkan_h264_picture_layout_label(
+                vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE
+            ),
+            "progressive"
+        );
+        assert_eq!(
+            native_vulkan_h264_picture_layout_label(
+                vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_INTERLEAVED_LINES
+            ),
+            "interlaced-interleaved-lines"
+        );
+        assert_eq!(
+            native_vulkan_h264_picture_layout_label(
+                vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_SEPARATE_PLANES
+            ),
+            "interlaced-separate-planes"
+        );
+
+        let usage = vk::ImageUsageFlags::VIDEO_DECODE_DST_KHR
+            | vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR
+            | vk::ImageUsageFlags::SAMPLED;
+        let labels = native_vulkan_image_usage_flag_labels(usage);
+
+        assert!(labels.contains(&"video-decode-dst"));
+        assert!(labels.contains(&"video-decode-dpb"));
+        assert!(labels.contains(&"sampled"));
+        assert!(native_vulkan_video_formats_include_nv12_with_usage(
+            &[NativeVulkanVideoFormatPropertiesSnapshot {
+                format: "G8_B8R8_2PLANE_420_UNORM",
+                format_raw: vk::Format::G8_B8R8_2PLANE_420_UNORM.as_raw(),
+                image_type: "2d",
+                image_tiling: "optimal",
+                image_usage_flags: labels,
+                image_create_flags: vec!["mutable-format"],
+            }],
+            &["video-decode-dst", "video-decode-dpb", "sampled"]
+        ));
+    }
+
+    #[test]
+    fn labels_h265_av1_probe_levels_and_formats() {
+        assert_eq!(
+            native_vulkan_h265_level_label(
+                vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_6_2
+            ),
+            Some("6.2")
+        );
+        assert_eq!(
+            native_vulkan_av1_level_label(vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_6_3),
+            Some("6.3")
+        );
+        assert_eq!(
+            native_vulkan_format_label(vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16),
+            "G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16"
+        );
+    }
+}
