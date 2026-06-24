@@ -98,6 +98,7 @@ pub struct NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot {
     pub av1_packet_queue_eos_count: u32,
     pub av1_packet_queue_loop_count: u32,
     pub av1_packet_queue_loop_skip_temporal_units: u32,
+    pub av1_packet_queue_loop_skipped_temporal_units: u32,
     pub av1_packet_queue_bootstrap_discarded_temporal_units: u32,
     pub av1_packet_queue_max_payload_bytes: u64,
     pub av1_packet_queue_retained_payload_bytes: u64,

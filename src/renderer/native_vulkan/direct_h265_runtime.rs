@@ -153,6 +153,7 @@ pub struct NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
     pub h265_packet_queue_eos_count: u32,
     pub h265_packet_queue_loop_count: u32,
     pub h265_packet_queue_loop_skip_access_units: u32,
+    pub h265_packet_queue_loop_skipped_access_units: u32,
     pub h265_packet_queue_bootstrap_discarded_access_units: u32,
     pub h265_packet_queue_max_payload_bytes: u64,
     pub h265_packet_queue_retained_payload_bytes: u64,

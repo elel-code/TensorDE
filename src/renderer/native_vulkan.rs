@@ -4485,6 +4485,8 @@ pub fn run_h264_ready_prefix_video(
                     h264_packet_queue_loop_count: streaming_queue.loop_count,
                     h264_packet_queue_loop_skip_access_units: streaming_queue
                         .loop_skip_access_units,
+                    h264_packet_queue_loop_skipped_access_units: streaming_queue
+                        .loop_skipped_access_units,
                     h264_packet_queue_bootstrap_discarded_access_units: streaming_queue
                         .bootstrap_discarded_access_units,
                     h264_packet_queue_max_payload_bytes: streaming_queue.max_payload_bytes,
@@ -6165,6 +6167,8 @@ pub fn run_h264_ready_prefix_video(
                 h264_packet_queue_eos_count: streaming_queue.eos_count,
                 h264_packet_queue_loop_count: streaming_queue.loop_count,
                 h264_packet_queue_loop_skip_access_units: streaming_queue.loop_skip_access_units,
+                h264_packet_queue_loop_skipped_access_units: streaming_queue
+                    .loop_skipped_access_units,
                 h264_packet_queue_bootstrap_discarded_access_units: streaming_queue
                     .bootstrap_discarded_access_units,
                 h264_packet_queue_max_payload_bytes: streaming_queue.max_payload_bytes,
@@ -7698,6 +7702,8 @@ pub fn run_h265_ready_prefix_video(
                 h265_packet_queue_eos_count: streaming_queue.eos_count,
                 h265_packet_queue_loop_count: streaming_queue.loop_count,
                 h265_packet_queue_loop_skip_access_units: streaming_queue.loop_skip_access_units,
+                h265_packet_queue_loop_skipped_access_units: streaming_queue
+                    .loop_skipped_access_units,
                 h265_packet_queue_bootstrap_discarded_access_units: streaming_queue
                     .bootstrap_discarded_access_units,
                 h265_packet_queue_max_payload_bytes: streaming_queue.max_payload_bytes,
@@ -13794,6 +13800,8 @@ pub fn run_av1_ready_prefix_video(
                 av1_packet_queue_eos_count: streaming_queue.eos_count,
                 av1_packet_queue_loop_count: streaming_queue.loop_count,
                 av1_packet_queue_loop_skip_temporal_units: streaming_queue.loop_skip_access_units,
+                av1_packet_queue_loop_skipped_temporal_units: streaming_queue
+                    .loop_skipped_access_units,
                 av1_packet_queue_bootstrap_discarded_temporal_units: streaming_queue
                     .bootstrap_discarded_access_units,
                 av1_packet_queue_max_payload_bytes: streaming_queue.max_payload_bytes,

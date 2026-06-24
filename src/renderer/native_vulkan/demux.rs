@@ -81,6 +81,7 @@ pub struct NativeVulkanStreamingPacketQueueRuntimeSnapshot {
     pub max_payload_bytes: u64,
     pub bootstrap_discarded_packets: u32,
     pub loop_skip_packets: u32,
+    pub loop_skipped_packets: u32,
     pub eos_count: u32,
 }
 
@@ -94,6 +95,7 @@ pub(super) struct NativeVulkanStreamingPacketQueue<A: NativeVulkanStreamingAcces
     pub(super) eos_count: u32,
     pub(super) loop_count: u32,
     pub(super) loop_skip_access_units: u32,
+    pub(super) loop_skipped_access_units: u32,
     pub(super) bootstrap_discarded_access_units: u32,
     pub(super) max_payload_bytes: u64,
 }
@@ -123,6 +125,7 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
             max_payload_bytes: self.max_payload_bytes,
             bootstrap_discarded_packets: self.bootstrap_discarded_access_units,
             loop_skip_packets: self.loop_skip_access_units,
+            loop_skipped_packets: self.loop_skipped_access_units,
             eos_count: self.eos_count,
         }
     }
@@ -214,12 +217,15 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
                 && self.loop_count != before_loop_count
                 && !access_unit.is_random_access_with_parameter_sets(&self.parameter_sets)
             {
+                self.loop_skipped_access_units = self.loop_skipped_access_units.saturating_add(1);
                 for _ in 1..self.loop_skip_access_units {
                     let skipped = self.frontend.pull_next_access_unit(loop_on_eos)?;
                     self.sync_frontend_counters();
                     if skipped.is_none() {
                         return Ok(None);
                     }
+                    self.loop_skipped_access_units =
+                        self.loop_skipped_access_units.saturating_add(1);
                 }
                 continue;
             }
@@ -376,6 +382,7 @@ pub(super) fn native_vulkan_start_streaming_packet_queue_from_frontend<
         eos_count,
         loop_count,
         loop_skip_access_units: 0,
+        loop_skipped_access_units: 0,
         bootstrap_discarded_access_units,
         max_payload_bytes,
     })
@@ -451,6 +458,28 @@ mod tests {
         }
     }
 
+    struct TestLoopingPacketFrontend {
+        bootstrap: VecDeque<TestAccessUnit>,
+        loop_access_units: Vec<TestAccessUnit>,
+        loop_position: usize,
+        eos_count: u32,
+        loop_count: u32,
+        bootstrapping: bool,
+    }
+
+    impl TestLoopingPacketFrontend {
+        fn new(bootstrap: Vec<TestAccessUnit>, loop_access_units: Vec<TestAccessUnit>) -> Self {
+            Self {
+                bootstrap: bootstrap.into(),
+                loop_access_units,
+                loop_position: 0,
+                eos_count: 0,
+                loop_count: 0,
+                bootstrapping: true,
+            }
+        }
+    }
+
     impl NativeVulkanStreamingPacketFrontend<TestAccessUnit> for TestPacketFrontend {
         fn pull_next_access_unit(
             &mut self,
@@ -461,6 +490,50 @@ mod tests {
                 self.eos_count = self.eos_count.saturating_add(1);
             }
             Ok(access_unit)
+        }
+
+        fn eos_count(&self) -> u32 {
+            self.eos_count
+        }
+
+        fn loop_count(&self) -> u32 {
+            self.loop_count
+        }
+    }
+
+    impl NativeVulkanStreamingPacketFrontend<TestAccessUnit> for TestLoopingPacketFrontend {
+        fn pull_next_access_unit(
+            &mut self,
+            loop_on_eos: bool,
+        ) -> Result<Option<TestAccessUnit>, NativeVulkanError> {
+            if self.bootstrapping {
+                if let Some(access_unit) = self.bootstrap.pop_front() {
+                    return Ok(Some(access_unit));
+                }
+                self.bootstrapping = false;
+                self.eos_count = self.eos_count.saturating_add(1);
+                if !loop_on_eos {
+                    return Ok(None);
+                }
+                self.loop_count = self.loop_count.saturating_add(1);
+                self.loop_position = 0;
+            }
+
+            if self.loop_access_units.is_empty() {
+                self.eos_count = self.eos_count.saturating_add(1);
+                return Ok(None);
+            }
+            if self.loop_position >= self.loop_access_units.len() {
+                self.eos_count = self.eos_count.saturating_add(1);
+                if !loop_on_eos {
+                    return Ok(None);
+                }
+                self.loop_count = self.loop_count.saturating_add(1);
+                self.loop_position = 0;
+            }
+            let access_unit = self.loop_access_units[self.loop_position].clone();
+            self.loop_position += 1;
+            Ok(Some(access_unit))
         }
 
         fn eos_count(&self) -> u32 {
@@ -523,6 +596,86 @@ mod tests {
         assert_eq!(snapshot.max_payload_bytes, 4);
         assert_eq!(snapshot.bootstrap_discarded_packets, 0);
         assert_eq!(snapshot.loop_skip_packets, 0);
+        assert_eq!(snapshot.loop_skipped_packets, 0);
         assert_eq!(snapshot.eos_count, 0);
+    }
+
+    #[test]
+    fn packet_queue_counts_actual_loop_skipped_packets() {
+        let bootstrap = vec![
+            TestAccessUnit {
+                bytes: vec![1, 2, 3],
+                pts_ms: Some(0),
+                parameter_sets: true,
+                random_access: true,
+            },
+            TestAccessUnit {
+                bytes: vec![4, 5, 6],
+                pts_ms: Some(4),
+                parameter_sets: false,
+                random_access: false,
+            },
+        ];
+        let loop_access_units = vec![
+            TestAccessUnit {
+                bytes: vec![7],
+                pts_ms: Some(0),
+                parameter_sets: false,
+                random_access: false,
+            },
+            TestAccessUnit {
+                bytes: vec![8],
+                pts_ms: Some(4),
+                parameter_sets: false,
+                random_access: false,
+            },
+            TestAccessUnit {
+                bytes: vec![1, 2, 3],
+                pts_ms: Some(8),
+                parameter_sets: true,
+                random_access: true,
+            },
+            TestAccessUnit {
+                bytes: vec![9],
+                pts_ms: Some(12),
+                parameter_sets: false,
+                random_access: false,
+            },
+        ];
+        let mut queue = native_vulkan_start_streaming_packet_queue_from_frontend(
+            Box::new(TestLoopingPacketFrontend::new(bootstrap, loop_access_units)),
+            2,
+        )
+        .expect("packet queue");
+        queue.set_loop_skip_access_units(2);
+
+        assert_eq!(
+            queue
+                .next_packet(true)
+                .expect("first bootstrap packet")
+                .access_unit
+                .pts_ms(),
+            Some(0)
+        );
+        assert_eq!(
+            queue
+                .next_packet(true)
+                .expect("second bootstrap packet")
+                .access_unit
+                .pts_ms(),
+            Some(4)
+        );
+        let recovered = queue.next_packet(true).expect("loop recovery packet");
+
+        assert_eq!(recovered.access_unit.pts_ms(), Some(8));
+        assert_eq!(recovered.source_loop_index, 1);
+        assert_eq!(queue.loop_skip_access_units, 2);
+        assert_eq!(queue.loop_skipped_access_units, 2);
+
+        let snapshot = queue.runtime_snapshot();
+        assert_eq!(snapshot.loop_skip_packets, 2);
+        assert_eq!(snapshot.loop_skipped_packets, 2);
+        assert_eq!(snapshot.current_serial, 1);
+        assert_eq!(snapshot.front_serial, None);
     }
 }
