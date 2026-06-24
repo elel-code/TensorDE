@@ -161,6 +161,7 @@ pub use direct_h264_runtime::{
 };
 #[cfg(feature = "native-vulkan-gst-video")]
 pub use direct_h265_runtime::{
+    NativeVulkanDirectH265FirstFrameDecodeSnapshot,
     NativeVulkanDirectH265FirstFrameRuntimeSnapshot,
     NativeVulkanDirectH265ReadyPrefixFrameSnapshot,
     NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot,
@@ -2491,33 +2492,6 @@ pub struct NativeVulkanRuntimeSnapshot {
     pub scene_lite_runtime: Option<NativeVulkanSceneLiteRuntimeSnapshot>,
     pub render_item: NativeVulkanRenderItem,
     pub last_render_error: Option<String>,
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NativeVulkanDirectH265FirstFrameDecodeSnapshot {
-    pub completed: bool,
-    pub queue_family_index: u32,
-    pub source_layout: &'static str,
-    pub decoded_layout: &'static str,
-    pub src_buffer_offset: u64,
-    pub src_buffer_range: u64,
-    pub dst_base_array_layer: u32,
-    pub setup_slot_index: i32,
-    pub begin_reference_slot_count: u32,
-    pub decode_reference_slot_count: u32,
-    pub reset_control_recorded: bool,
-    pub slice_segment_count: u32,
-    pub slice_segment_offsets: Vec<u32>,
-    pub nal_type: u8,
-    pub nal_type_label: &'static str,
-    pub first_slice_segment_in_pic_flag: bool,
-    pub slice_type: u32,
-    pub pps_id: u32,
-    pub pic_order_cnt_val: i32,
-    pub idr: bool,
-    pub irap: bool,
-    pub decode_elapsed_us: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -6,10 +6,33 @@ use crate::core::FitMode;
 
 use super::demux::NativeVulkanStreamingPacketQueueRuntimeSnapshot;
 use super::direct_runtime::{NativeVulkanDirectPresentTimedFrame, NativeVulkanDirectPresentTiming};
-use super::{
-    NativeVulkanAudioClockRuntimeSnapshot, NativeVulkanDirectH265FirstFrameDecodeSnapshot,
-    NativeVulkanVideoSessionCodec,
-};
+use super::{NativeVulkanAudioClockRuntimeSnapshot, NativeVulkanVideoSessionCodec};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanDirectH265FirstFrameDecodeSnapshot {
+    pub completed: bool,
+    pub queue_family_index: u32,
+    pub source_layout: &'static str,
+    pub decoded_layout: &'static str,
+    pub src_buffer_offset: u64,
+    pub src_buffer_range: u64,
+    pub dst_base_array_layer: u32,
+    pub setup_slot_index: i32,
+    pub begin_reference_slot_count: u32,
+    pub decode_reference_slot_count: u32,
+    pub reset_control_recorded: bool,
+    pub slice_segment_count: u32,
+    pub slice_segment_offsets: Vec<u32>,
+    pub nal_type: u8,
+    pub nal_type_label: &'static str,
+    pub first_slice_segment_in_pic_flag: bool,
+    pub slice_type: u32,
+    pub pps_id: u32,
+    pub pic_order_cnt_val: i32,
+    pub idr: bool,
+    pub irap: bool,
+    pub decode_elapsed_us: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanDirectH265FirstFrameRuntimeSnapshot {
