@@ -199,9 +199,7 @@ pub fn native_vulkan_extract_av1_ready_prefix_for_vulkanalia(
         codec,
         extract_bitstream: true,
         bitstream_source: Some(source),
-        bitstream_extract_max_samples: max_samples
-            .max(frame_count.saturating_mul(2))
-            .max(1),
+        bitstream_extract_max_samples: max_samples.max(frame_count.saturating_mul(2)).max(1),
         ..NativeVulkanVideoSessionSmokeOptions::default()
     };
     options.allocate_bitstream_buffer = false;

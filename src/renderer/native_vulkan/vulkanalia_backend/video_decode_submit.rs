@@ -169,7 +169,7 @@ pub(super) fn native_vulkan_vulkanalia_decode_command_order(
     order.extend([
         "cmd_decode_video_khr",
         "cmd_end_video_coding_khr",
-        "queue_submit",
+        "queue_submit2",
     ]);
     order
 }
@@ -187,7 +187,7 @@ mod tests {
                 "cmd_begin_video_coding_khr",
                 "cmd_decode_video_khr",
                 "cmd_end_video_coding_khr",
-                "queue_submit",
+                "queue_submit2",
             ]
         );
         assert_eq!(
@@ -198,7 +198,7 @@ mod tests {
                 "cmd_control_video_coding_khr",
                 "cmd_decode_video_khr",
                 "cmd_end_video_coding_khr",
-                "queue_submit",
+                "queue_submit2",
             ]
         );
     }

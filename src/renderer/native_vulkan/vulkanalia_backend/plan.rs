@@ -1,9 +1,11 @@
 use serde::Serialize;
 
 use super::{
-    NativeVulkanVulkanaliaDeviceProbeTemplate, NativeVulkanVulkanaliaFeatureChainTemplate,
-    NativeVulkanVulkanaliaMigrationContract, NativeVulkanVulkanaliaVideoProfileTemplate,
-    NativeVulkanVulkanaliaVideoSessionTemplate, native_vulkan_vulkanalia_device_probe_template,
+    NativeVulkanVulkanaliaDeviceProbeTemplate, NativeVulkanVulkanaliaDirectRuntimeContract,
+    NativeVulkanVulkanaliaFeatureChainTemplate, NativeVulkanVulkanaliaMigrationContract,
+    NativeVulkanVulkanaliaVideoProfileTemplate, NativeVulkanVulkanaliaVideoSessionTemplate,
+    native_vulkan_vulkanalia_device_probe_template,
+    native_vulkan_vulkanalia_direct_runtime_contract,
     native_vulkan_vulkanalia_feature_chain_template, native_vulkan_vulkanalia_migration_contract,
     native_vulkan_vulkanalia_video_profile_templates,
     native_vulkan_vulkanalia_video_session_template,
@@ -19,9 +21,11 @@ pub struct NativeVulkanVulkanaliaBackendPlan {
     pub device_probe_template: NativeVulkanVulkanaliaDeviceProbeTemplate,
     pub video_profile_templates: Vec<NativeVulkanVulkanaliaVideoProfileTemplate>,
     pub video_session_template: NativeVulkanVulkanaliaVideoSessionTemplate,
+    pub direct_runtime_contract: NativeVulkanVulkanaliaDirectRuntimeContract,
     pub migration_contract: NativeVulkanVulkanaliaMigrationContract,
     pub required_instance_extensions: &'static [&'static str],
     pub required_device_extensions: &'static [&'static str],
+    pub preferred_optional_device_extensions: &'static [&'static str],
     pub prioritized_vulkan_1_4_features: &'static [&'static str],
     pub migration_gates: &'static [&'static str],
 }
@@ -44,6 +48,7 @@ pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendP
         device_probe_template: native_vulkan_vulkanalia_device_probe_template(),
         video_profile_templates: native_vulkan_vulkanalia_video_profile_templates(),
         video_session_template: native_vulkan_vulkanalia_video_session_template(),
+        direct_runtime_contract: native_vulkan_vulkanalia_direct_runtime_contract(),
         migration_contract: native_vulkan_vulkanalia_migration_contract(),
         required_instance_extensions: &["VK_KHR_surface", "VK_KHR_wayland_surface"],
         required_device_extensions: &[
@@ -59,6 +64,11 @@ pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendP
             "VK_EXT_external_memory_dma_buf",
             "VK_EXT_image_drm_format_modifier",
         ],
+        preferred_optional_device_extensions: &[
+            "VK_KHR_video_maintenance1",
+            "VK_KHR_video_maintenance2",
+            "VK_EXT_descriptor_buffer",
+        ],
         prioritized_vulkan_1_4_features: &[
             "dynamic-rendering-local-read",
             "push-descriptor",
@@ -73,7 +83,7 @@ pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendP
             "create Vulkan 1.4 instance/device and report PhysicalDeviceVulkan14Features",
             "probe Wayland surface and swapchain parity with the ash backend",
             "probe Vulkan Video H.264/H.265/AV1 profile and format parity",
-            "port one H.265 first-frame submit path without raw FFI regressions",
+            "route H.264/H.265/AV1 direct-video submit through Vulkanalia-owned session/image/bitstream/command resources",
             "port direct present timing telemetry before replacing the ash main path",
             "remove ash only after all native Vulkan renderer smoke/probe paths pass through Vulkanalia",
         ],
@@ -103,6 +113,10 @@ mod tests {
                 .contains(&"dynamic-rendering-local-read")
         );
         assert!(
+            plan.preferred_optional_device_extensions
+                .contains(&"VK_KHR_video_maintenance2")
+        );
+        assert!(
             plan.api_type_evidence
                 .iter()
                 .any(|name| { name.ends_with("PhysicalDeviceVulkan14Features") })
@@ -111,6 +125,13 @@ mod tests {
             plan.api_type_evidence
                 .iter()
                 .any(|name| { name.ends_with("VideoDecodeAV1PictureInfoKHR") })
+        );
+        assert_eq!(plan.direct_runtime_contract.binding, "vulkanalia");
+        assert_eq!(plan.direct_runtime_contract.route_name, "direct-video");
+        assert!(
+            plan.direct_runtime_contract
+                .required_submit_order
+                .contains(&"queue_submit2")
         );
         assert_eq!(plan.feature_chain_template.api, "Vulkan 1.4");
         assert_eq!(plan.device_probe_template.requested_api_version, "1.4.0");

@@ -33,6 +33,8 @@ const REQUIRED_EXTERNAL_MEMORY_DEVICE_EXTENSIONS: &[&str] = &[
     "VK_EXT_external_memory_dma_buf",
     "VK_EXT_image_drm_format_modifier",
 ];
+const PREFERRED_VIDEO_MAINTENANCE_DEVICE_EXTENSIONS: &[&str] =
+    &["VK_KHR_video_maintenance1", "VK_KHR_video_maintenance2"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaDeviceProbeTemplate {
@@ -42,6 +44,7 @@ pub struct NativeVulkanVulkanaliaDeviceProbeTemplate {
     pub required_instance_extensions: &'static [&'static str],
     pub required_video_device_extensions: &'static [&'static str],
     pub required_external_memory_device_extensions: &'static [&'static str],
+    pub preferred_video_maintenance_device_extensions: &'static [&'static str],
     pub probe_scope: &'static str,
 }
 
@@ -77,6 +80,7 @@ pub struct NativeVulkanVulkanaliaPhysicalDeviceSnapshot {
     pub video_format_capabilities: NativeVulkanVulkanaliaVideoFormatProbeSnapshot,
     pub video_session_resource_plans: Vec<NativeVulkanVulkanaliaVideoSessionResourceProbePlan>,
     pub vulkan_1_4_features: NativeVulkanVulkanaliaVulkan14FeatureSnapshot,
+    pub video_maintenance_features: NativeVulkanVulkanaliaVideoMaintenanceFeatureSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -85,6 +89,16 @@ pub struct NativeVulkanVulkanaliaVulkan14FeatureSnapshot {
     pub maintenance5: bool,
     pub maintenance6: bool,
     pub push_descriptor: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaVideoMaintenanceFeatureSnapshot {
+    pub video_maintenance1_extension_available: bool,
+    pub video_maintenance2_extension_available: bool,
+    pub video_maintenance1_feature: bool,
+    pub video_maintenance2_feature: bool,
+    pub inline_session_parameters_supported: bool,
+    pub inline_session_parameter_codecs: Vec<&'static str>,
 }
 
 pub fn native_vulkan_vulkanalia_device_probe_template() -> NativeVulkanVulkanaliaDeviceProbeTemplate
@@ -96,6 +110,8 @@ pub fn native_vulkan_vulkanalia_device_probe_template() -> NativeVulkanVulkanali
         required_instance_extensions: REQUIRED_INSTANCE_EXTENSIONS,
         required_video_device_extensions: REQUIRED_VIDEO_DEVICE_EXTENSIONS,
         required_external_memory_device_extensions: REQUIRED_EXTERNAL_MEMORY_DEVICE_EXTENSIONS,
+        preferred_video_maintenance_device_extensions:
+            PREFERRED_VIDEO_MAINTENANCE_DEVICE_EXTENSIONS,
         probe_scope: "entry/instance/physical-device capability enumeration only; no logical device, surface, swapchain or submit work",
     }
 }
@@ -220,6 +236,11 @@ fn probe_vulkanalia_instance_devices(
                 &device_extensions,
                 REQUIRED_EXTERNAL_MEMORY_DEVICE_EXTENSIONS,
             );
+            let video_maintenance_features = query_vulkanalia_video_maintenance_features(
+                instance,
+                physical_device,
+                &device_extensions,
+            );
             let video_decode_queue_family_indices =
                 native_vulkan_vulkanalia_video_decode_queue_family_indices(
                     instance,
@@ -269,15 +290,78 @@ fn probe_vulkanalia_instance_devices(
                     maintenance6: vulkan14_features.maintenance6 != 0,
                     push_descriptor: vulkan14_features.push_descriptor != 0,
                 },
+                video_maintenance_features,
             })
         })
         .collect()
+}
+
+fn query_vulkanalia_video_maintenance_features(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+    device_extensions: &[String],
+) -> NativeVulkanVulkanaliaVideoMaintenanceFeatureSnapshot {
+    let video_maintenance1_extension_available =
+        has_extension(device_extensions, "VK_KHR_video_maintenance1");
+    let video_maintenance2_extension_available =
+        has_extension(device_extensions, "VK_KHR_video_maintenance2");
+    let video_maintenance1_feature = video_maintenance1_extension_available
+        && query_vulkanalia_video_maintenance1_feature(instance, physical_device);
+    let video_maintenance2_feature = video_maintenance1_feature
+        && video_maintenance2_extension_available
+        && query_vulkanalia_video_maintenance2_feature(instance, physical_device);
+    let inline_session_parameter_codecs = if video_maintenance2_feature {
+        vec!["h264", "h265", "av1"]
+    } else {
+        Vec::new()
+    };
+
+    NativeVulkanVulkanaliaVideoMaintenanceFeatureSnapshot {
+        video_maintenance1_extension_available,
+        video_maintenance2_extension_available,
+        video_maintenance1_feature,
+        video_maintenance2_feature,
+        inline_session_parameters_supported: video_maintenance2_feature,
+        inline_session_parameter_codecs,
+    }
+}
+
+fn query_vulkanalia_video_maintenance1_feature(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+) -> bool {
+    let mut feature = vk::PhysicalDeviceVideoMaintenance1FeaturesKHR::default();
+    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
+        .push_next(&mut feature)
+        .build();
+    unsafe {
+        instance.get_physical_device_features2(physical_device, &mut features2);
+    }
+    feature.video_maintenance1 != 0
+}
+
+fn query_vulkanalia_video_maintenance2_feature(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+) -> bool {
+    let mut feature = vk::PhysicalDeviceVideoMaintenance2FeaturesKHR::default();
+    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
+        .push_next(&mut feature)
+        .build();
+    unsafe {
+        instance.get_physical_device_features2(physical_device, &mut features2);
+    }
+    feature.video_maintenance2 != 0
 }
 
 fn has_all_extensions(available: &[String], required: &[&str]) -> bool {
     required
         .iter()
         .all(|required| available.iter().any(|available| available == required))
+}
+
+fn has_extension(available: &[String], required: &str) -> bool {
+    available.iter().any(|available| available == required)
 }
 
 fn sorted_strings(mut values: Vec<String>) -> Vec<String> {
@@ -309,6 +393,11 @@ mod tests {
                 .required_external_memory_device_extensions
                 .contains(&"VK_EXT_image_drm_format_modifier")
         );
+        assert!(
+            template
+                .preferred_video_maintenance_device_extensions
+                .contains(&"VK_KHR_video_maintenance2")
+        );
         assert!(template.probe_scope.contains("no logical device"));
     }
 
@@ -326,5 +415,30 @@ mod tests {
             &available,
             &["VK_KHR_video_queue", "VK_KHR_video_decode_h265"]
         ));
+    }
+
+    #[test]
+    fn video_maintenance_snapshot_only_claims_inline_when_feature_is_enabled() {
+        let disabled = NativeVulkanVulkanaliaVideoMaintenanceFeatureSnapshot {
+            video_maintenance1_extension_available: true,
+            video_maintenance2_extension_available: true,
+            video_maintenance1_feature: true,
+            video_maintenance2_feature: false,
+            inline_session_parameters_supported: false,
+            inline_session_parameter_codecs: Vec::new(),
+        };
+        let enabled = NativeVulkanVulkanaliaVideoMaintenanceFeatureSnapshot {
+            video_maintenance2_feature: true,
+            inline_session_parameters_supported: true,
+            inline_session_parameter_codecs: vec!["h264", "h265", "av1"],
+            ..disabled.clone()
+        };
+
+        assert!(!disabled.inline_session_parameters_supported);
+        assert!(enabled.inline_session_parameters_supported);
+        assert_eq!(
+            enabled.inline_session_parameter_codecs,
+            vec!["h264", "h265", "av1"]
+        );
     }
 }

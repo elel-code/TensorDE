@@ -96,6 +96,8 @@ const VIDEO_DECODE_QUEUE_EXTENSION_NAME: &str = "VK_KHR_video_decode_queue";
 const VIDEO_DECODE_H264_EXTENSION_NAME: &str = "VK_KHR_video_decode_h264";
 const VIDEO_DECODE_H265_EXTENSION_NAME: &str = "VK_KHR_video_decode_h265";
 const VIDEO_DECODE_AV1_EXTENSION_NAME: &str = "VK_KHR_video_decode_av1";
+const VIDEO_MAINTENANCE1_EXTENSION_NAME: &str = "VK_KHR_video_maintenance1";
+const VIDEO_MAINTENANCE2_EXTENSION_NAME: &str = "VK_KHR_video_maintenance2";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
@@ -154,6 +156,12 @@ pub struct NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot {
     pub selected_queue_count: u32,
     pub selected_queue_flags: Vec<&'static str>,
     pub enabled_device_extensions: Vec<&'static str>,
+    pub synchronization2_enabled: bool,
+    pub video_maintenance1_enabled: bool,
+    pub video_maintenance2_enabled: bool,
+    pub inline_session_parameters_enabled: bool,
+    pub inline_session_parameter_codecs: Vec<&'static str>,
+    pub ffmpeg_submit_model: &'static str,
     pub video_codec_operation: Vec<&'static str>,
     pub profile: &'static str,
     pub format_probe_profile: &'static str,
@@ -278,8 +286,31 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
         .queue_priorities(&priorities)
         .build();
     let queue_create_infos = [queue_create_info];
-    let enabled_device_extensions =
+    let feature_selection = vulkanalia_video_session_device_feature_selection(
+        instance,
+        selection.physical_device,
+        &selection.device_extensions,
+    );
+    if vulkanalia_video_session_decode_submit_requested(&options)
+        && !feature_selection.synchronization2_enabled
+    {
+        return Err(
+            "Vulkanalia ready-prefix decode submit requires synchronization2 for CmdPipelineBarrier2/QueueSubmit2"
+                .to_owned(),
+        );
+    }
+    let mut enabled_device_extensions =
         vulkanalia_video_session_required_device_extensions(options.codec);
+    if feature_selection.video_maintenance1_enabled
+        && !enabled_device_extensions.contains(&VIDEO_MAINTENANCE1_EXTENSION_NAME)
+    {
+        enabled_device_extensions.push(VIDEO_MAINTENANCE1_EXTENSION_NAME);
+    }
+    if feature_selection.video_maintenance2_enabled
+        && !enabled_device_extensions.contains(&VIDEO_MAINTENANCE2_EXTENSION_NAME)
+    {
+        enabled_device_extensions.push(VIDEO_MAINTENANCE2_EXTENSION_NAME);
+    }
     let extension_names = enabled_device_extensions
         .iter()
         .map(|extension| CString::new(*extension).expect("static extension name has no nul"))
@@ -288,9 +319,27 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
         .iter()
         .map(|extension| extension.as_ptr())
         .collect::<Vec<_>>();
-    let device_create_info = vk::DeviceCreateInfo::builder()
+    let mut synchronization2_features = vk::PhysicalDeviceSynchronization2Features::builder()
+        .synchronization2(true)
+        .build();
+    let mut video_maintenance1_features = vk::PhysicalDeviceVideoMaintenance1FeaturesKHR::builder()
+        .video_maintenance1(true)
+        .build();
+    let mut video_maintenance2_features = vk::PhysicalDeviceVideoMaintenance2FeaturesKHR::builder()
+        .video_maintenance2(true)
+        .build();
+    let mut device_create_info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queue_create_infos)
         .enabled_extension_names(&extension_name_ptrs);
+    if feature_selection.synchronization2_enabled {
+        device_create_info = device_create_info.push_next(&mut synchronization2_features);
+    }
+    if feature_selection.video_maintenance1_enabled {
+        device_create_info = device_create_info.push_next(&mut video_maintenance1_features);
+    }
+    if feature_selection.video_maintenance2_enabled {
+        device_create_info = device_create_info.push_next(&mut video_maintenance2_features);
+    }
     let device =
         unsafe { instance.create_device(selection.physical_device, &device_create_info, None) }
             .map_err(|err| format!("vkCreateDevice(vulkanalia video session bind): {err:?}"))?;
@@ -331,6 +380,8 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
                 target_picture_dpb_supported,
                 target_picture_sampled_output_supported,
                 target_resource_plan,
+                enabled_device_extensions,
+                feature_selection,
                 &profile_info,
                 queried,
             )
@@ -374,6 +425,8 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
                 target_picture_dpb_supported,
                 target_picture_sampled_output_supported,
                 target_resource_plan,
+                enabled_device_extensions,
+                feature_selection,
                 &profile_info,
                 queried,
             )
@@ -410,6 +463,8 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
                 target_picture_dpb_supported,
                 target_picture_sampled_output_supported,
                 target_resource_plan,
+                enabled_device_extensions,
+                feature_selection,
                 &profile_info,
                 queried,
             )
@@ -433,12 +488,116 @@ struct VulkanaliaVideoSessionPhysicalDeviceSelection {
     device_extensions: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VulkanaliaVideoSessionDeviceFeatureSelection {
+    synchronization2_enabled: bool,
+    video_maintenance1_enabled: bool,
+    video_maintenance2_enabled: bool,
+    inline_session_parameters_enabled: bool,
+}
+
+impl VulkanaliaVideoSessionDeviceFeatureSelection {
+    fn inline_session_parameter_codecs(self) -> Vec<&'static str> {
+        if self.inline_session_parameters_enabled {
+            vec!["h264", "h265", "av1"]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct VulkanaliaVideoSessionCapabilityQuery {
     capabilities: vk::VideoCapabilitiesKHR,
     decode_capability_flags: vk::VideoDecodeCapabilityFlagsKHR,
     codec_max_level: Option<&'static str>,
     codec_max_level_raw: Option<i32>,
+}
+
+fn vulkanalia_video_session_device_feature_selection(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+    device_extensions: &[String],
+) -> VulkanaliaVideoSessionDeviceFeatureSelection {
+    let synchronization2_enabled =
+        query_vulkanalia_synchronization2_feature(instance, physical_device);
+    let video_maintenance1_enabled =
+        vulkanalia_video_session_extension_available(
+            device_extensions,
+            VIDEO_MAINTENANCE1_EXTENSION_NAME,
+        ) && query_vulkanalia_video_maintenance1_feature(instance, physical_device);
+    let video_maintenance2_enabled = video_maintenance1_enabled
+        && vulkanalia_video_session_extension_available(
+            device_extensions,
+            VIDEO_MAINTENANCE2_EXTENSION_NAME,
+        )
+        && query_vulkanalia_video_maintenance2_feature(instance, physical_device);
+
+    VulkanaliaVideoSessionDeviceFeatureSelection {
+        synchronization2_enabled,
+        video_maintenance1_enabled,
+        video_maintenance2_enabled,
+        inline_session_parameters_enabled: video_maintenance2_enabled,
+    }
+}
+
+fn query_vulkanalia_synchronization2_feature(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+) -> bool {
+    let mut feature = vk::PhysicalDeviceSynchronization2Features::default();
+    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
+        .push_next(&mut feature)
+        .build();
+    unsafe {
+        instance.get_physical_device_features2(physical_device, &mut features2);
+    }
+    feature.synchronization2 != 0
+}
+
+fn query_vulkanalia_video_maintenance1_feature(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+) -> bool {
+    let mut feature = vk::PhysicalDeviceVideoMaintenance1FeaturesKHR::default();
+    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
+        .push_next(&mut feature)
+        .build();
+    unsafe {
+        instance.get_physical_device_features2(physical_device, &mut features2);
+    }
+    feature.video_maintenance1 != 0
+}
+
+fn query_vulkanalia_video_maintenance2_feature(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+) -> bool {
+    let mut feature = vk::PhysicalDeviceVideoMaintenance2FeaturesKHR::default();
+    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
+        .push_next(&mut feature)
+        .build();
+    unsafe {
+        instance.get_physical_device_features2(physical_device, &mut features2);
+    }
+    feature.video_maintenance2 != 0
+}
+
+fn vulkanalia_video_session_decode_submit_requested(
+    options: &NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
+) -> bool {
+    options.h264_ready_prefix_decode.is_some()
+        || options.h265_ready_prefix_decode.is_some()
+        || options.av1_ready_prefix_decode.is_some()
+}
+
+fn vulkanalia_video_session_extension_available(
+    device_extensions: &[String],
+    extension: &str,
+) -> bool {
+    device_extensions
+        .iter()
+        .any(|available| available == extension)
 }
 
 fn smoke_bind_vulkanalia_video_session_profile(
@@ -453,6 +612,8 @@ fn smoke_bind_vulkanalia_video_session_profile(
     target_picture_dpb_supported: bool,
     target_picture_sampled_output_supported: bool,
     target_resource_plan: NativeVulkanVulkanaliaVideoSessionResourceProbePlan,
+    enabled_device_extensions: Vec<&'static str>,
+    feature_selection: VulkanaliaVideoSessionDeviceFeatureSelection,
     profile_info: &vk::VideoProfileInfoKHR,
     queried: VulkanaliaVideoSessionCapabilityQuery,
 ) -> Result<NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot, String> {
@@ -675,9 +836,13 @@ fn smoke_bind_vulkanalia_video_session_profile(
             selected_queue_family_index: selection.queue_family_index,
             selected_queue_count: selection.queue_count,
             selected_queue_flags: queue_flag_labels(selection.queue_flags),
-            enabled_device_extensions: vulkanalia_video_session_required_device_extensions(
-                options.codec,
-            ),
+            enabled_device_extensions,
+            synchronization2_enabled: feature_selection.synchronization2_enabled,
+            video_maintenance1_enabled: feature_selection.video_maintenance1_enabled,
+            video_maintenance2_enabled: feature_selection.video_maintenance2_enabled,
+            inline_session_parameters_enabled: feature_selection.inline_session_parameters_enabled,
+            inline_session_parameter_codecs: feature_selection.inline_session_parameter_codecs(),
+            ffmpeg_submit_model: "references/ffmpeg/libavutil/vulkan.c: VkSubmitInfo2 + QueueSubmit2",
             video_codec_operation: video_codec_operation_labels(
                 vulkanalia_video_session_codec_operation(options.codec),
             ),
@@ -2261,6 +2426,44 @@ mod tests {
         assert_eq!(bytes.len(), 768);
         assert_eq!(&bytes[..3], &[1, 2, 3]);
         assert_eq!(&bytes[256..260], &[4, 4, 4, 4]);
+    }
+
+    #[test]
+    fn session_feature_selection_reports_inline_parameter_codecs() {
+        let disabled = VulkanaliaVideoSessionDeviceFeatureSelection {
+            synchronization2_enabled: true,
+            video_maintenance1_enabled: true,
+            video_maintenance2_enabled: false,
+            inline_session_parameters_enabled: false,
+        };
+        let enabled = VulkanaliaVideoSessionDeviceFeatureSelection {
+            video_maintenance2_enabled: true,
+            inline_session_parameters_enabled: true,
+            ..disabled
+        };
+
+        assert!(disabled.inline_session_parameter_codecs().is_empty());
+        assert_eq!(
+            enabled.inline_session_parameter_codecs(),
+            vec!["h264", "h265", "av1"]
+        );
+    }
+
+    #[test]
+    fn session_feature_extension_lookup_uses_exact_names() {
+        let extensions = vec![
+            VIDEO_MAINTENANCE1_EXTENSION_NAME.to_owned(),
+            VIDEO_MAINTENANCE2_EXTENSION_NAME.to_owned(),
+        ];
+
+        assert!(vulkanalia_video_session_extension_available(
+            &extensions,
+            VIDEO_MAINTENANCE1_EXTENSION_NAME
+        ));
+        assert!(!vulkanalia_video_session_extension_available(
+            &extensions,
+            "VK_KHR_video_maintenance"
+        ));
     }
 
     fn test_av1_sequence_header(bit_depth: u8) -> NativeVulkanAv1SequenceHeaderSnapshot {

@@ -30,6 +30,8 @@ mod video_decode_submit_av1;
 mod video_decode_submit_h264;
 #[path = "vulkanalia_backend/video_decode_submit_h265.rs"]
 mod video_decode_submit_h265;
+#[path = "vulkanalia_backend/video_direct_runtime.rs"]
+mod video_direct_runtime;
 #[path = "vulkanalia_backend/video_format_probe.rs"]
 mod video_format_probe;
 #[path = "vulkanalia_backend/video_profile_gate.rs"]
@@ -55,6 +57,7 @@ mod video_session_parameters_h265;
 
 pub use device_probe::{
     NativeVulkanVulkanaliaDeviceProbeSnapshot, NativeVulkanVulkanaliaDeviceProbeTemplate,
+    NativeVulkanVulkanaliaVideoMaintenanceFeatureSnapshot,
     native_vulkan_vulkanalia_device_probe_template, probe_native_vulkan_vulkanalia_devices,
 };
 pub use features::{
@@ -94,6 +97,11 @@ pub use video_decode_submit_h265::{
     NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot,
     NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput,
     NativeVulkanVulkanaliaH265ReadyPrefixFrameInput,
+};
+pub use video_direct_runtime::{
+    NativeVulkanVulkanaliaDirectCodecRuntimePlan, NativeVulkanVulkanaliaDirectRuntimeContract,
+    native_vulkan_vulkanalia_direct_codec_runtime_plans,
+    native_vulkan_vulkanalia_direct_runtime_contract,
 };
 #[allow(unused_imports)]
 pub use video_format_probe::{

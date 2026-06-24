@@ -8,6 +8,7 @@ pub enum NativeVulkanVulkanaliaMigrationStageKind {
     VideoFormatCapabilities,
     VideoSessionResources,
     CodecSubmit,
+    DirectVideoRuntime,
     ExternalMemoryImport,
     RenderPresent,
     AshRemoval,
@@ -75,20 +76,27 @@ pub fn native_vulkan_vulkanalia_migration_contract() -> NativeVulkanVulkanaliaMi
             },
             NativeVulkanVulkanaliaMigrationStage {
                 order: 5,
+                kind: NativeVulkanVulkanaliaMigrationStageKind::DirectVideoRuntime,
+                ash_boundary: "continuous direct-video runtime ownership of session images, bitstream upload, command buffers, submit completion and display handoff",
+                vulkanalia_target_module: "vulkanalia_backend/video_direct_runtime.rs",
+                validation_gate: "H.264, H.265 main8/main10 and AV1 main8/main10 direct-video runs consume Vulkanalia-owned resources and submit with QueueSubmit2",
+            },
+            NativeVulkanVulkanaliaMigrationStage {
+                order: 6,
                 kind: NativeVulkanVulkanaliaMigrationStageKind::ExternalMemoryImport,
                 ash_boundary: "DMABuf/DRM modifier import, external semaphore fd import and memory type selection",
                 vulkanalia_target_module: "vulkanalia_backend/external_memory.rs",
                 validation_gate: "gst-dma decoded-frame route reports import/display handoff without CPU frame copies when the driver supports it",
             },
             NativeVulkanVulkanaliaMigrationStage {
-                order: 6,
+                order: 7,
                 kind: NativeVulkanVulkanaliaMigrationStageKind::RenderPresent,
                 ash_boundary: "render pass/dynamic rendering, synchronization, queue submit and present timing",
                 vulkanalia_target_module: "vulkanalia_backend/render_present.rs",
                 validation_gate: "present pacing telemetry stays at least equal to ash on 240 Hz video and scene-lite runs",
             },
             NativeVulkanVulkanaliaMigrationStage {
-                order: 7,
+                order: 8,
                 kind: NativeVulkanVulkanaliaMigrationStageKind::AshRemoval,
                 ash_boundary: "ash dependency and compatibility shims",
                 vulkanalia_target_module: "native-vulkan-renderer Cargo feature",
@@ -110,7 +118,7 @@ mod tests {
         assert_eq!(contract.compatibility_binding, "ash");
         assert!(contract.split_rule.contains("vulkanalia_backend"));
         assert!(contract.native_vulkan_rs_rule.contains("must not gain"));
-        assert_eq!(contract.stages.len(), 8);
+        assert_eq!(contract.stages.len(), 9);
         assert_eq!(
             contract.stages.first().map(|stage| stage.kind),
             Some(NativeVulkanVulkanaliaMigrationStageKind::InstanceDevice)
@@ -130,6 +138,10 @@ mod tests {
                 && stage
                     .validation_gate
                     .contains("H.264, H.265 main8/main10 and AV1 main8/main10")
+        }));
+        assert!(contract.stages.iter().any(|stage| {
+            stage.kind == NativeVulkanVulkanaliaMigrationStageKind::DirectVideoRuntime
+                && stage.validation_gate.contains("QueueSubmit2")
         }));
         assert!(contract.stages.iter().any(|stage| {
             stage.kind == NativeVulkanVulkanaliaMigrationStageKind::ExternalMemoryImport
