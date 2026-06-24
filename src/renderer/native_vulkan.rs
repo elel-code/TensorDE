@@ -45938,12 +45938,21 @@ mod tests {
         assert_eq!(snapshot.frontend_decode_owner, "gstreamer");
         assert_eq!(snapshot.frontend_memory_preference, "auto");
         assert_eq!(snapshot.frontend_sample_queue_policy, "keep-last");
-        assert_eq!(snapshot.audio_status, "muted-no-audio-pipeline");
+        assert_eq!(
+            snapshot.audio_status,
+            "muted-clock-only-audio-clock-pipeline"
+        );
         assert_eq!(snapshot.audio_output_policy, "plan");
         assert_eq!(snapshot.audio_output_mode, "clock-only");
-        assert_eq!(snapshot.audio_output_status, "disabled-by-muted-plan");
-        assert_eq!(snapshot.audio_runtime_status, "disabled-by-muted-plan");
-        assert_eq!(snapshot.audio_runtime_provider, "none");
+        assert_eq!(
+            snapshot.audio_output_status,
+            "clock-only-output-ready-for-audio-clock-runtime"
+        );
+        assert_eq!(
+            snapshot.audio_runtime_status,
+            "clock-only-output-ready-for-audio-clock-runtime"
+        );
+        assert_eq!(snapshot.audio_runtime_provider, "gstreamer");
         assert_eq!(snapshot.audio_runtime_loop_seek_count, 0);
         assert_eq!(snapshot.audio_runtime_loop_restart_count, 0);
         assert_eq!(snapshot.audio_runtime_position_stale_count, 0);

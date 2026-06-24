@@ -205,15 +205,12 @@ pub(super) fn native_vulkan_video_runtime_snapshot(
 
     let audio_output_policy = NativeVulkanAudioOutputPolicy::Plan;
     let audio_output_mode = audio_output_policy.resolve(*muted);
-    let audio_output_status = if audio_output_mode == NativeVulkanAudioOutputMode::ClockOnly {
-        "disabled-by-muted-plan"
-    } else {
-        "auto-output-ready-for-audio-clock-runtime"
+    let audio_output_status = match audio_output_mode {
+        NativeVulkanAudioOutputMode::ClockOnly => "clock-only-output-ready-for-audio-clock-runtime",
+        NativeVulkanAudioOutputMode::Auto => "auto-output-ready-for-audio-clock-runtime",
     };
     let audio_runtime_status = if audio_runtime_last_error.is_some() {
         "audio-runtime-error"
-    } else if audio_output_mode == NativeVulkanAudioOutputMode::ClockOnly {
-        "disabled-by-muted-plan"
     } else if audio_runtime
         .map(|runtime| runtime.reached_clocked_playback)
         .unwrap_or(false)
@@ -222,22 +219,14 @@ pub(super) fn native_vulkan_video_runtime_snapshot(
     } else if audio_runtime.is_some() {
         "audio-runtime-started-waiting-for-clocked-playback"
     } else {
-        "auto-output-ready-for-audio-clock-runtime"
+        audio_output_status
     };
     let audio_runtime_reached_clocked_playback = audio_runtime
         .map(|runtime| runtime.reached_clocked_playback)
         .unwrap_or(false);
     let audio_runtime_provider = audio_runtime
         .map(|runtime| runtime.audio_provider)
-        .unwrap_or(
-            if audio_runtime_last_error.is_some()
-                || audio_output_mode == NativeVulkanAudioOutputMode::Auto
-            {
-                "gstreamer"
-            } else {
-                "none"
-            },
-        );
+        .unwrap_or("gstreamer");
     let audio_runtime_buffer_count = audio_runtime
         .map(|runtime| runtime.audio_buffer_count)
         .unwrap_or(0);
@@ -331,7 +320,7 @@ pub(super) fn native_vulkan_video_runtime_snapshot(
             .map(|import| import.texture_import_status)
             .unwrap_or("not-importing-yet"),
         audio_status: if *muted {
-            "muted-no-audio-pipeline"
+            "muted-clock-only-audio-clock-pipeline"
         } else {
             "planned-auto-audio-output-pipeline"
         },

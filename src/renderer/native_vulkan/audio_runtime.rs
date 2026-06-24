@@ -1,3 +1,5 @@
+#[cfg(feature = "native-vulkan-gst-video")]
+use super::NativeVulkanAudioOutputPolicy;
 use super::NativeVulkanRenderItem;
 #[cfg(feature = "native-vulkan-gst-video")]
 use super::audio_worker::{
@@ -5,8 +7,6 @@ use super::audio_worker::{
     native_vulkan_audio_runtime_state, native_vulkan_audio_runtime_state_with_error,
 };
 use super::video_runtime::NativeVulkanVideoAudioRuntimeTelemetry;
-#[cfg(feature = "native-vulkan-gst-video")]
-use super::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy};
 
 #[derive(Default)]
 pub(super) struct NativeVulkanPlanAudioRuntime {
@@ -39,12 +39,6 @@ impl NativeVulkanPlanAudioRuntime {
             };
         };
         let output_mode = NativeVulkanAudioOutputPolicy::Plan.resolve(*muted);
-        if output_mode != NativeVulkanAudioOutputMode::Auto {
-            return Self {
-                worker: None,
-                state,
-            };
-        }
         match super::audio_frontend::NativeVulkanAudioClockRuntimeFrontend::start(
             source,
             output_mode,
@@ -143,11 +137,26 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "native-vulkan-gst-video"))]
     fn muted_plan_does_not_start_audio_runtime() {
         let runtime = NativeVulkanPlanAudioRuntime::start_for_render_item(&video_item(true));
 
         assert_eq!(runtime.telemetry(), None);
         assert_eq!(runtime.last_error(), None);
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn muted_missing_source_records_clock_only_audio_runtime_error() {
+        let runtime = NativeVulkanPlanAudioRuntime::start_for_render_item(&video_item(true));
+
+        assert_eq!(runtime.telemetry(), None);
+        assert!(
+            runtime
+                .last_error()
+                .expect("clock-only audio runtime error")
+                .contains("audio clock runtime source does not exist")
+        );
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
