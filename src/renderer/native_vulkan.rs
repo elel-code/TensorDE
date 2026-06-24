@@ -266,7 +266,9 @@ use video_session_resources::*;
 pub use video_session_snapshots::*;
 #[cfg(feature = "native-vulkan-vulkanalia")]
 pub use vulkanalia_backend::{
-    NativeVulkanVulkanaliaBackendPlan, native_vulkan_vulkanalia_backend_plan,
+    NativeVulkanVulkanaliaBackendPlan, NativeVulkanVulkanaliaDeviceProbeSnapshot,
+    NativeVulkanVulkanaliaDeviceProbeTemplate, native_vulkan_vulkanalia_backend_plan,
+    native_vulkan_vulkanalia_device_probe_template, probe_native_vulkan_vulkanalia_devices,
 };
 
 #[cfg(feature = "native-vulkan-gst-video")]

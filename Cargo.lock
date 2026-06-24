@@ -1054,6 +1054,7 @@ version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebd71d6c64383bbdf1c260efa22e81e1a2a7dd832a3831af34495f47d7551d7b"
 dependencies = [
+ "libloading",
  "vulkanalia-sys",
 ]
 

@@ -4,6 +4,8 @@
 //! `native_vulkan/vulkanalia_backend/` so the ash replacement does not grow a
 //! second monolithic Vulkan file.
 
+#[path = "vulkanalia_backend/device_probe.rs"]
+mod device_probe;
 #[path = "vulkanalia_backend/features.rs"]
 mod features;
 #[path = "vulkanalia_backend/plan.rs"]
@@ -11,6 +13,10 @@ mod plan;
 #[path = "vulkanalia_backend/profiles.rs"]
 mod profiles;
 
+pub use device_probe::{
+    NativeVulkanVulkanaliaDeviceProbeSnapshot, NativeVulkanVulkanaliaDeviceProbeTemplate,
+    native_vulkan_vulkanalia_device_probe_template, probe_native_vulkan_vulkanalia_devices,
+};
 pub use features::{
     NativeVulkanVulkanaliaFeatureChainTemplate, native_vulkan_vulkanalia_feature_chain_template,
 };

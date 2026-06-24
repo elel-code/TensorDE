@@ -50,7 +50,7 @@ serde_json = "1"
 smithay-client-toolkit = { version = "0.20", optional = true }
 rustix = { version = "1.1", features = ["event"], optional = true }
 toml = "1"
-vulkanalia = { version = "0.35", optional = true }
+vulkanalia = { version = "0.35", features = ["libloading"], optional = true }
 wayland-client = { version = "0.31", features = ["system", "libwayland_1_23"], optional = true }
 wayland-protocols = { version = "0.32", features = ["client", "staging"], optional = true }
 zip = { version = "4", default-features = false, features = ["deflate"] }

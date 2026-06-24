@@ -1,7 +1,8 @@
 use serde::Serialize;
 
 use super::{
-    NativeVulkanVulkanaliaFeatureChainTemplate, NativeVulkanVulkanaliaVideoProfileTemplate,
+    NativeVulkanVulkanaliaDeviceProbeTemplate, NativeVulkanVulkanaliaFeatureChainTemplate,
+    NativeVulkanVulkanaliaVideoProfileTemplate, native_vulkan_vulkanalia_device_probe_template,
     native_vulkan_vulkanalia_feature_chain_template,
     native_vulkan_vulkanalia_video_profile_templates,
 };
@@ -13,6 +14,7 @@ pub struct NativeVulkanVulkanaliaBackendPlan {
     pub api_baseline: &'static str,
     pub api_type_evidence: Vec<&'static str>,
     pub feature_chain_template: NativeVulkanVulkanaliaFeatureChainTemplate,
+    pub device_probe_template: NativeVulkanVulkanaliaDeviceProbeTemplate,
     pub video_profile_templates: Vec<NativeVulkanVulkanaliaVideoProfileTemplate>,
     pub required_instance_extensions: &'static [&'static str],
     pub required_device_extensions: &'static [&'static str],
@@ -35,6 +37,7 @@ pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendP
             std::any::type_name::<vulkanalia::vk::VideoDecodeAV1PictureInfoKHR>(),
         ],
         feature_chain_template: native_vulkan_vulkanalia_feature_chain_template(),
+        device_probe_template: native_vulkan_vulkanalia_device_probe_template(),
         video_profile_templates: native_vulkan_vulkanalia_video_profile_templates(),
         required_instance_extensions: &["VK_KHR_surface", "VK_KHR_wayland_surface"],
         required_device_extensions: &[
@@ -101,6 +104,7 @@ mod tests {
                 .any(|name| { name.ends_with("VideoDecodeAV1PictureInfoKHR") })
         );
         assert_eq!(plan.feature_chain_template.api, "Vulkan 1.4");
+        assert_eq!(plan.device_probe_template.requested_api_version, "1.4.0");
         assert_eq!(plan.video_profile_templates.len(), 7);
     }
 }
