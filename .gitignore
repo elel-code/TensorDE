@@ -1,5 +1,7 @@
 /target/
 /artifacts/video-sources/
+/artifacts/video-real-source-matrix/
+/artifacts/wallpaper-engine-workshop/
 **/*.rs.bk
 *.gwp
 *.gwp.tmp
