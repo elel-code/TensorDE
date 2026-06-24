@@ -105,15 +105,13 @@ pub(super) unsafe fn native_vulkan_vulkanalia_record_decode_prepare_barriers(
     command_buffer: vk::CommandBuffer,
     image: vk::Image,
     bitstream_buffer: vk::Buffer,
+    bitstream_buffer_offset: u64,
     bitstream_buffer_range: u64,
     base_array_layer: u32,
     layer_count: u32,
 ) -> Result<NativeVulkanVulkanaliaDecodePrepareBarrierPlan, String> {
     if bitstream_buffer_range == 0 {
         return Err("Vulkanalia decode prepare barriers require non-empty bitstream range".into());
-    }
-    if layer_count == 0 {
-        return Err("Vulkanalia decode prepare barriers require at least one image layer".into());
     }
 
     let buffer_barrier = vk::BufferMemoryBarrier2::builder()
@@ -124,28 +122,34 @@ pub(super) unsafe fn native_vulkan_vulkanalia_record_decode_prepare_barriers(
         .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .buffer(bitstream_buffer)
-        .offset(0)
+        .offset(bitstream_buffer_offset)
         .size(bitstream_buffer_range)
         .build();
-    let image_barrier = vk::ImageMemoryBarrier2::builder()
-        .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
-        .src_access_mask(vk::AccessFlags2::empty())
-        .dst_stage_mask(vk::PipelineStageFlags2::VIDEO_DECODE_KHR)
-        .dst_access_mask(
-            vk::AccessFlags2::VIDEO_DECODE_READ_KHR | vk::AccessFlags2::VIDEO_DECODE_WRITE_KHR,
-        )
-        .old_layout(vk::ImageLayout::UNDEFINED)
-        .new_layout(vk::ImageLayout::VIDEO_DECODE_DPB_KHR)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .image(image)
-        .subresource_range(native_vulkan_vulkanalia_decode_image_subresource_range(
-            base_array_layer,
-            layer_count,
-        ))
-        .build();
     let buffer_barriers = [buffer_barrier];
-    let image_barriers = [image_barrier];
+    let image_barriers = if layer_count > 0 {
+        vec![
+            vk::ImageMemoryBarrier2::builder()
+                .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                .src_access_mask(vk::AccessFlags2::empty())
+                .dst_stage_mask(vk::PipelineStageFlags2::VIDEO_DECODE_KHR)
+                .dst_access_mask(
+                    vk::AccessFlags2::VIDEO_DECODE_READ_KHR
+                        | vk::AccessFlags2::VIDEO_DECODE_WRITE_KHR,
+                )
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::VIDEO_DECODE_DPB_KHR)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(image)
+                .subresource_range(native_vulkan_vulkanalia_decode_image_subresource_range(
+                    base_array_layer,
+                    layer_count,
+                ))
+                .build(),
+        ]
+    } else {
+        Vec::new()
+    };
     let dependency_info = vk::DependencyInfo::builder()
         .buffer_memory_barriers(&buffer_barriers)
         .image_memory_barriers(&image_barriers)
@@ -205,6 +209,7 @@ pub(super) unsafe fn native_vulkan_vulkanalia_record_h265_decode_command_buffer(
     bitstream_buffer: vk::Buffer,
     image_views: &super::video_decode_submit::NativeVulkanVulkanaliaDecodeImageViewBindings,
     reset_command_buffer: bool,
+    transition_dst_from_undefined: bool,
 ) -> Result<NativeVulkanVulkanaliaDecodeCommandBufferPlan, String> {
     if reset_command_buffer {
         unsafe {
@@ -226,9 +231,10 @@ pub(super) unsafe fn native_vulkan_vulkanalia_record_h265_decode_command_buffer(
             command_buffer,
             image,
             bitstream_buffer,
+            plan.common.src_buffer_offset,
             plan.common.src_buffer_range,
             plan.common.dst_picture_resource.base_array_layer,
-            1,
+            u32::from(transition_dst_from_undefined),
         )?;
         native_vulkan_vulkanalia_record_h265_decode_commands(
             device,

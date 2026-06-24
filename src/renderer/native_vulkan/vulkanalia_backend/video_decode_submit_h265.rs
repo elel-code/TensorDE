@@ -95,6 +95,21 @@ pub struct NativeVulkanVulkanaliaH265ReadyPrefixFrameInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaH265ReadyPrefixCommandFrameSnapshot {
+    pub frame_index: u32,
+    pub access_unit_index: u32,
+    pub src_buffer_offset: u64,
+    pub src_buffer_range: u64,
+    pub dst_base_array_layer: u32,
+    pub setup_slot_index: i32,
+    pub begin_reference_slot_count: u32,
+    pub decode_reference_slot_count: u32,
+    pub reset_control_recorded: bool,
+    pub slice_segment_count: u32,
+    pub slice_segment_offsets: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot {
     pub requested_frame_count: u32,
     pub recorded_frame_count: u32,
@@ -115,6 +130,7 @@ pub struct NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot {
     pub reset_control_recorded: bool,
     pub slice_segment_count: u32,
     pub slice_segment_offsets: Vec<u32>,
+    pub frames: Vec<NativeVulkanVulkanaliaH265ReadyPrefixCommandFrameSnapshot>,
 }
 
 pub(super) fn native_vulkan_vulkanalia_h265_ready_prefix_decode_submit_plan(
