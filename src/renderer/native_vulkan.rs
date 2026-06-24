@@ -138,11 +138,12 @@ pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolic
 #[cfg(feature = "native-vulkan-gst-video")]
 use direct_runtime::{
     NativeVulkanDirectDisplayHandoffMetrics, NativeVulkanDirectOptionalPresentTimedFrame,
-    NativeVulkanDirectOptionalPresentTiming, NativeVulkanDirectPresentTimedFrame,
-    NativeVulkanDirectPresentTiming, NativeVulkanDirectPresentWaitStats,
-    native_vulkan_direct_apply_optional_present_result, native_vulkan_direct_apply_present_result,
-    native_vulkan_direct_present_result_summary, native_vulkan_direct_recv_present_result,
-    native_vulkan_direct_runtime_summary, native_vulkan_direct_try_recv_pending_present_result,
+    NativeVulkanDirectOptionalPresentTiming, NativeVulkanDirectPresentBackpressure,
+    NativeVulkanDirectPresentTimedFrame, NativeVulkanDirectPresentTiming,
+    NativeVulkanDirectPresentWaitStats, native_vulkan_direct_apply_optional_present_result,
+    native_vulkan_direct_apply_present_result, native_vulkan_direct_present_result_summary,
+    native_vulkan_direct_recv_pending_present_result, native_vulkan_direct_runtime_summary,
+    native_vulkan_direct_try_recv_pending_present_result,
 };
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
@@ -5676,7 +5677,8 @@ pub fn run_h264_ready_prefix_video(
                 let mut h264_present_result_wait_stats =
                     NativeVulkanDirectPresentWaitStats::default();
                 let mut h264_acquire_not_ready_count = 0u32;
-                let mut pending_present_results = 0u32;
+                let mut direct_present_backpressure =
+                    NativeVulkanDirectPresentBackpressure::new(direct_async_present_depth);
                 let mut dpb_slot_in_flight_fences =
                     vec![vk::Fence::null(); image.snapshot.array_layers as usize];
                 let mut swapchain_image_in_flight_fences =
@@ -5963,13 +5965,14 @@ pub fn run_h264_ready_prefix_video(
                             h264_trace_enabled,
                             format!("direct-sampled frame {playback_frame_index} begin"),
                         );
-                        while pending_present_results >= direct_async_present_depth {
-                            let (present_result, _) = native_vulkan_direct_recv_present_result(
-                                &present_result_rx,
-                                &mut h264_present_result_wait_stats,
-                                "H.264 direct present worker exited before returning a present result",
-                            )?;
-                            pending_present_results = pending_present_results.saturating_sub(1);
+                        while direct_present_backpressure.should_wait_for_result() {
+                            let (present_result, _) =
+                                native_vulkan_direct_recv_pending_present_result(
+                                    &present_result_rx,
+                                    &mut direct_present_backpressure,
+                                    &mut h264_present_result_wait_stats,
+                                    "H.264 direct present worker exited before returning a present result",
+                                )?;
                             apply_h264_direct_present_result(
                                 &mut frames,
                                 &mut h264_acquire_not_ready_count,
@@ -5980,7 +5983,7 @@ pub fn run_h264_ready_prefix_video(
                             let Some(present_result) =
                                 native_vulkan_direct_try_recv_pending_present_result(
                                     &present_result_rx,
-                                    &mut pending_present_results,
+                                    &mut direct_present_backpressure,
                                     "H.264 direct present worker exited with pending present results",
                                 )?
                             else {
@@ -6322,7 +6325,7 @@ pub fn run_h264_ready_prefix_video(
                                     .to_owned(),
                             )
                             })?;
-                        pending_present_results = pending_present_results.saturating_add(1);
+                        direct_present_backpressure.record_submitted_result();
                         frame.acquire_elapsed_us = 0;
                         frame.record_elapsed_us = 0;
                         frame.submit_elapsed_us = 0;
@@ -6389,13 +6392,13 @@ pub fn run_h264_ready_prefix_video(
                                 .max(native_vulkan_elapsed_us(late_duration));
                         }
                     }
-                    while pending_present_results > 0 {
-                        let (present_result, _) = native_vulkan_direct_recv_present_result(
+                    while direct_present_backpressure.has_pending_results() {
+                        let (present_result, _) = native_vulkan_direct_recv_pending_present_result(
                             &present_result_rx,
+                            &mut direct_present_backpressure,
                             &mut h264_present_result_wait_stats,
                             "H.264 direct present worker exited before returning final present result",
                         )?;
-                        pending_present_results = pending_present_results.saturating_sub(1);
                         apply_h264_direct_present_result(
                             &mut frames,
                             &mut h264_acquire_not_ready_count,
@@ -6549,7 +6552,7 @@ pub fn run_h264_ready_prefix_video(
                     ),
                     h264_video_queue_sync_strategy,
                     h264_present_queue_count: requested_present_queue_count,
-                    h264_async_present_depth: direct_async_present_depth,
+                    h264_async_present_depth: direct_present_backpressure.max_pending_results(),
                     h264_present_result_wait_count: h264_present_result_wait_stats.wait_count,
                     h264_present_result_wait_elapsed_us: h264_present_result_wait_stats.elapsed_us,
                     h264_present_result_wait_max_us: h264_present_result_wait_stats.max_us,
@@ -7025,33 +7028,36 @@ pub fn run_h264_ready_prefix_video(
                             playback_frame_count, h264_async_present_depth
                         ),
                     );
-                    let max_pending_present_results = h264_async_present_depth;
-                    let mut pending_present_results = 0u32;
+                    let mut direct_present_backpressure =
+                        NativeVulkanDirectPresentBackpressure::new(h264_async_present_depth);
                     for playback_frame_index in 0..playback_frame_count {
                         native_vulkan_h264_trace(
                             h264_trace_enabled,
                             format!(
-                                "frame {playback_frame_index} begin pending_present={pending_present_results}"
+                                "frame {playback_frame_index} begin pending_present={}",
+                                direct_present_backpressure.pending_results()
                             ),
                         );
-                        while pending_present_results >= max_pending_present_results {
+                        while direct_present_backpressure.should_wait_for_result() {
                             native_vulkan_h264_trace(
                                 h264_trace_enabled,
                                 format!(
-                                    "frame {playback_frame_index} present result wait begin pending={pending_present_results}"
+                                    "frame {playback_frame_index} present result wait begin pending={}",
+                                    direct_present_backpressure.pending_results()
                                 ),
                             );
                             let (present_result, present_result_wait_elapsed_us) =
-                                native_vulkan_direct_recv_present_result(
+                                native_vulkan_direct_recv_pending_present_result(
                                     &present_result_rx,
+                                    &mut direct_present_backpressure,
                                     &mut h264_present_result_wait_stats,
                                     "H.264 present worker exited before returning a present result",
                                 )?;
-                            pending_present_results = pending_present_results.saturating_sub(1);
                             native_vulkan_h264_trace(
                                 h264_trace_enabled,
                                 format!(
-                                    "frame {playback_frame_index} present result wait end elapsed_us={present_result_wait_elapsed_us} pending={pending_present_results}"
+                                    "frame {playback_frame_index} present result wait end elapsed_us={present_result_wait_elapsed_us} pending={}",
+                                    direct_present_backpressure.pending_results()
                                 ),
                             );
                             apply_h264_present_result(
@@ -7064,7 +7070,7 @@ pub fn run_h264_ready_prefix_video(
                             let Some(present_result) =
                                 native_vulkan_direct_try_recv_pending_present_result(
                                     &present_result_rx,
-                                    &mut pending_present_results,
+                                    &mut direct_present_backpressure,
                                     "H.264 present worker exited with pending present results",
                                 )?
                             else {
@@ -7690,7 +7696,7 @@ pub fn run_h264_ready_prefix_video(
                         );
                         display_slot_in_flight_fences[display_slot] = frame_fence;
                         frame.submit_elapsed_us = 0;
-                        pending_present_results = pending_present_results.saturating_add(1);
+                        direct_present_backpressure.record_submitted_result();
                         let next_available_decode_semaphore_index = if let Some(plan) =
                             decode_ahead_plan
                         {
@@ -8058,24 +8064,26 @@ pub fn run_h264_ready_prefix_video(
                                 .max(native_vulkan_elapsed_us(late_duration));
                         }
                     }
-                    while pending_present_results > 0 {
+                    while direct_present_backpressure.has_pending_results() {
                         native_vulkan_h264_trace(
                             h264_trace_enabled,
                             format!(
-                                "final present result wait begin pending={pending_present_results}"
+                                "final present result wait begin pending={}",
+                                direct_present_backpressure.pending_results()
                             ),
                         );
                         let (present_result, present_result_wait_elapsed_us) =
-                            native_vulkan_direct_recv_present_result(
+                            native_vulkan_direct_recv_pending_present_result(
                                 &present_result_rx,
+                                &mut direct_present_backpressure,
                                 &mut h264_present_result_wait_stats,
                                 "H.264 present worker exited before returning a present result",
                             )?;
-                        pending_present_results = pending_present_results.saturating_sub(1);
                         native_vulkan_h264_trace(
                             h264_trace_enabled,
                             format!(
-                                "final present result wait end elapsed_us={present_result_wait_elapsed_us} pending={pending_present_results}"
+                                "final present result wait end elapsed_us={present_result_wait_elapsed_us} pending={}",
+                                direct_present_backpressure.pending_results()
                             ),
                         );
                         apply_h264_present_result(
@@ -9037,7 +9045,8 @@ pub fn run_h265_ready_prefix_video(
             let mut h265_present_frame_preroll_count = 0u32;
             let mut h265_present_result_wait_stats = NativeVulkanDirectPresentWaitStats::default();
             let mut h265_acquire_not_ready_count = 0u32;
-            let mut pending_present_results = 0u32;
+            let mut direct_present_backpressure =
+                NativeVulkanDirectPresentBackpressure::new(h265_async_present_depth);
             let mut dpb_slot_in_flight_fences =
                 vec![vk::Fence::null(); image.snapshot.array_layers as usize];
             let mut swapchain_image_in_flight_fences =
@@ -9310,13 +9319,13 @@ pub fn run_h265_ready_prefix_video(
                 });
 
                 for playback_frame_index in 0..playback_frame_count {
-                    while pending_present_results >= h265_async_present_depth {
-                        let (present_result, _) = native_vulkan_direct_recv_present_result(
+                    while direct_present_backpressure.should_wait_for_result() {
+                        let (present_result, _) = native_vulkan_direct_recv_pending_present_result(
                             &present_result_rx,
+                            &mut direct_present_backpressure,
                             &mut h265_present_result_wait_stats,
                             "H.265 present worker exited before returning a present result",
                         )?;
-                        pending_present_results = pending_present_results.saturating_sub(1);
                         apply_h265_present_result(
                             &mut frames,
                             &mut h265_acquire_not_ready_count,
@@ -9327,7 +9336,7 @@ pub fn run_h265_ready_prefix_video(
                         let Some(present_result) =
                             native_vulkan_direct_try_recv_pending_present_result(
                                 &present_result_rx,
-                                &mut pending_present_results,
+                                &mut direct_present_backpressure,
                                 "H.265 present worker exited with pending present results",
                             )?
                         else {
@@ -9552,7 +9561,7 @@ pub fn run_h265_ready_prefix_video(
                                     .to_owned(),
                             )
                         })?;
-                    pending_present_results = pending_present_results.saturating_add(1);
+                    direct_present_backpressure.record_submitted_result();
                     frame.acquire_elapsed_us = 0;
                     frame.record_elapsed_us = 0;
                     frame.submit_elapsed_us = 0;
@@ -9618,13 +9627,13 @@ pub fn run_h265_ready_prefix_video(
                             max_frame_pacing_late_us.max(native_vulkan_elapsed_us(late_duration));
                     }
                 }
-                while pending_present_results > 0 {
-                    let (present_result, _) = native_vulkan_direct_recv_present_result(
+                while direct_present_backpressure.has_pending_results() {
+                    let (present_result, _) = native_vulkan_direct_recv_pending_present_result(
                         &present_result_rx,
+                        &mut direct_present_backpressure,
                         &mut h265_present_result_wait_stats,
                         "H.265 present worker exited before returning final present result",
                     )?;
-                    pending_present_results = pending_present_results.saturating_sub(1);
                     apply_h265_present_result(
                         &mut frames,
                         &mut h265_acquire_not_ready_count,

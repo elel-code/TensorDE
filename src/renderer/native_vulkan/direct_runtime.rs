@@ -98,6 +98,45 @@ impl NativeVulkanDirectPresentWaitStats {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct NativeVulkanDirectPresentBackpressure {
+    max_pending_results: u32,
+    pending_results: u32,
+}
+
+impl NativeVulkanDirectPresentBackpressure {
+    pub(super) fn new(max_pending_results: u32) -> Self {
+        Self {
+            max_pending_results: max_pending_results.max(1),
+            pending_results: 0,
+        }
+    }
+
+    pub(super) fn max_pending_results(&self) -> u32 {
+        self.max_pending_results
+    }
+
+    pub(super) fn pending_results(&self) -> u32 {
+        self.pending_results
+    }
+
+    pub(super) fn should_wait_for_result(&self) -> bool {
+        self.pending_results >= self.max_pending_results
+    }
+
+    pub(super) fn has_pending_results(&self) -> bool {
+        self.pending_results > 0
+    }
+
+    pub(super) fn record_submitted_result(&mut self) {
+        self.pending_results = self.pending_results.saturating_add(1);
+    }
+
+    pub(super) fn record_completed_result(&mut self) {
+        self.pending_results = self.pending_results.saturating_sub(1);
+    }
+}
+
 pub(super) fn native_vulkan_direct_recv_present_result<T>(
     present_result_rx: &mpsc::Receiver<T>,
     wait_stats: &mut NativeVulkanDirectPresentWaitStats,
@@ -113,19 +152,34 @@ pub(super) fn native_vulkan_direct_recv_present_result<T>(
     Ok((present_result, present_result_wait_elapsed_us))
 }
 
+pub(super) fn native_vulkan_direct_recv_pending_present_result<T>(
+    present_result_rx: &mpsc::Receiver<T>,
+    backpressure: &mut NativeVulkanDirectPresentBackpressure,
+    wait_stats: &mut NativeVulkanDirectPresentWaitStats,
+    disconnected_message: &'static str,
+) -> Result<(T, u64), NativeVulkanError> {
+    let result = native_vulkan_direct_recv_present_result(
+        present_result_rx,
+        wait_stats,
+        disconnected_message,
+    )?;
+    backpressure.record_completed_result();
+    Ok(result)
+}
+
 pub(super) fn native_vulkan_direct_try_recv_pending_present_result<T>(
     present_result_rx: &mpsc::Receiver<T>,
-    pending_present_results: &mut u32,
+    backpressure: &mut NativeVulkanDirectPresentBackpressure,
     disconnected_pending_message: &'static str,
 ) -> Result<Option<T>, NativeVulkanError> {
     match present_result_rx.try_recv() {
         Ok(present_result) => {
-            *pending_present_results = pending_present_results.saturating_sub(1);
+            backpressure.record_completed_result();
             Ok(Some(present_result))
         }
         Err(mpsc::TryRecvError::Empty) => Ok(None),
         Err(mpsc::TryRecvError::Disconnected) => {
-            if *pending_present_results == 0 {
+            if !backpressure.has_pending_results() {
                 Ok(None)
             } else {
                 Err(NativeVulkanError::Video(
@@ -432,6 +486,25 @@ mod tests {
     }
 
     #[test]
+    fn present_backpressure_clamps_depth_and_tracks_pending_results() {
+        let mut backpressure = NativeVulkanDirectPresentBackpressure::new(0);
+
+        assert_eq!(backpressure.max_pending_results(), 1);
+        assert_eq!(backpressure.pending_results(), 0);
+        assert!(!backpressure.should_wait_for_result());
+
+        backpressure.record_submitted_result();
+        assert_eq!(backpressure.pending_results(), 1);
+        assert!(backpressure.should_wait_for_result());
+        assert!(backpressure.has_pending_results());
+
+        backpressure.record_completed_result();
+        backpressure.record_completed_result();
+        assert_eq!(backpressure.pending_results(), 0);
+        assert!(!backpressure.has_pending_results());
+    }
+
+    #[test]
     fn recv_present_result_records_wait_and_returns_payload() {
         let (tx, rx) = mpsc::channel();
         tx.send(42u32).expect("send present result");
@@ -462,69 +535,96 @@ mod tests {
     }
 
     #[test]
+    fn recv_pending_present_result_records_wait_and_decrements_pending() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(42u32).expect("send present result");
+        let mut stats = NativeVulkanDirectPresentWaitStats::default();
+        let mut backpressure = NativeVulkanDirectPresentBackpressure::new(2);
+        backpressure.record_submitted_result();
+
+        let (payload, elapsed_us) = native_vulkan_direct_recv_pending_present_result(
+            &rx,
+            &mut backpressure,
+            &mut stats,
+            "present worker exited",
+        )
+        .expect("receive pending present result");
+
+        assert_eq!(payload, 42);
+        assert_eq!(backpressure.pending_results(), 0);
+        assert_eq!(stats.wait_count, 1);
+        assert_eq!(stats.elapsed_us, elapsed_us);
+    }
+
+    #[test]
     fn try_recv_pending_present_result_decrements_pending_for_payload() {
         let (tx, rx) = mpsc::channel();
         tx.send(7u32).expect("send present result");
-        let mut pending = 2;
+        let mut backpressure = NativeVulkanDirectPresentBackpressure::new(4);
+        backpressure.record_submitted_result();
+        backpressure.record_submitted_result();
 
         let payload = native_vulkan_direct_try_recv_pending_present_result(
             &rx,
-            &mut pending,
+            &mut backpressure,
             "present worker exited with pending results",
         )
         .expect("try recv present result");
 
         assert_eq!(payload, Some(7));
-        assert_eq!(pending, 1);
+        assert_eq!(backpressure.pending_results(), 1);
     }
 
     #[test]
     fn try_recv_pending_present_result_keeps_pending_when_empty() {
         let (_tx, rx) = mpsc::channel::<u32>();
-        let mut pending = 2;
+        let mut backpressure = NativeVulkanDirectPresentBackpressure::new(4);
+        backpressure.record_submitted_result();
+        backpressure.record_submitted_result();
 
         let payload = native_vulkan_direct_try_recv_pending_present_result(
             &rx,
-            &mut pending,
+            &mut backpressure,
             "present worker exited with pending results",
         )
         .expect("try recv empty channel");
 
         assert_eq!(payload, None);
-        assert_eq!(pending, 2);
+        assert_eq!(backpressure.pending_results(), 2);
     }
 
     #[test]
     fn try_recv_pending_present_result_treats_disconnected_zero_pending_as_drained() {
         let (tx, rx) = mpsc::channel::<u32>();
         drop(tx);
-        let mut pending = 0;
+        let mut backpressure = NativeVulkanDirectPresentBackpressure::new(4);
 
         let payload = native_vulkan_direct_try_recv_pending_present_result(
             &rx,
-            &mut pending,
+            &mut backpressure,
             "present worker exited with pending results",
         )
         .expect("disconnected without pending results");
 
         assert_eq!(payload, None);
-        assert_eq!(pending, 0);
+        assert_eq!(backpressure.pending_results(), 0);
     }
 
     #[test]
     fn try_recv_pending_present_result_errors_when_disconnected_with_pending() {
         let (tx, rx) = mpsc::channel::<u32>();
         drop(tx);
-        let mut pending = 1;
+        let mut backpressure = NativeVulkanDirectPresentBackpressure::new(4);
+        backpressure.record_submitted_result();
 
         let err = native_vulkan_direct_try_recv_pending_present_result(
             &rx,
-            &mut pending,
+            &mut backpressure,
             "present worker exited with pending results",
         )
         .expect_err("disconnected with pending results must fail");
 
-        assert_eq!(pending, 1);
+        assert_eq!(backpressure.pending_results(), 1);
         assert!(
             err.to_string()
                 .contains("present worker exited with pending results")
