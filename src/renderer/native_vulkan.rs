@@ -139,12 +139,13 @@ pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolic
 use direct_runtime::{
     NativeVulkanDirectDisplayHandoffMetrics, NativeVulkanDirectOptionalPresentTimedFrame,
     NativeVulkanDirectOptionalPresentTiming, NativeVulkanDirectPresentBackpressure,
-    NativeVulkanDirectPresentTimedFrame, NativeVulkanDirectPresentTiming,
-    NativeVulkanDirectPresentWaitStats, native_vulkan_direct_apply_optional_present_result,
-    native_vulkan_direct_apply_present_result, native_vulkan_direct_has_pending_flags,
-    native_vulkan_direct_pending_flags_reached_limit, native_vulkan_direct_present_result_summary,
-    native_vulkan_direct_recv_pending_present_result, native_vulkan_direct_runtime_summary,
-    native_vulkan_direct_try_recv_pending_present_result,
+    NativeVulkanDirectPresentPendingContext, NativeVulkanDirectPresentTimedFrame,
+    NativeVulkanDirectPresentTiming, NativeVulkanDirectPresentWaitStats,
+    native_vulkan_direct_apply_optional_present_result, native_vulkan_direct_apply_present_result,
+    native_vulkan_direct_apply_present_result_with_pending_context,
+    native_vulkan_direct_has_pending_flags, native_vulkan_direct_pending_flags_reached_limit,
+    native_vulkan_direct_present_result_summary, native_vulkan_direct_recv_pending_present_result,
+    native_vulkan_direct_runtime_summary, native_vulkan_direct_try_recv_pending_present_result,
 };
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
@@ -20669,6 +20670,13 @@ struct NativeVulkanAv1FrameContext {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanDirectPresentPendingContext for NativeVulkanAv1FrameContext {
+    fn clear_direct_present_pending(&mut self) {
+        self.pending_present_result = false;
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 #[derive(Debug, Clone)]
 struct NativeVulkanAv1PresentJob {
     frame_index: usize,
@@ -21894,17 +21902,13 @@ fn native_vulkan_recv_av1_present_worker_result(
         .as_ref()
         .ok()
         .map(|result| result.frame_context_index);
-    native_vulkan_apply_av1_present_worker_result(frames, result)?;
-    if let Some(context_index) = context_index {
-        let context_count = frame_contexts.len();
-        let context = frame_contexts.get_mut(context_index).ok_or_else(|| {
-            NativeVulkanError::Video(format!(
-                "AV1 present worker returned context index {context_index} but only {context_count} context(s) exist"
-            ))
-        })?;
-        context.pending_present_result = false;
-    }
-    Ok(())
+    native_vulkan_direct_apply_present_result_with_pending_context(
+        "AV1",
+        frame_contexts,
+        context_index,
+        result,
+        |result| native_vulkan_apply_av1_present_worker_result(frames, result),
+    )
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -21920,16 +21924,13 @@ fn native_vulkan_drain_av1_present_worker_results(
                     .as_ref()
                     .ok()
                     .map(|result| result.frame_context_index);
-                native_vulkan_apply_av1_present_worker_result(frames, result)?;
-                if let Some(context_index) = context_index {
-                    let context_count = frame_contexts.len();
-                    let context = frame_contexts.get_mut(context_index).ok_or_else(|| {
-                        NativeVulkanError::Video(format!(
-                            "AV1 present worker returned context index {context_index} but only {context_count} context(s) exist"
-                        ))
-                    })?;
-                    context.pending_present_result = false;
-                }
+                native_vulkan_direct_apply_present_result_with_pending_context(
+                    "AV1",
+                    frame_contexts,
+                    context_index,
+                    result,
+                    |result| native_vulkan_apply_av1_present_worker_result(frames, result),
+                )?;
             }
             Err(mpsc::TryRecvError::Empty) => return Ok(()),
             Err(mpsc::TryRecvError::Disconnected) => {

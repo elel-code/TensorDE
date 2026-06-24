@@ -83,6 +83,10 @@ pub(super) trait NativeVulkanDirectOptionalPresentTimedFrame {
     );
 }
 
+pub(super) trait NativeVulkanDirectPresentPendingContext {
+    fn clear_direct_present_pending(&mut self);
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) struct NativeVulkanDirectPresentWaitStats {
     pub(super) wait_count: u32,
@@ -160,6 +164,42 @@ where
 {
     max_pending_results > 0
         && native_vulkan_direct_pending_flag_count(pending_flags) >= max_pending_results
+}
+
+pub(super) fn native_vulkan_direct_clear_pending_present_context<C>(
+    codec_label: &'static str,
+    contexts: &mut [C],
+    context_index: usize,
+) -> Result<(), NativeVulkanError>
+where
+    C: NativeVulkanDirectPresentPendingContext,
+{
+    let context_count = contexts.len();
+    let context = contexts.get_mut(context_index).ok_or_else(|| {
+        NativeVulkanError::Video(format!(
+            "{codec_label} present worker returned context index {context_index} but only {context_count} context(s) exist",
+        ))
+    })?;
+    context.clear_direct_present_pending();
+    Ok(())
+}
+
+pub(super) fn native_vulkan_direct_apply_present_result_with_pending_context<T, C, F>(
+    codec_label: &'static str,
+    contexts: &mut [C],
+    context_index: Option<usize>,
+    result: Result<T, NativeVulkanError>,
+    apply: F,
+) -> Result<(), NativeVulkanError>
+where
+    C: NativeVulkanDirectPresentPendingContext,
+    F: FnOnce(Result<T, NativeVulkanError>) -> Result<(), NativeVulkanError>,
+{
+    apply(result)?;
+    if let Some(context_index) = context_index {
+        native_vulkan_direct_clear_pending_present_context(codec_label, contexts, context_index)?;
+    }
+    Ok(())
 }
 
 pub(super) fn native_vulkan_direct_recv_present_result<T>(
@@ -414,6 +454,11 @@ mod tests {
         timing: Option<NativeVulkanDirectOptionalPresentTiming>,
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct TestPendingContext {
+        pending: bool,
+    }
+
     impl NativeVulkanDirectPresentTimedFrame for TestPresentFrame {
         fn apply_direct_present_timing(&mut self, timing: NativeVulkanDirectPresentTiming) {
             self.timing = Some(timing);
@@ -426,6 +471,12 @@ mod tests {
             timing: NativeVulkanDirectOptionalPresentTiming,
         ) {
             self.timing = Some(timing);
+        }
+    }
+
+    impl NativeVulkanDirectPresentPendingContext for TestPendingContext {
+        fn clear_direct_present_pending(&mut self) {
+            self.pending = false;
         }
     }
 
@@ -549,6 +600,71 @@ mod tests {
             [true, false],
             0
         ));
+    }
+
+    #[test]
+    fn apply_present_result_with_pending_context_clears_indexed_context_after_apply() {
+        let mut contexts = vec![
+            TestPendingContext { pending: true },
+            TestPendingContext { pending: true },
+        ];
+        let mut applied = None;
+
+        native_vulkan_direct_apply_present_result_with_pending_context(
+            "test",
+            &mut contexts,
+            Some(1),
+            Ok(42u32),
+            |result| {
+                applied = Some(result?);
+                Ok(())
+            },
+        )
+        .expect("apply present result with pending context");
+
+        assert_eq!(applied, Some(42));
+        assert!(contexts[0].pending);
+        assert!(!contexts[1].pending);
+    }
+
+    #[test]
+    fn apply_present_result_with_pending_context_rejects_missing_context() {
+        let mut contexts = vec![TestPendingContext { pending: true }];
+
+        let err = native_vulkan_direct_apply_present_result_with_pending_context(
+            "test",
+            &mut contexts,
+            Some(3),
+            Ok(42u32),
+            |result| {
+                let _ = result?;
+                Ok(())
+            },
+        )
+        .expect_err("missing pending context must fail");
+
+        assert!(contexts[0].pending);
+        assert!(
+            err.to_string()
+                .contains("test present worker returned context index 3")
+        );
+    }
+
+    #[test]
+    fn apply_present_result_with_pending_context_preserves_pending_on_apply_error() {
+        let mut contexts = vec![TestPendingContext { pending: true }];
+
+        let err = native_vulkan_direct_apply_present_result_with_pending_context(
+            "test",
+            &mut contexts,
+            Some(0),
+            Ok(42u32),
+            |_result| Err(NativeVulkanError::Video("apply failed".to_owned())),
+        )
+        .expect_err("apply error must fail");
+
+        assert!(contexts[0].pending);
+        assert!(err.to_string().contains("apply failed"));
     }
 
     #[test]
