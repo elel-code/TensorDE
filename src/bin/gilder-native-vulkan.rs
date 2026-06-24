@@ -25,9 +25,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "native-vulkan-gst-video")]
     use gilder::renderer::native_vulkan::{
         NativeVulkanAudioClockProbeOptions, NativeVulkanH264VideoInputMode,
-        NativeVulkanH265VideoInputMode, native_vulkan_extract_h265_parameter_sets_for_vulkanalia,
-        probe_native_vulkan_audio_clock, run_av1_ready_prefix_video, run_h264_ready_prefix_video,
-        run_h265_first_frame_video, run_h265_ready_prefix_video,
+        NativeVulkanH265VideoInputMode, NativeVulkanVideoSessionCodec,
+        native_vulkan_extract_h264_parameter_sets_for_vulkanalia,
+        native_vulkan_extract_h265_parameter_sets_for_vulkanalia, probe_native_vulkan_audio_clock,
+        run_av1_ready_prefix_video, run_h264_ready_prefix_video, run_h265_first_frame_video,
+        run_h265_ready_prefix_video,
     };
     use gilder::renderer::native_vulkan::{
         NativeVulkanOptions, NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionSmokeOptions,
@@ -390,7 +392,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         NativeVulkanCliMode::ProbeVideo => json!(probe_vulkan_video_decode()?),
         NativeVulkanCliMode::ProbeVulkanalia => json!(probe_native_vulkan_vulkanalia_devices()?),
         NativeVulkanCliMode::ProbeVulkanaliaVideoSession => {
-            let h265_parameter_sets = if vulkanalia_create_session_parameters {
+            let create_parameters = vulkanalia_create_session_parameters;
+            let (h264_parameter_sets, h265_parameter_sets) = if create_parameters {
                 let source = source
                     .clone()
                     .ok_or("--create-session-parameters requires --source")?;
@@ -401,11 +404,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 #[cfg(feature = "native-vulkan-gst-video")]
                 {
-                    Some(native_vulkan_extract_h265_parameter_sets_for_vulkanalia(
-                        source,
-                        video_session_options.codec,
-                        video_session_options.bitstream_extract_max_samples,
-                    )?)
+                    match video_session_options.codec {
+                        NativeVulkanVideoSessionCodec::H264High8 => {
+                            let parameter_sets =
+                                native_vulkan_extract_h264_parameter_sets_for_vulkanalia(
+                                    source,
+                                    video_session_options.bitstream_extract_max_samples,
+                                )?;
+                            (Some(parameter_sets), None)
+                        }
+                        NativeVulkanVideoSessionCodec::H265Main8
+                        | NativeVulkanVideoSessionCodec::H265Main10 => {
+                            let parameter_sets =
+                                native_vulkan_extract_h265_parameter_sets_for_vulkanalia(
+                                    source,
+                                    video_session_options.codec,
+                                    video_session_options.bitstream_extract_max_samples,
+                                )?;
+                            (None, Some(parameter_sets))
+                        }
+                        NativeVulkanVideoSessionCodec::Av1Main8
+                        | NativeVulkanVideoSessionCodec::Av1Main10 => {
+                            return Err(
+                                "--create-session-parameters currently supports H.264/H.265; AV1 needs sequence-header session-parameter migration"
+                                    .into(),
+                            );
+                        }
+                    }
                 }
                 #[cfg(not(feature = "native-vulkan-gst-video"))]
                 {
@@ -416,7 +441,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             } else {
-                None
+                (None, None)
             };
             json!(probe_native_vulkan_vulkanalia_video_session_bind(
                 NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
@@ -428,6 +453,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     bitstream_buffer_size: video_session_options.bitstream_buffer_size,
                     create_empty_session_parameters: vulkanalia_create_empty_session_parameters,
                     create_session_parameters: vulkanalia_create_session_parameters,
+                    h264_parameter_sets,
                     h265_parameter_sets,
                 }
             )?)
@@ -859,7 +885,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --allocate-video-images extends --probe-video-session and --probe-vulkanalia-video-session with codec-matching 2-plane 4:2:0 DPB/output sampled image allocation.\n\
 --allocate-bitstream-buffer extends --probe-video-session and --probe-vulkanalia-video-session with a mapped VIDEO_DECODE_SRC bitstream buffer.\n\
 --create-empty-session-parameters extends --probe-vulkanalia-video-session with an H.264/H.265 empty capacity VkVideoSessionParametersKHR smoke.\n\
---create-session-parameters extends --probe-vulkanalia-video-session with real H.265 VPS/SPS/PPS VkVideoSessionParametersKHR creation from --source.\n\
+--create-session-parameters extends --probe-vulkanalia-video-session with real H.264 SPS/PPS or H.265 VPS/SPS/PPS VkVideoSessionParametersKHR creation from --source.\n\
 --extract-bitstream extends --probe-video-session with parser/appsink encoded AU extraction and writes the selected AU to the bitstream buffer.\n\
 --decode-first-frame extends --probe-video-session with a real H.264/H.265 IDR Vulkan Video command buffer submit.\n\
 --sample-decoded-first-frame extends --decode-first-frame with NV12 shader sampling into an offscreen Vulkan color target.\n\

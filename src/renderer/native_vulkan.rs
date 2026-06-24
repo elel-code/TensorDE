@@ -79,6 +79,10 @@ mod interop;
 #[path = "native_vulkan/vulkanalia_backend.rs"]
 mod vulkanalia_backend;
 
+#[cfg(feature = "native-vulkan-gst-video")]
+#[path = "native_vulkan/vulkanalia_extract.rs"]
+mod vulkanalia_extract;
+
 #[path = "native_vulkan/labels.rs"]
 mod labels;
 
@@ -267,6 +271,11 @@ use video_session_parameters::*;
 use video_session_resources::*;
 pub use video_session_snapshots::*;
 pub use vulkanalia_backend::*;
+#[cfg(feature = "native-vulkan-gst-video")]
+pub use vulkanalia_extract::{
+    native_vulkan_extract_h264_parameter_sets_for_vulkanalia,
+    native_vulkan_extract_h265_parameter_sets_for_vulkanalia,
+};
 
 #[cfg(feature = "native-vulkan-gst-video")]
 pub use audio_clock::{
@@ -1087,37 +1096,6 @@ pub fn probe_vulkan_video_session(
         instance.destroy_instance(None);
     }
     result
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-pub fn native_vulkan_extract_h265_parameter_sets_for_vulkanalia(
-    source: PathBuf,
-    codec: NativeVulkanVideoSessionCodec,
-    max_samples: u32,
-) -> Result<NativeVulkanH265ParameterSetSnapshot, NativeVulkanError> {
-    if !matches!(
-        codec,
-        NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10
-    ) {
-        return Err(NativeVulkanError::Video(
-            "Vulkanalia real session-parameter extraction currently supports H.265 only".to_owned(),
-        ));
-    }
-
-    let mut options = NativeVulkanVideoSessionSmokeOptions {
-        codec,
-        extract_bitstream: true,
-        bitstream_source: Some(source),
-        bitstream_extract_max_samples: max_samples.max(1),
-        ..NativeVulkanVideoSessionSmokeOptions::default()
-    };
-    options.allocate_bitstream_buffer = false;
-    let extract = native_vulkan_extract_video_bitstream(&options)?;
-    extract.snapshot.h265_parameter_sets.ok_or_else(|| {
-        NativeVulkanError::Video(
-            "Vulkanalia real H.265 session parameters require parsed VPS/SPS/PPS".to_owned(),
-        )
-    })
 }
 
 #[derive(Debug, Clone, PartialEq)]

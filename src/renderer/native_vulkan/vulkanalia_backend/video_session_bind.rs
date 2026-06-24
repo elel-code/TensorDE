@@ -1,7 +1,8 @@
 use std::ffi::CString;
 
 use crate::renderer::native_vulkan::{
-    NativeVulkanH265ParameterSetSnapshot, NativeVulkanVideoSessionCodec,
+    NativeVulkanH264ParameterSetSnapshot, NativeVulkanH265ParameterSetSnapshot,
+    NativeVulkanVideoSessionCodec,
 };
 use serde::Serialize;
 use vulkanalia::Version;
@@ -37,6 +38,10 @@ use super::video_session_parameters::{
     NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot,
     native_vulkan_vulkanalia_smoke_create_empty_video_session_parameters,
 };
+use super::video_session_parameters_h264::{
+    native_vulkan_vulkanalia_h264_std_profile_idc, native_vulkan_vulkanalia_h264_std_profile_label,
+    native_vulkan_vulkanalia_smoke_create_h264_video_session_parameters,
+};
 use super::video_session_parameters_h265::native_vulkan_vulkanalia_smoke_create_h265_video_session_parameters;
 
 const LOADER_CANDIDATES: &[&str] = &["libvulkan.so.1", "libvulkan.so"];
@@ -56,6 +61,7 @@ pub struct NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
     pub bitstream_buffer_size: u64,
     pub create_empty_session_parameters: bool,
     pub create_session_parameters: bool,
+    pub h264_parameter_sets: Option<NativeVulkanH264ParameterSetSnapshot>,
     pub h265_parameter_sets: Option<NativeVulkanH265ParameterSetSnapshot>,
 }
 
@@ -70,6 +76,7 @@ impl Default for NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
             bitstream_buffer_size: 8 * 1024 * 1024,
             create_empty_session_parameters: false,
             create_session_parameters: false,
+            h264_parameter_sets: None,
             h265_parameter_sets: None,
         }
     }
@@ -169,7 +176,7 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
         &selection.device_extensions,
         true,
     );
-    let format_probe_profile = vulkanalia_video_session_format_probe_profile(options.codec);
+    let format_probe_profile = vulkanalia_video_session_effective_format_probe_profile(&options)?;
     let target_resource_plan =
         native_vulkan_vulkanalia_video_session_resource_plans_from_format_probe(
             &video_format_capabilities,
@@ -232,8 +239,10 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
         unsafe { instance.get_physical_device_memory_properties(selection.physical_device) };
     let result = match options.codec {
         NativeVulkanVideoSessionCodec::H264High8 => {
+            let h264_std_profile_idc =
+                vulkanalia_video_session_effective_h264_std_profile_idc(&options)?;
             let mut h264_profile_info = vk::VideoDecodeH264ProfileInfoKHR::builder()
-                .std_profile_idc(vk::video::STD_VIDEO_H264_PROFILE_IDC_HIGH)
+                .std_profile_idc(h264_std_profile_idc)
                 .picture_layout(vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE)
                 .build();
             let profile_info = vk::VideoProfileInfoKHR::builder()
@@ -388,6 +397,7 @@ fn smoke_bind_vulkanalia_video_session_profile(
     queried: VulkanaliaVideoSessionCapabilityQuery,
 ) -> Result<NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot, String> {
     let capabilities = queried.capabilities;
+    let effective_profile_label = vulkanalia_video_session_effective_profile_label(&options)?;
     let requested_extent_supported =
         vulkanalia_video_session_extent_supported(requested_extent, capabilities);
     if !requested_extent_supported {
@@ -465,6 +475,18 @@ fn smoke_bind_vulkanalia_video_session_profile(
         };
         let session_parameters = if options.create_session_parameters {
             Some(match options.codec {
+                NativeVulkanVideoSessionCodec::H264High8 => {
+                    let parameter_sets = options.h264_parameter_sets.as_ref().ok_or_else(|| {
+                        "Vulkanalia real H.264 session parameters require parsed H.264 parameter sets"
+                            .to_owned()
+                    })?;
+                    native_vulkan_vulkanalia_smoke_create_h264_video_session_parameters(
+                        device,
+                        session,
+                        options.codec,
+                        parameter_sets,
+                    )
+                }
                 NativeVulkanVideoSessionCodec::H265Main8
                 | NativeVulkanVideoSessionCodec::H265Main10 => {
                     let parameter_sets = options.h265_parameter_sets.as_ref().ok_or_else(|| {
@@ -478,9 +500,10 @@ fn smoke_bind_vulkanalia_video_session_profile(
                         parameter_sets,
                     )
                 }
-                _ => {
+                NativeVulkanVideoSessionCodec::Av1Main8
+                | NativeVulkanVideoSessionCodec::Av1Main10 => {
                     return Err(
-                        "Vulkanalia real session parameters currently support H.265 only"
+                        "Vulkanalia real session parameters currently support H.264/H.265 only"
                             .to_owned(),
                     );
                 }
@@ -523,8 +546,10 @@ fn smoke_bind_vulkanalia_video_session_profile(
             video_codec_operation: video_codec_operation_labels(
                 vulkanalia_video_session_codec_operation(options.codec),
             ),
-            profile: vulkanalia_video_session_profile_label(options.codec),
-            format_probe_profile: vulkanalia_video_session_format_probe_profile(options.codec),
+            profile: effective_profile_label,
+            format_probe_profile: vulkanalia_video_session_effective_format_probe_profile(
+                &options,
+            )?,
             picture_format: format!("{picture_format:?}"),
             reference_picture_format: format!("{picture_format:?}"),
             target_picture_dpb_supported,
@@ -803,6 +828,29 @@ fn vulkanalia_video_session_profile_label(codec: NativeVulkanVideoSessionCodec) 
     }
 }
 
+fn vulkanalia_video_session_effective_profile_label(
+    options: &NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
+) -> Result<&'static str, String> {
+    match options.codec {
+        NativeVulkanVideoSessionCodec::H264High8 => {
+            if let Some(parameter_sets) = options.h264_parameter_sets.as_ref() {
+                let profile = native_vulkan_vulkanalia_h264_std_profile_label(
+                    parameter_sets.sps.profile_idc,
+                )?;
+                Ok(match profile {
+                    "baseline" => "baseline-8",
+                    "main" => "main-8",
+                    "high" => "high-8",
+                    _ => unreachable!("mapper returns a fixed H.264 profile label"),
+                })
+            } else {
+                Ok(vulkanalia_video_session_profile_label(options.codec))
+            }
+        }
+        _ => Ok(vulkanalia_video_session_profile_label(options.codec)),
+    }
+}
+
 fn vulkanalia_video_session_format_probe_profile(
     codec: NativeVulkanVideoSessionCodec,
 ) -> &'static str {
@@ -815,6 +863,35 @@ fn vulkanalia_video_session_format_probe_profile(
             "main-10"
         }
     }
+}
+
+fn vulkanalia_video_session_effective_format_probe_profile(
+    options: &NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
+) -> Result<&'static str, String> {
+    match options.codec {
+        NativeVulkanVideoSessionCodec::H264High8 => options
+            .h264_parameter_sets
+            .as_ref()
+            .map(|parameter_sets| {
+                native_vulkan_vulkanalia_h264_std_profile_label(parameter_sets.sps.profile_idc)
+            })
+            .transpose()
+            .map(|profile| profile.unwrap_or("high")),
+        _ => Ok(vulkanalia_video_session_format_probe_profile(options.codec)),
+    }
+}
+
+fn vulkanalia_video_session_effective_h264_std_profile_idc(
+    options: &NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
+) -> Result<vk::video::StdVideoH264ProfileIdc, String> {
+    options
+        .h264_parameter_sets
+        .as_ref()
+        .map(|parameter_sets| {
+            native_vulkan_vulkanalia_h264_std_profile_idc(parameter_sets.sps.profile_idc)
+        })
+        .transpose()
+        .map(|profile| profile.unwrap_or(vk::video::STD_VIDEO_H264_PROFILE_IDC_HIGH))
 }
 
 fn vulkanalia_video_session_bit_depth(
