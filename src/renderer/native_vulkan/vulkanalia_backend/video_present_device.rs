@@ -35,25 +35,8 @@ use super::video_device::{
     native_vulkan_vulkanalia_video_device_extension_available,
     native_vulkan_vulkanalia_video_device_feature_selection,
 };
-use super::video_profile_labels::video_decode_capability_flag_labels;
-use super::video_session::{
-    NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot,
-    native_vulkan_vulkanalia_bind_video_session_memory_resources,
-    native_vulkan_vulkanalia_create_video_session, native_vulkan_vulkanalia_destroy_video_session,
-    native_vulkan_vulkanalia_destroy_video_session_memory_binding_resources,
-};
-use super::video_session_capabilities::{
-    native_vulkan_vulkanalia_video_session_effective_picture_format,
-    native_vulkan_vulkanalia_video_session_extent_supported,
-    native_vulkan_vulkanalia_video_session_max_active_reference_pictures,
-    native_vulkan_vulkanalia_video_session_max_dpb_slots,
-    with_native_vulkan_vulkanalia_video_session_capabilities,
-};
-use super::video_session_images::{
-    NativeVulkanVulkanaliaVideoSessionResourceImageSmokeSnapshot,
-    native_vulkan_vulkanalia_create_video_session_resource_image,
-    native_vulkan_vulkanalia_destroy_video_session_resource_image,
-};
+use super::video_session::NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot;
+use super::video_session_images::NativeVulkanVulkanaliaVideoSessionResourceImageSmokeSnapshot;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions {
@@ -146,35 +129,30 @@ pub struct NativeVulkanVulkanaliaVideoPresentQueueSnapshot {
     pub supports_wayland_presentation: bool,
 }
 
-struct NativeVulkanVulkanaliaVideoPresentPhysicalDeviceSelection {
-    physical_device_index: usize,
-    physical_device: vk::PhysicalDevice,
-    properties: vk::PhysicalDeviceProperties,
-    device_extensions: Vec<String>,
-    video_queue_family_index: u32,
-    video_queue_count: u32,
-    video_queue_flags: vk::QueueFlags,
-    present_queue_family_index: u32,
-    present_queue_count: u32,
-    present_queue_flags: vk::QueueFlags,
-    present_supports_wayland: bool,
+pub(super) struct NativeVulkanVulkanaliaVideoPresentPhysicalDeviceSelection {
+    pub(super) physical_device_index: usize,
+    pub(super) physical_device: vk::PhysicalDevice,
+    pub(super) properties: vk::PhysicalDeviceProperties,
+    pub(super) device_extensions: Vec<String>,
+    pub(super) video_queue_family_index: u32,
+    pub(super) video_queue_count: u32,
+    pub(super) video_queue_flags: vk::QueueFlags,
+    pub(super) present_queue_family_index: u32,
+    pub(super) present_queue_count: u32,
+    pub(super) present_queue_flags: vk::QueueFlags,
+    pub(super) present_supports_wayland: bool,
 }
 
-struct NativeVulkanVulkanaliaVideoPresentDeviceContext {
-    device: Device,
-    video_queue: vk::Queue,
-    present_queue: vk::Queue,
-    enabled_device_extensions: Vec<&'static str>,
-    video_enabled_device_extensions: Vec<&'static str>,
-    present_enabled_device_extensions: Vec<&'static str>,
-    video_feature_selection: NativeVulkanVulkanaliaVideoDeviceFeatureSelection,
-    present_feature_selection: super::swapchain::NativeVulkanVulkanaliaPresentFeatureSelection,
-}
-
-struct VideoPresentSessionResourceSnapshots {
-    memory_binding: NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot,
-    resource_image: NativeVulkanVulkanaliaVideoSessionResourceImageSmokeSnapshot,
-    resource_queue_family_indices: Vec<u32>,
+pub(super) struct NativeVulkanVulkanaliaVideoPresentDeviceContext {
+    pub(super) device: Device,
+    pub(super) video_queue: vk::Queue,
+    pub(super) present_queue: vk::Queue,
+    pub(super) enabled_device_extensions: Vec<&'static str>,
+    pub(super) video_enabled_device_extensions: Vec<&'static str>,
+    pub(super) present_enabled_device_extensions: Vec<&'static str>,
+    pub(super) video_feature_selection: NativeVulkanVulkanaliaVideoDeviceFeatureSelection,
+    pub(super) present_feature_selection:
+        super::swapchain::NativeVulkanVulkanaliaPresentFeatureSelection,
 }
 
 pub fn probe_native_vulkan_vulkanalia_video_present_device(
@@ -203,20 +181,9 @@ pub fn probe_native_vulkan_vulkanalia_video_present_session(
         return Err("Vulkanalia video present session probe requires non-zero extent".to_owned());
     }
 
-    let mut host =
-        NativeWaylandHost::connect(options.host.clone()).map_err(|err| err.to_string())?;
-    host.wait_until_configured(options.wait_configure_roundtrips)
-        .map_err(|err| err.to_string())?;
-    let handles = host.surface_handles().map_err(|err| err.to_string())?;
-
-    let mut requested_instance_extensions = REQUIRED_INSTANCE_EXTENSIONS.to_vec();
-    requested_instance_extensions.extend_from_slice(OPTIONAL_INSTANCE_EXTENSIONS);
-    let vulkan = native_vulkan_vulkanalia_create_instance_with_required_extensions(
-        &requested_instance_extensions,
-    )?;
-    let result = probe_video_present_session_inner(&vulkan, handles, options);
-    native_vulkan_vulkanalia_destroy_instance(vulkan);
-    result
+    super::video_present_runtime::probe_native_vulkan_vulkanalia_retained_video_present_session(
+        options,
+    )
 }
 
 fn probe_video_present_device_inner(
@@ -227,20 +194,6 @@ fn probe_video_present_device_inner(
     let instance = &vulkan.instance;
     let surface = create_vulkanalia_wayland_surface(instance, handles)?;
     let result = with_video_present_device(instance, surface, handles, vulkan, codec);
-    unsafe {
-        instance.destroy_surface_khr(surface, None);
-    }
-    result
-}
-
-fn probe_video_present_session_inner(
-    vulkan: &NativeVulkanVulkanaliaInstance,
-    handles: NativeWaylandSurfaceHandles,
-    options: NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
-) -> Result<NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot, String> {
-    let instance = &vulkan.instance;
-    let surface = create_vulkanalia_wayland_surface(instance, handles)?;
-    let result = with_video_present_session(instance, surface, handles, vulkan, options);
     unsafe {
         instance.destroy_surface_khr(surface, None);
     }
@@ -384,206 +337,7 @@ fn with_video_present_device(
     })
 }
 
-fn with_video_present_session(
-    instance: &Instance,
-    surface: vk::SurfaceKHR,
-    handles: NativeWaylandSurfaceHandles,
-    vulkan: &NativeVulkanVulkanaliaInstance,
-    options: NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
-) -> Result<NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot, String> {
-    let physical_devices = unsafe { instance.enumerate_physical_devices() }.map_err(|err| {
-        format!("vkEnumeratePhysicalDevices(vulkanalia video present session): {err:?}")
-    })?;
-    let selection = select_video_present_physical_device(
-        instance,
-        surface,
-        handles,
-        &physical_devices,
-        options.codec,
-    )?;
-    let context = create_video_present_device(instance, &selection, options.codec)?;
-    let result = create_video_present_session_resources(
-        instance, surface, handles, vulkan, &selection, &context, options,
-    );
-    unsafe {
-        context.device.destroy_device(None);
-    }
-    result
-}
-
-fn create_video_present_session_resources(
-    instance: &Instance,
-    surface: vk::SurfaceKHR,
-    handles: NativeWaylandSurfaceHandles,
-    vulkan: &NativeVulkanVulkanaliaInstance,
-    selection: &NativeVulkanVulkanaliaVideoPresentPhysicalDeviceSelection,
-    context: &NativeVulkanVulkanaliaVideoPresentDeviceContext,
-    options: NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
-) -> Result<NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot, String> {
-    let swapchain_plan = create_vulkanalia_swapchain_plan(
-        instance,
-        selection.physical_device,
-        surface,
-        handles.buffer_size,
-    )?;
-    let swapchain = unsafe {
-        context
-            .device
-            .create_swapchain_khr(&swapchain_plan.create_info, None)
-    }
-    .map_err(|err| format!("vkCreateSwapchainKHR(vulkanalia video present session): {err:?}"))?;
-    let swapchain_images = match unsafe { context.device.get_swapchain_images_khr(swapchain) } {
-        Ok(images) => images,
-        Err(err) => {
-            unsafe {
-                context.device.destroy_swapchain_khr(swapchain, None);
-            }
-            return Err(format!(
-                "vkGetSwapchainImagesKHR(vulkanalia video present session): {err:?}"
-            ));
-        }
-    };
-
-    let result = with_native_vulkan_vulkanalia_video_session_capabilities(
-        instance,
-        selection.physical_device,
-        options.codec,
-        None,
-        None,
-        |profile_info, queried| {
-            let requested_extent = vk::Extent2D {
-                width: options.width,
-                height: options.height,
-            };
-            if !native_vulkan_vulkanalia_video_session_extent_supported(
-                requested_extent,
-                queried.capabilities,
-            ) {
-                return Err(format!(
-                    "requested Vulkanalia video present session extent {}x{} is outside driver capabilities",
-                    requested_extent.width, requested_extent.height
-                ));
-            }
-            let session_max_dpb_slots = native_vulkan_vulkanalia_video_session_max_dpb_slots(
-                queried.capabilities.max_dpb_slots,
-            );
-            let session_max_active_reference_pictures =
-                native_vulkan_vulkanalia_video_session_max_active_reference_pictures(
-                    queried.capabilities.max_active_reference_pictures,
-                    session_max_dpb_slots,
-                );
-            let picture_format = native_vulkan_vulkanalia_video_session_effective_picture_format(
-                options.codec,
-                None,
-            );
-            let create_info = vk::VideoSessionCreateInfoKHR::builder()
-                .queue_family_index(selection.video_queue_family_index)
-                .video_profile(profile_info)
-                .picture_format(picture_format)
-                .reference_picture_format(picture_format)
-                .max_coded_extent(requested_extent)
-                .max_dpb_slots(session_max_dpb_slots)
-                .max_active_reference_pictures(session_max_active_reference_pictures)
-                .std_header_version(&queried.capabilities.std_header_version)
-                .build();
-            let session =
-                native_vulkan_vulkanalia_create_video_session(&context.device, &create_info)?;
-            let mut memory_resources = None;
-            let session_result = (|| -> Result<VideoPresentSessionResourceSnapshots, String> {
-                let memory_properties = unsafe {
-                    instance.get_physical_device_memory_properties(selection.physical_device)
-                };
-                let resources = native_vulkan_vulkanalia_bind_video_session_memory_resources(
-                    &context.device,
-                    &memory_properties,
-                    session,
-                )?;
-                let memory_binding = resources.snapshot.clone();
-                memory_resources = Some(resources);
-                let resource_queue_family_indices = video_present_queue_family_indices(
-                    selection.video_queue_family_index,
-                    selection.present_queue_family_index,
-                );
-                let resource_image = native_vulkan_vulkanalia_create_video_session_resource_image(
-                    instance,
-                    &context.device,
-                    &memory_properties,
-                    selection.physical_device,
-                    profile_info,
-                    requested_extent,
-                    session_max_dpb_slots.max(1),
-                    picture_format,
-                    queried.decode_capability_flags,
-                    &resource_queue_family_indices,
-                )?;
-                let resource_image_snapshot =
-                    NativeVulkanVulkanaliaVideoSessionResourceImageSmokeSnapshot {
-                        image_created: true,
-                        memory_bound: true,
-                        image_view_created: resource_image.view != vk::ImageView::default(),
-                        layer_view_count: resource_image.layer_views.len(),
-                        resource_image: resource_image.snapshot.clone(),
-                    };
-                native_vulkan_vulkanalia_destroy_video_session_resource_image(
-                    &context.device,
-                    resource_image,
-                );
-                Ok(VideoPresentSessionResourceSnapshots {
-                    memory_binding,
-                    resource_image: resource_image_snapshot,
-                    resource_queue_family_indices,
-                })
-            })();
-            if let Some(resources) = memory_resources.take() {
-                native_vulkan_vulkanalia_destroy_video_session_memory_binding_resources(
-                    &context.device,
-                    resources,
-                );
-            }
-            native_vulkan_vulkanalia_destroy_video_session(&context.device, session);
-            let resource_snapshots = session_result?;
-            let same_queue_family =
-                selection.video_queue_family_index == selection.present_queue_family_index;
-            Ok(NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot {
-                binding: "vulkanalia",
-                route: "video-present-session-resource",
-                codec: options.codec,
-                requested_extent: (requested_extent.width, requested_extent.height),
-                device: device_snapshot_from_selection(
-                    vulkan,
-                    selection,
-                    context,
-                    options.codec,
-                    swapchain_plan_snapshot(&swapchain_plan, swapchain_images.len()),
-                ),
-                video_session_created: true,
-                memory_binding: resource_snapshots.memory_binding,
-                resource_image: resource_snapshots.resource_image,
-                picture_format: format!("{picture_format:?}"),
-                decode_capability_flags: video_decode_capability_flag_labels(
-                    queried.decode_capability_flags,
-                ),
-                session_max_dpb_slots,
-                session_max_active_reference_pictures,
-                resource_queue_family_indices: resource_snapshots.resource_queue_family_indices,
-                resource_queue_sharing_model: decoded_image_resource_sharing_model(
-                    same_queue_family,
-                ),
-                decoded_image_zero_copy_presentable_candidate: true,
-                decoded_image_present_boundary: "same Vulkanalia device owns video session memory, coincident sampled DPB/output image and Wayland swapchain; next gate records decode into this retained image and samples it in the graphics present pass",
-                ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,
-            })
-        },
-    );
-
-    let _ = unsafe { context.device.device_wait_idle() };
-    unsafe {
-        context.device.destroy_swapchain_khr(swapchain, None);
-    }
-    result
-}
-
-fn select_video_present_physical_device(
+pub(super) fn select_video_present_physical_device(
     instance: &Instance,
     surface: vk::SurfaceKHR,
     handles: NativeWaylandSurfaceHandles,
@@ -741,7 +495,7 @@ fn select_graphics_present_queue(
     Ok(fallback)
 }
 
-fn create_video_present_device(
+pub(super) fn create_video_present_device(
     instance: &Instance,
     selection: &NativeVulkanVulkanaliaVideoPresentPhysicalDeviceSelection,
     codec: NativeVulkanVideoSessionCodec,
@@ -872,7 +626,7 @@ fn create_video_present_device(
     })
 }
 
-fn device_snapshot_from_selection(
+pub(super) fn device_snapshot_from_selection(
     vulkan: &NativeVulkanVulkanaliaInstance,
     selection: &NativeVulkanVulkanaliaVideoPresentPhysicalDeviceSelection,
     context: &NativeVulkanVulkanaliaVideoPresentDeviceContext,
@@ -933,7 +687,7 @@ fn device_snapshot_from_selection(
     }
 }
 
-fn feature_snapshot_from_context(
+pub(super) fn feature_snapshot_from_context(
     context: &NativeVulkanVulkanaliaVideoPresentDeviceContext,
 ) -> NativeVulkanVulkanaliaVideoPresentFeatureSnapshot {
     NativeVulkanVulkanaliaVideoPresentFeatureSnapshot {
@@ -954,7 +708,7 @@ fn feature_snapshot_from_context(
     }
 }
 
-fn swapchain_plan_snapshot(
+pub(super) fn swapchain_plan_snapshot(
     swapchain_plan: &super::swapchain::NativeVulkanVulkanaliaSwapchainPlan,
     image_count: usize,
 ) -> NativeVulkanVulkanaliaSwapchainSnapshot {
@@ -990,7 +744,7 @@ fn queue_snapshot(
     }
 }
 
-fn video_present_queue_family_indices(video: u32, present: u32) -> Vec<u32> {
+pub(super) fn video_present_queue_family_indices(video: u32, present: u32) -> Vec<u32> {
     if video == present {
         vec![video]
     } else {
@@ -998,7 +752,7 @@ fn video_present_queue_family_indices(video: u32, present: u32) -> Vec<u32> {
     }
 }
 
-fn video_present_queue_family_model(same_queue_family: bool) -> &'static str {
+pub(super) fn video_present_queue_family_model(same_queue_family: bool) -> &'static str {
     if same_queue_family {
         "single-video-graphics-present-queue-family"
     } else {
@@ -1006,7 +760,7 @@ fn video_present_queue_family_model(same_queue_family: bool) -> &'static str {
     }
 }
 
-fn decoded_image_resource_sharing_model(same_queue_family: bool) -> &'static str {
+pub(super) fn decoded_image_resource_sharing_model(same_queue_family: bool) -> &'static str {
     if same_queue_family {
         "exclusive-image-ownership-on-single-queue-family"
     } else {

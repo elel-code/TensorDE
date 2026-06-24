@@ -48,6 +48,8 @@ mod video_direct_runtime;
 mod video_format_probe;
 #[path = "vulkanalia_backend/video_present_device.rs"]
 mod video_present_device;
+#[path = "vulkanalia_backend/video_present_runtime.rs"]
+mod video_present_runtime;
 #[path = "vulkanalia_backend/video_profile_gate.rs"]
 mod video_profile_gate;
 #[path = "vulkanalia_backend/video_profile_info.rs"]
