@@ -137,8 +137,9 @@ mod demux_gst;
 pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy};
 #[cfg(feature = "native-vulkan-gst-video")]
 use direct_runtime::{
-    NativeVulkanDirectDisplayHandoffMetrics, native_vulkan_direct_present_result_summary,
-    native_vulkan_direct_runtime_summary,
+    NativeVulkanDirectDisplayHandoffMetrics, NativeVulkanDirectPresentTimedFrame,
+    NativeVulkanDirectPresentTiming, native_vulkan_direct_apply_present_result,
+    native_vulkan_direct_present_result_summary, native_vulkan_direct_runtime_summary,
 };
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
@@ -2631,6 +2632,18 @@ pub struct NativeVulkanDirectH265ReadyPrefixFrameSnapshot {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanDirectPresentTimedFrame for NativeVulkanDirectH265ReadyPrefixFrameSnapshot {
+    fn apply_direct_present_timing(&mut self, timing: NativeVulkanDirectPresentTiming) {
+        self.acquire_elapsed_us = timing.acquire_elapsed_us;
+        self.record_elapsed_us = timing.record_elapsed_us;
+        self.submit_elapsed_us = timing.queue_submit_elapsed_us;
+        self.queue_present_elapsed_us = timing.queue_present_elapsed_us;
+        self.present_elapsed_us = timing.present_elapsed_us;
+        self.present_result_since_start_us = timing.present_result_since_start_us;
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot {
     pub runtime_elapsed_ms: u64,
@@ -3134,6 +3147,18 @@ pub struct NativeVulkanDirectH264ReadyPrefixFrameSnapshot {
     pub queue_present_elapsed_us: u64,
     pub present_elapsed_us: u64,
     pub present_result_since_start_us: u64,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanDirectPresentTimedFrame for NativeVulkanDirectH264ReadyPrefixFrameSnapshot {
+    fn apply_direct_present_timing(&mut self, timing: NativeVulkanDirectPresentTiming) {
+        self.acquire_elapsed_us = timing.acquire_elapsed_us;
+        self.record_elapsed_us = timing.record_elapsed_us;
+        self.submit_elapsed_us = timing.queue_submit_elapsed_us;
+        self.queue_present_elapsed_us = timing.queue_present_elapsed_us;
+        self.present_elapsed_us = timing.present_elapsed_us;
+        self.present_result_since_start_us = timing.present_result_since_start_us;
+    }
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -5658,23 +5683,21 @@ pub fn run_h264_ready_prefix_video(
                      acquire_not_ready_count: &mut u32,
                      result: Result<H264DirectPresentWorkerResult, NativeVulkanError>|
                      -> Result<(), NativeVulkanError> {
-                        let result = result?;
-                        let frame_count = frames.len();
-                        let frame = frames.get_mut(result.frame_index).ok_or_else(|| {
-                            NativeVulkanError::Video(format!(
-                                "H.264 direct present worker returned frame index {} but only {} frame(s) are recorded",
-                                result.frame_index, frame_count
-                            ))
-                        })?;
-                        *acquire_not_ready_count =
-                            acquire_not_ready_count.saturating_add(result.acquire_not_ready_count);
-                        frame.acquire_elapsed_us = result.acquire_elapsed_us;
-                        frame.record_elapsed_us = result.record_elapsed_us;
-                        frame.submit_elapsed_us = result.queue_submit_elapsed_us;
-                        frame.queue_present_elapsed_us = result.queue_present_elapsed_us;
-                        frame.present_elapsed_us = result.present_elapsed_us;
-                        frame.present_result_since_start_us = result.present_result_since_start_us;
-                        Ok(())
+                        native_vulkan_direct_apply_present_result(
+                            "H.264 direct",
+                            frames,
+                            acquire_not_ready_count,
+                            result.map(|result| NativeVulkanDirectPresentTiming {
+                                frame_index: result.frame_index,
+                                acquire_elapsed_us: result.acquire_elapsed_us,
+                                acquire_not_ready_count: result.acquire_not_ready_count,
+                                record_elapsed_us: result.record_elapsed_us,
+                                queue_submit_elapsed_us: result.queue_submit_elapsed_us,
+                                queue_present_elapsed_us: result.queue_present_elapsed_us,
+                                present_elapsed_us: result.present_elapsed_us,
+                                present_result_since_start_us: result.present_result_since_start_us,
+                            }),
+                        )
                     };
                 let renderer_ref_for_worker: &NativeVulkanVideoRenderer = &*renderer_ref;
                 let present_command_buffers_for_worker = present_command_buffers.as_slice();
@@ -6671,23 +6694,21 @@ pub fn run_h264_ready_prefix_video(
                  acquire_not_ready_count: &mut u32,
                  result: Result<H264PresentWorkerResult, NativeVulkanError>|
                  -> Result<(), NativeVulkanError> {
-                    let result = result?;
-                    let frame_count = frames.len();
-                    let frame = frames.get_mut(result.frame_index).ok_or_else(|| {
-                    NativeVulkanError::Video(format!(
-                        "H.264 present worker returned frame index {} but only {} frame(s) are recorded",
-                        result.frame_index, frame_count
-                    ))
-                })?;
-                    *acquire_not_ready_count =
-                        acquire_not_ready_count.saturating_add(result.acquire_not_ready_count);
-                    frame.acquire_elapsed_us = result.acquire_elapsed_us;
-                    frame.record_elapsed_us = result.record_elapsed_us;
-                    frame.submit_elapsed_us = result.queue_submit_elapsed_us;
-                    frame.queue_present_elapsed_us = result.queue_present_elapsed_us;
-                    frame.present_elapsed_us = result.present_elapsed_us;
-                    frame.present_result_since_start_us = result.present_result_since_start_us;
-                    Ok(())
+                    native_vulkan_direct_apply_present_result(
+                        "H.264",
+                        frames,
+                        acquire_not_ready_count,
+                        result.map(|result| NativeVulkanDirectPresentTiming {
+                            frame_index: result.frame_index,
+                            acquire_elapsed_us: result.acquire_elapsed_us,
+                            acquire_not_ready_count: result.acquire_not_ready_count,
+                            record_elapsed_us: result.record_elapsed_us,
+                            queue_submit_elapsed_us: result.queue_submit_elapsed_us,
+                            queue_present_elapsed_us: result.queue_present_elapsed_us,
+                            present_elapsed_us: result.present_elapsed_us,
+                            present_result_since_start_us: result.present_result_since_start_us,
+                        }),
+                    )
                 };
             let present_queue_mutex = std::sync::Mutex::new(());
             let default_pending_present_results = render_finished_by_image
@@ -9082,23 +9103,21 @@ pub fn run_h265_ready_prefix_video(
                  acquire_not_ready_count: &mut u32,
                  result: Result<H265PresentWorkerResult, NativeVulkanError>|
                  -> Result<(), NativeVulkanError> {
-                    let result = result?;
-                    let frame_count = frames.len();
-                    let frame = frames.get_mut(result.frame_index).ok_or_else(|| {
-                        NativeVulkanError::Video(format!(
-                            "H.265 present worker returned frame index {} but only {} frame(s) are recorded",
-                            result.frame_index, frame_count
-                        ))
-                    })?;
-                    *acquire_not_ready_count =
-                        acquire_not_ready_count.saturating_add(result.acquire_not_ready_count);
-                    frame.acquire_elapsed_us = result.acquire_elapsed_us;
-                    frame.record_elapsed_us = result.record_elapsed_us;
-                    frame.submit_elapsed_us = result.queue_submit_elapsed_us;
-                    frame.queue_present_elapsed_us = result.queue_present_elapsed_us;
-                    frame.present_elapsed_us = result.present_elapsed_us;
-                    frame.present_result_since_start_us = result.present_result_since_start_us;
-                    Ok(())
+                    native_vulkan_direct_apply_present_result(
+                        "H.265",
+                        frames,
+                        acquire_not_ready_count,
+                        result.map(|result| NativeVulkanDirectPresentTiming {
+                            frame_index: result.frame_index,
+                            acquire_elapsed_us: result.acquire_elapsed_us,
+                            acquire_not_ready_count: result.acquire_not_ready_count,
+                            record_elapsed_us: result.record_elapsed_us,
+                            queue_submit_elapsed_us: result.queue_submit_elapsed_us,
+                            queue_present_elapsed_us: result.queue_present_elapsed_us,
+                            present_elapsed_us: result.present_elapsed_us,
+                            present_result_since_start_us: result.present_result_since_start_us,
+                        }),
+                    )
                 };
             let renderer_ref_for_worker: &NativeVulkanVideoRenderer = &*renderer_ref;
             let present_command_buffers_for_worker = present_command_buffers.as_slice();

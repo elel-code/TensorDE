@@ -7,6 +7,7 @@
 
 use std::time::Duration;
 
+use super::NativeVulkanError;
 use super::direct_zero_copy::{
     NATIVE_VULKAN_DIRECT_DECODED_FRAME_ZERO_COPY_SCOPE,
     native_vulkan_direct_decoded_frame_zero_copy_status,
@@ -41,6 +42,45 @@ pub(super) struct NativeVulkanDirectPresentResultSummary {
     pub(super) present_result_missed_vblank_threshold_us: u64,
     pub(super) present_result_missed_vblank_count: u32,
     pub(super) present_result_missed_vblank_after_warmup_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct NativeVulkanDirectPresentTiming {
+    pub(super) frame_index: usize,
+    pub(super) acquire_elapsed_us: u64,
+    pub(super) acquire_not_ready_count: u32,
+    pub(super) record_elapsed_us: u64,
+    pub(super) queue_submit_elapsed_us: u64,
+    pub(super) queue_present_elapsed_us: u64,
+    pub(super) present_elapsed_us: u64,
+    pub(super) present_result_since_start_us: u64,
+}
+
+pub(super) trait NativeVulkanDirectPresentTimedFrame {
+    fn apply_direct_present_timing(&mut self, timing: NativeVulkanDirectPresentTiming);
+}
+
+pub(super) fn native_vulkan_direct_apply_present_result<F>(
+    codec_label: &'static str,
+    frames: &mut [F],
+    acquire_not_ready_count: &mut u32,
+    timing: Result<NativeVulkanDirectPresentTiming, NativeVulkanError>,
+) -> Result<(), NativeVulkanError>
+where
+    F: NativeVulkanDirectPresentTimedFrame,
+{
+    let timing = timing?;
+    let frame_count = frames.len();
+    let frame = frames.get_mut(timing.frame_index).ok_or_else(|| {
+        NativeVulkanError::Video(format!(
+            "{codec_label} present worker returned frame index {} but only {frame_count} frame(s) are recorded",
+            timing.frame_index
+        ))
+    })?;
+    *acquire_not_ready_count =
+        acquire_not_ready_count.saturating_add(timing.acquire_not_ready_count);
+    frame.apply_direct_present_timing(timing);
+    Ok(())
 }
 
 pub(super) fn native_vulkan_direct_runtime_summary(
@@ -185,6 +225,17 @@ where
 mod tests {
     use super::*;
 
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    struct TestPresentFrame {
+        timing: Option<NativeVulkanDirectPresentTiming>,
+    }
+
+    impl NativeVulkanDirectPresentTimedFrame for TestPresentFrame {
+        fn apply_direct_present_timing(&mut self, timing: NativeVulkanDirectPresentTiming) {
+            self.timing = Some(timing);
+        }
+    }
+
     #[test]
     fn summary_reports_present_rate_and_zero_copy_status() {
         let summary = native_vulkan_direct_runtime_summary(
@@ -251,5 +302,61 @@ mod tests {
         assert_eq!(summary.present_result_first_interval_us, 16_667);
         assert_eq!(summary.present_result_over_budget_count, 0);
         assert_eq!(summary.present_result_missed_vblank_count, 0);
+    }
+
+    #[test]
+    fn applies_present_timing_to_indexed_frame_and_accumulates_acquire_not_ready() {
+        let mut frames = vec![TestPresentFrame::default(); 2];
+        let mut acquire_not_ready_count = 7;
+        let timing = NativeVulkanDirectPresentTiming {
+            frame_index: 1,
+            acquire_elapsed_us: 10,
+            acquire_not_ready_count: 3,
+            record_elapsed_us: 20,
+            queue_submit_elapsed_us: 30,
+            queue_present_elapsed_us: 40,
+            present_elapsed_us: 50,
+            present_result_since_start_us: 60,
+        };
+
+        native_vulkan_direct_apply_present_result(
+            "test",
+            &mut frames,
+            &mut acquire_not_ready_count,
+            Ok(timing),
+        )
+        .expect("apply present result");
+
+        assert_eq!(acquire_not_ready_count, 10);
+        assert_eq!(frames[0].timing, None);
+        assert_eq!(frames[1].timing, Some(timing));
+    }
+
+    #[test]
+    fn rejects_present_timing_for_missing_frame() {
+        let mut frames = vec![TestPresentFrame::default(); 1];
+        let mut acquire_not_ready_count = 0;
+        let err = native_vulkan_direct_apply_present_result(
+            "test",
+            &mut frames,
+            &mut acquire_not_ready_count,
+            Ok(NativeVulkanDirectPresentTiming {
+                frame_index: 4,
+                acquire_elapsed_us: 0,
+                acquire_not_ready_count: 1,
+                record_elapsed_us: 0,
+                queue_submit_elapsed_us: 0,
+                queue_present_elapsed_us: 0,
+                present_elapsed_us: 0,
+                present_result_since_start_us: 0,
+            }),
+        )
+        .expect_err("missing frame must fail");
+
+        assert_eq!(acquire_not_ready_count, 0);
+        assert!(
+            err.to_string()
+                .contains("test present worker returned frame index 4")
+        );
     }
 }
