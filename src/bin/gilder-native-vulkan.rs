@@ -2,7 +2,7 @@
     feature = "native-vulkan-renderer",
     feature = "native-vulkan-gst-video"
 ))]
-use gilder::renderer::native_vulkan::NativeVulkanAudioOutputMode;
+use gilder::renderer::native_vulkan::NativeVulkanAudioOutputPolicy;
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::native_vulkan::NativeVulkanClearColor;
 
@@ -46,7 +46,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut duration = Duration::from_secs(5);
     let mut audio_probe_duration = Duration::from_secs(10);
     #[cfg(feature = "native-vulkan-gst-video")]
-    let mut audio_output_policy = NativeVulkanCliAudioOutputPolicy::Plan;
+    let mut audio_output_policy = NativeVulkanAudioOutputPolicy::Plan;
     let mut audio_clock_probe_with_video = false;
     let mut source = None::<PathBuf>;
     let mut poster = None::<PathBuf>;
@@ -81,7 +81,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .ok_or("--audio-output requires plan, clock-only, or auto")?;
                 #[cfg(feature = "native-vulkan-gst-video")]
                 {
-                    audio_output_policy = parse_audio_output_policy(&value)?;
+                    audio_output_policy = NativeVulkanAudioOutputPolicy::parse_cli(&value)?;
                 }
                 #[cfg(not(feature = "native-vulkan-gst-video"))]
                 {
@@ -762,53 +762,6 @@ fn parse_decoder_policy(
     }
 }
 
-#[cfg(all(
-    feature = "native-vulkan-renderer",
-    feature = "native-vulkan-gst-video"
-))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NativeVulkanCliAudioOutputPolicy {
-    Plan,
-    Explicit(NativeVulkanAudioOutputMode),
-}
-
-#[cfg(all(
-    feature = "native-vulkan-renderer",
-    feature = "native-vulkan-gst-video"
-))]
-impl NativeVulkanCliAudioOutputPolicy {
-    fn resolve(self, muted: bool) -> NativeVulkanAudioOutputMode {
-        match self {
-            Self::Plan if muted => NativeVulkanAudioOutputMode::ClockOnly,
-            Self::Plan => NativeVulkanAudioOutputMode::Auto,
-            Self::Explicit(mode) => mode,
-        }
-    }
-}
-
-#[cfg(all(
-    feature = "native-vulkan-renderer",
-    feature = "native-vulkan-gst-video"
-))]
-fn parse_audio_output_policy(
-    value: &str,
-) -> Result<NativeVulkanCliAudioOutputPolicy, Box<dyn std::error::Error>> {
-    use gilder::renderer::native_vulkan::NativeVulkanAudioOutputMode;
-
-    match value {
-        "plan" | "muted-plan" | "follow-plan" | "manifest" => {
-            Ok(NativeVulkanCliAudioOutputPolicy::Plan)
-        }
-        "clock-only" | "clock" | "probe" | "silent" => Ok(
-            NativeVulkanCliAudioOutputPolicy::Explicit(NativeVulkanAudioOutputMode::ClockOnly),
-        ),
-        "auto" | "autoaudiosink" | "audible" => Ok(NativeVulkanCliAudioOutputPolicy::Explicit(
-            NativeVulkanAudioOutputMode::Auto,
-        )),
-        _ => Err(format!("unsupported --audio-output: {value}").into()),
-    }
-}
-
 #[cfg(feature = "native-vulkan-renderer")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeVulkanCliMode {
@@ -877,29 +830,4 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--require-h265-ready-prefix N] [--playback-frames N]\n\
          [--start-offset-ms MS]"
     );
-}
-
-#[cfg(all(
-    test,
-    feature = "native-vulkan-renderer",
-    feature = "native-vulkan-gst-video"
-))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn audio_output_plan_follows_effective_muted_policy() {
-        let policy = parse_audio_output_policy("plan").unwrap();
-
-        assert_eq!(policy.resolve(true), NativeVulkanAudioOutputMode::ClockOnly);
-        assert_eq!(policy.resolve(false), NativeVulkanAudioOutputMode::Auto);
-    }
-
-    #[test]
-    fn explicit_audio_output_overrides_effective_muted_policy() {
-        let policy = parse_audio_output_policy("auto").unwrap();
-
-        assert_eq!(policy.resolve(true), NativeVulkanAudioOutputMode::Auto);
-        assert_eq!(policy.resolve(false), NativeVulkanAudioOutputMode::Auto);
-    }
 }

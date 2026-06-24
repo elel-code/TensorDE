@@ -32,6 +32,35 @@ impl NativeVulkanAudioOutputMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum NativeVulkanAudioOutputPolicy {
+    Plan,
+    Explicit(NativeVulkanAudioOutputMode),
+}
+
+impl NativeVulkanAudioOutputPolicy {
+    pub fn parse_cli(value: &str) -> Result<Self, String> {
+        match value {
+            "plan" | "muted-plan" | "follow-plan" | "manifest" => Ok(Self::Plan),
+            "clock-only" | "clock" | "probe" | "silent" => {
+                Ok(Self::Explicit(NativeVulkanAudioOutputMode::ClockOnly))
+            }
+            "auto" | "autoaudiosink" | "audible" => {
+                Ok(Self::Explicit(NativeVulkanAudioOutputMode::Auto))
+            }
+            _ => Err(format!("unsupported --audio-output: {value}")),
+        }
+    }
+
+    pub fn resolve(self, muted: bool) -> NativeVulkanAudioOutputMode {
+        match self {
+            Self::Plan if muted => NativeVulkanAudioOutputMode::ClockOnly,
+            Self::Plan => NativeVulkanAudioOutputMode::Auto,
+            Self::Explicit(mode) => mode,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanAudioClockProbeOptions {
     pub source: PathBuf,
@@ -1188,5 +1217,21 @@ mod tests {
             segment_start_ns,
             elapsed_ns
         ));
+    }
+
+    #[test]
+    fn output_policy_plan_follows_effective_muted_policy() {
+        let policy = NativeVulkanAudioOutputPolicy::parse_cli("plan").unwrap();
+
+        assert_eq!(policy.resolve(true), NativeVulkanAudioOutputMode::ClockOnly);
+        assert_eq!(policy.resolve(false), NativeVulkanAudioOutputMode::Auto);
+    }
+
+    #[test]
+    fn output_policy_explicit_auto_overrides_effective_muted_policy() {
+        let policy = NativeVulkanAudioOutputPolicy::parse_cli("auto").unwrap();
+
+        assert_eq!(policy.resolve(true), NativeVulkanAudioOutputMode::Auto);
+        assert_eq!(policy.resolve(false), NativeVulkanAudioOutputMode::Auto);
     }
 }

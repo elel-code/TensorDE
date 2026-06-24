@@ -91,7 +91,7 @@ mod demux;
 pub use audio_clock::{
     NativeVulkanAudioClockProbeOptions, NativeVulkanAudioClockProbeSnapshot,
     NativeVulkanAudioClockRuntimeSnapshot, NativeVulkanAudioOutputMode,
-    probe_native_vulkan_audio_clock,
+    NativeVulkanAudioOutputPolicy, probe_native_vulkan_audio_clock,
 };
 
 #[cfg(feature = "native-vulkan-gst-video")]
