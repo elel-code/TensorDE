@@ -42,7 +42,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         wallpaper_type_support_matrix,
     };
     use gilder::renderer::native_vulkan::{
+        NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions,
         NativeVulkanVulkanaliaVideoSessionBindSmokeOptions, probe_native_vulkan_vulkanalia_devices,
+        probe_native_vulkan_vulkanalia_surface_swapchain,
         probe_native_vulkan_vulkanalia_video_session_bind,
     };
     use gilder::renderer::native_wayland::NativeWaylandLayer;
@@ -85,6 +87,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--probe-surface" => mode = NativeVulkanCliMode::ProbeSurface,
             "--probe-video" => mode = NativeVulkanCliMode::ProbeVideo,
             "--probe-vulkanalia" => mode = NativeVulkanCliMode::ProbeVulkanalia,
+            "--probe-vulkanalia-swapchain" | "--probe-vulkanalia-surface" => {
+                mode = NativeVulkanCliMode::ProbeVulkanaliaSwapchain
+            }
             "--probe-vulkanalia-video-session" => {
                 mode = NativeVulkanCliMode::ProbeVulkanaliaVideoSession
             }
@@ -398,6 +403,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         NativeVulkanCliMode::ProbeVideo => json!(probe_vulkan_video_decode()?),
         NativeVulkanCliMode::ProbeVulkanalia => json!(probe_native_vulkan_vulkanalia_devices()?),
+        NativeVulkanCliMode::ProbeVulkanaliaSwapchain => {
+            json!(probe_native_vulkan_vulkanalia_surface_swapchain(
+                NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions {
+                    host: options.host,
+                    wait_configure_roundtrips: options.wait_configure_roundtrips,
+                }
+            )?)
+        }
         NativeVulkanCliMode::ProbeVulkanaliaVideoSession => {
             let decode_h264_ready_prefix =
                 video_session_options.decode_h264_ready_prefix_frames > 0;
@@ -1004,6 +1017,7 @@ enum NativeVulkanCliMode {
     ProbeSurface,
     ProbeVideo,
     ProbeVulkanalia,
+    ProbeVulkanaliaSwapchain,
     ProbeVulkanaliaVideoSession,
     ProbeVideoSession,
     ProbeAudioClock,
@@ -1020,12 +1034,13 @@ enum NativeVulkanCliMode {
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-video-session|--probe-video-session|--probe-audio-clock|--run-clear|--run-static|--run-video|--run-h265-first-frame-video|--run-h264-ready-prefix-video|--run-h265-ready-prefix-video|--run-av1-ready-prefix-video|--run-vulkanalia-ready-prefix-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-session|--probe-video-session|--probe-audio-clock|--run-clear|--run-static|--run-video|--run-h265-first-frame-video|--run-h264-ready-prefix-video|--run-h265-ready-prefix-video|--run-av1-ready-prefix-video|--run-vulkanalia-ready-prefix-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
 --probe-video enumerates Vulkan Video decode extensions and queue families, then exits.\n\
 --probe-vulkanalia enumerates the vulkanalia Vulkan 1.4 physical-device/video/external-memory gates, then exits.\n\
+--probe-vulkanalia-swapchain creates a Wayland VkSurfaceKHR, Vulkanalia device, swapchain and swapchain image list, then exits.\n\
 --probe-vulkanalia-video-session creates and binds a Vulkanalia Vulkan Video session for --video-codec, then exits.\n\
 --probe-video-session creates and binds a Vulkan Video H.264/H.265/AV1 decode session, then exits.\n\
 --probe-audio-clock runs an explicit audio-only GStreamer clock probe for --source, then exits.\n\

@@ -39,6 +39,10 @@ pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendP
             std::any::type_name::<vulkanalia::Version>(),
             std::any::type_name::<vulkanalia::vk::PhysicalDeviceVulkan14Features>(),
             std::any::type_name::<vulkanalia::vk::PhysicalDeviceVulkan14Properties>(),
+            std::any::type_name::<vulkanalia::vk::SurfaceKHR>(),
+            std::any::type_name::<vulkanalia::vk::SwapchainCreateInfoKHR>(),
+            std::any::type_name::<vulkanalia::vk::PresentIdKHR>(),
+            std::any::type_name::<vulkanalia::vk::PresentWait2InfoKHR>(),
             std::any::type_name::<vulkanalia::vk::VideoBeginCodingInfoKHR>(),
             std::any::type_name::<vulkanalia::vk::VideoDecodeH264PictureInfoKHR>(),
             std::any::type_name::<vulkanalia::vk::VideoDecodeH265PictureInfoKHR>(),
@@ -68,12 +72,20 @@ pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendP
             "VK_KHR_video_maintenance1",
             "VK_KHR_video_maintenance2",
             "VK_EXT_descriptor_buffer",
+            "VK_KHR_present_id",
+            "VK_KHR_present_wait",
+            "VK_KHR_present_id2",
+            "VK_KHR_present_wait2",
+            "VK_KHR_swapchain_maintenance1",
         ],
         prioritized_vulkan_1_4_features: &[
             "dynamic-rendering-local-read",
             "push-descriptor",
             "maintenance5",
             "maintenance6",
+            "fifo-latest-ready-present-mode",
+            "present-id2",
+            "present-wait2",
             "scalar-block-layout",
             "synchronization2",
             "larger-portable-limits",
@@ -117,9 +129,18 @@ mod tests {
                 .contains(&"VK_KHR_video_maintenance2")
         );
         assert!(
+            plan.preferred_optional_device_extensions
+                .contains(&"VK_KHR_present_wait2")
+        );
+        assert!(
             plan.api_type_evidence
                 .iter()
                 .any(|name| { name.ends_with("PhysicalDeviceVulkan14Features") })
+        );
+        assert!(
+            plan.api_type_evidence
+                .iter()
+                .any(|name| { name.ends_with("SwapchainCreateInfoKHR") })
         );
         assert!(
             plan.api_type_evidence

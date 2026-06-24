@@ -18,6 +18,8 @@ mod plan;
 mod profiles;
 #[path = "vulkanalia_backend/queue_probe.rs"]
 mod queue_probe;
+#[path = "vulkanalia_backend/swapchain.rs"]
+mod swapchain;
 #[path = "vulkanalia_backend/video_bitstream_buffer.rs"]
 mod video_bitstream_buffer;
 #[path = "vulkanalia_backend/video_codec.rs"]
@@ -83,6 +85,15 @@ pub use migration::{
 pub use plan::{NativeVulkanVulkanaliaBackendPlan, native_vulkan_vulkanalia_backend_plan};
 pub use profiles::{
     NativeVulkanVulkanaliaVideoProfileTemplate, native_vulkan_vulkanalia_video_profile_templates,
+};
+#[allow(unused_imports)]
+pub use swapchain::{
+    NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
+    NativeVulkanVulkanaliaPresentQueueSnapshot, NativeVulkanVulkanaliaSurfaceCapabilitiesSnapshot,
+    NativeVulkanVulkanaliaSurfaceFormatSnapshot, NativeVulkanVulkanaliaSurfaceSnapshot,
+    NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions,
+    NativeVulkanVulkanaliaSurfaceSwapchainProbeSnapshot, NativeVulkanVulkanaliaSwapchainSnapshot,
+    probe_native_vulkan_vulkanalia_surface_swapchain,
 };
 #[allow(unused_imports)]
 pub use video_bitstream_buffer::{

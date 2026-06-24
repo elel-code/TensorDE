@@ -10,8 +10,11 @@ use super::vulkanalia_backend::{
     NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput,
     NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput,
     NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput,
+    NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions,
+    NativeVulkanVulkanaliaSurfaceSwapchainProbeSnapshot,
     NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
     NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot,
+    probe_native_vulkan_vulkanalia_surface_swapchain,
     probe_native_vulkan_vulkanalia_video_session_bind,
 };
 use super::vulkanalia_extract::{
@@ -37,6 +40,9 @@ pub struct NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
     pub decode_submit_backend: &'static str,
     pub command_submit_model: &'static str,
     pub present_backend: &'static str,
+    pub present_probe_requested: bool,
+    pub present_probe: Option<NativeVulkanVulkanaliaSurfaceSwapchainProbeSnapshot>,
+    pub present_probe_error: Option<String>,
     pub ffmpeg_reference: &'static str,
     pub session: NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot,
 }
@@ -81,6 +87,16 @@ pub fn run_vulkanalia_ready_prefix_video(
         ready_prefix.into_session_options(codec, width, height, bitstream_samples);
     let session = probe_native_vulkan_vulkanalia_video_session_bind(session_options)
         .map_err(NativeVulkanError::Video)?;
+    let present_probe = probe_native_vulkan_vulkanalia_surface_swapchain(
+        NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions {
+            host: options.host.clone(),
+            wait_configure_roundtrips: options.wait_configure_roundtrips,
+        },
+    );
+    let (present_probe, present_probe_error) = match present_probe {
+        Ok(snapshot) => (Some(snapshot), None),
+        Err(err) => (None, Some(err)),
+    };
 
     Ok(NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
         route: "direct-video-ready-prefix",
@@ -96,7 +112,10 @@ pub fn run_vulkanalia_ready_prefix_video(
         audio_output_mode: audio_output_mode.as_str(),
         decode_submit_backend: "vulkanalia-video-session-bind",
         command_submit_model: "CmdPipelineBarrier2 -> CmdBeginVideoCodingKHR -> CmdDecodeVideoKHR -> CmdEndVideoCodingKHR -> QueueSubmit2",
-        present_backend: "ash-visible-runtime-pending-vulkanalia-present-migration",
+        present_backend: "vulkanalia-surface-swapchain-probe-with-ash-runtime-compatibility",
+        present_probe_requested: true,
+        present_probe,
+        present_probe_error,
         ffmpeg_reference: "references/ffmpeg/libavcodec/vulkan_decode.c",
         session,
     })

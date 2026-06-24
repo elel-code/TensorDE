@@ -51,7 +51,7 @@ pub fn native_vulkan_vulkanalia_migration_contract() -> NativeVulkanVulkanaliaMi
                 kind: NativeVulkanVulkanaliaMigrationStageKind::SurfaceSwapchain,
                 ash_boundary: "Wayland surface, swapchain creation, image acquisition and resize recovery",
                 vulkanalia_target_module: "vulkanalia_backend/swapchain.rs",
-                validation_gate: "probe surface/swapchain parity with existing ash path on all outputs",
+                validation_gate: "probe creates a Wayland VkSurfaceKHR, Vulkanalia present device, VkSwapchainKHR and swapchain image list before render/present loop replacement",
             },
             NativeVulkanVulkanaliaMigrationStage {
                 order: 2,
