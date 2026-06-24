@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use serde::Serialize;
-use vulkanalia::vk;
+use vulkanalia::vk::{self, HasBuilder};
 
 use crate::renderer::native_vulkan::NativeVulkanVideoSessionCodec;
 
@@ -25,6 +25,24 @@ impl NativeVulkanVulkanaliaPictureResourcePlan {
             image_view_binding_required: true,
         }
     }
+
+    pub(super) fn to_vk(
+        &self,
+        image_view_binding: vk::ImageView,
+    ) -> vk::VideoPictureResourceInfoKHR {
+        vk::VideoPictureResourceInfoKHR::builder()
+            .coded_offset(vk::Offset2D {
+                x: self.coded_offset.0,
+                y: self.coded_offset.1,
+            })
+            .coded_extent(vk::Extent2D {
+                width: self.coded_extent.0,
+                height: self.coded_extent.1,
+            })
+            .base_array_layer(self.base_array_layer)
+            .image_view_binding(image_view_binding)
+            .build()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -32,6 +50,30 @@ pub(super) enum NativeVulkanVulkanaliaReferenceSlotRole {
     BeginInactive,
     DecodeReference,
     SetupCurrent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NativeVulkanVulkanaliaDecodeImageViewBindings {
+    pub dst_picture_image_view: vk::ImageView,
+    pub setup_reference_image_view: vk::ImageView,
+    pub begin_reference_image_views: Vec<vk::ImageView>,
+    pub decode_reference_image_views: Vec<vk::ImageView>,
+}
+
+impl NativeVulkanVulkanaliaDecodeImageViewBindings {
+    #[cfg(test)]
+    pub(super) fn repeated(
+        image_view: vk::ImageView,
+        begin_reference_slot_count: usize,
+        decode_reference_slot_count: usize,
+    ) -> Self {
+        Self {
+            dst_picture_image_view: image_view,
+            setup_reference_image_view: image_view,
+            begin_reference_image_views: vec![image_view; begin_reference_slot_count],
+            decode_reference_image_views: vec![image_view; decode_reference_slot_count],
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -48,7 +90,7 @@ impl NativeVulkanVulkanaliaReferenceSlotPlan {
             role: NativeVulkanVulkanaliaReferenceSlotRole::BeginInactive,
             slot_index: -1,
             resource,
-            codec_dpb_info_required: false,
+            codec_dpb_info_required: true,
         }
     }
 
@@ -173,7 +215,7 @@ mod tests {
 
         let inactive = NativeVulkanVulkanaliaReferenceSlotPlan::begin_inactive(resource.clone());
         assert_eq!(inactive.slot_index, -1);
-        assert!(!inactive.codec_dpb_info_required);
+        assert!(inactive.codec_dpb_info_required);
 
         let setup = NativeVulkanVulkanaliaReferenceSlotPlan::setup_current(3, resource);
         assert_eq!(setup.slot_index, 3);
