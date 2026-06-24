@@ -136,6 +136,12 @@ impl NativeVulkanVideoFrontend {
         }
     }
 
+    pub(super) fn segment_done_messages(&self) -> u64 {
+        match self {
+            Self::Gst(frontend) => frontend.segment_done_messages(),
+        }
+    }
+
     pub(super) fn snapshot(&self) -> NativeVulkanVideoFrontendSnapshot {
         match self {
             Self::Gst(frontend) => frontend.snapshot(),

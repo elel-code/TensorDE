@@ -189,6 +189,10 @@ impl NativeVulkanGstVideoFrontend {
         self.latest_sample.take()
     }
 
+    pub(super) fn segment_done_messages(&self) -> u64 {
+        self.segment_done_messages
+    }
+
     pub(super) fn snapshot(&self) -> NativeVulkanVideoFrontendSnapshot {
         let provider_state = Some(
             self.pipeline

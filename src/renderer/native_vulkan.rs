@@ -3179,6 +3179,8 @@ pub struct NativeVulkanSession {
     video_texture: Option<NativeVulkanVideoTexture>,
     #[cfg(feature = "native-vulkan-gst-video")]
     video_import_status: NativeVulkanVideoImportStatus,
+    #[cfg(feature = "native-vulkan-gst-video")]
+    audio_runtime_last_video_segment_done_messages: u64,
     audio_runtime: audio_runtime::NativeVulkanPlanAudioRuntime,
     clear_color: NativeVulkanClearColor,
     render_item: NativeVulkanRenderItem,
@@ -3404,6 +3406,8 @@ impl NativeVulkanSession {
             video_texture: None,
             #[cfg(feature = "native-vulkan-gst-video")]
             video_import_status: NativeVulkanVideoImportStatus::default(),
+            #[cfg(feature = "native-vulkan-gst-video")]
+            audio_runtime_last_video_segment_done_messages: 0,
             audio_runtime,
             clear_color,
             render_item,
@@ -3729,6 +3733,11 @@ impl NativeVulkanSession {
         #[cfg(feature = "native-vulkan-gst-video")]
         if let Some(frontend) = self.video_frontend.as_mut() {
             frontend.poll()?;
+            let segment_done_messages = frontend.segment_done_messages();
+            if segment_done_messages > self.audio_runtime_last_video_segment_done_messages {
+                self.audio_runtime.seek_for_video_loop(0);
+                self.audio_runtime_last_video_segment_done_messages = segment_done_messages;
+            }
             if let Some(sample) = frontend.take_latest_sample() {
                 self.import_video_frontend_sample(sample);
             }

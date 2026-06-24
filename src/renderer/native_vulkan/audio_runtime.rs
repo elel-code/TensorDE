@@ -34,6 +34,7 @@ struct NativeVulkanPlanAudioRuntimeWorker {
 #[cfg(feature = "native-vulkan-gst-video")]
 enum NativeVulkanPlanAudioRuntimeWorkerCommand {
     SampleVideoClock { video_clock_ns: u64 },
+    SeekForVideoLoop { position_ms: u64 },
     Stop,
 }
 
@@ -98,6 +99,21 @@ impl NativeVulkanPlanAudioRuntime {
         }
     }
 
+    #[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
+    pub(super) fn seek_for_video_loop(&mut self, position_ms: u64) {
+        #[cfg(feature = "native-vulkan-gst-video")]
+        if let Some(worker) = self.worker.as_ref() {
+            if let Err(err) = worker.seek_for_video_loop(position_ms) {
+                native_vulkan_audio_runtime_state(&self.state).last_error = Some(err);
+                self.worker = None;
+            }
+        }
+        #[cfg(not(feature = "native-vulkan-gst-video"))]
+        {
+            let _ = position_ms;
+        }
+    }
+
     pub(super) fn telemetry(&self) -> Option<NativeVulkanVideoAudioRuntimeTelemetry> {
         #[cfg(feature = "native-vulkan-gst-video")]
         {
@@ -145,6 +161,12 @@ impl NativeVulkanPlanAudioRuntimeWorker {
             .send(NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock { video_clock_ns })
             .map_err(|err| format!("audio runtime worker command channel closed: {err}"))
     }
+
+    fn seek_for_video_loop(&self, position_ms: u64) -> Result<(), String> {
+        self.command_tx
+            .send(NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop { position_ms })
+            .map_err(|err| format!("audio runtime worker command channel closed: {err}"))
+    }
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -185,6 +207,24 @@ fn native_vulkan_audio_runtime_worker_loop(
                     }
                 }
             }
+            NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop { position_ms } => {
+                match probe.seek_for_video_loop(position_ms) {
+                    Ok(()) => {
+                        let audio_provider = probe.provider().as_str();
+                        native_vulkan_audio_runtime_state(&state).telemetry = Some(
+                            NativeVulkanVideoAudioRuntimeTelemetry::from_audio_clock_runtime(
+                                audio_provider,
+                                probe.telemetry(),
+                            ),
+                        );
+                    }
+                    Err(err) => {
+                        native_vulkan_audio_runtime_state(&state).last_error =
+                            Some(err.to_string());
+                        break;
+                    }
+                }
+            }
             NativeVulkanPlanAudioRuntimeWorkerCommand::Stop => break,
         }
     }
@@ -195,17 +235,34 @@ fn native_vulkan_audio_runtime_coalesced_command(
     mut command: NativeVulkanPlanAudioRuntimeWorkerCommand,
     command_rx: &mpsc::Receiver<NativeVulkanPlanAudioRuntimeWorkerCommand>,
 ) -> NativeVulkanPlanAudioRuntimeWorkerCommand {
+    let mut latest_seek_position_ms = match command {
+        NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop { position_ms } => {
+            Some(position_ms)
+        }
+        _ => None,
+    };
     while let Ok(next_command) = command_rx.try_recv() {
         match next_command {
             NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock { .. } => {
-                command = next_command;
+                if latest_seek_position_ms.is_none() {
+                    command = next_command;
+                }
+            }
+            NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop { position_ms } => {
+                latest_seek_position_ms = Some(position_ms);
             }
             NativeVulkanPlanAudioRuntimeWorkerCommand::Stop => {
                 return NativeVulkanPlanAudioRuntimeWorkerCommand::Stop;
             }
         }
     }
-    command
+    latest_seek_position_ms
+        .map(
+            |position_ms| NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop {
+                position_ms,
+            },
+        )
+        .unwrap_or(command)
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -292,6 +349,59 @@ mod tests {
             NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock { video_clock_ns } => {
                 assert_eq!(video_clock_ns, 3);
             }
+            NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop { .. } => {
+                panic!("unexpected loop seek")
+            }
+            NativeVulkanPlanAudioRuntimeWorkerCommand::Stop => panic!("unexpected stop"),
+        }
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn worker_command_coalescing_keeps_latest_loop_seek() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock { video_clock_ns: 2 })
+            .unwrap();
+        tx.send(NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop { position_ms: 125 })
+            .unwrap();
+        tx.send(NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop { position_ms: 250 })
+            .unwrap();
+
+        let command = native_vulkan_audio_runtime_coalesced_command(
+            NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock { video_clock_ns: 1 },
+            &rx,
+        );
+
+        match command {
+            NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop { position_ms } => {
+                assert_eq!(position_ms, 250);
+            }
+            NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock { .. } => {
+                panic!("unexpected clock sample")
+            }
+            NativeVulkanPlanAudioRuntimeWorkerCommand::Stop => panic!("unexpected stop"),
+        }
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn worker_command_coalescing_keeps_loop_seek_over_later_clock_sample() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock { video_clock_ns: 2 })
+            .unwrap();
+
+        let command = native_vulkan_audio_runtime_coalesced_command(
+            NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop { position_ms: 125 },
+            &rx,
+        );
+
+        match command {
+            NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop { position_ms } => {
+                assert_eq!(position_ms, 125);
+            }
+            NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock { .. } => {
+                panic!("clock sample must not override loop seek")
+            }
             NativeVulkanPlanAudioRuntimeWorkerCommand::Stop => panic!("unexpected stop"),
         }
     }
@@ -300,7 +410,7 @@ mod tests {
     #[test]
     fn worker_command_coalescing_prioritizes_stop() {
         let (tx, rx) = std::sync::mpsc::channel();
-        tx.send(NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock { video_clock_ns: 2 })
+        tx.send(NativeVulkanPlanAudioRuntimeWorkerCommand::SeekForVideoLoop { position_ms: 125 })
             .unwrap();
         tx.send(NativeVulkanPlanAudioRuntimeWorkerCommand::Stop)
             .unwrap();
