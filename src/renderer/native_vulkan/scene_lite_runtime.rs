@@ -6,6 +6,10 @@ use crate::core::{FitMode, SceneLiteTextAlign, SceneLiteTransform};
 use super::NativeVulkanRenderItem;
 use super::render_plan::native_vulkan_scene_lite_draw_plan;
 use super::scene_lite_draw_pass::native_vulkan_scene_lite_draw_pass_plan;
+use super::vulkanalia_backend::{
+    NativeVulkanVulkanaliaSceneLiteDrawPassInput, NativeVulkanVulkanaliaSceneLiteDrawPassSnapshot,
+    native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot,
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneLiteRuntimeSnapshot {
@@ -43,6 +47,7 @@ pub struct NativeVulkanSceneLiteRuntimeSnapshot {
     pub draw_pass_requires_text_atlas: bool,
     pub draw_pass_requires_path_tessellation: bool,
     pub draw_pass_fast_clear_color: Option<String>,
+    pub vulkanalia_draw_pass: NativeVulkanVulkanaliaSceneLiteDrawPassSnapshot,
     pub draw_op_count: usize,
     pub unsupported_layer_count: usize,
     pub draw_ops: Vec<NativeVulkanSceneLiteDrawOpSnapshot>,
@@ -155,6 +160,29 @@ pub(super) fn native_vulkan_scene_lite_runtime_snapshot(
 ) -> Option<NativeVulkanSceneLiteRuntimeSnapshot> {
     let plan = native_vulkan_scene_lite_draw_plan(render_item)?;
     let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&plan);
+    let vulkanalia_draw_pass = native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
+        NativeVulkanVulkanaliaSceneLiteDrawPassInput {
+            plan_ready: pass_plan.plan_ready,
+            native_draw_ready: plan.native_draw_ready(),
+            draw_op_count: plan.draw_ops.len(),
+            backend_status: pass_plan.backend_status,
+            blocking_reason: pass_plan.blocking_reason,
+            fast_clear_color_ready: pass_plan.fast_clear_color.is_some(),
+            quad_recording_ready: pass_plan.quad_recording_ready,
+            quad_recording_step_count: pass_plan.quad_recording_steps.len(),
+            quad_vertex_buffer_bytes: pass_plan.quad_vertex_buffer_bytes,
+            quad_index_buffer_bytes: pass_plan.quad_index_buffer_bytes,
+            sampled_image_recording_ready: pass_plan.sampled_image_recording_ready,
+            sampled_image_op_count: pass_plan.sampled_image_op_count,
+            sampled_image_recording_step_count: pass_plan.sampled_image_recording_steps.len(),
+            sampled_image_vertex_buffer_bytes: pass_plan.sampled_image_vertex_buffer_bytes,
+            sampled_image_index_buffer_bytes: pass_plan.sampled_image_index_buffer_bytes,
+            color_op_count: pass_plan.color_op_count,
+            vector_shape_op_count: pass_plan.vector_shape_op_count,
+            text_op_count: pass_plan.text_op_count,
+            path_op_count: pass_plan.path_op_count,
+        },
+    );
     Some(NativeVulkanSceneLiteRuntimeSnapshot {
         snapshot_time_ms: plan.snapshot_time_ms,
         native_draw_ready: plan.native_draw_ready(),
@@ -268,6 +296,7 @@ pub(super) fn native_vulkan_scene_lite_runtime_snapshot(
         draw_pass_requires_text_atlas: pass_plan.requires_text_atlas,
         draw_pass_requires_path_tessellation: pass_plan.requires_path_tessellation,
         draw_pass_fast_clear_color: pass_plan.fast_clear_color,
+        vulkanalia_draw_pass,
         draw_op_count: plan.draw_ops.len(),
         unsupported_layer_count: plan.unsupported_layers.len(),
         draw_ops: plan
@@ -530,6 +559,15 @@ mod tests {
             snapshot.draw_pass_fast_clear_color.as_deref(),
             Some("#203040")
         );
+        assert!(!snapshot.vulkanalia_draw_pass.backend_ready);
+        assert_eq!(
+            snapshot.vulkanalia_draw_pass.backend_status,
+            "delegated-to-vulkanalia-clear-present"
+        );
+        assert_eq!(
+            snapshot.vulkanalia_draw_pass.command_order,
+            vec!["delegate_to_vulkanalia_clear_present"]
+        );
     }
 
     #[test]
@@ -583,6 +621,21 @@ mod tests {
         assert_eq!(quad.width, Some(320.0));
         assert_eq!(quad.height, Some(180.0));
         assert_eq!(quad.transform.y, 12.0);
+        assert!(snapshot.vulkanalia_draw_pass.backend_ready);
+        assert_eq!(
+            snapshot.vulkanalia_draw_pass.backend_status,
+            "solid-quad-dynamic-rendering-recording-ready"
+        );
+        assert_eq!(snapshot.vulkanalia_draw_pass.vertex_buffer_bytes, 96);
+        assert_eq!(snapshot.vulkanalia_draw_pass.index_buffer_bytes, 24);
+        assert_eq!(snapshot.vulkanalia_draw_pass.draw_indexed_count, 1);
+        assert!(snapshot.vulkanalia_draw_pass.uses_dynamic_rendering);
+        assert!(
+            snapshot
+                .vulkanalia_draw_pass
+                .command_order
+                .contains(&"cmd_begin_rendering")
+        );
     }
 
     #[test]
@@ -643,5 +696,12 @@ mod tests {
         );
         assert_eq!(snapshot.draw_pass_sampled_image_vertices[0].uv, [0.0, 0.0]);
         assert_eq!(snapshot.draw_pass_sampled_image_vertices[3].uv, [1.0, 1.0]);
+        assert!(!snapshot.vulkanalia_draw_pass.backend_ready);
+        assert_eq!(
+            snapshot.vulkanalia_draw_pass.backend_status,
+            "sampled-image-dynamic-rendering-recording-pending"
+        );
+        assert_eq!(snapshot.vulkanalia_draw_pass.descriptor_set_count, 1);
+        assert_eq!(snapshot.vulkanalia_draw_pass.vertex_stride_bytes, 20);
     }
 }

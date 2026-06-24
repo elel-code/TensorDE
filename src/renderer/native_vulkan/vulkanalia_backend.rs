@@ -22,6 +22,8 @@ mod profiles;
 mod queue_probe;
 #[path = "vulkanalia_backend/render_present.rs"]
 mod render_present;
+#[path = "vulkanalia_backend/scene_lite_draw_pass.rs"]
+mod scene_lite_draw_pass;
 #[path = "vulkanalia_backend/swapchain.rs"]
 mod swapchain;
 #[path = "vulkanalia_backend/video_bitstream_buffer.rs"]
@@ -104,6 +106,11 @@ pub use render_present::{
     NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot,
     NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot,
     NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot,
+};
+pub use scene_lite_draw_pass::NativeVulkanVulkanaliaSceneLiteDrawPassSnapshot;
+pub(crate) use scene_lite_draw_pass::{
+    NativeVulkanVulkanaliaSceneLiteDrawPassInput,
+    native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot,
 };
 #[allow(unused_imports)]
 pub use swapchain::{
