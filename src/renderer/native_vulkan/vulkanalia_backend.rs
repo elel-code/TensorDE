@@ -152,6 +152,11 @@ pub use video_present_device::{
     probe_native_vulkan_vulkanalia_video_present_device,
     probe_native_vulkan_vulkanalia_video_present_session,
 };
+pub use video_present_runtime::{
+    NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeOptions,
+    NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot,
+    run_native_vulkan_vulkanalia_h265_retained_video_present_decode,
+};
 #[allow(unused_imports)]
 pub use video_profile_probe::{
     NativeVulkanVulkanaliaVideoProfileCapabilitySnapshot,

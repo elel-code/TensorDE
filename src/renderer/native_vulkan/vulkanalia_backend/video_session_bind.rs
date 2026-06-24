@@ -692,6 +692,67 @@ fn native_vulkan_vulkanalia_record_h265_ready_prefix_decode_smoke(
     ) {
         return Err("Vulkanalia H.265 ready-prefix decode smoke requires an H.265 codec".into());
     }
+    let image = native_vulkan_vulkanalia_create_video_session_resource_image(
+        instance,
+        device,
+        memory_properties,
+        selection.physical_device,
+        profile_info,
+        extent,
+        array_layers,
+        picture_format,
+        decode_capability_flags,
+        &[selection.queue_family_index],
+    )?;
+    let mut image = Some(image);
+
+    let result = native_vulkan_vulkanalia_record_h265_ready_prefix_decode_into_image(
+        device,
+        queue,
+        memory_properties,
+        selection.queue_family_index,
+        profile_info,
+        extent,
+        capabilities,
+        session,
+        codec,
+        array_layers,
+        requested_bitstream_buffer_size,
+        input,
+        image
+            .as_ref()
+            .expect("Vulkanalia H.265 decode image is alive during smoke"),
+    );
+
+    if let Some(image) = image.take() {
+        native_vulkan_vulkanalia_destroy_video_session_resource_image(device, image);
+    }
+
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn native_vulkan_vulkanalia_record_h265_ready_prefix_decode_into_image(
+    device: &Device,
+    queue: vk::Queue,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    queue_family_index: u32,
+    profile_info: &vk::VideoProfileInfoKHR,
+    extent: vk::Extent2D,
+    capabilities: vk::VideoCapabilitiesKHR,
+    session: vk::VideoSessionKHR,
+    codec: NativeVulkanVideoSessionCodec,
+    array_layers: u32,
+    requested_bitstream_buffer_size: u64,
+    input: &NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput,
+    image: &super::video_session_images::VulkanaliaVideoSessionResourceImage,
+) -> Result<NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot, String> {
+    if !matches!(
+        codec,
+        NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10
+    ) {
+        return Err("Vulkanalia H.265 ready-prefix decode smoke requires an H.265 codec".into());
+    }
     if input.requested_frame_count == 0 {
         return Err(
             "Vulkanalia H.265 ready-prefix decode smoke requires at least one frame".to_owned(),
@@ -729,19 +790,6 @@ fn native_vulkan_vulkanalia_record_h265_ready_prefix_decode_smoke(
         capabilities.min_bitstream_buffer_size_alignment,
     )?;
     let bitstream_buffer_size = requested_bitstream_buffer_size.max(bitstream_payload.len() as u64);
-    let image = native_vulkan_vulkanalia_create_video_session_resource_image(
-        instance,
-        device,
-        memory_properties,
-        selection.physical_device,
-        profile_info,
-        extent,
-        array_layers,
-        picture_format,
-        decode_capability_flags,
-        &[selection.queue_family_index],
-    )?;
-    let mut image = Some(image);
     let bitstream_buffer = native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
         device,
         memory_properties,
@@ -759,19 +807,15 @@ fn native_vulkan_vulkanalia_record_h265_ready_prefix_decode_smoke(
         &input.parameter_sets,
     )?;
     let mut session_parameters = Some(session_parameters);
-    let command_buffer = native_vulkan_vulkanalia_create_decode_command_buffer(
-        device,
-        selection.queue_family_index,
-    )?;
+    let command_buffer =
+        native_vulkan_vulkanalia_create_decode_command_buffer(device, queue_family_index)?;
     let mut command_buffer = Some(command_buffer);
 
     let result =
         (|| -> Result<NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot, String> {
             let parameter_ids =
                 NativeVulkanVulkanaliaH265ParameterIds::from_parameter_sets(&input.parameter_sets)?;
-            let image_ref = image
-                .as_ref()
-                .expect("Vulkanalia H.265 decode image is alive during smoke");
+            let image_ref = image;
             let session_parameters_ref = session_parameters
                 .as_ref()
                 .expect("Vulkanalia H.265 session parameters are alive during smoke");
@@ -867,7 +911,7 @@ fn native_vulkan_vulkanalia_record_h265_ready_prefix_decode_smoke(
                 submitted,
                 uses_synchronization2,
                 uses_submit2,
-                queue_family_index: selection.queue_family_index,
+                queue_family_index,
                 src_buffer_total_bytes: bitstream_payload.len() as u64,
                 src_buffer_offset: last_frame.src_buffer_offset,
                 src_buffer_range: last_frame.src_buffer_range,
@@ -890,9 +934,6 @@ fn native_vulkan_vulkanalia_record_h265_ready_prefix_decode_smoke(
     }
     if let Some(bitstream_buffer) = bitstream_buffer.take() {
         native_vulkan_vulkanalia_destroy_video_session_bitstream_buffer(device, bitstream_buffer);
-    }
-    if let Some(image) = image.take() {
-        native_vulkan_vulkanalia_destroy_video_session_resource_image(device, image);
     }
 
     result
