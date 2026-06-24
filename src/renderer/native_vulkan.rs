@@ -207,7 +207,8 @@ use render_plan::{native_vulkan_render_item_clear_color, native_vulkan_static_up
 use scene_lite_runtime::native_vulkan_scene_lite_runtime_snapshot;
 pub use scene_lite_runtime::{
     NativeVulkanSceneLiteDrawOpSnapshot, NativeVulkanSceneLiteQuadRecordingStepSnapshot,
-    NativeVulkanSceneLiteRuntimeSnapshot, NativeVulkanSceneLiteUnsupportedLayerSnapshot,
+    NativeVulkanSceneLiteQuadVertexSnapshot, NativeVulkanSceneLiteRuntimeSnapshot,
+    NativeVulkanSceneLiteUnsupportedLayerSnapshot,
 };
 pub use video_frontend::NativeVulkanVideoCapsSnapshot;
 use video_frontend::NativeVulkanVideoFrontendSnapshot;
@@ -45651,13 +45652,20 @@ mod tests {
         assert!(snapshot.draw_pass_quad_recording_ready);
         assert_eq!(snapshot.draw_pass_quad_recording_step_count, 1);
         assert_eq!(snapshot.draw_pass_quad_vertex_buffer_bytes, 96);
-        assert_eq!(snapshot.draw_pass_quad_index_buffer_bytes, 12);
+        assert_eq!(snapshot.draw_pass_quad_index_buffer_bytes, 24);
         assert_eq!(
             snapshot.draw_pass_quad_recording_steps[0].pipeline,
             "solid-quad-alpha-blend"
         );
         assert_eq!(snapshot.draw_pass_quad_recording_steps[0].vertex_count, 4);
         assert_eq!(snapshot.draw_pass_quad_recording_steps[0].index_count, 6);
+        assert_eq!(snapshot.draw_pass_quad_indices, vec![0, 1, 2, 2, 1, 3]);
+        assert_eq!(snapshot.draw_pass_quad_vertices.len(), 4);
+        assert_eq!(
+            snapshot.draw_pass_quad_vertices[0].position,
+            [-160.0, -78.0]
+        );
+        assert_eq!(snapshot.draw_pass_quad_vertices[3].position, [160.0, 102.0]);
         let quad = &snapshot.draw_pass_recordable_quads[0];
         assert_eq!(quad.layer_id, "panel");
         assert_eq!(quad.kind, "rectangle");

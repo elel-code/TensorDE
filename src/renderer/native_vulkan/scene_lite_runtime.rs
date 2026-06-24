@@ -21,6 +21,8 @@ pub struct NativeVulkanSceneLiteRuntimeSnapshot {
     pub draw_pass_quad_recording_ready: bool,
     pub draw_pass_quad_recording_step_count: usize,
     pub draw_pass_quad_recording_steps: Vec<NativeVulkanSceneLiteQuadRecordingStepSnapshot>,
+    pub draw_pass_quad_vertices: Vec<NativeVulkanSceneLiteQuadVertexSnapshot>,
+    pub draw_pass_quad_indices: Vec<u32>,
     pub draw_pass_quad_vertex_buffer_bytes: u64,
     pub draw_pass_quad_index_buffer_bytes: u64,
     pub draw_pass_color_op_count: usize,
@@ -89,6 +91,12 @@ pub struct NativeVulkanSceneLiteQuadRecordingStepSnapshot {
     pub index_buffer_size_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct NativeVulkanSceneLiteQuadVertexSnapshot {
+    pub position: [f32; 2],
+    pub rgba: [f32; 4],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanSceneLiteUnsupportedLayerSnapshot {
     pub layer_index: usize,
@@ -144,6 +152,15 @@ pub(super) fn native_vulkan_scene_lite_runtime_snapshot(
                 index_buffer_size_bytes: step.index_buffer_size_bytes,
             })
             .collect(),
+        draw_pass_quad_vertices: pass_plan
+            .quad_vertices
+            .into_iter()
+            .map(|vertex| NativeVulkanSceneLiteQuadVertexSnapshot {
+                position: vertex.position,
+                rgba: vertex.rgba,
+            })
+            .collect(),
+        draw_pass_quad_indices: pass_plan.quad_indices,
         draw_pass_quad_vertex_buffer_bytes: pass_plan.quad_vertex_buffer_bytes,
         draw_pass_quad_index_buffer_bytes: pass_plan.quad_index_buffer_bytes,
         draw_pass_color_op_count: pass_plan.color_op_count,

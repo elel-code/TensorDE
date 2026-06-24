@@ -9,7 +9,7 @@ use super::render_plan::{
 const SCENE_LITE_SOLID_QUAD_VERTEX_COUNT: u32 = 4;
 const SCENE_LITE_SOLID_QUAD_INDEX_COUNT: u32 = 6;
 const SCENE_LITE_SOLID_QUAD_VERTEX_BYTES: u64 = 24;
-const SCENE_LITE_SOLID_QUAD_INDEX_BYTES: u64 = 2;
+const SCENE_LITE_SOLID_QUAD_INDEX_BYTES: u64 = 4;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct NativeVulkanSceneLiteRecordableQuad {
@@ -39,6 +39,12 @@ pub(super) struct NativeVulkanSceneLiteQuadRecordingStep {
     pub(super) index_buffer_size_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct NativeVulkanSceneLiteQuadVertex {
+    pub(super) position: [f32; 2],
+    pub(super) rgba: [f32; 4],
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct NativeVulkanSceneLiteDrawPassPlan {
     pub(super) plan_ready: bool,
@@ -49,6 +55,8 @@ pub(super) struct NativeVulkanSceneLiteDrawPassPlan {
     pub(super) recordable_quads: Vec<NativeVulkanSceneLiteRecordableQuad>,
     pub(super) quad_recording_ready: bool,
     pub(super) quad_recording_steps: Vec<NativeVulkanSceneLiteQuadRecordingStep>,
+    pub(super) quad_vertices: Vec<NativeVulkanSceneLiteQuadVertex>,
+    pub(super) quad_indices: Vec<u32>,
     pub(super) quad_vertex_buffer_bytes: u64,
     pub(super) quad_index_buffer_bytes: u64,
     pub(super) color_op_count: usize,
@@ -103,13 +111,13 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         .filter_map(native_vulkan_scene_lite_recordable_quad)
         .collect::<Vec<_>>();
     let recordable_op_count = recordable_quads.len();
-    let quad_recording_steps = native_vulkan_scene_lite_quad_recording_steps(&recordable_quads);
-    let quad_recording_ready =
-        !quad_recording_steps.is_empty() && quad_recording_steps.len() == draw_plan.draw_ops.len();
+    let quad_recording_payload = native_vulkan_scene_lite_quad_recording_payload(&recordable_quads);
+    let quad_recording_ready = !quad_recording_payload.steps.is_empty()
+        && quad_recording_payload.steps.len() == draw_plan.draw_ops.len();
     let quad_vertex_buffer_bytes =
-        native_vulkan_scene_lite_quad_vertex_buffer_bytes(quad_recording_steps.len());
+        native_vulkan_scene_lite_quad_vertex_buffer_bytes(quad_recording_payload.steps.len());
     let quad_index_buffer_bytes =
-        native_vulkan_scene_lite_quad_index_buffer_bytes(quad_recording_steps.len());
+        native_vulkan_scene_lite_quad_index_buffer_bytes(quad_recording_payload.steps.len());
     let plan_ready = draw_plan.native_draw_ready();
     let backend_ready = plan_ready && (fast_clear_color.is_some() || quad_recording_ready);
     let (backend_status, blocking_reason) = if !plan_ready {
@@ -128,7 +136,7 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         } else {
             ("solid-quad-recording-ready", None)
         }
-    } else if !quad_recording_steps.is_empty() {
+    } else if !quad_recording_payload.steps.is_empty() {
         (
             "partial-solid-quad-recording-ready",
             Some("non-quad-draw-ops-need-recording-backend"),
@@ -153,7 +161,9 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         recordable_op_count,
         recordable_quads,
         quad_recording_ready,
-        quad_recording_steps,
+        quad_recording_steps: quad_recording_payload.steps,
+        quad_vertices: quad_recording_payload.vertices,
+        quad_indices: quad_recording_payload.indices,
         quad_vertex_buffer_bytes,
         quad_index_buffer_bytes,
         color_op_count,
@@ -186,17 +196,27 @@ fn native_vulkan_scene_lite_fast_clear_color(
         .map(str::to_owned)
 }
 
-fn native_vulkan_scene_lite_quad_recording_steps(
+struct NativeVulkanSceneLiteQuadRecordingPayload {
+    steps: Vec<NativeVulkanSceneLiteQuadRecordingStep>,
+    vertices: Vec<NativeVulkanSceneLiteQuadVertex>,
+    indices: Vec<u32>,
+}
+
+fn native_vulkan_scene_lite_quad_recording_payload(
     quads: &[NativeVulkanSceneLiteRecordableQuad],
-) -> Vec<NativeVulkanSceneLiteQuadRecordingStep> {
-    quads
+) -> NativeVulkanSceneLiteQuadRecordingPayload {
+    let mut steps = Vec::new();
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    for quad in quads
         .iter()
         .filter(|quad| native_vulkan_scene_lite_quad_has_recordable_geometry(quad))
-        .enumerate()
-        .map(|(index, quad)| {
+    {
+        let index = steps.len();
+        if let Some(quad_vertices) = native_vulkan_scene_lite_quad_vertices(quad) {
             let first_vertex = (index as u32).saturating_mul(SCENE_LITE_SOLID_QUAD_VERTEX_COUNT);
             let first_index = (index as u32).saturating_mul(SCENE_LITE_SOLID_QUAD_INDEX_COUNT);
-            NativeVulkanSceneLiteQuadRecordingStep {
+            steps.push(NativeVulkanSceneLiteQuadRecordingStep {
                 layer_index: quad.layer_index,
                 layer_id: quad.layer_id.clone(),
                 kind: quad.kind,
@@ -213,9 +233,23 @@ fn native_vulkan_scene_lite_quad_recording_steps(
                     .saturating_mul(SCENE_LITE_SOLID_QUAD_INDEX_BYTES),
                 index_buffer_size_bytes: u64::from(SCENE_LITE_SOLID_QUAD_INDEX_COUNT)
                     .saturating_mul(SCENE_LITE_SOLID_QUAD_INDEX_BYTES),
-            }
-        })
-        .collect()
+            });
+            vertices.extend(quad_vertices);
+            indices.extend_from_slice(&[
+                first_vertex,
+                first_vertex + 1,
+                first_vertex + 2,
+                first_vertex + 2,
+                first_vertex + 1,
+                first_vertex + 3,
+            ]);
+        }
+    }
+    NativeVulkanSceneLiteQuadRecordingPayload {
+        steps,
+        vertices,
+        indices,
+    }
 }
 
 fn native_vulkan_scene_lite_quad_has_recordable_geometry(
@@ -228,6 +262,37 @@ fn native_vulkan_scene_lite_quad_has_recordable_geometry(
         && quad
             .height
             .is_some_and(|height| height.is_finite() && height > 0.0)
+}
+
+fn native_vulkan_scene_lite_quad_vertices(
+    quad: &NativeVulkanSceneLiteRecordableQuad,
+) -> Option<[NativeVulkanSceneLiteQuadVertex; 4]> {
+    let width = quad.width?;
+    let height = quad.height?;
+    let transform = quad.transform;
+    let left = -transform.anchor_x * width;
+    let top = -transform.anchor_y * height;
+    let right = left + width;
+    let bottom = top + height;
+    let rotation = transform.rotation_deg.to_radians();
+    let cos = rotation.cos();
+    let sin = rotation.sin();
+    let points = [(left, top), (right, top), (left, bottom), (right, bottom)];
+    let mut vertices = [NativeVulkanSceneLiteQuadVertex {
+        position: [0.0, 0.0],
+        rgba: quad.rgba,
+    }; 4];
+    for (vertex, (x, y)) in vertices.iter_mut().zip(points) {
+        let scaled_x = x * transform.scale_x;
+        let scaled_y = y * transform.scale_y;
+        let scene_x = scaled_x.mul_add(cos, -scaled_y * sin) + transform.x;
+        let scene_y = scaled_x.mul_add(sin, scaled_y * cos) + transform.y;
+        if !scene_x.is_finite() || !scene_y.is_finite() {
+            return None;
+        }
+        vertex.position = [scene_x as f32, scene_y as f32];
+    }
+    Some(vertices)
 }
 
 fn native_vulkan_scene_lite_quad_vertex_buffer_bytes(quad_count: usize) -> u64 {
@@ -433,11 +498,13 @@ mod tests {
         assert!(!pass_plan.quad_recording_ready);
         assert_eq!(pass_plan.quad_recording_steps.len(), 1);
         assert_eq!(pass_plan.quad_vertex_buffer_bytes, 96);
-        assert_eq!(pass_plan.quad_index_buffer_bytes, 12);
+        assert_eq!(pass_plan.quad_index_buffer_bytes, 24);
         assert_eq!(
             pass_plan.quad_recording_steps[0].pipeline,
             "solid-quad-alpha-blend"
         );
+        assert_eq!(pass_plan.quad_vertices.len(), 4);
+        assert_eq!(pass_plan.quad_indices, vec![0, 1, 2, 2, 1, 3]);
         let quad = &pass_plan.recordable_quads[0];
         assert_eq!(quad.kind, "rectangle");
         assert_eq!(quad.color, "#336699");
@@ -471,7 +538,7 @@ mod tests {
         assert!(pass_plan.quad_recording_ready);
         assert_eq!(pass_plan.quad_recording_steps.len(), 1);
         assert_eq!(pass_plan.quad_vertex_buffer_bytes, 96);
-        assert_eq!(pass_plan.quad_index_buffer_bytes, 12);
+        assert_eq!(pass_plan.quad_index_buffer_bytes, 24);
         let step = &pass_plan.quad_recording_steps[0];
         assert_eq!(step.layer_id, "layer-0");
         assert_eq!(step.kind, "rectangle");
@@ -483,6 +550,16 @@ mod tests {
         assert_eq!(step.vertex_buffer_offset_bytes, 0);
         assert_eq!(step.vertex_buffer_size_bytes, 96);
         assert_eq!(step.index_buffer_offset_bytes, 0);
-        assert_eq!(step.index_buffer_size_bytes, 12);
+        assert_eq!(step.index_buffer_size_bytes, 24);
+        assert_eq!(pass_plan.quad_indices, vec![0, 1, 2, 2, 1, 3]);
+        assert_eq!(pass_plan.quad_vertices.len(), 4);
+        assert_eq!(pass_plan.quad_vertices[0].position, [-296.0, -180.0]);
+        assert_eq!(pass_plan.quad_vertices[1].position, [344.0, -180.0]);
+        assert_eq!(pass_plan.quad_vertices[2].position, [-296.0, 180.0]);
+        assert_eq!(pass_plan.quad_vertices[3].position, [344.0, 180.0]);
+        assert_eq!(
+            pass_plan.quad_vertices[0].rgba,
+            [51.0 / 255.0, 102.0 / 255.0, 153.0 / 255.0, 0.5]
+        );
     }
 }
