@@ -8,6 +8,8 @@
 
 use std::collections::VecDeque;
 
+use serde::Serialize;
+
 use super::{NativeVulkanError, native_vulkan_streaming_bootstrap_scan_limit};
 
 pub(super) trait NativeVulkanStreamingAccessUnit: Sized {
@@ -58,6 +60,30 @@ pub(super) struct NativeVulkanStreamingPacket<A: NativeVulkanStreamingAccessUnit
     pub(super) timeline: NativeVulkanStreamingPacketTimeline,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanStreamingPacketQueueRuntimeSnapshot {
+    pub codec: &'static str,
+    pub boundary: &'static str,
+    pub first_reference: &'static str,
+    pub frontend_contract: &'static str,
+    pub queue_policy: &'static str,
+    pub frame_keep_last_policy: &'static str,
+    pub serial_model: &'static str,
+    pub capacity: u32,
+    pub queued_packets: u32,
+    pub pulled_packets: u32,
+    pub current_serial: u32,
+    pub front_serial: Option<u32>,
+    pub back_serial: Option<u32>,
+    pub front_pts_ms: Option<u64>,
+    pub back_pts_ms: Option<u64>,
+    pub retained_payload_bytes: u64,
+    pub max_payload_bytes: u64,
+    pub bootstrap_discarded_packets: u32,
+    pub loop_skip_packets: u32,
+    pub eos_count: u32,
+}
+
 pub(super) struct NativeVulkanStreamingPacketQueue<A: NativeVulkanStreamingAccessUnit> {
     frontend: Box<dyn NativeVulkanStreamingPacketFrontend<A>>,
     pub(super) parameter_sets: A::ParameterSets,
@@ -73,6 +99,34 @@ pub(super) struct NativeVulkanStreamingPacketQueue<A: NativeVulkanStreamingAcces
 }
 
 impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
+    pub(super) fn runtime_snapshot(&self) -> NativeVulkanStreamingPacketQueueRuntimeSnapshot {
+        NativeVulkanStreamingPacketQueueRuntimeSnapshot {
+            codec: A::CODEC_LABEL,
+            boundary: "replaceable-demux-parser-to-native-decode",
+            first_reference: "FFmpeg ffplay PacketQueue serial and bounded packet ownership",
+            frontend_contract: "frontend supplies encoded access units/temporal units; native Vulkan owns codec state, decode, render and present",
+            queue_policy: "bounded FIFO queue with bootstrap keep-last window and no long payload retention after bitstream upload",
+            frame_keep_last_policy: "decoded-frame keep-last/direct-DPB ownership is downstream of this packet queue",
+            serial_model: "source loop count is the packet serial; stale packets/frames are rejected across loop or seek boundaries",
+            capacity: self.capacity.min(u32::MAX as usize) as u32,
+            queued_packets: self.queued.len().min(u32::MAX as usize) as u32,
+            pulled_packets: self.pulled_count,
+            current_serial: self.loop_count,
+            front_serial: self.queued.front().map(|packet| packet.source_loop_index),
+            back_serial: self.queued.back().map(|packet| packet.source_loop_index),
+            front_pts_ms: self
+                .queued
+                .front()
+                .and_then(|packet| packet.timeline.pts_ms),
+            back_pts_ms: self.queued.back().and_then(|packet| packet.timeline.pts_ms),
+            retained_payload_bytes: self.retained_payload_bytes(),
+            max_payload_bytes: self.max_payload_bytes,
+            bootstrap_discarded_packets: self.bootstrap_discarded_access_units,
+            loop_skip_packets: self.loop_skip_access_units,
+            eos_count: self.eos_count,
+        }
+    }
+
     pub(super) fn bootstrap_access_units(&self) -> Vec<A::Snapshot> {
         self.queued
             .iter()
@@ -325,4 +379,150 @@ pub(super) fn native_vulkan_start_streaming_packet_queue_from_frontend<
         bootstrap_discarded_access_units,
         max_payload_bytes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone)]
+    struct TestAccessUnit {
+        bytes: Vec<u8>,
+        pts_ms: Option<u64>,
+        parameter_sets: bool,
+        random_access: bool,
+    }
+
+    impl NativeVulkanStreamingAccessUnit for TestAccessUnit {
+        type ParameterSets = Vec<u8>;
+        type Snapshot = usize;
+
+        const CODEC_LABEL: &'static str = "test-codec";
+        const PARAMETER_SETS_LABEL: &'static str = "test-parameter-sets";
+        const RING_SLOT_BYTES_ENV: &'static str = "GILDER_TEST_RING_SLOT_BYTES";
+        const DEFAULT_RING_SLOT_COUNT: u32 = 2;
+
+        fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String> {
+            Ok(bytes.to_vec())
+        }
+
+        fn snapshot(
+            index: u32,
+            access_unit: &Self,
+            _parameter_sets: &Self::ParameterSets,
+        ) -> Self::Snapshot {
+            index as usize + access_unit.bytes.len()
+        }
+
+        fn bytes(&self) -> &[u8] {
+            &self.bytes
+        }
+
+        fn pts_ms(&self) -> Option<u64> {
+            self.pts_ms
+        }
+
+        fn duration_ms(&self) -> Option<u64> {
+            Some(4)
+        }
+
+        fn has_parameter_sets(&self) -> bool {
+            self.parameter_sets
+        }
+
+        fn is_random_access(&self) -> bool {
+            self.random_access
+        }
+    }
+
+    struct TestPacketFrontend {
+        access_units: VecDeque<TestAccessUnit>,
+        eos_count: u32,
+        loop_count: u32,
+    }
+
+    impl TestPacketFrontend {
+        fn new(access_units: Vec<TestAccessUnit>, loop_count: u32) -> Self {
+            Self {
+                access_units: access_units.into(),
+                eos_count: 0,
+                loop_count,
+            }
+        }
+    }
+
+    impl NativeVulkanStreamingPacketFrontend<TestAccessUnit> for TestPacketFrontend {
+        fn pull_next_access_unit(
+            &mut self,
+            _loop_on_eos: bool,
+        ) -> Result<Option<TestAccessUnit>, NativeVulkanError> {
+            let access_unit = self.access_units.pop_front();
+            if access_unit.is_none() {
+                self.eos_count = self.eos_count.saturating_add(1);
+            }
+            Ok(access_unit)
+        }
+
+        fn eos_count(&self) -> u32 {
+            self.eos_count
+        }
+
+        fn loop_count(&self) -> u32 {
+            self.loop_count
+        }
+    }
+
+    #[test]
+    fn packet_queue_runtime_snapshot_reports_ffmpeg_boundary() {
+        let frontend = TestPacketFrontend::new(
+            vec![
+                TestAccessUnit {
+                    bytes: vec![1, 2, 3],
+                    pts_ms: Some(0),
+                    parameter_sets: true,
+                    random_access: true,
+                },
+                TestAccessUnit {
+                    bytes: vec![4, 5, 6, 7],
+                    pts_ms: Some(4),
+                    parameter_sets: false,
+                    random_access: false,
+                },
+            ],
+            7,
+        );
+
+        let queue = native_vulkan_start_streaming_packet_queue_from_frontend(Box::new(frontend), 2)
+            .expect("packet queue");
+
+        let snapshot = queue.runtime_snapshot();
+
+        assert_eq!(snapshot.codec, "test-codec");
+        assert_eq!(
+            snapshot.boundary,
+            "replaceable-demux-parser-to-native-decode"
+        );
+        assert!(snapshot.first_reference.contains("FFmpeg"));
+        assert!(snapshot.first_reference.contains("PacketQueue"));
+        assert!(snapshot.queue_policy.contains("bounded FIFO"));
+        assert!(
+            snapshot
+                .frontend_contract
+                .contains("native Vulkan owns codec state")
+        );
+        assert!(snapshot.frame_keep_last_policy.contains("direct-DPB"));
+        assert_eq!(snapshot.capacity, 2);
+        assert_eq!(snapshot.queued_packets, 2);
+        assert_eq!(snapshot.pulled_packets, 2);
+        assert_eq!(snapshot.current_serial, 7);
+        assert_eq!(snapshot.front_serial, Some(7));
+        assert_eq!(snapshot.back_serial, Some(7));
+        assert_eq!(snapshot.front_pts_ms, Some(0));
+        assert_eq!(snapshot.back_pts_ms, Some(4));
+        assert_eq!(snapshot.retained_payload_bytes, 7);
+        assert_eq!(snapshot.max_payload_bytes, 4);
+        assert_eq!(snapshot.bootstrap_discarded_packets, 0);
+        assert_eq!(snapshot.loop_skip_packets, 0);
+        assert_eq!(snapshot.eos_count, 0);
+    }
 }

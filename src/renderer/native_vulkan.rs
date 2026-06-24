@@ -78,6 +78,10 @@ mod direct_zero_copy;
 #[path = "native_vulkan/direct_runtime.rs"]
 mod direct_runtime;
 
+#[cfg(feature = "native-vulkan-gst-video")]
+#[path = "native_vulkan/direct_h265_runtime.rs"]
+mod direct_h265_runtime;
+
 #[path = "native_vulkan/render_item.rs"]
 mod render_item;
 
@@ -139,6 +143,12 @@ mod demux_gst;
 
 pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy};
 #[cfg(feature = "native-vulkan-gst-video")]
+pub use direct_h265_runtime::{
+    NativeVulkanDirectH265FirstFrameRuntimeSnapshot,
+    NativeVulkanDirectH265ReadyPrefixFrameSnapshot,
+    NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot,
+};
+#[cfg(feature = "native-vulkan-gst-video")]
 use direct_runtime::{
     NativeVulkanDirectDisplayHandoffMetrics, NativeVulkanDirectOptionalPresentTimedFrame,
     NativeVulkanDirectOptionalPresentTiming, NativeVulkanDirectPresentBackpressure,
@@ -192,6 +202,7 @@ pub use audio_clock::{
 #[cfg(feature = "native-vulkan-gst-video")]
 use demux::{
     NativeVulkanStreamingAccessUnit, NativeVulkanStreamingPacket, NativeVulkanStreamingPacketQueue,
+    NativeVulkanStreamingPacketQueueRuntimeSnapshot,
     native_vulkan_require_streaming_bootstrap_window,
 };
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -2469,191 +2480,6 @@ pub struct NativeVulkanRuntimeSnapshot {
 
 #[cfg(feature = "native-vulkan-gst-video")]
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct NativeVulkanDirectH265FirstFrameRuntimeSnapshot {
-    pub runtime_elapsed_ms: u64,
-    pub frames_rendered: u64,
-    pub average_render_fps: f64,
-    pub configured: bool,
-    pub source: PathBuf,
-    pub source_extent: (u32, u32),
-    pub fit: FitMode,
-    pub target_max_fps: Option<u32>,
-    pub wayland_surface_logical_size: (u32, u32),
-    pub wayland_surface_buffer_size: (u32, u32),
-    pub selected_physical_device_name: String,
-    pub selected_physical_device_type: &'static str,
-    pub present_queue_family_index: u32,
-    pub present_queue_flags: Vec<&'static str>,
-    pub video_decode_queue_family_index: u32,
-    pub video_decode_queue_flags: Vec<&'static str>,
-    pub video_decode_queue_codec_operations: Vec<String>,
-    pub cross_queue_sync_strategy: &'static str,
-    pub swapchain_extent: (u32, u32),
-    pub swapchain_image_count: usize,
-    pub swapchain_format: String,
-    pub present_mode: &'static str,
-    pub pacing_strategy: &'static str,
-    pub video_resource_memory_bytes: u64,
-    pub session_memory_bytes: u64,
-    pub bitstream_buffer_bytes: u64,
-    pub decode: NativeVulkanDirectH265FirstFrameDecodeSnapshot,
-    pub last_render_error: Option<String>,
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
-    pub runtime_elapsed_ms: u64,
-    pub requested_codec: NativeVulkanVideoSessionCodec,
-    pub picture_format: &'static str,
-    pub requested_frame_count: u32,
-    pub ready_prefix_frame_count: u32,
-    pub requested_playback_frame_count: u32,
-    pub decoded_frame_count: u32,
-    pub presented_frame_count: u32,
-    pub decoded_frame_zero_copy_scope: &'static str,
-    pub decoded_frame_zero_copy_status: &'static str,
-    pub h265_present_frame_preroll_count: u32,
-    pub playback_loop_count: u32,
-    pub loop_boundary_reset_count: u32,
-    pub frame_sleep_count: u32,
-    pub missed_frame_pacing_count: u32,
-    pub total_frame_sleep_us: u64,
-    pub max_frame_pacing_late_us: u64,
-    pub average_present_fps: f64,
-    pub average_present_result_fps: f64,
-    pub average_present_result_drop_first_fps: f64,
-    pub average_present_result_drop_first_60_fps: f64,
-    pub present_result_first_interval_us: u64,
-    pub present_result_max_interval_us: u64,
-    pub present_result_max_interval_after_warmup_us: u64,
-    pub present_result_over_budget_count: u32,
-    pub present_result_over_budget_after_warmup_count: u32,
-    pub present_result_missed_vblank_threshold_us: u64,
-    pub present_result_missed_vblank_count: u32,
-    pub present_result_missed_vblank_after_warmup_count: u32,
-    pub configured: bool,
-    pub source: PathBuf,
-    pub source_extent: (u32, u32),
-    pub fit: FitMode,
-    pub target_max_fps: Option<u32>,
-    pub wayland_surface_logical_size: (u32, u32),
-    pub wayland_surface_buffer_size: (u32, u32),
-    pub selected_physical_device_name: String,
-    pub selected_physical_device_type: &'static str,
-    pub present_queue_family_index: u32,
-    pub present_queue_flags: Vec<&'static str>,
-    pub video_decode_queue_family_index: u32,
-    pub video_decode_queue_flags: Vec<&'static str>,
-    pub video_decode_queue_codec_operations: Vec<String>,
-    pub cross_queue_sync_strategy: &'static str,
-    pub driver_max_dpb_slots: u32,
-    pub stream_sps_dpb_slots: u32,
-    pub stream_dpb_slots: u32,
-    pub stream_max_active_reference_pictures: u32,
-    pub session_max_dpb_slots: u32,
-    pub session_max_active_reference_pictures: u32,
-    pub swapchain_extent: (u32, u32),
-    pub swapchain_image_count: usize,
-    pub swapchain_format: String,
-    pub present_mode: &'static str,
-    pub pacing_strategy: &'static str,
-    pub video_resource_memory_bytes: u64,
-    pub session_memory_bytes: u64,
-    pub bitstream_buffer_bytes: u64,
-    pub bitstream_buffer_strategy: &'static str,
-    pub bitstream_buffer_slot_count: u32,
-    pub bitstream_buffer_slot_bytes: u64,
-    pub bitstream_ring_capacity_bytes: u64,
-    pub bitstream_ring_min_offset_alignment: u64,
-    pub bitstream_ring_min_size_alignment: u64,
-    pub bitstream_ring_wrap_count: u32,
-    pub bitstream_window_payload_bytes: u64,
-    pub bitstream_upload_count: u32,
-    pub bitstream_uploaded_bytes: u64,
-    pub h265_input_mode: &'static str,
-    pub h265_display_handoff_strategy: &'static str,
-    pub h265_display_ring_memory_bytes: u64,
-    pub h265_display_copy_count: u32,
-    pub h265_displayed_direct_dpb_count: u32,
-    pub h265_present_queue_count: u32,
-    pub h265_async_present_depth: u32,
-    pub h265_present_result_wait_count: u32,
-    pub h265_present_result_wait_elapsed_us: u64,
-    pub h265_present_result_wait_max_us: u64,
-    pub h265_acquire_not_ready_count: u32,
-    pub h265_packet_queue_capacity: u32,
-    pub h265_packet_queue_pulled_count: u32,
-    pub h265_packet_queue_eos_count: u32,
-    pub h265_packet_queue_loop_count: u32,
-    pub h265_packet_queue_loop_skip_access_units: u32,
-    pub h265_packet_queue_bootstrap_discarded_access_units: u32,
-    pub h265_packet_queue_max_payload_bytes: u64,
-    pub h265_packet_queue_retained_payload_bytes: u64,
-    pub pts_delta_min_ms: Option<u64>,
-    pub pts_delta_max_ms: Option<u64>,
-    pub pts_delta_expected_min_ms: Option<u64>,
-    pub pts_delta_expected_max_ms: Option<u64>,
-    pub pts_delta_in_expected_range: Option<bool>,
-    pub audio_clock_probe: Option<NativeVulkanAudioClockRuntimeSnapshot>,
-    pub frames: Vec<NativeVulkanDirectH265ReadyPrefixFrameSnapshot>,
-    pub last_render_error: Option<String>,
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NativeVulkanDirectH265ReadyPrefixFrameSnapshot {
-    pub playback_frame_index: u32,
-    pub playback_loop_index: u32,
-    pub ready_prefix_frame_index: u32,
-    pub loop_boundary_reset: bool,
-    pub access_unit_index: u32,
-    pub pts_ms: Option<u64>,
-    pub pts_delta_ms: Option<u64>,
-    pub nal_type: u8,
-    pub nal_type_label: &'static str,
-    pub slice_type: u32,
-    pub pic_order_cnt_val: i32,
-    pub idr: bool,
-    pub irap: bool,
-    pub short_term_ref_pic_set_sps_flag: bool,
-    pub num_delta_pocs_of_ref_rps_idx: u8,
-    pub num_bits_for_st_ref_pic_set_in_slice: u16,
-    pub reset_before_decode: bool,
-    pub src_buffer_offset: u64,
-    pub src_buffer_range: u64,
-    pub bitstream_payload_bytes: u64,
-    pub bitstream_ring_allocation_index: u64,
-    pub bitstream_ring_wrap_count: u32,
-    pub bitstream_upload_elapsed_us: u64,
-    pub fence_wait_elapsed_us: u64,
-    pub dst_base_array_layer: u32,
-    pub setup_slot_index: i32,
-    pub decode_reference_slot_count: u32,
-    pub decode_elapsed_us: u64,
-    pub descriptor_update_elapsed_us: u64,
-    pub acquire_elapsed_us: u64,
-    pub record_elapsed_us: u64,
-    pub submit_elapsed_us: u64,
-    pub queue_present_elapsed_us: u64,
-    pub present_elapsed_us: u64,
-    pub present_result_since_start_us: u64,
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-impl NativeVulkanDirectPresentTimedFrame for NativeVulkanDirectH265ReadyPrefixFrameSnapshot {
-    fn apply_direct_present_timing(&mut self, timing: NativeVulkanDirectPresentTiming) {
-        self.acquire_elapsed_us = timing.acquire_elapsed_us;
-        self.record_elapsed_us = timing.record_elapsed_us;
-        self.submit_elapsed_us = timing.queue_submit_elapsed_us;
-        self.queue_present_elapsed_us = timing.queue_present_elapsed_us;
-        self.present_elapsed_us = timing.present_elapsed_us;
-        self.present_result_since_start_us = timing.present_result_since_start_us;
-    }
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot {
     pub runtime_elapsed_ms: u64,
     pub requested_codec: NativeVulkanVideoSessionCodec,
@@ -2732,6 +2558,7 @@ pub struct NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot {
     pub bitstream_window_payload_bytes: u64,
     pub bitstream_upload_count: u32,
     pub bitstream_uploaded_bytes: u64,
+    pub av1_demux_queue: NativeVulkanStreamingPacketQueueRuntimeSnapshot,
     pub av1_packet_queue_capacity: u32,
     pub av1_packet_queue_pulled_count: u32,
     pub av1_packet_queue_eos_count: u32,
@@ -3094,6 +2921,7 @@ pub struct NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot {
     pub bitstream_upload_count: u32,
     pub bitstream_uploaded_bytes: u64,
     pub h264_input_mode: &'static str,
+    pub h264_demux_queue: NativeVulkanStreamingPacketQueueRuntimeSnapshot,
     pub h264_display_handoff_strategy: &'static str,
     pub h264_resource_image_layout: &'static str,
     pub h264_video_queue_sync_strategy: &'static str,
@@ -6551,6 +6379,7 @@ pub fn run_h264_ready_prefix_video(
                         .map(|frame| frame.src_buffer_range)
                         .sum(),
                     h264_input_mode: input_mode.as_str(),
+                    h264_demux_queue: streaming_queue.runtime_snapshot(),
                     h264_display_handoff_strategy: "direct-sampled-dpb-output",
                     h264_resource_image_layout: native_vulkan_image_layout_label(
                         h264_decode_image_layout,
@@ -8236,6 +8065,7 @@ pub fn run_h264_ready_prefix_video(
                 bitstream_upload_count: frames.len() as u32,
                 bitstream_uploaded_bytes: frames.iter().map(|frame| frame.src_buffer_range).sum(),
                 h264_input_mode: input_mode.as_str(),
+                h264_demux_queue: streaming_queue.runtime_snapshot(),
                 h264_display_handoff_strategy: h264_display_copy_queue_strategy,
                 h264_resource_image_layout: native_vulkan_image_layout_label(
                     h264_decode_image_layout,
@@ -9781,6 +9611,7 @@ pub fn run_h265_ready_prefix_video(
                 bitstream_upload_count: frames.len() as u32,
                 bitstream_uploaded_bytes: frames.iter().map(|frame| frame.src_buffer_range).sum(),
                 h265_input_mode: input_mode.as_str(),
+                h265_demux_queue: streaming_queue.runtime_snapshot(),
                 h265_display_handoff_strategy,
                 h265_display_ring_memory_bytes,
                 h265_display_copy_count,
@@ -15890,6 +15721,7 @@ pub fn run_av1_ready_prefix_video(
                 bitstream_window_payload_bytes: streaming_bitstream.window_payload_bytes,
                 bitstream_upload_count: total_decoded_frame_count,
                 bitstream_uploaded_bytes,
+                av1_demux_queue: streaming_queue.runtime_snapshot(),
                 av1_packet_queue_capacity: streaming_queue.capacity.min(u32::MAX as usize) as u32,
                 av1_packet_queue_pulled_count: streaming_queue.pulled_count,
                 av1_packet_queue_eos_count: streaming_queue.eos_count,
