@@ -12,6 +12,8 @@ mod features;
 mod plan;
 #[path = "vulkanalia_backend/profiles.rs"]
 mod profiles;
+#[path = "vulkanalia_backend/queue_probe.rs"]
+mod queue_probe;
 
 pub use device_probe::{
     NativeVulkanVulkanaliaDeviceProbeSnapshot, NativeVulkanVulkanaliaDeviceProbeTemplate,

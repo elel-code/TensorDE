@@ -5,6 +5,8 @@ use vulkanalia::Version;
 use vulkanalia::loader::LibloadingLoader;
 use vulkanalia::prelude::v1_4::*;
 
+use super::queue_probe::native_vulkan_vulkanalia_has_video_decode_queue_family;
+
 const LOADER_CANDIDATES: &[&str] = &["libvulkan.so.1", "libvulkan.so"];
 const REQUIRED_INSTANCE_EXTENSIONS: &[&str] = &["VK_KHR_surface", "VK_KHR_wayland_surface"];
 const REQUIRED_VIDEO_DEVICE_EXTENSIONS: &[&str] = &[
@@ -188,8 +190,6 @@ fn probe_vulkanalia_instance_devices(
             unsafe {
                 instance.get_physical_device_features2(physical_device, &mut features2);
             }
-            let queue_families =
-                unsafe { instance.get_physical_device_queue_family_properties2(physical_device) };
             let device_extensions =
                 unsafe { instance.enumerate_device_extension_properties(physical_device, None) }
                     .map_err(|err| {
@@ -215,12 +215,11 @@ fn probe_vulkanalia_instance_devices(
                     &device_extensions,
                     REQUIRED_EXTERNAL_MEMORY_DEVICE_EXTENSIONS,
                 ),
-                has_video_decode_queue_family: queue_families.iter().any(|queue| {
-                    queue
-                        .queue_family_properties
-                        .queue_flags
-                        .contains(vk::QueueFlags::VIDEO_DECODE_KHR)
-                }),
+                has_video_decode_queue_family:
+                    native_vulkan_vulkanalia_has_video_decode_queue_family(
+                        instance,
+                        physical_device,
+                    ),
                 device_extensions: sorted_strings(device_extensions),
                 vulkan_1_4_features: NativeVulkanVulkanaliaVulkan14FeatureSnapshot {
                     dynamic_rendering_local_read: vulkan14_features.dynamic_rendering_local_read
