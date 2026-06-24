@@ -70,6 +70,10 @@ mod pipeline;
 #[path = "native_vulkan/interop.rs"]
 mod interop;
 
+#[cfg(feature = "native-vulkan-gst-video")]
+#[path = "native_vulkan/direct_zero_copy.rs"]
+mod direct_zero_copy;
+
 #[path = "native_vulkan/render_item.rs"]
 mod render_item;
 
@@ -127,6 +131,11 @@ mod demux;
 mod demux_gst;
 
 pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy};
+#[cfg(feature = "native-vulkan-gst-video")]
+use direct_zero_copy::{
+    NATIVE_VULKAN_DIRECT_DECODED_FRAME_ZERO_COPY_SCOPE,
+    native_vulkan_direct_decoded_frame_zero_copy_status,
+};
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
@@ -2488,6 +2497,8 @@ pub struct NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
     pub requested_playback_frame_count: u32,
     pub decoded_frame_count: u32,
     pub presented_frame_count: u32,
+    pub decoded_frame_zero_copy_scope: &'static str,
+    pub decoded_frame_zero_copy_status: &'static str,
     pub h265_present_frame_preroll_count: u32,
     pub playback_loop_count: u32,
     pub loop_boundary_reset_count: u32,
@@ -2614,6 +2625,8 @@ pub struct NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot {
     pub total_decoded_frame_count: u32,
     pub displayed_handoff_frame_count: u32,
     pub presented_frame_count: u32,
+    pub decoded_frame_zero_copy_scope: &'static str,
+    pub decoded_frame_zero_copy_status: &'static str,
     pub playback_loop_count: u32,
     pub loop_boundary_reset_count: u32,
     pub frame_sleep_count: u32,
@@ -2940,6 +2953,8 @@ pub struct NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot {
     pub requested_playback_frame_count: u32,
     pub decoded_frame_count: u32,
     pub presented_frame_count: u32,
+    pub decoded_frame_zero_copy_scope: &'static str,
+    pub decoded_frame_zero_copy_status: &'static str,
     pub h264_present_frame_preroll_count: u32,
     pub playback_loop_count: u32,
     pub loop_boundary_reset_count: u32,
@@ -6453,6 +6468,16 @@ pub fn run_h264_ready_prefix_video(
                     requested_playback_frame_count: playback_frame_count,
                     decoded_frame_count: frames.len() as u32,
                     presented_frame_count,
+                    decoded_frame_zero_copy_scope:
+                        NATIVE_VULKAN_DIRECT_DECODED_FRAME_ZERO_COPY_SCOPE,
+                    decoded_frame_zero_copy_status:
+                        native_vulkan_direct_decoded_frame_zero_copy_status(
+                            presented_frame_count,
+                            0,
+                            0,
+                            Some(presented_frame_count),
+                            "direct-sampled-dpb-output",
+                        ),
                     h264_present_frame_preroll_count,
                     playback_loop_count: if frames.is_empty() {
                         0
@@ -8223,6 +8248,14 @@ pub fn run_h264_ready_prefix_video(
                 requested_playback_frame_count: playback_frame_count,
                 decoded_frame_count: frames.len() as u32,
                 presented_frame_count,
+                decoded_frame_zero_copy_scope: NATIVE_VULKAN_DIRECT_DECODED_FRAME_ZERO_COPY_SCOPE,
+                decoded_frame_zero_copy_status: native_vulkan_direct_decoded_frame_zero_copy_status(
+                    presented_frame_count,
+                    h264_display_copy_count,
+                    display_image_ref.memory_size,
+                    None,
+                    h264_display_copy_queue_strategy,
+                ),
                 h264_present_frame_preroll_count: 0,
                 playback_loop_count: if frames.is_empty() {
                     0
@@ -9756,6 +9789,14 @@ pub fn run_h265_ready_prefix_video(
                 requested_playback_frame_count: playback_frame_count,
                 decoded_frame_count: frames.len() as u32,
                 presented_frame_count,
+                decoded_frame_zero_copy_scope: NATIVE_VULKAN_DIRECT_DECODED_FRAME_ZERO_COPY_SCOPE,
+                decoded_frame_zero_copy_status: native_vulkan_direct_decoded_frame_zero_copy_status(
+                    presented_frame_count,
+                    0,
+                    0,
+                    None,
+                    "direct-sampled-dpb-output",
+                ),
                 h265_present_frame_preroll_count,
                 playback_loop_count: if frames.is_empty() {
                     0
@@ -15871,6 +15912,25 @@ pub fn run_av1_ready_prefix_video(
             } else {
                 None
             };
+            let av1_display_handoff_strategy = if av1_displayed_direct_dpb_enabled {
+                "direct-sampled-dpb-general-layout+frame-context-retire"
+            } else if av1_show_existing_direct_dpb_enabled {
+                "video-queue-early-keep-last-copy-display-ring+show-existing-direct-dpb"
+            } else if av1_early_display_copy_show_existing {
+                "video-queue-early-keep-last-copy-display-ring+show-existing"
+            } else if av1_early_display_copy {
+                "video-queue-early-keep-last-copy-display-ring"
+            } else if av1_graphics_display_copy {
+                "graphics-present-queue-copy-merged-with-render-display-ring"
+            } else if av1_direct_dpb_general_layout {
+                "direct-sampled-dpb-general-layout+frame-context-retire"
+            } else {
+                "direct-sampled-dpb-output"
+            };
+            let av1_display_ring_memory_bytes = av1_display_image
+                .as_ref()
+                .map(|image| image.memory_size)
+                .unwrap_or(0);
             Ok(NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot {
                 runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
                 requested_codec: codec,
@@ -15884,6 +15944,14 @@ pub fn run_av1_ready_prefix_video(
                 total_decoded_frame_count,
                 displayed_handoff_frame_count,
                 presented_frame_count,
+                decoded_frame_zero_copy_scope: NATIVE_VULKAN_DIRECT_DECODED_FRAME_ZERO_COPY_SCOPE,
+                decoded_frame_zero_copy_status: native_vulkan_direct_decoded_frame_zero_copy_status(
+                    presented_frame_count,
+                    av1_display_copy_count,
+                    av1_display_ring_memory_bytes,
+                    Some(av1_displayed_direct_dpb_count),
+                    av1_display_handoff_strategy,
+                ),
                 playback_loop_count: if frames.is_empty() {
                     0
                 } else {
@@ -15987,27 +16055,10 @@ pub fn run_av1_ready_prefix_video(
                     .bootstrap_discarded_access_units,
                 av1_packet_queue_max_payload_bytes: streaming_queue.max_payload_bytes,
                 av1_packet_queue_retained_payload_bytes: streaming_queue.retained_payload_bytes(),
-                av1_display_handoff_strategy: if av1_displayed_direct_dpb_enabled {
-                    "direct-sampled-dpb-general-layout+frame-context-retire"
-                } else if av1_show_existing_direct_dpb_enabled {
-                    "video-queue-early-keep-last-copy-display-ring+show-existing-direct-dpb"
-                } else if av1_early_display_copy_show_existing {
-                    "video-queue-early-keep-last-copy-display-ring+show-existing"
-                } else if av1_early_display_copy {
-                    "video-queue-early-keep-last-copy-display-ring"
-                } else if av1_graphics_display_copy {
-                    "graphics-present-queue-copy-merged-with-render-display-ring"
-                } else if av1_direct_dpb_general_layout {
-                    "direct-sampled-dpb-general-layout+frame-context-retire"
-                } else {
-                    "direct-sampled-dpb-output"
-                },
+                av1_display_handoff_strategy,
                 av1_display_ring_slot_count: av1_display_textures.len().min(u32::MAX as usize)
                     as u32,
-                av1_display_ring_memory_bytes: av1_display_image
-                    .as_ref()
-                    .map(|image| image.memory_size)
-                    .unwrap_or(0),
+                av1_display_ring_memory_bytes,
                 av1_display_copy_count,
                 av1_display_copy_elided_count,
                 av1_present_command_buffer_strategy: if av1_frame_context_present_command_buffer {
