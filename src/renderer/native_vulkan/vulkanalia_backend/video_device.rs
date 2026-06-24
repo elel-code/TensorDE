@@ -23,6 +23,7 @@ const VIDEO_DECODE_AV1_EXTENSION_NAME: &str = "VK_KHR_video_decode_av1";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(super) struct NativeVulkanVulkanaliaVideoDeviceFeatureSelection {
     pub synchronization2_enabled: bool,
+    pub dynamic_rendering_enabled: bool,
     pub sampler_ycbcr_conversion_enabled: bool,
     pub video_maintenance1_enabled: bool,
     pub video_maintenance2_enabled: bool,
@@ -96,6 +97,9 @@ pub(super) fn native_vulkan_vulkanalia_create_video_decode_device(
     let mut synchronization2_features = vk::PhysicalDeviceSynchronization2Features::builder()
         .synchronization2(true)
         .build();
+    let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::builder()
+        .dynamic_rendering(true)
+        .build();
     let mut sampler_ycbcr_conversion_features =
         vk::PhysicalDeviceSamplerYcbcrConversionFeatures::builder()
             .sampler_ycbcr_conversion(true)
@@ -111,6 +115,9 @@ pub(super) fn native_vulkan_vulkanalia_create_video_decode_device(
         .enabled_extension_names(&extension_name_ptrs);
     if feature_selection.synchronization2_enabled {
         device_create_info = device_create_info.push_next(&mut synchronization2_features);
+    }
+    if feature_selection.dynamic_rendering_enabled {
+        device_create_info = device_create_info.push_next(&mut dynamic_rendering_features);
     }
     if feature_selection.sampler_ycbcr_conversion_enabled {
         device_create_info = device_create_info.push_next(&mut sampler_ycbcr_conversion_features);
@@ -265,6 +272,8 @@ pub(super) fn native_vulkan_vulkanalia_video_device_feature_selection(
 ) -> NativeVulkanVulkanaliaVideoDeviceFeatureSelection {
     let synchronization2_enabled =
         query_vulkanalia_synchronization2_feature(instance, physical_device);
+    let dynamic_rendering_enabled =
+        query_vulkanalia_dynamic_rendering_feature(instance, physical_device);
     let sampler_ycbcr_conversion_enabled =
         query_vulkanalia_sampler_ycbcr_conversion_feature(instance, physical_device);
     let video_maintenance1_enabled =
@@ -281,6 +290,7 @@ pub(super) fn native_vulkan_vulkanalia_video_device_feature_selection(
 
     NativeVulkanVulkanaliaVideoDeviceFeatureSelection {
         synchronization2_enabled,
+        dynamic_rendering_enabled,
         sampler_ycbcr_conversion_enabled,
         video_maintenance1_enabled,
         video_maintenance2_enabled,
@@ -300,6 +310,20 @@ fn query_vulkanalia_synchronization2_feature(
         instance.get_physical_device_features2(physical_device, &mut features2);
     }
     feature.synchronization2 != 0
+}
+
+fn query_vulkanalia_dynamic_rendering_feature(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+) -> bool {
+    let mut feature = vk::PhysicalDeviceDynamicRenderingFeatures::default();
+    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
+        .push_next(&mut feature)
+        .build();
+    unsafe {
+        instance.get_physical_device_features2(physical_device, &mut features2);
+    }
+    feature.dynamic_rendering != 0
 }
 
 fn query_vulkanalia_sampler_ycbcr_conversion_feature(
@@ -395,6 +419,7 @@ mod tests {
     fn enabled_extensions_add_video_maintenance_when_features_are_selected() {
         let disabled = NativeVulkanVulkanaliaVideoDeviceFeatureSelection {
             synchronization2_enabled: true,
+            dynamic_rendering_enabled: false,
             sampler_ycbcr_conversion_enabled: false,
             video_maintenance1_enabled: false,
             video_maintenance2_enabled: false,

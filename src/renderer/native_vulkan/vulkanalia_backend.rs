@@ -99,7 +99,10 @@ pub use profiles::{
     NativeVulkanVulkanaliaVideoProfileTemplate, native_vulkan_vulkanalia_video_profile_templates,
 };
 #[allow(unused_imports)]
-pub use render_present::NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot;
+pub use render_present::{
+    NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot,
+    NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot,
+};
 #[allow(unused_imports)]
 pub use swapchain::{
     NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,

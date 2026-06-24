@@ -15,8 +15,10 @@ use super::instance::{
     native_vulkan_vulkanalia_destroy_instance,
 };
 use super::render_present::{
-    VulkanaliaDecodedImagePresentSamplerResources,
+    VulkanaliaDecodedImagePresentPipelineResources, VulkanaliaDecodedImagePresentSamplerResources,
+    native_vulkan_vulkanalia_create_decoded_image_present_pipeline_resources,
     native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources,
+    native_vulkan_vulkanalia_destroy_decoded_image_present_pipeline_resources,
     native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_resources,
 };
 use super::swapchain::{
@@ -81,6 +83,7 @@ struct NativeVulkanVulkanaliaVideoPresentSessionRuntimeResources {
     session: vk::VideoSessionKHR,
     memory_resources: Option<NativeVulkanVulkanaliaVideoSessionMemoryBindingResources>,
     resource_image: Option<VulkanaliaVideoSessionResourceImage>,
+    decoded_image_present_pipeline: Option<VulkanaliaDecodedImagePresentPipelineResources>,
     decoded_image_present_sampler: Option<VulkanaliaDecodedImagePresentSamplerResources>,
     h265_ready_prefix_decode: Option<NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot>,
 }
@@ -90,6 +93,11 @@ impl Drop for NativeVulkanVulkanaliaVideoPresentSessionRuntimeResources {
         if let Some(context) = self.context.take() {
             let device = &context.device;
             let _ = unsafe { device.device_wait_idle() };
+            if let Some(pipeline) = self.decoded_image_present_pipeline.take() {
+                native_vulkan_vulkanalia_destroy_decoded_image_present_pipeline_resources(
+                    device, pipeline,
+                );
+            }
             if let Some(sampler) = self.decoded_image_present_sampler.take() {
                 native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_resources(
                     device, sampler,
@@ -127,6 +135,7 @@ struct NativeVulkanVulkanaliaVideoPresentSessionPieces {
     session: vk::VideoSessionKHR,
     memory_resources: NativeVulkanVulkanaliaVideoSessionMemoryBindingResources,
     resource_image: VulkanaliaVideoSessionResourceImage,
+    decoded_image_present_pipeline: Option<VulkanaliaDecodedImagePresentPipelineResources>,
     decoded_image_present_sampler: Option<VulkanaliaDecodedImagePresentSamplerResources>,
     snapshot: NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot,
     h265_ready_prefix_decode: Option<NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot>,
@@ -312,6 +321,7 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_h265_decod
         options.codec,
         options.width,
         options.height,
+        swapchain_plan.format.format,
         swapchain_plan_snapshot(&swapchain_plan, swapchain_images.len()),
         h265_ready_prefix_decode,
     ) {
@@ -338,6 +348,7 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_h265_decod
             session: pieces.session,
             memory_resources: Some(pieces.memory_resources),
             resource_image: Some(pieces.resource_image),
+            decoded_image_present_pipeline: pieces.decoded_image_present_pipeline,
             decoded_image_present_sampler: pieces.decoded_image_present_sampler,
             h265_ready_prefix_decode: pieces.h265_ready_prefix_decode,
         }),
@@ -354,6 +365,7 @@ fn create_video_present_session_pieces(
     codec: NativeVulkanVideoSessionCodec,
     width: u32,
     height: u32,
+    swapchain_format: vk::Format,
     swapchain: super::swapchain::NativeVulkanVulkanaliaSwapchainSnapshot,
     h265_ready_prefix_decode: Option<(&NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput, u64)>,
 ) -> Result<NativeVulkanVulkanaliaVideoPresentSessionPieces, String> {
@@ -399,6 +411,7 @@ fn create_video_present_session_pieces(
             let mut session = Some(session);
             let mut memory_resources = None;
             let mut resource_image = None;
+            let mut decoded_image_present_pipeline = None;
             let mut decoded_image_present_sampler = None;
             let result = (|| -> Result<NativeVulkanVulkanaliaVideoPresentSessionPieces, String> {
                 let memory_properties = unsafe {
@@ -449,28 +462,64 @@ fn create_video_present_session_pieces(
                         .sampler_ycbcr_conversion_enabled
                     {
                         match native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources(
-                        &context.device,
-                        resource_image_ref,
-                        picture_format,
-                        0,
-                        selection.video_queue_family_index,
-                        selection.present_queue_family_index,
-                    ) {
-                        Ok(resources) => {
-                            let snapshot = resources.snapshot.clone();
-                            decoded_image_present_sampler = Some(resources);
-                            (Some(snapshot), None)
+                            &context.device,
+                            resource_image_ref,
+                            picture_format,
+                            0,
+                            selection.video_queue_family_index,
+                            selection.present_queue_family_index,
+                        ) {
+                            Ok(resources) => {
+                                let snapshot = resources.snapshot.clone();
+                                decoded_image_present_sampler = Some(resources);
+                                (Some(snapshot), None)
+                            }
+                            Err(err) => (None, Some(err)),
                         }
-                        Err(err) => (None, Some(err)),
-                    }
                     } else {
                         (
-                        None,
-                        Some(
-                            "samplerYcbcrConversion feature is unavailable on selected Vulkanalia video+present device"
-                                .to_owned(),
-                        ),
-                    )
+                            None,
+                            Some(
+                                "samplerYcbcrConversion feature is unavailable on selected Vulkanalia video+present device"
+                                    .to_owned(),
+                            ),
+                        )
+                    };
+                let (decoded_image_present_pipeline_snapshot, decoded_image_present_pipeline_error) =
+                    if !context.video_feature_selection.dynamic_rendering_enabled {
+                        (
+                            None,
+                            Some(
+                                "dynamicRendering feature is unavailable on selected Vulkanalia video+present device"
+                                    .to_owned(),
+                            ),
+                        )
+                    } else if let Some(sampler) = decoded_image_present_sampler.as_ref() {
+                        let target_extent = vk::Extent2D {
+                            width: swapchain.extent.0,
+                            height: swapchain.extent.1,
+                        };
+                        match native_vulkan_vulkanalia_create_decoded_image_present_pipeline_resources(
+                            &context.device,
+                            swapchain_format,
+                            target_extent,
+                            sampler.descriptor_set_layout,
+                        ) {
+                            Ok(resources) => {
+                                let snapshot = resources.snapshot.clone();
+                                decoded_image_present_pipeline = Some(resources);
+                                (Some(snapshot), None)
+                            }
+                            Err(err) => (None, Some(err)),
+                        }
+                    } else {
+                        (
+                            None,
+                            Some(
+                                "decoded image present pipeline requires a live YCbCr sampler descriptor resource"
+                                    .to_owned(),
+                            ),
+                        )
                     };
                 let memory_binding = memory_resources
                     .as_ref()
@@ -512,6 +561,7 @@ fn create_video_present_session_pieces(
                     resource_image: resource_image
                         .take()
                         .expect("Vulkanalia resource image is live"),
+                    decoded_image_present_pipeline: decoded_image_present_pipeline.take(),
                     decoded_image_present_sampler: decoded_image_present_sampler.take(),
                     snapshot: NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot {
                         binding: "vulkanalia",
@@ -537,6 +587,8 @@ fn create_video_present_session_pieces(
                         decoded_image_zero_copy_presentable_candidate: true,
                         decoded_image_present_sampler: decoded_image_present_sampler_snapshot,
                         decoded_image_present_sampler_error,
+                        decoded_image_present_pipeline: decoded_image_present_pipeline_snapshot,
+                        decoded_image_present_pipeline_error,
                         decoded_image_present_boundary: "retained Vulkanalia runtime owns video session memory, coincident sampled DPB/output image, YCbCr sampler/descriptor resources when supported, and Wayland swapchain until the caller drops the runtime; next step records the dynamic-rendering fullscreen draw into the graphics present pass",
                         ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,
                     },
@@ -544,6 +596,12 @@ fn create_video_present_session_pieces(
                 })
             })();
 
+            if let Some(pipeline) = decoded_image_present_pipeline.take() {
+                native_vulkan_vulkanalia_destroy_decoded_image_present_pipeline_resources(
+                    &context.device,
+                    pipeline,
+                );
+            }
             if let Some(sampler) = decoded_image_present_sampler.take() {
                 native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_resources(
                     &context.device,

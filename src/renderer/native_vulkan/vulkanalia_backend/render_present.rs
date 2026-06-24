@@ -46,6 +46,201 @@ pub(super) struct VulkanaliaDecodedImagePresentSamplerResources {
     pub(super) snapshot: NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot {
+    pub binding: &'static str,
+    pub route: &'static str,
+    pub target_format: String,
+    pub extent: (u32, u32),
+    pub shader_modules_created: bool,
+    pub pipeline_layout_created: bool,
+    pub pipeline_created: bool,
+    pub render_pass_compatibility: &'static str,
+    pub primitive_topology: &'static str,
+    pub vertex_shader_model: &'static str,
+    pub fragment_shader_model: &'static str,
+    pub descriptor_sets: u32,
+    pub uses_pipeline_rendering_create_info: bool,
+    pub uses_dynamic_rendering: bool,
+    pub uses_ycbcr_sampler_descriptor: bool,
+    pub ffmpeg_reference: &'static str,
+}
+
+pub(super) struct VulkanaliaDecodedImagePresentPipelineResources {
+    pub(super) pipeline_layout: vk::PipelineLayout,
+    pub(super) pipeline: vk::Pipeline,
+    pub(super) snapshot: NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot,
+}
+
+pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_pipeline_resources(
+    device: &Device,
+    target_format: vk::Format,
+    extent: vk::Extent2D,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+) -> Result<VulkanaliaDecodedImagePresentPipelineResources, String> {
+    if extent.width == 0 || extent.height == 0 {
+        return Err("decoded image present pipeline requires non-zero extent".to_owned());
+    }
+
+    let set_layouts = [descriptor_set_layout];
+    let pipeline_layout_info = vk::PipelineLayoutCreateInfo::builder().set_layouts(&set_layouts);
+    let pipeline_layout = unsafe { device.create_pipeline_layout(&pipeline_layout_info, None) }
+        .map_err(|err| {
+            format!("vkCreatePipelineLayout(vulkanalia decoded present dynamic rendering): {err:?}")
+        })?;
+
+    let result = (|| -> Result<VulkanaliaDecodedImagePresentPipelineResources, String> {
+        let vertex_module = native_vulkan_vulkanalia_create_shader_module(
+            device,
+            &NATIVE_VULKAN_VULKANALIA_YCBCR_PRESENT_VERTEX_SPIRV,
+            "decoded present vertex",
+        )?;
+        let result = (|| -> Result<VulkanaliaDecodedImagePresentPipelineResources, String> {
+            let fragment_module = native_vulkan_vulkanalia_create_shader_module(
+                device,
+                &NATIVE_VULKAN_VULKANALIA_YCBCR_PRESENT_FRAGMENT_SPIRV,
+                "decoded present fragment",
+            )?;
+            let result = (|| -> Result<VulkanaliaDecodedImagePresentPipelineResources, String> {
+                let shader_entry = b"main\0";
+                let stages = [
+                    vk::PipelineShaderStageCreateInfo::builder()
+                        .stage(vk::ShaderStageFlags::VERTEX)
+                        .module(vertex_module)
+                        .name(shader_entry)
+                        .build(),
+                    vk::PipelineShaderStageCreateInfo::builder()
+                        .stage(vk::ShaderStageFlags::FRAGMENT)
+                        .module(fragment_module)
+                        .name(shader_entry)
+                        .build(),
+                ];
+                let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder().build();
+                let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::builder()
+                    .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+                    .build();
+                let viewport = vk::Viewport::builder()
+                    .x(0.0)
+                    .y(0.0)
+                    .width(extent.width as f32)
+                    .height(extent.height as f32)
+                    .min_depth(0.0)
+                    .max_depth(1.0)
+                    .build();
+                let scissor = vk::Rect2D::builder()
+                    .offset(vk::Offset2D { x: 0, y: 0 })
+                    .extent(extent)
+                    .build();
+                let viewports = [viewport];
+                let scissors = [scissor];
+                let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
+                    .viewports(&viewports)
+                    .scissors(&scissors)
+                    .build();
+                let rasterization = vk::PipelineRasterizationStateCreateInfo::builder()
+                    .polygon_mode(vk::PolygonMode::FILL)
+                    .cull_mode(vk::CullModeFlags::NONE)
+                    .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                    .line_width(1.0)
+                    .build();
+                let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
+                    .rasterization_samples(vk::SampleCountFlags::_1)
+                    .build();
+                let color_attachment = vk::PipelineColorBlendAttachmentState::builder()
+                    .color_write_mask(
+                        vk::ColorComponentFlags::R
+                            | vk::ColorComponentFlags::G
+                            | vk::ColorComponentFlags::B
+                            | vk::ColorComponentFlags::A,
+                    )
+                    .blend_enable(false)
+                    .build();
+                let color_attachments = [color_attachment];
+                let color_blend = vk::PipelineColorBlendStateCreateInfo::builder()
+                    .attachments(&color_attachments)
+                    .build();
+                let color_attachment_formats = [target_format];
+                let mut rendering_info = vk::PipelineRenderingCreateInfo::builder()
+                    .color_attachment_formats(&color_attachment_formats)
+                    .build();
+                let pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
+                    .stages(&stages)
+                    .vertex_input_state(&vertex_input)
+                    .input_assembly_state(&input_assembly)
+                    .viewport_state(&viewport_state)
+                    .rasterization_state(&rasterization)
+                    .multisample_state(&multisample)
+                    .color_blend_state(&color_blend)
+                    .layout(pipeline_layout)
+                    .render_pass(vk::RenderPass::null())
+                    .subpass(0)
+                    .push_next(&mut rendering_info)
+                    .build();
+                let (pipelines, _success_code) = unsafe {
+                    device.create_graphics_pipelines(
+                        vk::PipelineCache::null(),
+                        &[pipeline_info],
+                        None,
+                    )
+                }
+                .map_err(|err| {
+                    format!(
+                        "vkCreateGraphicsPipelines(vulkanalia decoded present dynamic rendering): {err:?}"
+                    )
+                })?;
+                let pipeline = pipelines[0];
+                Ok(VulkanaliaDecodedImagePresentPipelineResources {
+                    pipeline_layout,
+                    pipeline,
+                    snapshot: NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot {
+                        binding: "vulkanalia",
+                        route: "decoded-image-dynamic-rendering-present-pipeline",
+                        target_format: format!("{target_format:?}"),
+                        extent: (extent.width, extent.height),
+                        shader_modules_created: true,
+                        pipeline_layout_created: true,
+                        pipeline_created: true,
+                        render_pass_compatibility: "dynamic-rendering-no-render-pass",
+                        primitive_topology: "fullscreen-triangle",
+                        vertex_shader_model: "gl_VertexIndex fullscreen triangle",
+                        fragment_shader_model: "single combined YCbCr sampler2D",
+                        descriptor_sets: 1,
+                        uses_pipeline_rendering_create_info: true,
+                        uses_dynamic_rendering: true,
+                        uses_ycbcr_sampler_descriptor: true,
+                        ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,
+                    },
+                })
+            })();
+            unsafe {
+                device.destroy_shader_module(fragment_module, None);
+            }
+            result
+        })();
+        unsafe {
+            device.destroy_shader_module(vertex_module, None);
+        }
+        result
+    })();
+
+    if result.is_err() {
+        unsafe {
+            device.destroy_pipeline_layout(pipeline_layout, None);
+        }
+    }
+    result
+}
+
+pub(super) fn native_vulkan_vulkanalia_destroy_decoded_image_present_pipeline_resources(
+    device: &Device,
+    resources: VulkanaliaDecodedImagePresentPipelineResources,
+) {
+    unsafe {
+        device.destroy_pipeline(resources.pipeline, None);
+        device.destroy_pipeline_layout(resources.pipeline_layout, None);
+    }
+}
+
 pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources(
     device: &Device,
     resource_image: &VulkanaliaVideoSessionResourceImage,
@@ -357,6 +552,27 @@ fn native_vulkan_vulkanalia_decoded_image_present_queue_model(
     }
 }
 
+fn native_vulkan_vulkanalia_create_shader_module(
+    device: &Device,
+    code: &[u32],
+    label: &'static str,
+) -> Result<vk::ShaderModule, String> {
+    if code.first().copied() != Some(0x0723_0203) {
+        return Err(format!(
+            "decoded present {label} shader is not valid SPIR-V bytecode"
+        ));
+    }
+    let create_info = vk::ShaderModuleCreateInfo::builder()
+        .code(code)
+        .code_size(native_vulkan_vulkanalia_shader_code_size_bytes(code));
+    unsafe { device.create_shader_module(&create_info, None) }
+        .map_err(|err| format!("vkCreateShaderModule(vulkanalia {label}): {err:?}"))
+}
+
+fn native_vulkan_vulkanalia_shader_code_size_bytes(code: &[u32]) -> usize {
+    std::mem::size_of_val(code)
+}
+
 fn sampler_ycbcr_model_label(model: vk::SamplerYcbcrModelConversion) -> &'static str {
     match model {
         vk::SamplerYcbcrModelConversion::YCBCR_709 => "ycbcr-709",
@@ -391,6 +607,44 @@ fn filter_label(filter: vk::Filter) -> &'static str {
         _ => "unknown",
     }
 }
+
+const NATIVE_VULKAN_VULKANALIA_YCBCR_PRESENT_VERTEX_SPIRV: [u32; 357] = [
+    119734787, 65536, 851979, 51, 0, 131089, 1, 393227, 1, 1280527431, 1685353262, 808793134, 0,
+    196622, 0, 1, 524303, 0, 4, 1852399981, 0, 32, 36, 47, 196611, 2, 450, 655364, 1197427783,
+    1279741775, 1885560645, 1953718128, 1600482425, 1701734764, 1919509599, 1769235301, 25974,
+    524292, 1197427783, 1279741775, 1852399429, 1685417059, 1768185701, 1952671090, 6649449,
+    262149, 4, 1852399981, 0, 196613, 12, 7565168, 196613, 19, 30325, 393221, 30, 1348430951,
+    1700164197, 2019914866, 0, 393222, 30, 0, 1348430951, 1953067887, 7237481, 458758, 30, 1,
+    1348430951, 1953393007, 1702521171, 0, 458758, 30, 2, 1130327143, 1148217708, 1635021673,
+    6644590, 458758, 30, 3, 1130327143, 1147956341, 1635021673, 6644590, 196613, 32, 0, 393221, 36,
+    1449094247, 1702130277, 1684949368, 30821, 262149, 47, 1987403638, 0, 196679, 30, 2, 327752,
+    30, 0, 11, 0, 327752, 30, 1, 11, 1, 327752, 30, 2, 11, 3, 327752, 30, 3, 11, 4, 262215, 36, 11,
+    42, 262215, 47, 30, 0, 131091, 2, 196641, 3, 2, 196630, 6, 32, 262167, 7, 6, 2, 262165, 8, 32,
+    0, 262187, 8, 9, 3, 262172, 10, 7, 9, 262176, 11, 7, 10, 262187, 6, 13, 3212836864, 327724, 7,
+    14, 13, 13, 262187, 6, 15, 1077936128, 327724, 7, 16, 15, 13, 327724, 7, 17, 13, 15, 393260,
+    10, 18, 14, 16, 17, 262187, 6, 20, 0, 262187, 6, 21, 1065353216, 327724, 7, 22, 20, 21, 262187,
+    6, 23, 1073741824, 327724, 7, 24, 23, 21, 327724, 7, 25, 20, 13, 393260, 10, 26, 22, 24, 25,
+    262167, 27, 6, 4, 262187, 8, 28, 1, 262172, 29, 6, 28, 393246, 30, 27, 6, 29, 29, 262176, 31,
+    3, 30, 262203, 31, 32, 3, 262165, 33, 32, 1, 262187, 33, 34, 0, 262176, 35, 1, 33, 262203, 35,
+    36, 1, 262176, 38, 7, 7, 262176, 44, 3, 27, 262176, 46, 3, 7, 262203, 46, 47, 3, 327734, 2, 4,
+    0, 3, 131320, 5, 262203, 11, 12, 7, 262203, 11, 19, 7, 196670, 12, 18, 196670, 19, 26, 262205,
+    33, 37, 36, 327745, 38, 39, 12, 37, 262205, 7, 40, 39, 327761, 6, 41, 40, 0, 327761, 6, 42, 40,
+    1, 458832, 27, 43, 41, 42, 20, 21, 327745, 44, 45, 32, 34, 196670, 45, 43, 262205, 33, 48, 36,
+    327745, 38, 49, 19, 48, 262205, 7, 50, 49, 196670, 47, 50, 65789, 65592,
+];
+
+const NATIVE_VULKAN_VULKANALIA_YCBCR_PRESENT_FRAGMENT_SPIRV: [u32; 157] = [
+    119734787, 65536, 851979, 20, 0, 131089, 1, 393227, 1, 1280527431, 1685353262, 808793134, 0,
+    196622, 0, 1, 458767, 4, 4, 1852399981, 0, 9, 17, 196624, 4, 7, 196611, 2, 450, 655364,
+    1197427783, 1279741775, 1885560645, 1953718128, 1600482425, 1701734764, 1919509599, 1769235301,
+    25974, 524292, 1197427783, 1279741775, 1852399429, 1685417059, 1768185701, 1952671090, 6649449,
+    262149, 4, 1852399981, 0, 327685, 9, 1601467759, 1869377379, 114, 262149, 13, 1769365365,
+    7300452, 262149, 17, 1987403638, 0, 262215, 9, 30, 0, 262215, 13, 33, 0, 262215, 13, 34, 0,
+    262215, 17, 30, 0, 131091, 2, 196641, 3, 2, 196630, 6, 32, 262167, 7, 6, 4, 262176, 8, 3, 7,
+    262203, 8, 9, 3, 589849, 10, 6, 1, 0, 0, 0, 1, 0, 196635, 11, 10, 262176, 12, 0, 11, 262203,
+    12, 13, 0, 262167, 15, 6, 2, 262176, 16, 1, 15, 262203, 16, 17, 1, 327734, 2, 4, 0, 3, 131320,
+    5, 262205, 11, 14, 13, 262205, 15, 18, 17, 327767, 7, 19, 14, 18, 196670, 9, 19, 65789, 65592,
+];
 
 #[cfg(test)]
 mod tests {
@@ -427,6 +681,16 @@ mod tests {
         );
         assert!(
             native_vulkan_vulkanalia_decoded_image_ycbcr_model(vk::Format::R8G8B8A8_UNORM).is_err()
+        );
+    }
+
+    #[test]
+    fn shader_module_code_size_uses_bytes_not_words() {
+        assert_eq!(
+            native_vulkan_vulkanalia_shader_code_size_bytes(
+                &NATIVE_VULKAN_VULKANALIA_YCBCR_PRESENT_VERTEX_SPIRV
+            ),
+            NATIVE_VULKAN_VULKANALIA_YCBCR_PRESENT_VERTEX_SPIRV.len() * 4
         );
     }
 }
