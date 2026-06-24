@@ -78,6 +78,9 @@ mod pipeline;
 #[path = "native_vulkan/audio_policy.rs"]
 mod audio_policy;
 
+#[path = "native_vulkan/audio_runtime.rs"]
+mod audio_runtime;
+
 #[path = "native_vulkan/video_runtime.rs"]
 mod video_runtime;
 
@@ -3262,10 +3265,7 @@ pub struct NativeVulkanSession {
     video_texture: Option<NativeVulkanVideoTexture>,
     #[cfg(feature = "native-vulkan-gst-video")]
     video_import_status: NativeVulkanVideoImportStatus,
-    #[cfg(feature = "native-vulkan-gst-video")]
-    audio_runtime: Option<audio_clock::NativeVulkanAudioClockRuntimeProbe>,
-    #[cfg(feature = "native-vulkan-gst-video")]
-    audio_runtime_last_error: Option<String>,
+    audio_runtime: audio_runtime::NativeVulkanPlanAudioRuntime,
     clear_color: NativeVulkanClearColor,
     render_item: NativeVulkanRenderItem,
     started_at: Instant,
@@ -3449,24 +3449,8 @@ impl NativeVulkanSession {
             )?),
             _ => None,
         };
-        #[cfg(feature = "native-vulkan-gst-video")]
-        let (audio_runtime, audio_runtime_last_error) = match &render_item {
-            NativeVulkanRenderItem::Video { source, muted, .. } => {
-                let output_mode = NativeVulkanAudioOutputPolicy::Plan.resolve(*muted);
-                if output_mode == NativeVulkanAudioOutputMode::Auto {
-                    match audio_clock::NativeVulkanAudioClockRuntimeProbe::start(
-                        source,
-                        output_mode,
-                    ) {
-                        Ok(runtime) => (Some(runtime), None),
-                        Err(err) => (None, Some(err.to_string())),
-                    }
-                } else {
-                    (None, None)
-                }
-            }
-            _ => (None, None),
-        };
+        let audio_runtime =
+            audio_runtime::NativeVulkanPlanAudioRuntime::start_for_render_item(&render_item);
         let selected_vulkan_drm_device =
             native_vulkan_physical_device_drm_snapshot(&instance, selection.physical_device);
 
@@ -3506,10 +3490,7 @@ impl NativeVulkanSession {
             video_texture: None,
             #[cfg(feature = "native-vulkan-gst-video")]
             video_import_status: NativeVulkanVideoImportStatus::default(),
-            #[cfg(feature = "native-vulkan-gst-video")]
             audio_runtime,
-            #[cfg(feature = "native-vulkan-gst-video")]
-            audio_runtime_last_error,
             clear_color,
             render_item,
             started_at: Instant::now(),
@@ -3841,39 +3822,16 @@ impl NativeVulkanSession {
     }
 
     fn poll_audio_runtime(&mut self) {
-        #[cfg(feature = "native-vulkan-gst-video")]
-        if let Some(runtime) = self.audio_runtime.as_mut() {
-            let video_clock_ns = native_vulkan_elapsed_ns(self.started_at.elapsed());
-            if let Err(err) = runtime.sample_video_pts_ms(None, Some(video_clock_ns)) {
-                self.audio_runtime_last_error = Some(err.to_string());
-                self.audio_runtime = None;
-            }
-        }
+        let video_clock_ns = native_vulkan_elapsed_ns(self.started_at.elapsed());
+        self.audio_runtime.poll_video_clock(video_clock_ns);
     }
 
     fn audio_runtime_telemetry(&self) -> Option<NativeVulkanVideoAudioRuntimeTelemetry> {
-        #[cfg(feature = "native-vulkan-gst-video")]
-        {
-            return self
-                .audio_runtime
-                .as_ref()
-                .map(|runtime| runtime.telemetry().into());
-        }
-        #[cfg(not(feature = "native-vulkan-gst-video"))]
-        {
-            None
-        }
+        self.audio_runtime.telemetry()
     }
 
     fn audio_runtime_last_error(&self) -> Option<String> {
-        #[cfg(feature = "native-vulkan-gst-video")]
-        {
-            return self.audio_runtime_last_error.clone();
-        }
-        #[cfg(not(feature = "native-vulkan-gst-video"))]
-        {
-            None
-        }
+        self.audio_runtime.last_error()
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
@@ -17012,7 +16970,6 @@ fn native_vulkan_elapsed_us(value: Duration) -> u64 {
     value.as_micros().min(u128::from(u64::MAX)) as u64
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_elapsed_ns(value: Duration) -> u64 {
     value.as_nanos().min(u128::from(u64::MAX)) as u64
 }
