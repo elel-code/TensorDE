@@ -5617,6 +5617,8 @@ pub fn run_h264_ready_prefix_video(
                 parameter_sets.sps.gaps_in_frame_num_value_allowed_flag,
             );
             let mut previous_source_loop_index = 0u32;
+            let mut video_clock_segment_start_frame_index = 0u32;
+            let mut video_clock_segment_start_pts_ms = None::<u64>;
             if h264_direct_sample_decoded_output {
                 native_vulkan_h264_trace(
                     h264_trace_enabled,
@@ -6337,6 +6339,13 @@ pub fn run_h264_ready_prefix_video(
                         frame.present_elapsed_us = 0;
                         previous_pts_ms = access_unit.pts_ms;
                         previous_duration_ms = access_unit.duration_ms;
+                        let video_clock_frame_index = native_vulkan_video_clock_segment_frame_index(
+                            frame.playback_frame_index,
+                            frame.loop_boundary_reset,
+                            frame.pts_ms,
+                            &mut video_clock_segment_start_frame_index,
+                            &mut video_clock_segment_start_pts_ms,
+                        );
                         if let Some(audio_clock_probe) = audio_clock_probe.as_mut() {
                             if frame.loop_boundary_reset {
                                 audio_clock_probe.seek_for_video_loop(frame.pts_ms.unwrap_or(0))?;
@@ -6344,18 +6353,20 @@ pub fn run_h264_ready_prefix_video(
                             audio_clock_probe.sample_video_pts_ms(
                                 frame.pts_ms,
                                 native_vulkan_audio_probe_video_clock_ns(
-                                    frame.playback_frame_index,
+                                    video_clock_frame_index,
                                     target_max_fps,
                                     frame.pts_ms,
+                                    video_clock_segment_start_pts_ms,
                                 ),
                             )?;
                         }
                         let next_video_clock_ns = native_vulkan_next_video_pacing_clock_ns(
-                            frame.playback_frame_index,
+                            video_clock_frame_index,
                             target_max_fps,
                             frame.pts_ms,
                             access_unit.duration_ms,
                             frame.pts_delta_ms,
+                            video_clock_segment_start_pts_ms,
                         );
                         let is_last_frame = playback_frame_index + 1 >= playback_frame_count;
                         frames.push(frame);
@@ -8083,6 +8094,13 @@ pub fn run_h264_ready_prefix_video(
                         previous_duration_ms = frame_duration_ms;
                         previous_source_loop_index = frame.playback_loop_index;
                         available_decode_semaphore_index = next_available_decode_semaphore_index;
+                        let video_clock_frame_index = native_vulkan_video_clock_segment_frame_index(
+                            frame.playback_frame_index,
+                            frame.loop_boundary_reset,
+                            frame.pts_ms,
+                            &mut video_clock_segment_start_frame_index,
+                            &mut video_clock_segment_start_pts_ms,
+                        );
                         if let Some(audio_clock_probe) = audio_clock_probe.as_mut() {
                             if frame.loop_boundary_reset {
                                 audio_clock_probe.seek_for_video_loop(frame.pts_ms.unwrap_or(0))?;
@@ -8090,18 +8108,20 @@ pub fn run_h264_ready_prefix_video(
                             audio_clock_probe.sample_video_pts_ms(
                                 frame.pts_ms,
                                 native_vulkan_audio_probe_video_clock_ns(
-                                    frame.playback_frame_index,
+                                    video_clock_frame_index,
                                     target_max_fps,
                                     frame.pts_ms,
+                                    video_clock_segment_start_pts_ms,
                                 ),
                             )?;
                         }
                         let next_video_clock_ns = native_vulkan_next_video_pacing_clock_ns(
-                            frame.playback_frame_index,
+                            video_clock_frame_index,
                             target_max_fps,
                             frame.pts_ms,
                             frame_duration_ms,
                             frame.pts_delta_ms,
+                            video_clock_segment_start_pts_ms,
                         );
                         let is_last_frame = playback_frame_index + 1 >= playback_frame_count;
                         frames.push(frame);
@@ -9145,6 +9165,8 @@ pub fn run_h265_ready_prefix_video(
                 stream_max_pic_order_cnt_lsb,
             );
             let mut previous_source_loop_index = 0u32;
+            let mut video_clock_segment_start_frame_index = 0u32;
+            let mut video_clock_segment_start_pts_ms = None::<u64>;
             struct H265PresentJob {
                 frame_index: usize,
                 image_available: vk::Semaphore,
@@ -9711,6 +9733,13 @@ pub fn run_h265_ready_prefix_video(
                     frame.present_elapsed_us = 0;
                     previous_pts_ms = access_unit.pts_ms;
                     previous_duration_ms = access_unit.duration_ms;
+                    let video_clock_frame_index = native_vulkan_video_clock_segment_frame_index(
+                        frame.playback_frame_index,
+                        frame.loop_boundary_reset,
+                        frame.pts_ms,
+                        &mut video_clock_segment_start_frame_index,
+                        &mut video_clock_segment_start_pts_ms,
+                    );
                     if let Some(audio_clock_probe) = audio_clock_probe.as_mut() {
                         if frame.loop_boundary_reset {
                             audio_clock_probe.seek_for_video_loop(frame.pts_ms.unwrap_or(0))?;
@@ -9718,18 +9747,20 @@ pub fn run_h265_ready_prefix_video(
                         audio_clock_probe.sample_video_pts_ms(
                             frame.pts_ms,
                             native_vulkan_audio_probe_video_clock_ns(
-                                frame.playback_frame_index,
+                                video_clock_frame_index,
                                 target_max_fps,
                                 frame.pts_ms,
+                                video_clock_segment_start_pts_ms,
                             ),
                         )?;
                     }
                     let next_video_clock_ns = native_vulkan_next_video_pacing_clock_ns(
-                        frame.playback_frame_index,
+                        video_clock_frame_index,
                         target_max_fps,
                         frame.pts_ms,
                         access_unit.duration_ms,
                         frame.pts_delta_ms,
+                        video_clock_segment_start_pts_ms,
                     );
                     let is_last_frame = playback_frame_index + 1 >= playback_frame_count;
                     frames.push(frame);
@@ -11094,6 +11125,8 @@ pub fn run_av1_ready_prefix_video(
             let mut streaming_reference_planner =
                 NativeVulkanAv1DecodeReferencePlanner::new(stream_dpb_slots);
             let mut previous_source_loop_index = 0u32;
+            let mut video_clock_segment_start_frame_index = 0u32;
+            let mut video_clock_segment_start_pts_ms = None::<u64>;
             let mut processed_temporal_unit_count = 0u32;
             let mut hidden_decoded_frame_count = 0u32;
             let mut hidden_bitstream_uploaded_bytes = 0u64;
@@ -15643,6 +15676,13 @@ pub fn run_av1_ready_prefix_video(
                 if av1_skip_counted_frame_after_present_preroll {
                     continue;
                 }
+                let video_clock_frame_index = native_vulkan_video_clock_segment_frame_index(
+                    frame.playback_frame_index,
+                    frame.loop_boundary_reset,
+                    frame.pts_ms,
+                    &mut video_clock_segment_start_frame_index,
+                    &mut video_clock_segment_start_pts_ms,
+                );
                 if let Some(audio_clock_probe) = audio_clock_probe.as_mut() {
                     if frame.loop_boundary_reset {
                         audio_clock_probe.seek_for_video_loop(frame.pts_ms.unwrap_or(0))?;
@@ -15650,18 +15690,20 @@ pub fn run_av1_ready_prefix_video(
                     audio_clock_probe.sample_video_pts_ms(
                         frame.pts_ms,
                         native_vulkan_audio_probe_video_clock_ns(
-                            frame.playback_frame_index,
+                            video_clock_frame_index,
                             target_max_fps,
                             frame.pts_ms,
+                            video_clock_segment_start_pts_ms,
                         ),
                     )?;
                 }
                 let next_video_clock_ns = native_vulkan_next_video_pacing_clock_ns(
-                    frame.playback_frame_index,
+                    video_clock_frame_index,
                     target_max_fps,
                     frame.pts_ms,
                     temporal_unit.duration_ms,
                     frame.pts_delta_ms,
+                    video_clock_segment_start_pts_ms,
                 );
                 let is_last_frame = frames.len().saturating_add(1) >= playback_frame_count as usize;
                 frames.push(frame);
@@ -16945,27 +16987,46 @@ fn native_vulkan_elapsed_us(value: Duration) -> u64 {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_audio_probe_video_clock_ns(
+fn native_vulkan_video_clock_segment_frame_index(
     playback_frame_index: u32,
+    loop_boundary_reset: bool,
+    pts_ms: Option<u64>,
+    segment_start_frame_index: &mut u32,
+    segment_start_pts_ms: &mut Option<u64>,
+) -> u32 {
+    if playback_frame_index == 0 || loop_boundary_reset {
+        *segment_start_frame_index = playback_frame_index;
+        *segment_start_pts_ms = pts_ms;
+    }
+    playback_frame_index.saturating_sub(*segment_start_frame_index)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_audio_probe_video_clock_ns(
+    segment_frame_index: u32,
     target_max_fps: Option<u32>,
-    fallback_pts_ms: Option<u64>,
+    pts_ms: Option<u64>,
+    segment_start_pts_ms: Option<u64>,
 ) -> Option<u64> {
-    target_max_fps
-        .filter(|fps| *fps > 0)
-        .map(|fps| {
-            let ns = (u128::from(playback_frame_index) * 1_000_000_000u128) / u128::from(fps);
-            u64::try_from(ns).unwrap_or(u64::MAX)
-        })
-        .or_else(|| fallback_pts_ms.map(|pts_ms| pts_ms.saturating_mul(1_000_000)))
+    if let Some(pts_ms) = pts_ms {
+        return Some(pts_ms.saturating_mul(1_000_000));
+    }
+
+    let segment_start_ns = segment_start_pts_ms.unwrap_or(0).saturating_mul(1_000_000);
+    target_max_fps.filter(|fps| *fps > 0).map(|fps| {
+        let elapsed_ns = (u128::from(segment_frame_index) * 1_000_000_000u128) / u128::from(fps);
+        segment_start_ns.saturating_add(u64::try_from(elapsed_ns).unwrap_or(u64::MAX))
+    })
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_next_video_pacing_clock_ns(
-    playback_frame_index: u32,
+    segment_frame_index: u32,
     target_max_fps: Option<u32>,
     pts_ms: Option<u64>,
     duration_ms: Option<u64>,
     pts_delta_ms: Option<u64>,
+    segment_start_pts_ms: Option<u64>,
 ) -> Option<u64> {
     if let Some(pts_ms) = pts_ms {
         let pts_ns = pts_ms.saturating_mul(1_000_000);
@@ -16979,9 +17040,10 @@ fn native_vulkan_next_video_pacing_clock_ns(
     }
 
     native_vulkan_audio_probe_video_clock_ns(
-        playback_frame_index.saturating_add(1),
+        segment_frame_index.saturating_add(1),
         target_max_fps,
-        pts_ms,
+        None,
+        segment_start_pts_ms,
     )
 }
 
@@ -49245,6 +49307,71 @@ mod tests {
 
         assert!(labels.contains(&"decode-h264".to_owned()));
         assert!(labels.contains(&"decode-vp9".to_owned()));
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn audio_video_clock_fallback_restarts_at_loop_segment() {
+        let mut segment_start_frame_index = 0;
+        let mut segment_start_pts_ms = None;
+
+        assert_eq!(
+            native_vulkan_video_clock_segment_frame_index(
+                0,
+                false,
+                Some(0),
+                &mut segment_start_frame_index,
+                &mut segment_start_pts_ms,
+            ),
+            0
+        );
+        assert_eq!(
+            native_vulkan_video_clock_segment_frame_index(
+                61,
+                false,
+                None,
+                &mut segment_start_frame_index,
+                &mut segment_start_pts_ms,
+            ),
+            61
+        );
+        assert_eq!(
+            native_vulkan_video_clock_segment_frame_index(
+                62,
+                true,
+                Some(0),
+                &mut segment_start_frame_index,
+                &mut segment_start_pts_ms,
+            ),
+            0
+        );
+        assert_eq!(segment_start_frame_index, 62);
+        assert_eq!(segment_start_pts_ms, Some(0));
+
+        assert_eq!(
+            native_vulkan_next_video_pacing_clock_ns(
+                57,
+                Some(60),
+                None,
+                None,
+                None,
+                segment_start_pts_ms,
+            ),
+            Some(966_666_666)
+        );
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    #[test]
+    fn audio_video_clock_fallback_preserves_nonzero_segment_start() {
+        assert_eq!(
+            native_vulkan_audio_probe_video_clock_ns(3, Some(60), None, Some(350)),
+            Some(400_000_000)
+        );
+        assert_eq!(
+            native_vulkan_audio_probe_video_clock_ns(999, Some(60), Some(1234), Some(350)),
+            Some(1_234_000_000)
+        );
     }
 
     #[test]
