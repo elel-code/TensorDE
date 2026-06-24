@@ -1,4 +1,11 @@
+#[cfg(feature = "native-vulkan-gst-video")]
+use gstreamer as gst;
 use serde::Serialize;
+
+#[cfg(feature = "native-vulkan-gst-video")]
+use super::video_frontend_gst::NativeVulkanGstVideoFrontend;
+#[cfg(feature = "native-vulkan-gst-video")]
+use super::{NativeVulkanError, NativeVulkanRenderItem};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
@@ -51,4 +58,41 @@ pub(super) struct NativeVulkanVideoFrontendSnapshot {
     pub(super) caps_memory_features: Vec<String>,
     pub(super) caps_reports: Vec<NativeVulkanVideoCapsSnapshot>,
     pub(super) last_error: Option<String>,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+pub(super) enum NativeVulkanVideoFrontend {
+    Gst(NativeVulkanGstVideoFrontend),
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanVideoFrontend {
+    pub(super) fn new_gst(item: &NativeVulkanRenderItem) -> Result<Self, NativeVulkanError> {
+        Ok(Self::Gst(NativeVulkanGstVideoFrontend::new(item)?))
+    }
+
+    pub(super) fn poll(&mut self) -> Result<(), NativeVulkanError> {
+        match self {
+            Self::Gst(frontend) => frontend.poll(),
+        }
+    }
+
+    pub(super) fn take_latest_sample(&mut self) -> Option<NativeVulkanVideoFrontendSample> {
+        match self {
+            Self::Gst(frontend) => frontend
+                .take_latest_sample()
+                .map(NativeVulkanVideoFrontendSample::Gst),
+        }
+    }
+
+    pub(super) fn snapshot(&self) -> NativeVulkanVideoFrontendSnapshot {
+        match self {
+            Self::Gst(frontend) => frontend.snapshot(),
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+pub(super) enum NativeVulkanVideoFrontendSample {
+    Gst(gst::Sample),
 }

@@ -110,7 +110,7 @@ pub use video_frontend::NativeVulkanVideoCapsSnapshot;
 use video_frontend::NativeVulkanVideoFrontendProvider;
 use video_frontend::NativeVulkanVideoFrontendSnapshot;
 #[cfg(feature = "native-vulkan-gst-video")]
-use video_frontend_gst::NativeVulkanGstVideoFrontend;
+use video_frontend::{NativeVulkanVideoFrontend, NativeVulkanVideoFrontendSample};
 use video_runtime::{NativeVulkanVideoAudioRuntimeTelemetry, native_vulkan_video_runtime_snapshot};
 pub use video_runtime::{NativeVulkanVideoMemoryRouteSnapshot, NativeVulkanVideoRuntimeSnapshot};
 
@@ -16457,43 +16457,6 @@ pub fn run_av1_ready_prefix_video(
     }
 
     result
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-enum NativeVulkanVideoFrontend {
-    Gst(NativeVulkanGstVideoFrontend),
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-impl NativeVulkanVideoFrontend {
-    fn new_gst(item: &NativeVulkanRenderItem) -> Result<Self, NativeVulkanError> {
-        Ok(Self::Gst(NativeVulkanGstVideoFrontend::new(item)?))
-    }
-
-    fn poll(&mut self) -> Result<(), NativeVulkanError> {
-        match self {
-            Self::Gst(frontend) => frontend.poll(),
-        }
-    }
-
-    fn take_latest_sample(&mut self) -> Option<NativeVulkanVideoFrontendSample> {
-        match self {
-            Self::Gst(frontend) => frontend
-                .take_latest_sample()
-                .map(NativeVulkanVideoFrontendSample::Gst),
-        }
-    }
-
-    fn snapshot(&self) -> NativeVulkanVideoFrontendSnapshot {
-        match self {
-            Self::Gst(frontend) => frontend.snapshot(),
-        }
-    }
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-enum NativeVulkanVideoFrontendSample {
-    Gst(gst::Sample),
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
