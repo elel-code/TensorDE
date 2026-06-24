@@ -24,6 +24,8 @@ mod video_command_pool;
 mod video_decode_commands;
 #[path = "vulkanalia_backend/video_decode_submit.rs"]
 mod video_decode_submit;
+#[path = "vulkanalia_backend/video_decode_submit_av1.rs"]
+mod video_decode_submit_av1;
 #[path = "vulkanalia_backend/video_decode_submit_h264.rs"]
 mod video_decode_submit_h264;
 #[path = "vulkanalia_backend/video_decode_submit_h265.rs"]
@@ -71,6 +73,16 @@ pub use profiles::{
 pub use video_bitstream_buffer::{
     NativeVulkanVulkanaliaVideoSessionBitstreamBufferSmokeSnapshot,
     NativeVulkanVulkanaliaVideoSessionBitstreamBufferSnapshot,
+};
+pub use video_decode_submit_av1::{
+    NativeVulkanVulkanaliaAv1CdefPlan, NativeVulkanVulkanaliaAv1FrameSubmitInput,
+    NativeVulkanVulkanaliaAv1GlobalMotionPlan, NativeVulkanVulkanaliaAv1LoopFilterPlan,
+    NativeVulkanVulkanaliaAv1LoopRestorationPlan, NativeVulkanVulkanaliaAv1QuantizationPlan,
+    NativeVulkanVulkanaliaAv1ReadyPrefixCommandFrameSnapshot,
+    NativeVulkanVulkanaliaAv1ReadyPrefixCommandSmokeSnapshot,
+    NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput,
+    NativeVulkanVulkanaliaAv1ReadyPrefixFrameInput, NativeVulkanVulkanaliaAv1ReferenceInfoPlan,
+    NativeVulkanVulkanaliaAv1SegmentationPlan, NativeVulkanVulkanaliaAv1TileInfoPlan,
 };
 pub use video_decode_submit_h264::{
     NativeVulkanVulkanaliaH264ReadyPrefixCommandFrameSnapshot,

@@ -8,6 +8,9 @@ use vulkanalia::vk::{
 };
 
 use super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE;
+use super::video_decode_submit_av1::{
+    NativeVulkanVulkanaliaAv1DecodeSubmitPlan, native_vulkan_vulkanalia_av1_with_vk_submit_info,
+};
 use super::video_decode_submit_h264::{
     NativeVulkanVulkanaliaH264DecodeSubmitPlan, native_vulkan_vulkanalia_h264_with_vk_submit_info,
 };
@@ -202,6 +205,42 @@ pub(super) unsafe fn native_vulkan_vulkanalia_record_h265_decode_commands(
     ))
 }
 
+pub(super) unsafe fn native_vulkan_vulkanalia_record_av1_decode_commands(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    plan: &NativeVulkanVulkanaliaAv1DecodeSubmitPlan,
+    video_session: vk::VideoSessionKHR,
+    session_parameters: vk::VideoSessionParametersKHR,
+    bitstream_buffer: vk::Buffer,
+    image_views: &super::video_decode_submit::NativeVulkanVulkanaliaDecodeImageViewBindings,
+) -> Result<NativeVulkanVulkanaliaDecodeCommandBodyPlan, String> {
+    native_vulkan_vulkanalia_av1_with_vk_submit_info(
+        plan,
+        video_session,
+        session_parameters,
+        bitstream_buffer,
+        image_views,
+        |vk_info| unsafe {
+            device.cmd_begin_video_coding_khr(command_buffer, vk_info.begin_info);
+            if plan.common.reset_control_recorded {
+                let control_info = vk::VideoCodingControlInfoKHR::builder()
+                    .flags(vk::VideoCodingControlFlagsKHR::RESET)
+                    .build();
+                device.cmd_control_video_coding_khr(command_buffer, &control_info);
+            }
+            device.cmd_decode_video_khr(command_buffer, vk_info.decode_info);
+            device.cmd_end_video_coding_khr(
+                command_buffer,
+                &vk::VideoEndCodingInfoKHR::builder().build(),
+            );
+        },
+    )?;
+
+    Ok(native_vulkan_vulkanalia_decode_command_body_plan(
+        plan.common.reset_control_recorded,
+    ))
+}
+
 pub(super) unsafe fn native_vulkan_vulkanalia_record_h264_decode_commands(
     device: &Device,
     command_buffer: vk::CommandBuffer,
@@ -234,6 +273,63 @@ pub(super) unsafe fn native_vulkan_vulkanalia_record_h264_decode_commands(
     )?;
 
     Ok(native_vulkan_vulkanalia_decode_command_body_plan(
+        plan.common.reset_control_recorded,
+    ))
+}
+
+pub(super) unsafe fn native_vulkan_vulkanalia_record_av1_decode_command_buffer(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    image: vk::Image,
+    plan: &NativeVulkanVulkanaliaAv1DecodeSubmitPlan,
+    video_session: vk::VideoSessionKHR,
+    session_parameters: vk::VideoSessionParametersKHR,
+    bitstream_buffer: vk::Buffer,
+    image_views: &super::video_decode_submit::NativeVulkanVulkanaliaDecodeImageViewBindings,
+    reset_command_buffer: bool,
+    transition_dst_from_undefined: bool,
+) -> Result<NativeVulkanVulkanaliaDecodeCommandBufferPlan, String> {
+    if reset_command_buffer {
+        unsafe {
+            device
+                .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
+                .map_err(|err| format!("vkResetCommandBuffer(vulkanalia av1 decode): {err:?}"))?;
+        }
+    }
+
+    let begin_info = vk::CommandBufferBeginInfo::builder()
+        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
+        .build();
+    unsafe {
+        device
+            .begin_command_buffer(command_buffer, &begin_info)
+            .map_err(|err| format!("vkBeginCommandBuffer(vulkanalia av1 decode): {err:?}"))?;
+        native_vulkan_vulkanalia_record_decode_prepare_barriers(
+            device,
+            command_buffer,
+            image,
+            bitstream_buffer,
+            plan.common.src_buffer_offset,
+            plan.common.src_buffer_range,
+            plan.common.dst_picture_resource.base_array_layer,
+            u32::from(transition_dst_from_undefined),
+        )?;
+        native_vulkan_vulkanalia_record_av1_decode_commands(
+            device,
+            command_buffer,
+            plan,
+            video_session,
+            session_parameters,
+            bitstream_buffer,
+            image_views,
+        )?;
+        device
+            .end_command_buffer(command_buffer)
+            .map_err(|err| format!("vkEndCommandBuffer(vulkanalia av1 decode): {err:?}"))?;
+    }
+
+    Ok(native_vulkan_vulkanalia_decode_command_buffer_plan(
+        reset_command_buffer,
         plan.common.reset_control_recorded,
     ))
 }

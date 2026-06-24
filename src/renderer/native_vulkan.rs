@@ -273,6 +273,7 @@ pub use video_session_snapshots::*;
 pub use vulkanalia_backend::*;
 #[cfg(feature = "native-vulkan-gst-video")]
 pub use vulkanalia_extract::{
+    native_vulkan_extract_av1_ready_prefix_for_vulkanalia,
     native_vulkan_extract_av1_sequence_header_for_vulkanalia,
     native_vulkan_extract_h264_parameter_sets_for_vulkanalia,
     native_vulkan_extract_h264_ready_prefix_for_vulkanalia,
@@ -18206,6 +18207,7 @@ struct NativeVulkanVideoBitstreamExtract {
     selected_access_unit: Vec<u8>,
     h264_access_unit_payloads: Vec<Vec<u8>>,
     h265_access_unit_payloads: Vec<Vec<u8>>,
+    av1_temporal_unit_payloads: Vec<Vec<u8>>,
     snapshot: NativeVulkanVideoBitstreamExtractSnapshot,
 }
 
@@ -28662,6 +28664,7 @@ fn native_vulkan_collect_h264_bitstream_samples(
             .map(|access_unit| access_unit.bytes.clone())
             .collect(),
         h265_access_unit_payloads: Vec::new(),
+        av1_temporal_unit_payloads: Vec::new(),
         snapshot: NativeVulkanVideoBitstreamExtractSnapshot {
             source: source.display().to_string(),
             frontend: "gstreamer-qtdemux-h264parse-appsink",
@@ -28858,6 +28861,7 @@ fn native_vulkan_collect_h265_bitstream_samples(
             .iter()
             .map(|access_unit| access_unit.bytes.clone())
             .collect(),
+        av1_temporal_unit_payloads: Vec::new(),
         snapshot: NativeVulkanVideoBitstreamExtractSnapshot {
             source: source.display().to_string(),
             frontend: "gstreamer-qtdemux-h265parse-appsink",
@@ -29049,6 +29053,10 @@ fn native_vulkan_collect_av1_bitstream_samples(
         selected_access_unit: selected.bytes.clone(),
         h264_access_unit_payloads: Vec::new(),
         h265_access_unit_payloads: Vec::new(),
+        av1_temporal_unit_payloads: temporal_units
+            .iter()
+            .map(|temporal_unit| temporal_unit.bytes.clone())
+            .collect(),
         snapshot: NativeVulkanVideoBitstreamExtractSnapshot {
             source: source.display().to_string(),
             frontend: "gstreamer-demux-av1parse-appsink",

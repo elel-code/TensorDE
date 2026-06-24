@@ -9,8 +9,9 @@ use vulkanalia::vk::{self, HasBuilder};
 
 use super::video_session_parameters::{
     NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot,
-    NativeVulkanVulkanaliaVideoSessionParametersSnapshot,
-    native_vulkan_vulkanalia_smoke_create_video_session_parameters,
+    NativeVulkanVulkanaliaVideoSessionParametersSnapshot, VulkanaliaVideoSessionParameters,
+    native_vulkan_vulkanalia_create_video_session_parameters,
+    native_vulkan_vulkanalia_destroy_video_session_parameters,
     vulkanalia_session_parameters_codec_label,
 };
 
@@ -22,18 +23,42 @@ pub(super) fn native_vulkan_vulkanalia_smoke_create_av1_video_session_parameters
     codec: NativeVulkanVideoSessionCodec,
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
 ) -> NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot {
+    match native_vulkan_vulkanalia_create_av1_video_session_parameters(
+        device,
+        session,
+        codec,
+        sequence_header,
+    ) {
+        Ok(parameters) => {
+            let snapshot = parameters.snapshot.clone();
+            native_vulkan_vulkanalia_destroy_video_session_parameters(device, parameters);
+            NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot {
+                requested: true,
+                supported: true,
+                created: true,
+                destroyed: true,
+                error: None,
+                parameters: snapshot,
+            }
+        }
+        Err(err) => native_vulkan_vulkanalia_av1_session_parameters_error(codec, err),
+    }
+}
+
+pub(super) fn native_vulkan_vulkanalia_create_av1_video_session_parameters(
+    device: &Device,
+    session: vk::VideoSessionKHR,
+    codec: NativeVulkanVideoSessionCodec,
+    sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
+) -> Result<VulkanaliaVideoSessionParameters, String> {
     if !matches!(
         codec,
         NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10
     ) {
-        return native_vulkan_vulkanalia_av1_session_parameters_error(
-            codec,
-            "Vulkanalia AV1 session parameters require an AV1 session codec".to_owned(),
-        );
+        return Err("Vulkanalia AV1 session parameters require an AV1 session codec".to_owned());
     }
     if !sequence_header.vulkan_std_session_parameters_ready {
-        return native_vulkan_vulkanalia_av1_session_parameters_error(
-            codec,
+        return Err(
             "AV1 sequence header is not in the first supported Vulkanalia STD subset".to_owned(),
         );
     }
@@ -43,14 +68,13 @@ pub(super) fn native_vulkan_vulkanalia_smoke_create_av1_video_session_parameters
         session,
         sequence_header,
     )
-    .unwrap_or_else(|err| native_vulkan_vulkanalia_av1_session_parameters_error(codec, err))
 }
 
 fn native_vulkan_vulkanalia_smoke_create_av1_video_session_parameters_inner(
     device: &Device,
     session: vk::VideoSessionKHR,
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
-) -> Result<NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot, String> {
+) -> Result<VulkanaliaVideoSessionParameters, String> {
     let color_config =
         native_vulkan_vulkanalia_av1_std_color_config(&sequence_header.color_config)?;
     let timing_info = sequence_header
@@ -117,23 +141,22 @@ fn native_vulkan_vulkanalia_smoke_create_av1_video_session_parameters_inner(
         .push_next(&mut av1_create_info)
         .build();
 
-    Ok(
-        native_vulkan_vulkanalia_smoke_create_video_session_parameters(
-            device,
-            &create_info,
-            NativeVulkanVulkanaliaVideoSessionParametersSnapshot {
-                codec: native_vulkan_vulkanalia_av1_sequence_header_codec_label(sequence_header),
-                source: AV1_SESSION_PARAMETERS_SOURCE,
-                max_std_vps_count: 0,
-                max_std_sps_count: 1,
-                max_std_pps_count: 0,
-                std_vps_count: 0,
-                std_sps_count: 1,
-                std_pps_count: 0,
-            },
-            "vulkanalia real av1 session parameters",
-        ),
+    native_vulkan_vulkanalia_create_video_session_parameters(
+        device,
+        &create_info,
+        NativeVulkanVulkanaliaVideoSessionParametersSnapshot {
+            codec: native_vulkan_vulkanalia_av1_sequence_header_codec_label(sequence_header),
+            source: AV1_SESSION_PARAMETERS_SOURCE,
+            max_std_vps_count: 0,
+            max_std_sps_count: 1,
+            max_std_pps_count: 0,
+            std_vps_count: 0,
+            std_sps_count: 1,
+            std_pps_count: 0,
+        },
+        "vulkanalia real av1 session parameters",
     )
+    .map_err(|err| err.error)
 }
 
 fn native_vulkan_vulkanalia_av1_session_parameters_error(
