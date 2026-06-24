@@ -14,6 +14,8 @@ pub(super) struct NativeVulkanPlanAudioRuntime {
     worker: Option<NativeVulkanPlanAudioRuntimeWorker>,
     #[cfg(feature = "native-vulkan-gst-video")]
     state: NativeVulkanPlanAudioRuntimeSharedState,
+    #[cfg(feature = "native-vulkan-gst-video")]
+    video_clock_serial: u32,
 }
 
 impl NativeVulkanPlanAudioRuntime {
@@ -36,6 +38,7 @@ impl NativeVulkanPlanAudioRuntime {
             return Self {
                 worker: None,
                 state,
+                video_clock_serial: 0,
             };
         };
         let output_mode = NativeVulkanAudioOutputPolicy::Plan.resolve(*muted);
@@ -48,11 +51,13 @@ impl NativeVulkanPlanAudioRuntime {
                 Self {
                     worker: Some(worker),
                     state,
+                    video_clock_serial: 0,
                 }
             }
             Err(err) => Self {
                 worker: None,
                 state: native_vulkan_audio_runtime_state_with_error(state, err.to_string()),
+                video_clock_serial: 0,
             },
         }
     }
@@ -60,7 +65,7 @@ impl NativeVulkanPlanAudioRuntime {
     pub(super) fn poll_video_clock(&mut self, video_clock_ns: u64) {
         #[cfg(feature = "native-vulkan-gst-video")]
         if let Some(worker) = self.worker.as_ref() {
-            if let Err(err) = worker.send_video_clock(video_clock_ns) {
+            if let Err(err) = worker.send_video_clock(video_clock_ns, self.video_clock_serial) {
                 native_vulkan_audio_runtime_state(&self.state).last_error = Some(err);
                 self.worker = None;
             }
@@ -74,10 +79,13 @@ impl NativeVulkanPlanAudioRuntime {
     #[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
     pub(super) fn seek_for_video_loop(&mut self, position_ms: u64) {
         #[cfg(feature = "native-vulkan-gst-video")]
-        if let Some(worker) = self.worker.as_ref() {
-            if let Err(err) = worker.seek_for_video_loop(position_ms) {
-                native_vulkan_audio_runtime_state(&self.state).last_error = Some(err);
-                self.worker = None;
+        {
+            self.video_clock_serial = self.video_clock_serial.saturating_add(1);
+            if let Some(worker) = self.worker.as_ref() {
+                if let Err(err) = worker.seek_for_video_loop(position_ms, self.video_clock_serial) {
+                    native_vulkan_audio_runtime_state(&self.state).last_error = Some(err);
+                    self.worker = None;
+                }
             }
         }
         #[cfg(not(feature = "native-vulkan-gst-video"))]
