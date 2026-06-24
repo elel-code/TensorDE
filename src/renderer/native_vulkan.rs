@@ -141,7 +141,8 @@ use direct_runtime::{
     NativeVulkanDirectOptionalPresentTiming, NativeVulkanDirectPresentTimedFrame,
     NativeVulkanDirectPresentTiming, NativeVulkanDirectPresentWaitStats,
     native_vulkan_direct_apply_optional_present_result, native_vulkan_direct_apply_present_result,
-    native_vulkan_direct_present_result_summary, native_vulkan_direct_runtime_summary,
+    native_vulkan_direct_present_result_summary, native_vulkan_direct_recv_present_result,
+    native_vulkan_direct_runtime_summary,
 };
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
@@ -5963,17 +5964,11 @@ pub fn run_h264_ready_prefix_video(
                             format!("direct-sampled frame {playback_frame_index} begin"),
                         );
                         while pending_present_results >= direct_async_present_depth {
-                            let present_result_wait_started_at = Instant::now();
-                            let present_result = present_result_rx.recv().map_err(|_| {
-                            NativeVulkanError::Video(
-                                "H.264 direct present worker exited before returning a present result"
-                                    .to_owned(),
-                            )
-                        })?;
-                            let present_result_wait_elapsed_us =
-                                native_vulkan_elapsed_us(present_result_wait_started_at.elapsed());
-                            h264_present_result_wait_stats
-                                .record_wait_elapsed_us(present_result_wait_elapsed_us);
+                            let (present_result, _) = native_vulkan_direct_recv_present_result(
+                                &present_result_rx,
+                                &mut h264_present_result_wait_stats,
+                                "H.264 direct present worker exited before returning a present result",
+                            )?;
                             pending_present_results = pending_present_results.saturating_sub(1);
                             apply_h264_direct_present_result(
                                 &mut frames,
@@ -6402,17 +6397,11 @@ pub fn run_h264_ready_prefix_video(
                         }
                     }
                     while pending_present_results > 0 {
-                        let present_result_wait_started_at = Instant::now();
-                        let present_result = present_result_rx.recv().map_err(|_| {
-                        NativeVulkanError::Video(
-                            "H.264 direct present worker exited before returning final present result"
-                                .to_owned(),
-                        )
-                    })?;
-                        let present_result_wait_elapsed_us =
-                            native_vulkan_elapsed_us(present_result_wait_started_at.elapsed());
-                        h264_present_result_wait_stats
-                            .record_wait_elapsed_us(present_result_wait_elapsed_us);
+                        let (present_result, _) = native_vulkan_direct_recv_present_result(
+                            &present_result_rx,
+                            &mut h264_present_result_wait_stats,
+                            "H.264 direct present worker exited before returning final present result",
+                        )?;
                         pending_present_results = pending_present_results.saturating_sub(1);
                         apply_h264_direct_present_result(
                             &mut frames,
@@ -7053,23 +7042,18 @@ pub fn run_h264_ready_prefix_video(
                             ),
                         );
                         while pending_present_results >= max_pending_present_results {
-                            let present_result_wait_started_at = Instant::now();
                             native_vulkan_h264_trace(
                                 h264_trace_enabled,
                                 format!(
                                     "frame {playback_frame_index} present result wait begin pending={pending_present_results}"
                                 ),
                             );
-                            let present_result = present_result_rx.recv().map_err(|_| {
-                                NativeVulkanError::Video(
-                                    "H.264 present worker exited before returning a present result"
-                                        .to_owned(),
-                                )
-                            })?;
-                            let present_result_wait_elapsed_us =
-                                native_vulkan_elapsed_us(present_result_wait_started_at.elapsed());
-                            h264_present_result_wait_stats
-                                .record_wait_elapsed_us(present_result_wait_elapsed_us);
+                            let (present_result, present_result_wait_elapsed_us) =
+                                native_vulkan_direct_recv_present_result(
+                                    &present_result_rx,
+                                    &mut h264_present_result_wait_stats,
+                                    "H.264 present worker exited before returning a present result",
+                                )?;
                             pending_present_results = pending_present_results.saturating_sub(1);
                             native_vulkan_h264_trace(
                                 h264_trace_enabled,
@@ -8089,23 +8073,18 @@ pub fn run_h264_ready_prefix_video(
                         }
                     }
                     while pending_present_results > 0 {
-                        let present_result_wait_started_at = Instant::now();
                         native_vulkan_h264_trace(
                             h264_trace_enabled,
                             format!(
                                 "final present result wait begin pending={pending_present_results}"
                             ),
                         );
-                        let present_result = present_result_rx.recv().map_err(|_| {
-                            NativeVulkanError::Video(
-                                "H.264 present worker exited before returning a present result"
-                                    .to_owned(),
-                            )
-                        })?;
-                        let present_result_wait_elapsed_us =
-                            native_vulkan_elapsed_us(present_result_wait_started_at.elapsed());
-                        h264_present_result_wait_stats
-                            .record_wait_elapsed_us(present_result_wait_elapsed_us);
+                        let (present_result, present_result_wait_elapsed_us) =
+                            native_vulkan_direct_recv_present_result(
+                                &present_result_rx,
+                                &mut h264_present_result_wait_stats,
+                                "H.264 present worker exited before returning a present result",
+                            )?;
                         pending_present_results = pending_present_results.saturating_sub(1);
                         native_vulkan_h264_trace(
                             h264_trace_enabled,
@@ -9346,17 +9325,11 @@ pub fn run_h265_ready_prefix_video(
 
                 for playback_frame_index in 0..playback_frame_count {
                     while pending_present_results >= h265_async_present_depth {
-                        let present_result_wait_started_at = Instant::now();
-                        let present_result = present_result_rx.recv().map_err(|_| {
-                            NativeVulkanError::Video(
-                                "H.265 present worker exited before returning a present result"
-                                    .to_owned(),
-                            )
-                        })?;
-                        let present_result_wait_elapsed_us =
-                            native_vulkan_elapsed_us(present_result_wait_started_at.elapsed());
-                        h265_present_result_wait_stats
-                            .record_wait_elapsed_us(present_result_wait_elapsed_us);
+                        let (present_result, _) = native_vulkan_direct_recv_present_result(
+                            &present_result_rx,
+                            &mut h265_present_result_wait_stats,
+                            "H.265 present worker exited before returning a present result",
+                        )?;
                         pending_present_results = pending_present_results.saturating_sub(1);
                         apply_h265_present_result(
                             &mut frames,
@@ -9666,17 +9639,11 @@ pub fn run_h265_ready_prefix_video(
                     }
                 }
                 while pending_present_results > 0 {
-                    let present_result_wait_started_at = Instant::now();
-                    let present_result = present_result_rx.recv().map_err(|_| {
-                        NativeVulkanError::Video(
-                            "H.265 present worker exited before returning final present result"
-                                .to_owned(),
-                        )
-                    })?;
-                    let present_result_wait_elapsed_us =
-                        native_vulkan_elapsed_us(present_result_wait_started_at.elapsed());
-                    h265_present_result_wait_stats
-                        .record_wait_elapsed_us(present_result_wait_elapsed_us);
+                    let (present_result, _) = native_vulkan_direct_recv_present_result(
+                        &present_result_rx,
+                        &mut h265_present_result_wait_stats,
+                        "H.265 present worker exited before returning final present result",
+                    )?;
                     pending_present_results = pending_present_results.saturating_sub(1);
                     apply_h265_present_result(
                         &mut frames,

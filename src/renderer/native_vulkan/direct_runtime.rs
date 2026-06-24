@@ -5,7 +5,8 @@
 //! packet-to-frame/display ownership evidence with the same fields for
 //! H.264, H.265 and AV1.
 
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use super::NativeVulkanError;
 use super::direct_zero_copy::{
@@ -97,6 +98,21 @@ impl NativeVulkanDirectPresentWaitStats {
     }
 }
 
+pub(super) fn native_vulkan_direct_recv_present_result<T>(
+    present_result_rx: &mpsc::Receiver<T>,
+    wait_stats: &mut NativeVulkanDirectPresentWaitStats,
+    disconnected_message: &'static str,
+) -> Result<(T, u64), NativeVulkanError> {
+    let present_result_wait_started_at = Instant::now();
+    let present_result = present_result_rx
+        .recv()
+        .map_err(|_| NativeVulkanError::Video(disconnected_message.to_owned()))?;
+    let present_result_wait_elapsed_us =
+        native_vulkan_direct_elapsed_us(present_result_wait_started_at.elapsed());
+    wait_stats.record_wait_elapsed_us(present_result_wait_elapsed_us);
+    Ok((present_result, present_result_wait_elapsed_us))
+}
+
 pub(super) fn native_vulkan_direct_apply_present_result<F>(
     codec_label: &'static str,
     frames: &mut [F],
@@ -161,6 +177,10 @@ pub(super) fn native_vulkan_direct_runtime_summary(
             handoff.display_handoff_strategy,
         ),
     }
+}
+
+fn native_vulkan_direct_elapsed_us(value: Duration) -> u64 {
+    value.as_micros().min(u128::from(u64::MAX)) as u64
 }
 
 pub(super) fn native_vulkan_direct_present_result_summary<I>(
@@ -386,6 +406,36 @@ mod tests {
         assert_eq!(stats.wait_count, 3);
         assert_eq!(stats.elapsed_us, 650);
         assert_eq!(stats.max_us, 500);
+    }
+
+    #[test]
+    fn recv_present_result_records_wait_and_returns_payload() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(42u32).expect("send present result");
+        let mut stats = NativeVulkanDirectPresentWaitStats::default();
+
+        let (payload, elapsed_us) =
+            native_vulkan_direct_recv_present_result(&rx, &mut stats, "present worker exited")
+                .expect("receive present result");
+
+        assert_eq!(payload, 42);
+        assert_eq!(stats.wait_count, 1);
+        assert_eq!(stats.elapsed_us, elapsed_us);
+        assert_eq!(stats.max_us, elapsed_us);
+    }
+
+    #[test]
+    fn recv_present_result_reports_disconnected_worker_without_recording_wait() {
+        let (tx, rx) = mpsc::channel::<u32>();
+        drop(tx);
+        let mut stats = NativeVulkanDirectPresentWaitStats::default();
+
+        let err =
+            native_vulkan_direct_recv_present_result(&rx, &mut stats, "present worker exited")
+                .expect_err("disconnected worker must fail");
+
+        assert_eq!(stats, NativeVulkanDirectPresentWaitStats::default());
+        assert!(err.to_string().contains("present worker exited"));
     }
 
     #[test]
