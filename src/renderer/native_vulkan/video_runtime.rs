@@ -32,6 +32,7 @@ pub struct NativeVulkanVideoRuntimeSnapshot {
     pub audio_output_mode: &'static str,
     pub audio_output_status: &'static str,
     pub audio_runtime_status: &'static str,
+    pub audio_runtime_provider: &'static str,
     pub audio_runtime_reached_clocked_playback: bool,
     pub audio_runtime_buffer_count: u32,
     pub audio_runtime_output_sink_count: usize,
@@ -69,6 +70,7 @@ pub struct NativeVulkanVideoRuntimeSnapshot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct NativeVulkanVideoAudioRuntimeTelemetry {
+    pub(super) audio_provider: &'static str,
     pub(super) reached_clocked_playback: bool,
     pub(super) audio_buffer_count: u32,
     pub(super) audio_output_sink_count: usize,
@@ -76,11 +78,13 @@ pub(super) struct NativeVulkanVideoAudioRuntimeTelemetry {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-impl From<super::audio_clock::NativeVulkanAudioClockRuntimeTelemetry>
-    for NativeVulkanVideoAudioRuntimeTelemetry
-{
-    fn from(value: super::audio_clock::NativeVulkanAudioClockRuntimeTelemetry) -> Self {
+impl NativeVulkanVideoAudioRuntimeTelemetry {
+    pub(super) fn from_audio_clock_runtime(
+        audio_provider: &'static str,
+        value: super::audio_clock::NativeVulkanAudioClockRuntimeTelemetry,
+    ) -> Self {
         Self {
+            audio_provider,
             reached_clocked_playback: value.reached_clocked_playback,
             audio_buffer_count: value.audio_buffer_count,
             audio_output_sink_count: value.audio_output_sink_count,
@@ -171,6 +175,17 @@ pub(super) fn native_vulkan_video_runtime_snapshot(
     let audio_runtime_reached_clocked_playback = audio_runtime
         .map(|runtime| runtime.reached_clocked_playback)
         .unwrap_or(false);
+    let audio_runtime_provider = audio_runtime
+        .map(|runtime| runtime.audio_provider)
+        .unwrap_or(
+            if audio_runtime_last_error.is_some()
+                || audio_output_mode == NativeVulkanAudioOutputMode::Auto
+            {
+                "gstreamer"
+            } else {
+                "none"
+            },
+        );
     let audio_runtime_buffer_count = audio_runtime
         .map(|runtime| runtime.audio_buffer_count)
         .unwrap_or(0);
@@ -218,6 +233,7 @@ pub(super) fn native_vulkan_video_runtime_snapshot(
         audio_output_mode: audio_output_mode.as_str(),
         audio_output_status,
         audio_runtime_status,
+        audio_runtime_provider,
         audio_runtime_reached_clocked_playback,
         audio_runtime_buffer_count,
         audio_runtime_output_sink_count,

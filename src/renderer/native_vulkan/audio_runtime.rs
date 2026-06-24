@@ -66,7 +66,10 @@ impl NativeVulkanPlanAudioRuntime {
                 state,
             };
         }
-        match super::audio_clock::NativeVulkanAudioClockRuntimeProbe::start(source, output_mode) {
+        match super::audio_frontend::NativeVulkanAudioClockRuntimeFrontend::start(
+            source,
+            output_mode,
+        ) {
             Ok(probe) => {
                 let worker = NativeVulkanPlanAudioRuntimeWorker::start(probe, Arc::clone(&state));
                 Self {
@@ -123,7 +126,7 @@ impl NativeVulkanPlanAudioRuntime {
 #[cfg(feature = "native-vulkan-gst-video")]
 impl NativeVulkanPlanAudioRuntimeWorker {
     fn start(
-        probe: super::audio_clock::NativeVulkanAudioClockRuntimeProbe,
+        probe: super::audio_frontend::NativeVulkanAudioClockRuntimeFrontend,
         state: NativeVulkanPlanAudioRuntimeSharedState,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel();
@@ -158,7 +161,7 @@ impl Drop for NativeVulkanPlanAudioRuntimeWorker {
 
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_audio_runtime_worker_loop(
-    mut probe: super::audio_clock::NativeVulkanAudioClockRuntimeProbe,
+    mut probe: super::audio_frontend::NativeVulkanAudioClockRuntimeFrontend,
     command_rx: mpsc::Receiver<NativeVulkanPlanAudioRuntimeWorkerCommand>,
     state: NativeVulkanPlanAudioRuntimeSharedState,
 ) {
@@ -167,8 +170,13 @@ fn native_vulkan_audio_runtime_worker_loop(
             NativeVulkanPlanAudioRuntimeWorkerCommand::SampleVideoClock { video_clock_ns } => {
                 match probe.sample_video_pts_ms(None, Some(video_clock_ns)) {
                     Ok(()) => {
-                        native_vulkan_audio_runtime_state(&state).telemetry =
-                            Some(probe.telemetry().into());
+                        let audio_provider = probe.provider().as_str();
+                        native_vulkan_audio_runtime_state(&state).telemetry = Some(
+                            NativeVulkanVideoAudioRuntimeTelemetry::from_audio_clock_runtime(
+                                audio_provider,
+                                probe.telemetry(),
+                            ),
+                        );
                     }
                     Err(err) => {
                         native_vulkan_audio_runtime_state(&state).last_error =

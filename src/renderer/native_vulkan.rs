@@ -76,6 +76,10 @@ mod audio_policy;
 #[path = "native_vulkan/audio_runtime.rs"]
 mod audio_runtime;
 
+#[cfg(feature = "native-vulkan-gst-video")]
+#[path = "native_vulkan/audio_frontend.rs"]
+mod audio_frontend;
+
 #[path = "native_vulkan/video_runtime.rs"]
 mod video_runtime;
 
@@ -5574,10 +5578,12 @@ pub fn run_h264_ready_prefix_video(
             let mut previous_duration_ms = None::<u64>;
             let mut frames = Vec::with_capacity(playback_frame_count as usize);
             let mut audio_clock_probe = if audio_clock_probe_enabled {
-                Some(audio_clock::NativeVulkanAudioClockRuntimeProbe::start(
-                    &source,
-                    audio_output_mode,
-                )?)
+                Some(
+                    audio_frontend::NativeVulkanAudioClockRuntimeFrontend::start(
+                        &source,
+                        audio_output_mode,
+                    )?,
+                )
             } else {
                 None
             };
@@ -9126,10 +9132,12 @@ pub fn run_h265_ready_prefix_video(
             let mut previous_duration_ms = None::<u64>;
             let mut frames = Vec::with_capacity(playback_frame_count as usize);
             let mut audio_clock_probe = if audio_clock_probe_enabled {
-                Some(audio_clock::NativeVulkanAudioClockRuntimeProbe::start(
-                    &source,
-                    audio_output_mode,
-                )?)
+                Some(
+                    audio_frontend::NativeVulkanAudioClockRuntimeFrontend::start(
+                        &source,
+                        audio_output_mode,
+                    )?,
+                )
             } else {
                 None
             };
@@ -11090,10 +11098,12 @@ pub fn run_av1_ready_prefix_video(
             let mut frames = Vec::with_capacity(playback_frame_count as usize);
             let mut diagnostic_hidden_frames = Vec::new();
             let mut audio_clock_probe = if audio_clock_probe_enabled {
-                Some(audio_clock::NativeVulkanAudioClockRuntimeProbe::start(
-                    &source,
-                    audio_output_mode,
-                )?)
+                Some(
+                    audio_frontend::NativeVulkanAudioClockRuntimeFrontend::start(
+                        &source,
+                        audio_output_mode,
+                    )?,
+                )
             } else {
                 None
             };
@@ -16551,7 +16561,7 @@ fn native_vulkan_next_video_pacing_clock_ns(
 fn native_vulkan_pace_video_after_frame(
     frame_pacer: &mut pacing::NativeVulkanVideoClockPacer,
     pacing_master: pacing::NativeVulkanVideoPacingMaster,
-    audio_clock_probe: Option<&audio_clock::NativeVulkanAudioClockRuntimeProbe>,
+    audio_clock_probe: Option<&audio_frontend::NativeVulkanAudioClockRuntimeFrontend>,
     is_last_frame: bool,
     next_video_clock_ns: Option<u64>,
 ) -> pacing::NativeVulkanVideoClockPaceResult {
@@ -52054,6 +52064,7 @@ mod tests {
             snapshot.audio_runtime_status,
             "auto-output-ready-for-audio-clock-runtime"
         );
+        assert_eq!(snapshot.audio_runtime_provider, "gstreamer");
         assert!(!snapshot.audio_runtime_reached_clocked_playback);
         assert_eq!(snapshot.audio_runtime_buffer_count, 0);
         assert_eq!(snapshot.audio_runtime_output_sink_count, 0);
@@ -52096,6 +52107,7 @@ mod tests {
             renderer_status: "vulkan-lifecycle-video-placeholder",
         };
         let audio_runtime = NativeVulkanVideoAudioRuntimeTelemetry {
+            audio_provider: "gstreamer",
             reached_clocked_playback: true,
             audio_buffer_count: 18,
             audio_output_sink_count: 2,
@@ -52117,6 +52129,7 @@ mod tests {
         assert_eq!(snapshot.audio_output_policy, "plan");
         assert_eq!(snapshot.audio_output_mode, "auto");
         assert_eq!(snapshot.audio_runtime_status, "clocked-playback-active");
+        assert_eq!(snapshot.audio_runtime_provider, "gstreamer");
         assert!(snapshot.audio_runtime_reached_clocked_playback);
         assert_eq!(snapshot.audio_runtime_buffer_count, 18);
         assert_eq!(snapshot.audio_runtime_output_sink_count, 2);
@@ -52198,6 +52211,7 @@ mod tests {
         assert_eq!(snapshot.audio_output_mode, "clock-only");
         assert_eq!(snapshot.audio_output_status, "disabled-by-muted-plan");
         assert_eq!(snapshot.audio_runtime_status, "disabled-by-muted-plan");
+        assert_eq!(snapshot.audio_runtime_provider, "none");
         assert_eq!(snapshot.frontend_status, "appsink-receiving-samples");
         assert_eq!(snapshot.handoff_status, "appsink-sample-handoff-active");
         assert_eq!(snapshot.frames_received, 3);
