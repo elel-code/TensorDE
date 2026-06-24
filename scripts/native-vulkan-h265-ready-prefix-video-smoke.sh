@@ -44,6 +44,8 @@ Options:
                         skip the broken prefix again, and restart each loop on IDR.
   --audio-clock-probe  Run explicit AAC audio-only clock probe beside H.265 video
                         and gate clocked playback / no video decoder contamination.
+  --audio-output <clock-only|auto>
+                        Select audio clock probe output branch. Default: clock-only.
   --pacing-master <target|audio>
                         Select pacing master. audio requires --audio-clock-probe.
   --allow-short-loop    Allow looped visible playback with a ready-prefix shorter than 1 second.
@@ -84,6 +86,7 @@ arbitrary_entry_offset=""
 arbitrary_entry_source=0
 require_loop_skip_replay=0
 audio_clock_probe=0
+audio_output="clock-only"
 pacing_master="target"
 allow_short_loop=0
 layer="background"
@@ -180,6 +183,10 @@ while [[ $# -gt 0 ]]; do
       audio_clock_probe=1
       shift
       ;;
+    --audio-output)
+      audio_output="${2:-}"
+      shift 2
+      ;;
     --pacing-master)
       pacing_master="${2:-}"
       shift 2
@@ -245,6 +252,14 @@ if [[ "$pacing_master" != "target" && "$pacing_master" != "audio" ]]; then
 fi
 if [[ "$pacing_master" == "audio" && "$audio_clock_probe" -ne 1 ]]; then
   printf 'FAIL: --pacing-master audio requires --audio-clock-probe\n' >&2
+  exit 1
+fi
+if [[ "$audio_output" != "clock-only" && "$audio_output" != "auto" ]]; then
+  printf 'FAIL: --audio-output must be clock-only or auto\n' >&2
+  exit 1
+fi
+if [[ "$audio_output" != "clock-only" && "$audio_clock_probe" -ne 1 ]]; then
+  printf 'FAIL: --audio-output %s requires --audio-clock-probe\n' "$audio_output" >&2
   exit 1
 fi
 
@@ -420,6 +435,7 @@ if [[ "$streaming_queue" -eq 1 ]]; then
 fi
 if [[ "$audio_clock_probe" -eq 1 ]]; then
   args+=(--audio-clock-probe)
+  args+=(--audio-output "$audio_output")
 fi
 if [[ -n "$output_name" ]]; then
   args+=(--output-name "$output_name")
@@ -538,6 +554,8 @@ h265_packet_queue_loop_skip_access_units="$(jq -r '.h265_packet_queue_loop_skip_
 h265_packet_queue_bootstrap_discarded_access_units="$(jq -r '.h265_packet_queue_bootstrap_discarded_access_units // 0' "$runtime_json")"
 h265_packet_queue_max_payload_bytes="$(jq -r '.h265_packet_queue_max_payload_bytes // 0' "$runtime_json")"
 audio_clock_probe_present="$(jq -r '(.audio_clock_probe != null)' "$runtime_json")"
+audio_output_mode="$(jq -r '.audio_clock_probe.audio_output_mode // "none"' "$runtime_json")"
+audio_output_sink_count="$(jq -r '(.audio_clock_probe.audio_output_sinks // []) | length' "$runtime_json")"
 audio_reached_clocked_playback="$(jq -r '.audio_clock_probe.reached_clocked_playback // false' "$runtime_json")"
 audio_no_video_decoder_instantiated="$(jq -r '.audio_clock_probe.no_video_decoder_instantiated // false' "$runtime_json")"
 audio_buffer_count="$(jq -r '.audio_clock_probe.audio_buffer_count // 0' "$runtime_json")"
@@ -623,6 +641,12 @@ audio_clock_gate_failed=0
 if [[ "$audio_clock_probe" -eq 1 && ( "$audio_clock_probe_present" != "true" || "$audio_reached_clocked_playback" != "true" || "$audio_no_video_decoder_instantiated" != "true" || "$audio_playback_started" != "true" || "$audio_clock_serial" -lt 1 || "$audio_buffer_count" -le 0 || "$audio_position_query_count" -le 0 || "$audio_position_query_hit_count" -le 0 || "$audio_sampled_video_frame_count" -le 0 || "$audio_master_clock_estimate_ns" == "none" || "$audio_video_master_clock_drift_latest_ns" == "none" || "$audio_loop_seek_error_count" -ne 0 ) ]]; then
   audio_clock_gate_failed=1
 fi
+if [[ "$audio_clock_probe" -eq 1 && "$audio_output_mode" != "$audio_output" ]]; then
+  audio_clock_gate_failed=1
+fi
+if [[ "$audio_output" == "auto" && "$audio_output_sink_count" -le 0 ]]; then
+  audio_clock_gate_failed=1
+fi
 if [[ "$audio_clock_probe" -eq 1 && "$loop_boundary_reset_count" -gt 0 && "$audio_loop_seek_count" -lt "$loop_boundary_reset_count" ]]; then
   audio_clock_gate_failed=1
 fi
@@ -661,6 +685,9 @@ if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expect
     printf 'pts_delta_gate_failed: %s\n' "$pts_delta_gate_failed"
     printf 'audio_clock_probe_requested: %s\n' "$([[ "$audio_clock_probe" -eq 1 ]] && printf yes || printf no)"
     printf 'audio_clock_probe_present: %s\n' "$audio_clock_probe_present"
+    printf 'audio_output: %s\n' "$audio_output"
+    printf 'audio_output_mode: %s\n' "$audio_output_mode"
+    printf 'audio_output_sink_count: %s\n' "$audio_output_sink_count"
     printf 'audio_clock_gate_failed: %s\n' "$audio_clock_gate_failed"
     printf 'audio_reached_clocked_playback: %s\n' "$audio_reached_clocked_playback"
     printf 'audio_no_video_decoder_instantiated: %s\n' "$audio_no_video_decoder_instantiated"
@@ -846,6 +873,9 @@ fi
   printf 'pts_delta_script_expected_max_ms: %s\n' "$script_pts_delta_expected_max"
   printf 'audio_clock_probe_requested: %s\n' "$([[ "$audio_clock_probe" -eq 1 ]] && printf yes || printf no)"
   printf 'audio_clock_probe_present: %s\n' "$audio_clock_probe_present"
+  printf 'audio_output: %s\n' "$audio_output"
+  printf 'audio_output_mode: %s\n' "$audio_output_mode"
+  printf 'audio_output_sink_count: %s\n' "$audio_output_sink_count"
   printf 'audio_reached_clocked_playback: %s\n' "$audio_reached_clocked_playback"
   printf 'audio_no_video_decoder_instantiated: %s\n' "$audio_no_video_decoder_instantiated"
   printf 'audio_buffer_count: %s\n' "$audio_buffer_count"

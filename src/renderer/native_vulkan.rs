@@ -3064,6 +3064,8 @@ pub struct NativeVulkanVideoRuntimeSnapshot {
     pub handoff_status: &'static str,
     pub texture_import_status: &'static str,
     pub audio_status: &'static str,
+    pub audio_output_mode: &'static str,
+    pub audio_output_status: &'static str,
     pub gst_state: Option<String>,
     pub eos_messages: u64,
     pub segment_done_messages: u64,
@@ -48884,6 +48886,13 @@ fn native_vulkan_video_runtime_snapshot(
     let memory_route =
         native_vulkan_video_memory_route_snapshot(frontend.as_ref(), import.as_ref());
 
+    let audio_output_mode = if *muted { "clock-only" } else { "auto" };
+    let audio_output_status = if *muted {
+        "disabled-by-muted-plan"
+    } else {
+        "auto-output-ready-for-audio-clock-runtime"
+    };
+
     Some(NativeVulkanVideoRuntimeSnapshot {
         source: source.clone(),
         poster: poster.clone(),
@@ -48908,8 +48917,10 @@ fn native_vulkan_video_runtime_snapshot(
         audio_status: if *muted {
             "muted-no-audio-pipeline"
         } else {
-            "planned-separate-audio-pipeline"
+            "planned-auto-audio-output-pipeline"
         },
+        audio_output_mode,
+        audio_output_status,
         gst_state: frontend
             .as_ref()
             .and_then(|frontend| frontend.gst_state.clone()),
@@ -53221,7 +53232,12 @@ mod tests {
             snapshot.handoff_status,
             "pending-appsink-dmabuf-or-gpu-memory-handoff"
         );
-        assert_eq!(snapshot.audio_status, "planned-separate-audio-pipeline");
+        assert_eq!(snapshot.audio_status, "planned-auto-audio-output-pipeline");
+        assert_eq!(snapshot.audio_output_mode, "auto");
+        assert_eq!(
+            snapshot.audio_output_status,
+            "auto-output-ready-for-audio-clock-runtime"
+        );
         assert_eq!(snapshot.frames_received, 0);
         assert_eq!(snapshot.frames_imported, 0);
         assert_eq!(snapshot.rendered_placeholder_frames, 9);
@@ -53308,6 +53324,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(snapshot.frontend, "gstreamer-appsink");
+        assert_eq!(snapshot.audio_status, "muted-no-audio-pipeline");
+        assert_eq!(snapshot.audio_output_mode, "clock-only");
+        assert_eq!(snapshot.audio_output_status, "disabled-by-muted-plan");
         assert_eq!(snapshot.frontend_status, "appsink-receiving-samples");
         assert_eq!(snapshot.handoff_status, "appsink-sample-handoff-active");
         assert_eq!(snapshot.frames_received, 3);
