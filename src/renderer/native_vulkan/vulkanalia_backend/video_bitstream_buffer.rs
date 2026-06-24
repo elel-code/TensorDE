@@ -40,11 +40,11 @@ pub struct NativeVulkanVulkanaliaVideoSessionBitstreamBufferSnapshot {
     pub keep_mapped: bool,
 }
 
-struct VulkanaliaVideoSessionBitstreamBuffer {
-    buffer: vk::Buffer,
-    memory: vk::DeviceMemory,
-    mapped_ptr: Option<*mut std::ffi::c_void>,
-    snapshot: NativeVulkanVulkanaliaVideoSessionBitstreamBufferSnapshot,
+pub(super) struct VulkanaliaVideoSessionBitstreamBuffer {
+    pub(super) buffer: vk::Buffer,
+    pub(super) memory: vk::DeviceMemory,
+    pub(super) mapped_ptr: Option<*mut std::ffi::c_void>,
+    pub(super) snapshot: NativeVulkanVulkanaliaVideoSessionBitstreamBufferSnapshot,
 }
 
 pub(super) fn native_vulkan_vulkanalia_smoke_create_video_session_bitstream_buffer(
@@ -76,7 +76,7 @@ pub(super) fn native_vulkan_vulkanalia_smoke_create_video_session_bitstream_buff
     Ok(snapshot)
 }
 
-fn native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
+pub(super) fn native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
     device: &Device,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
     profile_info: &vk::VideoProfileInfoKHR,
@@ -241,7 +241,7 @@ fn native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
     result
 }
 
-fn native_vulkan_vulkanalia_destroy_video_session_bitstream_buffer(
+pub(super) fn native_vulkan_vulkanalia_destroy_video_session_bitstream_buffer(
     device: &Device,
     buffer: VulkanaliaVideoSessionBitstreamBuffer,
 ) {

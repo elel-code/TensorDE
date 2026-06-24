@@ -38,12 +38,12 @@ pub struct NativeVulkanVulkanaliaVideoSessionResourceImageSnapshot {
     pub selected_memory_property_flags: Vec<&'static str>,
 }
 
-struct VulkanaliaVideoSessionResourceImage {
-    image: vk::Image,
-    memory: vk::DeviceMemory,
-    view: vk::ImageView,
-    layer_views: Vec<vk::ImageView>,
-    snapshot: NativeVulkanVulkanaliaVideoSessionResourceImageSnapshot,
+pub(super) struct VulkanaliaVideoSessionResourceImage {
+    pub(super) image: vk::Image,
+    pub(super) memory: vk::DeviceMemory,
+    pub(super) view: vk::ImageView,
+    pub(super) layer_views: Vec<vk::ImageView>,
+    pub(super) snapshot: NativeVulkanVulkanaliaVideoSessionResourceImageSnapshot,
 }
 
 pub(super) fn native_vulkan_vulkanalia_smoke_create_video_session_resource_image(
@@ -81,7 +81,7 @@ pub(super) fn native_vulkan_vulkanalia_smoke_create_video_session_resource_image
     Ok(snapshot)
 }
 
-fn native_vulkan_vulkanalia_create_video_session_resource_image(
+pub(super) fn native_vulkan_vulkanalia_create_video_session_resource_image(
     instance: &Instance,
     device: &Device,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
@@ -330,7 +330,7 @@ fn native_vulkan_vulkanalia_create_video_session_resource_layer_views(
     Ok(views)
 }
 
-fn native_vulkan_vulkanalia_destroy_video_session_resource_image(
+pub(super) fn native_vulkan_vulkanalia_destroy_video_session_resource_image(
     device: &Device,
     image: VulkanaliaVideoSessionResourceImage,
 ) {
