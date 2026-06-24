@@ -240,7 +240,7 @@ pub(super) fn native_vulkan_vulkanalia_video_session_max_dpb_slots(
     if driver_max_dpb_slots == 0 {
         0
     } else {
-        driver_max_dpb_slots.min(8).max(1)
+        driver_max_dpb_slots.min(16).max(1)
     }
 }
 
@@ -424,6 +424,13 @@ mod tests {
             },
             capabilities
         ));
+    }
+
+    #[test]
+    fn session_capabilities_allow_av1_transient_output_layers() {
+        assert_eq!(native_vulkan_vulkanalia_video_session_max_dpb_slots(32), 16);
+        assert_eq!(native_vulkan_vulkanalia_video_session_max_dpb_slots(8), 8);
+        assert_eq!(native_vulkan_vulkanalia_video_session_max_dpb_slots(0), 0);
     }
 
     fn test_av1_sequence_header(bit_depth: u8) -> NativeVulkanAv1SequenceHeaderSnapshot {

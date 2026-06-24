@@ -28929,9 +28929,8 @@ fn native_vulkan_collect_av1_bitstream_samples(
             )
         })
         .collect::<Vec<_>>();
-    let av1_reference_plan_dpb_slots = 8;
-    let av1_decode_reference_plan =
-        native_vulkan_av1_decode_reference_plan(&av1_temporal_units, av1_reference_plan_dpb_slots);
+    let (av1_reference_plan_dpb_slots, av1_decode_reference_plan) =
+        native_vulkan_av1_min_decodable_dpb_plan(&av1_temporal_units, 16);
     let av1_decode_ready_count = av1_decode_reference_plan
         .iter()
         .filter(|entry| entry.ready_for_decode_submit || entry.ready_for_display_handoff)

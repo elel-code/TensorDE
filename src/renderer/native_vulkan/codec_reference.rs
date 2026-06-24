@@ -2867,3 +2867,119 @@ pub(super) fn native_vulkan_h265_access_units_max_active_references(
         .max()
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn av1_planner_uses_transient_output_slot_when_reference_map_is_full() {
+        let mut temporal_units = (0..8)
+            .map(|index| test_av1_temporal_unit(index, 1u8 << index))
+            .collect::<Vec<_>>();
+        temporal_units.push(test_av1_temporal_unit(8, 0));
+
+        let (dpb_slots, plan) = native_vulkan_av1_min_decodable_dpb_plan(&temporal_units, 16);
+        let transient = plan.last().expect("AV1 transient frame is planned");
+
+        assert_eq!(dpb_slots, 9);
+        assert!(transient.ready_for_decode_submit);
+        assert_eq!(transient.output_slot, Some(8));
+        assert_eq!(transient.displayed_slot, Some(8));
+        assert!(transient.refreshed_reference_names.is_empty());
+        assert_eq!(
+            transient.map_slot_indices_after,
+            vec![0, 1, 2, 3, 4, 5, 6, 7]
+        );
+    }
+
+    fn test_av1_temporal_unit(
+        index: u32,
+        refresh_frame_flags: u8,
+    ) -> NativeVulkanAv1TemporalUnitSnapshot {
+        NativeVulkanAv1TemporalUnitSnapshot {
+            index,
+            bytes: 0,
+            byte_hash: index as u64,
+            pts_ns: None,
+            duration_ns: None,
+            pts_ms: None,
+            duration_ms: None,
+            obu_count: 1,
+            sequence_header_count: 0,
+            temporal_delimiter_count: 0,
+            frame_header_count: 1,
+            tile_group_count: 1,
+            frame_count: 1,
+            decode_candidate: true,
+            tile_payload_bytes: 1,
+            frame_payload_bytes: 1,
+            first_frame_header_obu_offset: Some(0),
+            first_tile_group_obu_offset: Some(0),
+            sequence_header_present: false,
+            sequence_header: None,
+            first_frame_submit: Some(test_av1_frame_submit(index, refresh_frame_flags)),
+            obus: Vec::new(),
+        }
+    }
+
+    fn test_av1_frame_submit(
+        index: u32,
+        refresh_frame_flags: u8,
+    ) -> NativeVulkanAv1FrameSubmitSnapshot {
+        NativeVulkanAv1FrameSubmitSnapshot {
+            parser: "test",
+            frame_header_obu_offset: 0,
+            frame_header_payload_offset: 0,
+            frame_header_payload_size: 1,
+            frame_header_offset_for_vulkan: 0,
+            tile_count: 1,
+            tile_columns: 1,
+            tile_rows: 1,
+            tile_size_bytes: 1,
+            tile_offsets: vec![0],
+            tile_sizes: vec![1],
+            tile_payload_total_bytes: 1,
+            frame_obu_payload_bytes: 1,
+            frame_type: 1,
+            frame_type_label: "inter",
+            show_existing_frame: false,
+            frame_to_show_map_idx: None,
+            display_frame_id: None,
+            current_frame_id: Some(index),
+            expected_frame_ids: Vec::new(),
+            show_frame: true,
+            showable_frame: true,
+            error_resilient_mode: false,
+            disable_cdf_update: false,
+            allow_screen_content_tools: 0,
+            force_integer_mv: 0,
+            allow_high_precision_mv: false,
+            interpolation_filter: 0,
+            interpolation_filter_label: "eighttap",
+            is_filter_switchable: false,
+            is_motion_mode_switchable: false,
+            use_ref_frame_mvs: false,
+            reference_select: false,
+            skip_mode_present: false,
+            allow_warped_motion: false,
+            order_hint: Some(index as u8),
+            primary_ref_frame: Some(0),
+            refresh_frame_flags,
+            reference_order_hints: Vec::new(),
+            frame_refs_short_signaling: false,
+            last_frame_idx: None,
+            gold_frame_idx: None,
+            ref_frame_indices: Vec::new(),
+            render_and_frame_size_different: Some(false),
+            frame_width: Some(640),
+            frame_height: Some(368),
+            render_width: Some(640),
+            render_height: Some(368),
+            found_frame_header: true,
+            found_tile_payload: true,
+            vulkan_submit_candidate: true,
+            unsupported_reason: None,
+        }
+    }
+}
