@@ -26,6 +26,8 @@ mod video_codec;
 mod video_command_pool;
 #[path = "vulkanalia_backend/video_decode_commands.rs"]
 mod video_decode_commands;
+#[path = "vulkanalia_backend/video_decode_payload.rs"]
+mod video_decode_payload;
 #[path = "vulkanalia_backend/video_decode_submit.rs"]
 mod video_decode_submit;
 #[path = "vulkanalia_backend/video_decode_submit_av1.rs"]
@@ -52,6 +54,8 @@ mod video_profile_probe;
 mod video_session;
 #[path = "vulkanalia_backend/video_session_bind.rs"]
 mod video_session_bind;
+#[path = "vulkanalia_backend/video_session_capabilities.rs"]
+mod video_session_capabilities;
 #[path = "vulkanalia_backend/video_session_images.rs"]
 mod video_session_images;
 #[path = "vulkanalia_backend/video_session_parameters.rs"]

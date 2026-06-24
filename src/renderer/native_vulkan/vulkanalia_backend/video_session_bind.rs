@@ -5,7 +5,7 @@ use crate::renderer::native_vulkan::{
 use serde::Serialize;
 use vulkanalia::Version;
 use vulkanalia::prelude::v1_4::*;
-use vulkanalia::vk::{self, HasBuilder, KhrVideoQueueExtensionInstanceCommands};
+use vulkanalia::vk::{self, HasBuilder};
 
 use super::instance::{
     native_vulkan_vulkanalia_create_instance, native_vulkan_vulkanalia_destroy_instance,
@@ -17,13 +17,9 @@ use super::video_bitstream_buffer::{
     native_vulkan_vulkanalia_smoke_create_video_session_bitstream_buffer,
 };
 use super::video_codec::{
-    native_vulkan_vulkanalia_video_session_bit_depth as vulkanalia_video_session_bit_depth,
     native_vulkan_vulkanalia_video_session_codec_name as vulkanalia_video_session_codec_name,
     native_vulkan_vulkanalia_video_session_codec_operation as vulkanalia_video_session_codec_operation,
-    native_vulkan_vulkanalia_video_session_format_probe_profile as vulkanalia_video_session_format_probe_profile,
     native_vulkan_vulkanalia_video_session_label as vulkanalia_video_session_label,
-    native_vulkan_vulkanalia_video_session_picture_format as vulkanalia_video_session_picture_format,
-    native_vulkan_vulkanalia_video_session_profile_label as vulkanalia_video_session_profile_label,
 };
 use super::video_command_pool::{
     native_vulkan_vulkanalia_create_decode_command_buffer,
@@ -34,6 +30,10 @@ use super::video_decode_commands::{
     native_vulkan_vulkanalia_record_h264_decode_command_buffer,
     native_vulkan_vulkanalia_record_h265_decode_command_buffer,
     native_vulkan_vulkanalia_submit_decode_command_buffer2,
+};
+use super::video_decode_payload::{
+    native_vulkan_vulkanalia_av1_decode_payloads, native_vulkan_vulkanalia_h264_decode_payloads,
+    native_vulkan_vulkanalia_h265_decode_payloads,
 };
 use super::video_decode_submit::NativeVulkanVulkanaliaDecodeImageViewBindings;
 use super::video_decode_submit_av1::{
@@ -63,16 +63,9 @@ use super::video_device::{
     native_vulkan_vulkanalia_destroy_video_decode_device,
     native_vulkan_vulkanalia_select_video_decode_physical_device,
 };
-use super::video_format_probe::{
-    NativeVulkanVulkanaliaVideoFormatQuerySnapshot, native_vulkan_vulkanalia_video_format_probe,
-};
-use super::video_profile_info::{
-    with_vulkanalia_av1_video_profile_info, with_vulkanalia_h264_video_profile_info,
-    with_vulkanalia_h265_video_profile_info,
-};
+use super::video_format_probe::native_vulkan_vulkanalia_video_format_probe;
 use super::video_profile_labels::{
-    av1_level_label, h264_level_label, h265_level_label, video_capability_flag_labels,
-    video_decode_capability_flag_labels,
+    video_capability_flag_labels, video_decode_capability_flag_labels,
 };
 use super::video_session::{
     NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot,
@@ -81,6 +74,17 @@ use super::video_session::{
     native_vulkan_vulkanalia_create_video_session, native_vulkan_vulkanalia_destroy_video_session,
     native_vulkan_vulkanalia_destroy_video_session_memory_binding_resources,
     native_vulkan_vulkanalia_video_session_resource_plans_from_format_probe,
+};
+use super::video_session_capabilities::{
+    VulkanaliaVideoSessionCapabilityQuery,
+    native_vulkan_vulkanalia_video_format_probe_includes_format as video_format_probe_includes_format,
+    native_vulkan_vulkanalia_video_session_effective_format_probe_profile,
+    native_vulkan_vulkanalia_video_session_effective_picture_format,
+    native_vulkan_vulkanalia_video_session_effective_profile_label,
+    native_vulkan_vulkanalia_video_session_extent_supported,
+    native_vulkan_vulkanalia_video_session_max_active_reference_pictures,
+    native_vulkan_vulkanalia_video_session_max_dpb_slots,
+    with_native_vulkan_vulkanalia_video_session_capabilities,
 };
 use super::video_session_images::{
     NativeVulkanVulkanaliaVideoSessionResourceImageSmokeSnapshot,
@@ -94,14 +98,11 @@ use super::video_session_parameters::{
     native_vulkan_vulkanalia_smoke_create_empty_video_session_parameters,
 };
 use super::video_session_parameters_av1::{
-    native_vulkan_vulkanalia_av1_sequence_header_bit_depth,
-    native_vulkan_vulkanalia_av1_sequence_header_profile_label,
     native_vulkan_vulkanalia_create_av1_video_session_parameters,
     native_vulkan_vulkanalia_smoke_create_av1_video_session_parameters,
 };
 use super::video_session_parameters_h264::{
     native_vulkan_vulkanalia_create_h264_video_session_parameters,
-    native_vulkan_vulkanalia_h264_std_profile_idc, native_vulkan_vulkanalia_h264_std_profile_label,
     native_vulkan_vulkanalia_smoke_create_h264_video_session_parameters,
 };
 use super::video_session_parameters_h265::{
@@ -235,7 +236,12 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
         width: options.width,
         height: options.height,
     };
-    let picture_format = vulkanalia_video_session_effective_picture_format(&options);
+    let h264_parameter_sets = options.h264_parameter_sets.clone();
+    let av1_sequence_header = options.av1_sequence_header.clone();
+    let picture_format = native_vulkan_vulkanalia_video_session_effective_picture_format(
+        options.codec,
+        av1_sequence_header.as_ref(),
+    );
     let picture_format_label = format!("{picture_format:?}");
     let video_format_capabilities = native_vulkan_vulkanalia_video_format_probe(
         instance,
@@ -243,7 +249,12 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
         &selection.device_extensions,
         true,
     );
-    let format_probe_profile = vulkanalia_video_session_effective_format_probe_profile(&options)?;
+    let format_probe_profile =
+        native_vulkan_vulkanalia_video_session_effective_format_probe_profile(
+            options.codec,
+            h264_parameter_sets.as_ref(),
+            av1_sequence_header.as_ref(),
+        )?;
     let target_resource_plan =
         native_vulkan_vulkanalia_video_session_resource_plans_from_format_probe(
             &video_format_capabilities,
@@ -290,127 +301,36 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
 
     let memory_properties =
         unsafe { instance.get_physical_device_memory_properties(selection.physical_device) };
-    let result = match options.codec {
-        NativeVulkanVideoSessionCodec::H264High8 => {
-            let h264_std_profile_idc =
-                vulkanalia_video_session_effective_h264_std_profile_idc(&options)?;
-            with_vulkanalia_h264_video_profile_info(
-                h264_std_profile_idc,
-                vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE,
-                |profile_info, _| {
-                    let mut h264_capabilities = vk::VideoDecodeH264CapabilitiesKHR::default();
-                    let queried = query_vulkanalia_h264_video_session_capabilities(
-                        instance,
-                        selection.physical_device,
-                        profile_info,
-                        &mut h264_capabilities,
-                    )?;
-                    smoke_bind_vulkanalia_video_session_profile(
-                        instance,
-                        &video_decode_device.device,
-                        video_decode_device.queue,
-                        &memory_properties,
-                        &selection,
-                        loader_name,
-                        options,
-                        requested_extent,
-                        picture_format,
-                        target_picture_dpb_supported,
-                        target_picture_sampled_output_supported,
-                        target_resource_plan,
-                        video_decode_device.enabled_device_extensions.clone(),
-                        video_decode_device.feature_selection,
-                        profile_info,
-                        queried,
-                    )
-                },
+    let result = with_native_vulkan_vulkanalia_video_session_capabilities(
+        instance,
+        selection.physical_device,
+        options.codec,
+        h264_parameter_sets.as_ref(),
+        av1_sequence_header.as_ref(),
+        |profile_info, queried| {
+            smoke_bind_vulkanalia_video_session_profile(
+                instance,
+                &video_decode_device.device,
+                video_decode_device.queue,
+                &memory_properties,
+                &selection,
+                loader_name,
+                options,
+                requested_extent,
+                picture_format,
+                target_picture_dpb_supported,
+                target_picture_sampled_output_supported,
+                target_resource_plan,
+                video_decode_device.enabled_device_extensions.clone(),
+                video_decode_device.feature_selection,
+                profile_info,
+                queried,
             )
-        }
-        NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10 => {
-            let std_profile_idc = match options.codec {
-                NativeVulkanVideoSessionCodec::H265Main8 => {
-                    vk::video::STD_VIDEO_H265_PROFILE_IDC_MAIN
-                }
-                NativeVulkanVideoSessionCodec::H265Main10 => {
-                    vk::video::STD_VIDEO_H265_PROFILE_IDC_MAIN_10
-                }
-                _ => unreachable!("matched H.265 codec"),
-            };
-            let bit_depth = vulkanalia_video_session_bit_depth(options.codec);
-            with_vulkanalia_h265_video_profile_info(
-                std_profile_idc,
-                bit_depth,
-                |profile_info, _| {
-                    let mut h265_capabilities = vk::VideoDecodeH265CapabilitiesKHR::default();
-                    let queried = query_vulkanalia_h265_video_session_capabilities(
-                        instance,
-                        selection.physical_device,
-                        profile_info,
-                        &mut h265_capabilities,
-                    )?;
-                    smoke_bind_vulkanalia_video_session_profile(
-                        instance,
-                        &video_decode_device.device,
-                        video_decode_device.queue,
-                        &memory_properties,
-                        &selection,
-                        loader_name,
-                        options,
-                        requested_extent,
-                        picture_format,
-                        target_picture_dpb_supported,
-                        target_picture_sampled_output_supported,
-                        target_resource_plan,
-                        video_decode_device.enabled_device_extensions.clone(),
-                        video_decode_device.feature_selection,
-                        profile_info,
-                        queried,
-                    )
-                },
-            )
-        }
-        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => {
-            let bit_depth = vulkanalia_video_session_effective_bit_depth(&options);
-            with_vulkanalia_av1_video_profile_info(bit_depth, false, |profile_info, _| {
-                let mut av1_capabilities = vk::VideoDecodeAV1CapabilitiesKHR::default();
-                let queried = query_vulkanalia_av1_video_session_capabilities(
-                    instance,
-                    selection.physical_device,
-                    profile_info,
-                    &mut av1_capabilities,
-                )?;
-                smoke_bind_vulkanalia_video_session_profile(
-                    instance,
-                    &video_decode_device.device,
-                    video_decode_device.queue,
-                    &memory_properties,
-                    &selection,
-                    loader_name,
-                    options,
-                    requested_extent,
-                    picture_format,
-                    target_picture_dpb_supported,
-                    target_picture_sampled_output_supported,
-                    target_resource_plan,
-                    video_decode_device.enabled_device_extensions.clone(),
-                    video_decode_device.feature_selection,
-                    profile_info,
-                    queried,
-                )
-            })
-        }
-    };
+        },
+    );
 
     native_vulkan_vulkanalia_destroy_video_decode_device(video_decode_device);
     result
-}
-
-#[derive(Debug, Clone, Copy)]
-struct VulkanaliaVideoSessionCapabilityQuery {
-    capabilities: vk::VideoCapabilitiesKHR,
-    decode_capability_flags: vk::VideoDecodeCapabilityFlagsKHR,
-    codec_max_level: Option<&'static str>,
-    codec_max_level_raw: Option<i32>,
 }
 
 fn vulkanalia_video_session_decode_submit_requested(
@@ -440,9 +360,13 @@ fn smoke_bind_vulkanalia_video_session_profile(
     queried: VulkanaliaVideoSessionCapabilityQuery,
 ) -> Result<NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot, String> {
     let capabilities = queried.capabilities;
-    let effective_profile_label = vulkanalia_video_session_effective_profile_label(&options)?;
+    let effective_profile_label = native_vulkan_vulkanalia_video_session_effective_profile_label(
+        options.codec,
+        options.h264_parameter_sets.as_ref(),
+        options.av1_sequence_header.as_ref(),
+    )?;
     let requested_extent_supported =
-        vulkanalia_video_session_extent_supported(requested_extent, capabilities);
+        native_vulkan_vulkanalia_video_session_extent_supported(requested_extent, capabilities);
     if !requested_extent_supported {
         return Err(format!(
             "requested Vulkanalia video extent {}x{} is outside ({}, {})..({}, {}) or is not aligned to ({}, {})",
@@ -457,9 +381,10 @@ fn smoke_bind_vulkanalia_video_session_profile(
         ));
     }
 
-    let session_max_dpb_slots = vulkanalia_video_session_max_dpb_slots(capabilities.max_dpb_slots);
+    let session_max_dpb_slots =
+        native_vulkan_vulkanalia_video_session_max_dpb_slots(capabilities.max_dpb_slots);
     let session_max_active_reference_pictures =
-        vulkanalia_video_session_max_active_reference_pictures(
+        native_vulkan_vulkanalia_video_session_max_active_reference_pictures(
             capabilities.max_active_reference_pictures,
             session_max_dpb_slots,
         );
@@ -672,9 +597,12 @@ fn smoke_bind_vulkanalia_video_session_profile(
                 vulkanalia_video_session_codec_operation(options.codec),
             ),
             profile: effective_profile_label,
-            format_probe_profile: vulkanalia_video_session_effective_format_probe_profile(
-                &options,
-            )?,
+            format_probe_profile:
+                native_vulkan_vulkanalia_video_session_effective_format_probe_profile(
+                    options.codec,
+                    options.h264_parameter_sets.as_ref(),
+                    options.av1_sequence_header.as_ref(),
+                )?,
             picture_format: format!("{picture_format:?}"),
             reference_picture_format: format!("{picture_format:?}"),
             target_picture_dpb_supported,
@@ -1541,378 +1469,6 @@ fn native_vulkan_vulkanalia_layer_view(
         })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct NativeVulkanVulkanaliaH264FrameBitstream {
-    src_buffer_offset: u64,
-    src_buffer_range: u64,
-}
-
-fn native_vulkan_vulkanalia_h264_decode_payloads(
-    frames: &[super::video_decode_submit_h264::NativeVulkanVulkanaliaH264ReadyPrefixFrameInput],
-    min_offset_alignment: u64,
-    min_size_alignment: u64,
-) -> Result<(Vec<u8>, Vec<NativeVulkanVulkanaliaH264FrameBitstream>), String> {
-    if frames.is_empty() {
-        return Err("Vulkanalia H.264 decode payload set cannot be empty".to_owned());
-    }
-
-    let mut bytes = Vec::new();
-    let mut bitstreams = Vec::with_capacity(frames.len());
-    for frame in frames {
-        if frame.access_unit_payload.is_empty() {
-            return Err(format!(
-                "Vulkanalia H.264 AU {} decode payload cannot be empty",
-                frame.entry.access_unit_index
-            ));
-        }
-        let src_buffer_offset =
-            native_vulkan_vulkanalia_align_up(bytes.len() as u64, min_offset_alignment.max(1))?;
-        bytes.resize(src_buffer_offset as usize, 0);
-        let src_buffer_range = native_vulkan_vulkanalia_align_up(
-            frame.access_unit_payload.len() as u64,
-            min_size_alignment.max(1),
-        )?;
-        bytes.extend_from_slice(&frame.access_unit_payload);
-        bytes.resize((src_buffer_offset + src_buffer_range) as usize, 0);
-        bitstreams.push(NativeVulkanVulkanaliaH264FrameBitstream {
-            src_buffer_offset,
-            src_buffer_range,
-        });
-    }
-    Ok((bytes, bitstreams))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct NativeVulkanVulkanaliaH265FrameBitstream {
-    src_buffer_offset: u64,
-    src_buffer_range: u64,
-}
-
-fn native_vulkan_vulkanalia_h265_decode_payloads(
-    frames: &[super::video_decode_submit_h265::NativeVulkanVulkanaliaH265ReadyPrefixFrameInput],
-    min_offset_alignment: u64,
-    min_size_alignment: u64,
-) -> Result<(Vec<u8>, Vec<NativeVulkanVulkanaliaH265FrameBitstream>), String> {
-    if frames.is_empty() {
-        return Err("Vulkanalia H.265 decode payload set cannot be empty".to_owned());
-    }
-
-    let mut bytes = Vec::new();
-    let mut bitstreams = Vec::with_capacity(frames.len());
-    for frame in frames {
-        if frame.access_unit_payload.is_empty() {
-            return Err(format!(
-                "Vulkanalia H.265 AU {} decode payload cannot be empty",
-                frame.entry.access_unit_index
-            ));
-        }
-        let src_buffer_offset =
-            native_vulkan_vulkanalia_align_up(bytes.len() as u64, min_offset_alignment.max(1))?;
-        bytes.resize(src_buffer_offset as usize, 0);
-        let src_buffer_range = native_vulkan_vulkanalia_align_up(
-            frame.access_unit_payload.len() as u64,
-            min_size_alignment.max(1),
-        )?;
-        bytes.extend_from_slice(&frame.access_unit_payload);
-        bytes.resize((src_buffer_offset + src_buffer_range) as usize, 0);
-        bitstreams.push(NativeVulkanVulkanaliaH265FrameBitstream {
-            src_buffer_offset,
-            src_buffer_range,
-        });
-    }
-    Ok((bytes, bitstreams))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct NativeVulkanVulkanaliaAv1FrameBitstream {
-    src_buffer_offset: u64,
-    src_buffer_range: u64,
-}
-
-fn native_vulkan_vulkanalia_av1_decode_payloads(
-    frames: &[super::video_decode_submit_av1::NativeVulkanVulkanaliaAv1ReadyPrefixFrameInput],
-    min_offset_alignment: u64,
-    min_size_alignment: u64,
-) -> Result<(Vec<u8>, Vec<NativeVulkanVulkanaliaAv1FrameBitstream>), String> {
-    if frames.is_empty() {
-        return Err("Vulkanalia AV1 decode payload set cannot be empty".to_owned());
-    }
-
-    let mut bytes = Vec::new();
-    let mut bitstreams = Vec::with_capacity(frames.len());
-    for frame in frames {
-        if frame.access_unit_payload.is_empty() {
-            return Err(format!(
-                "Vulkanalia AV1 TU {} decode payload cannot be empty",
-                frame.entry.temporal_unit_index
-            ));
-        }
-        let src_buffer_offset =
-            native_vulkan_vulkanalia_align_up(bytes.len() as u64, min_offset_alignment.max(1))?;
-        bytes.resize(src_buffer_offset as usize, 0);
-        let src_buffer_range = native_vulkan_vulkanalia_align_up(
-            frame.access_unit_payload.len() as u64,
-            min_size_alignment.max(1),
-        )?;
-        bytes.extend_from_slice(&frame.access_unit_payload);
-        bytes.resize((src_buffer_offset + src_buffer_range) as usize, 0);
-        bitstreams.push(NativeVulkanVulkanaliaAv1FrameBitstream {
-            src_buffer_offset,
-            src_buffer_range,
-        });
-    }
-    Ok((bytes, bitstreams))
-}
-
-fn native_vulkan_vulkanalia_align_up(value: u64, alignment: u64) -> Result<u64, String> {
-    let alignment = alignment.max(1);
-    value
-        .checked_add(alignment.saturating_sub(1))
-        .map(|aligned| aligned / alignment * alignment)
-        .ok_or_else(|| "Vulkanalia alignment overflow".to_owned())
-}
-
-fn query_vulkanalia_h264_video_session_capabilities(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
-    profile_info: &vk::VideoProfileInfoKHR,
-    h264_capabilities: &mut vk::VideoDecodeH264CapabilitiesKHR,
-) -> Result<VulkanaliaVideoSessionCapabilityQuery, String> {
-    let mut decode_capabilities = vk::VideoDecodeCapabilitiesKHR::default();
-    let mut capabilities = vk::VideoCapabilitiesKHR::builder()
-        .push_next(h264_capabilities)
-        .push_next(&mut decode_capabilities)
-        .build();
-    unsafe {
-        instance.get_physical_device_video_capabilities_khr(
-            physical_device,
-            profile_info,
-            &mut capabilities,
-        )
-    }
-    .map_err(|err| format!("vkGetPhysicalDeviceVideoCapabilitiesKHR(h264): {err:?}"))?;
-    Ok(VulkanaliaVideoSessionCapabilityQuery {
-        capabilities,
-        decode_capability_flags: decode_capabilities.flags,
-        codec_max_level: h264_level_label(h264_capabilities.max_level_idc),
-        codec_max_level_raw: Some(h264_capabilities.max_level_idc.0),
-    })
-}
-
-fn query_vulkanalia_h265_video_session_capabilities(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
-    profile_info: &vk::VideoProfileInfoKHR,
-    h265_capabilities: &mut vk::VideoDecodeH265CapabilitiesKHR,
-) -> Result<VulkanaliaVideoSessionCapabilityQuery, String> {
-    let mut decode_capabilities = vk::VideoDecodeCapabilitiesKHR::default();
-    let mut capabilities = vk::VideoCapabilitiesKHR::builder()
-        .push_next(h265_capabilities)
-        .push_next(&mut decode_capabilities)
-        .build();
-    unsafe {
-        instance.get_physical_device_video_capabilities_khr(
-            physical_device,
-            profile_info,
-            &mut capabilities,
-        )
-    }
-    .map_err(|err| format!("vkGetPhysicalDeviceVideoCapabilitiesKHR(h265): {err:?}"))?;
-    Ok(VulkanaliaVideoSessionCapabilityQuery {
-        capabilities,
-        decode_capability_flags: decode_capabilities.flags,
-        codec_max_level: h265_level_label(h265_capabilities.max_level_idc),
-        codec_max_level_raw: Some(h265_capabilities.max_level_idc.0),
-    })
-}
-
-fn query_vulkanalia_av1_video_session_capabilities(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
-    profile_info: &vk::VideoProfileInfoKHR,
-    av1_capabilities: &mut vk::VideoDecodeAV1CapabilitiesKHR,
-) -> Result<VulkanaliaVideoSessionCapabilityQuery, String> {
-    let mut decode_capabilities = vk::VideoDecodeCapabilitiesKHR::default();
-    let mut capabilities = vk::VideoCapabilitiesKHR::builder()
-        .push_next(av1_capabilities)
-        .push_next(&mut decode_capabilities)
-        .build();
-    unsafe {
-        instance.get_physical_device_video_capabilities_khr(
-            physical_device,
-            profile_info,
-            &mut capabilities,
-        )
-    }
-    .map_err(|err| format!("vkGetPhysicalDeviceVideoCapabilitiesKHR(av1): {err:?}"))?;
-    Ok(VulkanaliaVideoSessionCapabilityQuery {
-        capabilities,
-        decode_capability_flags: decode_capabilities.flags,
-        codec_max_level: av1_level_label(av1_capabilities.max_level),
-        codec_max_level_raw: Some(av1_capabilities.max_level.0),
-    })
-}
-
-fn vulkanalia_video_session_effective_profile_label(
-    options: &NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
-) -> Result<&'static str, String> {
-    match options.codec {
-        NativeVulkanVideoSessionCodec::H264High8 => {
-            if let Some(parameter_sets) = options.h264_parameter_sets.as_ref() {
-                let profile = native_vulkan_vulkanalia_h264_std_profile_label(
-                    parameter_sets.sps.profile_idc,
-                )?;
-                Ok(match profile {
-                    "baseline" => "baseline-8",
-                    "main" => "main-8",
-                    "high" => "high-8",
-                    _ => unreachable!("mapper returns a fixed H.264 profile label"),
-                })
-            } else {
-                Ok(vulkanalia_video_session_profile_label(options.codec))
-            }
-        }
-        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => {
-            if let Some(sequence_header) = options.av1_sequence_header.as_ref() {
-                Ok(native_vulkan_vulkanalia_av1_sequence_header_profile_label(
-                    sequence_header,
-                ))
-            } else {
-                Ok(vulkanalia_video_session_profile_label(options.codec))
-            }
-        }
-        _ => Ok(vulkanalia_video_session_profile_label(options.codec)),
-    }
-}
-
-fn vulkanalia_video_session_effective_format_probe_profile(
-    options: &NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
-) -> Result<&'static str, String> {
-    match options.codec {
-        NativeVulkanVideoSessionCodec::H264High8 => options
-            .h264_parameter_sets
-            .as_ref()
-            .map(|parameter_sets| {
-                native_vulkan_vulkanalia_h264_std_profile_label(parameter_sets.sps.profile_idc)
-            })
-            .transpose()
-            .map(|profile| profile.unwrap_or("high")),
-        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => {
-            Ok(options
-                .av1_sequence_header
-                .as_ref()
-                .map(native_vulkan_vulkanalia_av1_sequence_header_profile_label)
-                .unwrap_or_else(|| vulkanalia_video_session_format_probe_profile(options.codec)))
-        }
-        _ => Ok(vulkanalia_video_session_format_probe_profile(options.codec)),
-    }
-}
-
-fn vulkanalia_video_session_effective_h264_std_profile_idc(
-    options: &NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
-) -> Result<vk::video::StdVideoH264ProfileIdc, String> {
-    options
-        .h264_parameter_sets
-        .as_ref()
-        .map(|parameter_sets| {
-            native_vulkan_vulkanalia_h264_std_profile_idc(parameter_sets.sps.profile_idc)
-        })
-        .transpose()
-        .map(|profile| profile.unwrap_or(vk::video::STD_VIDEO_H264_PROFILE_IDC_HIGH))
-}
-
-fn vulkanalia_video_session_effective_bit_depth(
-    options: &NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
-) -> vk::VideoComponentBitDepthFlagsKHR {
-    if matches!(
-        options.codec,
-        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10
-    ) && let Some(sequence_header) = options.av1_sequence_header.as_ref()
-    {
-        return match native_vulkan_vulkanalia_av1_sequence_header_bit_depth(sequence_header) {
-            10 => vk::VideoComponentBitDepthFlagsKHR::_10,
-            _ => vk::VideoComponentBitDepthFlagsKHR::_8,
-        };
-    }
-    vulkanalia_video_session_bit_depth(options.codec)
-}
-
-fn vulkanalia_video_session_effective_picture_format(
-    options: &NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
-) -> vk::Format {
-    if matches!(
-        options.codec,
-        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10
-    ) && let Some(sequence_header) = options.av1_sequence_header.as_ref()
-    {
-        return match native_vulkan_vulkanalia_av1_sequence_header_bit_depth(sequence_header) {
-            10 => vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16,
-            _ => vk::Format::G8_B8R8_2PLANE_420_UNORM,
-        };
-    }
-    vulkanalia_video_session_picture_format(options.codec)
-}
-
-fn video_format_probe_includes_format(
-    queries: &[NativeVulkanVulkanaliaVideoFormatQuerySnapshot],
-    codec: &'static str,
-    profile: &'static str,
-    format: &str,
-) -> bool {
-    queries
-        .iter()
-        .find(|query| query.codec == codec && query.profile == profile)
-        .is_some_and(|query| {
-            query
-                .formats
-                .iter()
-                .any(|property| property.format == format)
-        })
-}
-
-fn vulkanalia_video_session_extent_supported(
-    extent: vk::Extent2D,
-    capabilities: vk::VideoCapabilitiesKHR,
-) -> bool {
-    extent.width >= capabilities.min_coded_extent.width
-        && extent.height >= capabilities.min_coded_extent.height
-        && extent.width <= capabilities.max_coded_extent.width
-        && extent.height <= capabilities.max_coded_extent.height
-        && vulkanalia_video_session_extent_aligned(
-            extent.width,
-            capabilities.picture_access_granularity.width,
-        )
-        && vulkanalia_video_session_extent_aligned(
-            extent.height,
-            capabilities.picture_access_granularity.height,
-        )
-}
-
-fn vulkanalia_video_session_extent_aligned(value: u32, granularity: u32) -> bool {
-    granularity == 0 || value.is_multiple_of(granularity)
-}
-
-fn vulkanalia_video_session_max_dpb_slots(driver_max_dpb_slots: u32) -> u32 {
-    if driver_max_dpb_slots == 0 {
-        0
-    } else {
-        driver_max_dpb_slots.min(8).max(1)
-    }
-}
-
-fn vulkanalia_video_session_max_active_reference_pictures(
-    driver_max_active_reference_pictures: u32,
-    session_max_dpb_slots: u32,
-) -> u32 {
-    if driver_max_active_reference_pictures == 0 || session_max_dpb_slots == 0 {
-        0
-    } else {
-        driver_max_active_reference_pictures
-            .min(session_max_dpb_slots)
-            .min(session_max_dpb_slots.max(1))
-    }
-}
-
 fn queue_flag_labels(flags: vk::QueueFlags) -> Vec<&'static str> {
     [
         (vk::QueueFlags::GRAPHICS, "graphics"),
@@ -1941,14 +1497,13 @@ fn video_codec_operation_labels(flags: vk::VideoCodecOperationFlagsKHR) -> Vec<&
 
 #[cfg(test)]
 mod tests {
+    use super::super::video_codec::{
+        native_vulkan_vulkanalia_video_session_format_probe_profile as vulkanalia_video_session_format_probe_profile,
+        native_vulkan_vulkanalia_video_session_picture_format as vulkanalia_video_session_picture_format,
+        native_vulkan_vulkanalia_video_session_profile_label as vulkanalia_video_session_profile_label,
+    };
     use super::super::video_device::native_vulkan_vulkanalia_video_decode_required_device_extensions;
     use super::*;
-    use crate::renderer::native_vulkan::{
-        NativeVulkanAv1ColorConfigSnapshot, NativeVulkanAv1OperatingPointSnapshot,
-        NativeVulkanAv1SequenceHeaderSnapshot, NativeVulkanH265AccessUnitSliceSnapshot,
-        NativeVulkanH265DecodeReferencePlanEntrySnapshot,
-        NativeVulkanVulkanaliaH265ReadyPrefixFrameInput,
-    };
 
     #[test]
     fn session_bind_smoke_maps_codec_extensions_and_formats() {
@@ -1974,202 +1529,5 @@ mod tests {
             vulkanalia_video_session_profile_label(NativeVulkanVideoSessionCodec::H264High8),
             "high-8"
         );
-    }
-
-    #[test]
-    fn session_bind_applies_av1_stream_bit_depth_only_to_av1() {
-        let av1_main10_header = test_av1_sequence_header(10);
-        let av1_options = NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
-            codec: NativeVulkanVideoSessionCodec::Av1Main8,
-            av1_sequence_header: Some(av1_main10_header.clone()),
-            ..NativeVulkanVulkanaliaVideoSessionBindSmokeOptions::default()
-        };
-        assert_eq!(
-            vulkanalia_video_session_effective_bit_depth(&av1_options),
-            vk::VideoComponentBitDepthFlagsKHR::_10
-        );
-        assert_eq!(
-            vulkanalia_video_session_effective_picture_format(&av1_options),
-            vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
-        );
-
-        let h265_options = NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
-            codec: NativeVulkanVideoSessionCodec::H265Main8,
-            av1_sequence_header: Some(av1_main10_header),
-            ..NativeVulkanVulkanaliaVideoSessionBindSmokeOptions::default()
-        };
-        assert_eq!(
-            vulkanalia_video_session_effective_bit_depth(&h265_options),
-            vk::VideoComponentBitDepthFlagsKHR::_8
-        );
-        assert_eq!(
-            vulkanalia_video_session_effective_picture_format(&h265_options),
-            vk::Format::G8_B8R8_2PLANE_420_UNORM
-        );
-    }
-
-    #[test]
-    fn session_bind_extent_check_matches_driver_granularity() {
-        let capabilities = vk::VideoCapabilitiesKHR::builder()
-            .min_coded_extent(vk::Extent2D {
-                width: 64,
-                height: 64,
-            })
-            .max_coded_extent(vk::Extent2D {
-                width: 3840,
-                height: 2160,
-            })
-            .picture_access_granularity(vk::Extent2D {
-                width: 16,
-                height: 16,
-            })
-            .build();
-
-        assert!(vulkanalia_video_session_extent_supported(
-            vk::Extent2D {
-                width: 1920,
-                height: 1088,
-            },
-            capabilities
-        ));
-        assert!(!vulkanalia_video_session_extent_supported(
-            vk::Extent2D {
-                width: 1921,
-                height: 1088,
-            },
-            capabilities
-        ));
-    }
-
-    #[test]
-    fn h265_multi_frame_payloads_align_offsets_and_ranges() {
-        let frames = vec![
-            test_h265_ready_prefix_frame(0, vec![1, 2, 3]),
-            test_h265_ready_prefix_frame(1, vec![4; 260]),
-        ];
-
-        let (bytes, bitstreams) =
-            native_vulkan_vulkanalia_h265_decode_payloads(&frames, 128, 256).unwrap();
-
-        assert_eq!(bitstreams.len(), 2);
-        assert_eq!(bitstreams[0].src_buffer_offset, 0);
-        assert_eq!(bitstreams[0].src_buffer_range, 256);
-        assert_eq!(bitstreams[1].src_buffer_offset, 256);
-        assert_eq!(bitstreams[1].src_buffer_range, 512);
-        assert_eq!(bytes.len(), 768);
-        assert_eq!(&bytes[..3], &[1, 2, 3]);
-        assert_eq!(&bytes[256..260], &[4, 4, 4, 4]);
-    }
-
-    fn test_av1_sequence_header(bit_depth: u8) -> NativeVulkanAv1SequenceHeaderSnapshot {
-        NativeVulkanAv1SequenceHeaderSnapshot {
-            parser: "test",
-            seq_profile: 0,
-            seq_profile_label: "main",
-            still_picture: false,
-            reduced_still_picture_header: false,
-            timing_info_present_flag: false,
-            timing_info: None,
-            decoder_model_info_present_flag: false,
-            buffer_delay_length_minus_1: 0,
-            frame_presentation_time_length_minus_1: 0,
-            initial_display_delay_present_flag: false,
-            operating_points_cnt_minus_1: 0,
-            operating_points: vec![NativeVulkanAv1OperatingPointSnapshot {
-                index: 0,
-                idc: 0,
-                seq_level_idx: 0,
-                seq_level_label: None,
-                seq_tier: false,
-                decoder_model_present_for_this_op: false,
-                initial_display_delay_present_for_this_op: false,
-                initial_display_delay_minus_1: None,
-            }],
-            frame_width_bits_minus_1: 15,
-            frame_height_bits_minus_1: 15,
-            max_frame_width_minus_1: 639,
-            max_frame_height_minus_1: 367,
-            max_frame_width: 640,
-            max_frame_height: 368,
-            frame_id_numbers_present_flag: false,
-            delta_frame_id_length_minus_2: None,
-            additional_frame_id_length_minus_1: None,
-            use_128x128_superblock: false,
-            enable_filter_intra: true,
-            enable_intra_edge_filter: true,
-            enable_interintra_compound: true,
-            enable_masked_compound: true,
-            enable_warped_motion: true,
-            enable_dual_filter: true,
-            enable_order_hint: true,
-            enable_jnt_comp: true,
-            enable_ref_frame_mvs: true,
-            seq_force_screen_content_tools: 2,
-            seq_force_integer_mv: 2,
-            order_hint_bits_minus_1: Some(6),
-            enable_superres: false,
-            enable_cdef: true,
-            enable_restoration: true,
-            film_grain_params_present: false,
-            color_config: NativeVulkanAv1ColorConfigSnapshot {
-                high_bitdepth: bit_depth > 8,
-                twelve_bit: bit_depth == 12,
-                mono_chrome: false,
-                color_description_present_flag: false,
-                color_primaries: 2,
-                transfer_characteristics: 2,
-                matrix_coefficients: 2,
-                color_range: false,
-                subsampling_x: true,
-                subsampling_y: true,
-                chroma_sample_position: 0,
-                separate_uv_delta_q: false,
-                bit_depth,
-                num_planes: 3,
-            },
-            requested_profile_compatible: matches!(bit_depth, 8 | 10),
-            vulkan_std_session_parameters_ready: matches!(bit_depth, 8 | 10),
-        }
-    }
-
-    fn test_h265_ready_prefix_frame(
-        access_unit_index: u32,
-        access_unit_payload: Vec<u8>,
-    ) -> NativeVulkanVulkanaliaH265ReadyPrefixFrameInput {
-        NativeVulkanVulkanaliaH265ReadyPrefixFrameInput {
-            entry: NativeVulkanH265DecodeReferencePlanEntrySnapshot {
-                access_unit_index,
-                pts_ms: None,
-                nal_type_label: None,
-                current_poc: Some(access_unit_index as i32),
-                planned_output_slot: access_unit_index,
-                setup_slot_index: None,
-                evicted_poc: None,
-                references: Vec::new(),
-                available_reference_count: 0,
-                missing_reference_count: 0,
-                missing_reference_pocs: Vec::new(),
-                ready_for_decode_submit: true,
-            },
-            first_slice: NativeVulkanH265AccessUnitSliceSnapshot {
-                nal_type: 1,
-                nal_type_label: "TRAIL_R",
-                slice_segment_offset: 0,
-                first_slice_segment_in_pic_flag: true,
-                slice_type: 1,
-                pps_id: 0,
-                pic_order_cnt_lsb: Some(0),
-                short_term_ref_pic_set_sps_flag: false,
-                short_term_ref_pic_set_idx: None,
-                num_delta_pocs_of_ref_rps_idx: 0,
-                num_bits_for_st_ref_pic_set_in_slice: 0,
-                short_term_ref_pic_set: None,
-                long_term_references: Vec::new(),
-                idr: false,
-                irap: false,
-            },
-            access_unit_payload,
-            slice_segment_offset: 0,
-        }
     }
 }
