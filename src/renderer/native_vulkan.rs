@@ -28,7 +28,7 @@ use crate::core::FitMode;
 use crate::renderer::native_wayland::{
     NativeWaylandError, NativeWaylandHost, NativeWaylandHostOptions, NativeWaylandSurfaceHandles,
 };
-use crate::renderer::{SceneLiteDisplayPlan, StaticWallpaperPlan, VideoWallpaperPlan};
+use crate::renderer::{StaticWallpaperPlan, VideoWallpaperPlan};
 use ash::vk;
 #[cfg(feature = "native-vulkan-gst-video")]
 use gst::prelude::*;
@@ -70,6 +70,9 @@ mod pipeline;
 #[path = "native_vulkan/render_item.rs"]
 mod render_item;
 
+#[path = "native_vulkan/render_plan.rs"]
+mod render_plan;
+
 #[path = "native_vulkan/audio_policy.rs"]
 mod audio_policy;
 
@@ -109,6 +112,7 @@ mod demux_gst;
 pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy};
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
 use render_item::{native_vulkan_static_item, native_vulkan_video_item};
+use render_plan::{native_vulkan_render_item_clear_color, native_vulkan_static_upload_plan};
 pub use video_frontend::NativeVulkanVideoCapsSnapshot;
 #[cfg(test)]
 use video_frontend::NativeVulkanVideoFrontendProvider;
@@ -3150,77 +3154,6 @@ struct NativeVulkanVideoImportSnapshot {
     last_import_elapsed_us: Option<u64>,
     max_import_elapsed_us: Option<u64>,
     last_dmabuf_import: Option<NativeVulkanDmabufImportSnapshot>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NativeVulkanStaticUploadPlan {
-    source: PathBuf,
-    fit: FitMode,
-    background: Option<String>,
-}
-
-fn native_vulkan_static_upload_plan(
-    render_item: &NativeVulkanRenderItem,
-) -> Option<NativeVulkanStaticUploadPlan> {
-    match render_item {
-        NativeVulkanRenderItem::StaticImage {
-            source,
-            fit,
-            background,
-            ..
-        } => Some(NativeVulkanStaticUploadPlan {
-            source: source.clone(),
-            fit: *fit,
-            background: background.clone(),
-        }),
-        NativeVulkanRenderItem::Video {
-            poster: Some(poster),
-            fit,
-            ..
-        } => Some(NativeVulkanStaticUploadPlan {
-            source: poster.clone(),
-            fit: *fit,
-            background: None,
-        }),
-        NativeVulkanRenderItem::SceneLite {
-            display:
-                Some(SceneLiteDisplayPlan::Image {
-                    source,
-                    fit,
-                    background,
-                }),
-            ..
-        } => Some(NativeVulkanStaticUploadPlan {
-            source: source.clone(),
-            fit: *fit,
-            background: background.clone(),
-        }),
-        _ => None,
-    }
-}
-
-fn native_vulkan_render_item_clear_color(
-    render_item: &NativeVulkanRenderItem,
-    fallback: NativeVulkanClearColor,
-) -> NativeVulkanClearColor {
-    match render_item {
-        NativeVulkanRenderItem::SceneLite {
-            display: Some(SceneLiteDisplayPlan::Color { color }),
-            ..
-        } => native_vulkan_clear_color_from_hex(color).unwrap_or(fallback),
-        _ => fallback,
-    }
-}
-
-fn native_vulkan_clear_color_from_hex(value: &str) -> Option<NativeVulkanClearColor> {
-    let hex = value.trim().strip_prefix('#')?;
-    if hex.len() != 6 {
-        return None;
-    }
-    let r = u8::from_str_radix(&hex[0..2], 16).ok()? as f32 / 255.0;
-    let g = u8::from_str_radix(&hex[2..4], 16).ok()? as f32 / 255.0;
-    let b = u8::from_str_radix(&hex[4..6], 16).ok()? as f32 / 255.0;
-    Some(NativeVulkanClearColor { r, g, b, a: 1.0 })
 }
 
 pub struct NativeVulkanSession {
@@ -48105,7 +48038,9 @@ pub fn web_interop_contract() -> NativeVulkanWebInteropContract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::renderer::{SceneLiteRenderLayer, SceneLiteWallpaperPlan, StaticRenderSyncPlan};
+    use crate::renderer::{
+        SceneLiteDisplayPlan, SceneLiteRenderLayer, SceneLiteWallpaperPlan, StaticRenderSyncPlan,
+    };
     use std::path::PathBuf;
 
     #[test]
