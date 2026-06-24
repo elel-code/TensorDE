@@ -9,7 +9,7 @@ mod scene_lite_display;
 pub mod video;
 
 use self::scene_lite_display::{
-    scene_lite_background_color, scene_lite_direct_display_color,
+    scene_lite_background_color, scene_lite_direct_display_color, scene_lite_direct_display_image,
     scene_lite_layer_is_snapshot_renderable,
 };
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
@@ -121,11 +121,15 @@ impl SceneLiteWallpaperPlan {
         if let Some(SceneLiteDisplayPlan::Image { source, .. }) = &self.display {
             sources.push(source.as_path());
         }
-        sources.extend(
-            self.layers
-                .iter()
-                .filter_map(|layer| layer.source.as_deref()),
-        );
+        for source in self
+            .layers
+            .iter()
+            .filter_map(|layer| layer.source.as_deref())
+        {
+            if !sources.contains(&source) {
+                sources.push(source);
+            }
+        }
         sources
     }
 }
@@ -1770,6 +1774,9 @@ fn scene_lite_display_plan(
         scene_lite_direct_display_color(layers, scene_lite_snapshot_size(document, render_target))
     {
         return Some(SceneLiteDisplayPlan::Color { color });
+    }
+    if let Some(image) = scene_lite_direct_display_image(layers, fit_override) {
+        return Some(image);
     }
     if let Some(snapshot) = scene_lite_snapshot_display(
         source_path,
@@ -4867,30 +4874,21 @@ exit 0
         assert!(matches!(
             &plan.display,
             Some(SceneLiteDisplayPlan::Image { source, fit, background })
-                if source.starts_with(test_dir.path.join("cache/scene-lite-cache"))
-                    && source.extension().and_then(|extension| extension.to_str()) == Some("svg")
-                    && source.is_file()
+                if source.ends_with("assets/background.svg")
                     && *fit == FitMode::Cover
                     && background.as_deref() == Some("#000000")
         ));
-        let display_source = match &plan.display {
-            Some(SceneLiteDisplayPlan::Image { source, .. }) => source,
-            _ => panic!("expected scene-lite snapshot image display"),
-        };
-        let snapshot = fs::read_to_string(display_source).unwrap();
-        assert!(snapshot.contains("<image"));
-        assert!(snapshot.contains("background.svg"));
-        assert_eq!(sync.cache.scene_lite_snapshot_cache_entries, 1);
-        assert_eq!(sync.cache.scene_lite_snapshot_cache_generations, 1);
+        assert_eq!(sync.cache.scene_lite_snapshot_cache_entries, 0);
+        assert_eq!(sync.cache.scene_lite_snapshot_cache_generations, 0);
         assert_eq!(sync.cache.scene_lite_snapshot_cache_reuses, 0);
-        assert!(sync.cache.scene_lite_snapshot_cache_bytes > 0);
-        assert_eq!(sync.cache.planned_scene_lite_image_resources, 2);
-        assert_eq!(sync.cache.planned_image_resource_references, 2);
+        assert_eq!(sync.cache.scene_lite_snapshot_cache_bytes, 0);
+        assert_eq!(sync.cache.planned_scene_lite_image_resources, 1);
+        assert_eq!(sync.cache.planned_image_resource_references, 1);
 
         let sync_again = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
 
         assert_eq!(sync_again.cache.scene_lite_snapshot_cache_generations, 0);
-        assert_eq!(sync_again.cache.scene_lite_snapshot_cache_reuses, 1);
+        assert_eq!(sync_again.cache.scene_lite_snapshot_cache_reuses, 0);
     }
 
     #[test]
@@ -4956,6 +4954,41 @@ exit 0
         assert_eq!(sync.cache.scene_lite_snapshot_cache_entries, 0);
         assert_eq!(sync.cache.planned_scene_lite_image_resources, 0);
         assert_eq!(sync.cache.planned_image_resource_references, 0);
+    }
+
+    #[test]
+    fn scene_lite_single_image_layer_uses_direct_display_without_snapshot() {
+        let test_dir = TestDir::new("gilder-scene-lite-image-plan");
+        let package_dir = test_dir.path.join("scene-image.gwpdir");
+        write_minimal_scene_lite_image_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.scene_lite_plans.len(), 1);
+        let plan = &sync.scene_lite_plans[0];
+        assert_eq!(plan.layers.len(), 1);
+        assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Image);
+        assert!(matches!(
+            &plan.display,
+            Some(SceneLiteDisplayPlan::Image { source, fit, background })
+                if source.ends_with("assets/image.png")
+                    && *fit == FitMode::Contain
+                    && background.as_deref() == Some("#000000")
+        ));
+        assert_eq!(sync.cache.scene_lite_snapshot_cache_generations, 0);
+        assert_eq!(sync.cache.scene_lite_snapshot_cache_entries, 0);
+        assert_eq!(sync.cache.planned_scene_lite_image_resources, 1);
+        assert_eq!(sync.cache.planned_image_resource_references, 1);
     }
 
     #[test]
@@ -6435,6 +6468,44 @@ void main() {}
             "id": "org.example.scene-full-rect",
             "version": "1.0.0",
             "title": "Scene Full Rect",
+            "kind": "scene-lite",
+            "entry": {
+                "type": "scene-lite",
+                "source": "assets/scene-lite.json",
+                "max_fps": 60
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_minimal_scene_lite_image_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(path.join("assets/image.png"), b"image-bytes").unwrap();
+        fs::write(
+            path.join("assets/scene-lite.json"),
+            br##"{
+              "size": { "width": 1280, "height": 720 },
+              "layers": [
+                {
+                  "id": "image",
+                  "type": "image",
+                  "source": "assets/image.png",
+                  "fit": "contain"
+                }
+              ]
+            }"##,
+        )
+        .unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.scene-image",
+            "version": "1.0.0",
+            "title": "Scene Image",
             "kind": "scene-lite",
             "entry": {
                 "type": "scene-lite",

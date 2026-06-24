@@ -1,6 +1,6 @@
-use crate::core::{SceneLiteLayerKind, SceneLiteTransform};
+use crate::core::{FitMode, SceneLiteLayerKind, SceneLiteTransform};
 
-use super::{RenderTargetSize, SceneLiteRenderLayer};
+use super::{RenderTargetSize, SceneLiteDisplayPlan, SceneLiteRenderLayer};
 
 pub(super) fn scene_lite_direct_display_color(
     layers: &[SceneLiteRenderLayer],
@@ -33,6 +33,28 @@ pub(super) fn scene_lite_direct_display_color(
         }
         _ => None,
     }
+}
+
+pub(super) fn scene_lite_direct_display_image(
+    layers: &[SceneLiteRenderLayer],
+    fit_override: Option<FitMode>,
+) -> Option<SceneLiteDisplayPlan> {
+    let mut renderable_layers = layers
+        .iter()
+        .filter(|layer| scene_lite_layer_is_snapshot_renderable(layer));
+    let layer = renderable_layers.next()?;
+    if renderable_layers.next().is_some()
+        || layer.kind != SceneLiteLayerKind::Image
+        || layer.opacity < 1.0
+        || layer.transform != SceneLiteTransform::default()
+    {
+        return None;
+    }
+    Some(SceneLiteDisplayPlan::Image {
+        source: layer.source.clone()?,
+        fit: fit_override.unwrap_or(layer.fit),
+        background: scene_lite_background_color(layers).or_else(|| Some("#000000".to_owned())),
+    })
 }
 
 pub(super) fn scene_lite_layer_is_snapshot_renderable(layer: &SceneLiteRenderLayer) -> bool {
