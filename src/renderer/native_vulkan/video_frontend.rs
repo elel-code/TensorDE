@@ -142,6 +142,12 @@ impl NativeVulkanVideoFrontend {
         }
     }
 
+    pub(super) fn loop_start_position_ms(&self) -> u64 {
+        match self {
+            Self::Gst(frontend) => frontend.loop_start_position_ms(),
+        }
+    }
+
     pub(super) fn snapshot(&self) -> NativeVulkanVideoFrontendSnapshot {
         match self {
             Self::Gst(frontend) => frontend.snapshot(),

@@ -3754,7 +3754,8 @@ impl NativeVulkanSession {
             frontend.poll()?;
             let segment_done_messages = frontend.segment_done_messages();
             if segment_done_messages > self.audio_runtime_last_video_segment_done_messages {
-                self.audio_runtime.seek_for_video_loop(0);
+                self.audio_runtime
+                    .seek_for_video_loop(frontend.loop_start_position_ms());
                 self.audio_runtime_last_video_segment_done_messages = segment_done_messages;
             }
             if let Some(sample) = frontend.take_latest_sample() {

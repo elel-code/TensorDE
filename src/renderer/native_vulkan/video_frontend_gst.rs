@@ -20,6 +20,7 @@ pub(super) struct NativeVulkanGstVideoFrontend {
     sink: gst::Element,
     bus: gst::Bus,
     loop_playback: bool,
+    loop_start_position_ms: u64,
     decoder_policy: VideoDecoderPolicy,
     eos_messages: u64,
     segment_done_messages: u64,
@@ -78,6 +79,7 @@ impl NativeVulkanGstVideoFrontend {
             sink,
             bus,
             loop_playback: *loop_playback,
+            loop_start_position_ms: *start_offset_ms,
             decoder_policy: *decoder_policy,
             eos_messages: 0,
             segment_done_messages: 0,
@@ -105,8 +107,11 @@ impl NativeVulkanGstVideoFrontend {
             match message.view() {
                 gst::MessageView::Eos(_) => {
                     self.eos_messages = self.eos_messages.saturating_add(1);
-                    if self.loop_playback {
-                        native_vulkan_gst_seek_loop_segment(&self.pipeline, 0)?;
+                    if let Some(position_ms) = native_vulkan_gst_video_loop_seek_position_ms(
+                        self.loop_playback,
+                        self.loop_start_position_ms,
+                    ) {
+                        native_vulkan_gst_seek_loop_segment(&self.pipeline, position_ms)?;
                     } else {
                         self.pipeline
                             .set_state(gst::State::Paused)
@@ -115,8 +120,11 @@ impl NativeVulkanGstVideoFrontend {
                 }
                 gst::MessageView::SegmentDone(_) => {
                     self.segment_done_messages = self.segment_done_messages.saturating_add(1);
-                    if self.loop_playback {
-                        native_vulkan_gst_seek_loop_segment(&self.pipeline, 0)?;
+                    if let Some(position_ms) = native_vulkan_gst_video_loop_seek_position_ms(
+                        self.loop_playback,
+                        self.loop_start_position_ms,
+                    ) {
+                        native_vulkan_gst_seek_loop_segment(&self.pipeline, position_ms)?;
                     }
                 }
                 gst::MessageView::Error(err) => {
@@ -193,6 +201,10 @@ impl NativeVulkanGstVideoFrontend {
         self.segment_done_messages
     }
 
+    pub(super) fn loop_start_position_ms(&self) -> u64 {
+        self.loop_start_position_ms
+    }
+
     pub(super) fn snapshot(&self) -> NativeVulkanVideoFrontendSnapshot {
         let provider_state = Some(
             self.pipeline
@@ -261,6 +273,13 @@ impl Drop for NativeVulkanGstVideoFrontend {
     fn drop(&mut self) {
         let _ = self.pipeline.set_state(gst::State::Null);
     }
+}
+
+fn native_vulkan_gst_video_loop_seek_position_ms(
+    loop_playback: bool,
+    loop_start_position_ms: u64,
+) -> Option<u64> {
+    loop_playback.then_some(loop_start_position_ms)
 }
 
 fn native_vulkan_gst_video_pipeline(source: &PathBuf) -> Result<gst::Pipeline, NativeVulkanError> {
@@ -564,6 +583,22 @@ mod tests {
         assert_eq!(
             native_vulkan_gst_sample_queue_policy_from_value(Some("blocking".to_owned())),
             NativeVulkanGstSampleQueuePolicy::Backpressure
+        );
+    }
+
+    #[test]
+    fn loop_seek_reuses_video_start_offset() {
+        assert_eq!(
+            native_vulkan_gst_video_loop_seek_position_ms(true, 12_345),
+            Some(12_345)
+        );
+    }
+
+    #[test]
+    fn non_loop_video_does_not_request_loop_seek() {
+        assert_eq!(
+            native_vulkan_gst_video_loop_seek_position_ms(false, 12_345),
+            None
         );
     }
 }
