@@ -107,10 +107,14 @@ pub use render_present::{
     NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot,
     NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot,
 };
-pub use scene_lite_draw_pass::NativeVulkanVulkanaliaSceneLiteDrawPassSnapshot;
 pub(crate) use scene_lite_draw_pass::{
     NativeVulkanVulkanaliaSceneLiteDrawPassInput,
     native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot,
+};
+pub use scene_lite_draw_pass::{
+    NativeVulkanVulkanaliaSceneLiteDrawPassSnapshot,
+    NativeVulkanVulkanaliaSceneLiteSolidQuadCommandSnapshot,
+    NativeVulkanVulkanaliaSceneLiteSolidQuadPipelineSnapshot,
 };
 #[allow(unused_imports)]
 pub use swapchain::{
