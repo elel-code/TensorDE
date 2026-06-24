@@ -1,10 +1,12 @@
-use std::ffi::CString;
-
 use serde::Serialize;
 use vulkanalia::Version;
-use vulkanalia::loader::LibloadingLoader;
 use vulkanalia::prelude::v1_4::*;
 
+use super::instance::{
+    NATIVE_VULKAN_VULKANALIA_LOADER_CANDIDATES,
+    native_vulkan_vulkanalia_create_instance_with_required_extensions,
+    native_vulkan_vulkanalia_destroy_instance,
+};
 use super::queue_probe::native_vulkan_vulkanalia_video_decode_queue_family_indices;
 use super::video_format_probe::{
     NativeVulkanVulkanaliaVideoFormatProbeSnapshot, native_vulkan_vulkanalia_video_format_probe,
@@ -17,7 +19,6 @@ use super::video_session::{
     native_vulkan_vulkanalia_video_session_resource_plans_from_format_probe,
 };
 
-const LOADER_CANDIDATES: &[&str] = &["libvulkan.so.1", "libvulkan.so"];
 const REQUIRED_INSTANCE_EXTENSIONS: &[&str] = &["VK_KHR_surface", "VK_KHR_wayland_surface"];
 const REQUIRED_VIDEO_DEVICE_EXTENSIONS: &[&str] = &[
     "VK_KHR_video_queue",
@@ -105,7 +106,7 @@ pub fn native_vulkan_vulkanalia_device_probe_template() -> NativeVulkanVulkanali
 {
     NativeVulkanVulkanaliaDeviceProbeTemplate {
         binding: "vulkanalia",
-        loader_candidates: LOADER_CANDIDATES,
+        loader_candidates: NATIVE_VULKAN_VULKANALIA_LOADER_CANDIDATES,
         requested_api_version: Version::V1_4_0.to_string(),
         required_instance_extensions: REQUIRED_INSTANCE_EXTENSIONS,
         required_video_device_extensions: REQUIRED_VIDEO_DEVICE_EXTENSIONS,
@@ -118,89 +119,40 @@ pub fn native_vulkan_vulkanalia_device_probe_template() -> NativeVulkanVulkanali
 
 pub fn probe_native_vulkan_vulkanalia_devices()
 -> Result<NativeVulkanVulkanaliaDeviceProbeSnapshot, String> {
-    let (loader, loader_name) = load_vulkanalia_loader()?;
-    let entry = unsafe { Entry::new(loader) }
-        .map_err(|err| format!("vulkanalia Entry::new({loader_name}): {err}"))?;
-    let entry_version = entry
-        .version()
-        .map_err(|err| format!("vkEnumerateInstanceVersion: {err:?}"))?;
-
-    let available_instance_extensions =
-        unsafe { entry.enumerate_instance_extension_properties(None) }
-            .map_err(|err| format!("vkEnumerateInstanceExtensionProperties: {err:?}"))?
-            .into_iter()
-            .map(|property| property.extension_name.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-    let enabled_instance_extensions = REQUIRED_INSTANCE_EXTENSIONS
-        .iter()
-        .copied()
-        .filter(|extension| {
-            available_instance_extensions
-                .iter()
-                .any(|name| name == extension)
-        })
-        .collect::<Vec<_>>();
-    let missing_instance_extensions = REQUIRED_INSTANCE_EXTENSIONS
-        .iter()
-        .copied()
-        .filter(|extension| {
-            !available_instance_extensions
-                .iter()
-                .any(|name| name == extension)
-        })
-        .collect::<Vec<_>>();
-
-    let extension_names = enabled_instance_extensions
-        .iter()
-        .map(|extension| CString::new(*extension).expect("static extension name has no nul"))
-        .collect::<Vec<_>>();
-    let extension_name_ptrs = extension_names
-        .iter()
-        .map(|extension| extension.as_ptr())
-        .collect::<Vec<_>>();
-    let app_info = vk::ApplicationInfo::builder()
-        .application_name(b"gilder-native-vulkan\0")
-        .application_version(1)
-        .engine_name(b"gilder\0")
-        .engine_version(1)
-        .api_version(u32::from(Version::V1_4_0));
-    let create_info = vk::InstanceCreateInfo::builder()
-        .application_info(&app_info)
-        .enabled_extension_names(&extension_name_ptrs);
-    let instance = unsafe { entry.create_instance(&create_info, None) }
-        .map_err(|err| format!("vkCreateInstance(vulkanalia): {err:?}"))?;
-
-    let devices = probe_vulkanalia_instance_devices(&instance);
-    unsafe {
-        instance.destroy_instance(None);
-    }
+    let vulkan = native_vulkan_vulkanalia_create_instance_with_required_extensions(
+        REQUIRED_INSTANCE_EXTENSIONS,
+    )?;
+    let devices = probe_vulkanalia_instance_devices(&vulkan.instance);
+    let loader_name = vulkan.loader_name.to_owned();
+    let entry_version = vulkan.entry_version.to_string();
+    let available_instance_extensions = sorted_strings(
+        vulkan
+            .extension_selection
+            .available_instance_extensions
+            .clone(),
+    );
+    let enabled_instance_extensions = vulkan
+        .extension_selection
+        .enabled_instance_extensions
+        .clone();
+    let missing_instance_extensions = vulkan
+        .extension_selection
+        .missing_instance_extensions
+        .clone();
+    native_vulkan_vulkanalia_destroy_instance(vulkan);
 
     let devices = devices?;
     Ok(NativeVulkanVulkanaliaDeviceProbeSnapshot {
         binding: "vulkanalia",
-        loader: loader_name.to_owned(),
-        entry_version: entry_version.to_string(),
+        loader: loader_name,
+        entry_version,
         requested_api_version: Version::V1_4_0.to_string(),
-        available_instance_extensions: sorted_strings(available_instance_extensions),
+        available_instance_extensions,
         enabled_instance_extensions,
         missing_instance_extensions,
         physical_device_count: devices.len(),
         devices,
     })
-}
-
-fn load_vulkanalia_loader() -> Result<(LibloadingLoader, &'static str), String> {
-    let mut errors = Vec::new();
-    for candidate in LOADER_CANDIDATES {
-        match unsafe { LibloadingLoader::new(candidate) } {
-            Ok(loader) => return Ok((loader, candidate)),
-            Err(err) => errors.push(format!("{candidate}: {err}")),
-        }
-    }
-    Err(format!(
-        "failed to load Vulkan loader via vulkanalia: {}",
-        errors.join("; ")
-    ))
 }
 
 fn probe_vulkanalia_instance_devices(
