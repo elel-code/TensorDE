@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::core::{FitMode, SceneLiteLayerKind};
+use crate::core::{FitMode, SceneLiteLayerKind, SceneLiteTextAlign, SceneLiteTransform};
 use crate::renderer::{SceneLiteDisplayPlan, SceneLiteRenderLayer};
 
 use super::{NativeVulkanClearColor, NativeVulkanRenderItem};
@@ -94,6 +94,21 @@ pub(super) struct NativeVulkanSceneLiteDrawOp {
     pub(super) layer_id: String,
     pub(super) kind: NativeVulkanSceneLiteDrawOpKind,
     pub(super) opacity: f64,
+    pub(super) source: Option<PathBuf>,
+    pub(super) color: Option<String>,
+    pub(super) stroke_color: Option<String>,
+    pub(super) stroke_width: Option<f64>,
+    pub(super) corner_radius: Option<f64>,
+    pub(super) width: Option<f64>,
+    pub(super) height: Option<f64>,
+    pub(super) text: Option<String>,
+    pub(super) font_size: Option<f64>,
+    pub(super) font_family: Option<String>,
+    pub(super) font_weight: Option<String>,
+    pub(super) text_align: Option<SceneLiteTextAlign>,
+    pub(super) path_data: Option<String>,
+    pub(super) fit: FitMode,
+    pub(super) transform: SceneLiteTransform,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,6 +173,21 @@ fn native_vulkan_scene_lite_draw_layers(
                 layer_id: layer.id.clone(),
                 kind,
                 opacity: layer.opacity.clamp(0.0, 1.0),
+                source: layer.source.clone(),
+                color: layer.color.clone(),
+                stroke_color: layer.stroke_color.clone(),
+                stroke_width: layer.stroke_width,
+                corner_radius: layer.corner_radius,
+                width: layer.width,
+                height: layer.height,
+                text: layer.text.clone(),
+                font_size: layer.font_size,
+                font_family: layer.font_family.clone(),
+                font_weight: layer.font_weight.clone(),
+                text_align: layer.text_align,
+                path_data: layer.path_data.clone(),
+                fit: layer.fit,
+                transform: layer.transform,
             }),
             Err(reason) => unsupported_layers.push(NativeVulkanSceneLiteUnsupportedLayer {
                 layer_index: index,
@@ -197,14 +227,35 @@ fn native_vulkan_scene_lite_draw_op_kind(
             .text
             .as_ref()
             .filter(|text| !text.is_empty())
-            .map(|_| NativeVulkanSceneLiteDrawOpKind::Text)
-            .ok_or("text-layer-missing-text"),
+            .ok_or("text-layer-missing-text")
+            .and_then(|_| {
+                layer
+                    .color
+                    .as_ref()
+                    .filter(|color| !color.is_empty())
+                    .map(|_| NativeVulkanSceneLiteDrawOpKind::Text)
+                    .ok_or("text-layer-missing-color")
+            }),
         SceneLiteLayerKind::Path => layer
             .path_data
             .as_ref()
             .filter(|path| !path.is_empty())
-            .map(|_| NativeVulkanSceneLiteDrawOpKind::Path)
-            .ok_or("path-layer-missing-data"),
+            .ok_or("path-layer-missing-data")
+            .and_then(|_| {
+                if layer
+                    .color
+                    .as_deref()
+                    .is_some_and(|color| !color.is_empty())
+                    || layer
+                        .stroke_color
+                        .as_deref()
+                        .is_some_and(|color| !color.is_empty())
+                {
+                    Ok(NativeVulkanSceneLiteDrawOpKind::Path)
+                } else {
+                    Err("path-layer-missing-paint")
+                }
+            }),
         SceneLiteLayerKind::Group => Err("group-layer-needs-flattened-children"),
     }
 }

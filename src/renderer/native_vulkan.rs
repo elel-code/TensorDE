@@ -47504,11 +47504,11 @@ fn ash_extension_name(name: &'static CStr) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{SceneLiteLayerKind, SceneLiteTransform};
+    use crate::core::{SceneLiteLayerKind, SceneLiteTextAlign, SceneLiteTransform};
     use crate::renderer::{
         SceneLiteDisplayPlan, SceneLiteRenderLayer, SceneLiteWallpaperPlan, StaticRenderSyncPlan,
     };
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn scene_lite_test_layer(id: &str, kind: SceneLiteLayerKind) -> SceneLiteRenderLayer {
         SceneLiteRenderLayer {
@@ -51402,15 +51402,27 @@ mod tests {
 
     #[test]
     fn scene_lite_runtime_snapshot_reports_native_draw_ready_layers() {
+        let mut image = scene_lite_test_layer("hero", SceneLiteLayerKind::Image);
+        image.source = Some(PathBuf::from("/tmp/scene-hero.png"));
+        image.fit = FitMode::Contain;
         let mut rectangle = scene_lite_test_layer("panel", SceneLiteLayerKind::Rectangle);
         rectangle.color = Some("#102030".to_owned());
+        rectangle.width = Some(640.0);
+        rectangle.height = Some(360.0);
+        rectangle.corner_radius = Some(12.0);
+        rectangle.transform.x = 24.0;
         rectangle.opacity = 1.25;
         let mut text = scene_lite_test_layer("label", SceneLiteLayerKind::Text);
         text.text = Some("Now Playing".to_owned());
+        text.color = Some("#ffffff".to_owned());
+        text.font_size = Some(24.0);
+        text.font_family = Some("Inter".to_owned());
+        text.font_weight = Some("600".to_owned());
+        text.text_align = Some(SceneLiteTextAlign::Middle);
         let mut hidden_group = scene_lite_test_layer("hidden-group", SceneLiteLayerKind::Group);
         hidden_group.opacity = 0.0;
         let item = scene_lite_test_item(
-            vec![rectangle, text, hidden_group],
+            vec![image, rectangle, text, hidden_group],
             Some(SceneLiteDisplayPlan::Color {
                 color: "#010203".to_owned(),
             }),
@@ -51423,7 +51435,7 @@ mod tests {
         assert_eq!(snapshot.snapshot_time_ms, 1234);
         assert!(snapshot.native_draw_ready);
         assert!(snapshot.fallback_display_available);
-        assert_eq!(snapshot.draw_op_count, 2);
+        assert_eq!(snapshot.draw_op_count, 3);
         assert_eq!(snapshot.unsupported_layer_count, 0);
         assert_eq!(
             snapshot
@@ -51431,11 +51443,31 @@ mod tests {
                 .iter()
                 .map(|op| op.kind)
                 .collect::<Vec<_>>(),
-            vec!["rectangle", "text"]
+            vec!["image", "rectangle", "text"]
         );
         assert_eq!(snapshot.draw_ops[0].layer_index, 0);
         assert_eq!(snapshot.draw_ops[1].layer_index, 1);
-        assert_eq!(snapshot.draw_ops[0].opacity, 1.0);
+        assert_eq!(snapshot.draw_ops[2].layer_index, 2);
+        assert_eq!(
+            snapshot.draw_ops[0].source.as_deref(),
+            Some(Path::new("/tmp/scene-hero.png"))
+        );
+        assert_eq!(snapshot.draw_ops[0].fit, FitMode::Contain);
+        assert_eq!(snapshot.draw_ops[1].opacity, 1.0);
+        assert_eq!(snapshot.draw_ops[1].color.as_deref(), Some("#102030"));
+        assert_eq!(snapshot.draw_ops[1].width, Some(640.0));
+        assert_eq!(snapshot.draw_ops[1].height, Some(360.0));
+        assert_eq!(snapshot.draw_ops[1].corner_radius, Some(12.0));
+        assert_eq!(snapshot.draw_ops[1].transform.x, 24.0);
+        assert_eq!(snapshot.draw_ops[2].text.as_deref(), Some("Now Playing"));
+        assert_eq!(snapshot.draw_ops[2].color.as_deref(), Some("#ffffff"));
+        assert_eq!(snapshot.draw_ops[2].font_size, Some(24.0));
+        assert_eq!(snapshot.draw_ops[2].font_family.as_deref(), Some("Inter"));
+        assert_eq!(snapshot.draw_ops[2].font_weight.as_deref(), Some("600"));
+        assert_eq!(
+            snapshot.draw_ops[2].text_align,
+            Some(SceneLiteTextAlign::Middle)
+        );
     }
 
     #[test]
@@ -51443,9 +51475,13 @@ mod tests {
         let mut color = scene_lite_test_layer("background", SceneLiteLayerKind::Color);
         color.color = Some("#010203".to_owned());
         let image = scene_lite_test_layer("missing-image", SceneLiteLayerKind::Image);
+        let mut text = scene_lite_test_layer("missing-text-color", SceneLiteLayerKind::Text);
+        text.text = Some("Needs paint".to_owned());
+        let mut path = scene_lite_test_layer("missing-path-paint", SceneLiteLayerKind::Path);
+        path.path_data = Some("M0,0 L1,1".to_owned());
         let group = scene_lite_test_layer("group", SceneLiteLayerKind::Group);
         let item = scene_lite_test_item(
-            vec![color, image, group],
+            vec![color, image, text, path, group],
             None,
             Some(PathBuf::from("/tmp/scene-fallback.svg")),
         );
@@ -51457,7 +51493,7 @@ mod tests {
         assert!(snapshot.fallback_display_available);
         assert_eq!(snapshot.draw_op_count, 1);
         assert_eq!(snapshot.draw_ops[0].kind, "color-quad");
-        assert_eq!(snapshot.unsupported_layer_count, 2);
+        assert_eq!(snapshot.unsupported_layer_count, 4);
         assert_eq!(
             snapshot
                 .unsupported_layers
@@ -51466,6 +51502,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 "image-layer-missing-source",
+                "text-layer-missing-color",
+                "path-layer-missing-paint",
                 "group-layer-needs-flattened-children"
             ]
         );
