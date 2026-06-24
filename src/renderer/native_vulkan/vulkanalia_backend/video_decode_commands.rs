@@ -3,7 +3,7 @@
 use serde::Serialize;
 use vulkanalia::prelude::v1_4::{Device, DeviceV1_0, DeviceV1_3};
 use vulkanalia::vk::{
-    self, HasBuilder, KhrVideoDecodeQueueExtensionDeviceCommands,
+    self, Handle, HasBuilder, KhrVideoDecodeQueueExtensionDeviceCommands,
     KhrVideoQueueExtensionDeviceCommands,
 };
 
@@ -51,6 +51,9 @@ pub(super) struct NativeVulkanVulkanaliaDecodeSubmit2Plan {
     pub ffmpeg_reference: &'static str,
     pub uses_submit2: bool,
     pub wait_idle_after_submit: bool,
+    pub wait_fence_after_submit: bool,
+    pub uses_submit_fence: bool,
+    pub submit_sync_model: &'static str,
     pub command_order: &'static [&'static str],
 }
 
@@ -97,12 +100,23 @@ pub(super) fn native_vulkan_vulkanalia_decode_command_buffer_plan(
 
 pub(super) fn native_vulkan_vulkanalia_decode_submit2_plan(
     wait_idle_after_submit: bool,
+    wait_fence_after_submit: bool,
+    uses_submit_fence: bool,
 ) -> NativeVulkanVulkanaliaDecodeSubmit2Plan {
     NativeVulkanVulkanaliaDecodeSubmit2Plan {
         ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,
         uses_submit2: true,
         wait_idle_after_submit,
-        command_order: native_vulkan_vulkanalia_decode_submit2_order(wait_idle_after_submit),
+        wait_fence_after_submit,
+        uses_submit_fence,
+        submit_sync_model: native_vulkan_vulkanalia_decode_submit_sync_model(
+            wait_idle_after_submit,
+            wait_fence_after_submit,
+        ),
+        command_order: native_vulkan_vulkanalia_decode_submit2_order(
+            wait_idle_after_submit,
+            wait_fence_after_submit,
+        ),
     }
 }
 
@@ -454,7 +468,11 @@ pub(super) unsafe fn native_vulkan_vulkanalia_submit_decode_command_buffer2(
     command_buffer: vk::CommandBuffer,
     fence: vk::Fence,
     wait_idle_after_submit: bool,
+    wait_fence_after_submit: bool,
 ) -> Result<NativeVulkanVulkanaliaDecodeSubmit2Plan, String> {
+    if wait_fence_after_submit && fence == vk::Fence::null() {
+        return Err("Vulkanalia decode submit fence wait requires a non-null fence".to_owned());
+    }
     let command_buffer_info = vk::CommandBufferSubmitInfo::builder()
         .command_buffer(command_buffer)
         .build();
@@ -470,11 +488,20 @@ pub(super) unsafe fn native_vulkan_vulkanalia_submit_decode_command_buffer2(
             device
                 .queue_wait_idle(queue)
                 .map_err(|err| format!("vkQueueWaitIdle(vulkanalia decode): {err:?}"))?;
+        } else if wait_fence_after_submit {
+            device
+                .wait_for_fences(&[fence], true, u64::MAX)
+                .map_err(|err| format!("vkWaitForFences(vulkanalia decode submit): {err:?}"))?;
+            device
+                .reset_fences(&[fence])
+                .map_err(|err| format!("vkResetFences(vulkanalia decode submit): {err:?}"))?;
         }
     }
 
     Ok(native_vulkan_vulkanalia_decode_submit2_plan(
         wait_idle_after_submit,
+        wait_fence_after_submit,
+        fence != vk::Fence::null(),
     ))
 }
 
@@ -556,11 +583,32 @@ fn native_vulkan_vulkanalia_decode_command_body_order(
 
 fn native_vulkan_vulkanalia_decode_submit2_order(
     wait_idle_after_submit: bool,
+    wait_fence_after_submit: bool,
 ) -> &'static [&'static str] {
     if wait_idle_after_submit {
         &["queue_submit2", "queue_wait_idle"]
+    } else if wait_fence_after_submit {
+        &[
+            "queue_submit2",
+            "wait_for_fences",
+            "reset_fences",
+            "no_queue_wait_idle_after_decode",
+        ]
     } else {
         &["queue_submit2"]
+    }
+}
+
+fn native_vulkan_vulkanalia_decode_submit_sync_model(
+    wait_idle_after_submit: bool,
+    wait_fence_after_submit: bool,
+) -> &'static str {
+    if wait_idle_after_submit {
+        "queue_submit2 + queue_wait_idle"
+    } else if wait_fence_after_submit {
+        "queue_submit2 + submit fence wait/reset; no queue_wait_idle"
+    } else {
+        "queue_submit2 without host-side completion wait"
     }
 }
 
@@ -585,7 +633,7 @@ mod tests {
     #[test]
     fn h265_decode_command_buffer_plan_uses_submit2_and_ffmpeg_order() {
         let record_plan = native_vulkan_vulkanalia_decode_command_buffer_plan(true, true);
-        let submit_plan = native_vulkan_vulkanalia_decode_submit2_plan(true);
+        let submit_plan = native_vulkan_vulkanalia_decode_submit2_plan(false, true, true);
 
         assert_eq!(record_plan.ffmpeg_reference, FFMPEG_VULKAN_DECODE_REFERENCE);
         assert!(record_plan.uses_synchronization2);
@@ -606,10 +654,18 @@ mod tests {
         );
         assert_eq!(submit_plan.ffmpeg_reference, FFMPEG_VULKAN_DECODE_REFERENCE);
         assert!(submit_plan.uses_submit2);
-        assert!(submit_plan.wait_idle_after_submit);
+        assert!(!submit_plan.wait_idle_after_submit);
+        assert!(submit_plan.wait_fence_after_submit);
+        assert!(submit_plan.uses_submit_fence);
+        assert!(submit_plan.submit_sync_model.contains("no queue_wait_idle"));
         assert_eq!(
             submit_plan.command_order,
-            &["queue_submit2", "queue_wait_idle"]
+            &[
+                "queue_submit2",
+                "wait_for_fences",
+                "reset_fences",
+                "no_queue_wait_idle_after_decode"
+            ]
         );
     }
 }

@@ -2,21 +2,24 @@
 
 use serde::Serialize;
 use vulkanalia::prelude::v1_4::{Device, DeviceV1_0};
-use vulkanalia::vk::{self, HasBuilder};
+use vulkanalia::vk::{self, Handle, HasBuilder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(super) struct NativeVulkanVulkanaliaDecodeCommandBufferSnapshot {
     pub queue_family_index: u32,
     pub command_pool_created: bool,
     pub command_buffer_allocated: bool,
+    pub submit_fence_created: bool,
     pub transient_pool: bool,
     pub reset_command_buffer_enabled: bool,
     pub command_buffer_level: &'static str,
+    pub submit_sync_model: &'static str,
 }
 
 pub(super) struct VulkanaliaDecodeCommandBuffer {
     pub(super) command_pool: vk::CommandPool,
     pub(super) command_buffer: vk::CommandBuffer,
+    pub(super) submit_fence: vk::Fence,
     pub(super) snapshot: NativeVulkanVulkanaliaDecodeCommandBufferSnapshot,
 }
 
@@ -32,6 +35,7 @@ pub(super) fn native_vulkan_vulkanalia_create_decode_command_buffer(
         .build();
     let command_pool = unsafe { device.create_command_pool(&command_pool_info, None) }
         .map_err(|err| format!("vkCreateCommandPool(vulkanalia decode): {err:?}"))?;
+    let mut submit_fence = vk::Fence::null();
 
     let result = (|| -> Result<VulkanaliaDecodeCommandBuffer, String> {
         let command_buffer_info = vk::CommandBufferAllocateInfo::builder()
@@ -46,24 +50,33 @@ pub(super) fn native_vulkan_vulkanalia_create_decode_command_buffer(
             .ok_or_else(|| {
                 "vkAllocateCommandBuffers(vulkanalia decode) returned none".to_owned()
             })?;
+        let fence_info = vk::FenceCreateInfo::builder();
+        submit_fence = unsafe { device.create_fence(&fence_info, None) }
+            .map_err(|err| format!("vkCreateFence(vulkanalia decode submit): {err:?}"))?;
 
         Ok(VulkanaliaDecodeCommandBuffer {
             command_pool,
             command_buffer,
+            submit_fence,
             snapshot: NativeVulkanVulkanaliaDecodeCommandBufferSnapshot {
                 queue_family_index,
                 command_pool_created: true,
                 command_buffer_allocated: true,
+                submit_fence_created: true,
                 transient_pool: pool_flags.contains(vk::CommandPoolCreateFlags::TRANSIENT),
                 reset_command_buffer_enabled: pool_flags
                     .contains(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
                 command_buffer_level: "primary",
+                submit_sync_model: "queue_submit2 + submit fence wait/reset; no queue_wait_idle",
             },
         })
     })();
 
     if result.is_err() {
         unsafe {
+            if submit_fence != vk::Fence::null() {
+                device.destroy_fence(submit_fence, None);
+            }
             device.destroy_command_pool(command_pool, None);
         }
     }
@@ -76,6 +89,9 @@ pub(super) fn native_vulkan_vulkanalia_destroy_decode_command_buffer(
     command_buffer: VulkanaliaDecodeCommandBuffer,
 ) {
     unsafe {
+        if command_buffer.submit_fence != vk::Fence::null() {
+            device.destroy_fence(command_buffer.submit_fence, None);
+        }
         device.free_command_buffers(
             command_buffer.command_pool,
             &[command_buffer.command_buffer],
@@ -94,14 +110,18 @@ mod tests {
             queue_family_index: 3,
             command_pool_created: true,
             command_buffer_allocated: true,
+            submit_fence_created: true,
             transient_pool: true,
             reset_command_buffer_enabled: true,
             command_buffer_level: "primary",
+            submit_sync_model: "queue_submit2 + submit fence wait/reset; no queue_wait_idle",
         };
 
         assert_eq!(snapshot.queue_family_index, 3);
         assert!(snapshot.transient_pool);
         assert!(snapshot.reset_command_buffer_enabled);
         assert_eq!(snapshot.command_buffer_level, "primary");
+        assert!(snapshot.submit_fence_created);
+        assert!(snapshot.submit_sync_model.contains("no queue_wait_idle"));
     }
 }

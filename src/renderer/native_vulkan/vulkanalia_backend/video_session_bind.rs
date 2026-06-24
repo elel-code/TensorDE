@@ -115,6 +115,18 @@ use super::video_session_parameters_h265::{
 type NativeVulkanVulkanaliaAfterFrameSubmitted<'a> =
     &'a mut dyn FnMut(u32, u32, Option<u64>, Option<u64>, i64, &'static str) -> Result<(), String>;
 
+const NATIVE_VULKAN_VULKANALIA_DECODE_SUBMIT_FENCE_SYNC_MODEL: &str =
+    "queue_submit2 + submit fence wait/reset; no queue_wait_idle";
+
+fn native_vulkan_vulkanalia_decode_submit_fence_command_order() -> Vec<&'static str> {
+    vec![
+        "queue_submit2",
+        "wait_for_fences",
+        "reset_fences",
+        "no_queue_wait_idle_after_decode",
+    ]
+}
+
 fn native_vulkan_vulkanalia_h264_display_order_key(
     entry: &NativeVulkanH264DecodeReferencePlanEntrySnapshot,
     frame_index: u32,
@@ -924,7 +936,8 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_ready_prefix_decode_into_imag
                         device,
                         queue,
                         command_buffer_ref.command_buffer,
-                        vk::Fence::default(),
+                        command_buffer_ref.submit_fence,
+                        false,
                         true,
                     )
                 }?;
@@ -980,6 +993,11 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_ready_prefix_decode_into_imag
                 submitted,
                 uses_synchronization2,
                 uses_submit2,
+                wait_idle_after_submit: false,
+                wait_fence_after_submit: true,
+                uses_submit_fence: true,
+                submit_sync_model: NATIVE_VULKAN_VULKANALIA_DECODE_SUBMIT_FENCE_SYNC_MODEL,
+                submit_command_order: native_vulkan_vulkanalia_decode_submit_fence_command_order(),
                 queue_family_index,
                 src_buffer_total_bytes: bitstream_payload.len() as u64,
                 src_buffer_offset: last_frame.src_buffer_offset,
@@ -1147,7 +1165,8 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_ready_prefix_decode_into_imag
                         device,
                         queue,
                         command_buffer_ref.command_buffer,
-                        vk::Fence::default(),
+                        command_buffer_ref.submit_fence,
+                        false,
                         true,
                     )
                 }?;
@@ -1203,6 +1222,11 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_ready_prefix_decode_into_imag
                 submitted,
                 uses_synchronization2,
                 uses_submit2,
+                wait_idle_after_submit: false,
+                wait_fence_after_submit: true,
+                uses_submit_fence: true,
+                submit_sync_model: NATIVE_VULKAN_VULKANALIA_DECODE_SUBMIT_FENCE_SYNC_MODEL,
+                submit_command_order: native_vulkan_vulkanalia_decode_submit_fence_command_order(),
                 queue_family_index,
                 src_buffer_total_bytes: bitstream_payload.len() as u64,
                 src_buffer_offset: last_frame.src_buffer_offset,
@@ -1389,7 +1413,8 @@ fn native_vulkan_vulkanalia_record_h264_ready_prefix_decode_smoke(
                         device,
                         queue,
                         command_buffer_ref.command_buffer,
-                        vk::Fence::default(),
+                        command_buffer_ref.submit_fence,
+                        false,
                         true,
                     )
                 }?;
@@ -1434,6 +1459,11 @@ fn native_vulkan_vulkanalia_record_h264_ready_prefix_decode_smoke(
                 submitted,
                 uses_synchronization2,
                 uses_submit2,
+                wait_idle_after_submit: false,
+                wait_fence_after_submit: true,
+                uses_submit_fence: true,
+                submit_sync_model: NATIVE_VULKAN_VULKANALIA_DECODE_SUBMIT_FENCE_SYNC_MODEL,
+                submit_command_order: native_vulkan_vulkanalia_decode_submit_fence_command_order(),
                 queue_family_index: selection.queue_family_index,
                 src_buffer_total_bytes: bitstream_payload.len() as u64,
                 src_buffer_offset: last_frame.src_buffer_offset,
@@ -1619,7 +1649,8 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_ready_prefix_decode_into_image
                         device,
                         queue,
                         command_buffer_ref.command_buffer,
-                        vk::Fence::default(),
+                        command_buffer_ref.submit_fence,
+                        false,
                         true,
                     )
                 }?;
@@ -1680,6 +1711,11 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_ready_prefix_decode_into_image
                 submitted,
                 uses_synchronization2,
                 uses_submit2,
+                wait_idle_after_submit: false,
+                wait_fence_after_submit: true,
+                uses_submit_fence: true,
+                submit_sync_model: NATIVE_VULKAN_VULKANALIA_DECODE_SUBMIT_FENCE_SYNC_MODEL,
+                submit_command_order: native_vulkan_vulkanalia_decode_submit_fence_command_order(),
                 queue_family_index,
                 src_buffer_total_bytes: bitstream_payload.len() as u64,
                 src_buffer_offset: last_frame.src_buffer_offset,
@@ -1882,7 +1918,8 @@ fn native_vulkan_vulkanalia_record_av1_ready_prefix_decode_smoke(
                         device,
                         queue,
                         command_buffer_ref.command_buffer,
-                        vk::Fence::default(),
+                        command_buffer_ref.submit_fence,
+                        false,
                         true,
                     )
                 }?;
@@ -1932,6 +1969,11 @@ fn native_vulkan_vulkanalia_record_av1_ready_prefix_decode_smoke(
                 submitted,
                 uses_synchronization2,
                 uses_submit2,
+                wait_idle_after_submit: false,
+                wait_fence_after_submit: true,
+                uses_submit_fence: true,
+                submit_sync_model: NATIVE_VULKAN_VULKANALIA_DECODE_SUBMIT_FENCE_SYNC_MODEL,
+                submit_command_order: native_vulkan_vulkanalia_decode_submit_fence_command_order(),
                 queue_family_index: selection.queue_family_index,
                 src_buffer_total_bytes: bitstream_payload.len() as u64,
                 src_buffer_offset: last_frame.src_buffer_offset,
