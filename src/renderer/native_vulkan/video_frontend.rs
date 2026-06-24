@@ -28,6 +28,53 @@ impl NativeVulkanVideoFrontendProvider {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum NativeVulkanVideoFrontendRoute {
+    DecodedProvider,
+}
+
+impl NativeVulkanVideoFrontendRoute {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::DecodedProvider => "decoded-provider",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum NativeVulkanVideoDecodeOwner {
+    Gstreamer,
+}
+
+impl NativeVulkanVideoDecodeOwner {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Gstreamer => "gstreamer",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum NativeVulkanVideoFrontendMemoryPreference {
+    Auto,
+    DirectDmabuf,
+}
+
+impl NativeVulkanVideoFrontendMemoryPreference {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::DirectDmabuf => "direct-dmabuf",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVideoCapsSnapshot {
     pub element: String,
@@ -41,6 +88,9 @@ pub struct NativeVulkanVideoCapsSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct NativeVulkanVideoFrontendSnapshot {
     pub(super) provider: NativeVulkanVideoFrontendProvider,
+    pub(super) route: NativeVulkanVideoFrontendRoute,
+    pub(super) decode_owner: NativeVulkanVideoDecodeOwner,
+    pub(super) memory_preference: NativeVulkanVideoFrontendMemoryPreference,
     pub(super) provider_state: Option<String>,
     pub(super) eos_messages: u64,
     pub(super) segment_done_messages: u64,

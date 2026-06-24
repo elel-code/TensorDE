@@ -24,6 +24,9 @@ pub struct NativeVulkanVideoRuntimeSnapshot {
     pub start_offset_ms: u64,
     pub frontend: &'static str,
     pub frontend_provider: &'static str,
+    pub frontend_route: &'static str,
+    pub frontend_decode_owner: &'static str,
+    pub frontend_memory_preference: &'static str,
     pub frontend_status: &'static str,
     pub handoff_status: &'static str,
     pub texture_import_status: &'static str,
@@ -218,6 +221,18 @@ pub(super) fn native_vulkan_video_runtime_snapshot(
             .as_ref()
             .map(|frontend| frontend.provider.as_str())
             .unwrap_or("gstreamer"),
+        frontend_route: frontend
+            .as_ref()
+            .map(|frontend| frontend.route.as_str())
+            .unwrap_or("decoded-provider"),
+        frontend_decode_owner: frontend
+            .as_ref()
+            .map(|frontend| frontend.decode_owner.as_str())
+            .unwrap_or("gstreamer"),
+        frontend_memory_preference: frontend
+            .as_ref()
+            .map(|frontend| frontend.memory_preference.as_str())
+            .unwrap_or("auto"),
         frontend_status,
         handoff_status,
         texture_import_status: import

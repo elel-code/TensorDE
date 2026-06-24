@@ -8,8 +8,9 @@ use gst::prelude::*;
 use gstreamer as gst;
 
 use super::video_frontend::{
-    NativeVulkanVideoCapsSnapshot, NativeVulkanVideoFrontendProvider,
-    NativeVulkanVideoFrontendSnapshot,
+    NativeVulkanVideoCapsSnapshot, NativeVulkanVideoDecodeOwner,
+    NativeVulkanVideoFrontendMemoryPreference, NativeVulkanVideoFrontendProvider,
+    NativeVulkanVideoFrontendRoute, NativeVulkanVideoFrontendSnapshot,
 };
 use super::{
     NativeVulkanError, NativeVulkanRenderItem, native_vulkan_clock_time_ms,
@@ -229,6 +230,9 @@ impl NativeVulkanGstVideoFrontend {
 
         NativeVulkanVideoFrontendSnapshot {
             provider: NativeVulkanVideoFrontendProvider::Gstreamer,
+            route: NativeVulkanVideoFrontendRoute::DecodedProvider,
+            decode_owner: NativeVulkanVideoDecodeOwner::Gstreamer,
+            memory_preference: native_vulkan_gst_memory_preference(),
             provider_state,
             eos_messages: self.eos_messages,
             segment_done_messages: self.segment_done_messages,
@@ -485,4 +489,12 @@ fn native_vulkan_gst_prefers_dmabuf() -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+fn native_vulkan_gst_memory_preference() -> NativeVulkanVideoFrontendMemoryPreference {
+    if native_vulkan_gst_prefers_dmabuf() {
+        NativeVulkanVideoFrontendMemoryPreference::DirectDmabuf
+    } else {
+        NativeVulkanVideoFrontendMemoryPreference::Auto
+    }
 }

@@ -25,10 +25,27 @@ pub struct NativeVulkanVideoPipelineStageContract {
     pub gstreamer_reference: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NativeVulkanVideoPipelineRouteKind {
+    BitstreamNativeDecode,
+    DecodedFrameFrontend,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVideoPipelineRouteContract {
+    pub kind: NativeVulkanVideoPipelineRouteKind,
+    pub frontend_role: &'static str,
+    pub decode_owner: &'static str,
+    pub gilder_role: &'static str,
+    pub handoff_contract: &'static str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVideoPipelineContract {
     pub first_reference: &'static str,
     pub second_reference: &'static str,
+    pub routes: Vec<NativeVulkanVideoPipelineRouteContract>,
     pub stages: Vec<NativeVulkanVideoPipelineStageContract>,
     pub invariants: &'static [&'static str],
 }
@@ -37,6 +54,22 @@ pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContr
     NativeVulkanVideoPipelineContract {
         first_reference: "FFmpeg packet/frame/clock model",
         second_reference: "replaceable GStreamer demux/parser/appsink/audio frontend",
+        routes: vec![
+            NativeVulkanVideoPipelineRouteContract {
+                kind: NativeVulkanVideoPipelineRouteKind::BitstreamNativeDecode,
+                frontend_role: "demux/parser/encoded access-unit provider",
+                decode_owner: "gilder-native-vulkan",
+                gilder_role: "Vulkan Video decode, decoded image ownership, render and present",
+                handoff_contract: "bounded encoded AU/TU packets with timestamps, loop serial and parameter-set snapshots",
+            },
+            NativeVulkanVideoPipelineRouteContract {
+                kind: NativeVulkanVideoPipelineRouteKind::DecodedFrameFrontend,
+                frontend_role: "decoded frame provider; current implementation is GStreamer decodebin/appsink",
+                decode_owner: "gstreamer",
+                gilder_role: "provider-neutral decoded sample import, render and present",
+                handoff_contract: "decoded frame samples with caps, timestamps and memory route; gst-dma is a DMABuf/VA memory route under this contract",
+            },
+        ],
         stages: vec![
             NativeVulkanVideoPipelineStageContract {
                 order: 0,
@@ -122,6 +155,8 @@ pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContr
         invariants: &[
             "FFmpeg is the first reference for codec packet/frame/clock semantics",
             "GStreamer is the second reference and current replaceable container/parser/audio frontend",
+            "the bitstream route uses GStreamer/libav only before decode; Gilder owns native Vulkan decode",
+            "the decoded frame route lets the provider decode; current gst-dma work belongs to this route as a memory handoff, not as a display bypass",
             "frontend implementations may be replaced by libav/ffmpeg or native demux as long as the packet/audio/clock contracts remain stable",
             "decoded video frontends must expose provider-neutral telemetry and samples before render/import",
             "audio clock frontends must expose provider-neutral runtime telemetry before pacing/render integration",
@@ -145,6 +180,17 @@ mod tests {
         assert!(contract.second_reference.contains("GStreamer"));
         assert!(contract.second_reference.contains("replaceable"));
         assert_eq!(contract.stages.len(), 10);
+        assert_eq!(contract.routes.len(), 2);
+        assert!(contract.routes.iter().any(|route| {
+            route.kind == NativeVulkanVideoPipelineRouteKind::BitstreamNativeDecode
+                && route.decode_owner == "gilder-native-vulkan"
+                && route.handoff_contract.contains("encoded")
+        }));
+        assert!(contract.routes.iter().any(|route| {
+            route.kind == NativeVulkanVideoPipelineRouteKind::DecodedFrameFrontend
+                && route.decode_owner == "gstreamer"
+                && route.handoff_contract.contains("gst-dma")
+        }));
         assert_eq!(
             contract.stages[0].kind,
             NativeVulkanVideoPipelineStageKind::Source

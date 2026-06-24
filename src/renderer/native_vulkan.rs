@@ -114,9 +114,12 @@ pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
 use render_item::{native_vulkan_static_item, native_vulkan_video_item};
 use render_plan::{native_vulkan_render_item_clear_color, native_vulkan_static_upload_plan};
 pub use video_frontend::NativeVulkanVideoCapsSnapshot;
-#[cfg(test)]
-use video_frontend::NativeVulkanVideoFrontendProvider;
 use video_frontend::NativeVulkanVideoFrontendSnapshot;
+#[cfg(test)]
+use video_frontend::{
+    NativeVulkanVideoDecodeOwner, NativeVulkanVideoFrontendMemoryPreference,
+    NativeVulkanVideoFrontendProvider, NativeVulkanVideoFrontendRoute,
+};
 #[cfg(feature = "native-vulkan-gst-video")]
 use video_frontend::{NativeVulkanVideoFrontend, NativeVulkanVideoFrontendSample};
 use video_runtime::{NativeVulkanVideoAudioRuntimeTelemetry, native_vulkan_video_runtime_snapshot};
@@ -51983,6 +51986,9 @@ mod tests {
 
         assert_eq!(snapshot.frontend, "gstreamer-planned");
         assert_eq!(snapshot.frontend_provider, "gstreamer");
+        assert_eq!(snapshot.frontend_route, "decoded-provider");
+        assert_eq!(snapshot.frontend_decode_owner, "gstreamer");
+        assert_eq!(snapshot.frontend_memory_preference, "auto");
         assert_eq!(snapshot.frontend_status, "not-started-poster-placeholder");
         assert_eq!(
             snapshot.handoff_status,
@@ -52089,6 +52095,9 @@ mod tests {
         };
         let frontend = NativeVulkanVideoFrontendSnapshot {
             provider: NativeVulkanVideoFrontendProvider::Gstreamer,
+            route: NativeVulkanVideoFrontendRoute::DecodedProvider,
+            decode_owner: NativeVulkanVideoDecodeOwner::Gstreamer,
+            memory_preference: NativeVulkanVideoFrontendMemoryPreference::Auto,
             provider_state: Some("Playing".to_owned()),
             eos_messages: 0,
             segment_done_messages: 1,
@@ -52141,6 +52150,9 @@ mod tests {
 
         assert_eq!(snapshot.frontend, "gstreamer-appsink");
         assert_eq!(snapshot.frontend_provider, "gstreamer");
+        assert_eq!(snapshot.frontend_route, "decoded-provider");
+        assert_eq!(snapshot.frontend_decode_owner, "gstreamer");
+        assert_eq!(snapshot.frontend_memory_preference, "auto");
         assert_eq!(snapshot.audio_status, "muted-no-audio-pipeline");
         assert_eq!(snapshot.audio_output_policy, "plan");
         assert_eq!(snapshot.audio_output_mode, "clock-only");
@@ -52270,6 +52282,9 @@ mod tests {
         };
         let frontend = NativeVulkanVideoFrontendSnapshot {
             provider: NativeVulkanVideoFrontendProvider::Gstreamer,
+            route: NativeVulkanVideoFrontendRoute::DecodedProvider,
+            decode_owner: NativeVulkanVideoDecodeOwner::Gstreamer,
+            memory_preference: NativeVulkanVideoFrontendMemoryPreference::DirectDmabuf,
             provider_state: Some("Playing".to_owned()),
             eos_messages: 0,
             segment_done_messages: 0,
@@ -52309,6 +52324,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(snapshot.memory_route.route, "dmabuf-caps-pending-import");
+        assert_eq!(snapshot.frontend_route, "decoded-provider");
+        assert_eq!(snapshot.frontend_decode_owner, "gstreamer");
+        assert_eq!(snapshot.frontend_memory_preference, "direct-dmabuf");
         assert!(snapshot.memory_route.direct_candidate);
         assert!(!snapshot.memory_route.direct_import_confirmed);
         assert_eq!(
