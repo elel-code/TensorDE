@@ -73,6 +73,9 @@ mod render_item;
 #[path = "native_vulkan/render_plan.rs"]
 mod render_plan;
 
+#[path = "native_vulkan/scene_lite_runtime.rs"]
+mod scene_lite_runtime;
+
 #[path = "native_vulkan/audio_policy.rs"]
 mod audio_policy;
 
@@ -124,6 +127,11 @@ pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolic
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
 use render_item::{native_vulkan_static_item, native_vulkan_video_item};
 use render_plan::{native_vulkan_render_item_clear_color, native_vulkan_static_upload_plan};
+use scene_lite_runtime::native_vulkan_scene_lite_runtime_snapshot;
+pub use scene_lite_runtime::{
+    NativeVulkanSceneLiteDrawOpSnapshot, NativeVulkanSceneLiteRuntimeSnapshot,
+    NativeVulkanSceneLiteUnsupportedLayerSnapshot,
+};
 pub use video_frontend::NativeVulkanVideoCapsSnapshot;
 use video_frontend::NativeVulkanVideoFrontendSnapshot;
 #[cfg(test)]
@@ -2426,6 +2434,7 @@ pub struct NativeVulkanRuntimeSnapshot {
     pub clear_color: NativeVulkanClearColor,
     pub static_upload_bytes: Option<u64>,
     pub video_runtime: Option<NativeVulkanVideoRuntimeSnapshot>,
+    pub scene_lite_runtime: Option<NativeVulkanSceneLiteRuntimeSnapshot>,
     pub render_item: NativeVulkanRenderItem,
     pub last_render_error: Option<String>,
 }
@@ -3482,6 +3491,7 @@ impl NativeVulkanSession {
                     .as_ref()
                     .map(|upload| upload.size_bytes.min(u64::MAX as vk::DeviceSize) as u64),
             ),
+            scene_lite_runtime: native_vulkan_scene_lite_runtime_snapshot(&self.render_item),
             render_item: self.render_item.clone(),
             last_render_error: self.last_render_error.clone(),
         }
@@ -47660,10 +47670,56 @@ pub fn web_interop_contract() -> NativeVulkanWebInteropContract {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{SceneLiteLayerKind, SceneLiteTransform};
     use crate::renderer::{
         SceneLiteDisplayPlan, SceneLiteRenderLayer, SceneLiteWallpaperPlan, StaticRenderSyncPlan,
     };
     use std::path::PathBuf;
+
+    fn scene_lite_test_layer(id: &str, kind: SceneLiteLayerKind) -> SceneLiteRenderLayer {
+        SceneLiteRenderLayer {
+            id: id.to_owned(),
+            kind,
+            source: None,
+            color: None,
+            stroke_color: None,
+            stroke_width: None,
+            corner_radius: None,
+            width: None,
+            height: None,
+            text: None,
+            font_size: None,
+            font_family: None,
+            font_weight: None,
+            text_align: None,
+            path_data: None,
+            fit: FitMode::Cover,
+            opacity: 1.0,
+            transform: SceneLiteTransform::default(),
+        }
+    }
+
+    fn scene_lite_test_item(
+        layers: Vec<SceneLiteRenderLayer>,
+        display: Option<SceneLiteDisplayPlan>,
+        fallback: Option<PathBuf>,
+    ) -> NativeVulkanRenderItem {
+        NativeVulkanRenderItem::SceneLite {
+            output_name: "HDMI-A-1".to_owned(),
+            scene_source: Some(PathBuf::from("/tmp/scene-lite.json")),
+            fallback,
+            display,
+            display_image: None,
+            display_color: None,
+            manifest_max_fps: Some(60),
+            layer_count: layers.len(),
+            layers,
+            bound_properties: Vec::new(),
+            snapshot_time_ms: 1234,
+            target_max_fps: Some(60),
+            renderer_status: "deterministic-scene-lite-snapshot-ready-for-vulkan-passes",
+        }
+    }
 
     #[test]
     fn reports_vulkan_spike_as_built_but_not_default() {
@@ -51573,6 +51629,77 @@ mod tests {
         assert!((color.g - 32.0 / 255.0).abs() < f32::EPSILON);
         assert!((color.b - 48.0 / 255.0).abs() < f32::EPSILON);
         assert_eq!(color.a, 1.0);
+    }
+
+    #[test]
+    fn scene_lite_runtime_snapshot_reports_native_draw_ready_layers() {
+        let mut rectangle = scene_lite_test_layer("panel", SceneLiteLayerKind::Rectangle);
+        rectangle.color = Some("#102030".to_owned());
+        rectangle.opacity = 1.25;
+        let mut text = scene_lite_test_layer("label", SceneLiteLayerKind::Text);
+        text.text = Some("Now Playing".to_owned());
+        let mut hidden_group = scene_lite_test_layer("hidden-group", SceneLiteLayerKind::Group);
+        hidden_group.opacity = 0.0;
+        let item = scene_lite_test_item(
+            vec![rectangle, text, hidden_group],
+            Some(SceneLiteDisplayPlan::Color {
+                color: "#010203".to_owned(),
+            }),
+            None,
+        );
+
+        let snapshot =
+            native_vulkan_scene_lite_runtime_snapshot(&item).expect("scene-lite snapshot");
+
+        assert_eq!(snapshot.snapshot_time_ms, 1234);
+        assert!(snapshot.native_draw_ready);
+        assert!(snapshot.fallback_display_available);
+        assert_eq!(snapshot.draw_op_count, 2);
+        assert_eq!(snapshot.unsupported_layer_count, 0);
+        assert_eq!(
+            snapshot
+                .draw_ops
+                .iter()
+                .map(|op| op.kind)
+                .collect::<Vec<_>>(),
+            vec!["rectangle", "text"]
+        );
+        assert_eq!(snapshot.draw_ops[0].layer_index, 0);
+        assert_eq!(snapshot.draw_ops[1].layer_index, 1);
+        assert_eq!(snapshot.draw_ops[0].opacity, 1.0);
+    }
+
+    #[test]
+    fn scene_lite_runtime_snapshot_reports_unsupported_layers() {
+        let mut color = scene_lite_test_layer("background", SceneLiteLayerKind::Color);
+        color.color = Some("#010203".to_owned());
+        let image = scene_lite_test_layer("missing-image", SceneLiteLayerKind::Image);
+        let group = scene_lite_test_layer("group", SceneLiteLayerKind::Group);
+        let item = scene_lite_test_item(
+            vec![color, image, group],
+            None,
+            Some(PathBuf::from("/tmp/scene-fallback.svg")),
+        );
+
+        let snapshot =
+            native_vulkan_scene_lite_runtime_snapshot(&item).expect("scene-lite snapshot");
+
+        assert!(!snapshot.native_draw_ready);
+        assert!(snapshot.fallback_display_available);
+        assert_eq!(snapshot.draw_op_count, 1);
+        assert_eq!(snapshot.draw_ops[0].kind, "color-quad");
+        assert_eq!(snapshot.unsupported_layer_count, 2);
+        assert_eq!(
+            snapshot
+                .unsupported_layers
+                .iter()
+                .map(|layer| layer.reason)
+                .collect::<Vec<_>>(),
+            vec![
+                "image-layer-missing-source",
+                "group-layer-needs-flattened-children"
+            ]
+        );
     }
 
     #[test]

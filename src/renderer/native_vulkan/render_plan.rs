@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use crate::core::FitMode;
-use crate::renderer::SceneLiteDisplayPlan;
+use crate::core::{FitMode, SceneLiteLayerKind};
+use crate::renderer::{SceneLiteDisplayPlan, SceneLiteRenderLayer};
 
 use super::{NativeVulkanClearColor, NativeVulkanRenderItem};
 
@@ -62,6 +62,150 @@ pub(super) fn native_vulkan_render_item_clear_color(
             ..
         } => native_vulkan_clear_color_from_hex(color).unwrap_or(fallback),
         _ => fallback,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeVulkanSceneLiteDrawOpKind {
+    Image,
+    ColorQuad,
+    Rectangle,
+    Ellipse,
+    Text,
+    Path,
+}
+
+impl NativeVulkanSceneLiteDrawOpKind {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::ColorQuad => "color-quad",
+            Self::Rectangle => "rectangle",
+            Self::Ellipse => "ellipse",
+            Self::Text => "text",
+            Self::Path => "path",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct NativeVulkanSceneLiteDrawOp {
+    pub(super) layer_index: usize,
+    pub(super) layer_id: String,
+    pub(super) kind: NativeVulkanSceneLiteDrawOpKind,
+    pub(super) opacity: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NativeVulkanSceneLiteUnsupportedLayer {
+    pub(super) layer_index: usize,
+    pub(super) layer_id: String,
+    pub(super) reason: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct NativeVulkanSceneLiteDrawPlan {
+    pub(super) snapshot_time_ms: u64,
+    pub(super) draw_ops: Vec<NativeVulkanSceneLiteDrawOp>,
+    pub(super) unsupported_layers: Vec<NativeVulkanSceneLiteUnsupportedLayer>,
+    pub(super) fallback_display_available: bool,
+}
+
+impl NativeVulkanSceneLiteDrawPlan {
+    pub(super) fn native_draw_ready(&self) -> bool {
+        !self.draw_ops.is_empty() && self.unsupported_layers.is_empty()
+    }
+}
+
+pub(super) fn native_vulkan_scene_lite_draw_plan(
+    render_item: &NativeVulkanRenderItem,
+) -> Option<NativeVulkanSceneLiteDrawPlan> {
+    let NativeVulkanRenderItem::SceneLite {
+        layers,
+        display,
+        fallback,
+        snapshot_time_ms,
+        ..
+    } = render_item
+    else {
+        return None;
+    };
+    let (draw_ops, unsupported_layers) = native_vulkan_scene_lite_draw_layers(layers);
+
+    Some(NativeVulkanSceneLiteDrawPlan {
+        snapshot_time_ms: *snapshot_time_ms,
+        draw_ops,
+        unsupported_layers,
+        fallback_display_available: display.is_some() || fallback.is_some(),
+    })
+}
+
+fn native_vulkan_scene_lite_draw_layers(
+    layers: &[SceneLiteRenderLayer],
+) -> (
+    Vec<NativeVulkanSceneLiteDrawOp>,
+    Vec<NativeVulkanSceneLiteUnsupportedLayer>,
+) {
+    let mut draw_ops = Vec::new();
+    let mut unsupported_layers = Vec::new();
+    for (index, layer) in layers.iter().enumerate() {
+        if layer.opacity <= 0.0 {
+            continue;
+        }
+        match native_vulkan_scene_lite_draw_op_kind(layer) {
+            Ok(kind) => draw_ops.push(NativeVulkanSceneLiteDrawOp {
+                layer_index: index,
+                layer_id: layer.id.clone(),
+                kind,
+                opacity: layer.opacity.clamp(0.0, 1.0),
+            }),
+            Err(reason) => unsupported_layers.push(NativeVulkanSceneLiteUnsupportedLayer {
+                layer_index: index,
+                layer_id: layer.id.clone(),
+                reason,
+            }),
+        }
+    }
+    (draw_ops, unsupported_layers)
+}
+
+fn native_vulkan_scene_lite_draw_op_kind(
+    layer: &SceneLiteRenderLayer,
+) -> Result<NativeVulkanSceneLiteDrawOpKind, &'static str> {
+    match layer.kind {
+        SceneLiteLayerKind::Image => layer
+            .source
+            .as_ref()
+            .map(|_| NativeVulkanSceneLiteDrawOpKind::Image)
+            .ok_or("image-layer-missing-source"),
+        SceneLiteLayerKind::Color => layer
+            .color
+            .as_ref()
+            .map(|_| NativeVulkanSceneLiteDrawOpKind::ColorQuad)
+            .ok_or("color-layer-missing-color"),
+        SceneLiteLayerKind::Rectangle => layer
+            .color
+            .as_ref()
+            .map(|_| NativeVulkanSceneLiteDrawOpKind::Rectangle)
+            .ok_or("rectangle-layer-missing-fill"),
+        SceneLiteLayerKind::Ellipse => layer
+            .color
+            .as_ref()
+            .map(|_| NativeVulkanSceneLiteDrawOpKind::Ellipse)
+            .ok_or("ellipse-layer-missing-fill"),
+        SceneLiteLayerKind::Text => layer
+            .text
+            .as_ref()
+            .filter(|text| !text.is_empty())
+            .map(|_| NativeVulkanSceneLiteDrawOpKind::Text)
+            .ok_or("text-layer-missing-text"),
+        SceneLiteLayerKind::Path => layer
+            .path_data
+            .as_ref()
+            .filter(|path| !path.is_empty())
+            .map(|_| NativeVulkanSceneLiteDrawOpKind::Path)
+            .ok_or("path-layer-missing-data"),
+        SceneLiteLayerKind::Group => Err("group-layer-needs-flattened-children"),
     }
 }
 
