@@ -57,6 +57,22 @@ fn native_vulkan_timeline_expected_pts_delta_range_ms(
     (Some(1000 / target_fps), Some(1000_u64.div_ceil(target_fps)))
 }
 
+pub(super) fn native_vulkan_timeline_loop_boundary_reset(
+    timeline_item_index: u32,
+    frame_serial: u32,
+    previous_frame_serial: u32,
+) -> bool {
+    timeline_item_index > 0
+        && native_vulkan_timeline_frame_serial_stale(frame_serial, previous_frame_serial)
+}
+
+pub(super) fn native_vulkan_timeline_frame_serial_stale(
+    frame_serial: u32,
+    current_queue_serial: u32,
+) -> bool {
+    frame_serial != current_queue_serial
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,5 +103,18 @@ mod tests {
     fn marks_pts_delta_range_invalid_when_outside_frame_period_bounds() {
         let summary = native_vulkan_timeline_pts_delta_summary(Some(240), [Some(3), Some(6)]);
         assert_eq!(summary.in_expected_range, Some(false));
+    }
+
+    #[test]
+    fn loop_boundary_reset_requires_non_initial_serial_change() {
+        assert!(!native_vulkan_timeline_loop_boundary_reset(0, 1, 0));
+        assert!(!native_vulkan_timeline_loop_boundary_reset(10, 1, 1));
+        assert!(native_vulkan_timeline_loop_boundary_reset(10, 2, 1));
+    }
+
+    #[test]
+    fn frame_serial_stale_follows_ffplay_queue_serial_rule() {
+        assert!(!native_vulkan_timeline_frame_serial_stale(3, 3));
+        assert!(native_vulkan_timeline_frame_serial_stale(2, 3));
     }
 }

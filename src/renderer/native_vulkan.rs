@@ -5997,8 +5997,12 @@ pub fn run_h264_ready_prefix_video(
                             ),
                         );
                         let mut playback_loop_index = packet.source_loop_index;
-                        let mut loop_boundary_reset = playback_frame_index > 0
-                            && playback_loop_index != previous_source_loop_index;
+                        let mut loop_boundary_reset =
+                            timeline::native_vulkan_timeline_loop_boundary_reset(
+                                playback_frame_index,
+                                playback_loop_index,
+                                previous_source_loop_index,
+                            );
                         let mut reset_recovery_required =
                             playback_frame_index == 0 || loop_boundary_reset;
                         if reset_recovery_required {
@@ -6036,8 +6040,12 @@ pub fn run_h264_ready_prefix_video(
                             packet = streaming_queue.next_packet(true)?;
                             access_unit = packet.snapshot.clone();
                             playback_loop_index = packet.source_loop_index;
-                            loop_boundary_reset = playback_frame_index > 0
-                                && playback_loop_index != previous_source_loop_index;
+                            loop_boundary_reset =
+                                timeline::native_vulkan_timeline_loop_boundary_reset(
+                                    playback_frame_index,
+                                    playback_loop_index,
+                                    previous_source_loop_index,
+                                );
                             reset_recovery_required =
                                 playback_frame_index == 0 || loop_boundary_reset;
                             if reset_recovery_required {
@@ -7183,8 +7191,12 @@ pub fn run_h264_ready_prefix_video(
                                 ),
                             );
                             let mut playback_loop_index = packet.source_loop_index;
-                            let mut loop_boundary_reset = playback_frame_index > 0
-                                && playback_loop_index != previous_source_loop_index;
+                            let mut loop_boundary_reset =
+                                timeline::native_vulkan_timeline_loop_boundary_reset(
+                                    playback_frame_index,
+                                    playback_loop_index,
+                                    previous_source_loop_index,
+                                );
                             let mut reset_recovery_required =
                                 playback_frame_index == 0 || loop_boundary_reset;
                             if reset_recovery_required {
@@ -7224,8 +7236,12 @@ pub fn run_h264_ready_prefix_video(
                                 packet = streaming_queue.next_packet(true)?;
                                 access_unit = packet.snapshot.clone();
                                 playback_loop_index = packet.source_loop_index;
-                                loop_boundary_reset = playback_frame_index > 0
-                                    && playback_loop_index != previous_source_loop_index;
+                                loop_boundary_reset =
+                                    timeline::native_vulkan_timeline_loop_boundary_reset(
+                                        playback_frame_index,
+                                        playback_loop_index,
+                                        previous_source_loop_index,
+                                    );
                                 reset_recovery_required =
                                     playback_frame_index == 0 || loop_boundary_reset;
                                 if reset_recovery_required {
@@ -7427,7 +7443,10 @@ pub fn run_h264_ready_prefix_video(
                                         .to_owned(),
                                 )
                             })?;
-                            if front_packet.source_loop_index != frame.playback_loop_index {
+                            if timeline::native_vulkan_timeline_frame_serial_stale(
+                                front_packet.source_loop_index,
+                                frame.playback_loop_index,
+                            ) {
                                 h264_decode_ahead_skip_unready_count =
                                     h264_decode_ahead_skip_unready_count.saturating_add(1);
                                 native_vulkan_h264_trace(
@@ -7737,7 +7756,10 @@ pub fn run_h264_ready_prefix_video(
                             let access_unit = packet.snapshot.clone();
                             let playback_loop_index = packet.source_loop_index;
                             let loop_boundary_reset =
-                                playback_loop_index != frame.playback_loop_index;
+                                timeline::native_vulkan_timeline_frame_serial_stale(
+                                    playback_loop_index,
+                                    frame.playback_loop_index,
+                                );
                             if loop_boundary_reset {
                                 streaming_reference_planner.reset();
                             }
@@ -9475,8 +9497,12 @@ pub fn run_h265_ready_prefix_video(
                     let mut packet = streaming_queue.next_packet(true)?;
                     let mut access_unit = packet.snapshot.clone();
                     let mut playback_loop_index = packet.source_loop_index;
-                    let mut loop_boundary_reset = playback_frame_index > 0
-                        && playback_loop_index != previous_source_loop_index;
+                    let mut loop_boundary_reset =
+                        timeline::native_vulkan_timeline_loop_boundary_reset(
+                            playback_frame_index,
+                            playback_loop_index,
+                            previous_source_loop_index,
+                        );
                     let mut reset_recovery_required =
                         playback_frame_index == 0 || loop_boundary_reset;
                     if reset_recovery_required {
@@ -9498,8 +9524,11 @@ pub fn run_h265_ready_prefix_video(
                         packet = streaming_queue.next_packet(true)?;
                         access_unit = packet.snapshot.clone();
                         playback_loop_index = packet.source_loop_index;
-                        loop_boundary_reset = playback_frame_index > 0
-                            && playback_loop_index != previous_source_loop_index;
+                        loop_boundary_reset = timeline::native_vulkan_timeline_loop_boundary_reset(
+                            playback_frame_index,
+                            playback_loop_index,
+                            previous_source_loop_index,
+                        );
                         reset_recovery_required = playback_frame_index == 0 || loop_boundary_reset;
                         if reset_recovery_required {
                             streaming_reference_planner.reset_for_idr();
@@ -12247,8 +12276,11 @@ pub fn run_av1_ready_prefix_video(
                 let loop_boundary_reset = if let Some(prepared) = prepared_visible_frame.as_ref() {
                     prepared.frame.loop_boundary_reset
                 } else {
-                    processed_temporal_unit_count > 0
-                        && playback_loop_index != previous_source_loop_index
+                    timeline::native_vulkan_timeline_loop_boundary_reset(
+                        processed_temporal_unit_count,
+                        playback_loop_index,
+                        previous_source_loop_index,
+                    )
                 };
                 if loop_boundary_reset && prepared_visible_frame.is_none() {
                     streaming_reference_planner =
@@ -13658,7 +13690,10 @@ pub fn run_av1_ready_prefix_video(
                         let Some(front_packet) = streaming_queue.front_packet() else {
                             break;
                         };
-                        if front_packet.source_loop_index != previous_source_loop_index {
+                        if timeline::native_vulkan_timeline_frame_serial_stale(
+                            front_packet.source_loop_index,
+                            previous_source_loop_index,
+                        ) {
                             break;
                         }
                         let mut lookahead_planner = streaming_reference_planner.clone();
@@ -15212,7 +15247,10 @@ pub fn run_av1_ready_prefix_video(
                             "AV1 visible decode-ahead lost front packet after prefetch".to_owned(),
                         )
                     })?;
-                    if front_packet.source_loop_index == previous_source_loop_index {
+                    if !timeline::native_vulkan_timeline_frame_serial_stale(
+                        front_packet.source_loop_index,
+                        previous_source_loop_index,
+                    ) {
                         let mut lookahead_planner = streaming_reference_planner.clone();
                         let lookahead_entry = lookahead_planner.plan_next(&front_packet.snapshot);
                         let lookahead_decode_will_present =
