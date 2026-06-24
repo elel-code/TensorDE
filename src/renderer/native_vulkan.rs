@@ -2547,6 +2547,10 @@ pub struct NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
     pub bitstream_upload_count: u32,
     pub bitstream_uploaded_bytes: u64,
     pub h265_input_mode: &'static str,
+    pub h265_display_handoff_strategy: &'static str,
+    pub h265_display_ring_memory_bytes: u64,
+    pub h265_display_copy_count: u32,
+    pub h265_displayed_direct_dpb_count: u32,
     pub h265_present_queue_count: u32,
     pub h265_async_present_depth: u32,
     pub h265_present_result_wait_count: u32,
@@ -9780,6 +9784,10 @@ pub fn run_h265_ready_prefix_video(
             } else {
                 None
             };
+            let h265_display_handoff_strategy = "direct-sampled-dpb-output";
+            let h265_display_ring_memory_bytes = 0;
+            let h265_display_copy_count = 0;
+            let h265_displayed_direct_dpb_count = presented_frame_count;
             Ok(NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
                 runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
                 requested_codec: codec,
@@ -9792,10 +9800,10 @@ pub fn run_h265_ready_prefix_video(
                 decoded_frame_zero_copy_scope: NATIVE_VULKAN_DIRECT_DECODED_FRAME_ZERO_COPY_SCOPE,
                 decoded_frame_zero_copy_status: native_vulkan_direct_decoded_frame_zero_copy_status(
                     presented_frame_count,
-                    0,
-                    0,
-                    None,
-                    "direct-sampled-dpb-output",
+                    h265_display_copy_count,
+                    h265_display_ring_memory_bytes,
+                    Some(h265_displayed_direct_dpb_count),
+                    h265_display_handoff_strategy,
                 ),
                 h265_present_frame_preroll_count,
                 playback_loop_count: if frames.is_empty() {
@@ -9861,6 +9869,10 @@ pub fn run_h265_ready_prefix_video(
                 bitstream_upload_count: frames.len() as u32,
                 bitstream_uploaded_bytes: frames.iter().map(|frame| frame.src_buffer_range).sum(),
                 h265_input_mode: input_mode.as_str(),
+                h265_display_handoff_strategy,
+                h265_display_ring_memory_bytes,
+                h265_display_copy_count,
+                h265_displayed_direct_dpb_count,
                 h265_present_queue_count: requested_present_queue_count,
                 h265_async_present_depth,
                 h265_present_result_wait_count,
