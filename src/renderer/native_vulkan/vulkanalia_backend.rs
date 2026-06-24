@@ -42,6 +42,8 @@ mod video_direct_runtime;
 mod video_format_probe;
 #[path = "vulkanalia_backend/video_profile_gate.rs"]
 mod video_profile_gate;
+#[path = "vulkanalia_backend/video_profile_info.rs"]
+mod video_profile_info;
 #[path = "vulkanalia_backend/video_profile_labels.rs"]
 mod video_profile_labels;
 #[path = "vulkanalia_backend/video_profile_probe.rs"]

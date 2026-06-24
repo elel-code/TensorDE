@@ -66,6 +66,10 @@ use super::video_device::{
 use super::video_format_probe::{
     NativeVulkanVulkanaliaVideoFormatQuerySnapshot, native_vulkan_vulkanalia_video_format_probe,
 };
+use super::video_profile_info::{
+    with_vulkanalia_av1_video_profile_info, with_vulkanalia_h264_video_profile_info,
+    with_vulkanalia_h265_video_profile_info,
+};
 use super::video_profile_labels::{
     av1_level_label, h264_level_label, h265_level_label, video_capability_flag_labels,
     video_decode_capability_flag_labels,
@@ -290,127 +294,110 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
         NativeVulkanVideoSessionCodec::H264High8 => {
             let h264_std_profile_idc =
                 vulkanalia_video_session_effective_h264_std_profile_idc(&options)?;
-            let mut h264_profile_info = vk::VideoDecodeH264ProfileInfoKHR::builder()
-                .std_profile_idc(h264_std_profile_idc)
-                .picture_layout(vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE)
-                .build();
-            let profile_info = vk::VideoProfileInfoKHR::builder()
-                .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_H264)
-                .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::_420)
-                .luma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::_8)
-                .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::_8)
-                .push_next(&mut h264_profile_info)
-                .build();
-            let mut h264_capabilities = vk::VideoDecodeH264CapabilitiesKHR::default();
-            let queried = query_vulkanalia_h264_video_session_capabilities(
-                instance,
-                selection.physical_device,
-                &profile_info,
-                &mut h264_capabilities,
-            )?;
-            smoke_bind_vulkanalia_video_session_profile(
-                instance,
-                &video_decode_device.device,
-                video_decode_device.queue,
-                &memory_properties,
-                &selection,
-                loader_name,
-                options,
-                requested_extent,
-                picture_format,
-                target_picture_dpb_supported,
-                target_picture_sampled_output_supported,
-                target_resource_plan,
-                video_decode_device.enabled_device_extensions.clone(),
-                video_decode_device.feature_selection,
-                &profile_info,
-                queried,
+            with_vulkanalia_h264_video_profile_info(
+                h264_std_profile_idc,
+                vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE,
+                |profile_info, _| {
+                    let mut h264_capabilities = vk::VideoDecodeH264CapabilitiesKHR::default();
+                    let queried = query_vulkanalia_h264_video_session_capabilities(
+                        instance,
+                        selection.physical_device,
+                        profile_info,
+                        &mut h264_capabilities,
+                    )?;
+                    smoke_bind_vulkanalia_video_session_profile(
+                        instance,
+                        &video_decode_device.device,
+                        video_decode_device.queue,
+                        &memory_properties,
+                        &selection,
+                        loader_name,
+                        options,
+                        requested_extent,
+                        picture_format,
+                        target_picture_dpb_supported,
+                        target_picture_sampled_output_supported,
+                        target_resource_plan,
+                        video_decode_device.enabled_device_extensions.clone(),
+                        video_decode_device.feature_selection,
+                        profile_info,
+                        queried,
+                    )
+                },
             )
         }
         NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10 => {
-            let mut h265_profile_info = vk::VideoDecodeH265ProfileInfoKHR::builder()
-                .std_profile_idc(match options.codec {
-                    NativeVulkanVideoSessionCodec::H265Main8 => {
-                        vk::video::STD_VIDEO_H265_PROFILE_IDC_MAIN
-                    }
-                    NativeVulkanVideoSessionCodec::H265Main10 => {
-                        vk::video::STD_VIDEO_H265_PROFILE_IDC_MAIN_10
-                    }
-                    _ => unreachable!("matched H.265 codec"),
-                })
-                .build();
+            let std_profile_idc = match options.codec {
+                NativeVulkanVideoSessionCodec::H265Main8 => {
+                    vk::video::STD_VIDEO_H265_PROFILE_IDC_MAIN
+                }
+                NativeVulkanVideoSessionCodec::H265Main10 => {
+                    vk::video::STD_VIDEO_H265_PROFILE_IDC_MAIN_10
+                }
+                _ => unreachable!("matched H.265 codec"),
+            };
             let bit_depth = vulkanalia_video_session_bit_depth(options.codec);
-            let profile_info = vk::VideoProfileInfoKHR::builder()
-                .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_H265)
-                .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::_420)
-                .luma_bit_depth(bit_depth)
-                .chroma_bit_depth(bit_depth)
-                .push_next(&mut h265_profile_info)
-                .build();
-            let mut h265_capabilities = vk::VideoDecodeH265CapabilitiesKHR::default();
-            let queried = query_vulkanalia_h265_video_session_capabilities(
-                instance,
-                selection.physical_device,
-                &profile_info,
-                &mut h265_capabilities,
-            )?;
-            smoke_bind_vulkanalia_video_session_profile(
-                instance,
-                &video_decode_device.device,
-                video_decode_device.queue,
-                &memory_properties,
-                &selection,
-                loader_name,
-                options,
-                requested_extent,
-                picture_format,
-                target_picture_dpb_supported,
-                target_picture_sampled_output_supported,
-                target_resource_plan,
-                video_decode_device.enabled_device_extensions.clone(),
-                video_decode_device.feature_selection,
-                &profile_info,
-                queried,
+            with_vulkanalia_h265_video_profile_info(
+                std_profile_idc,
+                bit_depth,
+                |profile_info, _| {
+                    let mut h265_capabilities = vk::VideoDecodeH265CapabilitiesKHR::default();
+                    let queried = query_vulkanalia_h265_video_session_capabilities(
+                        instance,
+                        selection.physical_device,
+                        profile_info,
+                        &mut h265_capabilities,
+                    )?;
+                    smoke_bind_vulkanalia_video_session_profile(
+                        instance,
+                        &video_decode_device.device,
+                        video_decode_device.queue,
+                        &memory_properties,
+                        &selection,
+                        loader_name,
+                        options,
+                        requested_extent,
+                        picture_format,
+                        target_picture_dpb_supported,
+                        target_picture_sampled_output_supported,
+                        target_resource_plan,
+                        video_decode_device.enabled_device_extensions.clone(),
+                        video_decode_device.feature_selection,
+                        profile_info,
+                        queried,
+                    )
+                },
             )
         }
         NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => {
-            let mut av1_profile_info = vk::VideoDecodeAV1ProfileInfoKHR::builder()
-                .std_profile(vk::video::STD_VIDEO_AV1_PROFILE_MAIN)
-                .film_grain_support(false)
-                .build();
             let bit_depth = vulkanalia_video_session_effective_bit_depth(&options);
-            let profile_info = vk::VideoProfileInfoKHR::builder()
-                .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_AV1)
-                .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::_420)
-                .luma_bit_depth(bit_depth)
-                .chroma_bit_depth(bit_depth)
-                .push_next(&mut av1_profile_info)
-                .build();
-            let mut av1_capabilities = vk::VideoDecodeAV1CapabilitiesKHR::default();
-            let queried = query_vulkanalia_av1_video_session_capabilities(
-                instance,
-                selection.physical_device,
-                &profile_info,
-                &mut av1_capabilities,
-            )?;
-            smoke_bind_vulkanalia_video_session_profile(
-                instance,
-                &video_decode_device.device,
-                video_decode_device.queue,
-                &memory_properties,
-                &selection,
-                loader_name,
-                options,
-                requested_extent,
-                picture_format,
-                target_picture_dpb_supported,
-                target_picture_sampled_output_supported,
-                target_resource_plan,
-                video_decode_device.enabled_device_extensions.clone(),
-                video_decode_device.feature_selection,
-                &profile_info,
-                queried,
-            )
+            with_vulkanalia_av1_video_profile_info(bit_depth, false, |profile_info, _| {
+                let mut av1_capabilities = vk::VideoDecodeAV1CapabilitiesKHR::default();
+                let queried = query_vulkanalia_av1_video_session_capabilities(
+                    instance,
+                    selection.physical_device,
+                    profile_info,
+                    &mut av1_capabilities,
+                )?;
+                smoke_bind_vulkanalia_video_session_profile(
+                    instance,
+                    &video_decode_device.device,
+                    video_decode_device.queue,
+                    &memory_properties,
+                    &selection,
+                    loader_name,
+                    options,
+                    requested_extent,
+                    picture_format,
+                    target_picture_dpb_supported,
+                    target_picture_sampled_output_supported,
+                    target_resource_plan,
+                    video_decode_device.enabled_device_extensions.clone(),
+                    video_decode_device.feature_selection,
+                    profile_info,
+                    queried,
+                )
+            })
         }
     };
 

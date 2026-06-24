@@ -3,6 +3,10 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder, KhrVideoQueueExtensionInstanceCommands};
 
 use super::video_profile_gate::query_disabled_reason;
+use super::video_profile_info::{
+    with_vulkanalia_av1_video_profile_info, with_vulkanalia_h264_video_profile_info,
+    with_vulkanalia_h265_video_profile_info,
+};
 use super::video_profile_labels::{
     av1_level_label, h264_level_label, h264_picture_layout_label, h265_level_label,
     video_capability_flag_labels, video_chroma_subsampling_labels,
@@ -128,17 +132,6 @@ fn query_h264_profile(
 ) -> NativeVulkanVulkanaliaVideoProfileCapabilitySnapshot {
     let chroma_subsampling = vk::VideoChromaSubsamplingFlagsKHR::_420;
     let bit_depth = vk::VideoComponentBitDepthFlagsKHR::_8;
-    let mut h264_profile_info = vk::VideoDecodeH264ProfileInfoKHR::builder()
-        .std_profile_idc(std_profile_idc)
-        .picture_layout(picture_layout)
-        .build();
-    let profile_info = vk::VideoProfileInfoKHR::builder()
-        .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_H264)
-        .chroma_subsampling(chroma_subsampling)
-        .luma_bit_depth(bit_depth)
-        .chroma_bit_depth(bit_depth)
-        .push_next(&mut h264_profile_info)
-        .build();
     let mut h264_capabilities = vk::VideoDecodeH264CapabilitiesKHR::default();
     let mut decode_capabilities = vk::VideoDecodeCapabilitiesKHR::default();
     let mut capabilities = vk::VideoCapabilitiesKHR::builder()
@@ -146,14 +139,27 @@ fn query_h264_profile(
         .push_next(&mut decode_capabilities)
         .build();
 
-    if let Err(err) = unsafe {
-        instance.get_physical_device_video_capabilities_khr(
-            physical_device,
-            &profile_info,
-            &mut capabilities,
-        )
-    } {
-        return unsupported_profile(
+    with_vulkanalia_h264_video_profile_info(std_profile_idc, picture_layout, |profile_info, _| {
+        if let Err(err) = unsafe {
+            instance.get_physical_device_video_capabilities_khr(
+                physical_device,
+                profile_info,
+                &mut capabilities,
+            )
+        } {
+            return unsupported_profile(
+                "h264",
+                profile,
+                std_profile_idc.0,
+                Some(h264_picture_layout_label(picture_layout)),
+                video_chroma_subsampling_labels(chroma_subsampling),
+                video_component_bit_depth_labels(bit_depth),
+                video_component_bit_depth_labels(bit_depth),
+                format!("vkGetPhysicalDeviceVideoCapabilitiesKHR: {err:?}"),
+            );
+        }
+
+        supported_profile(
             "h264",
             profile,
             std_profile_idc.0,
@@ -161,27 +167,16 @@ fn query_h264_profile(
             video_chroma_subsampling_labels(chroma_subsampling),
             video_component_bit_depth_labels(bit_depth),
             video_component_bit_depth_labels(bit_depth),
-            format!("vkGetPhysicalDeviceVideoCapabilitiesKHR: {err:?}"),
-        );
-    }
-
-    supported_profile(
-        "h264",
-        profile,
-        std_profile_idc.0,
-        Some(h264_picture_layout_label(picture_layout)),
-        video_chroma_subsampling_labels(chroma_subsampling),
-        video_component_bit_depth_labels(bit_depth),
-        video_component_bit_depth_labels(bit_depth),
-        h264_level_label(h264_capabilities.max_level_idc),
-        Some(h264_capabilities.max_level_idc.0),
-        capabilities,
-        decode_capabilities.flags,
-        Some((
-            h264_capabilities.field_offset_granularity.x,
-            h264_capabilities.field_offset_granularity.y,
-        )),
-    )
+            h264_level_label(h264_capabilities.max_level_idc),
+            Some(h264_capabilities.max_level_idc.0),
+            capabilities,
+            decode_capabilities.flags,
+            Some((
+                h264_capabilities.field_offset_granularity.x,
+                h264_capabilities.field_offset_granularity.y,
+            )),
+        )
+    })
 }
 
 fn h265_profiles(
@@ -239,16 +234,6 @@ fn query_h265_profile(
     bit_depth: vk::VideoComponentBitDepthFlagsKHR,
 ) -> NativeVulkanVulkanaliaVideoProfileCapabilitySnapshot {
     let chroma_subsampling = vk::VideoChromaSubsamplingFlagsKHR::_420;
-    let mut h265_profile_info = vk::VideoDecodeH265ProfileInfoKHR::builder()
-        .std_profile_idc(std_profile_idc)
-        .build();
-    let profile_info = vk::VideoProfileInfoKHR::builder()
-        .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_H265)
-        .chroma_subsampling(chroma_subsampling)
-        .luma_bit_depth(bit_depth)
-        .chroma_bit_depth(bit_depth)
-        .push_next(&mut h265_profile_info)
-        .build();
     let mut h265_capabilities = vk::VideoDecodeH265CapabilitiesKHR::default();
     let mut decode_capabilities = vk::VideoDecodeCapabilitiesKHR::default();
     let mut capabilities = vk::VideoCapabilitiesKHR::builder()
@@ -256,14 +241,27 @@ fn query_h265_profile(
         .push_next(&mut decode_capabilities)
         .build();
 
-    if let Err(err) = unsafe {
-        instance.get_physical_device_video_capabilities_khr(
-            physical_device,
-            &profile_info,
-            &mut capabilities,
-        )
-    } {
-        return unsupported_profile(
+    with_vulkanalia_h265_video_profile_info(std_profile_idc, bit_depth, |profile_info, _| {
+        if let Err(err) = unsafe {
+            instance.get_physical_device_video_capabilities_khr(
+                physical_device,
+                profile_info,
+                &mut capabilities,
+            )
+        } {
+            return unsupported_profile(
+                "h265",
+                profile,
+                std_profile_idc.0,
+                None,
+                video_chroma_subsampling_labels(chroma_subsampling),
+                video_component_bit_depth_labels(bit_depth),
+                video_component_bit_depth_labels(bit_depth),
+                format!("vkGetPhysicalDeviceVideoCapabilitiesKHR: {err:?}"),
+            );
+        }
+
+        supported_profile(
             "h265",
             profile,
             std_profile_idc.0,
@@ -271,24 +269,13 @@ fn query_h265_profile(
             video_chroma_subsampling_labels(chroma_subsampling),
             video_component_bit_depth_labels(bit_depth),
             video_component_bit_depth_labels(bit_depth),
-            format!("vkGetPhysicalDeviceVideoCapabilitiesKHR: {err:?}"),
-        );
-    }
-
-    supported_profile(
-        "h265",
-        profile,
-        std_profile_idc.0,
-        None,
-        video_chroma_subsampling_labels(chroma_subsampling),
-        video_component_bit_depth_labels(bit_depth),
-        video_component_bit_depth_labels(bit_depth),
-        h265_level_label(h265_capabilities.max_level_idc),
-        Some(h265_capabilities.max_level_idc.0),
-        capabilities,
-        decode_capabilities.flags,
-        None,
-    )
+            h265_level_label(h265_capabilities.max_level_idc),
+            Some(h265_capabilities.max_level_idc.0),
+            capabilities,
+            decode_capabilities.flags,
+            None,
+        )
+    })
 }
 
 fn av1_profiles(
@@ -340,17 +327,6 @@ fn query_av1_profile(
     bit_depth: vk::VideoComponentBitDepthFlagsKHR,
 ) -> NativeVulkanVulkanaliaVideoProfileCapabilitySnapshot {
     let chroma_subsampling = vk::VideoChromaSubsamplingFlagsKHR::_420;
-    let mut av1_profile_info = vk::VideoDecodeAV1ProfileInfoKHR::builder()
-        .std_profile(std_profile)
-        .film_grain_support(false)
-        .build();
-    let profile_info = vk::VideoProfileInfoKHR::builder()
-        .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_AV1)
-        .chroma_subsampling(chroma_subsampling)
-        .luma_bit_depth(bit_depth)
-        .chroma_bit_depth(bit_depth)
-        .push_next(&mut av1_profile_info)
-        .build();
     let mut av1_capabilities = vk::VideoDecodeAV1CapabilitiesKHR::default();
     let mut decode_capabilities = vk::VideoDecodeCapabilitiesKHR::default();
     let mut capabilities = vk::VideoCapabilitiesKHR::builder()
@@ -358,14 +334,27 @@ fn query_av1_profile(
         .push_next(&mut decode_capabilities)
         .build();
 
-    if let Err(err) = unsafe {
-        instance.get_physical_device_video_capabilities_khr(
-            physical_device,
-            &profile_info,
-            &mut capabilities,
-        )
-    } {
-        return unsupported_profile(
+    with_vulkanalia_av1_video_profile_info(bit_depth, false, |profile_info, _| {
+        if let Err(err) = unsafe {
+            instance.get_physical_device_video_capabilities_khr(
+                physical_device,
+                profile_info,
+                &mut capabilities,
+            )
+        } {
+            return unsupported_profile(
+                "av1",
+                profile,
+                std_profile.0,
+                None,
+                video_chroma_subsampling_labels(chroma_subsampling),
+                video_component_bit_depth_labels(bit_depth),
+                video_component_bit_depth_labels(bit_depth),
+                format!("vkGetPhysicalDeviceVideoCapabilitiesKHR: {err:?}"),
+            );
+        }
+
+        supported_profile(
             "av1",
             profile,
             std_profile.0,
@@ -373,24 +362,13 @@ fn query_av1_profile(
             video_chroma_subsampling_labels(chroma_subsampling),
             video_component_bit_depth_labels(bit_depth),
             video_component_bit_depth_labels(bit_depth),
-            format!("vkGetPhysicalDeviceVideoCapabilitiesKHR: {err:?}"),
-        );
-    }
-
-    supported_profile(
-        "av1",
-        profile,
-        std_profile.0,
-        None,
-        video_chroma_subsampling_labels(chroma_subsampling),
-        video_component_bit_depth_labels(bit_depth),
-        video_component_bit_depth_labels(bit_depth),
-        av1_level_label(av1_capabilities.max_level),
-        Some(av1_capabilities.max_level.0),
-        capabilities,
-        decode_capabilities.flags,
-        None,
-    )
+            av1_level_label(av1_capabilities.max_level),
+            Some(av1_capabilities.max_level.0),
+            capabilities,
+            decode_capabilities.flags,
+            None,
+        )
+    })
 }
 
 fn supported_profile(

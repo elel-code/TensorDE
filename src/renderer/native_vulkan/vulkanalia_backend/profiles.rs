@@ -1,6 +1,11 @@
 use serde::Serialize;
 use vulkanalia::vk::{self, HasBuilder};
 
+use super::video_profile_info::{
+    with_vulkanalia_av1_video_profile_info, with_vulkanalia_h264_video_profile_info,
+    with_vulkanalia_h265_video_profile_info,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaVideoProfileTemplate {
     pub codec: &'static str,
@@ -38,33 +43,23 @@ fn h264_profile_template(
     profile: &'static str,
     std_profile_idc: vk::video::StdVideoH264ProfileIdc,
 ) -> NativeVulkanVulkanaliaVideoProfileTemplate {
-    let chroma_subsampling = vk::VideoChromaSubsamplingFlagsKHR::_420;
-    let bit_depth = vk::VideoComponentBitDepthFlagsKHR::_8;
     let usage_info = vk::VideoDecodeUsageInfoKHR::builder()
         .video_usage_hints(vk::VideoDecodeUsageFlagsKHR::DEFAULT)
         .build();
-    let mut h264_profile_info = vk::VideoDecodeH264ProfileInfoKHR::builder()
-        .std_profile_idc(std_profile_idc)
-        .picture_layout(vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE)
-        .build();
-    let profile_info = vk::VideoProfileInfoKHR::builder()
-        .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_H264)
-        .chroma_subsampling(chroma_subsampling)
-        .luma_bit_depth(bit_depth)
-        .chroma_bit_depth(bit_depth)
-        .push_next(&mut h264_profile_info)
-        .build();
-
-    NativeVulkanVulkanaliaVideoProfileTemplate {
-        codec: "h264",
-        profile,
-        operation_bits: profile_info.video_codec_operation.bits(),
-        chroma_bits: profile_info.chroma_subsampling.bits(),
-        luma_bit_depth_bits: profile_info.luma_bit_depth.bits(),
-        chroma_bit_depth_bits: profile_info.chroma_bit_depth.bits(),
-        usage_bits: usage_info.video_usage_hints.bits(),
-        profile_struct: std::any::type_name_of_val(&h264_profile_info),
-    }
+    with_vulkanalia_h264_video_profile_info(
+        std_profile_idc,
+        vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE,
+        |profile_info, h264_profile_info| NativeVulkanVulkanaliaVideoProfileTemplate {
+            codec: "h264",
+            profile,
+            operation_bits: profile_info.video_codec_operation.bits(),
+            chroma_bits: profile_info.chroma_subsampling.bits(),
+            luma_bit_depth_bits: profile_info.luma_bit_depth.bits(),
+            chroma_bit_depth_bits: profile_info.chroma_bit_depth.bits(),
+            usage_bits: usage_info.video_usage_hints.bits(),
+            profile_struct: std::any::type_name_of_val(h264_profile_info),
+        },
+    )
 }
 
 fn h265_profile_template(
@@ -72,63 +67,44 @@ fn h265_profile_template(
     std_profile_idc: vk::video::StdVideoH265ProfileIdc,
     bit_depth: vk::VideoComponentBitDepthFlagsKHR,
 ) -> NativeVulkanVulkanaliaVideoProfileTemplate {
-    let chroma_subsampling = vk::VideoChromaSubsamplingFlagsKHR::_420;
     let usage_info = vk::VideoDecodeUsageInfoKHR::builder()
         .video_usage_hints(vk::VideoDecodeUsageFlagsKHR::DEFAULT)
         .build();
-    let mut h265_profile_info = vk::VideoDecodeH265ProfileInfoKHR::builder()
-        .std_profile_idc(std_profile_idc)
-        .build();
-    let profile_info = vk::VideoProfileInfoKHR::builder()
-        .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_H265)
-        .chroma_subsampling(chroma_subsampling)
-        .luma_bit_depth(bit_depth)
-        .chroma_bit_depth(bit_depth)
-        .push_next(&mut h265_profile_info)
-        .build();
-
-    NativeVulkanVulkanaliaVideoProfileTemplate {
-        codec: "h265",
-        profile,
-        operation_bits: profile_info.video_codec_operation.bits(),
-        chroma_bits: profile_info.chroma_subsampling.bits(),
-        luma_bit_depth_bits: profile_info.luma_bit_depth.bits(),
-        chroma_bit_depth_bits: profile_info.chroma_bit_depth.bits(),
-        usage_bits: usage_info.video_usage_hints.bits(),
-        profile_struct: std::any::type_name_of_val(&h265_profile_info),
-    }
+    with_vulkanalia_h265_video_profile_info(
+        std_profile_idc,
+        bit_depth,
+        |profile_info, h265_profile_info| NativeVulkanVulkanaliaVideoProfileTemplate {
+            codec: "h265",
+            profile,
+            operation_bits: profile_info.video_codec_operation.bits(),
+            chroma_bits: profile_info.chroma_subsampling.bits(),
+            luma_bit_depth_bits: profile_info.luma_bit_depth.bits(),
+            chroma_bit_depth_bits: profile_info.chroma_bit_depth.bits(),
+            usage_bits: usage_info.video_usage_hints.bits(),
+            profile_struct: std::any::type_name_of_val(h265_profile_info),
+        },
+    )
 }
 
 fn av1_profile_template(
     profile: &'static str,
     bit_depth: vk::VideoComponentBitDepthFlagsKHR,
 ) -> NativeVulkanVulkanaliaVideoProfileTemplate {
-    let chroma_subsampling = vk::VideoChromaSubsamplingFlagsKHR::_420;
     let usage_info = vk::VideoDecodeUsageInfoKHR::builder()
         .video_usage_hints(vk::VideoDecodeUsageFlagsKHR::DEFAULT)
         .build();
-    let mut av1_profile_info = vk::VideoDecodeAV1ProfileInfoKHR::builder()
-        .std_profile(vk::video::STD_VIDEO_AV1_PROFILE_MAIN)
-        .film_grain_support(true)
-        .build();
-    let profile_info = vk::VideoProfileInfoKHR::builder()
-        .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_AV1)
-        .chroma_subsampling(chroma_subsampling)
-        .luma_bit_depth(bit_depth)
-        .chroma_bit_depth(bit_depth)
-        .push_next(&mut av1_profile_info)
-        .build();
-
-    NativeVulkanVulkanaliaVideoProfileTemplate {
-        codec: "av1",
-        profile,
-        operation_bits: profile_info.video_codec_operation.bits(),
-        chroma_bits: profile_info.chroma_subsampling.bits(),
-        luma_bit_depth_bits: profile_info.luma_bit_depth.bits(),
-        chroma_bit_depth_bits: profile_info.chroma_bit_depth.bits(),
-        usage_bits: usage_info.video_usage_hints.bits(),
-        profile_struct: std::any::type_name_of_val(&av1_profile_info),
-    }
+    with_vulkanalia_av1_video_profile_info(bit_depth, true, |profile_info, av1_profile_info| {
+        NativeVulkanVulkanaliaVideoProfileTemplate {
+            codec: "av1",
+            profile,
+            operation_bits: profile_info.video_codec_operation.bits(),
+            chroma_bits: profile_info.chroma_subsampling.bits(),
+            luma_bit_depth_bits: profile_info.luma_bit_depth.bits(),
+            chroma_bit_depth_bits: profile_info.chroma_bit_depth.bits(),
+            usage_bits: usage_info.video_usage_hints.bits(),
+            profile_struct: std::any::type_name_of_val(av1_profile_info),
+        }
+    })
 }
 
 #[cfg(test)]

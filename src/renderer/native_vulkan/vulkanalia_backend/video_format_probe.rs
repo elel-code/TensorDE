@@ -5,6 +5,10 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};
 
 use super::video_profile_gate::query_disabled_reason;
+use super::video_profile_info::{
+    with_vulkanalia_av1_video_profile_info, with_vulkanalia_h264_video_profile_info,
+    with_vulkanalia_h265_video_profile_info,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaVideoFormatProbeSnapshot {
@@ -130,27 +134,20 @@ fn h264_format_queries(
             );
         }
 
-        let bit_depth = vk::VideoComponentBitDepthFlagsKHR::_8;
-        let mut h264_profile_info = vk::VideoDecodeH264ProfileInfoKHR::builder()
-            .std_profile_idc(std_profile_idc)
-            .picture_layout(vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE)
-            .build();
-        let profile_info = vk::VideoProfileInfoKHR::builder()
-            .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_H264)
-            .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::_420)
-            .luma_bit_depth(bit_depth)
-            .chroma_bit_depth(bit_depth)
-            .push_next(&mut h264_profile_info)
-            .build();
-
-        query_format_properties_for_profile(
-            instance,
-            physical_device,
-            "h264",
-            profile,
-            image_usage_label,
-            image_usage,
-            &profile_info,
+        with_vulkanalia_h264_video_profile_info(
+            std_profile_idc,
+            vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE,
+            |profile_info, _| {
+                query_format_properties_for_profile(
+                    instance,
+                    physical_device,
+                    "h264",
+                    profile,
+                    image_usage_label,
+                    image_usage,
+                    profile_info,
+                )
+            },
         )
     })
     .collect()
@@ -192,26 +189,17 @@ fn h265_format_queries(
             );
         }
 
-        let mut h265_profile_info = vk::VideoDecodeH265ProfileInfoKHR::builder()
-            .std_profile_idc(std_profile_idc)
-            .build();
-        let profile_info = vk::VideoProfileInfoKHR::builder()
-            .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_H265)
-            .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::_420)
-            .luma_bit_depth(bit_depth)
-            .chroma_bit_depth(bit_depth)
-            .push_next(&mut h265_profile_info)
-            .build();
-
-        query_format_properties_for_profile(
-            instance,
-            physical_device,
-            "h265",
-            profile,
-            image_usage_label,
-            image_usage,
-            &profile_info,
-        )
+        with_vulkanalia_h265_video_profile_info(std_profile_idc, bit_depth, |profile_info, _| {
+            query_format_properties_for_profile(
+                instance,
+                physical_device,
+                "h265",
+                profile,
+                image_usage_label,
+                image_usage,
+                profile_info,
+            )
+        })
     })
     .collect()
 }
@@ -238,27 +226,17 @@ fn av1_format_queries(
             return unsupported_format_query("av1", profile, image_usage_label, image_usage, error);
         }
 
-        let mut av1_profile_info = vk::VideoDecodeAV1ProfileInfoKHR::builder()
-            .std_profile(vk::video::STD_VIDEO_AV1_PROFILE_MAIN)
-            .film_grain_support(false)
-            .build();
-        let profile_info = vk::VideoProfileInfoKHR::builder()
-            .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_AV1)
-            .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::_420)
-            .luma_bit_depth(bit_depth)
-            .chroma_bit_depth(bit_depth)
-            .push_next(&mut av1_profile_info)
-            .build();
-
-        query_format_properties_for_profile(
-            instance,
-            physical_device,
-            "av1",
-            profile,
-            image_usage_label,
-            image_usage,
-            &profile_info,
-        )
+        with_vulkanalia_av1_video_profile_info(bit_depth, false, |profile_info, _| {
+            query_format_properties_for_profile(
+                instance,
+                physical_device,
+                "av1",
+                profile,
+                image_usage_label,
+                image_usage,
+                profile_info,
+            )
+        })
     })
     .collect()
 }
