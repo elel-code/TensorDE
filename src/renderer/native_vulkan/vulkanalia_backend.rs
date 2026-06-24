@@ -24,6 +24,8 @@ mod video_profile_gate;
 mod video_profile_labels;
 #[path = "vulkanalia_backend/video_profile_probe.rs"]
 mod video_profile_probe;
+#[path = "vulkanalia_backend/video_session.rs"]
+mod video_session;
 
 pub use device_probe::{
     NativeVulkanVulkanaliaDeviceProbeSnapshot, NativeVulkanVulkanaliaDeviceProbeTemplate,
@@ -51,4 +53,17 @@ pub use video_format_probe::{
 pub use video_profile_probe::{
     NativeVulkanVulkanaliaVideoProfileCapabilitySnapshot,
     NativeVulkanVulkanaliaVideoProfileProbeSnapshot,
+};
+#[allow(unused_imports)]
+pub use video_session::{
+    NativeVulkanVulkanaliaMemoryTypeCandidate, NativeVulkanVulkanaliaVideoSessionMemoryBindPlan,
+    NativeVulkanVulkanaliaVideoSessionMemoryRequirementSnapshot,
+    NativeVulkanVulkanaliaVideoSessionResourceProbePlan,
+    NativeVulkanVulkanaliaVideoSessionResourceStep,
+    NativeVulkanVulkanaliaVideoSessionResourceStepKind, NativeVulkanVulkanaliaVideoSessionTemplate,
+    native_vulkan_vulkanalia_memory_type_candidates,
+    native_vulkan_vulkanalia_video_session_memory_bind_plans,
+    native_vulkan_vulkanalia_video_session_memory_requirement_snapshots,
+    native_vulkan_vulkanalia_video_session_resource_plans_from_format_probe,
+    native_vulkan_vulkanalia_video_session_template,
 };

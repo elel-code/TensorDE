@@ -266,11 +266,7 @@ use video_sample_gst::{
 use video_session_parameters::*;
 use video_session_resources::*;
 pub use video_session_snapshots::*;
-pub use vulkanalia_backend::{
-    NativeVulkanVulkanaliaBackendPlan, NativeVulkanVulkanaliaDeviceProbeSnapshot,
-    NativeVulkanVulkanaliaDeviceProbeTemplate, native_vulkan_vulkanalia_backend_plan,
-    native_vulkan_vulkanalia_device_probe_template, probe_native_vulkan_vulkanalia_devices,
-};
+pub use vulkanalia_backend::*;
 
 #[cfg(feature = "native-vulkan-gst-video")]
 pub use audio_clock::{

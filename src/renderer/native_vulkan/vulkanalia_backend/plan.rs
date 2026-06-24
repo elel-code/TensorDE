@@ -3,9 +3,10 @@ use serde::Serialize;
 use super::{
     NativeVulkanVulkanaliaDeviceProbeTemplate, NativeVulkanVulkanaliaFeatureChainTemplate,
     NativeVulkanVulkanaliaMigrationContract, NativeVulkanVulkanaliaVideoProfileTemplate,
-    native_vulkan_vulkanalia_device_probe_template,
+    NativeVulkanVulkanaliaVideoSessionTemplate, native_vulkan_vulkanalia_device_probe_template,
     native_vulkan_vulkanalia_feature_chain_template, native_vulkan_vulkanalia_migration_contract,
     native_vulkan_vulkanalia_video_profile_templates,
+    native_vulkan_vulkanalia_video_session_template,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -17,6 +18,7 @@ pub struct NativeVulkanVulkanaliaBackendPlan {
     pub feature_chain_template: NativeVulkanVulkanaliaFeatureChainTemplate,
     pub device_probe_template: NativeVulkanVulkanaliaDeviceProbeTemplate,
     pub video_profile_templates: Vec<NativeVulkanVulkanaliaVideoProfileTemplate>,
+    pub video_session_template: NativeVulkanVulkanaliaVideoSessionTemplate,
     pub migration_contract: NativeVulkanVulkanaliaMigrationContract,
     pub required_instance_extensions: &'static [&'static str],
     pub required_device_extensions: &'static [&'static str],
@@ -41,6 +43,7 @@ pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendP
         feature_chain_template: native_vulkan_vulkanalia_feature_chain_template(),
         device_probe_template: native_vulkan_vulkanalia_device_probe_template(),
         video_profile_templates: native_vulkan_vulkanalia_video_profile_templates(),
+        video_session_template: native_vulkan_vulkanalia_video_session_template(),
         migration_contract: native_vulkan_vulkanalia_migration_contract(),
         required_instance_extensions: &["VK_KHR_surface", "VK_KHR_wayland_surface"],
         required_device_extensions: &[
@@ -112,6 +115,12 @@ mod tests {
         assert_eq!(plan.feature_chain_template.api, "Vulkan 1.4");
         assert_eq!(plan.device_probe_template.requested_api_version, "1.4.0");
         assert_eq!(plan.video_profile_templates.len(), 7);
+        assert!(
+            plan.video_session_template
+                .api_type_evidence
+                .iter()
+                .any(|name| name.ends_with("VideoSessionCreateInfoKHR"))
+        );
         assert_eq!(plan.migration_contract.primary_binding, "vulkanalia");
         assert_eq!(plan.migration_contract.compatibility_binding, "ash");
         assert!(
