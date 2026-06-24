@@ -8,7 +8,6 @@ use vulkanalia::loader::LibloadingLoader;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder, KhrVideoQueueExtensionInstanceCommands};
 
-use super::queue_probe::native_vulkan_vulkanalia_video_decode_queue_family_indices;
 use super::video_bitstream_buffer::{
     NativeVulkanVulkanaliaVideoSessionBitstreamBufferSmokeSnapshot,
     native_vulkan_vulkanalia_create_video_session_bitstream_buffer,
@@ -48,9 +47,10 @@ use super::video_decode_submit_h265::{
 };
 use super::video_device::{
     NativeVulkanVulkanaliaVideoDeviceFeatureSelection,
+    NativeVulkanVulkanaliaVideoPhysicalDeviceSelection,
     native_vulkan_vulkanalia_create_video_decode_device,
     native_vulkan_vulkanalia_destroy_video_decode_device,
-    native_vulkan_vulkanalia_video_decode_required_device_extensions,
+    native_vulkan_vulkanalia_select_video_decode_physical_device,
 };
 use super::video_format_probe::{
     NativeVulkanVulkanaliaVideoFormatQuerySnapshot, native_vulkan_vulkanalia_video_format_probe,
@@ -228,7 +228,8 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
     loader_name: &'static str,
     options: NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
 ) -> Result<NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot, String> {
-    let selection = select_vulkanalia_video_session_physical_device(instance, options.codec)?;
+    let selection =
+        native_vulkan_vulkanalia_select_video_decode_physical_device(instance, options.codec)?;
     let requested_extent = vk::Extent2D {
         width: options.width,
         height: options.height,
@@ -420,17 +421,6 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
     result
 }
 
-#[derive(Debug, Clone)]
-struct VulkanaliaVideoSessionPhysicalDeviceSelection {
-    physical_device_index: usize,
-    physical_device: vk::PhysicalDevice,
-    properties: vk::PhysicalDeviceProperties,
-    queue_family_index: u32,
-    queue_count: u32,
-    queue_flags: vk::QueueFlags,
-    device_extensions: Vec<String>,
-}
-
 #[derive(Debug, Clone, Copy)]
 struct VulkanaliaVideoSessionCapabilityQuery {
     capabilities: vk::VideoCapabilitiesKHR,
@@ -452,7 +442,7 @@ fn smoke_bind_vulkanalia_video_session_profile(
     device: &Device,
     queue: vk::Queue,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
-    selection: &VulkanaliaVideoSessionPhysicalDeviceSelection,
+    selection: &NativeVulkanVulkanaliaVideoPhysicalDeviceSelection,
     loader_name: &'static str,
     options: NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
     requested_extent: vk::Extent2D,
@@ -772,7 +762,7 @@ fn native_vulkan_vulkanalia_record_h265_ready_prefix_decode_smoke(
     device: &Device,
     queue: vk::Queue,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
-    selection: &VulkanaliaVideoSessionPhysicalDeviceSelection,
+    selection: &NativeVulkanVulkanaliaVideoPhysicalDeviceSelection,
     profile_info: &vk::VideoProfileInfoKHR,
     extent: vk::Extent2D,
     picture_format: vk::Format,
@@ -1002,7 +992,7 @@ fn native_vulkan_vulkanalia_record_h264_ready_prefix_decode_smoke(
     device: &Device,
     queue: vk::Queue,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
-    selection: &VulkanaliaVideoSessionPhysicalDeviceSelection,
+    selection: &NativeVulkanVulkanaliaVideoPhysicalDeviceSelection,
     profile_info: &vk::VideoProfileInfoKHR,
     extent: vk::Extent2D,
     picture_format: vk::Format,
@@ -1229,7 +1219,7 @@ fn native_vulkan_vulkanalia_record_av1_ready_prefix_decode_smoke(
     device: &Device,
     queue: vk::Queue,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
-    selection: &VulkanaliaVideoSessionPhysicalDeviceSelection,
+    selection: &NativeVulkanVulkanaliaVideoPhysicalDeviceSelection,
     profile_info: &vk::VideoProfileInfoKHR,
     extent: vk::Extent2D,
     picture_format: vk::Format,
@@ -1779,83 +1769,6 @@ fn query_vulkanalia_av1_video_session_capabilities(
     })
 }
 
-fn select_vulkanalia_video_session_physical_device(
-    instance: &Instance,
-    codec: NativeVulkanVideoSessionCodec,
-) -> Result<VulkanaliaVideoSessionPhysicalDeviceSelection, String> {
-    let physical_devices = unsafe { instance.enumerate_physical_devices() }
-        .map_err(|err| format!("vkEnumeratePhysicalDevices(vulkanalia video session): {err:?}"))?;
-    let required_extensions =
-        native_vulkan_vulkanalia_video_decode_required_device_extensions(codec);
-    let mut rejected = Vec::new();
-
-    for (physical_device_index, physical_device) in physical_devices.iter().copied().enumerate() {
-        let properties = unsafe { instance.get_physical_device_properties(physical_device) };
-        let device_extensions =
-            unsafe { instance.enumerate_device_extension_properties(physical_device, None) }
-                .map_err(|err| {
-                    format!(
-                        "vkEnumerateDeviceExtensionProperties(vulkanalia video session): {err:?}"
-                    )
-                })?
-                .into_iter()
-                .map(|property| property.extension_name.to_string_lossy().into_owned())
-                .collect::<Vec<_>>();
-        let missing_extensions = required_extensions
-            .iter()
-            .copied()
-            .filter(|required| {
-                !device_extensions
-                    .iter()
-                    .any(|available| available == required)
-            })
-            .collect::<Vec<_>>();
-        if !missing_extensions.is_empty() {
-            rejected.push(format!(
-                "{} missing {}",
-                properties.device_name.to_string_lossy(),
-                missing_extensions.join(", ")
-            ));
-            continue;
-        }
-
-        let queue_family_indices =
-            native_vulkan_vulkanalia_video_decode_queue_family_indices(instance, physical_device);
-        let Some(queue_family_index) = queue_family_indices.first().copied() else {
-            rejected.push(format!(
-                "{} has no VIDEO_DECODE_KHR queue family",
-                properties.device_name.to_string_lossy()
-            ));
-            continue;
-        };
-        let queue_families =
-            unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
-        let queue_family = queue_families
-            .get(queue_family_index as usize)
-            .ok_or_else(|| format!("selected invalid queue family index {queue_family_index}"))?;
-
-        return Ok(VulkanaliaVideoSessionPhysicalDeviceSelection {
-            physical_device_index,
-            physical_device,
-            properties,
-            queue_family_index,
-            queue_count: queue_family.queue_count,
-            queue_flags: queue_family.queue_flags,
-            device_extensions,
-        });
-    }
-
-    Err(format!(
-        "no Vulkanalia physical device can create {} video session{}",
-        vulkanalia_video_session_label(codec),
-        if rejected.is_empty() {
-            String::new()
-        } else {
-            format!(": {}", rejected.join("; "))
-        }
-    ))
-}
-
 fn load_vulkanalia_loader() -> Result<(LibloadingLoader, &'static str), String> {
     let mut errors = Vec::new();
     for candidate in LOADER_CANDIDATES {
@@ -2142,6 +2055,7 @@ fn video_codec_operation_labels(flags: vk::VideoCodecOperationFlagsKHR) -> Vec<&
 
 #[cfg(test)]
 mod tests {
+    use super::super::video_device::native_vulkan_vulkanalia_video_decode_required_device_extensions;
     use super::*;
     use crate::renderer::native_vulkan::{
         NativeVulkanAv1ColorConfigSnapshot, NativeVulkanAv1OperatingPointSnapshot,

@@ -8,6 +8,8 @@ use vulkanalia::vk::{self, HasBuilder};
 
 use crate::renderer::native_vulkan::NativeVulkanVideoSessionCodec;
 
+use super::queue_probe::native_vulkan_vulkanalia_video_decode_queue_family_indices;
+
 pub(super) const VIDEO_MAINTENANCE1_EXTENSION_NAME: &str = "VK_KHR_video_maintenance1";
 pub(super) const VIDEO_MAINTENANCE2_EXTENSION_NAME: &str = "VK_KHR_video_maintenance2";
 
@@ -33,6 +35,17 @@ impl NativeVulkanVulkanaliaVideoDeviceFeatureSelection {
             Vec::new()
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct NativeVulkanVulkanaliaVideoPhysicalDeviceSelection {
+    pub(super) physical_device_index: usize,
+    pub(super) physical_device: vk::PhysicalDevice,
+    pub(super) properties: vk::PhysicalDeviceProperties,
+    pub(super) queue_family_index: u32,
+    pub(super) queue_count: u32,
+    pub(super) queue_flags: vk::QueueFlags,
+    pub(super) device_extensions: Vec<String>,
 }
 
 pub(super) struct VulkanaliaVideoDecodeDevice {
@@ -120,6 +133,84 @@ pub(super) fn native_vulkan_vulkanalia_destroy_video_decode_device(
     }
 }
 
+pub(super) fn native_vulkan_vulkanalia_select_video_decode_physical_device(
+    instance: &Instance,
+    codec: NativeVulkanVideoSessionCodec,
+) -> Result<NativeVulkanVulkanaliaVideoPhysicalDeviceSelection, String> {
+    let physical_devices = unsafe { instance.enumerate_physical_devices() }
+        .map_err(|err| format!("vkEnumeratePhysicalDevices(vulkanalia video decode): {err:?}"))?;
+    let required_extensions =
+        native_vulkan_vulkanalia_video_decode_required_device_extensions(codec);
+    let mut rejected = Vec::new();
+
+    for (physical_device_index, physical_device) in physical_devices.iter().copied().enumerate() {
+        let properties = unsafe { instance.get_physical_device_properties(physical_device) };
+        let device_extensions =
+            unsafe { instance.enumerate_device_extension_properties(physical_device, None) }
+                .map_err(|err| {
+                    format!(
+                        "vkEnumerateDeviceExtensionProperties(vulkanalia video decode): {err:?}"
+                    )
+                })?
+                .into_iter()
+                .map(|property| property.extension_name.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+        let missing_extensions = required_extensions
+            .iter()
+            .copied()
+            .filter(|required| {
+                !native_vulkan_vulkanalia_video_device_extension_available(
+                    &device_extensions,
+                    required,
+                )
+            })
+            .collect::<Vec<_>>();
+        if !missing_extensions.is_empty() {
+            rejected.push(format!(
+                "{} missing {}",
+                properties.device_name.to_string_lossy(),
+                missing_extensions.join(", ")
+            ));
+            continue;
+        }
+
+        let queue_family_indices =
+            native_vulkan_vulkanalia_video_decode_queue_family_indices(instance, physical_device);
+        let Some(queue_family_index) = queue_family_indices.first().copied() else {
+            rejected.push(format!(
+                "{} has no VIDEO_DECODE_KHR queue family",
+                properties.device_name.to_string_lossy()
+            ));
+            continue;
+        };
+        let queue_families =
+            unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+        let queue_family = queue_families
+            .get(queue_family_index as usize)
+            .ok_or_else(|| format!("selected invalid queue family index {queue_family_index}"))?;
+
+        return Ok(NativeVulkanVulkanaliaVideoPhysicalDeviceSelection {
+            physical_device_index,
+            physical_device,
+            properties,
+            queue_family_index,
+            queue_count: queue_family.queue_count,
+            queue_flags: queue_family.queue_flags,
+            device_extensions,
+        });
+    }
+
+    Err(format!(
+        "no Vulkanalia physical device can create {} video decode session{}",
+        native_vulkan_vulkanalia_video_decode_codec_label(codec),
+        if rejected.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", rejected.join("; "))
+        }
+    ))
+}
+
 pub(super) fn native_vulkan_vulkanalia_video_decode_required_device_extensions(
     codec: NativeVulkanVideoSessionCodec,
 ) -> Vec<&'static str> {
@@ -137,6 +228,18 @@ pub(super) fn native_vulkan_vulkanalia_video_decode_required_device_extensions(
         }
     });
     extensions
+}
+
+fn native_vulkan_vulkanalia_video_decode_codec_label(
+    codec: NativeVulkanVideoSessionCodec,
+) -> &'static str {
+    match codec {
+        NativeVulkanVideoSessionCodec::H264High8 => "H.264 high-8",
+        NativeVulkanVideoSessionCodec::H265Main8 => "H.265 main-8",
+        NativeVulkanVideoSessionCodec::H265Main10 => "H.265 main-10",
+        NativeVulkanVideoSessionCodec::Av1Main8 => "AV1 main-8",
+        NativeVulkanVideoSessionCodec::Av1Main10 => "AV1 main-10",
+    }
 }
 
 fn native_vulkan_vulkanalia_video_decode_device_extensions(
