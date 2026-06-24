@@ -74,6 +74,10 @@ mod interop;
 #[path = "native_vulkan/direct_zero_copy.rs"]
 mod direct_zero_copy;
 
+#[cfg(feature = "native-vulkan-gst-video")]
+#[path = "native_vulkan/direct_runtime.rs"]
+mod direct_runtime;
+
 #[path = "native_vulkan/render_item.rs"]
 mod render_item;
 
@@ -132,9 +136,8 @@ mod demux_gst;
 
 pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy};
 #[cfg(feature = "native-vulkan-gst-video")]
-use direct_zero_copy::{
-    NATIVE_VULKAN_DIRECT_DECODED_FRAME_ZERO_COPY_SCOPE,
-    native_vulkan_direct_decoded_frame_zero_copy_status,
+use direct_runtime::{
+    NativeVulkanDirectDisplayHandoffMetrics, native_vulkan_direct_runtime_summary,
 };
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
@@ -6466,23 +6469,25 @@ pub fn run_h264_ready_prefix_video(
                 } else {
                     None
                 };
+                let direct_runtime = native_vulkan_direct_runtime_summary(
+                    elapsed,
+                    presented_frame_count,
+                    NativeVulkanDirectDisplayHandoffMetrics {
+                        display_copy_count: 0,
+                        display_ring_memory_bytes: 0,
+                        displayed_direct_dpb_count: Some(presented_frame_count),
+                        display_handoff_strategy: "direct-sampled-dpb-output",
+                    },
+                );
                 return Ok(NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot {
-                    runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
+                    runtime_elapsed_ms: direct_runtime.runtime_elapsed_ms,
                     requested_frame_count: playback_frame_count,
                     ready_prefix_frame_count,
                     requested_playback_frame_count: playback_frame_count,
                     decoded_frame_count: frames.len() as u32,
                     presented_frame_count,
-                    decoded_frame_zero_copy_scope:
-                        NATIVE_VULKAN_DIRECT_DECODED_FRAME_ZERO_COPY_SCOPE,
-                    decoded_frame_zero_copy_status:
-                        native_vulkan_direct_decoded_frame_zero_copy_status(
-                            presented_frame_count,
-                            0,
-                            0,
-                            Some(presented_frame_count),
-                            "direct-sampled-dpb-output",
-                        ),
+                    decoded_frame_zero_copy_scope: direct_runtime.decoded_frame_zero_copy_scope,
+                    decoded_frame_zero_copy_status: direct_runtime.decoded_frame_zero_copy_status,
                     h264_present_frame_preroll_count,
                     playback_loop_count: if frames.is_empty() {
                         0
@@ -6497,11 +6502,7 @@ pub fn run_h264_ready_prefix_video(
                     missed_frame_pacing_count,
                     total_frame_sleep_us,
                     max_frame_pacing_late_us,
-                    average_present_fps: if elapsed.is_zero() {
-                        0.0
-                    } else {
-                        f64::from(presented_frame_count) / elapsed.as_secs_f64()
-                    },
+                    average_present_fps: direct_runtime.average_present_fps,
                     average_present_result_fps,
                     average_present_result_drop_first_fps,
                     average_present_result_drop_first_60_fps,
@@ -8246,21 +8247,25 @@ pub fn run_h264_ready_prefix_video(
             } else {
                 None
             };
+            let direct_runtime = native_vulkan_direct_runtime_summary(
+                elapsed,
+                presented_frame_count,
+                NativeVulkanDirectDisplayHandoffMetrics {
+                    display_copy_count: h264_display_copy_count,
+                    display_ring_memory_bytes: display_image_ref.memory_size,
+                    displayed_direct_dpb_count: None,
+                    display_handoff_strategy: h264_display_copy_queue_strategy,
+                },
+            );
             Ok(NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot {
-                runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
+                runtime_elapsed_ms: direct_runtime.runtime_elapsed_ms,
                 requested_frame_count: playback_frame_count,
                 ready_prefix_frame_count,
                 requested_playback_frame_count: playback_frame_count,
                 decoded_frame_count: frames.len() as u32,
                 presented_frame_count,
-                decoded_frame_zero_copy_scope: NATIVE_VULKAN_DIRECT_DECODED_FRAME_ZERO_COPY_SCOPE,
-                decoded_frame_zero_copy_status: native_vulkan_direct_decoded_frame_zero_copy_status(
-                    presented_frame_count,
-                    h264_display_copy_count,
-                    display_image_ref.memory_size,
-                    None,
-                    h264_display_copy_queue_strategy,
-                ),
+                decoded_frame_zero_copy_scope: direct_runtime.decoded_frame_zero_copy_scope,
+                decoded_frame_zero_copy_status: direct_runtime.decoded_frame_zero_copy_status,
                 h264_present_frame_preroll_count: 0,
                 playback_loop_count: if frames.is_empty() {
                     0
@@ -8275,11 +8280,7 @@ pub fn run_h264_ready_prefix_video(
                 missed_frame_pacing_count,
                 total_frame_sleep_us,
                 max_frame_pacing_late_us,
-                average_present_fps: if elapsed.is_zero() {
-                    0.0
-                } else {
-                    f64::from(presented_frame_count) / elapsed.as_secs_f64()
-                },
+                average_present_fps: direct_runtime.average_present_fps,
                 average_present_result_fps,
                 average_present_result_drop_first_fps,
                 average_present_result_drop_first_60_fps,
@@ -9789,8 +9790,18 @@ pub fn run_h265_ready_prefix_video(
             let h265_display_ring_memory_bytes = 0;
             let h265_display_copy_count = 0;
             let h265_displayed_direct_dpb_count = presented_frame_count;
+            let direct_runtime = native_vulkan_direct_runtime_summary(
+                elapsed,
+                presented_frame_count,
+                NativeVulkanDirectDisplayHandoffMetrics {
+                    display_copy_count: h265_display_copy_count,
+                    display_ring_memory_bytes: h265_display_ring_memory_bytes,
+                    displayed_direct_dpb_count: Some(h265_displayed_direct_dpb_count),
+                    display_handoff_strategy: h265_display_handoff_strategy,
+                },
+            );
             Ok(NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
-                runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
+                runtime_elapsed_ms: direct_runtime.runtime_elapsed_ms,
                 requested_codec: codec,
                 picture_format: native_vulkan_format_label(picture_format),
                 requested_frame_count: playback_frame_count,
@@ -9798,14 +9809,8 @@ pub fn run_h265_ready_prefix_video(
                 requested_playback_frame_count: playback_frame_count,
                 decoded_frame_count: frames.len() as u32,
                 presented_frame_count,
-                decoded_frame_zero_copy_scope: NATIVE_VULKAN_DIRECT_DECODED_FRAME_ZERO_COPY_SCOPE,
-                decoded_frame_zero_copy_status: native_vulkan_direct_decoded_frame_zero_copy_status(
-                    presented_frame_count,
-                    h265_display_copy_count,
-                    h265_display_ring_memory_bytes,
-                    Some(h265_displayed_direct_dpb_count),
-                    h265_display_handoff_strategy,
-                ),
+                decoded_frame_zero_copy_scope: direct_runtime.decoded_frame_zero_copy_scope,
+                decoded_frame_zero_copy_status: direct_runtime.decoded_frame_zero_copy_status,
                 h265_present_frame_preroll_count,
                 playback_loop_count: if frames.is_empty() {
                     0
@@ -9820,11 +9825,7 @@ pub fn run_h265_ready_prefix_video(
                 missed_frame_pacing_count,
                 total_frame_sleep_us,
                 max_frame_pacing_late_us,
-                average_present_fps: if elapsed.is_zero() {
-                    0.0
-                } else {
-                    f64::from(presented_frame_count) / elapsed.as_secs_f64()
-                },
+                average_present_fps: direct_runtime.average_present_fps,
                 configured: probe.host.snapshot().configured,
                 source,
                 source_extent: (width, height),
@@ -15944,8 +15945,18 @@ pub fn run_av1_ready_prefix_video(
                 .as_ref()
                 .map(|image| image.memory_size)
                 .unwrap_or(0);
+            let direct_runtime = native_vulkan_direct_runtime_summary(
+                elapsed,
+                presented_frame_count,
+                NativeVulkanDirectDisplayHandoffMetrics {
+                    display_copy_count: av1_display_copy_count,
+                    display_ring_memory_bytes: av1_display_ring_memory_bytes,
+                    displayed_direct_dpb_count: Some(av1_displayed_direct_dpb_count),
+                    display_handoff_strategy: av1_display_handoff_strategy,
+                },
+            );
             Ok(NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot {
-                runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
+                runtime_elapsed_ms: direct_runtime.runtime_elapsed_ms,
                 requested_codec: codec,
                 picture_format: native_vulkan_format_label(picture_format),
                 requested_frame_count: playback_frame_count,
@@ -15957,14 +15968,8 @@ pub fn run_av1_ready_prefix_video(
                 total_decoded_frame_count,
                 displayed_handoff_frame_count,
                 presented_frame_count,
-                decoded_frame_zero_copy_scope: NATIVE_VULKAN_DIRECT_DECODED_FRAME_ZERO_COPY_SCOPE,
-                decoded_frame_zero_copy_status: native_vulkan_direct_decoded_frame_zero_copy_status(
-                    presented_frame_count,
-                    av1_display_copy_count,
-                    av1_display_ring_memory_bytes,
-                    Some(av1_displayed_direct_dpb_count),
-                    av1_display_handoff_strategy,
-                ),
+                decoded_frame_zero_copy_scope: direct_runtime.decoded_frame_zero_copy_scope,
+                decoded_frame_zero_copy_status: direct_runtime.decoded_frame_zero_copy_status,
                 playback_loop_count: if frames.is_empty() {
                     0
                 } else {
@@ -15978,11 +15983,7 @@ pub fn run_av1_ready_prefix_video(
                 missed_frame_pacing_count,
                 total_frame_sleep_us,
                 max_frame_pacing_late_us,
-                average_present_fps: if elapsed.is_zero() {
-                    0.0
-                } else {
-                    f64::from(presented_frame_count) / elapsed.as_secs_f64()
-                },
+                average_present_fps: direct_runtime.average_present_fps,
                 average_present_result_fps,
                 average_present_result_drop_first_fps,
                 average_present_result_drop_first_60_fps,
