@@ -17,6 +17,7 @@ pub struct NativeVulkanSceneLiteRuntimeSnapshot {
     pub draw_pass_backend_status: &'static str,
     pub draw_pass_blocking_reason: Option<&'static str>,
     pub draw_pass_recordable_op_count: usize,
+    pub draw_pass_recordable_quads: Vec<NativeVulkanSceneLiteRecordableQuadSnapshot>,
     pub draw_pass_color_op_count: usize,
     pub draw_pass_sampled_image_op_count: usize,
     pub draw_pass_vector_shape_op_count: usize,
@@ -55,6 +56,18 @@ pub struct NativeVulkanSceneLiteDrawOpSnapshot {
     pub transform: SceneLiteTransform,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneLiteRecordableQuadSnapshot {
+    pub layer_index: usize,
+    pub layer_id: String,
+    pub kind: &'static str,
+    pub color: String,
+    pub rgba: [f32; 4],
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+    pub transform: SceneLiteTransform,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanSceneLiteUnsupportedLayerSnapshot {
     pub layer_index: usize,
@@ -76,6 +89,20 @@ pub(super) fn native_vulkan_scene_lite_runtime_snapshot(
         draw_pass_backend_status: pass_plan.backend_status,
         draw_pass_blocking_reason: pass_plan.blocking_reason,
         draw_pass_recordable_op_count: pass_plan.recordable_op_count,
+        draw_pass_recordable_quads: pass_plan
+            .recordable_quads
+            .into_iter()
+            .map(|quad| NativeVulkanSceneLiteRecordableQuadSnapshot {
+                layer_index: quad.layer_index,
+                layer_id: quad.layer_id,
+                kind: quad.kind,
+                color: quad.color,
+                rgba: quad.rgba,
+                width: quad.width,
+                height: quad.height,
+                transform: quad.transform,
+            })
+            .collect(),
         draw_pass_color_op_count: pass_plan.color_op_count,
         draw_pass_sampled_image_op_count: pass_plan.sampled_image_op_count,
         draw_pass_vector_shape_op_count: pass_plan.vector_shape_op_count,

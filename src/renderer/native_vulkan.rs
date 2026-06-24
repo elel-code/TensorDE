@@ -47396,7 +47396,7 @@ pub fn wallpaper_type_support_matrix() -> Vec<NativeVulkanWallpaperTypeSupport> 
         NativeVulkanWallpaperTypeSupport {
             wallpaper_type: NativeVulkanWallpaperType::SceneLite,
             current_vulkan_item: true,
-            current_renderer_status: "deterministic scene snapshot layers carried by Vulkan render item; native draw-pass plan and fast-clear color path exist, general draw recording remains pending",
+            current_renderer_status: "deterministic scene snapshot layers carried by Vulkan render item; native draw-pass plan, fast-clear color path and color/rectangle quad payloads exist, general draw recording remains pending",
             target_vulkan_path: "deterministic scene snapshot -> Vulkan shape/image/text passes",
         },
         NativeVulkanWallpaperTypeSupport {
@@ -51529,12 +51529,57 @@ mod tests {
         assert_eq!(snapshot.draw_pass_backend_status, "fast-clear-color-ready");
         assert_eq!(snapshot.draw_pass_blocking_reason, None);
         assert_eq!(snapshot.draw_pass_recordable_op_count, 1);
+        assert_eq!(snapshot.draw_pass_recordable_quads.len(), 1);
+        assert_eq!(snapshot.draw_pass_recordable_quads[0].kind, "color-quad");
+        assert_eq!(
+            snapshot.draw_pass_recordable_quads[0].rgba,
+            [32.0 / 255.0, 48.0 / 255.0, 64.0 / 255.0, 1.0]
+        );
         assert_eq!(snapshot.draw_pass_color_op_count, 1);
         assert_eq!(snapshot.draw_pass_sampled_image_op_count, 0);
         assert_eq!(
             snapshot.draw_pass_fast_clear_color.as_deref(),
             Some("#203040")
         );
+    }
+
+    #[test]
+    fn scene_lite_runtime_snapshot_reports_recordable_rectangle_quad() {
+        let mut rectangle = scene_lite_test_layer("panel", SceneLiteLayerKind::Rectangle);
+        rectangle.color = Some("#336699".to_owned());
+        rectangle.opacity = 0.75;
+        rectangle.width = Some(320.0);
+        rectangle.height = Some(180.0);
+        rectangle.transform.y = 12.0;
+        let item = scene_lite_test_item(vec![rectangle], None, None);
+
+        let snapshot =
+            native_vulkan_scene_lite_runtime_snapshot(&item).expect("scene-lite snapshot");
+
+        assert!(snapshot.native_draw_ready);
+        assert!(snapshot.draw_pass_plan_ready);
+        assert!(!snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.draw_pass_backend_status,
+            "quad-payload-ready-recording-pending"
+        );
+        assert_eq!(
+            snapshot.draw_pass_blocking_reason,
+            Some("vulkan-quad-recording-not-implemented")
+        );
+        assert_eq!(snapshot.draw_pass_recordable_op_count, 1);
+        assert_eq!(snapshot.draw_pass_recordable_quads.len(), 1);
+        let quad = &snapshot.draw_pass_recordable_quads[0];
+        assert_eq!(quad.layer_id, "panel");
+        assert_eq!(quad.kind, "rectangle");
+        assert_eq!(quad.color, "#336699");
+        assert_eq!(
+            quad.rgba,
+            [51.0 / 255.0, 102.0 / 255.0, 153.0 / 255.0, 0.75]
+        );
+        assert_eq!(quad.width, Some(320.0));
+        assert_eq!(quad.height, Some(180.0));
+        assert_eq!(quad.transform.y, 12.0);
     }
 
     #[test]
