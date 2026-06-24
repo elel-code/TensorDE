@@ -28,6 +28,21 @@ pub(super) struct NativeVulkanDirectRuntimeSummary {
     pub(super) decoded_frame_zero_copy_status: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct NativeVulkanDirectPresentResultSummary {
+    pub(super) average_present_result_fps: f64,
+    pub(super) average_present_result_drop_first_fps: f64,
+    pub(super) average_present_result_drop_first_60_fps: f64,
+    pub(super) present_result_first_interval_us: u64,
+    pub(super) present_result_max_interval_us: u64,
+    pub(super) present_result_max_interval_after_warmup_us: u64,
+    pub(super) present_result_over_budget_count: u32,
+    pub(super) present_result_over_budget_after_warmup_count: u32,
+    pub(super) present_result_missed_vblank_threshold_us: u64,
+    pub(super) present_result_missed_vblank_count: u32,
+    pub(super) present_result_missed_vblank_after_warmup_count: u32,
+}
+
 pub(super) fn native_vulkan_direct_runtime_summary(
     elapsed: Duration,
     presented_frame_count: u32,
@@ -48,6 +63,121 @@ pub(super) fn native_vulkan_direct_runtime_summary(
             handoff.displayed_direct_dpb_count,
             handoff.display_handoff_strategy,
         ),
+    }
+}
+
+pub(super) fn native_vulkan_direct_present_result_summary<I>(
+    target_max_fps: Option<u32>,
+    present_result_times_us: I,
+) -> NativeVulkanDirectPresentResultSummary
+where
+    I: IntoIterator<Item = u64>,
+{
+    let present_result_times = present_result_times_us
+        .into_iter()
+        .filter(|time| *time != 0)
+        .collect::<Vec<_>>();
+    let present_result_warmup_frame_count = 60usize;
+    let present_result_budget_us = target_max_fps
+        .map(|fps| {
+            let fps = u64::from(fps.max(1));
+            1_000_000u64.div_ceil(fps)
+        })
+        .unwrap_or(0);
+    let present_result_missed_vblank_threshold_us = present_result_budget_us
+        .saturating_mul(3)
+        .checked_div(2)
+        .unwrap_or(0);
+
+    let mut present_result_first_interval_us = 0u64;
+    let mut present_result_max_interval_us = 0u64;
+    let mut present_result_max_interval_after_warmup_us = 0u64;
+    let mut present_result_over_budget_count = 0u32;
+    let mut present_result_over_budget_after_warmup_count = 0u32;
+    let mut present_result_missed_vblank_count = 0u32;
+    let mut present_result_missed_vblank_after_warmup_count = 0u32;
+    for (index, window) in present_result_times.windows(2).enumerate() {
+        let interval = window[1].saturating_sub(window[0]);
+        if index == 0 {
+            present_result_first_interval_us = interval;
+        }
+        present_result_max_interval_us = present_result_max_interval_us.max(interval);
+        if index >= present_result_warmup_frame_count {
+            present_result_max_interval_after_warmup_us =
+                present_result_max_interval_after_warmup_us.max(interval);
+        }
+        if present_result_budget_us != 0 && interval > present_result_budget_us {
+            present_result_over_budget_count = present_result_over_budget_count.saturating_add(1);
+            if index >= present_result_warmup_frame_count {
+                present_result_over_budget_after_warmup_count =
+                    present_result_over_budget_after_warmup_count.saturating_add(1);
+            }
+        }
+        if present_result_missed_vblank_threshold_us != 0
+            && interval > present_result_missed_vblank_threshold_us
+        {
+            present_result_missed_vblank_count =
+                present_result_missed_vblank_count.saturating_add(1);
+            if index >= present_result_warmup_frame_count {
+                present_result_missed_vblank_after_warmup_count =
+                    present_result_missed_vblank_after_warmup_count.saturating_add(1);
+            }
+        }
+    }
+
+    let average_present_result_fps = if present_result_times.len() > 1 {
+        let first = present_result_times[0];
+        let last = present_result_times[present_result_times.len() - 1];
+        if last > first {
+            (present_result_times.len().saturating_sub(1) as f64) * 1_000_000.0
+                / (last - first) as f64
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+    let average_present_result_drop_first_fps = if present_result_times.len() > 2 {
+        let second = present_result_times[1];
+        let last = present_result_times[present_result_times.len() - 1];
+        if last > second {
+            (present_result_times.len().saturating_sub(2) as f64) * 1_000_000.0
+                / (last - second) as f64
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+    let average_present_result_drop_first_60_fps =
+        if present_result_times.len() > present_result_warmup_frame_count + 1 {
+            let first_after_warmup = present_result_times[present_result_warmup_frame_count];
+            let last = present_result_times[present_result_times.len() - 1];
+            if last > first_after_warmup {
+                (present_result_times
+                    .len()
+                    .saturating_sub(present_result_warmup_frame_count + 1) as f64)
+                    * 1_000_000.0
+                    / (last - first_after_warmup) as f64
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+    NativeVulkanDirectPresentResultSummary {
+        average_present_result_fps,
+        average_present_result_drop_first_fps,
+        average_present_result_drop_first_60_fps,
+        present_result_first_interval_us,
+        present_result_max_interval_us,
+        present_result_max_interval_after_warmup_us,
+        present_result_over_budget_count,
+        present_result_over_budget_after_warmup_count,
+        present_result_missed_vblank_threshold_us,
+        present_result_missed_vblank_count,
+        present_result_missed_vblank_after_warmup_count,
     }
 }
 
@@ -95,5 +225,31 @@ mod tests {
             summary.decoded_frame_zero_copy_scope,
             NATIVE_VULKAN_DIRECT_DECODED_FRAME_ZERO_COPY_SCOPE
         );
+    }
+
+    #[test]
+    fn present_result_summary_reports_rate_and_budget_misses() {
+        let summary = native_vulkan_direct_present_result_summary(
+            Some(240),
+            [10_000, 14_167, 18_334, 28_334],
+        );
+
+        assert!((summary.average_present_result_fps - 163.63).abs() < 0.01);
+        assert!((summary.average_present_result_drop_first_fps - 141.17).abs() < 0.01);
+        assert_eq!(summary.present_result_first_interval_us, 4_167);
+        assert_eq!(summary.present_result_max_interval_us, 10_000);
+        assert_eq!(summary.present_result_over_budget_count, 1);
+        assert_eq!(summary.present_result_missed_vblank_threshold_us, 6_250);
+        assert_eq!(summary.present_result_missed_vblank_count, 1);
+    }
+
+    #[test]
+    fn present_result_summary_filters_zero_placeholders() {
+        let summary =
+            native_vulkan_direct_present_result_summary(Some(60), [0, 1_000, 17_667, 34_334]);
+
+        assert_eq!(summary.present_result_first_interval_us, 16_667);
+        assert_eq!(summary.present_result_over_budget_count, 0);
+        assert_eq!(summary.present_result_missed_vblank_count, 0);
     }
 }

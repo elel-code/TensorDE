@@ -137,7 +137,8 @@ mod demux_gst;
 pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy};
 #[cfg(feature = "native-vulkan-gst-video")]
 use direct_runtime::{
-    NativeVulkanDirectDisplayHandoffMetrics, native_vulkan_direct_runtime_summary,
+    NativeVulkanDirectDisplayHandoffMetrics, native_vulkan_direct_present_result_summary,
+    native_vulkan_direct_runtime_summary,
 };
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
@@ -2510,6 +2511,17 @@ pub struct NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
     pub total_frame_sleep_us: u64,
     pub max_frame_pacing_late_us: u64,
     pub average_present_fps: f64,
+    pub average_present_result_fps: f64,
+    pub average_present_result_drop_first_fps: f64,
+    pub average_present_result_drop_first_60_fps: f64,
+    pub present_result_first_interval_us: u64,
+    pub present_result_max_interval_us: u64,
+    pub present_result_max_interval_after_warmup_us: u64,
+    pub present_result_over_budget_count: u32,
+    pub present_result_over_budget_after_warmup_count: u32,
+    pub present_result_missed_vblank_threshold_us: u64,
+    pub present_result_missed_vblank_count: u32,
+    pub present_result_missed_vblank_after_warmup_count: u32,
     pub configured: bool,
     pub source: PathBuf,
     pub source_extent: (u32, u32),
@@ -2615,6 +2627,7 @@ pub struct NativeVulkanDirectH265ReadyPrefixFrameSnapshot {
     pub submit_elapsed_us: u64,
     pub queue_present_elapsed_us: u64,
     pub present_elapsed_us: u64,
+    pub present_result_since_start_us: u64,
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -9163,12 +9176,17 @@ pub fn run_h265_ready_prefix_video(
                 queue_submit_elapsed_us: u64,
                 queue_present_elapsed_us: u64,
                 present_elapsed_us: u64,
+                present_result_since_start_us: u64,
             }
-            let h265_async_present_depth = render_finished_by_image
+            let default_h265_async_present_depth = render_finished_by_image
                 .len()
                 .saturating_sub(1)
                 .max(1)
                 .min(2) as u32;
+            let h265_async_present_depth = native_vulkan_h265_async_present_depth(
+                default_h265_async_present_depth,
+                render_finished_by_image.len().max(1) as u32,
+            );
             let mut h265_present_frame_preroll_count = 0u32;
             let mut h265_present_result_wait_count = 0u32;
             let mut h265_present_result_wait_elapsed_us = 0u64;
@@ -9233,6 +9251,7 @@ pub fn run_h265_ready_prefix_video(
                     frame.submit_elapsed_us = result.queue_submit_elapsed_us;
                     frame.queue_present_elapsed_us = result.queue_present_elapsed_us;
                     frame.present_elapsed_us = result.present_elapsed_us;
+                    frame.present_result_since_start_us = result.present_result_since_start_us;
                     Ok(())
                 };
             let renderer_ref_for_worker: &NativeVulkanVideoRenderer = &*renderer_ref;
@@ -9415,6 +9434,9 @@ pub fn run_h265_ready_prefix_video(
                                     ),
                                     present_elapsed_us: native_vulkan_elapsed_us(
                                         present_result_at.duration_since(job.present_started_at),
+                                    ),
+                                    present_result_since_start_us: native_vulkan_elapsed_us(
+                                        present_result_at.duration_since(started_at),
                                     ),
                                 })
                             })();
@@ -9829,6 +9851,12 @@ pub fn run_h265_ready_prefix_video(
                     display_handoff_strategy: h265_display_handoff_strategy,
                 },
             );
+            let present_result_summary = native_vulkan_direct_present_result_summary(
+                target_max_fps,
+                frames
+                    .iter()
+                    .map(|frame| frame.present_result_since_start_us),
+            );
             Ok(NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
                 runtime_elapsed_ms: direct_runtime.runtime_elapsed_ms,
                 requested_codec: codec,
@@ -9855,6 +9883,27 @@ pub fn run_h265_ready_prefix_video(
                 total_frame_sleep_us,
                 max_frame_pacing_late_us,
                 average_present_fps: direct_runtime.average_present_fps,
+                average_present_result_fps: present_result_summary.average_present_result_fps,
+                average_present_result_drop_first_fps: present_result_summary
+                    .average_present_result_drop_first_fps,
+                average_present_result_drop_first_60_fps: present_result_summary
+                    .average_present_result_drop_first_60_fps,
+                present_result_first_interval_us: present_result_summary
+                    .present_result_first_interval_us,
+                present_result_max_interval_us: present_result_summary
+                    .present_result_max_interval_us,
+                present_result_max_interval_after_warmup_us: present_result_summary
+                    .present_result_max_interval_after_warmup_us,
+                present_result_over_budget_count: present_result_summary
+                    .present_result_over_budget_count,
+                present_result_over_budget_after_warmup_count: present_result_summary
+                    .present_result_over_budget_after_warmup_count,
+                present_result_missed_vblank_threshold_us: present_result_summary
+                    .present_result_missed_vblank_threshold_us,
+                present_result_missed_vblank_count: present_result_summary
+                    .present_result_missed_vblank_count,
+                present_result_missed_vblank_after_warmup_count: present_result_summary
+                    .present_result_missed_vblank_after_warmup_count,
                 configured: probe.host.snapshot().configured,
                 source,
                 source_extent: (width, height),
@@ -29798,6 +29847,16 @@ fn native_vulkan_h265_begin_includes_setup_slot() -> bool {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_async_present_depth(default_depth: u32, max_depth: u32) -> u32 {
+    std::env::var("GILDER_H265_ASYNC_PRESENT_DEPTH")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default_depth.max(1))
+        .clamp(1, max_depth.max(1))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_h265_direct_present_clear_preroll_count() -> u32 {
     if matches!(
         std::env::var("GILDER_H265_DIRECT_PRESENT_CLEAR_PREROLL")
@@ -30758,6 +30817,7 @@ fn native_vulkan_decode_h265_ready_prefix_frame_to_image(
         submit_elapsed_us: 0,
         queue_present_elapsed_us: 0,
         present_elapsed_us: 0,
+        present_result_since_start_us: 0,
     })
 }
 
