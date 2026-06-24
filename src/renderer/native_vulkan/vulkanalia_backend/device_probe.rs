@@ -5,7 +5,7 @@ use vulkanalia::Version;
 use vulkanalia::loader::LibloadingLoader;
 use vulkanalia::prelude::v1_4::*;
 
-use super::queue_probe::native_vulkan_vulkanalia_has_video_decode_queue_family;
+use super::queue_probe::native_vulkan_vulkanalia_video_decode_queue_family_indices;
 use super::video_format_probe::{
     NativeVulkanVulkanaliaVideoFormatProbeSnapshot, native_vulkan_vulkanalia_video_format_probe,
 };
@@ -71,6 +71,8 @@ pub struct NativeVulkanVulkanaliaPhysicalDeviceSnapshot {
     pub has_required_video_device_extensions: bool,
     pub has_required_external_memory_device_extensions: bool,
     pub has_video_decode_queue_family: bool,
+    pub video_decode_queue_family_indices: Vec<u32>,
+    pub selected_video_decode_queue_family_index: Option<u32>,
     pub video_profile_capabilities: NativeVulkanVulkanaliaVideoProfileProbeSnapshot,
     pub video_format_capabilities: NativeVulkanVulkanaliaVideoFormatProbeSnapshot,
     pub video_session_resource_plans: Vec<NativeVulkanVulkanaliaVideoSessionResourceProbePlan>,
@@ -218,8 +220,14 @@ fn probe_vulkanalia_instance_devices(
                 &device_extensions,
                 REQUIRED_EXTERNAL_MEMORY_DEVICE_EXTENSIONS,
             );
-            let has_video_decode_queue_family =
-                native_vulkan_vulkanalia_has_video_decode_queue_family(instance, physical_device);
+            let video_decode_queue_family_indices =
+                native_vulkan_vulkanalia_video_decode_queue_family_indices(
+                    instance,
+                    physical_device,
+                );
+            let selected_video_decode_queue_family_index =
+                video_decode_queue_family_indices.first().copied();
+            let has_video_decode_queue_family = selected_video_decode_queue_family_index.is_some();
             let video_profile_capabilities = native_vulkan_vulkanalia_video_profile_probe(
                 instance,
                 physical_device,
@@ -248,6 +256,8 @@ fn probe_vulkanalia_instance_devices(
                 has_required_video_device_extensions,
                 has_required_external_memory_device_extensions,
                 has_video_decode_queue_family,
+                video_decode_queue_family_indices,
+                selected_video_decode_queue_family_index,
                 video_profile_capabilities,
                 video_format_capabilities,
                 video_session_resource_plans,

@@ -28,6 +28,8 @@ pub struct NativeVulkanVulkanaliaVideoProfileCapabilitySnapshot {
     pub supported: bool,
     pub max_level: Option<&'static str>,
     pub max_level_raw: Option<i32>,
+    pub std_header_version_name: Option<String>,
+    pub std_header_version_spec_version: Option<u32>,
     pub capability_flags: Vec<&'static str>,
     pub decode_capability_flags: Vec<&'static str>,
     pub min_bitstream_buffer_offset_alignment: Option<u64>,
@@ -416,6 +418,14 @@ fn supported_profile(
         supported: true,
         max_level,
         max_level_raw,
+        std_header_version_name: Some(
+            capabilities
+                .std_header_version
+                .extension_name
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        std_header_version_spec_version: Some(capabilities.std_header_version.spec_version),
         capability_flags: video_capability_flag_labels(capabilities.flags),
         decode_capability_flags: video_decode_capability_flag_labels(decode_capability_flags),
         min_bitstream_buffer_offset_alignment: Some(
@@ -462,6 +472,8 @@ fn unsupported_profile(
         supported: false,
         max_level: None,
         max_level_raw: None,
+        std_header_version_name: None,
+        std_header_version_spec_version: None,
         capability_flags: Vec::new(),
         decode_capability_flags: Vec::new(),
         min_bitstream_buffer_offset_alignment: None,
@@ -473,5 +485,56 @@ fn unsupported_profile(
         max_active_reference_pictures: None,
         field_offset_granularity: None,
         query_error: Some(query_error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn supported_profile_preserves_std_header_version() {
+        let mut capabilities = vk::VideoCapabilitiesKHR::default();
+        capabilities.std_header_version.spec_version = 7;
+
+        let profile = supported_profile(
+            "h265",
+            "main-10",
+            vk::video::STD_VIDEO_H265_PROFILE_IDC_MAIN_10.0,
+            None,
+            vec!["420"],
+            vec!["10-bit"],
+            vec!["10-bit"],
+            Some("6.2"),
+            Some(vk::video::STD_VIDEO_H265_LEVEL_IDC_6_2.0),
+            capabilities,
+            vk::VideoDecodeCapabilityFlagsKHR::DPB_AND_OUTPUT_COINCIDE,
+            None,
+        );
+
+        assert!(profile.supported);
+        assert_eq!(profile.std_header_version_spec_version, Some(7));
+        assert_eq!(
+            profile.decode_capability_flags,
+            vec!["dpb-and-output-coincide"]
+        );
+    }
+
+    #[test]
+    fn unsupported_profile_has_no_std_header_version() {
+        let profile = unsupported_profile(
+            "av1",
+            "main-10",
+            vk::video::STD_VIDEO_AV1_PROFILE_MAIN.0,
+            None,
+            vec!["420"],
+            vec!["10-bit"],
+            vec!["10-bit"],
+            "missing required Vulkan Video decode extensions: VK_KHR_video_decode_av1".to_owned(),
+        );
+
+        assert!(!profile.supported);
+        assert_eq!(profile.std_header_version_name, None);
+        assert_eq!(profile.std_header_version_spec_version, None);
     }
 }
