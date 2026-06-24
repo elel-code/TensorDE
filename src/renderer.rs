@@ -5465,8 +5465,8 @@ exit 0
         assert_eq!(sync.cache.planned_static_image_resources, 1);
         assert_eq!(sync.cache.planned_video_poster_resources, 1);
         assert_eq!(sync.cache.planned_slideshow_image_resources, 2);
-        assert_eq!(sync.cache.planned_scene_lite_image_resources, 2);
-        let expected_image_resource_count = 5 + expected_video_poster_static_plan_count();
+        assert_eq!(sync.cache.planned_scene_lite_image_resources, 1);
+        let expected_image_resource_count = 4 + expected_video_poster_static_plan_count();
         assert_eq!(
             sync.cache.planned_image_resource_references,
             expected_image_resource_count
@@ -5487,14 +5487,14 @@ exit 0
             + fs::metadata(slideshow_package.join("assets/b.svg"))
                 .unwrap()
                 .len();
-        let scene_snapshot_bytes = match &sync.scene_lite_plans[0].display {
-            Some(SceneLiteDisplayPlan::Image { source, .. }) => fs::metadata(source).unwrap().len(),
-            _ => panic!("expected scene-lite snapshot image display"),
-        };
-        let scene_bytes = scene_snapshot_bytes
-            + fs::metadata(scene_package.join("assets/background.svg"))
-                .unwrap()
-                .len();
+        assert!(matches!(
+            &sync.scene_lite_plans[0].display,
+            Some(SceneLiteDisplayPlan::Image { source, .. })
+                if source.ends_with("assets/background.svg")
+        ));
+        let scene_bytes = fs::metadata(scene_package.join("assets/background.svg"))
+            .unwrap()
+            .len();
         assert_eq!(sync.cache.planned_static_image_resource_bytes, static_bytes);
         assert_eq!(sync.cache.planned_video_poster_resource_bytes, poster_bytes);
         assert_eq!(
