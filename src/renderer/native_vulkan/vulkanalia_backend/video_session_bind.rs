@@ -21,6 +21,10 @@ use super::video_session::{
     native_vulkan_vulkanalia_smoke_bind_video_session_memory,
     native_vulkan_vulkanalia_video_session_resource_plans_from_format_probe,
 };
+use super::video_session_images::{
+    NativeVulkanVulkanaliaVideoSessionResourceImageSmokeSnapshot,
+    native_vulkan_vulkanalia_smoke_create_video_session_resource_image,
+};
 
 const LOADER_CANDIDATES: &[&str] = &["libvulkan.so.1", "libvulkan.so"];
 const VIDEO_QUEUE_EXTENSION_NAME: &str = "VK_KHR_video_queue";
@@ -34,6 +38,7 @@ pub struct NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
     pub codec: NativeVulkanVideoSessionCodec,
     pub width: u32,
     pub height: u32,
+    pub allocate_video_images: bool,
 }
 
 impl Default for NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
@@ -42,6 +47,7 @@ impl Default for NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
             codec: NativeVulkanVideoSessionCodec::H265Main8,
             width: 3840,
             height: 2160,
+            allocate_video_images: false,
         }
     }
 }
@@ -89,6 +95,8 @@ pub struct NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot {
     pub std_header_version_name: String,
     pub std_header_version_spec_version: u32,
     pub memory_binding: NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot,
+    pub resource_image_requested: bool,
+    pub resource_image: Option<NativeVulkanVulkanaliaVideoSessionResourceImageSmokeSnapshot>,
 }
 
 pub fn probe_native_vulkan_vulkanalia_video_session_bind(
@@ -216,6 +224,7 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
                 &mut h264_capabilities,
             )?;
             smoke_bind_vulkanalia_video_session_profile(
+                instance,
                 &device,
                 &memory_properties,
                 &selection,
@@ -258,6 +267,7 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
                 &mut h265_capabilities,
             )?;
             smoke_bind_vulkanalia_video_session_profile(
+                instance,
                 &device,
                 &memory_properties,
                 &selection,
@@ -293,6 +303,7 @@ fn probe_native_vulkan_vulkanalia_video_session_bind_inner(
                 &mut av1_capabilities,
             )?;
             smoke_bind_vulkanalia_video_session_profile(
+                instance,
                 &device,
                 &memory_properties,
                 &selection,
@@ -335,6 +346,7 @@ struct VulkanaliaVideoSessionCapabilityQuery {
 }
 
 fn smoke_bind_vulkanalia_video_session_profile(
+    instance: &Instance,
     device: &Device,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
     selection: &VulkanaliaVideoSessionPhysicalDeviceSelection,
@@ -386,6 +398,24 @@ fn smoke_bind_vulkanalia_video_session_profile(
         memory_properties,
         &create_info,
     )?;
+    let resource_image = if options.allocate_video_images {
+        Some(
+            native_vulkan_vulkanalia_smoke_create_video_session_resource_image(
+                instance,
+                device,
+                memory_properties,
+                selection.physical_device,
+                profile_info,
+                requested_extent,
+                session_max_dpb_slots.max(1),
+                picture_format,
+                queried.decode_capability_flags,
+                &[selection.queue_family_index],
+            )?,
+        )
+    } else {
+        None
+    };
 
     Ok(NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot {
         binding: "vulkanalia",
@@ -452,6 +482,8 @@ fn smoke_bind_vulkanalia_video_session_profile(
             .into_owned(),
         std_header_version_spec_version: capabilities.std_header_version.spec_version,
         memory_binding,
+        resource_image_requested: options.allocate_video_images,
+        resource_image,
     })
 }
 

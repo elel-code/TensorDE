@@ -389,6 +389,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     codec: video_session_options.codec,
                     width: video_session_options.width,
                     height: video_session_options.height,
+                    allocate_video_images: video_session_options.allocate_video_images,
                 }
             )?)
         }

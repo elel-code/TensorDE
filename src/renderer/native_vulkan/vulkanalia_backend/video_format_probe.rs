@@ -272,7 +272,7 @@ fn query_format_properties_for_profile(
     image_usage: vk::ImageUsageFlags,
     profile_info: &vk::VideoProfileInfoKHR,
 ) -> NativeVulkanVulkanaliaVideoFormatQuerySnapshot {
-    match query_video_format_properties_explicit(
+    match native_vulkan_vulkanalia_video_format_properties_for_profile(
         instance,
         physical_device,
         profile_info,
@@ -299,7 +299,7 @@ fn query_format_properties_for_profile(
     }
 }
 
-fn query_video_format_properties_explicit(
+pub(super) fn native_vulkan_vulkanalia_video_format_properties_for_profile(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     profile_info: &vk::VideoProfileInfoKHR,
