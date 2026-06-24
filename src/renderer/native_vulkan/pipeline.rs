@@ -39,6 +39,9 @@ pub struct NativeVulkanVideoPipelineRouteContract {
     pub decode_owner: &'static str,
     pub gilder_role: &'static str,
     pub handoff_contract: &'static str,
+    pub compressed_payload_copy_scope: &'static str,
+    pub decoded_frame_copy_scope: &'static str,
+    pub zero_copy_claim: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -61,6 +64,9 @@ pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContr
                 decode_owner: "gilder-native-vulkan",
                 gilder_role: "Vulkan Video decode, decoded image ownership, render and present",
                 handoff_contract: "bounded encoded AU/TU packets with timestamps, loop serial and parameter-set snapshots",
+                compressed_payload_copy_scope: "frontend CPU packet payloads are copied into the Vulkan Video bitstream ring",
+                decoded_frame_copy_scope: "decoded DPB/output images stay GPU-owned and may be sampled directly by render",
+                zero_copy_claim: "decoded-frame display handoff only when display-copy telemetry is zero; not a full-pipeline zero-copy claim",
             },
             NativeVulkanVideoPipelineRouteContract {
                 kind: NativeVulkanVideoPipelineRouteKind::DecodedFrameFrontend,
@@ -68,6 +74,9 @@ pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContr
                 decode_owner: "gstreamer",
                 gilder_role: "provider-neutral decoded sample import, render and present",
                 handoff_contract: "decoded frame samples with caps, timestamps and memory route; gst-dma is a DMABuf/VA memory route under this contract",
+                compressed_payload_copy_scope: "compressed payload lifetime is internal to the provider decoder",
+                decoded_frame_copy_scope: "decoded samples avoid CPU copies only after a confirmed DMABuf/DRM-PRIME Vulkan import contract",
+                zero_copy_claim: "provider-decoded import/display handoff only; hardware decode or GPU memory labels alone are insufficient",
             },
         ],
         stages: vec![
@@ -162,6 +171,7 @@ pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContr
             "audio clock frontends must expose provider-neutral runtime telemetry before pacing/render integration",
             "demux/parser ownership must not imply display-sink ownership",
             "compressed payload retention must stay bounded by the packet queue and bitstream ring",
+            "zero-copy claims must name scope: bitstream upload, decoded-frame handoff, import, render or compositor present",
             "decode, render and present telemetry must be independently attributable",
             "audio clock serial changes must invalidate stale video/audio samples across loop or seek",
         ],
@@ -185,11 +195,21 @@ mod tests {
             route.kind == NativeVulkanVideoPipelineRouteKind::BitstreamNativeDecode
                 && route.decode_owner == "gilder-native-vulkan"
                 && route.handoff_contract.contains("encoded")
+                && route
+                    .compressed_payload_copy_scope
+                    .contains("bitstream ring")
+                && route.decoded_frame_copy_scope.contains("GPU-owned")
+                && route.zero_copy_claim.contains("not a full-pipeline")
         }));
         assert!(contract.routes.iter().any(|route| {
             route.kind == NativeVulkanVideoPipelineRouteKind::DecodedFrameFrontend
                 && route.decode_owner == "gstreamer"
                 && route.handoff_contract.contains("gst-dma")
+                && route
+                    .compressed_payload_copy_scope
+                    .contains("internal to the provider")
+                && route.decoded_frame_copy_scope.contains("DMABuf/DRM-PRIME")
+                && route.zero_copy_claim.contains("insufficient")
         }));
         assert_eq!(
             contract.stages[0].kind,
@@ -229,5 +249,11 @@ mod tests {
             invariant
                 .contains("audio clock frontends must expose provider-neutral runtime telemetry")
         }));
+        assert!(
+            contract
+                .invariants
+                .iter()
+                .any(|invariant| invariant.contains("zero-copy claims must name scope"))
+        );
     }
 }
