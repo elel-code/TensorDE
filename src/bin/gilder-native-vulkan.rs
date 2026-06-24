@@ -22,7 +22,6 @@ fn main() {
 
 #[cfg(feature = "native-vulkan-renderer")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    use gilder::renderer::native_vulkan::probe_native_vulkan_vulkanalia_devices;
     #[cfg(feature = "native-vulkan-gst-video")]
     use gilder::renderer::native_vulkan::{
         NativeVulkanAudioClockProbeOptions, NativeVulkanH264VideoInputMode,
@@ -35,6 +34,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         backend_contract, capabilities, probe_vulkan_video_decode, probe_vulkan_video_session,
         probe_wayland_surface, run_clear, run_static_image, run_video,
         wallpaper_type_support_matrix,
+    };
+    use gilder::renderer::native_vulkan::{
+        NativeVulkanVulkanaliaVideoSessionBindSmokeOptions, probe_native_vulkan_vulkanalia_devices,
+        probe_native_vulkan_vulkanalia_video_session_bind,
     };
     use gilder::renderer::native_wayland::NativeWaylandLayer;
     use gilder::renderer::{StaticWallpaperPlan, VideoWallpaperPlan};
@@ -74,6 +77,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--probe-surface" => mode = NativeVulkanCliMode::ProbeSurface,
             "--probe-video" => mode = NativeVulkanCliMode::ProbeVideo,
             "--probe-vulkanalia" => mode = NativeVulkanCliMode::ProbeVulkanalia,
+            "--probe-vulkanalia-video-session" => {
+                mode = NativeVulkanCliMode::ProbeVulkanaliaVideoSession
+            }
             "--probe-video-session" => mode = NativeVulkanCliMode::ProbeVideoSession,
             "--probe-audio-clock" => mode = NativeVulkanCliMode::ProbeAudioClock,
             "--audio-clock-probe" => audio_clock_probe_with_video = true,
@@ -377,6 +383,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         NativeVulkanCliMode::ProbeVideo => json!(probe_vulkan_video_decode()?),
         NativeVulkanCliMode::ProbeVulkanalia => json!(probe_native_vulkan_vulkanalia_devices()?),
+        NativeVulkanCliMode::ProbeVulkanaliaVideoSession => {
+            json!(probe_native_vulkan_vulkanalia_video_session_bind(
+                NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
+                    codec: video_session_options.codec,
+                    width: video_session_options.width,
+                    height: video_session_options.height,
+                }
+            )?)
+        }
         NativeVulkanCliMode::ProbeVideoSession => {
             if video_session_options.sample_h265_ready_prefix_output
                 && video_session_options.decode_h265_ready_prefix_frames == 0
@@ -775,6 +790,7 @@ enum NativeVulkanCliMode {
     ProbeSurface,
     ProbeVideo,
     ProbeVulkanalia,
+    ProbeVulkanaliaVideoSession,
     ProbeVideoSession,
     ProbeAudioClock,
     RunClear,
@@ -789,12 +805,13 @@ enum NativeVulkanCliMode {
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-video-session|--probe-audio-clock|--run-clear|--run-static|--run-video|--run-h265-first-frame-video|--run-h264-ready-prefix-video|--run-h265-ready-prefix-video|--run-av1-ready-prefix-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-video-session|--probe-video-session|--probe-audio-clock|--run-clear|--run-static|--run-video|--run-h265-first-frame-video|--run-h264-ready-prefix-video|--run-h265-ready-prefix-video|--run-av1-ready-prefix-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
 --probe-video enumerates Vulkan Video decode extensions and queue families, then exits.\n\
 --probe-vulkanalia enumerates the vulkanalia Vulkan 1.4 physical-device/video/external-memory gates, then exits.\n\
+--probe-vulkanalia-video-session creates and binds a Vulkanalia Vulkan Video session for --video-codec, then exits.\n\
 --probe-video-session creates and binds a Vulkan Video H.264/H.265/AV1 decode session, then exits.\n\
 --probe-audio-clock runs an explicit audio-only GStreamer clock probe for --source, then exits.\n\
 --audio-clock-probe runs the explicit audio-only clock probe beside H.264 visible video and reports A/V drift.\n\
