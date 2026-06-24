@@ -16,6 +16,15 @@ use super::video_bitstream_buffer::{
     native_vulkan_vulkanalia_destroy_video_session_bitstream_buffer,
     native_vulkan_vulkanalia_smoke_create_video_session_bitstream_buffer,
 };
+use super::video_codec::{
+    native_vulkan_vulkanalia_video_session_bit_depth as vulkanalia_video_session_bit_depth,
+    native_vulkan_vulkanalia_video_session_codec_name as vulkanalia_video_session_codec_name,
+    native_vulkan_vulkanalia_video_session_codec_operation as vulkanalia_video_session_codec_operation,
+    native_vulkan_vulkanalia_video_session_format_probe_profile as vulkanalia_video_session_format_probe_profile,
+    native_vulkan_vulkanalia_video_session_label as vulkanalia_video_session_label,
+    native_vulkan_vulkanalia_video_session_picture_format as vulkanalia_video_session_picture_format,
+    native_vulkan_vulkanalia_video_session_profile_label as vulkanalia_video_session_profile_label,
+};
 use super::video_command_pool::{
     native_vulkan_vulkanalia_create_decode_command_buffer,
     native_vulkan_vulkanalia_destroy_decode_command_buffer,
@@ -1757,38 +1766,6 @@ fn query_vulkanalia_av1_video_session_capabilities(
     })
 }
 
-fn vulkanalia_video_session_codec_name(codec: NativeVulkanVideoSessionCodec) -> &'static str {
-    match codec {
-        NativeVulkanVideoSessionCodec::H264High8 => "h264",
-        NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10 => {
-            "h265"
-        }
-        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => "av1",
-    }
-}
-
-fn vulkanalia_video_session_label(codec: NativeVulkanVideoSessionCodec) -> &'static str {
-    match codec {
-        NativeVulkanVideoSessionCodec::H264High8 => "h264-high-8",
-        NativeVulkanVideoSessionCodec::H265Main8 => "h265-main-8",
-        NativeVulkanVideoSessionCodec::H265Main10 => "h265-main-10",
-        NativeVulkanVideoSessionCodec::Av1Main8 => "av1-main-8",
-        NativeVulkanVideoSessionCodec::Av1Main10 => "av1-main-10",
-    }
-}
-
-fn vulkanalia_video_session_profile_label(codec: NativeVulkanVideoSessionCodec) -> &'static str {
-    match codec {
-        NativeVulkanVideoSessionCodec::H264High8 => "high-8",
-        NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::Av1Main8 => {
-            "main-8"
-        }
-        NativeVulkanVideoSessionCodec::H265Main10 | NativeVulkanVideoSessionCodec::Av1Main10 => {
-            "main-10"
-        }
-    }
-}
-
 fn vulkanalia_video_session_effective_profile_label(
     options: &NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
 ) -> Result<&'static str, String> {
@@ -1818,20 +1795,6 @@ fn vulkanalia_video_session_effective_profile_label(
             }
         }
         _ => Ok(vulkanalia_video_session_profile_label(options.codec)),
-    }
-}
-
-fn vulkanalia_video_session_format_probe_profile(
-    codec: NativeVulkanVideoSessionCodec,
-) -> &'static str {
-    match codec {
-        NativeVulkanVideoSessionCodec::H264High8 => "high",
-        NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::Av1Main8 => {
-            "main-8"
-        }
-        NativeVulkanVideoSessionCodec::H265Main10 | NativeVulkanVideoSessionCodec::Av1Main10 => {
-            "main-10"
-        }
     }
 }
 
@@ -1871,19 +1834,6 @@ fn vulkanalia_video_session_effective_h264_std_profile_idc(
         .map(|profile| profile.unwrap_or(vk::video::STD_VIDEO_H264_PROFILE_IDC_HIGH))
 }
 
-fn vulkanalia_video_session_bit_depth(
-    codec: NativeVulkanVideoSessionCodec,
-) -> vk::VideoComponentBitDepthFlagsKHR {
-    match codec {
-        NativeVulkanVideoSessionCodec::H264High8
-        | NativeVulkanVideoSessionCodec::H265Main8
-        | NativeVulkanVideoSessionCodec::Av1Main8 => vk::VideoComponentBitDepthFlagsKHR::_8,
-        NativeVulkanVideoSessionCodec::H265Main10 | NativeVulkanVideoSessionCodec::Av1Main10 => {
-            vk::VideoComponentBitDepthFlagsKHR::_10
-        }
-    }
-}
-
 fn vulkanalia_video_session_effective_bit_depth(
     options: &NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
 ) -> vk::VideoComponentBitDepthFlagsKHR {
@@ -1900,17 +1850,6 @@ fn vulkanalia_video_session_effective_bit_depth(
     vulkanalia_video_session_bit_depth(options.codec)
 }
 
-fn vulkanalia_video_session_picture_format(codec: NativeVulkanVideoSessionCodec) -> vk::Format {
-    match codec {
-        NativeVulkanVideoSessionCodec::H264High8
-        | NativeVulkanVideoSessionCodec::H265Main8
-        | NativeVulkanVideoSessionCodec::Av1Main8 => vk::Format::G8_B8R8_2PLANE_420_UNORM,
-        NativeVulkanVideoSessionCodec::H265Main10 | NativeVulkanVideoSessionCodec::Av1Main10 => {
-            vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
-        }
-    }
-}
-
 fn vulkanalia_video_session_effective_picture_format(
     options: &NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
 ) -> vk::Format {
@@ -1925,20 +1864,6 @@ fn vulkanalia_video_session_effective_picture_format(
         };
     }
     vulkanalia_video_session_picture_format(options.codec)
-}
-
-fn vulkanalia_video_session_codec_operation(
-    codec: NativeVulkanVideoSessionCodec,
-) -> vk::VideoCodecOperationFlagsKHR {
-    match codec {
-        NativeVulkanVideoSessionCodec::H264High8 => vk::VideoCodecOperationFlagsKHR::DECODE_H264,
-        NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10 => {
-            vk::VideoCodecOperationFlagsKHR::DECODE_H265
-        }
-        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => {
-            vk::VideoCodecOperationFlagsKHR::DECODE_AV1
-        }
-    }
 }
 
 fn video_format_probe_includes_format(

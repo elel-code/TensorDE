@@ -20,6 +20,8 @@ mod profiles;
 mod queue_probe;
 #[path = "vulkanalia_backend/video_bitstream_buffer.rs"]
 mod video_bitstream_buffer;
+#[path = "vulkanalia_backend/video_codec.rs"]
+mod video_codec;
 #[path = "vulkanalia_backend/video_command_pool.rs"]
 mod video_command_pool;
 #[path = "vulkanalia_backend/video_decode_commands.rs"]

@@ -9,6 +9,7 @@ use vulkanalia::vk::{self, HasBuilder};
 use crate::renderer::native_vulkan::NativeVulkanVideoSessionCodec;
 
 use super::queue_probe::native_vulkan_vulkanalia_video_decode_queue_family_indices;
+use super::video_codec::native_vulkan_vulkanalia_video_decode_codec_label;
 
 pub(super) const VIDEO_MAINTENANCE1_EXTENSION_NAME: &str = "VK_KHR_video_maintenance1";
 pub(super) const VIDEO_MAINTENANCE2_EXTENSION_NAME: &str = "VK_KHR_video_maintenance2";
@@ -228,18 +229,6 @@ pub(super) fn native_vulkan_vulkanalia_video_decode_required_device_extensions(
         }
     });
     extensions
-}
-
-fn native_vulkan_vulkanalia_video_decode_codec_label(
-    codec: NativeVulkanVideoSessionCodec,
-) -> &'static str {
-    match codec {
-        NativeVulkanVideoSessionCodec::H264High8 => "H.264 high-8",
-        NativeVulkanVideoSessionCodec::H265Main8 => "H.265 main-8",
-        NativeVulkanVideoSessionCodec::H265Main10 => "H.265 main-10",
-        NativeVulkanVideoSessionCodec::Av1Main8 => "AV1 main-8",
-        NativeVulkanVideoSessionCodec::Av1Main10 => "AV1 main-10",
-    }
 }
 
 fn native_vulkan_vulkanalia_video_decode_device_extensions(

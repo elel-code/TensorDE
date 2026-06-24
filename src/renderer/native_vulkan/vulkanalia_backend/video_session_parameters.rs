@@ -3,6 +3,8 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder, KhrVideoQueueExtensionDeviceCommands};
 
+use super::video_codec::native_vulkan_vulkanalia_video_session_label;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot {
     pub requested: bool,
@@ -212,13 +214,7 @@ pub(super) fn native_vulkan_vulkanalia_destroy_video_session_parameters(
 pub(super) fn vulkanalia_session_parameters_codec_label(
     codec: NativeVulkanVideoSessionCodec,
 ) -> &'static str {
-    match codec {
-        NativeVulkanVideoSessionCodec::H264High8 => "h264-high-8",
-        NativeVulkanVideoSessionCodec::H265Main8 => "h265-main-8",
-        NativeVulkanVideoSessionCodec::H265Main10 => "h265-main-10",
-        NativeVulkanVideoSessionCodec::Av1Main8 => "av1-main-8",
-        NativeVulkanVideoSessionCodec::Av1Main10 => "av1-main-10",
-    }
+    native_vulkan_vulkanalia_video_session_label(codec)
 }
 
 #[cfg(test)]

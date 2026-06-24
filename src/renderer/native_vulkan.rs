@@ -185,6 +185,9 @@ mod video_probe_snapshots;
 #[path = "native_vulkan/codec_snapshots.rs"]
 mod codec_snapshots;
 
+#[path = "native_vulkan/video_codec.rs"]
+mod video_codec;
+
 #[cfg(feature = "native-vulkan-gst-video")]
 #[path = "native_vulkan/codec_reference.rs"]
 mod codec_reference;
@@ -249,6 +252,7 @@ pub use scene_lite_runtime::{
     NativeVulkanSceneLiteQuadVertexSnapshot, NativeVulkanSceneLiteRuntimeSnapshot,
     NativeVulkanSceneLiteUnsupportedLayerSnapshot,
 };
+pub use video_codec::NativeVulkanVideoSessionCodec;
 pub use video_frontend::NativeVulkanVideoCapsSnapshot;
 use video_frontend::NativeVulkanVideoFrontendSnapshot;
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -615,40 +619,7 @@ impl Default for NativeVulkanSurfaceProbeOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum NativeVulkanVideoSessionCodec {
-    #[serde(rename = "h264-high-8")]
-    H264High8,
-    #[serde(rename = "h265-main-8")]
-    H265Main8,
-    #[serde(rename = "h265-main-10")]
-    H265Main10,
-    #[serde(rename = "av1-main-8")]
-    Av1Main8,
-    #[serde(rename = "av1-main-10")]
-    Av1Main10,
-}
-
 impl NativeVulkanVideoSessionCodec {
-    fn label(self) -> &'static str {
-        match self {
-            Self::H264High8 => "h264-high-8",
-            Self::H265Main8 => "h265-main-8",
-            Self::H265Main10 => "h265-main-10",
-            Self::Av1Main8 => "av1-main-8",
-            Self::Av1Main10 => "av1-main-10",
-        }
-    }
-
-    fn profile_label(self) -> &'static str {
-        match self {
-            Self::H264High8 => "high-8",
-            Self::H265Main8 | Self::Av1Main8 => "main-8",
-            Self::H265Main10 | Self::Av1Main10 => "main-10",
-        }
-    }
-
     fn codec_extension_name(self) -> &'static CStr {
         match self {
             Self::H264High8 => vk::KHR_VIDEO_DECODE_H264_NAME,
@@ -712,21 +683,6 @@ impl NativeVulkanVideoSessionCodec {
                 Some(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH)
             }
             Self::H265Main8 | Self::H265Main10 | Self::Av1Main8 | Self::Av1Main10 => None,
-        }
-    }
-}
-
-impl std::str::FromStr for NativeVulkanVideoSessionCodec {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "h264" | "avc" | "h264-high" | "h264-high-8" | "avc-high-8" => Ok(Self::H264High8),
-            "h265" | "hevc" | "h265-main-8" | "hevc-main-8" => Ok(Self::H265Main8),
-            "h265-main-10" | "hevc-main-10" => Ok(Self::H265Main10),
-            "av1" | "av1-main-8" => Ok(Self::Av1Main8),
-            "av1-main-10" => Ok(Self::Av1Main10),
-            other => Err(format!("unsupported Vulkan Video session codec: {other}")),
         }
     }
 }
