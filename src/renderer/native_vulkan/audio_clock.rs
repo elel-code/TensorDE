@@ -209,7 +209,12 @@ pub(super) struct NativeVulkanAudioClockRuntimeTelemetry {
     pub(super) reached_clocked_playback: bool,
     pub(super) audio_buffer_count: u32,
     pub(super) audio_output_sink_count: usize,
+    pub(super) audio_clock_serial: u32,
+    pub(super) audio_master_clock_estimate_ns: Option<u64>,
     pub(super) audio_position_query_hit_count: u32,
+    pub(super) audio_video_clock_drift_latest_ns: Option<i64>,
+    pub(super) audio_video_master_clock_drift_latest_ns: Option<i64>,
+    pub(super) audio_video_master_clock_drift_abs_max_ns: Option<u64>,
 }
 
 impl NativeVulkanAudioClockProbeStats {
@@ -338,7 +343,15 @@ impl NativeVulkanAudioClockRuntimeProbe {
                 && self.stats.audio_buffer_count > 0,
             audio_buffer_count: self.stats.audio_buffer_count,
             audio_output_sink_count,
+            audio_clock_serial: self
+                .audio_segment
+                .map(|segment| segment.serial)
+                .unwrap_or(self.audio_clock_serial),
+            audio_master_clock_estimate_ns: self.audio_master_clock_estimate_ns(),
             audio_position_query_hit_count: self.audio_position_query_hit_count,
+            audio_video_clock_drift_latest_ns: self.clock_drift_latest_ns,
+            audio_video_master_clock_drift_latest_ns: self.master_clock_drift_latest_ns,
+            audio_video_master_clock_drift_abs_max_ns: self.master_clock_drift_abs_max_ns,
         }
     }
 

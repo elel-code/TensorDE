@@ -51629,7 +51629,18 @@ mod tests {
         assert!(!snapshot.audio_runtime_reached_clocked_playback);
         assert_eq!(snapshot.audio_runtime_buffer_count, 0);
         assert_eq!(snapshot.audio_runtime_output_sink_count, 0);
+        assert_eq!(snapshot.audio_runtime_clock_serial, 0);
+        assert_eq!(snapshot.audio_runtime_master_clock_estimate_ns, None);
         assert_eq!(snapshot.audio_runtime_position_query_hit_count, 0);
+        assert_eq!(snapshot.audio_runtime_video_clock_drift_latest_ns, None);
+        assert_eq!(
+            snapshot.audio_runtime_video_master_clock_drift_latest_ns,
+            None
+        );
+        assert_eq!(
+            snapshot.audio_runtime_video_master_clock_drift_abs_max_ns,
+            None
+        );
         assert_eq!(snapshot.audio_runtime_last_error, None);
         assert_eq!(snapshot.frames_received, 0);
         assert_eq!(snapshot.frames_imported, 0);
@@ -51672,7 +51683,12 @@ mod tests {
             reached_clocked_playback: true,
             audio_buffer_count: 18,
             audio_output_sink_count: 2,
+            audio_clock_serial: 3,
+            audio_master_clock_estimate_ns: Some(1_240_000_000),
             audio_position_query_hit_count: 12,
+            audio_video_clock_drift_latest_ns: Some(-20_000),
+            audio_video_master_clock_drift_latest_ns: Some(15_000),
+            audio_video_master_clock_drift_abs_max_ns: Some(40_000),
         };
 
         let snapshot = native_vulkan_video_runtime_snapshot(
@@ -51694,7 +51710,24 @@ mod tests {
         assert!(snapshot.audio_runtime_reached_clocked_playback);
         assert_eq!(snapshot.audio_runtime_buffer_count, 18);
         assert_eq!(snapshot.audio_runtime_output_sink_count, 2);
+        assert_eq!(snapshot.audio_runtime_clock_serial, 3);
+        assert_eq!(
+            snapshot.audio_runtime_master_clock_estimate_ns,
+            Some(1_240_000_000)
+        );
         assert_eq!(snapshot.audio_runtime_position_query_hit_count, 12);
+        assert_eq!(
+            snapshot.audio_runtime_video_clock_drift_latest_ns,
+            Some(-20_000)
+        );
+        assert_eq!(
+            snapshot.audio_runtime_video_master_clock_drift_latest_ns,
+            Some(15_000)
+        );
+        assert_eq!(
+            snapshot.audio_runtime_video_master_clock_drift_abs_max_ns,
+            Some(40_000)
+        );
         assert_eq!(snapshot.audio_runtime_last_error, None);
     }
 
@@ -51781,6 +51814,8 @@ mod tests {
         assert_eq!(snapshot.audio_output_status, "disabled-by-muted-plan");
         assert_eq!(snapshot.audio_runtime_status, "disabled-by-muted-plan");
         assert_eq!(snapshot.audio_runtime_provider, "none");
+        assert_eq!(snapshot.audio_runtime_clock_serial, 0);
+        assert_eq!(snapshot.audio_runtime_master_clock_estimate_ns, None);
         assert_eq!(snapshot.frontend_status, "appsink-receiving-samples");
         assert_eq!(snapshot.handoff_status, "appsink-sample-handoff-active");
         assert_eq!(snapshot.frames_received, 3);

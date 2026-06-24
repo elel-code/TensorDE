@@ -41,7 +41,12 @@ pub struct NativeVulkanVideoRuntimeSnapshot {
     pub audio_runtime_reached_clocked_playback: bool,
     pub audio_runtime_buffer_count: u32,
     pub audio_runtime_output_sink_count: usize,
+    pub audio_runtime_clock_serial: u32,
+    pub audio_runtime_master_clock_estimate_ns: Option<u64>,
     pub audio_runtime_position_query_hit_count: u32,
+    pub audio_runtime_video_clock_drift_latest_ns: Option<i64>,
+    pub audio_runtime_video_master_clock_drift_latest_ns: Option<i64>,
+    pub audio_runtime_video_master_clock_drift_abs_max_ns: Option<u64>,
     pub audio_runtime_last_error: Option<String>,
     pub gst_state: Option<String>,
     pub eos_messages: u64,
@@ -79,7 +84,12 @@ pub(super) struct NativeVulkanVideoAudioRuntimeTelemetry {
     pub(super) reached_clocked_playback: bool,
     pub(super) audio_buffer_count: u32,
     pub(super) audio_output_sink_count: usize,
+    pub(super) audio_clock_serial: u32,
+    pub(super) audio_master_clock_estimate_ns: Option<u64>,
     pub(super) audio_position_query_hit_count: u32,
+    pub(super) audio_video_clock_drift_latest_ns: Option<i64>,
+    pub(super) audio_video_master_clock_drift_latest_ns: Option<i64>,
+    pub(super) audio_video_master_clock_drift_abs_max_ns: Option<u64>,
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -93,7 +103,14 @@ impl NativeVulkanVideoAudioRuntimeTelemetry {
             reached_clocked_playback: value.reached_clocked_playback,
             audio_buffer_count: value.audio_buffer_count,
             audio_output_sink_count: value.audio_output_sink_count,
+            audio_clock_serial: value.audio_clock_serial,
+            audio_master_clock_estimate_ns: value.audio_master_clock_estimate_ns,
             audio_position_query_hit_count: value.audio_position_query_hit_count,
+            audio_video_clock_drift_latest_ns: value.audio_video_clock_drift_latest_ns,
+            audio_video_master_clock_drift_latest_ns: value
+                .audio_video_master_clock_drift_latest_ns,
+            audio_video_master_clock_drift_abs_max_ns: value
+                .audio_video_master_clock_drift_abs_max_ns,
         }
     }
 }
@@ -197,9 +214,20 @@ pub(super) fn native_vulkan_video_runtime_snapshot(
     let audio_runtime_output_sink_count = audio_runtime
         .map(|runtime| runtime.audio_output_sink_count)
         .unwrap_or(0);
+    let audio_runtime_clock_serial = audio_runtime
+        .map(|runtime| runtime.audio_clock_serial)
+        .unwrap_or(0);
+    let audio_runtime_master_clock_estimate_ns =
+        audio_runtime.and_then(|runtime| runtime.audio_master_clock_estimate_ns);
     let audio_runtime_position_query_hit_count = audio_runtime
         .map(|runtime| runtime.audio_position_query_hit_count)
         .unwrap_or(0);
+    let audio_runtime_video_clock_drift_latest_ns =
+        audio_runtime.and_then(|runtime| runtime.audio_video_clock_drift_latest_ns);
+    let audio_runtime_video_master_clock_drift_latest_ns =
+        audio_runtime.and_then(|runtime| runtime.audio_video_master_clock_drift_latest_ns);
+    let audio_runtime_video_master_clock_drift_abs_max_ns =
+        audio_runtime.and_then(|runtime| runtime.audio_video_master_clock_drift_abs_max_ns);
 
     Some(NativeVulkanVideoRuntimeSnapshot {
         source: source.clone(),
@@ -258,7 +286,12 @@ pub(super) fn native_vulkan_video_runtime_snapshot(
         audio_runtime_reached_clocked_playback,
         audio_runtime_buffer_count,
         audio_runtime_output_sink_count,
+        audio_runtime_clock_serial,
+        audio_runtime_master_clock_estimate_ns,
         audio_runtime_position_query_hit_count,
+        audio_runtime_video_clock_drift_latest_ns,
+        audio_runtime_video_master_clock_drift_latest_ns,
+        audio_runtime_video_master_clock_drift_abs_max_ns,
         audio_runtime_last_error,
         gst_state: frontend
             .as_ref()
