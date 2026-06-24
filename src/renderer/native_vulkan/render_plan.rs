@@ -270,3 +270,75 @@ fn native_vulkan_clear_color_from_hex(value: &str) -> Option<NativeVulkanClearCo
     let b = u8::from_str_radix(&hex[4..6], 16).ok()? as f32 / 255.0;
     Some(NativeVulkanClearColor { r, g, b, a: 1.0 })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::{NativeVulkanClearColor, NativeVulkanRenderItem};
+    use super::*;
+    use crate::core::FitMode;
+    use crate::renderer::SceneLiteDisplayPlan;
+    use std::path::PathBuf;
+
+    #[test]
+    fn scene_lite_image_display_uses_static_upload_plan() {
+        let item = NativeVulkanRenderItem::SceneLite {
+            output_name: "HDMI-A-1".to_owned(),
+            scene_source: Some(PathBuf::from("/tmp/scene-lite.json")),
+            fallback: Some(PathBuf::from("/tmp/scene-fallback.svg")),
+            display: Some(SceneLiteDisplayPlan::Image {
+                source: PathBuf::from("/tmp/scene-snapshot.png"),
+                fit: FitMode::Contain,
+                background: Some("#010203".to_owned()),
+            }),
+            display_image: Some(PathBuf::from("/tmp/scene-snapshot.png")),
+            display_color: None,
+            manifest_max_fps: Some(60),
+            layer_count: 0,
+            layers: Vec::new(),
+            bound_properties: Vec::new(),
+            snapshot_time_ms: 0,
+            target_max_fps: Some(60),
+            renderer_status: "deterministic-scene-lite-snapshot-ready-for-vulkan-passes",
+        };
+
+        let plan = native_vulkan_static_upload_plan(&item).expect("scene-lite image display plan");
+
+        assert_eq!(plan.source, PathBuf::from("/tmp/scene-snapshot.png"));
+        assert_eq!(plan.fit, FitMode::Contain);
+        assert_eq!(plan.background.as_deref(), Some("#010203"));
+    }
+
+    #[test]
+    fn scene_lite_color_display_overrides_default_clear_color() {
+        let fallback = NativeVulkanClearColor {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        };
+        let item = NativeVulkanRenderItem::SceneLite {
+            output_name: "HDMI-A-1".to_owned(),
+            scene_source: Some(PathBuf::from("/tmp/scene-lite.json")),
+            fallback: None,
+            display: Some(SceneLiteDisplayPlan::Color {
+                color: "#102030".to_owned(),
+            }),
+            display_image: None,
+            display_color: Some("#102030".to_owned()),
+            manifest_max_fps: Some(60),
+            layer_count: 0,
+            layers: Vec::new(),
+            bound_properties: Vec::new(),
+            snapshot_time_ms: 0,
+            target_max_fps: Some(60),
+            renderer_status: "deterministic-scene-lite-snapshot-ready-for-vulkan-passes",
+        };
+
+        let color = native_vulkan_render_item_clear_color(&item, fallback);
+
+        assert!((color.r - 16.0 / 255.0).abs() < f32::EPSILON);
+        assert!((color.g - 32.0 / 255.0).abs() < f32::EPSILON);
+        assert!((color.b - 48.0 / 255.0).abs() < f32::EPSILON);
+        assert_eq!(color.a, 1.0);
+    }
+}
