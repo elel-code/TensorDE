@@ -30,6 +30,8 @@ mod video_decode_submit_av1;
 mod video_decode_submit_h264;
 #[path = "vulkanalia_backend/video_decode_submit_h265.rs"]
 mod video_decode_submit_h265;
+#[path = "vulkanalia_backend/video_device.rs"]
+mod video_device;
 #[path = "vulkanalia_backend/video_direct_runtime.rs"]
 mod video_direct_runtime;
 #[path = "vulkanalia_backend/video_format_probe.rs"]
