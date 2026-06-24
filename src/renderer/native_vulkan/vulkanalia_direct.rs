@@ -12,11 +12,12 @@ use super::vulkanalia_backend::{
     NativeVulkanVulkanaliaClearPresentSnapshot, NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput,
     NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput,
     NativeVulkanVulkanaliaSurfaceSwapchainProbeSnapshot,
-    NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions,
     NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot,
+    NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
+    NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot,
     NativeVulkanVulkanaliaVideoSessionBindSmokeOptions,
     NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot,
-    probe_native_vulkan_vulkanalia_video_present_device,
+    probe_native_vulkan_vulkanalia_video_present_session,
     probe_native_vulkan_vulkanalia_video_session_bind, run_native_vulkan_vulkanalia_clear_present,
 };
 use super::vulkanalia_extract::{
@@ -48,6 +49,9 @@ pub struct NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
     pub video_present_device_probe_requested: bool,
     pub video_present_device_probe: Option<NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot>,
     pub video_present_device_probe_error: Option<String>,
+    pub video_present_session_probe_requested: bool,
+    pub video_present_session_probe: Option<NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot>,
+    pub video_present_session_probe_error: Option<String>,
     pub present_runtime_requested: bool,
     pub present_runtime: Option<NativeVulkanVulkanaliaClearPresentSnapshot>,
     pub present_runtime_error: Option<String>,
@@ -97,18 +101,28 @@ pub fn run_vulkanalia_ready_prefix_video(
         ready_prefix.into_session_options(codec, width, height, bitstream_samples);
     let session = probe_native_vulkan_vulkanalia_video_session_bind(session_options)
         .map_err(NativeVulkanError::Video)?;
-    let video_present_device_probe = probe_native_vulkan_vulkanalia_video_present_device(
-        NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions {
+    let video_present_session_probe = probe_native_vulkan_vulkanalia_video_present_session(
+        NativeVulkanVulkanaliaVideoPresentSessionProbeOptions {
             host: options.host.clone(),
             wait_configure_roundtrips: options.wait_configure_roundtrips,
             codec,
+            width,
+            height,
         },
     );
-    let (video_present_device_probe, video_present_device_probe_error) =
-        match video_present_device_probe {
+    let (video_present_session_probe, video_present_session_probe_error) =
+        match video_present_session_probe {
             Ok(snapshot) => (Some(snapshot), None),
             Err(err) => (None, Some(err)),
         };
+    let video_present_device_probe = video_present_session_probe
+        .as_ref()
+        .map(|probe| probe.device.clone());
+    let video_present_device_probe_error = if video_present_device_probe.is_none() {
+        video_present_session_probe_error.clone()
+    } else {
+        None
+    };
     let present_runtime =
         run_native_vulkan_vulkanalia_clear_present(NativeVulkanVulkanaliaClearPresentOptions {
             host: options.host.clone(),
@@ -146,6 +160,9 @@ pub fn run_vulkanalia_ready_prefix_video(
         video_present_device_probe_requested: true,
         video_present_device_probe,
         video_present_device_probe_error,
+        video_present_session_probe_requested: true,
+        video_present_session_probe,
+        video_present_session_probe_error,
         present_runtime_requested: true,
         present_runtime,
         present_runtime_error,

@@ -145,7 +145,10 @@ pub use video_present_device::{
     NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot,
     NativeVulkanVulkanaliaVideoPresentFeatureSnapshot,
     NativeVulkanVulkanaliaVideoPresentQueueSnapshot,
+    NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
+    NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot,
     probe_native_vulkan_vulkanalia_video_present_device,
+    probe_native_vulkan_vulkanalia_video_present_session,
 };
 #[allow(unused_imports)]
 pub use video_profile_probe::{
