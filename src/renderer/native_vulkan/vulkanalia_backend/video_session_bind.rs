@@ -8,6 +8,10 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder, KhrVideoQueueExtensionInstanceCommands};
 
 use super::queue_probe::native_vulkan_vulkanalia_video_decode_queue_family_indices;
+use super::video_bitstream_buffer::{
+    NativeVulkanVulkanaliaVideoSessionBitstreamBufferSmokeSnapshot,
+    native_vulkan_vulkanalia_smoke_create_video_session_bitstream_buffer,
+};
 use super::video_format_probe::{
     NativeVulkanVulkanaliaVideoFormatQuerySnapshot, native_vulkan_vulkanalia_video_format_probe,
 };
@@ -39,6 +43,8 @@ pub struct NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
     pub width: u32,
     pub height: u32,
     pub allocate_video_images: bool,
+    pub allocate_bitstream_buffer: bool,
+    pub bitstream_buffer_size: u64,
 }
 
 impl Default for NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
@@ -48,6 +54,8 @@ impl Default for NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
             width: 3840,
             height: 2160,
             allocate_video_images: false,
+            allocate_bitstream_buffer: false,
+            bitstream_buffer_size: 8 * 1024 * 1024,
         }
     }
 }
@@ -97,6 +105,8 @@ pub struct NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot {
     pub memory_binding: NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot,
     pub resource_image_requested: bool,
     pub resource_image: Option<NativeVulkanVulkanaliaVideoSessionResourceImageSmokeSnapshot>,
+    pub bitstream_buffer_requested: bool,
+    pub bitstream_buffer: Option<NativeVulkanVulkanaliaVideoSessionBitstreamBufferSmokeSnapshot>,
 }
 
 pub fn probe_native_vulkan_vulkanalia_video_session_bind(
@@ -416,6 +426,21 @@ fn smoke_bind_vulkanalia_video_session_profile(
     } else {
         None
     };
+    let bitstream_buffer = if options.allocate_bitstream_buffer {
+        Some(
+            native_vulkan_vulkanalia_smoke_create_video_session_bitstream_buffer(
+                device,
+                memory_properties,
+                profile_info,
+                options.bitstream_buffer_size,
+                capabilities.min_bitstream_buffer_size_alignment,
+                None,
+                false,
+            )?,
+        )
+    } else {
+        None
+    };
 
     Ok(NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot {
         binding: "vulkanalia",
@@ -484,6 +509,8 @@ fn smoke_bind_vulkanalia_video_session_profile(
         memory_binding,
         resource_image_requested: options.allocate_video_images,
         resource_image,
+        bitstream_buffer_requested: options.allocate_bitstream_buffer,
+        bitstream_buffer,
     })
 }
 

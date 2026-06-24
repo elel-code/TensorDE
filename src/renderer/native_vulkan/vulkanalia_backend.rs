@@ -16,6 +16,8 @@ mod plan;
 mod profiles;
 #[path = "vulkanalia_backend/queue_probe.rs"]
 mod queue_probe;
+#[path = "vulkanalia_backend/video_bitstream_buffer.rs"]
+mod video_bitstream_buffer;
 #[path = "vulkanalia_backend/video_format_probe.rs"]
 mod video_format_probe;
 #[path = "vulkanalia_backend/video_profile_gate.rs"]
@@ -46,6 +48,11 @@ pub use migration::{
 pub use plan::{NativeVulkanVulkanaliaBackendPlan, native_vulkan_vulkanalia_backend_plan};
 pub use profiles::{
     NativeVulkanVulkanaliaVideoProfileTemplate, native_vulkan_vulkanalia_video_profile_templates,
+};
+#[allow(unused_imports)]
+pub use video_bitstream_buffer::{
+    NativeVulkanVulkanaliaVideoSessionBitstreamBufferSmokeSnapshot,
+    NativeVulkanVulkanaliaVideoSessionBitstreamBufferSnapshot,
 };
 #[allow(unused_imports)]
 pub use video_format_probe::{

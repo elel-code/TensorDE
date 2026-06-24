@@ -390,6 +390,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     width: video_session_options.width,
                     height: video_session_options.height,
                     allocate_video_images: video_session_options.allocate_video_images,
+                    allocate_bitstream_buffer: video_session_options.allocate_bitstream_buffer,
+                    bitstream_buffer_size: video_session_options.bitstream_buffer_size,
                 }
             )?)
         }
@@ -817,8 +819,8 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --probe-audio-clock runs an explicit audio-only GStreamer clock probe for --source, then exits.\n\
 --audio-clock-probe runs the explicit audio-only clock probe beside H.264 visible video and reports A/V drift.\n\
 --audio-output plan|clock-only|auto selects plan-following, clock-only telemetry, or tee-to-autoaudiosink output for --audio-clock-probe.\n\
---allocate-video-images extends --probe-video-session with codec-matching 2-plane 4:2:0 DPB/output sampled image allocation.\n\
---allocate-bitstream-buffer extends --probe-video-session with a mapped VIDEO_DECODE_SRC bitstream buffer.\n\
+--allocate-video-images extends --probe-video-session and --probe-vulkanalia-video-session with codec-matching 2-plane 4:2:0 DPB/output sampled image allocation.\n\
+--allocate-bitstream-buffer extends --probe-video-session and --probe-vulkanalia-video-session with a mapped VIDEO_DECODE_SRC bitstream buffer.\n\
 --extract-bitstream extends --probe-video-session with parser/appsink encoded AU extraction and writes the selected AU to the bitstream buffer.\n\
 --decode-first-frame extends --probe-video-session with a real H.264/H.265 IDR Vulkan Video command buffer submit.\n\
 --sample-decoded-first-frame extends --decode-first-frame with NV12 shader sampling into an offscreen Vulkan color target.\n\
