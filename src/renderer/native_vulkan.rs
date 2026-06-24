@@ -6386,100 +6386,12 @@ pub fn run_h264_ready_prefix_video(
 
                 let elapsed = started_at.elapsed();
                 let presented_frame_count = frames.len() as u32;
-                let present_result_times = frames
-                    .iter()
-                    .map(|frame| frame.present_result_since_start_us)
-                    .filter(|time| *time != 0)
-                    .collect::<Vec<_>>();
-                let present_result_warmup_frame_count = 60usize;
-                let mut present_result_first_interval_us = 0u64;
-                let mut present_result_max_interval_us = 0u64;
-                let mut present_result_max_interval_after_warmup_us = 0u64;
-                let mut present_result_over_budget_count = 0u32;
-                let mut present_result_over_budget_after_warmup_count = 0u32;
-                let present_result_budget_us = target_max_fps
-                    .map(|fps| {
-                        let fps = u64::from(fps.max(1));
-                        1_000_000u64.div_ceil(fps)
-                    })
-                    .unwrap_or(0);
-                let present_result_missed_vblank_threshold_us = present_result_budget_us
-                    .saturating_mul(3)
-                    .checked_div(2)
-                    .unwrap_or(0);
-                let mut present_result_missed_vblank_count = 0u32;
-                let mut present_result_missed_vblank_after_warmup_count = 0u32;
-                for (index, window) in present_result_times.windows(2).enumerate() {
-                    let interval = window[1].saturating_sub(window[0]);
-                    if index == 0 {
-                        present_result_first_interval_us = interval;
-                    }
-                    present_result_max_interval_us = present_result_max_interval_us.max(interval);
-                    if index >= present_result_warmup_frame_count {
-                        present_result_max_interval_after_warmup_us =
-                            present_result_max_interval_after_warmup_us.max(interval);
-                    }
-                    if present_result_budget_us != 0 && interval > present_result_budget_us {
-                        present_result_over_budget_count =
-                            present_result_over_budget_count.saturating_add(1);
-                        if index >= present_result_warmup_frame_count {
-                            present_result_over_budget_after_warmup_count =
-                                present_result_over_budget_after_warmup_count.saturating_add(1);
-                        }
-                    }
-                    if present_result_missed_vblank_threshold_us != 0
-                        && interval > present_result_missed_vblank_threshold_us
-                    {
-                        present_result_missed_vblank_count =
-                            present_result_missed_vblank_count.saturating_add(1);
-                        if index >= present_result_warmup_frame_count {
-                            present_result_missed_vblank_after_warmup_count =
-                                present_result_missed_vblank_after_warmup_count.saturating_add(1);
-                        }
-                    }
-                }
-                let average_present_result_fps = if present_result_times.len() > 1 {
-                    let first = present_result_times[0];
-                    let last = present_result_times[present_result_times.len() - 1];
-                    if last > first {
-                        (present_result_times.len().saturating_sub(1) as f64) * 1_000_000.0
-                            / (last - first) as f64
-                    } else {
-                        0.0
-                    }
-                } else {
-                    0.0
-                };
-                let average_present_result_drop_first_fps = if present_result_times.len() > 2 {
-                    let second = present_result_times[1];
-                    let last = present_result_times[present_result_times.len() - 1];
-                    if last > second {
-                        (present_result_times.len().saturating_sub(2) as f64) * 1_000_000.0
-                            / (last - second) as f64
-                    } else {
-                        0.0
-                    }
-                } else {
-                    0.0
-                };
-                let average_present_result_drop_first_60_fps =
-                    if present_result_times.len() > present_result_warmup_frame_count + 1 {
-                        let first_after_warmup =
-                            present_result_times[present_result_warmup_frame_count];
-                        let last = present_result_times[present_result_times.len() - 1];
-                        if last > first_after_warmup {
-                            (present_result_times
-                                .len()
-                                .saturating_sub(present_result_warmup_frame_count + 1)
-                                as f64)
-                                * 1_000_000.0
-                                / (last - first_after_warmup) as f64
-                        } else {
-                            0.0
-                        }
-                    } else {
-                        0.0
-                    };
+                let present_result_summary = native_vulkan_direct_present_result_summary(
+                    target_max_fps,
+                    frames
+                        .iter()
+                        .map(|frame| frame.present_result_since_start_us),
+                );
                 let pts_delta_summary = timeline::native_vulkan_timeline_pts_delta_summary(
                     target_max_fps,
                     frames.iter().map(|frame| frame.pts_delta_ms),
@@ -6524,17 +6436,27 @@ pub fn run_h264_ready_prefix_video(
                     total_frame_sleep_us,
                     max_frame_pacing_late_us,
                     average_present_fps: direct_runtime.average_present_fps,
-                    average_present_result_fps,
-                    average_present_result_drop_first_fps,
-                    average_present_result_drop_first_60_fps,
-                    present_result_first_interval_us,
-                    present_result_max_interval_us,
-                    present_result_max_interval_after_warmup_us,
-                    present_result_over_budget_count,
-                    present_result_over_budget_after_warmup_count,
-                    present_result_missed_vblank_threshold_us,
-                    present_result_missed_vblank_count,
-                    present_result_missed_vblank_after_warmup_count,
+                    average_present_result_fps: present_result_summary.average_present_result_fps,
+                    average_present_result_drop_first_fps: present_result_summary
+                        .average_present_result_drop_first_fps,
+                    average_present_result_drop_first_60_fps: present_result_summary
+                        .average_present_result_drop_first_60_fps,
+                    present_result_first_interval_us: present_result_summary
+                        .present_result_first_interval_us,
+                    present_result_max_interval_us: present_result_summary
+                        .present_result_max_interval_us,
+                    present_result_max_interval_after_warmup_us: present_result_summary
+                        .present_result_max_interval_after_warmup_us,
+                    present_result_over_budget_count: present_result_summary
+                        .present_result_over_budget_count,
+                    present_result_over_budget_after_warmup_count: present_result_summary
+                        .present_result_over_budget_after_warmup_count,
+                    present_result_missed_vblank_threshold_us: present_result_summary
+                        .present_result_missed_vblank_threshold_us,
+                    present_result_missed_vblank_count: present_result_summary
+                        .present_result_missed_vblank_count,
+                    present_result_missed_vblank_after_warmup_count: present_result_summary
+                        .present_result_missed_vblank_after_warmup_count,
                     configured: probe.host.snapshot().configured,
                     source,
                     source_extent: (width, height),
@@ -8179,100 +8101,12 @@ pub fn run_h264_ready_prefix_video(
 
             let elapsed = started_at.elapsed();
             let presented_frame_count = frames.len() as u32;
-            let present_result_times = frames
-                .iter()
-                .map(|frame| frame.present_result_since_start_us)
-                .filter(|time| *time != 0)
-                .collect::<Vec<_>>();
-            let present_result_warmup_frame_count = 60usize;
-            let mut present_result_first_interval_us = 0u64;
-            let mut present_result_max_interval_us = 0u64;
-            let mut present_result_max_interval_after_warmup_us = 0u64;
-            let mut present_result_over_budget_count = 0u32;
-            let mut present_result_over_budget_after_warmup_count = 0u32;
-            let present_result_budget_us = target_max_fps
-                .map(|fps| {
-                    let fps = u64::from(fps.max(1));
-                    1_000_000u64.div_ceil(fps)
-                })
-                .unwrap_or(0);
-            let present_result_missed_vblank_threshold_us = present_result_budget_us
-                .saturating_mul(3)
-                .checked_div(2)
-                .unwrap_or(0);
-            let mut present_result_missed_vblank_count = 0u32;
-            let mut present_result_missed_vblank_after_warmup_count = 0u32;
-            for (index, window) in present_result_times.windows(2).enumerate() {
-                let interval = window[1].saturating_sub(window[0]);
-                if index == 0 {
-                    present_result_first_interval_us = interval;
-                }
-                present_result_max_interval_us = present_result_max_interval_us.max(interval);
-                if index >= present_result_warmup_frame_count {
-                    present_result_max_interval_after_warmup_us =
-                        present_result_max_interval_after_warmup_us.max(interval);
-                }
-                if present_result_budget_us != 0 && interval > present_result_budget_us {
-                    present_result_over_budget_count =
-                        present_result_over_budget_count.saturating_add(1);
-                    if index >= present_result_warmup_frame_count {
-                        present_result_over_budget_after_warmup_count =
-                            present_result_over_budget_after_warmup_count.saturating_add(1);
-                    }
-                }
-                if present_result_missed_vblank_threshold_us != 0
-                    && interval > present_result_missed_vblank_threshold_us
-                {
-                    present_result_missed_vblank_count =
-                        present_result_missed_vblank_count.saturating_add(1);
-                    if index >= present_result_warmup_frame_count {
-                        present_result_missed_vblank_after_warmup_count =
-                            present_result_missed_vblank_after_warmup_count.saturating_add(1);
-                    }
-                }
-            }
-            let average_present_result_fps = if present_result_times.len() > 1 {
-                let first = present_result_times[0];
-                let last = present_result_times[present_result_times.len() - 1];
-                if last > first {
-                    (present_result_times.len().saturating_sub(1) as f64) * 1_000_000.0
-                        / (last - first) as f64
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
-            let average_present_result_drop_first_fps = if present_result_times.len() > 2 {
-                let second = present_result_times[1];
-                let last = present_result_times[present_result_times.len() - 1];
-                if last > second {
-                    (present_result_times.len().saturating_sub(2) as f64) * 1_000_000.0
-                        / (last - second) as f64
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
-            let average_present_result_drop_first_60_fps = if present_result_times.len()
-                > present_result_warmup_frame_count + 1
-            {
-                let first_after_warmup = present_result_times[present_result_warmup_frame_count];
-                let last = present_result_times[present_result_times.len() - 1];
-                if last > first_after_warmup {
-                    (present_result_times
-                        .len()
-                        .saturating_sub(present_result_warmup_frame_count + 1)
-                        as f64)
-                        * 1_000_000.0
-                        / (last - first_after_warmup) as f64
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
+            let present_result_summary = native_vulkan_direct_present_result_summary(
+                target_max_fps,
+                frames
+                    .iter()
+                    .map(|frame| frame.present_result_since_start_us),
+            );
             let pts_delta_summary = timeline::native_vulkan_timeline_pts_delta_summary(
                 target_max_fps,
                 frames.iter().map(|frame| frame.pts_delta_ms),
@@ -8316,17 +8150,27 @@ pub fn run_h264_ready_prefix_video(
                 total_frame_sleep_us,
                 max_frame_pacing_late_us,
                 average_present_fps: direct_runtime.average_present_fps,
-                average_present_result_fps,
-                average_present_result_drop_first_fps,
-                average_present_result_drop_first_60_fps,
-                present_result_first_interval_us,
-                present_result_max_interval_us,
-                present_result_max_interval_after_warmup_us,
-                present_result_over_budget_count,
-                present_result_over_budget_after_warmup_count,
-                present_result_missed_vblank_threshold_us,
-                present_result_missed_vblank_count,
-                present_result_missed_vblank_after_warmup_count,
+                average_present_result_fps: present_result_summary.average_present_result_fps,
+                average_present_result_drop_first_fps: present_result_summary
+                    .average_present_result_drop_first_fps,
+                average_present_result_drop_first_60_fps: present_result_summary
+                    .average_present_result_drop_first_60_fps,
+                present_result_first_interval_us: present_result_summary
+                    .present_result_first_interval_us,
+                present_result_max_interval_us: present_result_summary
+                    .present_result_max_interval_us,
+                present_result_max_interval_after_warmup_us: present_result_summary
+                    .present_result_max_interval_after_warmup_us,
+                present_result_over_budget_count: present_result_summary
+                    .present_result_over_budget_count,
+                present_result_over_budget_after_warmup_count: present_result_summary
+                    .present_result_over_budget_after_warmup_count,
+                present_result_missed_vblank_threshold_us: present_result_summary
+                    .present_result_missed_vblank_threshold_us,
+                present_result_missed_vblank_count: present_result_summary
+                    .present_result_missed_vblank_count,
+                present_result_missed_vblank_after_warmup_count: present_result_summary
+                    .present_result_missed_vblank_after_warmup_count,
                 configured: probe.host.snapshot().configured,
                 source,
                 source_extent: (width, height),
@@ -15906,99 +15750,10 @@ pub fn run_av1_ready_prefix_video(
             let total_decoded_frame_count =
                 decoded_frame_count.saturating_add(hidden_decoded_frame_count);
             let presented_frame_count = frames.len() as u32;
-            let present_result_times = frames
-                .iter()
-                .map(|frame| frame.present_result_since_start_us)
-                .filter(|time| *time != 0)
-                .collect::<Vec<_>>();
-            let present_result_warmup_frame_count = 60usize;
-            let mut present_result_first_interval_us = 0u64;
-            let mut present_result_max_interval_us = 0u64;
-            let mut present_result_max_interval_after_warmup_us = 0u64;
-            let mut present_result_over_budget_count = 0u32;
-            let mut present_result_over_budget_after_warmup_count = 0u32;
-            let present_result_budget_us = target_max_fps
-                .map(|fps| {
-                    let fps = u64::from(fps.max(1));
-                    1_000_000u64.div_ceil(fps)
-                })
-                .unwrap_or(0);
-            let present_result_missed_vblank_threshold_us = present_result_budget_us
-                .saturating_mul(3)
-                .checked_div(2)
-                .unwrap_or(0);
-            let mut present_result_missed_vblank_count = 0u32;
-            let mut present_result_missed_vblank_after_warmup_count = 0u32;
-            for (index, window) in present_result_times.windows(2).enumerate() {
-                let interval = window[1].saturating_sub(window[0]);
-                if index == 0 {
-                    present_result_first_interval_us = interval;
-                }
-                present_result_max_interval_us = present_result_max_interval_us.max(interval);
-                if index >= present_result_warmup_frame_count {
-                    present_result_max_interval_after_warmup_us =
-                        present_result_max_interval_after_warmup_us.max(interval);
-                }
-                if present_result_budget_us != 0 && interval > present_result_budget_us {
-                    present_result_over_budget_count =
-                        present_result_over_budget_count.saturating_add(1);
-                    if index >= present_result_warmup_frame_count {
-                        present_result_over_budget_after_warmup_count =
-                            present_result_over_budget_after_warmup_count.saturating_add(1);
-                    }
-                }
-                if present_result_missed_vblank_threshold_us != 0
-                    && interval > present_result_missed_vblank_threshold_us
-                {
-                    present_result_missed_vblank_count =
-                        present_result_missed_vblank_count.saturating_add(1);
-                    if index >= present_result_warmup_frame_count {
-                        present_result_missed_vblank_after_warmup_count =
-                            present_result_missed_vblank_after_warmup_count.saturating_add(1);
-                    }
-                }
-            }
-            let average_present_result_fps = if present_result_times.len() > 1 {
-                let first = present_result_times[0];
-                let last = present_result_times[present_result_times.len() - 1];
-                if last > first {
-                    (present_result_times.len().saturating_sub(1) as f64) * 1_000_000.0
-                        / (last - first) as f64
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
-            let average_present_result_drop_first_fps = if present_result_times.len() > 2 {
-                let second = present_result_times[1];
-                let last = present_result_times[present_result_times.len() - 1];
-                if last > second {
-                    (present_result_times.len().saturating_sub(2) as f64) * 1_000_000.0
-                        / (last - second) as f64
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
-            let average_present_result_drop_first_60_fps =
-                if present_result_times.len() > present_result_warmup_frame_count + 1 {
-                    let first_after_warmup = present_result_times[present_result_warmup_frame_count];
-                    let last = present_result_times[present_result_times.len() - 1];
-                    if last > first_after_warmup {
-                        (present_result_times
-                            .len()
-                            .saturating_sub(present_result_warmup_frame_count + 1)
-                            as f64)
-                            * 1_000_000.0
-                            / (last - first_after_warmup) as f64
-                    } else {
-                        0.0
-                    }
-                } else {
-                    0.0
-                };
+            let present_result_summary = native_vulkan_direct_present_result_summary(
+                target_max_fps,
+                frames.iter().map(|frame| frame.present_result_since_start_us),
+            );
             let bitstream_uploaded_bytes = frames
                 .iter()
                 .map(|frame| frame.src_buffer_range)
@@ -16071,17 +15826,26 @@ pub fn run_av1_ready_prefix_video(
                 total_frame_sleep_us,
                 max_frame_pacing_late_us,
                 average_present_fps: direct_runtime.average_present_fps,
-                average_present_result_fps,
-                average_present_result_drop_first_fps,
-                average_present_result_drop_first_60_fps,
-                present_result_first_interval_us,
-                present_result_max_interval_us,
-                present_result_max_interval_after_warmup_us,
-                present_result_over_budget_count,
-                present_result_over_budget_after_warmup_count,
-                present_result_missed_vblank_threshold_us,
-                present_result_missed_vblank_count,
-                present_result_missed_vblank_after_warmup_count,
+                average_present_result_fps: present_result_summary.average_present_result_fps,
+                average_present_result_drop_first_fps: present_result_summary
+                    .average_present_result_drop_first_fps,
+                average_present_result_drop_first_60_fps: present_result_summary
+                    .average_present_result_drop_first_60_fps,
+                present_result_first_interval_us: present_result_summary
+                    .present_result_first_interval_us,
+                present_result_max_interval_us: present_result_summary.present_result_max_interval_us,
+                present_result_max_interval_after_warmup_us: present_result_summary
+                    .present_result_max_interval_after_warmup_us,
+                present_result_over_budget_count: present_result_summary
+                    .present_result_over_budget_count,
+                present_result_over_budget_after_warmup_count: present_result_summary
+                    .present_result_over_budget_after_warmup_count,
+                present_result_missed_vblank_threshold_us: present_result_summary
+                    .present_result_missed_vblank_threshold_us,
+                present_result_missed_vblank_count: present_result_summary
+                    .present_result_missed_vblank_count,
+                present_result_missed_vblank_after_warmup_count: present_result_summary
+                    .present_result_missed_vblank_after_warmup_count,
                 configured: probe.host.snapshot().configured,
                 source,
                 source_extent: (width, height),
