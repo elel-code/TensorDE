@@ -57,14 +57,36 @@ pub(super) fn native_vulkan_video_pacing_plan(
 pub(super) fn native_vulkan_video_pacing_master(
     audio_clock_probe_enabled: bool,
 ) -> NativeVulkanVideoPacingMaster {
-    if audio_clock_probe_enabled
-        && std::env::var("GILDER_VIDEO_PACING_MASTER")
-            .or_else(|_| std::env::var("GILDER_PACING_MASTER"))
-            .map_or(false, |value| value.eq_ignore_ascii_case("audio"))
-    {
-        NativeVulkanVideoPacingMaster::AudioClock
-    } else {
-        NativeVulkanVideoPacingMaster::TargetFps
+    let requested = std::env::var("GILDER_VIDEO_PACING_MASTER")
+        .or_else(|_| std::env::var("GILDER_PACING_MASTER"))
+        .ok();
+    native_vulkan_video_pacing_master_from_value(audio_clock_probe_enabled, requested.as_deref())
+}
+
+fn native_vulkan_video_pacing_master_from_value(
+    audio_clock_probe_enabled: bool,
+    requested: Option<&str>,
+) -> NativeVulkanVideoPacingMaster {
+    match requested.map(|value| value.to_ascii_lowercase()) {
+        Some(value) if matches!(value.as_str(), "target" | "target-fps" | "video") => {
+            NativeVulkanVideoPacingMaster::TargetFps
+        }
+        Some(value) if matches!(value.as_str(), "audio" | "audio-clock") => {
+            if audio_clock_probe_enabled {
+                NativeVulkanVideoPacingMaster::AudioClock
+            } else {
+                NativeVulkanVideoPacingMaster::TargetFps
+            }
+        }
+        Some(value) if value == "auto" => {
+            if audio_clock_probe_enabled {
+                NativeVulkanVideoPacingMaster::AudioClock
+            } else {
+                NativeVulkanVideoPacingMaster::TargetFps
+            }
+        }
+        _ if audio_clock_probe_enabled => NativeVulkanVideoPacingMaster::AudioClock,
+        _ => NativeVulkanVideoPacingMaster::TargetFps,
     }
 }
 
@@ -259,6 +281,34 @@ mod tests {
                 NativeVulkanVideoPacingMaster::AudioClock,
             ),
             "audio-clock-master-with-target-fps-fallback-and-fifo-present"
+        );
+    }
+
+    #[test]
+    fn defaults_to_audio_master_when_audio_probe_is_available() {
+        assert_eq!(
+            native_vulkan_video_pacing_master_from_value(true, None),
+            NativeVulkanVideoPacingMaster::AudioClock
+        );
+        assert_eq!(
+            native_vulkan_video_pacing_master_from_value(false, None),
+            NativeVulkanVideoPacingMaster::TargetFps
+        );
+    }
+
+    #[test]
+    fn pacing_master_request_can_force_target_or_audio() {
+        assert_eq!(
+            native_vulkan_video_pacing_master_from_value(true, Some("target")),
+            NativeVulkanVideoPacingMaster::TargetFps
+        );
+        assert_eq!(
+            native_vulkan_video_pacing_master_from_value(true, Some("audio")),
+            NativeVulkanVideoPacingMaster::AudioClock
+        );
+        assert_eq!(
+            native_vulkan_video_pacing_master_from_value(false, Some("audio")),
+            NativeVulkanVideoPacingMaster::TargetFps
         );
     }
 

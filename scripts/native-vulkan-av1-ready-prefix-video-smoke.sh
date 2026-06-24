@@ -442,6 +442,8 @@ performance_status=0
 runtime_env=(WAYLAND_DISPLAY="$display")
 if [[ "$pacing_master" == "audio" ]]; then
   runtime_env+=(GILDER_VIDEO_PACING_MASTER=audio)
+else
+  runtime_env+=(GILDER_VIDEO_PACING_MASTER=target)
 fi
 if [[ "$readback_frames" -gt 0 ]]; then
   runtime_env+=(GILDER_VULKAN_AV1_READBACK_FRAMES="$readback_frames")

@@ -460,6 +460,8 @@ fi
 runtime_env=(WAYLAND_DISPLAY="$display")
 if [[ "$pacing_master" == "audio" ]]; then
   runtime_env+=(GILDER_VIDEO_PACING_MASTER=audio)
+else
+  runtime_env+=(GILDER_VIDEO_PACING_MASTER=target)
 fi
 
 performance_status=0
