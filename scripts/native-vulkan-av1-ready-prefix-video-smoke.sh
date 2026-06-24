@@ -26,6 +26,7 @@ Options:
   --require-loop-skip-replay      Require EOS loop replay to skip leading non-key TUs.
   --audio-clock-probe             Run explicit AAC audio-only clock probe beside AV1 video
                                   and gate clocked playback / no video decoder contamination.
+  --pacing-master <target|audio>  Select pacing master. audio requires --audio-clock-probe.
   --require-readback-diversity    Require visible diagnostic readback hashes to change.
   --readback-frames <n>           Diagnostic visible readback frame count. Default: 16 when required.
   --readback-hidden               Also read back hidden decode outputs.
@@ -69,6 +70,7 @@ arbitrary_entry_probe_frames=""
 arbitrary_entry_probe_status=0
 require_loop_skip_replay=0
 audio_clock_probe=0
+pacing_master="target"
 require_readback_diversity=0
 readback_frames=0
 readback_hidden=0
@@ -147,6 +149,10 @@ while [[ $# -gt 0 ]]; do
       audio_clock_probe=1
       shift
       ;;
+    --pacing-master)
+      pacing_master="${2:?--pacing-master requires target or audio}"
+      shift 2
+      ;;
     --require-readback-diversity)
       require_readback_diversity=1
       shift
@@ -208,6 +214,14 @@ done
 
 if [[ -z "$display" ]]; then
   printf 'FAIL: WAYLAND_DISPLAY is empty; pass --display\n' >&2
+  exit 1
+fi
+if [[ "$pacing_master" != "target" && "$pacing_master" != "audio" ]]; then
+  printf 'FAIL: --pacing-master must be target or audio\n' >&2
+  exit 1
+fi
+if [[ "$pacing_master" == "audio" && "$audio_clock_probe" -ne 1 ]]; then
+  printf 'FAIL: --pacing-master audio requires --audio-clock-probe\n' >&2
   exit 1
 fi
 for tool in ffmpeg ffprobe jq; do
@@ -394,6 +408,9 @@ fi
 runtime_status=0
 performance_status=0
 runtime_env=(WAYLAND_DISPLAY="$display")
+if [[ "$pacing_master" == "audio" ]]; then
+  runtime_env+=(GILDER_VIDEO_PACING_MASTER=audio)
+fi
 if [[ "$readback_frames" -gt 0 ]]; then
   runtime_env+=(GILDER_VULKAN_AV1_READBACK_FRAMES="$readback_frames")
 fi
@@ -655,7 +672,7 @@ session_max_dpb_slots="$(jq -r '.session_max_dpb_slots // 0' "$runtime_json")"
 session_max_active_reference_pictures="$(jq -r '.session_max_active_reference_pictures // 0' "$runtime_json")"
 present_mode="$(jq -r '.present_mode // "none"' "$runtime_json")"
 pacing_strategy="$(jq -r '.pacing_strategy // "none"' "$runtime_json")"
-expected_pacing_strategy="$(gilder_expected_pacing_strategy "$present_mode" "$target_fps")"
+expected_pacing_strategy="$(gilder_expected_pacing_strategy_with_master "$present_mode" "$target_fps" "$pacing_master")"
 frame_sleep_count_value="$(jq -r '.frame_sleep_count // 0' "$runtime_json")"
 bitstream_strategy="$(jq -r '.bitstream_buffer_strategy // "none"' "$runtime_json")"
 bitstream_slot_count="$(jq -r '.bitstream_buffer_slot_count // 0' "$runtime_json")"
@@ -975,6 +992,7 @@ if [[ "$requested_codec" != "$video_codec" || "$picture_format" != "$expected_pi
     printf 'session_max_dpb_slots: %s\n' "$session_max_dpb_slots"
     printf 'session_max_active_reference_pictures: %s\n' "$session_max_active_reference_pictures"
     printf 'present_mode: %s\n' "$present_mode"
+    printf 'pacing_master: %s\n' "$pacing_master"
     printf 'pacing_strategy: %s\n' "$pacing_strategy"
     printf 'expected_pacing_strategy: %s\n' "$expected_pacing_strategy"
     printf 'frame_sleep_count: %s\n' "$frame_sleep_count_value"
@@ -1044,6 +1062,7 @@ fi
   printf 'max_reference_count: %s\n' "$max_reference_count"
   printf 'first_frame_key: %s\n' "$first_frame_key"
   printf 'loop_first_non_key_count: %s\n' "$loop_first_non_key_count"
+  printf 'pacing_master: %s\n' "$pacing_master"
   printf 'pacing_strategy: %s\n' "$pacing_strategy"
   printf 'expected_pacing_strategy: %s\n' "$expected_pacing_strategy"
   printf 'frame_sleep_count: %s\n' "$frame_sleep_count_value"

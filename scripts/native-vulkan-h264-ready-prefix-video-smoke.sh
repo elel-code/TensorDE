@@ -46,6 +46,8 @@ Options:
                         skip the broken prefix again, and restart each loop on IDR.
   --audio-clock-probe  Run explicit AAC audio-only clock probe beside H.264 video
                         and gate clocked playback / no video decoder contamination.
+  --pacing-master <target|audio>
+                        Select pacing master. audio requires --audio-clock-probe.
   --allow-short-loop    Allow looped visible playback with a ready-prefix shorter than 1 second.
   --performance-snapshot
                         Capture process CPU/RSS/PSS/USS/Private_Dirty/smaps while the
@@ -86,6 +88,7 @@ arbitrary_entry_offset=""
 arbitrary_entry_source=0
 require_loop_skip_replay=0
 audio_clock_probe=0
+pacing_master="target"
 allow_short_loop=0
 layer="background"
 fit="cover"
@@ -189,6 +192,10 @@ while [[ $# -gt 0 ]]; do
       audio_clock_probe=1
       shift
       ;;
+    --pacing-master)
+      pacing_master="${2:-}"
+      shift 2
+      ;;
     --allow-short-loop)
       allow_short_loop=1
       shift
@@ -242,6 +249,14 @@ fi
 
 if [[ -z "$display" ]]; then
   printf 'FAIL: WAYLAND_DISPLAY is empty; pass --display\n' >&2
+  exit 1
+fi
+if [[ "$pacing_master" != "target" && "$pacing_master" != "audio" ]]; then
+  printf 'FAIL: --pacing-master must be target or audio\n' >&2
+  exit 1
+fi
+if [[ "$pacing_master" == "audio" && "$audio_clock_probe" -ne 1 ]]; then
+  printf 'FAIL: --pacing-master audio requires --audio-clock-probe\n' >&2
   exit 1
 fi
 
@@ -399,6 +414,11 @@ if [[ -n "$output_name" ]]; then
   args+=(--output-name "$output_name")
 fi
 
+runtime_env=(WAYLAND_DISPLAY="$display")
+if [[ "$pacing_master" == "audio" ]]; then
+  runtime_env+=(GILDER_VIDEO_PACING_MASTER=audio)
+fi
+
 performance_status=0
 if [[ "$performance_snapshot" -eq 1 ]]; then
   if [[ ! -x scripts/performance-snapshot.sh ]]; then
@@ -406,7 +426,7 @@ if [[ "$performance_snapshot" -eq 1 ]]; then
     exit 1
   fi
   set +e
-  env WAYLAND_DISPLAY="$display" \
+  env "${runtime_env[@]}" \
     target/release/gilder-native-vulkan \
     "${args[@]}" \
     >"$runtime_json" 2>"$runtime_stderr" &
@@ -426,7 +446,7 @@ if [[ "$performance_snapshot" -eq 1 ]]; then
   set -e
 else
   set +e
-  env WAYLAND_DISPLAY="$display" \
+  env "${runtime_env[@]}" \
     target/release/gilder-native-vulkan \
     "${args[@]}" \
     >"$runtime_json" 2>"$runtime_stderr"
@@ -499,7 +519,7 @@ h264_stream_profile_idc="$(jq -r '.h264_stream_profile_idc // "none"' "$runtime_
 h264_vulkan_std_profile_idc="$(jq -r '.h264_vulkan_std_profile_idc // "none"' "$runtime_json")"
 present_mode="$(jq -r '.present_mode // "none"' "$runtime_json")"
 pacing_strategy="$(jq -r '.pacing_strategy // "none"' "$runtime_json")"
-expected_pacing_strategy="$(gilder_expected_pacing_strategy "$present_mode" "$target_fps")"
+expected_pacing_strategy="$(gilder_expected_pacing_strategy_with_master "$present_mode" "$target_fps" "$pacing_master")"
 frame_sleep_count_value="$(jq -r '.frame_sleep_count // 0' "$runtime_json")"
 bitstream_strategy="$(jq -r '.bitstream_buffer_strategy // "none"' "$runtime_json")"
 bitstream_slot_count="$(jq -r '.bitstream_buffer_slot_count // 0' "$runtime_json")"
@@ -711,6 +731,7 @@ if [[ "$decoded_count" -ne "$expected_frames" || "$presented_count" -ne "$expect
     printf 'h264_stream_profile_idc: %s\n' "$h264_stream_profile_idc"
     printf 'h264_vulkan_std_profile_idc: %s\n' "$h264_vulkan_std_profile_idc"
     printf 'present_mode: %s\n' "$present_mode"
+    printf 'pacing_master: %s\n' "$pacing_master"
     printf 'pacing_strategy: %s\n' "$pacing_strategy"
     printf 'expected_pacing_strategy: %s\n' "$expected_pacing_strategy"
     printf 'frame_sleep_count: %s\n' "$frame_sleep_count_value"
@@ -823,6 +844,7 @@ fi
   printf 'b_frames: %s\n' "$b_frames"
   printf 'max_requested_reference_count: %s\n' "$max_requested_reference_count"
   printf 'max_reference_count: %s\n' "$max_reference_count"
+  printf 'pacing_master: %s\n' "$pacing_master"
   printf 'pacing_strategy: %s\n' "$pacing_strategy"
   printf 'expected_pacing_strategy: %s\n' "$expected_pacing_strategy"
   printf 'frame_sleep_count: %s\n' "$frame_sleep_count_value"

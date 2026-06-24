@@ -5582,7 +5582,12 @@ pub fn run_h264_ready_prefix_video(
                 swapchain_plan.present_mode,
                 target_max_fps,
             );
-            let pacing_strategy = pacing_plan.strategy;
+            let pacing_master =
+                pacing::native_vulkan_video_pacing_master(audio_clock_probe_enabled);
+            let pacing_strategy = pacing::native_vulkan_video_pacing_strategy_label(
+                pacing_plan.strategy,
+                pacing_master,
+            );
             let frame_interval = pacing_plan.frame_interval;
             let mut frame_pacer = pacing::NativeVulkanVideoClockPacer::new(
                 target_max_fps,
@@ -6345,10 +6350,23 @@ pub fn run_h264_ready_prefix_video(
                                 ),
                             )?;
                         }
+                        let next_video_clock_ns = native_vulkan_next_video_pacing_clock_ns(
+                            frame.playback_frame_index,
+                            target_max_fps,
+                            frame.pts_ms,
+                            access_unit.duration_ms,
+                            frame.pts_delta_ms,
+                        );
+                        let is_last_frame = playback_frame_index + 1 >= playback_frame_count;
                         frames.push(frame);
 
-                        let pace_result = frame_pacer
-                            .pace_after_frame(playback_frame_index + 1 >= playback_frame_count);
+                        let pace_result = native_vulkan_pace_video_after_frame(
+                            &mut frame_pacer,
+                            pacing_master,
+                            audio_clock_probe.as_ref(),
+                            is_last_frame,
+                            next_video_clock_ns,
+                        );
                         if pace_result.slept {
                             frame_sleep_count = frame_sleep_count.saturating_add(1);
                             total_frame_sleep_us = total_frame_sleep_us.saturating_add(
@@ -8078,10 +8096,23 @@ pub fn run_h264_ready_prefix_video(
                                 ),
                             )?;
                         }
+                        let next_video_clock_ns = native_vulkan_next_video_pacing_clock_ns(
+                            frame.playback_frame_index,
+                            target_max_fps,
+                            frame.pts_ms,
+                            frame_duration_ms,
+                            frame.pts_delta_ms,
+                        );
+                        let is_last_frame = playback_frame_index + 1 >= playback_frame_count;
                         frames.push(frame);
 
-                        let pace_result = frame_pacer
-                            .pace_after_frame(playback_frame_index + 1 >= playback_frame_count);
+                        let pace_result = native_vulkan_pace_video_after_frame(
+                            &mut frame_pacer,
+                            pacing_master,
+                            audio_clock_probe.as_ref(),
+                            is_last_frame,
+                            next_video_clock_ns,
+                        );
                         if pace_result.slept {
                             frame_sleep_count = frame_sleep_count.saturating_add(1);
                             total_frame_sleep_us = total_frame_sleep_us.saturating_add(
@@ -9081,7 +9112,12 @@ pub fn run_h265_ready_prefix_video(
                 swapchain_plan.present_mode,
                 target_max_fps,
             );
-            let pacing_strategy = pacing_plan.strategy;
+            let pacing_master =
+                pacing::native_vulkan_video_pacing_master(audio_clock_probe_enabled);
+            let pacing_strategy = pacing::native_vulkan_video_pacing_strategy_label(
+                pacing_plan.strategy,
+                pacing_master,
+            );
             let frame_interval = pacing_plan.frame_interval;
             let mut frame_pacer = pacing::NativeVulkanVideoClockPacer::new(
                 target_max_fps,
@@ -9688,10 +9724,23 @@ pub fn run_h265_ready_prefix_video(
                             ),
                         )?;
                     }
+                    let next_video_clock_ns = native_vulkan_next_video_pacing_clock_ns(
+                        frame.playback_frame_index,
+                        target_max_fps,
+                        frame.pts_ms,
+                        access_unit.duration_ms,
+                        frame.pts_delta_ms,
+                    );
+                    let is_last_frame = playback_frame_index + 1 >= playback_frame_count;
                     frames.push(frame);
 
-                    let pace_result = frame_pacer
-                        .pace_after_frame(playback_frame_index + 1 >= playback_frame_count);
+                    let pace_result = native_vulkan_pace_video_after_frame(
+                        &mut frame_pacer,
+                        pacing_master,
+                        audio_clock_probe.as_ref(),
+                        is_last_frame,
+                        next_video_clock_ns,
+                    );
                     if pace_result.slept {
                         frame_sleep_count = frame_sleep_count.saturating_add(1);
                         total_frame_sleep_us = total_frame_sleep_us
@@ -11011,7 +11060,12 @@ pub fn run_av1_ready_prefix_video(
                 swapchain_plan.present_mode,
                 target_max_fps,
             );
-            let pacing_strategy = pacing_plan.strategy;
+            let pacing_master =
+                pacing::native_vulkan_video_pacing_master(audio_clock_probe_enabled);
+            let pacing_strategy = pacing::native_vulkan_video_pacing_strategy_label(
+                pacing_plan.strategy,
+                pacing_master,
+            );
             let frame_interval = pacing_plan.frame_interval;
             let mut frame_pacer = pacing::NativeVulkanVideoClockPacer::new(
                 target_max_fps,
@@ -15602,10 +15656,23 @@ pub fn run_av1_ready_prefix_video(
                         ),
                     )?;
                 }
+                let next_video_clock_ns = native_vulkan_next_video_pacing_clock_ns(
+                    frame.playback_frame_index,
+                    target_max_fps,
+                    frame.pts_ms,
+                    temporal_unit.duration_ms,
+                    frame.pts_delta_ms,
+                );
+                let is_last_frame = frames.len().saturating_add(1) >= playback_frame_count as usize;
                 frames.push(frame);
 
-                let pace_result =
-                    frame_pacer.pace_after_frame(frames.len() >= playback_frame_count as usize);
+                let pace_result = native_vulkan_pace_video_after_frame(
+                    &mut frame_pacer,
+                    pacing_master,
+                    audio_clock_probe.as_ref(),
+                    is_last_frame,
+                    next_video_clock_ns,
+                );
                 if pace_result.slept {
                     frame_sleep_count = frame_sleep_count.saturating_add(1);
                     total_frame_sleep_us = total_frame_sleep_us
@@ -16890,6 +16957,53 @@ fn native_vulkan_audio_probe_video_clock_ns(
             u64::try_from(ns).unwrap_or(u64::MAX)
         })
         .or_else(|| fallback_pts_ms.map(|pts_ms| pts_ms.saturating_mul(1_000_000)))
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_next_video_pacing_clock_ns(
+    playback_frame_index: u32,
+    target_max_fps: Option<u32>,
+    pts_ms: Option<u64>,
+    duration_ms: Option<u64>,
+    pts_delta_ms: Option<u64>,
+) -> Option<u64> {
+    if let Some(pts_ms) = pts_ms {
+        let pts_ns = pts_ms.saturating_mul(1_000_000);
+        if let Some(duration_ms) = duration_ms.or(pts_delta_ms) {
+            return Some(pts_ns.saturating_add(duration_ms.saturating_mul(1_000_000)));
+        }
+        if let Some(fps) = target_max_fps.filter(|fps| *fps > 0) {
+            let duration_ns = 1_000_000_000u64 / u64::from(fps);
+            return Some(pts_ns.saturating_add(duration_ns));
+        }
+    }
+
+    native_vulkan_audio_probe_video_clock_ns(
+        playback_frame_index.saturating_add(1),
+        target_max_fps,
+        pts_ms,
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_pace_video_after_frame(
+    frame_pacer: &mut pacing::NativeVulkanVideoClockPacer,
+    pacing_master: pacing::NativeVulkanVideoPacingMaster,
+    audio_clock_probe: Option<&audio_clock::NativeVulkanAudioClockRuntimeProbe>,
+    is_last_frame: bool,
+    next_video_clock_ns: Option<u64>,
+) -> pacing::NativeVulkanVideoClockPaceResult {
+    match pacing_master {
+        pacing::NativeVulkanVideoPacingMaster::AudioClock => frame_pacer
+            .pace_after_frame_with_master_clock(
+                is_last_frame,
+                next_video_clock_ns,
+                audio_clock_probe.and_then(|probe| probe.audio_master_clock_estimate_ns()),
+            ),
+        pacing::NativeVulkanVideoPacingMaster::TargetFps => {
+            frame_pacer.pace_after_frame(is_last_frame)
+        }
+    }
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]

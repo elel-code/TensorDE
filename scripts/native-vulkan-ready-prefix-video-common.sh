@@ -64,3 +64,31 @@ gilder_expected_pacing_strategy() {
     printf 'unlimited\n'
   fi
 }
+
+gilder_expected_pacing_strategy_with_master() {
+  local present_mode="${1:?present mode is required}"
+  local fps="${2:?target fps is required}"
+  local pacing_master="${3:-target}"
+  local base
+
+  base="$(gilder_expected_pacing_strategy "$present_mode" "$fps")"
+  if [[ "$pacing_master" != "audio" ]]; then
+    printf '%s\n' "$base"
+    return
+  fi
+
+  case "$base" in
+    target-fps-cpu-sleep-with-fifo-present)
+      printf 'audio-clock-master-with-target-fps-fallback-and-fifo-present\n'
+      ;;
+    target-fps-cpu-sleep)
+      printf 'audio-clock-master-with-target-fps-fallback\n'
+      ;;
+    fifo-present-blocking-no-cpu-sleep)
+      printf 'audio-clock-master-with-fifo-present\n'
+      ;;
+    *)
+      printf 'audio-clock-master\n'
+      ;;
+  esac
+}

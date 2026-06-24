@@ -445,7 +445,7 @@ impl NativeVulkanAudioClockRuntimeProbe {
             .map(|segment| native_vulkan_audio_duration_ns(segment.started_at.elapsed()))
     }
 
-    fn audio_master_clock_estimate_ns(&self) -> Option<u64> {
+    pub(super) fn audio_master_clock_estimate_ns(&self) -> Option<u64> {
         let position_ns = self.audio_master_clock_position_ns?;
         let updated_at = self.audio_master_clock_updated_at?;
         Some(position_ns.saturating_add(native_vulkan_audio_duration_ns(updated_at.elapsed())))
