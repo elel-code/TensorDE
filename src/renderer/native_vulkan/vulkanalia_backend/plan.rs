@@ -43,6 +43,8 @@ pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendP
             std::any::type_name::<vulkanalia::vk::SwapchainCreateInfoKHR>(),
             std::any::type_name::<vulkanalia::vk::PresentIdKHR>(),
             std::any::type_name::<vulkanalia::vk::PresentWait2InfoKHR>(),
+            std::any::type_name::<vulkanalia::vk::RenderingInfo>(),
+            std::any::type_name::<vulkanalia::vk::SamplerYcbcrConversionCreateInfo>(),
             std::any::type_name::<vulkanalia::vk::VideoBeginCodingInfoKHR>(),
             std::any::type_name::<vulkanalia::vk::VideoDecodeH264PictureInfoKHR>(),
             std::any::type_name::<vulkanalia::vk::VideoDecodeH265PictureInfoKHR>(),
@@ -79,7 +81,9 @@ pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendP
             "VK_KHR_swapchain_maintenance1",
         ],
         prioritized_vulkan_1_4_features: &[
+            "dynamic-rendering",
             "dynamic-rendering-local-read",
+            "sampler-ycbcr-conversion",
             "push-descriptor",
             "maintenance5",
             "maintenance6",
@@ -141,6 +145,16 @@ mod tests {
             plan.api_type_evidence
                 .iter()
                 .any(|name| { name.ends_with("SwapchainCreateInfoKHR") })
+        );
+        assert!(
+            plan.api_type_evidence
+                .iter()
+                .any(|name| { name.ends_with("RenderingInfo") })
+        );
+        assert!(
+            plan.api_type_evidence
+                .iter()
+                .any(|name| { name.ends_with("SamplerYcbcrConversionCreateInfo") })
         );
         assert!(
             plan.api_type_evidence

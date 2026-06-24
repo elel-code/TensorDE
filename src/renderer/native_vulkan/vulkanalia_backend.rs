@@ -20,6 +20,8 @@ mod present_clear;
 mod profiles;
 #[path = "vulkanalia_backend/queue_probe.rs"]
 mod queue_probe;
+#[path = "vulkanalia_backend/render_present.rs"]
+mod render_present;
 #[path = "vulkanalia_backend/swapchain.rs"]
 mod swapchain;
 #[path = "vulkanalia_backend/video_bitstream_buffer.rs"]
@@ -96,6 +98,8 @@ pub use present_clear::{
 pub use profiles::{
     NativeVulkanVulkanaliaVideoProfileTemplate, native_vulkan_vulkanalia_video_profile_templates,
 };
+#[allow(unused_imports)]
+pub use render_present::NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot;
 #[allow(unused_imports)]
 pub use swapchain::{
     NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,

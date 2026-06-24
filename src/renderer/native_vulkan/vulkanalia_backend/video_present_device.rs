@@ -21,6 +21,7 @@ use super::instance::{
     native_vulkan_vulkanalia_destroy_instance,
 };
 use super::queue_probe::native_vulkan_vulkanalia_video_decode_queue_family_indices;
+use super::render_present::NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot;
 use super::swapchain::{
     NativeVulkanVulkanaliaSwapchainSnapshot, OPTIONAL_INSTANCE_EXTENSIONS,
     REQUIRED_INSTANCE_EXTENSIONS, composite_alpha_label, create_vulkanalia_swapchain_plan,
@@ -101,6 +102,9 @@ pub struct NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot {
     pub resource_queue_family_indices: Vec<u32>,
     pub resource_queue_sharing_model: &'static str,
     pub decoded_image_zero_copy_presentable_candidate: bool,
+    pub decoded_image_present_sampler:
+        Option<NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot>,
+    pub decoded_image_present_sampler_error: Option<String>,
     pub decoded_image_present_boundary: &'static str,
     pub ffmpeg_reference: &'static str,
 }
@@ -108,6 +112,7 @@ pub struct NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaVideoPresentFeatureSnapshot {
     pub synchronization2_enabled: bool,
+    pub sampler_ycbcr_conversion_enabled: bool,
     pub video_maintenance1_enabled: bool,
     pub video_maintenance2_enabled: bool,
     pub inline_session_parameters_enabled: bool,
@@ -283,6 +288,9 @@ fn with_video_present_device(
         feature_selection: NativeVulkanVulkanaliaVideoPresentFeatureSnapshot {
             synchronization2_enabled: context.video_feature_selection.synchronization2_enabled
                 && context.present_feature_selection.synchronization2_enabled,
+            sampler_ycbcr_conversion_enabled: context
+                .video_feature_selection
+                .sampler_ycbcr_conversion_enabled,
             video_maintenance1_enabled: context.video_feature_selection.video_maintenance1_enabled,
             video_maintenance2_enabled: context.video_feature_selection.video_maintenance2_enabled,
             inline_session_parameters_enabled: context
@@ -559,6 +567,10 @@ pub(super) fn create_video_present_device(
     let mut synchronization2_features = vk::PhysicalDeviceSynchronization2Features::builder()
         .synchronization2(true)
         .build();
+    let mut sampler_ycbcr_conversion_features =
+        vk::PhysicalDeviceSamplerYcbcrConversionFeatures::builder()
+            .sampler_ycbcr_conversion(true)
+            .build();
     let mut video_maintenance1_features = vk::PhysicalDeviceVideoMaintenance1FeaturesKHR::builder()
         .video_maintenance1(true)
         .build();
@@ -586,6 +598,9 @@ pub(super) fn create_video_present_device(
         .queue_create_infos(&queue_create_infos)
         .enabled_extension_names(&extension_name_ptrs)
         .push_next(&mut synchronization2_features);
+    if video_feature_selection.sampler_ycbcr_conversion_enabled {
+        device_create_info = device_create_info.push_next(&mut sampler_ycbcr_conversion_features);
+    }
     if video_feature_selection.video_maintenance1_enabled {
         device_create_info = device_create_info.push_next(&mut video_maintenance1_features);
     }
@@ -693,6 +708,9 @@ pub(super) fn feature_snapshot_from_context(
     NativeVulkanVulkanaliaVideoPresentFeatureSnapshot {
         synchronization2_enabled: context.video_feature_selection.synchronization2_enabled
             && context.present_feature_selection.synchronization2_enabled,
+        sampler_ycbcr_conversion_enabled: context
+            .video_feature_selection
+            .sampler_ycbcr_conversion_enabled,
         video_maintenance1_enabled: context.video_feature_selection.video_maintenance1_enabled,
         video_maintenance2_enabled: context.video_feature_selection.video_maintenance2_enabled,
         inline_session_parameters_enabled: context

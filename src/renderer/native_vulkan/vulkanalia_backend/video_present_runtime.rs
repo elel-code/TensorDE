@@ -14,6 +14,11 @@ use super::instance::{
     native_vulkan_vulkanalia_create_instance_with_required_extensions,
     native_vulkan_vulkanalia_destroy_instance,
 };
+use super::render_present::{
+    VulkanaliaDecodedImagePresentSamplerResources,
+    native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources,
+    native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_resources,
+};
 use super::swapchain::{
     OPTIONAL_INSTANCE_EXTENSIONS, REQUIRED_INSTANCE_EXTENSIONS, create_vulkanalia_swapchain_plan,
     create_vulkanalia_wayland_surface,
@@ -76,6 +81,7 @@ struct NativeVulkanVulkanaliaVideoPresentSessionRuntimeResources {
     session: vk::VideoSessionKHR,
     memory_resources: Option<NativeVulkanVulkanaliaVideoSessionMemoryBindingResources>,
     resource_image: Option<VulkanaliaVideoSessionResourceImage>,
+    decoded_image_present_sampler: Option<VulkanaliaDecodedImagePresentSamplerResources>,
     h265_ready_prefix_decode: Option<NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot>,
 }
 
@@ -84,6 +90,11 @@ impl Drop for NativeVulkanVulkanaliaVideoPresentSessionRuntimeResources {
         if let Some(context) = self.context.take() {
             let device = &context.device;
             let _ = unsafe { device.device_wait_idle() };
+            if let Some(sampler) = self.decoded_image_present_sampler.take() {
+                native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_resources(
+                    device, sampler,
+                );
+            }
             if let Some(resource_image) = self.resource_image.take() {
                 native_vulkan_vulkanalia_destroy_video_session_resource_image(
                     device,
@@ -116,6 +127,7 @@ struct NativeVulkanVulkanaliaVideoPresentSessionPieces {
     session: vk::VideoSessionKHR,
     memory_resources: NativeVulkanVulkanaliaVideoSessionMemoryBindingResources,
     resource_image: VulkanaliaVideoSessionResourceImage,
+    decoded_image_present_sampler: Option<VulkanaliaDecodedImagePresentSamplerResources>,
     snapshot: NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot,
     h265_ready_prefix_decode: Option<NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot>,
 }
@@ -326,6 +338,7 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_h265_decod
             session: pieces.session,
             memory_resources: Some(pieces.memory_resources),
             resource_image: Some(pieces.resource_image),
+            decoded_image_present_sampler: pieces.decoded_image_present_sampler,
             h265_ready_prefix_decode: pieces.h265_ready_prefix_decode,
         }),
         snapshot,
@@ -386,6 +399,7 @@ fn create_video_present_session_pieces(
             let mut session = Some(session);
             let mut memory_resources = None;
             let mut resource_image = None;
+            let mut decoded_image_present_sampler = None;
             let result = (|| -> Result<NativeVulkanVulkanaliaVideoPresentSessionPieces, String> {
                 let memory_properties = unsafe {
                     instance.get_physical_device_memory_properties(selection.physical_device)
@@ -429,6 +443,35 @@ fn create_video_present_session_pieces(
                     };
                 let same_queue_family =
                     selection.video_queue_family_index == selection.present_queue_family_index;
+                let (decoded_image_present_sampler_snapshot, decoded_image_present_sampler_error) =
+                    if context
+                        .video_feature_selection
+                        .sampler_ycbcr_conversion_enabled
+                    {
+                        match native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources(
+                        &context.device,
+                        resource_image_ref,
+                        picture_format,
+                        0,
+                        selection.video_queue_family_index,
+                        selection.present_queue_family_index,
+                    ) {
+                        Ok(resources) => {
+                            let snapshot = resources.snapshot.clone();
+                            decoded_image_present_sampler = Some(resources);
+                            (Some(snapshot), None)
+                        }
+                        Err(err) => (None, Some(err)),
+                    }
+                    } else {
+                        (
+                        None,
+                        Some(
+                            "samplerYcbcrConversion feature is unavailable on selected Vulkanalia video+present device"
+                                .to_owned(),
+                        ),
+                    )
+                    };
                 let memory_binding = memory_resources
                     .as_ref()
                     .expect("Vulkanalia session memory resources are live")
@@ -469,6 +512,7 @@ fn create_video_present_session_pieces(
                     resource_image: resource_image
                         .take()
                         .expect("Vulkanalia resource image is live"),
+                    decoded_image_present_sampler: decoded_image_present_sampler.take(),
                     snapshot: NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot {
                         binding: "vulkanalia",
                         route: VIDEO_PRESENT_SESSION_RETAINED_RESOURCE_ROUTE,
@@ -491,13 +535,21 @@ fn create_video_present_session_pieces(
                             same_queue_family,
                         ),
                         decoded_image_zero_copy_presentable_candidate: true,
-                        decoded_image_present_boundary: "retained Vulkanalia runtime owns video session memory, coincident sampled DPB/output image and Wayland swapchain until the caller drops the runtime; next step records decode into this retained image and samples it in the graphics present pass",
+                        decoded_image_present_sampler: decoded_image_present_sampler_snapshot,
+                        decoded_image_present_sampler_error,
+                        decoded_image_present_boundary: "retained Vulkanalia runtime owns video session memory, coincident sampled DPB/output image, YCbCr sampler/descriptor resources when supported, and Wayland swapchain until the caller drops the runtime; next step records the dynamic-rendering fullscreen draw into the graphics present pass",
                         ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,
                     },
                     h265_ready_prefix_decode,
                 })
             })();
 
+            if let Some(sampler) = decoded_image_present_sampler.take() {
+                native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_resources(
+                    &context.device,
+                    sampler,
+                );
+            }
             if let Some(image) = resource_image.take() {
                 native_vulkan_vulkanalia_destroy_video_session_resource_image(
                     &context.device,

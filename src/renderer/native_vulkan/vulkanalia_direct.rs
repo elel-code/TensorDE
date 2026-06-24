@@ -213,7 +213,7 @@ pub fn run_vulkanalia_ready_prefix_video(
         present_runtime_error,
         decoded_image_zero_copy_presented: false,
         decoded_image_present_boundary: if retained_h265_ready_prefix_decode.is_some() {
-            "H.265 ready-prefix decode writes into the retained Vulkanalia video-present DPB/output image; next gate samples that decoded image in the graphics present pass instead of clear placeholder"
+            "H.265 ready-prefix decode writes into the retained Vulkanalia video-present DPB/output image and creates a Vulkanalia YCbCr sampler/descriptor resource for that image; next gate records the dynamic-rendering fullscreen draw into the swapchain instead of the clear placeholder"
         } else {
             "Vulkanalia decodes the real ready-prefix source and presents a Vulkanalia-owned visible swapchain placeholder; next gate replaces the clear image with decoded DPB/output image sampling/import"
         },
