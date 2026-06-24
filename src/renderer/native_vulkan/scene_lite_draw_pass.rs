@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::core::SceneLiteTransform;
+use crate::core::{FitMode, SceneLiteTransform};
 
 use super::render_plan::{
     NativeVulkanSceneLiteDrawOp, NativeVulkanSceneLiteDrawOpKind, NativeVulkanSceneLiteDrawPlan,
@@ -10,6 +10,10 @@ const SCENE_LITE_SOLID_QUAD_VERTEX_COUNT: u32 = 4;
 const SCENE_LITE_SOLID_QUAD_INDEX_COUNT: u32 = 6;
 const SCENE_LITE_SOLID_QUAD_VERTEX_BYTES: u64 = 24;
 const SCENE_LITE_SOLID_QUAD_INDEX_BYTES: u64 = 4;
+const SCENE_LITE_SAMPLED_IMAGE_VERTEX_COUNT: u32 = 4;
+const SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT: u32 = 6;
+const SCENE_LITE_SAMPLED_IMAGE_VERTEX_BYTES: u64 = 20;
+const SCENE_LITE_SAMPLED_IMAGE_INDEX_BYTES: u64 = 4;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct NativeVulkanSceneLiteRecordableQuad {
@@ -39,10 +43,47 @@ pub(super) struct NativeVulkanSceneLiteQuadRecordingStep {
     pub(super) index_buffer_size_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct NativeVulkanSceneLiteSampledImageQuad {
+    pub(super) layer_index: usize,
+    pub(super) layer_id: String,
+    pub(super) source: PathBuf,
+    pub(super) fit: FitMode,
+    pub(super) opacity: f64,
+    pub(super) width: f64,
+    pub(super) height: f64,
+    pub(super) transform: SceneLiteTransform,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct NativeVulkanSceneLiteSampledImageRecordingStep {
+    pub(super) layer_index: usize,
+    pub(super) layer_id: String,
+    pub(super) source: PathBuf,
+    pub(super) fit: FitMode,
+    pub(super) pipeline: &'static str,
+    pub(super) resource_index: u32,
+    pub(super) first_vertex: u32,
+    pub(super) vertex_count: u32,
+    pub(super) first_index: u32,
+    pub(super) index_count: u32,
+    pub(super) vertex_buffer_offset_bytes: u64,
+    pub(super) vertex_buffer_size_bytes: u64,
+    pub(super) index_buffer_offset_bytes: u64,
+    pub(super) index_buffer_size_bytes: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct NativeVulkanSceneLiteQuadVertex {
     pub(super) position: [f32; 2],
     pub(super) rgba: [f32; 4],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct NativeVulkanSceneLiteSampledImageVertex {
+    pub(super) position: [f32; 2],
+    pub(super) uv: [f32; 2],
+    pub(super) opacity: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +100,13 @@ pub(super) struct NativeVulkanSceneLiteDrawPassPlan {
     pub(super) quad_indices: Vec<u32>,
     pub(super) quad_vertex_buffer_bytes: u64,
     pub(super) quad_index_buffer_bytes: u64,
+    pub(super) sampled_image_quads: Vec<NativeVulkanSceneLiteSampledImageQuad>,
+    pub(super) sampled_image_recording_ready: bool,
+    pub(super) sampled_image_recording_steps: Vec<NativeVulkanSceneLiteSampledImageRecordingStep>,
+    pub(super) sampled_image_vertices: Vec<NativeVulkanSceneLiteSampledImageVertex>,
+    pub(super) sampled_image_indices: Vec<u32>,
+    pub(super) sampled_image_vertex_buffer_bytes: u64,
+    pub(super) sampled_image_index_buffer_bytes: u64,
     pub(super) color_op_count: usize,
     pub(super) sampled_image_op_count: usize,
     pub(super) vector_shape_op_count: usize,
@@ -114,10 +162,27 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
     let quad_recording_payload = native_vulkan_scene_lite_quad_recording_payload(&recordable_quads);
     let quad_recording_ready = !quad_recording_payload.steps.is_empty()
         && quad_recording_payload.steps.len() == draw_plan.draw_ops.len();
+    let sampled_image_quads = draw_plan
+        .draw_ops
+        .iter()
+        .filter_map(native_vulkan_scene_lite_sampled_image_quad)
+        .collect::<Vec<_>>();
+    let sampled_image_recording_payload =
+        native_vulkan_scene_lite_sampled_image_recording_payload(&sampled_image_quads);
+    let sampled_image_recording_ready = sampled_image_op_count > 0
+        && sampled_image_recording_payload.steps.len() == sampled_image_op_count;
     let quad_vertex_buffer_bytes =
         native_vulkan_scene_lite_quad_vertex_buffer_bytes(quad_recording_payload.steps.len());
     let quad_index_buffer_bytes =
         native_vulkan_scene_lite_quad_index_buffer_bytes(quad_recording_payload.steps.len());
+    let sampled_image_vertex_buffer_bytes =
+        native_vulkan_scene_lite_sampled_image_vertex_buffer_bytes(
+            sampled_image_recording_payload.steps.len(),
+        );
+    let sampled_image_index_buffer_bytes =
+        native_vulkan_scene_lite_sampled_image_index_buffer_bytes(
+            sampled_image_recording_payload.steps.len(),
+        );
     let plan_ready = draw_plan.native_draw_ready();
     let backend_ready = plan_ready && (fast_clear_color.is_some() || quad_recording_ready);
     let (backend_status, blocking_reason) = if !plan_ready {
@@ -136,10 +201,20 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         } else {
             ("solid-quad-recording-ready", None)
         }
+    } else if sampled_image_recording_ready && sampled_image_op_count == draw_plan.draw_ops.len() {
+        (
+            "sampled-image-quad-payload-ready-recording-pending",
+            Some("vulkan-sampled-image-recording-not-implemented"),
+        )
     } else if !quad_recording_payload.steps.is_empty() {
         (
             "partial-solid-quad-recording-ready",
             Some("non-quad-draw-ops-need-recording-backend"),
+        )
+    } else if !sampled_image_recording_payload.steps.is_empty() {
+        (
+            "partial-sampled-image-quad-payload-ready",
+            Some("non-image-quad-draw-ops-need-recording-backend"),
         )
     } else if !recordable_quads.is_empty() {
         (
@@ -166,6 +241,13 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         quad_indices: quad_recording_payload.indices,
         quad_vertex_buffer_bytes,
         quad_index_buffer_bytes,
+        sampled_image_quads,
+        sampled_image_recording_ready,
+        sampled_image_recording_steps: sampled_image_recording_payload.steps,
+        sampled_image_vertices: sampled_image_recording_payload.vertices,
+        sampled_image_indices: sampled_image_recording_payload.indices,
+        sampled_image_vertex_buffer_bytes,
+        sampled_image_index_buffer_bytes,
         color_op_count,
         sampled_image_op_count,
         vector_shape_op_count,
@@ -199,6 +281,12 @@ fn native_vulkan_scene_lite_fast_clear_color(
 struct NativeVulkanSceneLiteQuadRecordingPayload {
     steps: Vec<NativeVulkanSceneLiteQuadRecordingStep>,
     vertices: Vec<NativeVulkanSceneLiteQuadVertex>,
+    indices: Vec<u32>,
+}
+
+struct NativeVulkanSceneLiteSampledImageRecordingPayload {
+    steps: Vec<NativeVulkanSceneLiteSampledImageRecordingStep>,
+    vertices: Vec<NativeVulkanSceneLiteSampledImageVertex>,
     indices: Vec<u32>,
 }
 
@@ -252,6 +340,59 @@ fn native_vulkan_scene_lite_quad_recording_payload(
     }
 }
 
+fn native_vulkan_scene_lite_sampled_image_recording_payload(
+    quads: &[NativeVulkanSceneLiteSampledImageQuad],
+) -> NativeVulkanSceneLiteSampledImageRecordingPayload {
+    let mut steps = Vec::new();
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    for quad in quads
+        .iter()
+        .filter(|quad| native_vulkan_scene_lite_sampled_image_quad_has_recordable_geometry(quad))
+    {
+        let index = steps.len();
+        if let Some(quad_vertices) = native_vulkan_scene_lite_sampled_image_vertices(quad) {
+            let resource_index = index as u32;
+            let first_vertex = (index as u32).saturating_mul(SCENE_LITE_SAMPLED_IMAGE_VERTEX_COUNT);
+            let first_index = (index as u32).saturating_mul(SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT);
+            steps.push(NativeVulkanSceneLiteSampledImageRecordingStep {
+                layer_index: quad.layer_index,
+                layer_id: quad.layer_id.clone(),
+                source: quad.source.clone(),
+                fit: quad.fit,
+                pipeline: "sampled-image-alpha-blend",
+                resource_index,
+                first_vertex,
+                vertex_count: SCENE_LITE_SAMPLED_IMAGE_VERTEX_COUNT,
+                first_index,
+                index_count: SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT,
+                vertex_buffer_offset_bytes: u64::from(first_vertex)
+                    .saturating_mul(SCENE_LITE_SAMPLED_IMAGE_VERTEX_BYTES),
+                vertex_buffer_size_bytes: u64::from(SCENE_LITE_SAMPLED_IMAGE_VERTEX_COUNT)
+                    .saturating_mul(SCENE_LITE_SAMPLED_IMAGE_VERTEX_BYTES),
+                index_buffer_offset_bytes: u64::from(first_index)
+                    .saturating_mul(SCENE_LITE_SAMPLED_IMAGE_INDEX_BYTES),
+                index_buffer_size_bytes: u64::from(SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT)
+                    .saturating_mul(SCENE_LITE_SAMPLED_IMAGE_INDEX_BYTES),
+            });
+            vertices.extend(quad_vertices);
+            indices.extend_from_slice(&[
+                first_vertex,
+                first_vertex + 1,
+                first_vertex + 2,
+                first_vertex + 2,
+                first_vertex + 1,
+                first_vertex + 3,
+            ]);
+        }
+    }
+    NativeVulkanSceneLiteSampledImageRecordingPayload {
+        steps,
+        vertices,
+        indices,
+    }
+}
+
 fn native_vulkan_scene_lite_quad_has_recordable_geometry(
     quad: &NativeVulkanSceneLiteRecordableQuad,
 ) -> bool {
@@ -264,12 +405,54 @@ fn native_vulkan_scene_lite_quad_has_recordable_geometry(
             .is_some_and(|height| height.is_finite() && height > 0.0)
 }
 
+fn native_vulkan_scene_lite_sampled_image_quad_has_recordable_geometry(
+    quad: &NativeVulkanSceneLiteSampledImageQuad,
+) -> bool {
+    quad.width.is_finite()
+        && quad.width > 0.0
+        && quad.height.is_finite()
+        && quad.height > 0.0
+        && quad.opacity.is_finite()
+        && quad.opacity > 0.0
+}
+
 fn native_vulkan_scene_lite_quad_vertices(
     quad: &NativeVulkanSceneLiteRecordableQuad,
 ) -> Option<[NativeVulkanSceneLiteQuadVertex; 4]> {
-    let width = quad.width?;
-    let height = quad.height?;
-    let transform = quad.transform;
+    let points =
+        native_vulkan_scene_lite_quad_positions(quad.width?, quad.height?, quad.transform)?;
+    let mut vertices = [NativeVulkanSceneLiteQuadVertex {
+        position: [0.0, 0.0],
+        rgba: quad.rgba,
+    }; 4];
+    for (vertex, position) in vertices.iter_mut().zip(points) {
+        vertex.position = position;
+    }
+    Some(vertices)
+}
+
+fn native_vulkan_scene_lite_sampled_image_vertices(
+    quad: &NativeVulkanSceneLiteSampledImageQuad,
+) -> Option<[NativeVulkanSceneLiteSampledImageVertex; 4]> {
+    let points = native_vulkan_scene_lite_quad_positions(quad.width, quad.height, quad.transform)?;
+    let uvs = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+    let mut vertices = [NativeVulkanSceneLiteSampledImageVertex {
+        position: [0.0, 0.0],
+        uv: [0.0, 0.0],
+        opacity: quad.opacity.clamp(0.0, 1.0) as f32,
+    }; 4];
+    for ((vertex, position), uv) in vertices.iter_mut().zip(points).zip(uvs) {
+        vertex.position = position;
+        vertex.uv = uv;
+    }
+    Some(vertices)
+}
+
+fn native_vulkan_scene_lite_quad_positions(
+    width: f64,
+    height: f64,
+    transform: SceneLiteTransform,
+) -> Option<[[f32; 2]; 4]> {
     let left = -transform.anchor_x * width;
     let top = -transform.anchor_y * height;
     let right = left + width;
@@ -278,11 +461,8 @@ fn native_vulkan_scene_lite_quad_vertices(
     let cos = rotation.cos();
     let sin = rotation.sin();
     let points = [(left, top), (right, top), (left, bottom), (right, bottom)];
-    let mut vertices = [NativeVulkanSceneLiteQuadVertex {
-        position: [0.0, 0.0],
-        rgba: quad.rgba,
-    }; 4];
-    for (vertex, (x, y)) in vertices.iter_mut().zip(points) {
+    let mut positions = [[0.0, 0.0]; 4];
+    for (position, (x, y)) in positions.iter_mut().zip(points) {
         let scaled_x = x * transform.scale_x;
         let scaled_y = y * transform.scale_y;
         let scene_x = scaled_x.mul_add(cos, -scaled_y * sin) + transform.x;
@@ -290,9 +470,9 @@ fn native_vulkan_scene_lite_quad_vertices(
         if !scene_x.is_finite() || !scene_y.is_finite() {
             return None;
         }
-        vertex.position = [scene_x as f32, scene_y as f32];
+        *position = [scene_x as f32, scene_y as f32];
     }
-    Some(vertices)
+    Some(positions)
 }
 
 fn native_vulkan_scene_lite_quad_vertex_buffer_bytes(quad_count: usize) -> u64 {
@@ -305,6 +485,18 @@ fn native_vulkan_scene_lite_quad_index_buffer_bytes(quad_count: usize) -> u64 {
     (quad_count as u64)
         .saturating_mul(u64::from(SCENE_LITE_SOLID_QUAD_INDEX_COUNT))
         .saturating_mul(SCENE_LITE_SOLID_QUAD_INDEX_BYTES)
+}
+
+fn native_vulkan_scene_lite_sampled_image_vertex_buffer_bytes(quad_count: usize) -> u64 {
+    (quad_count as u64)
+        .saturating_mul(u64::from(SCENE_LITE_SAMPLED_IMAGE_VERTEX_COUNT))
+        .saturating_mul(SCENE_LITE_SAMPLED_IMAGE_VERTEX_BYTES)
+}
+
+fn native_vulkan_scene_lite_sampled_image_index_buffer_bytes(quad_count: usize) -> u64 {
+    (quad_count as u64)
+        .saturating_mul(u64::from(SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT))
+        .saturating_mul(SCENE_LITE_SAMPLED_IMAGE_INDEX_BYTES)
 }
 
 fn native_vulkan_scene_lite_recordable_quad(
@@ -321,6 +513,24 @@ fn native_vulkan_scene_lite_recordable_quad(
         }
         _ => None,
     }
+}
+
+fn native_vulkan_scene_lite_sampled_image_quad(
+    op: &NativeVulkanSceneLiteDrawOp,
+) -> Option<NativeVulkanSceneLiteSampledImageQuad> {
+    if op.kind != NativeVulkanSceneLiteDrawOpKind::Image {
+        return None;
+    }
+    Some(NativeVulkanSceneLiteSampledImageQuad {
+        layer_index: op.layer_index,
+        layer_id: op.layer_id.clone(),
+        source: op.source.clone()?,
+        fit: op.fit,
+        opacity: op.opacity,
+        width: op.width?,
+        height: op.height?,
+        transform: op.transform,
+    })
 }
 
 fn native_vulkan_scene_lite_recordable_quad_from_op(
@@ -460,6 +670,60 @@ mod tests {
         );
         assert!(pass_plan.requires_text_atlas);
         assert!(pass_plan.requires_path_tessellation);
+    }
+
+    #[test]
+    fn draw_pass_plan_reports_sampled_image_quad_payload() {
+        let mut image = draw_op(0, NativeVulkanSceneLiteDrawOpKind::Image);
+        image.source = Some(PathBuf::from("/tmp/hero.png"));
+        image.fit = FitMode::Contain;
+        image.opacity = 0.75;
+        image.width = Some(320.0);
+        image.height = Some(180.0);
+        image.transform.x = 16.0;
+        image.transform.y = 8.0;
+        let draw_plan = NativeVulkanSceneLiteDrawPlan {
+            snapshot_time_ms: 0,
+            draw_ops: vec![image],
+            unsupported_layers: Vec::new(),
+            fallback_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(!pass_plan.backend_ready);
+        assert_eq!(
+            pass_plan.backend_status,
+            "sampled-image-quad-payload-ready-recording-pending"
+        );
+        assert_eq!(
+            pass_plan.blocking_reason,
+            Some("vulkan-sampled-image-recording-not-implemented")
+        );
+        assert_eq!(pass_plan.sampled_image_op_count, 1);
+        assert_eq!(pass_plan.sampled_image_quads.len(), 1);
+        assert!(pass_plan.sampled_image_recording_ready);
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 1);
+        assert_eq!(pass_plan.sampled_image_vertex_buffer_bytes, 80);
+        assert_eq!(pass_plan.sampled_image_index_buffer_bytes, 24);
+        assert_eq!(pass_plan.sampled_image_indices, vec![0, 1, 2, 2, 1, 3]);
+        let step = &pass_plan.sampled_image_recording_steps[0];
+        assert_eq!(step.pipeline, "sampled-image-alpha-blend");
+        assert_eq!(step.source, PathBuf::from("/tmp/hero.png"));
+        assert_eq!(step.fit, FitMode::Contain);
+        assert_eq!(step.resource_index, 0);
+        assert_eq!(step.vertex_count, 4);
+        assert_eq!(step.index_count, 6);
+        assert_eq!(pass_plan.sampled_image_vertices.len(), 4);
+        assert_eq!(
+            pass_plan.sampled_image_vertices[0].position,
+            [-144.0, -82.0]
+        );
+        assert_eq!(pass_plan.sampled_image_vertices[3].position, [176.0, 98.0]);
+        assert_eq!(pass_plan.sampled_image_vertices[0].uv, [0.0, 0.0]);
+        assert_eq!(pass_plan.sampled_image_vertices[3].uv, [1.0, 1.0]);
+        assert_eq!(pass_plan.sampled_image_vertices[0].opacity, 0.75);
     }
 
     #[test]

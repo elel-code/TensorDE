@@ -45678,6 +45678,66 @@ mod tests {
     }
 
     #[test]
+    fn scene_lite_runtime_snapshot_reports_sampled_image_quad_payload() {
+        let mut image = scene_lite_test_layer("hero", SceneLiteLayerKind::Image);
+        image.source = Some(PathBuf::from("/tmp/scene-hero.png"));
+        image.fit = FitMode::Contain;
+        image.opacity = 0.5;
+        image.width = Some(200.0);
+        image.height = Some(100.0);
+        image.transform.x = 10.0;
+        let item = scene_lite_test_item(vec![image], None, None);
+
+        let snapshot =
+            native_vulkan_scene_lite_runtime_snapshot(&item).expect("scene-lite snapshot");
+
+        assert!(snapshot.native_draw_ready);
+        assert!(snapshot.draw_pass_plan_ready);
+        assert!(!snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.draw_pass_backend_status,
+            "sampled-image-quad-payload-ready-recording-pending"
+        );
+        assert_eq!(
+            snapshot.draw_pass_blocking_reason,
+            Some("vulkan-sampled-image-recording-not-implemented")
+        );
+        assert_eq!(snapshot.draw_pass_sampled_image_op_count, 1);
+        assert_eq!(snapshot.draw_pass_sampled_image_quads.len(), 1);
+        assert!(snapshot.draw_pass_sampled_image_recording_ready);
+        assert_eq!(snapshot.draw_pass_sampled_image_recording_step_count, 1);
+        assert_eq!(snapshot.draw_pass_sampled_image_vertex_buffer_bytes, 80);
+        assert_eq!(snapshot.draw_pass_sampled_image_index_buffer_bytes, 24);
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_indices,
+            vec![0, 1, 2, 2, 1, 3]
+        );
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_quads[0].source,
+            PathBuf::from("/tmp/scene-hero.png")
+        );
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_quads[0].fit,
+            FitMode::Contain
+        );
+        assert_eq!(snapshot.draw_pass_sampled_image_quads[0].opacity, 0.5);
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_recording_steps[0].pipeline,
+            "sampled-image-alpha-blend"
+        );
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_vertices[0].position,
+            [-90.0, -50.0]
+        );
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_vertices[3].position,
+            [110.0, 50.0]
+        );
+        assert_eq!(snapshot.draw_pass_sampled_image_vertices[0].uv, [0.0, 0.0]);
+        assert_eq!(snapshot.draw_pass_sampled_image_vertices[3].uv, [1.0, 1.0]);
+    }
+
+    #[test]
     fn video_runtime_snapshot_reports_pending_gstreamer_handoff() {
         let item = NativeVulkanRenderItem::Video {
             output_name: "HDMI-A-1".to_owned(),

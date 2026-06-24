@@ -25,6 +25,15 @@ pub struct NativeVulkanSceneLiteRuntimeSnapshot {
     pub draw_pass_quad_indices: Vec<u32>,
     pub draw_pass_quad_vertex_buffer_bytes: u64,
     pub draw_pass_quad_index_buffer_bytes: u64,
+    pub draw_pass_sampled_image_quads: Vec<NativeVulkanSceneLiteSampledImageQuadSnapshot>,
+    pub draw_pass_sampled_image_recording_ready: bool,
+    pub draw_pass_sampled_image_recording_step_count: usize,
+    pub draw_pass_sampled_image_recording_steps:
+        Vec<NativeVulkanSceneLiteSampledImageRecordingStepSnapshot>,
+    pub draw_pass_sampled_image_vertices: Vec<NativeVulkanSceneLiteSampledImageVertexSnapshot>,
+    pub draw_pass_sampled_image_indices: Vec<u32>,
+    pub draw_pass_sampled_image_vertex_buffer_bytes: u64,
+    pub draw_pass_sampled_image_index_buffer_bytes: u64,
     pub draw_pass_color_op_count: usize,
     pub draw_pass_sampled_image_op_count: usize,
     pub draw_pass_vector_shape_op_count: usize,
@@ -91,10 +100,47 @@ pub struct NativeVulkanSceneLiteQuadRecordingStepSnapshot {
     pub index_buffer_size_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneLiteSampledImageQuadSnapshot {
+    pub layer_index: usize,
+    pub layer_id: String,
+    pub source: PathBuf,
+    pub fit: FitMode,
+    pub opacity: f64,
+    pub width: f64,
+    pub height: f64,
+    pub transform: SceneLiteTransform,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneLiteSampledImageRecordingStepSnapshot {
+    pub layer_index: usize,
+    pub layer_id: String,
+    pub source: PathBuf,
+    pub fit: FitMode,
+    pub pipeline: &'static str,
+    pub resource_index: u32,
+    pub first_vertex: u32,
+    pub vertex_count: u32,
+    pub first_index: u32,
+    pub index_count: u32,
+    pub vertex_buffer_offset_bytes: u64,
+    pub vertex_buffer_size_bytes: u64,
+    pub index_buffer_offset_bytes: u64,
+    pub index_buffer_size_bytes: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct NativeVulkanSceneLiteQuadVertexSnapshot {
     pub position: [f32; 2],
     pub rgba: [f32; 4],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct NativeVulkanSceneLiteSampledImageVertexSnapshot {
+    pub position: [f32; 2],
+    pub uv: [f32; 2],
+    pub opacity: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -163,6 +209,56 @@ pub(super) fn native_vulkan_scene_lite_runtime_snapshot(
         draw_pass_quad_indices: pass_plan.quad_indices,
         draw_pass_quad_vertex_buffer_bytes: pass_plan.quad_vertex_buffer_bytes,
         draw_pass_quad_index_buffer_bytes: pass_plan.quad_index_buffer_bytes,
+        draw_pass_sampled_image_quads: pass_plan
+            .sampled_image_quads
+            .into_iter()
+            .map(|quad| NativeVulkanSceneLiteSampledImageQuadSnapshot {
+                layer_index: quad.layer_index,
+                layer_id: quad.layer_id,
+                source: quad.source,
+                fit: quad.fit,
+                opacity: quad.opacity,
+                width: quad.width,
+                height: quad.height,
+                transform: quad.transform,
+            })
+            .collect(),
+        draw_pass_sampled_image_recording_ready: pass_plan.sampled_image_recording_ready,
+        draw_pass_sampled_image_recording_step_count: pass_plan.sampled_image_recording_steps.len(),
+        draw_pass_sampled_image_recording_steps: pass_plan
+            .sampled_image_recording_steps
+            .into_iter()
+            .map(
+                |step| NativeVulkanSceneLiteSampledImageRecordingStepSnapshot {
+                    layer_index: step.layer_index,
+                    layer_id: step.layer_id,
+                    source: step.source,
+                    fit: step.fit,
+                    pipeline: step.pipeline,
+                    resource_index: step.resource_index,
+                    first_vertex: step.first_vertex,
+                    vertex_count: step.vertex_count,
+                    first_index: step.first_index,
+                    index_count: step.index_count,
+                    vertex_buffer_offset_bytes: step.vertex_buffer_offset_bytes,
+                    vertex_buffer_size_bytes: step.vertex_buffer_size_bytes,
+                    index_buffer_offset_bytes: step.index_buffer_offset_bytes,
+                    index_buffer_size_bytes: step.index_buffer_size_bytes,
+                },
+            )
+            .collect(),
+        draw_pass_sampled_image_vertices: pass_plan
+            .sampled_image_vertices
+            .into_iter()
+            .map(|vertex| NativeVulkanSceneLiteSampledImageVertexSnapshot {
+                position: vertex.position,
+                uv: vertex.uv,
+                opacity: vertex.opacity,
+            })
+            .collect(),
+        draw_pass_sampled_image_indices: pass_plan.sampled_image_indices,
+        draw_pass_sampled_image_vertex_buffer_bytes: pass_plan.sampled_image_vertex_buffer_bytes,
+        draw_pass_sampled_image_index_buffer_bytes: pass_plan.sampled_image_index_buffer_bytes,
         draw_pass_color_op_count: pass_plan.color_op_count,
         draw_pass_sampled_image_op_count: pass_plan.sampled_image_op_count,
         draw_pass_vector_shape_op_count: pass_plan.vector_shape_op_count,
