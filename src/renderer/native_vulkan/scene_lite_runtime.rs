@@ -5,12 +5,27 @@ use crate::core::{FitMode, SceneLiteTextAlign, SceneLiteTransform};
 
 use super::NativeVulkanRenderItem;
 use super::render_plan::native_vulkan_scene_lite_draw_plan;
+use super::scene_lite_draw_pass::native_vulkan_scene_lite_draw_pass_plan;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneLiteRuntimeSnapshot {
     pub snapshot_time_ms: u64,
     pub native_draw_ready: bool,
     pub fallback_display_available: bool,
+    pub draw_pass_plan_ready: bool,
+    pub draw_pass_backend_ready: bool,
+    pub draw_pass_backend_status: &'static str,
+    pub draw_pass_blocking_reason: Option<&'static str>,
+    pub draw_pass_recordable_op_count: usize,
+    pub draw_pass_color_op_count: usize,
+    pub draw_pass_sampled_image_op_count: usize,
+    pub draw_pass_vector_shape_op_count: usize,
+    pub draw_pass_text_op_count: usize,
+    pub draw_pass_path_op_count: usize,
+    pub draw_pass_required_image_resources: Vec<PathBuf>,
+    pub draw_pass_requires_text_atlas: bool,
+    pub draw_pass_requires_path_tessellation: bool,
+    pub draw_pass_fast_clear_color: Option<String>,
     pub draw_op_count: usize,
     pub unsupported_layer_count: usize,
     pub draw_ops: Vec<NativeVulkanSceneLiteDrawOpSnapshot>,
@@ -51,10 +66,25 @@ pub(super) fn native_vulkan_scene_lite_runtime_snapshot(
     render_item: &NativeVulkanRenderItem,
 ) -> Option<NativeVulkanSceneLiteRuntimeSnapshot> {
     let plan = native_vulkan_scene_lite_draw_plan(render_item)?;
+    let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&plan);
     Some(NativeVulkanSceneLiteRuntimeSnapshot {
         snapshot_time_ms: plan.snapshot_time_ms,
         native_draw_ready: plan.native_draw_ready(),
         fallback_display_available: plan.fallback_display_available,
+        draw_pass_plan_ready: pass_plan.plan_ready,
+        draw_pass_backend_ready: pass_plan.backend_ready,
+        draw_pass_backend_status: pass_plan.backend_status,
+        draw_pass_blocking_reason: pass_plan.blocking_reason,
+        draw_pass_recordable_op_count: pass_plan.recordable_op_count,
+        draw_pass_color_op_count: pass_plan.color_op_count,
+        draw_pass_sampled_image_op_count: pass_plan.sampled_image_op_count,
+        draw_pass_vector_shape_op_count: pass_plan.vector_shape_op_count,
+        draw_pass_text_op_count: pass_plan.text_op_count,
+        draw_pass_path_op_count: pass_plan.path_op_count,
+        draw_pass_required_image_resources: pass_plan.required_image_resources,
+        draw_pass_requires_text_atlas: pass_plan.requires_text_atlas,
+        draw_pass_requires_path_tessellation: pass_plan.requires_path_tessellation,
+        draw_pass_fast_clear_color: pass_plan.fast_clear_color,
         draw_op_count: plan.draw_ops.len(),
         unsupported_layer_count: plan.unsupported_layers.len(),
         draw_ops: plan

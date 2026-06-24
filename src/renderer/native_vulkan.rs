@@ -84,6 +84,9 @@ mod render_item;
 #[path = "native_vulkan/render_plan.rs"]
 mod render_plan;
 
+#[path = "native_vulkan/scene_lite_draw_pass.rs"]
+mod scene_lite_draw_pass;
+
 #[path = "native_vulkan/scene_lite_runtime.rs"]
 mod scene_lite_runtime;
 
@@ -47393,7 +47396,7 @@ pub fn wallpaper_type_support_matrix() -> Vec<NativeVulkanWallpaperTypeSupport> 
         NativeVulkanWallpaperTypeSupport {
             wallpaper_type: NativeVulkanWallpaperType::SceneLite,
             current_vulkan_item: true,
-            current_renderer_status: "deterministic scene snapshot layers carried by Vulkan render item; scene draw pass not implemented yet",
+            current_renderer_status: "deterministic scene snapshot layers carried by Vulkan render item; native draw-pass plan and fast-clear color path exist, general draw recording remains pending",
             target_vulkan_path: "deterministic scene snapshot -> Vulkan shape/image/text passes",
         },
         NativeVulkanWallpaperTypeSupport {
@@ -51403,6 +51406,29 @@ mod tests {
         assert_eq!(snapshot.snapshot_time_ms, 1234);
         assert!(snapshot.native_draw_ready);
         assert!(snapshot.fallback_display_available);
+        assert!(snapshot.draw_pass_plan_ready);
+        assert!(!snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.draw_pass_backend_status,
+            "draw-pass-plan-ready-recording-pending"
+        );
+        assert_eq!(
+            snapshot.draw_pass_blocking_reason,
+            Some("vulkan-draw-recording-not-implemented")
+        );
+        assert_eq!(snapshot.draw_pass_recordable_op_count, 0);
+        assert_eq!(snapshot.draw_pass_color_op_count, 0);
+        assert_eq!(snapshot.draw_pass_sampled_image_op_count, 1);
+        assert_eq!(snapshot.draw_pass_vector_shape_op_count, 1);
+        assert_eq!(snapshot.draw_pass_text_op_count, 1);
+        assert_eq!(snapshot.draw_pass_path_op_count, 0);
+        assert_eq!(
+            snapshot.draw_pass_required_image_resources,
+            vec![PathBuf::from("/tmp/scene-hero.png")]
+        );
+        assert!(snapshot.draw_pass_requires_text_atlas);
+        assert!(!snapshot.draw_pass_requires_path_tessellation);
+        assert_eq!(snapshot.draw_pass_fast_clear_color, None);
         assert_eq!(snapshot.draw_op_count, 3);
         assert_eq!(snapshot.unsupported_layer_count, 0);
         assert_eq!(
@@ -51459,6 +51485,17 @@ mod tests {
 
         assert!(!snapshot.native_draw_ready);
         assert!(snapshot.fallback_display_available);
+        assert!(!snapshot.draw_pass_plan_ready);
+        assert!(!snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.draw_pass_backend_status,
+            "blocked-by-unsupported-scene-lite-layers"
+        );
+        assert_eq!(
+            snapshot.draw_pass_blocking_reason,
+            Some("unsupported-scene-lite-layers")
+        );
+        assert_eq!(snapshot.draw_pass_color_op_count, 1);
         assert_eq!(snapshot.draw_op_count, 1);
         assert_eq!(snapshot.draw_ops[0].kind, "color-quad");
         assert_eq!(snapshot.unsupported_layer_count, 4);
@@ -51474,6 +51511,29 @@ mod tests {
                 "path-layer-missing-paint",
                 "group-layer-needs-flattened-children"
             ]
+        );
+    }
+
+    #[test]
+    fn scene_lite_runtime_snapshot_reports_fast_clear_draw_pass() {
+        let mut color = scene_lite_test_layer("background", SceneLiteLayerKind::Color);
+        color.color = Some("#203040".to_owned());
+        let item = scene_lite_test_item(vec![color], None, None);
+
+        let snapshot =
+            native_vulkan_scene_lite_runtime_snapshot(&item).expect("scene-lite snapshot");
+
+        assert!(snapshot.native_draw_ready);
+        assert!(snapshot.draw_pass_plan_ready);
+        assert!(snapshot.draw_pass_backend_ready);
+        assert_eq!(snapshot.draw_pass_backend_status, "fast-clear-color-ready");
+        assert_eq!(snapshot.draw_pass_blocking_reason, None);
+        assert_eq!(snapshot.draw_pass_recordable_op_count, 1);
+        assert_eq!(snapshot.draw_pass_color_op_count, 1);
+        assert_eq!(snapshot.draw_pass_sampled_image_op_count, 0);
+        assert_eq!(
+            snapshot.draw_pass_fast_clear_color.as_deref(),
+            Some("#203040")
         );
     }
 
