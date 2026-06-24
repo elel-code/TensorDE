@@ -47622,6 +47622,8 @@ fn ash_extension_name(name: &'static CStr) -> &'static str {
 pub struct NativeVulkanVideoInteropContract {
     pub target_memory_flow: &'static str,
     pub current_baseline: &'static str,
+    pub vulkan_binding_policy: &'static str,
+    pub ash_mainline_value: &'static str,
     pub target_sampling: &'static str,
     pub avoids_default_rgba_upload: bool,
     pub decoder_policy: &'static str,
@@ -47633,6 +47635,8 @@ pub fn video_interop_contract() -> NativeVulkanVideoInteropContract {
     NativeVulkanVideoInteropContract {
         target_memory_flow: "decoder GPU memory -> importable DMABuf/EGLImage/Vulkan image -> Vulkan YUV sampling",
         current_baseline: "retired native-wgpu evidence: GStreamer CUDAMemory -> CUDA copy -> external Vulkan image planes -> wgpu present",
+        vulkan_binding_policy: "ash is the Vulkan binding layer; zero-copy evidence comes from device extension/capability/import telemetry, not from the binding choice alone",
+        ash_mainline_value: "ash mainline is useful when it exposes newer Vulkan Video or external-memory structs before the crates.io release, reducing raw FFI and generated binding drift",
         target_sampling: "NV12/P010/YUV planes sampled directly in Vulkan before RGB composition",
         avoids_default_rgba_upload: true,
         decoder_policy: "prefer GStreamer for codec/audio coverage; allow Vulkan Video or libavcodec import paths when they win evidence",
@@ -52201,6 +52205,25 @@ mod tests {
             contract
                 .required_device_extensions
                 .contains(&"VK_EXT_image_drm_format_modifier")
+        );
+        assert!(contract.video_interop.vulkan_binding_policy.contains("ash"));
+        assert!(
+            contract
+                .video_interop
+                .vulkan_binding_policy
+                .contains("zero-copy evidence")
+        );
+        assert!(
+            contract
+                .video_interop
+                .ash_mainline_value
+                .contains("Vulkan Video")
+        );
+        assert!(
+            contract
+                .video_interop
+                .ash_mainline_value
+                .contains("external-memory")
         );
     }
 
