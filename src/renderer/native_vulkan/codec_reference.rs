@@ -2310,6 +2310,150 @@ pub(super) struct NativeVulkanH265ReferenceRequest {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct NativeVulkanH265ActiveDpbReference {
+    pub(super) poc: i32,
+    pub(super) used_for_long_term_reference: bool,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+pub(super) fn native_vulkan_h265_ref_pic_set_st_curr_before(
+    access_unit_index: u32,
+    available_references: &[&NativeVulkanH265DecodeReferenceSnapshot],
+) -> Result<[u8; 8], NativeVulkanError> {
+    native_vulkan_h265_ref_pic_set_slots_by(
+        access_unit_index,
+        available_references,
+        "StCurrBefore",
+        |reference| !reference.used_for_long_term_reference && reference.delta_poc < 0,
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+pub(super) fn native_vulkan_h265_ref_pic_set_st_curr_after(
+    access_unit_index: u32,
+    available_references: &[&NativeVulkanH265DecodeReferenceSnapshot],
+) -> Result<[u8; 8], NativeVulkanError> {
+    native_vulkan_h265_ref_pic_set_slots_by(
+        access_unit_index,
+        available_references,
+        "StCurrAfter",
+        |reference| !reference.used_for_long_term_reference && reference.delta_poc > 0,
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+pub(super) fn native_vulkan_h265_ref_pic_set_lt_curr(
+    access_unit_index: u32,
+    available_references: &[&NativeVulkanH265DecodeReferenceSnapshot],
+) -> Result<[u8; 8], NativeVulkanError> {
+    native_vulkan_h265_ref_pic_set_slots_by(
+        access_unit_index,
+        available_references,
+        "LtCurr",
+        |reference| reference.used_for_long_term_reference,
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_ref_pic_set_slots_by(
+    access_unit_index: u32,
+    available_references: &[&NativeVulkanH265DecodeReferenceSnapshot],
+    label: &'static str,
+    include: fn(&NativeVulkanH265DecodeReferenceSnapshot) -> bool,
+) -> Result<[u8; 8], NativeVulkanError> {
+    let reference_count = available_references
+        .iter()
+        .filter(|reference| include(reference))
+        .count();
+    if reference_count > 8 {
+        return Err(NativeVulkanError::Video(format!(
+            "H.265 AU {access_unit_index} has {reference_count} {label} references; Vulkan STD H.265 decode supports at most 8 entries"
+        )));
+    }
+
+    let mut slots = [0xffu8; 8];
+    for (index, reference) in available_references
+        .iter()
+        .copied()
+        .filter(|reference| include(reference))
+        .enumerate()
+    {
+        let dpb_slot = reference.dpb_slot.ok_or_else(|| {
+            NativeVulkanError::Video(format!(
+                "H.265 AU {access_unit_index} reference POC {} has no DPB slot",
+                reference.poc
+            ))
+        })?;
+        slots[index] = native_vulkan_h265_u8(dpb_slot, "RefPicSet slotIndex")
+            .map_err(NativeVulkanError::Video)?;
+    }
+    Ok(slots)
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+fn native_vulkan_h265_begin_reference_slots_active_only() -> bool {
+    matches!(
+        std::env::var("GILDER_VULKAN_H265_BEGIN_REFERENCE_SLOTS")
+            .ok()
+            .as_deref(),
+        Some("active-only") | Some("active")
+    )
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+pub(super) fn native_vulkan_h265_begin_slot_refs(
+    active_dpb_refs: &[Option<NativeVulkanH265ActiveDpbReference>],
+    references: &[NativeVulkanH265DecodeReferenceSnapshot],
+    reset_before_decode: bool,
+) -> Vec<(u32, Option<NativeVulkanH265ActiveDpbReference>)> {
+    let active_only = native_vulkan_h265_begin_reference_slots_active_only();
+    active_dpb_refs
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(|(slot, active_reference)| {
+            let reference_override = references
+                .iter()
+                .find(|reference| reference.available && reference.dpb_slot == Some(slot as u32))
+                .map(|reference| NativeVulkanH265ActiveDpbReference {
+                    poc: reference.poc,
+                    used_for_long_term_reference: reference.used_for_long_term_reference,
+                });
+            let had_active_reference = active_reference.is_some() || reference_override.is_some();
+            if active_only && !had_active_reference {
+                return None;
+            }
+            let reference = if reset_before_decode {
+                None
+            } else {
+                reference_override.or(active_reference)
+            };
+            Some((slot as u32, reference))
+        })
+        .collect()
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+pub(super) fn native_vulkan_h265_apply_reference_usage(
+    active_dpb_refs: &mut [Option<NativeVulkanH265ActiveDpbReference>],
+    references: &[NativeVulkanH265DecodeReferenceSnapshot],
+) {
+    for reference in references.iter().filter(|reference| reference.available) {
+        let Some(dpb_slot) = reference.dpb_slot else {
+            continue;
+        };
+        let Some(slot) = active_dpb_refs.get_mut(dpb_slot as usize) else {
+            continue;
+        };
+        *slot = Some(NativeVulkanH265ActiveDpbReference {
+            poc: reference.poc,
+            used_for_long_term_reference: reference.used_for_long_term_reference,
+        });
+    }
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
 impl NativeVulkanH265DecodeReferencePlanner {
     pub(super) fn new(dpb_slots: u32, max_pic_order_cnt_lsb: u32) -> Self {
         let dpb_slots = dpb_slots.max(1);
