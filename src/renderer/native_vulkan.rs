@@ -112,6 +112,9 @@ mod audio_policy;
 #[path = "native_vulkan/audio_runtime.rs"]
 mod audio_runtime;
 #[cfg(feature = "native-vulkan-gst-video")]
+#[path = "native_vulkan/audio_sync.rs"]
+mod audio_sync;
+#[cfg(feature = "native-vulkan-gst-video")]
 #[path = "native_vulkan/audio_worker.rs"]
 mod audio_worker;
 
@@ -4262,17 +4265,13 @@ pub fn run_h264_ready_prefix_video(
                                 &mut video_clock_segment_start_pts_ms,
                             );
                         if let Some(audio_clock_probe) = audio_clock_probe.as_mut() {
-                            if frame.loop_boundary_reset {
-                                audio_clock_probe.seek_for_video_loop(frame.pts_ms.unwrap_or(0))?;
-                            }
-                            audio_clock_probe.sample_video_pts_ms(
+                            audio_sync::native_vulkan_sample_audio_clock_for_video_frame(
+                                audio_clock_probe,
+                                video_clock_frame_index,
+                                target_max_fps,
                                 frame.pts_ms,
-                                pacing::native_vulkan_audio_probe_video_clock_ns(
-                                    video_clock_frame_index,
-                                    target_max_fps,
-                                    frame.pts_ms,
-                                    video_clock_segment_start_pts_ms,
-                                ),
+                                video_clock_segment_start_pts_ms,
+                                frame.loop_boundary_reset,
                             )?;
                         }
                         let next_video_clock_ns = pacing::native_vulkan_next_video_pacing_clock_ns(
@@ -5935,17 +5934,13 @@ pub fn run_h264_ready_prefix_video(
                                 &mut video_clock_segment_start_pts_ms,
                             );
                         if let Some(audio_clock_probe) = audio_clock_probe.as_mut() {
-                            if frame.loop_boundary_reset {
-                                audio_clock_probe.seek_for_video_loop(frame.pts_ms.unwrap_or(0))?;
-                            }
-                            audio_clock_probe.sample_video_pts_ms(
+                            audio_sync::native_vulkan_sample_audio_clock_for_video_frame(
+                                audio_clock_probe,
+                                video_clock_frame_index,
+                                target_max_fps,
                                 frame.pts_ms,
-                                pacing::native_vulkan_audio_probe_video_clock_ns(
-                                    video_clock_frame_index,
-                                    target_max_fps,
-                                    frame.pts_ms,
-                                    video_clock_segment_start_pts_ms,
-                                ),
+                                video_clock_segment_start_pts_ms,
+                                frame.loop_boundary_reset,
                             )?;
                         }
                         let next_video_clock_ns = pacing::native_vulkan_next_video_pacing_clock_ns(
@@ -7500,17 +7495,13 @@ pub fn run_h265_ready_prefix_video(
                             &mut video_clock_segment_start_pts_ms,
                         );
                     if let Some(audio_clock_probe) = audio_clock_probe.as_mut() {
-                        if frame.loop_boundary_reset {
-                            audio_clock_probe.seek_for_video_loop(frame.pts_ms.unwrap_or(0))?;
-                        }
-                        audio_clock_probe.sample_video_pts_ms(
+                        audio_sync::native_vulkan_sample_audio_clock_for_video_frame(
+                            audio_clock_probe,
+                            video_clock_frame_index,
+                            target_max_fps,
                             frame.pts_ms,
-                            pacing::native_vulkan_audio_probe_video_clock_ns(
-                                video_clock_frame_index,
-                                target_max_fps,
-                                frame.pts_ms,
-                                video_clock_segment_start_pts_ms,
-                            ),
+                            video_clock_segment_start_pts_ms,
+                            frame.loop_boundary_reset,
                         )?;
                     }
                     let next_video_clock_ns = pacing::native_vulkan_next_video_pacing_clock_ns(
@@ -13480,17 +13471,13 @@ pub fn run_av1_ready_prefix_video(
                     &mut video_clock_segment_start_pts_ms,
                 );
                 if let Some(audio_clock_probe) = audio_clock_probe.as_mut() {
-                    if frame.loop_boundary_reset {
-                        audio_clock_probe.seek_for_video_loop(frame.pts_ms.unwrap_or(0))?;
-                    }
-                    audio_clock_probe.sample_video_pts_ms(
+                    audio_sync::native_vulkan_sample_audio_clock_for_video_frame(
+                        audio_clock_probe,
+                        video_clock_frame_index,
+                        target_max_fps,
                         frame.pts_ms,
-                        pacing::native_vulkan_audio_probe_video_clock_ns(
-                            video_clock_frame_index,
-                            target_max_fps,
-                            frame.pts_ms,
-                            video_clock_segment_start_pts_ms,
-                        ),
+                        video_clock_segment_start_pts_ms,
+                        frame.loop_boundary_reset,
                     )?;
                 }
                 let next_video_clock_ns = pacing::native_vulkan_next_video_pacing_clock_ns(
