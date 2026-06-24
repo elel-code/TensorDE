@@ -60,6 +60,28 @@ pub(super) trait NativeVulkanDirectPresentTimedFrame {
     fn apply_direct_present_timing(&mut self, timing: NativeVulkanDirectPresentTiming);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct NativeVulkanDirectOptionalPresentTiming {
+    pub(super) frame_index: usize,
+    pub(super) acquire_elapsed_us: Option<u64>,
+    pub(super) acquire_start_since_start_us: Option<u64>,
+    pub(super) acquire_end_since_start_us: Option<u64>,
+    pub(super) record_elapsed_us: Option<u64>,
+    pub(super) queue_submit_elapsed_us: u64,
+    pub(super) queue_present_elapsed_us: u64,
+    pub(super) present_elapsed_us: u64,
+    pub(super) present_submit_start_since_start_us: Option<u64>,
+    pub(super) queue_present_start_since_start_us: Option<u64>,
+    pub(super) present_result_since_start_us: u64,
+}
+
+pub(super) trait NativeVulkanDirectOptionalPresentTimedFrame {
+    fn apply_direct_optional_present_timing(
+        &mut self,
+        timing: NativeVulkanDirectOptionalPresentTiming,
+    );
+}
+
 pub(super) fn native_vulkan_direct_apply_present_result<F>(
     codec_label: &'static str,
     frames: &mut [F],
@@ -80,6 +102,26 @@ where
     *acquire_not_ready_count =
         acquire_not_ready_count.saturating_add(timing.acquire_not_ready_count);
     frame.apply_direct_present_timing(timing);
+    Ok(())
+}
+
+pub(super) fn native_vulkan_direct_apply_optional_present_result<F>(
+    codec_label: &'static str,
+    frames: &mut [F],
+    timing: Result<NativeVulkanDirectOptionalPresentTiming, NativeVulkanError>,
+) -> Result<(), NativeVulkanError>
+where
+    F: NativeVulkanDirectOptionalPresentTimedFrame,
+{
+    let timing = timing?;
+    let frame_count = frames.len();
+    let frame = frames.get_mut(timing.frame_index).ok_or_else(|| {
+        NativeVulkanError::Video(format!(
+            "{codec_label} present worker returned frame index {} but only {frame_count} frame(s) are recorded",
+            timing.frame_index
+        ))
+    })?;
+    frame.apply_direct_optional_present_timing(timing);
     Ok(())
 }
 
@@ -230,8 +272,22 @@ mod tests {
         timing: Option<NativeVulkanDirectPresentTiming>,
     }
 
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    struct TestOptionalPresentFrame {
+        timing: Option<NativeVulkanDirectOptionalPresentTiming>,
+    }
+
     impl NativeVulkanDirectPresentTimedFrame for TestPresentFrame {
         fn apply_direct_present_timing(&mut self, timing: NativeVulkanDirectPresentTiming) {
+            self.timing = Some(timing);
+        }
+    }
+
+    impl NativeVulkanDirectOptionalPresentTimedFrame for TestOptionalPresentFrame {
+        fn apply_direct_optional_present_timing(
+            &mut self,
+            timing: NativeVulkanDirectOptionalPresentTiming,
+        ) {
             self.timing = Some(timing);
         }
     }
@@ -358,5 +414,29 @@ mod tests {
             err.to_string()
                 .contains("test present worker returned frame index 4")
         );
+    }
+
+    #[test]
+    fn applies_optional_present_timing_without_acquire_not_ready_accounting() {
+        let mut frames = vec![TestOptionalPresentFrame::default(); 2];
+        let timing = NativeVulkanDirectOptionalPresentTiming {
+            frame_index: 1,
+            acquire_elapsed_us: None,
+            acquire_start_since_start_us: None,
+            acquire_end_since_start_us: None,
+            record_elapsed_us: Some(20),
+            queue_submit_elapsed_us: 30,
+            queue_present_elapsed_us: 40,
+            present_elapsed_us: 50,
+            present_submit_start_since_start_us: Some(60),
+            queue_present_start_since_start_us: Some(70),
+            present_result_since_start_us: 80,
+        };
+
+        native_vulkan_direct_apply_optional_present_result("test", &mut frames, Ok(timing))
+            .expect("apply optional present result");
+
+        assert_eq!(frames[0].timing, None);
+        assert_eq!(frames[1].timing, Some(timing));
     }
 }

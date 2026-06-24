@@ -137,9 +137,11 @@ mod demux_gst;
 pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy};
 #[cfg(feature = "native-vulkan-gst-video")]
 use direct_runtime::{
-    NativeVulkanDirectDisplayHandoffMetrics, NativeVulkanDirectPresentTimedFrame,
-    NativeVulkanDirectPresentTiming, native_vulkan_direct_apply_present_result,
-    native_vulkan_direct_present_result_summary, native_vulkan_direct_runtime_summary,
+    NativeVulkanDirectDisplayHandoffMetrics, NativeVulkanDirectOptionalPresentTimedFrame,
+    NativeVulkanDirectOptionalPresentTiming, NativeVulkanDirectPresentTimedFrame,
+    NativeVulkanDirectPresentTiming, native_vulkan_direct_apply_optional_present_result,
+    native_vulkan_direct_apply_present_result, native_vulkan_direct_present_result_summary,
+    native_vulkan_direct_runtime_summary,
 };
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
@@ -2975,6 +2977,40 @@ pub struct NativeVulkanDirectAv1ReadyPrefixFrameSnapshot {
     pub readback_y_unique_values: Option<u32>,
     pub readback_uv_unique_values: Option<u32>,
     pub readback_elapsed_us: Option<u64>,
+}
+
+#[cfg(feature = "native-vulkan-gst-video")]
+impl NativeVulkanDirectOptionalPresentTimedFrame for NativeVulkanDirectAv1ReadyPrefixFrameSnapshot {
+    fn apply_direct_optional_present_timing(
+        &mut self,
+        timing: NativeVulkanDirectOptionalPresentTiming,
+    ) {
+        if let Some(acquire_elapsed_us) = timing.acquire_elapsed_us {
+            self.acquire_elapsed_us = acquire_elapsed_us;
+        }
+        if let Some(acquire_start_since_start_us) = timing.acquire_start_since_start_us {
+            self.acquire_start_since_start_us = acquire_start_since_start_us;
+        }
+        if let Some(acquire_end_since_start_us) = timing.acquire_end_since_start_us {
+            self.acquire_end_since_start_us = acquire_end_since_start_us;
+        }
+        if let Some(record_elapsed_us) = timing.record_elapsed_us {
+            self.record_elapsed_us = record_elapsed_us;
+        }
+        self.submit_elapsed_us = timing.queue_submit_elapsed_us;
+        self.queue_present_elapsed_us = timing.queue_present_elapsed_us;
+        self.present_elapsed_us = timing.present_elapsed_us;
+        if let Some(present_submit_start_since_start_us) =
+            timing.present_submit_start_since_start_us
+        {
+            self.present_submit_start_since_start_us = present_submit_start_since_start_us;
+        }
+        if let Some(queue_present_start_since_start_us) = timing.queue_present_start_since_start_us
+        {
+            self.queue_present_start_since_start_us = queue_present_start_since_start_us;
+        }
+        self.present_result_since_start_us = timing.present_result_since_start_us;
+    }
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -21905,32 +21941,23 @@ fn native_vulkan_apply_av1_present_worker_result(
     if !result.counted {
         return Ok(());
     }
-    let frame_count = frames.len();
-    let frame = frames.get_mut(result.frame_index).ok_or_else(|| {
-        NativeVulkanError::Video(format!(
-            "AV1 present worker returned frame index {} but only {} frame(s) are recorded",
-            result.frame_index, frame_count
-        ))
-    })?;
-    if let Some(acquire_elapsed_us) = result.acquire_elapsed_us {
-        frame.acquire_elapsed_us = acquire_elapsed_us;
-    }
-    if let Some(acquire_start_since_start_us) = result.acquire_start_since_start_us {
-        frame.acquire_start_since_start_us = acquire_start_since_start_us;
-    }
-    if let Some(acquire_end_since_start_us) = result.acquire_end_since_start_us {
-        frame.acquire_end_since_start_us = acquire_end_since_start_us;
-    }
-    if let Some(record_elapsed_us) = result.record_elapsed_us {
-        frame.record_elapsed_us = record_elapsed_us;
-    }
-    frame.submit_elapsed_us = result.queue_submit_elapsed_us;
-    frame.queue_present_elapsed_us = result.queue_present_elapsed_us;
-    frame.present_elapsed_us = result.present_elapsed_us;
-    frame.present_submit_start_since_start_us = result.present_submit_start_since_start_us;
-    frame.queue_present_start_since_start_us = result.queue_present_start_since_start_us;
-    frame.present_result_since_start_us = result.present_result_since_start_us;
-    Ok(())
+    native_vulkan_direct_apply_optional_present_result(
+        "AV1",
+        frames,
+        Ok(NativeVulkanDirectOptionalPresentTiming {
+            frame_index: result.frame_index,
+            acquire_elapsed_us: result.acquire_elapsed_us,
+            acquire_start_since_start_us: result.acquire_start_since_start_us,
+            acquire_end_since_start_us: result.acquire_end_since_start_us,
+            record_elapsed_us: result.record_elapsed_us,
+            queue_submit_elapsed_us: result.queue_submit_elapsed_us,
+            queue_present_elapsed_us: result.queue_present_elapsed_us,
+            present_elapsed_us: result.present_elapsed_us,
+            present_submit_start_since_start_us: Some(result.present_submit_start_since_start_us),
+            queue_present_start_since_start_us: Some(result.queue_present_start_since_start_us),
+            present_result_since_start_us: result.present_result_since_start_us,
+        }),
+    )
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
