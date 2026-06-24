@@ -19,8 +19,9 @@ use super::instance::{
     native_vulkan_vulkanalia_destroy_instance,
 };
 
-const REQUIRED_INSTANCE_EXTENSIONS: &[&str] = &["VK_KHR_surface", "VK_KHR_wayland_surface"];
-const OPTIONAL_INSTANCE_EXTENSIONS: &[&str] = &["VK_KHR_get_surface_capabilities2"];
+pub(super) const REQUIRED_INSTANCE_EXTENSIONS: &[&str] =
+    &["VK_KHR_surface", "VK_KHR_wayland_surface"];
+pub(super) const OPTIONAL_INSTANCE_EXTENSIONS: &[&str] = &["VK_KHR_get_surface_capabilities2"];
 const REQUIRED_DEVICE_EXTENSIONS: &[&str] = &["VK_KHR_swapchain"];
 const PRESENT_ID_EXTENSION_NAME: &str = "VK_KHR_present_id";
 const PRESENT_ID2_EXTENSION_NAME: &str = "VK_KHR_present_id2";
@@ -84,6 +85,7 @@ pub struct NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot {
     pub available_device_extensions: Vec<String>,
     pub enabled_device_extensions: Vec<&'static str>,
     pub required_swapchain: bool,
+    pub synchronization2_enabled: bool,
     pub present_id_available: bool,
     pub present_id_enabled: bool,
     pub present_id2_available: bool,
@@ -135,34 +137,42 @@ pub struct NativeVulkanVulkanaliaSwapchainSnapshot {
     pub image_usage: Vec<&'static str>,
 }
 
-struct NativeVulkanVulkanaliaPresentQueueSelection {
-    physical_device_index: usize,
-    physical_device: vk::PhysicalDevice,
-    physical_device_name: String,
-    physical_device_type: String,
-    queue_family_index: u32,
-    queue_count: u32,
-    queue_flags: vk::QueueFlags,
-    supports_wayland_presentation: bool,
-    device_extensions: Vec<String>,
+pub(super) struct NativeVulkanVulkanaliaPresentQueueSelection {
+    pub(super) physical_device_index: usize,
+    pub(super) physical_device: vk::PhysicalDevice,
+    pub(super) physical_device_name: String,
+    pub(super) physical_device_type: String,
+    pub(super) queue_family_index: u32,
+    pub(super) queue_count: u32,
+    pub(super) queue_flags: vk::QueueFlags,
+    pub(super) supports_wayland_presentation: bool,
+    pub(super) device_extensions: Vec<String>,
 }
 
-struct NativeVulkanVulkanaliaSwapchainPlan {
-    create_info: vk::SwapchainCreateInfoKHR,
-    format: vk::SurfaceFormatKHR,
-    present_mode: vk::PresentModeKHR,
-    extent: vk::Extent2D,
-    image_count: u32,
-    composite_alpha: vk::CompositeAlphaFlagsKHR,
+pub(super) struct NativeVulkanVulkanaliaSwapchainPlan {
+    pub(super) create_info: vk::SwapchainCreateInfoKHR,
+    pub(super) format: vk::SurfaceFormatKHR,
+    pub(super) present_mode: vk::PresentModeKHR,
+    pub(super) extent: vk::Extent2D,
+    pub(super) image_count: u32,
+    pub(super) composite_alpha: vk::CompositeAlphaFlagsKHR,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct NativeVulkanVulkanaliaPresentFeatureSelection {
+pub(super) struct NativeVulkanVulkanaliaPresentFeatureSelection {
+    pub(super) synchronization2_enabled: bool,
     present_id_enabled: bool,
     present_id2_enabled: bool,
     present_wait_enabled: bool,
     present_wait2_enabled: bool,
     swapchain_maintenance1_enabled: bool,
+}
+
+pub(super) struct NativeVulkanVulkanaliaPresentDeviceContext {
+    pub(super) device: Device,
+    pub(super) queue: vk::Queue,
+    pub(super) extension_snapshot: NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
+    pub(super) feature_selection: NativeVulkanVulkanaliaPresentFeatureSelection,
 }
 
 pub fn probe_native_vulkan_vulkanalia_surface_swapchain(
@@ -230,66 +240,9 @@ fn with_vulkanalia_surface_swapchain(
         &mut present_queue_family_count,
     )?;
 
-    let extension_snapshot = present_device_extension_snapshot(instance, &selection)?;
-    let feature_selection = query_vulkanalia_present_feature_selection(
-        instance,
-        selection.physical_device,
-        &selection.device_extensions,
-    );
-    let enabled_device_extensions = enabled_present_device_extensions(&feature_selection);
-    let priorities = [1.0_f32];
-    let queue_create_info = vk::DeviceQueueCreateInfo::builder()
-        .queue_family_index(selection.queue_family_index)
-        .queue_priorities(&priorities)
-        .build();
-    let queue_create_infos = [queue_create_info];
-    let extension_names = enabled_device_extensions
-        .iter()
-        .map(|extension| CString::new(*extension).expect("static extension has no nul"))
-        .collect::<Vec<_>>();
-    let extension_name_ptrs = extension_names
-        .iter()
-        .map(|extension| extension.as_ptr())
-        .collect::<Vec<_>>();
-
-    let mut present_id_features = vk::PhysicalDevicePresentIdFeaturesKHR::builder()
-        .present_id(true)
-        .build();
-    let mut present_wait_features = vk::PhysicalDevicePresentWaitFeaturesKHR::builder()
-        .present_wait(true)
-        .build();
-    let mut present_id2_features = vk::PhysicalDevicePresentId2FeaturesKHR::builder()
-        .present_id2(true)
-        .build();
-    let mut present_wait2_features = vk::PhysicalDevicePresentWait2FeaturesKHR::builder()
-        .present_wait2(true)
-        .build();
-    let mut swapchain_maintenance1_features =
-        vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR::builder()
-            .swapchain_maintenance1(true)
-            .build();
-    let mut device_create_info = vk::DeviceCreateInfo::builder()
-        .queue_create_infos(&queue_create_infos)
-        .enabled_extension_names(&extension_name_ptrs);
-    if feature_selection.present_id_enabled {
-        device_create_info = device_create_info.push_next(&mut present_id_features);
-    }
-    if feature_selection.present_wait_enabled {
-        device_create_info = device_create_info.push_next(&mut present_wait_features);
-    }
-    if feature_selection.present_id2_enabled {
-        device_create_info = device_create_info.push_next(&mut present_id2_features);
-    }
-    if feature_selection.present_wait2_enabled {
-        device_create_info = device_create_info.push_next(&mut present_wait2_features);
-    }
-    if feature_selection.swapchain_maintenance1_enabled {
-        device_create_info = device_create_info.push_next(&mut swapchain_maintenance1_features);
-    }
-
-    let device =
-        unsafe { instance.create_device(selection.physical_device, &device_create_info, None) }
-            .map_err(|err| format!("vkCreateDevice(vulkanalia present/swapchain): {err:?}"))?;
+    let present_device = create_vulkanalia_present_device(instance, &selection)?;
+    let extension_snapshot = present_device.extension_snapshot.clone();
+    let device = &present_device.device;
     let swapchain_plan = match create_vulkanalia_swapchain_plan(
         instance,
         selection.physical_device,
@@ -299,7 +252,7 @@ fn with_vulkanalia_surface_swapchain(
         Ok(plan) => plan,
         Err(err) => {
             unsafe {
-                device.destroy_device(None);
+                present_device.device.destroy_device(None);
             }
             return Err(err);
         }
@@ -315,7 +268,7 @@ fn with_vulkanalia_surface_swapchain(
         Ok(swapchain) => swapchain,
         Err(err) => {
             unsafe {
-                device.destroy_device(None);
+                present_device.device.destroy_device(None);
             }
             return Err(format!("vkCreateSwapchainKHR(vulkanalia): {err:?}"));
         }
@@ -325,7 +278,7 @@ fn with_vulkanalia_surface_swapchain(
         Err(err) => {
             unsafe {
                 device.destroy_swapchain_khr(swapchain, None);
-                device.destroy_device(None);
+                present_device.device.destroy_device(None);
             }
             return Err(format!("vkGetSwapchainImagesKHR(vulkanalia): {err:?}"));
         }
@@ -333,7 +286,7 @@ fn with_vulkanalia_surface_swapchain(
     let _ = unsafe { device.device_wait_idle() };
     unsafe {
         device.destroy_swapchain_khr(swapchain, None);
-        device.destroy_device(None);
+        present_device.device.destroy_device(None);
     }
 
     Ok(NativeVulkanVulkanaliaSurfaceSwapchainProbeSnapshot {
@@ -365,15 +318,7 @@ fn with_vulkanalia_surface_swapchain(
             supports_present: true,
             supports_wayland_presentation: selection.supports_wayland_presentation,
         },
-        device_extensions: NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot {
-            enabled_device_extensions,
-            present_id_enabled: feature_selection.present_id_enabled,
-            present_id2_enabled: feature_selection.present_id2_enabled,
-            present_wait_enabled: feature_selection.present_wait_enabled,
-            present_wait2_enabled: feature_selection.present_wait2_enabled,
-            swapchain_maintenance1_enabled: feature_selection.swapchain_maintenance1_enabled,
-            ..extension_snapshot
-        },
+        device_extensions: extension_snapshot,
         surface: surface_snapshot,
         swapchain: NativeVulkanVulkanaliaSwapchainSnapshot {
             created: true,
@@ -391,7 +336,7 @@ fn with_vulkanalia_surface_swapchain(
     })
 }
 
-fn create_vulkanalia_wayland_surface(
+pub(super) fn create_vulkanalia_wayland_surface(
     instance: &Instance,
     handles: NativeWaylandSurfaceHandles,
 ) -> Result<vk::SurfaceKHR, String> {
@@ -402,7 +347,7 @@ fn create_vulkanalia_wayland_surface(
         .map_err(|err| format!("vkCreateWaylandSurfaceKHR(vulkanalia): {err:?}"))
 }
 
-fn select_vulkanalia_present_queue(
+pub(super) fn select_vulkanalia_present_queue(
     instance: &Instance,
     surface: vk::SurfaceKHR,
     handles: NativeWaylandSurfaceHandles,
@@ -505,6 +450,7 @@ fn present_device_extension_snapshot(
         available_device_extensions,
         enabled_device_extensions: enabled_present_device_extensions(&feature_selection),
         required_swapchain,
+        synchronization2_enabled: feature_selection.synchronization2_enabled,
         present_id_available: extension_available(
             &selection.device_extensions,
             PRESENT_ID_EXTENSION_NAME,
@@ -533,11 +479,92 @@ fn present_device_extension_snapshot(
     })
 }
 
+pub(super) fn create_vulkanalia_present_device(
+    instance: &Instance,
+    selection: &NativeVulkanVulkanaliaPresentQueueSelection,
+) -> Result<NativeVulkanVulkanaliaPresentDeviceContext, String> {
+    let extension_snapshot = present_device_extension_snapshot(instance, selection)?;
+    let feature_selection = query_vulkanalia_present_feature_selection(
+        instance,
+        selection.physical_device,
+        &selection.device_extensions,
+    );
+    let enabled_device_extensions = enabled_present_device_extensions(&feature_selection);
+    let priorities = [1.0_f32];
+    let queue_create_info = vk::DeviceQueueCreateInfo::builder()
+        .queue_family_index(selection.queue_family_index)
+        .queue_priorities(&priorities)
+        .build();
+    let queue_create_infos = [queue_create_info];
+    let extension_names = enabled_device_extensions
+        .iter()
+        .map(|extension| CString::new(*extension).expect("static extension has no nul"))
+        .collect::<Vec<_>>();
+    let extension_name_ptrs = extension_names
+        .iter()
+        .map(|extension| extension.as_ptr())
+        .collect::<Vec<_>>();
+
+    let mut synchronization2_features = vk::PhysicalDeviceSynchronization2Features::builder()
+        .synchronization2(true)
+        .build();
+    let mut present_id_features = vk::PhysicalDevicePresentIdFeaturesKHR::builder()
+        .present_id(true)
+        .build();
+    let mut present_wait_features = vk::PhysicalDevicePresentWaitFeaturesKHR::builder()
+        .present_wait(true)
+        .build();
+    let mut present_id2_features = vk::PhysicalDevicePresentId2FeaturesKHR::builder()
+        .present_id2(true)
+        .build();
+    let mut present_wait2_features = vk::PhysicalDevicePresentWait2FeaturesKHR::builder()
+        .present_wait2(true)
+        .build();
+    let mut swapchain_maintenance1_features =
+        vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR::builder()
+            .swapchain_maintenance1(true)
+            .build();
+    let mut device_create_info = vk::DeviceCreateInfo::builder()
+        .queue_create_infos(&queue_create_infos)
+        .enabled_extension_names(&extension_name_ptrs);
+    if feature_selection.synchronization2_enabled {
+        device_create_info = device_create_info.push_next(&mut synchronization2_features);
+    }
+    if feature_selection.present_id_enabled {
+        device_create_info = device_create_info.push_next(&mut present_id_features);
+    }
+    if feature_selection.present_wait_enabled {
+        device_create_info = device_create_info.push_next(&mut present_wait_features);
+    }
+    if feature_selection.present_id2_enabled {
+        device_create_info = device_create_info.push_next(&mut present_id2_features);
+    }
+    if feature_selection.present_wait2_enabled {
+        device_create_info = device_create_info.push_next(&mut present_wait2_features);
+    }
+    if feature_selection.swapchain_maintenance1_enabled {
+        device_create_info = device_create_info.push_next(&mut swapchain_maintenance1_features);
+    }
+
+    let device =
+        unsafe { instance.create_device(selection.physical_device, &device_create_info, None) }
+            .map_err(|err| format!("vkCreateDevice(vulkanalia present/swapchain): {err:?}"))?;
+    let queue = unsafe { device.get_device_queue(selection.queue_family_index, 0) };
+
+    Ok(NativeVulkanVulkanaliaPresentDeviceContext {
+        device,
+        queue,
+        extension_snapshot,
+        feature_selection,
+    })
+}
+
 fn query_vulkanalia_present_feature_selection(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     device_extensions: &[String],
 ) -> NativeVulkanVulkanaliaPresentFeatureSelection {
+    let synchronization2_enabled = query_synchronization2_feature(instance, physical_device);
     let present_id_supported = extension_available(device_extensions, PRESENT_ID_EXTENSION_NAME)
         && query_present_id_feature(instance, physical_device);
     let present_wait_supported = present_id_supported
@@ -553,6 +580,7 @@ fn query_vulkanalia_present_feature_selection(
             && query_swapchain_maintenance1_feature(instance, physical_device);
 
     NativeVulkanVulkanaliaPresentFeatureSelection {
+        synchronization2_enabled,
         present_id_enabled: present_id_supported,
         present_id2_enabled: present_id2_supported,
         present_wait_enabled: present_wait_supported,
@@ -583,7 +611,7 @@ fn enabled_present_device_extensions(
     extensions
 }
 
-fn create_vulkanalia_swapchain_plan(
+pub(super) fn create_vulkanalia_swapchain_plan(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     surface: vk::SurfaceKHR,
@@ -790,6 +818,20 @@ fn choose_composite_alpha(flags: vk::CompositeAlphaFlagsKHR) -> vk::CompositeAlp
     .unwrap_or(vk::CompositeAlphaFlagsKHR::OPAQUE)
 }
 
+fn query_synchronization2_feature(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+) -> bool {
+    let mut feature = vk::PhysicalDeviceSynchronization2Features::default();
+    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
+        .push_next(&mut feature)
+        .build();
+    unsafe {
+        instance.get_physical_device_features2(physical_device, &mut features2);
+    }
+    feature.synchronization2 != 0
+}
+
 fn query_present_id_feature(instance: &Instance, physical_device: vk::PhysicalDevice) -> bool {
     let mut feature = vk::PhysicalDevicePresentIdFeaturesKHR::default();
     let mut features2 = vk::PhysicalDeviceFeatures2::builder()
@@ -858,7 +900,7 @@ fn physical_device_name(properties: vk::PhysicalDeviceProperties) -> String {
         .into_owned()
 }
 
-fn queue_flag_labels(flags: vk::QueueFlags) -> Vec<&'static str> {
+pub(super) fn queue_flag_labels(flags: vk::QueueFlags) -> Vec<&'static str> {
     let mut labels = Vec::new();
     if flags.contains(vk::QueueFlags::GRAPHICS) {
         labels.push("graphics");
@@ -875,7 +917,7 @@ fn queue_flag_labels(flags: vk::QueueFlags) -> Vec<&'static str> {
     labels
 }
 
-fn present_mode_label(mode: vk::PresentModeKHR) -> &'static str {
+pub(super) fn present_mode_label(mode: vk::PresentModeKHR) -> &'static str {
     match mode {
         vk::PresentModeKHR::IMMEDIATE => "immediate",
         vk::PresentModeKHR::MAILBOX => "mailbox",
@@ -888,7 +930,7 @@ fn present_mode_label(mode: vk::PresentModeKHR) -> &'static str {
     }
 }
 
-fn composite_alpha_label(flags: vk::CompositeAlphaFlagsKHR) -> &'static str {
+pub(super) fn composite_alpha_label(flags: vk::CompositeAlphaFlagsKHR) -> &'static str {
     if flags == vk::CompositeAlphaFlagsKHR::OPAQUE {
         "opaque"
     } else if flags == vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED {
@@ -917,6 +959,7 @@ mod tests {
     #[test]
     fn present_device_extensions_keep_swapchain_required() {
         let disabled = NativeVulkanVulkanaliaPresentFeatureSelection {
+            synchronization2_enabled: false,
             present_id_enabled: false,
             present_id2_enabled: false,
             present_wait_enabled: false,

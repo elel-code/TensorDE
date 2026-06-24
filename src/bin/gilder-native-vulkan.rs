@@ -38,14 +38,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::native_vulkan::{
         NativeVulkanOptions, NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionSmokeOptions,
         backend_contract, capabilities, probe_vulkan_video_decode, probe_vulkan_video_session,
-        probe_wayland_surface, run_clear, run_static_image, run_video,
-        wallpaper_type_support_matrix,
+        probe_wayland_surface, run_static_image, run_video, wallpaper_type_support_matrix,
     };
     use gilder::renderer::native_vulkan::{
+        NativeVulkanVulkanaliaClearPresentOptions,
         NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions,
         NativeVulkanVulkanaliaVideoSessionBindSmokeOptions, probe_native_vulkan_vulkanalia_devices,
         probe_native_vulkan_vulkanalia_surface_swapchain,
         probe_native_vulkan_vulkanalia_video_session_bind,
+        run_native_vulkan_vulkanalia_clear_present,
     };
     use gilder::renderer::native_wayland::NativeWaylandLayer;
     use gilder::renderer::{StaticWallpaperPlan, VideoWallpaperPlan};
@@ -203,7 +204,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 video_session_options.allocate_bitstream_buffer = true;
                 video_session_options.allocate_video_images = true;
             }
-            "--run-clear" => mode = NativeVulkanCliMode::RunClear,
+            "--run-clear" | "--run-vulkanalia-clear" => mode = NativeVulkanCliMode::RunClear,
             "--run-static" => mode = NativeVulkanCliMode::RunStatic,
             "--run-video" => mode = NativeVulkanCliMode::RunVideo,
             "--json" => mode = NativeVulkanCliMode::All,
@@ -596,7 +597,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("--probe-audio-clock requires native-vulkan-gst-video feature".into());
             }
         }
-        NativeVulkanCliMode::RunClear => json!(run_clear(options, duration)?),
+        NativeVulkanCliMode::RunClear => json!(run_native_vulkan_vulkanalia_clear_present(
+            NativeVulkanVulkanaliaClearPresentOptions {
+                host: options.host,
+                wait_configure_roundtrips: options.wait_configure_roundtrips,
+                duration,
+                target_max_fps: options.target_max_fps,
+                clear_color: options.clear_color,
+            }
+        )?),
         NativeVulkanCliMode::RunStatic => {
             let source = source.ok_or("--run-static requires --source")?;
             let output_name = options
@@ -1034,7 +1043,7 @@ enum NativeVulkanCliMode {
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-session|--probe-video-session|--probe-audio-clock|--run-clear|--run-static|--run-video|--run-h265-first-frame-video|--run-h264-ready-prefix-video|--run-h265-ready-prefix-video|--run-av1-ready-prefix-video|--run-vulkanalia-ready-prefix-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-session|--probe-video-session|--probe-audio-clock|--run-clear|--run-vulkanalia-clear|--run-static|--run-video|--run-h265-first-frame-video|--run-h264-ready-prefix-video|--run-h265-ready-prefix-video|--run-av1-ready-prefix-video|--run-vulkanalia-ready-prefix-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
@@ -1061,7 +1070,8 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --sample-h265-ready-prefix-sequence samples each ready-prefix decoded frame before the next AU can overwrite its DPB/output layer.\n\
 --playback-frames N repeats the ready-prefix AU window for N direct Vulkan Video decode/present frames.\n\
 --audio-probe-duration N overrides the default 10s audio clock probe duration.\n\
---run-clear creates a Vulkan device/swapchain, clears frames, presents, then prints runtime JSON.\n\
+--run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
+--run-vulkanalia-clear is an explicit alias for --run-clear.\n\
 --run-static decodes --source, fits it to the swapchain, copies it through Vulkan, presents, then prints runtime JSON.\n\
 --run-video accepts a video wallpaper plan, presents a poster/clear placeholder through native Vulkan, then prints video handoff telemetry.\n\
 --run-h265-first-frame-video decodes the first H.265 IDR with Vulkan Video and samples the decoded NV12 image to the swapchain.\n\

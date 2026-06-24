@@ -14,6 +14,8 @@ mod instance;
 mod migration;
 #[path = "vulkanalia_backend/plan.rs"]
 mod plan;
+#[path = "vulkanalia_backend/present_clear.rs"]
+mod present_clear;
 #[path = "vulkanalia_backend/profiles.rs"]
 mod profiles;
 #[path = "vulkanalia_backend/queue_probe.rs"]
@@ -83,6 +85,10 @@ pub use migration::{
     NativeVulkanVulkanaliaMigrationStageKind, native_vulkan_vulkanalia_migration_contract,
 };
 pub use plan::{NativeVulkanVulkanaliaBackendPlan, native_vulkan_vulkanalia_backend_plan};
+pub use present_clear::{
+    NativeVulkanVulkanaliaClearPresentOptions, NativeVulkanVulkanaliaClearPresentSnapshot,
+    run_native_vulkan_vulkanalia_clear_present,
+};
 pub use profiles::{
     NativeVulkanVulkanaliaVideoProfileTemplate, native_vulkan_vulkanalia_video_profile_templates,
 };
