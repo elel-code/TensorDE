@@ -75,6 +75,9 @@ mod pacing;
 #[path = "native_vulkan/pipeline.rs"]
 mod pipeline;
 
+#[path = "native_vulkan/audio_policy.rs"]
+mod audio_policy;
+
 #[cfg(feature = "native-vulkan-gst-video")]
 #[path = "native_vulkan/audio_clock.rs"]
 mod audio_clock;
@@ -87,11 +90,12 @@ mod timeline;
 #[path = "native_vulkan/demux.rs"]
 mod demux;
 
+pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy};
+
 #[cfg(feature = "native-vulkan-gst-video")]
 pub use audio_clock::{
     NativeVulkanAudioClockProbeOptions, NativeVulkanAudioClockProbeSnapshot,
-    NativeVulkanAudioClockRuntimeSnapshot, NativeVulkanAudioOutputMode,
-    NativeVulkanAudioOutputPolicy, probe_native_vulkan_audio_clock,
+    NativeVulkanAudioClockRuntimeSnapshot, probe_native_vulkan_audio_clock,
 };
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -3064,6 +3068,7 @@ pub struct NativeVulkanVideoRuntimeSnapshot {
     pub handoff_status: &'static str,
     pub texture_import_status: &'static str,
     pub audio_status: &'static str,
+    pub audio_output_policy: &'static str,
     pub audio_output_mode: &'static str,
     pub audio_output_status: &'static str,
     pub gst_state: Option<String>,
@@ -48886,8 +48891,9 @@ fn native_vulkan_video_runtime_snapshot(
     let memory_route =
         native_vulkan_video_memory_route_snapshot(frontend.as_ref(), import.as_ref());
 
-    let audio_output_mode = if *muted { "clock-only" } else { "auto" };
-    let audio_output_status = if *muted {
+    let audio_output_policy = NativeVulkanAudioOutputPolicy::Plan;
+    let audio_output_mode = audio_output_policy.resolve(*muted);
+    let audio_output_status = if audio_output_mode == NativeVulkanAudioOutputMode::ClockOnly {
         "disabled-by-muted-plan"
     } else {
         "auto-output-ready-for-audio-clock-runtime"
@@ -48919,7 +48925,8 @@ fn native_vulkan_video_runtime_snapshot(
         } else {
             "planned-auto-audio-output-pipeline"
         },
-        audio_output_mode,
+        audio_output_policy: audio_output_policy.as_str(),
+        audio_output_mode: audio_output_mode.as_str(),
         audio_output_status,
         gst_state: frontend
             .as_ref()
@@ -53233,6 +53240,7 @@ mod tests {
             "pending-appsink-dmabuf-or-gpu-memory-handoff"
         );
         assert_eq!(snapshot.audio_status, "planned-auto-audio-output-pipeline");
+        assert_eq!(snapshot.audio_output_policy, "plan");
         assert_eq!(snapshot.audio_output_mode, "auto");
         assert_eq!(
             snapshot.audio_output_status,
@@ -53325,6 +53333,7 @@ mod tests {
 
         assert_eq!(snapshot.frontend, "gstreamer-appsink");
         assert_eq!(snapshot.audio_status, "muted-no-audio-pipeline");
+        assert_eq!(snapshot.audio_output_policy, "plan");
         assert_eq!(snapshot.audio_output_mode, "clock-only");
         assert_eq!(snapshot.audio_output_status, "disabled-by-muted-plan");
         assert_eq!(snapshot.frontend_status, "appsink-receiving-samples");
