@@ -282,8 +282,8 @@ use legacy_static_present::{
     native_vulkan_legacy_static_wait_stage, native_vulkan_record_legacy_static_frame,
 };
 use present::*;
+use render_item::native_vulkan_video_item;
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
-use render_item::{native_vulkan_static_item, native_vulkan_video_item};
 use render_plan::{native_vulkan_render_item_clear_color, native_vulkan_static_upload_plan};
 pub use scene_lite_present_runtime::{run_scene_lite, run_scene_lite_sampled_image};
 use scene_lite_runtime::native_vulkan_scene_lite_runtime_snapshot;
@@ -1942,11 +1942,8 @@ pub fn run_legacy_static_image(
     options: NativeVulkanOptions,
     duration: Duration,
     plan: StaticWallpaperPlan,
-) -> Result<NativeVulkanRuntimeSnapshot, NativeVulkanError> {
-    let target_max_fps = options.target_max_fps;
-    let item = native_vulkan_static_item(&plan);
-    let mut session = NativeVulkanSession::connect_with_render_item(options, item)?;
-    session.run_for(duration, target_max_fps)
+) -> Result<NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot, NativeVulkanError> {
+    static_image_present_runtime::run_static_image(options, duration, plan)
 }
 
 pub fn run_video(

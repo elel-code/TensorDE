@@ -1234,7 +1234,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --run-vulkanalia-scene-lite-solid-quad uses Vulkanalia dynamic rendering to draw a retained scene-lite solid quad to the Wayland swapchain.\n\
 --run-vulkanalia-scene-lite-sampled-image uses Vulkanalia dynamic rendering to upload --source once into a retained sampled image and draw it to the Wayland swapchain.\n\
 --run-static and --run-vulkanalia-static use Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
---run-legacy-static uses the old ash staging-copy static image path for comparison.\n\
+--run-legacy-static is a compatibility alias for the Vulkanalia sampled-image static runtime.\n\
 --run-video uses Vulkanalia ready-prefix video when matching --decode-*-ready-prefix input and source extent are available; otherwise it uses the legacy video plan handoff telemetry path.\n\
 --run-h265-first-frame-video decodes the first H.265 IDR with Vulkan Video and samples the decoded NV12 image to the swapchain.\n\
 --run-h264-ready-prefix-video is a compatibility alias for the Vulkanalia H.264 ready-prefix runtime.\n\
