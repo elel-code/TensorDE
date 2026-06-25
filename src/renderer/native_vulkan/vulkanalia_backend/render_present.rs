@@ -5,6 +5,7 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder, KhrSwapchainExtensionDeviceCommands};
 
 use super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE;
+use super::video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot;
 use super::video_session_images::VulkanaliaVideoSessionResourceImage;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -131,6 +132,7 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
     pub total_pacing_sleep_micros: u64,
     pub pts_monotonic: bool,
     pub display_order_monotonic: bool,
+    pub present_handoff: NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot,
     pub draws: Vec<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
     pub frame_order_model: &'static str,
     pub present_resource_reuse_model: &'static str,

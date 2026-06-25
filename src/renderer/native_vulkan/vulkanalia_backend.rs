@@ -56,6 +56,8 @@ mod video_direct_runtime;
 mod video_format_probe;
 #[path = "vulkanalia_backend/video_present_device.rs"]
 mod video_present_device;
+#[path = "vulkanalia_backend/video_present_handoff.rs"]
+mod video_present_handoff;
 #[path = "vulkanalia_backend/video_present_runtime.rs"]
 mod video_present_runtime;
 #[path = "vulkanalia_backend/video_profile_gate.rs"]
@@ -189,6 +191,7 @@ pub use video_present_device::{
     probe_native_vulkan_vulkanalia_video_present_device,
     probe_native_vulkan_vulkanalia_video_present_session,
 };
+pub use video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot;
 pub use video_present_runtime::{
     NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeSnapshot,

@@ -57,6 +57,11 @@ use super::video_present_device::{
     select_video_present_physical_device, swapchain_plan_snapshot,
     video_present_queue_family_indices,
 };
+use super::video_present_handoff::{
+    NativeVulkanVulkanaliaDecodedPresentHandoff,
+    NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot,
+    NativeVulkanVulkanaliaPendingDecodedPresentFrame,
+};
 use super::video_profile_labels::video_decode_capability_flag_labels;
 use super::video_session::{
     NativeVulkanVulkanaliaVideoSessionMemoryBindingResources,
@@ -207,16 +212,6 @@ struct NativeVulkanVulkanaliaRetainedPresentResult {
     draw: Option<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
     draw_error: Option<String>,
     zero_copy_presented: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NativeVulkanVulkanaliaPendingDecodedPresentFrame {
-    decode_frame_index: u32,
-    sampled_array_layer: u32,
-    source_frame_pts_ms: Option<u64>,
-    source_frame_duration_ms: Option<u64>,
-    display_order_key: i64,
-    display_order_key_source: &'static str,
 }
 
 impl Drop for NativeVulkanVulkanaliaVideoPresentSessionRuntimeResources {
@@ -848,6 +843,7 @@ fn create_video_present_session_pieces(
                     || h265_ready_prefix_decode.is_some();
                 let mut decoded_image_present_sequence_error = None;
                 let mut decoded_image_present_draws = Vec::new();
+                let mut decoded_image_present_handoff_snapshot = None;
                 if decoded_image_present_sequence_requested {
                     if decoded_image_present_sampler.is_none() {
                         decoded_image_present_sequence_error = Some(
@@ -883,7 +879,24 @@ fn create_video_present_session_pieces(
                 let sequence_started_at = Instant::now();
                 let mut first_present_pts_ms = None;
                 let (av1_ready_prefix_decode, h264_ready_prefix_decode, h265_ready_prefix_decode) = {
-                    let mut pending_decoded_present_frames = Vec::new();
+                    let present_handoff_capacity =
+                        native_vulkan_vulkanalia_present_handoff_capacity(
+                            decoded_image_present_frame_count_hint(
+                                av1_ready_prefix_decode
+                                    .as_ref()
+                                    .map(|(input, _)| input.frames.len()),
+                                h264_ready_prefix_decode
+                                    .as_ref()
+                                    .map(|(input, _)| input.frames.len()),
+                                h265_ready_prefix_decode
+                                    .as_ref()
+                                    .map(|(input, _)| input.frames.len()),
+                            ),
+                            swapchain_images.len(),
+                            session_max_dpb_slots,
+                        );
+                    let mut pending_decoded_present_frames =
+                        NativeVulkanVulkanaliaDecodedPresentHandoff::new(present_handoff_capacity);
                     let mut enqueue_decoded_frame = |decode_frame_index: u32,
                                                      sampled_array_layer: u32,
                                                      source_frame_pts_ms: Option<u64>,
@@ -894,15 +907,15 @@ fn create_video_present_session_pieces(
                         if decoded_image_present_sequence_error.is_some() {
                             return Ok(());
                         }
-                        pending_decoded_present_frames.push(
-                            NativeVulkanVulkanaliaPendingDecodedPresentFrame {
+                        pending_decoded_present_frames.push_keep_last(
+                            NativeVulkanVulkanaliaPendingDecodedPresentFrame::new(
                                 decode_frame_index,
                                 sampled_array_layer,
                                 source_frame_pts_ms,
                                 source_frame_duration_ms,
                                 display_order_key,
                                 display_order_key_source,
-                            },
+                            ),
                         );
                         Ok(())
                     };
@@ -1020,7 +1033,10 @@ fn create_video_present_session_pieces(
                                 &mut pending_decoded_present_frames,
                             );
                         match present_result {
-                            Ok(draws) => decoded_image_present_draws = draws,
+                            Ok((draws, handoff_snapshot)) => {
+                                decoded_image_present_draws = draws;
+                                decoded_image_present_handoff_snapshot = Some(handoff_snapshot);
+                            }
                             Err(err) => decoded_image_present_sequence_error = Some(err),
                         }
                     }
@@ -1048,6 +1064,13 @@ fn create_video_present_session_pieces(
                     native_vulkan_vulkanalia_decoded_image_present_sequence_from_draws(
                         requested_present_frame_count,
                         decoded_image_present_draws,
+                        decoded_image_present_handoff_snapshot.unwrap_or_else(|| {
+                            native_vulkan_vulkanalia_present_handoff_snapshot_for_ready_prefix(
+                                requested_present_frame_count,
+                                swapchain_images.len(),
+                                session_max_dpb_slots,
+                            )
+                        }),
                     );
                 Ok(NativeVulkanVulkanaliaVideoPresentSessionPieces {
                     session: session.take().expect("Vulkanalia video session is live"),
@@ -1151,12 +1174,17 @@ fn native_vulkan_vulkanalia_flush_pending_decoded_present_frames(
     sequence_started_at: Instant,
     first_present_pts_ms: &mut Option<u64>,
     target_max_fps: Option<u32>,
-    pending_frames: &mut Vec<NativeVulkanVulkanaliaPendingDecodedPresentFrame>,
-) -> Result<Vec<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>, String> {
-    native_vulkan_vulkanalia_sort_pending_decoded_present_frames(pending_frames);
-
-    let mut draws = Vec::with_capacity(pending_frames.len());
-    for (present_frame_index, frame) in pending_frames.drain(..).enumerate() {
+    pending_frames: &mut NativeVulkanVulkanaliaDecodedPresentHandoff,
+) -> Result<
+    (
+        Vec<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
+        NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot,
+    ),
+    String,
+> {
+    let (frames, handoff_snapshot) = pending_frames.drain_sorted();
+    let mut draws = Vec::with_capacity(frames.len());
+    for (present_frame_index, frame) in frames.into_iter().enumerate() {
         let present_frame_index = u32::try_from(present_frame_index)
             .map_err(|_| "Vulkanalia present frame index exceeds u32".to_owned())?;
         native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_layer(
@@ -1196,22 +1224,13 @@ fn native_vulkan_vulkanalia_flush_pending_decoded_present_frames(
         )?);
     }
 
-    Ok(draws)
-}
-
-fn native_vulkan_vulkanalia_sort_pending_decoded_present_frames(
-    pending_frames: &mut [NativeVulkanVulkanaliaPendingDecodedPresentFrame],
-) {
-    pending_frames.sort_by(|left, right| {
-        left.display_order_key
-            .cmp(&right.display_order_key)
-            .then_with(|| left.decode_frame_index.cmp(&right.decode_frame_index))
-    });
+    Ok((draws, handoff_snapshot))
 }
 
 fn native_vulkan_vulkanalia_decoded_image_present_sequence_from_draws(
     requested_present_frame_count: u32,
     draws: Vec<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
+    present_handoff: NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot,
 ) -> Option<NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot> {
     if draws.is_empty() {
         return None;
@@ -1264,9 +1283,10 @@ fn native_vulkan_vulkanalia_decoded_image_present_sequence_from_draws(
         total_pacing_sleep_micros,
         pts_monotonic,
         display_order_monotonic,
+        present_handoff,
         draws,
-        frame_order_model: "FFmpeg-style display-key scheduler: decode submissions enqueue frames, present flush sorts by PTS/POC/order-hint with decode-index tie-break before Vulkanalia dynamic rendering",
-        present_resource_reuse_model: "one swapchain image-view set, one command pool, one semaphore pair and one fence reused across decoded-image present frames",
+        frame_order_model: "FFmpeg-style display-key scheduler: decode submissions enqueue into a bounded keep-last handoff, then present drain sorts by PTS/POC/order-hint with decode-index tie-break before Vulkanalia dynamic rendering",
+        present_resource_reuse_model: "one swapchain image-view set, one command pool, one semaphore pair, one fence set and one bounded decoded-frame handoff reused across decoded-image present frames",
         all_zero_copy_presented,
         uses_dynamic_rendering: true,
         uses_synchronization2: true,
@@ -1325,12 +1345,63 @@ fn native_vulkan_vulkanalia_frame_index_duration(
     Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
 }
 
+fn decoded_image_present_frame_count_hint(
+    av1_frame_count: Option<usize>,
+    h264_frame_count: Option<usize>,
+    h265_frame_count: Option<usize>,
+) -> u32 {
+    av1_frame_count
+        .or(h264_frame_count)
+        .or(h265_frame_count)
+        .and_then(|count| u32::try_from(count).ok())
+        .unwrap_or(0)
+}
+
+fn native_vulkan_vulkanalia_present_handoff_capacity(
+    requested_present_frame_count: u32,
+    swapchain_image_count: usize,
+    session_max_dpb_slots: u32,
+) -> usize {
+    usize::try_from(requested_present_frame_count)
+        .unwrap_or(usize::MAX)
+        .max(swapchain_image_count)
+        .max(usize::try_from(session_max_dpb_slots).unwrap_or(usize::MAX))
+        .max(1)
+}
+
+fn native_vulkan_vulkanalia_present_handoff_snapshot_for_ready_prefix(
+    requested_present_frame_count: u32,
+    swapchain_image_count: usize,
+    session_max_dpb_slots: u32,
+) -> NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot {
+    let capacity_frames = native_vulkan_vulkanalia_present_handoff_capacity(
+        requested_present_frame_count,
+        swapchain_image_count,
+        session_max_dpb_slots,
+    );
+    NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot {
+        binding: "vulkanalia",
+        route: "decoded-image-present-bounded-keep-last-handoff",
+        model: "bounded decoded-frame handoff between Vulkan Video decode completion and Vulkanalia dynamic-rendering present",
+        capacity_frames,
+        queued_frame_count_before_drain: 0,
+        enqueued_frame_count: 0,
+        dropped_frame_count: 0,
+        drained_frame_count: 0,
+        peak_depth: 0,
+        keep_last_overwrite_enabled: true,
+        drop_policy: "when the handoff is full, drop the oldest display-order frame and keep the newest decoded frame",
+        drain_order: "sort by display_order_key, then decode_frame_index",
+        zero_copy_scope: "handoff stores decoded image array-layer identities and timing metadata only; frame pixels stay in Vulkan images",
+        ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        NativeVulkanVulkanaliaPendingDecodedPresentFrame,
-        VIDEO_PRESENT_SESSION_RETAINED_RESOURCE_ROUTE,
-        native_vulkan_vulkanalia_sort_pending_decoded_present_frames,
+        VIDEO_PRESENT_SESSION_RETAINED_RESOURCE_ROUTE, decoded_image_present_frame_count_hint,
+        native_vulkan_vulkanalia_present_handoff_capacity,
     };
 
     #[test]
@@ -1342,37 +1413,31 @@ mod tests {
     }
 
     #[test]
-    fn pending_present_frames_sort_by_display_key_then_decode_index() {
-        let mut frames = vec![
-            test_pending_frame(2, 1, 16),
-            test_pending_frame(1, 2, 8),
-            test_pending_frame(0, 0, 8),
-            test_pending_frame(3, 3, 4),
-        ];
-
-        native_vulkan_vulkanalia_sort_pending_decoded_present_frames(&mut frames);
-
+    fn ready_prefix_handoff_capacity_preserves_current_smoke_window() {
         assert_eq!(
-            frames
-                .iter()
-                .map(|frame| (frame.display_order_key, frame.decode_frame_index))
-                .collect::<Vec<_>>(),
-            vec![(4, 3), (8, 0), (8, 1), (16, 2)]
+            native_vulkan_vulkanalia_present_handoff_capacity(16, 3, 8),
+            16
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_present_handoff_capacity(0, 3, 16),
+            16
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_present_handoff_capacity(0, 0, 0),
+            1
         );
     }
 
-    fn test_pending_frame(
-        decode_frame_index: u32,
-        sampled_array_layer: u32,
-        display_order_key: i64,
-    ) -> NativeVulkanVulkanaliaPendingDecodedPresentFrame {
-        NativeVulkanVulkanaliaPendingDecodedPresentFrame {
-            decode_frame_index,
-            sampled_array_layer,
-            source_frame_pts_ms: None,
-            source_frame_duration_ms: None,
-            display_order_key,
-            display_order_key_source: "test-display-key",
-        }
+    #[test]
+    fn decoded_image_present_frame_count_hint_prefers_active_codec() {
+        assert_eq!(
+            decoded_image_present_frame_count_hint(Some(5), Some(7), Some(9)),
+            5
+        );
+        assert_eq!(
+            decoded_image_present_frame_count_hint(None, Some(7), Some(9)),
+            7
+        );
+        assert_eq!(decoded_image_present_frame_count_hint(None, None, None), 0);
     }
 }
