@@ -42,6 +42,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     use gilder::renderer::native_vulkan::{
         NativeVulkanVulkanaliaClearPresentOptions,
+        NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions,
         NativeVulkanVulkanaliaSceneLiteSolidQuadPresentOptions,
         NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions,
         NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions,
@@ -52,6 +53,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         probe_native_vulkan_vulkanalia_video_present_session,
         probe_native_vulkan_vulkanalia_video_session_bind,
         run_native_vulkan_vulkanalia_clear_present,
+        run_native_vulkan_vulkanalia_scene_lite_sampled_image_present,
         run_native_vulkan_vulkanalia_scene_lite_solid_quad_present,
     };
     use gilder::renderer::native_wayland::NativeWaylandLayer;
@@ -219,6 +221,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--run-clear" | "--run-vulkanalia-clear" => mode = NativeVulkanCliMode::RunClear,
             "--run-vulkanalia-scene-lite-solid-quad" => {
                 mode = NativeVulkanCliMode::RunVulkanaliaSceneLiteSolidQuad
+            }
+            "--run-vulkanalia-scene-lite-sampled-image" => {
+                mode = NativeVulkanCliMode::RunVulkanaliaSceneLiteSampledImage
             }
             "--run-static" => mode = NativeVulkanCliMode::RunStatic,
             "--run-video" => mode = NativeVulkanCliMode::RunVideo,
@@ -654,6 +659,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             )?)
         }
+        NativeVulkanCliMode::RunVulkanaliaSceneLiteSampledImage => {
+            let source =
+                source.ok_or("--run-vulkanalia-scene-lite-sampled-image requires --source")?;
+            if !source.is_file() {
+                return Err(
+                    format!("sampled-image source does not exist: {}", source.display()).into(),
+                );
+            }
+            json!(
+                run_native_vulkan_vulkanalia_scene_lite_sampled_image_present(
+                    NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions {
+                        host: options.host,
+                        wait_configure_roundtrips: options.wait_configure_roundtrips,
+                        duration,
+                        target_max_fps: options.target_max_fps,
+                        source,
+                        geometry: None,
+                    }
+                )?
+            )
+        }
         NativeVulkanCliMode::RunStatic => {
             let source = source.ok_or("--run-static requires --source")?;
             let output_name = options
@@ -1082,6 +1108,7 @@ enum NativeVulkanCliMode {
     ProbeAudioClock,
     RunClear,
     RunVulkanaliaSceneLiteSolidQuad,
+    RunVulkanaliaSceneLiteSampledImage,
     RunStatic,
     RunVideo,
     RunH265FirstFrameVideo,
@@ -1094,7 +1121,7 @@ enum NativeVulkanCliMode {
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--probe-video-session|--probe-audio-clock|--run-clear|--run-vulkanalia-clear|--run-vulkanalia-scene-lite-solid-quad|--run-static|--run-video|--run-h265-first-frame-video|--run-h264-ready-prefix-video|--run-h265-ready-prefix-video|--run-av1-ready-prefix-video|--run-vulkanalia-ready-prefix-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--probe-video-session|--probe-audio-clock|--run-clear|--run-vulkanalia-clear|--run-vulkanalia-scene-lite-solid-quad|--run-vulkanalia-scene-lite-sampled-image|--run-static|--run-video|--run-h265-first-frame-video|--run-h264-ready-prefix-video|--run-h265-ready-prefix-video|--run-av1-ready-prefix-video|--run-vulkanalia-ready-prefix-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
@@ -1126,6 +1153,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
 --run-vulkanalia-clear is an explicit alias for --run-clear.\n\
 --run-vulkanalia-scene-lite-solid-quad uses Vulkanalia dynamic rendering to draw a retained scene-lite solid quad to the Wayland swapchain.\n\
+--run-vulkanalia-scene-lite-sampled-image uses Vulkanalia dynamic rendering to upload --source once into a retained sampled image and draw it to the Wayland swapchain.\n\
 --run-static decodes --source, fits it to the swapchain, copies it through Vulkan, presents, then prints runtime JSON.\n\
 --run-video accepts a video wallpaper plan, presents a poster/clear placeholder through native Vulkan, then prints video handoff telemetry.\n\
 --run-h265-first-frame-video decodes the first H.265 IDR with Vulkan Video and samples the decoded NV12 image to the swapchain.\n\

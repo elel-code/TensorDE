@@ -127,11 +127,17 @@ pub use scene_lite_draw_pass::{
     NativeVulkanVulkanaliaSceneLiteSolidQuadPipelineSnapshot,
 };
 pub use scene_lite_present::{
+    NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput,
+    NativeVulkanVulkanaliaSceneLiteSampledImageGeometrySnapshot,
+    NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions,
+    NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot,
+    NativeVulkanVulkanaliaSceneLiteSampledImageVertex,
     NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput,
     NativeVulkanVulkanaliaSceneLiteSolidQuadGeometrySnapshot,
     NativeVulkanVulkanaliaSceneLiteSolidQuadPresentOptions,
     NativeVulkanVulkanaliaSceneLiteSolidQuadPresentSnapshot,
     NativeVulkanVulkanaliaSceneLiteSolidQuadVertex,
+    run_native_vulkan_vulkanalia_scene_lite_sampled_image_present,
     run_native_vulkan_vulkanalia_scene_lite_solid_quad_present,
 };
 pub use scene_lite_sampled_image::NativeVulkanVulkanaliaSceneLiteSampledImagePlanSnapshot;

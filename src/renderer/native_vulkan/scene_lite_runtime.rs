@@ -8,8 +8,10 @@ use super::render_plan::native_vulkan_scene_lite_draw_plan;
 use super::scene_lite_draw_pass::native_vulkan_scene_lite_draw_pass_plan;
 use super::vulkanalia_backend::{
     NativeVulkanVulkanaliaSceneLiteDrawPassInput, NativeVulkanVulkanaliaSceneLiteDrawPassSnapshot,
+    NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput,
     NativeVulkanVulkanaliaSceneLiteSampledImagePlanInput,
     NativeVulkanVulkanaliaSceneLiteSampledImagePlanSnapshot,
+    NativeVulkanVulkanaliaSceneLiteSampledImageVertex,
     NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput,
     NativeVulkanVulkanaliaSceneLiteSolidQuadVertex,
     native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot,
@@ -83,6 +85,39 @@ impl NativeVulkanSceneLiteRuntimeSnapshot {
                 .collect(),
             self.draw_pass_quad_indices.clone(),
             "scene-lite-runtime-draw-plan",
+        ))
+    }
+
+    pub fn vulkanalia_sampled_image_geometry_input(
+        &self,
+    ) -> Option<(
+        PathBuf,
+        NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput,
+    )> {
+        if !self.draw_pass_sampled_image_recording_ready
+            || self.draw_pass_sampled_image_quads.len() != 1
+            || self.draw_pass_sampled_image_vertices.is_empty()
+            || self.draw_pass_sampled_image_indices.is_empty()
+        {
+            return None;
+        }
+
+        Some((
+            self.draw_pass_sampled_image_quads[0].source.clone(),
+            NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput::new(
+                self.draw_pass_sampled_image_vertices
+                    .iter()
+                    .map(|vertex| {
+                        NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new(
+                            vertex.position,
+                            vertex.uv,
+                            vertex.opacity,
+                        )
+                    })
+                    .collect(),
+                self.draw_pass_sampled_image_indices.clone(),
+                "scene-lite-runtime-sampled-image-draw-plan",
+            ),
         ))
     }
 }
@@ -713,15 +748,12 @@ mod tests {
 
         assert!(snapshot.native_draw_ready);
         assert!(snapshot.draw_pass_plan_ready);
-        assert!(!snapshot.draw_pass_backend_ready);
+        assert!(snapshot.draw_pass_backend_ready);
         assert_eq!(
             snapshot.draw_pass_backend_status,
-            "sampled-image-quad-payload-ready-recording-pending"
+            "sampled-image-recording-ready"
         );
-        assert_eq!(
-            snapshot.draw_pass_blocking_reason,
-            Some("vulkan-sampled-image-recording-not-implemented")
-        );
+        assert_eq!(snapshot.draw_pass_blocking_reason, None);
         assert_eq!(snapshot.draw_pass_sampled_image_op_count, 1);
         assert_eq!(snapshot.draw_pass_sampled_image_quads.len(), 1);
         assert!(snapshot.draw_pass_sampled_image_recording_ready);
@@ -755,6 +787,19 @@ mod tests {
         );
         assert_eq!(snapshot.draw_pass_sampled_image_vertices[0].uv, [0.0, 0.0]);
         assert_eq!(snapshot.draw_pass_sampled_image_vertices[3].uv, [1.0, 1.0]);
+        let (source, sampled_geometry) = snapshot
+            .vulkanalia_sampled_image_geometry_input()
+            .expect("recordable sampled image geometry");
+        assert_eq!(source, PathBuf::from("/tmp/scene-hero.png"));
+        assert_eq!(
+            sampled_geometry.source_label,
+            "scene-lite-runtime-sampled-image-draw-plan"
+        );
+        assert_eq!(sampled_geometry.vertices.len(), 4);
+        assert_eq!(sampled_geometry.indices, vec![0, 1, 2, 2, 1, 3]);
+        assert_eq!(sampled_geometry.vertices[0].position, [-90.0, -50.0]);
+        assert_eq!(sampled_geometry.vertices[3].uv, [1.0, 1.0]);
+        assert_eq!(sampled_geometry.vertices[0].opacity, 0.5);
         assert!(snapshot.vulkanalia_draw_pass.backend_ready);
         assert_eq!(
             snapshot.vulkanalia_draw_pass.backend_status,

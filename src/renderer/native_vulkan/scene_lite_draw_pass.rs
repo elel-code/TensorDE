@@ -184,7 +184,10 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
             sampled_image_recording_payload.steps.len(),
         );
     let plan_ready = draw_plan.native_draw_ready();
-    let backend_ready = plan_ready && (fast_clear_color.is_some() || quad_recording_ready);
+    let sampled_image_recording_complete =
+        sampled_image_recording_ready && sampled_image_op_count == draw_plan.draw_ops.len();
+    let backend_ready = plan_ready
+        && (fast_clear_color.is_some() || quad_recording_ready || sampled_image_recording_complete);
     let (backend_status, blocking_reason) = if !plan_ready {
         (
             "blocked-by-unsupported-scene-lite-layers",
@@ -198,14 +201,11 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
     } else if backend_ready {
         if fast_clear_color.is_some() {
             ("fast-clear-color-ready", None)
-        } else {
+        } else if quad_recording_ready {
             ("solid-quad-recording-ready", None)
+        } else {
+            ("sampled-image-recording-ready", None)
         }
-    } else if sampled_image_recording_ready && sampled_image_op_count == draw_plan.draw_ops.len() {
-        (
-            "sampled-image-quad-payload-ready-recording-pending",
-            Some("vulkan-sampled-image-recording-not-implemented"),
-        )
     } else if !quad_recording_payload.steps.is_empty() {
         (
             "partial-solid-quad-recording-ready",
@@ -692,15 +692,9 @@ mod tests {
         let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
 
         assert!(pass_plan.plan_ready);
-        assert!(!pass_plan.backend_ready);
-        assert_eq!(
-            pass_plan.backend_status,
-            "sampled-image-quad-payload-ready-recording-pending"
-        );
-        assert_eq!(
-            pass_plan.blocking_reason,
-            Some("vulkan-sampled-image-recording-not-implemented")
-        );
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.backend_status, "sampled-image-recording-ready");
+        assert_eq!(pass_plan.blocking_reason, None);
         assert_eq!(pass_plan.sampled_image_op_count, 1);
         assert_eq!(pass_plan.sampled_image_quads.len(), 1);
         assert!(pass_plan.sampled_image_recording_ready);

@@ -256,7 +256,7 @@ use present::*;
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
 use render_item::{native_vulkan_static_item, native_vulkan_video_item};
 use render_plan::{native_vulkan_render_item_clear_color, native_vulkan_static_upload_plan};
-pub use scene_lite_present_runtime::run_scene_lite;
+pub use scene_lite_present_runtime::{run_scene_lite, run_scene_lite_sampled_image};
 use scene_lite_runtime::native_vulkan_scene_lite_runtime_snapshot;
 pub use scene_lite_runtime::{
     NativeVulkanSceneLiteDrawOpSnapshot, NativeVulkanSceneLiteQuadRecordingStepSnapshot,
