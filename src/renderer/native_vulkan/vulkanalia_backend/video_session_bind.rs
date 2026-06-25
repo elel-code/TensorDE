@@ -14,8 +14,10 @@ use super::instance::{
 };
 use super::video_bitstream_buffer::{
     NativeVulkanVulkanaliaVideoSessionBitstreamBufferSmokeSnapshot,
+    VulkanaliaVideoSessionBitstreamBuffer,
     native_vulkan_vulkanalia_create_video_session_bitstream_buffer,
     native_vulkan_vulkanalia_destroy_video_session_bitstream_buffer,
+    native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size,
     native_vulkan_vulkanalia_smoke_create_video_session_bitstream_buffer,
     native_vulkan_vulkanalia_write_video_session_bitstream_payload,
 };
@@ -243,6 +245,42 @@ fn native_vulkan_vulkanalia_trim_heap_after_decode_teardown() {
     {
         crate::renderer::native_vulkan::native_vulkan_trim_process_heap();
     }
+}
+
+fn native_vulkan_vulkanalia_streaming_bitstream_buffer_for_payload<'a>(
+    device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    profile_info: &vk::VideoProfileInfoKHR,
+    min_size_alignment: u64,
+    bitstream_buffer: &'a mut Option<VulkanaliaVideoSessionBitstreamBuffer>,
+    payload_len: u64,
+) -> Result<&'a VulkanaliaVideoSessionBitstreamBuffer, String> {
+    let target_size = native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size(
+        payload_len,
+        min_size_alignment,
+    );
+    let needs_grow = bitstream_buffer
+        .as_ref()
+        .map(|buffer| buffer.snapshot.size < target_size)
+        .unwrap_or(true);
+    if needs_grow {
+        let new_buffer = native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
+            device,
+            memory_properties,
+            profile_info,
+            target_size,
+            min_size_alignment,
+            None,
+            true,
+        )?;
+        if let Some(old_buffer) = bitstream_buffer.replace(new_buffer) {
+            native_vulkan_vulkanalia_destroy_video_session_bitstream_buffer(device, old_buffer);
+        }
+    }
+
+    bitstream_buffer.as_ref().ok_or_else(|| {
+        "Vulkanalia streaming bitstream buffer was not created for payload upload".to_owned()
+    })
 }
 
 fn native_vulkan_vulkanalia_decode_submit_fence_command_order() -> Vec<&'static str> {
@@ -1282,9 +1320,6 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_streaming_decode_into_image(
             let session_parameters_ref = session_parameters
                 .as_ref()
                 .expect("Vulkanalia H.265 session parameters are alive during streaming decode");
-            let bitstream_buffer_ref = bitstream_buffer
-                .as_ref()
-                .expect("Vulkanalia streaming bitstream buffer is alive during decode");
             let command_buffer_ref = command_buffer
                 .as_ref()
                 .expect("Vulkanalia streaming command buffer is alive during decode");
@@ -1315,6 +1350,15 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_streaming_decode_into_image(
                     }
                 }
                 let payload_len = frame.access_unit_payload.len() as u64;
+                let bitstream_buffer_ref =
+                    native_vulkan_vulkanalia_streaming_bitstream_buffer_for_payload(
+                        device,
+                        memory_properties,
+                        profile_info,
+                        capabilities.min_bitstream_buffer_size_alignment,
+                        &mut bitstream_buffer,
+                        payload_len,
+                    )?;
                 let src_buffer_range =
                     native_vulkan_vulkanalia_write_video_session_bitstream_payload(
                         device,
@@ -1815,9 +1859,6 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_streaming_decode_into_image(
             let session_parameters_ref = session_parameters
                 .as_ref()
                 .expect("Vulkanalia H.264 session parameters are alive during streaming decode");
-            let bitstream_buffer_ref = bitstream_buffer
-                .as_ref()
-                .expect("Vulkanalia streaming bitstream buffer is alive during decode");
             let command_buffer_ref = command_buffer
                 .as_ref()
                 .expect("Vulkanalia streaming command buffer is alive during decode");
@@ -1854,6 +1895,15 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_streaming_decode_into_image(
                     ));
                 }
                 let payload_len = frame.access_unit_payload.len() as u64;
+                let bitstream_buffer_ref =
+                    native_vulkan_vulkanalia_streaming_bitstream_buffer_for_payload(
+                        device,
+                        memory_properties,
+                        profile_info,
+                        capabilities.min_bitstream_buffer_size_alignment,
+                        &mut bitstream_buffer,
+                        payload_len,
+                    )?;
                 let src_buffer_range =
                     native_vulkan_vulkanalia_write_video_session_bitstream_payload(
                         device,

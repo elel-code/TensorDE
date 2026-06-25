@@ -185,6 +185,7 @@ pub use swapchain::{
     NativeVulkanVulkanaliaSurfaceSwapchainProbeSnapshot, NativeVulkanVulkanaliaSwapchainSnapshot,
     probe_native_vulkan_vulkanalia_surface_swapchain,
 };
+pub(crate) use video_bitstream_buffer::native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size;
 #[allow(unused_imports)]
 pub use video_bitstream_buffer::{
     NativeVulkanVulkanaliaVideoSessionBitstreamBufferSmokeSnapshot,
