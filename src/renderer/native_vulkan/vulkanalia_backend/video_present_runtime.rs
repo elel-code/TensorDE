@@ -13,8 +13,7 @@ use vulkanalia::vk::{
 
 #[cfg(feature = "native-vulkan-gst-video")]
 use crate::renderer::native_vulkan::video_extract::{
-    native_vulkan_h265_ready_prefix_bitstream_payload,
-    native_vulkan_start_h264_streaming_packet_queue,
+    native_vulkan_h265_slice_segment_offset, native_vulkan_start_h264_streaming_packet_queue,
     native_vulkan_start_h265_streaming_packet_queue,
 };
 use crate::renderer::native_vulkan::{
@@ -619,20 +618,42 @@ fn native_vulkan_vulkanalia_next_h265_streaming_frame(
             packet.snapshot.index
         )
     })?;
-    let (access_unit_payload, slice_segment_offset) =
-        native_vulkan_h265_ready_prefix_bitstream_payload(packet.access_unit.bytes)
-            .map_err(|err| err.to_string())?;
+    let slice_segment_offset = native_vulkan_h265_slice_segment_offset(&packet.access_unit.bytes)
+        .map_err(|err| err.to_string())?;
     Ok(NativeVulkanVulkanaliaH265ReadyPrefixFrameInput {
         entry,
         first_slice,
         duration_ms: packet.snapshot.duration_ms,
-        access_unit_payload,
+        access_unit_payload: packet.access_unit.bytes,
         slice_segment_offset,
     })
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
 impl NativeVulkanVulkanaliaPreparedStreamingDecode {
+    fn coded_extent(&self) -> Option<vk::Extent2D> {
+        let (width, height) = self
+            .h264
+            .as_ref()
+            .map(|prepared| {
+                (
+                    prepared.parameter_sets.sps.width,
+                    prepared.parameter_sets.sps.height,
+                )
+            })
+            .or_else(|| {
+                self.h265.as_ref().map(|prepared| {
+                    (
+                        prepared.parameter_sets.sps.width,
+                        prepared.parameter_sets.sps.height,
+                    )
+                })
+            })?;
+        let width = native_vulkan_vulkanalia_align16(width);
+        let height = native_vulkan_vulkanalia_align16(height);
+        (width > 0 && height > 0).then_some(vk::Extent2D { width, height })
+    }
+
     fn required_resource_image_array_layers(&self) -> u32 {
         self.h264
             .as_ref()
@@ -661,14 +682,23 @@ fn native_vulkan_vulkanalia_streaming_decode_requested(_prepared: &()) -> bool {
 
 #[cfg(not(feature = "native-vulkan-gst-video"))]
 trait NativeVulkanVulkanaliaNoStreamingDecodeLayers {
+    fn coded_extent(&self) -> Option<vk::Extent2D>;
     fn required_resource_image_array_layers(&self) -> u32;
 }
 
 #[cfg(not(feature = "native-vulkan-gst-video"))]
 impl NativeVulkanVulkanaliaNoStreamingDecodeLayers for () {
+    fn coded_extent(&self) -> Option<vk::Extent2D> {
+        None
+    }
+
     fn required_resource_image_array_layers(&self) -> u32 {
         1
     }
+}
+
+fn native_vulkan_vulkanalia_align16(value: u32) -> u32 {
+    value.div_ceil(16).saturating_mul(16)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1175,16 +1205,6 @@ fn create_video_present_session_pieces(
         None,
         None,
         |profile_info, queried| {
-            let requested_extent = vk::Extent2D { width, height };
-            if !native_vulkan_vulkanalia_video_session_extent_supported(
-                requested_extent,
-                queried.capabilities,
-            ) {
-                return Err(format!(
-                    "requested Vulkanalia video present session extent {}x{} is outside driver capabilities",
-                    requested_extent.width, requested_extent.height
-                ));
-            }
             let session_max_dpb_slots = native_vulkan_vulkanalia_video_session_max_dpb_slots(
                 queried.capabilities.max_dpb_slots,
             );
@@ -1207,6 +1227,18 @@ fn create_video_present_session_pieces(
                     codec,
                     session_max_dpb_slots,
                 )?;
+            let requested_extent = prepared_streaming_decode
+                .coded_extent()
+                .unwrap_or(vk::Extent2D { width, height });
+            if !native_vulkan_vulkanalia_video_session_extent_supported(
+                requested_extent,
+                queried.capabilities,
+            ) {
+                return Err(format!(
+                    "requested Vulkanalia video present session extent {}x{} is outside driver capabilities",
+                    requested_extent.width, requested_extent.height
+                ));
+            }
             let ready_prefix_resource_image_array_layers =
                 native_vulkan_vulkanalia_ready_prefix_resource_image_array_layers(
                     session_max_dpb_slots,

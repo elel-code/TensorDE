@@ -589,14 +589,17 @@ pub(super) fn native_vulkan_validate_h264_ready_prefix(
 pub(super) fn native_vulkan_h265_ready_prefix_bitstream_payload(
     payload: Vec<u8>,
 ) -> Result<(Vec<u8>, u32), NativeVulkanError> {
-    let slice_segment_offset = {
-        let first_slice = native_vulkan_h265_nal_payloads(&payload)
-            .into_iter()
-            .find(|nal| nal.nal_type <= 31)
-            .ok_or_else(|| NativeVulkanError::Video("H.265 AU has no VCL slice NAL".to_owned()))?;
-        u32::try_from(first_slice.slice_segment_offset).map_err(|_| {
-            NativeVulkanError::Video("H.265 slice segment offset exceeds u32".to_owned())
-        })?
-    };
+    let slice_segment_offset = native_vulkan_h265_slice_segment_offset(&payload)?;
     Ok((payload, slice_segment_offset))
+}
+
+pub(super) fn native_vulkan_h265_slice_segment_offset(
+    payload: &[u8],
+) -> Result<u32, NativeVulkanError> {
+    let first_slice = native_vulkan_h265_nal_payloads(payload)
+        .into_iter()
+        .find(|nal| nal.nal_type <= 31)
+        .ok_or_else(|| NativeVulkanError::Video("H.265 AU has no VCL slice NAL".to_owned()))?;
+    u32::try_from(first_slice.slice_segment_offset)
+        .map_err(|_| NativeVulkanError::Video("H.265 slice segment offset exceeds u32".to_owned()))
 }

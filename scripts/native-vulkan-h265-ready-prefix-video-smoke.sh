@@ -450,6 +450,16 @@ if [[ "$pacing_master" == "audio" ]]; then
 else
   runtime_env+=(GILDER_VIDEO_PACING_MASTER=target)
 fi
+for passthrough_env in \
+  GILDER_VULKAN_STREAMING_PACKET_QUEUE_CAPACITY \
+  MALLOC_ARENA_MAX \
+  MALLOC_MMAP_THRESHOLD_ \
+  MALLOC_TRIM_THRESHOLD_ \
+  GLIBC_TUNABLES; do
+  if [[ -n "${!passthrough_env:-}" ]]; then
+    runtime_env+=("${passthrough_env}=${!passthrough_env}")
+  fi
+done
 
 performance_status=0
 if [[ "$performance_snapshot" -eq 1 ]]; then
@@ -505,6 +515,7 @@ decoded_count="$(jq -r '(.h265_retained_video_present_decode.decode.submitted_fr
 presented_count="$(jq -r '(.h265_retained_video_present_decode.decoded_image_present_sequence.presented_frame_count // 0)' "$runtime_json")"
 frame_count="$presented_count"
 bad_frames="$(jq -r 'if ((.h265_retained_video_present_decode.decoded_image_present_sequence_error // null) == null and (.h265_retained_video_present_decode.decoded_image_present_draw_error // null) == null) then 0 else 1 end' "$runtime_json")"
+average_present_fps="$(jq -r '(.h265_retained_video_present_decode.decoded_image_present_sequence.average_present_fps // .decoded_image_present_sequence.average_present_fps // 0)' "$runtime_json")"
 distinct_layers="$(jq -r '((.h265_retained_video_present_decode.decoded_image_present_sequence.sampled_array_layers_head // []) + (.h265_retained_video_present_decode.decoded_image_present_sequence.sampled_array_layers_tail // [])) | unique | length' "$runtime_json")"
 ready_prefix_count="$(jq -r '(.h265_retained_video_present_decode.decode.requested_frame_count // 0)' "$runtime_json")"
 requested_playback_count="$(jq -r '(.playback_frame_count // 0)' "$runtime_json")"
@@ -539,7 +550,7 @@ video_queue="$(jq -r '(.h265_retained_video_present_decode.session.device.video_
 sync_strategy="$(jq -r '(.h265_retained_video_present_decode.session.resource_queue_sharing_model // "none")' "$runtime_json")"
 runtime_codec="$(jq -r '(.h265_retained_video_present_decode.session.codec // "none")' "$runtime_json")"
 picture_format="$(jq -r '(.h265_retained_video_present_decode.session.picture_format // "none")' "$runtime_json")"
-driver_max_dpb_slots="$(jq -r '(.session.driver_max_dpb_slots // 0)' "$runtime_json")"
+runtime_max_dpb_slots="$(jq -r '(.h265_retained_video_present_decode.session.session_max_dpb_slots // 0)' "$runtime_json")"
 stream_sps_dpb_slots="$(jq -r '(.h265_retained_video_present_decode.decode.begin_reference_slot_count // 0)' "$runtime_json")"
 stream_dpb_slots="$stream_sps_dpb_slots"
 stream_max_active_reference_pictures="$(jq -r '(.h265_retained_video_present_decode.decode.decode_reference_slot_count // 0)' "$runtime_json")"
@@ -552,10 +563,9 @@ frame_sleep_count_value="$(jq -r '.frame_sleep_count // 0' "$runtime_json")"
 bitstream_strategy="$(jq -r '(.h265_retained_video_present_decode.decode.bitstream_buffer_model // "none")' "$runtime_json")"
 bitstream_slot_count=1
 bitstream_slot_bytes="$(jq -r '(.h265_retained_video_present_decode.decode.max_src_buffer_range // ([.h265_retained_video_present_decode.decode.frames[]?.src_buffer_range] | max) // 0)' "$runtime_json")"
-bitstream_ring_capacity_bytes="$(jq -r '(.h265_retained_video_present_decode.decode.src_buffer_total_bytes // 0)' "$runtime_json")"
-bitstream_ring_wrap_count=0
-bitstream_window_payload_bytes="$bitstream_ring_capacity_bytes"
-bitstream_uploaded_bytes="$bitstream_ring_capacity_bytes"
+bitstream_buffer_capacity_bytes="$bitstream_slot_bytes"
+bitstream_total_payload_bytes="$(jq -r '(.h265_retained_video_present_decode.decode.src_buffer_total_bytes // 0)' "$runtime_json")"
+bitstream_uploaded_bytes="$bitstream_total_payload_bytes"
 h265_input_mode="$(jq -r '(.h265_retained_video_present_decode.decode.input_payload_model // "none")' "$runtime_json")"
 if [[ "$h265_input_mode" == "bounded-streaming-packet-queue-per-frame-upload" ]]; then
   bitstream_upload_count="$decoded_count"
@@ -619,11 +629,11 @@ p_frames="$(jq -r '(.h265_retained_video_present_decode.decode.p_frame_count // 
 b_frames="$(jq -r '(.h265_retained_video_present_decode.decode.b_frame_count // ((.h265_retained_video_present_decode.decode.frames // []) | map(select(.begin_reference_slot_count > .decode_reference_slot_count)) | length))' "$runtime_json")"
 max_reference_count="$(jq -r '(.h265_retained_video_present_decode.decode.max_decode_reference_slot_count // ((.h265_retained_video_present_decode.decode.frames // []) | map(.decode_reference_slot_count) | max) // 0)' "$runtime_json")"
 loop_gate_failed=0
-if [[ "$expected_frames" -gt "$decode_prefix" && ( "$playback_loop_count" -le 1 || "$loop_boundary_reset_count" -lt 1 ) ]]; then
+if [[ "$h265_input_mode" != "bounded-streaming-packet-queue-per-frame-upload" && "$expected_frames" -gt "$decode_prefix" && ( "$playback_loop_count" -le 1 || "$loop_boundary_reset_count" -lt 1 ) ]]; then
   loop_gate_failed=1
 fi
 bitstream_gate_failed=0
-if [[ ( "$bitstream_strategy" != "ready-prefix-owned-upload-buffer" && "$bitstream_strategy" != "streaming-persistent-mapped-reused-upload-buffer" ) || "$bitstream_slot_count" -ne 1 || "$bitstream_slot_bytes" -le 0 || "$bitstream_ring_capacity_bytes" -lt "$bitstream_window_payload_bytes" || "$bitstream_window_payload_bytes" -le 0 || "$bitstream_upload_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
+if [[ ( "$bitstream_strategy" != "ready-prefix-owned-upload-buffer" && "$bitstream_strategy" != "streaming-persistent-mapped-reused-upload-buffer" ) || "$bitstream_slot_count" -ne 1 || "$bitstream_slot_bytes" -le 0 || "$bitstream_buffer_capacity_bytes" -lt "$bitstream_slot_bytes" || "$bitstream_total_payload_bytes" -le 0 || "$bitstream_upload_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
   bitstream_gate_failed=1
 fi
 input_gate_failed=0
@@ -659,7 +669,7 @@ if [[ "$pacing_strategy" != "$expected_pacing_strategy" && ! ( "$pacing_strategy
   pacing_gate_failed=1
 fi
 dpb_gate_failed=0
-if [[ "$driver_max_dpb_slots" -le 0 || "$stream_sps_dpb_slots" -le 0 || "$stream_dpb_slots" -le 0 || "$session_max_dpb_slots" -le 0 || "$session_max_active_reference_pictures" -le 0 || "$session_max_active_reference_pictures" -gt "$session_max_dpb_slots" || "$session_max_active_reference_pictures" -lt "$stream_max_active_reference_pictures" || "$distinct_layers" -gt "$session_max_dpb_slots" ]]; then
+if [[ "$runtime_max_dpb_slots" -le 0 || "$stream_sps_dpb_slots" -le 0 || "$stream_dpb_slots" -le 0 || "$session_max_dpb_slots" -le 0 || "$session_max_active_reference_pictures" -le 0 || "$session_max_active_reference_pictures" -gt "$session_max_dpb_slots" || "$session_max_active_reference_pictures" -lt "$stream_max_active_reference_pictures" || "$distinct_layers" -gt "$session_max_dpb_slots" ]]; then
   dpb_gate_failed=1
 fi
 pts_delta_gate_failed=0
@@ -749,7 +759,7 @@ if [[ "$decoded_count" -ne "$expected_decoded_count" || "$presented_count" -ne "
     printf 'present_queue: %s\n' "$present_queue"
     printf 'video_queue: %s\n' "$video_queue"
     printf 'cross_queue_sync_strategy: %s\n' "$sync_strategy"
-    printf 'driver_max_dpb_slots: %s\n' "$driver_max_dpb_slots"
+    printf 'runtime_max_dpb_slots: %s\n' "$runtime_max_dpb_slots"
     printf 'stream_sps_dpb_slots: %s\n' "$stream_sps_dpb_slots"
     printf 'stream_dpb_slots: %s\n' "$stream_dpb_slots"
     printf 'stream_max_active_reference_pictures: %s\n' "$stream_max_active_reference_pictures"
@@ -764,9 +774,8 @@ if [[ "$decoded_count" -ne "$expected_decoded_count" || "$presented_count" -ne "
     printf 'bitstream_buffer_strategy: %s\n' "$bitstream_strategy"
     printf 'bitstream_buffer_slot_count: %s\n' "$bitstream_slot_count"
     printf 'bitstream_buffer_slot_bytes: %s\n' "$bitstream_slot_bytes"
-    printf 'bitstream_ring_capacity_bytes: %s\n' "$bitstream_ring_capacity_bytes"
-    printf 'bitstream_ring_wrap_count: %s\n' "$bitstream_ring_wrap_count"
-    printf 'bitstream_window_payload_bytes: %s\n' "$bitstream_window_payload_bytes"
+    printf 'bitstream_buffer_capacity_bytes: %s\n' "$bitstream_buffer_capacity_bytes"
+    printf 'bitstream_total_payload_bytes: %s\n' "$bitstream_total_payload_bytes"
     printf 'bitstream_upload_count: %s\n' "$bitstream_upload_count"
     printf 'bitstream_uploaded_bytes: %s\n' "$bitstream_uploaded_bytes"
     printf 'h265_input_mode: %s\n' "$h265_input_mode"
@@ -836,7 +845,7 @@ fi
   printf 'missed_frame_pacing_count: %s\n' "$(jq -r '.missed_frame_pacing_count // 0' "$runtime_json")"
   printf 'total_frame_sleep_us: %s\n' "$(jq -r '.total_frame_sleep_us // 0' "$runtime_json")"
   printf 'max_frame_pacing_late_us: %s\n' "$(jq -r '.max_frame_pacing_late_us // 0' "$runtime_json")"
-  printf 'average_present_fps: %s\n' "$(jq -r '.average_present_fps' "$runtime_json")"
+  printf 'average_present_fps: %s\n' "$average_present_fps"
   printf 'target_max_fps: %s\n' "$(jq -r '.target_max_fps // "none"' "$runtime_json")"
   printf 'present_queue_family_index: %s\n' "$present_queue"
   printf 'present_queue_flags: %s\n' "$(jq -c '.present_queue_flags' "$runtime_json")"
@@ -844,7 +853,7 @@ fi
   printf 'video_decode_queue_flags: %s\n' "$(jq -c '.video_decode_queue_flags' "$runtime_json")"
   printf 'video_decode_queue_codec_operations: %s\n' "$(jq -c '.video_decode_queue_codec_operations' "$runtime_json")"
   printf 'cross_queue_sync_strategy: %s\n' "$(jq -r '.cross_queue_sync_strategy' "$runtime_json")"
-  printf 'driver_max_dpb_slots: %s\n' "$driver_max_dpb_slots"
+  printf 'runtime_max_dpb_slots: %s\n' "$runtime_max_dpb_slots"
   printf 'stream_sps_dpb_slots: %s\n' "$stream_sps_dpb_slots"
   printf 'stream_dpb_slots: %s\n' "$stream_dpb_slots"
   printf 'stream_max_active_reference_pictures: %s\n' "$stream_max_active_reference_pictures"
@@ -853,11 +862,10 @@ fi
   printf 'bitstream_buffer_strategy: %s\n' "$bitstream_strategy"
   printf 'bitstream_buffer_slot_count: %s\n' "$bitstream_slot_count"
   printf 'bitstream_buffer_slot_bytes: %s\n' "$bitstream_slot_bytes"
-  printf 'bitstream_ring_capacity_bytes: %s\n' "$bitstream_ring_capacity_bytes"
-  printf 'bitstream_ring_min_offset_alignment: %s\n' "$(jq -r '.bitstream_ring_min_offset_alignment // 0' "$runtime_json")"
-  printf 'bitstream_ring_min_size_alignment: %s\n' "$(jq -r '.bitstream_ring_min_size_alignment // 0' "$runtime_json")"
-  printf 'bitstream_ring_wrap_count: %s\n' "$bitstream_ring_wrap_count"
-  printf 'bitstream_window_payload_bytes: %s\n' "$bitstream_window_payload_bytes"
+  printf 'bitstream_buffer_capacity_bytes: %s\n' "$bitstream_buffer_capacity_bytes"
+  printf 'bitstream_min_offset_alignment: %s\n' "$(jq -r '.bitstream_ring_min_offset_alignment // 0' "$runtime_json")"
+  printf 'bitstream_min_size_alignment: %s\n' "$(jq -r '.bitstream_ring_min_size_alignment // 0' "$runtime_json")"
+  printf 'bitstream_total_payload_bytes: %s\n' "$bitstream_total_payload_bytes"
   printf 'bitstream_upload_count: %s\n' "$bitstream_upload_count"
   printf 'bitstream_uploaded_bytes: %s\n' "$bitstream_uploaded_bytes"
   printf 'h265_input_mode: %s\n' "$h265_input_mode"
@@ -878,8 +886,6 @@ fi
   printf 'frame_loop_indices_tail: %s\n' "$(jq -c '[.frames[-32:][]?.playback_loop_index]' "$runtime_json")"
   printf 'frame_bitstream_offsets_head: %s\n' "$(jq -c '[.frames[0:32][]?.src_buffer_offset]' "$runtime_json")"
   printf 'frame_bitstream_offsets_tail: %s\n' "$(jq -c '[.frames[-32:][]?.src_buffer_offset]' "$runtime_json")"
-  printf 'frame_bitstream_wraps_head: %s\n' "$(jq -c '[.frames[0:32][]?.bitstream_ring_wrap_count]' "$runtime_json")"
-  printf 'frame_bitstream_wraps_tail: %s\n' "$(jq -c '[.frames[-32:][]?.bitstream_ring_wrap_count]' "$runtime_json")"
   printf 'pts_delta_min_ms: %s\n' "$pts_delta_min"
   printf 'pts_delta_max_ms: %s\n' "$pts_delta_max"
   printf 'pts_delta_expected_min_ms: %s\n' "$pts_delta_expected_min"

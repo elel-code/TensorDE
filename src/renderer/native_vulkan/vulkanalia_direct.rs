@@ -7,10 +7,6 @@ use crate::core::FitMode;
 
 use super::audio_policy::NativeVulkanAudioOutputMode;
 use super::video_codec::NativeVulkanVideoSessionCodec;
-use super::video_extract::{
-    native_vulkan_start_h264_streaming_packet_queue,
-    native_vulkan_start_h265_streaming_packet_queue,
-};
 use super::vulkanalia_backend::{
     NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput,
     NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeOptions,
@@ -37,10 +33,7 @@ use super::vulkanalia_backend::{
     run_native_vulkan_vulkanalia_h265_streaming_video_present_decode,
 };
 use super::vulkanalia_extract::native_vulkan_extract_av1_ready_prefix_for_vulkanalia;
-use super::{
-    NativeVulkanError, NativeVulkanH264ParameterSetSnapshot, NativeVulkanH265ParameterSetSnapshot,
-    NativeVulkanOptions,
-};
+use super::{NativeVulkanError, NativeVulkanOptions};
 
 const NATIVE_VULKAN_VULKANALIA_STREAMING_PACKET_QUEUE_CAPACITY: usize = 32;
 
@@ -94,31 +87,11 @@ pub struct NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
     pub decoded_image_zero_copy_presented: bool,
     pub decoded_image_present_boundary: &'static str,
     pub ffmpeg_reference: &'static str,
-    pub session: NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot,
+    pub session: Option<NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot>,
 }
 
-/// Coded resolution of the ready-prefix source, aligned up to a 16-pixel macroblock
-/// grid so the decode image is never smaller than the coded picture. Returns (0, 0)
-/// when the parsed parameter sets carry no usable dimensions, letting the caller keep
-/// its requested extent as a fallback.
-fn native_vulkan_vulkanalia_ready_prefix_source_extent(
-    ready_prefix: &NativeVulkanVulkanaliaReadyPrefixInput,
-) -> (u32, u32) {
+fn native_vulkan_vulkanalia_align16_extent(width: u32, height: u32) -> (u32, u32) {
     let align16 = |value: u32| value.div_ceil(16).saturating_mul(16);
-    let (width, height) = match ready_prefix {
-        NativeVulkanVulkanaliaReadyPrefixInput::H264(input) => (
-            input.parameter_sets.sps.width,
-            input.parameter_sets.sps.height,
-        ),
-        NativeVulkanVulkanaliaReadyPrefixInput::H265(input) => (
-            input.parameter_sets.sps.width,
-            input.parameter_sets.sps.height,
-        ),
-        NativeVulkanVulkanaliaReadyPrefixInput::Av1(input) => (
-            input.sequence_header.max_frame_width,
-            input.sequence_header.max_frame_height,
-        ),
-    };
     if width == 0 || height == 0 {
         (0, 0)
     } else {
@@ -156,48 +129,61 @@ pub fn run_vulkanalia_ready_prefix_video(
         ));
     }
 
-    let ready_prefix = native_vulkan_extract_ready_prefix_for_vulkanalia(
-        source.clone(),
-        codec,
-        bitstream_samples,
-        ready_prefix_frame_count,
-    )?;
-    let h264_streaming_decode_requested = matches!(
-        ready_prefix,
-        NativeVulkanVulkanaliaReadyPrefixInput::H264(_)
-    );
-    let retained_av1_ready_prefix_decode = match &ready_prefix {
-        NativeVulkanVulkanaliaReadyPrefixInput::Av1(input) => Some(input.clone()),
-        _ => None,
-    };
+    let h264_streaming_decode_requested = codec == NativeVulkanVideoSessionCodec::H264High8;
     let h265_streaming_decode_requested = matches!(
-        ready_prefix,
-        NativeVulkanVulkanaliaReadyPrefixInput::H265(_)
+        codec,
+        NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10
     );
-    // Size the decode image to the video's own coded resolution rather than the CLI
-    // default (3840x2160). Vulkan video writes each picture at its coded size, so an
-    // oversized decode image leaves most of the frame undecoded — which samples as a
-    // green screen when the present pass covers the whole image — and wastes a large
-    // amount of device memory (a 4K NV12 DPB layer is ~12 MiB versus ~0.35 MiB at
-    // 640x368). FFmpeg likewise sizes its DPB to the stream, not the display surface.
-    let (source_width, source_height) =
-        native_vulkan_vulkanalia_ready_prefix_source_extent(&ready_prefix);
-    let width = if source_width > 0 {
-        source_width
-    } else {
-        width
-    };
-    let height = if source_height > 0 {
-        source_height
-    } else {
-        height
-    };
-    let bitstream_buffer_size = ready_prefix.ffmpeg_decode_bitstream_buffer_size(bitstream_samples);
     let streaming_queue_capacity = native_vulkan_vulkanalia_streaming_packet_queue_capacity();
-    let session_options =
-        ready_prefix.into_session_options(codec, width, height, bitstream_buffer_size);
-    let session = probe_native_vulkan_vulkanalia_video_session_bind(session_options)
-        .map_err(NativeVulkanError::Video)?;
+    let retained_av1_ready_prefix_decode =
+        if h264_streaming_decode_requested || h265_streaming_decode_requested {
+            None
+        } else {
+            Some(native_vulkan_extract_av1_ready_prefix_for_vulkanalia(
+                source.clone(),
+                codec,
+                bitstream_samples,
+                ready_prefix_frame_count,
+            )?)
+        };
+    // H.264/H.265 streaming now matches FFmpeg's single playback pipeline: no
+    // pre-playback metadata queue and no extra video-session-bind smoke. The
+    // runtime creates the only demux/parser queue, derives stream extent from
+    // that queue, and grows the single mapped bitstream buffer only if a payload
+    // exceeds the initial FFmpeg-style one-picture allocation.
+    let (width, height, bitstream_buffer_size, session) =
+        if let Some(ready_prefix) = retained_av1_ready_prefix_decode.as_ref() {
+            let (source_width, source_height) =
+                native_vulkan_vulkanalia_av1_ready_prefix_source_extent(ready_prefix);
+            let width = if source_width > 0 {
+                source_width
+            } else {
+                width
+            };
+            let height = if source_height > 0 {
+                source_height
+            } else {
+                height
+            };
+            let bitstream_buffer_size = u64::from(bitstream_samples.max(1)) * 1024 * 1024;
+            let session_options = native_vulkan_vulkanalia_av1_session_options(
+                ready_prefix.clone(),
+                codec,
+                width,
+                height,
+                bitstream_buffer_size,
+            );
+            let session = probe_native_vulkan_vulkanalia_video_session_bind(session_options)
+                .map_err(NativeVulkanError::Video)?;
+            (width, height, bitstream_buffer_size, Some(session))
+        } else {
+            (
+                width,
+                height,
+                native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size(1, 1),
+                None,
+            )
+        };
     let video_present_session_options = NativeVulkanVulkanaliaVideoPresentSessionProbeOptions {
         host: options.host.clone(),
         wait_configure_roundtrips: options.wait_configure_roundtrips,
@@ -528,160 +514,38 @@ fn native_vulkan_vulkanalia_streaming_packet_queue_capacity() -> usize {
         .unwrap_or(NATIVE_VULKAN_VULKANALIA_STREAMING_PACKET_QUEUE_CAPACITY)
 }
 
-enum NativeVulkanVulkanaliaReadyPrefixInput {
-    H264(NativeVulkanVulkanaliaH264StreamingSourceInfo),
-    H265(NativeVulkanVulkanaliaH265StreamingSourceInfo),
-    Av1(NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput),
-}
-
-struct NativeVulkanVulkanaliaH264StreamingSourceInfo {
-    parameter_sets: NativeVulkanH264ParameterSetSnapshot,
-    max_payload_bytes: u64,
-}
-
-struct NativeVulkanVulkanaliaH265StreamingSourceInfo {
-    parameter_sets: NativeVulkanH265ParameterSetSnapshot,
-    max_payload_bytes: u64,
-}
-
-impl NativeVulkanVulkanaliaReadyPrefixInput {
-    fn into_session_options(
-        self,
-        codec: NativeVulkanVideoSessionCodec,
-        width: u32,
-        height: u32,
-        bitstream_buffer_size: u64,
-    ) -> NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
-        match self {
-            Self::H264(source_info) => NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
-                codec,
-                width,
-                height,
-                allocate_video_images: true,
-                allocate_bitstream_buffer: false,
-                bitstream_buffer_size,
-                create_empty_session_parameters: false,
-                create_session_parameters: true,
-                h264_parameter_sets: Some(source_info.parameter_sets),
-                h265_parameter_sets: None,
-                av1_sequence_header: None,
-                h264_ready_prefix_decode: None,
-                h265_ready_prefix_decode: None,
-                av1_ready_prefix_decode: None,
-            },
-            Self::H265(source_info) => NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
-                codec,
-                width,
-                height,
-                allocate_video_images: true,
-                allocate_bitstream_buffer: false,
-                bitstream_buffer_size,
-                create_empty_session_parameters: false,
-                create_session_parameters: true,
-                h264_parameter_sets: None,
-                h265_parameter_sets: Some(source_info.parameter_sets),
-                av1_sequence_header: None,
-                h264_ready_prefix_decode: None,
-                h265_ready_prefix_decode: None,
-                av1_ready_prefix_decode: None,
-            },
-            Self::Av1(ready_prefix) => NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
-                codec,
-                width,
-                height,
-                allocate_video_images: true,
-                allocate_bitstream_buffer: true,
-                bitstream_buffer_size,
-                create_empty_session_parameters: false,
-                create_session_parameters: true,
-                h264_parameter_sets: None,
-                h265_parameter_sets: None,
-                av1_sequence_header: Some(ready_prefix.sequence_header.clone()),
-                h264_ready_prefix_decode: None,
-                h265_ready_prefix_decode: None,
-                av1_ready_prefix_decode: Some(ready_prefix),
-            },
-        }
-    }
-
-    fn ffmpeg_decode_bitstream_buffer_size(&self, bitstream_samples: u32) -> u64 {
-        match self {
-            Self::H264(source_info) => {
-                native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size(
-                    source_info.max_payload_bytes,
-                    1,
-                )
-            }
-            Self::H265(source_info) => {
-                native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size(
-                    source_info.max_payload_bytes,
-                    1,
-                )
-            }
-            Self::Av1(_) => u64::from(bitstream_samples.max(1)) * 1024 * 1024,
-        }
-    }
-}
-
-fn native_vulkan_extract_ready_prefix_for_vulkanalia(
-    source: PathBuf,
+fn native_vulkan_vulkanalia_av1_session_options(
+    ready_prefix: NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput,
     codec: NativeVulkanVideoSessionCodec,
-    bitstream_samples: u32,
-    ready_prefix_frame_count: u32,
-) -> Result<NativeVulkanVulkanaliaReadyPrefixInput, NativeVulkanError> {
-    match codec {
-        NativeVulkanVideoSessionCodec::H264High8 => native_vulkan_probe_h264_streaming_source_info(
-            &source,
-            bitstream_samples.max(ready_prefix_frame_count),
-        )
-        .map(NativeVulkanVulkanaliaReadyPrefixInput::H264),
-        NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10 => {
-            native_vulkan_probe_h265_streaming_source_info(
-                &source,
-                bitstream_samples.max(ready_prefix_frame_count),
-            )
-            .map(NativeVulkanVulkanaliaReadyPrefixInput::H265)
-        }
-        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => {
-            native_vulkan_extract_av1_ready_prefix_for_vulkanalia(
-                source,
-                codec,
-                bitstream_samples,
-                ready_prefix_frame_count,
-            )
-            .map(NativeVulkanVulkanaliaReadyPrefixInput::Av1)
-        }
+    width: u32,
+    height: u32,
+    bitstream_buffer_size: u64,
+) -> NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
+    NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
+        codec,
+        width,
+        height,
+        allocate_video_images: true,
+        allocate_bitstream_buffer: true,
+        bitstream_buffer_size,
+        create_empty_session_parameters: false,
+        create_session_parameters: true,
+        h264_parameter_sets: None,
+        h265_parameter_sets: None,
+        av1_sequence_header: Some(ready_prefix.sequence_header.clone()),
+        h264_ready_prefix_decode: None,
+        h265_ready_prefix_decode: None,
+        av1_ready_prefix_decode: Some(ready_prefix),
     }
 }
 
-fn native_vulkan_probe_h264_streaming_source_info(
-    source: &std::path::Path,
-    requested_window: u32,
-) -> Result<NativeVulkanVulkanaliaH264StreamingSourceInfo, NativeVulkanError> {
-    let queue = native_vulkan_start_h264_streaming_packet_queue(
-        source,
-        native_vulkan_vulkanalia_streaming_packet_queue_capacity()
-            .min(requested_window.max(1) as usize),
-    )?;
-    Ok(NativeVulkanVulkanaliaH264StreamingSourceInfo {
-        parameter_sets: queue.parameter_sets,
-        max_payload_bytes: queue.max_payload_bytes.max(1),
-    })
-}
-
-fn native_vulkan_probe_h265_streaming_source_info(
-    source: &std::path::Path,
-    requested_window: u32,
-) -> Result<NativeVulkanVulkanaliaH265StreamingSourceInfo, NativeVulkanError> {
-    let queue = native_vulkan_start_h265_streaming_packet_queue(
-        source,
-        native_vulkan_vulkanalia_streaming_packet_queue_capacity()
-            .min(requested_window.max(1) as usize),
-    )?;
-    Ok(NativeVulkanVulkanaliaH265StreamingSourceInfo {
-        parameter_sets: queue.parameter_sets,
-        max_payload_bytes: queue.max_payload_bytes.max(1),
-    })
+fn native_vulkan_vulkanalia_av1_ready_prefix_source_extent(
+    ready_prefix: &NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput,
+) -> (u32, u32) {
+    native_vulkan_vulkanalia_align16_extent(
+        ready_prefix.sequence_header.max_frame_width,
+        ready_prefix.sequence_header.max_frame_height,
+    )
 }
 
 #[cfg(test)]
