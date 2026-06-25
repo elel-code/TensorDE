@@ -40,8 +40,6 @@ decoded appsink importer paths have been removed.
   helper for codec smoke validation.
 - `scripts/native-vulkan-h265-ready-prefix-video-smoke.sh`: real Wayland native
   Vulkan H.265 decode/present evidence helper.
-- `scripts/native-vulkan-h265-first-frame-video-smoke.sh`: real Wayland native
-  Vulkan first-frame video helper.
 - `scripts/native-vulkan-surface-video-queue-smoke.sh`: native Vulkan surface
   queue helper.
 - `scripts/performance-snapshot.sh`: daemon CPU/RSS/PSS/USS/status sampling

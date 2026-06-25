@@ -8,64 +8,6 @@ use super::demux::NativeVulkanStreamingPacketQueueRuntimeSnapshot;
 use super::direct_runtime::{NativeVulkanDirectPresentTimedFrame, NativeVulkanDirectPresentTiming};
 use super::{NativeVulkanAudioClockRuntimeSnapshot, NativeVulkanVideoSessionCodec};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NativeVulkanDirectH265FirstFrameDecodeSnapshot {
-    pub completed: bool,
-    pub queue_family_index: u32,
-    pub source_layout: &'static str,
-    pub decoded_layout: &'static str,
-    pub src_buffer_offset: u64,
-    pub src_buffer_range: u64,
-    pub dst_base_array_layer: u32,
-    pub setup_slot_index: i32,
-    pub begin_reference_slot_count: u32,
-    pub decode_reference_slot_count: u32,
-    pub reset_control_recorded: bool,
-    pub slice_segment_count: u32,
-    pub slice_segment_offsets: Vec<u32>,
-    pub nal_type: u8,
-    pub nal_type_label: &'static str,
-    pub first_slice_segment_in_pic_flag: bool,
-    pub slice_type: u32,
-    pub pps_id: u32,
-    pub pic_order_cnt_val: i32,
-    pub idr: bool,
-    pub irap: bool,
-    pub decode_elapsed_us: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct NativeVulkanDirectH265FirstFrameRuntimeSnapshot {
-    pub runtime_elapsed_ms: u64,
-    pub frames_rendered: u64,
-    pub average_render_fps: f64,
-    pub configured: bool,
-    pub source: PathBuf,
-    pub source_extent: (u32, u32),
-    pub fit: FitMode,
-    pub target_max_fps: Option<u32>,
-    pub wayland_surface_logical_size: (u32, u32),
-    pub wayland_surface_buffer_size: (u32, u32),
-    pub selected_physical_device_name: String,
-    pub selected_physical_device_type: &'static str,
-    pub present_queue_family_index: u32,
-    pub present_queue_flags: Vec<&'static str>,
-    pub video_decode_queue_family_index: u32,
-    pub video_decode_queue_flags: Vec<&'static str>,
-    pub video_decode_queue_codec_operations: Vec<String>,
-    pub cross_queue_sync_strategy: &'static str,
-    pub swapchain_extent: (u32, u32),
-    pub swapchain_image_count: usize,
-    pub swapchain_format: String,
-    pub present_mode: &'static str,
-    pub pacing_strategy: &'static str,
-    pub video_resource_memory_bytes: u64,
-    pub session_memory_bytes: u64,
-    pub bitstream_buffer_bytes: u64,
-    pub decode: NativeVulkanDirectH265FirstFrameDecodeSnapshot,
-    pub last_render_error: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot {
     pub runtime_elapsed_ms: u64,

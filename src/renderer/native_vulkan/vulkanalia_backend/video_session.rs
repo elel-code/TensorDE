@@ -102,7 +102,7 @@ pub fn native_vulkan_vulkanalia_video_session_template()
             "src/renderer/native_vulkan.rs::native_vulkan_create_video_session",
             "src/renderer/native_vulkan/video_session_resources.rs",
             "src/renderer/native_vulkan/video_session_parameters.rs",
-            "src/renderer/native_vulkan/direct_h265_submit.rs",
+            "src/renderer/native_vulkan.rs::native_vulkan_decode_*_ready_prefix_smoke",
         ],
         vulkanalia_target_module: "src/renderer/native_vulkan/vulkanalia_backend/video_session.rs",
         api_type_evidence: vec![
@@ -162,7 +162,7 @@ pub fn native_vulkan_vulkanalia_video_session_template()
             NativeVulkanVulkanaliaVideoSessionResourceStep {
                 order: 6,
                 kind: NativeVulkanVulkanaliaVideoSessionResourceStepKind::DecodeSubmit,
-                ash_source: "direct_h265_submit.rs and codec submit call sites",
+                ash_source: "legacy codec ready-prefix submit call sites",
                 vulkanalia_target: "Vulkanalia VideoBeginCodingInfoKHR/VideoDecodeInfoKHR submit helpers",
                 validation_gate: "H.265 main8/main10 ready-prefix submit matches ash output before H.264/AV1 are switched",
             },
