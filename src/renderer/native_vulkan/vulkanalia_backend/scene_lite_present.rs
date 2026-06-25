@@ -29,6 +29,7 @@ use super::scene_lite_draw_pass::{
     NativeVulkanVulkanaliaSceneLiteSampledImagePipelineSnapshot,
     NativeVulkanVulkanaliaSceneLiteSolidQuadCommandSnapshot,
     NativeVulkanVulkanaliaSceneLiteSolidQuadPipelineSnapshot,
+    VulkanaliaSceneLiteSampledImageDescriptorBinding,
     VulkanaliaSceneLiteSampledImagePipelineResources,
     VulkanaliaSceneLiteSolidQuadPipelineResources,
     native_vulkan_vulkanalia_create_scene_lite_sampled_image_pipeline_resources,
@@ -660,10 +661,16 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
             return Err(err);
         }
     };
+    let descriptor_strategy = native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strategy(
+        present_device.feature_selection.core_features,
+        present_device.feature_selection.vulkan_1_4_properties,
+        1,
+    );
     let pipeline = match native_vulkan_vulkanalia_create_scene_lite_sampled_image_pipeline_resources(
         device,
         swapchain_plan.format.format,
         swapchain_plan.extent,
+        descriptor_strategy.uses_push_descriptor_fast_path,
     ) {
         Ok(pipeline) => pipeline,
         Err(err) => {
@@ -737,6 +744,7 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
         frame_resources.command_pool,
         present_device.queue,
         pipeline.descriptor_set_layout,
+        descriptor_strategy.uses_push_descriptor_fast_path,
         scene_lite_sampled_image_sampler_mode(options.fit),
         options.source.display().to_string(),
         vk::Extent2D {
@@ -759,11 +767,6 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
             return Err(err);
         }
     };
-    let descriptor_strategy = native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strategy(
-        present_device.feature_selection.core_features,
-        present_device.feature_selection.vulkan_1_4_properties,
-        1,
-    );
     let present_timing = VulkanaliaPresentTimingConfig::new(
         present_device.feature_selection.present_id_enabled,
         swapchain_plan.present_id2_enabled,
@@ -1028,6 +1031,16 @@ fn run_scene_lite_sampled_image_present_loop(
     let mut frames_presented = 0u64;
     let mut present_ids = Vec::new();
     let mut last_command = None;
+    let descriptor_binding = if descriptor_strategy.uses_push_descriptor_fast_path {
+        VulkanaliaSceneLiteSampledImageDescriptorBinding::PushDescriptor {
+            sampler: sampled_image.sampler,
+            image_view: sampled_image.image_view,
+        }
+    } else {
+        VulkanaliaSceneLiteSampledImageDescriptorBinding::DescriptorSet(
+            sampled_image.descriptor_set,
+        )
+    };
 
     while Instant::now() < deadline {
         let present_frame_slot = frames_presented as usize % frame_resources.in_flight.len();
@@ -1074,7 +1087,7 @@ fn run_scene_lite_sampled_image_present_loop(
             swapchain_view,
             extent,
             pipeline,
-            sampled_image.descriptor_set,
+            descriptor_binding,
             geometry.vertex_buffer,
             geometry.index_buffer,
             geometry.snapshot.index_count,

@@ -118,8 +118,10 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot {
     pub sampler_address_mode: &'static str,
     pub descriptor_pool_created: bool,
     pub descriptor_set_allocated: bool,
+    pub descriptor_model: &'static str,
     pub descriptor_type: &'static str,
     pub descriptor_image_layout: &'static str,
+    pub uses_push_descriptor_fast_path: bool,
     pub upload_command_recorded: bool,
     pub upload_submitted: bool,
     pub upload_wait_model: &'static str,
@@ -251,20 +253,20 @@ pub(super) fn native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strat
         sampled_image_count,
         descriptor_set_path_enabled: true,
         active_descriptor_model: if push_descriptor_fast_path_candidate {
-            "descriptor-set-stable-path-with-vulkan-1.4-push-descriptor-candidate"
+            "vulkan-1.4-push-descriptor-fast-path"
         } else {
             "descriptor-set-stable-path"
         },
         push_descriptor_available: core_features.push_descriptor,
         max_push_descriptors: vulkan_1_4_properties.max_push_descriptors,
         push_descriptor_fast_path_candidate,
-        uses_push_descriptor_fast_path: false,
+        uses_push_descriptor_fast_path: push_descriptor_fast_path_candidate,
         next_gate: if push_descriptor_fast_path_candidate {
-            "record cmd_push_descriptor_set fast path for frequently changing scene sampled-image bindings"
+            "extend push-descriptor path from single sampled image to multi-image scene batches"
         } else {
             "keep descriptor-set path until Vulkan 1.4 push_descriptor capability and descriptor budget are available"
         },
-        primary_reference: "FFmpeg frame lifetime discipline; Vulkan 1.4 push_descriptor is a descriptor-churn optimization, not a zero-copy proof",
+        primary_reference: "FFmpeg frame lifetime discipline; Vulkan 1.4 push_descriptor reduces descriptor churn but is not a zero-copy proof",
     }
 }
 
@@ -302,6 +304,7 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
     command_pool: vk::CommandPool,
     queue: vk::Queue,
     descriptor_set_layout: vk::DescriptorSetLayout,
+    use_push_descriptor_fast_path: bool,
     sampler_mode: NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode,
     source_label: impl Into<String>,
     extent: vk::Extent2D,
@@ -354,6 +357,8 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
     let mut sampler_live = false;
     let mut descriptor_pool = vk::DescriptorPool::default();
     let mut descriptor_pool_live = false;
+    let mut descriptor_set = vk::DescriptorSet::null();
+    let mut descriptor_set_allocated = false;
 
     let result = (|| -> Result<VulkanaliaSceneLiteSampledImageResources, String> {
         let memory_requirements = unsafe { device.get_image_memory_requirements(image) };
@@ -394,14 +399,17 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
         sampler = create_scene_lite_sampled_image_sampler(device, sampler_mode)?;
         sampler_live = true;
 
-        descriptor_pool = create_scene_lite_sampled_image_descriptor_pool(device)?;
-        descriptor_pool_live = true;
-        let descriptor_set = allocate_scene_lite_sampled_image_descriptor_set(
-            device,
-            descriptor_pool,
-            descriptor_set_layout,
-        )?;
-        update_scene_lite_sampled_image_descriptor(device, descriptor_set, sampler, image_view);
+        if !use_push_descriptor_fast_path {
+            descriptor_pool = create_scene_lite_sampled_image_descriptor_pool(device)?;
+            descriptor_pool_live = true;
+            descriptor_set = allocate_scene_lite_sampled_image_descriptor_set(
+                device,
+                descriptor_pool,
+                descriptor_set_layout,
+            )?;
+            descriptor_set_allocated = true;
+            update_scene_lite_sampled_image_descriptor(device, descriptor_set, sampler, image_view);
+        }
 
         let staging_ref = staging
             .as_ref()
@@ -459,10 +467,16 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
                 image_view_created: true,
                 sampler_created: true,
                 sampler_address_mode: sampler_mode.label(),
-                descriptor_pool_created: true,
-                descriptor_set_allocated: true,
+                descriptor_pool_created: !use_push_descriptor_fast_path,
+                descriptor_set_allocated,
+                descriptor_model: if use_push_descriptor_fast_path {
+                    "vulkan-1.4-push-descriptor-fast-path"
+                } else {
+                    "descriptor-set-stable-path"
+                },
                 descriptor_type: "combined-image-sampler",
                 descriptor_image_layout: "shader-read-only-optimal",
+                uses_push_descriptor_fast_path: use_push_descriptor_fast_path,
                 upload_command_recorded: true,
                 upload_submitted: true,
                 upload_wait_model: "queue_submit2 + fence wait during retained resource upload",
@@ -513,7 +527,9 @@ pub(super) fn native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resource
     resources: VulkanaliaSceneLiteSampledImageResources,
 ) {
     unsafe {
-        device.destroy_descriptor_pool(resources.descriptor_pool, None);
+        if resources.descriptor_pool != vk::DescriptorPool::null() {
+            device.destroy_descriptor_pool(resources.descriptor_pool, None);
+        }
         device.destroy_sampler(resources.sampler, None);
         device.destroy_image_view(resources.image_view, None);
         device.destroy_image(resources.image, None);
@@ -1114,10 +1130,10 @@ mod tests {
         assert!(snapshot.descriptor_set_path_enabled);
         assert!(snapshot.push_descriptor_available);
         assert!(snapshot.push_descriptor_fast_path_candidate);
-        assert!(!snapshot.uses_push_descriptor_fast_path);
+        assert!(snapshot.uses_push_descriptor_fast_path);
         assert_eq!(
             snapshot.active_descriptor_model,
-            "descriptor-set-stable-path-with-vulkan-1.4-push-descriptor-candidate"
+            "vulkan-1.4-push-descriptor-fast-path"
         );
     }
 
