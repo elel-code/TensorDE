@@ -244,6 +244,13 @@ pub use video_present_runtime::{
     run_native_vulkan_vulkanalia_h264_retained_video_present_decode,
     run_native_vulkan_vulkanalia_h265_retained_video_present_decode,
 };
+#[cfg(feature = "native-vulkan-gst-video")]
+pub use video_present_runtime::{
+    NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions,
+    NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions,
+    run_native_vulkan_vulkanalia_h264_streaming_video_present_decode,
+    run_native_vulkan_vulkanalia_h265_streaming_video_present_decode,
+};
 #[allow(unused_imports)]
 pub use video_profile_probe::{
     NativeVulkanVulkanaliaVideoProfileCapabilitySnapshot,

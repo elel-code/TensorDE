@@ -83,7 +83,7 @@ fn native_vulkan_extract_av1_bitstream(
     native_vulkan_av1_bitstream_extract_from_queue(source, max_samples, queue)
 }
 
-fn native_vulkan_start_h264_streaming_packet_queue(
+pub(super) fn native_vulkan_start_h264_streaming_packet_queue(
     source: &Path,
     capacity: usize,
 ) -> Result<NativeVulkanH264StreamingPacketQueue, NativeVulkanError> {
@@ -92,7 +92,7 @@ fn native_vulkan_start_h264_streaming_packet_queue(
     )
 }
 
-fn native_vulkan_start_h265_streaming_packet_queue(
+pub(super) fn native_vulkan_start_h265_streaming_packet_queue(
     source: &Path,
     capacity: usize,
 ) -> Result<NativeVulkanH265StreamingPacketQueue, NativeVulkanError> {
@@ -101,7 +101,7 @@ fn native_vulkan_start_h265_streaming_packet_queue(
     )
 }
 
-fn native_vulkan_start_av1_streaming_packet_queue(
+pub(super) fn native_vulkan_start_av1_streaming_packet_queue(
     source: &Path,
     capacity: usize,
 ) -> Result<NativeVulkanAv1StreamingPacketQueue, NativeVulkanError> {

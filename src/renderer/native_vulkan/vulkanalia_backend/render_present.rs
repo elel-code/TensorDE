@@ -204,9 +204,10 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_pipeline_res
                     vk::SamplerYcbcrConversionInfo::builder()
                         .conversion(descriptor_heap_embedded_sampler_conversion)
                         .build();
-                let embedded_sampler_info = native_vulkan_vulkanalia_decoded_image_sampler_create_info(
-                    &mut embedded_sampler_conversion_info,
-                );
+                let embedded_sampler_info =
+                    native_vulkan_vulkanalia_decoded_image_sampler_create_info(
+                        &mut embedded_sampler_conversion_info,
+                    );
                 let descriptor_heap_mapping =
                     native_vulkan_vulkanalia_descriptor_heap_combined_image_embedded_sampler_mapping(
                         descriptor_heap_plan,
@@ -292,7 +293,10 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_pipeline_res
                     .rasterization_state(&rasterization)
                     .multisample_state(&multisample)
                     .color_blend_state(&color_blend)
-                    .layout(pipeline_layout)
+                    // VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT requires layout to be
+                    // VK_NULL_HANDLE (VUID-VkGraphicsPipelineCreateInfo-flags-11311); the
+                    // descriptor bindings come from the pushed mapping info, not a layout.
+                    .layout(vk::PipelineLayout::null())
                     .render_pass(vk::RenderPass::null())
                     .subpass(0)
                     .push_next(&mut rendering_info);

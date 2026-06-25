@@ -38,6 +38,8 @@ pub struct NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot {
     pub sampler_descriptor_stride: u64,
     pub resource_heap_bytes: u64,
     pub sampler_heap_bytes: u64,
+    pub resource_heap_reserved_range_offset: u64,
+    pub resource_heap_reserved_range_size: u64,
     pub image_descriptor_offsets: Vec<u64>,
     pub sampler_descriptor_offsets: Vec<u64>,
     pub max_resource_heap_size: u64,
@@ -109,11 +111,25 @@ pub(super) fn native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan(
         properties.sampler_descriptor_size,
         properties.sampler_descriptor_alignment,
     );
-    let resource_heap_bytes = descriptor_heap_bytes(
+    let resource_descriptor_region_bytes = descriptor_heap_bytes(
         input.image_count,
         image_descriptor_stride,
         properties.resource_heap_alignment,
     );
+    // VK_EXT_descriptor_heap requires the resource heap bind to declare a reserved range
+    // of at least minResourceHeapReservedRange (VUID-vkCmdBindResourceHeapEXT-pBindInfo-11233).
+    // Keep the application descriptors at the front of the heap (offsets unchanged) and
+    // place the driver-reserved range immediately after them, growing the buffer to cover both.
+    let resource_heap_reserved_range_offset = align_up(
+        resource_descriptor_region_bytes,
+        properties.resource_heap_alignment,
+    );
+    let resource_heap_reserved_range_size = align_up(
+        properties.min_resource_heap_reserved_range,
+        properties.resource_heap_alignment,
+    );
+    let resource_heap_bytes =
+        resource_heap_reserved_range_offset.saturating_add(resource_heap_reserved_range_size);
     let sampler_heap_bytes = descriptor_heap_bytes(
         input.image_count,
         sampler_descriptor_stride,
@@ -156,6 +172,8 @@ pub(super) fn native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan(
         sampler_descriptor_stride,
         resource_heap_bytes,
         sampler_heap_bytes,
+        resource_heap_reserved_range_offset,
+        resource_heap_reserved_range_size,
         image_descriptor_offsets: descriptor_offsets(input.image_count, image_descriptor_stride),
         sampler_descriptor_offsets: descriptor_offsets(
             input.image_count,
@@ -427,6 +445,8 @@ pub(super) fn native_vulkan_vulkanalia_descriptor_heap_resource_bind_info(
                 .size(resources.resource_heap.snapshot.requested_bytes)
                 .build(),
         )
+        .reserved_range_offset(resources.plan.resource_heap_reserved_range_offset)
+        .reserved_range_size(resources.plan.resource_heap_reserved_range_size)
         .build()
 }
 
@@ -745,6 +765,7 @@ mod tests {
                     resource_heap_alignment: 64,
                     sampler_heap_alignment: 32,
                     max_resource_heap_size: 4096,
+                    min_resource_heap_reserved_range: 0,
                     max_sampler_heap_size: 2048,
                     image_descriptor_size: 24,
                     sampler_descriptor_size: 16,
@@ -804,6 +825,7 @@ mod tests {
                     resource_heap_alignment: 64,
                     sampler_heap_alignment: 64,
                     max_resource_heap_size: 4096,
+                    min_resource_heap_reserved_range: 0,
                     max_sampler_heap_size: 4096,
                     image_descriptor_size: 32,
                     sampler_descriptor_size: 16,
@@ -837,6 +859,7 @@ mod tests {
                     resource_heap_alignment: 64,
                     sampler_heap_alignment: 64,
                     max_resource_heap_size: 4096,
+                    min_resource_heap_reserved_range: 0,
                     max_sampler_heap_size: 4096,
                     image_descriptor_size: 32,
                     sampler_descriptor_size: 16,
@@ -877,6 +900,7 @@ mod tests {
                     resource_heap_alignment: 32,
                     sampler_heap_alignment: 32,
                     max_resource_heap_size: 4096,
+                    min_resource_heap_reserved_range: 0,
                     max_sampler_heap_size: 4096,
                     image_descriptor_size: 24,
                     sampler_descriptor_size: 16,

@@ -121,16 +121,17 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_reso
         let sampler_info = native_vulkan_vulkanalia_decoded_image_sampler_create_info(
             &mut sampler_conversion_info,
         );
-        let descriptor_heap = native_vulkan_vulkanalia_create_decoded_image_present_descriptor_heap(
-            device,
-            memory_properties,
-            resource_image.image,
-            picture_format,
-            sampled_array_layer,
-            conversion,
-            &sampler_info,
-            &descriptor_heap_plan,
-        )?;
+        let descriptor_heap =
+            native_vulkan_vulkanalia_create_decoded_image_present_descriptor_heap(
+                device,
+                memory_properties,
+                resource_image.image,
+                picture_format,
+                sampled_array_layer,
+                conversion,
+                &sampler_info,
+                &descriptor_heap_plan,
+            )?;
         let descriptor_heap_resources_created = true;
         let descriptor_heap_resource_descriptor_written =
             descriptor_heap.snapshot.resource_descriptor_written;
@@ -163,8 +164,7 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_reso
                 chroma_filter: filter_label(chroma_filter),
                 descriptor_type: "combined-image-sampler",
                 image_layout_for_shader: "shader-read-only-optimal",
-                present_pass_model:
-                    "decoded image -> VK_EXT_descriptor_heap YCbCr sampler mapping -> dynamic rendering fullscreen graphics pass -> swapchain",
+                present_pass_model: "decoded image -> VK_EXT_descriptor_heap YCbCr sampler mapping -> dynamic rendering fullscreen graphics pass -> swapchain",
                 queue_transfer_model: native_vulkan_vulkanalia_decoded_image_present_queue_model(
                     video_queue_family_index,
                     present_queue_family_index,
@@ -218,9 +218,8 @@ pub(super) fn native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_la
     let mut sampler_conversion_info = vk::SamplerYcbcrConversionInfo::builder()
         .conversion(resources.conversion)
         .build();
-    let sampler_info = native_vulkan_vulkanalia_decoded_image_sampler_create_info(
-        &mut sampler_conversion_info,
-    );
+    let sampler_info =
+        native_vulkan_vulkanalia_decoded_image_sampler_create_info(&mut sampler_conversion_info);
     if let Err(err) = native_vulkan_vulkanalia_write_descriptor_heap_image_sampler(
         device,
         &mut resources.descriptor_heap,
@@ -233,12 +232,16 @@ pub(super) fn native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_la
     }
     resources
         .snapshot
-        .descriptor_heap_resource_descriptor_written =
-        resources.descriptor_heap.snapshot.resource_descriptor_written;
+        .descriptor_heap_resource_descriptor_written = resources
+        .descriptor_heap
+        .snapshot
+        .resource_descriptor_written;
     resources
         .snapshot
-        .descriptor_heap_sampler_descriptor_written =
-        resources.descriptor_heap.snapshot.sampler_descriptor_written;
+        .descriptor_heap_sampler_descriptor_written = resources
+        .descriptor_heap
+        .snapshot
+        .sampler_descriptor_written;
     resources.snapshot.sampled_array_layer = sampled_array_layer;
     Ok(())
 }

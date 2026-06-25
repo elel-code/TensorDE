@@ -254,6 +254,51 @@ pub(super) fn native_vulkan_vulkanalia_destroy_video_session_bitstream_buffer(
     }
 }
 
+pub(super) fn native_vulkan_vulkanalia_write_video_session_bitstream_payload(
+    device: &Device,
+    buffer: &VulkanaliaVideoSessionBitstreamBuffer,
+    payload: &[u8],
+    min_size_alignment: u64,
+) -> Result<u64, String> {
+    if payload.is_empty() {
+        return Err("Vulkanalia streaming bitstream payload cannot be empty".to_owned());
+    }
+    let mapped_ptr = buffer.mapped_ptr.ok_or_else(|| {
+        "Vulkanalia streaming bitstream buffer is not persistently mapped".to_owned()
+    })?;
+    let src_buffer_range =
+        native_vulkan_vulkanalia_align_up(payload.len() as u64, min_size_alignment.max(1));
+    if src_buffer_range > buffer.snapshot.size {
+        return Err(format!(
+            "Vulkanalia streaming bitstream payload range {src_buffer_range} exceeds buffer size {}",
+            buffer.snapshot.size
+        ));
+    }
+    unsafe {
+        ptr::copy_nonoverlapping(payload.as_ptr(), mapped_ptr.cast::<u8>(), payload.len());
+        if src_buffer_range as usize > payload.len() {
+            ptr::write_bytes(
+                mapped_ptr.cast::<u8>().add(payload.len()),
+                0,
+                src_buffer_range as usize - payload.len(),
+            );
+        }
+    }
+    if !buffer.snapshot.host_coherent {
+        let range = vk::MappedMemoryRange::builder()
+            .memory(buffer.memory)
+            .offset(0)
+            .size(src_buffer_range)
+            .build();
+        unsafe {
+            device.flush_mapped_memory_ranges(&[range]).map_err(|err| {
+                format!("vkFlushMappedMemoryRanges(vulkanalia streaming bitstream): {err:?}")
+            })?;
+        }
+    }
+    Ok(src_buffer_range)
+}
+
 fn native_vulkan_vulkanalia_bitstream_memory_type_index(
     memory_types: &[NativeVulkanVulkanaliaMemoryTypeCandidate],
     allowed_memory_type_bits: u32,

@@ -268,8 +268,14 @@ fn native_vulkan_vulkanalia_create_video_session_resource_image_view(
     format: vk::Format,
     image_usage: vk::ImageUsageFlags,
 ) -> Result<vk::ImageView, String> {
+    // Decode DPB/DST views must drop SAMPLED usage. The image is a multi-planar
+    // (YCbCr) format that is also SAMPLED, so any view keeping SAMPLED would require a
+    // VkSamplerYcbcrConversion (VUID-VkImageViewCreateInfo-format-06415). The decode
+    // picture-resource binding only needs the video-decode usages; the present pass
+    // samples through a separate conversion-enabled view.
+    let decode_view_usage = image_usage & !vk::ImageUsageFlags::SAMPLED;
     let mut view_usage_info = vk::ImageViewUsageCreateInfo::builder()
-        .usage(image_usage)
+        .usage(decode_view_usage)
         .build();
     let subresource_range = vk::ImageSubresourceRange {
         aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -296,9 +302,12 @@ fn native_vulkan_vulkanalia_create_video_session_resource_layer_views(
     array_layers: u32,
 ) -> Result<Vec<vk::ImageView>, String> {
     let mut views = Vec::with_capacity(array_layers as usize);
+    // Same as the array view: drop SAMPLED so multi-planar decode views do not require a
+    // YCbCr conversion (VUID-VkImageViewCreateInfo-format-06415).
+    let decode_view_usage = image_usage & !vk::ImageUsageFlags::SAMPLED;
     for layer in 0..array_layers {
         let mut view_usage_info = vk::ImageViewUsageCreateInfo::builder()
-            .usage(image_usage)
+            .usage(decode_view_usage)
             .build();
         let subresource_range = vk::ImageSubresourceRange {
             aspect_mask: vk::ImageAspectFlags::COLOR,

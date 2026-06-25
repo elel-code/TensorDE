@@ -15,11 +15,11 @@ use super::vulkanalia_backend::{
     NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot,
     NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot,
     NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput,
-    NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot,
+    NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput,
-    NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot,
+    NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaSurfaceSwapchainProbeSnapshot,
     NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot,
     NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
@@ -30,8 +30,8 @@ use super::vulkanalia_backend::{
     probe_native_vulkan_vulkanalia_video_session_bind,
     run_native_vulkan_vulkanalia_av1_retained_video_present_decode,
     run_native_vulkan_vulkanalia_clear_present,
-    run_native_vulkan_vulkanalia_h264_retained_video_present_decode,
-    run_native_vulkan_vulkanalia_h265_retained_video_present_decode,
+    run_native_vulkan_vulkanalia_h264_streaming_video_present_decode,
+    run_native_vulkan_vulkanalia_h265_streaming_video_present_decode,
 };
 use super::vulkanalia_extract::{
     native_vulkan_extract_av1_ready_prefix_for_vulkanalia,
@@ -93,6 +93,35 @@ pub struct NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
     pub session: NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot,
 }
 
+/// Coded resolution of the ready-prefix source, aligned up to a 16-pixel macroblock
+/// grid so the decode image is never smaller than the coded picture. Returns (0, 0)
+/// when the parsed parameter sets carry no usable dimensions, letting the caller keep
+/// its requested extent as a fallback.
+fn native_vulkan_vulkanalia_ready_prefix_source_extent(
+    ready_prefix: &NativeVulkanVulkanaliaReadyPrefixInput,
+) -> (u32, u32) {
+    let align16 = |value: u32| value.div_ceil(16).saturating_mul(16);
+    let (width, height) = match ready_prefix {
+        NativeVulkanVulkanaliaReadyPrefixInput::H264(input) => (
+            input.parameter_sets.sps.width,
+            input.parameter_sets.sps.height,
+        ),
+        NativeVulkanVulkanaliaReadyPrefixInput::H265(input) => (
+            input.parameter_sets.sps.width,
+            input.parameter_sets.sps.height,
+        ),
+        NativeVulkanVulkanaliaReadyPrefixInput::Av1(input) => (
+            input.sequence_header.max_frame_width,
+            input.sequence_header.max_frame_height,
+        ),
+    };
+    if width == 0 || height == 0 {
+        (0, 0)
+    } else {
+        (align16(width), align16(height))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run_vulkanalia_ready_prefix_video(
     options: NativeVulkanOptions,
@@ -141,6 +170,24 @@ pub fn run_vulkanalia_ready_prefix_video(
         NativeVulkanVulkanaliaReadyPrefixInput::H265(input) => Some(input.clone()),
         _ => None,
     };
+    // Size the decode image to the video's own coded resolution rather than the CLI
+    // default (3840x2160). Vulkan video writes each picture at its coded size, so an
+    // oversized decode image leaves most of the frame undecoded — which samples as a
+    // green screen when the present pass covers the whole image — and wastes a large
+    // amount of device memory (a 4K NV12 DPB layer is ~12 MiB versus ~0.35 MiB at
+    // 640x368). FFmpeg likewise sizes its DPB to the stream, not the display surface.
+    let (source_width, source_height) =
+        native_vulkan_vulkanalia_ready_prefix_source_extent(&ready_prefix);
+    let width = if source_width > 0 {
+        source_width
+    } else {
+        width
+    };
+    let height = if source_height > 0 {
+        source_height
+    } else {
+        height
+    };
     let bitstream_buffer_size = u64::from(bitstream_samples.max(1)) * 1024 * 1024;
     let session_options =
         ready_prefix.into_session_options(codec, width, height, bitstream_samples);
@@ -154,19 +201,17 @@ pub fn run_vulkanalia_ready_prefix_video(
         height,
         target_max_fps: options.target_max_fps,
     };
-    let h264_retained_video_present_decode =
-        retained_h264_ready_prefix_decode
-            .as_ref()
-            .map(|ready_prefix| {
-                run_native_vulkan_vulkanalia_h264_retained_video_present_decode(
-                    NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeOptions {
-                        session: video_present_session_options.clone(),
-                        ready_prefix: ready_prefix.clone(),
-                        bitstream_buffer_size,
-                        playback_frame_count,
-                    },
-                )
-            });
+    let h264_retained_video_present_decode = retained_h264_ready_prefix_decode.as_ref().map(|_| {
+        run_native_vulkan_vulkanalia_h264_streaming_video_present_decode(
+            NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions {
+                session: video_present_session_options.clone(),
+                source: source.clone(),
+                queue_capacity: bitstream_samples.max(ready_prefix_frame_count).max(1) as usize,
+                bitstream_buffer_size,
+                playback_frame_count,
+            },
+        )
+    });
     let av1_retained_video_present_decode =
         retained_av1_ready_prefix_decode
             .as_ref()
@@ -180,19 +225,17 @@ pub fn run_vulkanalia_ready_prefix_video(
                     },
                 )
             });
-    let h265_retained_video_present_decode =
-        retained_h265_ready_prefix_decode
-            .as_ref()
-            .map(|ready_prefix| {
-                run_native_vulkan_vulkanalia_h265_retained_video_present_decode(
-                    NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeOptions {
-                        session: video_present_session_options.clone(),
-                        ready_prefix: ready_prefix.clone(),
-                        bitstream_buffer_size,
-                        playback_frame_count,
-                    },
-                )
-            });
+    let h265_retained_video_present_decode = retained_h265_ready_prefix_decode.as_ref().map(|_| {
+        run_native_vulkan_vulkanalia_h265_streaming_video_present_decode(
+            NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions {
+                session: video_present_session_options.clone(),
+                source: source.clone(),
+                queue_capacity: bitstream_samples.max(ready_prefix_frame_count).max(1) as usize,
+                bitstream_buffer_size,
+                playback_frame_count,
+            },
+        )
+    });
     let (
         video_present_session_probe,
         video_present_session_probe_error,

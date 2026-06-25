@@ -488,8 +488,7 @@ pub(super) unsafe fn native_vulkan_vulkanalia_submit_decode_command_buffer2(
         .value(signal_semaphore_value)
         .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
         .build()];
-    let mut submit_builder =
-        vk::SubmitInfo2::builder().command_buffer_infos(&command_buffer_infos);
+    let mut submit_builder = vk::SubmitInfo2::builder().command_buffer_infos(&command_buffer_infos);
     if signal_semaphore != vk::Semaphore::null() {
         submit_builder = submit_builder.signal_semaphore_infos(&signal_semaphore_infos);
     }
