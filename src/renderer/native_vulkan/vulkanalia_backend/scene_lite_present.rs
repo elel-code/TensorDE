@@ -36,7 +36,8 @@ use super::swapchain::{
     OPTIONAL_INSTANCE_EXTENSIONS, REQUIRED_INSTANCE_EXTENSIONS, composite_alpha_label,
     create_vulkanalia_present_device, create_vulkanalia_swapchain_plan,
     create_vulkanalia_wayland_surface, present_mode_label, queue_flag_labels,
-    select_vulkanalia_present_queue,
+    select_vulkanalia_present_queue, swapchain_create_flag_labels,
+    vulkanalia_surface_capabilities2_enabled,
 };
 use super::video_session::{
     NativeVulkanVulkanaliaMemoryTypeCandidate, native_vulkan_vulkanalia_memory_type_candidates,
@@ -252,6 +253,8 @@ fn with_vulkanalia_scene_lite_solid_quad_present(
         selection.physical_device,
         surface,
         handles.buffer_size,
+        vulkanalia_surface_capabilities2_enabled(vulkan),
+        &present_device.feature_selection,
     ) {
         Ok(plan) => plan,
         Err(err) => {
@@ -357,9 +360,9 @@ fn with_vulkanalia_scene_lite_solid_quad_present(
     };
     let present_timing = VulkanaliaPresentTimingConfig::new(
         present_device.feature_selection.present_id_enabled,
-        present_device.feature_selection.present_id2_enabled,
+        swapchain_plan.present_id2_enabled,
         present_device.feature_selection.present_wait_enabled,
-        present_device.feature_selection.present_wait2_enabled,
+        swapchain_plan.present_wait2_enabled,
     );
 
     let result = run_scene_lite_solid_quad_present_loop(
@@ -562,6 +565,9 @@ fn run_scene_lite_solid_quad_present_loop(
             min_image_count: swapchain_plan.image_count,
             composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),
             image_usage: vec!["transfer-dst", "color-attachment"],
+            create_flags: swapchain_create_flag_labels(swapchain_plan.create_flags),
+            present_id2_enabled: swapchain_plan.present_id2_enabled,
+            present_wait2_enabled: swapchain_plan.present_wait2_enabled,
         },
         geometry: geometry.snapshot.clone(),
         pipeline: pipeline.snapshot.clone(),

@@ -26,7 +26,8 @@ use super::swapchain::{
     OPTIONAL_INSTANCE_EXTENSIONS, REQUIRED_INSTANCE_EXTENSIONS, composite_alpha_label,
     create_vulkanalia_present_device, create_vulkanalia_swapchain_plan,
     create_vulkanalia_wayland_surface, present_mode_label, queue_flag_labels,
-    select_vulkanalia_present_queue,
+    select_vulkanalia_present_queue, swapchain_create_flag_labels,
+    vulkanalia_surface_capabilities2_enabled,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -123,6 +124,8 @@ fn with_vulkanalia_clear_present(
         selection.physical_device,
         surface,
         handles.buffer_size,
+        vulkanalia_surface_capabilities2_enabled(vulkan),
+        &present_device.feature_selection,
     ) {
         Ok(plan) => plan,
         Err(err) => {
@@ -346,6 +349,9 @@ fn with_vulkanalia_clear_present(
             min_image_count: swapchain_plan.image_count,
             composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),
             image_usage: vec!["transfer-dst", "color-attachment"],
+            create_flags: swapchain_create_flag_labels(swapchain_plan.create_flags),
+            present_id2_enabled: swapchain_plan.present_id2_enabled,
+            present_wait2_enabled: swapchain_plan.present_wait2_enabled,
         },
         command_submit_model: "acquire_next_image_khr -> cmd_pipeline_barrier2 -> cmd_clear_color_image -> queue_submit2 -> queue_present_khr",
         uses_synchronization2: true,

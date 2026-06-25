@@ -34,7 +34,7 @@ use super::render_present::{
 };
 use super::swapchain::{
     OPTIONAL_INSTANCE_EXTENSIONS, REQUIRED_INSTANCE_EXTENSIONS, create_vulkanalia_swapchain_plan,
-    create_vulkanalia_wayland_surface,
+    create_vulkanalia_wayland_surface, vulkanalia_surface_capabilities2_enabled,
 };
 use super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE;
 use super::video_decode_submit_av1::{
@@ -111,6 +111,7 @@ struct NativeVulkanVulkanaliaVideoPresentSessionRuntimeResources {
     swapchain_images: Vec<vk::Image>,
     swapchain_format: vk::Format,
     swapchain_extent: vk::Extent2D,
+    decoded_image_present_timing: VulkanaliaDecodedImagePresentTimingConfig,
     present_queue_family_index: u32,
     picture_format: vk::Format,
     session: vk::VideoSessionKHR,
@@ -165,12 +166,7 @@ impl NativeVulkanVulkanaliaVideoPresentSessionRuntimeResources {
             resource_image,
             sampler,
             pipeline,
-            VulkanaliaDecodedImagePresentTimingConfig::new(
-                context.present_feature_selection.present_id_enabled,
-                context.present_feature_selection.present_id2_enabled,
-                context.present_feature_selection.present_wait_enabled,
-                context.present_feature_selection.present_wait2_enabled,
-            ),
+            self.decoded_image_present_timing,
         )
     }
 
@@ -568,6 +564,8 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_ready_pref
         selection.physical_device,
         surface,
         handles.buffer_size,
+        vulkanalia_surface_capabilities2_enabled(&vulkan),
+        &context.present_feature_selection,
     ) {
         Ok(plan) => plan,
         Err(err) => {
@@ -611,6 +609,13 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_ready_pref
         }
     };
 
+    let decoded_image_present_timing = VulkanaliaDecodedImagePresentTimingConfig::new(
+        context.present_feature_selection.present_id_enabled,
+        swapchain_plan.present_id2_enabled,
+        context.present_feature_selection.present_wait_enabled,
+        swapchain_plan.present_wait2_enabled,
+    );
+
     let pieces = match create_video_present_session_pieces(
         instance,
         &vulkan,
@@ -624,6 +629,7 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_ready_pref
         swapchain_plan.extent,
         swapchain_plan.format.format,
         options.target_max_fps,
+        decoded_image_present_timing,
         swapchain_plan_snapshot(&swapchain_plan, swapchain_images.len()),
         av1_ready_prefix_decode,
         h264_ready_prefix_decode,
@@ -652,6 +658,7 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_ready_pref
             swapchain_images,
             swapchain_format: swapchain_plan.format.format,
             swapchain_extent: swapchain_plan.extent,
+            decoded_image_present_timing,
             present_queue_family_index: selection.present_queue_family_index,
             picture_format: native_vulkan_vulkanalia_video_session_effective_picture_format(
                 options.codec,
@@ -686,6 +693,7 @@ fn create_video_present_session_pieces(
     swapchain_extent: vk::Extent2D,
     swapchain_format: vk::Format,
     target_max_fps: Option<u32>,
+    decoded_image_present_timing: VulkanaliaDecodedImagePresentTimingConfig,
     swapchain: super::swapchain::NativeVulkanVulkanaliaSwapchainSnapshot,
     av1_ready_prefix_decode: Option<(&NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput, u64)>,
     h264_ready_prefix_decode: Option<(&NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput, u64)>,
@@ -884,12 +892,6 @@ fn create_video_present_session_pieces(
                     .clone();
                 let sequence_started_at = Instant::now();
                 let mut first_present_pts_ms = None;
-                let decoded_image_present_timing = VulkanaliaDecodedImagePresentTimingConfig::new(
-                    context.present_feature_selection.present_id_enabled,
-                    context.present_feature_selection.present_id2_enabled,
-                    context.present_feature_selection.present_wait_enabled,
-                    context.present_feature_selection.present_wait2_enabled,
-                );
                 let (av1_ready_prefix_decode, h264_ready_prefix_decode, h265_ready_prefix_decode) = {
                     let present_handoff_capacity =
                         native_vulkan_vulkanalia_present_handoff_capacity(

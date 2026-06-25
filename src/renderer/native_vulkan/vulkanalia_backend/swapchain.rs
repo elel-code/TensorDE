@@ -6,7 +6,8 @@ use serde::Serialize;
 use vulkanalia::Version;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{
-    self, HasBuilder, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands,
+    self, HasBuilder, KhrGetSurfaceCapabilities2ExtensionInstanceCommands,
+    KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands,
     KhrWaylandSurfaceExtensionInstanceCommands,
 };
 
@@ -19,9 +20,11 @@ use super::instance::{
     native_vulkan_vulkanalia_destroy_instance,
 };
 
+const GET_SURFACE_CAPABILITIES2_EXTENSION_NAME: &str = "VK_KHR_get_surface_capabilities2";
 pub(super) const REQUIRED_INSTANCE_EXTENSIONS: &[&str] =
     &["VK_KHR_surface", "VK_KHR_wayland_surface"];
-pub(super) const OPTIONAL_INSTANCE_EXTENSIONS: &[&str] = &["VK_KHR_get_surface_capabilities2"];
+pub(super) const OPTIONAL_INSTANCE_EXTENSIONS: &[&str] =
+    &[GET_SURFACE_CAPABILITIES2_EXTENSION_NAME];
 const REQUIRED_DEVICE_EXTENSIONS: &[&str] = &["VK_KHR_swapchain"];
 const PRESENT_ID_EXTENSION_NAME: &str = "VK_KHR_present_id";
 const PRESENT_ID2_EXTENSION_NAME: &str = "VK_KHR_present_id2";
@@ -117,6 +120,8 @@ pub struct NativeVulkanVulkanaliaSurfaceCapabilitiesSnapshot {
     pub max_image_extent: (u32, u32),
     pub supports_transfer_dst: bool,
     pub supports_color_attachment: bool,
+    pub present_id2_supported: bool,
+    pub present_wait2_supported: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -136,6 +141,9 @@ pub struct NativeVulkanVulkanaliaSwapchainSnapshot {
     pub min_image_count: u32,
     pub composite_alpha: &'static str,
     pub image_usage: Vec<&'static str>,
+    pub create_flags: Vec<&'static str>,
+    pub present_id2_enabled: bool,
+    pub present_wait2_enabled: bool,
 }
 
 pub(super) struct NativeVulkanVulkanaliaPresentQueueSelection {
@@ -157,6 +165,11 @@ pub(super) struct NativeVulkanVulkanaliaSwapchainPlan {
     pub(super) extent: vk::Extent2D,
     pub(super) image_count: u32,
     pub(super) composite_alpha: vk::CompositeAlphaFlagsKHR,
+    pub(super) create_flags: vk::SwapchainCreateFlagsKHR,
+    pub(super) surface_present_id2_supported: bool,
+    pub(super) surface_present_wait2_supported: bool,
+    pub(super) present_id2_enabled: bool,
+    pub(super) present_wait2_enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -250,6 +263,8 @@ fn with_vulkanalia_surface_swapchain(
         selection.physical_device,
         surface,
         handles.buffer_size,
+        vulkanalia_surface_capabilities2_enabled(vulkan),
+        &present_device.feature_selection,
     ) {
         Ok(plan) => plan,
         Err(err) => {
@@ -332,6 +347,9 @@ fn with_vulkanalia_surface_swapchain(
             min_image_count: swapchain_plan.image_count,
             composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),
             image_usage: vec!["transfer-dst", "color-attachment"],
+            create_flags: swapchain_create_flag_labels(swapchain_plan.create_flags),
+            present_id2_enabled: swapchain_plan.present_id2_enabled,
+            present_wait2_enabled: swapchain_plan.present_wait2_enabled,
         },
         present_backend: "vulkanalia-wayland-surface-swapchain",
         ffmpeg_reference: "references/ffmpeg/libavutil/vulkan.c",
@@ -622,17 +640,34 @@ pub(super) fn enabled_present_device_extensions(
     extensions
 }
 
+pub(super) fn vulkanalia_surface_capabilities2_enabled(
+    vulkan: &super::instance::NativeVulkanVulkanaliaInstance,
+) -> bool {
+    vulkan
+        .extension_selection
+        .enabled_instance_extensions
+        .contains(&GET_SURFACE_CAPABILITIES2_EXTENSION_NAME)
+}
+
 pub(super) fn create_vulkanalia_swapchain_plan(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     surface: vk::SurfaceKHR,
     buffer_size: (u32, u32),
+    surface_capabilities2_enabled: bool,
+    feature_selection: &NativeVulkanVulkanaliaPresentFeatureSelection,
 ) -> Result<NativeVulkanVulkanaliaSwapchainPlan, String> {
     let capabilities =
         unsafe { instance.get_physical_device_surface_capabilities_khr(physical_device, surface) }
             .map_err(|err| {
                 format!("vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vulkanalia): {err:?}")
             })?;
+    let present_timing_capabilities = query_surface_present_timing_capabilities(
+        instance,
+        physical_device,
+        surface,
+        surface_capabilities2_enabled,
+    )?;
     if !capabilities
         .supported_usage_flags
         .contains(vk::ImageUsageFlags::TRANSFER_DST)
@@ -658,7 +693,14 @@ pub(super) fn create_vulkanalia_swapchain_plan(
     let extent = choose_swapchain_extent(&capabilities, buffer_size)?;
     let image_count = swapchain_image_count(&capabilities);
     let composite_alpha = choose_composite_alpha(capabilities.supported_composite_alpha);
+    let present_id2_enabled =
+        feature_selection.present_id2_enabled && present_timing_capabilities.present_id2_supported;
+    let present_wait2_enabled = feature_selection.present_wait2_enabled
+        && present_id2_enabled
+        && present_timing_capabilities.present_wait2_supported;
+    let create_flags = swapchain_create_flags(present_id2_enabled, present_wait2_enabled);
     let create_info = vk::SwapchainCreateInfoKHR::builder()
+        .flags(create_flags)
         .surface(surface)
         .min_image_count(image_count)
         .image_format(format.format)
@@ -680,6 +722,11 @@ pub(super) fn create_vulkanalia_swapchain_plan(
         extent,
         image_count,
         composite_alpha,
+        create_flags,
+        surface_present_id2_supported: present_timing_capabilities.present_id2_supported,
+        surface_present_wait2_supported: present_timing_capabilities.present_wait2_supported,
+        present_id2_enabled,
+        present_wait2_enabled,
     })
 }
 
@@ -724,6 +771,8 @@ fn surface_snapshot_from_plan(
             supports_color_attachment: capabilities
                 .supported_usage_flags
                 .contains(vk::ImageUsageFlags::COLOR_ATTACHMENT),
+            present_id2_supported: _swapchain_plan.surface_present_id2_supported,
+            present_wait2_supported: _swapchain_plan.surface_present_wait2_supported,
         },
         surface_format_count: formats.len(),
         surface_formats: formats
@@ -785,6 +834,65 @@ fn present_mode_from_label(label: &str) -> Option<vk::PresentModeKHR> {
         }
         _ => None,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SurfacePresentTimingCapabilities {
+    present_id2_supported: bool,
+    present_wait2_supported: bool,
+}
+
+fn query_surface_present_timing_capabilities(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+    surface: vk::SurfaceKHR,
+    surface_capabilities2_enabled: bool,
+) -> Result<SurfacePresentTimingCapabilities, String> {
+    if !surface_capabilities2_enabled {
+        return Ok(SurfacePresentTimingCapabilities {
+            present_id2_supported: false,
+            present_wait2_supported: false,
+        });
+    }
+
+    let surface_info = vk::PhysicalDeviceSurfaceInfo2KHR::builder()
+        .surface(surface)
+        .build();
+    let mut present_id2 = vk::SurfaceCapabilitiesPresentId2KHR::default();
+    let mut present_wait2 = vk::SurfaceCapabilitiesPresentWait2KHR::default();
+    let mut capabilities2 = vk::SurfaceCapabilities2KHR::builder()
+        .push_next(&mut present_id2)
+        .push_next(&mut present_wait2)
+        .build();
+    unsafe {
+        instance.get_physical_device_surface_capabilities2_khr(
+            physical_device,
+            &surface_info,
+            &mut capabilities2,
+        )
+    }
+    .map_err(|err| {
+        format!("vkGetPhysicalDeviceSurfaceCapabilities2KHR(vulkanalia present timing): {err:?}")
+    })?;
+
+    Ok(SurfacePresentTimingCapabilities {
+        present_id2_supported: present_id2.present_id2_supported != 0,
+        present_wait2_supported: present_wait2.present_wait2_supported != 0,
+    })
+}
+
+fn swapchain_create_flags(
+    present_id2_enabled: bool,
+    present_wait2_enabled: bool,
+) -> vk::SwapchainCreateFlagsKHR {
+    let mut flags = vk::SwapchainCreateFlagsKHR::empty();
+    if present_id2_enabled {
+        flags |= vk::SwapchainCreateFlagsKHR::PRESENT_ID_2;
+    }
+    if present_wait2_enabled {
+        flags |= vk::SwapchainCreateFlagsKHR::PRESENT_WAIT_2;
+    }
+    flags
 }
 
 fn choose_swapchain_extent(
@@ -969,6 +1077,19 @@ pub(super) fn composite_alpha_label(flags: vk::CompositeAlphaFlagsKHR) -> &'stat
     }
 }
 
+pub(super) fn swapchain_create_flag_labels(
+    flags: vk::SwapchainCreateFlagsKHR,
+) -> Vec<&'static str> {
+    let mut labels = Vec::new();
+    if flags.contains(vk::SwapchainCreateFlagsKHR::PRESENT_ID_2) {
+        labels.push("present-id2");
+    }
+    if flags.contains(vk::SwapchainCreateFlagsKHR::PRESENT_WAIT_2) {
+        labels.push("present-wait2");
+    }
+    labels
+}
+
 fn extent_tuple(extent: vk::Extent2D) -> Option<(u32, u32)> {
     if extent.width == u32::MAX || extent.height == u32::MAX {
         None
@@ -998,6 +1119,14 @@ mod tests {
             swapchain_maintenance1_enabled: true,
             ..disabled
         };
+        let enabled2 = NativeVulkanVulkanaliaPresentFeatureSelection {
+            present_id_enabled: true,
+            present_id2_enabled: true,
+            present_wait_enabled: true,
+            present_wait2_enabled: true,
+            swapchain_maintenance1_enabled: true,
+            ..disabled
+        };
 
         assert_eq!(
             enabled_present_device_extensions(&disabled),
@@ -1011,6 +1140,32 @@ mod tests {
                 PRESENT_WAIT_EXTENSION_NAME,
                 SWAPCHAIN_MAINTENANCE1_EXTENSION_NAME,
             ]
+        );
+        assert_eq!(
+            enabled_present_device_extensions(&enabled2),
+            vec![
+                "VK_KHR_swapchain",
+                PRESENT_ID_EXTENSION_NAME,
+                PRESENT_WAIT_EXTENSION_NAME,
+                PRESENT_ID2_EXTENSION_NAME,
+                PRESENT_WAIT2_EXTENSION_NAME,
+                SWAPCHAIN_MAINTENANCE1_EXTENSION_NAME,
+            ]
+        );
+    }
+
+    #[test]
+    fn swapchain_create_flags_report_present_id2_and_wait2() {
+        let disabled = swapchain_create_flags(false, false);
+        let id2 = swapchain_create_flags(true, false);
+        let wait2 = swapchain_create_flags(true, true);
+
+        assert!(disabled.is_empty());
+        assert_eq!(swapchain_create_flag_labels(disabled), Vec::<&str>::new());
+        assert_eq!(swapchain_create_flag_labels(id2), vec!["present-id2"]);
+        assert_eq!(
+            swapchain_create_flag_labels(wait2),
+            vec!["present-id2", "present-wait2"]
         );
     }
 

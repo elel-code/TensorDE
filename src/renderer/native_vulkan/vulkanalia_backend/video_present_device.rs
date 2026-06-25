@@ -30,6 +30,7 @@ use super::swapchain::{
     REQUIRED_INSTANCE_EXTENSIONS, composite_alpha_label, create_vulkanalia_swapchain_plan,
     create_vulkanalia_wayland_surface, enabled_present_device_extensions, present_mode_label,
     query_vulkanalia_present_feature_selection, queue_flag_labels,
+    vulkanalia_surface_capabilities2_enabled,
 };
 use super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE;
 use super::video_device::{
@@ -230,6 +231,8 @@ fn with_video_present_device(
         selection.physical_device,
         surface,
         handles.buffer_size,
+        vulkanalia_surface_capabilities2_enabled(vulkan),
+        &context.present_feature_selection,
     ) {
         Ok(plan) => plan,
         Err(err) => {
@@ -347,6 +350,11 @@ fn with_video_present_device(
             min_image_count: swapchain_plan.image_count,
             composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),
             image_usage: vec!["transfer-dst", "color-attachment"],
+            create_flags: super::swapchain::swapchain_create_flag_labels(
+                swapchain_plan.create_flags,
+            ),
+            present_id2_enabled: swapchain_plan.present_id2_enabled,
+            present_wait2_enabled: swapchain_plan.present_wait2_enabled,
         },
         present_backend: "vulkanalia-single-device-video-decode-graphics-present",
         decoded_image_present_boundary: "same logical device now owns video-decode and graphics/present queues; next gate records decoded DPB/output image sampling into swapchain instead of clear placeholder",
@@ -756,6 +764,9 @@ pub(super) fn swapchain_plan_snapshot(
         min_image_count: swapchain_plan.image_count,
         composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),
         image_usage: vec!["transfer-dst", "color-attachment"],
+        create_flags: super::swapchain::swapchain_create_flag_labels(swapchain_plan.create_flags),
+        present_id2_enabled: swapchain_plan.present_id2_enabled,
+        present_wait2_enabled: swapchain_plan.present_wait2_enabled,
     }
 }
 
