@@ -10,6 +10,7 @@ use crate::renderer::{
 };
 
 use super::NativeVulkanWallpaperType;
+use super::legacy_static_present::NATIVE_VULKAN_LEGACY_STATIC_RENDERER_STATUS;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -99,7 +100,7 @@ pub(super) fn native_vulkan_static_item(plan: &StaticWallpaperPlan) -> NativeVul
         source: plan.source.clone(),
         fit: plan.fit,
         background: plan.background.clone(),
-        renderer_status: "cpu-fit-staging-copy",
+        renderer_status: NATIVE_VULKAN_LEGACY_STATIC_RENDERER_STATUS,
     }
 }
 

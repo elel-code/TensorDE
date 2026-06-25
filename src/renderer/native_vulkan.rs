@@ -134,6 +134,9 @@ mod render_plan;
 #[path = "native_vulkan/static_image_upload.rs"]
 mod static_image_upload;
 
+#[path = "native_vulkan/legacy_static_present.rs"]
+mod legacy_static_present;
+
 #[path = "native_vulkan/static_image_present_runtime.rs"]
 mod static_image_present_runtime;
 
@@ -268,6 +271,9 @@ use drm_format::*;
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
 use labels::*;
+use legacy_static_present::{
+    native_vulkan_legacy_static_wait_stage, native_vulkan_record_legacy_static_frame,
+};
 use present::*;
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
 use render_item::{native_vulkan_static_item, native_vulkan_video_item};
@@ -1589,64 +1595,14 @@ impl NativeVulkanSession {
 
             let image = self.swapchain_images[image_index];
             let old_layout = self.swapchain_image_layouts[image_index];
-            let range = native_vulkan_color_subresource_range();
-            let to_transfer = vk::ImageMemoryBarrier::default()
-                .old_layout(old_layout)
-                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(image)
-                .subresource_range(range)
-                .src_access_mask(vk::AccessFlags::empty())
-                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
-            self.device.cmd_pipeline_barrier(
+            let final_layout = native_vulkan_record_legacy_static_frame(
+                &self.device,
                 command_buffer,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[to_transfer],
-            );
-
-            if let Some(static_upload) = &self.static_upload {
-                let copy = static_upload.buffer_image_copy;
-                self.device.cmd_copy_buffer_to_image(
-                    command_buffer,
-                    static_upload.buffer,
-                    image,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    &[copy],
-                );
-            } else {
-                let clear_color = vk::ClearColorValue::from(self.clear_color);
-                self.device.cmd_clear_color_image(
-                    command_buffer,
-                    image,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    &clear_color,
-                    &[range],
-                );
-            }
-
-            let to_present = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(image)
-                .subresource_range(range)
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::empty());
-            self.device.cmd_pipeline_barrier(
-                command_buffer,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[to_present],
-            );
+                image,
+                old_layout,
+                self.static_upload.as_ref(),
+                self.clear_color,
+            )?;
 
             self.device
                 .end_command_buffer(command_buffer)
@@ -1654,7 +1610,7 @@ impl NativeVulkanSession {
                     operation: "vkEndCommandBuffer",
                     result,
                 })?;
-            self.swapchain_image_layouts[image_index] = vk::ImageLayout::PRESENT_SRC_KHR;
+            self.swapchain_image_layouts[image_index] = final_layout;
         }
         Ok(())
     }
@@ -1664,7 +1620,7 @@ impl NativeVulkanSession {
         if self.video_texture.is_some() && self.video_renderer.is_some() {
             return vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT;
         }
-        vk::PipelineStageFlags::TRANSFER
+        native_vulkan_legacy_static_wait_stage()
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
@@ -37040,8 +36996,8 @@ pub fn wallpaper_type_support_matrix() -> Vec<NativeVulkanWallpaperTypeSupport> 
         NativeVulkanWallpaperTypeSupport {
             wallpaper_type: NativeVulkanWallpaperType::StaticImage,
             current_vulkan_item: true,
-            current_renderer_status: "CPU decode/fit into staging buffer, copied into swapchain image",
-            target_vulkan_path: "decode image -> sampled Vulkan image -> fit-aware textured fullscreen pass",
+            current_renderer_status: "--run-static uses Vulkanalia sampled-image dynamic rendering; legacy ash session remains CPU decode/fit into staging buffer",
+            target_vulkan_path: "decode image once -> retained sampled Vulkan image -> fit-aware dynamic-rendering pass shared with scene/image layers",
         },
         NativeVulkanWallpaperTypeSupport {
             wallpaper_type: NativeVulkanWallpaperType::Video,
