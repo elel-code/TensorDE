@@ -64,6 +64,15 @@ pub(super) struct VulkanaliaDecodedImagePresentFrameResources {
     image_available: Vec<vk::Semaphore>,
     render_finished: Vec<vk::Semaphore>,
     in_flight: Vec<vk::Fence>,
+    // Timeline semaphore signalled by the video-queue decode submit and waited on by
+    // the present submit, providing the decode->present cross-queue dependency.
+    decode_complete: vk::Semaphore,
+}
+
+impl VulkanaliaDecodedImagePresentFrameResources {
+    pub(super) fn decode_complete_semaphore(&self) -> vk::Semaphore {
+        self.decode_complete
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -375,6 +384,7 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_frame_resour
     let mut image_available = Vec::new();
     let mut render_finished = Vec::new();
     let mut in_flight = Vec::new();
+    let mut decode_complete = vk::Semaphore::null();
 
     let result = (|| -> Result<VulkanaliaDecodedImagePresentFrameResources, String> {
         swapchain_image_views = native_vulkan_vulkanalia_create_present_swapchain_image_views(
@@ -425,6 +435,16 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_frame_resour
             );
         }
 
+        let mut decode_complete_type_info = vk::SemaphoreTypeCreateInfo::builder()
+            .semaphore_type(vk::SemaphoreType::TIMELINE)
+            .initial_value(0);
+        let decode_complete_info =
+            vk::SemaphoreCreateInfo::builder().push_next(&mut decode_complete_type_info);
+        decode_complete = unsafe { device.create_semaphore(&decode_complete_info, None) }
+            .map_err(|err| {
+                format!("vkCreateSemaphore(decode_complete timeline vulkanalia decoded image present): {err:?}")
+            })?;
+
         Ok(VulkanaliaDecodedImagePresentFrameResources {
             swapchain_image_views: std::mem::take(&mut swapchain_image_views),
             command_pool,
@@ -432,6 +452,7 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_frame_resour
             image_available: std::mem::take(&mut image_available),
             render_finished: std::mem::take(&mut render_finished),
             in_flight: std::mem::take(&mut in_flight),
+            decode_complete,
         })
     })();
 
@@ -443,6 +464,7 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_frame_resour
             image_available,
             render_finished,
             in_flight,
+            decode_complete,
         );
     }
 
@@ -489,6 +511,8 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_once(
         0,
         "unpaced-single-frame-smoke",
         present_timing,
+        vk::Semaphore::null(),
+        0,
     );
     native_vulkan_vulkanalia_destroy_decoded_image_present_frame_resources(device, frame_resources);
     result
@@ -515,6 +539,8 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
     pacing_sleep_micros: u64,
     pacing_clock_model: &'static str,
     present_timing: VulkanaliaDecodedImagePresentTimingConfig,
+    decode_complete_semaphore: vk::Semaphore,
+    decode_complete_value: u64,
 ) -> Result<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot, String> {
     if swapchain_images.is_empty() {
         return Err("decoded image present requires at least one swapchain image".to_owned());
@@ -599,6 +625,8 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         image_available,
         render_finished,
         in_flight,
+        decode_complete_semaphore,
+        decode_complete_value,
     )?;
 
     let swapchains = [swapchain];
@@ -702,6 +730,7 @@ pub(super) fn native_vulkan_vulkanalia_destroy_decoded_image_present_frame_resou
         resources.image_available,
         resources.render_finished,
         resources.in_flight,
+        resources.decode_complete,
     );
 }
 
@@ -712,8 +741,12 @@ fn native_vulkan_vulkanalia_destroy_partial_decoded_image_present_frame_resource
     image_available: Vec<vk::Semaphore>,
     render_finished: Vec<vk::Semaphore>,
     in_flight: Vec<vk::Fence>,
+    decode_complete: vk::Semaphore,
 ) {
     unsafe {
+        if decode_complete != vk::Semaphore::null() {
+            device.destroy_semaphore(decode_complete, None);
+        }
         for fence in in_flight {
             if fence != vk::Fence::null() {
                 device.destroy_fence(fence, None);
@@ -796,10 +829,8 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
             })?;
 
         let decoded_to_shader = vk::ImageMemoryBarrier2::builder()
-            .src_stage_mask(vk::PipelineStageFlags2::VIDEO_DECODE_KHR)
-            .src_access_mask(
-                vk::AccessFlags2::VIDEO_DECODE_READ_KHR | vk::AccessFlags2::VIDEO_DECODE_WRITE_KHR,
-            )
+            .src_stage_mask(vk::PipelineStageFlags2::NONE)
+            .src_access_mask(vk::AccessFlags2::NONE)
             .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
             .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
             .old_layout(vk::ImageLayout::VIDEO_DECODE_DPB_KHR)
@@ -873,10 +904,8 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
         let decoded_to_decode = vk::ImageMemoryBarrier2::builder()
             .src_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
             .src_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
-            .dst_stage_mask(vk::PipelineStageFlags2::VIDEO_DECODE_KHR)
-            .dst_access_mask(
-                vk::AccessFlags2::VIDEO_DECODE_READ_KHR | vk::AccessFlags2::VIDEO_DECODE_WRITE_KHR,
-            )
+            .dst_stage_mask(vk::PipelineStageFlags2::NONE)
+            .dst_access_mask(vk::AccessFlags2::NONE)
             .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .new_layout(vk::ImageLayout::VIDEO_DECODE_DPB_KHR)
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
@@ -919,12 +948,24 @@ fn native_vulkan_vulkanalia_submit_decoded_image_present_command_buffer2(
     image_available: vk::Semaphore,
     render_finished: vk::Semaphore,
     fence: vk::Fence,
+    decode_complete_semaphore: vk::Semaphore,
+    decode_complete_value: u64,
 ) -> Result<(), String> {
-    let wait = vk::SemaphoreSubmitInfo::builder()
+    // Wait for the swapchain image to be acquired, and (for freshly decoded frames)
+    // for the video-queue decode submit to finish writing the decoded image. The
+    // decode wait uses ALL_COMMANDS so it also gates the layout-transition barrier at
+    // the start of the present command buffer, not just the fragment shader sample.
+    let image_available_wait = vk::SemaphoreSubmitInfo::builder()
         .semaphore(image_available)
         .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
         .build();
-    let waits = [wait];
+    let decode_complete_wait = vk::SemaphoreSubmitInfo::builder()
+        .semaphore(decode_complete_semaphore)
+        .value(decode_complete_value)
+        .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+        .build();
+    let waits_with_decode = [image_available_wait, decode_complete_wait];
+    let waits_without_decode = [image_available_wait];
     let command_buffer_info = vk::CommandBufferSubmitInfo::builder()
         .command_buffer(command_buffer)
         .build();
@@ -934,11 +975,15 @@ fn native_vulkan_vulkanalia_submit_decoded_image_present_command_buffer2(
         .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
         .build();
     let signals = [signal];
-    let submit_info = vk::SubmitInfo2::builder()
-        .wait_semaphore_infos(&waits)
+    let mut submit_builder = vk::SubmitInfo2::builder()
         .command_buffer_infos(&command_buffer_infos)
-        .signal_semaphore_infos(&signals)
-        .build();
+        .signal_semaphore_infos(&signals);
+    if decode_complete_semaphore != vk::Semaphore::null() {
+        submit_builder = submit_builder.wait_semaphore_infos(&waits_with_decode);
+    } else {
+        submit_builder = submit_builder.wait_semaphore_infos(&waits_without_decode);
+    }
+    let submit_info = submit_builder.build();
 
     unsafe {
         device

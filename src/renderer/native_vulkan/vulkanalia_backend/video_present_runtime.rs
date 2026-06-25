@@ -952,7 +952,8 @@ fn create_video_present_session_pieces(
                          source_frame_pts_ms: Option<u64>,
                          source_frame_duration_ms: Option<u64>,
                          display_order_key: i64,
-                         display_order_key_source: &'static str|
+                         display_order_key_source: &'static str,
+                         decode_complete_value: u64|
                          -> Result<(), String> {
                             if decoded_image_present_sequence_error.is_some() {
                                 return Ok(());
@@ -989,6 +990,10 @@ fn create_video_present_session_pieces(
                                     source_frame_duration_ms,
                                     target_max_fps,
                                 );
+                            let decode_complete_semaphore = decoded_image_present_frame_resources
+                                .as_ref()
+                                .map(|frame_resources| frame_resources.decode_complete_semaphore())
+                                .unwrap_or_else(vk::Semaphore::null);
                             let draw = native_vulkan_vulkanalia_present_decoded_image_frame(
                                 &context.device,
                                 context.present_queue,
@@ -1016,6 +1021,8 @@ fn create_video_present_session_pieces(
                                 pacing_sleep_micros,
                                 pacing_clock_model,
                                 decoded_image_present_timing,
+                                decode_complete_semaphore,
+                                decode_complete_value,
                             )?;
                             sequence_builder.push(draw);
                             immediate_present_frame_index =
@@ -1023,6 +1030,27 @@ fn create_video_present_session_pieces(
                             let _ = decode_frame_index;
                             Ok(())
                         };
+                    // Persistent timeline semaphore shared by the decode submits and the
+                    // present submits. Seed the per-frame counter from its current value so
+                    // signalled values stay strictly increasing across present sequences.
+                    let decode_complete_semaphore = decoded_image_present_frame_resources
+                        .as_ref()
+                        .map(|frame_resources| frame_resources.decode_complete_semaphore())
+                        .unwrap_or_else(vk::Semaphore::null);
+                    let decode_complete_value = std::cell::Cell::new(
+                        if decode_complete_semaphore != vk::Semaphore::null() {
+                            unsafe {
+                                context
+                                    .device
+                                    .get_semaphore_counter_value(decode_complete_semaphore)
+                            }
+                            .map_err(|err| {
+                                format!("vkGetSemaphoreCounterValue(decode_complete): {err:?}")
+                            })?
+                        } else {
+                            0
+                        },
+                    );
                     let av1_ready_prefix_decode =
                         if let Some((input, bitstream_buffer_size)) = av1_ready_prefix_decode {
                             Some(
@@ -1046,6 +1074,8 @@ fn create_video_present_session_pieces(
                                         .as_ref()
                                         .expect("Vulkanalia resource image is live"),
                                     Some(&mut enqueue_decoded_frame),
+                                    decode_complete_semaphore,
+                                    &decode_complete_value,
                                 )?,
                             )
                         } else {
@@ -1074,6 +1104,8 @@ fn create_video_present_session_pieces(
                                     .as_ref()
                                     .expect("Vulkanalia resource image is live"),
                                 Some(&mut enqueue_decoded_frame),
+                                decode_complete_semaphore,
+                                &decode_complete_value,
                             )?,
                         )
                         } else {
@@ -1102,6 +1134,8 @@ fn create_video_present_session_pieces(
                                     .as_ref()
                                     .expect("Vulkanalia resource image is live"),
                                 Some(&mut enqueue_decoded_frame),
+                                decode_complete_semaphore,
+                                &decode_complete_value,
                             )?,
                         )
                         } else {
@@ -1296,6 +1330,8 @@ fn native_vulkan_vulkanalia_flush_pending_decoded_present_frames(
             pacing_sleep_micros,
             pacing_clock_model,
             present_timing,
+            vk::Semaphore::null(),
+            0,
         )?;
         sequence_builder.push(draw);
     }

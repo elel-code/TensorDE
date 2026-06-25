@@ -302,7 +302,7 @@ pub(super) fn native_vulkan_vulkanalia_h264_with_vk_submit_info<R>(
         .common
         .setup_reference_slot
         .resource
-        .to_vk_with_base_array_layer(image_views.setup_reference_image_view, 0);
+        .to_vk(image_views.setup_reference_image_view);
     let std_setup_reference_info = native_vulkan_vulkanalia_h264_std_reference_info(
         plan.picture.frame_num,
         plan.picture.field_pic_flag,
@@ -326,7 +326,7 @@ pub(super) fn native_vulkan_vulkanalia_h264_with_vk_submit_info<R>(
         .decode_reference_slots
         .iter()
         .zip(image_views.decode_reference_image_views.iter().copied())
-        .map(|(slot, image_view)| slot.resource.to_vk_with_base_array_layer(image_view, 0))
+        .map(|(slot, image_view)| slot.resource.to_vk(image_view))
         .collect::<Vec<_>>();
     let decode_reference_std_infos = plan
         .picture
@@ -368,7 +368,7 @@ pub(super) fn native_vulkan_vulkanalia_h264_with_vk_submit_info<R>(
         .begin_reference_slots
         .iter()
         .zip(image_views.begin_reference_image_views.iter().copied())
-        .map(|(slot, image_view)| slot.resource.to_vk_with_base_array_layer(image_view, 0))
+        .map(|(slot, image_view)| slot.resource.to_vk(image_view))
         .collect::<Vec<_>>();
     let begin_reference_sources = plan
         .common

@@ -469,6 +469,8 @@ pub(super) unsafe fn native_vulkan_vulkanalia_submit_decode_command_buffer2(
     fence: vk::Fence,
     wait_idle_after_submit: bool,
     wait_fence_after_submit: bool,
+    signal_semaphore: vk::Semaphore,
+    signal_semaphore_value: u64,
 ) -> Result<NativeVulkanVulkanaliaDecodeSubmit2Plan, String> {
     if wait_fence_after_submit && fence == vk::Fence::null() {
         return Err("Vulkanalia decode submit fence wait requires a non-null fence".to_owned());
@@ -477,9 +479,21 @@ pub(super) unsafe fn native_vulkan_vulkanalia_submit_decode_command_buffer2(
         .command_buffer(command_buffer)
         .build();
     let command_buffer_infos = [command_buffer_info];
-    let submit_info = vk::SubmitInfo2::builder()
-        .command_buffer_infos(&command_buffer_infos)
-        .build();
+    // FFmpeg-style decode->present handoff: the decode submit signals a timeline
+    // semaphore value that the present submit (on the graphics/present queue) waits
+    // on before sampling the decoded image. Without this the present pass reads the
+    // decoded image before the video queue has finished writing it (green frame).
+    let signal_semaphore_infos = [vk::SemaphoreSubmitInfo::builder()
+        .semaphore(signal_semaphore)
+        .value(signal_semaphore_value)
+        .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+        .build()];
+    let mut submit_builder =
+        vk::SubmitInfo2::builder().command_buffer_infos(&command_buffer_infos);
+    if signal_semaphore != vk::Semaphore::null() {
+        submit_builder = submit_builder.signal_semaphore_infos(&signal_semaphore_infos);
+    }
+    let submit_info = submit_builder.build();
     unsafe {
         device
             .queue_submit2(queue, &[submit_info], fence)

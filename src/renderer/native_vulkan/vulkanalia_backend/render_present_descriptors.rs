@@ -104,7 +104,7 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_reso
         .format(picture_format)
         .ycbcr_model(ycbcr_model)
         .ycbcr_range(ycbcr_range)
-        .components(vk::ComponentMapping::default())
+        .components(native_vulkan_vulkanalia_identity_component_mapping())
         .x_chroma_offset(x_chroma_offset)
         .y_chroma_offset(y_chroma_offset)
         .chroma_filter(chroma_filter)
@@ -203,7 +203,7 @@ pub(super) fn native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_la
         return Ok(());
     }
     let mut heap_view_usage_info = vk::ImageViewUsageCreateInfo::builder()
-        .usage(vk::ImageUsageFlags::SAMPLED)
+        .usage(native_vulkan_vulkanalia_decoded_image_sampled_view_usage())
         .build();
     let mut heap_view_conversion_info = vk::SamplerYcbcrConversionInfo::builder()
         .conversion(resources.conversion)
@@ -267,7 +267,7 @@ fn native_vulkan_vulkanalia_create_decoded_image_present_descriptor_heap(
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
 ) -> Result<VulkanaliaDescriptorHeapImageSamplerResources, String> {
     let mut heap_view_usage_info = vk::ImageViewUsageCreateInfo::builder()
-        .usage(vk::ImageUsageFlags::SAMPLED)
+        .usage(native_vulkan_vulkanalia_decoded_image_sampled_view_usage())
         .build();
     let mut heap_view_conversion_info = vk::SamplerYcbcrConversionInfo::builder()
         .conversion(conversion)
@@ -336,10 +336,24 @@ fn native_vulkan_vulkanalia_decoded_image_sampled_view_create_info<'a>(
         .image(image)
         .view_type(vk::ImageViewType::_2D)
         .format(picture_format)
+        .components(native_vulkan_vulkanalia_identity_component_mapping())
         .subresource_range(subresource_range)
         .push_next(view_usage_info)
         .push_next(view_conversion_info)
         .build()
+}
+
+fn native_vulkan_vulkanalia_decoded_image_sampled_view_usage() -> vk::ImageUsageFlags {
+    vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::VIDEO_DECODE_DPB_KHR
+}
+
+fn native_vulkan_vulkanalia_identity_component_mapping() -> vk::ComponentMapping {
+    vk::ComponentMapping {
+        r: vk::ComponentSwizzle::IDENTITY,
+        g: vk::ComponentSwizzle::IDENTITY,
+        b: vk::ComponentSwizzle::IDENTITY,
+        a: vk::ComponentSwizzle::IDENTITY,
+    }
 }
 
 fn native_vulkan_vulkanalia_decoded_image_ycbcr_model(

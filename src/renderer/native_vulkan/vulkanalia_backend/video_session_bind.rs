@@ -113,7 +113,7 @@ use super::video_session_parameters_h265::{
 };
 
 type NativeVulkanVulkanaliaAfterFrameSubmitted<'a> =
-    &'a mut dyn FnMut(u32, u32, Option<u64>, Option<u64>, i64, &'static str) -> Result<(), String>;
+    &'a mut dyn FnMut(u32, u32, Option<u64>, Option<u64>, i64, &'static str, u64) -> Result<(), String>;
 
 const NATIVE_VULKAN_VULKANALIA_DECODE_SUBMIT_FENCE_SYNC_MODEL: &str =
     "queue_submit2 per frame + final submit fence wait/reset; no queue_wait_idle";
@@ -814,6 +814,8 @@ fn native_vulkan_vulkanalia_record_h265_ready_prefix_decode_smoke(
             .as_ref()
             .expect("Vulkanalia H.265 decode image is alive during smoke"),
         None,
+        vk::Semaphore::null(),
+        &std::cell::Cell::new(0),
     );
 
     if let Some(image) = image.take() {
@@ -840,6 +842,8 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_ready_prefix_decode_into_imag
     input: NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput,
     image: &super::video_session_images::VulkanaliaVideoSessionResourceImage,
     mut after_frame_submitted: Option<NativeVulkanVulkanaliaAfterFrameSubmitted<'_>>,
+    decode_complete_semaphore: vk::Semaphore,
+    decode_complete_value: &std::cell::Cell<u64>,
 ) -> Result<NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot, String> {
     if !matches!(
         codec,
@@ -980,6 +984,8 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_ready_prefix_decode_into_imag
                         transition_dst_from_undefined,
                     )
                 }?;
+                let decode_complete_value_for_frame = decode_complete_value.get() + 1;
+                decode_complete_value.set(decode_complete_value_for_frame);
                 let submit_plan = unsafe {
                     native_vulkan_vulkanalia_submit_decode_command_buffer2(
                         device,
@@ -988,6 +994,8 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_ready_prefix_decode_into_imag
                         decode_submit_fence,
                         false,
                         wait_for_decode_batch,
+                        decode_complete_semaphore,
+                        decode_complete_value_for_frame,
                     )
                 }?;
                 initialized_slots[dst_slot] = true;
@@ -1007,6 +1015,7 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_ready_prefix_decode_into_imag
                         frame.duration_ms,
                         display_order_key,
                         display_order_key_source,
+                        decode_complete_value_for_frame,
                     )?;
                 }
 
@@ -1095,6 +1104,8 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_ready_prefix_decode_into_imag
     input: NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput,
     image: &super::video_session_images::VulkanaliaVideoSessionResourceImage,
     mut after_frame_submitted: Option<NativeVulkanVulkanaliaAfterFrameSubmitted<'_>>,
+    decode_complete_semaphore: vk::Semaphore,
+    decode_complete_value: &std::cell::Cell<u64>,
 ) -> Result<NativeVulkanVulkanaliaH264ReadyPrefixCommandSmokeSnapshot, String> {
     if codec != NativeVulkanVideoSessionCodec::H264High8 {
         return Err("Vulkanalia H.264 ready-prefix decode smoke requires H.264 high-8".into());
@@ -1231,6 +1242,8 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_ready_prefix_decode_into_imag
                         transition_dst_from_undefined,
                     )
                 }?;
+                let decode_complete_value_for_frame = decode_complete_value.get() + 1;
+                decode_complete_value.set(decode_complete_value_for_frame);
                 let submit_plan = unsafe {
                     native_vulkan_vulkanalia_submit_decode_command_buffer2(
                         device,
@@ -1239,6 +1252,8 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_ready_prefix_decode_into_imag
                         decode_submit_fence,
                         false,
                         wait_for_decode_batch,
+                        decode_complete_semaphore,
+                        decode_complete_value_for_frame,
                     )
                 }?;
                 initialized_slots[dst_slot] = true;
@@ -1258,6 +1273,7 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_ready_prefix_decode_into_imag
                         frame.duration_ms,
                         display_order_key,
                         display_order_key_source,
+                        decode_complete_value_for_frame,
                     )?;
                 }
 
@@ -1507,6 +1523,8 @@ fn native_vulkan_vulkanalia_record_h264_ready_prefix_decode_smoke(
                         decode_submit_fence,
                         false,
                         wait_for_decode_batch,
+                        vk::Semaphore::null(),
+                        0,
                     )
                 }?;
                 initialized_slots[dst_slot] = true;
@@ -1606,6 +1624,8 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_ready_prefix_decode_into_image
     input: NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput,
     image: &super::video_session_images::VulkanaliaVideoSessionResourceImage,
     mut after_frame_submitted: Option<NativeVulkanVulkanaliaAfterFrameSubmitted<'_>>,
+    decode_complete_semaphore: vk::Semaphore,
+    decode_complete_value: &std::cell::Cell<u64>,
 ) -> Result<NativeVulkanVulkanaliaAv1ReadyPrefixCommandSmokeSnapshot, String> {
     if !matches!(
         codec,
@@ -1758,6 +1778,8 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_ready_prefix_decode_into_image
                         transition_dst_from_undefined,
                     )
                 }?;
+                let decode_complete_value_for_frame = decode_complete_value.get() + 1;
+                decode_complete_value.set(decode_complete_value_for_frame);
                 let submit_plan = unsafe {
                     native_vulkan_vulkanalia_submit_decode_command_buffer2(
                         device,
@@ -1766,6 +1788,8 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_ready_prefix_decode_into_image
                         decode_submit_fence,
                         false,
                         wait_for_decode_batch,
+                        decode_complete_semaphore,
+                        decode_complete_value_for_frame,
                     )
                 }?;
                 initialized_slots[dst_slot] = true;
@@ -1789,6 +1813,7 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_ready_prefix_decode_into_image
                         frame.duration_ms,
                         display_order_key,
                         display_order_key_source,
+                        decode_complete_value_for_frame,
                     )?;
                 }
 
@@ -2056,6 +2081,8 @@ fn native_vulkan_vulkanalia_record_av1_ready_prefix_decode_smoke(
                         decode_submit_fence,
                         false,
                         wait_for_decode_batch,
+                        vk::Semaphore::null(),
+                        0,
                     )
                 }?;
                 initialized_slots[dst_slot] = true;
@@ -2153,22 +2180,9 @@ fn native_vulkan_vulkanalia_h264_decode_image_view_bindings(
             image,
             plan.common.dst_picture_resource.base_array_layer,
         )?,
-        setup_reference_image_view: native_vulkan_vulkanalia_layer_view(
-            image,
-            plan.common.setup_reference_slot.resource.base_array_layer,
-        )?,
-        begin_reference_image_views: plan
-            .common
-            .begin_reference_slots
-            .iter()
-            .map(|slot| native_vulkan_vulkanalia_layer_view(image, slot.resource.base_array_layer))
-            .collect::<Result<Vec<_>, _>>()?,
-        decode_reference_image_views: plan
-            .common
-            .decode_reference_slots
-            .iter()
-            .map(|slot| native_vulkan_vulkanalia_layer_view(image, slot.resource.base_array_layer))
-            .collect::<Result<Vec<_>, _>>()?,
+        setup_reference_image_view: image.view,
+        begin_reference_image_views: vec![image.view; plan.common.begin_reference_slots.len()],
+        decode_reference_image_views: vec![image.view; plan.common.decode_reference_slots.len()],
     })
 }
 
@@ -2181,22 +2195,9 @@ fn native_vulkan_vulkanalia_h265_decode_image_view_bindings(
             image,
             plan.common.dst_picture_resource.base_array_layer,
         )?,
-        setup_reference_image_view: native_vulkan_vulkanalia_layer_view(
-            image,
-            plan.common.setup_reference_slot.resource.base_array_layer,
-        )?,
-        begin_reference_image_views: plan
-            .common
-            .begin_reference_slots
-            .iter()
-            .map(|slot| native_vulkan_vulkanalia_layer_view(image, slot.resource.base_array_layer))
-            .collect::<Result<Vec<_>, _>>()?,
-        decode_reference_image_views: plan
-            .common
-            .decode_reference_slots
-            .iter()
-            .map(|slot| native_vulkan_vulkanalia_layer_view(image, slot.resource.base_array_layer))
-            .collect::<Result<Vec<_>, _>>()?,
+        setup_reference_image_view: image.view,
+        begin_reference_image_views: vec![image.view; plan.common.begin_reference_slots.len()],
+        decode_reference_image_views: vec![image.view; plan.common.decode_reference_slots.len()],
     })
 }
 
@@ -2209,22 +2210,9 @@ fn native_vulkan_vulkanalia_av1_decode_image_view_bindings(
             image,
             plan.common.dst_picture_resource.base_array_layer,
         )?,
-        setup_reference_image_view: native_vulkan_vulkanalia_layer_view(
-            image,
-            plan.common.setup_reference_slot.resource.base_array_layer,
-        )?,
-        begin_reference_image_views: plan
-            .common
-            .begin_reference_slots
-            .iter()
-            .map(|slot| native_vulkan_vulkanalia_layer_view(image, slot.resource.base_array_layer))
-            .collect::<Result<Vec<_>, _>>()?,
-        decode_reference_image_views: plan
-            .common
-            .decode_reference_slots
-            .iter()
-            .map(|slot| native_vulkan_vulkanalia_layer_view(image, slot.resource.base_array_layer))
-            .collect::<Result<Vec<_>, _>>()?,
+        setup_reference_image_view: image.view,
+        begin_reference_image_views: vec![image.view; plan.common.begin_reference_slots.len()],
+        decode_reference_image_views: vec![image.view; plan.common.decode_reference_slots.len()],
     })
 }
 
@@ -2278,6 +2266,7 @@ mod tests {
         native_vulkan_vulkanalia_video_session_profile_label as vulkanalia_video_session_profile_label,
     };
     use super::super::video_device::native_vulkan_vulkanalia_video_decode_required_device_extensions;
+    use vulkanalia::vk::Handle;
     use super::*;
 
     #[test]
@@ -2329,5 +2318,85 @@ mod tests {
                 "no_queue_wait_idle_after_decode",
             ]
         );
+    }
+
+    #[test]
+    fn h264_decode_bindings_use_ffmpeg_dst_layer_view_and_layered_refs() {
+        let plan = super::super::video_decode_submit_h264::NativeVulkanVulkanaliaH264DecodeSubmitPlan {
+            common: super::super::video_decode_submit::NativeVulkanVulkanaliaDecodeSubmitPlan::new(
+                NativeVulkanVideoSessionCodec::H264High8,
+                0,
+                0,
+                super::super::video_decode_submit::NativeVulkanVulkanaliaPictureResourcePlan::new(
+                    vk::Extent2D {
+                        width: 1280,
+                        height: 720,
+                    },
+                    2,
+                ),
+                super::super::video_decode_submit::NativeVulkanVulkanaliaReferenceSlotPlan::setup_current(
+                    2,
+                    super::super::video_decode_submit::NativeVulkanVulkanaliaPictureResourcePlan::new(
+                        vk::Extent2D {
+                            width: 1280,
+                            height: 720,
+                        },
+                        2,
+                    ),
+                ),
+                vec![],
+                vec![],
+                false,
+            ),
+            picture: super::super::video_decode_submit_h264::NativeVulkanVulkanaliaH264PictureInfoPlan {
+                ffmpeg_reference: super::super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE,
+                seq_parameter_set_id: 0,
+                pic_parameter_set_id: 0,
+                field_pic_flag: false,
+                bottom_field_flag: false,
+                is_intra: false,
+                is_idr: false,
+                is_reference: false,
+                frame_num: 0,
+                idr_pic_id: 0,
+                pic_order_cnt: [0, 0],
+                references: vec![],
+                slice_offsets: vec![0],
+            },
+        };
+        let image = super::super::video_session_images::VulkanaliaVideoSessionResourceImage {
+            image: vk::Image::null(),
+            memory: vk::DeviceMemory::null(),
+            view: vk::ImageView::from_raw(100),
+            layer_views: vec![
+                vk::ImageView::from_raw(101),
+                vk::ImageView::from_raw(102),
+                vk::ImageView::from_raw(103),
+            ],
+            snapshot: super::super::video_session_images::NativeVulkanVulkanaliaVideoSessionResourceImageSnapshot {
+                role: "coincident-dpb-output-sampled-video",
+                format: "G8_B8R8_2PLANE_420_UNORM".to_owned(),
+                image_type: "_2D".to_owned(),
+                image_tiling: "OPTIMAL".to_owned(),
+                image_usage_flags: vec!["sampled", "video-decode-dst", "video-decode-dpb"],
+                image_create_flags: vec!["mutable-format"],
+                extent: (1280, 720, 1),
+                array_layers: 3,
+                image_view_type: "2d-array",
+                image_view_created: true,
+                layer_view_count: 3,
+                memory_size: 0,
+                memory_alignment: 0,
+                memory_type_bits: 0,
+                selected_memory_type_index: 0,
+                selected_memory_property_flags: vec![],
+            },
+        };
+
+        let bindings = native_vulkan_vulkanalia_h264_decode_image_view_bindings(&image, &plan)
+            .expect("bindings should resolve");
+
+        assert_eq!(bindings.dst_picture_image_view, vk::ImageView::from_raw(103));
+        assert_eq!(bindings.setup_reference_image_view, vk::ImageView::from_raw(100));
     }
 }
