@@ -1141,6 +1141,7 @@ fn run_scene_lite_solid_quad_present_loop(
     let mut next_frame = Instant::now();
     let mut frames_presented = 0u64;
     let mut present_ids = Vec::new();
+    let mut present_wait_after_present = false;
     let mut last_command = None;
 
     while Instant::now() < deadline {
@@ -1234,6 +1235,12 @@ fn run_scene_lite_solid_quad_present_loop(
                     format!("vkQueuePresentKHR(vulkanalia scene-lite present): {err:?}")
                 })?;
         }
+        present_wait_after_present |= present_timing.wait_after_queue_present(
+            device,
+            swapchain,
+            present_id,
+            "scene-lite solid quad present",
+        )?;
 
         present_ids.push(present_id);
         frames_presented += 1;
@@ -1293,7 +1300,11 @@ fn run_scene_lite_solid_quad_present_loop(
         geometry: geometry.snapshot.clone(),
         pipeline: pipeline.snapshot.clone(),
         last_command,
-        command_submit_model: "acquire_next_image_khr -> cmd_begin_rendering solid quad -> queue_submit2 -> queue_present_khr",
+        command_submit_model: if present_wait_after_present {
+            "acquire_next_image_khr -> cmd_begin_rendering solid quad -> queue_submit2 -> queue_present_khr -> wait_for_present"
+        } else {
+            "acquire_next_image_khr -> cmd_begin_rendering solid quad -> queue_submit2 -> queue_present_khr"
+        },
         present_sync_model: "frame-slot semaphore/fence reuse; no per-present queue_wait_idle",
         wait_idle_after_present: false,
         present_ids,
@@ -1301,7 +1312,7 @@ fn run_scene_lite_solid_quad_present_loop(
         uses_present_id2: present_timing.present_id2_enabled,
         present_wait_available: present_timing.present_wait_enabled,
         present_wait2_available: present_timing.present_wait2_enabled,
-        present_wait_after_present: false,
+        present_wait_after_present,
         uses_pipeline_rendering_create_info: true,
         uses_dynamic_rendering: true,
         uses_synchronization2: true,
@@ -1343,6 +1354,7 @@ fn run_scene_lite_sampled_image_present_loop(
     let mut next_frame = Instant::now();
     let mut frames_presented = 0u64;
     let mut present_ids = Vec::new();
+    let mut present_wait_after_present = false;
     let mut last_command = None;
     let sampled_image = sampled_images.first().ok_or_else(|| {
         "scene-lite sampled image present requires at least one sampled image".to_owned()
@@ -1481,6 +1493,12 @@ fn run_scene_lite_sampled_image_present_loop(
                     )
                 })?;
         }
+        present_wait_after_present |= present_timing.wait_after_queue_present(
+            device,
+            swapchain,
+            present_id,
+            "scene-lite sampled image present",
+        )?;
 
         present_ids.push(present_id);
         frames_presented += 1;
@@ -1552,11 +1570,10 @@ fn run_scene_lite_sampled_image_present_loop(
         descriptor_heap: descriptor_heap.map(|resources| resources.snapshot.clone()),
         pipeline: pipeline.snapshot.clone(),
         last_command,
-        command_submit_model: if solid_quad_draw.is_some() {
-            "acquire_next_image_khr -> cmd_begin_rendering solid quads then sampled image quads -> queue_submit2 -> queue_present_khr"
-        } else {
-            "acquire_next_image_khr -> cmd_begin_rendering sampled image quad -> queue_submit2 -> queue_present_khr"
-        },
+        command_submit_model: scene_lite_present_submit_model(
+            solid_quad_draw.is_some(),
+            present_wait_after_present,
+        ),
         present_sync_model: "frame-slot semaphore/fence reuse; no per-present queue_wait_idle",
         wait_idle_after_present: false,
         present_ids,
@@ -1564,7 +1581,7 @@ fn run_scene_lite_sampled_image_present_loop(
         uses_present_id2: present_timing.present_id2_enabled,
         present_wait_available: present_timing.present_wait_enabled,
         present_wait2_available: present_timing.present_wait2_enabled,
-        present_wait_after_present: false,
+        present_wait_after_present,
         uses_pipeline_rendering_create_info: true,
         uses_dynamic_rendering: true,
         uses_synchronization2: true,
@@ -1576,6 +1593,26 @@ fn run_scene_lite_sampled_image_present_loop(
         },
         primary_reference: "Vulkan dynamic rendering and sync2; FFmpeg frame lifetime discipline for retained resources",
     })
+}
+
+fn scene_lite_present_submit_model(
+    includes_solid_quads: bool,
+    present_wait_after_present: bool,
+) -> &'static str {
+    match (includes_solid_quads, present_wait_after_present) {
+        (true, true) => {
+            "acquire_next_image_khr -> cmd_begin_rendering solid quads then sampled image quads -> queue_submit2 -> queue_present_khr -> wait_for_present"
+        }
+        (true, false) => {
+            "acquire_next_image_khr -> cmd_begin_rendering solid quads then sampled image quads -> queue_submit2 -> queue_present_khr"
+        }
+        (false, true) => {
+            "acquire_next_image_khr -> cmd_begin_rendering sampled image quad -> queue_submit2 -> queue_present_khr -> wait_for_present"
+        }
+        (false, false) => {
+            "acquire_next_image_khr -> cmd_begin_rendering sampled image quad -> queue_submit2 -> queue_present_khr"
+        }
+    }
 }
 
 fn create_scene_lite_solid_quad_frame_resources(

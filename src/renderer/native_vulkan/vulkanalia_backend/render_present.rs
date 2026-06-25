@@ -617,6 +617,12 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
                 format!("vkQueuePresentKHR(vulkanalia decoded image present): {err:?}")
             })?;
     }
+    let present_wait_after_present = present_timing.wait_after_queue_present(
+        device,
+        swapchain,
+        present_id,
+        "decoded image present",
+    )?;
 
     Ok(NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
         binding: "vulkanalia",
@@ -639,7 +645,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         uses_present_id2: present_timing.present_id2_enabled,
         present_wait_available: present_timing.present_wait_enabled,
         present_wait2_available: present_timing.present_wait2_enabled,
-        present_wait_after_present: false,
+        present_wait_after_present,
         swapchain_image_index: image_index,
         swapchain_image_view_count: frame_resources.swapchain_image_views.len(),
         target_format: format!("{swapchain_format:?}"),
@@ -653,6 +659,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         command_order: native_vulkan_vulkanalia_decoded_image_present_command_order(
             true,
             present_timing.present_id_mode(),
+            present_timing.present_wait_mode(),
             sampler.descriptor_heap.is_some(),
         ),
         uses_pipeline_rendering_create_info: true,
@@ -935,6 +942,7 @@ fn native_vulkan_vulkanalia_submit_decoded_image_present_command_buffer2(
 pub(super) fn native_vulkan_vulkanalia_decoded_image_present_command_order(
     same_queue_family: bool,
     present_id_mode: &'static str,
+    present_wait_mode: &'static str,
     uses_descriptor_heap: bool,
 ) -> Vec<&'static str> {
     let bind_steps = if uses_descriptor_heap {
@@ -988,6 +996,11 @@ pub(super) fn native_vulkan_vulkanalia_decoded_image_present_command_order(
     match present_id_mode {
         "present-id2-khr" => order.insert(order.len().saturating_sub(3), "present_id2_khr"),
         "present-id-khr" => order.insert(order.len().saturating_sub(3), "present_id_khr"),
+        _ => {}
+    }
+    match present_wait_mode {
+        "present-wait2-khr" => order.insert(order.len().saturating_sub(2), "wait_for_present2_khr"),
+        "present-wait-khr" => order.insert(order.len().saturating_sub(2), "wait_for_present_khr"),
         _ => {}
     }
     order
@@ -1080,8 +1093,9 @@ mod tests {
 
     #[test]
     fn decoded_image_present_order_keeps_queue_ownership_explicit() {
-        let split =
-            native_vulkan_vulkanalia_decoded_image_present_command_order(false, "disabled", false);
+        let split = native_vulkan_vulkanalia_decoded_image_present_command_order(
+            false, "disabled", "disabled", false,
+        );
         assert!(split.contains(&"cmd_pipeline_barrier2_video_release"));
         assert!(split.contains(&"cmd_pipeline_barrier2_graphics_acquire_shader_read"));
         assert!(split.contains(&"cmd_begin_rendering"));
@@ -1089,13 +1103,15 @@ mod tests {
         assert!(split.contains(&"queue_submit2_present"));
         assert!(split.contains(&"no_queue_wait_idle_after_present"));
 
-        let same =
-            native_vulkan_vulkanalia_decoded_image_present_command_order(true, "disabled", false);
+        let same = native_vulkan_vulkanalia_decoded_image_present_command_order(
+            true, "disabled", "disabled", false,
+        );
         assert!(!same.contains(&"cmd_pipeline_barrier2_video_release"));
         assert!(same.contains(&"cmd_bind_ycbcr_descriptor_set"));
 
-        let heap =
-            native_vulkan_vulkanalia_decoded_image_present_command_order(true, "disabled", true);
+        let heap = native_vulkan_vulkanalia_decoded_image_present_command_order(
+            true, "disabled", "disabled", true,
+        );
         assert!(heap.contains(&"cmd_bind_resource_heap_ext"));
         assert!(heap.contains(&"cmd_bind_sampler_heap_ext"));
         assert!(heap.contains(&"draw_with_descriptor_heap_mapping"));
@@ -1104,14 +1120,17 @@ mod tests {
         let present_id2 = native_vulkan_vulkanalia_decoded_image_present_command_order(
             true,
             "present-id2-khr",
+            "present-wait2-khr",
             true,
         );
         assert!(present_id2.contains(&"present_id2_khr"));
-        assert!(
-            present_id2
-                .windows(2)
-                .any(|pair| pair == ["present_id2_khr", "queue_present_khr"])
-        );
+        assert!(present_id2.contains(&"wait_for_present2_khr"));
+        assert!(present_id2.windows(3).any(|triple| triple
+            == [
+                "present_id2_khr",
+                "queue_present_khr",
+                "wait_for_present2_khr"
+            ]));
     }
 
     #[test]
