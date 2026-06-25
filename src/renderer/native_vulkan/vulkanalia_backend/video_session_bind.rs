@@ -2149,10 +2149,26 @@ fn native_vulkan_vulkanalia_h264_decode_image_view_bindings(
     plan: &super::video_decode_submit_h264::NativeVulkanVulkanaliaH264DecodeSubmitPlan,
 ) -> Result<NativeVulkanVulkanaliaDecodeImageViewBindings, String> {
     Ok(NativeVulkanVulkanaliaDecodeImageViewBindings {
-        dst_picture_image_view: image.view,
-        setup_reference_image_view: image.view,
-        begin_reference_image_views: vec![image.view; plan.common.begin_reference_slots.len()],
-        decode_reference_image_views: vec![image.view; plan.common.decode_reference_slots.len()],
+        dst_picture_image_view: native_vulkan_vulkanalia_layer_view(
+            image,
+            plan.common.dst_picture_resource.base_array_layer,
+        )?,
+        setup_reference_image_view: native_vulkan_vulkanalia_layer_view(
+            image,
+            plan.common.setup_reference_slot.resource.base_array_layer,
+        )?,
+        begin_reference_image_views: plan
+            .common
+            .begin_reference_slots
+            .iter()
+            .map(|slot| native_vulkan_vulkanalia_layer_view(image, slot.resource.base_array_layer))
+            .collect::<Result<Vec<_>, _>>()?,
+        decode_reference_image_views: plan
+            .common
+            .decode_reference_slots
+            .iter()
+            .map(|slot| native_vulkan_vulkanalia_layer_view(image, slot.resource.base_array_layer))
+            .collect::<Result<Vec<_>, _>>()?,
     })
 }
 
@@ -2161,10 +2177,26 @@ fn native_vulkan_vulkanalia_h265_decode_image_view_bindings(
     plan: &super::video_decode_submit_h265::NativeVulkanVulkanaliaH265DecodeSubmitPlan,
 ) -> Result<NativeVulkanVulkanaliaDecodeImageViewBindings, String> {
     Ok(NativeVulkanVulkanaliaDecodeImageViewBindings {
-        dst_picture_image_view: image.view,
-        setup_reference_image_view: image.view,
-        begin_reference_image_views: vec![image.view; plan.common.begin_reference_slots.len()],
-        decode_reference_image_views: vec![image.view; plan.common.decode_reference_slots.len()],
+        dst_picture_image_view: native_vulkan_vulkanalia_layer_view(
+            image,
+            plan.common.dst_picture_resource.base_array_layer,
+        )?,
+        setup_reference_image_view: native_vulkan_vulkanalia_layer_view(
+            image,
+            plan.common.setup_reference_slot.resource.base_array_layer,
+        )?,
+        begin_reference_image_views: plan
+            .common
+            .begin_reference_slots
+            .iter()
+            .map(|slot| native_vulkan_vulkanalia_layer_view(image, slot.resource.base_array_layer))
+            .collect::<Result<Vec<_>, _>>()?,
+        decode_reference_image_views: plan
+            .common
+            .decode_reference_slots
+            .iter()
+            .map(|slot| native_vulkan_vulkanalia_layer_view(image, slot.resource.base_array_layer))
+            .collect::<Result<Vec<_>, _>>()?,
     })
 }
 
@@ -2173,11 +2205,43 @@ fn native_vulkan_vulkanalia_av1_decode_image_view_bindings(
     plan: &super::video_decode_submit_av1::NativeVulkanVulkanaliaAv1DecodeSubmitPlan,
 ) -> Result<NativeVulkanVulkanaliaDecodeImageViewBindings, String> {
     Ok(NativeVulkanVulkanaliaDecodeImageViewBindings {
-        dst_picture_image_view: image.view,
-        setup_reference_image_view: image.view,
-        begin_reference_image_views: vec![image.view; plan.common.begin_reference_slots.len()],
-        decode_reference_image_views: vec![image.view; plan.common.decode_reference_slots.len()],
+        dst_picture_image_view: native_vulkan_vulkanalia_layer_view(
+            image,
+            plan.common.dst_picture_resource.base_array_layer,
+        )?,
+        setup_reference_image_view: native_vulkan_vulkanalia_layer_view(
+            image,
+            plan.common.setup_reference_slot.resource.base_array_layer,
+        )?,
+        begin_reference_image_views: plan
+            .common
+            .begin_reference_slots
+            .iter()
+            .map(|slot| native_vulkan_vulkanalia_layer_view(image, slot.resource.base_array_layer))
+            .collect::<Result<Vec<_>, _>>()?,
+        decode_reference_image_views: plan
+            .common
+            .decode_reference_slots
+            .iter()
+            .map(|slot| native_vulkan_vulkanalia_layer_view(image, slot.resource.base_array_layer))
+            .collect::<Result<Vec<_>, _>>()?,
     })
+}
+
+fn native_vulkan_vulkanalia_layer_view(
+    image: &super::video_session_images::VulkanaliaVideoSessionResourceImage,
+    layer: u32,
+) -> Result<vk::ImageView, String> {
+    image
+        .layer_views
+        .get(layer as usize)
+        .copied()
+        .ok_or_else(|| {
+            format!(
+                "Vulkanalia video image has {} layer views but layer {layer} was requested",
+                image.layer_views.len()
+            )
+        })
 }
 
 fn queue_flag_labels(flags: vk::QueueFlags) -> Vec<&'static str> {

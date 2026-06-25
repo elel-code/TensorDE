@@ -297,12 +297,12 @@ pub(super) fn native_vulkan_vulkanalia_h264_with_vk_submit_info<R>(
     let dst_picture_resource = plan
         .common
         .dst_picture_resource
-        .to_vk(image_views.dst_picture_image_view);
+        .to_vk_with_base_array_layer(image_views.dst_picture_image_view, 0);
     let setup_picture_resource = plan
         .common
         .setup_reference_slot
         .resource
-        .to_vk(image_views.setup_reference_image_view);
+        .to_vk_with_base_array_layer(image_views.setup_reference_image_view, 0);
     let std_setup_reference_info = native_vulkan_vulkanalia_h264_std_reference_info(
         plan.picture.frame_num,
         plan.picture.field_pic_flag,
@@ -326,7 +326,7 @@ pub(super) fn native_vulkan_vulkanalia_h264_with_vk_submit_info<R>(
         .decode_reference_slots
         .iter()
         .zip(image_views.decode_reference_image_views.iter().copied())
-        .map(|(slot, image_view)| slot.resource.to_vk(image_view))
+        .map(|(slot, image_view)| slot.resource.to_vk_with_base_array_layer(image_view, 0))
         .collect::<Vec<_>>();
     let decode_reference_std_infos = plan
         .picture
@@ -368,7 +368,7 @@ pub(super) fn native_vulkan_vulkanalia_h264_with_vk_submit_info<R>(
         .begin_reference_slots
         .iter()
         .zip(image_views.begin_reference_image_views.iter().copied())
-        .map(|(slot, image_view)| slot.resource.to_vk(image_view))
+        .map(|(slot, image_view)| slot.resource.to_vk_with_base_array_layer(image_view, 0))
         .collect::<Vec<_>>();
     let begin_reference_sources = plan
         .common
@@ -473,8 +473,8 @@ fn native_vulkan_vulkanalia_h264_begin_reference_source(
         return Ok(None);
     }
     match slot.role {
-        NativeVulkanVulkanaliaReferenceSlotRole::BeginInactive => Ok(None),
-        NativeVulkanVulkanaliaReferenceSlotRole::SetupCurrent => {
+        NativeVulkanVulkanaliaReferenceSlotRole::BeginInactive
+        | NativeVulkanVulkanaliaReferenceSlotRole::SetupCurrent => {
             Ok(Some(NativeVulkanVulkanaliaH264ReferenceSource {
                 frame_num: plan.picture.frame_num,
                 field_pic_flag: plan.picture.field_pic_flag,
@@ -710,7 +710,7 @@ mod tests {
                 assert_eq!(vk_info.begin_reference_slots[0].slot_index, 1);
                 assert!(!vk_info.begin_reference_slots[0].next.is_null());
                 assert_eq!(vk_info.begin_reference_slots[1].slot_index, -1);
-                assert!(vk_info.begin_reference_slots[1].next.is_null());
+                assert!(!vk_info.begin_reference_slots[1].next.is_null());
             },
         )
         .unwrap();
