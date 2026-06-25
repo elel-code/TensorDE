@@ -39,8 +39,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::native_vulkan::{
         NativeVulkanOptions, NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionSmokeOptions,
         backend_contract, capabilities, native_vulkan_video_duration_playback_frames,
-        native_vulkan_video_run_route, probe_vulkan_video_decode, probe_vulkan_video_session,
-        probe_wayland_surface, run_clear, run_static_image, wallpaper_type_support_matrix,
+        native_vulkan_video_run_route, probe_vulkan_video_decode, probe_wayland_surface, run_clear,
+        run_static_image, wallpaper_type_support_matrix,
     };
     use gilder::renderer::native_vulkan::{
         NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions,
@@ -100,7 +100,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--probe-vulkanalia-video-present-session" => {
                 mode = NativeVulkanCliMode::ProbeVulkanaliaVideoPresentSession
             }
-            "--probe-video-session" => mode = NativeVulkanCliMode::ProbeVideoSession,
             "--probe-audio-clock" => mode = NativeVulkanCliMode::ProbeAudioClock,
             "--audio-clock-probe" => audio_clock_probe_with_video = true,
             "--audio-output" => {
@@ -129,35 +128,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 vulkanalia_create_empty_session_parameters = true
             }
             "--create-session-parameters" => vulkanalia_create_session_parameters = true,
-            "--extract-bitstream" => {
-                video_session_options.extract_bitstream = true;
-                video_session_options.allocate_bitstream_buffer = true;
-            }
-            "--decode-first-frame" => {
-                video_session_options.decode_first_frame = true;
-                video_session_options.extract_bitstream = true;
-                video_session_options.allocate_bitstream_buffer = true;
-                video_session_options.allocate_video_images = true;
-            }
-            "--sample-decoded-first-frame" => {
-                video_session_options.sample_decoded_first_frame = true;
-                video_session_options.decode_first_frame = true;
-                video_session_options.extract_bitstream = true;
-                video_session_options.allocate_bitstream_buffer = true;
-                video_session_options.allocate_video_images = true;
-            }
-            "--decode-h264-idr-prefix" => {
-                let count = args
-                    .next()
-                    .map(|value| value.parse::<u32>())
-                    .transpose()?
-                    .ok_or("--decode-h264-idr-prefix requires a count")?;
-                video_session_options.decode_h264_idr_prefix_frames = count;
-                video_session_options.h264_required_idr_prefix_access_units = count;
-                video_session_options.extract_bitstream = true;
-                video_session_options.allocate_bitstream_buffer = true;
-                video_session_options.allocate_video_images = true;
-            }
             "--decode-h264-ready-prefix" => {
                 let count = args
                     .next()
@@ -192,19 +162,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 video_session_options.bitstream_extract_max_samples = video_session_options
                     .bitstream_extract_max_samples
                     .max(count);
-                video_session_options.extract_bitstream = true;
-                video_session_options.allocate_bitstream_buffer = true;
-                video_session_options.allocate_video_images = true;
-            }
-            "--sample-h265-ready-prefix" => {
-                video_session_options.sample_h265_ready_prefix_output = true;
-                video_session_options.extract_bitstream = true;
-                video_session_options.allocate_bitstream_buffer = true;
-                video_session_options.allocate_video_images = true;
-            }
-            "--sample-h265-ready-prefix-sequence" => {
-                video_session_options.sample_h265_ready_prefix_output = true;
-                video_session_options.sample_h265_ready_prefix_sequence = true;
                 video_session_options.extract_bitstream = true;
                 video_session_options.allocate_bitstream_buffer = true;
                 video_session_options.allocate_video_images = true;
@@ -323,15 +280,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|value| value.parse::<u32>())
                     .transpose()?
                     .ok_or("--require-h265-ready-prefix requires a count")?;
-                video_session_options.extract_bitstream = true;
-                video_session_options.allocate_bitstream_buffer = true;
-            }
-            "--require-h264-idr-prefix" => {
-                video_session_options.h264_required_idr_prefix_access_units = args
-                    .next()
-                    .map(|value| value.parse::<u32>())
-                    .transpose()?
-                    .ok_or("--require-h264-idr-prefix requires a count")?;
                 video_session_options.extract_bitstream = true;
                 video_session_options.allocate_bitstream_buffer = true;
             }
@@ -594,27 +542,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     av1_ready_prefix_decode,
                 }
             )?)
-        }
-        NativeVulkanCliMode::ProbeVideoSession => {
-            if video_session_options.sample_h265_ready_prefix_output
-                && video_session_options.decode_h265_ready_prefix_frames == 0
-            {
-                return Err(
-                    "--sample-h265-ready-prefix requires --decode-h265-ready-prefix N".into(),
-                );
-            }
-            if video_session_options.extract_bitstream {
-                let source = source
-                    .clone()
-                    .ok_or("--extract-bitstream requires --source")?;
-                if !source.is_file() {
-                    return Err(
-                        format!("bitstream source does not exist: {}", source.display()).into(),
-                    );
-                }
-                video_session_options.bitstream_source = Some(source);
-            }
-            json!(probe_vulkan_video_session(video_session_options)?)
         }
         NativeVulkanCliMode::ProbeAudioClock => {
             let source = source.ok_or("--probe-audio-clock requires --source")?;
@@ -1098,7 +1025,6 @@ enum NativeVulkanCliMode {
     ProbeVulkanaliaVideoPresent,
     ProbeVulkanaliaVideoPresentSession,
     ProbeVulkanaliaVideoSession,
-    ProbeVideoSession,
     ProbeAudioClock,
     RunClear,
     RunVulkanaliaSceneLiteSolidQuad,
@@ -1115,7 +1041,7 @@ enum NativeVulkanCliMode {
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--probe-video-session|--probe-audio-clock|--run-clear|--run-vulkanalia-clear|--run-vulkanalia-scene-lite-solid-quad|--run-vulkanalia-scene-lite-sampled-image|--run-static|--run-vulkanalia-static|--run-legacy-static|--run-video|--run-h264-ready-prefix-video|--run-h265-ready-prefix-video|--run-av1-ready-prefix-video|--run-vulkanalia-ready-prefix-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--probe-audio-clock|--run-clear|--run-vulkanalia-clear|--run-vulkanalia-scene-lite-solid-quad|--run-vulkanalia-scene-lite-sampled-image|--run-static|--run-vulkanalia-static|--run-legacy-static|--run-video|--run-h264-ready-prefix-video|--run-h265-ready-prefix-video|--run-av1-ready-prefix-video|--run-vulkanalia-ready-prefix-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
@@ -1125,23 +1051,16 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --probe-vulkanalia-video-present creates one Vulkanalia device with video-decode and graphics/present queues plus a Wayland swapchain, then exits.\n\
 --probe-vulkanalia-video-present-session creates one Vulkanalia video+present device, video session, sampled DPB/output image, and Wayland swapchain, then exits.\n\
 --probe-vulkanalia-video-session creates and binds a Vulkanalia Vulkan Video session for --video-codec, then exits.\n\
---probe-video-session creates and binds a Vulkan Video H.264/H.265/AV1 decode session, then exits.\n\
 --probe-audio-clock runs an explicit audio-only GStreamer clock probe for --source, then exits.\n\
 --audio-clock-probe runs the explicit audio-only clock probe beside H.264 visible video and reports A/V drift.\n\
 --audio-output plan|clock-only|auto selects plan-following, clock-only telemetry, or tee-to-autoaudiosink output for --audio-clock-probe.\n\
---allocate-video-images extends --probe-video-session and --probe-vulkanalia-video-session with codec-matching 2-plane 4:2:0 DPB/output sampled image allocation.\n\
---allocate-bitstream-buffer extends --probe-video-session and --probe-vulkanalia-video-session with a mapped VIDEO_DECODE_SRC bitstream buffer.\n\
+--allocate-video-images extends --probe-vulkanalia-video-session with codec-matching 2-plane 4:2:0 DPB/output sampled image allocation.\n\
+--allocate-bitstream-buffer extends --probe-vulkanalia-video-session with a mapped VIDEO_DECODE_SRC bitstream buffer.\n\
 --create-empty-session-parameters extends --probe-vulkanalia-video-session with an H.264/H.265 empty capacity VkVideoSessionParametersKHR smoke.\n\
 --create-session-parameters extends --probe-vulkanalia-video-session with real H.264 SPS/PPS, H.265 VPS/SPS/PPS, or AV1 sequence-header VkVideoSessionParametersKHR creation from --source.\n\
---extract-bitstream extends --probe-video-session with parser/appsink encoded AU extraction and writes the selected AU to the bitstream buffer.\n\
---decode-first-frame extends --probe-video-session with a real H.264/H.265 IDR Vulkan Video command buffer submit.\n\
---sample-decoded-first-frame extends --decode-first-frame with NV12 shader sampling into an offscreen Vulkan color target.\n\
---decode-h264-idr-prefix N extends --probe-video-session with N H.264 IDR AU Vulkan Video decode submits and final-frame readback.\n\
---decode-h264-ready-prefix N extends --probe-video-session with N reference-ready H.264 AU Vulkan Video decode submits and final-frame readback.\n\
---decode-h265-ready-prefix N extends --probe-video-session with N ready H.265 AU Vulkan Video decode submits and final-frame readback.\n\
+--decode-h264-ready-prefix N extends --probe-vulkanalia-video-session/--run-video with N reference-ready H.264 AU Vulkan Video decode submits.\n\
+--decode-h265-ready-prefix N extends --probe-vulkanalia-video-session/--run-video with N ready H.265 AU Vulkan Video decode submits.\n\
 --decode-av1-ready-prefix N selects an AV1 ready TU window for direct visible AV1 decode/present.\n\
---sample-h265-ready-prefix extends --decode-h265-ready-prefix with final-frame NV12 shader sampling into an offscreen RGBA target.\n\
---sample-h265-ready-prefix-sequence samples each ready-prefix decoded frame before the next AU can overwrite its DPB/output layer.\n\
 --playback-frames N repeats the ready-prefix AU window for N direct Vulkan Video decode/present frames.\n\
 --audio-probe-duration N overrides the default 10s audio clock probe duration.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
@@ -1163,10 +1082,9 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--decoder auto|hardware-preferred|hardware-required|software]\n\
          [--video-codec h264|h265|h265-main-10|av1|av1-main-10] [--width PX] [--height PX]\n\
          [--allocate-video-images] [--allocate-bitstream-buffer] [--bitstream-buffer-size BYTES]\n\
-         [--create-session-parameters] [--extract-bitstream] [--decode-first-frame] [--sample-decoded-first-frame] [--bitstream-samples N]\n\
-         [--decode-h264-idr-prefix N] [--require-h264-idr-prefix N]\n\
+         [--create-session-parameters] [--bitstream-samples N]\n\
          [--decode-h264-ready-prefix N] [--require-h264-ready-prefix N]\n\
-         [--decode-h265-ready-prefix N] [--sample-h265-ready-prefix] [--sample-h265-ready-prefix-sequence]\n\
+         [--decode-h265-ready-prefix N]\n\
          [--decode-av1-ready-prefix N]\n\
          [--require-h265-ready-prefix N] [--playback-frames N]\n\
          [--start-offset-ms MS]"
