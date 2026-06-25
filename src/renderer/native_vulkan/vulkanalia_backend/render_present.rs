@@ -82,6 +82,57 @@ pub(super) struct VulkanaliaDecodedImagePresentFrameResources {
     in_flight: Vec<vk::Fence>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct VulkanaliaDecodedImagePresentTimingConfig {
+    pub(super) present_id_enabled: bool,
+    pub(super) present_id2_enabled: bool,
+    pub(super) present_wait_enabled: bool,
+    pub(super) present_wait2_enabled: bool,
+}
+
+impl VulkanaliaDecodedImagePresentTimingConfig {
+    pub(super) fn disabled() -> Self {
+        Self {
+            present_id_enabled: false,
+            present_id2_enabled: false,
+            present_wait_enabled: false,
+            present_wait2_enabled: false,
+        }
+    }
+
+    pub(super) fn new(
+        present_id_enabled: bool,
+        present_id2_enabled: bool,
+        present_wait_enabled: bool,
+        present_wait2_enabled: bool,
+    ) -> Self {
+        Self {
+            present_id_enabled,
+            present_id2_enabled,
+            present_wait_enabled,
+            present_wait2_enabled,
+        }
+    }
+
+    fn present_id(self, present_frame_index: u32) -> Option<u64> {
+        if self.present_id2_enabled || self.present_id_enabled {
+            Some(u64::from(present_frame_index).saturating_add(1))
+        } else {
+            None
+        }
+    }
+
+    fn present_id_mode(self) -> &'static str {
+        if self.present_id2_enabled {
+            "present-id2-khr"
+        } else if self.present_id_enabled {
+            "present-id-khr"
+        } else {
+            "disabled"
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
     pub binding: &'static str,
@@ -98,6 +149,13 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
     pub present_frame_slot: u32,
     pub present_sync_model: &'static str,
     pub wait_idle_after_present: bool,
+    pub present_id: Option<u64>,
+    pub present_id_mode: &'static str,
+    pub uses_present_id: bool,
+    pub uses_present_id2: bool,
+    pub present_wait_available: bool,
+    pub present_wait2_available: bool,
+    pub present_wait_after_present: bool,
     pub swapchain_image_index: u32,
     pub swapchain_image_view_count: usize,
     pub target_format: String,
@@ -129,9 +187,15 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
     pub source_frame_duration_ms: Vec<Option<u64>>,
     pub display_order_keys: Vec<i64>,
     pub display_order_key_sources: Vec<&'static str>,
+    pub present_ids: Vec<Option<u64>>,
     pub total_pacing_sleep_micros: u64,
     pub pts_monotonic: bool,
     pub display_order_monotonic: bool,
+    pub uses_present_id: bool,
+    pub uses_present_id2: bool,
+    pub present_wait_available: bool,
+    pub present_wait2_available: bool,
+    pub present_wait_after_present: bool,
     pub present_handoff: NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot,
     pub draws: Vec<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
     pub frame_order_model: &'static str,
@@ -413,6 +477,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_once(
     resource_image: &VulkanaliaVideoSessionResourceImage,
     sampler: &VulkanaliaDecodedImagePresentSamplerResources,
     pipeline: &VulkanaliaDecodedImagePresentPipelineResources,
+    present_timing: VulkanaliaDecodedImagePresentTimingConfig,
 ) -> Result<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot, String> {
     let frame_resources = native_vulkan_vulkanalia_create_decoded_image_present_frame_resources(
         device,
@@ -439,6 +504,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_once(
         "single-frame-present",
         0,
         "unpaced-single-frame-smoke",
+        present_timing,
     );
     native_vulkan_vulkanalia_destroy_decoded_image_present_frame_resources(device, frame_resources);
     result
@@ -464,6 +530,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
     display_order_key_source: &'static str,
     pacing_sleep_micros: u64,
     pacing_clock_model: &'static str,
+    present_timing: VulkanaliaDecodedImagePresentTimingConfig,
 ) -> Result<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot, String> {
     if swapchain_images.is_empty() {
         return Err("decoded image present requires at least one swapchain image".to_owned());
@@ -553,10 +620,31 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
     let swapchains = [swapchain];
     let image_indices = [image_index];
     let wait_semaphores = [render_finished];
-    let present_info = vk::PresentInfoKHR::builder()
+    let present_id = present_timing.present_id(present_frame_index);
+    let present_ids = [present_id.unwrap_or(0)];
+    let mut present_id2_info = present_id.map(|_| {
+        vk::PresentId2KHR::builder()
+            .present_ids(&present_ids)
+            .build()
+    });
+    let mut present_id_info = present_id.map(|_| {
+        vk::PresentIdKHR::builder()
+            .present_ids(&present_ids)
+            .build()
+    });
+    let mut present_info = vk::PresentInfoKHR::builder()
         .wait_semaphores(&wait_semaphores)
         .swapchains(&swapchains)
         .image_indices(&image_indices);
+    if present_timing.present_id2_enabled {
+        if let Some(present_id2_info) = present_id2_info.as_mut() {
+            present_info = present_info.push_next(present_id2_info);
+        }
+    } else if present_timing.present_id_enabled {
+        if let Some(present_id_info) = present_id_info.as_mut() {
+            present_info = present_info.push_next(present_id_info);
+        }
+    }
     unsafe {
         device
             .queue_present_khr(queue, &present_info)
@@ -580,6 +668,13 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         present_frame_slot: present_frame_slot as u32,
         present_sync_model: "frame-slot semaphore/fence reuse; no per-present queue_wait_idle",
         wait_idle_after_present: false,
+        present_id,
+        present_id_mode: present_timing.present_id_mode(),
+        uses_present_id: present_timing.present_id_enabled,
+        uses_present_id2: present_timing.present_id2_enabled,
+        present_wait_available: present_timing.present_wait_enabled,
+        present_wait2_available: present_timing.present_wait2_enabled,
+        present_wait_after_present: false,
         swapchain_image_index: image_index,
         swapchain_image_view_count: frame_resources.swapchain_image_views.len(),
         target_format: format!("{swapchain_format:?}"),
@@ -590,7 +685,10 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         decoded_image_layout_transition: "video-decode-dpb -> shader-read-only-optimal -> video-decode-dpb",
         swapchain_layout_transition: "undefined -> color-attachment-optimal -> present-src-khr",
         render_model: "immutable YCbCr combined image sampler -> Vulkan 1.3/1.4 dynamic rendering fullscreen triangle -> Wayland swapchain",
-        command_order: native_vulkan_vulkanalia_decoded_image_present_command_order(true).to_vec(),
+        command_order: native_vulkan_vulkanalia_decoded_image_present_command_order(
+            true,
+            present_timing.present_id_mode(),
+        ),
         uses_pipeline_rendering_create_info: true,
         uses_dynamic_rendering: true,
         uses_synchronization2: true,
@@ -1179,9 +1277,10 @@ pub(super) fn native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_res
 
 pub(super) fn native_vulkan_vulkanalia_decoded_image_present_command_order(
     same_queue_family: bool,
-) -> &'static [&'static str] {
-    if same_queue_family {
-        &[
+    present_id_mode: &'static str,
+) -> Vec<&'static str> {
+    let mut order = if same_queue_family {
+        vec![
             "queue_submit2_decode",
             "cmd_pipeline_barrier2_shader_read",
             "cmd_begin_rendering",
@@ -1196,7 +1295,7 @@ pub(super) fn native_vulkan_vulkanalia_decoded_image_present_command_order(
             "no_queue_wait_idle_after_present",
         ]
     } else {
-        &[
+        vec![
             "queue_submit2_decode",
             "cmd_pipeline_barrier2_video_release",
             "cmd_pipeline_barrier2_graphics_acquire_shader_read",
@@ -1211,7 +1310,13 @@ pub(super) fn native_vulkan_vulkanalia_decoded_image_present_command_order(
             "defer_frame_slot_reuse_until_fence",
             "no_queue_wait_idle_after_present",
         ]
+    };
+    match present_id_mode {
+        "present-id2-khr" => order.insert(order.len().saturating_sub(3), "present_id2_khr"),
+        "present-id-khr" => order.insert(order.len().saturating_sub(3), "present_id_khr"),
+        _ => {}
     }
+    order
 }
 
 const NATIVE_VULKAN_VULKANALIA_YCBCR_DESCRIPTOR_POOL_BUDGET: u32 = 4;
@@ -1363,7 +1468,7 @@ mod tests {
 
     #[test]
     fn decoded_image_present_order_keeps_queue_ownership_explicit() {
-        let split = native_vulkan_vulkanalia_decoded_image_present_command_order(false);
+        let split = native_vulkan_vulkanalia_decoded_image_present_command_order(false, "disabled");
         assert!(split.contains(&"cmd_pipeline_barrier2_video_release"));
         assert!(split.contains(&"cmd_pipeline_barrier2_graphics_acquire_shader_read"));
         assert!(split.contains(&"cmd_begin_rendering"));
@@ -1371,9 +1476,18 @@ mod tests {
         assert!(split.contains(&"queue_submit2_present"));
         assert!(split.contains(&"no_queue_wait_idle_after_present"));
 
-        let same = native_vulkan_vulkanalia_decoded_image_present_command_order(true);
+        let same = native_vulkan_vulkanalia_decoded_image_present_command_order(true, "disabled");
         assert!(!same.contains(&"cmd_pipeline_barrier2_video_release"));
         assert!(same.contains(&"cmd_bind_ycbcr_descriptor"));
+
+        let present_id2 =
+            native_vulkan_vulkanalia_decoded_image_present_command_order(true, "present-id2-khr");
+        assert!(present_id2.contains(&"present_id2_khr"));
+        assert!(
+            present_id2
+                .windows(2)
+                .any(|pair| pair == ["present_id2_khr", "queue_present_khr"])
+        );
     }
 
     #[test]

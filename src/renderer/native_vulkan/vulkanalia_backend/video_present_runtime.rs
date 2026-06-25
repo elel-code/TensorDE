@@ -21,7 +21,7 @@ use super::render_present::{
     NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot,
     NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot,
     VulkanaliaDecodedImagePresentFrameResources, VulkanaliaDecodedImagePresentPipelineResources,
-    VulkanaliaDecodedImagePresentSamplerResources,
+    VulkanaliaDecodedImagePresentSamplerResources, VulkanaliaDecodedImagePresentTimingConfig,
     native_vulkan_vulkanalia_create_decoded_image_present_frame_resources,
     native_vulkan_vulkanalia_create_decoded_image_present_pipeline_resources,
     native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources,
@@ -165,6 +165,12 @@ impl NativeVulkanVulkanaliaVideoPresentSessionRuntimeResources {
             resource_image,
             sampler,
             pipeline,
+            VulkanaliaDecodedImagePresentTimingConfig::new(
+                context.present_feature_selection.present_id_enabled,
+                context.present_feature_selection.present_id2_enabled,
+                context.present_feature_selection.present_wait_enabled,
+                context.present_feature_selection.present_wait2_enabled,
+            ),
         )
     }
 
@@ -878,6 +884,12 @@ fn create_video_present_session_pieces(
                     .clone();
                 let sequence_started_at = Instant::now();
                 let mut first_present_pts_ms = None;
+                let decoded_image_present_timing = VulkanaliaDecodedImagePresentTimingConfig::new(
+                    context.present_feature_selection.present_id_enabled,
+                    context.present_feature_selection.present_id2_enabled,
+                    context.present_feature_selection.present_wait_enabled,
+                    context.present_feature_selection.present_wait2_enabled,
+                );
                 let (av1_ready_prefix_decode, h264_ready_prefix_decode, h265_ready_prefix_decode) = {
                     let present_handoff_capacity =
                         native_vulkan_vulkanalia_present_handoff_capacity(
@@ -1031,6 +1043,7 @@ fn create_video_present_session_pieces(
                                 &mut first_present_pts_ms,
                                 target_max_fps,
                                 &mut pending_decoded_present_frames,
+                                decoded_image_present_timing,
                             );
                         match present_result {
                             Ok((draws, handoff_snapshot)) => {
@@ -1175,6 +1188,7 @@ fn native_vulkan_vulkanalia_flush_pending_decoded_present_frames(
     first_present_pts_ms: &mut Option<u64>,
     target_max_fps: Option<u32>,
     pending_frames: &mut NativeVulkanVulkanaliaDecodedPresentHandoff,
+    present_timing: VulkanaliaDecodedImagePresentTimingConfig,
 ) -> Result<
     (
         Vec<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
@@ -1221,6 +1235,7 @@ fn native_vulkan_vulkanalia_flush_pending_decoded_present_frames(
             frame.display_order_key_source,
             pacing_sleep_micros,
             pacing_clock_model,
+            present_timing,
         )?);
     }
 
@@ -1258,6 +1273,7 @@ fn native_vulkan_vulkanalia_decoded_image_present_sequence_from_draws(
         .iter()
         .map(|draw| draw.display_order_key_source)
         .collect::<Vec<_>>();
+    let present_ids = draws.iter().map(|draw| draw.present_id).collect::<Vec<_>>();
     let total_pacing_sleep_micros = draws
         .iter()
         .map(|draw| draw.pacing_sleep_micros)
@@ -1269,6 +1285,11 @@ fn native_vulkan_vulkanalia_decoded_image_present_sequence_from_draws(
         .collect::<Vec<_>>();
     let pts_monotonic = pts_values.windows(2).all(|pair| pair[0] <= pair[1]);
     let display_order_monotonic = display_order_keys.windows(2).all(|pair| pair[0] <= pair[1]);
+    let uses_present_id = draws.iter().any(|draw| draw.uses_present_id);
+    let uses_present_id2 = draws.iter().any(|draw| draw.uses_present_id2);
+    let present_wait_available = draws.iter().any(|draw| draw.present_wait_available);
+    let present_wait2_available = draws.iter().any(|draw| draw.present_wait2_available);
+    let present_wait_after_present = draws.iter().any(|draw| draw.present_wait_after_present);
     Some(NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
         binding: "vulkanalia",
         route: "decoded-image-dynamic-rendering-present-sequence",
@@ -1280,9 +1301,15 @@ fn native_vulkan_vulkanalia_decoded_image_present_sequence_from_draws(
         source_frame_duration_ms,
         display_order_keys,
         display_order_key_sources,
+        present_ids,
         total_pacing_sleep_micros,
         pts_monotonic,
         display_order_monotonic,
+        uses_present_id,
+        uses_present_id2,
+        present_wait_available,
+        present_wait2_available,
+        present_wait_after_present,
         present_handoff,
         draws,
         frame_order_model: "FFmpeg-style display-key scheduler: decode submissions enqueue into a bounded keep-last handoff, then present drain sorts by PTS/POC/order-hint with decode-index tie-break before Vulkanalia dynamic rendering",
