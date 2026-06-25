@@ -44,8 +44,6 @@ mod video_codec;
 mod video_command_pool;
 #[path = "vulkanalia_backend/video_decode_commands.rs"]
 mod video_decode_commands;
-#[path = "vulkanalia_backend/video_decode_payload.rs"]
-mod video_decode_payload;
 #[path = "vulkanalia_backend/video_decode_submit.rs"]
 mod video_decode_submit;
 #[path = "vulkanalia_backend/video_decode_submit_av1.rs"]
@@ -192,14 +190,13 @@ pub use video_bitstream_buffer::{
     NativeVulkanVulkanaliaVideoSessionBitstreamBufferSnapshot,
 };
 pub use video_decode_submit_av1::{
-    NativeVulkanVulkanaliaAv1CdefPlan, NativeVulkanVulkanaliaAv1FrameSubmitInput,
+    NativeVulkanVulkanaliaAv1CdefPlan, NativeVulkanVulkanaliaAv1CommandFrameSnapshot,
+    NativeVulkanVulkanaliaAv1CommandSmokeSnapshot, NativeVulkanVulkanaliaAv1DecodeFrameBatchInput,
+    NativeVulkanVulkanaliaAv1DecodeFrameInput, NativeVulkanVulkanaliaAv1FrameSubmitInput,
     NativeVulkanVulkanaliaAv1GlobalMotionPlan, NativeVulkanVulkanaliaAv1LoopFilterPlan,
     NativeVulkanVulkanaliaAv1LoopRestorationPlan, NativeVulkanVulkanaliaAv1QuantizationPlan,
-    NativeVulkanVulkanaliaAv1ReadyPrefixCommandFrameSnapshot,
-    NativeVulkanVulkanaliaAv1ReadyPrefixCommandSmokeSnapshot,
-    NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput,
-    NativeVulkanVulkanaliaAv1ReadyPrefixFrameInput, NativeVulkanVulkanaliaAv1ReferenceInfoPlan,
-    NativeVulkanVulkanaliaAv1SegmentationPlan, NativeVulkanVulkanaliaAv1TileInfoPlan,
+    NativeVulkanVulkanaliaAv1ReferenceInfoPlan, NativeVulkanVulkanaliaAv1SegmentationPlan,
+    NativeVulkanVulkanaliaAv1TileInfoPlan,
 };
 pub use video_decode_submit_h264::{
     NativeVulkanVulkanaliaH264ReadyPrefixCommandFrameSnapshot,
@@ -235,15 +232,8 @@ pub use video_present_device::{
 };
 pub use video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot;
 pub use video_present_runtime::{
-    NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeOptions,
-    NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeSnapshot,
-    NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot,
-    NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot,
-    run_native_vulkan_vulkanalia_av1_retained_video_present_decode,
-    run_native_vulkan_vulkanalia_h264_retained_video_present_decode,
-    run_native_vulkan_vulkanalia_h265_retained_video_present_decode,
 };
 #[cfg(feature = "native-vulkan-gst-video")]
 pub use video_present_runtime::{

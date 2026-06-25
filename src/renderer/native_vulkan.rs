@@ -34,6 +34,87 @@ unsafe extern "C" {
     fn malloc_trim(pad: usize) -> i32;
 }
 
+pub enum NativeVulkanEncodedAccessUnitPayload {
+    Empty,
+    Owned(Vec<u8>),
+    #[cfg(feature = "native-vulkan-gst-video")]
+    GstMapped(gst::MappedBuffer<gst::buffer::Readable>),
+}
+
+impl NativeVulkanEncodedAccessUnitPayload {
+    pub(crate) fn owned(bytes: Vec<u8>) -> Self {
+        Self::Owned(bytes)
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    fn from_gst_buffer(
+        buffer: gst::Buffer,
+        codec_label: &'static str,
+    ) -> Result<Self, NativeVulkanError> {
+        buffer
+            .into_mapped_buffer_readable()
+            .map(Self::GstMapped)
+            .map_err(|_| {
+                NativeVulkanError::Video(format!(
+                    "{codec_label} bitstream buffer map_readable failed"
+                ))
+            })
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Empty => &[],
+            Self::Owned(bytes) => bytes,
+            #[cfg(feature = "native-vulkan-gst-video")]
+            Self::GstMapped(map) => map.as_slice(),
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.bytes().len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.bytes().is_empty()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        *self = Self::Empty;
+    }
+
+    pub(crate) fn into_vec(self) -> Vec<u8> {
+        match self {
+            Self::Empty => Vec::new(),
+            Self::Owned(bytes) => bytes,
+            #[cfg(feature = "native-vulkan-gst-video")]
+            Self::GstMapped(map) => map.as_slice().to_vec(),
+        }
+    }
+}
+
+impl Default for NativeVulkanEncodedAccessUnitPayload {
+    fn default() -> Self {
+        Self::Empty
+    }
+}
+
+impl fmt::Debug for NativeVulkanEncodedAccessUnitPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NativeVulkanEncodedAccessUnitPayload")
+            .field(
+                "model",
+                &match self {
+                    Self::Empty => "empty",
+                    Self::Owned(_) => "owned-vec",
+                    #[cfg(feature = "native-vulkan-gst-video")]
+                    Self::GstMapped(_) => "gst-mapped-buffer",
+                },
+            )
+            .field("bytes", &self.len())
+            .finish()
+    }
+}
+
 #[cfg(any(
     feature = "native-vulkan-renderer",
     feature = "native-vulkan-gst-video",
@@ -189,7 +270,7 @@ pub use vulkanalia_direct::{
 };
 #[cfg(feature = "native-vulkan-gst-video")]
 pub use vulkanalia_extract::{
-    native_vulkan_extract_av1_ready_prefix_for_vulkanalia,
+    native_vulkan_extract_av1_decode_frames_for_vulkanalia,
     native_vulkan_extract_av1_sequence_header_for_vulkanalia,
     native_vulkan_extract_h264_parameter_sets_for_vulkanalia,
     native_vulkan_extract_h264_ready_prefix_for_vulkanalia,
@@ -526,7 +607,7 @@ type NativeVulkanAv1TemporalUnitSampleMetadata = NativeVulkanH265AccessUnitSampl
 
 #[cfg(feature = "native-vulkan-gst-video")]
 struct NativeVulkanH265AccessUnitExtract {
-    bytes: Vec<u8>,
+    payload: NativeVulkanEncodedAccessUnitPayload,
     pts_ms: Option<u64>,
     duration_ms: Option<u64>,
     caps: Option<String>,
@@ -540,7 +621,7 @@ struct NativeVulkanH265AccessUnitExtract {
 
 #[cfg(feature = "native-vulkan-gst-video")]
 struct NativeVulkanH264AccessUnitExtract {
-    bytes: Vec<u8>,
+    payload: NativeVulkanEncodedAccessUnitPayload,
     pts_ms: Option<u64>,
     duration_ms: Option<u64>,
     caps: Option<String>,
@@ -573,7 +654,7 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH264AccessUnitExtract {
     }
 
     fn bytes(&self) -> &[u8] {
-        &self.bytes
+        self.payload.bytes()
     }
 
     fn pts_ms(&self) -> Option<u64> {
@@ -1338,7 +1419,7 @@ fn native_vulkan_av1_reference_info_from_decode_info(
 
 #[cfg(feature = "native-vulkan-gst-video")]
 struct NativeVulkanAv1TemporalUnitExtract {
-    bytes: Vec<u8>,
+    payload: NativeVulkanEncodedAccessUnitPayload,
     pts_ns: Option<u64>,
     duration_ns: Option<u64>,
     pts_ms: Option<u64>,
@@ -1401,7 +1482,7 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
     }
 
     fn bytes(&self) -> &[u8] {
-        &self.bytes
+        self.payload.bytes()
     }
 
     fn pts_ms(&self) -> Option<u64> {
@@ -1459,7 +1540,7 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
     }
 
     fn bytes(&self) -> &[u8] {
-        &self.bytes
+        self.payload.bytes()
     }
 
     fn pts_ms(&self) -> Option<u64> {
@@ -1489,7 +1570,7 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
             .clone()
             .or_else(|| {
                 native_vulkan_av1_first_frame_submit_snapshot(
-                    &self.bytes,
+                    self.payload.bytes(),
                     &self.stats.obus,
                     parameter_sets,
                 )
@@ -1519,23 +1600,20 @@ impl NativeVulkanGstStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
 fn native_vulkan_h264_access_unit_from_sample(
     sample: &gst::Sample,
 ) -> Result<NativeVulkanH264AccessUnitExtract, NativeVulkanError> {
-    let buffer = sample.buffer().ok_or_else(|| {
+    let buffer = sample.buffer_owned().ok_or_else(|| {
         NativeVulkanError::Video("H.264 bitstream sample has no buffer".to_owned())
     })?;
-    let map = buffer.map_readable().map_err(|_| {
-        NativeVulkanError::Video("H.264 bitstream buffer map_readable failed".to_owned())
-    })?;
-    let bytes = map.as_slice().to_vec();
-    if bytes.is_empty() {
+    let metadata = native_vulkan_h265_access_unit_metadata_from_sample(sample, buffer.as_ref());
+    let payload = NativeVulkanEncodedAccessUnitPayload::from_gst_buffer(buffer, "H.264")?;
+    if payload.is_empty() {
         return Err(NativeVulkanError::Video(
             "H.264 bitstream sample is empty".to_owned(),
         ));
     }
-    let stats = native_vulkan_h264_nal_stats(&bytes);
-    let metadata = native_vulkan_h265_access_unit_metadata_from_sample(sample, buffer);
+    let stats = native_vulkan_h264_nal_stats(payload.bytes());
 
     Ok(NativeVulkanH264AccessUnitExtract {
-        bytes,
+        payload,
         pts_ms: metadata.pts_ms,
         duration_ms: metadata.duration_ms,
         caps: metadata.caps,
@@ -1553,22 +1631,19 @@ fn native_vulkan_av1_temporal_unit_from_sample(
     sample: &gst::Sample,
 ) -> Result<NativeVulkanAv1TemporalUnitExtract, NativeVulkanError> {
     let buffer = sample
-        .buffer()
+        .buffer_owned()
         .ok_or_else(|| NativeVulkanError::Video("AV1 bitstream sample has no buffer".to_owned()))?;
-    let map = buffer.map_readable().map_err(|_| {
-        NativeVulkanError::Video("AV1 bitstream buffer map_readable failed".to_owned())
-    })?;
-    let bytes = map.as_slice().to_vec();
-    if bytes.is_empty() {
+    let metadata = native_vulkan_av1_temporal_unit_metadata_from_sample(sample, buffer.as_ref());
+    let payload = NativeVulkanEncodedAccessUnitPayload::from_gst_buffer(buffer, "AV1")?;
+    if payload.is_empty() {
         return Err(NativeVulkanError::Video(
             "AV1 bitstream sample is empty".to_owned(),
         ));
     }
-    let stats = native_vulkan_av1_obu_stats(&bytes).map_err(NativeVulkanError::Video)?;
-    let metadata = native_vulkan_av1_temporal_unit_metadata_from_sample(sample, buffer);
+    let stats = native_vulkan_av1_obu_stats(payload.bytes()).map_err(NativeVulkanError::Video)?;
 
     Ok(NativeVulkanAv1TemporalUnitExtract {
-        bytes,
+        payload,
         pts_ns: metadata.pts_ns,
         duration_ns: metadata.duration_ns,
         pts_ms: metadata.pts_ms,
@@ -1604,7 +1679,7 @@ fn native_vulkan_av1_temporal_unit_snapshot(
             .as_ref()
             .or(active_sequence_header)?;
         native_vulkan_av1_first_frame_submit_snapshot(
-            &temporal_unit.bytes,
+            temporal_unit.payload.bytes(),
             &temporal_unit.stats.obus,
             sequence_header,
         )
@@ -1613,7 +1688,7 @@ fn native_vulkan_av1_temporal_unit_snapshot(
     NativeVulkanAv1TemporalUnitSnapshot {
         index,
         bytes: temporal_unit.stats.bytes,
-        byte_hash: native_vulkan_stable_byte_hash(&temporal_unit.bytes),
+        byte_hash: native_vulkan_stable_byte_hash(temporal_unit.payload.bytes()),
         pts_ns: temporal_unit.pts_ns,
         duration_ns: temporal_unit.duration_ns,
         pts_ms: temporal_unit.pts_ms,
@@ -1642,7 +1717,8 @@ fn native_vulkan_h264_access_unit_snapshot(
     access_unit: &NativeVulkanH264AccessUnitExtract,
     parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
 ) -> NativeVulkanH264AccessUnitSnapshot {
-    let first_frame = native_vulkan_h264_picture_decode_info(&access_unit.bytes, parameter_sets);
+    let first_frame =
+        native_vulkan_h264_picture_decode_info(access_unit.payload.bytes(), parameter_sets);
     let (first_slice, first_slice_parse_error) = match first_frame {
         Ok(first_frame) => (
             Some(NativeVulkanH264AccessUnitSliceSnapshot {
@@ -1706,7 +1782,7 @@ fn native_vulkan_h264_access_unit_snapshot(
     NativeVulkanH264AccessUnitSnapshot {
         index,
         bytes: access_unit.stats.bytes,
-        byte_hash: native_vulkan_stable_byte_hash(&access_unit.bytes),
+        byte_hash: native_vulkan_stable_byte_hash(access_unit.payload.bytes()),
         pts_ms: access_unit.pts_ms,
         duration_ms: access_unit.duration_ms,
         has_annex_b_start_codes: access_unit.stats.has_annex_b_start_codes,
@@ -1726,23 +1802,20 @@ fn native_vulkan_h264_access_unit_snapshot(
 fn native_vulkan_h265_access_unit_from_sample(
     sample: &gst::Sample,
 ) -> Result<NativeVulkanH265AccessUnitExtract, NativeVulkanError> {
-    let buffer = sample.buffer().ok_or_else(|| {
+    let buffer = sample.buffer_owned().ok_or_else(|| {
         NativeVulkanError::Video("H.265 bitstream sample has no buffer".to_owned())
     })?;
-    let map = buffer.map_readable().map_err(|_| {
-        NativeVulkanError::Video("H.265 bitstream buffer map_readable failed".to_owned())
-    })?;
-    let bytes = map.as_slice().to_vec();
-    if bytes.is_empty() {
+    let metadata = native_vulkan_h265_access_unit_metadata_from_sample(sample, buffer.as_ref());
+    let payload = NativeVulkanEncodedAccessUnitPayload::from_gst_buffer(buffer, "H.265")?;
+    if payload.is_empty() {
         return Err(NativeVulkanError::Video(
             "H.265 bitstream sample is empty".to_owned(),
         ));
     }
-    let stats = native_vulkan_h265_nal_stats(&bytes);
-    let metadata = native_vulkan_h265_access_unit_metadata_from_sample(sample, buffer);
+    let stats = native_vulkan_h265_nal_stats(payload.bytes());
 
     Ok(NativeVulkanH265AccessUnitExtract {
-        bytes,
+        payload,
         pts_ms: metadata.pts_ms,
         duration_ms: metadata.duration_ms,
         caps: metadata.caps,
@@ -1806,7 +1879,7 @@ fn native_vulkan_h265_access_unit_snapshot(
     parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
 ) -> NativeVulkanH265AccessUnitSnapshot {
     let first_slice_result =
-        native_vulkan_h265_first_slice_probe_snapshot(&access_unit.bytes, parameter_sets);
+        native_vulkan_h265_first_slice_probe_snapshot(access_unit.payload.bytes(), parameter_sets);
     let (first_slice, first_slice_parse_error) = match first_slice_result {
         Ok(snapshot) => (Some(snapshot), None),
         Err(err) => (None, Some(err)),
@@ -1814,7 +1887,7 @@ fn native_vulkan_h265_access_unit_snapshot(
     NativeVulkanH265AccessUnitSnapshot {
         index,
         bytes: access_unit.stats.bytes,
-        byte_hash: native_vulkan_stable_byte_hash(&access_unit.bytes),
+        byte_hash: native_vulkan_stable_byte_hash(access_unit.payload.bytes()),
         pts_ms: access_unit.pts_ms,
         duration_ms: access_unit.duration_ms,
         has_annex_b_start_codes: access_unit.stats.has_annex_b_start_codes,
@@ -8157,7 +8230,7 @@ pub fn wallpaper_type_support_matrix() -> Vec<NativeVulkanWallpaperTypeSupport> 
         NativeVulkanWallpaperTypeSupport {
             wallpaper_type: NativeVulkanWallpaperType::Video,
             current_vulkan_item: true,
-            current_renderer_status: "--run-video routes H.264/H.265/AV1 through Vulkanalia ready-prefix decode/present; missing explicit prefix counts use the codec default ready-prefix window instead of legacy video plan handoff",
+            current_renderer_status: "--run-video routes H.264/H.265 through Vulkanalia streaming decode/present; AV1 waits for the continuous streaming runtime",
             target_vulkan_path: "container demux/parser -> Vulkan Video bitstream/session parameters -> decoded NV12/P010 image -> Vulkan YUV sampling; importer paths remain fallback/comparison",
         },
         NativeVulkanWallpaperTypeSupport {
@@ -9913,7 +9986,7 @@ mod tests {
         assert!(frame_only_stats.first_frame_submit.is_none());
 
         let temporal_unit = NativeVulkanAv1TemporalUnitExtract {
-            bytes: frame_only_obu,
+            payload: NativeVulkanEncodedAccessUnitPayload::owned(frame_only_obu),
             pts_ns: Some(4_000_000),
             duration_ns: Some(4_000_000),
             pts_ms: Some(4),

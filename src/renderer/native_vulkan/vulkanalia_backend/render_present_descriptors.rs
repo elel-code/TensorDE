@@ -115,12 +115,8 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_reso
         })?;
 
     let result = (|| -> Result<VulkanaliaDecodedImagePresentSamplerResources, String> {
-        let mut sampler_conversion_info = vk::SamplerYcbcrConversionInfo::builder()
-            .conversion(conversion)
-            .build();
-        let sampler_info = native_vulkan_vulkanalia_decoded_image_sampler_create_info(
-            &mut sampler_conversion_info,
-        );
+        let sampler_info =
+            native_vulkan_vulkanalia_decoded_image_descriptor_heap_sampler_create_info();
         let descriptor_heap =
             native_vulkan_vulkanalia_create_decoded_image_present_descriptor_heap(
                 device,
@@ -215,11 +211,7 @@ pub(super) fn native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_la
         &mut heap_view_usage_info,
         &mut heap_view_conversion_info,
     );
-    let mut sampler_conversion_info = vk::SamplerYcbcrConversionInfo::builder()
-        .conversion(resources.conversion)
-        .build();
-    let sampler_info =
-        native_vulkan_vulkanalia_decoded_image_sampler_create_info(&mut sampler_conversion_info);
+    let sampler_info = native_vulkan_vulkanalia_decoded_image_descriptor_heap_sampler_create_info();
     if let Err(err) = native_vulkan_vulkanalia_write_descriptor_heap_image_sampler(
         device,
         &mut resources.descriptor_heap,
@@ -318,6 +310,20 @@ pub(super) fn native_vulkan_vulkanalia_decoded_image_sampler_create_info(
         .min_lod(0.0)
         .max_lod(0.0)
         .push_next(sampler_conversion_info)
+        .build()
+}
+
+fn native_vulkan_vulkanalia_decoded_image_descriptor_heap_sampler_create_info()
+-> vk::SamplerCreateInfo {
+    vk::SamplerCreateInfo::builder()
+        .mag_filter(vk::Filter::LINEAR)
+        .min_filter(vk::Filter::LINEAR)
+        .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .min_lod(0.0)
+        .max_lod(0.0)
         .build()
 }
 

@@ -27,7 +27,7 @@ use super::swapchain::{
     create_vulkanalia_present_device, create_vulkanalia_swapchain_plan,
     create_vulkanalia_wayland_surface, present_mode_label, queue_flag_labels,
     select_vulkanalia_present_queue, swapchain_create_flag_labels,
-    vulkanalia_surface_capabilities2_enabled,
+    vulkanalia_surface_capabilities2_enabled, vulkanalia_surface_maintenance1_enabled,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,7 +109,11 @@ fn with_vulkanalia_clear_present(
         &physical_devices,
         &mut present_queue_family_count,
     )?;
-    let present_device = create_vulkanalia_present_device(instance, &selection)?;
+    let present_device = create_vulkanalia_present_device(
+        instance,
+        &selection,
+        vulkanalia_surface_maintenance1_enabled(vulkan),
+    )?;
     if !present_device.feature_selection.synchronization2_enabled {
         unsafe {
             present_device.device.destroy_device(None);

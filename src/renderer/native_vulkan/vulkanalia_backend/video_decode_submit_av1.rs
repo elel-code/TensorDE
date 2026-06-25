@@ -20,15 +20,15 @@ const FFMPEG_AV1_PICTURE_REFERENCE: &str = "references/ffmpeg/libavcodec/vulkan_
 const AV1_REFERENCE_NAME_COUNT: usize = vk::MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput {
+pub struct NativeVulkanVulkanaliaAv1DecodeFrameBatchInput {
     pub codec: NativeVulkanVideoSessionCodec,
     pub sequence_header: NativeVulkanAv1SequenceHeaderSnapshot,
     pub requested_frame_count: u32,
-    pub frames: Vec<NativeVulkanVulkanaliaAv1ReadyPrefixFrameInput>,
+    pub frames: Vec<NativeVulkanVulkanaliaAv1DecodeFrameInput>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NativeVulkanVulkanaliaAv1ReadyPrefixFrameInput {
+pub struct NativeVulkanVulkanaliaAv1DecodeFrameInput {
     pub entry: NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
     pub frame: NativeVulkanVulkanaliaAv1FrameSubmitInput,
     pub pts_ms: Option<u64>,
@@ -37,7 +37,7 @@ pub struct NativeVulkanVulkanaliaAv1ReadyPrefixFrameInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NativeVulkanVulkanaliaAv1ReadyPrefixCommandFrameSnapshot {
+pub struct NativeVulkanVulkanaliaAv1CommandFrameSnapshot {
     pub frame_index: u32,
     pub temporal_unit_index: u32,
     pub pts_ms: Option<u64>,
@@ -57,7 +57,7 @@ pub struct NativeVulkanVulkanaliaAv1ReadyPrefixCommandFrameSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NativeVulkanVulkanaliaAv1ReadyPrefixCommandSmokeSnapshot {
+pub struct NativeVulkanVulkanaliaAv1CommandSmokeSnapshot {
     pub requested_frame_count: u32,
     pub recorded_frame_count: u32,
     pub submitted_frame_count: u32,
@@ -86,7 +86,7 @@ pub struct NativeVulkanVulkanaliaAv1ReadyPrefixCommandSmokeSnapshot {
     pub tile_count: u32,
     pub tile_offsets: Vec<u32>,
     pub tile_sizes: Vec<u32>,
-    pub frames: Vec<NativeVulkanVulkanaliaAv1ReadyPrefixCommandFrameSnapshot>,
+    pub frames: Vec<NativeVulkanVulkanaliaAv1CommandFrameSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -299,7 +299,7 @@ pub(super) struct NativeVulkanVulkanaliaAv1VkSubmitInfo<'a> {
     pub decode_reference_slots: &'a [vk::VideoReferenceSlotInfoKHR],
 }
 
-pub(super) fn native_vulkan_vulkanalia_av1_ready_prefix_decode_submit_plan(
+pub(super) fn native_vulkan_vulkanalia_av1_decode_submit_plan(
     extent: vk::Extent2D,
     codec: NativeVulkanVideoSessionCodec,
     entry: &NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
@@ -871,11 +871,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn av1_ready_prefix_plan_matches_ffmpeg_slot_shape() {
+    fn av1_decode_submit_plan_matches_ffmpeg_slot_shape() {
         let entry = test_av1_entry();
         let frame = test_av1_frame();
 
-        let plan = native_vulkan_vulkanalia_av1_ready_prefix_decode_submit_plan(
+        let plan = native_vulkan_vulkanalia_av1_decode_submit_plan(
             vk::Extent2D {
                 width: 1920,
                 height: 1080,
@@ -907,8 +907,8 @@ mod tests {
     }
 
     #[test]
-    fn av1_ready_prefix_plan_lowers_to_vulkanalia_decode_info() {
-        let plan = native_vulkan_vulkanalia_av1_ready_prefix_decode_submit_plan(
+    fn av1_decode_submit_plan_lowers_to_vulkanalia_decode_info() {
+        let plan = native_vulkan_vulkanalia_av1_decode_submit_plan(
             vk::Extent2D {
                 width: 1280,
                 height: 720,

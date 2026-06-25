@@ -30,10 +30,13 @@ use super::instance::{
 };
 
 const GET_SURFACE_CAPABILITIES2_EXTENSION_NAME: &str = "VK_KHR_get_surface_capabilities2";
+const SURFACE_MAINTENANCE1_EXTENSION_NAME: &str = "VK_KHR_surface_maintenance1";
 pub(super) const REQUIRED_INSTANCE_EXTENSIONS: &[&str] =
     &["VK_KHR_surface", "VK_KHR_wayland_surface"];
-pub(super) const OPTIONAL_INSTANCE_EXTENSIONS: &[&str] =
-    &[GET_SURFACE_CAPABILITIES2_EXTENSION_NAME];
+pub(super) const OPTIONAL_INSTANCE_EXTENSIONS: &[&str] = &[
+    GET_SURFACE_CAPABILITIES2_EXTENSION_NAME,
+    SURFACE_MAINTENANCE1_EXTENSION_NAME,
+];
 const REQUIRED_DEVICE_EXTENSIONS: &[&str] = &["VK_KHR_swapchain"];
 const PRESENT_ID_EXTENSION_NAME: &str = "VK_KHR_present_id";
 const PRESENT_ID2_EXTENSION_NAME: &str = "VK_KHR_present_id2";
@@ -272,7 +275,11 @@ fn with_vulkanalia_surface_swapchain(
         &mut present_queue_family_count,
     )?;
 
-    let present_device = create_vulkanalia_present_device(instance, &selection)?;
+    let present_device = create_vulkanalia_present_device(
+        instance,
+        &selection,
+        vulkanalia_surface_maintenance1_enabled(vulkan),
+    )?;
     let extension_snapshot = present_device.extension_snapshot.clone();
     let device = &present_device.device;
     let swapchain_plan = match create_vulkanalia_swapchain_plan(
@@ -470,6 +477,7 @@ pub(super) fn select_vulkanalia_present_queue(
 fn present_device_extension_snapshot(
     instance: &Instance,
     selection: &NativeVulkanVulkanaliaPresentQueueSelection,
+    surface_maintenance1_enabled: bool,
 ) -> Result<NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot, String> {
     let mut available_device_extensions = selection.device_extensions.clone();
     available_device_extensions.sort();
@@ -481,6 +489,7 @@ fn present_device_extension_snapshot(
         instance,
         selection.physical_device,
         &available_device_extensions,
+        surface_maintenance1_enabled,
     );
 
     Ok(NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot {
@@ -528,12 +537,15 @@ fn present_device_extension_snapshot(
 pub(super) fn create_vulkanalia_present_device(
     instance: &Instance,
     selection: &NativeVulkanVulkanaliaPresentQueueSelection,
+    surface_maintenance1_enabled: bool,
 ) -> Result<NativeVulkanVulkanaliaPresentDeviceContext, String> {
-    let extension_snapshot = present_device_extension_snapshot(instance, selection)?;
+    let extension_snapshot =
+        present_device_extension_snapshot(instance, selection, surface_maintenance1_enabled)?;
     let feature_selection = query_vulkanalia_present_feature_selection(
         instance,
         selection.physical_device,
         &selection.device_extensions,
+        surface_maintenance1_enabled,
     );
     let enabled_device_extensions = enabled_present_device_extensions(&feature_selection);
     let priorities = [1.0_f32];
@@ -635,6 +647,7 @@ pub(super) fn query_vulkanalia_present_feature_selection(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     device_extensions: &[String],
+    surface_maintenance1_enabled: bool,
 ) -> NativeVulkanVulkanaliaPresentFeatureSelection {
     let (mut core_features, vulkan_1_4_properties, descriptor_heap_properties) =
         native_vulkan_vulkanalia_core_feature_snapshot(instance, physical_device);
@@ -654,9 +667,9 @@ pub(super) fn query_vulkanalia_present_feature_selection(
     let present_wait2_supported = present_id2_supported
         && extension_available(device_extensions, PRESENT_WAIT2_EXTENSION_NAME)
         && query_present_wait2_feature(instance, physical_device);
-    let swapchain_maintenance1_supported =
-        extension_available(device_extensions, SWAPCHAIN_MAINTENANCE1_EXTENSION_NAME)
-            && query_swapchain_maintenance1_feature(instance, physical_device);
+    let swapchain_maintenance1_supported = surface_maintenance1_enabled
+        && extension_available(device_extensions, SWAPCHAIN_MAINTENANCE1_EXTENSION_NAME)
+        && query_swapchain_maintenance1_feature(instance, physical_device);
 
     NativeVulkanVulkanaliaPresentFeatureSelection {
         core_features,
@@ -670,6 +683,15 @@ pub(super) fn query_vulkanalia_present_feature_selection(
         present_wait2_enabled: present_wait2_supported,
         swapchain_maintenance1_enabled: swapchain_maintenance1_supported,
     }
+}
+
+pub(super) fn vulkanalia_surface_maintenance1_enabled(
+    vulkan: &super::instance::NativeVulkanVulkanaliaInstance,
+) -> bool {
+    vulkan
+        .extension_selection
+        .enabled_instance_extensions
+        .contains(&SURFACE_MAINTENANCE1_EXTENSION_NAME)
 }
 
 pub(super) fn enabled_present_device_extensions(

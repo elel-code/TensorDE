@@ -879,7 +879,7 @@ mod tests {
             "sampled-image-dynamic-rendering-recording-ready"
         );
         assert_eq!(snapshot.vulkanalia_draw_pass.blocking_reason, None);
-        assert_eq!(snapshot.vulkanalia_draw_pass.descriptor_set_count, 1);
+        assert_eq!(snapshot.vulkanalia_draw_pass.descriptor_set_count, 0);
         assert_eq!(snapshot.vulkanalia_draw_pass.vertex_stride_bytes, 20);
         assert_eq!(snapshot.vulkanalia_draw_pass.draw_indexed_count, 1);
         assert!(snapshot.vulkanalia_sampled_image.backend_ready);

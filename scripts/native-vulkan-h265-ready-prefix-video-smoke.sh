@@ -567,13 +567,8 @@ bitstream_buffer_capacity_bytes="$bitstream_slot_bytes"
 bitstream_total_payload_bytes="$(jq -r '(.h265_retained_video_present_decode.decode.src_buffer_total_bytes // 0)' "$runtime_json")"
 bitstream_uploaded_bytes="$bitstream_total_payload_bytes"
 h265_input_mode="$(jq -r '(.h265_retained_video_present_decode.decode.input_payload_model // "none")' "$runtime_json")"
-if [[ "$h265_input_mode" == "bounded-streaming-packet-queue-per-frame-upload" ]]; then
-  bitstream_upload_count="$decoded_count"
-  expected_decoded_count="$requested_playback_count"
-else
-  bitstream_upload_count=1
-  expected_decoded_count="$ready_prefix_count"
-fi
+bitstream_upload_count="$decoded_count"
+expected_decoded_count="$requested_playback_count"
 h265_present_frame_preroll_count="$(jq -r '(.h265_retained_video_present_decode.decoded_image_present_sequence.present_handoff.queued_frame_count_before_drain // 0)' "$runtime_json")"
 h265_present_queue_count="$(jq -r '(.h265_retained_video_present_decode.decoded_image_present_sequence.present_handoff.capacity_frames // 0)' "$runtime_json")"
 h265_async_present_depth="$(jq -r '(.h265_retained_video_present_decode.decoded_image_present_sequence.present_handoff.peak_depth // 0)' "$runtime_json")"
@@ -628,24 +623,12 @@ resource_bytes="$(jq -r '(.h265_retained_video_present_decode.session.resource_i
 p_frames="$(jq -r '(.h265_retained_video_present_decode.decode.p_frame_count // ((.h265_retained_video_present_decode.decode.frames // []) | map(select(.reset_control_recorded == false and .decode_reference_slot_count > 0)) | length))' "$runtime_json")"
 b_frames="$(jq -r '(.h265_retained_video_present_decode.decode.b_frame_count // ((.h265_retained_video_present_decode.decode.frames // []) | map(select(.begin_reference_slot_count > .decode_reference_slot_count)) | length))' "$runtime_json")"
 max_reference_count="$(jq -r '(.h265_retained_video_present_decode.decode.max_decode_reference_slot_count // ((.h265_retained_video_present_decode.decode.frames // []) | map(.decode_reference_slot_count) | max) // 0)' "$runtime_json")"
-loop_gate_failed=0
-if [[ "$h265_input_mode" != "bounded-streaming-packet-queue-per-frame-upload" && "$expected_frames" -gt "$decode_prefix" && ( "$playback_loop_count" -le 1 || "$loop_boundary_reset_count" -lt 1 ) ]]; then
-  loop_gate_failed=1
-fi
 bitstream_gate_failed=0
-if [[ ( "$bitstream_strategy" != "ready-prefix-owned-upload-buffer" && "$bitstream_strategy" != "streaming-persistent-mapped-reused-upload-buffer" ) || "$bitstream_slot_count" -ne 1 || "$bitstream_slot_bytes" -le 0 || "$bitstream_buffer_capacity_bytes" -lt "$bitstream_slot_bytes" || "$bitstream_total_payload_bytes" -le 0 || "$bitstream_upload_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
+if [[ "$bitstream_strategy" != "streaming-persistent-mapped-reused-upload-buffer" || "$bitstream_slot_count" -ne 1 || "$bitstream_slot_bytes" -le 0 || "$bitstream_buffer_capacity_bytes" -lt "$bitstream_slot_bytes" || "$bitstream_total_payload_bytes" -le 0 || "$bitstream_upload_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
   bitstream_gate_failed=1
 fi
 input_gate_failed=0
-if [[ "$h265_input_mode" == "bounded-streaming-packet-queue-per-frame-upload" ]]; then
-  if [[ "$decoded_count" -ne "$requested_playback_count" || "$requested_playback_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
-    input_gate_failed=1
-  fi
-elif [[ "$h265_input_mode" == "owned-frame-payloads-moved-into-aligned-bitstream-buffer" ]]; then
-  if [[ "$decoded_count" -ne "$ready_prefix_count" || "$ready_prefix_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
-    input_gate_failed=1
-  fi
-else
+if [[ "$h265_input_mode" != "bounded-streaming-packet-queue-per-frame-upload" || "$decoded_count" -ne "$requested_playback_count" || "$requested_playback_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
   input_gate_failed=1
 fi
 arbitrary_entry_gate_failed=0
@@ -660,6 +643,7 @@ b_frame_gate_failed=0
 if [[ "$generated_source" -eq 1 && "$bframes" -gt 0 && "$b_frames" -lt 1 ]]; then
   b_frame_gate_failed=1
 fi
+loop_gate_failed=0
 loop_skip_replay_gate_failed=0
 if [[ "$require_loop_skip_replay" -eq 1 && ( "$playback_loop_count" -le 1 || "$loop_boundary_reset_count" -le 0 || "$first_frame_idr" != "true" || "$loop_first_non_idr_count" -ne 0 ) ]]; then
   loop_skip_replay_gate_failed=1

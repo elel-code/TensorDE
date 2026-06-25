@@ -4,8 +4,9 @@ use serde::Serialize;
 use vulkanalia::vk::{self, HasBuilder};
 
 use crate::renderer::native_vulkan::{
-    NativeVulkanH265AccessUnitSliceSnapshot, NativeVulkanH265DecodeReferencePlanEntrySnapshot,
-    NativeVulkanH265ParameterSetSnapshot, NativeVulkanVideoSessionCodec,
+    NativeVulkanEncodedAccessUnitPayload, NativeVulkanH265AccessUnitSliceSnapshot,
+    NativeVulkanH265DecodeReferencePlanEntrySnapshot, NativeVulkanH265ParameterSetSnapshot,
+    NativeVulkanVideoSessionCodec,
 };
 
 use super::video_decode_submit::{
@@ -79,19 +80,19 @@ pub(super) struct NativeVulkanVulkanaliaH265VkSubmitInfo<'a> {
     pub decode_reference_slots: &'a [vk::VideoReferenceSlotInfoKHR],
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput {
     pub parameter_sets: NativeVulkanH265ParameterSetSnapshot,
     pub requested_frame_count: u32,
     pub frames: Vec<NativeVulkanVulkanaliaH265ReadyPrefixFrameInput>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct NativeVulkanVulkanaliaH265ReadyPrefixFrameInput {
     pub entry: NativeVulkanH265DecodeReferencePlanEntrySnapshot,
     pub first_slice: NativeVulkanH265AccessUnitSliceSnapshot,
     pub duration_ms: Option<u64>,
-    pub access_unit_payload: Vec<u8>,
+    pub access_unit_payload: NativeVulkanEncodedAccessUnitPayload,
     pub slice_segment_offset: u32,
 }
 

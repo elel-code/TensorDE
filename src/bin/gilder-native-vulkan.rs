@@ -28,12 +28,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "native-vulkan-gst-video")]
     use gilder::renderer::native_vulkan::{
         NativeVulkanAudioClockProbeOptions, NativeVulkanVideoSessionCodec,
-        native_vulkan_extract_av1_ready_prefix_for_vulkanalia,
         native_vulkan_extract_av1_sequence_header_for_vulkanalia,
         native_vulkan_extract_h264_parameter_sets_for_vulkanalia,
-        native_vulkan_extract_h264_ready_prefix_for_vulkanalia,
-        native_vulkan_extract_h265_parameter_sets_for_vulkanalia,
-        native_vulkan_extract_h265_ready_prefix_for_vulkanalia, probe_native_vulkan_audio_clock,
+        native_vulkan_extract_h265_parameter_sets_for_vulkanalia, probe_native_vulkan_audio_clock,
         run_vulkanalia_ready_prefix_video,
     };
     use gilder::renderer::native_vulkan::{
@@ -78,7 +75,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut vulkanalia_create_empty_session_parameters = false;
     let mut vulkanalia_create_session_parameters = false;
     let mut ready_prefix_playback_frames = 0u32;
-    let mut av1_ready_prefix_frames = 0u32;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -145,20 +141,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .ok_or("--decode-h265-ready-prefix requires a count")?;
                 video_session_options.decode_h265_ready_prefix_frames = count;
                 video_session_options.h265_required_ready_prefix_access_units = count;
-                video_session_options.extract_bitstream = true;
-                video_session_options.allocate_bitstream_buffer = true;
-                video_session_options.allocate_video_images = true;
-            }
-            "--decode-av1-ready-prefix" => {
-                let count = args
-                    .next()
-                    .map(|value| value.parse::<u32>())
-                    .transpose()?
-                    .ok_or("--decode-av1-ready-prefix requires a count")?;
-                av1_ready_prefix_frames = count;
-                video_session_options.bitstream_extract_max_samples = video_session_options
-                    .bitstream_extract_max_samples
-                    .max(count);
                 video_session_options.extract_bitstream = true;
                 video_session_options.allocate_bitstream_buffer = true;
                 video_session_options.allocate_video_images = true;
@@ -374,128 +356,70 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )?)
         }
         NativeVulkanCliMode::ProbeVulkanaliaVideoSession => {
-            let decode_h264_ready_prefix =
-                video_session_options.decode_h264_ready_prefix_frames > 0;
-            let decode_h265_ready_prefix =
-                video_session_options.decode_h265_ready_prefix_frames > 0;
-            let decode_av1_ready_prefix = av1_ready_prefix_frames > 0;
-            let create_parameters = vulkanalia_create_session_parameters
-                || decode_h264_ready_prefix
-                || decode_h265_ready_prefix
-                || decode_av1_ready_prefix;
-            let (
-                h264_parameter_sets,
-                h265_parameter_sets,
-                av1_sequence_header,
-                h264_ready_prefix_decode,
-                h265_ready_prefix_decode,
-                av1_ready_prefix_decode,
-            ) = if create_parameters {
-                let source = source.clone().ok_or(
-                    "--create-session-parameters/--decode-*-ready-prefix requires --source",
-                )?;
-                if !source.is_file() {
-                    return Err(
-                        format!("bitstream source does not exist: {}", source.display()).into(),
-                    );
-                }
-                #[cfg(feature = "native-vulkan-gst-video")]
-                {
-                    match video_session_options.codec {
-                        NativeVulkanVideoSessionCodec::H264High8 => {
-                            if decode_h264_ready_prefix {
-                                let ready_prefix =
-                                    native_vulkan_extract_h264_ready_prefix_for_vulkanalia(
-                                        source,
-                                        video_session_options.bitstream_extract_max_samples,
-                                        video_session_options.decode_h264_ready_prefix_frames,
-                                    )?;
-                                (
-                                    Some(ready_prefix.parameter_sets.clone()),
-                                    None,
-                                    None,
-                                    Some(ready_prefix),
-                                    None,
-                                    None,
-                                )
-                            } else {
+            if video_session_options.decode_h264_ready_prefix_frames > 0
+                || video_session_options.decode_h265_ready_prefix_frames > 0
+            {
+                return Err(
+                    "--decode-*-ready-prefix session-bind decode was removed; use the streaming video runtime"
+                        .into(),
+                );
+            }
+            let (h264_parameter_sets, h265_parameter_sets, av1_sequence_header) =
+                if vulkanalia_create_session_parameters {
+                    let source = source
+                        .clone()
+                        .ok_or("--create-session-parameters requires --source")?;
+                    if !source.is_file() {
+                        return Err(format!(
+                            "bitstream source does not exist: {}",
+                            source.display()
+                        )
+                        .into());
+                    }
+                    #[cfg(feature = "native-vulkan-gst-video")]
+                    {
+                        match video_session_options.codec {
+                            NativeVulkanVideoSessionCodec::H264High8 => {
                                 let parameter_sets =
                                     native_vulkan_extract_h264_parameter_sets_for_vulkanalia(
                                         source,
                                         video_session_options.bitstream_extract_max_samples,
                                     )?;
-                                (Some(parameter_sets), None, None, None, None, None)
+                                (Some(parameter_sets), None, None)
                             }
-                        }
-                        NativeVulkanVideoSessionCodec::H265Main8
-                        | NativeVulkanVideoSessionCodec::H265Main10 => {
-                            if decode_h265_ready_prefix {
-                                let ready_prefix =
-                                    native_vulkan_extract_h265_ready_prefix_for_vulkanalia(
-                                        source,
-                                        video_session_options.codec,
-                                        video_session_options.bitstream_extract_max_samples,
-                                        video_session_options.decode_h265_ready_prefix_frames,
-                                    )?;
-                                (
-                                    None,
-                                    Some(ready_prefix.parameter_sets.clone()),
-                                    None,
-                                    None,
-                                    Some(ready_prefix),
-                                    None,
-                                )
-                            } else {
+                            NativeVulkanVideoSessionCodec::H265Main8
+                            | NativeVulkanVideoSessionCodec::H265Main10 => {
                                 let parameter_sets =
                                     native_vulkan_extract_h265_parameter_sets_for_vulkanalia(
                                         source,
                                         video_session_options.codec,
                                         video_session_options.bitstream_extract_max_samples,
                                     )?;
-                                (None, Some(parameter_sets), None, None, None, None)
+                                (None, Some(parameter_sets), None)
                             }
-                        }
-                        NativeVulkanVideoSessionCodec::Av1Main8
-                        | NativeVulkanVideoSessionCodec::Av1Main10 => {
-                            if decode_av1_ready_prefix {
-                                let ready_prefix =
-                                    native_vulkan_extract_av1_ready_prefix_for_vulkanalia(
-                                        source,
-                                        video_session_options.codec,
-                                        video_session_options.bitstream_extract_max_samples,
-                                        av1_ready_prefix_frames,
-                                    )?;
-                                (
-                                    None,
-                                    None,
-                                    Some(ready_prefix.sequence_header.clone()),
-                                    None,
-                                    None,
-                                    Some(ready_prefix),
-                                )
-                            } else {
+                            NativeVulkanVideoSessionCodec::Av1Main8
+                            | NativeVulkanVideoSessionCodec::Av1Main10 => {
                                 let sequence_header =
                                     native_vulkan_extract_av1_sequence_header_for_vulkanalia(
                                         source,
                                         video_session_options.codec,
                                         video_session_options.bitstream_extract_max_samples,
                                     )?;
-                                (None, None, Some(sequence_header), None, None, None)
+                                (None, None, Some(sequence_header))
                             }
                         }
                     }
-                }
-                #[cfg(not(feature = "native-vulkan-gst-video"))]
-                {
-                    let _ = source;
-                    return Err(
-                        "--create-session-parameters requires native-vulkan-gst-video feature"
-                            .into(),
-                    );
-                }
-            } else {
-                (None, None, None, None, None, None)
-            };
+                    #[cfg(not(feature = "native-vulkan-gst-video"))]
+                    {
+                        let _ = source;
+                        return Err(
+                            "--create-session-parameters requires native-vulkan-gst-video feature"
+                                .into(),
+                        );
+                    }
+                } else {
+                    (None, None, None)
+                };
             json!(probe_native_vulkan_vulkanalia_video_session_bind(
                 NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
                     codec: video_session_options.codec,
@@ -505,13 +429,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     allocate_bitstream_buffer: video_session_options.allocate_bitstream_buffer,
                     bitstream_buffer_size: video_session_options.bitstream_buffer_size,
                     create_empty_session_parameters: vulkanalia_create_empty_session_parameters,
-                    create_session_parameters: create_parameters,
+                    create_session_parameters: vulkanalia_create_session_parameters,
                     h264_parameter_sets,
                     h265_parameter_sets,
                     av1_sequence_header,
-                    h264_ready_prefix_decode,
-                    h265_ready_prefix_decode,
-                    av1_ready_prefix_decode,
                 }
             )?)
         }
@@ -602,7 +523,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             let route = native_vulkan_video_run_route(
                 &video_session_options,
-                av1_ready_prefix_frames,
                 ready_prefix_playback_frames,
                 duration_playback_frames,
             );
@@ -655,13 +575,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     video_session_options.decode_h265_ready_prefix_frames
                 }
                 NativeVulkanVideoSessionCodec::Av1Main8
-                | NativeVulkanVideoSessionCodec::Av1Main10 => av1_ready_prefix_frames,
+                | NativeVulkanVideoSessionCodec::Av1Main10 => 0,
             };
             #[cfg(not(feature = "native-vulkan-gst-video"))]
             let ready_prefix_frames = 0u32;
             if ready_prefix_frames == 0 {
                 return Err(
-                    "--run-vulkanalia-ready-prefix-video requires --decode-h264-ready-prefix N, --decode-h265-ready-prefix N, or --decode-av1-ready-prefix N matching --video-codec"
+                    "--run-vulkanalia-ready-prefix-video requires --decode-h264-ready-prefix N or --decode-h265-ready-prefix N matching --video-codec"
                         .into(),
                 );
             }
@@ -818,7 +738,6 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --create-session-parameters extends --probe-vulkanalia-video-session with real H.264 SPS/PPS, H.265 VPS/SPS/PPS, or AV1 sequence-header VkVideoSessionParametersKHR creation from --source.\n\
 --decode-h264-ready-prefix N extends --probe-vulkanalia-video-session/--run-video with N reference-ready H.264 AU Vulkan Video decode submits.\n\
 --decode-h265-ready-prefix N extends --probe-vulkanalia-video-session/--run-video with N ready H.265 AU Vulkan Video decode submits.\n\
---decode-av1-ready-prefix N selects an AV1 ready TU window for direct visible AV1 decode/present.\n\
 --playback-frames N repeats the ready-prefix AU window for N direct Vulkan Video decode/present frames.\n\
 --audio-probe-duration N overrides the default 10s audio clock probe duration.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
@@ -827,7 +746,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --run-vulkanalia-scene-lite-sampled-image uses Vulkanalia dynamic rendering to upload --source once into a retained sampled image and draw it to the Wayland swapchain.\n\
 --run-static and --run-vulkanalia-static use Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
 --run-video uses Vulkanalia ready-prefix video. Without explicit --decode-*-ready-prefix, it uses the codec default ready-prefix window.\n\
---run-vulkanalia-ready-prefix-video decodes a ready H.264/H.265/AV1 prefix through Vulkanalia CmdPipelineBarrier2/QueueSubmit2 and prints runtime JSON.\n\
+--run-vulkanalia-ready-prefix-video decodes a streaming H.264/H.265 source through Vulkanalia CmdPipelineBarrier2/QueueSubmit2 and prints runtime JSON.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
@@ -837,7 +756,6 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--create-session-parameters] [--bitstream-samples N]\n\
          [--decode-h264-ready-prefix N] [--require-h264-ready-prefix N]\n\
          [--decode-h265-ready-prefix N]\n\
-         [--decode-av1-ready-prefix N]\n\
          [--require-h265-ready-prefix N] [--playback-frames N]\n\
          [--start-offset-ms MS]"
     );

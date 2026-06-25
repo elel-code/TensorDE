@@ -67,7 +67,7 @@ use super::swapchain::{
     create_vulkanalia_present_device, create_vulkanalia_swapchain_plan,
     create_vulkanalia_wayland_surface, present_mode_label, queue_flag_labels,
     select_vulkanalia_present_queue, swapchain_create_flag_labels,
-    vulkanalia_surface_capabilities2_enabled,
+    vulkanalia_surface_capabilities2_enabled, vulkanalia_surface_maintenance1_enabled,
 };
 use super::video_session::{
     NativeVulkanVulkanaliaMemoryTypeCandidate, native_vulkan_vulkanalia_memory_type_candidates,
@@ -496,7 +496,11 @@ fn with_vulkanalia_scene_lite_solid_quad_present(
         &physical_devices,
         &mut present_queue_family_count,
     )?;
-    let present_device = create_vulkanalia_present_device(instance, &selection)?;
+    let present_device = create_vulkanalia_present_device(
+        instance,
+        &selection,
+        vulkanalia_surface_maintenance1_enabled(vulkan),
+    )?;
     if !present_device.feature_selection.synchronization2_enabled {
         unsafe {
             present_device.device.destroy_device(None);
@@ -679,7 +683,11 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
         &physical_devices,
         &mut present_queue_family_count,
     )?;
-    let present_device = create_vulkanalia_present_device(instance, &selection)?;
+    let present_device = create_vulkanalia_present_device(
+        instance,
+        &selection,
+        vulkanalia_surface_maintenance1_enabled(vulkan),
+    )?;
     if !present_device.feature_selection.synchronization2_enabled {
         unsafe {
             present_device.device.destroy_device(None);
@@ -766,12 +774,22 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
     );
     let use_descriptor_heap_primary_path =
         descriptor_strategy.uses_descriptor_heap_primary_path && descriptor_heap_plan.backend_ready;
+    if !use_descriptor_heap_primary_path {
+        destroy_scene_lite_solid_quad_frame_resources(device, frame_resources);
+        unsafe {
+            device.destroy_swapchain_khr(swapchain, None);
+            present_device.device.destroy_device(None);
+        }
+        return Err(
+            "scene-lite sampled-image runtime requires VK_EXT_descriptor_heap; descriptor set and push descriptor fallback paths are disabled"
+                .to_owned(),
+        );
+    }
     let pipeline = match native_vulkan_vulkanalia_create_scene_lite_sampled_image_pipeline_resources(
         device,
         swapchain_plan.format.format,
         swapchain_plan.extent,
-        descriptor_strategy.uses_push_descriptor_fast_path,
-        use_descriptor_heap_primary_path.then_some(&descriptor_heap_plan),
+        &descriptor_heap_plan,
     ) {
         Ok(pipeline) => pipeline,
         Err(err) => {
@@ -853,9 +871,6 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
             &memory_properties,
             frame_resources.command_pool,
             present_device.queue,
-            pipeline.descriptor_set_layout,
-            use_descriptor_heap_primary_path,
-            descriptor_strategy.uses_push_descriptor_fast_path,
             scene_lite_sampled_image_resource_sampler_mode(
                 resource_index,
                 &geometry.draw_steps,
@@ -918,37 +933,33 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
     } else {
         None
     };
-    let draw_commands = match scene_lite_sampled_image_draw_commands(
-        &geometry.draw_steps,
-        &sampled_images,
-        use_descriptor_heap_primary_path,
-        descriptor_strategy.uses_push_descriptor_fast_path,
-    ) {
-        Ok(draw_commands) => draw_commands,
-        Err(err) => {
-            if let Some(descriptor_heap) = descriptor_heap {
-                native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(
-                    device,
-                    descriptor_heap,
+    let draw_commands =
+        match scene_lite_sampled_image_draw_commands(&geometry.draw_steps, &sampled_images) {
+            Ok(draw_commands) => draw_commands,
+            Err(err) => {
+                if let Some(descriptor_heap) = descriptor_heap {
+                    native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(
+                        device,
+                        descriptor_heap,
+                    );
+                }
+                for resource in sampled_images.drain(..) {
+                    native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resources(
+                        device, resource,
+                    );
+                }
+                destroy_scene_lite_sampled_image_geometry_resources(device, geometry);
+                native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_pipeline_resources(
+                    device, pipeline,
                 );
+                destroy_scene_lite_solid_quad_frame_resources(device, frame_resources);
+                unsafe {
+                    device.destroy_swapchain_khr(swapchain, None);
+                    present_device.device.destroy_device(None);
+                }
+                return Err(err);
             }
-            for resource in sampled_images.drain(..) {
-                native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resources(
-                    device, resource,
-                );
-            }
-            destroy_scene_lite_sampled_image_geometry_resources(device, geometry);
-            native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_pipeline_resources(
-                device, pipeline,
-            );
-            destroy_scene_lite_solid_quad_frame_resources(device, frame_resources);
-            unsafe {
-                device.destroy_swapchain_khr(swapchain, None);
-                present_device.device.destroy_device(None);
-            }
-            return Err(err);
-        }
-    };
+        };
     let solid_pipeline = if options.solid_geometry.is_some() {
         match native_vulkan_vulkanalia_create_scene_lite_solid_quad_pipeline_resources(
             device,
@@ -2248,29 +2259,18 @@ fn create_scene_lite_sampled_image_descriptor_heap_resources(
 fn scene_lite_sampled_image_draw_commands(
     draw_steps: &[NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep],
     sampled_images: &[VulkanaliaSceneLiteSampledImageResources],
-    use_descriptor_heap_primary_path: bool,
-    use_push_descriptor_fast_path: bool,
 ) -> Result<Vec<VulkanaliaSceneLiteSampledImageDrawCommand>, String> {
     let mut draw_commands = Vec::with_capacity(draw_steps.len());
     for (step_index, step) in draw_steps.iter().enumerate() {
-        let resource = sampled_images.get(step.resource_index as usize).ok_or_else(|| {
+        sampled_images.get(step.resource_index as usize).ok_or_else(|| {
             format!(
                 "scene-lite sampled-image draw step {step_index} resource index {} exceeds sampled image count {}",
                 step.resource_index,
                 sampled_images.len()
             )
         })?;
-        let descriptor_binding = if use_descriptor_heap_primary_path {
-            VulkanaliaSceneLiteSampledImageDescriptorBinding::DescriptorHeap {
-                resource_index: step.resource_index,
-            }
-        } else if use_push_descriptor_fast_path {
-            VulkanaliaSceneLiteSampledImageDescriptorBinding::PushDescriptor {
-                sampler: resource.sampler,
-                image_view: resource.image_view,
-            }
-        } else {
-            VulkanaliaSceneLiteSampledImageDescriptorBinding::DescriptorSet(resource.descriptor_set)
+        let descriptor_binding = VulkanaliaSceneLiteSampledImageDescriptorBinding::DescriptorHeap {
+            resource_index: step.resource_index,
         };
         draw_commands.push(VulkanaliaSceneLiteSampledImageDrawCommand {
             layer_index: step.layer_index,

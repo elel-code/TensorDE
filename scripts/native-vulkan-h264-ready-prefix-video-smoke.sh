@@ -587,13 +587,8 @@ bitstream_buffer_capacity_bytes="$bitstream_slot_bytes"
 bitstream_total_payload_bytes="$(jq -r '(.h264_retained_video_present_decode.decode.src_buffer_total_bytes // 0)' "$runtime_json")"
 bitstream_uploaded_bytes="$bitstream_total_payload_bytes"
 h264_input_mode="$(jq -r '(.h264_retained_video_present_decode.decode.input_payload_model // "none")' "$runtime_json")"
-if [[ "$h264_input_mode" == "bounded-streaming-packet-queue-per-frame-upload" ]]; then
-  bitstream_upload_count="$decoded_count"
-  expected_decoded_count="$requested_playback_count"
-else
-  bitstream_upload_count=1
-  expected_decoded_count="$ready_prefix_count"
-fi
+bitstream_upload_count="$decoded_count"
+expected_decoded_count="$requested_playback_count"
 h264_display_handoff_strategy="$(jq -r '.h264_display_handoff_strategy // "none"' "$runtime_json")"
 h264_resource_image_layout="$(jq -r '.h264_resource_image_layout // "none"' "$runtime_json")"
 h264_video_queue_sync_strategy="$(jq -r '.h264_video_queue_sync_strategy // "none"' "$runtime_json")"
@@ -681,23 +676,12 @@ if [[ "$generated_source" -eq 1 && "$bframes" -gt 0 && "$b_frames" -lt 1 ]]; the
   b_frame_gate_failed=1
 fi
 loop_gate_failed=0
-if [[ "$h264_input_mode" != "bounded-streaming-packet-queue-per-frame-upload" && "$requested_playback_count" -gt "$ready_prefix_count" && ( "$playback_loop_count" -le 1 || "$loop_boundary_reset_count" -lt 1 ) ]]; then
-  loop_gate_failed=1
-fi
 bitstream_gate_failed=0
-if [[ ( "$bitstream_strategy" != "ready-prefix-owned-upload-buffer" && "$bitstream_strategy" != "streaming-persistent-mapped-reused-upload-buffer" ) || "$bitstream_slot_count" -ne 1 || "$bitstream_slot_bytes" -le 0 || "$bitstream_buffer_capacity_bytes" -lt "$bitstream_slot_bytes" || "$bitstream_total_payload_bytes" -le 0 || "$bitstream_upload_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
+if [[ "$bitstream_strategy" != "streaming-persistent-mapped-reused-upload-buffer" || "$bitstream_slot_count" -ne 1 || "$bitstream_slot_bytes" -le 0 || "$bitstream_buffer_capacity_bytes" -lt "$bitstream_slot_bytes" || "$bitstream_total_payload_bytes" -le 0 || "$bitstream_upload_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
   bitstream_gate_failed=1
 fi
 input_gate_failed=0
-if [[ "$h264_input_mode" == "bounded-streaming-packet-queue-per-frame-upload" ]]; then
-  if [[ "$decoded_count" -ne "$requested_playback_count" || "$requested_playback_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
-    input_gate_failed=1
-  fi
-elif [[ "$h264_input_mode" == "owned-frame-payloads-moved-into-aligned-bitstream-buffer" ]]; then
-  if [[ "$decoded_count" -ne "$ready_prefix_count" || "$ready_prefix_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
-    input_gate_failed=1
-  fi
-else
+if [[ "$h264_input_mode" != "bounded-streaming-packet-queue-per-frame-upload" || "$decoded_count" -ne "$requested_playback_count" || "$requested_playback_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
   input_gate_failed=1
 fi
 arbitrary_entry_gate_failed=0

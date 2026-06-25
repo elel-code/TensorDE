@@ -70,7 +70,7 @@ pub struct NativeVulkanVideoBitstreamExtractSnapshot {
     pub av1_temporal_units: Vec<NativeVulkanAv1TemporalUnitSnapshot>,
     pub av1_reference_plan_dpb_slots: u32,
     pub av1_decode_ready_count: u32,
-    pub av1_decode_ready_prefix_count: u32,
+    pub av1_decode_ready_leading_count: u32,
     pub av1_decode_first_unready_temporal_unit_index: Option<u32>,
     pub av1_decode_first_unready_reason: Option<String>,
     pub av1_decode_reference_plan: Vec<NativeVulkanAv1DecodeReferencePlanEntrySnapshot>,

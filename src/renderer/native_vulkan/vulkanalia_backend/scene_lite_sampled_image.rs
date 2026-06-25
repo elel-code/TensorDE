@@ -124,12 +124,9 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot {
     pub image_view_created: bool,
     pub sampler_created: bool,
     pub sampler_address_mode: &'static str,
-    pub descriptor_pool_created: bool,
-    pub descriptor_set_allocated: bool,
     pub descriptor_model: &'static str,
     pub descriptor_type: &'static str,
     pub descriptor_image_layout: &'static str,
-    pub uses_push_descriptor_fast_path: bool,
     pub upload_command_recorded: bool,
     pub upload_submitted: bool,
     pub upload_wait_model: &'static str,
@@ -168,8 +165,6 @@ pub(super) struct VulkanaliaSceneLiteSampledImageResources {
     pub(super) image_view: vk::ImageView,
     pub(super) sampler_create_info: vk::SamplerCreateInfo,
     pub(super) sampler: vk::Sampler,
-    pub(super) descriptor_pool: vk::DescriptorPool,
-    pub(super) descriptor_set: vk::DescriptorSet,
     pub(super) snapshot: NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot,
 }
 
@@ -232,8 +227,8 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_sampled_image_plan(
             "transfer-dst-optimal",
             "shader-read-only-optimal",
         ],
-        upload_model: "decode source image to RGBA once, upload into retained sampled image, reuse descriptor across present frames",
-        descriptor_model: "VK_EXT_descriptor_heap primary path for retained sampled images; Vulkan 1.4 push descriptors only for small high-churn fallback bindings",
+        upload_model: "decode source image to RGBA once, upload into retained sampled image, reuse descriptor-heap records across present frames",
+        descriptor_model: "VK_EXT_descriptor_heap only; descriptor set and push descriptor fallbacks are disabled",
         pipeline_label: "scene-lite-sampled-image-alpha-blend",
         draw_indexed_count: if backend_ready { descriptor_budget } else { 0 },
         command_order: scene_lite_sampled_image_command_order(backend_ready).to_vec(),
@@ -242,7 +237,7 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_sampled_image_plan(
         uses_synchronization2: backend_ready,
         uses_submit2: backend_ready,
         uses_push_descriptor_fast_path: false,
-        vulkan_1_4_push_descriptor_policy: "VK_EXT_descriptor_heap is the primary target; use Vulkan 1.4 push_descriptor only for small high-churn per-draw bindings",
+        vulkan_1_4_push_descriptor_policy: "disabled for scene-lite sampled images; VK_EXT_descriptor_heap is required",
         zero_copy_scope: "source image pixels upload once; present frames sample retained GPU image directly into the swapchain",
         primary_reference: "FFmpeg frame/descriptor lifetime discipline; Vulkan dynamic rendering and sync2 command ordering",
     }
@@ -259,9 +254,7 @@ pub(super) fn native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strat
         && descriptor_heap_properties.max_resource_heap_size > 0
         && descriptor_heap_properties.image_descriptor_size > 0
         && descriptor_heap_properties.sampler_descriptor_size > 0;
-    let push_descriptor_fast_path_candidate = core_features.push_descriptor
-        && sampled_image_count > 0
-        && vulkan_1_4_properties.max_push_descriptors > 0;
+    let push_descriptor_fast_path_candidate = false;
 
     NativeVulkanVulkanaliaSceneLiteSampledImageDescriptorStrategySnapshot {
         binding: "vulkanalia",
@@ -270,10 +263,8 @@ pub(super) fn native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strat
         descriptor_set_path_enabled: false,
         active_descriptor_model: if descriptor_heap_fast_path_candidate {
             "vulkan-ext-descriptor-heap-primary-path"
-        } else if push_descriptor_fast_path_candidate {
-            "vulkan-1.4-push-descriptor-fast-path"
         } else {
-            "descriptor-set-stable-path"
+            "descriptor-heap-required-unavailable"
         },
         descriptor_heap_available: core_features.descriptor_heap,
         descriptor_heap_fast_path_candidate,
@@ -284,16 +275,13 @@ pub(super) fn native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strat
         push_descriptor_available: core_features.push_descriptor,
         max_push_descriptors: vulkan_1_4_properties.max_push_descriptors,
         push_descriptor_fast_path_candidate,
-        uses_push_descriptor_fast_path: !descriptor_heap_fast_path_candidate
-            && push_descriptor_fast_path_candidate,
+        uses_push_descriptor_fast_path: false,
         next_gate: if descriptor_heap_fast_path_candidate {
-            "remove remaining descriptor-set command recorder branches after heap-only scene sampled-image runtime coverage"
-        } else if push_descriptor_fast_path_candidate {
-            "extend push-descriptor path from single sampled image to multi-image scene batches"
+            "heap-only scene sampled-image runtime coverage"
         } else {
-            "require descriptor heap support for the retained sampled-image path; keep push descriptors scoped to small high-churn bindings"
+            "require descriptor heap support for the retained sampled-image path"
         },
-        primary_reference: "FFmpeg frame lifetime discipline; VK_EXT_descriptor_heap is the primary descriptor model, with push descriptors only for small high-churn bindings",
+        primary_reference: "FFmpeg frame lifetime discipline; VK_EXT_descriptor_heap is the only descriptor model",
     }
 }
 
@@ -330,21 +318,12 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
-    _descriptor_set_layout: vk::DescriptorSetLayout,
-    use_descriptor_heap_primary_path: bool,
-    use_push_descriptor_fast_path: bool,
     sampler_mode: NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode,
     source_label: impl Into<String>,
     extent: vk::Extent2D,
     rgba_bytes: &[u8],
 ) -> Result<VulkanaliaSceneLiteSampledImageResources, String> {
     validate_scene_lite_rgba_upload(extent, rgba_bytes)?;
-    if !use_descriptor_heap_primary_path && !use_push_descriptor_fast_path {
-        return Err(
-            "scene-lite sampled image requires VK_EXT_descriptor_heap or Vulkan 1.4 push descriptors; descriptor set fallback is disabled"
-                .to_owned(),
-        );
-    }
     let source_label = source_label.into();
     let mut staging = Some(create_scene_lite_sampled_image_upload_buffer(
         device,
@@ -389,7 +368,6 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
     let mut image_view_live = false;
     let mut sampler = vk::Sampler::default();
     let mut sampler_live = false;
-    let descriptor_set = vk::DescriptorSet::null();
 
     let result = (|| -> Result<VulkanaliaSceneLiteSampledImageResources, String> {
         let memory_requirements = unsafe { device.get_image_memory_requirements(image) };
@@ -462,8 +440,6 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
             image_view,
             sampler_create_info: sampler_info,
             sampler,
-            descriptor_pool: vk::DescriptorPool::null(),
-            descriptor_set,
             snapshot: NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot {
                 binding: "vulkanalia",
                 route: "scene-lite-sampled-image-retained-resource",
@@ -489,18 +465,9 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
                 image_view_created: true,
                 sampler_created: true,
                 sampler_address_mode: sampler_mode.label(),
-                descriptor_pool_created: false,
-                descriptor_set_allocated: false,
-                descriptor_model: if use_push_descriptor_fast_path {
-                    "vulkan-1.4-push-descriptor-fast-path"
-                } else if use_descriptor_heap_primary_path {
-                    "VK_EXT_descriptor_heap"
-                } else {
-                    "descriptor-set-stable-path"
-                },
+                descriptor_model: "VK_EXT_descriptor_heap",
                 descriptor_type: "combined-image-sampler",
                 descriptor_image_layout: "shader-read-only-optimal",
-                uses_push_descriptor_fast_path: use_push_descriptor_fast_path,
                 upload_command_recorded: true,
                 upload_submitted: true,
                 upload_wait_model: "queue_submit2 + fence wait during retained resource upload",
@@ -546,9 +513,6 @@ pub(super) fn native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resource
     resources: VulkanaliaSceneLiteSampledImageResources,
 ) {
     unsafe {
-        if resources.descriptor_pool != vk::DescriptorPool::null() {
-            device.destroy_descriptor_pool(resources.descriptor_pool, None);
-        }
         device.destroy_sampler(resources.sampler, None);
         device.destroy_image_view(resources.image_view, None);
         device.destroy_image(resources.image, None);
@@ -1085,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_strategy_reports_vulkan_1_4_push_descriptor_candidate() {
+    fn descriptor_strategy_requires_descriptor_heap_even_when_push_descriptor_exists() {
         let snapshot = native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strategy(
             NativeVulkanVulkanaliaCoreFeatureSnapshot {
                 push_descriptor: true,
@@ -1102,11 +1066,11 @@ mod tests {
         assert!(!snapshot.descriptor_set_path_enabled);
         assert!(!snapshot.descriptor_heap_fast_path_candidate);
         assert!(snapshot.push_descriptor_available);
-        assert!(snapshot.push_descriptor_fast_path_candidate);
-        assert!(snapshot.uses_push_descriptor_fast_path);
+        assert!(!snapshot.push_descriptor_fast_path_candidate);
+        assert!(!snapshot.uses_push_descriptor_fast_path);
         assert_eq!(
             snapshot.active_descriptor_model,
-            "vulkan-1.4-push-descriptor-fast-path"
+            "descriptor-heap-required-unavailable"
         );
     }
 
@@ -1134,7 +1098,7 @@ mod tests {
         assert!(snapshot.descriptor_heap_available);
         assert!(snapshot.descriptor_heap_fast_path_candidate);
         assert!(snapshot.uses_descriptor_heap_primary_path);
-        assert!(snapshot.push_descriptor_fast_path_candidate);
+        assert!(!snapshot.push_descriptor_fast_path_candidate);
         assert!(!snapshot.uses_push_descriptor_fast_path);
         assert_eq!(
             snapshot.active_descriptor_model,
@@ -1143,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_strategy_uses_per_draw_push_descriptor_budget() {
+    fn descriptor_strategy_rejects_push_descriptor_budget_without_heap() {
         let snapshot = native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strategy(
             NativeVulkanVulkanaliaCoreFeatureSnapshot {
                 push_descriptor: true,
@@ -1158,11 +1122,11 @@ mod tests {
         );
 
         assert_eq!(snapshot.sampled_image_count, 64);
-        assert!(snapshot.push_descriptor_fast_path_candidate);
-        assert!(snapshot.uses_push_descriptor_fast_path);
+        assert!(!snapshot.push_descriptor_fast_path_candidate);
+        assert!(!snapshot.uses_push_descriptor_fast_path);
         assert_eq!(
             snapshot.active_descriptor_model,
-            "vulkan-1.4-push-descriptor-fast-path"
+            "descriptor-heap-required-unavailable"
         );
     }
 

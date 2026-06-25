@@ -195,7 +195,7 @@ fn native_vulkan_h264_bitstream_extract_from_queue(
     let total_bytes = queue
         .queued
         .iter()
-        .map(|packet| packet.access_unit.bytes.len() as u64)
+        .map(|packet| packet.access_unit.payload.len() as u64)
         .sum();
 
     let snapshot = NativeVulkanVideoBitstreamExtractSnapshot {
@@ -265,7 +265,7 @@ fn native_vulkan_h264_bitstream_extract_from_queue(
         av1_temporal_units: Vec::new(),
         av1_reference_plan_dpb_slots: 0,
         av1_decode_ready_count: 0,
-        av1_decode_ready_prefix_count: 0,
+        av1_decode_ready_leading_count: 0,
         av1_decode_first_unready_temporal_unit_index: None,
         av1_decode_first_unready_reason: None,
         av1_decode_reference_plan: Vec::new(),
@@ -273,7 +273,7 @@ fn native_vulkan_h264_bitstream_extract_from_queue(
     let h264_access_unit_payloads = queue
         .queued
         .into_iter()
-        .map(|packet| packet.access_unit.bytes)
+        .map(|packet| packet.access_unit.payload.into_vec())
         .collect();
 
     Ok(NativeVulkanVideoBitstreamExtract {
@@ -328,7 +328,7 @@ fn native_vulkan_h265_bitstream_extract_from_queue(
     let total_bytes = queue
         .queued
         .iter()
-        .map(|packet| packet.access_unit.bytes.len() as u64)
+        .map(|packet| packet.access_unit.payload.len() as u64)
         .sum();
 
     let snapshot = NativeVulkanVideoBitstreamExtractSnapshot {
@@ -398,7 +398,7 @@ fn native_vulkan_h265_bitstream_extract_from_queue(
         av1_temporal_units: Vec::new(),
         av1_reference_plan_dpb_slots: 0,
         av1_decode_ready_count: 0,
-        av1_decode_ready_prefix_count: 0,
+        av1_decode_ready_leading_count: 0,
         av1_decode_first_unready_temporal_unit_index: None,
         av1_decode_first_unready_reason: None,
         av1_decode_reference_plan: Vec::new(),
@@ -406,7 +406,7 @@ fn native_vulkan_h265_bitstream_extract_from_queue(
     let h265_access_unit_payloads = queue
         .queued
         .into_iter()
-        .map(|packet| packet.access_unit.bytes)
+        .map(|packet| packet.access_unit.payload.into_vec())
         .collect();
 
     Ok(NativeVulkanVideoBitstreamExtract {
@@ -442,7 +442,7 @@ fn native_vulkan_av1_bitstream_extract_from_queue(
         .iter()
         .filter(|entry| entry.ready_for_decode_submit || entry.ready_for_display_handoff)
         .count() as u32;
-    let av1_decode_ready_prefix_count = av1_decode_reference_plan
+    let av1_decode_ready_leading_count = av1_decode_reference_plan
         .iter()
         .take_while(|entry| entry.ready_for_decode_submit || entry.ready_for_display_handoff)
         .count() as u32;
@@ -456,7 +456,7 @@ fn native_vulkan_av1_bitstream_extract_from_queue(
     let total_bytes = queue
         .queued
         .iter()
-        .map(|packet| packet.access_unit.bytes.len() as u64)
+        .map(|packet| packet.access_unit.payload.len() as u64)
         .sum();
 
     let snapshot = NativeVulkanVideoBitstreamExtractSnapshot {
@@ -526,7 +526,7 @@ fn native_vulkan_av1_bitstream_extract_from_queue(
         av1_temporal_units,
         av1_reference_plan_dpb_slots,
         av1_decode_ready_count,
-        av1_decode_ready_prefix_count,
+        av1_decode_ready_leading_count,
         av1_decode_first_unready_temporal_unit_index,
         av1_decode_first_unready_reason,
         av1_decode_reference_plan,
@@ -534,7 +534,7 @@ fn native_vulkan_av1_bitstream_extract_from_queue(
     let av1_temporal_unit_payloads = queue
         .queued
         .into_iter()
-        .map(|packet| packet.access_unit.bytes)
+        .map(|packet| packet.access_unit.payload.into_vec())
         .collect();
 
     Ok(NativeVulkanVideoBitstreamExtract {

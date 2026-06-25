@@ -164,7 +164,7 @@ pub fn native_vulkan_vulkanalia_video_session_template()
                 kind: NativeVulkanVulkanaliaVideoSessionResourceStepKind::DecodeSubmit,
                 legacy_source: "legacy codec ready-prefix submit call sites",
                 vulkanalia_target: "Vulkanalia VideoBeginCodingInfoKHR/VideoDecodeInfoKHR submit helpers",
-                validation_gate: "H.264/H.265/AV1 ready-prefix submit flows through Vulkanalia-owned command recording",
+                validation_gate: "H.264/H.265 streaming submit and AV1 decode-frame submit lowering flow through Vulkanalia-owned command recording",
             },
         ],
     }

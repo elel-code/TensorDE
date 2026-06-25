@@ -14,19 +14,19 @@ use super::video_extract::{
     native_vulkan_validate_h264_ready_prefix, native_vulkan_validate_h265_ready_prefix,
 };
 use super::vulkanalia_backend::{
-    NativeVulkanVulkanaliaAv1CdefPlan, NativeVulkanVulkanaliaAv1FrameSubmitInput,
+    NativeVulkanVulkanaliaAv1CdefPlan, NativeVulkanVulkanaliaAv1DecodeFrameBatchInput,
+    NativeVulkanVulkanaliaAv1DecodeFrameInput, NativeVulkanVulkanaliaAv1FrameSubmitInput,
     NativeVulkanVulkanaliaAv1GlobalMotionPlan, NativeVulkanVulkanaliaAv1LoopFilterPlan,
     NativeVulkanVulkanaliaAv1LoopRestorationPlan, NativeVulkanVulkanaliaAv1QuantizationPlan,
-    NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput,
-    NativeVulkanVulkanaliaAv1ReadyPrefixFrameInput, NativeVulkanVulkanaliaAv1ReferenceInfoPlan,
-    NativeVulkanVulkanaliaAv1SegmentationPlan, NativeVulkanVulkanaliaAv1TileInfoPlan,
-    NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput,
+    NativeVulkanVulkanaliaAv1ReferenceInfoPlan, NativeVulkanVulkanaliaAv1SegmentationPlan,
+    NativeVulkanVulkanaliaAv1TileInfoPlan, NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput,
     NativeVulkanVulkanaliaH264ReadyPrefixFrameInput,
     NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput,
     NativeVulkanVulkanaliaH265ReadyPrefixFrameInput,
 };
 use super::{
-    NativeVulkanError, NativeVulkanVideoSessionCodec, NativeVulkanVideoSessionSmokeOptions,
+    NativeVulkanEncodedAccessUnitPayload, NativeVulkanError, NativeVulkanVideoSessionCodec,
+    NativeVulkanVideoSessionSmokeOptions,
 };
 
 pub fn native_vulkan_extract_h264_parameter_sets_for_vulkanalia(
@@ -136,7 +136,7 @@ pub fn native_vulkan_extract_h264_ready_prefix_for_vulkanalia(
             slice_offsets: first_slice.slice_offsets.clone(),
             first_slice,
             duration_ms: access_unit.duration_ms,
-            access_unit_payload: payload,
+            access_unit_payload: NativeVulkanEncodedAccessUnitPayload::owned(payload),
         });
     }
 
@@ -178,23 +178,23 @@ pub fn native_vulkan_extract_av1_sequence_header_for_vulkanalia(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-pub fn native_vulkan_extract_av1_ready_prefix_for_vulkanalia(
+pub fn native_vulkan_extract_av1_decode_frames_for_vulkanalia(
     source: PathBuf,
     codec: NativeVulkanVideoSessionCodec,
     max_samples: u32,
     frame_count: u32,
-) -> Result<NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput, NativeVulkanError> {
+) -> Result<NativeVulkanVulkanaliaAv1DecodeFrameBatchInput, NativeVulkanError> {
     if !matches!(
         codec,
         NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10
     ) {
         return Err(NativeVulkanError::Video(
-            "Vulkanalia AV1 ready-prefix extraction requires an AV1 codec".to_owned(),
+            "Vulkanalia AV1 decode-frame extraction requires an AV1 codec".to_owned(),
         ));
     }
     if frame_count == 0 {
         return Err(NativeVulkanError::Video(
-            "Vulkanalia AV1 ready-prefix extraction requires at least one frame".to_owned(),
+            "Vulkanalia AV1 decode-frame extraction requires at least one frame".to_owned(),
         ));
     }
 
@@ -213,7 +213,7 @@ pub fn native_vulkan_extract_av1_ready_prefix_for_vulkanalia(
         .clone()
         .ok_or_else(|| {
             NativeVulkanError::Video(
-                "Vulkanalia AV1 ready-prefix extraction requires parsed sequence header".to_owned(),
+                "Vulkanalia AV1 decode-frame extraction requires parsed sequence header".to_owned(),
             )
         })?;
     if extract.snapshot.av1_decode_reference_plan.len() != extract.snapshot.av1_temporal_units.len()
@@ -503,7 +503,7 @@ pub fn native_vulkan_extract_av1_ready_prefix_for_vulkanalia(
             prepared_reference_context.reference_name_order_hints,
             &sequence_header,
         );
-        frames.push(NativeVulkanVulkanaliaAv1ReadyPrefixFrameInput {
+        frames.push(NativeVulkanVulkanaliaAv1DecodeFrameInput {
             entry: entry.clone(),
             frame,
             pts_ms: temporal_unit.pts_ms,
@@ -523,7 +523,7 @@ pub fn native_vulkan_extract_av1_ready_prefix_for_vulkanalia(
         )));
     }
 
-    Ok(NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput {
+    Ok(NativeVulkanVulkanaliaAv1DecodeFrameBatchInput {
         codec,
         sequence_header,
         requested_frame_count: frame_count,
@@ -532,14 +532,14 @@ pub fn native_vulkan_extract_av1_ready_prefix_for_vulkanalia(
 }
 
 #[cfg(not(feature = "native-vulkan-gst-video"))]
-pub fn native_vulkan_extract_av1_ready_prefix_for_vulkanalia(
+pub fn native_vulkan_extract_av1_decode_frames_for_vulkanalia(
     _source: PathBuf,
     _codec: NativeVulkanVideoSessionCodec,
     _max_samples: u32,
     _frame_count: u32,
-) -> Result<NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput, NativeVulkanError> {
+) -> Result<NativeVulkanVulkanaliaAv1DecodeFrameBatchInput, NativeVulkanError> {
     Err(NativeVulkanError::Video(
-        "Vulkanalia AV1 ready-prefix extraction requires native-vulkan-gst-video".to_owned(),
+        "Vulkanalia AV1 decode-frame extraction requires native-vulkan-gst-video".to_owned(),
     ))
 }
 
@@ -770,7 +770,7 @@ pub fn native_vulkan_extract_h265_ready_prefix_for_vulkanalia(
             entry: entry.clone(),
             first_slice,
             duration_ms: access_unit.duration_ms,
-            access_unit_payload,
+            access_unit_payload: NativeVulkanEncodedAccessUnitPayload::owned(access_unit_payload),
             slice_segment_offset,
         });
     }

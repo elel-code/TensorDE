@@ -38,7 +38,7 @@ use super::swapchain::{
     REQUIRED_INSTANCE_EXTENSIONS, composite_alpha_label, create_vulkanalia_swapchain_plan,
     create_vulkanalia_wayland_surface, enabled_present_device_extensions, present_mode_label,
     query_vulkanalia_present_feature_selection, queue_flag_labels,
-    vulkanalia_surface_capabilities2_enabled,
+    vulkanalia_surface_capabilities2_enabled, vulkanalia_surface_maintenance1_enabled,
 };
 use super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE;
 use super::video_device::{
@@ -237,7 +237,12 @@ fn with_video_present_device(
         .map_err(|err| format!("vkEnumeratePhysicalDevices(vulkanalia video present): {err:?}"))?;
     let selection =
         select_video_present_physical_device(instance, surface, handles, &physical_devices, codec)?;
-    let context = create_video_present_device(instance, &selection, codec)?;
+    let context = create_video_present_device(
+        instance,
+        &selection,
+        codec,
+        vulkanalia_surface_maintenance1_enabled(vulkan),
+    )?;
     let swapchain_plan = match create_vulkanalia_swapchain_plan(
         instance,
         selection.physical_device,
@@ -546,6 +551,7 @@ pub(super) fn create_video_present_device(
     instance: &Instance,
     selection: &NativeVulkanVulkanaliaVideoPresentPhysicalDeviceSelection,
     codec: NativeVulkanVideoSessionCodec,
+    surface_maintenance1_enabled: bool,
 ) -> Result<NativeVulkanVulkanaliaVideoPresentDeviceContext, String> {
     let video_feature_selection = native_vulkan_vulkanalia_video_device_feature_selection(
         instance,
@@ -562,6 +568,7 @@ pub(super) fn create_video_present_device(
         instance,
         selection.physical_device,
         &selection.device_extensions,
+        surface_maintenance1_enabled,
     );
     if !present_feature_selection.synchronization2_enabled {
         return Err(
