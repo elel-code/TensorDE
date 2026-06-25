@@ -163,6 +163,7 @@ pub fn run_vulkanalia_ready_prefix_video(
                         session: video_present_session_options.clone(),
                         ready_prefix: ready_prefix.clone(),
                         bitstream_buffer_size,
+                        playback_frame_count,
                     },
                 )
             });
@@ -175,6 +176,7 @@ pub fn run_vulkanalia_ready_prefix_video(
                         session: video_present_session_options.clone(),
                         ready_prefix: ready_prefix.clone(),
                         bitstream_buffer_size,
+                        playback_frame_count,
                     },
                 )
             });
@@ -187,6 +189,7 @@ pub fn run_vulkanalia_ready_prefix_video(
                         session: video_present_session_options.clone(),
                         ready_prefix: ready_prefix.clone(),
                         bitstream_buffer_size,
+                        playback_frame_count,
                     },
                 )
             });
