@@ -26,6 +26,8 @@ mod profiles;
 mod queue_probe;
 #[path = "vulkanalia_backend/render_present.rs"]
 mod render_present;
+#[path = "vulkanalia_backend/render_present_descriptors.rs"]
+mod render_present_descriptors;
 #[path = "vulkanalia_backend/scene_lite_draw_pass.rs"]
 mod scene_lite_draw_pass;
 #[path = "vulkanalia_backend/scene_lite_present.rs"]
@@ -136,9 +138,9 @@ pub use profiles::{
 pub use render_present::{
     NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot,
     NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot,
-    NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot,
     NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot,
 };
+pub use render_present_descriptors::NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot;
 pub(crate) use scene_lite_draw_pass::{
     NativeVulkanVulkanaliaSceneLiteDrawPassInput,
     native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot,
