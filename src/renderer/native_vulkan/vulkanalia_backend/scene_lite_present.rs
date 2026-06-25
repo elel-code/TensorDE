@@ -39,12 +39,14 @@ use super::scene_lite_draw_pass::{
     native_vulkan_vulkanalia_record_scene_lite_solid_quad_command_buffer,
 };
 use super::scene_lite_sampled_image::{
+    NativeVulkanVulkanaliaSceneLiteSampledImageDescriptorStrategySnapshot,
     NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot,
     NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode,
     VulkanaliaSceneLiteSampledImageResources,
     native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources,
     native_vulkan_vulkanalia_decode_scene_lite_rgba_image,
     native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resources,
+    native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strategy,
 };
 use super::swapchain::{
     NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
@@ -212,6 +214,7 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot {
     pub swapchain: NativeVulkanVulkanaliaSwapchainSnapshot,
     pub geometry: NativeVulkanVulkanaliaSceneLiteSampledImageGeometrySnapshot,
     pub sampled_image: NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot,
+    pub descriptor_strategy: NativeVulkanVulkanaliaSceneLiteSampledImageDescriptorStrategySnapshot,
     pub pipeline: NativeVulkanVulkanaliaSceneLiteSampledImagePipelineSnapshot,
     pub last_command: Option<NativeVulkanVulkanaliaSceneLiteSampledImageCommandSnapshot>,
     pub command_submit_model: &'static str,
@@ -756,6 +759,11 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
             return Err(err);
         }
     };
+    let descriptor_strategy = native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strategy(
+        present_device.feature_selection.core_features,
+        present_device.feature_selection.vulkan_1_4_properties,
+        1,
+    );
     let present_timing = VulkanaliaPresentTimingConfig::new(
         present_device.feature_selection.present_id_enabled,
         swapchain_plan.present_id2_enabled,
@@ -774,6 +782,7 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
         &pipeline,
         &geometry,
         &sampled_image,
+        descriptor_strategy,
         &selection,
         &present_device.extension_snapshot,
         &swapchain_plan,
@@ -1002,6 +1011,7 @@ fn run_scene_lite_sampled_image_present_loop(
     pipeline: &VulkanaliaSceneLiteSampledImagePipelineResources,
     geometry: &VulkanaliaSceneLiteSampledImageGeometryResources,
     sampled_image: &VulkanaliaSceneLiteSampledImageResources,
+    descriptor_strategy: NativeVulkanVulkanaliaSceneLiteSampledImageDescriptorStrategySnapshot,
     selection: &super::swapchain::NativeVulkanVulkanaliaPresentQueueSelection,
     extension_snapshot: &NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     swapchain_plan: &super::swapchain::NativeVulkanVulkanaliaSwapchainPlan,
@@ -1181,6 +1191,7 @@ fn run_scene_lite_sampled_image_present_loop(
         },
         geometry: geometry.snapshot.clone(),
         sampled_image: sampled_image.snapshot.clone(),
+        descriptor_strategy,
         pipeline: pipeline.snapshot.clone(),
         last_command,
         command_submit_model: "acquire_next_image_khr -> cmd_begin_rendering sampled image quad -> queue_submit2 -> queue_present_khr",

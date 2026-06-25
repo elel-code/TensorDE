@@ -48,9 +48,27 @@ impl SceneLiteDocument {
     }
 
     pub fn snapshot_at(&self, time_ms: u64) -> SceneLiteSnapshot {
+        self.snapshot_at_with_property_resolver(time_ms, |_| None)
+    }
+
+    pub fn snapshot_at_with_property_resolver<F>(
+        &self,
+        time_ms: u64,
+        resolve_property: F,
+    ) -> SceneLiteSnapshot
+    where
+        F: Fn(&str) -> Option<f64>,
+    {
         let mut layers = Vec::new();
         for layer in &self.layers {
-            layer.push_snapshot_layers(time_ms, SceneLiteTransform::default(), 1.0, &mut layers);
+            layer.push_snapshot_layers(
+                time_ms,
+                SceneLiteTransform::default(),
+                1.0,
+                &self.property_bindings,
+                &resolve_property,
+                &mut layers,
+            );
         }
         SceneLiteSnapshot { time_ms, layers }
     }
@@ -222,6 +240,8 @@ impl SceneLiteLayer {
         time_ms: u64,
         parent_transform: SceneLiteTransform,
         parent_opacity: f64,
+        document_property_bindings: &[SceneLitePropertyBinding],
+        resolve_property: &impl Fn(&str) -> Option<f64>,
         output: &mut Vec<SceneLiteSnapshotLayer>,
     ) {
         if !self.visible {
@@ -242,8 +262,22 @@ impl SceneLiteLayer {
             }
         }
 
-        let transform = parent_transform.compose(transform);
-        let opacity = (parent_opacity * opacity).clamp(0.0, 1.0);
+        let mut transform = parent_transform.compose(transform);
+        let mut opacity = (parent_opacity * opacity).clamp(0.0, 1.0);
+        apply_scene_lite_property_bindings(
+            &mut transform,
+            &mut opacity,
+            document_property_bindings,
+            resolve_property,
+            &self.id,
+        );
+        apply_scene_lite_property_bindings(
+            &mut transform,
+            &mut opacity,
+            &self.property_bindings,
+            resolve_property,
+            &self.id,
+        );
         if self.kind != SceneLiteLayerKind::Group {
             output.push(SceneLiteSnapshotLayer {
                 id: self.id.clone(),
@@ -267,7 +301,14 @@ impl SceneLiteLayer {
             });
         }
         for layer in &self.layers {
-            layer.push_snapshot_layers(time_ms, transform, opacity, output);
+            layer.push_snapshot_layers(
+                time_ms,
+                transform,
+                opacity,
+                document_property_bindings,
+                resolve_property,
+                output,
+            );
         }
     }
 
@@ -607,6 +648,56 @@ impl SceneLitePropertyBinding {
     }
 }
 
+fn apply_scene_lite_property_bindings(
+    transform: &mut SceneLiteTransform,
+    opacity: &mut f64,
+    bindings: &[SceneLitePropertyBinding],
+    resolve_property: &impl Fn(&str) -> Option<f64>,
+    layer_id: &str,
+) {
+    for binding in bindings {
+        if scene_lite_binding_targets_layer(binding, layer_id) {
+            apply_scene_lite_property_binding(transform, opacity, binding, resolve_property);
+        }
+    }
+}
+
+fn scene_lite_binding_targets_layer(binding: &SceneLitePropertyBinding, layer_id: &str) -> bool {
+    binding
+        .layer
+        .as_deref()
+        .is_none_or(|target| target == layer_id)
+}
+
+fn apply_scene_lite_property_binding(
+    transform: &mut SceneLiteTransform,
+    opacity: &mut f64,
+    binding: &SceneLitePropertyBinding,
+    resolve_property: &impl Fn(&str) -> Option<f64>,
+) {
+    let Some(value) = scene_lite_property_binding_value(binding, resolve_property) else {
+        return;
+    };
+    match binding.target {
+        SceneLiteAnimatedProperty::Opacity => *opacity = value.clamp(0.0, 1.0),
+        SceneLiteAnimatedProperty::X => transform.x = value,
+        SceneLiteAnimatedProperty::Y => transform.y = value,
+        SceneLiteAnimatedProperty::ScaleX if value > 0.0 => transform.scale_x = value,
+        SceneLiteAnimatedProperty::ScaleY if value > 0.0 => transform.scale_y = value,
+        SceneLiteAnimatedProperty::ScaleX | SceneLiteAnimatedProperty::ScaleY => {}
+        SceneLiteAnimatedProperty::RotationDeg => transform.rotation_deg = value,
+    }
+}
+
+fn scene_lite_property_binding_value(
+    binding: &SceneLitePropertyBinding,
+    resolve_property: &impl Fn(&str) -> Option<f64>,
+) -> Option<f64> {
+    let raw_value = resolve_property(&binding.property)?;
+    let value = raw_value * binding.scale.unwrap_or(1.0) + binding.offset.unwrap_or(0.0);
+    value.is_finite().then_some(value)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneLiteSnapshot {
     pub time_ms: u64,
@@ -741,6 +832,54 @@ mod tests {
         assert_eq!(snapshot.layers[0].fit, FitMode::Cover);
         assert_eq!(snapshot.layers[0].transform.x, 10.0);
         assert!((snapshot.layers[0].opacity - 0.625).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn applies_property_bindings_during_snapshot() {
+        let document: SceneLiteDocument = serde_json::from_str(
+            r##"
+            {
+              "property_bindings": [
+                {
+                  "property": "scene_opacity",
+                  "target": "opacity",
+                  "layer": "foreground",
+                  "scale": 0.5,
+                  "offset": 0.25
+                }
+              ],
+              "layers": [
+                {
+                  "id": "foreground",
+                  "type": "rectangle",
+                  "color": "#ffffff",
+                  "width": 320,
+                  "height": 180,
+                  "transform": { "x": 1, "scale_x": 1 },
+                  "property_bindings": [
+                    { "property": "scene_x", "target": "x", "scale": 2, "offset": 3 },
+                    { "property": "bad_scale", "target": "scale-x" }
+                  ]
+                }
+              ]
+            }
+            "##,
+        )
+        .unwrap();
+
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(0, |property| match property {
+            "scene_opacity" => Some(0.5),
+            "scene_x" => Some(4.0),
+            "bad_scale" => Some(-1.0),
+            _ => None,
+        });
+
+        assert_eq!(snapshot.layers.len(), 1);
+        assert_eq!(snapshot.layers[0].id, "foreground");
+        assert_eq!(snapshot.layers[0].opacity, 0.5);
+        assert_eq!(snapshot.layers[0].transform.x, 11.0);
+        assert_eq!(snapshot.layers[0].transform.scale_x, 1.0);
     }
 
     #[test]

@@ -16,7 +16,8 @@ use crate::renderer::native_wayland::{
 };
 
 use super::features::{
-    NativeVulkanVulkanaliaCoreFeatureSnapshot, native_vulkan_vulkanalia_core_feature_snapshot,
+    NativeVulkanVulkanaliaCoreFeatureSnapshot, NativeVulkanVulkanaliaVulkan14PropertySnapshot,
+    native_vulkan_vulkanalia_core_feature_snapshot,
     native_vulkan_vulkanalia_vulkan12_device_features,
     native_vulkan_vulkanalia_vulkan13_device_features,
     native_vulkan_vulkanalia_vulkan14_device_features,
@@ -95,6 +96,7 @@ pub struct NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot {
     pub enabled_device_extensions: Vec<&'static str>,
     pub required_swapchain: bool,
     pub core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
+    pub vulkan_1_4_properties: NativeVulkanVulkanaliaVulkan14PropertySnapshot,
     pub synchronization2_enabled: bool,
     pub dynamic_rendering_enabled: bool,
     pub present_id_available: bool,
@@ -182,6 +184,7 @@ pub(super) struct NativeVulkanVulkanaliaSwapchainPlan {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct NativeVulkanVulkanaliaPresentFeatureSelection {
     pub(super) core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
+    pub(super) vulkan_1_4_properties: NativeVulkanVulkanaliaVulkan14PropertySnapshot,
     pub(super) synchronization2_enabled: bool,
     pub(super) dynamic_rendering_enabled: bool,
     pub(super) present_id_enabled: bool,
@@ -479,6 +482,7 @@ fn present_device_extension_snapshot(
         enabled_device_extensions: enabled_present_device_extensions(&feature_selection),
         required_swapchain,
         core_features: feature_selection.core_features,
+        vulkan_1_4_properties: feature_selection.vulkan_1_4_properties,
         synchronization2_enabled: feature_selection.synchronization2_enabled,
         dynamic_rendering_enabled: feature_selection.dynamic_rendering_enabled,
         present_id_available: extension_available(
@@ -612,7 +616,7 @@ pub(super) fn query_vulkanalia_present_feature_selection(
     physical_device: vk::PhysicalDevice,
     device_extensions: &[String],
 ) -> NativeVulkanVulkanaliaPresentFeatureSelection {
-    let (core_features, _) =
+    let (core_features, vulkan_1_4_properties) =
         native_vulkan_vulkanalia_core_feature_snapshot(instance, physical_device);
     let synchronization2_enabled = core_features.synchronization2;
     let dynamic_rendering_enabled = core_features.dynamic_rendering;
@@ -632,6 +636,7 @@ pub(super) fn query_vulkanalia_present_feature_selection(
 
     NativeVulkanVulkanaliaPresentFeatureSelection {
         core_features,
+        vulkan_1_4_properties,
         synchronization2_enabled,
         dynamic_rendering_enabled,
         present_id_enabled: present_id_supported,
@@ -1102,6 +1107,7 @@ mod tests {
     fn present_device_extensions_keep_swapchain_required() {
         let disabled = NativeVulkanVulkanaliaPresentFeatureSelection {
             core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot::default(),
+            vulkan_1_4_properties: NativeVulkanVulkanaliaVulkan14PropertySnapshot::default(),
             synchronization2_enabled: false,
             dynamic_rendering_enabled: false,
             present_id_enabled: false,

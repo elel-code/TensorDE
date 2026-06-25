@@ -16,6 +16,9 @@ const HOST_VISIBLE_COHERENT_MEMORY_FLAG_BITS: u32 =
     vk::MemoryPropertyFlags::HOST_VISIBLE.bits() | vk::MemoryPropertyFlags::HOST_COHERENT.bits();
 const HOST_VISIBLE_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::HOST_VISIBLE.bits();
 
+use super::features::{
+    NativeVulkanVulkanaliaCoreFeatureSnapshot, NativeVulkanVulkanaliaVulkan14PropertySnapshot,
+};
 use super::video_session::{
     NativeVulkanVulkanaliaMemoryTypeCandidate, native_vulkan_vulkanalia_memory_type_candidates,
 };
@@ -65,6 +68,21 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImagePlanSnapshot {
     pub uses_push_descriptor_fast_path: bool,
     pub vulkan_1_4_push_descriptor_policy: &'static str,
     pub zero_copy_scope: &'static str,
+    pub primary_reference: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaSceneLiteSampledImageDescriptorStrategySnapshot {
+    pub binding: &'static str,
+    pub route: &'static str,
+    pub sampled_image_count: usize,
+    pub descriptor_set_path_enabled: bool,
+    pub active_descriptor_model: &'static str,
+    pub push_descriptor_available: bool,
+    pub max_push_descriptors: u32,
+    pub push_descriptor_fast_path_candidate: bool,
+    pub uses_push_descriptor_fast_path: bool,
+    pub next_gate: &'static str,
     pub primary_reference: &'static str,
 }
 
@@ -215,6 +233,38 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_sampled_image_plan(
         vulkan_1_4_push_descriptor_policy: "descriptor sets are the stable first path; use Vulkan 1.4 push_descriptor later to reduce descriptor churn when available",
         zero_copy_scope: "source image pixels upload once; present frames sample retained GPU image directly into the swapchain",
         primary_reference: "FFmpeg frame/descriptor lifetime discipline; Vulkan dynamic rendering and sync2 command ordering",
+    }
+}
+
+pub(super) fn native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strategy(
+    core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
+    vulkan_1_4_properties: NativeVulkanVulkanaliaVulkan14PropertySnapshot,
+    sampled_image_count: usize,
+) -> NativeVulkanVulkanaliaSceneLiteSampledImageDescriptorStrategySnapshot {
+    let push_descriptor_fast_path_candidate = core_features.push_descriptor
+        && sampled_image_count > 0
+        && sampled_image_count <= vulkan_1_4_properties.max_push_descriptors as usize;
+
+    NativeVulkanVulkanaliaSceneLiteSampledImageDescriptorStrategySnapshot {
+        binding: "vulkanalia",
+        route: "scene-lite-sampled-image-descriptor-strategy",
+        sampled_image_count,
+        descriptor_set_path_enabled: true,
+        active_descriptor_model: if push_descriptor_fast_path_candidate {
+            "descriptor-set-stable-path-with-vulkan-1.4-push-descriptor-candidate"
+        } else {
+            "descriptor-set-stable-path"
+        },
+        push_descriptor_available: core_features.push_descriptor,
+        max_push_descriptors: vulkan_1_4_properties.max_push_descriptors,
+        push_descriptor_fast_path_candidate,
+        uses_push_descriptor_fast_path: false,
+        next_gate: if push_descriptor_fast_path_candidate {
+            "record cmd_push_descriptor_set fast path for frequently changing scene sampled-image bindings"
+        } else {
+            "keep descriptor-set path until Vulkan 1.4 push_descriptor capability and descriptor budget are available"
+        },
+        primary_reference: "FFmpeg frame lifetime discipline; Vulkan 1.4 push_descriptor is a descriptor-churn optimization, not a zero-copy proof",
     }
 }
 
@@ -1044,6 +1094,30 @@ mod tests {
         assert_eq!(
             snapshot.command_order,
             vec!["wait_for_scene_lite_sampled_image_geometry"]
+        );
+    }
+
+    #[test]
+    fn descriptor_strategy_reports_vulkan_1_4_push_descriptor_candidate() {
+        let snapshot = native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strategy(
+            NativeVulkanVulkanaliaCoreFeatureSnapshot {
+                push_descriptor: true,
+                ..NativeVulkanVulkanaliaCoreFeatureSnapshot::default()
+            },
+            NativeVulkanVulkanaliaVulkan14PropertySnapshot {
+                max_push_descriptors: 8,
+                ..NativeVulkanVulkanaliaVulkan14PropertySnapshot::default()
+            },
+            2,
+        );
+
+        assert!(snapshot.descriptor_set_path_enabled);
+        assert!(snapshot.push_descriptor_available);
+        assert!(snapshot.push_descriptor_fast_path_candidate);
+        assert!(!snapshot.uses_push_descriptor_fast_path);
+        assert_eq!(
+            snapshot.active_descriptor_model,
+            "descriptor-set-stable-path-with-vulkan-1.4-push-descriptor-candidate"
         );
     }
 

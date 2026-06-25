@@ -16,9 +16,8 @@ use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPo
 use crate::core::manifest::{Manifest, PropertySpec, Variant};
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
-    SceneLiteAnimatedProperty, SceneLiteDocument, SceneLiteLayer, SceneLiteLayerKind,
-    SceneLitePropertyBinding, SceneLiteTextAlign, SceneLiteTransform, Transition, WallpaperEntry,
-    WallpaperPackage,
+    SceneLiteDocument, SceneLiteLayer, SceneLiteLayerKind, SceneLiteTextAlign, SceneLiteTransform,
+    Transition, WallpaperEntry, WallpaperPackage,
 };
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot, PowerState};
 use crate::policy::{PerformanceDecision, RenderMode};
@@ -1516,41 +1515,31 @@ fn scene_lite_wallpaper_plan(
             property_bindings: Vec::new(),
         },
     };
-    let snapshot = document.snapshot_at(0);
-    let layer_property_bindings = scene_lite_layer_property_bindings(&document);
+    let snapshot = document.snapshot_at_with_property_resolver(0, |property| {
+        scene_lite_property_value(property, render_properties, &package.manifest.properties)
+    });
     let layers = snapshot
         .layers
         .into_iter()
-        .map(|layer| {
-            let mut render_layer = SceneLiteRenderLayer {
-                id: layer.id,
-                kind: layer.kind,
-                source: layer.source.map(|source| source.join_to(&package.root)),
-                color: layer.color,
-                stroke_color: layer.stroke_color,
-                stroke_width: layer.stroke_width,
-                corner_radius: layer.corner_radius,
-                width: layer.width,
-                height: layer.height,
-                text: layer.text,
-                font_size: layer.font_size,
-                font_family: layer.font_family,
-                font_weight: layer.font_weight,
-                text_align: layer.text_align,
-                path_data: layer.path_data,
-                fit: layer.fit,
-                opacity: layer.opacity,
-                transform: layer.transform,
-            };
-            let layer_id = render_layer.id.clone();
-            apply_scene_lite_property_bindings(
-                &mut render_layer,
-                &document.property_bindings,
-                layer_property_bindings.get(&layer_id),
-                render_properties,
-                &package.manifest.properties,
-            );
-            render_layer
+        .map(|layer| SceneLiteRenderLayer {
+            id: layer.id,
+            kind: layer.kind,
+            source: layer.source.map(|source| source.join_to(&package.root)),
+            color: layer.color,
+            stroke_color: layer.stroke_color,
+            stroke_width: layer.stroke_width,
+            corner_radius: layer.corner_radius,
+            width: layer.width,
+            height: layer.height,
+            text: layer.text,
+            font_size: layer.font_size,
+            font_family: layer.font_family,
+            font_weight: layer.font_weight,
+            text_align: layer.text_align,
+            path_data: layer.path_data,
+            fit: layer.fit,
+            opacity: layer.opacity,
+            transform: layer.transform,
         })
         .collect::<Vec<_>>();
     let fallback = fallback.map(|fallback| fallback.join_to(&package.root));
@@ -1602,107 +1591,19 @@ fn collect_scene_lite_bound_properties(layer: &SceneLiteLayer, properties: &mut 
     }
 }
 
-fn scene_lite_layer_property_bindings(
-    document: &SceneLiteDocument,
-) -> BTreeMap<String, Vec<&SceneLitePropertyBinding>> {
-    let mut bindings = BTreeMap::new();
-    for layer in &document.layers {
-        collect_scene_lite_layer_property_bindings(layer, &mut bindings);
-    }
-    bindings
-}
-
-fn collect_scene_lite_layer_property_bindings<'a>(
-    layer: &'a SceneLiteLayer,
-    bindings: &mut BTreeMap<String, Vec<&'a SceneLitePropertyBinding>>,
-) {
-    if !layer.property_bindings.is_empty() {
-        bindings
-            .entry(layer.id.clone())
-            .or_default()
-            .extend(layer.property_bindings.iter());
-    }
-    for child in &layer.layers {
-        collect_scene_lite_layer_property_bindings(child, bindings);
-    }
-}
-
-fn apply_scene_lite_property_bindings(
-    layer: &mut SceneLiteRenderLayer,
-    document_bindings: &[SceneLitePropertyBinding],
-    layer_bindings: Option<&Vec<&SceneLitePropertyBinding>>,
-    render_properties: Option<&BTreeMap<String, Value>>,
-    manifest_properties: &BTreeMap<String, PropertySpec>,
-) {
-    let layer_id = layer.id.clone();
-    for binding in document_bindings {
-        if scene_lite_binding_targets_layer(binding, &layer_id) {
-            apply_scene_lite_property_binding(
-                layer,
-                binding,
-                render_properties,
-                manifest_properties,
-            );
-        }
-    }
-    if let Some(layer_bindings) = layer_bindings {
-        for binding in layer_bindings {
-            if scene_lite_binding_targets_layer(binding, &layer_id) {
-                apply_scene_lite_property_binding(
-                    layer,
-                    binding,
-                    render_properties,
-                    manifest_properties,
-                );
-            }
-        }
-    }
-}
-
-fn scene_lite_binding_targets_layer(binding: &SceneLitePropertyBinding, layer_id: &str) -> bool {
-    binding
-        .layer
-        .as_deref()
-        .is_none_or(|target| target == layer_id)
-}
-
-fn apply_scene_lite_property_binding(
-    layer: &mut SceneLiteRenderLayer,
-    binding: &SceneLitePropertyBinding,
-    render_properties: Option<&BTreeMap<String, Value>>,
-    manifest_properties: &BTreeMap<String, PropertySpec>,
-) {
-    let Some(value) =
-        scene_lite_property_binding_value(binding, render_properties, manifest_properties)
-    else {
-        return;
-    };
-    match binding.target {
-        SceneLiteAnimatedProperty::Opacity => layer.opacity = value.clamp(0.0, 1.0),
-        SceneLiteAnimatedProperty::X => layer.transform.x = value,
-        SceneLiteAnimatedProperty::Y => layer.transform.y = value,
-        SceneLiteAnimatedProperty::ScaleX if value > 0.0 => layer.transform.scale_x = value,
-        SceneLiteAnimatedProperty::ScaleY if value > 0.0 => layer.transform.scale_y = value,
-        SceneLiteAnimatedProperty::ScaleX | SceneLiteAnimatedProperty::ScaleY => {}
-        SceneLiteAnimatedProperty::RotationDeg => layer.transform.rotation_deg = value,
-    }
-}
-
-fn scene_lite_property_binding_value(
-    binding: &SceneLitePropertyBinding,
+fn scene_lite_property_value(
+    property: &str,
     render_properties: Option<&BTreeMap<String, Value>>,
     manifest_properties: &BTreeMap<String, PropertySpec>,
 ) -> Option<f64> {
-    let raw_value = render_properties
-        .and_then(|properties| properties.get(&binding.property))
+    render_properties
+        .and_then(|properties| properties.get(property))
         .and_then(scene_lite_json_property_number)
         .or_else(|| {
             manifest_properties
-                .get(&binding.property)
+                .get(property)
                 .and_then(scene_lite_manifest_property_default_number)
-        })?;
-    let value = raw_value * binding.scale.unwrap_or(1.0) + binding.offset.unwrap_or(0.0);
-    value.is_finite().then_some(value)
+        })
 }
 
 fn scene_lite_json_property_number(value: &Value) -> Option<f64> {

@@ -142,7 +142,10 @@ pub use scene_lite_present::{
     run_native_vulkan_vulkanalia_scene_lite_sampled_image_present,
     run_native_vulkan_vulkanalia_scene_lite_solid_quad_present,
 };
-pub use scene_lite_sampled_image::NativeVulkanVulkanaliaSceneLiteSampledImagePlanSnapshot;
+pub use scene_lite_sampled_image::{
+    NativeVulkanVulkanaliaSceneLiteSampledImageDescriptorStrategySnapshot,
+    NativeVulkanVulkanaliaSceneLiteSampledImagePlanSnapshot,
+};
 pub(crate) use scene_lite_sampled_image::{
     NativeVulkanVulkanaliaSceneLiteSampledImagePlanInput,
     native_vulkan_vulkanalia_scene_lite_sampled_image_plan,
