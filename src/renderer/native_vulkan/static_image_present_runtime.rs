@@ -2,9 +2,8 @@ use std::time::Duration;
 
 use crate::renderer::StaticWallpaperPlan;
 
-use super::static_image_upload::native_vulkan_static_background_clear_color;
 use super::{
-    NativeVulkanError, NativeVulkanOptions,
+    NativeVulkanClearColor, NativeVulkanError, NativeVulkanOptions,
     NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions,
     NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot,
     run_native_vulkan_vulkanalia_scene_lite_sampled_image_present,
@@ -43,6 +42,29 @@ pub fn run_static_image_vulkanalia(
     run_static_image(options, duration, plan)
 }
 
+fn native_vulkan_static_background_clear_color(background: Option<&str>) -> NativeVulkanClearColor {
+    let Some(hex) = background
+        .and_then(|value| value.trim().strip_prefix('#'))
+        .filter(|hex| hex.len() == 6)
+    else {
+        return NativeVulkanClearColor {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        };
+    };
+    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+    NativeVulkanClearColor {
+        r: r as f32 / 255.0,
+        g: g as f32 / 255.0,
+        b: b as f32 / 255.0,
+        a: 1.0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,5 +89,24 @@ mod tests {
         .unwrap_err();
 
         assert!(!err.to_string().contains("does not yet support tile"));
+    }
+
+    #[test]
+    fn static_background_clear_color_parses_hex_or_defaults_black() {
+        let color = native_vulkan_static_background_clear_color(Some("#336699"));
+        assert_eq!(color.r, 0x33 as f32 / 255.0);
+        assert_eq!(color.g, 0x66 as f32 / 255.0);
+        assert_eq!(color.b, 0x99 as f32 / 255.0);
+        assert_eq!(color.a, 1.0);
+
+        assert_eq!(
+            native_vulkan_static_background_clear_color(None),
+            NativeVulkanClearColor {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            }
+        );
     }
 }

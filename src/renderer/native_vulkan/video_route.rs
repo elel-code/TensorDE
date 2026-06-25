@@ -64,6 +64,12 @@ impl NativeVulkanVideoRunRouteDecision {
     }
 }
 
+pub fn native_vulkan_video_default_ready_prefix_frames(
+    _codec: NativeVulkanVideoSessionCodec,
+) -> u32 {
+    16
+}
+
 pub fn native_vulkan_video_run_route(
     options: &NativeVulkanVideoSessionSmokeOptions,
     av1_ready_prefix_frames: u32,
@@ -72,7 +78,14 @@ pub fn native_vulkan_video_run_route(
 ) -> NativeVulkanVideoRunRouteDecision {
     let counts =
         NativeVulkanVideoReadyPrefixCounts::from_smoke_options(options, av1_ready_prefix_frames);
-    let ready_prefix_frames = counts.matching(options.codec);
+    let requested_ready_prefix_frames = counts.matching(options.codec);
+    let default_ready_prefix_frames =
+        native_vulkan_video_default_ready_prefix_frames(options.codec);
+    let ready_prefix_frames = if requested_ready_prefix_frames == 0 && !counts.any() {
+        default_ready_prefix_frames
+    } else {
+        requested_ready_prefix_frames
+    };
     if ready_prefix_frames == 0 {
         return NativeVulkanVideoRunRouteDecision {
             kind: NativeVulkanVideoRunRouteKind::LegacyVideo,
@@ -81,7 +94,7 @@ pub fn native_vulkan_video_run_route(
             } else {
                 "no-ready-prefix-requested"
             },
-            fallback_allowed: !counts.any(),
+            fallback_allowed: false,
             codec: options.codec,
             width: options.width,
             height: options.height,
@@ -111,7 +124,11 @@ pub fn native_vulkan_video_run_route(
 
     NativeVulkanVideoRunRouteDecision {
         kind: NativeVulkanVideoRunRouteKind::VulkanaliaReadyPrefix,
-        status: "vulkanalia-ready-prefix",
+        status: if counts.any() {
+            "vulkanalia-ready-prefix"
+        } else {
+            "vulkanalia-ready-prefix-default"
+        },
         fallback_allowed: false,
         codec: options.codec,
         width: options.width,
@@ -203,14 +220,21 @@ mod tests {
     }
 
     #[test]
-    fn no_ready_prefix_allows_legacy_video_fallback() {
+    fn no_ready_prefix_defaults_to_vulkanalia_ready_prefix() {
         let options = options(NativeVulkanVideoSessionCodec::H265Main8);
 
         let route = native_vulkan_video_run_route(&options, 0, 0, None);
 
-        assert_eq!(route.kind, NativeVulkanVideoRunRouteKind::LegacyVideo);
-        assert_eq!(route.status, "no-ready-prefix-requested");
-        assert!(route.fallback_allowed);
+        assert_eq!(
+            route.kind,
+            NativeVulkanVideoRunRouteKind::VulkanaliaReadyPrefix
+        );
+        assert_eq!(route.status, "vulkanalia-ready-prefix-default");
+        assert_eq!(
+            route.ready_prefix_frames,
+            native_vulkan_video_default_ready_prefix_frames(options.codec)
+        );
+        assert!(!route.fallback_allowed);
     }
 
     #[test]
