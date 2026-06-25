@@ -37,9 +37,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     use gilder::renderer::native_vulkan::{
         NativeVulkanOptions, NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionSmokeOptions,
-        backend_contract, capabilities, probe_vulkan_video_decode, probe_vulkan_video_session,
-        probe_wayland_surface, run_clear, run_legacy_static_image, run_static_image, run_video,
-        wallpaper_type_support_matrix,
+        backend_contract, capabilities, native_vulkan_video_run_route, probe_vulkan_video_decode,
+        probe_vulkan_video_session, probe_wayland_surface, run_clear, run_legacy_static_image,
+        run_static_image, run_video, wallpaper_type_support_matrix,
     };
     use gilder::renderer::native_vulkan::{
         NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions,
@@ -730,22 +730,79 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .clone()
                 .unwrap_or_else(|| "native-vulkan".to_owned());
             let target_max_fps = options.target_max_fps;
-            json!(run_video(
-                options,
-                duration,
-                VideoWallpaperPlan {
-                    output_name,
-                    source,
-                    poster,
-                    fit,
-                    loop_playback,
-                    muted,
-                    manifest_max_fps: None,
-                    target_max_fps,
-                    decoder_policy,
-                    start_offset_ms,
-                },
-            )?)
+            let route = native_vulkan_video_run_route(
+                &video_session_options,
+                av1_ready_prefix_frames,
+                ready_prefix_playback_frames,
+            );
+            #[cfg(feature = "native-vulkan-gst-video")]
+            {
+                if route.is_vulkanalia_ready_prefix() {
+                    let audio_output_mode = audio_output_policy.resolve(muted);
+                    json!(run_vulkanalia_ready_prefix_video(
+                        options,
+                        video_session_options.codec,
+                        source,
+                        video_session_options.width,
+                        video_session_options.height,
+                        fit,
+                        video_session_options.bitstream_extract_max_samples,
+                        route.ready_prefix_frames,
+                        route.playback_frames,
+                        audio_clock_probe_with_video,
+                        audio_output_mode,
+                    )?)
+                } else {
+                    if !route.fallback_allowed {
+                        return Err(format!(
+                            "--run-video cannot use Vulkanalia ready-prefix route: {}",
+                            route.status
+                        )
+                        .into());
+                    }
+                    json!(run_video(
+                        options,
+                        duration,
+                        VideoWallpaperPlan {
+                            output_name,
+                            source,
+                            poster,
+                            fit,
+                            loop_playback,
+                            muted,
+                            manifest_max_fps: None,
+                            target_max_fps,
+                            decoder_policy,
+                            start_offset_ms,
+                        },
+                    )?)
+                }
+            }
+            #[cfg(not(feature = "native-vulkan-gst-video"))]
+            {
+                if !route.fallback_allowed {
+                    return Err(
+                        "--run-video Vulkanalia ready-prefix route requires native-vulkan-gst-video feature"
+                            .into(),
+                    );
+                }
+                json!(run_video(
+                    options,
+                    duration,
+                    VideoWallpaperPlan {
+                        output_name,
+                        source,
+                        poster,
+                        fit,
+                        loop_playback,
+                        muted,
+                        manifest_max_fps: None,
+                        target_max_fps,
+                        decoder_policy,
+                        start_offset_ms,
+                    },
+                )?)
+            }
         }
         NativeVulkanCliMode::RunH265FirstFrameVideo => {
             let source = source.ok_or("--run-h265-first-frame-video requires --source")?;
@@ -1173,7 +1230,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --run-vulkanalia-scene-lite-sampled-image uses Vulkanalia dynamic rendering to upload --source once into a retained sampled image and draw it to the Wayland swapchain.\n\
 --run-static and --run-vulkanalia-static use Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
 --run-legacy-static uses the old ash staging-copy static image path for comparison.\n\
---run-video accepts a video wallpaper plan, presents a poster/clear placeholder through native Vulkan, then prints video handoff telemetry.\n\
+--run-video uses Vulkanalia ready-prefix video when matching --decode-*-ready-prefix input and source extent are available; otherwise it uses the legacy video plan handoff telemetry path.\n\
 --run-h265-first-frame-video decodes the first H.265 IDR with Vulkan Video and samples the decoded NV12 image to the swapchain.\n\
 --run-h264-ready-prefix-video decodes a ready H.264 AU prefix with Vulkan Video and samples each decoded NV12 layer to the swapchain.\n\
 --h264-input streaming-queue selects bounded streaming packet queue input for H.264 visible video; ready-prefix spool is no longer maintained.\n\

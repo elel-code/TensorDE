@@ -77,6 +77,9 @@ mod pipeline;
 #[path = "native_vulkan/video_flow.rs"]
 mod video_flow;
 
+#[path = "native_vulkan/video_route.rs"]
+mod video_route;
+
 #[path = "native_vulkan/present.rs"]
 mod present;
 
@@ -303,6 +306,10 @@ use video_import::{NativeVulkanVideoImportReport, NativeVulkanVideoImportStatus}
 #[cfg(feature = "native-vulkan-gst-video")]
 use video_memory_gst::{native_vulkan_gst_memory_type, native_vulkan_gst_memory_types};
 pub use video_probe_snapshots::*;
+pub use video_route::{
+    NativeVulkanVideoReadyPrefixCounts, NativeVulkanVideoRunRouteDecision,
+    NativeVulkanVideoRunRouteKind, native_vulkan_video_run_route,
+};
 use video_runtime::{NativeVulkanVideoAudioRuntimeTelemetry, native_vulkan_video_runtime_snapshot};
 pub use video_runtime::{NativeVulkanVideoMemoryRouteSnapshot, NativeVulkanVideoRuntimeSnapshot};
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -37008,7 +37015,7 @@ pub fn wallpaper_type_support_matrix() -> Vec<NativeVulkanWallpaperTypeSupport> 
         NativeVulkanWallpaperTypeSupport {
             wallpaper_type: NativeVulkanWallpaperType::Video,
             current_vulkan_item: true,
-            current_renderer_status: "video render item runs through native Vulkan lifecycle; H.265 visible direct path exists; H.264/H.265/AV1 session+bitstream gates cover direct Vulkan Video expansion",
+            current_renderer_status: "--run-video auto-routes matching H.264/H.265/AV1 ready-prefix input through Vulkanalia; legacy video plan handoff remains the no-prefix fallback",
             target_vulkan_path: "container demux/parser -> Vulkan Video bitstream/session parameters -> decoded NV12/P010 image -> Vulkan YUV sampling; importer paths remain fallback/comparison",
         },
         NativeVulkanWallpaperTypeSupport {
