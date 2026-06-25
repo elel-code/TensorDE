@@ -4,6 +4,7 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder, KhrSwapchainExtensionDeviceCommands};
 
+pub(super) use super::present_timing::VulkanaliaPresentTimingConfig as VulkanaliaDecodedImagePresentTimingConfig;
 use super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE;
 use super::video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot;
 use super::video_session_images::VulkanaliaVideoSessionResourceImage;
@@ -80,57 +81,6 @@ pub(super) struct VulkanaliaDecodedImagePresentFrameResources {
     image_available: Vec<vk::Semaphore>,
     render_finished: Vec<vk::Semaphore>,
     in_flight: Vec<vk::Fence>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct VulkanaliaDecodedImagePresentTimingConfig {
-    pub(super) present_id_enabled: bool,
-    pub(super) present_id2_enabled: bool,
-    pub(super) present_wait_enabled: bool,
-    pub(super) present_wait2_enabled: bool,
-}
-
-impl VulkanaliaDecodedImagePresentTimingConfig {
-    pub(super) fn disabled() -> Self {
-        Self {
-            present_id_enabled: false,
-            present_id2_enabled: false,
-            present_wait_enabled: false,
-            present_wait2_enabled: false,
-        }
-    }
-
-    pub(super) fn new(
-        present_id_enabled: bool,
-        present_id2_enabled: bool,
-        present_wait_enabled: bool,
-        present_wait2_enabled: bool,
-    ) -> Self {
-        Self {
-            present_id_enabled,
-            present_id2_enabled,
-            present_wait_enabled,
-            present_wait2_enabled,
-        }
-    }
-
-    fn present_id(self, present_frame_index: u32) -> Option<u64> {
-        if self.present_id2_enabled || self.present_id_enabled {
-            Some(u64::from(present_frame_index).saturating_add(1))
-        } else {
-            None
-        }
-    }
-
-    fn present_id_mode(self) -> &'static str {
-        if self.present_id2_enabled {
-            "present-id2-khr"
-        } else if self.present_id_enabled {
-            "present-id-khr"
-        } else {
-            "disabled"
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -16,6 +16,8 @@ mod migration;
 mod plan;
 #[path = "vulkanalia_backend/present_clear.rs"]
 mod present_clear;
+#[path = "vulkanalia_backend/present_timing.rs"]
+mod present_timing;
 #[path = "vulkanalia_backend/profiles.rs"]
 mod profiles;
 #[path = "vulkanalia_backend/queue_probe.rs"]

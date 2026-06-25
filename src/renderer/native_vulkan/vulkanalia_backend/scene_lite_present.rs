@@ -21,6 +21,7 @@ use super::instance::{
     native_vulkan_vulkanalia_create_instance_with_required_extensions,
     native_vulkan_vulkanalia_destroy_instance,
 };
+use super::present_timing::VulkanaliaPresentTimingConfig;
 use super::scene_lite_draw_pass::{
     NativeVulkanVulkanaliaSceneLiteSolidQuadCommandSnapshot,
     NativeVulkanVulkanaliaSceneLiteSolidQuadPipelineSnapshot,
@@ -111,6 +112,12 @@ pub struct NativeVulkanVulkanaliaSceneLiteSolidQuadPresentSnapshot {
     pub command_submit_model: &'static str,
     pub present_sync_model: &'static str,
     pub wait_idle_after_present: bool,
+    pub present_ids: Vec<Option<u64>>,
+    pub uses_present_id: bool,
+    pub uses_present_id2: bool,
+    pub present_wait_available: bool,
+    pub present_wait2_available: bool,
+    pub present_wait_after_present: bool,
     pub uses_pipeline_rendering_create_info: bool,
     pub uses_dynamic_rendering: bool,
     pub uses_synchronization2: bool,
@@ -348,6 +355,12 @@ fn with_vulkanalia_scene_lite_solid_quad_present(
             return Err(err);
         }
     };
+    let present_timing = VulkanaliaPresentTimingConfig::new(
+        present_device.feature_selection.present_id_enabled,
+        present_device.feature_selection.present_id2_enabled,
+        present_device.feature_selection.present_wait_enabled,
+        present_device.feature_selection.present_wait2_enabled,
+    );
 
     let result = run_scene_lite_solid_quad_present_loop(
         vulkan,
@@ -362,6 +375,7 @@ fn with_vulkanalia_scene_lite_solid_quad_present(
         &selection,
         &present_device.extension_snapshot,
         &swapchain_plan,
+        present_timing,
         options,
     );
 
@@ -391,6 +405,7 @@ fn run_scene_lite_solid_quad_present_loop(
     selection: &super::swapchain::NativeVulkanVulkanaliaPresentQueueSelection,
     extension_snapshot: &NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     swapchain_plan: &super::swapchain::NativeVulkanVulkanaliaSwapchainPlan,
+    present_timing: VulkanaliaPresentTimingConfig,
     options: NativeVulkanVulkanaliaSceneLiteSolidQuadPresentOptions,
 ) -> Result<NativeVulkanVulkanaliaSceneLiteSolidQuadPresentSnapshot, String> {
     let started_at = Instant::now();
@@ -401,6 +416,7 @@ fn run_scene_lite_solid_quad_present_loop(
         .map(|fps| Duration::from_secs_f64(1.0 / fps as f64));
     let mut next_frame = Instant::now();
     let mut frames_presented = 0u64;
+    let mut present_ids = Vec::new();
     let mut last_command = None;
 
     while Instant::now() < deadline {
@@ -462,10 +478,31 @@ fn run_scene_lite_solid_quad_present_loop(
         let swapchains = [swapchain];
         let image_indices = [image_index];
         let wait_semaphores = [render_finished];
-        let present_info = vk::PresentInfoKHR::builder()
+        let present_id = present_timing.present_id(frames_presented as u32);
+        let present_id_values = [present_id.unwrap_or(0)];
+        let mut present_id2_info = present_id.map(|_| {
+            vk::PresentId2KHR::builder()
+                .present_ids(&present_id_values)
+                .build()
+        });
+        let mut present_id_info = present_id.map(|_| {
+            vk::PresentIdKHR::builder()
+                .present_ids(&present_id_values)
+                .build()
+        });
+        let mut present_info = vk::PresentInfoKHR::builder()
             .wait_semaphores(&wait_semaphores)
             .swapchains(&swapchains)
             .image_indices(&image_indices);
+        if present_timing.present_id2_enabled {
+            if let Some(present_id2_info) = present_id2_info.as_mut() {
+                present_info = present_info.push_next(present_id2_info);
+            }
+        } else if present_timing.present_id_enabled {
+            if let Some(present_id_info) = present_id_info.as_mut() {
+                present_info = present_info.push_next(present_id_info);
+            }
+        }
         unsafe {
             device
                 .queue_present_khr(queue, &present_info)
@@ -474,6 +511,7 @@ fn run_scene_lite_solid_quad_present_loop(
                 })?;
         }
 
+        present_ids.push(present_id);
         frames_presented += 1;
         last_command = Some(command);
 
@@ -531,6 +569,12 @@ fn run_scene_lite_solid_quad_present_loop(
         command_submit_model: "acquire_next_image_khr -> cmd_begin_rendering solid quad -> queue_submit2 -> queue_present_khr",
         present_sync_model: "frame-slot semaphore/fence reuse; no per-present queue_wait_idle",
         wait_idle_after_present: false,
+        present_ids,
+        uses_present_id: present_timing.present_id_enabled,
+        uses_present_id2: present_timing.present_id2_enabled,
+        present_wait_available: present_timing.present_wait_enabled,
+        present_wait2_available: present_timing.present_wait2_enabled,
+        present_wait_after_present: false,
         uses_pipeline_rendering_create_info: true,
         uses_dynamic_rendering: true,
         uses_synchronization2: true,
