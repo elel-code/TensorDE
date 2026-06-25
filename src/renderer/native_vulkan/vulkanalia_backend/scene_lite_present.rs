@@ -40,6 +40,7 @@ use super::scene_lite_draw_pass::{
 };
 use super::scene_lite_sampled_image::{
     NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot,
+    NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode,
     VulkanaliaSceneLiteSampledImageResources,
     native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources,
     native_vulkan_vulkanalia_decode_scene_lite_rgba_image,
@@ -733,6 +734,7 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
         frame_resources.command_pool,
         present_device.queue,
         pipeline.descriptor_set_layout,
+        scene_lite_sampled_image_sampler_mode(options.fit),
         options.source.display().to_string(),
         vk::Extent2D {
             width: decoded.width,
@@ -1738,6 +1740,16 @@ fn scene_lite_sampled_image_full_extent_geometry_input(
     )
 }
 
+fn scene_lite_sampled_image_sampler_mode(
+    fit: Option<FitMode>,
+) -> NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode {
+    if fit == Some(FitMode::Tile) {
+        NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode::Repeat
+    } else {
+        NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode::ClampToEdge
+    }
+}
+
 fn scene_lite_sampled_image_fit_geometry_input(
     extent: vk::Extent2D,
     source_extent: vk::Extent2D,
@@ -1749,19 +1761,14 @@ fn scene_lite_sampled_image_fit_geometry_input(
     if source_extent.width == 0 || source_extent.height == 0 {
         return Err("scene-lite sampled-image fit geometry requires non-zero source extent".into());
     }
-    if fit == FitMode::Tile {
-        return Err(
-            "scene-lite sampled-image Vulkanalia fit geometry does not yet support tile".into(),
-        );
-    }
 
     let target_width = extent.width as f64;
     let target_height = extent.height as f64;
     let source_width = source_extent.width as f64;
     let source_height = source_extent.height as f64;
-    let (scaled_width, scaled_height) = match fit {
-        FitMode::Stretch => (target_width, target_height),
-        FitMode::Center => (source_width, source_height),
+    let (scaled_width, scaled_height, uv_x1, uv_y1) = match fit {
+        FitMode::Stretch => (target_width, target_height, 1.0, 1.0),
+        FitMode::Center => (source_width, source_height, 1.0, 1.0),
         FitMode::Contain | FitMode::Cover => {
             let scale_x = target_width / source_width;
             let scale_y = target_height / source_height;
@@ -1773,22 +1780,35 @@ fn scene_lite_sampled_image_fit_geometry_input(
             (
                 (source_width * scale).round().max(1.0),
                 (source_height * scale).round().max(1.0),
+                1.0,
+                1.0,
             )
         }
-        FitMode::Tile => unreachable!("tile rejected above"),
+        FitMode::Tile => (
+            target_width,
+            target_height,
+            target_width / source_width,
+            target_height / source_height,
+        ),
     };
     let x0 = ((target_width - scaled_width) * 0.5) as f32;
     let y0 = ((target_height - scaled_height) * 0.5) as f32;
     let x1 = (x0 as f64 + scaled_width) as f32;
     let y1 = (y0 as f64 + scaled_height) as f32;
+    let uv_x1 = uv_x1 as f32;
+    let uv_y1 = uv_y1 as f32;
 
     Ok(
         NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput::new(
             vec![
                 NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new([x0, y0], [0.0, 0.0], 1.0),
-                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new([x1, y0], [1.0, 0.0], 1.0),
-                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new([x0, y1], [0.0, 1.0], 1.0),
-                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new([x1, y1], [1.0, 1.0], 1.0),
+                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new([x1, y0], [uv_x1, 0.0], 1.0),
+                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new([x0, y1], [0.0, uv_y1], 1.0),
+                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new(
+                    [x1, y1],
+                    [uv_x1, uv_y1],
+                    1.0,
+                ),
             ],
             vec![0, 1, 2, 2, 1, 3],
             format!("fit-{fit:?}-sampled-image"),
@@ -2174,8 +2194,27 @@ mod tests {
             vec![[300.0, 50.0], [700.0, 50.0], [300.0, 450.0], [700.0, 450.0]]
         );
 
-        assert!(
-            scene_lite_sampled_image_fit_geometry_input(target, source, FitMode::Tile).is_err()
+        let tile = scene_lite_sampled_image_fit_geometry_input(target, source, FitMode::Tile)
+            .expect("tile geometry");
+        assert_eq!(
+            sampled_image_positions(&tile),
+            vec![[0.0, 0.0], [1000.0, 0.0], [0.0, 500.0], [1000.0, 500.0]]
+        );
+        assert_eq!(
+            sampled_image_uvs(&tile),
+            vec![[0.0, 0.0], [2.5, 0.0], [0.0, 1.25], [2.5, 1.25]]
+        );
+        assert_eq!(
+            scene_lite_sampled_image_sampler_mode(Some(FitMode::Tile)),
+            NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode::Repeat
+        );
+        assert_eq!(
+            scene_lite_sampled_image_sampler_mode(Some(FitMode::Cover)),
+            NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode::ClampToEdge
+        );
+        assert_eq!(
+            scene_lite_sampled_image_sampler_mode(None),
+            NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode::ClampToEdge
         );
     }
 
@@ -2187,6 +2226,12 @@ mod tests {
             .iter()
             .map(|vertex| vertex.position)
             .collect()
+    }
+
+    fn sampled_image_uvs(
+        input: &NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput,
+    ) -> Vec<[f32; 2]> {
+        input.vertices.iter().map(|vertex| vertex.uv).collect()
     }
 
     #[test]

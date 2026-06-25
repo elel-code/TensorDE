@@ -97,6 +97,7 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot {
     pub selected_staging_memory_property_flags: Vec<&'static str>,
     pub image_view_created: bool,
     pub sampler_created: bool,
+    pub sampler_address_mode: &'static str,
     pub descriptor_pool_created: bool,
     pub descriptor_set_allocated: bool,
     pub descriptor_type: &'static str,
@@ -108,6 +109,28 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot {
     pub command_order: Vec<&'static str>,
     pub uses_synchronization2: bool,
     pub retained_across_present_frames: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode {
+    ClampToEdge,
+    Repeat,
+}
+
+impl NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode {
+    pub(super) fn address_mode(self) -> vk::SamplerAddressMode {
+        match self {
+            Self::ClampToEdge => vk::SamplerAddressMode::CLAMP_TO_EDGE,
+            Self::Repeat => vk::SamplerAddressMode::REPEAT,
+        }
+    }
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::ClampToEdge => "clamp-to-edge",
+            Self::Repeat => "repeat",
+        }
+    }
 }
 
 pub(super) struct VulkanaliaSceneLiteSampledImageResources {
@@ -229,6 +252,7 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
     command_pool: vk::CommandPool,
     queue: vk::Queue,
     descriptor_set_layout: vk::DescriptorSetLayout,
+    sampler_mode: NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode,
     source_label: impl Into<String>,
     extent: vk::Extent2D,
     rgba_bytes: &[u8],
@@ -317,7 +341,7 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
 
         image_view = create_scene_lite_sampled_image_view(device, image)?;
         image_view_live = true;
-        sampler = create_scene_lite_sampled_image_sampler(device)?;
+        sampler = create_scene_lite_sampled_image_sampler(device, sampler_mode)?;
         sampler_live = true;
 
         descriptor_pool = create_scene_lite_sampled_image_descriptor_pool(device)?;
@@ -384,6 +408,7 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
                 ),
                 image_view_created: true,
                 sampler_created: true,
+                sampler_address_mode: sampler_mode.label(),
                 descriptor_pool_created: true,
                 descriptor_set_allocated: true,
                 descriptor_type: "combined-image-sampler",
@@ -639,14 +664,17 @@ fn create_scene_lite_sampled_image_view(
         .map_err(|err| format!("vkCreateImageView(vulkanalia scene-lite sampled image): {err:?}"))
 }
 
-fn create_scene_lite_sampled_image_sampler(device: &Device) -> Result<vk::Sampler, String> {
+fn create_scene_lite_sampled_image_sampler(
+    device: &Device,
+    sampler_mode: NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode,
+) -> Result<vk::Sampler, String> {
     let sampler_info = vk::SamplerCreateInfo::builder()
         .mag_filter(vk::Filter::LINEAR)
         .min_filter(vk::Filter::LINEAR)
         .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
-        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .address_mode_u(sampler_mode.address_mode())
+        .address_mode_v(sampler_mode.address_mode())
+        .address_mode_w(sampler_mode.address_mode())
         .min_lod(0.0)
         .max_lod(0.0);
     unsafe { device.create_sampler(&sampler_info, None) }
@@ -1038,6 +1066,26 @@ mod tests {
                 &[]
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn sampled_image_sampler_modes_name_vulkan_address_modes() {
+        assert_eq!(
+            NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode::ClampToEdge.address_mode(),
+            vk::SamplerAddressMode::CLAMP_TO_EDGE
+        );
+        assert_eq!(
+            NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode::ClampToEdge.label(),
+            "clamp-to-edge"
+        );
+        assert_eq!(
+            NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode::Repeat.address_mode(),
+            vk::SamplerAddressMode::REPEAT
+        );
+        assert_eq!(
+            NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode::Repeat.label(),
+            "repeat"
         );
     }
 

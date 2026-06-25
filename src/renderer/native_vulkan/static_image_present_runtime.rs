@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use crate::core::FitMode;
 use crate::renderer::StaticWallpaperPlan;
 
 use super::static_image_upload::native_vulkan_static_background_clear_color;
@@ -16,12 +15,6 @@ pub fn run_static_image_vulkanalia(
     duration: Duration,
     plan: StaticWallpaperPlan,
 ) -> Result<NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot, NativeVulkanError> {
-    if plan.fit == FitMode::Tile {
-        return Err(NativeVulkanError::StaticImage(
-            "Vulkanalia static sampled-image path does not yet support tile fit; use legacy --run-static until repeat/tile geometry lands"
-                .to_owned(),
-        ));
-    }
     if options.host.output_name.is_none() {
         options.host.output_name = Some(plan.output_name.clone());
     }
@@ -45,10 +38,11 @@ pub fn run_static_image_vulkanalia(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::FitMode;
     use crate::renderer::native_wayland::NativeWaylandHostOptions;
 
     #[test]
-    fn vulkanalia_static_rejects_tile_without_silent_fallback() {
+    fn vulkanalia_static_no_longer_rejects_tile_before_runtime_setup() {
         let err = run_static_image_vulkanalia(
             NativeVulkanOptions {
                 host: NativeWaylandHostOptions::default(),
@@ -64,6 +58,6 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(err.to_string().contains("does not yet support tile"));
+        assert!(!err.to_string().contains("does not yet support tile"));
     }
 }
