@@ -929,6 +929,7 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_sampled_image_command_b
     vertex_buffer: vk::Buffer,
     index_buffer: vk::Buffer,
     index_count: u32,
+    clear_color: [f32; 4],
 ) -> Result<NativeVulkanVulkanaliaSceneLiteSampledImageCommandSnapshot, String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("scene-lite sampled-image command requires non-zero extent".to_owned());
@@ -975,7 +976,7 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_sampled_image_command_b
 
         let clear_value = vk::ClearValue {
             color: vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 1.0],
+                float32: clear_color,
             },
         };
         let color_attachment = vk::RenderingAttachmentInfo::builder()

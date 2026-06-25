@@ -12,6 +12,7 @@ use vulkanalia::vk::{
     self, HasBuilder, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands,
 };
 
+use crate::core::FitMode;
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
 use crate::renderer::native_wayland::{
     NativeWaylandHost, NativeWaylandHostOptions, NativeWaylandSurfaceHandles,
@@ -84,6 +85,8 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions {
     pub duration: Duration,
     pub target_max_fps: Option<u32>,
     pub source: PathBuf,
+    pub clear_color: NativeVulkanClearColor,
+    pub fit: Option<FitMode>,
     pub geometry: Option<NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput>,
 }
 
@@ -201,6 +204,8 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot {
     pub frames_presented: u64,
     pub average_present_fps: f64,
     pub source: PathBuf,
+    pub clear_color: NativeVulkanClearColor,
+    pub fit: Option<FitMode>,
     pub selected_queue: NativeVulkanVulkanaliaPresentQueueSnapshot,
     pub device_extensions: NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     pub swapchain: NativeVulkanVulkanaliaSwapchainSnapshot,
@@ -668,9 +673,28 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
     };
     let memory_properties =
         unsafe { instance.get_physical_device_memory_properties(selection.physical_device) };
+    let decoded = match native_vulkan_vulkanalia_decode_scene_lite_rgba_image(&options.source) {
+        Ok(decoded) => decoded,
+        Err(err) => {
+            native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_pipeline_resources(
+                device, pipeline,
+            );
+            destroy_scene_lite_solid_quad_frame_resources(device, frame_resources);
+            unsafe {
+                device.destroy_swapchain_khr(swapchain, None);
+                present_device.device.destroy_device(None);
+            }
+            return Err(err);
+        }
+    };
     let geometry_payload = match scene_lite_sampled_image_geometry_payload(
         options.geometry.as_ref(),
         swapchain_plan.extent,
+        options.fit,
+        vk::Extent2D {
+            width: decoded.width,
+            height: decoded.height,
+        },
     ) {
         Ok(payload) => payload,
         Err(err) => {
@@ -692,21 +716,6 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
     ) {
         Ok(geometry) => geometry,
         Err(err) => {
-            native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_pipeline_resources(
-                device, pipeline,
-            );
-            destroy_scene_lite_solid_quad_frame_resources(device, frame_resources);
-            unsafe {
-                device.destroy_swapchain_khr(swapchain, None);
-                present_device.device.destroy_device(None);
-            }
-            return Err(err);
-        }
-    };
-    let decoded = match native_vulkan_vulkanalia_decode_scene_lite_rgba_image(&options.source) {
-        Ok(decoded) => decoded,
-        Err(err) => {
-            destroy_scene_lite_sampled_image_geometry_resources(device, geometry);
             native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_pipeline_resources(
                 device, pipeline,
             );
@@ -1057,6 +1066,12 @@ fn run_scene_lite_sampled_image_present_loop(
             geometry.vertex_buffer,
             geometry.index_buffer,
             geometry.snapshot.index_count,
+            [
+                options.clear_color.r,
+                options.clear_color.g,
+                options.clear_color.b,
+                options.clear_color.a,
+            ],
         )?;
         submit_scene_lite_solid_quad_command_buffer2(
             device,
@@ -1134,6 +1149,8 @@ fn run_scene_lite_sampled_image_present_loop(
             frames_presented as f64 / elapsed.as_secs_f64()
         },
         source: options.source,
+        clear_color: options.clear_color,
+        fit: options.fit,
         selected_queue: NativeVulkanVulkanaliaPresentQueueSnapshot {
             physical_device_index: selection.physical_device_index,
             physical_device_name: selection.physical_device_name.clone(),
@@ -1686,10 +1703,15 @@ fn scene_lite_solid_quad_geometry_payload_from_input(
 fn scene_lite_sampled_image_geometry_payload(
     input: Option<&NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput>,
     extent: vk::Extent2D,
+    fit: Option<FitMode>,
+    source_extent: vk::Extent2D,
 ) -> Result<VulkanaliaSceneLiteSampledImageGeometryPayload, String> {
     let fallback;
     let input = if let Some(input) = input {
         input
+    } else if let Some(fit) = fit {
+        fallback = scene_lite_sampled_image_fit_geometry_input(extent, source_extent, fit)?;
+        &fallback
     } else {
         fallback = scene_lite_sampled_image_full_extent_geometry_input(extent);
         &fallback
@@ -1713,6 +1735,64 @@ fn scene_lite_sampled_image_full_extent_geometry_input(
         ],
         vec![0, 1, 2, 2, 1, 3],
         "full-extent-smoke-sampled-image",
+    )
+}
+
+fn scene_lite_sampled_image_fit_geometry_input(
+    extent: vk::Extent2D,
+    source_extent: vk::Extent2D,
+    fit: FitMode,
+) -> Result<NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput, String> {
+    if extent.width == 0 || extent.height == 0 {
+        return Err("scene-lite sampled-image fit geometry requires non-zero target extent".into());
+    }
+    if source_extent.width == 0 || source_extent.height == 0 {
+        return Err("scene-lite sampled-image fit geometry requires non-zero source extent".into());
+    }
+    if fit == FitMode::Tile {
+        return Err(
+            "scene-lite sampled-image Vulkanalia fit geometry does not yet support tile".into(),
+        );
+    }
+
+    let target_width = extent.width as f64;
+    let target_height = extent.height as f64;
+    let source_width = source_extent.width as f64;
+    let source_height = source_extent.height as f64;
+    let (scaled_width, scaled_height) = match fit {
+        FitMode::Stretch => (target_width, target_height),
+        FitMode::Center => (source_width, source_height),
+        FitMode::Contain | FitMode::Cover => {
+            let scale_x = target_width / source_width;
+            let scale_y = target_height / source_height;
+            let scale = if fit == FitMode::Cover {
+                scale_x.max(scale_y)
+            } else {
+                scale_x.min(scale_y)
+            };
+            (
+                (source_width * scale).round().max(1.0),
+                (source_height * scale).round().max(1.0),
+            )
+        }
+        FitMode::Tile => unreachable!("tile rejected above"),
+    };
+    let x0 = ((target_width - scaled_width) * 0.5) as f32;
+    let y0 = ((target_height - scaled_height) * 0.5) as f32;
+    let x1 = (x0 as f64 + scaled_width) as f32;
+    let y1 = (y0 as f64 + scaled_height) as f32;
+
+    Ok(
+        NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput::new(
+            vec![
+                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new([x0, y0], [0.0, 0.0], 1.0),
+                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new([x1, y0], [1.0, 0.0], 1.0),
+                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new([x0, y1], [0.0, 1.0], 1.0),
+                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new([x1, y1], [1.0, 1.0], 1.0),
+            ],
+            vec![0, 1, 2, 2, 1, 3],
+            format!("fit-{fit:?}-sampled-image"),
+        ),
     )
 }
 
@@ -2027,6 +2107,11 @@ mod tests {
                 width: 1000,
                 height: 500,
             },
+            None,
+            vk::Extent2D {
+                width: 1000,
+                height: 500,
+            },
         )
         .unwrap();
 
@@ -2043,6 +2128,65 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(&floats[0..5], &[0.0, 0.0, 0.0, 0.0, 1.0]);
         assert_eq!(&floats[15..20], &[0.0, 500.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn sampled_image_fit_geometry_matches_static_fit_semantics() {
+        let target = vk::Extent2D {
+            width: 1000,
+            height: 500,
+        };
+        let source = vk::Extent2D {
+            width: 400,
+            height: 400,
+        };
+
+        let cover = scene_lite_sampled_image_fit_geometry_input(target, source, FitMode::Cover)
+            .expect("cover geometry");
+        assert_eq!(
+            sampled_image_positions(&cover),
+            vec![
+                [0.0, -250.0],
+                [1000.0, -250.0],
+                [0.0, 750.0],
+                [1000.0, 750.0]
+            ]
+        );
+
+        let contain = scene_lite_sampled_image_fit_geometry_input(target, source, FitMode::Contain)
+            .expect("contain geometry");
+        assert_eq!(
+            sampled_image_positions(&contain),
+            vec![[250.0, 0.0], [750.0, 0.0], [250.0, 500.0], [750.0, 500.0]]
+        );
+
+        let stretch = scene_lite_sampled_image_fit_geometry_input(target, source, FitMode::Stretch)
+            .expect("stretch geometry");
+        assert_eq!(
+            sampled_image_positions(&stretch),
+            vec![[0.0, 0.0], [1000.0, 0.0], [0.0, 500.0], [1000.0, 500.0]]
+        );
+
+        let center = scene_lite_sampled_image_fit_geometry_input(target, source, FitMode::Center)
+            .expect("center geometry");
+        assert_eq!(
+            sampled_image_positions(&center),
+            vec![[300.0, 50.0], [700.0, 50.0], [300.0, 450.0], [700.0, 450.0]]
+        );
+
+        assert!(
+            scene_lite_sampled_image_fit_geometry_input(target, source, FitMode::Tile).is_err()
+        );
+    }
+
+    fn sampled_image_positions(
+        input: &NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput,
+    ) -> Vec<[f32; 2]> {
+        input
+            .vertices
+            .iter()
+            .map(|vertex| vertex.position)
+            .collect()
     }
 
     #[test]

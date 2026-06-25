@@ -78,6 +78,8 @@ pub fn run_scene_lite_sampled_image(
             duration,
             target_max_fps,
             source,
+            clear_color: options.clear_color,
+            fit: None,
             geometry: Some(geometry),
         },
     )
