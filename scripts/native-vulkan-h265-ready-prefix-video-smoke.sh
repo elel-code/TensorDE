@@ -551,13 +551,19 @@ expected_pacing_strategy="$(gilder_expected_pacing_strategy_with_master "$presen
 frame_sleep_count_value="$(jq -r '.frame_sleep_count // 0' "$runtime_json")"
 bitstream_strategy="$(jq -r '(.h265_retained_video_present_decode.decode.bitstream_buffer_model // "none")' "$runtime_json")"
 bitstream_slot_count=1
-bitstream_slot_bytes="$(jq -r '([.h265_retained_video_present_decode.decode.frames[]?.src_buffer_range] | max // 0)' "$runtime_json")"
+bitstream_slot_bytes="$(jq -r '(.h265_retained_video_present_decode.decode.max_src_buffer_range // ([.h265_retained_video_present_decode.decode.frames[]?.src_buffer_range] | max) // 0)' "$runtime_json")"
 bitstream_ring_capacity_bytes="$(jq -r '(.h265_retained_video_present_decode.decode.src_buffer_total_bytes // 0)' "$runtime_json")"
 bitstream_ring_wrap_count=0
 bitstream_window_payload_bytes="$bitstream_ring_capacity_bytes"
-bitstream_upload_count=1
 bitstream_uploaded_bytes="$bitstream_ring_capacity_bytes"
 h265_input_mode="$(jq -r '(.h265_retained_video_present_decode.decode.input_payload_model // "none")' "$runtime_json")"
+if [[ "$h265_input_mode" == "bounded-streaming-packet-queue-per-frame-upload" ]]; then
+  bitstream_upload_count="$decoded_count"
+  expected_decoded_count="$requested_playback_count"
+else
+  bitstream_upload_count=1
+  expected_decoded_count="$ready_prefix_count"
+fi
 h265_present_frame_preroll_count="$(jq -r '(.h265_retained_video_present_decode.decoded_image_present_sequence.present_handoff.queued_frame_count_before_drain // 0)' "$runtime_json")"
 h265_present_queue_count="$(jq -r '(.h265_retained_video_present_decode.decoded_image_present_sequence.present_handoff.capacity_frames // 0)' "$runtime_json")"
 h265_async_present_depth="$(jq -r '(.h265_retained_video_present_decode.decoded_image_present_sequence.present_handoff.peak_depth // 0)' "$runtime_json")"
@@ -609,19 +615,27 @@ first_frame_idr="$(jq -r '(.h265_retained_video_present_decode.decode.frames[0].
 loop_first_non_idr_count=0
 swapchain_images="$(jq -r '(.h265_retained_video_present_decode.session.device.swapchain.image_count // 0)' "$runtime_json")"
 resource_bytes="$(jq -r '(.h265_retained_video_present_decode.session.resource_image.resource_image.memory_size // 0)' "$runtime_json")"
-p_frames="$(jq -r '(.h265_retained_video_present_decode.decode.frames // []) | map(select(.reset_control_recorded == false and .decode_reference_slot_count > 0)) | length' "$runtime_json")"
-b_frames="$(jq -r '(.h265_retained_video_present_decode.decode.frames // []) | map(select(.begin_reference_slot_count > .decode_reference_slot_count)) | length' "$runtime_json")"
-max_reference_count="$(jq -r '(.h265_retained_video_present_decode.decode.frames // []) | map(.decode_reference_slot_count) | max // 0' "$runtime_json")"
+p_frames="$(jq -r '(.h265_retained_video_present_decode.decode.p_frame_count // ((.h265_retained_video_present_decode.decode.frames // []) | map(select(.reset_control_recorded == false and .decode_reference_slot_count > 0)) | length))' "$runtime_json")"
+b_frames="$(jq -r '(.h265_retained_video_present_decode.decode.b_frame_count // ((.h265_retained_video_present_decode.decode.frames // []) | map(select(.begin_reference_slot_count > .decode_reference_slot_count)) | length))' "$runtime_json")"
+max_reference_count="$(jq -r '(.h265_retained_video_present_decode.decode.max_decode_reference_slot_count // ((.h265_retained_video_present_decode.decode.frames // []) | map(.decode_reference_slot_count) | max) // 0)' "$runtime_json")"
 loop_gate_failed=0
 if [[ "$expected_frames" -gt "$decode_prefix" && ( "$playback_loop_count" -le 1 || "$loop_boundary_reset_count" -lt 1 ) ]]; then
   loop_gate_failed=1
 fi
 bitstream_gate_failed=0
-if [[ "$bitstream_strategy" != "ready-prefix-owned-upload-buffer" || "$bitstream_slot_count" -ne 1 || "$bitstream_slot_bytes" -le 0 || "$bitstream_ring_capacity_bytes" -lt "$bitstream_window_payload_bytes" || "$bitstream_window_payload_bytes" -le 0 || "$bitstream_upload_count" -ne 1 || "$bitstream_uploaded_bytes" -le 0 ]]; then
+if [[ ( "$bitstream_strategy" != "ready-prefix-owned-upload-buffer" && "$bitstream_strategy" != "streaming-persistent-mapped-reused-upload-buffer" ) || "$bitstream_slot_count" -ne 1 || "$bitstream_slot_bytes" -le 0 || "$bitstream_ring_capacity_bytes" -lt "$bitstream_window_payload_bytes" || "$bitstream_window_payload_bytes" -le 0 || "$bitstream_upload_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
   bitstream_gate_failed=1
 fi
 input_gate_failed=0
-if [[ "$h265_input_mode" != "owned-frame-payloads-moved-into-aligned-bitstream-buffer" || "$decoded_count" -ne "$ready_prefix_count" || "$ready_prefix_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
+if [[ "$h265_input_mode" == "bounded-streaming-packet-queue-per-frame-upload" ]]; then
+  if [[ "$decoded_count" -ne "$requested_playback_count" || "$requested_playback_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
+    input_gate_failed=1
+  fi
+elif [[ "$h265_input_mode" == "owned-frame-payloads-moved-into-aligned-bitstream-buffer" ]]; then
+  if [[ "$decoded_count" -ne "$ready_prefix_count" || "$ready_prefix_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
+    input_gate_failed=1
+  fi
+else
   input_gate_failed=1
 fi
 arbitrary_entry_gate_failed=0
@@ -666,7 +680,7 @@ if [[ "$audio_clock_probe" -eq 1 && "$loop_boundary_reset_count" -gt 0 && "$audi
   audio_clock_gate_failed=1
 fi
 
-if [[ "$decoded_count" -ne "$ready_prefix_count" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$runtime_codec" != "$video_codec" || "$picture_format" != "$expected_picture_format" || "$ready_prefix_count" -ne "$decode_prefix" || "$requested_playback_count" -ne "$expected_frames" || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$arbitrary_entry_gate_failed" -ne 0 || "$reference_gate_failed" -ne 0 || "$b_frame_gate_failed" -ne 0 || "$loop_skip_replay_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$pts_delta_gate_failed" -ne 0 || "$audio_clock_gate_failed" -ne 0 || "$present_queue" == "none" || "$video_queue" == "none" || "$sync_strategy" == "none" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
+if [[ "$decoded_count" -ne "$expected_decoded_count" || "$presented_count" -ne "$expected_frames" || "$frame_count" -ne "$expected_frames" || "$runtime_codec" != "$video_codec" || "$picture_format" != "$expected_picture_format" || "$expected_decoded_count" -le 0 || "$requested_playback_count" -ne "$expected_frames" || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$arbitrary_entry_gate_failed" -ne 0 || "$reference_gate_failed" -ne 0 || "$b_frame_gate_failed" -ne 0 || "$loop_skip_replay_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$pts_delta_gate_failed" -ne 0 || "$audio_clock_gate_failed" -ne 0 || "$present_queue" == "none" || "$video_queue" == "none" || "$sync_strategy" == "none" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
   {
     printf 'FAIL: native Vulkan direct H.265 ready-prefix video output was not valid\n'
     printf 'decoded_count: %s\n' "$decoded_count"
