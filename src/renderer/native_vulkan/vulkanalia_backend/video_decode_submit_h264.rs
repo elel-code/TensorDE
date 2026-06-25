@@ -130,6 +130,8 @@ pub struct NativeVulkanVulkanaliaH264ReadyPrefixCommandSmokeSnapshot {
     pub submit_sync_model: &'static str,
     pub submit_command_order: Vec<&'static str>,
     pub queue_family_index: u32,
+    pub bitstream_buffer_model: &'static str,
+    pub input_payload_model: &'static str,
     pub src_buffer_total_bytes: u64,
     pub src_buffer_offset: u64,
     pub src_buffer_range: u64,

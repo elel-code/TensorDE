@@ -10,8 +10,7 @@ use super::codec_snapshots::{
     NativeVulkanH265ParameterSetSnapshot,
 };
 use super::video_extract::{
-    native_vulkan_extract_video_bitstream, native_vulkan_h265_ready_prefix_bitstream_window,
-    native_vulkan_h265_ready_prefix_bitstream_window_mode,
+    native_vulkan_extract_video_bitstream, native_vulkan_h265_ready_prefix_bitstream_payload,
     native_vulkan_validate_h264_ready_prefix, native_vulkan_validate_h265_ready_prefix,
 };
 use super::vulkanalia_backend::{
@@ -101,15 +100,16 @@ pub fn native_vulkan_extract_h264_ready_prefix_for_vulkanalia(
                 extract.snapshot.h264_access_units.len()
             ))
         })?;
+    let payload_count = extract.h264_access_unit_payloads.len();
+    if payload_count < frame_count as usize {
+        return Err(NativeVulkanError::Video(format!(
+            "H.264 bitstream has {payload_count} payloads but {frame_count} ready-prefix frames were requested"
+        )));
+    }
     let payloads = extract
         .h264_access_unit_payloads
-        .get(..frame_count as usize)
-        .ok_or_else(|| {
-            NativeVulkanError::Video(format!(
-                "H.264 bitstream has {} payloads but {frame_count} ready-prefix frames were requested",
-                extract.h264_access_unit_payloads.len()
-            ))
-        })?;
+        .into_iter()
+        .take(frame_count as usize);
 
     let mut frames = Vec::with_capacity(frame_count as usize);
     for ((entry, access_unit), payload) in entries.iter().zip(access_units).zip(payloads) {
@@ -136,7 +136,7 @@ pub fn native_vulkan_extract_h264_ready_prefix_for_vulkanalia(
             slice_offsets: first_slice.slice_offsets.clone(),
             first_slice,
             duration_ms: access_unit.duration_ms,
-            access_unit_payload: payload.clone(),
+            access_unit_payload: payload,
         });
     }
 
@@ -238,7 +238,7 @@ pub fn native_vulkan_extract_av1_ready_prefix_for_vulkanalia(
         .av1_decode_reference_plan
         .iter()
         .zip(extract.snapshot.av1_temporal_units.iter())
-        .zip(extract.av1_temporal_unit_payloads.iter())
+        .zip(extract.av1_temporal_unit_payloads.into_iter())
     {
         if frames.len() >= frame_count as usize {
             break;
@@ -259,7 +259,7 @@ pub fn native_vulkan_extract_av1_ready_prefix_for_vulkanalia(
         let prepared_reference_context =
             super::native_vulkan_av1_prepared_reference_context(entry, &active_dpb_refs);
         let decode_info = super::native_vulkan_av1_temporal_unit_decode_info(
-            payload,
+            &payload,
             &temporal_unit.obus,
             &sequence_header,
             Some(&prepared_reference_context.reference_context),
@@ -508,7 +508,7 @@ pub fn native_vulkan_extract_av1_ready_prefix_for_vulkanalia(
             frame,
             pts_ms: temporal_unit.pts_ms,
             duration_ms: temporal_unit.duration_ms,
-            access_unit_payload: payload.clone(),
+            access_unit_payload: payload,
         });
     }
     if frames.len() < frame_count as usize {
@@ -739,17 +739,17 @@ pub fn native_vulkan_extract_h265_ready_prefix_for_vulkanalia(
                 extract.snapshot.h265_access_units.len()
             ))
         })?;
+    let payload_count = extract.h265_access_unit_payloads.len();
+    if payload_count < frame_count as usize {
+        return Err(NativeVulkanError::Video(format!(
+            "H.265 bitstream has {payload_count} payloads but {frame_count} ready-prefix frames were requested"
+        )));
+    }
     let payloads = extract
         .h265_access_unit_payloads
-        .get(..frame_count as usize)
-        .ok_or_else(|| {
-            NativeVulkanError::Video(format!(
-                "H.265 bitstream has {} payloads but {frame_count} ready-prefix frames were requested",
-                extract.h265_access_unit_payloads.len()
-            ))
-        })?;
+        .into_iter()
+        .take(frame_count as usize);
 
-    let window_mode = native_vulkan_h265_ready_prefix_bitstream_window_mode();
     let mut frames = Vec::with_capacity(frame_count as usize);
     for ((entry, access_unit), payload) in entries.iter().zip(access_units).zip(payloads) {
         let first_slice = access_unit.first_slice.clone().ok_or_else(|| {
@@ -764,13 +764,13 @@ pub fn native_vulkan_extract_h265_ready_prefix_for_vulkanalia(
                 access_unit.index
             )));
         }
-        let (window_payload, slice_segment_offset) =
-            native_vulkan_h265_ready_prefix_bitstream_window(payload, window_mode)?;
+        let (access_unit_payload, slice_segment_offset) =
+            native_vulkan_h265_ready_prefix_bitstream_payload(payload)?;
         frames.push(NativeVulkanVulkanaliaH265ReadyPrefixFrameInput {
             entry: entry.clone(),
             first_slice,
             duration_ms: access_unit.duration_ms,
-            access_unit_payload: window_payload.to_vec(),
+            access_unit_payload,
             slice_segment_offset,
         });
     }

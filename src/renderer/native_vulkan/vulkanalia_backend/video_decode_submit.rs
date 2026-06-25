@@ -43,6 +43,25 @@ impl NativeVulkanVulkanaliaPictureResourcePlan {
             .image_view_binding(image_view_binding)
             .build()
     }
+
+    pub(super) fn to_vk_with_base_array_layer(
+        &self,
+        image_view_binding: vk::ImageView,
+        base_array_layer: u32,
+    ) -> vk::VideoPictureResourceInfoKHR {
+        vk::VideoPictureResourceInfoKHR::builder()
+            .coded_offset(vk::Offset2D {
+                x: self.coded_offset.0,
+                y: self.coded_offset.1,
+            })
+            .coded_extent(vk::Extent2D {
+                width: self.coded_extent.0,
+                height: self.coded_extent.1,
+            })
+            .base_array_layer(base_array_layer)
+            .image_view_binding(image_view_binding)
+            .build()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

@@ -544,7 +544,7 @@ fn native_vulkan_vulkanalia_update_traditional_decoded_image_present_descriptor_
     }
 }
 
-fn native_vulkan_vulkanalia_decoded_image_sampler_create_info(
+pub(super) fn native_vulkan_vulkanalia_decoded_image_sampler_create_info(
     sampler_conversion_info: &mut vk::SamplerYcbcrConversionInfo,
 ) -> vk::SamplerCreateInfo {
     vk::SamplerCreateInfo::builder()

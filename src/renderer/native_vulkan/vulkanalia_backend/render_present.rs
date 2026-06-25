@@ -9,6 +9,7 @@ use vulkanalia::vk::{
 use super::descriptor_heap::{
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     VulkanaliaDescriptorHeapImageSamplerResources,
+    native_vulkan_vulkanalia_descriptor_heap_combined_image_embedded_sampler_mapping,
     native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_bind_info,
     native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info,
@@ -18,12 +19,15 @@ pub(super) use super::render_present_descriptors::{
     NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot,
     VulkanaliaDecodedImagePresentSamplerResources,
     native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources,
+    native_vulkan_vulkanalia_decoded_image_sampler_create_info,
     native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_resources,
     native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_layer,
 };
 use super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE;
 use super::video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot;
 use super::video_session_images::VulkanaliaVideoSessionResourceImage;
+
+pub(super) const DECODED_IMAGE_PRESENT_TELEMETRY_RETAINED_FRAMES: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot {
@@ -41,6 +45,7 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot {
     pub descriptor_sets: u32,
     pub descriptor_model: &'static str,
     pub descriptor_heap_mapping_enabled: bool,
+    pub descriptor_heap_embedded_sampler_enabled: bool,
     pub descriptor_heap_pipeline_flag_enabled: bool,
     pub uses_pipeline_rendering_create_info: bool,
     pub uses_dynamic_rendering: bool,
@@ -106,19 +111,27 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
     pub ffmpeg_reference: &'static str,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
     pub binding: &'static str,
     pub route: &'static str,
     pub requested_present_frame_count: u32,
     pub submitted_present_frame_count: u32,
     pub presented_frame_count: u32,
-    pub sampled_array_layers: Vec<u32>,
-    pub source_frame_pts_ms: Vec<Option<u64>>,
-    pub source_frame_duration_ms: Vec<Option<u64>>,
-    pub display_order_keys: Vec<i64>,
-    pub display_order_key_sources: Vec<&'static str>,
-    pub present_ids: Vec<Option<u64>>,
+    pub average_present_fps: f64,
+    pub retained_frame_telemetry_limit: usize,
+    pub sampled_array_layers_head: Vec<u32>,
+    pub sampled_array_layers_tail: Vec<u32>,
+    pub source_frame_pts_ms_head: Vec<Option<u64>>,
+    pub source_frame_pts_ms_tail: Vec<Option<u64>>,
+    pub source_frame_duration_ms_head: Vec<Option<u64>>,
+    pub source_frame_duration_ms_tail: Vec<Option<u64>>,
+    pub display_order_keys_head: Vec<i64>,
+    pub display_order_keys_tail: Vec<i64>,
+    pub display_order_key_sources_head: Vec<&'static str>,
+    pub display_order_key_sources_tail: Vec<&'static str>,
+    pub present_ids_head: Vec<Option<u64>>,
+    pub present_ids_tail: Vec<Option<u64>>,
     pub total_pacing_sleep_micros: u64,
     pub pts_monotonic: bool,
     pub display_order_monotonic: bool,
@@ -128,9 +141,12 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
     pub present_wait2_available: bool,
     pub present_wait_after_present: bool,
     pub present_handoff: NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot,
-    pub draws: Vec<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
+    pub latest_draw: Option<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
+    pub draws_head: Vec<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
+    pub draws_tail: Vec<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
     pub frame_order_model: &'static str,
     pub present_resource_reuse_model: &'static str,
+    pub telemetry_retention_model: &'static str,
     pub all_zero_copy_presented: bool,
     pub uses_dynamic_rendering: bool,
     pub uses_synchronization2: bool,
@@ -144,6 +160,7 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_pipeline_res
     extent: vk::Extent2D,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_heap_plan: Option<&NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot>,
+    descriptor_heap_embedded_sampler_conversion: Option<vk::SamplerYcbcrConversion>,
 ) -> Result<VulkanaliaDecodedImagePresentPipelineResources, String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("decoded image present pipeline requires non-zero extent".to_owned());
@@ -173,14 +190,39 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_pipeline_res
                 let descriptor_heap_mapping_enabled = descriptor_heap_plan
                     .map(|plan| plan.backend_ready)
                     .unwrap_or(false);
-                let descriptor_heap_mapping =
-                    if let Some(plan) = descriptor_heap_plan.filter(|plan| plan.backend_ready) {
+                let descriptor_heap_embedded_sampler_enabled = descriptor_heap_mapping_enabled
+                    && descriptor_heap_embedded_sampler_conversion.is_some();
+                let mut embedded_sampler_conversion_info =
+                    descriptor_heap_embedded_sampler_conversion.map(|conversion| {
+                        vk::SamplerYcbcrConversionInfo::builder()
+                            .conversion(conversion)
+                            .build()
+                    });
+                let embedded_sampler_info =
+                    embedded_sampler_conversion_info
+                        .as_mut()
+                        .map(|conversion_info| {
+                            native_vulkan_vulkanalia_decoded_image_sampler_create_info(
+                                conversion_info,
+                            )
+                        });
+                let descriptor_heap_mapping = if let Some(plan) =
+                    descriptor_heap_plan.filter(|plan| plan.backend_ready)
+                {
+                    if let Some(embedded_sampler_info) = embedded_sampler_info.as_ref() {
+                        native_vulkan_vulkanalia_descriptor_heap_combined_image_embedded_sampler_mapping(
+                            plan,
+                            0,
+                            embedded_sampler_info,
+                        )?
+                    } else {
                         native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping(
                             plan, 0,
                         )?
-                    } else {
-                        vk::DescriptorSetAndBindingMappingEXT::default()
-                    };
+                    }
+                } else {
+                    vk::DescriptorSetAndBindingMappingEXT::default()
+                };
                 let descriptor_heap_mappings = [descriptor_heap_mapping];
                 let mut descriptor_heap_mapping_info =
                     vk::ShaderDescriptorSetAndBindingMappingInfoEXT::builder()
@@ -303,6 +345,7 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_pipeline_res
                             "descriptor-set"
                         },
                         descriptor_heap_mapping_enabled,
+                        descriptor_heap_embedded_sampler_enabled,
                         descriptor_heap_pipeline_flag_enabled: descriptor_heap_mapping_enabled,
                         uses_pipeline_rendering_create_info: true,
                         uses_dynamic_rendering: true,
@@ -572,6 +615,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         sampler.descriptor_heap.as_ref(),
         pipeline.pipeline_layout,
         pipeline.pipeline,
+        pipeline.snapshot.descriptor_heap_embedded_sampler_enabled,
     )?;
     native_vulkan_vulkanalia_submit_decoded_image_present_command_buffer2(
         device,
@@ -661,6 +705,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
             present_timing.present_id_mode(),
             present_timing.present_wait_mode(),
             sampler.descriptor_heap.is_some(),
+            pipeline.snapshot.descriptor_heap_embedded_sampler_enabled,
         ),
         uses_pipeline_rendering_create_info: true,
         uses_dynamic_rendering: true,
@@ -766,6 +811,7 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
     descriptor_heap: Option<&VulkanaliaDescriptorHeapImageSamplerResources>,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    descriptor_heap_embedded_sampler: bool,
 ) -> Result<(), String> {
     unsafe {
         device
@@ -815,6 +861,24 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
             .image_memory_barriers(&image_barriers)
             .build();
         device.cmd_pipeline_barrier2(command_buffer, &dependency);
+        if descriptor_heap.is_some() {
+            let descriptor_heap_read_access = if descriptor_heap_embedded_sampler {
+                vk::AccessFlags2::RESOURCE_HEAP_READ_EXT
+            } else {
+                vk::AccessFlags2::RESOURCE_HEAP_READ_EXT | vk::AccessFlags2::SAMPLER_HEAP_READ_EXT
+            };
+            let descriptor_heap_host_to_shader = vk::MemoryBarrier2::builder()
+                .src_stage_mask(vk::PipelineStageFlags2::HOST)
+                .src_access_mask(vk::AccessFlags2::HOST_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                .dst_access_mask(descriptor_heap_read_access)
+                .build();
+            let descriptor_heap_memory_barriers = [descriptor_heap_host_to_shader];
+            let descriptor_heap_dependency = vk::DependencyInfo::builder()
+                .memory_barriers(&descriptor_heap_memory_barriers)
+                .build();
+            device.cmd_pipeline_barrier2(command_buffer, &descriptor_heap_dependency);
+        }
 
         let clear_value = vk::ClearValue {
             color: vk::ClearColorValue {
@@ -843,10 +907,12 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
         if let Some(descriptor_heap) = descriptor_heap {
             let resource_bind =
                 native_vulkan_vulkanalia_descriptor_heap_resource_bind_info(descriptor_heap);
-            let sampler_bind =
-                native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info(descriptor_heap);
             device.cmd_bind_resource_heap_ext(command_buffer, &resource_bind);
-            device.cmd_bind_sampler_heap_ext(command_buffer, &sampler_bind);
+            if !descriptor_heap_embedded_sampler {
+                let sampler_bind =
+                    native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info(descriptor_heap);
+                device.cmd_bind_sampler_heap_ext(command_buffer, &sampler_bind);
+            }
         } else {
             device.cmd_bind_descriptor_sets(
                 command_buffer,
@@ -944,13 +1010,23 @@ pub(super) fn native_vulkan_vulkanalia_decoded_image_present_command_order(
     present_id_mode: &'static str,
     present_wait_mode: &'static str,
     uses_descriptor_heap: bool,
+    uses_embedded_sampler: bool,
 ) -> Vec<&'static str> {
     let bind_steps = if uses_descriptor_heap {
-        vec![
-            "cmd_bind_resource_heap_ext",
-            "cmd_bind_sampler_heap_ext",
-            "draw_with_descriptor_heap_mapping",
-        ]
+        if uses_embedded_sampler {
+            vec![
+                "cmd_pipeline_barrier2_descriptor_heap_host_write_to_shader_read",
+                "cmd_bind_resource_heap_ext",
+                "draw_with_descriptor_heap_embedded_sampler_mapping",
+            ]
+        } else {
+            vec![
+                "cmd_pipeline_barrier2_descriptor_heap_host_write_to_shader_read",
+                "cmd_bind_resource_heap_ext",
+                "cmd_bind_sampler_heap_ext",
+                "draw_with_descriptor_heap_mapping",
+            ]
+        }
     } else {
         vec![
             "cmd_bind_ycbcr_descriptor_set",
@@ -1110,17 +1186,25 @@ mod tests {
         assert!(same.contains(&"cmd_bind_ycbcr_descriptor_set"));
 
         let heap = native_vulkan_vulkanalia_decoded_image_present_command_order(
-            true, "disabled", "disabled", true,
+            true, "disabled", "disabled", true, false,
         );
         assert!(heap.contains(&"cmd_bind_resource_heap_ext"));
         assert!(heap.contains(&"cmd_bind_sampler_heap_ext"));
         assert!(heap.contains(&"draw_with_descriptor_heap_mapping"));
         assert!(!heap.contains(&"cmd_bind_ycbcr_descriptor_set"));
 
+        let embedded = native_vulkan_vulkanalia_decoded_image_present_command_order(
+            true, "disabled", "disabled", true, true,
+        );
+        assert!(embedded.contains(&"cmd_bind_resource_heap_ext"));
+        assert!(!embedded.contains(&"cmd_bind_sampler_heap_ext"));
+        assert!(embedded.contains(&"draw_with_descriptor_heap_embedded_sampler_mapping"));
+
         let present_id2 = native_vulkan_vulkanalia_decoded_image_present_command_order(
             true,
             "present-id2-khr",
             "present-wait2-khr",
+            true,
             true,
         );
         assert!(present_id2.contains(&"present_id2_khr"));

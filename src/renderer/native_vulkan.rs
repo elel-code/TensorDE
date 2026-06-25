@@ -84,26 +84,6 @@ mod vulkanalia_direct;
 #[path = "native_vulkan/labels.rs"]
 mod labels;
 
-#[cfg(feature = "native-vulkan-gst-video")]
-#[path = "native_vulkan/direct_zero_copy.rs"]
-mod direct_zero_copy;
-
-#[cfg(feature = "native-vulkan-gst-video")]
-#[path = "native_vulkan/direct_runtime.rs"]
-mod direct_runtime;
-
-#[cfg(feature = "native-vulkan-gst-video")]
-#[path = "native_vulkan/direct_h265_runtime.rs"]
-mod direct_h265_runtime;
-
-#[cfg(feature = "native-vulkan-gst-video")]
-#[path = "native_vulkan/direct_h264_runtime.rs"]
-mod direct_h264_runtime;
-
-#[cfg(feature = "native-vulkan-gst-video")]
-#[path = "native_vulkan/direct_av1_runtime.rs"]
-mod direct_av1_runtime;
-
 #[path = "native_vulkan/render_item.rs"]
 mod render_item;
 
@@ -183,20 +163,6 @@ pub use clear_present_runtime::run_clear;
 #[cfg(feature = "native-vulkan-gst-video")]
 use codec_reference::*;
 pub use codec_snapshots::*;
-#[cfg(feature = "native-vulkan-gst-video")]
-pub use direct_av1_runtime::{
-    NativeVulkanDirectAv1ReadyPrefixFrameSnapshot, NativeVulkanDirectAv1ReadyPrefixRuntimeSnapshot,
-};
-#[cfg(feature = "native-vulkan-gst-video")]
-pub use direct_h264_runtime::{
-    NativeVulkanDirectH264ReadyPrefixFrameSnapshot,
-    NativeVulkanDirectH264ReadyPrefixRuntimeSnapshot,
-};
-#[cfg(feature = "native-vulkan-gst-video")]
-pub use direct_h265_runtime::{
-    NativeVulkanDirectH265ReadyPrefixFrameSnapshot,
-    NativeVulkanDirectH265ReadyPrefixRuntimeSnapshot,
-};
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
@@ -238,45 +204,13 @@ pub use audio_clock::{
 };
 
 #[cfg(feature = "native-vulkan-gst-video")]
-use demux::{
-    NativeVulkanStreamingAccessUnit, NativeVulkanStreamingPacket, NativeVulkanStreamingPacketQueue,
-};
+use demux::{NativeVulkanStreamingAccessUnit, NativeVulkanStreamingPacketQueue};
 #[cfg(feature = "native-vulkan-gst-video")]
 use demux_gst::{
     NativeVulkanGstStreamingAccessUnit, native_vulkan_av1_bitstream_pipeline,
     native_vulkan_h264_bitstream_pipeline, native_vulkan_h265_bitstream_pipeline,
     native_vulkan_start_gst_streaming_packet_queue as native_vulkan_start_streaming_packet_queue,
 };
-
-#[cfg(feature = "native-vulkan-gst-video")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeVulkanH264VideoInputMode {
-    StreamingQueue,
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-impl NativeVulkanH264VideoInputMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::StreamingQueue => "streaming-queue",
-        }
-    }
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeVulkanH265VideoInputMode {
-    StreamingQueue,
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-impl NativeVulkanH265VideoInputMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::StreamingQueue => "streaming-queue",
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanCapabilities {
@@ -625,8 +559,6 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH264AccessUnitExtract {
 
     const CODEC_LABEL: &'static str = "H.264";
     const PARAMETER_SETS_LABEL: &'static str = "SPS/PPS";
-    const RING_SLOT_BYTES_ENV: &'static str = "GILDER_VULKAN_H264_STREAMING_RING_SLOT_BYTES";
-    const DEFAULT_RING_SLOT_COUNT: u32 = 2;
 
     fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String> {
         native_vulkan_parse_h264_parameter_sets(bytes)
@@ -1421,16 +1353,8 @@ struct NativeVulkanAv1TemporalUnitExtract {
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-type NativeVulkanH264StreamingPacket =
-    NativeVulkanStreamingPacket<NativeVulkanH264AccessUnitExtract>;
-
-#[cfg(feature = "native-vulkan-gst-video")]
 type NativeVulkanH264StreamingPacketQueue =
     NativeVulkanStreamingPacketQueue<NativeVulkanH264AccessUnitExtract>;
-
-#[cfg(feature = "native-vulkan-gst-video")]
-type NativeVulkanH265StreamingPacket =
-    NativeVulkanStreamingPacket<NativeVulkanH265AccessUnitExtract>;
 
 #[cfg(feature = "native-vulkan-gst-video")]
 type NativeVulkanH265StreamingPacketQueue =
@@ -1438,236 +1362,9 @@ type NativeVulkanH265StreamingPacketQueue =
 
 #[cfg(feature = "native-vulkan-gst-video")]
 #[allow(dead_code)]
-type NativeVulkanAv1StreamingPacket =
-    NativeVulkanStreamingPacket<NativeVulkanAv1TemporalUnitExtract>;
-
-#[cfg(feature = "native-vulkan-gst-video")]
-#[allow(dead_code)]
 type NativeVulkanAv1StreamingPacketQueue =
     NativeVulkanStreamingPacketQueue<NativeVulkanAv1TemporalUnitExtract>;
 
-#[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
-struct NativeVulkanH265ReadyPrefixBitstreamPayload {
-    bytes: Vec<u8>,
-    spans: Vec<NativeVulkanH265ReadyPrefixBitstreamSpan>,
-}
-
-#[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
-struct NativeVulkanH264IdrPrefixBitstreamPayload {
-    bytes: Vec<u8>,
-    spans: Vec<NativeVulkanH264IdrPrefixBitstreamSpan>,
-}
-
-#[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
-struct NativeVulkanH264ReadyPrefixBitstreamPayload {
-    bytes: Vec<u8>,
-    spans: Vec<NativeVulkanH264ReadyPrefixBitstreamSpan>,
-}
-
-#[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
-struct NativeVulkanH265ReadyPrefixStreamingBitstreamPlan {
-    slot_bytes: u64,
-    ring_capacity_bytes: u64,
-    ring_slot_count: u32,
-    min_offset_alignment: u64,
-    min_size_alignment: u64,
-    window_payload_bytes: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
-struct NativeVulkanH265ReadyPrefixBitstreamSpan {
-    offset: u64,
-    range: u64,
-    payload_bytes: u64,
-    slice_segment_offset: u32,
-    ring_allocation_index: u64,
-    ring_wrap_count: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
-struct NativeVulkanH264IdrPrefixBitstreamSpan {
-    offset: u64,
-    range: u64,
-    payload_bytes: u64,
-    slice_offsets: Vec<u32>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
-struct NativeVulkanH264ReadyPrefixBitstreamSpan {
-    offset: u64,
-    range: u64,
-    payload_bytes: u64,
-    slice_offsets: Vec<u32>,
-    ring_allocation_index: u64,
-    ring_wrap_count: u32,
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-#[derive(Debug, Clone)]
-struct NativeVulkanVideoBitstreamRing {
-    capacity_bytes: u64,
-    min_offset_alignment: u64,
-    min_size_alignment: u64,
-    cursor: u64,
-    wrap_count: u32,
-    allocation_count: u64,
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-impl NativeVulkanVideoBitstreamRing {
-    fn new(plan: &NativeVulkanH265ReadyPrefixStreamingBitstreamPlan) -> Self {
-        Self {
-            capacity_bytes: plan.ring_capacity_bytes,
-            min_offset_alignment: plan.min_offset_alignment.max(1),
-            min_size_alignment: plan.min_size_alignment.max(1),
-            cursor: 0,
-            wrap_count: 0,
-            allocation_count: 0,
-        }
-    }
-
-    fn allocate(
-        &mut self,
-        payload_bytes: u64,
-        slice_segment_offset: u32,
-    ) -> Result<NativeVulkanH265ReadyPrefixBitstreamSpan, NativeVulkanError> {
-        let range = native_vulkan_align_up(payload_bytes, self.min_size_alignment);
-        if range == 0 {
-            return Err(NativeVulkanError::Video(
-                "bitstream ring cannot allocate an empty access unit".to_owned(),
-            ));
-        }
-        if range > self.capacity_bytes {
-            return Err(NativeVulkanError::Video(format!(
-                "bitstream ring allocation range {range} exceeds capacity {}",
-                self.capacity_bytes
-            )));
-        }
-
-        let mut offset = native_vulkan_align_up(self.cursor, self.min_offset_alignment);
-        if offset
-            .checked_add(range)
-            .ok_or_else(|| NativeVulkanError::Video("bitstream ring range overflow".to_owned()))?
-            > self.capacity_bytes
-        {
-            offset = 0;
-            self.wrap_count = self.wrap_count.saturating_add(1);
-        }
-        let end = offset
-            .checked_add(range)
-            .ok_or_else(|| NativeVulkanError::Video("bitstream ring range overflow".to_owned()))?;
-        if end > self.capacity_bytes {
-            return Err(NativeVulkanError::Video(format!(
-                "bitstream ring allocation {offset}..{end} exceeds capacity {}",
-                self.capacity_bytes
-            )));
-        }
-
-        let span = NativeVulkanH265ReadyPrefixBitstreamSpan {
-            offset,
-            range,
-            payload_bytes,
-            slice_segment_offset,
-            ring_allocation_index: self.allocation_count,
-            ring_wrap_count: self.wrap_count,
-        };
-        self.cursor = end;
-        self.allocation_count = self.allocation_count.saturating_add(1);
-        Ok(span)
-    }
-
-    fn allocate_h264(
-        &mut self,
-        payload_bytes: u64,
-        slice_offsets: Vec<u32>,
-    ) -> Result<NativeVulkanH264ReadyPrefixBitstreamSpan, NativeVulkanError> {
-        let range = native_vulkan_align_up(payload_bytes, self.min_size_alignment);
-        if range == 0 {
-            return Err(NativeVulkanError::Video(
-                "H.264 bitstream ring cannot allocate an empty access unit".to_owned(),
-            ));
-        }
-        if range > self.capacity_bytes {
-            return Err(NativeVulkanError::Video(format!(
-                "H.264 bitstream ring allocation range {range} exceeds capacity {}",
-                self.capacity_bytes
-            )));
-        }
-
-        let mut offset = native_vulkan_align_up(self.cursor, self.min_offset_alignment);
-        if offset.checked_add(range).ok_or_else(|| {
-            NativeVulkanError::Video("H.264 bitstream ring range overflow".to_owned())
-        })? > self.capacity_bytes
-        {
-            offset = 0;
-            self.wrap_count = self.wrap_count.saturating_add(1);
-        }
-        let end = offset.checked_add(range).ok_or_else(|| {
-            NativeVulkanError::Video("H.264 bitstream ring range overflow".to_owned())
-        })?;
-        if end > self.capacity_bytes {
-            return Err(NativeVulkanError::Video(format!(
-                "H.264 bitstream ring allocation {offset}..{end} exceeds capacity {}",
-                self.capacity_bytes
-            )));
-        }
-
-        let span = NativeVulkanH264ReadyPrefixBitstreamSpan {
-            offset,
-            range,
-            payload_bytes,
-            slice_offsets,
-            ring_allocation_index: self.allocation_count,
-            ring_wrap_count: self.wrap_count,
-        };
-        self.cursor = end;
-        self.allocation_count = self.allocation_count.saturating_add(1);
-        Ok(span)
-    }
-
-    fn wrap_count(&self) -> u32 {
-        self.wrap_count
-    }
-
-    fn allocation_count(&self) -> u64 {
-        self.allocation_count
-    }
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_byte_ranges_overlap(
-    a_offset: u64,
-    a_range: u64,
-    b_offset: u64,
-    b_range: u64,
-) -> bool {
-    let Some(a_end) = a_offset.checked_add(a_range) else {
-        return true;
-    };
-    let Some(b_end) = b_offset.checked_add(b_range) else {
-        return true;
-    };
-    a_offset < b_end && b_offset < a_end
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-enum NativeVulkanAv1StreamingBitstreamPayload<'a> {
-    Borrowed(&'a [u8]),
-    Owned(Vec<u8>),
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-impl<'a> NativeVulkanAv1StreamingBitstreamPayload<'a> {
-    fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Borrowed(bytes) => bytes,
-            Self::Owned(bytes) => bytes.as_slice(),
-        }
-    }
-}
 #[cfg(feature = "native-vulkan-gst-video")]
 impl NativeVulkanGstStreamingAccessUnit for NativeVulkanH264AccessUnitExtract {
     fn pipeline(source: &Path) -> Result<gst::Pipeline, NativeVulkanError> {
@@ -1690,8 +1387,6 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
 
     const CODEC_LABEL: &'static str = "H.265";
     const PARAMETER_SETS_LABEL: &'static str = "VPS/SPS/PPS";
-    const RING_SLOT_BYTES_ENV: &'static str = "GILDER_VULKAN_H265_STREAMING_RING_SLOT_BYTES";
-    const DEFAULT_RING_SLOT_COUNT: u32 = 2;
 
     fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String> {
         native_vulkan_parse_h265_parameter_sets(bytes)
@@ -1748,8 +1443,6 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
 
     const CODEC_LABEL: &'static str = "AV1";
     const PARAMETER_SETS_LABEL: &'static str = "sequence header";
-    const RING_SLOT_BYTES_ENV: &'static str = "GILDER_VULKAN_AV1_STREAMING_RING_SLOT_BYTES";
-    const DEFAULT_RING_SLOT_COUNT: u32 = 16;
 
     fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String> {
         native_vulkan_av1_obu_stats(bytes)?
@@ -2161,33 +1854,6 @@ fn native_vulkan_h265_sps_long_term_ref_pics_supported(
     ref_pics: &[NativeVulkanH265LongTermRefPicSpsSnapshot],
 ) -> bool {
     ref_pics.len() <= 32
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_h264_streaming_packet_queue_capacity(requested_frame_count: u32) -> usize {
-    std::env::var("GILDER_VULKAN_H264_PACKET_QUEUE_CAPACITY")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or_else(|| requested_frame_count.clamp(8, 32) as usize)
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_h265_streaming_packet_queue_capacity(requested_frame_count: u32) -> usize {
-    std::env::var("GILDER_VULKAN_H265_PACKET_QUEUE_CAPACITY")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or_else(|| requested_frame_count.clamp(8, 32) as usize)
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_av1_streaming_packet_queue_capacity(requested_frame_count: u32) -> usize {
-    std::env::var("GILDER_VULKAN_AV1_PACKET_QUEUE_CAPACITY")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or_else(|| requested_frame_count.clamp(8, 32) as usize)
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -8879,7 +8545,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_h264_weighted_p_slice_header_for_streaming_queue() {
+    fn parses_h264_weighted_p_slice_header_for_vulkanalia_extractor() {
         fn push_bits(bits: &mut Vec<bool>, value: u32, count: u32) {
             for shift in (0..count).rev() {
                 bits.push(((value >> shift) & 1) != 0);
@@ -8969,7 +8635,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_h264_b_slice_l1_ref_list_modification_for_streaming_queue() {
+    fn parses_h264_b_slice_l1_ref_list_modification_for_vulkanalia_extractor() {
         fn push_bits(bits: &mut Vec<bool>, value: u32, count: u32) {
             for shift in (0..count).rev() {
                 bits.push(((value >> shift) & 1) != 0);
@@ -10470,41 +10136,6 @@ mod tests {
         assert!(sequence_header.color_config.subsampling_x);
         assert!(sequence_header.color_config.subsampling_y);
         assert!(sequence_header.vulkan_std_session_parameters_ready);
-    }
-
-    #[cfg(feature = "native-vulkan-gst-video")]
-    #[test]
-    fn allocates_h265_bitstream_ring_offsets_and_wraps() {
-        let plan = NativeVulkanH265ReadyPrefixStreamingBitstreamPlan {
-            slot_bytes: 512,
-            ring_capacity_bytes: 1024,
-            ring_slot_count: 2,
-            min_offset_alignment: 256,
-            min_size_alignment: 256,
-            window_payload_bytes: 2048,
-        };
-        let mut ring = NativeVulkanVideoBitstreamRing::new(&plan);
-
-        let first = ring.allocate(100, 7).unwrap();
-        let second = ring.allocate(300, 11).unwrap();
-        let third = ring.allocate(300, 13).unwrap();
-
-        assert_eq!(first.offset, 0);
-        assert_eq!(first.range, 256);
-        assert_eq!(first.payload_bytes, 100);
-        assert_eq!(first.slice_segment_offset, 7);
-        assert_eq!(first.ring_allocation_index, 0);
-        assert_eq!(first.ring_wrap_count, 0);
-        assert_eq!(second.offset, 256);
-        assert_eq!(second.range, 512);
-        assert_eq!(second.ring_allocation_index, 1);
-        assert_eq!(second.ring_wrap_count, 0);
-        assert_eq!(third.offset, 0);
-        assert_eq!(third.range, 512);
-        assert_eq!(third.slice_segment_offset, 13);
-        assert_eq!(third.ring_allocation_index, 2);
-        assert_eq!(third.ring_wrap_count, 1);
-        assert_eq!(ring.wrap_count(), 1);
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]

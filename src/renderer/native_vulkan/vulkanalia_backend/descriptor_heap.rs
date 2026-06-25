@@ -346,6 +346,32 @@ pub(super) fn native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_ma
         .build())
 }
 
+pub(super) fn native_vulkan_vulkanalia_descriptor_heap_combined_image_embedded_sampler_mapping(
+    plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
+    image_index: usize,
+    embedded_sampler: &vk::SamplerCreateInfo,
+) -> Result<vk::DescriptorSetAndBindingMappingEXT, String> {
+    let heap_offset = descriptor_offset_u32(&plan.image_descriptor_offsets, image_index)?;
+    let heap_array_stride = u32::try_from(plan.image_descriptor_stride)
+        .map_err(|_| "descriptor heap image stride exceeds u32".to_owned())?;
+    let source = vk::DescriptorMappingSourceConstantOffsetEXT::builder()
+        .heap_offset(heap_offset)
+        .heap_array_stride(heap_array_stride)
+        .embedded_sampler(embedded_sampler)
+        .build();
+
+    Ok(vk::DescriptorSetAndBindingMappingEXT::builder()
+        .descriptor_set(0)
+        .first_binding(0)
+        .binding_count(1)
+        .resource_mask(vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE)
+        .source(vk::DescriptorMappingSourceEXT::HEAP_WITH_CONSTANT_OFFSET)
+        .source_data(vk::DescriptorMappingSourceDataEXT {
+            constant_offset: source,
+        })
+        .build())
+}
+
 pub(super) fn native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_push_index_mapping(
     plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     push_offset: u32,

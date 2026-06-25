@@ -18,8 +18,6 @@ pub(super) trait NativeVulkanStreamingAccessUnit: Sized {
 
     const CODEC_LABEL: &'static str;
     const PARAMETER_SETS_LABEL: &'static str;
-    const RING_SLOT_BYTES_ENV: &'static str;
-    const DEFAULT_RING_SLOT_COUNT: u32;
 
     fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String>;
     fn snapshot(
@@ -406,8 +404,6 @@ mod tests {
 
         const CODEC_LABEL: &'static str = "test-codec";
         const PARAMETER_SETS_LABEL: &'static str = "test-parameter-sets";
-        const RING_SLOT_BYTES_ENV: &'static str = "GILDER_TEST_RING_SLOT_BYTES";
-        const DEFAULT_RING_SLOT_COUNT: u32 = 2;
 
         fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String> {
             Ok(bytes.to_vec())

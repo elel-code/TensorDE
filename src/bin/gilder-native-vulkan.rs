@@ -116,9 +116,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     return Err("--audio-output requires native-vulkan-gst-video feature".into());
                 }
             }
-            "--run-h264-ready-prefix-video" => mode = NativeVulkanCliMode::RunH264ReadyPrefixVideo,
-            "--run-h265-ready-prefix-video" => mode = NativeVulkanCliMode::RunH265ReadyPrefixVideo,
-            "--run-av1-ready-prefix-video" => mode = NativeVulkanCliMode::RunAv1ReadyPrefixVideo,
             "--run-vulkanalia-ready-prefix-video" => {
                 mode = NativeVulkanCliMode::RunVulkanaliaReadyPrefixVideo
             }
@@ -174,7 +171,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 mode = NativeVulkanCliMode::RunVulkanaliaSceneLiteSampledImage
             }
             "--run-vulkanalia-static" => mode = NativeVulkanCliMode::RunStatic,
-            "--run-legacy-static" => mode = NativeVulkanCliMode::RunLegacyStatic,
             "--run-static" => mode = NativeVulkanCliMode::RunStatic,
             "--run-video" => mode = NativeVulkanCliMode::RunVideo,
             "--json" => mode = NativeVulkanCliMode::All,
@@ -298,30 +294,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|value| value.parse::<u32>())
                     .transpose()?
                     .ok_or("--playback-frames requires a count")?;
-            }
-            "--h264-input" | "--h264-input-mode" => {
-                let value = args.next().ok_or("--h264-input requires a value")?;
-                #[cfg(feature = "native-vulkan-gst-video")]
-                {
-                    let _ = parse_h264_video_input_mode(&value)?;
-                }
-                #[cfg(not(feature = "native-vulkan-gst-video"))]
-                {
-                    let _ = value;
-                    return Err("--h264-input requires native-vulkan-gst-video feature".into());
-                }
-            }
-            "--h265-input" | "--h265-input-mode" => {
-                let value = args.next().ok_or("--h265-input requires a value")?;
-                #[cfg(feature = "native-vulkan-gst-video")]
-                {
-                    let _ = parse_h265_video_input_mode(&value)?;
-                }
-                #[cfg(not(feature = "native-vulkan-gst-video"))]
-                {
-                    let _ = value;
-                    return Err("--h265-input requires native-vulkan-gst-video feature".into());
-                }
             }
             "--start-offset-ms" => {
                 let _ = args
@@ -623,24 +595,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 },
             )?)
         }
-        NativeVulkanCliMode::RunLegacyStatic => {
-            let source = source.ok_or("--run-legacy-static requires --source")?;
-            let output_name = options
-                .host
-                .output_name
-                .clone()
-                .unwrap_or_else(|| "native-vulkan".to_owned());
-            json!(run_static_image(
-                options,
-                duration,
-                StaticWallpaperPlan {
-                    output_name,
-                    source,
-                    fit,
-                    background,
-                },
-            )?)
-        }
         NativeVulkanCliMode::RunVideo => {
             let source = source.ok_or("--run-video requires --source")?;
             if !source.is_file() {
@@ -683,157 +637,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(
                     "--run-video Vulkanalia ready-prefix route requires native-vulkan-gst-video feature"
                         .into(),
-                );
-            }
-        }
-        NativeVulkanCliMode::RunH264ReadyPrefixVideo => {
-            let source = source.ok_or("--run-h264-ready-prefix-video requires --source")?;
-            if !source.is_file() {
-                return Err(format!("video source does not exist: {}", source.display()).into());
-            }
-            if video_session_options.decode_h264_ready_prefix_frames == 0 {
-                return Err(
-                    "--run-h264-ready-prefix-video requires --decode-h264-ready-prefix N".into(),
-                );
-            }
-            #[cfg(feature = "native-vulkan-gst-video")]
-            {
-                let playback_frames = native_vulkan_video_playback_frame_count(
-                    video_session_options.decode_h264_ready_prefix_frames,
-                    ready_prefix_playback_frames,
-                    duration_playback_frames,
-                );
-                let audio_output_mode = audio_output_policy.resolve(muted);
-                json!(run_vulkanalia_ready_prefix_video(
-                    options,
-                    NativeVulkanVideoSessionCodec::H264High8,
-                    source,
-                    video_session_options.width,
-                    video_session_options.height,
-                    fit,
-                    video_session_options.bitstream_extract_max_samples,
-                    video_session_options.decode_h264_ready_prefix_frames,
-                    playback_frames,
-                    audio_clock_probe_with_video,
-                    audio_output_mode,
-                )?)
-            }
-            #[cfg(not(feature = "native-vulkan-gst-video"))]
-            {
-                let _ = (
-                    options,
-                    source,
-                    video_session_options.width,
-                    video_session_options.height,
-                    fit,
-                    video_session_options.bitstream_extract_max_samples,
-                    video_session_options.decode_h264_ready_prefix_frames,
-                    ready_prefix_playback_frames,
-                    audio_clock_probe_with_video,
-                );
-                return Err(
-                    "--run-h264-ready-prefix-video requires native-vulkan-gst-video feature".into(),
-                );
-            }
-        }
-        NativeVulkanCliMode::RunH265ReadyPrefixVideo => {
-            let source = source.ok_or("--run-h265-ready-prefix-video requires --source")?;
-            if !source.is_file() {
-                return Err(format!("video source does not exist: {}", source.display()).into());
-            }
-            if video_session_options.decode_h265_ready_prefix_frames == 0 {
-                return Err(
-                    "--run-h265-ready-prefix-video requires --decode-h265-ready-prefix N".into(),
-                );
-            }
-            #[cfg(feature = "native-vulkan-gst-video")]
-            {
-                let playback_frames = native_vulkan_video_playback_frame_count(
-                    video_session_options.decode_h265_ready_prefix_frames,
-                    ready_prefix_playback_frames,
-                    duration_playback_frames,
-                );
-                let audio_output_mode = audio_output_policy.resolve(muted);
-                json!(run_vulkanalia_ready_prefix_video(
-                    options,
-                    video_session_options.codec,
-                    source,
-                    video_session_options.width,
-                    video_session_options.height,
-                    fit,
-                    video_session_options.bitstream_extract_max_samples,
-                    video_session_options.decode_h265_ready_prefix_frames,
-                    playback_frames,
-                    audio_clock_probe_with_video,
-                    audio_output_mode,
-                )?)
-            }
-            #[cfg(not(feature = "native-vulkan-gst-video"))]
-            {
-                let _ = (
-                    options,
-                    video_session_options.codec,
-                    source,
-                    video_session_options.width,
-                    video_session_options.height,
-                    fit,
-                    video_session_options.bitstream_extract_max_samples,
-                    video_session_options.decode_h265_ready_prefix_frames,
-                    ready_prefix_playback_frames,
-                    audio_clock_probe_with_video,
-                );
-                return Err(
-                    "--run-h265-ready-prefix-video requires native-vulkan-gst-video feature".into(),
-                );
-            }
-        }
-        NativeVulkanCliMode::RunAv1ReadyPrefixVideo => {
-            let source = source.ok_or("--run-av1-ready-prefix-video requires --source")?;
-            if !source.is_file() {
-                return Err(format!("video source does not exist: {}", source.display()).into());
-            }
-            if av1_ready_prefix_frames == 0 {
-                return Err(
-                    "--run-av1-ready-prefix-video requires --decode-av1-ready-prefix N".into(),
-                );
-            }
-            #[cfg(feature = "native-vulkan-gst-video")]
-            {
-                let playback_frames = native_vulkan_video_playback_frame_count(
-                    av1_ready_prefix_frames,
-                    ready_prefix_playback_frames,
-                    duration_playback_frames,
-                );
-                let audio_output_mode = audio_output_policy.resolve(muted);
-                json!(run_vulkanalia_ready_prefix_video(
-                    options,
-                    video_session_options.codec,
-                    source,
-                    video_session_options.width,
-                    video_session_options.height,
-                    fit,
-                    video_session_options.bitstream_extract_max_samples,
-                    av1_ready_prefix_frames,
-                    playback_frames,
-                    audio_clock_probe_with_video,
-                    audio_output_mode,
-                )?)
-            }
-            #[cfg(not(feature = "native-vulkan-gst-video"))]
-            {
-                let _ = (
-                    options,
-                    video_session_options.codec,
-                    source,
-                    video_session_options.width,
-                    video_session_options.height,
-                    fit,
-                    av1_ready_prefix_frames,
-                    ready_prefix_playback_frames,
-                    audio_clock_probe_with_video,
-                );
-                return Err(
-                    "--run-av1-ready-prefix-video requires native-vulkan-gst-video feature".into(),
                 );
             }
         }
@@ -953,48 +756,6 @@ fn parse_fit_mode(value: &str) -> Result<gilder::core::FitMode, String> {
     }
 }
 
-#[cfg(all(
-    feature = "native-vulkan-renderer",
-    feature = "native-vulkan-gst-video"
-))]
-fn parse_h264_video_input_mode(
-    value: &str,
-) -> Result<gilder::renderer::native_vulkan::NativeVulkanH264VideoInputMode, String> {
-    use gilder::renderer::native_vulkan::NativeVulkanH264VideoInputMode;
-
-    match value {
-        "ready-prefix-spool" | "spool" | "ready-prefix" => Err(
-            "H.264 ready-prefix spool input is no longer maintained; use streaming-queue"
-                .to_owned(),
-        ),
-        "streaming-queue" | "streaming" | "queue" => {
-            Ok(NativeVulkanH264VideoInputMode::StreamingQueue)
-        }
-        other => Err(format!("unsupported H.264 video input mode: {other}")),
-    }
-}
-
-#[cfg(all(
-    feature = "native-vulkan-renderer",
-    feature = "native-vulkan-gst-video"
-))]
-fn parse_h265_video_input_mode(
-    value: &str,
-) -> Result<gilder::renderer::native_vulkan::NativeVulkanH265VideoInputMode, String> {
-    use gilder::renderer::native_vulkan::NativeVulkanH265VideoInputMode;
-
-    match value {
-        "ready-prefix-spool" | "spool" | "ready-prefix" => Err(
-            "H.265 ready-prefix spool input is no longer maintained; use streaming-queue"
-                .to_owned(),
-        ),
-        "streaming-queue" | "streaming" | "queue" => {
-            Ok(NativeVulkanH265VideoInputMode::StreamingQueue)
-        }
-        other => Err(format!("unsupported H.265 video input mode: {other}")),
-    }
-}
-
 #[cfg(feature = "native-vulkan-renderer")]
 fn parse_decoder_policy(
     value: &str,
@@ -1031,18 +792,14 @@ enum NativeVulkanCliMode {
     RunVulkanaliaSceneLiteSolidQuad,
     RunVulkanaliaSceneLiteSampledImage,
     RunStatic,
-    RunLegacyStatic,
     RunVideo,
-    RunH264ReadyPrefixVideo,
-    RunH265ReadyPrefixVideo,
-    RunAv1ReadyPrefixVideo,
     RunVulkanaliaReadyPrefixVideo,
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--probe-audio-clock|--run-clear|--run-vulkanalia-clear|--run-vulkanalia-scene-lite-solid-quad|--run-vulkanalia-scene-lite-sampled-image|--run-static|--run-vulkanalia-static|--run-legacy-static|--run-video|--run-h264-ready-prefix-video|--run-h265-ready-prefix-video|--run-av1-ready-prefix-video|--run-vulkanalia-ready-prefix-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--probe-audio-clock|--run-clear|--run-vulkanalia-clear|--run-vulkanalia-scene-lite-solid-quad|--run-vulkanalia-scene-lite-sampled-image|--run-static|--run-vulkanalia-static|--run-video|--run-vulkanalia-ready-prefix-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
@@ -1069,13 +826,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --run-vulkanalia-scene-lite-solid-quad uses Vulkanalia dynamic rendering to draw a retained scene-lite solid quad to the Wayland swapchain.\n\
 --run-vulkanalia-scene-lite-sampled-image uses Vulkanalia dynamic rendering to upload --source once into a retained sampled image and draw it to the Wayland swapchain.\n\
 --run-static and --run-vulkanalia-static use Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
---run-legacy-static is a compatibility alias for the Vulkanalia sampled-image static runtime.\n\
---run-video uses Vulkanalia ready-prefix video. Without explicit --decode-*-ready-prefix, it uses the codec default ready-prefix window and no longer falls back to the legacy video plan handoff.\n\
---run-h264-ready-prefix-video is a compatibility alias for the Vulkanalia H.264 ready-prefix runtime.\n\
---h264-input streaming-queue is accepted for compatibility; ready-prefix CLI playback now uses the Vulkanalia extractor path.\n\
---run-h265-ready-prefix-video is a compatibility alias for the Vulkanalia H.265 ready-prefix runtime.\n\
---h265-input streaming-queue is accepted for compatibility; ready-prefix CLI playback now uses the Vulkanalia extractor path.\n\
---run-av1-ready-prefix-video is a compatibility alias for the Vulkanalia AV1 ready-prefix runtime.\n\
+--run-video uses Vulkanalia ready-prefix video. Without explicit --decode-*-ready-prefix, it uses the codec default ready-prefix window.\n\
 --run-vulkanalia-ready-prefix-video decodes a ready H.264/H.265/AV1 prefix through Vulkanalia CmdPipelineBarrier2/QueueSubmit2 and prints runtime JSON.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\

@@ -21,7 +21,7 @@ pub(super) struct NativeVulkanVulkanaliaAv1FrameBitstream {
 }
 
 pub(super) fn native_vulkan_vulkanalia_h264_decode_payloads(
-    frames: &[NativeVulkanVulkanaliaH264ReadyPrefixFrameInput],
+    frames: &mut [NativeVulkanVulkanaliaH264ReadyPrefixFrameInput],
     min_offset_alignment: u64,
     min_size_alignment: u64,
 ) -> Result<(Vec<u8>, Vec<NativeVulkanVulkanaliaH264FrameBitstream>), String> {
@@ -29,7 +29,13 @@ pub(super) fn native_vulkan_vulkanalia_h264_decode_payloads(
         return Err("Vulkanalia H.264 decode payload set cannot be empty".to_owned());
     }
 
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::with_capacity(native_vulkan_vulkanalia_decode_payload_capacity(
+        frames
+            .iter()
+            .map(|frame| frame.access_unit_payload.len() as u64),
+        min_offset_alignment,
+        min_size_alignment,
+    )?);
     let mut bitstreams = Vec::with_capacity(frames.len());
     for frame in frames {
         if frame.access_unit_payload.is_empty() {
@@ -38,14 +44,13 @@ pub(super) fn native_vulkan_vulkanalia_h264_decode_payloads(
                 frame.entry.access_unit_index
             ));
         }
+        let mut payload = std::mem::take(&mut frame.access_unit_payload);
         let src_buffer_offset =
             native_vulkan_vulkanalia_align_up(bytes.len() as u64, min_offset_alignment.max(1))?;
         bytes.resize(src_buffer_offset as usize, 0);
-        let src_buffer_range = native_vulkan_vulkanalia_align_up(
-            frame.access_unit_payload.len() as u64,
-            min_size_alignment.max(1),
-        )?;
-        bytes.extend_from_slice(&frame.access_unit_payload);
+        let src_buffer_range =
+            native_vulkan_vulkanalia_align_up(payload.len() as u64, min_size_alignment.max(1))?;
+        bytes.append(&mut payload);
         bytes.resize((src_buffer_offset + src_buffer_range) as usize, 0);
         bitstreams.push(NativeVulkanVulkanaliaH264FrameBitstream {
             src_buffer_offset,
@@ -56,7 +61,7 @@ pub(super) fn native_vulkan_vulkanalia_h264_decode_payloads(
 }
 
 pub(super) fn native_vulkan_vulkanalia_h265_decode_payloads(
-    frames: &[NativeVulkanVulkanaliaH265ReadyPrefixFrameInput],
+    frames: &mut [NativeVulkanVulkanaliaH265ReadyPrefixFrameInput],
     min_offset_alignment: u64,
     min_size_alignment: u64,
 ) -> Result<(Vec<u8>, Vec<NativeVulkanVulkanaliaH265FrameBitstream>), String> {
@@ -64,7 +69,13 @@ pub(super) fn native_vulkan_vulkanalia_h265_decode_payloads(
         return Err("Vulkanalia H.265 decode payload set cannot be empty".to_owned());
     }
 
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::with_capacity(native_vulkan_vulkanalia_decode_payload_capacity(
+        frames
+            .iter()
+            .map(|frame| frame.access_unit_payload.len() as u64),
+        min_offset_alignment,
+        min_size_alignment,
+    )?);
     let mut bitstreams = Vec::with_capacity(frames.len());
     for frame in frames {
         if frame.access_unit_payload.is_empty() {
@@ -73,14 +84,13 @@ pub(super) fn native_vulkan_vulkanalia_h265_decode_payloads(
                 frame.entry.access_unit_index
             ));
         }
+        let mut payload = std::mem::take(&mut frame.access_unit_payload);
         let src_buffer_offset =
             native_vulkan_vulkanalia_align_up(bytes.len() as u64, min_offset_alignment.max(1))?;
         bytes.resize(src_buffer_offset as usize, 0);
-        let src_buffer_range = native_vulkan_vulkanalia_align_up(
-            frame.access_unit_payload.len() as u64,
-            min_size_alignment.max(1),
-        )?;
-        bytes.extend_from_slice(&frame.access_unit_payload);
+        let src_buffer_range =
+            native_vulkan_vulkanalia_align_up(payload.len() as u64, min_size_alignment.max(1))?;
+        bytes.append(&mut payload);
         bytes.resize((src_buffer_offset + src_buffer_range) as usize, 0);
         bitstreams.push(NativeVulkanVulkanaliaH265FrameBitstream {
             src_buffer_offset,
@@ -91,7 +101,7 @@ pub(super) fn native_vulkan_vulkanalia_h265_decode_payloads(
 }
 
 pub(super) fn native_vulkan_vulkanalia_av1_decode_payloads(
-    frames: &[NativeVulkanVulkanaliaAv1ReadyPrefixFrameInput],
+    frames: &mut [NativeVulkanVulkanaliaAv1ReadyPrefixFrameInput],
     min_offset_alignment: u64,
     min_size_alignment: u64,
 ) -> Result<(Vec<u8>, Vec<NativeVulkanVulkanaliaAv1FrameBitstream>), String> {
@@ -99,7 +109,13 @@ pub(super) fn native_vulkan_vulkanalia_av1_decode_payloads(
         return Err("Vulkanalia AV1 decode payload set cannot be empty".to_owned());
     }
 
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::with_capacity(native_vulkan_vulkanalia_decode_payload_capacity(
+        frames
+            .iter()
+            .map(|frame| frame.access_unit_payload.len() as u64),
+        min_offset_alignment,
+        min_size_alignment,
+    )?);
     let mut bitstreams = Vec::with_capacity(frames.len());
     for frame in frames {
         if frame.access_unit_payload.is_empty() {
@@ -108,14 +124,13 @@ pub(super) fn native_vulkan_vulkanalia_av1_decode_payloads(
                 frame.entry.temporal_unit_index
             ));
         }
+        let mut payload = std::mem::take(&mut frame.access_unit_payload);
         let src_buffer_offset =
             native_vulkan_vulkanalia_align_up(bytes.len() as u64, min_offset_alignment.max(1))?;
         bytes.resize(src_buffer_offset as usize, 0);
-        let src_buffer_range = native_vulkan_vulkanalia_align_up(
-            frame.access_unit_payload.len() as u64,
-            min_size_alignment.max(1),
-        )?;
-        bytes.extend_from_slice(&frame.access_unit_payload);
+        let src_buffer_range =
+            native_vulkan_vulkanalia_align_up(payload.len() as u64, min_size_alignment.max(1))?;
+        bytes.append(&mut payload);
         bytes.resize((src_buffer_offset + src_buffer_range) as usize, 0);
         bitstreams.push(NativeVulkanVulkanaliaAv1FrameBitstream {
             src_buffer_offset,
@@ -123,6 +138,25 @@ pub(super) fn native_vulkan_vulkanalia_av1_decode_payloads(
         });
     }
     Ok((bytes, bitstreams))
+}
+
+fn native_vulkan_vulkanalia_decode_payload_capacity<I>(
+    payload_lengths: I,
+    min_offset_alignment: u64,
+    min_size_alignment: u64,
+) -> Result<usize, String>
+where
+    I: IntoIterator<Item = u64>,
+{
+    let mut total = 0u64;
+    for payload_len in payload_lengths {
+        let offset = native_vulkan_vulkanalia_align_up(total, min_offset_alignment.max(1))?;
+        let range = native_vulkan_vulkanalia_align_up(payload_len, min_size_alignment.max(1))?;
+        total = offset
+            .checked_add(range)
+            .ok_or_else(|| "Vulkanalia payload capacity overflow".to_owned())?;
+    }
+    usize::try_from(total).map_err(|_| "Vulkanalia payload capacity exceeds usize".to_owned())
 }
 
 fn native_vulkan_vulkanalia_align_up(value: u64, alignment: u64) -> Result<u64, String> {
@@ -142,13 +176,13 @@ mod tests {
 
     #[test]
     fn h265_multi_frame_payloads_align_offsets_and_ranges() {
-        let frames = vec![
+        let mut frames = vec![
             test_h265_ready_prefix_frame(0, vec![1, 2, 3]),
             test_h265_ready_prefix_frame(1, vec![4; 260]),
         ];
 
         let (bytes, bitstreams) =
-            native_vulkan_vulkanalia_h265_decode_payloads(&frames, 128, 256).unwrap();
+            native_vulkan_vulkanalia_h265_decode_payloads(&mut frames, 128, 256).unwrap();
 
         assert_eq!(bitstreams.len(), 2);
         assert_eq!(bitstreams[0].src_buffer_offset, 0);
@@ -158,6 +192,11 @@ mod tests {
         assert_eq!(bytes.len(), 768);
         assert_eq!(&bytes[..3], &[1, 2, 3]);
         assert_eq!(&bytes[256..260], &[4, 4, 4, 4]);
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.access_unit_payload.is_empty())
+        );
     }
 
     fn test_h265_ready_prefix_frame(
