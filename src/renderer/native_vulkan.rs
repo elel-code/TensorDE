@@ -56,6 +56,12 @@ unsafe extern "C" {
 #[path = "native_vulkan/h264.rs"]
 mod h264;
 
+#[path = "native_vulkan/byte_summary.rs"]
+mod byte_summary;
+
+#[path = "native_vulkan/drm_format.rs"]
+mod drm_format;
+
 #[cfg(feature = "native-vulkan-gst-video")]
 #[path = "native_vulkan/sampling.rs"]
 mod sampling;
@@ -212,6 +218,7 @@ mod video_session_resources;
 mod video_session_parameters;
 
 pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy};
+use byte_summary::*;
 #[cfg(feature = "native-vulkan-gst-video")]
 use codec_reference::*;
 pub use codec_snapshots::*;
@@ -249,6 +256,8 @@ use direct_runtime::{
     native_vulkan_direct_present_result_summary, native_vulkan_direct_recv_pending_present_result,
     native_vulkan_direct_runtime_summary, native_vulkan_direct_try_recv_pending_present_result,
 };
+#[cfg(any(feature = "native-vulkan-gst-video", test))]
+use drm_format::*;
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
 use labels::*;
@@ -17358,22 +17367,6 @@ const CUDA_STREAM_NON_BLOCKING: u32 = 1;
 const CUDA_ARRAY_FORMAT_UNSIGNED_INT8: u32 = 1;
 #[cfg(feature = "native-vulkan-gst-video")]
 const CUDA_ARRAY_FORMAT_UNSIGNED_INT16: u32 = 2;
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
-const DRM_FORMAT_NV12: u32 = 0x3231_564e;
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
-const DRM_FORMAT_P010: u32 = 0x3031_3050;
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
-const DRM_FORMAT_R8: u32 = 0x2020_3852;
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
-const DRM_FORMAT_R16: u32 = 0x2036_3152;
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
-const DRM_FORMAT_GR88: u32 = 0x3838_5247;
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
-const DRM_FORMAT_GR1616: u32 = 0x3233_5247;
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
-const DRM_FORMAT_MOD_LINEAR: u64 = 0;
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
-const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
 #[cfg(feature = "native-vulkan-gst-video")]
 const VA_STATUS_SUCCESS: NativeVulkanVaStatus = 0;
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -27569,38 +27562,6 @@ fn native_vulkan_read_video_decode_output_snapshot(
     result
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
-struct NativeVulkanByteSummary {
-    hash: u64,
-    nonzero_bytes: u64,
-    min: u8,
-    max: u8,
-    unique_values: u32,
-}
-
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
-fn native_vulkan_byte_summary(bytes: &[u8]) -> NativeVulkanByteSummary {
-    let mut seen = [false; 256];
-    let mut nonzero_bytes = 0u64;
-    let mut min = u8::MAX;
-    let mut max = u8::MIN;
-    for byte in bytes.iter().copied() {
-        seen[byte as usize] = true;
-        if byte != 0 {
-            nonzero_bytes = nonzero_bytes.saturating_add(1);
-        }
-        min = min.min(byte);
-        max = max.max(byte);
-    }
-    NativeVulkanByteSummary {
-        hash: native_vulkan_stable_byte_hash(bytes),
-        nonzero_bytes,
-        min: if bytes.is_empty() { 0 } else { min },
-        max: if bytes.is_empty() { 0 } else { max },
-        unique_values: seen.into_iter().filter(|value| *value).count() as u32,
-    }
-}
-
 #[cfg(feature = "native-vulkan-gst-video")]
 fn native_vulkan_extract_video_bitstream(
     options: &NativeVulkanVideoSessionSmokeOptions,
@@ -35910,12 +35871,6 @@ fn native_vulkan_h265_nal_type_label(nal_type: u8) -> &'static str {
         48..=63 => "unspecified",
         _ => "slice-or-extension",
     }
-}
-
-fn native_vulkan_stable_byte_hash(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
-    })
 }
 
 fn native_vulkan_video_session_smoke_result(
