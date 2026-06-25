@@ -1,10 +1,24 @@
-use std::path::PathBuf;
+#![allow(dead_code)]
+
+use std::path::{Path, PathBuf};
+use std::ptr;
 
 use serde::Serialize;
+use vulkanalia::prelude::v1_4::*;
+use vulkanalia::vk::{self, HasBuilder};
 
 const SCENE_LITE_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 20;
 const SCENE_LITE_SAMPLED_IMAGE_VERTEX_COUNT: usize = 4;
 const SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT: usize = 6;
+const SCENE_LITE_RGBA_BYTES_PER_PIXEL: u64 = 4;
+const DEVICE_LOCAL_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::DEVICE_LOCAL.bits();
+const HOST_VISIBLE_COHERENT_MEMORY_FLAG_BITS: u32 =
+    vk::MemoryPropertyFlags::HOST_VISIBLE.bits() | vk::MemoryPropertyFlags::HOST_COHERENT.bits();
+const HOST_VISIBLE_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::HOST_VISIBLE.bits();
+
+use super::video_session::{
+    NativeVulkanVulkanaliaMemoryTypeCandidate, native_vulkan_vulkanalia_memory_type_candidates,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaSceneLiteSampledImagePlanInput {
@@ -52,6 +66,65 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImagePlanSnapshot {
     pub vulkan_1_4_push_descriptor_policy: &'static str,
     pub zero_copy_scope: &'static str,
     pub primary_reference: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaSceneLiteDecodedRgbaImage {
+    pub source: PathBuf,
+    pub width: u32,
+    pub height: u32,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot {
+    pub binding: &'static str,
+    pub route: &'static str,
+    pub source_label: String,
+    pub extent: (u32, u32),
+    pub rgba_bytes: u64,
+    pub image_format: &'static str,
+    pub image_usage: Vec<&'static str>,
+    pub image_created: bool,
+    pub image_memory_bound: bool,
+    pub image_memory_size: u64,
+    pub image_memory_alignment: u64,
+    pub image_memory_type_bits: u32,
+    pub selected_image_memory_type_index: u32,
+    pub selected_image_memory_property_flags: Vec<&'static str>,
+    pub staging_buffer_bytes: u64,
+    pub selected_staging_memory_type_index: u32,
+    pub selected_staging_memory_property_flags: Vec<&'static str>,
+    pub image_view_created: bool,
+    pub sampler_created: bool,
+    pub descriptor_pool_created: bool,
+    pub descriptor_set_allocated: bool,
+    pub descriptor_type: &'static str,
+    pub descriptor_image_layout: &'static str,
+    pub upload_command_recorded: bool,
+    pub upload_submitted: bool,
+    pub upload_wait_model: &'static str,
+    pub final_image_layout: &'static str,
+    pub command_order: Vec<&'static str>,
+    pub uses_synchronization2: bool,
+    pub retained_across_present_frames: bool,
+}
+
+pub(super) struct VulkanaliaSceneLiteSampledImageResources {
+    pub(super) image: vk::Image,
+    pub(super) memory: vk::DeviceMemory,
+    pub(super) image_view: vk::ImageView,
+    pub(super) sampler: vk::Sampler,
+    pub(super) descriptor_pool: vk::DescriptorPool,
+    pub(super) descriptor_set: vk::DescriptorSet,
+    pub(super) snapshot: NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot,
+}
+
+struct VulkanaliaSceneLiteSampledImageUploadBuffer {
+    buffer: vk::Buffer,
+    memory: vk::DeviceMemory,
+    memory_type: NativeVulkanVulkanaliaMemoryTypeCandidate,
+    size: u64,
 }
 
 pub(crate) fn native_vulkan_vulkanalia_scene_lite_sampled_image_plan(
@@ -122,6 +195,257 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_sampled_image_plan(
     }
 }
 
+pub(super) fn native_vulkan_vulkanalia_decode_scene_lite_rgba_image(
+    source: &Path,
+) -> Result<NativeVulkanVulkanaliaSceneLiteDecodedRgbaImage, String> {
+    let image = image::open(source)
+        .map_err(|err| {
+            format!(
+                "decode scene-lite sampled image {}: {err}",
+                source.display()
+            )
+        })?
+        .to_rgba8();
+    let (width, height) = image.dimensions();
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "scene-lite sampled image {} decoded to zero extent",
+            source.display()
+        ));
+    }
+
+    Ok(NativeVulkanVulkanaliaSceneLiteDecodedRgbaImage {
+        source: source.to_path_buf(),
+        width,
+        height,
+        bytes: image.into_raw(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources(
+    device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    source_label: impl Into<String>,
+    extent: vk::Extent2D,
+    rgba_bytes: &[u8],
+) -> Result<VulkanaliaSceneLiteSampledImageResources, String> {
+    validate_scene_lite_rgba_upload(extent, rgba_bytes)?;
+    let source_label = source_label.into();
+    let mut staging = Some(create_scene_lite_sampled_image_upload_buffer(
+        device,
+        memory_properties,
+        rgba_bytes,
+        vk::BufferUsageFlags::TRANSFER_SRC,
+    )?);
+
+    let image_usage = vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED;
+    let image_extent = vk::Extent3D {
+        width: extent.width,
+        height: extent.height,
+        depth: 1,
+    };
+    let image_create_info = vk::ImageCreateInfo::builder()
+        .image_type(vk::ImageType::_2D)
+        .format(vk::Format::R8G8B8A8_UNORM)
+        .extent(image_extent)
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .usage(image_usage)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+    let image = match unsafe { device.create_image(&image_create_info, None) } {
+        Ok(image) => image,
+        Err(err) => {
+            if let Some(staging) = staging.take() {
+                destroy_scene_lite_sampled_image_upload_buffer(device, staging);
+            }
+            return Err(format!(
+                "vkCreateImage(vulkanalia scene-lite sampled image): {err:?}"
+            ));
+        }
+    };
+
+    let mut image_live = true;
+    let mut memory = vk::DeviceMemory::default();
+    let mut memory_live = false;
+    let mut image_view = vk::ImageView::default();
+    let mut image_view_live = false;
+    let mut sampler = vk::Sampler::default();
+    let mut sampler_live = false;
+    let mut descriptor_pool = vk::DescriptorPool::default();
+    let mut descriptor_pool_live = false;
+
+    let result = (|| -> Result<VulkanaliaSceneLiteSampledImageResources, String> {
+        let memory_requirements = unsafe { device.get_image_memory_requirements(image) };
+        let memory_type_candidates =
+            native_vulkan_vulkanalia_memory_type_candidates(memory_properties);
+        let image_memory_type = sampled_image_memory_type_index(
+            &memory_type_candidates,
+            memory_requirements.memory_type_bits,
+            DEVICE_LOCAL_MEMORY_FLAG_BITS,
+        )
+        .or_else(|| {
+            sampled_image_memory_type_index(
+                &memory_type_candidates,
+                memory_requirements.memory_type_bits,
+                0,
+            )
+        })
+        .ok_or_else(|| {
+            format!(
+                "scene-lite sampled image has no compatible memory type for bits 0x{:08x}",
+                memory_requirements.memory_type_bits
+            )
+        })?;
+        let allocation_info = vk::MemoryAllocateInfo::builder()
+            .allocation_size(memory_requirements.size)
+            .memory_type_index(image_memory_type.index);
+        memory = unsafe { device.allocate_memory(&allocation_info, None) }.map_err(|err| {
+            format!("vkAllocateMemory(vulkanalia scene-lite sampled image): {err:?}")
+        })?;
+        memory_live = true;
+
+        unsafe { device.bind_image_memory(image, memory, 0) }.map_err(|err| {
+            format!("vkBindImageMemory(vulkanalia scene-lite sampled image): {err:?}")
+        })?;
+
+        image_view = create_scene_lite_sampled_image_view(device, image)?;
+        image_view_live = true;
+        sampler = create_scene_lite_sampled_image_sampler(device)?;
+        sampler_live = true;
+
+        descriptor_pool = create_scene_lite_sampled_image_descriptor_pool(device)?;
+        descriptor_pool_live = true;
+        let descriptor_set = allocate_scene_lite_sampled_image_descriptor_set(
+            device,
+            descriptor_pool,
+            descriptor_set_layout,
+        )?;
+        update_scene_lite_sampled_image_descriptor(device, descriptor_set, sampler, image_view);
+
+        let staging_ref = staging
+            .as_ref()
+            .expect("scene-lite sampled image staging buffer is live during upload");
+        upload_scene_lite_sampled_image(
+            device,
+            command_pool,
+            queue,
+            staging_ref.buffer,
+            image,
+            extent,
+        )?;
+        let staging = staging
+            .take()
+            .expect("scene-lite sampled image staging buffer is live after upload");
+        let staging_memory_type = staging.memory_type;
+        let staging_size = staging.size;
+        destroy_scene_lite_sampled_image_upload_buffer(device, staging);
+
+        image_live = false;
+        memory_live = false;
+        image_view_live = false;
+        sampler_live = false;
+        descriptor_pool_live = false;
+
+        Ok(VulkanaliaSceneLiteSampledImageResources {
+            image,
+            memory,
+            image_view,
+            sampler,
+            descriptor_pool,
+            descriptor_set,
+            snapshot: NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot {
+                binding: "vulkanalia",
+                route: "scene-lite-sampled-image-retained-resource",
+                source_label,
+                extent: (extent.width, extent.height),
+                rgba_bytes: rgba_bytes.len() as u64,
+                image_format: "R8G8B8A8_UNORM",
+                image_usage: sampled_image_usage_labels(image_usage),
+                image_created: true,
+                image_memory_bound: true,
+                image_memory_size: memory_requirements.size,
+                image_memory_alignment: memory_requirements.alignment,
+                image_memory_type_bits: memory_requirements.memory_type_bits,
+                selected_image_memory_type_index: image_memory_type.index,
+                selected_image_memory_property_flags: memory_property_flag_labels(
+                    image_memory_type.property_flags_bits,
+                ),
+                staging_buffer_bytes: staging_size,
+                selected_staging_memory_type_index: staging_memory_type.index,
+                selected_staging_memory_property_flags: memory_property_flag_labels(
+                    staging_memory_type.property_flags_bits,
+                ),
+                image_view_created: true,
+                sampler_created: true,
+                descriptor_pool_created: true,
+                descriptor_set_allocated: true,
+                descriptor_type: "combined-image-sampler",
+                descriptor_image_layout: "shader-read-only-optimal",
+                upload_command_recorded: true,
+                upload_submitted: true,
+                upload_wait_model: "queue_submit2 + fence wait during retained resource upload",
+                final_image_layout: "shader-read-only-optimal",
+                command_order: sampled_image_resource_command_order().to_vec(),
+                uses_synchronization2: true,
+                retained_across_present_frames: true,
+            },
+        })
+    })();
+
+    if result.is_err() {
+        if let Some(staging) = staging.take() {
+            destroy_scene_lite_sampled_image_upload_buffer(device, staging);
+        }
+        if descriptor_pool_live {
+            unsafe {
+                device.destroy_descriptor_pool(descriptor_pool, None);
+            }
+        }
+        if sampler_live {
+            unsafe {
+                device.destroy_sampler(sampler, None);
+            }
+        }
+        if image_view_live {
+            unsafe {
+                device.destroy_image_view(image_view, None);
+            }
+        }
+        if memory_live {
+            unsafe {
+                device.free_memory(memory, None);
+            }
+        }
+        if image_live {
+            unsafe {
+                device.destroy_image(image, None);
+            }
+        }
+    }
+
+    result
+}
+
+pub(super) fn native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resources(
+    device: &Device,
+    resources: VulkanaliaSceneLiteSampledImageResources,
+) {
+    unsafe {
+        device.destroy_descriptor_pool(resources.descriptor_pool, None);
+        device.destroy_sampler(resources.sampler, None);
+        device.destroy_image_view(resources.image_view, None);
+        device.destroy_image(resources.image, None);
+        device.free_memory(resources.memory, None);
+    }
+}
+
 fn scene_lite_sampled_image_command_order(backend_ready: bool) -> &'static [&'static str] {
     if backend_ready {
         &[
@@ -148,6 +472,474 @@ fn scene_lite_sampled_image_command_order(backend_ready: bool) -> &'static [&'st
 
 fn saturating_nonzero_u32(value: usize) -> u32 {
     u32::try_from(value.max(1)).unwrap_or(u32::MAX)
+}
+
+fn validate_scene_lite_rgba_upload(extent: vk::Extent2D, rgba_bytes: &[u8]) -> Result<(), String> {
+    if extent.width == 0 || extent.height == 0 {
+        return Err("scene-lite sampled image upload requires non-zero extent".to_owned());
+    }
+    let expected = scene_lite_rgba_byte_len(extent)?;
+    if rgba_bytes.len() as u64 != expected {
+        return Err(format!(
+            "scene-lite sampled image upload expected {expected} RGBA bytes for {}x{}, got {}",
+            extent.width,
+            extent.height,
+            rgba_bytes.len()
+        ));
+    }
+    Ok(())
+}
+
+fn scene_lite_rgba_byte_len(extent: vk::Extent2D) -> Result<u64, String> {
+    u64::from(extent.width)
+        .checked_mul(u64::from(extent.height))
+        .and_then(|pixels| pixels.checked_mul(SCENE_LITE_RGBA_BYTES_PER_PIXEL))
+        .ok_or_else(|| {
+            format!(
+                "scene-lite sampled image extent {}x{} overflows RGBA byte size",
+                extent.width, extent.height
+            )
+        })
+}
+
+fn create_scene_lite_sampled_image_upload_buffer(
+    device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    payload: &[u8],
+    usage: vk::BufferUsageFlags,
+) -> Result<VulkanaliaSceneLiteSampledImageUploadBuffer, String> {
+    let create_info = vk::BufferCreateInfo::builder()
+        .size(payload.len() as u64)
+        .usage(usage)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+    let buffer = unsafe { device.create_buffer(&create_info, None) }.map_err(|err| {
+        format!("vkCreateBuffer(vulkanalia scene-lite sampled image staging): {err:?}")
+    })?;
+
+    let result = (|| -> Result<VulkanaliaSceneLiteSampledImageUploadBuffer, String> {
+        let memory_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+        let memory_type_candidates =
+            native_vulkan_vulkanalia_memory_type_candidates(memory_properties);
+        let memory_type = sampled_image_memory_type_index(
+            &memory_type_candidates,
+            memory_requirements.memory_type_bits,
+            HOST_VISIBLE_COHERENT_MEMORY_FLAG_BITS,
+        )
+        .or_else(|| {
+            sampled_image_memory_type_index(
+                &memory_type_candidates,
+                memory_requirements.memory_type_bits,
+                HOST_VISIBLE_MEMORY_FLAG_BITS,
+            )
+        })
+        .ok_or_else(|| {
+            format!(
+                "scene-lite sampled image staging buffer has no host-visible memory type for bits 0x{:08x}",
+                memory_requirements.memory_type_bits
+            )
+        })?;
+        let allocation_info = vk::MemoryAllocateInfo::builder()
+            .allocation_size(memory_requirements.size)
+            .memory_type_index(memory_type.index);
+        let memory = unsafe { device.allocate_memory(&allocation_info, None) }.map_err(|err| {
+            format!("vkAllocateMemory(vulkanalia scene-lite sampled image staging): {err:?}")
+        })?;
+
+        if let Err(err) = unsafe { device.bind_buffer_memory(buffer, memory, 0) } {
+            unsafe {
+                device.free_memory(memory, None);
+            }
+            return Err(format!(
+                "vkBindBufferMemory(vulkanalia scene-lite sampled image staging): {err:?}"
+            ));
+        }
+
+        let map = match unsafe {
+            device.map_memory(memory, 0, payload.len() as u64, vk::MemoryMapFlags::empty())
+        } {
+            Ok(map) => map,
+            Err(err) => {
+                unsafe {
+                    device.free_memory(memory, None);
+                }
+                return Err(format!(
+                    "vkMapMemory(vulkanalia scene-lite sampled image staging): {err:?}"
+                ));
+            }
+        };
+        unsafe {
+            ptr::copy_nonoverlapping(payload.as_ptr(), map.cast::<u8>(), payload.len());
+        }
+        let host_coherent = memory_type.property_flags_bits
+            & vk::MemoryPropertyFlags::HOST_COHERENT.bits()
+            == vk::MemoryPropertyFlags::HOST_COHERENT.bits();
+        if !host_coherent {
+            let range = vk::MappedMemoryRange::builder()
+                .memory(memory)
+                .offset(0)
+                .size(vk::WHOLE_SIZE)
+                .build();
+            if let Err(err) = unsafe { device.flush_mapped_memory_ranges(&[range]) } {
+                unsafe {
+                    device.unmap_memory(memory);
+                    device.free_memory(memory, None);
+                }
+                return Err(format!(
+                    "vkFlushMappedMemoryRanges(vulkanalia scene-lite sampled image staging): {err:?}"
+                ));
+            }
+        }
+        unsafe {
+            device.unmap_memory(memory);
+        }
+
+        Ok(VulkanaliaSceneLiteSampledImageUploadBuffer {
+            buffer,
+            memory,
+            memory_type,
+            size: payload.len() as u64,
+        })
+    })();
+
+    if result.is_err() {
+        unsafe {
+            device.destroy_buffer(buffer, None);
+        }
+    }
+    result
+}
+
+fn destroy_scene_lite_sampled_image_upload_buffer(
+    device: &Device,
+    buffer: VulkanaliaSceneLiteSampledImageUploadBuffer,
+) {
+    unsafe {
+        device.destroy_buffer(buffer.buffer, None);
+        device.free_memory(buffer.memory, None);
+    }
+}
+
+fn create_scene_lite_sampled_image_view(
+    device: &Device,
+    image: vk::Image,
+) -> Result<vk::ImageView, String> {
+    let subresource_range = vk::ImageSubresourceRange::builder()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .base_mip_level(0)
+        .level_count(1)
+        .base_array_layer(0)
+        .layer_count(1)
+        .build();
+    let create_info = vk::ImageViewCreateInfo::builder()
+        .image(image)
+        .view_type(vk::ImageViewType::_2D)
+        .format(vk::Format::R8G8B8A8_UNORM)
+        .subresource_range(subresource_range);
+    unsafe { device.create_image_view(&create_info, None) }
+        .map_err(|err| format!("vkCreateImageView(vulkanalia scene-lite sampled image): {err:?}"))
+}
+
+fn create_scene_lite_sampled_image_sampler(device: &Device) -> Result<vk::Sampler, String> {
+    let sampler_info = vk::SamplerCreateInfo::builder()
+        .mag_filter(vk::Filter::LINEAR)
+        .min_filter(vk::Filter::LINEAR)
+        .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .min_lod(0.0)
+        .max_lod(0.0);
+    unsafe { device.create_sampler(&sampler_info, None) }
+        .map_err(|err| format!("vkCreateSampler(vulkanalia scene-lite sampled image): {err:?}"))
+}
+
+fn create_scene_lite_sampled_image_descriptor_pool(
+    device: &Device,
+) -> Result<vk::DescriptorPool, String> {
+    let pool_size = vk::DescriptorPoolSize::builder()
+        .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .descriptor_count(1)
+        .build();
+    let pool_sizes = [pool_size];
+    let pool_info = vk::DescriptorPoolCreateInfo::builder()
+        .max_sets(1)
+        .pool_sizes(&pool_sizes);
+    unsafe { device.create_descriptor_pool(&pool_info, None) }.map_err(|err| {
+        format!("vkCreateDescriptorPool(vulkanalia scene-lite sampled image): {err:?}")
+    })
+}
+
+fn allocate_scene_lite_sampled_image_descriptor_set(
+    device: &Device,
+    descriptor_pool: vk::DescriptorPool,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+) -> Result<vk::DescriptorSet, String> {
+    let layouts = [descriptor_set_layout];
+    let allocate_info = vk::DescriptorSetAllocateInfo::builder()
+        .descriptor_pool(descriptor_pool)
+        .set_layouts(&layouts);
+    let descriptor_sets =
+        unsafe { device.allocate_descriptor_sets(&allocate_info) }.map_err(|err| {
+            format!("vkAllocateDescriptorSets(vulkanalia scene-lite sampled image): {err:?}")
+        })?;
+    descriptor_sets.first().copied().ok_or_else(|| {
+        "vkAllocateDescriptorSets(vulkanalia scene-lite sampled image) returned no sets".to_owned()
+    })
+}
+
+fn update_scene_lite_sampled_image_descriptor(
+    device: &Device,
+    descriptor_set: vk::DescriptorSet,
+    sampler: vk::Sampler,
+    image_view: vk::ImageView,
+) {
+    let image_info = vk::DescriptorImageInfo::builder()
+        .sampler(sampler)
+        .image_view(image_view)
+        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .build();
+    let image_infos = [image_info];
+    let write = vk::WriteDescriptorSet::builder()
+        .dst_set(descriptor_set)
+        .dst_binding(0)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .image_info(&image_infos)
+        .build();
+    let descriptor_copies: [vk::CopyDescriptorSet; 0] = [];
+    unsafe {
+        device.update_descriptor_sets(&[write], &descriptor_copies);
+    }
+}
+
+fn upload_scene_lite_sampled_image(
+    device: &Device,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+    staging_buffer: vk::Buffer,
+    image: vk::Image,
+    extent: vk::Extent2D,
+) -> Result<(), String> {
+    let allocate_info = vk::CommandBufferAllocateInfo::builder()
+        .command_pool(command_pool)
+        .level(vk::CommandBufferLevel::PRIMARY)
+        .command_buffer_count(1);
+    let command_buffers =
+        unsafe { device.allocate_command_buffers(&allocate_info) }.map_err(|err| {
+            format!("vkAllocateCommandBuffers(vulkanalia scene-lite sampled image upload): {err:?}")
+        })?;
+    let command_buffer = command_buffers[0];
+    let result = record_and_submit_scene_lite_sampled_image_upload(
+        device,
+        queue,
+        command_buffer,
+        staging_buffer,
+        image,
+        extent,
+    );
+    unsafe {
+        device.free_command_buffers(command_pool, &[command_buffer]);
+    }
+    result
+}
+
+fn record_and_submit_scene_lite_sampled_image_upload(
+    device: &Device,
+    queue: vk::Queue,
+    command_buffer: vk::CommandBuffer,
+    staging_buffer: vk::Buffer,
+    image: vk::Image,
+    extent: vk::Extent2D,
+) -> Result<(), String> {
+    unsafe {
+        let begin_info = vk::CommandBufferBeginInfo::builder()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
+            .build();
+        device
+            .begin_command_buffer(command_buffer, &begin_info)
+            .map_err(|err| {
+                format!("vkBeginCommandBuffer(vulkanalia scene-lite sampled image upload): {err:?}")
+            })?;
+
+        let transfer_dst = vk::ImageMemoryBarrier2::builder()
+            .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+            .src_access_mask(vk::AccessFlags2::empty())
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
+            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(scene_lite_sampled_image_subresource_range())
+            .build();
+        let transfer_dst_barriers = [transfer_dst];
+        let transfer_dst_dependency = vk::DependencyInfo::builder()
+            .image_memory_barriers(&transfer_dst_barriers)
+            .build();
+        device.cmd_pipeline_barrier2(command_buffer, &transfer_dst_dependency);
+
+        let image_subresource = vk::ImageSubresourceLayers::builder()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .mip_level(0)
+            .base_array_layer(0)
+            .layer_count(1)
+            .build();
+        let image_copy = vk::BufferImageCopy::builder()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(image_subresource)
+            .image_extent(vk::Extent3D {
+                width: extent.width,
+                height: extent.height,
+                depth: 1,
+            })
+            .build();
+        device.cmd_copy_buffer_to_image(
+            command_buffer,
+            staging_buffer,
+            image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[image_copy],
+        );
+
+        let shader_read = vk::ImageMemoryBarrier2::builder()
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
+            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(scene_lite_sampled_image_subresource_range())
+            .build();
+        let shader_read_barriers = [shader_read];
+        let shader_read_dependency = vk::DependencyInfo::builder()
+            .image_memory_barriers(&shader_read_barriers)
+            .build();
+        device.cmd_pipeline_barrier2(command_buffer, &shader_read_dependency);
+
+        device.end_command_buffer(command_buffer).map_err(|err| {
+            format!("vkEndCommandBuffer(vulkanalia scene-lite sampled image upload): {err:?}")
+        })?;
+    }
+
+    let fence_info = vk::FenceCreateInfo::builder();
+    let fence = unsafe { device.create_fence(&fence_info, None) }.map_err(|err| {
+        format!("vkCreateFence(vulkanalia scene-lite sampled image upload): {err:?}")
+    })?;
+    let result = submit_scene_lite_sampled_image_upload_command_buffer2(
+        device,
+        queue,
+        command_buffer,
+        fence,
+    )
+    .and_then(|()| unsafe {
+        device
+            .wait_for_fences(&[fence], true, u64::MAX)
+            .map(|_| ())
+            .map_err(|err| {
+                format!("vkWaitForFences(vulkanalia scene-lite sampled image upload): {err:?}")
+            })
+    });
+    unsafe {
+        device.destroy_fence(fence, None);
+    }
+    result
+}
+
+fn submit_scene_lite_sampled_image_upload_command_buffer2(
+    device: &Device,
+    queue: vk::Queue,
+    command_buffer: vk::CommandBuffer,
+    fence: vk::Fence,
+) -> Result<(), String> {
+    let command_buffer_info = vk::CommandBufferSubmitInfo::builder()
+        .command_buffer(command_buffer)
+        .build();
+    let command_buffer_infos = [command_buffer_info];
+    let submit_info = vk::SubmitInfo2::builder()
+        .command_buffer_infos(&command_buffer_infos)
+        .build();
+    unsafe {
+        device
+            .queue_submit2(queue, &[submit_info], fence)
+            .map_err(|err| {
+                format!("vkQueueSubmit2(vulkanalia scene-lite sampled image upload): {err:?}")
+            })
+    }
+}
+
+fn scene_lite_sampled_image_subresource_range() -> vk::ImageSubresourceRange {
+    vk::ImageSubresourceRange::builder()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .base_mip_level(0)
+        .level_count(1)
+        .base_array_layer(0)
+        .layer_count(1)
+        .build()
+}
+
+fn sampled_image_resource_command_order() -> &'static [&'static str] {
+    &[
+        "decode_source_image_rgba",
+        "create_sampled_image_transfer_dst_sampled",
+        "create_rgba_upload_staging_buffer",
+        "cmd_pipeline_barrier2_transfer_dst",
+        "cmd_copy_buffer_to_image",
+        "cmd_pipeline_barrier2_shader_read",
+        "create_combined_image_sampler_descriptor",
+        "queue_submit2_upload",
+        "wait_upload_fence",
+        "retain_sampled_image_descriptor_for_present",
+    ]
+}
+
+fn sampled_image_memory_type_index(
+    memory_types: &[NativeVulkanVulkanaliaMemoryTypeCandidate],
+    allowed_memory_type_bits: u32,
+    required_property_flags_bits: u32,
+) -> Option<NativeVulkanVulkanaliaMemoryTypeCandidate> {
+    memory_types.iter().copied().find(|candidate| {
+        let allowed = candidate.index < u32::BITS
+            && allowed_memory_type_bits & (1u32 << candidate.index) != 0;
+        let properties_match = candidate.property_flags_bits & required_property_flags_bits
+            == required_property_flags_bits;
+        allowed && properties_match
+    })
+}
+
+fn memory_property_flag_labels(bits: u32) -> Vec<&'static str> {
+    [
+        (vk::MemoryPropertyFlags::DEVICE_LOCAL.bits(), "device-local"),
+        (vk::MemoryPropertyFlags::HOST_VISIBLE.bits(), "host-visible"),
+        (
+            vk::MemoryPropertyFlags::HOST_COHERENT.bits(),
+            "host-coherent",
+        ),
+        (vk::MemoryPropertyFlags::HOST_CACHED.bits(), "host-cached"),
+        (
+            vk::MemoryPropertyFlags::LAZILY_ALLOCATED.bits(),
+            "lazily-allocated",
+        ),
+        (vk::MemoryPropertyFlags::PROTECTED.bits(), "protected"),
+    ]
+    .into_iter()
+    .filter_map(|(flag_bits, label)| (bits & flag_bits == flag_bits).then_some(label))
+    .collect()
+}
+
+fn sampled_image_usage_labels(flags: vk::ImageUsageFlags) -> Vec<&'static str> {
+    let mut labels = Vec::new();
+    if flags.contains(vk::ImageUsageFlags::TRANSFER_DST) {
+        labels.push("transfer-dst");
+    }
+    if flags.contains(vk::ImageUsageFlags::SAMPLED) {
+        labels.push("sampled");
+    }
+    labels
 }
 
 #[cfg(test)]
@@ -225,5 +1017,96 @@ mod tests {
             snapshot.command_order,
             vec!["wait_for_scene_lite_sampled_image_geometry"]
         );
+    }
+
+    #[test]
+    fn rgba_upload_validation_matches_extent() {
+        let extent = vk::Extent2D {
+            width: 2,
+            height: 2,
+        };
+
+        assert_eq!(scene_lite_rgba_byte_len(extent), Ok(16));
+        assert!(validate_scene_lite_rgba_upload(extent, &[0; 16]).is_ok());
+        assert!(validate_scene_lite_rgba_upload(extent, &[0; 15]).is_err());
+        assert!(
+            validate_scene_lite_rgba_upload(
+                vk::Extent2D {
+                    width: 0,
+                    height: 2
+                },
+                &[]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn sampled_image_memory_type_selection_respects_required_flags() {
+        let memory_types = [
+            NativeVulkanVulkanaliaMemoryTypeCandidate {
+                index: 0,
+                property_flags_bits: vk::MemoryPropertyFlags::HOST_VISIBLE.bits(),
+            },
+            NativeVulkanVulkanaliaMemoryTypeCandidate {
+                index: 1,
+                property_flags_bits: vk::MemoryPropertyFlags::DEVICE_LOCAL.bits(),
+            },
+        ];
+
+        let device_local = sampled_image_memory_type_index(
+            &memory_types,
+            0b11,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL.bits(),
+        )
+        .expect("device-local memory type");
+        assert_eq!(device_local.index, 1);
+
+        let host_visible = sampled_image_memory_type_index(
+            &memory_types,
+            0b01,
+            vk::MemoryPropertyFlags::HOST_VISIBLE.bits(),
+        )
+        .expect("host-visible memory type");
+        assert_eq!(host_visible.index, 0);
+    }
+
+    #[test]
+    fn sampled_image_resource_command_order_uploads_before_descriptor_present_reuse() {
+        assert_eq!(
+            sampled_image_resource_command_order(),
+            &[
+                "decode_source_image_rgba",
+                "create_sampled_image_transfer_dst_sampled",
+                "create_rgba_upload_staging_buffer",
+                "cmd_pipeline_barrier2_transfer_dst",
+                "cmd_copy_buffer_to_image",
+                "cmd_pipeline_barrier2_shader_read",
+                "create_combined_image_sampler_descriptor",
+                "queue_submit2_upload",
+                "wait_upload_fence",
+                "retain_sampled_image_descriptor_for_present",
+            ]
+        );
+    }
+
+    #[test]
+    fn decodes_scene_lite_image_to_rgba_bytes() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "gilder-scene-lite-rgba-decode-{}.png",
+            std::process::id()
+        ));
+        let image = image::RgbaImage::from_raw(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 128])
+            .expect("test rgba image");
+        image.save(&path).expect("write test png");
+
+        let decoded =
+            native_vulkan_vulkanalia_decode_scene_lite_rgba_image(&path).expect("decode png");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 1);
+        assert_eq!(decoded.bytes, vec![255, 0, 0, 255, 0, 255, 0, 128]);
     }
 }
