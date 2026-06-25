@@ -137,6 +137,9 @@ mod static_image_upload;
 #[path = "native_vulkan/legacy_static_present.rs"]
 mod legacy_static_present;
 
+#[path = "native_vulkan/clear_present_runtime.rs"]
+mod clear_present_runtime;
+
 #[path = "native_vulkan/static_image_present_runtime.rs"]
 mod static_image_present_runtime;
 
@@ -229,6 +232,7 @@ mod video_session_parameters;
 
 pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy};
 use byte_summary::*;
+pub use clear_present_runtime::run_clear;
 #[cfg(feature = "native-vulkan-gst-video")]
 use codec_reference::*;
 pub use codec_snapshots::*;
@@ -285,7 +289,7 @@ pub use scene_lite_runtime::{
     NativeVulkanSceneLiteQuadVertexSnapshot, NativeVulkanSceneLiteRuntimeSnapshot,
     NativeVulkanSceneLiteUnsupportedLayerSnapshot,
 };
-pub use static_image_present_runtime::run_static_image_vulkanalia;
+pub use static_image_present_runtime::{run_static_image, run_static_image_vulkanalia};
 use static_image_upload::NativeVulkanStaticImageUpload;
 pub use video_codec::NativeVulkanVideoSessionCodec;
 pub use video_frontend::NativeVulkanVideoCapsSnapshot;
@@ -601,6 +605,7 @@ pub enum NativeVulkanError {
     MissingSurfaceFormat,
     UnsupportedSwapchainUsage(&'static str),
     InvalidSwapchainExtent,
+    Clear(String),
     StaticImage(String),
     SceneLite(String),
     Video(String),
@@ -627,6 +632,7 @@ impl fmt::Display for NativeVulkanError {
                 )
             }
             Self::InvalidSwapchainExtent => write!(f, "invalid Vulkan swapchain extent"),
+            Self::Clear(err) => write!(f, "clear present error: {err}"),
             Self::StaticImage(err) => write!(f, "static image error: {err}"),
             Self::SceneLite(err) => write!(f, "scene-lite error: {err}"),
             Self::Video(err) => write!(f, "video error: {err}"),
@@ -1915,7 +1921,7 @@ impl Drop for NativeVulkanSession {
     }
 }
 
-pub fn run_clear(
+pub fn run_legacy_clear(
     options: NativeVulkanOptions,
     duration: Duration,
 ) -> Result<NativeVulkanRuntimeSnapshot, NativeVulkanError> {
@@ -1924,7 +1930,7 @@ pub fn run_clear(
     session.run_for(duration, target_max_fps)
 }
 
-pub fn run_static_image(
+pub fn run_legacy_static_image(
     options: NativeVulkanOptions,
     duration: Duration,
     plan: StaticWallpaperPlan,

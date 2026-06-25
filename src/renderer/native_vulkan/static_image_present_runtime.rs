@@ -10,7 +10,7 @@ use super::{
     run_native_vulkan_vulkanalia_scene_lite_sampled_image_present,
 };
 
-pub fn run_static_image_vulkanalia(
+pub fn run_static_image(
     mut options: NativeVulkanOptions,
     duration: Duration,
     plan: StaticWallpaperPlan,
@@ -35,6 +35,14 @@ pub fn run_static_image_vulkanalia(
     .map_err(NativeVulkanError::StaticImage)
 }
 
+pub fn run_static_image_vulkanalia(
+    options: NativeVulkanOptions,
+    duration: Duration,
+    plan: StaticWallpaperPlan,
+) -> Result<NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot, NativeVulkanError> {
+    run_static_image(options, duration, plan)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -43,7 +51,7 @@ mod tests {
 
     #[test]
     fn vulkanalia_static_no_longer_rejects_tile_before_runtime_setup() {
-        let err = run_static_image_vulkanalia(
+        let err = run_static_image(
             NativeVulkanOptions {
                 host: NativeWaylandHostOptions::default(),
                 ..Default::default()

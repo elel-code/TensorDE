@@ -38,11 +38,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::native_vulkan::{
         NativeVulkanOptions, NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionSmokeOptions,
         backend_contract, capabilities, probe_vulkan_video_decode, probe_vulkan_video_session,
-        probe_wayland_surface, run_static_image, run_static_image_vulkanalia, run_video,
+        probe_wayland_surface, run_clear, run_legacy_static_image, run_static_image, run_video,
         wallpaper_type_support_matrix,
     };
     use gilder::renderer::native_vulkan::{
-        NativeVulkanVulkanaliaClearPresentOptions,
         NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions,
         NativeVulkanVulkanaliaSceneLiteSolidQuadPresentOptions,
         NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions,
@@ -53,7 +52,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         probe_native_vulkan_vulkanalia_video_present_device,
         probe_native_vulkan_vulkanalia_video_present_session,
         probe_native_vulkan_vulkanalia_video_session_bind,
-        run_native_vulkan_vulkanalia_clear_present,
         run_native_vulkan_vulkanalia_scene_lite_sampled_image_present,
         run_native_vulkan_vulkanalia_scene_lite_solid_quad_present,
     };
@@ -641,15 +639,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("--probe-audio-clock requires native-vulkan-gst-video feature".into());
             }
         }
-        NativeVulkanCliMode::RunClear => json!(run_native_vulkan_vulkanalia_clear_present(
-            NativeVulkanVulkanaliaClearPresentOptions {
-                host: options.host,
-                wait_configure_roundtrips: options.wait_configure_roundtrips,
-                duration,
-                target_max_fps: options.target_max_fps,
-                clear_color: options.clear_color,
-            }
-        )?),
+        NativeVulkanCliMode::RunClear => json!(run_clear(options, duration)?),
         NativeVulkanCliMode::RunVulkanaliaSceneLiteSolidQuad => {
             json!(run_native_vulkan_vulkanalia_scene_lite_solid_quad_present(
                 NativeVulkanVulkanaliaSceneLiteSolidQuadPresentOptions {
@@ -695,7 +685,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .output_name
                 .clone()
                 .unwrap_or_else(|| "native-vulkan".to_owned());
-            json!(run_static_image_vulkanalia(
+            json!(run_static_image(
                 options,
                 duration,
                 StaticWallpaperPlan {
@@ -713,7 +703,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .output_name
                 .clone()
                 .unwrap_or_else(|| "native-vulkan".to_owned());
-            json!(run_static_image(
+            json!(run_legacy_static_image(
                 options,
                 duration,
                 StaticWallpaperPlan {
