@@ -97,11 +97,11 @@ pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendP
         migration_gates: &[
             "make Vulkanalia visible through ordinary native-vulkan-renderer builds",
             "create Vulkan 1.4 instance/device and report PhysicalDeviceVulkan14Features",
-            "probe Wayland surface and swapchain parity with the ash backend",
+            "probe Wayland surface and swapchain through the Vulkanalia backend",
             "probe Vulkan Video H.264/H.265/AV1 profile and format parity",
             "route H.264/H.265/AV1 direct-video submit through Vulkanalia-owned session/image/bitstream/command resources",
-            "port direct present timing telemetry before replacing the ash main path",
-            "remove ash only after all native Vulkan renderer smoke/probe paths pass through Vulkanalia",
+            "keep direct present timing telemetry on the Vulkanalia main path",
+            "keep all native Vulkan renderer smoke/probe paths passing without dep:ash",
         ],
     }
 }
@@ -178,7 +178,7 @@ mod tests {
                 .any(|name| name.ends_with("VideoSessionCreateInfoKHR"))
         );
         assert_eq!(plan.migration_contract.primary_binding, "vulkanalia");
-        assert_eq!(plan.migration_contract.compatibility_binding, "ash");
+        assert_eq!(plan.migration_contract.retired_binding, "ash");
         assert!(
             plan.migration_gates
                 .iter()

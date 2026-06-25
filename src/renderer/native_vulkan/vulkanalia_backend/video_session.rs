@@ -27,7 +27,7 @@ pub enum NativeVulkanVulkanaliaVideoSessionResourceStepKind {
 pub struct NativeVulkanVulkanaliaVideoSessionResourceStep {
     pub order: u8,
     pub kind: NativeVulkanVulkanaliaVideoSessionResourceStepKind,
-    pub ash_source: &'static str,
+    pub legacy_source: &'static str,
     pub vulkanalia_target: &'static str,
     pub validation_gate: &'static str,
 }
@@ -35,7 +35,7 @@ pub struct NativeVulkanVulkanaliaVideoSessionResourceStep {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaVideoSessionTemplate {
     pub boundary: &'static str,
-    pub ash_source_modules: &'static [&'static str],
+    pub retired_source_modules: &'static [&'static str],
     pub vulkanalia_target_module: &'static str,
     pub api_type_evidence: Vec<&'static str>,
     pub resource_steps: Vec<NativeVulkanVulkanaliaVideoSessionResourceStep>,
@@ -98,7 +98,7 @@ pub fn native_vulkan_vulkanalia_video_session_template()
 -> NativeVulkanVulkanaliaVideoSessionTemplate {
     NativeVulkanVulkanaliaVideoSessionTemplate {
         boundary: "vulkanalia-video-session-resource-ownership",
-        ash_source_modules: &[
+        retired_source_modules: &[
             "src/renderer/native_vulkan.rs::native_vulkan_create_video_session",
             "src/renderer/native_vulkan/video_session_resources.rs",
             "src/renderer/native_vulkan/video_session_parameters.rs",
@@ -120,51 +120,51 @@ pub fn native_vulkan_vulkanalia_video_session_template()
             NativeVulkanVulkanaliaVideoSessionResourceStep {
                 order: 0,
                 kind: NativeVulkanVulkanaliaVideoSessionResourceStepKind::ProfileFormatSelection,
-                ash_source: "native_vulkan_video_format_properties_raw",
+                legacy_source: "native_vulkan_video_format_properties_raw",
                 vulkanalia_target: "video_format_probe + session resource probe plan",
                 validation_gate: "sampled decode-output and DPB formats are both reported before resource creation",
             },
             NativeVulkanVulkanaliaVideoSessionResourceStep {
                 order: 1,
                 kind: NativeVulkanVulkanaliaVideoSessionResourceStepKind::SessionCreate,
-                ash_source: "native_vulkan_create_video_session",
+                legacy_source: "native_vulkan_create_video_session",
                 vulkanalia_target: "vkCreateVideoSessionKHR through vulkanalia Device commands",
                 validation_gate: "created session reports non-empty explicit memory requirements",
             },
             NativeVulkanVulkanaliaVideoSessionResourceStep {
                 order: 2,
                 kind: NativeVulkanVulkanaliaVideoSessionResourceStepKind::SessionMemoryBind,
-                ash_source: "native_vulkan_video_session_memory_requirements + bind",
+                legacy_source: "native_vulkan_video_session_memory_requirements + bind",
                 vulkanalia_target: "explicit default-initialized VideoSessionMemoryRequirementsKHR and BindVideoSessionMemoryInfoKHR",
-                validation_gate: "memory bind indices/sizes match ash telemetry for each codec profile",
+                validation_gate: "memory bind indices/sizes match Vulkan Video requirements for each codec profile",
             },
             NativeVulkanVulkanaliaVideoSessionResourceStep {
                 order: 3,
                 kind: NativeVulkanVulkanaliaVideoSessionResourceStepKind::ResourceImages,
-                ash_source: "native_vulkan_create_video_session_resource_image",
+                legacy_source: "native_vulkan_create_video_session_resource_image",
                 vulkanalia_target: "Vulkanalia DPB/output image allocation module split from session creation",
                 validation_gate: "coincident DPB/output image path is retained when supported; separate output image path remains available",
             },
             NativeVulkanVulkanaliaVideoSessionResourceStep {
                 order: 4,
                 kind: NativeVulkanVulkanaliaVideoSessionResourceStepKind::SessionParameters,
-                ash_source: "native_vulkan_create_h264/h265/av1_video_session_parameters",
+                legacy_source: "native_vulkan_create_h264/h265/av1_video_session_parameters",
                 vulkanalia_target: "codec-specific Vulkanalia session parameter builders",
-                validation_gate: "parameter snapshot remains byte-for-byte equivalent to ash path for H.264/H.265/AV1",
+                validation_gate: "parameter snapshot remains aligned with H.264/H.265/AV1 parser/reference state",
             },
             NativeVulkanVulkanaliaVideoSessionResourceStep {
                 order: 5,
                 kind: NativeVulkanVulkanaliaVideoSessionResourceStepKind::BitstreamRing,
-                ash_source: "native_vulkan_create_video_session_bitstream_buffer_with_mapping",
+                legacy_source: "native_vulkan_create_video_session_bitstream_buffer_with_mapping",
                 vulkanalia_target: "Vulkanalia-owned bitstream ring with unchanged upload/copy telemetry",
                 validation_gate: "bitstream upload copy scope is unchanged and still bounded",
             },
             NativeVulkanVulkanaliaVideoSessionResourceStep {
                 order: 6,
                 kind: NativeVulkanVulkanaliaVideoSessionResourceStepKind::DecodeSubmit,
-                ash_source: "legacy codec ready-prefix submit call sites",
+                legacy_source: "legacy codec ready-prefix submit call sites",
                 vulkanalia_target: "Vulkanalia VideoBeginCodingInfoKHR/VideoDecodeInfoKHR submit helpers",
-                validation_gate: "H.265 main8/main10 ready-prefix submit matches ash output before H.264/AV1 are switched",
+                validation_gate: "H.264/H.265/AV1 ready-prefix submit flows through Vulkanalia-owned command recording",
             },
         ],
     }

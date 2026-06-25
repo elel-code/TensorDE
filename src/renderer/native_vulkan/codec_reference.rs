@@ -2093,49 +2093,6 @@ pub(super) fn native_vulkan_h264_first_recovery_access_unit_offset(
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
-pub(super) fn native_vulkan_select_h264_picture_layout_capabilities(
-    video_queue_loader: &ash::khr::video_queue::Instance,
-    physical_device: vk::PhysicalDevice,
-    std_profile_idc: vk::native::StdVideoH264ProfileIdc,
-    profile_label: &'static str,
-    picture_layouts: &[vk::VideoDecodeH264PictureLayoutFlagsKHR],
-) -> Result<
-    (
-        vk::VideoDecodeH264PictureLayoutFlagsKHR,
-        NativeVulkanVideoSessionCapabilityQuery,
-    ),
-    NativeVulkanError,
-> {
-    let mut failures = Vec::<String>::new();
-    for picture_layout in picture_layouts {
-        let mut h264_profile_info = vk::VideoDecodeH264ProfileInfoKHR::default()
-            .std_profile_idc(std_profile_idc)
-            .picture_layout(*picture_layout);
-        let profile_info = vk::VideoProfileInfoKHR::default()
-            .video_codec_operation(vk::VideoCodecOperationFlagsKHR::DECODE_H264)
-            .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420)
-            .luma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
-            .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
-            .push_next(&mut h264_profile_info);
-        match native_vulkan_video_session_h264_capabilities(
-            video_queue_loader,
-            physical_device,
-            &profile_info,
-        ) {
-            Ok(capabilities) => return Ok((*picture_layout, capabilities)),
-            Err(err) => failures.push(format!(
-                "{}: {err}",
-                native_vulkan_h264_picture_layout_label(*picture_layout)
-            )),
-        }
-    }
-    Err(NativeVulkanError::Video(format!(
-        "direct H.264 {profile_label} ready-prefix video could not find a supported picture layout: {}",
-        failures.join("; ")
-    )))
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
 pub(super) fn native_vulkan_h264_align_streaming_bootstrap(
     queue: &mut NativeVulkanH264StreamingPacketQueue,
     parameter_sets: &NativeVulkanH264ParameterSetSnapshot,

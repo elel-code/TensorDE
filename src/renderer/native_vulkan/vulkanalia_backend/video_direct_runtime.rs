@@ -52,7 +52,7 @@ pub fn native_vulkan_vulkanalia_direct_runtime_contract()
             FFMPEG_VULKAN_H265_REFERENCE,
             FFMPEG_VULKAN_AV1_REFERENCE,
         ],
-        resource_owner: "Vulkanalia-owned instance/device/session/images/bitstream-command resources; ash stays comparison-only until parity gates pass",
+        resource_owner: "Vulkanalia-owned instance/device/session/images/bitstream-command resources; the old ash comparison backend is removed",
         command_submit_model: "FFmpeg-style command lifecycle: start command buffer, CmdPipelineBarrier2, Begin/Decode/End video coding, QueueSubmit2, fence/timeline completion",
         present_handoff_model: "decoded image handoff stays codec-neutral; zero-copy is claimed only when imported/direct image telemetry proves no CPU frame copy",
         audio_sync_boundary: "audio remains a separate runtime clock; video direct runtime publishes PTS/present timing for audio clock synchronization",
@@ -84,7 +84,7 @@ pub fn native_vulkan_vulkanalia_direct_runtime_contract()
             std::any::type_name::<vulkanalia::vk::VideoDecodeAV1InlineSessionParametersInfoKHR>(),
         ],
         codec_plans: native_vulkan_vulkanalia_direct_codec_runtime_plans(),
-        compatibility_policy: "do not add new ash direct-video ownership; port codec-neutral runtime resources to Vulkanalia first, then delete ash compatibility once continuous real-source smokes pass",
+        compatibility_policy: "do not reintroduce ash direct-video ownership; codec-neutral runtime resources stay Vulkanalia-owned and must be validated by continuous real-source smokes",
     }
 }
 
@@ -96,7 +96,7 @@ pub fn native_vulkan_vulkanalia_direct_codec_runtime_plans()
             codec_reference: FFMPEG_VULKAN_H264_REFERENCE,
             submit_plan_module: "video_decode_submit_h264.rs",
             ready_prefix_smoke_gate: "H.264 Vulkanalia ready-prefix decode smoke records and submits real access units with queue_submit2",
-            direct_runtime_gate: "H.264 continuous direct runtime consumes the Vulkanalia submit plan and no longer records decode work through ash",
+            direct_runtime_gate: "H.264 continuous direct runtime consumes the Vulkanalia submit plan and records decode work through Vulkanalia",
             session_parameter_strategy: "real SPS/PPS session parameters now; prefer VK_KHR_video_maintenance2 inline parameters when device probe enables it",
             display_handoff_target: "decoded DPB/output image -> codec-neutral direct display handoff",
         },
@@ -105,7 +105,7 @@ pub fn native_vulkan_vulkanalia_direct_codec_runtime_plans()
             codec_reference: FFMPEG_VULKAN_H265_REFERENCE,
             submit_plan_module: "video_decode_submit_h265.rs",
             ready_prefix_smoke_gate: "H.265 main8 Vulkanalia ready-prefix decode smoke records and submits real access units with queue_submit2",
-            direct_runtime_gate: "H.265 main8 continuous direct runtime consumes the Vulkanalia submit plan and no longer records decode work through ash",
+            direct_runtime_gate: "H.265 main8 continuous direct runtime consumes the Vulkanalia submit plan and records decode work through Vulkanalia",
             session_parameter_strategy: "real VPS/SPS/PPS session parameters now; prefer VK_KHR_video_maintenance2 inline parameters when device probe enables it",
             display_handoff_target: "decoded DPB/output image -> codec-neutral direct display handoff",
         },
@@ -114,7 +114,7 @@ pub fn native_vulkan_vulkanalia_direct_codec_runtime_plans()
             codec_reference: FFMPEG_VULKAN_H265_REFERENCE,
             submit_plan_module: "video_decode_submit_h265.rs",
             ready_prefix_smoke_gate: "H.265 main10 Vulkanalia ready-prefix decode smoke records and submits real access units with queue_submit2",
-            direct_runtime_gate: "H.265 main10 continuous direct runtime consumes the Vulkanalia submit plan and no longer records decode work through ash",
+            direct_runtime_gate: "H.265 main10 continuous direct runtime consumes the Vulkanalia submit plan and records decode work through Vulkanalia",
             session_parameter_strategy: "real VPS/SPS/PPS session parameters now; prefer VK_KHR_video_maintenance2 inline parameters when device probe enables it",
             display_handoff_target: "decoded DPB/output image -> codec-neutral direct display handoff",
         },
@@ -123,7 +123,7 @@ pub fn native_vulkan_vulkanalia_direct_codec_runtime_plans()
             codec_reference: FFMPEG_VULKAN_AV1_REFERENCE,
             submit_plan_module: "video_decode_submit_av1.rs",
             ready_prefix_smoke_gate: "AV1 main8 Vulkanalia ready-prefix decode smoke records and submits real temporal units with queue_submit2",
-            direct_runtime_gate: "AV1 main8 continuous direct runtime consumes the Vulkanalia submit plan and no longer records decode work through ash",
+            direct_runtime_gate: "AV1 main8 continuous direct runtime consumes the Vulkanalia submit plan and records decode work through Vulkanalia",
             session_parameter_strategy: "real sequence-header session parameters now; prefer VK_KHR_video_maintenance2 inline parameters when device probe enables it",
             display_handoff_target: "decoded DPB/output image -> codec-neutral direct display handoff, including show-existing/display-only reuse",
         },
@@ -132,7 +132,7 @@ pub fn native_vulkan_vulkanalia_direct_codec_runtime_plans()
             codec_reference: FFMPEG_VULKAN_AV1_REFERENCE,
             submit_plan_module: "video_decode_submit_av1.rs",
             ready_prefix_smoke_gate: "AV1 main10 Vulkanalia ready-prefix decode smoke records and submits real temporal units with queue_submit2",
-            direct_runtime_gate: "AV1 main10 continuous direct runtime consumes the Vulkanalia submit plan and no longer records decode work through ash",
+            direct_runtime_gate: "AV1 main10 continuous direct runtime consumes the Vulkanalia submit plan and records decode work through Vulkanalia",
             session_parameter_strategy: "real sequence-header session parameters now; prefer VK_KHR_video_maintenance2 inline parameters when device probe enables it",
             display_handoff_target: "decoded DPB/output image -> codec-neutral direct display handoff, including show-existing/display-only reuse",
         },
@@ -165,7 +165,11 @@ mod tests {
                 .resource_owner
                 .contains("Vulkanalia-owned instance/device/session")
         );
-        assert!(contract.compatibility_policy.contains("do not add new ash"));
+        assert!(
+            contract
+                .compatibility_policy
+                .contains("do not reintroduce ash")
+        );
         assert!(
             contract
                 .vulkanalia_inline_session_parameter_type_evidence

@@ -1,6 +1,6 @@
 use std::ffi::CStr;
 
-use ash::vk;
+use vulkanalia::vk;
 
 pub(super) const NATIVE_VULKAN_VIDEO_CODEC_OPERATION_DECODE_VP9: u32 = 0x0000_0008;
 
@@ -30,18 +30,18 @@ pub(super) fn native_vulkan_queue_flag_labels(flags: vk::QueueFlags) -> Vec<&'st
 pub(super) fn native_vulkan_video_codec_operation_labels(
     operations: vk::VideoCodecOperationFlagsKHR,
 ) -> Vec<String> {
-    let raw = operations.as_raw();
+    let raw = operations.bits();
     let known = [
         (
-            vk::VideoCodecOperationFlagsKHR::DECODE_H264.as_raw(),
+            vk::VideoCodecOperationFlagsKHR::DECODE_H264.bits(),
             "decode-h264",
         ),
         (
-            vk::VideoCodecOperationFlagsKHR::DECODE_H265.as_raw(),
+            vk::VideoCodecOperationFlagsKHR::DECODE_H265.bits(),
             "decode-h265",
         ),
         (
-            vk::VideoCodecOperationFlagsKHR::DECODE_AV1.as_raw(),
+            vk::VideoCodecOperationFlagsKHR::DECODE_AV1.bits(),
             "decode-av1",
         ),
         (NATIVE_VULKAN_VIDEO_CODEC_OPERATION_DECODE_VP9, "decode-vp9"),
@@ -66,7 +66,7 @@ pub(super) fn native_vulkan_h264_picture_layout_label(
     } else if layout.contains(vk::VideoDecodeH264PictureLayoutFlagsKHR::INTERLACED_SEPARATE_PLANES)
     {
         "interlaced-separate-planes"
-    } else if layout.as_raw() == vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE.as_raw() {
+    } else if layout.bits() == vk::VideoDecodeH264PictureLayoutFlagsKHR::PROGRESSIVE.bits() {
         "progressive"
     } else {
         "unknown"
@@ -95,13 +95,13 @@ pub(super) fn native_vulkan_video_chroma_subsampling_labels(
     if flags.contains(vk::VideoChromaSubsamplingFlagsKHR::MONOCHROME) {
         labels.push("monochrome");
     }
-    if flags.contains(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420) {
+    if flags.contains(vk::VideoChromaSubsamplingFlagsKHR::_420) {
         labels.push("420");
     }
-    if flags.contains(vk::VideoChromaSubsamplingFlagsKHR::TYPE_422) {
+    if flags.contains(vk::VideoChromaSubsamplingFlagsKHR::_422) {
         labels.push("422");
     }
-    if flags.contains(vk::VideoChromaSubsamplingFlagsKHR::TYPE_444) {
+    if flags.contains(vk::VideoChromaSubsamplingFlagsKHR::_444) {
         labels.push("444");
     }
     labels
@@ -111,13 +111,13 @@ pub(super) fn native_vulkan_video_component_bit_depth_labels(
     flags: vk::VideoComponentBitDepthFlagsKHR,
 ) -> Vec<&'static str> {
     let mut labels = Vec::new();
-    if flags.contains(vk::VideoComponentBitDepthFlagsKHR::TYPE_8) {
+    if flags.contains(vk::VideoComponentBitDepthFlagsKHR::_8) {
         labels.push("8-bit");
     }
-    if flags.contains(vk::VideoComponentBitDepthFlagsKHR::TYPE_10) {
+    if flags.contains(vk::VideoComponentBitDepthFlagsKHR::_10) {
         labels.push("10-bit");
     }
-    if flags.contains(vk::VideoComponentBitDepthFlagsKHR::TYPE_12) {
+    if flags.contains(vk::VideoComponentBitDepthFlagsKHR::_12) {
         labels.push("12-bit");
     }
     labels
@@ -150,81 +150,81 @@ pub(super) fn native_vulkan_video_decode_capability_flag_labels(
 }
 
 pub(super) fn native_vulkan_h264_level_label(
-    level: vk::native::StdVideoH264LevelIdc,
+    level: vk::video::StdVideoH264LevelIdc,
 ) -> Option<&'static str> {
     match level {
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_1_0 => Some("1.0"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_1_1 => Some("1.1"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_1_2 => Some("1.2"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_1_3 => Some("1.3"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_2_0 => Some("2.0"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_2_1 => Some("2.1"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_2_2 => Some("2.2"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_3_0 => Some("3.0"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_3_1 => Some("3.1"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_3_2 => Some("3.2"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_4_0 => Some("4.0"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_4_1 => Some("4.1"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_4_2 => Some("4.2"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_5_0 => Some("5.0"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_5_1 => Some("5.1"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_5_2 => Some("5.2"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_6_0 => Some("6.0"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_6_1 => Some("6.1"),
-        vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_6_2 => Some("6.2"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_1_0 => Some("1.0"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_1_1 => Some("1.1"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_1_2 => Some("1.2"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_1_3 => Some("1.3"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_2_0 => Some("2.0"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_2_1 => Some("2.1"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_2_2 => Some("2.2"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_3_0 => Some("3.0"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_3_1 => Some("3.1"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_3_2 => Some("3.2"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_4_0 => Some("4.0"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_4_1 => Some("4.1"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_4_2 => Some("4.2"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_5_0 => Some("5.0"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_5_1 => Some("5.1"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_5_2 => Some("5.2"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_6_0 => Some("6.0"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_6_1 => Some("6.1"),
+        vk::video::STD_VIDEO_H264_LEVEL_IDC_6_2 => Some("6.2"),
         _ => None,
     }
 }
 
 pub(super) fn native_vulkan_h265_level_label(
-    level: vk::native::StdVideoH265LevelIdc,
+    level: vk::video::StdVideoH265LevelIdc,
 ) -> Option<&'static str> {
     match level {
-        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_1_0 => Some("1.0"),
-        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_2_0 => Some("2.0"),
-        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_2_1 => Some("2.1"),
-        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_3_0 => Some("3.0"),
-        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_3_1 => Some("3.1"),
-        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_4_0 => Some("4.0"),
-        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_4_1 => Some("4.1"),
-        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_5_0 => Some("5.0"),
-        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_5_1 => Some("5.1"),
-        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_5_2 => Some("5.2"),
-        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_6_0 => Some("6.0"),
-        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_6_1 => Some("6.1"),
-        vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_6_2 => Some("6.2"),
+        vk::video::STD_VIDEO_H265_LEVEL_IDC_1_0 => Some("1.0"),
+        vk::video::STD_VIDEO_H265_LEVEL_IDC_2_0 => Some("2.0"),
+        vk::video::STD_VIDEO_H265_LEVEL_IDC_2_1 => Some("2.1"),
+        vk::video::STD_VIDEO_H265_LEVEL_IDC_3_0 => Some("3.0"),
+        vk::video::STD_VIDEO_H265_LEVEL_IDC_3_1 => Some("3.1"),
+        vk::video::STD_VIDEO_H265_LEVEL_IDC_4_0 => Some("4.0"),
+        vk::video::STD_VIDEO_H265_LEVEL_IDC_4_1 => Some("4.1"),
+        vk::video::STD_VIDEO_H265_LEVEL_IDC_5_0 => Some("5.0"),
+        vk::video::STD_VIDEO_H265_LEVEL_IDC_5_1 => Some("5.1"),
+        vk::video::STD_VIDEO_H265_LEVEL_IDC_5_2 => Some("5.2"),
+        vk::video::STD_VIDEO_H265_LEVEL_IDC_6_0 => Some("6.0"),
+        vk::video::STD_VIDEO_H265_LEVEL_IDC_6_1 => Some("6.1"),
+        vk::video::STD_VIDEO_H265_LEVEL_IDC_6_2 => Some("6.2"),
         _ => None,
     }
 }
 
 pub(super) fn native_vulkan_av1_level_label(
-    level: vk::native::StdVideoAV1Level,
+    level: vk::video::StdVideoAV1Level,
 ) -> Option<&'static str> {
     match level {
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_2_0 => Some("2.0"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_2_1 => Some("2.1"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_2_2 => Some("2.2"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_2_3 => Some("2.3"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_3_0 => Some("3.0"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_3_1 => Some("3.1"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_3_2 => Some("3.2"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_3_3 => Some("3.3"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_4_0 => Some("4.0"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_4_1 => Some("4.1"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_4_2 => Some("4.2"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_4_3 => Some("4.3"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_5_0 => Some("5.0"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_5_1 => Some("5.1"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_5_2 => Some("5.2"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_5_3 => Some("5.3"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_6_0 => Some("6.0"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_6_1 => Some("6.1"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_6_2 => Some("6.2"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_6_3 => Some("6.3"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_7_0 => Some("7.0"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_7_1 => Some("7.1"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_7_2 => Some("7.2"),
-        vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_7_3 => Some("7.3"),
+        vk::video::STD_VIDEO_AV1_LEVEL_2_0 => Some("2.0"),
+        vk::video::STD_VIDEO_AV1_LEVEL_2_1 => Some("2.1"),
+        vk::video::STD_VIDEO_AV1_LEVEL_2_2 => Some("2.2"),
+        vk::video::STD_VIDEO_AV1_LEVEL_2_3 => Some("2.3"),
+        vk::video::STD_VIDEO_AV1_LEVEL_3_0 => Some("3.0"),
+        vk::video::STD_VIDEO_AV1_LEVEL_3_1 => Some("3.1"),
+        vk::video::STD_VIDEO_AV1_LEVEL_3_2 => Some("3.2"),
+        vk::video::STD_VIDEO_AV1_LEVEL_3_3 => Some("3.3"),
+        vk::video::STD_VIDEO_AV1_LEVEL_4_0 => Some("4.0"),
+        vk::video::STD_VIDEO_AV1_LEVEL_4_1 => Some("4.1"),
+        vk::video::STD_VIDEO_AV1_LEVEL_4_2 => Some("4.2"),
+        vk::video::STD_VIDEO_AV1_LEVEL_4_3 => Some("4.3"),
+        vk::video::STD_VIDEO_AV1_LEVEL_5_0 => Some("5.0"),
+        vk::video::STD_VIDEO_AV1_LEVEL_5_1 => Some("5.1"),
+        vk::video::STD_VIDEO_AV1_LEVEL_5_2 => Some("5.2"),
+        vk::video::STD_VIDEO_AV1_LEVEL_5_3 => Some("5.3"),
+        vk::video::STD_VIDEO_AV1_LEVEL_6_0 => Some("6.0"),
+        vk::video::STD_VIDEO_AV1_LEVEL_6_1 => Some("6.1"),
+        vk::video::STD_VIDEO_AV1_LEVEL_6_2 => Some("6.2"),
+        vk::video::STD_VIDEO_AV1_LEVEL_6_3 => Some("6.3"),
+        vk::video::STD_VIDEO_AV1_LEVEL_7_0 => Some("7.0"),
+        vk::video::STD_VIDEO_AV1_LEVEL_7_1 => Some("7.1"),
+        vk::video::STD_VIDEO_AV1_LEVEL_7_2 => Some("7.2"),
+        vk::video::STD_VIDEO_AV1_LEVEL_7_3 => Some("7.3"),
         _ => None,
     }
 }
@@ -256,9 +256,9 @@ pub(super) fn native_vulkan_format_label(format: vk::Format) -> &'static str {
 
 pub(super) fn native_vulkan_image_type_label(image_type: vk::ImageType) -> &'static str {
     match image_type {
-        vk::ImageType::TYPE_1D => "1d",
-        vk::ImageType::TYPE_2D => "2d",
-        vk::ImageType::TYPE_3D => "3d",
+        vk::ImageType::_1D => "1d",
+        vk::ImageType::_2D => "2d",
+        vk::ImageType::_3D => "3d",
         _ => "unknown",
     }
 }
@@ -410,9 +410,9 @@ pub(super) fn native_vulkan_extension_properties_name(
 pub(super) fn native_vulkan_api_version_label(version: u32) -> String {
     format!(
         "{}.{}.{}",
-        vk::api_version_major(version),
-        vk::api_version_minor(version),
-        vk::api_version_patch(version)
+        vk::version_major(version),
+        vk::version_minor(version),
+        vk::version_patch(version)
     )
 }
 
@@ -427,7 +427,7 @@ mod tests {
     #[test]
     fn labels_vulkan_video_decode_codec_operations() {
         let operations = vk::VideoCodecOperationFlagsKHR::from_raw(
-            vk::VideoCodecOperationFlagsKHR::DECODE_H264.as_raw()
+            vk::VideoCodecOperationFlagsKHR::DECODE_H264.bits()
                 | NATIVE_VULKAN_VIDEO_CODEC_OPERATION_DECODE_VP9,
         );
 
@@ -440,9 +440,7 @@ mod tests {
     #[test]
     fn labels_h264_probe_format_requirements() {
         assert_eq!(
-            native_vulkan_h264_level_label(
-                vk::native::StdVideoH264LevelIdc_STD_VIDEO_H264_LEVEL_IDC_5_2
-            ),
+            native_vulkan_h264_level_label(vk::video::STD_VIDEO_H264_LEVEL_IDC_5_2),
             Some("5.2")
         );
         assert_eq!(
@@ -475,7 +473,7 @@ mod tests {
         assert!(native_vulkan_video_formats_include_nv12_with_usage(
             &[NativeVulkanVideoFormatPropertiesSnapshot {
                 format: "G8_B8R8_2PLANE_420_UNORM",
-                format_raw: vk::Format::G8_B8R8_2PLANE_420_UNORM.as_raw(),
+                format_raw: vk::Format::G8_B8R8_2PLANE_420_UNORM.bits(),
                 image_type: "2d",
                 image_tiling: "optimal",
                 image_usage_flags: labels,
@@ -488,13 +486,11 @@ mod tests {
     #[test]
     fn labels_h265_av1_probe_levels_and_formats() {
         assert_eq!(
-            native_vulkan_h265_level_label(
-                vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_6_2
-            ),
+            native_vulkan_h265_level_label(vk::video::STD_VIDEO_H265_LEVEL_IDC_6_2),
             Some("6.2")
         );
         assert_eq!(
-            native_vulkan_av1_level_label(vk::native::StdVideoAV1Level_STD_VIDEO_AV1_LEVEL_6_3),
+            native_vulkan_av1_level_label(vk::video::STD_VIDEO_AV1_LEVEL_6_3),
             Some("6.3")
         );
         assert_eq!(

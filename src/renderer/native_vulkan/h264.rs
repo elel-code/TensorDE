@@ -1,4 +1,4 @@
-use ash::vk;
+use vulkanalia::vk;
 
 #[cfg(any(feature = "native-vulkan-gst-video", test))]
 pub(super) fn native_vulkan_h264_profile_has_high_syntax(profile_idc: u8) -> bool {
@@ -29,11 +29,11 @@ pub(super) fn native_vulkan_h264_profile_is_8bit_420_decode_candidate(profile_id
 
 pub(super) fn native_vulkan_h264_std_profile_idc(
     profile_idc: u8,
-) -> Option<vk::native::StdVideoH264ProfileIdc> {
+) -> Option<vk::video::StdVideoH264ProfileIdc> {
     match profile_idc {
-        66 => Some(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_BASELINE),
-        77 => Some(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_MAIN),
-        100 => Some(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH),
+        66 => Some(vk::video::STD_VIDEO_H264_PROFILE_IDC_BASELINE),
+        77 => Some(vk::video::STD_VIDEO_H264_PROFILE_IDC_MAIN),
+        100 => Some(vk::video::STD_VIDEO_H264_PROFILE_IDC_HIGH),
         _ => None,
     }
 }
@@ -46,15 +46,15 @@ mod tests {
     fn maps_supported_8bit_420_h264_profiles_to_vulkan_std_profiles() {
         assert_eq!(
             native_vulkan_h264_std_profile_idc(66),
-            Some(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_BASELINE)
+            Some(vk::video::STD_VIDEO_H264_PROFILE_IDC_BASELINE)
         );
         assert_eq!(
             native_vulkan_h264_std_profile_idc(77),
-            Some(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_MAIN)
+            Some(vk::video::STD_VIDEO_H264_PROFILE_IDC_MAIN)
         );
         assert_eq!(
             native_vulkan_h264_std_profile_idc(100),
-            Some(vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH)
+            Some(vk::video::STD_VIDEO_H264_PROFILE_IDC_HIGH)
         );
     }
 

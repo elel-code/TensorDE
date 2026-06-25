@@ -1,8 +1,8 @@
 //! Early vulkanalia backend spike boundary.
 //!
 //! Keep this module as a facade. Backend implementation pieces live under
-//! `native_vulkan/vulkanalia_backend/` so the ash replacement does not grow a
-//! second monolithic Vulkan file.
+//! `native_vulkan/vulkanalia_backend/` so the Vulkanalia main path does not
+//! grow a second monolithic Vulkan file.
 
 #[path = "vulkanalia_backend/device_probe.rs"]
 mod device_probe;

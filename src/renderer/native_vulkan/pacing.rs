@@ -1,7 +1,7 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ash::vk;
+use vulkanalia::vk;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct NativeVulkanVideoPacingPlan {

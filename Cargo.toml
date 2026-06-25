@@ -17,7 +17,6 @@ native-wayland-renderer = [
 ]
 native-vulkan-renderer = [
     "native-wayland-renderer",
-    "dep:ash",
     "dep:image",
     "dep:vulkanalia",
 ]
@@ -45,7 +44,6 @@ path = "src/bin/gilder-native-vulkan.rs"
 required-features = ["native-vulkan-renderer"]
 
 [dependencies]
-ash = { version = "0.38", optional = true }
 gstreamer = { version = "0.25", optional = true }
 gstreamer-video = { version = "0.25", optional = true }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"], optional = true }

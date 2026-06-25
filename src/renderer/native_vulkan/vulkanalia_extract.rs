@@ -426,7 +426,7 @@ pub fn native_vulkan_extract_av1_ready_prefix_for_vulkanalia(
             order_hint: decode_info.header.order_hint,
             primary_ref_frame: decode_info.header.primary_ref_frame,
             refresh_frame_flags: decode_info.header.refresh_frame_flags,
-            interpolation_filter: decode_info.header.interpolation_filter as u32,
+            interpolation_filter: decode_info.header.interpolation_filter.0 as u32,
             tx_mode_select: decode_info.header.tx_mode_select,
             delta_q_res: decode_info.header.delta_q.res,
             delta_lf_res: decode_info.header.delta_lf.res,
