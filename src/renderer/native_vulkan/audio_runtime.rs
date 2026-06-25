@@ -1,12 +1,12 @@
 #[cfg(feature = "native-vulkan-gst-video")]
 use super::NativeVulkanAudioOutputPolicy;
 use super::NativeVulkanRenderItem;
+use super::audio_telemetry::NativeVulkanVideoAudioRuntimeTelemetry;
 #[cfg(feature = "native-vulkan-gst-video")]
 use super::audio_worker::{
     NativeVulkanPlanAudioRuntimeSharedState, NativeVulkanPlanAudioRuntimeWorker,
     native_vulkan_audio_runtime_state, native_vulkan_audio_runtime_state_with_error,
 };
-use super::video_runtime::NativeVulkanVideoAudioRuntimeTelemetry;
 
 #[derive(Default)]
 pub(super) struct NativeVulkanPlanAudioRuntime {

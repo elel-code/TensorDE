@@ -7,8 +7,9 @@ packages on Linux.
 
 Current status: daemon IPC, state persistence, wallpaper planning, and
 feature-gated native Wayland/Vulkan renderer paths. Video work is converging on
-GStreamer demux/parser/appsink feeding native Vulkan import/decode/render; the
-old GTK and native waylandsink/playbin display paths have been removed.
+GStreamer demux/parser/audio frontend feeding Vulkanalia/Vulkan Video
+decode/render/present; the old GTK, native waylandsink/playbin display, and
+decoded appsink importer paths have been removed.
 
 ## Project Layout
 
@@ -83,5 +84,6 @@ wallpaper pipeline lifecycle. It expects GStreamer 1.0 development files and
 plugins from the host system.
 
 The optional `native-vulkan-gst-video` feature builds the native Wayland/Vulkan
-video helper. GStreamer owns container parsing and appsink handoff; native
-Vulkan owns the GPU/display side.
+video helper. GStreamer owns container parsing, parser-normalized bitstream
+handoff and audio probing; Vulkanalia/native Vulkan owns decode, render and
+present.

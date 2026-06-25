@@ -25,7 +25,7 @@ pub struct NativeVulkanVideoInteropContract {
 pub fn video_interop_contract() -> NativeVulkanVideoInteropContract {
     NativeVulkanVideoInteropContract {
         target_memory_flow: "decoder GPU memory -> importable DMABuf/EGLImage/Vulkan image -> Vulkan YUV sampling",
-        current_baseline: "retired native-wgpu evidence: GStreamer CUDAMemory -> CUDA copy -> external Vulkan image planes -> wgpu present",
+        current_baseline: "retired native-wgpu evidence: GStreamer GPU-memory CUDA-copy path into wgpu present",
         vulkan_binding_policy: "vulkanalia is the primary migration binding for native Vulkan; ash remains the current compatibility/runtime baseline only until Vulkan 1.4 video, memory import and present parity land; zero-copy evidence still comes from device extension/capability/import telemetry, not from the binding choice alone",
         vulkanalia_replacement_policy: "run vulkanalia as the primary migration surface in native-vulkan-renderer, then move instance/device ownership, Vulkan Video submit helpers, image/import resources and present telemetry across one boundary at a time",
         vulkan_1_4_value: "Vulkan 1.4 is valuable for dynamic-rendering-local-read, push descriptors, maintenance5/6, scalar block layout, synchronization2 and stronger portable limits; it does not by itself prove Vulkan Video or zero-copy support",

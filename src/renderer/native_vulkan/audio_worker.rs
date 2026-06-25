@@ -1,5 +1,5 @@
 use super::audio_frontend::NativeVulkanAudioClockRuntimeFrontend;
-use super::video_runtime::NativeVulkanVideoAudioRuntimeTelemetry;
+use super::audio_telemetry::NativeVulkanVideoAudioRuntimeTelemetry;
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
 
