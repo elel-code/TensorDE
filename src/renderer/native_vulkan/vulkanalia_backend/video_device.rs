@@ -8,6 +8,7 @@ use vulkanalia::vk::{self, HasBuilder};
 
 use crate::renderer::native_vulkan::NativeVulkanVideoSessionCodec;
 
+use super::features::native_vulkan_vulkanalia_core_feature_snapshot;
 use super::queue_probe::native_vulkan_vulkanalia_video_decode_queue_family_indices;
 use super::video_codec::native_vulkan_vulkanalia_video_decode_codec_label;
 
@@ -270,10 +271,10 @@ pub(super) fn native_vulkan_vulkanalia_video_device_feature_selection(
     physical_device: vk::PhysicalDevice,
     device_extensions: &[String],
 ) -> NativeVulkanVulkanaliaVideoDeviceFeatureSelection {
-    let synchronization2_enabled =
-        query_vulkanalia_synchronization2_feature(instance, physical_device);
-    let dynamic_rendering_enabled =
-        query_vulkanalia_dynamic_rendering_feature(instance, physical_device);
+    let (core_features, _) =
+        native_vulkan_vulkanalia_core_feature_snapshot(instance, physical_device);
+    let synchronization2_enabled = core_features.synchronization2;
+    let dynamic_rendering_enabled = core_features.dynamic_rendering;
     let sampler_ycbcr_conversion_enabled =
         query_vulkanalia_sampler_ycbcr_conversion_feature(instance, physical_device);
     let video_maintenance1_enabled =
@@ -296,34 +297,6 @@ pub(super) fn native_vulkan_vulkanalia_video_device_feature_selection(
         video_maintenance2_enabled,
         inline_session_parameters_enabled: video_maintenance2_enabled,
     }
-}
-
-fn query_vulkanalia_synchronization2_feature(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
-) -> bool {
-    let mut feature = vk::PhysicalDeviceSynchronization2Features::default();
-    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
-        .push_next(&mut feature)
-        .build();
-    unsafe {
-        instance.get_physical_device_features2(physical_device, &mut features2);
-    }
-    feature.synchronization2 != 0
-}
-
-fn query_vulkanalia_dynamic_rendering_feature(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
-) -> bool {
-    let mut feature = vk::PhysicalDeviceDynamicRenderingFeatures::default();
-    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
-        .push_next(&mut feature)
-        .build();
-    unsafe {
-        instance.get_physical_device_features2(physical_device, &mut features2);
-    }
-    feature.dynamic_rendering != 0
 }
 
 fn query_vulkanalia_sampler_ycbcr_conversion_feature(

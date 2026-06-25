@@ -15,6 +15,7 @@ use crate::renderer::native_wayland::{
     NativeWaylandHost, NativeWaylandHostOptions, NativeWaylandSurfaceHandles,
 };
 
+use super::features::native_vulkan_vulkanalia_core_feature_snapshot;
 use super::instance::{
     native_vulkan_vulkanalia_create_instance_with_required_extensions,
     native_vulkan_vulkanalia_destroy_instance,
@@ -591,8 +592,10 @@ pub(super) fn query_vulkanalia_present_feature_selection(
     physical_device: vk::PhysicalDevice,
     device_extensions: &[String],
 ) -> NativeVulkanVulkanaliaPresentFeatureSelection {
-    let synchronization2_enabled = query_synchronization2_feature(instance, physical_device);
-    let dynamic_rendering_enabled = query_dynamic_rendering_feature(instance, physical_device);
+    let (core_features, _) =
+        native_vulkan_vulkanalia_core_feature_snapshot(instance, physical_device);
+    let synchronization2_enabled = core_features.synchronization2;
+    let dynamic_rendering_enabled = core_features.dynamic_rendering;
     let present_id_supported = extension_available(device_extensions, PRESENT_ID_EXTENSION_NAME)
         && query_present_id_feature(instance, physical_device);
     let present_wait_supported = present_id_supported
@@ -935,34 +938,6 @@ fn choose_composite_alpha(flags: vk::CompositeAlphaFlagsKHR) -> vk::CompositeAlp
     .into_iter()
     .find(|flag| flags.contains(*flag))
     .unwrap_or(vk::CompositeAlphaFlagsKHR::OPAQUE)
-}
-
-fn query_synchronization2_feature(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
-) -> bool {
-    let mut feature = vk::PhysicalDeviceSynchronization2Features::default();
-    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
-        .push_next(&mut feature)
-        .build();
-    unsafe {
-        instance.get_physical_device_features2(physical_device, &mut features2);
-    }
-    feature.synchronization2 != 0
-}
-
-fn query_dynamic_rendering_feature(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
-) -> bool {
-    let mut feature = vk::PhysicalDeviceDynamicRenderingFeatures::default();
-    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
-        .push_next(&mut feature)
-        .build();
-    unsafe {
-        instance.get_physical_device_features2(physical_device, &mut features2);
-    }
-    feature.dynamic_rendering != 0
 }
 
 fn query_present_id_feature(instance: &Instance, physical_device: vk::PhysicalDevice) -> bool {

@@ -93,7 +93,9 @@ pub use device_probe::{
     native_vulkan_vulkanalia_device_probe_template, probe_native_vulkan_vulkanalia_devices,
 };
 pub use features::{
-    NativeVulkanVulkanaliaFeatureChainTemplate, native_vulkan_vulkanalia_feature_chain_template,
+    NativeVulkanVulkanaliaCoreFeatureSnapshot, NativeVulkanVulkanaliaFeatureChainTemplate,
+    NativeVulkanVulkanaliaVulkan14PropertySnapshot,
+    native_vulkan_vulkanalia_feature_chain_template,
 };
 #[allow(unused_imports)]
 pub use migration::{

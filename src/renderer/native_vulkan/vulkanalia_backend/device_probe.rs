@@ -2,6 +2,10 @@ use serde::Serialize;
 use vulkanalia::Version;
 use vulkanalia::prelude::v1_4::*;
 
+use super::features::{
+    NativeVulkanVulkanaliaCoreFeatureSnapshot, NativeVulkanVulkanaliaVulkan14PropertySnapshot,
+    native_vulkan_vulkanalia_core_feature_snapshot,
+};
 use super::instance::{
     NATIVE_VULKAN_VULKANALIA_LOADER_CANDIDATES,
     native_vulkan_vulkanalia_create_instance_with_required_extensions,
@@ -85,16 +89,9 @@ pub struct NativeVulkanVulkanaliaPhysicalDeviceSnapshot {
     pub video_profile_capabilities: NativeVulkanVulkanaliaVideoProfileProbeSnapshot,
     pub video_format_capabilities: NativeVulkanVulkanaliaVideoFormatProbeSnapshot,
     pub video_session_resource_plans: Vec<NativeVulkanVulkanaliaVideoSessionResourceProbePlan>,
-    pub vulkan_1_4_features: NativeVulkanVulkanaliaVulkan14FeatureSnapshot,
+    pub core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
+    pub vulkan_1_4_properties: NativeVulkanVulkanaliaVulkan14PropertySnapshot,
     pub video_maintenance_features: NativeVulkanVulkanaliaVideoMaintenanceFeatureSnapshot,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NativeVulkanVulkanaliaVulkan14FeatureSnapshot {
-    pub dynamic_rendering_local_read: bool,
-    pub maintenance5: bool,
-    pub maintenance6: bool,
-    pub push_descriptor: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -171,13 +168,8 @@ fn probe_vulkanalia_instance_devices(
         .enumerate()
         .map(|(physical_device_index, physical_device)| {
             let properties = unsafe { instance.get_physical_device_properties(physical_device) };
-            let mut vulkan14_features = vk::PhysicalDeviceVulkan14Features::default();
-            let mut features2 = vk::PhysicalDeviceFeatures2::builder()
-                .push_next(&mut vulkan14_features)
-                .build();
-            unsafe {
-                instance.get_physical_device_features2(physical_device, &mut features2);
-            }
+            let (core_features, vulkan_1_4_properties) =
+                native_vulkan_vulkanalia_core_feature_snapshot(instance, physical_device);
             let device_extensions =
                 unsafe { instance.enumerate_device_extension_properties(physical_device, None) }
                     .map_err(|err| {
@@ -240,13 +232,8 @@ fn probe_vulkanalia_instance_devices(
                 video_format_capabilities,
                 video_session_resource_plans,
                 device_extensions: sorted_strings(device_extensions),
-                vulkan_1_4_features: NativeVulkanVulkanaliaVulkan14FeatureSnapshot {
-                    dynamic_rendering_local_read: vulkan14_features.dynamic_rendering_local_read
-                        != 0,
-                    maintenance5: vulkan14_features.maintenance5 != 0,
-                    maintenance6: vulkan14_features.maintenance6 != 0,
-                    push_descriptor: vulkan14_features.push_descriptor != 0,
-                },
+                core_features,
+                vulkan_1_4_properties,
                 video_maintenance_features,
             })
         })
