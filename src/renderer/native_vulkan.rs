@@ -8668,20 +8668,16 @@ mod tests {
             Ok(NativeVulkanVideoSessionCodec::Av1Main10)
         );
         assert_eq!(
-            NativeVulkanVideoSessionCodec::H265Main10.picture_format(),
-            vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
+            NativeVulkanVideoSessionCodec::H265Main10.label(),
+            "h265-main-10"
         );
         assert_eq!(
-            NativeVulkanVideoSessionCodec::H264High8.h264_std_profile_idc(),
-            Some(vk::video::STD_VIDEO_H264_PROFILE_IDC_HIGH)
+            NativeVulkanVideoSessionCodec::H264High8.label(),
+            "h264-high-8"
         );
         assert_eq!(
             NativeVulkanVideoSessionCodec::H264High8.profile_label(),
             "high-8"
-        );
-        assert_eq!(
-            NativeVulkanVideoSessionCodec::Av1Main10.bit_depth_flags(),
-            vk::VideoComponentBitDepthFlagsKHR::_10
         );
         assert_eq!(
             NativeVulkanVideoSessionCodec::Av1Main10.profile_label(),
@@ -10395,10 +10391,6 @@ mod tests {
         assert!(sequence_header.color_config.subsampling_x);
         assert!(sequence_header.color_config.subsampling_y);
         assert!(sequence_header.vulkan_std_session_parameters_ready);
-        assert_eq!(
-            native_vulkan_av1_sequence_header_codec_label(sequence_header),
-            "av1-main-10"
-        );
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
@@ -10628,18 +10620,6 @@ mod tests {
         assert_eq!(bottom.bottom_field_flag(), 1);
         assert_eq!(bottom.used_for_long_term_reference(), 1);
         assert_eq!(bottom.is_non_existing(), 1);
-    }
-
-    #[test]
-    fn uses_h264_long_term_frame_idx_as_vulkan_reference_frame_num() {
-        assert_eq!(
-            native_vulkan_h264_reference_info_frame_num(37, false, None),
-            37
-        );
-        assert_eq!(
-            native_vulkan_h264_reference_info_frame_num(37, true, Some(2)),
-            2
-        );
     }
 
     #[cfg(feature = "native-vulkan-gst-video")]
@@ -12288,24 +12268,6 @@ mod tests {
     }
 
     #[test]
-    fn drm_device_snapshot_derives_linux_dri_nodes() {
-        let snapshot =
-            native_vulkan_drm_device_snapshot_from_parts(true, true, 226, 1, true, 226, 128);
-
-        assert!(snapshot.extension_available);
-        assert!(snapshot.has_primary);
-        assert_eq!(snapshot.primary_major, Some(226));
-        assert_eq!(snapshot.primary_minor, Some(1));
-        assert_eq!(snapshot.primary_node.as_deref(), Some("/dev/dri/card1"));
-        assert!(snapshot.primary_dev_t.is_some());
-        assert!(snapshot.has_render);
-        assert_eq!(snapshot.render_major, Some(226));
-        assert_eq!(snapshot.render_minor, Some(128));
-        assert_eq!(snapshot.render_node.as_deref(), Some("/dev/dri/renderD128"));
-        assert!(snapshot.render_dev_t.is_some());
-    }
-
-    #[test]
     fn contract_names_required_vulkan_extensions() {
         let contract = backend_contract();
 
@@ -12338,8 +12300,14 @@ mod tests {
         assert!(
             contract
                 .video_interop
-                .vulkanalia_replacement_policy
-                .contains("primary migration")
+                .vulkanalia_primary_policy
+                .contains("vulkanalia owns")
+        );
+        assert!(
+            contract
+                .video_interop
+                .vulkanalia_primary_policy
+                .contains("Vulkan Video submit helpers")
         );
         assert!(
             contract

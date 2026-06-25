@@ -28,6 +28,7 @@ pub fn run_static_image(
             source: plan.source,
             clear_color,
             fit: Some(plan.fit),
+            solid_geometry: None,
             geometry: None,
         },
     )

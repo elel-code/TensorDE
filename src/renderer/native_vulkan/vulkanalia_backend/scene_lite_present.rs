@@ -30,7 +30,7 @@ use super::scene_lite_draw_pass::{
     NativeVulkanVulkanaliaSceneLiteSolidQuadCommandSnapshot,
     NativeVulkanVulkanaliaSceneLiteSolidQuadPipelineSnapshot,
     VulkanaliaSceneLiteSampledImageDescriptorBinding, VulkanaliaSceneLiteSampledImageDrawCommand,
-    VulkanaliaSceneLiteSampledImagePipelineResources,
+    VulkanaliaSceneLiteSampledImagePipelineResources, VulkanaliaSceneLiteSolidQuadDrawResources,
     VulkanaliaSceneLiteSolidQuadPipelineResources,
     native_vulkan_vulkanalia_create_scene_lite_sampled_image_pipeline_resources,
     native_vulkan_vulkanalia_create_scene_lite_solid_quad_pipeline_resources,
@@ -92,6 +92,7 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions {
     pub source: PathBuf,
     pub clear_color: NativeVulkanClearColor,
     pub fit: Option<FitMode>,
+    pub solid_geometry: Option<NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput>,
     pub geometry: Option<NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput>,
 }
 
@@ -245,9 +246,12 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot {
     pub source: PathBuf,
     pub clear_color: NativeVulkanClearColor,
     pub fit: Option<FitMode>,
+    pub mixed_scene_draw_enabled: bool,
     pub selected_queue: NativeVulkanVulkanaliaPresentQueueSnapshot,
     pub device_extensions: NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     pub swapchain: NativeVulkanVulkanaliaSwapchainSnapshot,
+    pub solid_geometry: Option<NativeVulkanVulkanaliaSceneLiteSolidQuadGeometrySnapshot>,
+    pub solid_pipeline: Option<NativeVulkanVulkanaliaSceneLiteSolidQuadPipelineSnapshot>,
     pub geometry: NativeVulkanVulkanaliaSceneLiteSampledImageGeometrySnapshot,
     pub sampled_image: NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot,
     pub sampled_images: Vec<NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot>,
@@ -854,6 +858,94 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
             return Err(err);
         }
     };
+    let solid_pipeline = if options.solid_geometry.is_some() {
+        match native_vulkan_vulkanalia_create_scene_lite_solid_quad_pipeline_resources(
+            device,
+            swapchain_plan.format.format,
+            swapchain_plan.extent,
+        ) {
+            Ok(pipeline) => Some(pipeline),
+            Err(err) => {
+                for resource in sampled_images.drain(..) {
+                    native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resources(
+                        device, resource,
+                    );
+                }
+                destroy_scene_lite_sampled_image_geometry_resources(device, geometry);
+                native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_pipeline_resources(
+                    device, pipeline,
+                );
+                destroy_scene_lite_solid_quad_frame_resources(device, frame_resources);
+                unsafe {
+                    device.destroy_swapchain_khr(swapchain, None);
+                    present_device.device.destroy_device(None);
+                }
+                return Err(err);
+            }
+        }
+    } else {
+        None
+    };
+    let solid_geometry = if let Some(solid_geometry_input) = options.solid_geometry.as_ref() {
+        let payload = match scene_lite_solid_quad_geometry_payload(
+            Some(solid_geometry_input),
+            swapchain_plan.extent,
+            options.clear_color,
+        ) {
+            Ok(payload) => payload,
+            Err(err) => {
+                if let Some(solid_pipeline) = solid_pipeline {
+                    native_vulkan_vulkanalia_destroy_scene_lite_solid_quad_pipeline_resources(
+                        device,
+                        solid_pipeline,
+                    );
+                }
+                for resource in sampled_images.drain(..) {
+                    native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resources(
+                        device, resource,
+                    );
+                }
+                destroy_scene_lite_sampled_image_geometry_resources(device, geometry);
+                native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_pipeline_resources(
+                    device, pipeline,
+                );
+                destroy_scene_lite_solid_quad_frame_resources(device, frame_resources);
+                unsafe {
+                    device.destroy_swapchain_khr(swapchain, None);
+                    present_device.device.destroy_device(None);
+                }
+                return Err(err);
+            }
+        };
+        match create_scene_lite_solid_quad_geometry_resources(device, &memory_properties, payload) {
+            Ok(geometry) => Some(geometry),
+            Err(err) => {
+                if let Some(solid_pipeline) = solid_pipeline {
+                    native_vulkan_vulkanalia_destroy_scene_lite_solid_quad_pipeline_resources(
+                        device,
+                        solid_pipeline,
+                    );
+                }
+                for resource in sampled_images.drain(..) {
+                    native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resources(
+                        device, resource,
+                    );
+                }
+                destroy_scene_lite_sampled_image_geometry_resources(device, geometry);
+                native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_pipeline_resources(
+                    device, pipeline,
+                );
+                destroy_scene_lite_solid_quad_frame_resources(device, frame_resources);
+                unsafe {
+                    device.destroy_swapchain_khr(swapchain, None);
+                    present_device.device.destroy_device(None);
+                }
+                return Err(err);
+            }
+        }
+    } else {
+        None
+    };
     let present_timing = VulkanaliaPresentTimingConfig::new(
         present_device.feature_selection.present_id_enabled,
         swapchain_plan.present_id2_enabled,
@@ -871,6 +963,8 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
         &frame_resources,
         &pipeline,
         &geometry,
+        solid_pipeline.as_ref(),
+        solid_geometry.as_ref(),
         &sampled_images,
         &draw_commands,
         descriptor_strategy,
@@ -882,6 +976,15 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
     );
 
     let _ = unsafe { device.device_wait_idle() };
+    if let Some(solid_geometry) = solid_geometry {
+        destroy_scene_lite_solid_quad_geometry_resources(device, solid_geometry);
+    }
+    if let Some(solid_pipeline) = solid_pipeline {
+        native_vulkan_vulkanalia_destroy_scene_lite_solid_quad_pipeline_resources(
+            device,
+            solid_pipeline,
+        );
+    }
     for resource in sampled_images {
         native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resources(device, resource);
     }
@@ -1103,6 +1206,8 @@ fn run_scene_lite_sampled_image_present_loop(
     frame_resources: &VulkanaliaSceneLiteSolidQuadFrameResources,
     pipeline: &VulkanaliaSceneLiteSampledImagePipelineResources,
     geometry: &VulkanaliaSceneLiteSampledImageGeometryResources,
+    solid_pipeline: Option<&VulkanaliaSceneLiteSolidQuadPipelineResources>,
+    solid_geometry: Option<&VulkanaliaSceneLiteSolidQuadGeometryResources>,
     sampled_images: &[VulkanaliaSceneLiteSampledImageResources],
     draw_commands: &[VulkanaliaSceneLiteSampledImageDrawCommand],
     descriptor_strategy: NativeVulkanVulkanaliaSceneLiteSampledImageDescriptorStrategySnapshot,
@@ -1125,6 +1230,23 @@ fn run_scene_lite_sampled_image_present_loop(
     let sampled_image = sampled_images.first().ok_or_else(|| {
         "scene-lite sampled image present requires at least one sampled image".to_owned()
     })?;
+    let solid_quad_draw = match (solid_pipeline, solid_geometry) {
+        (Some(pipeline_resources), Some(geometry)) => {
+            Some(VulkanaliaSceneLiteSolidQuadDrawResources {
+                pipeline_resources,
+                vertex_buffer: geometry.vertex_buffer,
+                index_buffer: geometry.index_buffer,
+                index_count: geometry.snapshot.index_count,
+            })
+        }
+        (None, None) => None,
+        _ => {
+            return Err(
+                "scene-lite mixed present requires both solid pipeline and solid geometry"
+                    .to_owned(),
+            );
+        }
+    };
 
     while Instant::now() < deadline {
         let present_frame_slot = frames_presented as usize % frame_resources.in_flight.len();
@@ -1170,6 +1292,7 @@ fn run_scene_lite_sampled_image_present_loop(
             swapchain_image,
             swapchain_view,
             extent,
+            solid_quad_draw,
             pipeline,
             draw_commands,
             geometry.vertex_buffer,
@@ -1259,6 +1382,7 @@ fn run_scene_lite_sampled_image_present_loop(
         source: options.source,
         clear_color: options.clear_color,
         fit: options.fit,
+        mixed_scene_draw_enabled: solid_quad_draw.is_some(),
         selected_queue: NativeVulkanVulkanaliaPresentQueueSnapshot {
             physical_device_index: selection.physical_device_index,
             physical_device_name: selection.physical_device_name.clone(),
@@ -1285,6 +1409,8 @@ fn run_scene_lite_sampled_image_present_loop(
             present_id2_enabled: swapchain_plan.present_id2_enabled,
             present_wait2_enabled: swapchain_plan.present_wait2_enabled,
         },
+        solid_geometry: solid_geometry.map(|geometry| geometry.snapshot.clone()),
+        solid_pipeline: solid_pipeline.map(|pipeline| pipeline.snapshot.clone()),
         geometry: geometry.snapshot.clone(),
         sampled_image: sampled_image.snapshot.clone(),
         sampled_images: sampled_images
@@ -1294,7 +1420,11 @@ fn run_scene_lite_sampled_image_present_loop(
         descriptor_strategy,
         pipeline: pipeline.snapshot.clone(),
         last_command,
-        command_submit_model: "acquire_next_image_khr -> cmd_begin_rendering sampled image quad -> queue_submit2 -> queue_present_khr",
+        command_submit_model: if solid_quad_draw.is_some() {
+            "acquire_next_image_khr -> cmd_begin_rendering solid quads then sampled image quads -> queue_submit2 -> queue_present_khr"
+        } else {
+            "acquire_next_image_khr -> cmd_begin_rendering sampled image quad -> queue_submit2 -> queue_present_khr"
+        },
         present_sync_model: "frame-slot semaphore/fence reuse; no per-present queue_wait_idle",
         wait_idle_after_present: false,
         present_ids,
@@ -1307,7 +1437,11 @@ fn run_scene_lite_sampled_image_present_loop(
         uses_dynamic_rendering: true,
         uses_synchronization2: true,
         uses_submit2: true,
-        zero_copy_scope: "source image is uploaded once into a retained Vulkan sampled image and rendered directly to the swapchain",
+        zero_copy_scope: if solid_quad_draw.is_some() {
+            "scene geometry buffers and retained sampled images render directly to the swapchain; no fallback scene snapshot upload"
+        } else {
+            "source image is uploaded once into a retained Vulkan sampled image and rendered directly to the swapchain"
+        },
         primary_reference: "Vulkan dynamic rendering and sync2; FFmpeg frame lifetime discipline for retained resources",
     })
 }

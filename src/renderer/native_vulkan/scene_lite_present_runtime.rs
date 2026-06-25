@@ -66,10 +66,11 @@ pub fn run_scene_lite_sampled_image(
         .vulkanalia_sampled_image_geometry_input()
         .ok_or_else(|| {
             NativeVulkanError::SceneLite(format!(
-                "scene-lite draw plan is not single sampled-image recordable: {}",
+                "scene-lite draw plan is not sampled-image recordable: {}",
                 runtime.draw_pass_backend_status
             ))
         })?;
+    let solid_geometry = runtime.vulkanalia_mixed_solid_quad_geometry_input();
 
     run_native_vulkan_vulkanalia_scene_lite_sampled_image_present(
         NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions {
@@ -80,6 +81,7 @@ pub fn run_scene_lite_sampled_image(
             source,
             clear_color: options.clear_color,
             fit: None,
+            solid_geometry,
             geometry: Some(geometry),
         },
     )

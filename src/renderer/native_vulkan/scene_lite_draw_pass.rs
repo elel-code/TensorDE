@@ -171,6 +171,13 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         native_vulkan_scene_lite_sampled_image_recording_payload(&sampled_image_quads);
     let sampled_image_recording_ready = sampled_image_op_count > 0
         && sampled_image_recording_payload.steps.len() == sampled_image_op_count;
+    let mixed_quad_sampled_image_recording_ready = !quad_recording_payload.steps.is_empty()
+        && sampled_image_recording_ready
+        && quad_recording_payload
+            .steps
+            .len()
+            .saturating_add(sampled_image_recording_payload.steps.len())
+            == draw_plan.draw_ops.len();
     let quad_vertex_buffer_bytes =
         native_vulkan_scene_lite_quad_vertex_buffer_bytes(quad_recording_payload.steps.len());
     let quad_index_buffer_bytes =
@@ -187,7 +194,10 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
     let sampled_image_recording_complete =
         sampled_image_recording_ready && sampled_image_op_count == draw_plan.draw_ops.len();
     let backend_ready = plan_ready
-        && (fast_clear_color.is_some() || quad_recording_ready || sampled_image_recording_complete);
+        && (fast_clear_color.is_some()
+            || quad_recording_ready
+            || sampled_image_recording_complete
+            || mixed_quad_sampled_image_recording_ready);
     let (backend_status, blocking_reason) = if !plan_ready {
         (
             "blocked-by-unsupported-scene-lite-layers",
@@ -203,6 +213,8 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
             ("fast-clear-color-ready", None)
         } else if quad_recording_ready {
             ("solid-quad-recording-ready", None)
+        } else if mixed_quad_sampled_image_recording_ready {
+            ("mixed-quad-sampled-image-recording-ready", None)
         } else {
             ("sampled-image-recording-ready", None)
         }
@@ -718,6 +730,42 @@ mod tests {
         assert_eq!(pass_plan.sampled_image_vertices[0].uv, [0.0, 0.0]);
         assert_eq!(pass_plan.sampled_image_vertices[3].uv, [1.0, 1.0]);
         assert_eq!(pass_plan.sampled_image_vertices[0].opacity, 0.75);
+    }
+
+    #[test]
+    fn draw_pass_plan_reports_mixed_quad_and_sampled_image_backend_ready() {
+        let mut rectangle = draw_op(0, NativeVulkanSceneLiteDrawOpKind::Rectangle);
+        rectangle.color = Some("#102030".to_owned());
+        rectangle.opacity = 0.8;
+        rectangle.width = Some(640.0);
+        rectangle.height = Some(360.0);
+        let mut image = draw_op(1, NativeVulkanSceneLiteDrawOpKind::Image);
+        image.source = Some(PathBuf::from("/tmp/overlay.png"));
+        image.width = Some(320.0);
+        image.height = Some(180.0);
+        image.opacity = 0.5;
+        let draw_plan = NativeVulkanSceneLiteDrawPlan {
+            snapshot_time_ms: 0,
+            draw_ops: vec![rectangle, image],
+            unsupported_layers: Vec::new(),
+            fallback_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(pass_plan.backend_ready);
+        assert_eq!(
+            pass_plan.backend_status,
+            "mixed-quad-sampled-image-recording-ready"
+        );
+        assert_eq!(pass_plan.blocking_reason, None);
+        assert!(!pass_plan.quad_recording_ready);
+        assert!(pass_plan.sampled_image_recording_ready);
+        assert_eq!(pass_plan.quad_recording_steps.len(), 1);
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 1);
+        assert_eq!(pass_plan.quad_vertex_buffer_bytes, 96);
+        assert_eq!(pass_plan.sampled_image_vertex_buffer_bytes, 80);
     }
 
     #[test]

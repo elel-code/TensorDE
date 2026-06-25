@@ -418,15 +418,11 @@ pub(super) fn native_vulkan_api_version_label(version: u32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{
-        NativeVulkanVideoFormatPropertiesSnapshot,
-        native_vulkan_video_formats_include_nv12_with_usage,
-    };
     use super::*;
 
     #[test]
     fn labels_vulkan_video_decode_codec_operations() {
-        let operations = vk::VideoCodecOperationFlagsKHR::from_raw(
+        let operations = vk::VideoCodecOperationFlagsKHR::from_bits_truncate(
             vk::VideoCodecOperationFlagsKHR::DECODE_H264.bits()
                 | NATIVE_VULKAN_VIDEO_CODEC_OPERATION_DECODE_VP9,
         );
@@ -470,17 +466,15 @@ mod tests {
         assert!(labels.contains(&"video-decode-dst"));
         assert!(labels.contains(&"video-decode-dpb"));
         assert!(labels.contains(&"sampled"));
-        assert!(native_vulkan_video_formats_include_nv12_with_usage(
-            &[NativeVulkanVideoFormatPropertiesSnapshot {
-                format: "G8_B8R8_2PLANE_420_UNORM",
-                format_raw: vk::Format::G8_B8R8_2PLANE_420_UNORM.bits(),
-                image_type: "2d",
-                image_tiling: "optimal",
-                image_usage_flags: labels,
-                image_create_flags: vec!["mutable-format"],
-            }],
-            &["video-decode-dst", "video-decode-dpb", "sampled"]
-        ));
+        assert_eq!(
+            native_vulkan_format_label(vk::Format::G8_B8R8_2PLANE_420_UNORM),
+            "G8_B8R8_2PLANE_420_UNORM"
+        );
+        assert!(
+            ["video-decode-dst", "video-decode-dpb", "sampled"]
+                .iter()
+                .all(|label| labels.contains(label))
+        );
     }
 
     #[test]

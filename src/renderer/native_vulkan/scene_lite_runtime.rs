@@ -139,6 +139,32 @@ impl NativeVulkanSceneLiteRuntimeSnapshot {
             ),
         ))
     }
+
+    pub fn vulkanalia_mixed_solid_quad_geometry_input(
+        &self,
+    ) -> Option<NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput> {
+        if self.vulkanalia_draw_pass.backend_status
+            != "mixed-quad-sampled-image-dynamic-rendering-recording-ready"
+            || self.draw_pass_quad_vertices.is_empty()
+            || self.draw_pass_quad_indices.is_empty()
+        {
+            return None;
+        }
+
+        Some(NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput::new(
+            self.draw_pass_quad_vertices
+                .iter()
+                .map(|vertex| {
+                    NativeVulkanVulkanaliaSceneLiteSolidQuadVertex::new(
+                        vertex.position,
+                        vertex.rgba,
+                    )
+                })
+                .collect(),
+            self.draw_pass_quad_indices.clone(),
+            "scene-lite-runtime-mixed-solid-quad-draw-plan",
+        ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -856,6 +882,75 @@ mod tests {
                 .vulkanalia_sampled_image
                 .command_order
                 .contains(&"cmd_bind_sampled_image_descriptor_set")
+        );
+    }
+
+    #[test]
+    fn scene_lite_runtime_snapshot_exports_mixed_quad_and_sampled_image_geometry() {
+        let mut background = scene_lite_test_layer("background", SceneLiteLayerKind::Rectangle);
+        background.color = Some("#102030".to_owned());
+        background.opacity = 0.8;
+        background.width = Some(800.0);
+        background.height = Some(450.0);
+        let mut image = scene_lite_test_layer("hero", SceneLiteLayerKind::Image);
+        image.source = Some(PathBuf::from("/tmp/scene-hero.png"));
+        image.fit = FitMode::Cover;
+        image.opacity = 0.5;
+        image.width = Some(320.0);
+        image.height = Some(180.0);
+        let item = scene_lite_test_item(vec![background, image], None, None);
+
+        let snapshot =
+            native_vulkan_scene_lite_runtime_snapshot(&item).expect("scene-lite snapshot");
+        let solid_geometry = snapshot
+            .vulkanalia_mixed_solid_quad_geometry_input()
+            .expect("mixed solid quad geometry");
+        let (source, sampled_geometry) = snapshot
+            .vulkanalia_sampled_image_geometry_input()
+            .expect("mixed sampled image geometry");
+
+        assert!(snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.draw_pass_backend_status,
+            "mixed-quad-sampled-image-recording-ready"
+        );
+        assert!(snapshot.vulkanalia_draw_pass.backend_ready);
+        assert_eq!(
+            snapshot.vulkanalia_draw_pass.backend_status,
+            "mixed-quad-sampled-image-dynamic-rendering-recording-ready"
+        );
+        assert_eq!(
+            snapshot.vulkanalia_draw_pass.pipeline_labels,
+            vec![
+                "scene-lite-solid-quad-alpha-blend",
+                "scene-lite-sampled-image-alpha-blend"
+            ]
+        );
+        assert_eq!(snapshot.vulkanalia_draw_pass.draw_indexed_count, 2);
+        assert_eq!(solid_geometry.vertices.len(), 4);
+        assert_eq!(solid_geometry.indices, vec![0, 1, 2, 2, 1, 3]);
+        assert_eq!(
+            solid_geometry.source_label,
+            "scene-lite-runtime-mixed-solid-quad-draw-plan"
+        );
+        assert_eq!(source, PathBuf::from("/tmp/scene-hero.png"));
+        assert_eq!(
+            sampled_geometry.sources,
+            vec![PathBuf::from("/tmp/scene-hero.png")]
+        );
+        assert_eq!(sampled_geometry.draw_steps.len(), 1);
+        assert_eq!(sampled_geometry.draw_steps[0].resource_index, 0);
+        assert!(
+            snapshot
+                .vulkanalia_draw_pass
+                .command_order
+                .contains(&"cmd_bind_scene_lite_solid_quad_pipeline")
+        );
+        assert!(
+            snapshot
+                .vulkanalia_draw_pass
+                .command_order
+                .contains(&"cmd_bind_scene_lite_sampled_image_pipeline")
         );
     }
 

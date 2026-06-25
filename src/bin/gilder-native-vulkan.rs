@@ -596,6 +596,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         source,
                         clear_color: options.clear_color,
                         fit: None,
+                        solid_geometry: None,
                         geometry: None,
                     }
                 )?

@@ -153,6 +153,9 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImageCommandSnapshot {
     pub vertex_buffer_bound: bool,
     pub index_buffer_bound: bool,
     pub draw_call_count: u32,
+    pub solid_quad_draw_call_count: u32,
+    pub sampled_image_draw_call_count: u32,
+    pub pipeline_bind_count: u32,
     pub descriptor_set_bound: bool,
     pub push_descriptor_set_recorded: bool,
     pub descriptor_set_bind_count: u32,
@@ -196,6 +199,14 @@ pub(super) struct VulkanaliaSceneLiteSampledImageDrawCommand {
     pub(super) index_count: u32,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct VulkanaliaSceneLiteSolidQuadDrawResources<'a> {
+    pub(super) pipeline_resources: &'a VulkanaliaSceneLiteSolidQuadPipelineResources,
+    pub(super) vertex_buffer: vk::Buffer,
+    pub(super) index_buffer: vk::Buffer,
+    pub(super) index_count: u32,
+}
+
 pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
     input: NativeVulkanVulkanaliaSceneLiteDrawPassInput,
 ) -> NativeVulkanVulkanaliaSceneLiteDrawPassSnapshot {
@@ -211,9 +222,24 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
         && input.sampled_image_recording_ready
         && input.sampled_image_recording_step_count == input.sampled_image_op_count
         && input.sampled_image_op_count == input.draw_op_count;
+    let mixed_quad_sampled_image_ready = input.plan_ready
+        && input.native_draw_ready
+        && input.quad_recording_step_count > 0
+        && input.sampled_image_recording_ready
+        && input.sampled_image_recording_step_count == input.sampled_image_op_count
+        && input
+            .quad_recording_step_count
+            .saturating_add(input.sampled_image_recording_step_count)
+            == input.draw_op_count;
 
     let (backend_ready, backend_status, blocking_reason) = if solid_quad_ready {
         (true, "solid-quad-dynamic-rendering-recording-ready", None)
+    } else if mixed_quad_sampled_image_ready {
+        (
+            true,
+            "mixed-quad-sampled-image-dynamic-rendering-recording-ready",
+            None,
+        )
     } else if !input.plan_ready || !input.native_draw_ready {
         (
             false,
@@ -246,29 +272,45 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
 
     let pipeline_labels = if solid_quad_ready {
         vec!["scene-lite-solid-quad-alpha-blend"]
+    } else if mixed_quad_sampled_image_ready {
+        vec![
+            "scene-lite-solid-quad-alpha-blend",
+            "scene-lite-sampled-image-alpha-blend",
+        ]
     } else if sampled_image_pending {
         vec!["scene-lite-sampled-image-alpha-blend"]
     } else {
         Vec::new()
     };
-    let descriptor_set_count = if sampled_image_pending {
+    let descriptor_set_count = if sampled_image_pending || mixed_quad_sampled_image_ready {
         saturating_u32(input.sampled_image_op_count)
     } else {
         0
     };
-    let (vertex_buffer_bytes, index_buffer_bytes, vertex_stride_bytes) = if sampled_image_pending {
-        (
-            input.sampled_image_vertex_buffer_bytes,
-            input.sampled_image_index_buffer_bytes,
-            SCENE_LITE_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES,
-        )
-    } else {
-        (
-            input.quad_vertex_buffer_bytes,
-            input.quad_index_buffer_bytes,
-            24,
-        )
-    };
+    let (vertex_buffer_bytes, index_buffer_bytes, vertex_stride_bytes) =
+        if mixed_quad_sampled_image_ready {
+            (
+                input
+                    .quad_vertex_buffer_bytes
+                    .saturating_add(input.sampled_image_vertex_buffer_bytes),
+                input
+                    .quad_index_buffer_bytes
+                    .saturating_add(input.sampled_image_index_buffer_bytes),
+                0,
+            )
+        } else if sampled_image_pending {
+            (
+                input.sampled_image_vertex_buffer_bytes,
+                input.sampled_image_index_buffer_bytes,
+                SCENE_LITE_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES,
+            )
+        } else {
+            (
+                input.quad_vertex_buffer_bytes,
+                input.quad_index_buffer_bytes,
+                24,
+            )
+        };
 
     NativeVulkanVulkanaliaSceneLiteDrawPassSnapshot {
         binding: "vulkanalia",
@@ -292,18 +334,29 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
         index_type: "uint32",
         draw_indexed_count: if solid_quad_ready {
             saturating_u32(input.quad_recording_step_count)
+        } else if mixed_quad_sampled_image_ready {
+            saturating_u32(
+                input
+                    .quad_recording_step_count
+                    .saturating_add(input.sampled_image_recording_step_count),
+            )
         } else if sampled_image_pending {
             saturating_u32(input.sampled_image_recording_step_count)
         } else {
             0
         },
-        render_pass_compatibility: if solid_quad_ready || sampled_image_pending {
+        render_pass_compatibility: if solid_quad_ready
+            || sampled_image_pending
+            || mixed_quad_sampled_image_ready
+        {
             "dynamic-rendering-no-render-pass"
         } else {
             "not-recordable-yet"
         },
         render_model: if solid_quad_ready {
             "scene-lite solid quad vertices -> Vulkan 1.3/1.4 dynamic rendering indexed draw -> Wayland swapchain"
+        } else if mixed_quad_sampled_image_ready {
+            "scene-lite solid quad buffers + retained sampled images -> Vulkan 1.4 dynamic rendering ordered draws -> Wayland swapchain"
         } else if sampled_image_pending {
             "scene-lite image quad vertices -> retained sampled image descriptor -> Vulkan 1.3/1.4 dynamic rendering indexed draw -> Wayland swapchain"
         } else {
@@ -314,12 +367,19 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
             sampled_image_pending,
             input.fast_clear_color_ready,
             false,
+            mixed_quad_sampled_image_ready,
         )
         .to_vec(),
-        uses_pipeline_rendering_create_info: solid_quad_ready || sampled_image_pending,
-        uses_dynamic_rendering: solid_quad_ready || sampled_image_pending,
-        uses_synchronization2: solid_quad_ready || sampled_image_pending,
-        uses_submit2: solid_quad_ready || sampled_image_pending,
+        uses_pipeline_rendering_create_info: solid_quad_ready
+            || sampled_image_pending
+            || mixed_quad_sampled_image_ready,
+        uses_dynamic_rendering: solid_quad_ready
+            || sampled_image_pending
+            || mixed_quad_sampled_image_ready,
+        uses_synchronization2: solid_quad_ready
+            || sampled_image_pending
+            || mixed_quad_sampled_image_ready,
+        uses_submit2: solid_quad_ready || sampled_image_pending || mixed_quad_sampled_image_ready,
         uses_vulkan_1_4_dynamic_rendering_local_read: false,
         vulkan_1_4_dynamic_rendering_local_read_policy: "not-required-for-single-pass-solid-quad; reserve-for-multipass-scene-local-read",
         zero_copy_scope: "scene-graph-geometry-to-swapchain; no decoded-video frame copy or fallback snapshot upload",
@@ -968,7 +1028,7 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_solid_quad_command_buff
         swapchain_layout_transition: "undefined -> color-attachment-optimal -> present-src-khr",
         render_model: "scene-lite solid quad vertex/index buffers -> dynamic rendering indexed draw -> Wayland swapchain",
         command_order: native_vulkan_vulkanalia_scene_lite_draw_pass_command_order(
-            true, false, false, false,
+            true, false, false, false, false,
         )
         .to_vec(),
         uses_dynamic_rendering: true,
@@ -983,6 +1043,7 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_sampled_image_command_b
     swapchain_image: vk::Image,
     swapchain_view: vk::ImageView,
     extent: vk::Extent2D,
+    solid_quad_draw: Option<VulkanaliaSceneLiteSolidQuadDrawResources<'_>>,
     pipeline_resources: &VulkanaliaSceneLiteSampledImagePipelineResources,
     draw_commands: &[VulkanaliaSceneLiteSampledImageDrawCommand],
     vertex_buffer: vk::Buffer,
@@ -994,6 +1055,9 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_sampled_image_command_b
     }
     if draw_commands.is_empty() {
         return Err("scene-lite sampled-image command requires at least one draw".to_owned());
+    }
+    if solid_quad_draw.is_some_and(|draw| draw.index_count == 0) {
+        return Err("scene-lite mixed command requires non-empty solid quad indices".to_owned());
     }
     for draw in draw_commands {
         if draw.index_count == 0 {
@@ -1074,6 +1138,35 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_sampled_image_command_b
             .color_attachments(&color_attachments)
             .build();
         device.cmd_begin_rendering(command_buffer, &rendering_info);
+        if let Some(solid_quad_draw) = solid_quad_draw {
+            device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                solid_quad_draw.pipeline_resources.pipeline,
+            );
+            let vertex_buffers = [solid_quad_draw.vertex_buffer];
+            let vertex_offsets = [0u64];
+            device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &vertex_offsets);
+            device.cmd_bind_index_buffer(
+                command_buffer,
+                solid_quad_draw.index_buffer,
+                0,
+                vk::IndexType::UINT32,
+            );
+            let push_constants = [extent.width as f32, extent.height as f32];
+            let push_constant_bytes = std::slice::from_raw_parts(
+                push_constants.as_ptr().cast::<u8>(),
+                SCENE_LITE_SOLID_QUAD_PUSH_CONSTANT_BYTES as usize,
+            );
+            device.cmd_push_constants(
+                command_buffer,
+                solid_quad_draw.pipeline_resources.pipeline_layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                push_constant_bytes,
+            );
+            device.cmd_draw_indexed(command_buffer, solid_quad_draw.index_count, 1, 0, 0, 0);
+        }
         device.cmd_bind_pipeline(
             command_buffer,
             vk::PipelineBindPoint::GRAPHICS,
@@ -1182,19 +1275,30 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_sampled_image_command_b
             })
             .count(),
     );
-    let index_count = draw_commands
+    let sampled_image_index_count = draw_commands
         .iter()
         .fold(0u32, |sum, draw| sum.saturating_add(draw.index_count));
+    let solid_quad_index_count = solid_quad_draw.map_or(0, |draw| draw.index_count);
+    let solid_quad_draw_call_count = u32::from(solid_quad_draw.is_some());
+    let sampled_image_draw_call_count = saturating_u32(draw_commands.len());
+    let draw_call_count = solid_quad_draw_call_count.saturating_add(sampled_image_draw_call_count);
 
     Ok(NativeVulkanVulkanaliaSceneLiteSampledImageCommandSnapshot {
         binding: "vulkanalia",
-        route: "scene-lite-sampled-image-dynamic-rendering-command-buffer",
+        route: if solid_quad_draw.is_some() {
+            "scene-lite-mixed-quad-sampled-image-dynamic-rendering-command-buffer"
+        } else {
+            "scene-lite-sampled-image-dynamic-rendering-command-buffer"
+        },
         extent: (extent.width, extent.height),
-        index_count,
+        index_count: solid_quad_index_count.saturating_add(sampled_image_index_count),
         command_buffer_recorded: true,
         vertex_buffer_bound: true,
         index_buffer_bound: true,
-        draw_call_count: saturating_u32(draw_commands.len()),
+        draw_call_count,
+        solid_quad_draw_call_count,
+        sampled_image_draw_call_count,
+        pipeline_bind_count: if solid_quad_draw.is_some() { 2 } else { 1 },
         descriptor_set_bound: descriptor_set_bind_count > 0,
         push_descriptor_set_recorded: push_descriptor_set_recorded_count > 0,
         descriptor_set_bind_count,
@@ -1211,12 +1315,17 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_sampled_image_command_b
         push_constant_bytes: SCENE_LITE_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES,
         swapchain_layout_transition: "undefined -> color-attachment-optimal -> present-src-khr",
         sampled_image_layout: "shader-read-only-optimal",
-        render_model: "scene-lite sampled image vertex/index buffers + combined-image-sampler descriptor -> dynamic rendering indexed draw -> Wayland swapchain",
+        render_model: if solid_quad_draw.is_some() {
+            "scene-lite solid quad buffers then sampled image buffers/descriptors -> one dynamic rendering pass -> Wayland swapchain"
+        } else {
+            "scene-lite sampled image vertex/index buffers + combined-image-sampler descriptor -> dynamic rendering indexed draw -> Wayland swapchain"
+        },
         command_order: native_vulkan_vulkanalia_scene_lite_draw_pass_command_order(
             false,
             true,
             false,
             push_descriptor_set_recorded_count > 0,
+            solid_quad_draw.is_some(),
         )
         .to_vec(),
         uses_dynamic_rendering: true,
@@ -1229,8 +1338,47 @@ fn native_vulkan_vulkanalia_scene_lite_draw_pass_command_order(
     sampled_image_pending: bool,
     fast_clear_color_ready: bool,
     sampled_image_push_descriptor_fast_path: bool,
+    mixed_quad_sampled_image_ready: bool,
 ) -> &'static [&'static str] {
-    if solid_quad_ready {
+    if mixed_quad_sampled_image_ready {
+        if sampled_image_push_descriptor_fast_path {
+            &[
+                "cmd_pipeline_barrier2_swapchain_attachment",
+                "cmd_begin_rendering",
+                "cmd_bind_scene_lite_solid_quad_pipeline",
+                "cmd_bind_scene_lite_vertex_buffer",
+                "cmd_bind_scene_lite_index_buffer",
+                "cmd_draw_indexed_per_quad",
+                "cmd_bind_scene_lite_sampled_image_pipeline",
+                "cmd_bind_sampled_image_vertex_buffer",
+                "cmd_bind_sampled_image_index_buffer",
+                "cmd_push_scene_lite_sampled_image_descriptor",
+                "cmd_draw_indexed_per_image_quad",
+                "cmd_end_rendering",
+                "cmd_pipeline_barrier2_present",
+                "queue_submit2_present",
+                "queue_present_khr",
+            ]
+        } else {
+            &[
+                "cmd_pipeline_barrier2_swapchain_attachment",
+                "cmd_begin_rendering",
+                "cmd_bind_scene_lite_solid_quad_pipeline",
+                "cmd_bind_scene_lite_vertex_buffer",
+                "cmd_bind_scene_lite_index_buffer",
+                "cmd_draw_indexed_per_quad",
+                "cmd_bind_scene_lite_sampled_image_pipeline",
+                "cmd_bind_sampled_image_vertex_buffer",
+                "cmd_bind_sampled_image_index_buffer",
+                "cmd_bind_sampled_image_descriptor_set",
+                "cmd_draw_indexed_per_image_quad",
+                "cmd_end_rendering",
+                "cmd_pipeline_barrier2_present",
+                "queue_submit2_present",
+                "queue_present_khr",
+            ]
+        }
+    } else if solid_quad_ready {
         &[
             "cmd_pipeline_barrier2_swapchain_attachment",
             "cmd_begin_rendering",
@@ -1638,8 +1786,9 @@ mod tests {
 
     #[test]
     fn solid_quad_command_order_records_dynamic_rendering_draw_indexed() {
-        let order =
-            native_vulkan_vulkanalia_scene_lite_draw_pass_command_order(true, false, false, false);
+        let order = native_vulkan_vulkanalia_scene_lite_draw_pass_command_order(
+            true, false, false, false, false,
+        );
 
         assert_eq!(order[0], "cmd_pipeline_barrier2_swapchain_attachment");
         assert!(order.contains(&"cmd_begin_rendering"));
@@ -1649,5 +1798,24 @@ mod tests {
         assert!(order.contains(&"cmd_draw_indexed_per_quad"));
         assert!(order.contains(&"queue_submit2_present"));
         assert!(order.contains(&"queue_present_khr"));
+    }
+
+    #[test]
+    fn mixed_scene_command_order_records_solid_then_sampled_draws() {
+        let order = native_vulkan_vulkanalia_scene_lite_draw_pass_command_order(
+            false, true, false, true, true,
+        );
+
+        let solid_pipeline = order
+            .iter()
+            .position(|step| *step == "cmd_bind_scene_lite_solid_quad_pipeline")
+            .unwrap();
+        let sampled_pipeline = order
+            .iter()
+            .position(|step| *step == "cmd_bind_scene_lite_sampled_image_pipeline")
+            .unwrap();
+        assert!(solid_pipeline < sampled_pipeline);
+        assert!(order.contains(&"cmd_push_scene_lite_sampled_image_descriptor"));
+        assert!(order.contains(&"queue_submit2_present"));
     }
 }
