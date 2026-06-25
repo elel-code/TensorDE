@@ -8,6 +8,8 @@ use super::render_plan::native_vulkan_scene_lite_draw_plan;
 use super::scene_lite_draw_pass::native_vulkan_scene_lite_draw_pass_plan;
 use super::vulkanalia_backend::{
     NativeVulkanVulkanaliaSceneLiteDrawPassInput, NativeVulkanVulkanaliaSceneLiteDrawPassSnapshot,
+    NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput,
+    NativeVulkanVulkanaliaSceneLiteSolidQuadVertex,
     native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot,
 };
 
@@ -52,6 +54,33 @@ pub struct NativeVulkanSceneLiteRuntimeSnapshot {
     pub unsupported_layer_count: usize,
     pub draw_ops: Vec<NativeVulkanSceneLiteDrawOpSnapshot>,
     pub unsupported_layers: Vec<NativeVulkanSceneLiteUnsupportedLayerSnapshot>,
+}
+
+impl NativeVulkanSceneLiteRuntimeSnapshot {
+    pub fn vulkanalia_solid_quad_geometry_input(
+        &self,
+    ) -> Option<NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput> {
+        if !self.draw_pass_quad_recording_ready
+            || self.draw_pass_quad_vertices.is_empty()
+            || self.draw_pass_quad_indices.is_empty()
+        {
+            return None;
+        }
+
+        Some(NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput::new(
+            self.draw_pass_quad_vertices
+                .iter()
+                .map(|vertex| {
+                    NativeVulkanVulkanaliaSceneLiteSolidQuadVertex::new(
+                        vertex.position,
+                        vertex.rgba,
+                    )
+                })
+                .collect(),
+            self.draw_pass_quad_indices.clone(),
+            "scene-lite-runtime-draw-plan",
+        ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -610,6 +639,17 @@ mod tests {
             [-160.0, -78.0]
         );
         assert_eq!(snapshot.draw_pass_quad_vertices[3].position, [160.0, 102.0]);
+        let vulkanalia_geometry = snapshot
+            .vulkanalia_solid_quad_geometry_input()
+            .expect("recordable solid quad geometry");
+        assert_eq!(
+            vulkanalia_geometry.source_label,
+            "scene-lite-runtime-draw-plan"
+        );
+        assert_eq!(vulkanalia_geometry.vertices.len(), 4);
+        assert_eq!(vulkanalia_geometry.indices, vec![0, 1, 2, 2, 1, 3]);
+        assert_eq!(vulkanalia_geometry.vertices[0].position, [-160.0, -78.0]);
+        assert_eq!(vulkanalia_geometry.vertices[3].position, [160.0, 102.0]);
         let quad = &snapshot.draw_pass_recordable_quads[0];
         assert_eq!(quad.layer_id, "panel");
         assert_eq!(quad.kind, "rectangle");

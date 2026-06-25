@@ -131,7 +131,9 @@ fn native_vulkan_slideshow_item(plan: &SlideshowWallpaperPlan) -> NativeVulkanRe
     }
 }
 
-fn native_vulkan_scene_lite_item(plan: &SceneLiteWallpaperPlan) -> NativeVulkanRenderItem {
+pub(super) fn native_vulkan_scene_lite_item(
+    plan: &SceneLiteWallpaperPlan,
+) -> NativeVulkanRenderItem {
     NativeVulkanRenderItem::SceneLite {
         output_name: plan.output_name.clone(),
         scene_source: plan.source.clone(),

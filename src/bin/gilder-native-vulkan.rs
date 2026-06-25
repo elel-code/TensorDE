@@ -650,6 +650,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     duration,
                     target_max_fps: options.target_max_fps,
                     quad_color: options.clear_color,
+                    geometry: None,
                 }
             )?)
         }

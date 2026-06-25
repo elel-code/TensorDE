@@ -42,6 +42,7 @@ use super::video_session::{
 };
 
 const SCENE_LITE_SOLID_QUAD_INDEX_COUNT: u32 = 6;
+const SCENE_LITE_SOLID_QUAD_VERTEX_STRIDE_BYTES: u32 = 24;
 const HOST_VISIBLE_COHERENT_MEMORY_FLAG_BITS: u32 =
     vk::MemoryPropertyFlags::HOST_VISIBLE.bits() | vk::MemoryPropertyFlags::HOST_COHERENT.bits();
 const HOST_VISIBLE_COHERENT_DEVICE_LOCAL_MEMORY_FLAG_BITS: u32 =
@@ -55,6 +56,40 @@ pub struct NativeVulkanVulkanaliaSceneLiteSolidQuadPresentOptions {
     pub duration: Duration,
     pub target_max_fps: Option<u32>,
     pub quad_color: NativeVulkanClearColor,
+    pub geometry: Option<NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeVulkanVulkanaliaSceneLiteSolidQuadVertex {
+    pub position: [f32; 2],
+    pub rgba: [f32; 4],
+}
+
+impl NativeVulkanVulkanaliaSceneLiteSolidQuadVertex {
+    pub fn new(position: [f32; 2], rgba: [f32; 4]) -> Self {
+        Self { position, rgba }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput {
+    pub vertices: Vec<NativeVulkanVulkanaliaSceneLiteSolidQuadVertex>,
+    pub indices: Vec<u32>,
+    pub source_label: String,
+}
+
+impl NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput {
+    pub fn new(
+        vertices: Vec<NativeVulkanVulkanaliaSceneLiteSolidQuadVertex>,
+        indices: Vec<u32>,
+        source_label: impl Into<String>,
+    ) -> Self {
+        Self {
+            vertices,
+            indices,
+            source_label: source_label.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -86,9 +121,12 @@ pub struct NativeVulkanVulkanaliaSceneLiteSolidQuadPresentSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaSceneLiteSolidQuadGeometrySnapshot {
+    pub source_label: String,
+    pub vertex_count: u32,
     pub vertex_buffer_bytes: u64,
     pub index_buffer_bytes: u64,
     pub index_count: u32,
+    pub quad_count: u32,
     pub vertex_stride_bytes: u32,
     pub selected_vertex_memory_type_index: u32,
     pub selected_index_memory_type_index: u32,
@@ -119,6 +157,16 @@ struct VulkanaliaSceneLiteUploadedBuffer {
     buffer: vk::Buffer,
     memory: vk::DeviceMemory,
     memory_type: NativeVulkanVulkanaliaMemoryTypeCandidate,
+}
+
+#[derive(Debug)]
+struct VulkanaliaSceneLiteSolidQuadGeometryPayload {
+    vertex_bytes: Vec<u8>,
+    index_bytes: Vec<u8>,
+    vertex_count: u32,
+    index_count: u32,
+    quad_count: u32,
+    source_label: String,
 }
 
 pub fn run_native_vulkan_vulkanalia_scene_lite_solid_quad_present(
@@ -264,11 +312,28 @@ fn with_vulkanalia_scene_lite_solid_quad_present(
     };
     let memory_properties =
         unsafe { instance.get_physical_device_memory_properties(selection.physical_device) };
+    let geometry_payload = match scene_lite_solid_quad_geometry_payload(
+        options.geometry.as_ref(),
+        swapchain_plan.extent,
+        options.quad_color,
+    ) {
+        Ok(payload) => payload,
+        Err(err) => {
+            native_vulkan_vulkanalia_destroy_scene_lite_solid_quad_pipeline_resources(
+                device, pipeline,
+            );
+            destroy_scene_lite_solid_quad_frame_resources(device, frame_resources);
+            unsafe {
+                device.destroy_swapchain_khr(swapchain, None);
+                present_device.device.destroy_device(None);
+            }
+            return Err(err);
+        }
+    };
     let geometry = match create_scene_lite_solid_quad_geometry_resources(
         device,
         &memory_properties,
-        swapchain_plan.extent,
-        options.quad_color,
+        geometry_payload,
     ) {
         Ok(geometry) => geometry,
         Err(err) => {
@@ -383,7 +448,7 @@ fn run_scene_lite_solid_quad_present_loop(
             pipeline,
             geometry.vertex_buffer,
             geometry.index_buffer,
-            SCENE_LITE_SOLID_QUAD_INDEX_COUNT,
+            geometry.snapshot.index_count,
         )?;
         submit_scene_lite_solid_quad_command_buffer2(
             device,
@@ -643,22 +708,19 @@ fn destroy_partial_scene_lite_solid_quad_frame_resources(
 fn create_scene_lite_solid_quad_geometry_resources(
     device: &Device,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
-    extent: vk::Extent2D,
-    color: NativeVulkanClearColor,
+    payload: VulkanaliaSceneLiteSolidQuadGeometryPayload,
 ) -> Result<VulkanaliaSceneLiteSolidQuadGeometryResources, String> {
-    let vertex_bytes = scene_lite_solid_quad_vertex_bytes(extent, color);
-    let index_bytes = scene_lite_solid_quad_index_bytes();
     let vertex = create_scene_lite_uploaded_buffer(
         device,
         memory_properties,
-        &vertex_bytes,
+        &payload.vertex_bytes,
         vk::BufferUsageFlags::VERTEX_BUFFER,
         "vertex",
     )?;
     let index = match create_scene_lite_uploaded_buffer(
         device,
         memory_properties,
-        &index_bytes,
+        &payload.index_bytes,
         vk::BufferUsageFlags::INDEX_BUFFER,
         "index",
     ) {
@@ -675,10 +737,13 @@ fn create_scene_lite_solid_quad_geometry_resources(
         index_buffer: index.buffer,
         index_memory: index.memory,
         snapshot: NativeVulkanVulkanaliaSceneLiteSolidQuadGeometrySnapshot {
-            vertex_buffer_bytes: vertex_bytes.len() as u64,
-            index_buffer_bytes: index_bytes.len() as u64,
-            index_count: SCENE_LITE_SOLID_QUAD_INDEX_COUNT,
-            vertex_stride_bytes: 24,
+            source_label: payload.source_label,
+            vertex_count: payload.vertex_count,
+            vertex_buffer_bytes: payload.vertex_bytes.len() as u64,
+            index_buffer_bytes: payload.index_bytes.len() as u64,
+            index_count: payload.index_count,
+            quad_count: payload.quad_count,
+            vertex_stride_bytes: SCENE_LITE_SOLID_QUAD_VERTEX_STRIDE_BYTES,
             selected_vertex_memory_type_index: vertex.memory_type.index,
             selected_index_memory_type_index: index.memory_type.index,
             vertex_memory_property_flags: memory_property_flag_labels(
@@ -844,36 +909,111 @@ fn scene_lite_buffer_memory_type_index(
     })
 }
 
-fn scene_lite_solid_quad_vertex_bytes(
+fn scene_lite_solid_quad_geometry_payload(
+    input: Option<&NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput>,
     extent: vk::Extent2D,
     color: NativeVulkanClearColor,
-) -> Vec<u8> {
+) -> Result<VulkanaliaSceneLiteSolidQuadGeometryPayload, String> {
+    let fallback;
+    let input = if let Some(input) = input {
+        input
+    } else {
+        fallback = scene_lite_solid_quad_full_extent_geometry_input(extent, color);
+        &fallback
+    };
+    scene_lite_solid_quad_geometry_payload_from_input(input)
+}
+
+fn scene_lite_solid_quad_full_extent_geometry_input(
+    extent: vk::Extent2D,
+    color: NativeVulkanClearColor,
+) -> NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput {
     let x0 = 0.0;
     let y0 = 0.0;
     let x1 = extent.width as f32;
     let y1 = extent.height as f32;
-    let vertices = [
-        [x0, y0, color.r, color.g, color.b, color.a],
-        [x1, y0, color.r, color.g, color.b, color.a],
-        [x1, y1, color.r, color.g, color.b, color.a],
-        [x0, y1, color.r, color.g, color.b, color.a],
-    ];
-    let mut bytes = Vec::with_capacity(vertices.len() * 24);
-    for vertex in vertices {
-        for value in vertex {
+    let rgba = [color.r, color.g, color.b, color.a];
+    NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput::new(
+        vec![
+            NativeVulkanVulkanaliaSceneLiteSolidQuadVertex::new([x0, y0], rgba),
+            NativeVulkanVulkanaliaSceneLiteSolidQuadVertex::new([x1, y0], rgba),
+            NativeVulkanVulkanaliaSceneLiteSolidQuadVertex::new([x1, y1], rgba),
+            NativeVulkanVulkanaliaSceneLiteSolidQuadVertex::new([x0, y1], rgba),
+        ],
+        vec![0, 1, 2, 2, 3, 0],
+        "full-extent-smoke-quad",
+    )
+}
+
+fn scene_lite_solid_quad_geometry_payload_from_input(
+    input: &NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput,
+) -> Result<VulkanaliaSceneLiteSolidQuadGeometryPayload, String> {
+    if input.vertices.is_empty() {
+        return Err("scene-lite solid quad geometry requires at least one vertex".to_owned());
+    }
+    if input.indices.is_empty() {
+        return Err("scene-lite solid quad geometry requires at least one index".to_owned());
+    }
+    if input.indices.len() % 3 != 0 {
+        return Err("scene-lite solid quad index payload must be a triangle list".to_owned());
+    }
+    if input.vertices.len() > u32::MAX as usize {
+        return Err("scene-lite solid quad vertex count exceeds u32".to_owned());
+    }
+    if input.indices.len() > u32::MAX as usize {
+        return Err("scene-lite solid quad index count exceeds u32".to_owned());
+    }
+
+    let vertex_bytes = scene_lite_solid_quad_vertex_bytes(&input.vertices)?;
+    let index_bytes = scene_lite_solid_quad_index_bytes(&input.indices, input.vertices.len())?;
+    Ok(VulkanaliaSceneLiteSolidQuadGeometryPayload {
+        vertex_bytes,
+        index_bytes,
+        vertex_count: input.vertices.len() as u32,
+        index_count: input.indices.len() as u32,
+        quad_count: (input.indices.len() / SCENE_LITE_SOLID_QUAD_INDEX_COUNT as usize) as u32,
+        source_label: input.source_label.clone(),
+    })
+}
+
+fn scene_lite_solid_quad_vertex_bytes(
+    vertices: &[NativeVulkanVulkanaliaSceneLiteSolidQuadVertex],
+) -> Result<Vec<u8>, String> {
+    let mut bytes =
+        Vec::with_capacity(vertices.len() * SCENE_LITE_SOLID_QUAD_VERTEX_STRIDE_BYTES as usize);
+    for (index, vertex) in vertices.iter().enumerate() {
+        if !vertex
+            .position
+            .into_iter()
+            .chain(vertex.rgba)
+            .all(f32::is_finite)
+        {
+            return Err(format!(
+                "scene-lite solid quad vertex {index} contains a non-finite value"
+            ));
+        }
+        for value in vertex.position.into_iter().chain(vertex.rgba) {
             bytes.extend_from_slice(&value.to_ne_bytes());
         }
     }
-    bytes
+    Ok(bytes)
 }
 
-fn scene_lite_solid_quad_index_bytes() -> Vec<u8> {
-    let indices = [0u32, 1, 2, 2, 3, 0];
+fn scene_lite_solid_quad_index_bytes(
+    indices: &[u32],
+    vertex_count: usize,
+) -> Result<Vec<u8>, String> {
+    let max_index = (vertex_count - 1) as u32;
     let mut bytes = Vec::with_capacity(indices.len() * 4);
     for index in indices {
+        if *index > max_index {
+            return Err(format!(
+                "scene-lite solid quad index {index} exceeds max vertex index {max_index}"
+            ));
+        }
         bytes.extend_from_slice(&index.to_ne_bytes());
     }
-    bytes
+    Ok(bytes)
 }
 
 fn submit_scene_lite_solid_quad_command_buffer2(
@@ -950,7 +1090,38 @@ mod tests {
 
     #[test]
     fn solid_quad_vertices_cover_full_pixel_extent() {
-        let bytes = scene_lite_solid_quad_vertex_bytes(
+        let payload = scene_lite_solid_quad_geometry_payload(
+            None,
+            vk::Extent2D {
+                width: 1000,
+                height: 500,
+            },
+            NativeVulkanClearColor {
+                r: 0.25,
+                g: 0.5,
+                b: 0.75,
+                a: 1.0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(payload.source_label, "full-extent-smoke-quad");
+        assert_eq!(payload.vertex_count, 4);
+        assert_eq!(payload.index_count, 6);
+        assert_eq!(payload.quad_count, 1);
+        assert_eq!(payload.vertex_bytes.len(), 96);
+        let floats = payload
+            .vertex_bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(&floats[0..6], &[0.0, 0.0, 0.25, 0.5, 0.75, 1.0]);
+        assert_eq!(&floats[18..24], &[0.0, 500.0, 0.25, 0.5, 0.75, 1.0]);
+    }
+
+    #[test]
+    fn solid_quad_indices_match_two_triangles() {
+        let input = scene_lite_solid_quad_full_extent_geometry_input(
             vk::Extent2D {
                 width: 1000,
                 height: 500,
@@ -962,25 +1133,81 @@ mod tests {
                 a: 1.0,
             },
         );
-
-        assert_eq!(bytes.len(), 96);
-        let floats = bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
-            .collect::<Vec<_>>();
-        assert_eq!(&floats[0..6], &[0.0, 0.0, 0.25, 0.5, 0.75, 1.0]);
-        assert_eq!(&floats[18..24], &[0.0, 500.0, 0.25, 0.5, 0.75, 1.0]);
-    }
-
-    #[test]
-    fn solid_quad_indices_match_two_triangles() {
-        let bytes = scene_lite_solid_quad_index_bytes();
+        let bytes = scene_lite_solid_quad_index_bytes(&input.indices, input.vertices.len())
+            .expect("full extent quad indices");
         let indices = bytes
             .chunks_exact(4)
             .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
             .collect::<Vec<_>>();
 
         assert_eq!(indices, vec![0, 1, 2, 2, 3, 0]);
+    }
+
+    #[test]
+    fn solid_quad_geometry_accepts_scene_lite_draw_plan_payload() {
+        let input = NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput::new(
+            vec![
+                NativeVulkanVulkanaliaSceneLiteSolidQuadVertex::new(
+                    [-160.0, -78.0],
+                    [0.2, 0.4, 0.6, 0.75],
+                ),
+                NativeVulkanVulkanaliaSceneLiteSolidQuadVertex::new(
+                    [160.0, -78.0],
+                    [0.2, 0.4, 0.6, 0.75],
+                ),
+                NativeVulkanVulkanaliaSceneLiteSolidQuadVertex::new(
+                    [-160.0, 102.0],
+                    [0.2, 0.4, 0.6, 0.75],
+                ),
+                NativeVulkanVulkanaliaSceneLiteSolidQuadVertex::new(
+                    [160.0, 102.0],
+                    [0.2, 0.4, 0.6, 0.75],
+                ),
+            ],
+            vec![0, 1, 2, 2, 1, 3],
+            "scene-lite-runtime-draw-plan",
+        );
+
+        let payload = scene_lite_solid_quad_geometry_payload_from_input(&input).unwrap();
+
+        assert_eq!(payload.source_label, "scene-lite-runtime-draw-plan");
+        assert_eq!(payload.vertex_count, 4);
+        assert_eq!(payload.index_count, 6);
+        assert_eq!(payload.quad_count, 1);
+        assert_eq!(payload.vertex_bytes.len(), 96);
+        assert_eq!(payload.index_bytes.len(), 24);
+        let indices = payload
+            .index_bytes
+            .chunks_exact(4)
+            .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(indices, vec![0, 1, 2, 2, 1, 3]);
+    }
+
+    #[test]
+    fn solid_quad_geometry_rejects_out_of_range_indices() {
+        let input = NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput::new(
+            vec![
+                NativeVulkanVulkanaliaSceneLiteSolidQuadVertex::new(
+                    [0.0, 0.0],
+                    [1.0, 0.0, 0.0, 1.0],
+                ),
+                NativeVulkanVulkanaliaSceneLiteSolidQuadVertex::new(
+                    [1.0, 0.0],
+                    [1.0, 0.0, 0.0, 1.0],
+                ),
+                NativeVulkanVulkanaliaSceneLiteSolidQuadVertex::new(
+                    [0.0, 1.0],
+                    [1.0, 0.0, 0.0, 1.0],
+                ),
+            ],
+            vec![0, 1, 3],
+            "bad-geometry",
+        );
+
+        let err = scene_lite_solid_quad_geometry_payload_from_input(&input).unwrap_err();
+
+        assert!(err.contains("exceeds max vertex index"));
     }
 
     #[test]

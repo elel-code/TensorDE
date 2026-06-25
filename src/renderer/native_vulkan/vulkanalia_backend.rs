@@ -119,9 +119,11 @@ pub use scene_lite_draw_pass::{
     NativeVulkanVulkanaliaSceneLiteSolidQuadPipelineSnapshot,
 };
 pub use scene_lite_present::{
+    NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput,
     NativeVulkanVulkanaliaSceneLiteSolidQuadGeometrySnapshot,
     NativeVulkanVulkanaliaSceneLiteSolidQuadPresentOptions,
     NativeVulkanVulkanaliaSceneLiteSolidQuadPresentSnapshot,
+    NativeVulkanVulkanaliaSceneLiteSolidQuadVertex,
     run_native_vulkan_vulkanalia_scene_lite_solid_quad_present,
 };
 #[allow(unused_imports)]
