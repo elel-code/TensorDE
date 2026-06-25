@@ -8,9 +8,12 @@ use super::render_plan::native_vulkan_scene_lite_draw_plan;
 use super::scene_lite_draw_pass::native_vulkan_scene_lite_draw_pass_plan;
 use super::vulkanalia_backend::{
     NativeVulkanVulkanaliaSceneLiteDrawPassInput, NativeVulkanVulkanaliaSceneLiteDrawPassSnapshot,
+    NativeVulkanVulkanaliaSceneLiteSampledImagePlanInput,
+    NativeVulkanVulkanaliaSceneLiteSampledImagePlanSnapshot,
     NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput,
     NativeVulkanVulkanaliaSceneLiteSolidQuadVertex,
     native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot,
+    native_vulkan_vulkanalia_scene_lite_sampled_image_plan,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -50,6 +53,7 @@ pub struct NativeVulkanSceneLiteRuntimeSnapshot {
     pub draw_pass_requires_path_tessellation: bool,
     pub draw_pass_fast_clear_color: Option<String>,
     pub vulkanalia_draw_pass: NativeVulkanVulkanaliaSceneLiteDrawPassSnapshot,
+    pub vulkanalia_sampled_image: NativeVulkanVulkanaliaSceneLiteSampledImagePlanSnapshot,
     pub draw_op_count: usize,
     pub unsupported_layer_count: usize,
     pub draw_ops: Vec<NativeVulkanSceneLiteDrawOpSnapshot>,
@@ -212,6 +216,20 @@ pub(super) fn native_vulkan_scene_lite_runtime_snapshot(
             path_op_count: pass_plan.path_op_count,
         },
     );
+    let vulkanalia_sampled_image = native_vulkan_vulkanalia_scene_lite_sampled_image_plan(
+        NativeVulkanVulkanaliaSceneLiteSampledImagePlanInput {
+            sampled_image_sources: pass_plan
+                .sampled_image_quads
+                .iter()
+                .map(|quad| quad.source.clone())
+                .collect(),
+            recording_step_count: pass_plan.sampled_image_recording_steps.len(),
+            vertex_count: pass_plan.sampled_image_vertices.len(),
+            index_count: pass_plan.sampled_image_indices.len(),
+            vertex_buffer_bytes: pass_plan.sampled_image_vertex_buffer_bytes,
+            index_buffer_bytes: pass_plan.sampled_image_index_buffer_bytes,
+        },
+    );
     Some(NativeVulkanSceneLiteRuntimeSnapshot {
         snapshot_time_ms: plan.snapshot_time_ms,
         native_draw_ready: plan.native_draw_ready(),
@@ -326,6 +344,7 @@ pub(super) fn native_vulkan_scene_lite_runtime_snapshot(
         draw_pass_requires_path_tessellation: pass_plan.requires_path_tessellation,
         draw_pass_fast_clear_color: pass_plan.fast_clear_color,
         vulkanalia_draw_pass,
+        vulkanalia_sampled_image,
         draw_op_count: plan.draw_ops.len(),
         unsupported_layer_count: plan.unsupported_layers.len(),
         draw_ops: plan
@@ -743,5 +762,37 @@ mod tests {
         );
         assert_eq!(snapshot.vulkanalia_draw_pass.descriptor_set_count, 1);
         assert_eq!(snapshot.vulkanalia_draw_pass.vertex_stride_bytes, 20);
+        assert!(snapshot.vulkanalia_sampled_image.backend_ready);
+        assert_eq!(
+            snapshot.vulkanalia_sampled_image.backend_status,
+            "sampled-image-upload-descriptor-plan-ready"
+        );
+        assert_eq!(
+            snapshot.vulkanalia_sampled_image.blocking_reason,
+            Some("sampled-image-command-recording-not-yet-wired")
+        );
+        assert_eq!(
+            snapshot.vulkanalia_sampled_image.sampled_image_sources,
+            vec![PathBuf::from("/tmp/scene-hero.png")]
+        );
+        assert_eq!(snapshot.vulkanalia_sampled_image.descriptor_set_count, 1);
+        assert_eq!(
+            snapshot.vulkanalia_sampled_image.descriptor_type,
+            "combined-image-sampler"
+        );
+        assert_eq!(snapshot.vulkanalia_sampled_image.vertex_buffer_bytes, 80);
+        assert_eq!(snapshot.vulkanalia_sampled_image.index_buffer_bytes, 24);
+        assert!(
+            snapshot
+                .vulkanalia_sampled_image
+                .command_order
+                .contains(&"cmd_copy_buffer_to_image")
+        );
+        assert!(
+            snapshot
+                .vulkanalia_sampled_image
+                .command_order
+                .contains(&"cmd_bind_sampled_image_descriptor_set")
+        );
     }
 }

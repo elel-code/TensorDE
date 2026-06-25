@@ -26,6 +26,8 @@ mod render_present;
 mod scene_lite_draw_pass;
 #[path = "vulkanalia_backend/scene_lite_present.rs"]
 mod scene_lite_present;
+#[path = "vulkanalia_backend/scene_lite_sampled_image.rs"]
+mod scene_lite_sampled_image;
 #[path = "vulkanalia_backend/swapchain.rs"]
 mod swapchain;
 #[path = "vulkanalia_backend/video_bitstream_buffer.rs"]
@@ -125,6 +127,11 @@ pub use scene_lite_present::{
     NativeVulkanVulkanaliaSceneLiteSolidQuadPresentSnapshot,
     NativeVulkanVulkanaliaSceneLiteSolidQuadVertex,
     run_native_vulkan_vulkanalia_scene_lite_solid_quad_present,
+};
+pub use scene_lite_sampled_image::NativeVulkanVulkanaliaSceneLiteSampledImagePlanSnapshot;
+pub(crate) use scene_lite_sampled_image::{
+    NativeVulkanVulkanaliaSceneLiteSampledImagePlanInput,
+    native_vulkan_vulkanalia_scene_lite_sampled_image_plan,
 };
 #[allow(unused_imports)]
 pub use swapchain::{
