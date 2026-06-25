@@ -5,11 +5,9 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, ExtDescriptorHeapExtensionDeviceCommands, HasBuilder};
 
 use super::descriptor_heap::{
-    DESCRIPTOR_HEAP_PUSH_INDEX_OFFSET,
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     VulkanaliaDescriptorHeapImageSamplerResources,
-    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_push_index_mapping,
-    native_vulkan_vulkanalia_descriptor_heap_push_image_index_info,
+    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_bind_info,
     native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info,
 };
@@ -173,7 +171,7 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImageCommandSnapshot {
     pub descriptor_heap_bound: bool,
     pub descriptor_set_bind_count: u32,
     pub push_descriptor_set_recorded_count: u32,
-    pub descriptor_heap_push_index_count: u32,
+    pub descriptor_heap_draw_count: u32,
     pub descriptor_model: &'static str,
     pub push_constant_bytes: u32,
     pub swapchain_layout_transition: &'static str,
@@ -264,7 +262,6 @@ pub(super) struct VulkanaliaSceneLiteSolidQuadDrawResources<'a> {
 #[derive(Clone, Copy)]
 pub(super) struct VulkanaliaSceneLiteDescriptorHeapDrawResources<'a> {
     pub(super) resources: &'a VulkanaliaDescriptorHeapImageSamplerResources,
-    pub(super) push_index_offset: u32,
 }
 
 fn native_vulkan_vulkanalia_scene_lite_ordered_draw_steps(
@@ -760,10 +757,9 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_pipeline_
                             let descriptor_heap_mapping = if let Some(plan) =
                                 descriptor_heap_plan.filter(|plan| plan.backend_ready)
                             {
-                                native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_push_index_mapping(
-                                        plan,
-                                        DESCRIPTOR_HEAP_PUSH_INDEX_OFFSET,
-                                    )?
+                                native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping(
+                                    plan, 0,
+                                )?
                             } else {
                                 vk::DescriptorSetAndBindingMappingEXT::default()
                             };
@@ -998,7 +994,7 @@ pub(super) fn native_vulkan_vulkanalia_scene_lite_sampled_image_pipeline_snapsho
         push_constant_model: "scene-space pixel extent -> NDC conversion in vertex shader",
         blend_model: "sampled rgba with opacity; src-alpha over one-minus-src-alpha",
         sampled_image_model: if descriptor_heap_mapping_enabled {
-            "retained R8G8B8A8_UNORM sampled image -> VK_EXT_descriptor_heap push-index mapping -> fragment shader"
+            "retained R8G8B8A8_UNORM sampled image -> VK_EXT_descriptor_heap constant-offset mapping -> fragment shader"
         } else {
             "retained R8G8B8A8_UNORM sampled image -> combined image sampler descriptor -> fragment shader"
         },
@@ -1457,16 +1453,10 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_sampled_image_command_b
                             );
                         }
                         VulkanaliaSceneLiteSampledImageDescriptorBinding::DescriptorHeap {
-                            resource_index,
+                            resource_index: _,
                         } => {
-                            let push_info =
-                                native_vulkan_vulkanalia_descriptor_heap_push_image_index_info(
-                                    &resource_index,
-                                    descriptor_heap_draw
-                                        .expect("descriptor heap draw resources present")
-                                        .push_index_offset,
-                                );
-                            device.cmd_push_data_ext(command_buffer, &push_info);
+                            let _ = descriptor_heap_draw
+                                .expect("descriptor heap draw resources present");
                         }
                     }
                     device.cmd_draw_indexed(
@@ -1527,7 +1517,7 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_sampled_image_command_b
             })
             .count(),
     );
-    let descriptor_heap_push_index_count = saturating_u32(
+    let descriptor_heap_draw_count = saturating_u32(
         draw_commands
             .iter()
             .filter(|draw| {
@@ -1578,15 +1568,14 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_sampled_image_command_b
         pipeline_bind_count,
         descriptor_set_bound: descriptor_set_bind_count > 0,
         push_descriptor_set_recorded: push_descriptor_set_recorded_count > 0,
-        descriptor_heap_bound: descriptor_heap_draw.is_some()
-            && descriptor_heap_push_index_count > 0,
+        descriptor_heap_bound: descriptor_heap_draw.is_some() && descriptor_heap_draw_count > 0,
         descriptor_set_bind_count,
         push_descriptor_set_recorded_count,
-        descriptor_heap_push_index_count,
+        descriptor_heap_draw_count,
         descriptor_model: match (
             descriptor_set_bind_count > 0,
             push_descriptor_set_recorded_count > 0,
-            descriptor_heap_push_index_count > 0,
+            descriptor_heap_draw_count > 0,
         ) {
             (false, false, true) => "VK_EXT_descriptor_heap",
             (true, false, false) => "descriptor-set",
@@ -1607,7 +1596,7 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_sampled_image_command_b
             true,
             false,
             push_descriptor_set_recorded_count > 0,
-            descriptor_heap_push_index_count > 0,
+            descriptor_heap_draw_count > 0,
             solid_quad_draw.is_some(),
         )
         .to_vec(),
@@ -1633,7 +1622,6 @@ fn native_vulkan_vulkanalia_scene_lite_draw_pass_command_order(
                 "cmd_bind_scene_lite_sampled_image_pipeline_as_needed",
                 "cmd_bind_scene_lite_geometry_for_next_layer",
                 "cmd_bind_scene_lite_descriptor_heap_when_needed",
-                "cmd_push_scene_lite_descriptor_heap_index_when_needed",
                 "cmd_draw_indexed_in_scene_layer_order",
                 "cmd_end_rendering",
                 "cmd_pipeline_barrier2_present",
@@ -1691,7 +1679,6 @@ fn native_vulkan_vulkanalia_scene_lite_draw_pass_command_order(
                 "cmd_bind_sampled_image_vertex_buffer",
                 "cmd_bind_sampled_image_index_buffer",
                 "cmd_bind_scene_lite_descriptor_heap",
-                "cmd_push_scene_lite_descriptor_heap_index",
                 "cmd_draw_indexed_per_image_quad",
                 "cmd_end_rendering",
                 "cmd_pipeline_barrier2_present",
@@ -2199,7 +2186,6 @@ mod tests {
         );
 
         assert!(order.contains(&"cmd_bind_scene_lite_descriptor_heap_when_needed"));
-        assert!(order.contains(&"cmd_push_scene_lite_descriptor_heap_index_when_needed"));
         assert!(order.contains(&"cmd_draw_indexed_in_scene_layer_order"));
     }
 }

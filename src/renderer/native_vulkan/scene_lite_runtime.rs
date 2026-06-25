@@ -892,7 +892,7 @@ mod tests {
             snapshot.vulkanalia_sampled_image.sampled_image_sources,
             vec![PathBuf::from("/tmp/scene-hero.png")]
         );
-        assert_eq!(snapshot.vulkanalia_sampled_image.descriptor_set_count, 1);
+        assert_eq!(snapshot.vulkanalia_sampled_image.descriptor_set_count, 0);
         assert_eq!(
             snapshot.vulkanalia_sampled_image.descriptor_type,
             "combined-image-sampler"
@@ -909,7 +909,7 @@ mod tests {
             snapshot
                 .vulkanalia_sampled_image
                 .command_order
-                .contains(&"cmd_bind_sampled_image_descriptor_set")
+                .contains(&"cmd_bind_scene_lite_descriptor_heap")
         );
     }
 

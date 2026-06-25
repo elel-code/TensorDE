@@ -9,7 +9,11 @@ use vulkanalia::vk::{
     self, HasBuilder, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands,
 };
 
-use crate::renderer::native_vulkan::NativeVulkanVideoSessionCodec;
+use crate::renderer::native_vulkan::{
+    NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
+    NativeVulkanH264DecodeReferencePlanEntrySnapshot,
+    NativeVulkanH265DecodeReferencePlanEntrySnapshot, NativeVulkanVideoSessionCodec,
+};
 use crate::renderer::native_wayland::NativeWaylandHost;
 
 use super::instance::{
@@ -733,6 +737,13 @@ fn create_video_present_session_pieces(
                     queried.capabilities.max_active_reference_pictures,
                     session_max_dpb_slots,
                 );
+            let resource_image_array_layers =
+                native_vulkan_vulkanalia_ready_prefix_resource_image_array_layers(
+                    session_max_dpb_slots,
+                    av1_ready_prefix_decode.map(|(input, _)| input),
+                    h264_ready_prefix_decode.map(|(input, _)| input),
+                    h265_ready_prefix_decode.map(|(input, _)| input),
+                );
             let picture_format =
                 native_vulkan_vulkanalia_video_session_effective_picture_format(codec, None);
             let create_info = vk::VideoSessionCreateInfoKHR::builder()
@@ -777,7 +788,7 @@ fn create_video_present_session_pieces(
                     selection.physical_device,
                     profile_info,
                     requested_extent,
-                    session_max_dpb_slots.max(1),
+                    resource_image_array_layers,
                     picture_format,
                     queried.decode_capability_flags,
                     &resource_queue_family_indices,
@@ -930,7 +941,7 @@ fn create_video_present_session_pieces(
                                     .map(|(input, _)| input.frames.len()),
                             ),
                             swapchain_images.len(),
-                            session_max_dpb_slots,
+                            resource_image_array_layers,
                         );
                     let mut pending_decoded_present_frames =
                         NativeVulkanVulkanaliaDecodedPresentHandoff::new(present_handoff_capacity);
@@ -972,7 +983,7 @@ fn create_video_present_session_pieces(
                                         .copied()
                                         .expect("Vulkanalia video session is live"),
                                     codec,
-                                    session_max_dpb_slots.max(1),
+                                    resource_image_array_layers,
                                     bitstream_buffer_size,
                                     input,
                                     resource_image
@@ -1000,7 +1011,7 @@ fn create_video_present_session_pieces(
                                     .copied()
                                     .expect("Vulkanalia video session is live"),
                                 codec,
-                                session_max_dpb_slots.max(1),
+                                resource_image_array_layers,
                                 bitstream_buffer_size,
                                 input,
                                 resource_image
@@ -1028,7 +1039,7 @@ fn create_video_present_session_pieces(
                                     .copied()
                                     .expect("Vulkanalia video session is live"),
                                 codec,
-                                session_max_dpb_slots.max(1),
+                                resource_image_array_layers,
                                 bitstream_buffer_size,
                                 input,
                                 resource_image
@@ -1110,7 +1121,7 @@ fn create_video_present_session_pieces(
                             native_vulkan_vulkanalia_present_handoff_snapshot_for_ready_prefix(
                                 requested_present_frame_count,
                                 swapchain_images.len(),
-                                session_max_dpb_slots,
+                                resource_image_array_layers,
                             )
                         }),
                     );
@@ -1497,27 +1508,192 @@ fn decoded_image_present_frame_count_hint(
         .unwrap_or(0)
 }
 
+fn native_vulkan_vulkanalia_ready_prefix_resource_image_array_layers(
+    session_max_dpb_slots: u32,
+    av1_ready_prefix_decode: Option<&NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput>,
+    h264_ready_prefix_decode: Option<&NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput>,
+    h265_ready_prefix_decode: Option<&NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput>,
+) -> u32 {
+    let required_layers = av1_ready_prefix_decode
+        .map(native_vulkan_vulkanalia_av1_ready_prefix_resource_image_array_layers)
+        .or_else(|| {
+            h264_ready_prefix_decode
+                .map(native_vulkan_vulkanalia_h264_ready_prefix_resource_image_array_layers)
+        })
+        .or_else(|| {
+            h265_ready_prefix_decode
+                .map(native_vulkan_vulkanalia_h265_ready_prefix_resource_image_array_layers)
+        })
+        .unwrap_or(1);
+
+    native_vulkan_vulkanalia_clamp_ready_prefix_resource_image_array_layers(
+        required_layers,
+        session_max_dpb_slots,
+    )
+}
+
+fn native_vulkan_vulkanalia_av1_ready_prefix_resource_image_array_layers(
+    input: &NativeVulkanVulkanaliaAv1ReadyPrefixDecodeInput,
+) -> u32 {
+    native_vulkan_vulkanalia_av1_reference_plan_resource_image_array_layers(
+        input
+            .frames
+            .iter()
+            .take(native_vulkan_vulkanalia_requested_ready_prefix_frame_count(
+                input.requested_frame_count,
+            ))
+            .map(|frame| &frame.entry),
+    )
+}
+
+fn native_vulkan_vulkanalia_h264_ready_prefix_resource_image_array_layers(
+    input: &NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput,
+) -> u32 {
+    native_vulkan_vulkanalia_h264_reference_plan_resource_image_array_layers(
+        input
+            .frames
+            .iter()
+            .take(native_vulkan_vulkanalia_requested_ready_prefix_frame_count(
+                input.requested_frame_count,
+            ))
+            .map(|frame| &frame.entry),
+    )
+}
+
+fn native_vulkan_vulkanalia_h265_ready_prefix_resource_image_array_layers(
+    input: &NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput,
+) -> u32 {
+    native_vulkan_vulkanalia_h265_reference_plan_resource_image_array_layers(
+        input
+            .frames
+            .iter()
+            .take(native_vulkan_vulkanalia_requested_ready_prefix_frame_count(
+                input.requested_frame_count,
+            ))
+            .map(|frame| &frame.entry),
+    )
+}
+
+fn native_vulkan_vulkanalia_requested_ready_prefix_frame_count(
+    requested_frame_count: u32,
+) -> usize {
+    usize::try_from(requested_frame_count).unwrap_or(usize::MAX)
+}
+
+fn native_vulkan_vulkanalia_av1_reference_plan_resource_image_array_layers<'a>(
+    entries: impl IntoIterator<Item = &'a NativeVulkanAv1DecodeReferencePlanEntrySnapshot>,
+) -> u32 {
+    let mut max_slot = None;
+    for entry in entries {
+        native_vulkan_vulkanalia_track_optional_slot(&mut max_slot, entry.output_slot);
+        native_vulkan_vulkanalia_track_optional_slot(&mut max_slot, entry.displayed_slot);
+        for slot in &entry.decode_reference_slots {
+            native_vulkan_vulkanalia_track_non_negative_slot(&mut max_slot, *slot);
+        }
+        for slot in &entry.reference_name_slot_indices {
+            native_vulkan_vulkanalia_track_non_negative_slot(&mut max_slot, *slot);
+        }
+        for slot in &entry.map_slot_indices_after {
+            native_vulkan_vulkanalia_track_non_negative_slot(&mut max_slot, *slot);
+        }
+    }
+
+    native_vulkan_vulkanalia_array_layers_from_max_slot(max_slot)
+}
+
+fn native_vulkan_vulkanalia_h264_reference_plan_resource_image_array_layers<'a>(
+    entries: impl IntoIterator<Item = &'a NativeVulkanH264DecodeReferencePlanEntrySnapshot>,
+) -> u32 {
+    let mut max_slot = None;
+    for entry in entries {
+        native_vulkan_vulkanalia_track_slot(&mut max_slot, entry.planned_output_slot);
+        if let Some(setup_slot_index) = entry.setup_slot_index {
+            native_vulkan_vulkanalia_track_non_negative_slot(&mut max_slot, setup_slot_index);
+        }
+        for reference in &entry.references {
+            native_vulkan_vulkanalia_track_optional_slot(&mut max_slot, reference.dpb_slot);
+        }
+        for reference in &entry.inferred_non_existing_references {
+            native_vulkan_vulkanalia_track_slot(&mut max_slot, reference.dpb_slot);
+        }
+    }
+
+    native_vulkan_vulkanalia_array_layers_from_max_slot(max_slot)
+}
+
+fn native_vulkan_vulkanalia_h265_reference_plan_resource_image_array_layers<'a>(
+    entries: impl IntoIterator<Item = &'a NativeVulkanH265DecodeReferencePlanEntrySnapshot>,
+) -> u32 {
+    let mut max_slot = None;
+    for entry in entries {
+        native_vulkan_vulkanalia_track_slot(&mut max_slot, entry.planned_output_slot);
+        if let Some(setup_slot_index) = entry.setup_slot_index {
+            native_vulkan_vulkanalia_track_non_negative_slot(&mut max_slot, setup_slot_index);
+        }
+        for reference in &entry.references {
+            native_vulkan_vulkanalia_track_optional_slot(&mut max_slot, reference.dpb_slot);
+        }
+    }
+
+    native_vulkan_vulkanalia_array_layers_from_max_slot(max_slot)
+}
+
+fn native_vulkan_vulkanalia_clamp_ready_prefix_resource_image_array_layers(
+    required_layers: u32,
+    session_max_dpb_slots: u32,
+) -> u32 {
+    let required_layers = required_layers.max(1);
+    if session_max_dpb_slots == 0 {
+        required_layers
+    } else {
+        required_layers.min(session_max_dpb_slots).max(1)
+    }
+}
+
+fn native_vulkan_vulkanalia_array_layers_from_max_slot(max_slot: Option<u32>) -> u32 {
+    max_slot
+        .map(|slot| slot.saturating_add(1))
+        .unwrap_or(1)
+        .max(1)
+}
+
+fn native_vulkan_vulkanalia_track_optional_slot(max_slot: &mut Option<u32>, slot: Option<u32>) {
+    if let Some(slot) = slot {
+        native_vulkan_vulkanalia_track_slot(max_slot, slot);
+    }
+}
+
+fn native_vulkan_vulkanalia_track_non_negative_slot(max_slot: &mut Option<u32>, slot: i32) {
+    if let Ok(slot) = u32::try_from(slot) {
+        native_vulkan_vulkanalia_track_slot(max_slot, slot);
+    }
+}
+
+fn native_vulkan_vulkanalia_track_slot(max_slot: &mut Option<u32>, slot: u32) {
+    *max_slot = Some(max_slot.map_or(slot, |current| current.max(slot)));
+}
+
 fn native_vulkan_vulkanalia_present_handoff_capacity(
     requested_present_frame_count: u32,
     swapchain_image_count: usize,
-    session_max_dpb_slots: u32,
+    resource_image_array_layers: u32,
 ) -> usize {
     usize::try_from(requested_present_frame_count)
         .unwrap_or(usize::MAX)
         .max(swapchain_image_count)
-        .max(usize::try_from(session_max_dpb_slots).unwrap_or(usize::MAX))
+        .max(usize::try_from(resource_image_array_layers).unwrap_or(usize::MAX))
         .max(1)
 }
 
 fn native_vulkan_vulkanalia_present_handoff_snapshot_for_ready_prefix(
     requested_present_frame_count: u32,
     swapchain_image_count: usize,
-    session_max_dpb_slots: u32,
+    resource_image_array_layers: u32,
 ) -> NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot {
     let capacity_frames = native_vulkan_vulkanalia_present_handoff_capacity(
         requested_present_frame_count,
         swapchain_image_count,
-        session_max_dpb_slots,
+        resource_image_array_layers,
     );
     NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot {
         binding: "vulkanalia",
@@ -1542,8 +1718,18 @@ mod tests {
     use super::{
         NativeVulkanVulkanaliaPendingDecodedPresentFrame,
         VIDEO_PRESENT_SESSION_RETAINED_RESOURCE_ROUTE, decoded_image_present_frame_count_hint,
+        native_vulkan_vulkanalia_av1_reference_plan_resource_image_array_layers,
+        native_vulkan_vulkanalia_clamp_ready_prefix_resource_image_array_layers,
+        native_vulkan_vulkanalia_h264_reference_plan_resource_image_array_layers,
+        native_vulkan_vulkanalia_h265_reference_plan_resource_image_array_layers,
         native_vulkan_vulkanalia_present_handoff_capacity,
         native_vulkan_vulkanalia_repeat_ready_prefix_present_frames,
+    };
+    use crate::renderer::native_vulkan::{
+        NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
+        NativeVulkanH264DecodeReferencePlanEntrySnapshot, NativeVulkanH264DecodeReferenceSnapshot,
+        NativeVulkanH264InferredNonExistingReferenceSnapshot,
+        NativeVulkanH265DecodeReferencePlanEntrySnapshot, NativeVulkanH265DecodeReferenceSnapshot,
     };
 
     #[test]
@@ -1561,11 +1747,164 @@ mod tests {
             16
         );
         assert_eq!(
-            native_vulkan_vulkanalia_present_handoff_capacity(0, 3, 16),
-            16
+            native_vulkan_vulkanalia_present_handoff_capacity(0, 3, 1),
+            3
         );
         assert_eq!(
             native_vulkan_vulkanalia_present_handoff_capacity(0, 0, 0),
+            1
+        );
+    }
+
+    #[test]
+    fn h264_resource_image_layers_follow_actual_ready_prefix_slots() {
+        let entry = NativeVulkanH264DecodeReferencePlanEntrySnapshot {
+            access_unit_index: 2,
+            pts_ms: Some(8),
+            nal_type_label: Some("non-idr-slice"),
+            current_frame_num: Some(2),
+            current_pic_order_cnt_val: Some(4),
+            current_pic_order_cnt: Some([4, 4]),
+            current_long_term_frame_idx: None,
+            planned_output_slot: 0,
+            setup_slot_index: Some(1),
+            evicted_frame_num: None,
+            evicted_long_term_frame_idx: None,
+            dropped_reference_frame_nums: Vec::new(),
+            dropped_long_term_frame_indices: Vec::new(),
+            inferred_non_existing_frame_nums: vec![1],
+            inferred_non_existing_references: vec![
+                NativeVulkanH264InferredNonExistingReferenceSnapshot {
+                    frame_num: 1,
+                    field_pic_flag: false,
+                    bottom_field_flag: false,
+                    pic_order_cnt_val: 2,
+                    pic_order_cnt: [2, 2],
+                    dpb_slot: 2,
+                },
+            ],
+            inferred_dropped_reference_frame_nums: Vec::new(),
+            inferred_dropped_long_term_frame_indices: Vec::new(),
+            inferred_dropped_reference_slots: Vec::new(),
+            long_term_reference_conversions: Vec::new(),
+            dropped_reference_slots: Vec::new(),
+            requested_reference_count: 1,
+            references: vec![NativeVulkanH264DecodeReferenceSnapshot {
+                frame_num: 0,
+                field_pic_flag: false,
+                bottom_field_flag: false,
+                used_for_long_term_reference: false,
+                long_term_frame_idx: None,
+                long_term_pic_num: None,
+                non_existing: false,
+                pic_order_cnt_val: 0,
+                pic_order_cnt: [0, 0],
+                available: true,
+                source_access_unit_index: Some(0),
+                dpb_slot: Some(1),
+            }],
+            available_reference_count: 1,
+            missing_reference_count: 0,
+            unsupported_reason: None,
+            ready_for_decode_submit: true,
+        };
+
+        let required_layers =
+            native_vulkan_vulkanalia_h264_reference_plan_resource_image_array_layers(
+                std::iter::once(&entry),
+            );
+        assert_eq!(required_layers, 3);
+        assert_eq!(
+            native_vulkan_vulkanalia_clamp_ready_prefix_resource_image_array_layers(
+                required_layers,
+                16,
+            ),
+            3
+        );
+    }
+
+    #[test]
+    fn h265_resource_image_layers_include_references_and_setup_slot() {
+        let entry = NativeVulkanH265DecodeReferencePlanEntrySnapshot {
+            access_unit_index: 3,
+            pts_ms: Some(12),
+            nal_type_label: Some("TRAIL_R"),
+            current_poc: Some(6),
+            planned_output_slot: 1,
+            setup_slot_index: Some(2),
+            evicted_poc: None,
+            references: vec![NativeVulkanH265DecodeReferenceSnapshot {
+                delta_poc: -2,
+                poc: 4,
+                used_for_long_term_reference: false,
+                available: true,
+                source_access_unit_index: Some(2),
+                dpb_slot: Some(3),
+            }],
+            available_reference_count: 1,
+            missing_reference_count: 0,
+            missing_reference_pocs: Vec::new(),
+            ready_for_decode_submit: true,
+        };
+
+        assert_eq!(
+            native_vulkan_vulkanalia_h265_reference_plan_resource_image_array_layers(
+                std::iter::once(&entry),
+            ),
+            4
+        );
+    }
+
+    #[test]
+    fn av1_resource_image_layers_ignore_negative_sentinels() {
+        let entry = NativeVulkanAv1DecodeReferencePlanEntrySnapshot {
+            temporal_unit_index: 4,
+            frame_type_label: "inter",
+            show_existing_frame: false,
+            frame_to_show_map_idx: None,
+            show_frame: true,
+            order_hint: Some(6),
+            current_frame_id: Some(9),
+            expected_frame_ids: vec![0; 8],
+            refresh_frame_flags: 0x04,
+            output_slot: Some(2),
+            displayed_slot: Some(4),
+            reference_name_slot_indices: vec![1, -1, 3, -1, -1, -1, -1],
+            reference_name_order_hints: vec![None; 8],
+            map_order_hints: vec![None; 8],
+            ref_frame_indices: vec![0],
+            decode_reference_slots: vec![1, -1, -1, -1, -1, -1, -1],
+            refreshed_reference_names: vec![2],
+            missing_reference_names: Vec::new(),
+            missing_reference_count: 0,
+            references_resolved: true,
+            submit_fields_ready: true,
+            ready_for_decode_submit: true,
+            ready_for_display_handoff: true,
+            unsupported_reason: None,
+            map_slot_indices_after: vec![-1, 1, 2, -1, 4, -1, -1, -1],
+            map_order_hints_after: vec![None; 8],
+        };
+
+        assert_eq!(
+            native_vulkan_vulkanalia_av1_reference_plan_resource_image_array_layers(
+                std::iter::once(&entry),
+            ),
+            5
+        );
+    }
+
+    #[test]
+    fn empty_ready_prefix_resource_image_layers_fall_back_to_one() {
+        let h264_entries: Vec<NativeVulkanH264DecodeReferencePlanEntrySnapshot> = Vec::new();
+        assert_eq!(
+            native_vulkan_vulkanalia_h264_reference_plan_resource_image_array_layers(
+                h264_entries.iter(),
+            ),
+            1
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_clamp_ready_prefix_resource_image_array_layers(1, 16),
             1
         );
     }

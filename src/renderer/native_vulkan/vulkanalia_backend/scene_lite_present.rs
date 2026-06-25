@@ -19,7 +19,7 @@ use crate::renderer::native_wayland::{
 };
 
 use super::descriptor_heap::{
-    DESCRIPTOR_HEAP_PUSH_INDEX_OFFSET, NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput,
+    NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput,
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerResourceSnapshot,
     VulkanaliaDescriptorHeapImageSamplerResources,
     native_vulkan_vulkanalia_create_descriptor_heap_image_sampler_resources,
@@ -1384,11 +1384,8 @@ fn run_scene_lite_sampled_image_present_loop(
             );
         }
     };
-    let descriptor_heap_draw =
-        descriptor_heap.map(|resources| VulkanaliaSceneLiteDescriptorHeapDrawResources {
-            resources,
-            push_index_offset: DESCRIPTOR_HEAP_PUSH_INDEX_OFFSET,
-        });
+    let descriptor_heap_draw = descriptor_heap
+        .map(|resources| VulkanaliaSceneLiteDescriptorHeapDrawResources { resources });
 
     while Instant::now() < deadline {
         let present_frame_slot = frames_presented as usize % frame_resources.in_flight.len();
@@ -2218,7 +2215,7 @@ fn create_scene_lite_sampled_image_descriptor_heap_resources(
             plan,
         )?;
     descriptor_heap.snapshot.route = "scene-lite-descriptor-heap-image-sampler-retained-resource";
-    descriptor_heap.snapshot.shader_mapping_source = "heap-with-push-index";
+    descriptor_heap.snapshot.shader_mapping_source = "heap-with-constant-offset";
     descriptor_heap.snapshot.command_order = vec![
         "create_device_addressable_resource_heap_buffer",
         "create_device_addressable_sampler_heap_buffer",
@@ -2226,8 +2223,7 @@ fn create_scene_lite_sampled_image_descriptor_heap_resources(
         "write_sampler_descriptors_ext",
         "cmd_bind_resource_heap_ext",
         "cmd_bind_sampler_heap_ext",
-        "cmd_push_data_ext",
-        "draw_with_descriptor_heap_push_index_mapping",
+        "draw_with_descriptor_heap_constant_offset_mapping",
     ];
     for (image_index, resource) in sampled_images.iter().enumerate() {
         if let Err(err) = native_vulkan_vulkanalia_write_descriptor_heap_image_sampler(

@@ -221,9 +221,9 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_sampled_image_plan(
         vertex_buffer_bytes: input.vertex_buffer_bytes,
         index_buffer_bytes: input.index_buffer_bytes,
         vertex_stride_bytes: SCENE_LITE_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES,
-        descriptor_set_count: if backend_ready { descriptor_budget } else { 0 },
+        descriptor_set_count: 0,
         descriptor_type: "combined-image-sampler",
-        descriptor_pool_combined_image_sampler_budget: descriptor_budget,
+        descriptor_pool_combined_image_sampler_budget: 0,
         sampled_image_format: "R8G8B8A8_UNORM",
         sampled_image_usage: vec!["transfer-dst", "sampled"],
         staging_buffer_usage: vec!["transfer-src"],
@@ -233,7 +233,7 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_sampled_image_plan(
             "shader-read-only-optimal",
         ],
         upload_model: "decode source image to RGBA once, upload into retained sampled image, reuse descriptor across present frames",
-        descriptor_model: "descriptor heap is the preferred Vulkanalia path for retained sampled images; push descriptors remain for small high-churn bindings; descriptor sets are a temporary fallback",
+        descriptor_model: "VK_EXT_descriptor_heap primary path for retained sampled images; Vulkan 1.4 push descriptors only for small high-churn fallback bindings",
         pipeline_label: "scene-lite-sampled-image-alpha-blend",
         draw_indexed_count: if backend_ready { descriptor_budget } else { 0 },
         command_order: scene_lite_sampled_image_command_order(backend_ready).to_vec(),
@@ -242,7 +242,7 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_sampled_image_plan(
         uses_synchronization2: backend_ready,
         uses_submit2: backend_ready,
         uses_push_descriptor_fast_path: false,
-        vulkan_1_4_push_descriptor_policy: "VK_EXT_descriptor_heap is the primary target; use Vulkan 1.4 push_descriptor only for small high-churn per-draw bindings while heap writing lands",
+        vulkan_1_4_push_descriptor_policy: "VK_EXT_descriptor_heap is the primary target; use Vulkan 1.4 push_descriptor only for small high-churn per-draw bindings",
         zero_copy_scope: "source image pixels upload once; present frames sample retained GPU image directly into the swapchain",
         primary_reference: "FFmpeg frame/descriptor lifetime discipline; Vulkan dynamic rendering and sync2 command ordering",
     }
@@ -267,7 +267,7 @@ pub(super) fn native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strat
         binding: "vulkanalia",
         route: "scene-lite-sampled-image-descriptor-strategy",
         sampled_image_count,
-        descriptor_set_path_enabled: true,
+        descriptor_set_path_enabled: false,
         active_descriptor_model: if descriptor_heap_fast_path_candidate {
             "vulkan-ext-descriptor-heap-primary-path"
         } else if push_descriptor_fast_path_candidate {
@@ -287,11 +287,11 @@ pub(super) fn native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strat
         uses_push_descriptor_fast_path: !descriptor_heap_fast_path_candidate
             && push_descriptor_fast_path_candidate,
         next_gate: if descriptor_heap_fast_path_candidate {
-            "write sampled image descriptors into VK_EXT_descriptor_heap and replace per-resource descriptor pools"
+            "remove remaining descriptor-set command recorder branches after heap-only scene sampled-image runtime coverage"
         } else if push_descriptor_fast_path_candidate {
             "extend push-descriptor path from single sampled image to multi-image scene batches"
         } else {
-            "keep descriptor-set fallback only until descriptor heap capability and heap descriptor sizes are available"
+            "require descriptor heap support for the retained sampled-image path; keep push descriptors scoped to small high-churn bindings"
         },
         primary_reference: "FFmpeg frame lifetime discipline; VK_EXT_descriptor_heap is the primary descriptor model, with push descriptors only for small high-churn bindings",
     }
@@ -330,7 +330,7 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
-    descriptor_set_layout: vk::DescriptorSetLayout,
+    _descriptor_set_layout: vk::DescriptorSetLayout,
     use_descriptor_heap_primary_path: bool,
     use_push_descriptor_fast_path: bool,
     sampler_mode: NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode,
@@ -339,6 +339,12 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
     rgba_bytes: &[u8],
 ) -> Result<VulkanaliaSceneLiteSampledImageResources, String> {
     validate_scene_lite_rgba_upload(extent, rgba_bytes)?;
+    if !use_descriptor_heap_primary_path && !use_push_descriptor_fast_path {
+        return Err(
+            "scene-lite sampled image requires VK_EXT_descriptor_heap or Vulkan 1.4 push descriptors; descriptor set fallback is disabled"
+                .to_owned(),
+        );
+    }
     let source_label = source_label.into();
     let mut staging = Some(create_scene_lite_sampled_image_upload_buffer(
         device,
@@ -383,10 +389,7 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
     let mut image_view_live = false;
     let mut sampler = vk::Sampler::default();
     let mut sampler_live = false;
-    let mut descriptor_pool = vk::DescriptorPool::default();
-    let mut descriptor_pool_live = false;
-    let mut descriptor_set = vk::DescriptorSet::null();
-    let mut descriptor_set_allocated = false;
+    let descriptor_set = vk::DescriptorSet::null();
 
     let result = (|| -> Result<VulkanaliaSceneLiteSampledImageResources, String> {
         let memory_requirements = unsafe { device.get_image_memory_requirements(image) };
@@ -429,18 +432,6 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
         sampler = create_scene_lite_sampled_image_sampler(device, &sampler_info)?;
         sampler_live = true;
 
-        if !use_descriptor_heap_primary_path && !use_push_descriptor_fast_path {
-            descriptor_pool = create_scene_lite_sampled_image_descriptor_pool(device)?;
-            descriptor_pool_live = true;
-            descriptor_set = allocate_scene_lite_sampled_image_descriptor_set(
-                device,
-                descriptor_pool,
-                descriptor_set_layout,
-            )?;
-            descriptor_set_allocated = true;
-            update_scene_lite_sampled_image_descriptor(device, descriptor_set, sampler, image_view);
-        }
-
         let staging_ref = staging
             .as_ref()
             .expect("scene-lite sampled image staging buffer is live during upload");
@@ -463,7 +454,6 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
         memory_live = false;
         image_view_live = false;
         sampler_live = false;
-        descriptor_pool_live = false;
 
         Ok(VulkanaliaSceneLiteSampledImageResources {
             image,
@@ -472,7 +462,7 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
             image_view,
             sampler_create_info: sampler_info,
             sampler,
-            descriptor_pool,
+            descriptor_pool: vk::DescriptorPool::null(),
             descriptor_set,
             snapshot: NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot {
                 binding: "vulkanalia",
@@ -499,9 +489,8 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
                 image_view_created: true,
                 sampler_created: true,
                 sampler_address_mode: sampler_mode.label(),
-                descriptor_pool_created: !use_descriptor_heap_primary_path
-                    && !use_push_descriptor_fast_path,
-                descriptor_set_allocated,
+                descriptor_pool_created: false,
+                descriptor_set_allocated: false,
                 descriptor_model: if use_push_descriptor_fast_path {
                     "vulkan-1.4-push-descriptor-fast-path"
                 } else if use_descriptor_heap_primary_path {
@@ -526,11 +515,6 @@ pub(super) fn native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources
     if result.is_err() {
         if let Some(staging) = staging.take() {
             destroy_scene_lite_sampled_image_upload_buffer(device, staging);
-        }
-        if descriptor_pool_live {
-            unsafe {
-                device.destroy_descriptor_pool(descriptor_pool, None);
-            }
         }
         if sampler_live {
             unsafe {
@@ -586,7 +570,7 @@ fn scene_lite_sampled_image_command_order(backend_ready: bool) -> &'static [&'st
             "cmd_bind_scene_lite_sampled_image_pipeline",
             "cmd_bind_sampled_image_vertex_buffer",
             "cmd_bind_sampled_image_index_buffer",
-            "cmd_bind_sampled_image_descriptor_set",
+            "cmd_bind_scene_lite_descriptor_heap",
             "cmd_draw_indexed_per_image_quad",
             "cmd_end_rendering",
             "queue_submit2_present",
@@ -790,64 +774,6 @@ fn create_scene_lite_sampled_image_sampler(
 ) -> Result<vk::Sampler, String> {
     unsafe { device.create_sampler(sampler_info, None) }
         .map_err(|err| format!("vkCreateSampler(vulkanalia scene-lite sampled image): {err:?}"))
-}
-
-fn create_scene_lite_sampled_image_descriptor_pool(
-    device: &Device,
-) -> Result<vk::DescriptorPool, String> {
-    let pool_size = vk::DescriptorPoolSize::builder()
-        .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-        .descriptor_count(1)
-        .build();
-    let pool_sizes = [pool_size];
-    let pool_info = vk::DescriptorPoolCreateInfo::builder()
-        .max_sets(1)
-        .pool_sizes(&pool_sizes);
-    unsafe { device.create_descriptor_pool(&pool_info, None) }.map_err(|err| {
-        format!("vkCreateDescriptorPool(vulkanalia scene-lite sampled image): {err:?}")
-    })
-}
-
-fn allocate_scene_lite_sampled_image_descriptor_set(
-    device: &Device,
-    descriptor_pool: vk::DescriptorPool,
-    descriptor_set_layout: vk::DescriptorSetLayout,
-) -> Result<vk::DescriptorSet, String> {
-    let layouts = [descriptor_set_layout];
-    let allocate_info = vk::DescriptorSetAllocateInfo::builder()
-        .descriptor_pool(descriptor_pool)
-        .set_layouts(&layouts);
-    let descriptor_sets =
-        unsafe { device.allocate_descriptor_sets(&allocate_info) }.map_err(|err| {
-            format!("vkAllocateDescriptorSets(vulkanalia scene-lite sampled image): {err:?}")
-        })?;
-    descriptor_sets.first().copied().ok_or_else(|| {
-        "vkAllocateDescriptorSets(vulkanalia scene-lite sampled image) returned no sets".to_owned()
-    })
-}
-
-fn update_scene_lite_sampled_image_descriptor(
-    device: &Device,
-    descriptor_set: vk::DescriptorSet,
-    sampler: vk::Sampler,
-    image_view: vk::ImageView,
-) {
-    let image_info = vk::DescriptorImageInfo::builder()
-        .sampler(sampler)
-        .image_view(image_view)
-        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-        .build();
-    let image_infos = [image_info];
-    let write = vk::WriteDescriptorSet::builder()
-        .dst_set(descriptor_set)
-        .dst_binding(0)
-        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-        .image_info(&image_infos)
-        .build();
-    let descriptor_copies: [vk::CopyDescriptorSet; 0] = [];
-    unsafe {
-        device.update_descriptor_sets(&[write], &descriptor_copies);
-    }
 }
 
 fn upload_scene_lite_sampled_image(
@@ -1104,7 +1030,7 @@ mod tests {
             "sampled-image-dynamic-rendering-recording-ready"
         );
         assert_eq!(snapshot.blocking_reason, None);
-        assert_eq!(snapshot.descriptor_set_count, 1);
+        assert_eq!(snapshot.descriptor_set_count, 0);
         assert_eq!(snapshot.descriptor_type, "combined-image-sampler");
         assert_eq!(snapshot.sampled_image_format, "R8G8B8A8_UNORM");
         assert_eq!(
@@ -1123,7 +1049,7 @@ mod tests {
         assert!(
             snapshot
                 .command_order
-                .contains(&"cmd_bind_sampled_image_descriptor_set")
+                .contains(&"cmd_bind_scene_lite_descriptor_heap")
         );
         assert_eq!(snapshot.draw_indexed_count, 1);
         assert!(snapshot.uses_dynamic_rendering);
@@ -1173,7 +1099,7 @@ mod tests {
             2,
         );
 
-        assert!(snapshot.descriptor_set_path_enabled);
+        assert!(!snapshot.descriptor_set_path_enabled);
         assert!(!snapshot.descriptor_heap_fast_path_candidate);
         assert!(snapshot.push_descriptor_available);
         assert!(snapshot.push_descriptor_fast_path_candidate);
