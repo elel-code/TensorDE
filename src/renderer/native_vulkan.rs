@@ -308,7 +308,8 @@ use video_memory_gst::{native_vulkan_gst_memory_type, native_vulkan_gst_memory_t
 pub use video_probe_snapshots::*;
 pub use video_route::{
     NativeVulkanVideoReadyPrefixCounts, NativeVulkanVideoRunRouteDecision,
-    NativeVulkanVideoRunRouteKind, native_vulkan_video_run_route,
+    NativeVulkanVideoRunRouteKind, native_vulkan_video_duration_playback_frames,
+    native_vulkan_video_playback_frame_count, native_vulkan_video_run_route,
 };
 use video_runtime::{NativeVulkanVideoAudioRuntimeTelemetry, native_vulkan_video_runtime_snapshot};
 pub use video_runtime::{NativeVulkanVideoMemoryRouteSnapshot, NativeVulkanVideoRuntimeSnapshot};

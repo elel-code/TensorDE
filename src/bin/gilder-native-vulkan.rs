@@ -23,6 +23,8 @@ fn main() {
 #[cfg(feature = "native-vulkan-renderer")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "native-vulkan-gst-video")]
+    use gilder::renderer::native_vulkan::native_vulkan_video_playback_frame_count;
+    #[cfg(feature = "native-vulkan-gst-video")]
     use gilder::renderer::native_vulkan::{
         NativeVulkanAudioClockProbeOptions, NativeVulkanVideoSessionCodec,
         native_vulkan_extract_av1_ready_prefix_for_vulkanalia,
@@ -35,9 +37,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     use gilder::renderer::native_vulkan::{
         NativeVulkanOptions, NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionSmokeOptions,
-        backend_contract, capabilities, native_vulkan_video_run_route, probe_vulkan_video_decode,
-        probe_vulkan_video_session, probe_wayland_surface, run_clear, run_legacy_static_image,
-        run_static_image, run_video, wallpaper_type_support_matrix,
+        backend_contract, capabilities, native_vulkan_video_duration_playback_frames,
+        native_vulkan_video_run_route, probe_vulkan_video_decode, probe_vulkan_video_session,
+        probe_wayland_surface, run_clear, run_legacy_static_image, run_static_image, run_video,
+        wallpaper_type_support_matrix,
     };
     use gilder::renderer::native_vulkan::{
         NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions,
@@ -62,6 +65,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut mode = NativeVulkanCliMode::All;
     let mut options = NativeVulkanOptions::default();
     let mut duration = Duration::from_secs(5);
+    let mut duration_set = false;
     let mut audio_probe_duration = Duration::from_secs(10);
     #[cfg(feature = "native-vulkan-gst-video")]
     let mut audio_output_policy = NativeVulkanAudioOutputPolicy::Plan;
@@ -246,6 +250,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .transpose()?
                     .map(Duration::from_secs)
                     .ok_or("--duration requires seconds")?;
+                duration_set = true;
                 audio_probe_duration = duration;
             }
             "--audio-probe-duration" => {
@@ -403,6 +408,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
+
+    let duration_playback_frames = if duration_set {
+        native_vulkan_video_duration_playback_frames(duration, options.target_max_fps)
+    } else {
+        None
+    };
 
     let report = match mode {
         NativeVulkanCliMode::All => {
@@ -728,6 +739,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 &video_session_options,
                 av1_ready_prefix_frames,
                 ready_prefix_playback_frames,
+                duration_playback_frames,
             );
             #[cfg(feature = "native-vulkan-gst-video")]
             {
@@ -842,11 +854,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             #[cfg(feature = "native-vulkan-gst-video")]
             {
-                let playback_frames = if ready_prefix_playback_frames == 0 {
-                    video_session_options.decode_h264_ready_prefix_frames
-                } else {
-                    ready_prefix_playback_frames
-                };
+                let playback_frames = native_vulkan_video_playback_frame_count(
+                    video_session_options.decode_h264_ready_prefix_frames,
+                    ready_prefix_playback_frames,
+                    duration_playback_frames,
+                );
                 let audio_output_mode = audio_output_policy.resolve(muted);
                 json!(run_vulkanalia_ready_prefix_video(
                     options,
@@ -892,11 +904,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             #[cfg(feature = "native-vulkan-gst-video")]
             {
-                let playback_frames = if ready_prefix_playback_frames == 0 {
-                    video_session_options.decode_h265_ready_prefix_frames
-                } else {
-                    ready_prefix_playback_frames
-                };
+                let playback_frames = native_vulkan_video_playback_frame_count(
+                    video_session_options.decode_h265_ready_prefix_frames,
+                    ready_prefix_playback_frames,
+                    duration_playback_frames,
+                );
                 let audio_output_mode = audio_output_policy.resolve(muted);
                 json!(run_vulkanalia_ready_prefix_video(
                     options,
@@ -943,11 +955,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             #[cfg(feature = "native-vulkan-gst-video")]
             {
-                let playback_frames = if ready_prefix_playback_frames == 0 {
-                    av1_ready_prefix_frames
-                } else {
-                    ready_prefix_playback_frames
-                };
+                let playback_frames = native_vulkan_video_playback_frame_count(
+                    av1_ready_prefix_frames,
+                    ready_prefix_playback_frames,
+                    duration_playback_frames,
+                );
                 let audio_output_mode = audio_output_policy.resolve(muted);
                 json!(run_vulkanalia_ready_prefix_video(
                     options,
@@ -1008,11 +1020,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             #[cfg(feature = "native-vulkan-gst-video")]
             {
-                let playback_frames = if ready_prefix_playback_frames == 0 {
-                    ready_prefix_frames
-                } else {
-                    ready_prefix_playback_frames
-                };
+                let playback_frames = native_vulkan_video_playback_frame_count(
+                    ready_prefix_frames,
+                    ready_prefix_playback_frames,
+                    duration_playback_frames,
+                );
                 let audio_output_mode = audio_output_policy.resolve(muted);
                 json!(run_vulkanalia_ready_prefix_video(
                     options,
