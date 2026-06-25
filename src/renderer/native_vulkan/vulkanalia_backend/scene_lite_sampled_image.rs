@@ -245,7 +245,7 @@ pub(super) fn native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strat
 ) -> NativeVulkanVulkanaliaSceneLiteSampledImageDescriptorStrategySnapshot {
     let push_descriptor_fast_path_candidate = core_features.push_descriptor
         && sampled_image_count > 0
-        && sampled_image_count <= vulkan_1_4_properties.max_push_descriptors as usize;
+        && vulkan_1_4_properties.max_push_descriptors > 0;
 
     NativeVulkanVulkanaliaSceneLiteSampledImageDescriptorStrategySnapshot {
         binding: "vulkanalia",
@@ -1129,6 +1129,29 @@ mod tests {
 
         assert!(snapshot.descriptor_set_path_enabled);
         assert!(snapshot.push_descriptor_available);
+        assert!(snapshot.push_descriptor_fast_path_candidate);
+        assert!(snapshot.uses_push_descriptor_fast_path);
+        assert_eq!(
+            snapshot.active_descriptor_model,
+            "vulkan-1.4-push-descriptor-fast-path"
+        );
+    }
+
+    #[test]
+    fn descriptor_strategy_uses_per_draw_push_descriptor_budget() {
+        let snapshot = native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strategy(
+            NativeVulkanVulkanaliaCoreFeatureSnapshot {
+                push_descriptor: true,
+                ..NativeVulkanVulkanaliaCoreFeatureSnapshot::default()
+            },
+            NativeVulkanVulkanaliaVulkan14PropertySnapshot {
+                max_push_descriptors: 1,
+                ..NativeVulkanVulkanaliaVulkan14PropertySnapshot::default()
+            },
+            64,
+        );
+
+        assert_eq!(snapshot.sampled_image_count, 64);
         assert!(snapshot.push_descriptor_fast_path_candidate);
         assert!(snapshot.uses_push_descriptor_fast_path);
         assert_eq!(

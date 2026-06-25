@@ -129,6 +129,7 @@ pub use scene_lite_draw_pass::{
     NativeVulkanVulkanaliaSceneLiteSolidQuadPipelineSnapshot,
 };
 pub use scene_lite_present::{
+    NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep,
     NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput,
     NativeVulkanVulkanaliaSceneLiteSampledImageGeometrySnapshot,
     NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions,

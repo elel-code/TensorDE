@@ -152,8 +152,11 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImageCommandSnapshot {
     pub command_buffer_recorded: bool,
     pub vertex_buffer_bound: bool,
     pub index_buffer_bound: bool,
+    pub draw_call_count: u32,
     pub descriptor_set_bound: bool,
     pub push_descriptor_set_recorded: bool,
+    pub descriptor_set_bind_count: u32,
+    pub push_descriptor_set_recorded_count: u32,
     pub descriptor_model: &'static str,
     pub push_constant_bytes: u32,
     pub swapchain_layout_transition: &'static str,
@@ -184,6 +187,13 @@ pub(super) enum VulkanaliaSceneLiteSampledImageDescriptorBinding {
         sampler: vk::Sampler,
         image_view: vk::ImageView,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct VulkanaliaSceneLiteSampledImageDrawCommand {
+    pub(super) descriptor_binding: VulkanaliaSceneLiteSampledImageDescriptorBinding,
+    pub(super) first_index: u32,
+    pub(super) index_count: u32,
 }
 
 pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
@@ -974,34 +984,38 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_sampled_image_command_b
     swapchain_view: vk::ImageView,
     extent: vk::Extent2D,
     pipeline_resources: &VulkanaliaSceneLiteSampledImagePipelineResources,
-    descriptor_binding: VulkanaliaSceneLiteSampledImageDescriptorBinding,
+    draw_commands: &[VulkanaliaSceneLiteSampledImageDrawCommand],
     vertex_buffer: vk::Buffer,
     index_buffer: vk::Buffer,
-    index_count: u32,
     clear_color: [f32; 4],
 ) -> Result<NativeVulkanVulkanaliaSceneLiteSampledImageCommandSnapshot, String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("scene-lite sampled-image command requires non-zero extent".to_owned());
     }
-    if index_count == 0 {
-        return Err("scene-lite sampled-image command requires at least one index".to_owned());
+    if draw_commands.is_empty() {
+        return Err("scene-lite sampled-image command requires at least one draw".to_owned());
     }
-    match descriptor_binding {
-        VulkanaliaSceneLiteSampledImageDescriptorBinding::DescriptorSet(descriptor_set)
-            if descriptor_set == vk::DescriptorSet::null() =>
-        {
-            return Err("scene-lite sampled-image command requires a descriptor set".to_owned());
+    for draw in draw_commands {
+        if draw.index_count == 0 {
+            return Err("scene-lite sampled-image draw requires at least one index".to_owned());
         }
-        VulkanaliaSceneLiteSampledImageDescriptorBinding::PushDescriptor {
-            sampler,
-            image_view,
-        } if sampler == vk::Sampler::null() || image_view == vk::ImageView::null() => {
-            return Err(
-                "scene-lite sampled-image push descriptor requires sampler and image view"
-                    .to_owned(),
-            );
+        match draw.descriptor_binding {
+            VulkanaliaSceneLiteSampledImageDescriptorBinding::DescriptorSet(descriptor_set)
+                if descriptor_set == vk::DescriptorSet::null() =>
+            {
+                return Err("scene-lite sampled-image command requires a descriptor set".to_owned());
+            }
+            VulkanaliaSceneLiteSampledImageDescriptorBinding::PushDescriptor {
+                sampler,
+                image_view,
+            } if sampler == vk::Sampler::null() || image_view == vk::ImageView::null() => {
+                return Err(
+                    "scene-lite sampled-image push descriptor requires sampler and image view"
+                        .to_owned(),
+                );
+            }
+            _ => {}
         }
-        _ => {}
     }
 
     unsafe {
@@ -1069,43 +1083,6 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_sampled_image_command_b
         let vertex_offsets = [0u64];
         device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &vertex_offsets);
         device.cmd_bind_index_buffer(command_buffer, index_buffer, 0, vk::IndexType::UINT32);
-        match descriptor_binding {
-            VulkanaliaSceneLiteSampledImageDescriptorBinding::DescriptorSet(descriptor_set) => {
-                let descriptor_sets = [descriptor_set];
-                device.cmd_bind_descriptor_sets(
-                    command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    pipeline_resources.pipeline_layout,
-                    0,
-                    &descriptor_sets,
-                    &[],
-                );
-            }
-            VulkanaliaSceneLiteSampledImageDescriptorBinding::PushDescriptor {
-                sampler,
-                image_view,
-            } => {
-                let image_info = vk::DescriptorImageInfo::builder()
-                    .sampler(sampler)
-                    .image_view(image_view)
-                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .build();
-                let image_infos = [image_info];
-                let write = vk::WriteDescriptorSet::builder()
-                    .dst_set(vk::DescriptorSet::null())
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&image_infos)
-                    .build();
-                device.cmd_push_descriptor_set(
-                    command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    pipeline_resources.pipeline_layout,
-                    0,
-                    &[write],
-                );
-            }
-        }
         let push_constants = [extent.width as f32, extent.height as f32];
         let push_constant_bytes = std::slice::from_raw_parts(
             push_constants.as_ptr().cast::<u8>(),
@@ -1118,7 +1095,46 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_sampled_image_command_b
             0,
             push_constant_bytes,
         );
-        device.cmd_draw_indexed(command_buffer, index_count, 1, 0, 0, 0);
+        for draw in draw_commands {
+            match draw.descriptor_binding {
+                VulkanaliaSceneLiteSampledImageDescriptorBinding::DescriptorSet(descriptor_set) => {
+                    let descriptor_sets = [descriptor_set];
+                    device.cmd_bind_descriptor_sets(
+                        command_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline_resources.pipeline_layout,
+                        0,
+                        &descriptor_sets,
+                        &[],
+                    );
+                }
+                VulkanaliaSceneLiteSampledImageDescriptorBinding::PushDescriptor {
+                    sampler,
+                    image_view,
+                } => {
+                    let image_info = vk::DescriptorImageInfo::builder()
+                        .sampler(sampler)
+                        .image_view(image_view)
+                        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                        .build();
+                    let image_infos = [image_info];
+                    let write = vk::WriteDescriptorSet::builder()
+                        .dst_set(vk::DescriptorSet::null())
+                        .dst_binding(0)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(&image_infos)
+                        .build();
+                    device.cmd_push_descriptor_set(
+                        command_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline_resources.pipeline_layout,
+                        0,
+                        &[write],
+                    );
+                }
+            }
+            device.cmd_draw_indexed(command_buffer, draw.index_count, 1, draw.first_index, 0, 0);
+        }
         device.cmd_end_rendering(command_buffer);
 
         let swapchain_to_present = vk::ImageMemoryBarrier2::builder()
@@ -1144,6 +1160,32 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_sampled_image_command_b
         })?;
     }
 
+    let descriptor_set_bind_count = saturating_u32(
+        draw_commands
+            .iter()
+            .filter(|draw| {
+                matches!(
+                    draw.descriptor_binding,
+                    VulkanaliaSceneLiteSampledImageDescriptorBinding::DescriptorSet(_)
+                )
+            })
+            .count(),
+    );
+    let push_descriptor_set_recorded_count = saturating_u32(
+        draw_commands
+            .iter()
+            .filter(|draw| {
+                matches!(
+                    draw.descriptor_binding,
+                    VulkanaliaSceneLiteSampledImageDescriptorBinding::PushDescriptor { .. }
+                )
+            })
+            .count(),
+    );
+    let index_count = draw_commands
+        .iter()
+        .fold(0u32, |sum, draw| sum.saturating_add(draw.index_count));
+
     Ok(NativeVulkanVulkanaliaSceneLiteSampledImageCommandSnapshot {
         binding: "vulkanalia",
         route: "scene-lite-sampled-image-dynamic-rendering-command-buffer",
@@ -1152,19 +1194,19 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_sampled_image_command_b
         command_buffer_recorded: true,
         vertex_buffer_bound: true,
         index_buffer_bound: true,
-        descriptor_set_bound: matches!(
-            descriptor_binding,
-            VulkanaliaSceneLiteSampledImageDescriptorBinding::DescriptorSet(_)
-        ),
-        push_descriptor_set_recorded: matches!(
-            descriptor_binding,
-            VulkanaliaSceneLiteSampledImageDescriptorBinding::PushDescriptor { .. }
-        ),
-        descriptor_model: match descriptor_binding {
-            VulkanaliaSceneLiteSampledImageDescriptorBinding::DescriptorSet(_) => "descriptor-set",
-            VulkanaliaSceneLiteSampledImageDescriptorBinding::PushDescriptor { .. } => {
-                "vulkan-1.4-push-descriptor"
-            }
+        draw_call_count: saturating_u32(draw_commands.len()),
+        descriptor_set_bound: descriptor_set_bind_count > 0,
+        push_descriptor_set_recorded: push_descriptor_set_recorded_count > 0,
+        descriptor_set_bind_count,
+        push_descriptor_set_recorded_count,
+        descriptor_model: match (
+            descriptor_set_bind_count > 0,
+            push_descriptor_set_recorded_count > 0,
+        ) {
+            (true, false) => "descriptor-set",
+            (false, true) => "vulkan-1.4-push-descriptor",
+            (true, true) => "mixed-descriptor-bindings",
+            (false, false) => "no-descriptor-bindings",
         },
         push_constant_bytes: SCENE_LITE_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES,
         swapchain_layout_transition: "undefined -> color-attachment-optimal -> present-src-khr",
@@ -1174,10 +1216,7 @@ pub(super) fn native_vulkan_vulkanalia_record_scene_lite_sampled_image_command_b
             false,
             true,
             false,
-            matches!(
-                descriptor_binding,
-                VulkanaliaSceneLiteSampledImageDescriptorBinding::PushDescriptor { .. }
-            ),
+            push_descriptor_set_recorded_count > 0,
         )
         .to_vec(),
         uses_dynamic_rendering: true,

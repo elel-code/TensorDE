@@ -29,7 +29,7 @@ use super::scene_lite_draw_pass::{
     NativeVulkanVulkanaliaSceneLiteSampledImagePipelineSnapshot,
     NativeVulkanVulkanaliaSceneLiteSolidQuadCommandSnapshot,
     NativeVulkanVulkanaliaSceneLiteSolidQuadPipelineSnapshot,
-    VulkanaliaSceneLiteSampledImageDescriptorBinding,
+    VulkanaliaSceneLiteSampledImageDescriptorBinding, VulkanaliaSceneLiteSampledImageDrawCommand,
     VulkanaliaSceneLiteSampledImagePipelineResources,
     VulkanaliaSceneLiteSolidQuadPipelineResources,
     native_vulkan_vulkanalia_create_scene_lite_sampled_image_pipeline_resources,
@@ -40,6 +40,7 @@ use super::scene_lite_draw_pass::{
     native_vulkan_vulkanalia_record_scene_lite_solid_quad_command_buffer,
 };
 use super::scene_lite_sampled_image::{
+    NativeVulkanVulkanaliaSceneLiteDecodedRgbaImage,
     NativeVulkanVulkanaliaSceneLiteSampledImageDescriptorStrategySnapshot,
     NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot,
     NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode,
@@ -134,7 +135,17 @@ pub struct NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput {
 pub struct NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput {
     pub vertices: Vec<NativeVulkanVulkanaliaSceneLiteSampledImageVertex>,
     pub indices: Vec<u32>,
+    pub sources: Vec<PathBuf>,
+    pub draw_steps: Vec<NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep>,
     pub source_label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep {
+    pub resource_index: u32,
+    pub first_index: u32,
+    pub index_count: u32,
+    pub fit: Option<FitMode>,
 }
 
 impl NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput {
@@ -143,9 +154,33 @@ impl NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput {
         indices: Vec<u32>,
         source_label: impl Into<String>,
     ) -> Self {
+        let index_count = indices.len().min(u32::MAX as usize) as u32;
         Self {
             vertices,
             indices,
+            sources: Vec::new(),
+            draw_steps: vec![NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep {
+                resource_index: 0,
+                first_index: 0,
+                index_count,
+                fit: None,
+            }],
+            source_label: source_label.into(),
+        }
+    }
+
+    pub fn new_batched(
+        vertices: Vec<NativeVulkanVulkanaliaSceneLiteSampledImageVertex>,
+        indices: Vec<u32>,
+        sources: Vec<PathBuf>,
+        draw_steps: Vec<NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep>,
+        source_label: impl Into<String>,
+    ) -> Self {
+        Self {
+            vertices,
+            indices,
+            sources,
+            draw_steps,
             source_label: source_label.into(),
         }
     }
@@ -215,6 +250,7 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot {
     pub swapchain: NativeVulkanVulkanaliaSwapchainSnapshot,
     pub geometry: NativeVulkanVulkanaliaSceneLiteSampledImageGeometrySnapshot,
     pub sampled_image: NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot,
+    pub sampled_images: Vec<NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot>,
     pub descriptor_strategy: NativeVulkanVulkanaliaSceneLiteSampledImageDescriptorStrategySnapshot,
     pub pipeline: NativeVulkanVulkanaliaSceneLiteSampledImagePipelineSnapshot,
     pub last_command: Option<NativeVulkanVulkanaliaSceneLiteSampledImageCommandSnapshot>,
@@ -260,6 +296,8 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImageGeometrySnapshot {
     pub index_buffer_bytes: u64,
     pub index_count: u32,
     pub quad_count: u32,
+    pub source_count: u32,
+    pub draw_step_count: u32,
     pub vertex_stride_bytes: u32,
     pub selected_vertex_memory_type_index: u32,
     pub selected_index_memory_type_index: u32,
@@ -282,6 +320,7 @@ struct VulkanaliaSceneLiteSampledImageGeometryResources {
     vertex_memory: vk::DeviceMemory,
     index_buffer: vk::Buffer,
     index_memory: vk::DeviceMemory,
+    draw_steps: Vec<NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep>,
     snapshot: NativeVulkanVulkanaliaSceneLiteSampledImageGeometrySnapshot,
 }
 
@@ -317,6 +356,8 @@ struct VulkanaliaSceneLiteSampledImageGeometryPayload {
     vertex_count: u32,
     index_count: u32,
     quad_count: u32,
+    source_count: u32,
+    draw_steps: Vec<NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep>,
     source_label: String,
 }
 
@@ -661,10 +702,12 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
             return Err(err);
         }
     };
+    let sampled_image_sources =
+        scene_lite_sampled_image_sources(&options.source, options.geometry.as_ref());
     let descriptor_strategy = native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strategy(
         present_device.feature_selection.core_features,
         present_device.feature_selection.vulkan_1_4_properties,
-        1,
+        sampled_image_sources.len(),
     );
     let pipeline = match native_vulkan_vulkanalia_create_scene_lite_sampled_image_pipeline_resources(
         device,
@@ -684,8 +727,8 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
     };
     let memory_properties =
         unsafe { instance.get_physical_device_memory_properties(selection.physical_device) };
-    let decoded = match native_vulkan_vulkanalia_decode_scene_lite_rgba_image(&options.source) {
-        Ok(decoded) => decoded,
+    let decoded_images = match scene_lite_sampled_image_decode_sources(&sampled_image_sources) {
+        Ok(decoded_images) => decoded_images,
         Err(err) => {
             native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_pipeline_resources(
                 device, pipeline,
@@ -698,14 +741,21 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
             return Err(err);
         }
     };
+    let source_extent = decoded_images
+        .first()
+        .map(|decoded| vk::Extent2D {
+            width: decoded.width,
+            height: decoded.height,
+        })
+        .unwrap_or(vk::Extent2D {
+            width: 0,
+            height: 0,
+        });
     let geometry_payload = match scene_lite_sampled_image_geometry_payload(
         options.geometry.as_ref(),
         swapchain_plan.extent,
         options.fit,
-        vk::Extent2D {
-            width: decoded.width,
-            height: decoded.height,
-        },
+        source_extent,
     ) {
         Ok(payload) => payload,
         Err(err) => {
@@ -738,23 +788,60 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
             return Err(err);
         }
     };
-    let sampled_image = match native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources(
-        device,
-        &memory_properties,
-        frame_resources.command_pool,
-        present_device.queue,
-        pipeline.descriptor_set_layout,
+    let mut sampled_images = Vec::new();
+    for (resource_index, decoded) in decoded_images.iter().enumerate() {
+        let resource = match native_vulkan_vulkanalia_create_scene_lite_sampled_image_resources(
+            device,
+            &memory_properties,
+            frame_resources.command_pool,
+            present_device.queue,
+            pipeline.descriptor_set_layout,
+            descriptor_strategy.uses_push_descriptor_fast_path,
+            scene_lite_sampled_image_resource_sampler_mode(
+                resource_index,
+                &geometry.draw_steps,
+                options.fit,
+            ),
+            decoded.source.display().to_string(),
+            vk::Extent2D {
+                width: decoded.width,
+                height: decoded.height,
+            },
+            &decoded.bytes,
+        ) {
+            Ok(resources) => resources,
+            Err(err) => {
+                for resource in sampled_images.drain(..) {
+                    native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resources(
+                        device, resource,
+                    );
+                }
+                destroy_scene_lite_sampled_image_geometry_resources(device, geometry);
+                native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_pipeline_resources(
+                    device, pipeline,
+                );
+                destroy_scene_lite_solid_quad_frame_resources(device, frame_resources);
+                unsafe {
+                    device.destroy_swapchain_khr(swapchain, None);
+                    present_device.device.destroy_device(None);
+                }
+                return Err(err);
+            }
+        };
+        sampled_images.push(resource);
+    }
+    let draw_commands = match scene_lite_sampled_image_draw_commands(
+        &geometry.draw_steps,
+        &sampled_images,
         descriptor_strategy.uses_push_descriptor_fast_path,
-        scene_lite_sampled_image_sampler_mode(options.fit),
-        options.source.display().to_string(),
-        vk::Extent2D {
-            width: decoded.width,
-            height: decoded.height,
-        },
-        &decoded.bytes,
     ) {
-        Ok(resources) => resources,
+        Ok(draw_commands) => draw_commands,
         Err(err) => {
+            for resource in sampled_images.drain(..) {
+                native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resources(
+                    device, resource,
+                );
+            }
             destroy_scene_lite_sampled_image_geometry_resources(device, geometry);
             native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_pipeline_resources(
                 device, pipeline,
@@ -784,7 +871,8 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
         &frame_resources,
         &pipeline,
         &geometry,
-        &sampled_image,
+        &sampled_images,
+        &draw_commands,
         descriptor_strategy,
         &selection,
         &present_device.extension_snapshot,
@@ -794,7 +882,9 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
     );
 
     let _ = unsafe { device.device_wait_idle() };
-    native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resources(device, sampled_image);
+    for resource in sampled_images {
+        native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resources(device, resource);
+    }
     destroy_scene_lite_sampled_image_geometry_resources(device, geometry);
     native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_pipeline_resources(device, pipeline);
     destroy_scene_lite_solid_quad_frame_resources(device, frame_resources);
@@ -1013,7 +1103,8 @@ fn run_scene_lite_sampled_image_present_loop(
     frame_resources: &VulkanaliaSceneLiteSolidQuadFrameResources,
     pipeline: &VulkanaliaSceneLiteSampledImagePipelineResources,
     geometry: &VulkanaliaSceneLiteSampledImageGeometryResources,
-    sampled_image: &VulkanaliaSceneLiteSampledImageResources,
+    sampled_images: &[VulkanaliaSceneLiteSampledImageResources],
+    draw_commands: &[VulkanaliaSceneLiteSampledImageDrawCommand],
     descriptor_strategy: NativeVulkanVulkanaliaSceneLiteSampledImageDescriptorStrategySnapshot,
     selection: &super::swapchain::NativeVulkanVulkanaliaPresentQueueSelection,
     extension_snapshot: &NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
@@ -1031,16 +1122,9 @@ fn run_scene_lite_sampled_image_present_loop(
     let mut frames_presented = 0u64;
     let mut present_ids = Vec::new();
     let mut last_command = None;
-    let descriptor_binding = if descriptor_strategy.uses_push_descriptor_fast_path {
-        VulkanaliaSceneLiteSampledImageDescriptorBinding::PushDescriptor {
-            sampler: sampled_image.sampler,
-            image_view: sampled_image.image_view,
-        }
-    } else {
-        VulkanaliaSceneLiteSampledImageDescriptorBinding::DescriptorSet(
-            sampled_image.descriptor_set,
-        )
-    };
+    let sampled_image = sampled_images.first().ok_or_else(|| {
+        "scene-lite sampled image present requires at least one sampled image".to_owned()
+    })?;
 
     while Instant::now() < deadline {
         let present_frame_slot = frames_presented as usize % frame_resources.in_flight.len();
@@ -1087,10 +1171,9 @@ fn run_scene_lite_sampled_image_present_loop(
             swapchain_view,
             extent,
             pipeline,
-            descriptor_binding,
+            draw_commands,
             geometry.vertex_buffer,
             geometry.index_buffer,
-            geometry.snapshot.index_count,
             [
                 options.clear_color.r,
                 options.clear_color.g,
@@ -1204,6 +1287,10 @@ fn run_scene_lite_sampled_image_present_loop(
         },
         geometry: geometry.snapshot.clone(),
         sampled_image: sampled_image.snapshot.clone(),
+        sampled_images: sampled_images
+            .iter()
+            .map(|resource| resource.snapshot.clone())
+            .collect(),
         descriptor_strategy,
         pipeline: pipeline.snapshot.clone(),
         last_command,
@@ -1486,6 +1573,7 @@ fn create_scene_lite_sampled_image_geometry_resources(
         vertex_memory: vertex.memory,
         index_buffer: index.buffer,
         index_memory: index.memory,
+        draw_steps: payload.draw_steps.clone(),
         snapshot: NativeVulkanVulkanaliaSceneLiteSampledImageGeometrySnapshot {
             source_label: payload.source_label,
             vertex_count: payload.vertex_count,
@@ -1493,6 +1581,8 @@ fn create_scene_lite_sampled_image_geometry_resources(
             index_buffer_bytes: payload.index_bytes.len() as u64,
             index_count: payload.index_count,
             quad_count: payload.quad_count,
+            source_count: payload.source_count,
+            draw_step_count: payload.draw_steps.len().min(u32::MAX as usize) as u32,
             vertex_stride_bytes: SCENE_LITE_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES,
             selected_vertex_memory_type_index: vertex.memory_type.index,
             selected_index_memory_type_index: index.memory_type.index,
@@ -1764,6 +1854,55 @@ fn scene_lite_sampled_image_full_extent_geometry_input(
     )
 }
 
+fn scene_lite_sampled_image_sources(
+    source: &PathBuf,
+    geometry: Option<&NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput>,
+) -> Vec<PathBuf> {
+    geometry
+        .and_then(|geometry| (!geometry.sources.is_empty()).then_some(geometry.sources.clone()))
+        .unwrap_or_else(|| vec![source.clone()])
+}
+
+fn scene_lite_sampled_image_decode_sources(
+    sources: &[PathBuf],
+) -> Result<Vec<NativeVulkanVulkanaliaSceneLiteDecodedRgbaImage>, String> {
+    sources
+        .iter()
+        .map(|source| native_vulkan_vulkanalia_decode_scene_lite_rgba_image(source))
+        .collect()
+}
+
+fn scene_lite_sampled_image_draw_commands(
+    draw_steps: &[NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep],
+    sampled_images: &[VulkanaliaSceneLiteSampledImageResources],
+    use_push_descriptor_fast_path: bool,
+) -> Result<Vec<VulkanaliaSceneLiteSampledImageDrawCommand>, String> {
+    let mut draw_commands = Vec::with_capacity(draw_steps.len());
+    for (step_index, step) in draw_steps.iter().enumerate() {
+        let resource = sampled_images.get(step.resource_index as usize).ok_or_else(|| {
+            format!(
+                "scene-lite sampled-image draw step {step_index} resource index {} exceeds sampled image count {}",
+                step.resource_index,
+                sampled_images.len()
+            )
+        })?;
+        let descriptor_binding = if use_push_descriptor_fast_path {
+            VulkanaliaSceneLiteSampledImageDescriptorBinding::PushDescriptor {
+                sampler: resource.sampler,
+                image_view: resource.image_view,
+            }
+        } else {
+            VulkanaliaSceneLiteSampledImageDescriptorBinding::DescriptorSet(resource.descriptor_set)
+        };
+        draw_commands.push(VulkanaliaSceneLiteSampledImageDrawCommand {
+            descriptor_binding,
+            first_index: step.first_index,
+            index_count: step.index_count,
+        });
+    }
+    Ok(draw_commands)
+}
+
 fn scene_lite_sampled_image_sampler_mode(
     fit: Option<FitMode>,
 ) -> NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode {
@@ -1772,6 +1911,21 @@ fn scene_lite_sampled_image_sampler_mode(
     } else {
         NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode::ClampToEdge
     }
+}
+
+fn scene_lite_sampled_image_resource_sampler_mode(
+    resource_index: usize,
+    draw_steps: &[NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep],
+    fallback_fit: Option<FitMode>,
+) -> NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode {
+    draw_steps
+        .get(resource_index)
+        .and_then(|step| step.fit)
+        .or(fallback_fit)
+        .map_or(
+            NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode::ClampToEdge,
+            |fit| scene_lite_sampled_image_sampler_mode(Some(fit)),
+        )
 }
 
 fn scene_lite_sampled_image_fit_geometry_input(
@@ -1858,6 +2012,44 @@ fn scene_lite_sampled_image_geometry_payload_from_input(
     if input.indices.len() > u32::MAX as usize {
         return Err("scene-lite sampled-image index count exceeds u32".to_owned());
     }
+    if input.draw_steps.is_empty() {
+        return Err("scene-lite sampled-image geometry requires at least one draw step".to_owned());
+    }
+    if !input.sources.is_empty() && input.sources.len() != input.draw_steps.len() {
+        return Err(format!(
+            "scene-lite sampled-image geometry requires source count {} to match draw step count {}",
+            input.sources.len(),
+            input.draw_steps.len()
+        ));
+    }
+    let source_count = input.sources.len().max(1);
+    for (step_index, step) in input.draw_steps.iter().enumerate() {
+        if step.index_count == 0 {
+            return Err(format!(
+                "scene-lite sampled-image draw step {step_index} requires at least one index"
+            ));
+        }
+        if step.resource_index as usize >= source_count {
+            return Err(format!(
+                "scene-lite sampled-image draw step {step_index} resource index {} exceeds source count {}",
+                step.resource_index, source_count
+            ));
+        }
+        let end_index = step
+            .first_index
+            .checked_add(step.index_count)
+            .ok_or_else(|| {
+                format!("scene-lite sampled-image draw step {step_index} index range overflows")
+            })?;
+        if end_index as usize > input.indices.len() {
+            return Err(format!(
+                "scene-lite sampled-image draw step {step_index} index range {}..{} exceeds index count {}",
+                step.first_index,
+                end_index,
+                input.indices.len()
+            ));
+        }
+    }
 
     let vertex_bytes = scene_lite_sampled_image_vertex_bytes(&input.vertices)?;
     let index_bytes =
@@ -1868,6 +2060,8 @@ fn scene_lite_sampled_image_geometry_payload_from_input(
         vertex_count: input.vertices.len() as u32,
         index_count: input.indices.len() as u32,
         quad_count: (input.indices.len() / SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT as usize) as u32,
+        source_count: source_count.min(u32::MAX as usize) as u32,
+        draw_steps: input.draw_steps.clone(),
         source_label: input.source_label.clone(),
     })
 }
@@ -2320,6 +2514,82 @@ mod tests {
             .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
             .collect::<Vec<_>>();
         assert_eq!(indices, vec![0, 1, 2, 2, 1, 3]);
+    }
+
+    #[test]
+    fn sampled_image_geometry_accepts_batched_scene_lite_payload() {
+        let input = NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput::new_batched(
+            vec![
+                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new([0.0, 0.0], [0.0, 0.0], 1.0),
+                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new(
+                    [10.0, 0.0],
+                    [1.0, 0.0],
+                    1.0,
+                ),
+                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new(
+                    [0.0, 10.0],
+                    [0.0, 1.0],
+                    1.0,
+                ),
+                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new(
+                    [10.0, 10.0],
+                    [1.0, 1.0],
+                    1.0,
+                ),
+                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new(
+                    [20.0, 20.0],
+                    [0.0, 0.0],
+                    0.5,
+                ),
+                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new(
+                    [30.0, 20.0],
+                    [2.0, 0.0],
+                    0.5,
+                ),
+                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new(
+                    [20.0, 30.0],
+                    [0.0, 2.0],
+                    0.5,
+                ),
+                NativeVulkanVulkanaliaSceneLiteSampledImageVertex::new(
+                    [30.0, 30.0],
+                    [2.0, 2.0],
+                    0.5,
+                ),
+            ],
+            vec![0, 1, 2, 2, 1, 3, 4, 5, 6, 6, 5, 7],
+            vec![PathBuf::from("/tmp/a.png"), PathBuf::from("/tmp/b.png")],
+            vec![
+                NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep {
+                    resource_index: 0,
+                    first_index: 0,
+                    index_count: 6,
+                    fit: Some(FitMode::Cover),
+                },
+                NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep {
+                    resource_index: 1,
+                    first_index: 6,
+                    index_count: 6,
+                    fit: Some(FitMode::Tile),
+                },
+            ],
+            "batched-scene-lite-runtime-sampled-image-draw-plan",
+        );
+
+        let payload = scene_lite_sampled_image_geometry_payload_from_input(&input).unwrap();
+
+        assert_eq!(payload.vertex_count, 8);
+        assert_eq!(payload.index_count, 12);
+        assert_eq!(payload.quad_count, 2);
+        assert_eq!(payload.source_count, 2);
+        assert_eq!(payload.draw_steps.len(), 2);
+        assert_eq!(payload.draw_steps[1].resource_index, 1);
+        assert_eq!(payload.draw_steps[1].first_index, 6);
+        assert_eq!(payload.draw_steps[1].index_count, 6);
+        assert_eq!(
+            scene_lite_sampled_image_resource_sampler_mode(1, &payload.draw_steps, None),
+            NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode::Repeat
+        );
     }
 
     #[test]

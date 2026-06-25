@@ -8,6 +8,7 @@ use super::render_plan::native_vulkan_scene_lite_draw_plan;
 use super::scene_lite_draw_pass::native_vulkan_scene_lite_draw_pass_plan;
 use super::vulkanalia_backend::{
     NativeVulkanVulkanaliaSceneLiteDrawPassInput, NativeVulkanVulkanaliaSceneLiteDrawPassSnapshot,
+    NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep,
     NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput,
     NativeVulkanVulkanaliaSceneLiteSampledImagePlanInput,
     NativeVulkanVulkanaliaSceneLiteSampledImagePlanSnapshot,
@@ -95,16 +96,32 @@ impl NativeVulkanSceneLiteRuntimeSnapshot {
         NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput,
     )> {
         if !self.draw_pass_sampled_image_recording_ready
-            || self.draw_pass_sampled_image_quads.len() != 1
+            || self.draw_pass_sampled_image_quads.is_empty()
             || self.draw_pass_sampled_image_vertices.is_empty()
             || self.draw_pass_sampled_image_indices.is_empty()
         {
             return None;
         }
 
+        let sources = self
+            .draw_pass_sampled_image_quads
+            .iter()
+            .map(|quad| quad.source.clone())
+            .collect::<Vec<_>>();
+        let draw_steps = self
+            .draw_pass_sampled_image_recording_steps
+            .iter()
+            .map(|step| NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep {
+                resource_index: step.resource_index,
+                first_index: step.first_index,
+                index_count: step.index_count,
+                fit: Some(step.fit),
+            })
+            .collect::<Vec<_>>();
+
         Some((
             self.draw_pass_sampled_image_quads[0].source.clone(),
-            NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput::new(
+            NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput::new_batched(
                 self.draw_pass_sampled_image_vertices
                     .iter()
                     .map(|vertex| {
@@ -116,6 +133,8 @@ impl NativeVulkanSceneLiteRuntimeSnapshot {
                     })
                     .collect(),
                 self.draw_pass_sampled_image_indices.clone(),
+                sources,
+                draw_steps,
                 "scene-lite-runtime-sampled-image-draw-plan",
             ),
         ))
@@ -838,5 +857,55 @@ mod tests {
                 .command_order
                 .contains(&"cmd_bind_sampled_image_descriptor_set")
         );
+    }
+
+    #[test]
+    fn scene_lite_runtime_snapshot_builds_batched_sampled_image_geometry() {
+        let mut background = scene_lite_test_layer("background", SceneLiteLayerKind::Image);
+        background.source = Some(PathBuf::from("/tmp/scene-background.png"));
+        background.fit = FitMode::Cover;
+        background.width = Some(800.0);
+        background.height = Some(450.0);
+        let mut overlay = scene_lite_test_layer("overlay", SceneLiteLayerKind::Image);
+        overlay.source = Some(PathBuf::from("/tmp/scene-overlay.png"));
+        overlay.fit = FitMode::Tile;
+        overlay.opacity = 0.75;
+        overlay.width = Some(320.0);
+        overlay.height = Some(180.0);
+        overlay.transform.x = 64.0;
+        let item = scene_lite_test_item(vec![background, overlay], None, None);
+
+        let snapshot =
+            native_vulkan_scene_lite_runtime_snapshot(&item).expect("scene-lite snapshot");
+        let (source, sampled_geometry) = snapshot
+            .vulkanalia_sampled_image_geometry_input()
+            .expect("batched sampled image geometry");
+
+        assert_eq!(source, PathBuf::from("/tmp/scene-background.png"));
+        assert_eq!(
+            sampled_geometry.sources,
+            vec![
+                PathBuf::from("/tmp/scene-background.png"),
+                PathBuf::from("/tmp/scene-overlay.png")
+            ]
+        );
+        assert_eq!(sampled_geometry.draw_steps.len(), 2);
+        assert_eq!(sampled_geometry.draw_steps[0].resource_index, 0);
+        assert_eq!(sampled_geometry.draw_steps[0].first_index, 0);
+        assert_eq!(sampled_geometry.draw_steps[0].index_count, 6);
+        assert_eq!(sampled_geometry.draw_steps[0].fit, Some(FitMode::Cover));
+        assert_eq!(sampled_geometry.draw_steps[1].resource_index, 1);
+        assert_eq!(sampled_geometry.draw_steps[1].first_index, 6);
+        assert_eq!(sampled_geometry.draw_steps[1].index_count, 6);
+        assert_eq!(sampled_geometry.draw_steps[1].fit, Some(FitMode::Tile));
+        assert_eq!(sampled_geometry.vertices.len(), 8);
+        assert_eq!(
+            sampled_geometry.indices,
+            vec![0, 1, 2, 2, 1, 3, 4, 5, 6, 6, 5, 7]
+        );
+        assert_eq!(snapshot.vulkanalia_draw_pass.sampled_image_quad_count, 2);
+        assert_eq!(snapshot.vulkanalia_draw_pass.draw_indexed_count, 2);
+        assert_eq!(snapshot.vulkanalia_sampled_image.sampled_image_count, 2);
+        assert_eq!(snapshot.vulkanalia_sampled_image.draw_indexed_count, 2);
     }
 }
