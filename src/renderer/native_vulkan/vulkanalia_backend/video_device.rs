@@ -8,7 +8,12 @@ use vulkanalia::vk::{self, HasBuilder};
 
 use crate::renderer::native_vulkan::NativeVulkanVideoSessionCodec;
 
-use super::features::native_vulkan_vulkanalia_core_feature_snapshot;
+use super::features::{
+    NativeVulkanVulkanaliaCoreFeatureSnapshot, native_vulkan_vulkanalia_core_feature_snapshot,
+    native_vulkan_vulkanalia_vulkan12_device_features,
+    native_vulkan_vulkanalia_vulkan13_device_features,
+    native_vulkan_vulkanalia_vulkan14_device_features,
+};
 use super::queue_probe::native_vulkan_vulkanalia_video_decode_queue_family_indices;
 use super::video_codec::native_vulkan_vulkanalia_video_decode_codec_label;
 
@@ -23,6 +28,7 @@ const VIDEO_DECODE_AV1_EXTENSION_NAME: &str = "VK_KHR_video_decode_av1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(super) struct NativeVulkanVulkanaliaVideoDeviceFeatureSelection {
+    pub core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
     pub synchronization2_enabled: bool,
     pub dynamic_rendering_enabled: bool,
     pub sampler_ycbcr_conversion_enabled: bool,
@@ -95,12 +101,12 @@ pub(super) fn native_vulkan_vulkanalia_create_video_decode_device(
         .iter()
         .map(|extension| extension.as_ptr())
         .collect::<Vec<_>>();
-    let mut synchronization2_features = vk::PhysicalDeviceSynchronization2Features::builder()
-        .synchronization2(true)
-        .build();
-    let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::builder()
-        .dynamic_rendering(true)
-        .build();
+    let mut vulkan12_features =
+        native_vulkan_vulkanalia_vulkan12_device_features(feature_selection.core_features);
+    let mut vulkan13_features =
+        native_vulkan_vulkanalia_vulkan13_device_features(feature_selection.core_features);
+    let mut vulkan14_features =
+        native_vulkan_vulkanalia_vulkan14_device_features(feature_selection.core_features);
     let mut sampler_ycbcr_conversion_features =
         vk::PhysicalDeviceSamplerYcbcrConversionFeatures::builder()
             .sampler_ycbcr_conversion(true)
@@ -114,11 +120,23 @@ pub(super) fn native_vulkan_vulkanalia_create_video_decode_device(
     let mut device_create_info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queue_create_infos)
         .enabled_extension_names(&extension_name_ptrs);
-    if feature_selection.synchronization2_enabled {
-        device_create_info = device_create_info.push_next(&mut synchronization2_features);
+    if feature_selection
+        .core_features
+        .enables_vulkan_1_2_features()
+    {
+        device_create_info = device_create_info.push_next(&mut vulkan12_features);
     }
-    if feature_selection.dynamic_rendering_enabled {
-        device_create_info = device_create_info.push_next(&mut dynamic_rendering_features);
+    if feature_selection
+        .core_features
+        .enables_vulkan_1_3_features()
+    {
+        device_create_info = device_create_info.push_next(&mut vulkan13_features);
+    }
+    if feature_selection
+        .core_features
+        .enables_vulkan_1_4_features()
+    {
+        device_create_info = device_create_info.push_next(&mut vulkan14_features);
     }
     if feature_selection.sampler_ycbcr_conversion_enabled {
         device_create_info = device_create_info.push_next(&mut sampler_ycbcr_conversion_features);
@@ -290,6 +308,7 @@ pub(super) fn native_vulkan_vulkanalia_video_device_feature_selection(
         && query_vulkanalia_video_maintenance2_feature(instance, physical_device);
 
     NativeVulkanVulkanaliaVideoDeviceFeatureSelection {
+        core_features,
         synchronization2_enabled,
         dynamic_rendering_enabled,
         sampler_ycbcr_conversion_enabled,
@@ -391,6 +410,10 @@ mod tests {
     #[test]
     fn enabled_extensions_add_video_maintenance_when_features_are_selected() {
         let disabled = NativeVulkanVulkanaliaVideoDeviceFeatureSelection {
+            core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot {
+                synchronization2: true,
+                ..NativeVulkanVulkanaliaCoreFeatureSnapshot::default()
+            },
             synchronization2_enabled: true,
             dynamic_rendering_enabled: false,
             sampler_ycbcr_conversion_enabled: false,

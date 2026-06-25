@@ -15,6 +15,11 @@ use crate::renderer::native_wayland::{
     NativeWaylandHost, NativeWaylandHostOptions, NativeWaylandSurfaceHandles,
 };
 
+use super::features::{
+    NativeVulkanVulkanaliaCoreFeatureSnapshot, native_vulkan_vulkanalia_vulkan12_device_features,
+    native_vulkan_vulkanalia_vulkan13_device_features,
+    native_vulkan_vulkanalia_vulkan14_device_features,
+};
 use super::instance::{
     NativeVulkanVulkanaliaInstance,
     native_vulkan_vulkanalia_create_instance_with_required_extensions,
@@ -119,6 +124,7 @@ pub struct NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaVideoPresentFeatureSnapshot {
+    pub core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
     pub synchronization2_enabled: bool,
     pub dynamic_rendering_enabled: bool,
     pub sampler_ycbcr_conversion_enabled: bool,
@@ -297,6 +303,7 @@ fn with_video_present_device(
         video_enabled_device_extensions: context.video_enabled_device_extensions,
         present_enabled_device_extensions: context.present_enabled_device_extensions,
         feature_selection: NativeVulkanVulkanaliaVideoPresentFeatureSnapshot {
+            core_features: context.video_feature_selection.core_features,
             synchronization2_enabled: context.video_feature_selection.synchronization2_enabled
                 && context.present_feature_selection.synchronization2_enabled,
             dynamic_rendering_enabled: context.video_feature_selection.dynamic_rendering_enabled,
@@ -581,12 +588,12 @@ pub(super) fn create_video_present_device(
         })
         .collect::<Vec<_>>();
 
-    let mut synchronization2_features = vk::PhysicalDeviceSynchronization2Features::builder()
-        .synchronization2(true)
-        .build();
-    let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::builder()
-        .dynamic_rendering(true)
-        .build();
+    let mut vulkan12_features =
+        native_vulkan_vulkanalia_vulkan12_device_features(video_feature_selection.core_features);
+    let mut vulkan13_features =
+        native_vulkan_vulkanalia_vulkan13_device_features(video_feature_selection.core_features);
+    let mut vulkan14_features =
+        native_vulkan_vulkanalia_vulkan14_device_features(video_feature_selection.core_features);
     let mut sampler_ycbcr_conversion_features =
         vk::PhysicalDeviceSamplerYcbcrConversionFeatures::builder()
             .sampler_ycbcr_conversion(true)
@@ -616,10 +623,24 @@ pub(super) fn create_video_present_device(
 
     let mut device_create_info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queue_create_infos)
-        .enabled_extension_names(&extension_name_ptrs)
-        .push_next(&mut synchronization2_features);
-    if video_feature_selection.dynamic_rendering_enabled {
-        device_create_info = device_create_info.push_next(&mut dynamic_rendering_features);
+        .enabled_extension_names(&extension_name_ptrs);
+    if video_feature_selection
+        .core_features
+        .enables_vulkan_1_2_features()
+    {
+        device_create_info = device_create_info.push_next(&mut vulkan12_features);
+    }
+    if video_feature_selection
+        .core_features
+        .enables_vulkan_1_3_features()
+    {
+        device_create_info = device_create_info.push_next(&mut vulkan13_features);
+    }
+    if video_feature_selection
+        .core_features
+        .enables_vulkan_1_4_features()
+    {
+        device_create_info = device_create_info.push_next(&mut vulkan14_features);
     }
     if video_feature_selection.sampler_ycbcr_conversion_enabled {
         device_create_info = device_create_info.push_next(&mut sampler_ycbcr_conversion_features);
@@ -729,6 +750,7 @@ pub(super) fn feature_snapshot_from_context(
     context: &NativeVulkanVulkanaliaVideoPresentDeviceContext,
 ) -> NativeVulkanVulkanaliaVideoPresentFeatureSnapshot {
     NativeVulkanVulkanaliaVideoPresentFeatureSnapshot {
+        core_features: context.video_feature_selection.core_features,
         synchronization2_enabled: context.video_feature_selection.synchronization2_enabled
             && context.present_feature_selection.synchronization2_enabled,
         dynamic_rendering_enabled: context.video_feature_selection.dynamic_rendering_enabled,

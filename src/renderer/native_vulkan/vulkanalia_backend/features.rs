@@ -10,7 +10,7 @@ pub struct NativeVulkanVulkanaliaFeatureChainTemplate {
     pub requested_feature_fields: &'static [&'static str],
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaCoreFeatureSnapshot {
     pub timeline_semaphore: bool,
     pub scalar_block_layout: bool,
@@ -29,7 +29,7 @@ pub struct NativeVulkanVulkanaliaCoreFeatureSnapshot {
     pub shader_subgroup_rotate: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaVulkan14PropertySnapshot {
     pub max_push_descriptors: u32,
     pub max_combined_image_sampler_descriptor_count: u32,
@@ -148,6 +148,60 @@ pub(super) fn native_vulkan_vulkanalia_core_feature_snapshot(
     )
 }
 
+impl NativeVulkanVulkanaliaCoreFeatureSnapshot {
+    pub(super) fn enables_vulkan_1_2_features(self) -> bool {
+        self.timeline_semaphore
+            || self.scalar_block_layout
+            || self.descriptor_indexing
+            || self.runtime_descriptor_array
+            || self.buffer_device_address
+    }
+
+    pub(super) fn enables_vulkan_1_3_features(self) -> bool {
+        self.synchronization2 || self.dynamic_rendering || self.maintenance4
+    }
+
+    pub(super) fn enables_vulkan_1_4_features(self) -> bool {
+        self.dynamic_rendering_local_read
+            || self.maintenance5
+            || self.maintenance6
+            || self.push_descriptor
+    }
+}
+
+pub(super) fn native_vulkan_vulkanalia_vulkan12_device_features(
+    core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
+) -> vk::PhysicalDeviceVulkan12Features {
+    vk::PhysicalDeviceVulkan12Features::builder()
+        .timeline_semaphore(core_features.timeline_semaphore)
+        .scalar_block_layout(core_features.scalar_block_layout)
+        .descriptor_indexing(core_features.descriptor_indexing)
+        .runtime_descriptor_array(core_features.runtime_descriptor_array)
+        .buffer_device_address(core_features.buffer_device_address)
+        .build()
+}
+
+pub(super) fn native_vulkan_vulkanalia_vulkan13_device_features(
+    core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
+) -> vk::PhysicalDeviceVulkan13Features {
+    vk::PhysicalDeviceVulkan13Features::builder()
+        .synchronization2(core_features.synchronization2)
+        .dynamic_rendering(core_features.dynamic_rendering)
+        .maintenance4(core_features.maintenance4)
+        .build()
+}
+
+pub(super) fn native_vulkan_vulkanalia_vulkan14_device_features(
+    core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
+) -> vk::PhysicalDeviceVulkan14Features {
+    vk::PhysicalDeviceVulkan14Features::builder()
+        .dynamic_rendering_local_read(core_features.dynamic_rendering_local_read)
+        .maintenance5(core_features.maintenance5)
+        .maintenance6(core_features.maintenance6)
+        .push_descriptor(core_features.push_descriptor)
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,5 +281,28 @@ mod tests {
         assert!(features.push_descriptor);
         assert_eq!(properties.max_push_descriptors, 32);
         assert!(properties.identical_memory_type_requirements);
+    }
+
+    #[test]
+    fn core_feature_snapshot_builds_device_feature_chains() {
+        let features = NativeVulkanVulkanaliaCoreFeatureSnapshot {
+            timeline_semaphore: true,
+            dynamic_rendering: true,
+            maintenance5: true,
+            push_descriptor: true,
+            ..NativeVulkanVulkanaliaCoreFeatureSnapshot::default()
+        };
+
+        let vulkan12 = native_vulkan_vulkanalia_vulkan12_device_features(features);
+        let vulkan13 = native_vulkan_vulkanalia_vulkan13_device_features(features);
+        let vulkan14 = native_vulkan_vulkanalia_vulkan14_device_features(features);
+
+        assert!(features.enables_vulkan_1_2_features());
+        assert!(features.enables_vulkan_1_3_features());
+        assert!(features.enables_vulkan_1_4_features());
+        assert_ne!(vulkan12.timeline_semaphore, 0);
+        assert_ne!(vulkan13.dynamic_rendering, 0);
+        assert_ne!(vulkan14.maintenance5, 0);
+        assert_ne!(vulkan14.push_descriptor, 0);
     }
 }

@@ -15,7 +15,12 @@ use crate::renderer::native_wayland::{
     NativeWaylandHost, NativeWaylandHostOptions, NativeWaylandSurfaceHandles,
 };
 
-use super::features::native_vulkan_vulkanalia_core_feature_snapshot;
+use super::features::{
+    NativeVulkanVulkanaliaCoreFeatureSnapshot, native_vulkan_vulkanalia_core_feature_snapshot,
+    native_vulkan_vulkanalia_vulkan12_device_features,
+    native_vulkan_vulkanalia_vulkan13_device_features,
+    native_vulkan_vulkanalia_vulkan14_device_features,
+};
 use super::instance::{
     native_vulkan_vulkanalia_create_instance_with_required_extensions,
     native_vulkan_vulkanalia_destroy_instance,
@@ -89,6 +94,7 @@ pub struct NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot {
     pub available_device_extensions: Vec<String>,
     pub enabled_device_extensions: Vec<&'static str>,
     pub required_swapchain: bool,
+    pub core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
     pub synchronization2_enabled: bool,
     pub dynamic_rendering_enabled: bool,
     pub present_id_available: bool,
@@ -175,6 +181,7 @@ pub(super) struct NativeVulkanVulkanaliaSwapchainPlan {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct NativeVulkanVulkanaliaPresentFeatureSelection {
+    pub(super) core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
     pub(super) synchronization2_enabled: bool,
     pub(super) dynamic_rendering_enabled: bool,
     pub(super) present_id_enabled: bool,
@@ -471,6 +478,7 @@ fn present_device_extension_snapshot(
         available_device_extensions,
         enabled_device_extensions: enabled_present_device_extensions(&feature_selection),
         required_swapchain,
+        core_features: feature_selection.core_features,
         synchronization2_enabled: feature_selection.synchronization2_enabled,
         dynamic_rendering_enabled: feature_selection.dynamic_rendering_enabled,
         present_id_available: extension_available(
@@ -527,12 +535,12 @@ pub(super) fn create_vulkanalia_present_device(
         .map(|extension| extension.as_ptr())
         .collect::<Vec<_>>();
 
-    let mut synchronization2_features = vk::PhysicalDeviceSynchronization2Features::builder()
-        .synchronization2(true)
-        .build();
-    let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::builder()
-        .dynamic_rendering(true)
-        .build();
+    let mut vulkan12_features =
+        native_vulkan_vulkanalia_vulkan12_device_features(feature_selection.core_features);
+    let mut vulkan13_features =
+        native_vulkan_vulkanalia_vulkan13_device_features(feature_selection.core_features);
+    let mut vulkan14_features =
+        native_vulkan_vulkanalia_vulkan14_device_features(feature_selection.core_features);
     let mut present_id_features = vk::PhysicalDevicePresentIdFeaturesKHR::builder()
         .present_id(true)
         .build();
@@ -552,11 +560,23 @@ pub(super) fn create_vulkanalia_present_device(
     let mut device_create_info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queue_create_infos)
         .enabled_extension_names(&extension_name_ptrs);
-    if feature_selection.synchronization2_enabled {
-        device_create_info = device_create_info.push_next(&mut synchronization2_features);
+    if feature_selection
+        .core_features
+        .enables_vulkan_1_2_features()
+    {
+        device_create_info = device_create_info.push_next(&mut vulkan12_features);
     }
-    if feature_selection.dynamic_rendering_enabled {
-        device_create_info = device_create_info.push_next(&mut dynamic_rendering_features);
+    if feature_selection
+        .core_features
+        .enables_vulkan_1_3_features()
+    {
+        device_create_info = device_create_info.push_next(&mut vulkan13_features);
+    }
+    if feature_selection
+        .core_features
+        .enables_vulkan_1_4_features()
+    {
+        device_create_info = device_create_info.push_next(&mut vulkan14_features);
     }
     if feature_selection.present_id_enabled {
         device_create_info = device_create_info.push_next(&mut present_id_features);
@@ -611,6 +631,7 @@ pub(super) fn query_vulkanalia_present_feature_selection(
             && query_swapchain_maintenance1_feature(instance, physical_device);
 
     NativeVulkanVulkanaliaPresentFeatureSelection {
+        core_features,
         synchronization2_enabled,
         dynamic_rendering_enabled,
         present_id_enabled: present_id_supported,
@@ -1080,6 +1101,7 @@ mod tests {
     #[test]
     fn present_device_extensions_keep_swapchain_required() {
         let disabled = NativeVulkanVulkanaliaPresentFeatureSelection {
+            core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot::default(),
             synchronization2_enabled: false,
             dynamic_rendering_enabled: false,
             present_id_enabled: false,
