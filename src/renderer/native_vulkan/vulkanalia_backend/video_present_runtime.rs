@@ -803,11 +803,16 @@ fn create_video_present_session_pieces(
                     {
                         match native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources(
                             &context.device,
+                            &memory_properties,
                             resource_image_ref,
                             picture_format,
                             0,
                             selection.video_queue_family_index,
                             selection.present_queue_family_index,
+                            context.video_feature_selection.core_features.descriptor_heap,
+                            context
+                                .video_feature_selection
+                                .descriptor_heap_properties,
                         ) {
                             Ok(resources) => {
                                 let snapshot = resources.snapshot.clone();
@@ -844,6 +849,10 @@ fn create_video_present_session_pieces(
                             swapchain_format,
                             target_extent,
                             sampler.descriptor_set_layout,
+                            sampler
+                                .descriptor_heap
+                                .as_ref()
+                                .map(|_| &sampler.snapshot.descriptor_heap_plan),
                         ) {
                             Ok(resources) => {
                                 let snapshot = resources.snapshot.clone();

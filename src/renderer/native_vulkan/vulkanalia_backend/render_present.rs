@@ -2,8 +2,22 @@
 
 use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
-use vulkanalia::vk::{self, HasBuilder, KhrSwapchainExtensionDeviceCommands};
+use vulkanalia::vk::{
+    self, ExtDescriptorHeapExtensionDeviceCommands, HasBuilder, KhrSwapchainExtensionDeviceCommands,
+};
 
+use super::descriptor_heap::{
+    NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput,
+    NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
+    VulkanaliaDescriptorHeapImageSamplerResources,
+    native_vulkan_vulkanalia_create_descriptor_heap_image_sampler_resources,
+    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping,
+    native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan,
+    native_vulkan_vulkanalia_descriptor_heap_resource_bind_info,
+    native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info,
+    native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources,
+    native_vulkan_vulkanalia_write_descriptor_heap_image_sampler,
+};
 pub(super) use super::present_timing::VulkanaliaPresentTimingConfig as VulkanaliaDecodedImagePresentTimingConfig;
 use super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE;
 use super::video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot;
@@ -23,6 +37,12 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot {
     pub descriptor_pool_created: bool,
     pub descriptor_set_allocated: bool,
     pub descriptor_pool_combined_image_sampler_budget: u32,
+    pub descriptor_heap_available: bool,
+    pub descriptor_heap_plan_ready: bool,
+    pub descriptor_heap_resources_created: bool,
+    pub descriptor_heap_resource_descriptor_written: bool,
+    pub descriptor_heap_sampler_descriptor_written: bool,
+    pub descriptor_heap_plan: NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     pub ycbcr_model: &'static str,
     pub ycbcr_range: &'static str,
     pub x_chroma_offset: &'static str,
@@ -45,6 +65,7 @@ pub(super) struct VulkanaliaDecodedImagePresentSamplerResources {
     pub(super) descriptor_set_layout: vk::DescriptorSetLayout,
     pub(super) descriptor_pool: vk::DescriptorPool,
     pub(super) descriptor_set: vk::DescriptorSet,
+    pub(super) descriptor_heap: Option<VulkanaliaDescriptorHeapImageSamplerResources>,
     pub(super) snapshot: NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot,
 }
 
@@ -62,6 +83,9 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot {
     pub vertex_shader_model: &'static str,
     pub fragment_shader_model: &'static str,
     pub descriptor_sets: u32,
+    pub descriptor_model: &'static str,
+    pub descriptor_heap_mapping_enabled: bool,
+    pub descriptor_heap_pipeline_flag_enabled: bool,
     pub uses_pipeline_rendering_create_info: bool,
     pub uses_dynamic_rendering: bool,
     pub uses_ycbcr_sampler_descriptor: bool,
@@ -122,6 +146,7 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
     pub uses_synchronization2: bool,
     pub uses_submit2: bool,
     pub zero_copy_presented: bool,
+    pub descriptor_model: &'static str,
     pub ffmpeg_reference: &'static str,
 }
 
@@ -162,6 +187,7 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_pipeline_res
     target_format: vk::Format,
     extent: vk::Extent2D,
     descriptor_set_layout: vk::DescriptorSetLayout,
+    descriptor_heap_plan: Option<&NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot>,
 ) -> Result<VulkanaliaDecodedImagePresentPipelineResources, String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("decoded image present pipeline requires non-zero extent".to_owned());
@@ -188,17 +214,36 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_pipeline_res
             )?;
             let result = (|| -> Result<VulkanaliaDecodedImagePresentPipelineResources, String> {
                 let shader_entry = b"main\0";
+                let descriptor_heap_mapping_enabled = descriptor_heap_plan
+                    .map(|plan| plan.backend_ready)
+                    .unwrap_or(false);
+                let descriptor_heap_mapping =
+                    if let Some(plan) = descriptor_heap_plan.filter(|plan| plan.backend_ready) {
+                        native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping(
+                            plan, 0,
+                        )?
+                    } else {
+                        vk::DescriptorSetAndBindingMappingEXT::default()
+                    };
+                let descriptor_heap_mappings = [descriptor_heap_mapping];
+                let mut descriptor_heap_mapping_info =
+                    vk::ShaderDescriptorSetAndBindingMappingInfoEXT::builder()
+                        .mappings(&descriptor_heap_mappings)
+                        .build();
+                let mut fragment_stage = vk::PipelineShaderStageCreateInfo::builder()
+                    .stage(vk::ShaderStageFlags::FRAGMENT)
+                    .module(fragment_module)
+                    .name(shader_entry);
+                if descriptor_heap_mapping_enabled {
+                    fragment_stage = fragment_stage.push_next(&mut descriptor_heap_mapping_info);
+                }
                 let stages = [
                     vk::PipelineShaderStageCreateInfo::builder()
                         .stage(vk::ShaderStageFlags::VERTEX)
                         .module(vertex_module)
                         .name(shader_entry)
                         .build(),
-                    vk::PipelineShaderStageCreateInfo::builder()
-                        .stage(vk::ShaderStageFlags::FRAGMENT)
-                        .module(fragment_module)
-                        .name(shader_entry)
-                        .build(),
+                    fragment_stage.build(),
                 ];
                 let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder().build();
                 let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::builder()
@@ -248,7 +293,10 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_pipeline_res
                 let mut rendering_info = vk::PipelineRenderingCreateInfo::builder()
                     .color_attachment_formats(&color_attachment_formats)
                     .build();
-                let pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
+                let mut pipeline_flags2 = vk::PipelineCreateFlags2CreateInfo::builder()
+                    .flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT)
+                    .build();
+                let mut pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
                     .stages(&stages)
                     .vertex_input_state(&vertex_input)
                     .input_assembly_state(&input_assembly)
@@ -259,8 +307,11 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_pipeline_res
                     .layout(pipeline_layout)
                     .render_pass(vk::RenderPass::null())
                     .subpass(0)
-                    .push_next(&mut rendering_info)
-                    .build();
+                    .push_next(&mut rendering_info);
+                if descriptor_heap_mapping_enabled {
+                    pipeline_info = pipeline_info.push_next(&mut pipeline_flags2);
+                }
+                let pipeline_info = pipeline_info.build();
                 let (pipelines, _success_code) = unsafe {
                     device.create_graphics_pipelines(
                         vk::PipelineCache::null(),
@@ -290,6 +341,13 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_pipeline_res
                         vertex_shader_model: "gl_VertexIndex fullscreen triangle",
                         fragment_shader_model: "single combined YCbCr sampler2D",
                         descriptor_sets: 1,
+                        descriptor_model: if descriptor_heap_mapping_enabled {
+                            "VK_EXT_descriptor_heap"
+                        } else {
+                            "descriptor-set"
+                        },
+                        descriptor_heap_mapping_enabled,
+                        descriptor_heap_pipeline_flag_enabled: descriptor_heap_mapping_enabled,
                         uses_pipeline_rendering_create_info: true,
                         uses_dynamic_rendering: true,
                         uses_ycbcr_sampler_descriptor: true,
@@ -555,6 +613,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         resource_image.image,
         sampled_array_layer,
         sampler.descriptor_set,
+        sampler.descriptor_heap.as_ref(),
         pipeline.pipeline_layout,
         pipeline.pipeline,
     )?;
@@ -638,12 +697,18 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         command_order: native_vulkan_vulkanalia_decoded_image_present_command_order(
             true,
             present_timing.present_id_mode(),
+            sampler.descriptor_heap.is_some(),
         ),
         uses_pipeline_rendering_create_info: true,
         uses_dynamic_rendering: true,
         uses_synchronization2: true,
         uses_submit2: true,
         zero_copy_presented: true,
+        descriptor_model: if sampler.descriptor_heap.is_some() {
+            "VK_EXT_descriptor_heap"
+        } else {
+            "descriptor-set"
+        },
         ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,
     })
 }
@@ -698,11 +763,14 @@ fn native_vulkan_vulkanalia_destroy_partial_decoded_image_present_frame_resource
 
 pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources(
     device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
     resource_image: &VulkanaliaVideoSessionResourceImage,
     picture_format: vk::Format,
     sampled_array_layer: u32,
     video_queue_family_index: u32,
     present_queue_family_index: u32,
+    descriptor_heap_enabled: bool,
+    descriptor_heap_properties: super::features::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
 ) -> Result<VulkanaliaDecodedImagePresentSamplerResources, String> {
     if !resource_image
         .snapshot
@@ -722,6 +790,12 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_reso
     let x_chroma_offset = vk::ChromaLocation::COSITED_EVEN;
     let y_chroma_offset = vk::ChromaLocation::MIDPOINT;
     let chroma_filter = vk::Filter::LINEAR;
+    let descriptor_heap_plan = native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan(
+        NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput {
+            image_count: 1,
+            properties: descriptor_heap_properties,
+        },
+    );
 
     let conversion_info = vk::SamplerYcbcrConversionCreateInfo::builder()
         .format(picture_format)
@@ -750,7 +824,8 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_reso
             .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
             .min_lod(0.0)
             .max_lod(0.0)
-            .push_next(&mut sampler_conversion_info);
+            .push_next(&mut sampler_conversion_info)
+            .build();
         let sampler = unsafe { device.create_sampler(&sampler_info, None) }
             .map_err(|err| format!("vkCreateSampler(vulkanalia decoded present ycbcr): {err:?}"))?;
 
@@ -791,110 +866,184 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_reso
                     )
                 })?;
 
+                let mut descriptor_heap = None;
+                if descriptor_heap_enabled && descriptor_heap_plan.backend_ready {
+                    let mut heap_view_usage_info = vk::ImageViewUsageCreateInfo::builder()
+                        .usage(vk::ImageUsageFlags::SAMPLED)
+                        .build();
+                    let mut heap_view_conversion_info = vk::SamplerYcbcrConversionInfo::builder()
+                        .conversion(conversion)
+                        .build();
+                    let heap_sampled_view_info =
+                        native_vulkan_vulkanalia_decoded_image_sampled_view_create_info(
+                            resource_image.image,
+                            picture_format,
+                            sampled_array_layer,
+                            &mut heap_view_usage_info,
+                            &mut heap_view_conversion_info,
+                        );
+                    let mut heap_resources =
+                        native_vulkan_vulkanalia_create_descriptor_heap_image_sampler_resources(
+                            device,
+                            memory_properties,
+                            &descriptor_heap_plan,
+                        )?;
+                    native_vulkan_vulkanalia_write_descriptor_heap_image_sampler(
+                        device,
+                        &mut heap_resources,
+                        0,
+                        &heap_sampled_view_info,
+                        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        &sampler_info,
+                    )?;
+                    descriptor_heap = Some(heap_resources);
+                }
+
                 let result =
                     (|| -> Result<VulkanaliaDecodedImagePresentSamplerResources, String> {
                         let descriptor_budget =
                             NATIVE_VULKAN_VULKANALIA_YCBCR_DESCRIPTOR_POOL_BUDGET;
-                        let pool_size = vk::DescriptorPoolSize::builder()
-                            .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                            .descriptor_count(descriptor_budget)
-                            .build();
-                        let pool_sizes = [pool_size];
-                        let descriptor_pool_info = vk::DescriptorPoolCreateInfo::builder()
-                            .max_sets(1)
-                            .pool_sizes(&pool_sizes);
-                        let descriptor_pool = unsafe {
-                            device.create_descriptor_pool(&descriptor_pool_info, None)
-                        }
-                        .map_err(|err| {
-                            format!(
-                                "vkCreateDescriptorPool(vulkanalia decoded present ycbcr): {err:?}"
-                            )
-                        })?;
+                        let descriptor_heap_resources_created = descriptor_heap.is_some();
+                        let mut descriptor_pool = vk::DescriptorPool::null();
+                        let mut descriptor_set = vk::DescriptorSet::null();
+                        let mut descriptor_pool_created = false;
+                        let mut descriptor_set_allocated = false;
 
-                        let result =
-                        (|| -> Result<VulkanaliaDecodedImagePresentSamplerResources, String> {
-                            let descriptor_set_layouts = [descriptor_set_layout];
-                            let allocate_info = vk::DescriptorSetAllocateInfo::builder()
-                                .descriptor_pool(descriptor_pool)
-                                .set_layouts(&descriptor_set_layouts);
-                            let descriptor_sets =
-                                unsafe { device.allocate_descriptor_sets(&allocate_info) }
-                                    .map_err(|err| {
-                                        format!(
-                                            "vkAllocateDescriptorSets(vulkanalia decoded present ycbcr): {err:?}"
-                                        )
-                                    })?;
-                            let descriptor_set = descriptor_sets[0];
-                            let descriptor_image = vk::DescriptorImageInfo::builder()
-                                .sampler(sampler)
-                                .image_view(sampled_view)
-                                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                        if descriptor_heap.is_none() {
+                            let pool_size = vk::DescriptorPoolSize::builder()
+                                .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                                .descriptor_count(descriptor_budget)
                                 .build();
-                            let descriptor_images = [descriptor_image];
-                            let write = vk::WriteDescriptorSet::builder()
-                                .dst_set(descriptor_set)
-                                .dst_binding(0)
-                                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                                .image_info(&descriptor_images)
-                                .build();
-                            let descriptor_copies: [vk::CopyDescriptorSet; 0] = [];
-                            unsafe {
-                                device.update_descriptor_sets(&[write], &descriptor_copies);
+                            let pool_sizes = [pool_size];
+                            let descriptor_pool_info = vk::DescriptorPoolCreateInfo::builder()
+                                .max_sets(1)
+                                .pool_sizes(&pool_sizes);
+                            descriptor_pool = unsafe {
+                                device.create_descriptor_pool(&descriptor_pool_info, None)
                             }
+                            .map_err(|err| {
+                                format!(
+                                    "vkCreateDescriptorPool(vulkanalia decoded present ycbcr): {err:?}"
+                                )
+                            })?;
+                            descriptor_pool_created = true;
 
-                            Ok(VulkanaliaDecodedImagePresentSamplerResources {
-                                conversion,
-                                sampler,
-                                sampled_view,
-                                descriptor_set_layout,
-                                descriptor_pool,
-                                descriptor_set,
-                                snapshot: NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot {
-                                    binding: "vulkanalia",
-                                    route: "decoded-image-ycbcr-sampler-present-resource",
-                                    source_image_role: resource_image.snapshot.role,
-                                    picture_format: format!("{picture_format:?}"),
-                                    sampled_array_layer,
-                                    conversion_created: true,
-                                    sampler_created: true,
-                                    sampled_view_created: true,
-                                    descriptor_set_layout_created: true,
-                                    descriptor_pool_created: true,
-                                    descriptor_set_allocated: true,
-                                    descriptor_pool_combined_image_sampler_budget:
-                                        descriptor_budget,
-                                    ycbcr_model: sampler_ycbcr_model_label(ycbcr_model),
-                                    ycbcr_range: sampler_ycbcr_range_label(ycbcr_range),
-                                    x_chroma_offset: chroma_location_label(x_chroma_offset),
-                                    y_chroma_offset: chroma_location_label(y_chroma_offset),
-                                    chroma_filter: filter_label(chroma_filter),
-                                    descriptor_type: "combined-image-sampler",
-                                    image_layout_for_shader: "shader-read-only-optimal",
-                                    present_pass_model:
-                                        "decoded image -> immutable YCbCr combined image sampler -> dynamic rendering fullscreen graphics pass -> swapchain",
-                                    queue_transfer_model:
-                                        native_vulkan_vulkanalia_decoded_image_present_queue_model(
-                                            video_queue_family_index,
-                                            present_queue_family_index,
-                                        ),
-                                    uses_dynamic_rendering: true,
-                                    uses_synchronization2: true,
-                                    uses_submit2: true,
-                                    ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,
+                            let descriptor_result = (|| -> Result<(), String> {
+                                let descriptor_set_layouts = [descriptor_set_layout];
+                                let allocate_info = vk::DescriptorSetAllocateInfo::builder()
+                                    .descriptor_pool(descriptor_pool)
+                                    .set_layouts(&descriptor_set_layouts);
+                                let descriptor_sets = unsafe {
+                                    device.allocate_descriptor_sets(&allocate_info)
+                                }
+                                .map_err(|err| {
+                                    format!(
+                                        "vkAllocateDescriptorSets(vulkanalia decoded present ycbcr): {err:?}"
+                                    )
+                                })?;
+                                descriptor_set = descriptor_sets[0];
+                                descriptor_set_allocated = true;
+                                let descriptor_image = vk::DescriptorImageInfo::builder()
+                                    .sampler(sampler)
+                                    .image_view(sampled_view)
+                                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                                    .build();
+                                let descriptor_images = [descriptor_image];
+                                let write = vk::WriteDescriptorSet::builder()
+                                    .dst_set(descriptor_set)
+                                    .dst_binding(0)
+                                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                                    .image_info(&descriptor_images)
+                                    .build();
+                                let descriptor_copies: [vk::CopyDescriptorSet; 0] = [];
+                                unsafe {
+                                    device.update_descriptor_sets(&[write], &descriptor_copies);
+                                }
+                                Ok(())
+                            })();
+
+                            if let Err(err) = descriptor_result {
+                                unsafe {
+                                    device.destroy_descriptor_pool(descriptor_pool, None);
+                                }
+                                return Err(err);
+                            }
+                        }
+
+                        let descriptor_heap_resource_descriptor_written = descriptor_heap
+                            .as_ref()
+                            .map(|heap| heap.snapshot.resource_descriptor_written)
+                            .unwrap_or(false);
+                        let descriptor_heap_sampler_descriptor_written = descriptor_heap
+                            .as_ref()
+                            .map(|heap| heap.snapshot.sampler_descriptor_written)
+                            .unwrap_or(false);
+
+                        Ok(VulkanaliaDecodedImagePresentSamplerResources {
+                            conversion,
+                            sampler,
+                            sampled_view,
+                            descriptor_set_layout,
+                            descriptor_pool,
+                            descriptor_set,
+                            descriptor_heap: descriptor_heap.take(),
+                            snapshot: NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot {
+                                binding: "vulkanalia",
+                                route: "decoded-image-ycbcr-sampler-present-resource",
+                                source_image_role: resource_image.snapshot.role,
+                                picture_format: format!("{picture_format:?}"),
+                                sampled_array_layer,
+                                conversion_created: true,
+                                sampler_created: true,
+                                sampled_view_created: true,
+                                descriptor_set_layout_created: true,
+                                descriptor_pool_created,
+                                descriptor_set_allocated,
+                                descriptor_pool_combined_image_sampler_budget:
+                                    if descriptor_pool_created {
+                                        descriptor_budget
+                                    } else {
+                                        0
+                                    },
+                                descriptor_heap_available: descriptor_heap_enabled,
+                                descriptor_heap_plan_ready: descriptor_heap_enabled
+                                    && descriptor_heap_plan.backend_ready,
+                                descriptor_heap_resources_created,
+                                descriptor_heap_resource_descriptor_written,
+                                descriptor_heap_sampler_descriptor_written,
+                                descriptor_heap_plan,
+                                ycbcr_model: sampler_ycbcr_model_label(ycbcr_model),
+                                ycbcr_range: sampler_ycbcr_range_label(ycbcr_range),
+                                x_chroma_offset: chroma_location_label(x_chroma_offset),
+                                y_chroma_offset: chroma_location_label(y_chroma_offset),
+                                chroma_filter: filter_label(chroma_filter),
+                                descriptor_type: "combined-image-sampler",
+                                image_layout_for_shader: "shader-read-only-optimal",
+                                present_pass_model: if descriptor_heap_resources_created {
+                                    "decoded image -> VK_EXT_descriptor_heap YCbCr sampler mapping -> dynamic rendering fullscreen graphics pass -> swapchain"
+                                } else {
+                                    "decoded image -> immutable YCbCr combined image sampler -> dynamic rendering fullscreen graphics pass -> swapchain"
                                 },
-                            })
-                        })();
-
-                        if result.is_err() {
-                            unsafe {
-                                device.destroy_descriptor_pool(descriptor_pool, None);
-                            }
-                        }
-                        result
+                                queue_transfer_model:
+                                    native_vulkan_vulkanalia_decoded_image_present_queue_model(
+                                        video_queue_family_index,
+                                        present_queue_family_index,
+                                    ),
+                                uses_dynamic_rendering: true,
+                                uses_synchronization2: true,
+                                uses_submit2: true,
+                                ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,
+                            },
+                        })
                     })();
 
                 if result.is_err() {
+                    if let Some(descriptor_heap) = descriptor_heap.take() {
+                        native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(
+                            device,
+                            descriptor_heap,
+                        );
+                    }
                     unsafe {
                         device.destroy_descriptor_set_layout(descriptor_set_layout, None);
                     }
@@ -958,6 +1107,63 @@ pub(super) fn native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_la
         &mut view_conversion_info,
     )?;
 
+    if let Some(descriptor_heap) = resources.descriptor_heap.as_mut() {
+        let mut heap_view_usage_info = vk::ImageViewUsageCreateInfo::builder()
+            .usage(vk::ImageUsageFlags::SAMPLED)
+            .build();
+        let mut heap_view_conversion_info = vk::SamplerYcbcrConversionInfo::builder()
+            .conversion(resources.conversion)
+            .build();
+        let heap_sampled_view_info =
+            native_vulkan_vulkanalia_decoded_image_sampled_view_create_info(
+                resource_image.image,
+                picture_format,
+                sampled_array_layer,
+                &mut heap_view_usage_info,
+                &mut heap_view_conversion_info,
+            );
+        if let Err(err) = native_vulkan_vulkanalia_write_descriptor_heap_image_sampler(
+            device,
+            descriptor_heap,
+            0,
+            &heap_sampled_view_info,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            &vk::SamplerCreateInfo::builder()
+                .mag_filter(vk::Filter::LINEAR)
+                .min_filter(vk::Filter::LINEAR)
+                .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+                .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .min_lod(0.0)
+                .max_lod(0.0)
+                .push_next(&mut heap_view_conversion_info)
+                .build(),
+        ) {
+            unsafe {
+                device.destroy_image_view(sampled_view, None);
+            }
+            return Err(err);
+        }
+        resources
+            .snapshot
+            .descriptor_heap_resource_descriptor_written =
+            descriptor_heap.snapshot.resource_descriptor_written;
+        resources
+            .snapshot
+            .descriptor_heap_sampler_descriptor_written =
+            descriptor_heap.snapshot.sampler_descriptor_written;
+    }
+
+    if resources.descriptor_heap.is_some() {
+        unsafe {
+            device.destroy_image_view(resources.sampled_view, None);
+        }
+        resources.sampled_view = sampled_view;
+        resources.snapshot.sampled_array_layer = sampled_array_layer;
+        return Ok(());
+    }
+
     let descriptor_image = vk::DescriptorImageInfo::builder()
         .sampler(resources.sampler)
         .image_view(sampled_view)
@@ -989,6 +1195,24 @@ fn native_vulkan_vulkanalia_create_decoded_image_sampled_view(
     view_usage_info: &mut vk::ImageViewUsageCreateInfo,
     view_conversion_info: &mut vk::SamplerYcbcrConversionInfo,
 ) -> Result<vk::ImageView, String> {
+    let sampled_view_info = native_vulkan_vulkanalia_decoded_image_sampled_view_create_info(
+        image,
+        picture_format,
+        sampled_array_layer,
+        view_usage_info,
+        view_conversion_info,
+    );
+    unsafe { device.create_image_view(&sampled_view_info, None) }
+        .map_err(|err| format!("vkCreateImageView(vulkanalia decoded present ycbcr): {err:?}"))
+}
+
+fn native_vulkan_vulkanalia_decoded_image_sampled_view_create_info<'a>(
+    image: vk::Image,
+    picture_format: vk::Format,
+    sampled_array_layer: u32,
+    view_usage_info: &'a mut vk::ImageViewUsageCreateInfo,
+    view_conversion_info: &'a mut vk::SamplerYcbcrConversionInfo,
+) -> vk::ImageViewCreateInfo {
     let subresource_range = vk::ImageSubresourceRange::builder()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
         .base_mip_level(0)
@@ -996,15 +1220,14 @@ fn native_vulkan_vulkanalia_create_decoded_image_sampled_view(
         .base_array_layer(sampled_array_layer)
         .layer_count(1)
         .build();
-    let sampled_view_info = vk::ImageViewCreateInfo::builder()
+    vk::ImageViewCreateInfo::builder()
         .image(image)
         .view_type(vk::ImageViewType::_2D)
         .format(picture_format)
         .subresource_range(subresource_range)
         .push_next(view_usage_info)
-        .push_next(view_conversion_info);
-    unsafe { device.create_image_view(&sampled_view_info, None) }
-        .map_err(|err| format!("vkCreateImageView(vulkanalia decoded present ycbcr): {err:?}"))
+        .push_next(view_conversion_info)
+        .build()
 }
 
 fn native_vulkan_vulkanalia_create_present_swapchain_image_views(
@@ -1046,6 +1269,7 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
     decoded_image: vk::Image,
     sampled_array_layer: u32,
     descriptor_set: vk::DescriptorSet,
+    descriptor_heap: Option<&VulkanaliaDescriptorHeapImageSamplerResources>,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
 ) -> Result<(), String> {
@@ -1122,14 +1346,23 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
             .build();
         device.cmd_begin_rendering(command_buffer, &rendering_info);
         device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
-        device.cmd_bind_descriptor_sets(
-            command_buffer,
-            vk::PipelineBindPoint::GRAPHICS,
-            pipeline_layout,
-            0,
-            &[descriptor_set],
-            &[],
-        );
+        if let Some(descriptor_heap) = descriptor_heap {
+            let resource_bind =
+                native_vulkan_vulkanalia_descriptor_heap_resource_bind_info(descriptor_heap);
+            let sampler_bind =
+                native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info(descriptor_heap);
+            device.cmd_bind_resource_heap_ext(command_buffer, &resource_bind);
+            device.cmd_bind_sampler_heap_ext(command_buffer, &sampler_bind);
+        } else {
+            device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                pipeline_layout,
+                0,
+                &[descriptor_set],
+                &[],
+            );
+        }
         device.cmd_draw(command_buffer, 3, 1, 0, 0);
         device.cmd_end_rendering(command_buffer);
 
@@ -1217,7 +1450,15 @@ pub(super) fn native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_res
     resources: VulkanaliaDecodedImagePresentSamplerResources,
 ) {
     unsafe {
-        device.destroy_descriptor_pool(resources.descriptor_pool, None);
+        if let Some(descriptor_heap) = resources.descriptor_heap {
+            native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(
+                device,
+                descriptor_heap,
+            );
+        }
+        if resources.descriptor_pool != vk::DescriptorPool::null() {
+            device.destroy_descriptor_pool(resources.descriptor_pool, None);
+        }
         device.destroy_descriptor_set_layout(resources.descriptor_set_layout, None);
         device.destroy_image_view(resources.sampled_view, None);
         device.destroy_sampler(resources.sampler, None);
@@ -1228,14 +1469,28 @@ pub(super) fn native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_res
 pub(super) fn native_vulkan_vulkanalia_decoded_image_present_command_order(
     same_queue_family: bool,
     present_id_mode: &'static str,
+    uses_descriptor_heap: bool,
 ) -> Vec<&'static str> {
-    let mut order = if same_queue_family {
+    let bind_steps = if uses_descriptor_heap {
         vec![
+            "cmd_bind_resource_heap_ext",
+            "cmd_bind_sampler_heap_ext",
+            "draw_with_descriptor_heap_mapping",
+        ]
+    } else {
+        vec![
+            "cmd_bind_ycbcr_descriptor_set",
+            "cmd_draw_fullscreen_triangle",
+        ]
+    };
+    let mut order = if same_queue_family {
+        let mut order = vec![
             "queue_submit2_decode",
             "cmd_pipeline_barrier2_shader_read",
             "cmd_begin_rendering",
-            "cmd_bind_ycbcr_descriptor",
-            "cmd_draw_fullscreen_triangle",
+        ];
+        order.extend(bind_steps.iter().copied());
+        order.extend([
             "cmd_end_rendering",
             "cmd_pipeline_barrier2_decoded_restore",
             "cmd_pipeline_barrier2_present",
@@ -1243,15 +1498,17 @@ pub(super) fn native_vulkan_vulkanalia_decoded_image_present_command_order(
             "queue_present_khr",
             "defer_frame_slot_reuse_until_fence",
             "no_queue_wait_idle_after_present",
-        ]
+        ]);
+        order
     } else {
-        vec![
+        let mut order = vec![
             "queue_submit2_decode",
             "cmd_pipeline_barrier2_video_release",
             "cmd_pipeline_barrier2_graphics_acquire_shader_read",
             "cmd_begin_rendering",
-            "cmd_bind_ycbcr_descriptor",
-            "cmd_draw_fullscreen_triangle",
+        ];
+        order.extend(bind_steps.iter().copied());
+        order.extend([
             "cmd_end_rendering",
             "cmd_pipeline_barrier2_decoded_restore",
             "cmd_pipeline_barrier2_present",
@@ -1259,7 +1516,8 @@ pub(super) fn native_vulkan_vulkanalia_decoded_image_present_command_order(
             "queue_present_khr",
             "defer_frame_slot_reuse_until_fence",
             "no_queue_wait_idle_after_present",
-        ]
+        ]);
+        order
     };
     match present_id_mode {
         "present-id2-khr" => order.insert(order.len().saturating_sub(3), "present_id2_khr"),
@@ -1418,7 +1676,8 @@ mod tests {
 
     #[test]
     fn decoded_image_present_order_keeps_queue_ownership_explicit() {
-        let split = native_vulkan_vulkanalia_decoded_image_present_command_order(false, "disabled");
+        let split =
+            native_vulkan_vulkanalia_decoded_image_present_command_order(false, "disabled", false);
         assert!(split.contains(&"cmd_pipeline_barrier2_video_release"));
         assert!(split.contains(&"cmd_pipeline_barrier2_graphics_acquire_shader_read"));
         assert!(split.contains(&"cmd_begin_rendering"));
@@ -1426,12 +1685,23 @@ mod tests {
         assert!(split.contains(&"queue_submit2_present"));
         assert!(split.contains(&"no_queue_wait_idle_after_present"));
 
-        let same = native_vulkan_vulkanalia_decoded_image_present_command_order(true, "disabled");
+        let same =
+            native_vulkan_vulkanalia_decoded_image_present_command_order(true, "disabled", false);
         assert!(!same.contains(&"cmd_pipeline_barrier2_video_release"));
-        assert!(same.contains(&"cmd_bind_ycbcr_descriptor"));
+        assert!(same.contains(&"cmd_bind_ycbcr_descriptor_set"));
 
-        let present_id2 =
-            native_vulkan_vulkanalia_decoded_image_present_command_order(true, "present-id2-khr");
+        let heap =
+            native_vulkan_vulkanalia_decoded_image_present_command_order(true, "disabled", true);
+        assert!(heap.contains(&"cmd_bind_resource_heap_ext"));
+        assert!(heap.contains(&"cmd_bind_sampler_heap_ext"));
+        assert!(heap.contains(&"draw_with_descriptor_heap_mapping"));
+        assert!(!heap.contains(&"cmd_bind_ycbcr_descriptor_set"));
+
+        let present_id2 = native_vulkan_vulkanalia_decoded_image_present_command_order(
+            true,
+            "present-id2-khr",
+            true,
+        );
         assert!(present_id2.contains(&"present_id2_khr"));
         assert!(
             present_id2

@@ -531,11 +531,13 @@ fn native_vulkan_vulkanalia_h264_std_reference_info(
     non_existing: bool,
     pic_order_cnt: [i32; 2],
 ) -> vk::video::StdVideoDecodeH264ReferenceInfo {
+    let top_field_flag = field_pic_flag && !bottom_field_flag;
+    let bottom_field_flag = field_pic_flag && bottom_field_flag;
     vk::video::StdVideoDecodeH264ReferenceInfo {
         flags: vk::video::StdVideoDecodeH264ReferenceInfoFlags {
             _bitfield_align_1: [],
             _bitfield_1: vk::video::StdVideoDecodeH264ReferenceInfoFlags::new_bitfield_1(
-                h264_bool_u32(field_pic_flag),
+                h264_bool_u32(top_field_flag),
                 h264_bool_u32(bottom_field_flag),
                 h264_bool_u32(used_for_long_term_reference),
                 h264_bool_u32(non_existing),

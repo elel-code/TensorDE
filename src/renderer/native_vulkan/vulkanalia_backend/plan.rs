@@ -44,6 +44,8 @@ pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendP
             std::any::type_name::<vulkanalia::vk::PresentIdKHR>(),
             std::any::type_name::<vulkanalia::vk::PresentWait2InfoKHR>(),
             std::any::type_name::<vulkanalia::vk::RenderingInfo>(),
+            std::any::type_name::<vulkanalia::vk::PhysicalDeviceDescriptorHeapFeaturesEXT>(),
+            std::any::type_name::<vulkanalia::vk::BindHeapInfoEXT>(),
             std::any::type_name::<vulkanalia::vk::SamplerYcbcrConversionCreateInfo>(),
             std::any::type_name::<vulkanalia::vk::VideoBeginCodingInfoKHR>(),
             std::any::type_name::<vulkanalia::vk::VideoDecodeH264PictureInfoKHR>(),
@@ -73,7 +75,7 @@ pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendP
         preferred_optional_device_extensions: &[
             "VK_KHR_video_maintenance1",
             "VK_KHR_video_maintenance2",
-            "VK_EXT_descriptor_buffer",
+            "VK_EXT_descriptor_heap",
             "VK_KHR_present_id",
             "VK_KHR_present_wait",
             "VK_KHR_present_id2",
@@ -84,6 +86,7 @@ pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendP
             "dynamic-rendering",
             "dynamic-rendering-local-read",
             "sampler-ycbcr-conversion",
+            "descriptor-heap",
             "push-descriptor",
             "maintenance5",
             "maintenance6",
@@ -137,6 +140,10 @@ mod tests {
                 .contains(&"VK_KHR_present_wait2")
         );
         assert!(
+            plan.preferred_optional_device_extensions
+                .contains(&"VK_EXT_descriptor_heap")
+        );
+        assert!(
             plan.api_type_evidence
                 .iter()
                 .any(|name| { name.ends_with("PhysicalDeviceVulkan14Features") })
@@ -150,6 +157,16 @@ mod tests {
             plan.api_type_evidence
                 .iter()
                 .any(|name| { name.ends_with("RenderingInfo") })
+        );
+        assert!(
+            plan.api_type_evidence
+                .iter()
+                .any(|name| { name.ends_with("PhysicalDeviceDescriptorHeapFeaturesEXT") })
+        );
+        assert!(
+            plan.api_type_evidence
+                .iter()
+                .any(|name| { name.ends_with("BindHeapInfoEXT") })
         );
         assert!(
             plan.api_type_evidence

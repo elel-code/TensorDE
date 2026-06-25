@@ -3,8 +3,9 @@ use vulkanalia::Version;
 use vulkanalia::prelude::v1_4::*;
 
 use super::features::{
-    NativeVulkanVulkanaliaCoreFeatureSnapshot, NativeVulkanVulkanaliaVulkan14PropertySnapshot,
-    native_vulkan_vulkanalia_core_feature_snapshot,
+    NativeVulkanVulkanaliaCoreFeatureSnapshot,
+    NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
+    NativeVulkanVulkanaliaVulkan14PropertySnapshot, native_vulkan_vulkanalia_core_feature_snapshot,
 };
 use super::instance::{
     NATIVE_VULKAN_VULKANALIA_LOADER_CANDIDATES,
@@ -91,6 +92,7 @@ pub struct NativeVulkanVulkanaliaPhysicalDeviceSnapshot {
     pub video_session_resource_plans: Vec<NativeVulkanVulkanaliaVideoSessionResourceProbePlan>,
     pub core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
     pub vulkan_1_4_properties: NativeVulkanVulkanaliaVulkan14PropertySnapshot,
+    pub descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     pub video_maintenance_features: NativeVulkanVulkanaliaVideoMaintenanceFeatureSnapshot,
 }
 
@@ -168,7 +170,7 @@ fn probe_vulkanalia_instance_devices(
         .enumerate()
         .map(|(physical_device_index, physical_device)| {
             let properties = unsafe { instance.get_physical_device_properties(physical_device) };
-            let (core_features, vulkan_1_4_properties) =
+            let (core_features, vulkan_1_4_properties, descriptor_heap_properties) =
                 native_vulkan_vulkanalia_core_feature_snapshot(instance, physical_device);
             let device_extensions =
                 unsafe { instance.enumerate_device_extension_properties(physical_device, None) }
@@ -234,6 +236,7 @@ fn probe_vulkanalia_instance_devices(
                 device_extensions: sorted_strings(device_extensions),
                 core_features,
                 vulkan_1_4_properties,
+                descriptor_heap_properties,
                 video_maintenance_features,
             })
         })

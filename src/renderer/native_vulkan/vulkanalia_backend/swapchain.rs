@@ -16,8 +16,10 @@ use crate::renderer::native_wayland::{
 };
 
 use super::features::{
-    NativeVulkanVulkanaliaCoreFeatureSnapshot, NativeVulkanVulkanaliaVulkan14PropertySnapshot,
-    native_vulkan_vulkanalia_core_feature_snapshot,
+    DESCRIPTOR_HEAP_EXTENSION_NAME, NativeVulkanVulkanaliaCoreFeatureSnapshot,
+    NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
+    NativeVulkanVulkanaliaVulkan14PropertySnapshot, native_vulkan_vulkanalia_core_feature_snapshot,
+    native_vulkan_vulkanalia_descriptor_heap_device_features,
     native_vulkan_vulkanalia_vulkan12_device_features,
     native_vulkan_vulkanalia_vulkan13_device_features,
     native_vulkan_vulkanalia_vulkan14_device_features,
@@ -97,8 +99,11 @@ pub struct NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot {
     pub required_swapchain: bool,
     pub core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
     pub vulkan_1_4_properties: NativeVulkanVulkanaliaVulkan14PropertySnapshot,
+    pub descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     pub synchronization2_enabled: bool,
     pub dynamic_rendering_enabled: bool,
+    pub descriptor_heap_available: bool,
+    pub descriptor_heap_enabled: bool,
     pub present_id_available: bool,
     pub present_id_enabled: bool,
     pub present_id2_available: bool,
@@ -185,6 +190,7 @@ pub(super) struct NativeVulkanVulkanaliaSwapchainPlan {
 pub(super) struct NativeVulkanVulkanaliaPresentFeatureSelection {
     pub(super) core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
     pub(super) vulkan_1_4_properties: NativeVulkanVulkanaliaVulkan14PropertySnapshot,
+    pub(super) descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     pub(super) synchronization2_enabled: bool,
     pub(super) dynamic_rendering_enabled: bool,
     pub(super) present_id_enabled: bool,
@@ -483,8 +489,14 @@ fn present_device_extension_snapshot(
         required_swapchain,
         core_features: feature_selection.core_features,
         vulkan_1_4_properties: feature_selection.vulkan_1_4_properties,
+        descriptor_heap_properties: feature_selection.descriptor_heap_properties,
         synchronization2_enabled: feature_selection.synchronization2_enabled,
         dynamic_rendering_enabled: feature_selection.dynamic_rendering_enabled,
+        descriptor_heap_available: extension_available(
+            &selection.device_extensions,
+            DESCRIPTOR_HEAP_EXTENSION_NAME,
+        ),
+        descriptor_heap_enabled: feature_selection.core_features.descriptor_heap,
         present_id_available: extension_available(
             &selection.device_extensions,
             PRESENT_ID_EXTENSION_NAME,
@@ -545,6 +557,8 @@ pub(super) fn create_vulkanalia_present_device(
         native_vulkan_vulkanalia_vulkan13_device_features(feature_selection.core_features);
     let mut vulkan14_features =
         native_vulkan_vulkanalia_vulkan14_device_features(feature_selection.core_features);
+    let mut descriptor_heap_features =
+        native_vulkan_vulkanalia_descriptor_heap_device_features(feature_selection.core_features);
     let mut present_id_features = vk::PhysicalDevicePresentIdFeaturesKHR::builder()
         .present_id(true)
         .build();
@@ -582,6 +596,12 @@ pub(super) fn create_vulkanalia_present_device(
     {
         device_create_info = device_create_info.push_next(&mut vulkan14_features);
     }
+    if feature_selection
+        .core_features
+        .enables_descriptor_heap_features()
+    {
+        device_create_info = device_create_info.push_next(&mut descriptor_heap_features);
+    }
     if feature_selection.present_id_enabled {
         device_create_info = device_create_info.push_next(&mut present_id_features);
     }
@@ -616,8 +636,12 @@ pub(super) fn query_vulkanalia_present_feature_selection(
     physical_device: vk::PhysicalDevice,
     device_extensions: &[String],
 ) -> NativeVulkanVulkanaliaPresentFeatureSelection {
-    let (core_features, vulkan_1_4_properties) =
+    let (mut core_features, vulkan_1_4_properties, descriptor_heap_properties) =
         native_vulkan_vulkanalia_core_feature_snapshot(instance, physical_device);
+    if !extension_available(device_extensions, DESCRIPTOR_HEAP_EXTENSION_NAME) {
+        core_features.descriptor_heap = false;
+        core_features.descriptor_heap_capture_replay = false;
+    }
     let synchronization2_enabled = core_features.synchronization2;
     let dynamic_rendering_enabled = core_features.dynamic_rendering;
     let present_id_supported = extension_available(device_extensions, PRESENT_ID_EXTENSION_NAME)
@@ -637,6 +661,7 @@ pub(super) fn query_vulkanalia_present_feature_selection(
     NativeVulkanVulkanaliaPresentFeatureSelection {
         core_features,
         vulkan_1_4_properties,
+        descriptor_heap_properties,
         synchronization2_enabled,
         dynamic_rendering_enabled,
         present_id_enabled: present_id_supported,
@@ -665,6 +690,9 @@ pub(super) fn enabled_present_device_extensions(
     }
     if feature_selection.swapchain_maintenance1_enabled {
         extensions.push(SWAPCHAIN_MAINTENANCE1_EXTENSION_NAME);
+    }
+    if feature_selection.core_features.descriptor_heap {
+        extensions.push(DESCRIPTOR_HEAP_EXTENSION_NAME);
     }
     extensions
 }
@@ -1108,6 +1136,8 @@ mod tests {
         let disabled = NativeVulkanVulkanaliaPresentFeatureSelection {
             core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot::default(),
             vulkan_1_4_properties: NativeVulkanVulkanaliaVulkan14PropertySnapshot::default(),
+            descriptor_heap_properties:
+                NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default(),
             synchronization2_enabled: false,
             dynamic_rendering_enabled: false,
             present_id_enabled: false,
@@ -1128,6 +1158,13 @@ mod tests {
             present_wait_enabled: true,
             present_wait2_enabled: true,
             swapchain_maintenance1_enabled: true,
+            ..disabled
+        };
+        let descriptor_heap_enabled = NativeVulkanVulkanaliaPresentFeatureSelection {
+            core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot {
+                descriptor_heap: true,
+                ..NativeVulkanVulkanaliaCoreFeatureSnapshot::default()
+            },
             ..disabled
         };
 
@@ -1154,6 +1191,10 @@ mod tests {
                 PRESENT_WAIT2_EXTENSION_NAME,
                 SWAPCHAIN_MAINTENANCE1_EXTENSION_NAME,
             ]
+        );
+        assert_eq!(
+            enabled_present_device_extensions(&descriptor_heap_enabled),
+            vec!["VK_KHR_swapchain", DESCRIPTOR_HEAP_EXTENSION_NAME]
         );
     }
 

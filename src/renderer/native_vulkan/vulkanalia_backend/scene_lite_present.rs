@@ -18,6 +18,15 @@ use crate::renderer::native_wayland::{
     NativeWaylandHost, NativeWaylandHostOptions, NativeWaylandSurfaceHandles,
 };
 
+use super::descriptor_heap::{
+    DESCRIPTOR_HEAP_PUSH_INDEX_OFFSET, NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput,
+    NativeVulkanVulkanaliaDescriptorHeapImageSamplerResourceSnapshot,
+    VulkanaliaDescriptorHeapImageSamplerResources,
+    native_vulkan_vulkanalia_create_descriptor_heap_image_sampler_resources,
+    native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan,
+    native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources,
+    native_vulkan_vulkanalia_write_descriptor_heap_image_sampler,
+};
 use super::instance::{
     NativeVulkanVulkanaliaInstance,
     native_vulkan_vulkanalia_create_instance_with_required_extensions,
@@ -29,9 +38,10 @@ use super::scene_lite_draw_pass::{
     NativeVulkanVulkanaliaSceneLiteSampledImagePipelineSnapshot,
     NativeVulkanVulkanaliaSceneLiteSolidQuadCommandSnapshot,
     NativeVulkanVulkanaliaSceneLiteSolidQuadPipelineSnapshot,
+    VulkanaliaSceneLiteDescriptorHeapDrawResources,
     VulkanaliaSceneLiteSampledImageDescriptorBinding, VulkanaliaSceneLiteSampledImageDrawCommand,
-    VulkanaliaSceneLiteSampledImagePipelineResources, VulkanaliaSceneLiteSolidQuadDrawResources,
-    VulkanaliaSceneLiteSolidQuadPipelineResources,
+    VulkanaliaSceneLiteSampledImagePipelineResources, VulkanaliaSceneLiteSolidQuadDrawCommand,
+    VulkanaliaSceneLiteSolidQuadDrawResources, VulkanaliaSceneLiteSolidQuadPipelineResources,
     native_vulkan_vulkanalia_create_scene_lite_sampled_image_pipeline_resources,
     native_vulkan_vulkanalia_create_scene_lite_solid_quad_pipeline_resources,
     native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_pipeline_resources,
@@ -129,6 +139,7 @@ impl NativeVulkanVulkanaliaSceneLiteSolidQuadVertex {
 pub struct NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput {
     pub vertices: Vec<NativeVulkanVulkanaliaSceneLiteSolidQuadVertex>,
     pub indices: Vec<u32>,
+    pub draw_steps: Vec<NativeVulkanVulkanaliaSceneLiteSolidQuadDrawStep>,
     pub source_label: String,
 }
 
@@ -143,10 +154,18 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep {
+    pub layer_index: usize,
     pub resource_index: u32,
     pub first_index: u32,
     pub index_count: u32,
     pub fit: Option<FitMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeVulkanVulkanaliaSceneLiteSolidQuadDrawStep {
+    pub layer_index: usize,
+    pub first_index: u32,
+    pub index_count: u32,
 }
 
 impl NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput {
@@ -161,6 +180,7 @@ impl NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput {
             indices,
             sources: Vec::new(),
             draw_steps: vec![NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep {
+                layer_index: 0,
                 resource_index: 0,
                 first_index: 0,
                 index_count,
@@ -193,9 +213,29 @@ impl NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput {
         indices: Vec<u32>,
         source_label: impl Into<String>,
     ) -> Self {
+        let index_count = indices.len().min(u32::MAX as usize) as u32;
+        Self::new_batched(
+            vertices,
+            indices,
+            vec![NativeVulkanVulkanaliaSceneLiteSolidQuadDrawStep {
+                layer_index: 0,
+                first_index: 0,
+                index_count,
+            }],
+            source_label,
+        )
+    }
+
+    pub fn new_batched(
+        vertices: Vec<NativeVulkanVulkanaliaSceneLiteSolidQuadVertex>,
+        indices: Vec<u32>,
+        draw_steps: Vec<NativeVulkanVulkanaliaSceneLiteSolidQuadDrawStep>,
+        source_label: impl Into<String>,
+    ) -> Self {
         Self {
             vertices,
             indices,
+            draw_steps,
             source_label: source_label.into(),
         }
     }
@@ -256,6 +296,7 @@ pub struct NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot {
     pub sampled_image: NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot,
     pub sampled_images: Vec<NativeVulkanVulkanaliaSceneLiteSampledImageResourceSnapshot>,
     pub descriptor_strategy: NativeVulkanVulkanaliaSceneLiteSampledImageDescriptorStrategySnapshot,
+    pub descriptor_heap: Option<NativeVulkanVulkanaliaDescriptorHeapImageSamplerResourceSnapshot>,
     pub pipeline: NativeVulkanVulkanaliaSceneLiteSampledImagePipelineSnapshot,
     pub last_command: Option<NativeVulkanVulkanaliaSceneLiteSampledImageCommandSnapshot>,
     pub command_submit_model: &'static str,
@@ -283,6 +324,7 @@ pub struct NativeVulkanVulkanaliaSceneLiteSolidQuadGeometrySnapshot {
     pub index_buffer_bytes: u64,
     pub index_count: u32,
     pub quad_count: u32,
+    pub draw_step_count: u32,
     pub vertex_stride_bytes: u32,
     pub selected_vertex_memory_type_index: u32,
     pub selected_index_memory_type_index: u32,
@@ -316,6 +358,7 @@ struct VulkanaliaSceneLiteSolidQuadGeometryResources {
     vertex_memory: vk::DeviceMemory,
     index_buffer: vk::Buffer,
     index_memory: vk::DeviceMemory,
+    draw_steps: Vec<NativeVulkanVulkanaliaSceneLiteSolidQuadDrawStep>,
     snapshot: NativeVulkanVulkanaliaSceneLiteSolidQuadGeometrySnapshot,
 }
 
@@ -350,6 +393,7 @@ struct VulkanaliaSceneLiteSolidQuadGeometryPayload {
     vertex_count: u32,
     index_count: u32,
     quad_count: u32,
+    draw_steps: Vec<NativeVulkanVulkanaliaSceneLiteSolidQuadDrawStep>,
     source_label: String,
 }
 
@@ -711,13 +755,23 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
     let descriptor_strategy = native_vulkan_vulkanalia_scene_lite_sampled_image_descriptor_strategy(
         present_device.feature_selection.core_features,
         present_device.feature_selection.vulkan_1_4_properties,
+        present_device.feature_selection.descriptor_heap_properties,
         sampled_image_sources.len(),
     );
+    let descriptor_heap_plan = native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan(
+        NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput {
+            image_count: sampled_image_sources.len(),
+            properties: present_device.feature_selection.descriptor_heap_properties,
+        },
+    );
+    let use_descriptor_heap_primary_path =
+        descriptor_strategy.uses_descriptor_heap_primary_path && descriptor_heap_plan.backend_ready;
     let pipeline = match native_vulkan_vulkanalia_create_scene_lite_sampled_image_pipeline_resources(
         device,
         swapchain_plan.format.format,
         swapchain_plan.extent,
         descriptor_strategy.uses_push_descriptor_fast_path,
+        use_descriptor_heap_primary_path.then_some(&descriptor_heap_plan),
     ) {
         Ok(pipeline) => pipeline,
         Err(err) => {
@@ -800,6 +854,7 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
             frame_resources.command_pool,
             present_device.queue,
             pipeline.descriptor_set_layout,
+            use_descriptor_heap_primary_path,
             descriptor_strategy.uses_push_descriptor_fast_path,
             scene_lite_sampled_image_resource_sampler_mode(
                 resource_index,
@@ -834,13 +889,49 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
         };
         sampled_images.push(resource);
     }
+    let descriptor_heap = if use_descriptor_heap_primary_path {
+        match create_scene_lite_sampled_image_descriptor_heap_resources(
+            device,
+            &memory_properties,
+            &descriptor_heap_plan,
+            &sampled_images,
+        ) {
+            Ok(resources) => Some(resources),
+            Err(err) => {
+                for resource in sampled_images.drain(..) {
+                    native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resources(
+                        device, resource,
+                    );
+                }
+                destroy_scene_lite_sampled_image_geometry_resources(device, geometry);
+                native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_pipeline_resources(
+                    device, pipeline,
+                );
+                destroy_scene_lite_solid_quad_frame_resources(device, frame_resources);
+                unsafe {
+                    device.destroy_swapchain_khr(swapchain, None);
+                    present_device.device.destroy_device(None);
+                }
+                return Err(err);
+            }
+        }
+    } else {
+        None
+    };
     let draw_commands = match scene_lite_sampled_image_draw_commands(
         &geometry.draw_steps,
         &sampled_images,
+        use_descriptor_heap_primary_path,
         descriptor_strategy.uses_push_descriptor_fast_path,
     ) {
         Ok(draw_commands) => draw_commands,
         Err(err) => {
+            if let Some(descriptor_heap) = descriptor_heap {
+                native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(
+                    device,
+                    descriptor_heap,
+                );
+            }
             for resource in sampled_images.drain(..) {
                 native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resources(
                     device, resource,
@@ -866,6 +957,12 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
         ) {
             Ok(pipeline) => Some(pipeline),
             Err(err) => {
+                if let Some(descriptor_heap) = descriptor_heap {
+                    native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(
+                        device,
+                        descriptor_heap,
+                    );
+                }
                 for resource in sampled_images.drain(..) {
                     native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resources(
                         device, resource,
@@ -900,6 +997,12 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
                         solid_pipeline,
                     );
                 }
+                if let Some(descriptor_heap) = descriptor_heap {
+                    native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(
+                        device,
+                        descriptor_heap,
+                    );
+                }
                 for resource in sampled_images.drain(..) {
                     native_vulkan_vulkanalia_destroy_scene_lite_sampled_image_resources(
                         device, resource,
@@ -924,6 +1027,12 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
                     native_vulkan_vulkanalia_destroy_scene_lite_solid_quad_pipeline_resources(
                         device,
                         solid_pipeline,
+                    );
+                }
+                if let Some(descriptor_heap) = descriptor_heap {
+                    native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(
+                        device,
+                        descriptor_heap,
                     );
                 }
                 for resource in sampled_images.drain(..) {
@@ -967,6 +1076,7 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
         solid_geometry.as_ref(),
         &sampled_images,
         &draw_commands,
+        descriptor_heap.as_ref(),
         descriptor_strategy,
         &selection,
         &present_device.extension_snapshot,
@@ -983,6 +1093,12 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
         native_vulkan_vulkanalia_destroy_scene_lite_solid_quad_pipeline_resources(
             device,
             solid_pipeline,
+        );
+    }
+    if let Some(descriptor_heap) = descriptor_heap {
+        native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(
+            device,
+            descriptor_heap,
         );
     }
     for resource in sampled_images {
@@ -1210,6 +1326,7 @@ fn run_scene_lite_sampled_image_present_loop(
     solid_geometry: Option<&VulkanaliaSceneLiteSolidQuadGeometryResources>,
     sampled_images: &[VulkanaliaSceneLiteSampledImageResources],
     draw_commands: &[VulkanaliaSceneLiteSampledImageDrawCommand],
+    descriptor_heap: Option<&VulkanaliaDescriptorHeapImageSamplerResources>,
     descriptor_strategy: NativeVulkanVulkanaliaSceneLiteSampledImageDescriptorStrategySnapshot,
     selection: &super::swapchain::NativeVulkanVulkanaliaPresentQueueSelection,
     extension_snapshot: &NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
@@ -1230,16 +1347,24 @@ fn run_scene_lite_sampled_image_present_loop(
     let sampled_image = sampled_images.first().ok_or_else(|| {
         "scene-lite sampled image present requires at least one sampled image".to_owned()
     })?;
-    let solid_quad_draw = match (solid_pipeline, solid_geometry) {
-        (Some(pipeline_resources), Some(geometry)) => {
+    let solid_draw_commands = match solid_geometry {
+        Some(geometry) => Some(scene_lite_solid_quad_draw_commands(&geometry.draw_steps)?),
+        None => None,
+    };
+    let solid_quad_draw = match (
+        solid_pipeline,
+        solid_geometry,
+        solid_draw_commands.as_deref(),
+    ) {
+        (Some(pipeline_resources), Some(geometry), Some(draw_commands)) => {
             Some(VulkanaliaSceneLiteSolidQuadDrawResources {
                 pipeline_resources,
                 vertex_buffer: geometry.vertex_buffer,
                 index_buffer: geometry.index_buffer,
-                index_count: geometry.snapshot.index_count,
+                draw_commands,
             })
         }
-        (None, None) => None,
+        (None, None, None) => None,
         _ => {
             return Err(
                 "scene-lite mixed present requires both solid pipeline and solid geometry"
@@ -1247,6 +1372,11 @@ fn run_scene_lite_sampled_image_present_loop(
             );
         }
     };
+    let descriptor_heap_draw =
+        descriptor_heap.map(|resources| VulkanaliaSceneLiteDescriptorHeapDrawResources {
+            resources,
+            push_index_offset: DESCRIPTOR_HEAP_PUSH_INDEX_OFFSET,
+        });
 
     while Instant::now() < deadline {
         let present_frame_slot = frames_presented as usize % frame_resources.in_flight.len();
@@ -1293,6 +1423,7 @@ fn run_scene_lite_sampled_image_present_loop(
             swapchain_view,
             extent,
             solid_quad_draw,
+            descriptor_heap_draw,
             pipeline,
             draw_commands,
             geometry.vertex_buffer,
@@ -1418,6 +1549,7 @@ fn run_scene_lite_sampled_image_present_loop(
             .map(|resource| resource.snapshot.clone())
             .collect(),
         descriptor_strategy,
+        descriptor_heap: descriptor_heap.map(|resources| resources.snapshot.clone()),
         pipeline: pipeline.snapshot.clone(),
         last_command,
         command_submit_model: if solid_quad_draw.is_some() {
@@ -1642,6 +1774,7 @@ fn create_scene_lite_solid_quad_geometry_resources(
         vertex_memory: vertex.memory,
         index_buffer: index.buffer,
         index_memory: index.memory,
+        draw_steps: payload.draw_steps.clone(),
         snapshot: NativeVulkanVulkanaliaSceneLiteSolidQuadGeometrySnapshot {
             source_label: payload.source_label,
             vertex_count: payload.vertex_count,
@@ -1649,6 +1782,7 @@ fn create_scene_lite_solid_quad_geometry_resources(
             index_buffer_bytes: payload.index_bytes.len() as u64,
             index_count: payload.index_count,
             quad_count: payload.quad_count,
+            draw_step_count: payload.draw_steps.len().min(u32::MAX as usize) as u32,
             vertex_stride_bytes: SCENE_LITE_SOLID_QUAD_VERTEX_STRIDE_BYTES,
             selected_vertex_memory_type_index: vertex.memory_type.index,
             selected_index_memory_type_index: index.memory_type.index,
@@ -1937,6 +2071,30 @@ fn scene_lite_solid_quad_geometry_payload_from_input(
     if input.indices.len() > u32::MAX as usize {
         return Err("scene-lite solid quad index count exceeds u32".to_owned());
     }
+    if input.draw_steps.is_empty() {
+        return Err("scene-lite solid quad geometry requires at least one draw step".to_owned());
+    }
+    for (step_index, step) in input.draw_steps.iter().enumerate() {
+        if step.index_count == 0 {
+            return Err(format!(
+                "scene-lite solid quad draw step {step_index} requires at least one index"
+            ));
+        }
+        let end_index = step
+            .first_index
+            .checked_add(step.index_count)
+            .ok_or_else(|| {
+                format!("scene-lite solid quad draw step {step_index} index range overflows")
+            })?;
+        if end_index as usize > input.indices.len() {
+            return Err(format!(
+                "scene-lite solid quad draw step {step_index} index range {}..{} exceeds index count {}",
+                step.first_index,
+                end_index,
+                input.indices.len()
+            ));
+        }
+    }
 
     let vertex_bytes = scene_lite_solid_quad_vertex_bytes(&input.vertices)?;
     let index_bytes = scene_lite_solid_quad_index_bytes(&input.indices, input.vertices.len())?;
@@ -1946,6 +2104,7 @@ fn scene_lite_solid_quad_geometry_payload_from_input(
         vertex_count: input.vertices.len() as u32,
         index_count: input.indices.len() as u32,
         quad_count: (input.indices.len() / SCENE_LITE_SOLID_QUAD_INDEX_COUNT as usize) as u32,
+        draw_steps: input.draw_steps.clone(),
         source_label: input.source_label.clone(),
     })
 }
@@ -2006,9 +2165,57 @@ fn scene_lite_sampled_image_decode_sources(
         .collect()
 }
 
+fn create_scene_lite_sampled_image_descriptor_heap_resources(
+    device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    plan: &super::descriptor_heap::NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
+    sampled_images: &[VulkanaliaSceneLiteSampledImageResources],
+) -> Result<VulkanaliaDescriptorHeapImageSamplerResources, String> {
+    if sampled_images.is_empty() {
+        return Err("scene-lite descriptor heap requires at least one sampled image".to_owned());
+    }
+    let mut descriptor_heap =
+        native_vulkan_vulkanalia_create_descriptor_heap_image_sampler_resources(
+            device,
+            memory_properties,
+            plan,
+        )?;
+    descriptor_heap.snapshot.route = "scene-lite-descriptor-heap-image-sampler-retained-resource";
+    descriptor_heap.snapshot.shader_mapping_source = "heap-with-push-index";
+    descriptor_heap.snapshot.command_order = vec![
+        "create_device_addressable_resource_heap_buffer",
+        "create_device_addressable_sampler_heap_buffer",
+        "write_resource_descriptors_ext",
+        "write_sampler_descriptors_ext",
+        "cmd_bind_resource_heap_ext",
+        "cmd_bind_sampler_heap_ext",
+        "cmd_push_data_ext",
+        "draw_with_descriptor_heap_push_index_mapping",
+    ];
+    for (image_index, resource) in sampled_images.iter().enumerate() {
+        if let Err(err) = native_vulkan_vulkanalia_write_descriptor_heap_image_sampler(
+            device,
+            &mut descriptor_heap,
+            image_index,
+            &resource.image_view_create_info,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            &resource.sampler_create_info,
+        ) {
+            native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(
+                device,
+                descriptor_heap,
+            );
+            return Err(err);
+        }
+    }
+    descriptor_heap.snapshot.zero_copy_gate = "scene sampled-image heap descriptors point at retained Vulkan images; present draws sample retained GPU images without per-frame descriptor set updates";
+    Ok(descriptor_heap)
+}
+
 fn scene_lite_sampled_image_draw_commands(
     draw_steps: &[NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep],
     sampled_images: &[VulkanaliaSceneLiteSampledImageResources],
+    use_descriptor_heap_primary_path: bool,
     use_push_descriptor_fast_path: bool,
 ) -> Result<Vec<VulkanaliaSceneLiteSampledImageDrawCommand>, String> {
     let mut draw_commands = Vec::with_capacity(draw_steps.len());
@@ -2020,7 +2227,11 @@ fn scene_lite_sampled_image_draw_commands(
                 sampled_images.len()
             )
         })?;
-        let descriptor_binding = if use_push_descriptor_fast_path {
+        let descriptor_binding = if use_descriptor_heap_primary_path {
+            VulkanaliaSceneLiteSampledImageDescriptorBinding::DescriptorHeap {
+                resource_index: step.resource_index,
+            }
+        } else if use_push_descriptor_fast_path {
             VulkanaliaSceneLiteSampledImageDescriptorBinding::PushDescriptor {
                 sampler: resource.sampler,
                 image_view: resource.image_view,
@@ -2029,7 +2240,30 @@ fn scene_lite_sampled_image_draw_commands(
             VulkanaliaSceneLiteSampledImageDescriptorBinding::DescriptorSet(resource.descriptor_set)
         };
         draw_commands.push(VulkanaliaSceneLiteSampledImageDrawCommand {
+            layer_index: step.layer_index,
             descriptor_binding,
+            first_index: step.first_index,
+            index_count: step.index_count,
+        });
+    }
+    Ok(draw_commands)
+}
+
+fn scene_lite_solid_quad_draw_commands(
+    draw_steps: &[NativeVulkanVulkanaliaSceneLiteSolidQuadDrawStep],
+) -> Result<Vec<VulkanaliaSceneLiteSolidQuadDrawCommand>, String> {
+    if draw_steps.is_empty() {
+        return Err("scene-lite solid draw command list requires at least one step".to_owned());
+    }
+    let mut draw_commands = Vec::with_capacity(draw_steps.len());
+    for (step_index, step) in draw_steps.iter().enumerate() {
+        if step.index_count == 0 {
+            return Err(format!(
+                "scene-lite solid draw step {step_index} requires at least one index"
+            ));
+        }
+        draw_commands.push(VulkanaliaSceneLiteSolidQuadDrawCommand {
+            layer_index: step.layer_index,
             first_index: step.first_index,
             index_count: step.index_count,
         });
@@ -2695,12 +2929,14 @@ mod tests {
             vec![PathBuf::from("/tmp/a.png"), PathBuf::from("/tmp/b.png")],
             vec![
                 NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep {
+                    layer_index: 0,
                     resource_index: 0,
                     first_index: 0,
                     index_count: 6,
                     fit: Some(FitMode::Cover),
                 },
                 NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep {
+                    layer_index: 1,
                     resource_index: 1,
                     first_index: 6,
                     index_count: 6,

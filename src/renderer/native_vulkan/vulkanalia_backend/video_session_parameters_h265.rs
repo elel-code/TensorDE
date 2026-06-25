@@ -485,7 +485,7 @@ fn native_vulkan_vulkanalia_h265_std_short_term_ref_pic_sets(
         .collect()
 }
 
-fn native_vulkan_vulkanalia_h265_std_long_term_ref_pics_sps(
+pub(super) fn native_vulkan_vulkanalia_h265_std_long_term_ref_pics_sps(
     ref_pics: &[NativeVulkanH265LongTermRefPicSpsSnapshot],
 ) -> Result<Option<vk::video::StdVideoH265LongTermRefPicsSps>, String> {
     if ref_pics.is_empty() {
@@ -510,7 +510,7 @@ fn native_vulkan_vulkanalia_h265_std_long_term_ref_pics_sps(
     }))
 }
 
-fn native_vulkan_vulkanalia_h265_std_short_term_ref_pic_set(
+pub(super) fn native_vulkan_vulkanalia_h265_std_short_term_ref_pic_set(
     ref_pic_set: &NativeVulkanH265ShortTermRefPicSetSnapshot,
 ) -> Result<vk::video::StdVideoH265ShortTermRefPicSet, String> {
     let num_negative_pics = h265_u8(

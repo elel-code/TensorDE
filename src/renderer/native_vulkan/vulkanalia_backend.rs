@@ -4,6 +4,8 @@
 //! `native_vulkan/vulkanalia_backend/` so the Vulkanalia main path does not
 //! grow a second monolithic Vulkan file.
 
+#[path = "vulkanalia_backend/descriptor_heap.rs"]
+mod descriptor_heap;
 #[path = "vulkanalia_backend/device_probe.rs"]
 mod device_probe;
 #[path = "vulkanalia_backend/features.rs"]
@@ -87,14 +89,34 @@ mod video_session_parameters_h264;
 #[path = "vulkanalia_backend/video_session_parameters_h265.rs"]
 mod video_session_parameters_h265;
 
+#[cfg(test)]
+pub(super) fn native_vulkan_vulkanalia_h265_std_long_term_ref_pics_sps(
+    ref_pics: &[super::NativeVulkanH265LongTermRefPicSpsSnapshot],
+) -> Result<Option<vulkanalia::vk::video::StdVideoH265LongTermRefPicsSps>, String> {
+    video_session_parameters_h265::native_vulkan_vulkanalia_h265_std_long_term_ref_pics_sps(
+        ref_pics,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn native_vulkan_vulkanalia_h265_std_short_term_ref_pic_set(
+    ref_pic_set: &super::NativeVulkanH265ShortTermRefPicSetSnapshot,
+) -> Result<vulkanalia::vk::video::StdVideoH265ShortTermRefPicSet, String> {
+    video_session_parameters_h265::native_vulkan_vulkanalia_h265_std_short_term_ref_pic_set(
+        ref_pic_set,
+    )
+}
+
+pub use descriptor_heap::NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot;
 pub use device_probe::{
     NativeVulkanVulkanaliaDeviceProbeSnapshot, NativeVulkanVulkanaliaDeviceProbeTemplate,
     NativeVulkanVulkanaliaVideoMaintenanceFeatureSnapshot,
     native_vulkan_vulkanalia_device_probe_template, probe_native_vulkan_vulkanalia_devices,
 };
 pub use features::{
-    NativeVulkanVulkanaliaCoreFeatureSnapshot, NativeVulkanVulkanaliaFeatureChainTemplate,
-    NativeVulkanVulkanaliaVulkan14PropertySnapshot,
+    NativeVulkanVulkanaliaCoreFeatureSnapshot,
+    NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
+    NativeVulkanVulkanaliaFeatureChainTemplate, NativeVulkanVulkanaliaVulkan14PropertySnapshot,
     native_vulkan_vulkanalia_feature_chain_template,
 };
 #[allow(unused_imports)]
@@ -135,6 +157,7 @@ pub use scene_lite_present::{
     NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions,
     NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot,
     NativeVulkanVulkanaliaSceneLiteSampledImageVertex,
+    NativeVulkanVulkanaliaSceneLiteSolidQuadDrawStep,
     NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput,
     NativeVulkanVulkanaliaSceneLiteSolidQuadGeometrySnapshot,
     NativeVulkanVulkanaliaSceneLiteSolidQuadPresentOptions,

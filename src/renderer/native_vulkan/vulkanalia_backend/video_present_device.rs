@@ -16,7 +16,10 @@ use crate::renderer::native_wayland::{
 };
 
 use super::features::{
-    NativeVulkanVulkanaliaCoreFeatureSnapshot, native_vulkan_vulkanalia_vulkan12_device_features,
+    NativeVulkanVulkanaliaCoreFeatureSnapshot,
+    NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
+    native_vulkan_vulkanalia_descriptor_heap_device_features,
+    native_vulkan_vulkanalia_vulkan12_device_features,
     native_vulkan_vulkanalia_vulkan13_device_features,
     native_vulkan_vulkanalia_vulkan14_device_features,
 };
@@ -127,6 +130,9 @@ pub struct NativeVulkanVulkanaliaVideoPresentFeatureSnapshot {
     pub core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
     pub synchronization2_enabled: bool,
     pub dynamic_rendering_enabled: bool,
+    pub descriptor_heap_enabled: bool,
+    pub descriptor_heap_capture_replay_enabled: bool,
+    pub descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     pub sampler_ycbcr_conversion_enabled: bool,
     pub video_maintenance1_enabled: bool,
     pub video_maintenance2_enabled: bool,
@@ -307,6 +313,15 @@ fn with_video_present_device(
             synchronization2_enabled: context.video_feature_selection.synchronization2_enabled
                 && context.present_feature_selection.synchronization2_enabled,
             dynamic_rendering_enabled: context.video_feature_selection.dynamic_rendering_enabled,
+            descriptor_heap_enabled: context
+                .video_feature_selection
+                .core_features
+                .descriptor_heap,
+            descriptor_heap_capture_replay_enabled: context
+                .video_feature_selection
+                .core_features
+                .descriptor_heap_capture_replay,
+            descriptor_heap_properties: context.video_feature_selection.descriptor_heap_properties,
             sampler_ycbcr_conversion_enabled: context
                 .video_feature_selection
                 .sampler_ycbcr_conversion_enabled,
@@ -594,6 +609,9 @@ pub(super) fn create_video_present_device(
         native_vulkan_vulkanalia_vulkan13_device_features(video_feature_selection.core_features);
     let mut vulkan14_features =
         native_vulkan_vulkanalia_vulkan14_device_features(video_feature_selection.core_features);
+    let mut descriptor_heap_features = native_vulkan_vulkanalia_descriptor_heap_device_features(
+        video_feature_selection.core_features,
+    );
     let mut sampler_ycbcr_conversion_features =
         vk::PhysicalDeviceSamplerYcbcrConversionFeatures::builder()
             .sampler_ycbcr_conversion(true)
@@ -641,6 +659,12 @@ pub(super) fn create_video_present_device(
         .enables_vulkan_1_4_features()
     {
         device_create_info = device_create_info.push_next(&mut vulkan14_features);
+    }
+    if video_feature_selection
+        .core_features
+        .enables_descriptor_heap_features()
+    {
+        device_create_info = device_create_info.push_next(&mut descriptor_heap_features);
     }
     if video_feature_selection.sampler_ycbcr_conversion_enabled {
         device_create_info = device_create_info.push_next(&mut sampler_ycbcr_conversion_features);
@@ -754,6 +778,15 @@ pub(super) fn feature_snapshot_from_context(
         synchronization2_enabled: context.video_feature_selection.synchronization2_enabled
             && context.present_feature_selection.synchronization2_enabled,
         dynamic_rendering_enabled: context.video_feature_selection.dynamic_rendering_enabled,
+        descriptor_heap_enabled: context
+            .video_feature_selection
+            .core_features
+            .descriptor_heap,
+        descriptor_heap_capture_replay_enabled: context
+            .video_feature_selection
+            .core_features
+            .descriptor_heap_capture_replay,
+        descriptor_heap_properties: context.video_feature_selection.descriptor_heap_properties,
         sampler_ycbcr_conversion_enabled: context
             .video_feature_selection
             .sampler_ycbcr_conversion_enabled,

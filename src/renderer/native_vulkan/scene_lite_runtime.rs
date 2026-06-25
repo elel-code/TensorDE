@@ -13,6 +13,7 @@ use super::vulkanalia_backend::{
     NativeVulkanVulkanaliaSceneLiteSampledImagePlanInput,
     NativeVulkanVulkanaliaSceneLiteSampledImagePlanSnapshot,
     NativeVulkanVulkanaliaSceneLiteSampledImageVertex,
+    NativeVulkanVulkanaliaSceneLiteSolidQuadDrawStep,
     NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput,
     NativeVulkanVulkanaliaSceneLiteSolidQuadVertex,
     native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot,
@@ -74,19 +75,32 @@ impl NativeVulkanSceneLiteRuntimeSnapshot {
             return None;
         }
 
-        Some(NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput::new(
-            self.draw_pass_quad_vertices
-                .iter()
-                .map(|vertex| {
-                    NativeVulkanVulkanaliaSceneLiteSolidQuadVertex::new(
-                        vertex.position,
-                        vertex.rgba,
-                    )
-                })
-                .collect(),
-            self.draw_pass_quad_indices.clone(),
-            "scene-lite-runtime-draw-plan",
-        ))
+        let draw_steps = self
+            .draw_pass_quad_recording_steps
+            .iter()
+            .map(|step| NativeVulkanVulkanaliaSceneLiteSolidQuadDrawStep {
+                layer_index: step.layer_index,
+                first_index: step.first_index,
+                index_count: step.index_count,
+            })
+            .collect::<Vec<_>>();
+
+        Some(
+            NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput::new_batched(
+                self.draw_pass_quad_vertices
+                    .iter()
+                    .map(|vertex| {
+                        NativeVulkanVulkanaliaSceneLiteSolidQuadVertex::new(
+                            vertex.position,
+                            vertex.rgba,
+                        )
+                    })
+                    .collect(),
+                self.draw_pass_quad_indices.clone(),
+                draw_steps,
+                "scene-lite-runtime-draw-plan",
+            ),
+        )
     }
 
     pub fn vulkanalia_sampled_image_geometry_input(
@@ -112,6 +126,7 @@ impl NativeVulkanSceneLiteRuntimeSnapshot {
             .draw_pass_sampled_image_recording_steps
             .iter()
             .map(|step| NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep {
+                layer_index: step.layer_index,
                 resource_index: step.resource_index,
                 first_index: step.first_index,
                 index_count: step.index_count,
@@ -151,19 +166,32 @@ impl NativeVulkanSceneLiteRuntimeSnapshot {
             return None;
         }
 
-        Some(NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput::new(
-            self.draw_pass_quad_vertices
-                .iter()
-                .map(|vertex| {
-                    NativeVulkanVulkanaliaSceneLiteSolidQuadVertex::new(
-                        vertex.position,
-                        vertex.rgba,
-                    )
-                })
-                .collect(),
-            self.draw_pass_quad_indices.clone(),
-            "scene-lite-runtime-mixed-solid-quad-draw-plan",
-        ))
+        let draw_steps = self
+            .draw_pass_quad_recording_steps
+            .iter()
+            .map(|step| NativeVulkanVulkanaliaSceneLiteSolidQuadDrawStep {
+                layer_index: step.layer_index,
+                first_index: step.first_index,
+                index_count: step.index_count,
+            })
+            .collect::<Vec<_>>();
+
+        Some(
+            NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput::new_batched(
+                self.draw_pass_quad_vertices
+                    .iter()
+                    .map(|vertex| {
+                        NativeVulkanVulkanaliaSceneLiteSolidQuadVertex::new(
+                            vertex.position,
+                            vertex.rgba,
+                        )
+                    })
+                    .collect(),
+                self.draw_pass_quad_indices.clone(),
+                draw_steps,
+                "scene-lite-runtime-mixed-solid-quad-draw-plan",
+            ),
+        )
     }
 }
 
@@ -944,13 +972,19 @@ mod tests {
             snapshot
                 .vulkanalia_draw_pass
                 .command_order
-                .contains(&"cmd_bind_scene_lite_solid_quad_pipeline")
+                .contains(&"cmd_bind_scene_lite_solid_quad_pipeline_as_needed")
         );
         assert!(
             snapshot
                 .vulkanalia_draw_pass
                 .command_order
-                .contains(&"cmd_bind_scene_lite_sampled_image_pipeline")
+                .contains(&"cmd_bind_scene_lite_sampled_image_pipeline_as_needed")
+        );
+        assert!(
+            snapshot
+                .vulkanalia_draw_pass
+                .command_order
+                .contains(&"cmd_draw_indexed_in_scene_layer_order")
         );
     }
 

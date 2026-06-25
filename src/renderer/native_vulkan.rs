@@ -8583,6 +8583,85 @@ mod tests {
     };
     use std::path::PathBuf;
 
+    #[cfg(feature = "native-vulkan-gst-video")]
+    struct NativeVulkanTestDecodeReadbackLayout {
+        format: &'static str,
+        y_plane_bytes: u64,
+        uv_plane_bytes: u64,
+        size: u64,
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    struct NativeVulkanTestDecodedPlaneFormats {
+        y_view_format: vk::Format,
+        uv_view_format: vk::Format,
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    fn native_vulkan_video_decode_readback_layout(
+        format: vk::Format,
+        extent: vk::Extent2D,
+    ) -> Option<NativeVulkanTestDecodeReadbackLayout> {
+        let pixels = u64::from(extent.width).checked_mul(u64::from(extent.height))?;
+        match format {
+            vk::Format::G8_B8R8_2PLANE_420_UNORM => Some(NativeVulkanTestDecodeReadbackLayout {
+                format: "G8_B8R8_2PLANE_420_UNORM",
+                y_plane_bytes: pixels,
+                uv_plane_bytes: pixels / 2,
+                size: pixels * 3 / 2,
+            }),
+            vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 => {
+                Some(NativeVulkanTestDecodeReadbackLayout {
+                    format: "G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16",
+                    y_plane_bytes: pixels * 2,
+                    uv_plane_bytes: pixels,
+                    size: pixels * 3,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    fn native_vulkan_decoded_video_plane_formats(
+        format: vk::Format,
+    ) -> Option<NativeVulkanTestDecodedPlaneFormats> {
+        match format {
+            vk::Format::G8_B8R8_2PLANE_420_UNORM => Some(NativeVulkanTestDecodedPlaneFormats {
+                y_view_format: vk::Format::R8_UNORM,
+                uv_view_format: vk::Format::R8G8_UNORM,
+            }),
+            vk::Format::G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 => {
+                Some(NativeVulkanTestDecodedPlaneFormats {
+                    y_view_format: vk::Format::R16_UNORM,
+                    uv_view_format: vk::Format::R16G16_UNORM,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "native-vulkan-gst-video")]
+    fn native_vulkan_h264_reference_info_flags(
+        field_pic_flag: bool,
+        bottom_field_flag: bool,
+        used_for_long_term_reference: bool,
+        non_existing: bool,
+    ) -> vk::video::StdVideoDecodeH264ReferenceInfoFlags {
+        let top_field_flag = field_pic_flag && !bottom_field_flag;
+        let bottom_field_flag = field_pic_flag && bottom_field_flag;
+        vk::video::StdVideoDecodeH264ReferenceInfoFlags {
+            _bitfield_align_1: [],
+            _bitfield_1: vk::video::StdVideoDecodeH264ReferenceInfoFlags::new_bitfield_1(
+                native_vulkan_bool_u32(top_field_flag),
+                native_vulkan_bool_u32(bottom_field_flag),
+                native_vulkan_bool_u32(used_for_long_term_reference),
+                native_vulkan_bool_u32(non_existing),
+            ),
+            __bindgen_padding_0: [0; 3],
+        }
+    }
+
     #[test]
     fn reports_vulkan_spike_as_built_but_not_default() {
         let capabilities = capabilities();
@@ -9465,8 +9544,8 @@ mod tests {
                 allow_screen_content_tools: 0,
                 force_integer_mv: 2,
                 allow_high_precision_mv: false,
-                interpolation_filter:
-                    vk::video::STD_VIDEO_AV1_INTERPOLATION_FILTER_EIGHTTAP,
+                interpolation_filter: vk::video::STD_VIDEO_AV1_INTERPOLATION_FILTER_EIGHTTAP.0
+                    as u32,
                 interpolation_filter_label: "eighttap",
                 is_filter_switchable: false,
                 is_motion_mode_switchable: false,
@@ -11536,7 +11615,7 @@ mod tests {
         let b_slice = access_units[2].first_slice.as_mut().unwrap();
         b_slice.nal_ref_idc = 0;
         b_slice.slice_type = 6;
-        b_slice.slice_type_normalized = vk::video::STD_VIDEO_H264_SLICE_TYPE_B;
+        b_slice.slice_type_normalized = vk::video::STD_VIDEO_H264_SLICE_TYPE_B.0 as u32;
         b_slice.num_ref_idx_l0_active_minus1 = Some(0);
         b_slice.num_ref_idx_l1_active_minus1 = Some(0);
         b_slice.is_reference = false;
@@ -11586,7 +11665,7 @@ mod tests {
         let b_slice = access_units[3].first_slice.as_mut().unwrap();
         b_slice.nal_ref_idc = 0;
         b_slice.slice_type = 6;
-        b_slice.slice_type_normalized = vk::video::STD_VIDEO_H264_SLICE_TYPE_B;
+        b_slice.slice_type_normalized = vk::video::STD_VIDEO_H264_SLICE_TYPE_B.0 as u32;
         b_slice.num_ref_idx_l0_active_minus1 = Some(0);
         b_slice.num_ref_idx_l1_active_minus1 = Some(0);
         b_slice.ref_pic_list_modification_l1 = true;
@@ -11740,18 +11819,19 @@ mod tests {
     #[cfg(feature = "native-vulkan-gst-video")]
     #[test]
     fn maps_h265_sps_long_term_refs_to_vulkan_std() {
-        let std_refs = native_vulkan_h265_std_long_term_ref_pics_sps(&[
-            NativeVulkanH265LongTermRefPicSpsSnapshot {
-                lt_ref_pic_poc_lsb_sps: 4,
-                used_by_curr_pic_lt_sps_flag: true,
-            },
-            NativeVulkanH265LongTermRefPicSpsSnapshot {
-                lt_ref_pic_poc_lsb_sps: 9,
-                used_by_curr_pic_lt_sps_flag: false,
-            },
-        ])
-        .expect("H.265 SPS long-term refs should map")
-        .expect("non-empty refs should produce STD payload");
+        let std_refs =
+            vulkanalia_backend::native_vulkan_vulkanalia_h265_std_long_term_ref_pics_sps(&[
+                NativeVulkanH265LongTermRefPicSpsSnapshot {
+                    lt_ref_pic_poc_lsb_sps: 4,
+                    used_by_curr_pic_lt_sps_flag: true,
+                },
+                NativeVulkanH265LongTermRefPicSpsSnapshot {
+                    lt_ref_pic_poc_lsb_sps: 9,
+                    used_by_curr_pic_lt_sps_flag: false,
+                },
+            ])
+            .expect("H.265 SPS long-term refs should map")
+            .expect("non-empty refs should produce STD payload");
 
         assert_eq!(std_refs.used_by_curr_pic_lt_sps_flag, 0b01);
         assert_eq!(std_refs.lt_ref_pic_poc_lsb_sps[0], 4);
@@ -11958,8 +12038,9 @@ mod tests {
         assert_eq!(rps.used_positive_delta_pocs, vec![1]);
         assert_eq!(rps.used_by_current_count, 3);
 
-        let std_rps = native_vulkan_h265_std_short_term_ref_pic_set(&rps)
-            .expect("predicted RPS should map to Vulkan STD fields");
+        let std_rps =
+            vulkanalia_backend::native_vulkan_vulkanalia_h265_std_short_term_ref_pic_set(&rps)
+                .expect("predicted RPS should map to Vulkan STD fields");
         assert_eq!(std_rps.flags.inter_ref_pic_set_prediction_flag(), 1);
         assert_eq!(std_rps.flags.delta_rps_sign(), 1);
         assert_eq!(std_rps.delta_idx_minus1, 0);

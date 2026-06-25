@@ -9,7 +9,10 @@ use vulkanalia::vk::{self, HasBuilder};
 use crate::renderer::native_vulkan::NativeVulkanVideoSessionCodec;
 
 use super::features::{
-    NativeVulkanVulkanaliaCoreFeatureSnapshot, native_vulkan_vulkanalia_core_feature_snapshot,
+    DESCRIPTOR_HEAP_EXTENSION_NAME, NativeVulkanVulkanaliaCoreFeatureSnapshot,
+    NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
+    native_vulkan_vulkanalia_core_feature_snapshot,
+    native_vulkan_vulkanalia_descriptor_heap_device_features,
     native_vulkan_vulkanalia_vulkan12_device_features,
     native_vulkan_vulkanalia_vulkan13_device_features,
     native_vulkan_vulkanalia_vulkan14_device_features,
@@ -29,6 +32,7 @@ const VIDEO_DECODE_AV1_EXTENSION_NAME: &str = "VK_KHR_video_decode_av1";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(super) struct NativeVulkanVulkanaliaVideoDeviceFeatureSelection {
     pub core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
+    pub descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     pub synchronization2_enabled: bool,
     pub dynamic_rendering_enabled: bool,
     pub sampler_ycbcr_conversion_enabled: bool,
@@ -107,6 +111,8 @@ pub(super) fn native_vulkan_vulkanalia_create_video_decode_device(
         native_vulkan_vulkanalia_vulkan13_device_features(feature_selection.core_features);
     let mut vulkan14_features =
         native_vulkan_vulkanalia_vulkan14_device_features(feature_selection.core_features);
+    let mut descriptor_heap_features =
+        native_vulkan_vulkanalia_descriptor_heap_device_features(feature_selection.core_features);
     let mut sampler_ycbcr_conversion_features =
         vk::PhysicalDeviceSamplerYcbcrConversionFeatures::builder()
             .sampler_ycbcr_conversion(true)
@@ -137,6 +143,12 @@ pub(super) fn native_vulkan_vulkanalia_create_video_decode_device(
         .enables_vulkan_1_4_features()
     {
         device_create_info = device_create_info.push_next(&mut vulkan14_features);
+    }
+    if feature_selection
+        .core_features
+        .enables_descriptor_heap_features()
+    {
+        device_create_info = device_create_info.push_next(&mut descriptor_heap_features);
     }
     if feature_selection.sampler_ycbcr_conversion_enabled {
         device_create_info = device_create_info.push_next(&mut sampler_ycbcr_conversion_features);
@@ -281,6 +293,11 @@ pub(super) fn native_vulkan_vulkanalia_video_decode_device_extensions(
     {
         enabled_device_extensions.push(VIDEO_MAINTENANCE2_EXTENSION_NAME);
     }
+    if feature_selection.core_features.descriptor_heap
+        && !enabled_device_extensions.contains(&DESCRIPTOR_HEAP_EXTENSION_NAME)
+    {
+        enabled_device_extensions.push(DESCRIPTOR_HEAP_EXTENSION_NAME);
+    }
     enabled_device_extensions
 }
 
@@ -289,8 +306,15 @@ pub(super) fn native_vulkan_vulkanalia_video_device_feature_selection(
     physical_device: vk::PhysicalDevice,
     device_extensions: &[String],
 ) -> NativeVulkanVulkanaliaVideoDeviceFeatureSelection {
-    let (core_features, _) =
+    let (mut core_features, _, descriptor_heap_properties) =
         native_vulkan_vulkanalia_core_feature_snapshot(instance, physical_device);
+    if !native_vulkan_vulkanalia_video_device_extension_available(
+        device_extensions,
+        DESCRIPTOR_HEAP_EXTENSION_NAME,
+    ) {
+        core_features.descriptor_heap = false;
+        core_features.descriptor_heap_capture_replay = false;
+    }
     let synchronization2_enabled = core_features.synchronization2;
     let dynamic_rendering_enabled = core_features.dynamic_rendering;
     let sampler_ycbcr_conversion_enabled =
@@ -309,6 +333,7 @@ pub(super) fn native_vulkan_vulkanalia_video_device_feature_selection(
 
     NativeVulkanVulkanaliaVideoDeviceFeatureSelection {
         core_features,
+        descriptor_heap_properties,
         synchronization2_enabled,
         dynamic_rendering_enabled,
         sampler_ycbcr_conversion_enabled,
@@ -414,6 +439,8 @@ mod tests {
                 synchronization2: true,
                 ..NativeVulkanVulkanaliaCoreFeatureSnapshot::default()
             },
+            descriptor_heap_properties:
+                NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default(),
             synchronization2_enabled: true,
             dynamic_rendering_enabled: false,
             sampler_ycbcr_conversion_enabled: false,
@@ -425,6 +452,14 @@ mod tests {
             video_maintenance1_enabled: true,
             video_maintenance2_enabled: true,
             inline_session_parameters_enabled: true,
+            ..disabled
+        };
+        let descriptor_heap_enabled = NativeVulkanVulkanaliaVideoDeviceFeatureSelection {
+            core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot {
+                synchronization2: true,
+                descriptor_heap: true,
+                ..NativeVulkanVulkanaliaCoreFeatureSnapshot::default()
+            },
             ..disabled
         };
 
@@ -441,6 +476,13 @@ mod tests {
                 enabled,
             )
             .contains(&VIDEO_MAINTENANCE2_EXTENSION_NAME)
+        );
+        assert!(
+            native_vulkan_vulkanalia_video_decode_device_extensions(
+                NativeVulkanVideoSessionCodec::H265Main8,
+                descriptor_heap_enabled,
+            )
+            .contains(&DESCRIPTOR_HEAP_EXTENSION_NAME)
         );
         assert_eq!(
             enabled.inline_session_parameter_codecs(),
