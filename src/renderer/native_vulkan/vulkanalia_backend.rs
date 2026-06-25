@@ -121,6 +121,8 @@ pub(crate) use scene_lite_draw_pass::{
 };
 pub use scene_lite_draw_pass::{
     NativeVulkanVulkanaliaSceneLiteDrawPassSnapshot,
+    NativeVulkanVulkanaliaSceneLiteSampledImageCommandSnapshot,
+    NativeVulkanVulkanaliaSceneLiteSampledImagePipelineSnapshot,
     NativeVulkanVulkanaliaSceneLiteSolidQuadCommandSnapshot,
     NativeVulkanVulkanaliaSceneLiteSolidQuadPipelineSnapshot,
 };

@@ -755,22 +755,21 @@ mod tests {
         );
         assert_eq!(snapshot.draw_pass_sampled_image_vertices[0].uv, [0.0, 0.0]);
         assert_eq!(snapshot.draw_pass_sampled_image_vertices[3].uv, [1.0, 1.0]);
-        assert!(!snapshot.vulkanalia_draw_pass.backend_ready);
+        assert!(snapshot.vulkanalia_draw_pass.backend_ready);
         assert_eq!(
             snapshot.vulkanalia_draw_pass.backend_status,
-            "sampled-image-dynamic-rendering-recording-pending"
+            "sampled-image-dynamic-rendering-recording-ready"
         );
+        assert_eq!(snapshot.vulkanalia_draw_pass.blocking_reason, None);
         assert_eq!(snapshot.vulkanalia_draw_pass.descriptor_set_count, 1);
         assert_eq!(snapshot.vulkanalia_draw_pass.vertex_stride_bytes, 20);
+        assert_eq!(snapshot.vulkanalia_draw_pass.draw_indexed_count, 1);
         assert!(snapshot.vulkanalia_sampled_image.backend_ready);
         assert_eq!(
             snapshot.vulkanalia_sampled_image.backend_status,
-            "sampled-image-upload-descriptor-plan-ready"
+            "sampled-image-dynamic-rendering-recording-ready"
         );
-        assert_eq!(
-            snapshot.vulkanalia_sampled_image.blocking_reason,
-            Some("sampled-image-command-recording-not-yet-wired")
-        );
+        assert_eq!(snapshot.vulkanalia_sampled_image.blocking_reason, None);
         assert_eq!(
             snapshot.vulkanalia_sampled_image.sampled_image_sources,
             vec![PathBuf::from("/tmp/scene-hero.png")]

@@ -69,10 +69,7 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_sampled_image_plan(
         && input.vertex_buffer_bytes > 0
         && input.index_buffer_bytes > 0;
     let (backend_status, blocking_reason) = if backend_ready {
-        (
-            "sampled-image-upload-descriptor-plan-ready",
-            Some("sampled-image-command-recording-not-yet-wired"),
-        )
+        ("sampled-image-dynamic-rendering-recording-ready", None)
     } else if sampled_image_count == 0 {
         ("no-sampled-image-quads", Some("no-sampled-image-quads"))
     } else {
@@ -173,12 +170,9 @@ mod tests {
         assert!(snapshot.backend_ready);
         assert_eq!(
             snapshot.backend_status,
-            "sampled-image-upload-descriptor-plan-ready"
+            "sampled-image-dynamic-rendering-recording-ready"
         );
-        assert_eq!(
-            snapshot.blocking_reason,
-            Some("sampled-image-command-recording-not-yet-wired")
-        );
+        assert_eq!(snapshot.blocking_reason, None);
         assert_eq!(snapshot.descriptor_set_count, 1);
         assert_eq!(snapshot.descriptor_type, "combined-image-sampler");
         assert_eq!(snapshot.sampled_image_format, "R8G8B8A8_UNORM");
