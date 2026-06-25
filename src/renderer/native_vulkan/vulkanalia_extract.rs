@@ -9,6 +9,11 @@ use super::codec_snapshots::{
     NativeVulkanAv1SequenceHeaderSnapshot, NativeVulkanH264ParameterSetSnapshot,
     NativeVulkanH265ParameterSetSnapshot,
 };
+use super::video_extract::{
+    native_vulkan_extract_video_bitstream, native_vulkan_h265_ready_prefix_bitstream_window,
+    native_vulkan_h265_ready_prefix_bitstream_window_mode,
+    native_vulkan_validate_h264_ready_prefix, native_vulkan_validate_h265_ready_prefix,
+};
 use super::vulkanalia_backend::{
     NativeVulkanVulkanaliaAv1CdefPlan, NativeVulkanVulkanaliaAv1FrameSubmitInput,
     NativeVulkanVulkanaliaAv1GlobalMotionPlan, NativeVulkanVulkanaliaAv1LoopFilterPlan,
@@ -23,9 +28,6 @@ use super::vulkanalia_backend::{
 };
 use super::{
     NativeVulkanError, NativeVulkanVideoSessionCodec, NativeVulkanVideoSessionSmokeOptions,
-    native_vulkan_extract_video_bitstream, native_vulkan_h265_ready_prefix_bitstream_window,
-    native_vulkan_h265_ready_prefix_bitstream_window_mode,
-    native_vulkan_validate_h264_ready_prefix, native_vulkan_validate_h265_ready_prefix,
 };
 
 pub fn native_vulkan_extract_h264_parameter_sets_for_vulkanalia(
