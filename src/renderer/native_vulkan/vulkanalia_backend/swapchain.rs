@@ -86,6 +86,7 @@ pub struct NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot {
     pub enabled_device_extensions: Vec<&'static str>,
     pub required_swapchain: bool,
     pub synchronization2_enabled: bool,
+    pub dynamic_rendering_enabled: bool,
     pub present_id_available: bool,
     pub present_id_enabled: bool,
     pub present_id2_available: bool,
@@ -161,6 +162,7 @@ pub(super) struct NativeVulkanVulkanaliaSwapchainPlan {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct NativeVulkanVulkanaliaPresentFeatureSelection {
     pub(super) synchronization2_enabled: bool,
+    pub(super) dynamic_rendering_enabled: bool,
     pub(super) present_id_enabled: bool,
     pub(super) present_id2_enabled: bool,
     pub(super) present_wait_enabled: bool,
@@ -451,6 +453,7 @@ fn present_device_extension_snapshot(
         enabled_device_extensions: enabled_present_device_extensions(&feature_selection),
         required_swapchain,
         synchronization2_enabled: feature_selection.synchronization2_enabled,
+        dynamic_rendering_enabled: feature_selection.dynamic_rendering_enabled,
         present_id_available: extension_available(
             &selection.device_extensions,
             PRESENT_ID_EXTENSION_NAME,
@@ -508,6 +511,9 @@ pub(super) fn create_vulkanalia_present_device(
     let mut synchronization2_features = vk::PhysicalDeviceSynchronization2Features::builder()
         .synchronization2(true)
         .build();
+    let mut dynamic_rendering_features = vk::PhysicalDeviceDynamicRenderingFeatures::builder()
+        .dynamic_rendering(true)
+        .build();
     let mut present_id_features = vk::PhysicalDevicePresentIdFeaturesKHR::builder()
         .present_id(true)
         .build();
@@ -529,6 +535,9 @@ pub(super) fn create_vulkanalia_present_device(
         .enabled_extension_names(&extension_name_ptrs);
     if feature_selection.synchronization2_enabled {
         device_create_info = device_create_info.push_next(&mut synchronization2_features);
+    }
+    if feature_selection.dynamic_rendering_enabled {
+        device_create_info = device_create_info.push_next(&mut dynamic_rendering_features);
     }
     if feature_selection.present_id_enabled {
         device_create_info = device_create_info.push_next(&mut present_id_features);
@@ -565,6 +574,7 @@ pub(super) fn query_vulkanalia_present_feature_selection(
     device_extensions: &[String],
 ) -> NativeVulkanVulkanaliaPresentFeatureSelection {
     let synchronization2_enabled = query_synchronization2_feature(instance, physical_device);
+    let dynamic_rendering_enabled = query_dynamic_rendering_feature(instance, physical_device);
     let present_id_supported = extension_available(device_extensions, PRESENT_ID_EXTENSION_NAME)
         && query_present_id_feature(instance, physical_device);
     let present_wait_supported = present_id_supported
@@ -581,6 +591,7 @@ pub(super) fn query_vulkanalia_present_feature_selection(
 
     NativeVulkanVulkanaliaPresentFeatureSelection {
         synchronization2_enabled,
+        dynamic_rendering_enabled,
         present_id_enabled: present_id_supported,
         present_id2_enabled: present_id2_supported,
         present_wait_enabled: present_wait_supported,
@@ -832,6 +843,20 @@ fn query_synchronization2_feature(
     feature.synchronization2 != 0
 }
 
+fn query_dynamic_rendering_feature(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+) -> bool {
+    let mut feature = vk::PhysicalDeviceDynamicRenderingFeatures::default();
+    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
+        .push_next(&mut feature)
+        .build();
+    unsafe {
+        instance.get_physical_device_features2(physical_device, &mut features2);
+    }
+    feature.dynamic_rendering != 0
+}
+
 fn query_present_id_feature(instance: &Instance, physical_device: vk::PhysicalDevice) -> bool {
     let mut feature = vk::PhysicalDevicePresentIdFeaturesKHR::default();
     let mut features2 = vk::PhysicalDeviceFeatures2::builder()
@@ -960,6 +985,7 @@ mod tests {
     fn present_device_extensions_keep_swapchain_required() {
         let disabled = NativeVulkanVulkanaliaPresentFeatureSelection {
             synchronization2_enabled: false,
+            dynamic_rendering_enabled: false,
             present_id_enabled: false,
             present_id2_enabled: false,
             present_wait_enabled: false,

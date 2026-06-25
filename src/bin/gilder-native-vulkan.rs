@@ -42,6 +42,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     use gilder::renderer::native_vulkan::{
         NativeVulkanVulkanaliaClearPresentOptions,
+        NativeVulkanVulkanaliaSceneLiteSolidQuadPresentOptions,
         NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions,
         NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions,
         NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
@@ -51,6 +52,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         probe_native_vulkan_vulkanalia_video_present_session,
         probe_native_vulkan_vulkanalia_video_session_bind,
         run_native_vulkan_vulkanalia_clear_present,
+        run_native_vulkan_vulkanalia_scene_lite_solid_quad_present,
     };
     use gilder::renderer::native_wayland::NativeWaylandLayer;
     use gilder::renderer::{StaticWallpaperPlan, VideoWallpaperPlan};
@@ -215,6 +217,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 video_session_options.allocate_video_images = true;
             }
             "--run-clear" | "--run-vulkanalia-clear" => mode = NativeVulkanCliMode::RunClear,
+            "--run-vulkanalia-scene-lite-solid-quad" => {
+                mode = NativeVulkanCliMode::RunVulkanaliaSceneLiteSolidQuad
+            }
             "--run-static" => mode = NativeVulkanCliMode::RunStatic,
             "--run-video" => mode = NativeVulkanCliMode::RunVideo,
             "--json" => mode = NativeVulkanCliMode::All,
@@ -637,6 +642,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 clear_color: options.clear_color,
             }
         )?),
+        NativeVulkanCliMode::RunVulkanaliaSceneLiteSolidQuad => {
+            json!(run_native_vulkan_vulkanalia_scene_lite_solid_quad_present(
+                NativeVulkanVulkanaliaSceneLiteSolidQuadPresentOptions {
+                    host: options.host,
+                    wait_configure_roundtrips: options.wait_configure_roundtrips,
+                    duration,
+                    target_max_fps: options.target_max_fps,
+                    quad_color: options.clear_color,
+                }
+            )?)
+        }
         NativeVulkanCliMode::RunStatic => {
             let source = source.ok_or("--run-static requires --source")?;
             let output_name = options
@@ -1064,6 +1080,7 @@ enum NativeVulkanCliMode {
     ProbeVideoSession,
     ProbeAudioClock,
     RunClear,
+    RunVulkanaliaSceneLiteSolidQuad,
     RunStatic,
     RunVideo,
     RunH265FirstFrameVideo,
@@ -1076,7 +1093,7 @@ enum NativeVulkanCliMode {
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--probe-video-session|--probe-audio-clock|--run-clear|--run-vulkanalia-clear|--run-static|--run-video|--run-h265-first-frame-video|--run-h264-ready-prefix-video|--run-h265-ready-prefix-video|--run-av1-ready-prefix-video|--run-vulkanalia-ready-prefix-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--probe-video-session|--probe-audio-clock|--run-clear|--run-vulkanalia-clear|--run-vulkanalia-scene-lite-solid-quad|--run-static|--run-video|--run-h265-first-frame-video|--run-h264-ready-prefix-video|--run-h265-ready-prefix-video|--run-av1-ready-prefix-video|--run-vulkanalia-ready-prefix-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
@@ -1107,6 +1124,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --audio-probe-duration N overrides the default 10s audio clock probe duration.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
 --run-vulkanalia-clear is an explicit alias for --run-clear.\n\
+--run-vulkanalia-scene-lite-solid-quad uses Vulkanalia dynamic rendering to draw a retained scene-lite solid quad to the Wayland swapchain.\n\
 --run-static decodes --source, fits it to the swapchain, copies it through Vulkan, presents, then prints runtime JSON.\n\
 --run-video accepts a video wallpaper plan, presents a poster/clear placeholder through native Vulkan, then prints video handoff telemetry.\n\
 --run-h265-first-frame-video decodes the first H.265 IDR with Vulkan Video and samples the decoded NV12 image to the swapchain.\n\
