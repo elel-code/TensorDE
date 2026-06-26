@@ -1210,13 +1210,11 @@ fn native_vulkan_vulkanalia_submit_decoded_image_present_command_buffer2(
     decode_complete_semaphore: vk::Semaphore,
     decode_complete_value: u64,
 ) -> Result<(), String> {
-    // Wait for the swapchain image to be acquired, and for freshly decoded
-    // frames to finish on the video queue before this graphics command buffer
-    // touches the decoded image. FFmpeg tracks AVVkFrame semaphore values as
-    // image dependencies (references/ffmpeg/libavutil/vulkan.c:800-863,
-    // references/ffmpeg/libavcodec/vulkan_decode.c:575-586); this retained
-    // image path uses one timeline semaphore and gates the whole present submit
-    // so the layout transition and fragment sample observe the same decode.
+    // Wait for the swapchain image at color output. FFmpeg mirrors AVVkFrame
+    // semaphore values as frame dependencies (references/ffmpeg/libavcodec/
+    // vulkan_decode.c:575-586); the decode submit signals at video-decode
+    // completion, while this present submit waits before any graphics command
+    // mutates the decoded image layout.
     let image_available_wait = vk::SemaphoreSubmitInfo::builder()
         .semaphore(image_available)
         .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)

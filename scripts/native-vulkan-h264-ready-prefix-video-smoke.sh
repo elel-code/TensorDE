@@ -58,6 +58,7 @@ Options:
                         Performance sampling interval. Default: 1.
   --max-private-dirty-kib <kib>
                         With --performance-snapshot, fail if max Private_Dirty exceeds this.
+                        Default with --performance-snapshot: 25000.
   --layer <layer>       Wayland layer. Default: background.
   --fit <mode>          Render fit. Default: cover.
   --no-build            Reuse existing target/release/gilder-native-vulkan.
@@ -101,6 +102,7 @@ performance_snapshot=0
 performance_duration=10
 performance_interval=1
 max_private_dirty_kib_limit=""
+default_max_private_dirty_kib_limit=25000
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -318,6 +320,9 @@ fi
 if [[ -n "$max_private_dirty_kib_limit" && "$performance_snapshot" -ne 1 ]]; then
   printf 'FAIL: --max-private-dirty-kib requires --performance-snapshot\n' >&2
   exit 1
+fi
+if [[ "$performance_snapshot" -eq 1 && -z "$max_private_dirty_kib_limit" ]]; then
+  max_private_dirty_kib_limit="$default_max_private_dirty_kib_limit"
 fi
 if (( width % 16 != 0 || height % 16 != 0 )); then
   printf 'FAIL: H.264 Vulkan Video source dimensions must be 16-pixel aligned; got %sx%s\n' "$width" "$height" >&2
@@ -680,6 +685,10 @@ pacing_gate_failed=0
 if ! gilder_pacing_strategy_matches_expected "$pacing_strategy" "$expected_pacing_strategy" "$target_fps"; then
   pacing_gate_failed=1
 fi
+fps_gate_failed=0
+if ! awk -v fps="$average_present_fps" -v target="$target_fps" 'BEGIN { exit (fps + 0.001 >= target) ? 0 : 1 }'; then
+  fps_gate_failed=1
+fi
 dpb_gate_failed=0
 if [[ "$runtime_max_dpb_slots" -le 0 || "$stream_sps_dpb_slots" -le 0 || "$stream_dpb_slots" -le 0 || "$session_max_dpb_slots" -le 0 || "$session_max_active_reference_pictures" -le 0 || "$session_max_active_reference_pictures" -gt "$session_max_dpb_slots" || "$session_max_dpb_slots" -lt "$stream_sps_dpb_slots" || "$session_max_dpb_slots" -lt "$stream_dpb_slots" || "$distinct_layers" -gt "$session_max_dpb_slots" ]]; then
   dpb_gate_failed=1
@@ -702,7 +711,7 @@ if [[ "$audio_clock_probe" -eq 1 && "$loop_boundary_reset_count" -gt 0 && "$audi
   audio_clock_gate_failed=1
 fi
 
-if [[ "$decoded_count" -ne "$expected_decoded_count" || "$presented_count" -ne "$requested_playback_count" || "$frame_count" -ne "$requested_playback_count" || "$expected_decoded_count" -le 0 || "$requested_playback_count" -le 0 || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$reference_gate_failed" -ne 0 || "$b_frame_gate_failed" -ne 0 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$arbitrary_entry_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$pts_delta_gate_failed" -ne 0 || "$audio_clock_gate_failed" -ne 0 || "$present_queue" == "none" || "$video_queue" == "none" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
+if [[ "$decoded_count" -ne "$expected_decoded_count" || "$presented_count" -ne "$requested_playback_count" || "$frame_count" -ne "$requested_playback_count" || "$expected_decoded_count" -le 0 || "$requested_playback_count" -le 0 || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$reference_gate_failed" -ne 0 || "$b_frame_gate_failed" -ne 0 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$arbitrary_entry_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$fps_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$pts_delta_gate_failed" -ne 0 || "$audio_clock_gate_failed" -ne 0 || "$present_queue" == "none" || "$video_queue" == "none" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
   {
     printf 'FAIL: native Vulkan direct H.264 ready-prefix video output was not valid\n'
     printf 'decoded_count: %s\n' "$decoded_count"
@@ -783,6 +792,7 @@ if [[ "$decoded_count" -ne "$expected_decoded_count" || "$presented_count" -ne "
     printf 'pacing_master: %s\n' "$pacing_master"
     printf 'pacing_strategy: %s\n' "$pacing_strategy"
     printf 'expected_pacing_strategy: %s\n' "$expected_pacing_strategy"
+    printf 'fps_gate_failed: %s\n' "$fps_gate_failed"
     printf 'frame_sleep_count: %s\n' "$frame_sleep_count_value"
     printf 'average_present_fps: %s\n' "$average_present_fps"
     printf 'average_present_teardown_inclusive_fps: %s\n' "$average_present_teardown_inclusive_fps"
@@ -991,6 +1001,7 @@ fi
   printf 'session_memory_bytes: %s\n' "$(jq -r '.session_memory_bytes' "$runtime_json")"
   printf 'performance_snapshot: %s\n' "$([[ "$performance_snapshot" -eq 1 ]] && printf yes || printf no)"
   if [[ "$performance_snapshot" -eq 1 ]]; then
+    printf 'performance_max_private_dirty_kib_limit: %s\n' "$max_private_dirty_kib_limit"
     printf 'performance_dir: %s\n' "$performance_dir"
     printf 'performance_log: %s\n' "$performance_log"
     if [[ -s "$performance_dir/summary.txt" ]]; then

@@ -90,6 +90,8 @@ Performance evidence must be long enough for sampling and must pass
 GPU, or memory claims. Codec smoke scripts default to
 `--allocator-profile system`, which matches distribution behavior and clears
 known glibc/malloc tuning variables before launching the video process.
+Current 4K240 video performance gates are `average_present_fps >= 239.999` and
+`performance_max_private_dirty_kib < 25000`.
 
 Example shape:
 

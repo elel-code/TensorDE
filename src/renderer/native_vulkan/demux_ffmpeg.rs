@@ -2,8 +2,12 @@
 //!
 //! This follows the local FFmpeg ownership shape:
 //! `references/ffmpeg/fftools/ffplay.c:420-456` moves AVPacket ownership into a
-//! bounded PacketQueue, `references/ffmpeg/fftools/ffplay.c:3154-3215` filters
-//! the target stream in the read loop, and
+//! bounded PacketQueue. The FFmpeg read worker uses a codec-limited handoff
+//! here: it can overlap demux/BSF work with decode like ffplay's read thread,
+//! but it cannot retain a second unbounded payload queue outside the renderer's
+//! bounded packet queue. `references/ffmpeg/fftools/ffplay.c:3132-3141` blocks
+//! the read thread when queues are full, `references/ffmpeg/fftools/ffplay.c:3154-3215`
+//! filters the target stream in the read loop, and
 //! `references/ffmpeg/libavcodec/bsf.h:162-222` defines the
 //! send-packet/drain-packet BSF contract used for H.264/H.265. AV1 follows
 //! `references/ffmpeg/libavcodec/av1dec.c:1456-1474`: container packets are read
@@ -156,6 +160,7 @@ pub(super) trait NativeVulkanFfmpegStreamingAccessUnit:
     NativeVulkanStreamingAccessUnit
 {
     const FFMPEG_CODEC: NativeVulkanFfmpegCodec;
+    const FFMPEG_READ_THREAD_HANDOFF_PACKETS: usize = 1;
 
     fn from_ffmpeg_packet(
         payload: NativeVulkanFfmpegPacketPayload,
@@ -176,6 +181,7 @@ pub(super) fn native_vulkan_start_ffmpeg_streaming_packet_queue<
     source: &Path,
     capacity: usize,
 ) -> Result<NativeVulkanStreamingPacketQueue<A>, NativeVulkanError> {
+    super::native_vulkan_configure_process_allocator_for_streaming_video();
     let frontend = NativeVulkanFfmpegStreamingPacketFrontend::<A>::new(source, capacity)?;
     native_vulkan_start_streaming_packet_queue_from_frontend(Box::new(frontend), capacity)
 }
@@ -497,8 +503,8 @@ struct NativeVulkanFfmpegStreamingPacketFrontendMessage<A> {
 impl<A: NativeVulkanFfmpegStreamingAccessUnit + Send + 'static>
     NativeVulkanFfmpegStreamingPacketFrontend<A>
 {
-    fn new(source: &Path, capacity: usize) -> Result<Self, NativeVulkanError> {
-        let (sender, receiver) = sync_channel(capacity.max(1));
+    fn new(source: &Path, _capacity: usize) -> Result<Self, NativeVulkanError> {
+        let (sender, receiver) = sync_channel(A::FFMPEG_READ_THREAD_HANDOFF_PACKETS);
         let loop_on_eos = Arc::new(AtomicBool::new(false));
         let worker_loop_on_eos = Arc::clone(&loop_on_eos);
         let source = source.to_path_buf();

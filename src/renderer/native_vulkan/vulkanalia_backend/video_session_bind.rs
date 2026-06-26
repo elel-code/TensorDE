@@ -119,7 +119,7 @@ type NativeVulkanVulkanaliaAfterFrameSubmitted<'a> = &'a mut dyn FnMut(
 ) -> Result<(), String>;
 type NativeVulkanVulkanaliaBeforeOutputSlotReuse<'a> = &'a mut dyn FnMut(u32) -> Result<(), String>;
 
-const NATIVE_VULKAN_VULKANALIA_STREAMING_DECODE_SUBMIT_FENCE_SYNC_MODEL: &str = "FFmpeg-style queue_submit2 async exec ring: each exec slot owns its mapped picture slices buffer until that slot fence completes; DPB output layer reuse stays independent; no per-frame submit wait and no queue_wait_idle";
+const NATIVE_VULKAN_VULKANALIA_STREAMING_DECODE_SUBMIT_FENCE_SYNC_MODEL: &str = "FFmpeg-style queue_submit2 async exec ring: each exec slot owns its mapped picture slices buffer until that slot fence completes; decode timeline signals at video-decode stage and present waits on the per-frame value before touching the decoded image; DPB output layer reuse stays independent; no per-frame submit wait and no queue_wait_idle";
 const NATIVE_VULKAN_VULKANALIA_DECODE_FRAME_TELEMETRY_RETAINED_FRAMES: usize = 0;
 const NATIVE_VULKAN_VULKANALIA_DECODE_FRAME_TELEMETRY_RETENTION_MODEL: &str = "FFmpeg-style scalar decode telemetry only; mirrors references/ffmpeg/libavcodec/vulkan_decode.h:73-106 and references/ffmpeg/libavcodec/vulkan_decode.c:488-536; no retained per-frame command snapshots";
 

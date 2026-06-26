@@ -40,6 +40,7 @@ Options:
                         Performance sampling interval. Default: 1.
   --max-private-dirty-kib <kib>
                         With --performance-snapshot, fail if max Private_Dirty exceeds this.
+                        Default with --performance-snapshot: 25000.
   --layer <layer>       Wayland layer. Default: background.
   --fit <mode>          Render fit. Default: cover.
   --no-build            Reuse existing target/release/gilder-native-vulkan.
@@ -68,6 +69,7 @@ performance_snapshot=0
 performance_duration=10
 performance_interval=1
 max_private_dirty_kib_limit=""
+default_max_private_dirty_kib_limit=25000
 layer="background"
 fit="cover"
 no_build=0
@@ -232,6 +234,9 @@ fi
 if [[ -n "$max_private_dirty_kib_limit" && "$performance_snapshot" -ne 1 ]]; then
   printf 'FAIL: --max-private-dirty-kib requires --performance-snapshot\n' >&2
   exit 2
+fi
+if [[ "$performance_snapshot" -eq 1 && -z "$max_private_dirty_kib_limit" ]]; then
+  max_private_dirty_kib_limit="$default_max_private_dirty_kib_limit"
 fi
 if [[ "$target_fps" -lt 1 || "$width" -lt 1 || "$height" -lt 1 ]]; then
   printf 'FAIL: target-fps/width/height must be positive\n' >&2

@@ -53,6 +53,7 @@ pub(super) struct NativeVulkanVulkanaliaDecodeSubmit2Plan {
     pub wait_idle_after_submit: bool,
     pub wait_fence_after_submit: bool,
     pub uses_submit_fence: bool,
+    pub signal_stage: &'static str,
     pub submit_sync_model: &'static str,
     pub command_order: &'static [&'static str],
 }
@@ -109,6 +110,7 @@ pub(super) fn native_vulkan_vulkanalia_decode_submit2_plan(
         wait_idle_after_submit,
         wait_fence_after_submit,
         uses_submit_fence,
+        signal_stage: "video-decode",
         submit_sync_model: native_vulkan_vulkanalia_decode_submit_sync_model(
             wait_idle_after_submit,
             wait_fence_after_submit,
@@ -479,14 +481,15 @@ pub(super) unsafe fn native_vulkan_vulkanalia_submit_decode_command_buffer2(
         .command_buffer(command_buffer)
         .build();
     let command_buffer_infos = [command_buffer_info];
-    // FFmpeg-style decode->present handoff: the decode submit signals a timeline
-    // semaphore value that the present submit (on the graphics/present queue) waits
-    // on before sampling the decoded image. Without this the present pass reads the
-    // decoded image before the video queue has finished writing it (green frame).
+    // FFmpeg mirrors each decoded AVVkFrame semaphore value as a frame dependency
+    // and only gates the consumer that uses that frame
+    // (references/ffmpeg/libavcodec/vulkan_decode.c:575-586). Signal when the
+    // video decode stage has produced the image, instead of serializing the
+    // whole queue with ALL_COMMANDS.
     let signal_semaphore_infos = [vk::SemaphoreSubmitInfo::builder()
         .semaphore(signal_semaphore)
         .value(signal_semaphore_value)
-        .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+        .stage_mask(vk::PipelineStageFlags2::VIDEO_DECODE_KHR)
         .build()];
     let mut submit_builder = vk::SubmitInfo2::builder().command_buffer_infos(&command_buffer_infos);
     if signal_semaphore != vk::Semaphore::null() {
@@ -670,6 +673,7 @@ mod tests {
         assert!(!submit_plan.wait_idle_after_submit);
         assert!(submit_plan.wait_fence_after_submit);
         assert!(submit_plan.uses_submit_fence);
+        assert_eq!(submit_plan.signal_stage, "video-decode");
         assert!(submit_plan.submit_sync_model.contains("no queue_wait_idle"));
         assert_eq!(
             submit_plan.command_order,

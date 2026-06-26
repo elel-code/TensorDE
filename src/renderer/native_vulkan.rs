@@ -1474,6 +1474,7 @@ type NativeVulkanAv1StreamingPacketQueue =
 #[cfg(feature = "native-vulkan-video")]
 impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanH264AccessUnitExtract {
     const FFMPEG_CODEC: NativeVulkanFfmpegCodec = NativeVulkanFfmpegCodec::H264;
+    const FFMPEG_READ_THREAD_HANDOFF_PACKETS: usize = 0;
 
     fn from_ffmpeg_packet(
         payload: NativeVulkanFfmpegPacketPayload,
@@ -1547,6 +1548,7 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
 #[cfg(feature = "native-vulkan-video")]
 impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
     const FFMPEG_CODEC: NativeVulkanFfmpegCodec = NativeVulkanFfmpegCodec::H265;
+    const FFMPEG_READ_THREAD_HANDOFF_PACKETS: usize = 2;
 
     fn from_ffmpeg_packet(
         payload: NativeVulkanFfmpegPacketPayload,
