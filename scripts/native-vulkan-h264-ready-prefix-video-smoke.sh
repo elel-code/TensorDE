@@ -582,10 +582,12 @@ present_mode="$(jq -r '(.h264_retained_video_present_decode.session.device.swapc
 pacing_strategy="$(jq -r '(.h264_retained_video_present_decode.decoded_image_present_sequence.latest_draw.pacing_clock_model // .h264_retained_video_present_decode.decoded_image_present_sequence.draws_tail[-1].pacing_clock_model // "none")' "$runtime_json")"
 expected_pacing_strategy="$(gilder_expected_pacing_strategy_with_master "$present_mode" "$target_fps" "$pacing_master")"
 frame_sleep_count_value="$(jq -r '.frame_sleep_count // 0' "$runtime_json")"
-bitstream_strategy="$(jq -r '(.h264_retained_video_present_decode.decode.bitstream_buffer_model // "none")' "$runtime_json")"
-bitstream_slot_count=1
-bitstream_slot_bytes="$(jq -r '(.h264_retained_video_present_decode.decode.max_src_buffer_range // ([.h264_retained_video_present_decode.decode.frames[]?.src_buffer_range] | max) // 0)' "$runtime_json")"
-bitstream_buffer_capacity_bytes="$bitstream_slot_bytes"
+ffmpeg_slices_buffer_model="$(jq -r '(.h264_retained_video_present_decode.decode.bitstream_buffer_model // "none")' "$runtime_json")"
+ffmpeg_slices_buffer_pool_slot_count="$(jq -r '(.h264_retained_video_present_decode.decode.ffmpeg_slices_buffer_pool_slot_count // 0)' "$runtime_json")"
+ffmpeg_slices_buffer_pool_allocated_slot_count="$(jq -r '(.h264_retained_video_present_decode.decode.ffmpeg_slices_buffer_pool_allocated_slot_count // 0)' "$runtime_json")"
+ffmpeg_slices_buffer_pool_capacity_bytes="$(jq -r '(.h264_retained_video_present_decode.decode.ffmpeg_slices_buffer_pool_capacity_bytes // 0)' "$runtime_json")"
+ffmpeg_slices_buffer_pool_max_slot_bytes="$(jq -r '(.h264_retained_video_present_decode.decode.ffmpeg_slices_buffer_pool_max_slot_bytes // 0)' "$runtime_json")"
+ffmpeg_slices_buffer_max_src_range="$(jq -r '(.h264_retained_video_present_decode.decode.max_src_buffer_range // ([.h264_retained_video_present_decode.decode.frames[]?.src_buffer_range] | max) // 0)' "$runtime_json")"
 bitstream_total_payload_bytes="$(jq -r '(.h264_retained_video_present_decode.decode.src_buffer_total_bytes // 0)' "$runtime_json")"
 bitstream_uploaded_bytes="$bitstream_total_payload_bytes"
 h264_input_mode="$(jq -r '(.h264_retained_video_present_decode.decode.input_payload_model // "none")' "$runtime_json")"
@@ -679,7 +681,7 @@ if [[ "$generated_source" -eq 1 && "$bframes" -gt 0 && "$b_frames" -lt 1 ]]; the
 fi
 loop_gate_failed=0
 bitstream_gate_failed=0
-if [[ "$bitstream_strategy" != "streaming-persistent-mapped-reused-upload-buffer" || "$bitstream_slot_count" -ne 1 || "$bitstream_slot_bytes" -le 0 || "$bitstream_buffer_capacity_bytes" -lt "$bitstream_slot_bytes" || "$bitstream_total_payload_bytes" -le 0 || "$bitstream_upload_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
+if [[ "$ffmpeg_slices_buffer_model" != "ffmpeg-picture-slices-buffer-pool-exec-owned" || "$ffmpeg_slices_buffer_pool_slot_count" -le 0 || "$ffmpeg_slices_buffer_pool_allocated_slot_count" -le 0 || "$ffmpeg_slices_buffer_pool_capacity_bytes" -le 0 || "$ffmpeg_slices_buffer_pool_max_slot_bytes" -le 0 || "$ffmpeg_slices_buffer_max_src_range" -le 0 || "$bitstream_total_payload_bytes" -le 0 || "$bitstream_upload_count" -le 0 || "$bitstream_uploaded_bytes" -le 0 ]]; then
   bitstream_gate_failed=1
 fi
 input_gate_failed=0
@@ -813,10 +815,12 @@ if [[ "$decoded_count" -ne "$expected_decoded_count" || "$presented_count" -ne "
     printf 'present_result_missed_vblank_threshold_us: %s\n' "$present_result_missed_vblank_threshold_us"
     printf 'present_result_missed_vblank_count: %s\n' "$present_result_missed_vblank_count"
     printf 'present_result_missed_vblank_after_warmup_count: %s\n' "$present_result_missed_vblank_after_warmup_count"
-    printf 'bitstream_buffer_strategy: %s\n' "$bitstream_strategy"
-    printf 'bitstream_buffer_slot_count: %s\n' "$bitstream_slot_count"
-    printf 'bitstream_buffer_slot_bytes: %s\n' "$bitstream_slot_bytes"
-    printf 'bitstream_buffer_capacity_bytes: %s\n' "$bitstream_buffer_capacity_bytes"
+    printf 'ffmpeg_slices_buffer_model: %s\n' "$ffmpeg_slices_buffer_model"
+    printf 'ffmpeg_slices_buffer_pool_slot_count: %s\n' "$ffmpeg_slices_buffer_pool_slot_count"
+    printf 'ffmpeg_slices_buffer_pool_allocated_slot_count: %s\n' "$ffmpeg_slices_buffer_pool_allocated_slot_count"
+    printf 'ffmpeg_slices_buffer_pool_capacity_bytes: %s\n' "$ffmpeg_slices_buffer_pool_capacity_bytes"
+    printf 'ffmpeg_slices_buffer_pool_max_slot_bytes: %s\n' "$ffmpeg_slices_buffer_pool_max_slot_bytes"
+    printf 'ffmpeg_slices_buffer_max_src_range: %s\n' "$ffmpeg_slices_buffer_max_src_range"
     printf 'bitstream_total_payload_bytes: %s\n' "$bitstream_total_payload_bytes"
     printf 'bitstream_upload_count: %s\n' "$bitstream_upload_count"
     printf 'bitstream_uploaded_bytes: %s\n' "$bitstream_uploaded_bytes"
@@ -938,12 +942,12 @@ fi
   printf 'h264_stream_profile: %s\n' "$h264_stream_profile"
   printf 'h264_stream_profile_idc: %s\n' "$h264_stream_profile_idc"
   printf 'h264_vulkan_std_profile_idc: %s\n' "$h264_vulkan_std_profile_idc"
-  printf 'bitstream_buffer_strategy: %s\n' "$bitstream_strategy"
-  printf 'bitstream_buffer_slot_count: %s\n' "$bitstream_slot_count"
-  printf 'bitstream_buffer_slot_bytes: %s\n' "$bitstream_slot_bytes"
-  printf 'bitstream_buffer_capacity_bytes: %s\n' "$bitstream_buffer_capacity_bytes"
-  printf 'bitstream_min_offset_alignment: %s\n' "$(jq -r '.bitstream_ring_min_offset_alignment // 0' "$runtime_json")"
-  printf 'bitstream_min_size_alignment: %s\n' "$(jq -r '.bitstream_ring_min_size_alignment // 0' "$runtime_json")"
+  printf 'ffmpeg_slices_buffer_model: %s\n' "$ffmpeg_slices_buffer_model"
+  printf 'ffmpeg_slices_buffer_pool_slot_count: %s\n' "$ffmpeg_slices_buffer_pool_slot_count"
+  printf 'ffmpeg_slices_buffer_pool_allocated_slot_count: %s\n' "$ffmpeg_slices_buffer_pool_allocated_slot_count"
+  printf 'ffmpeg_slices_buffer_pool_capacity_bytes: %s\n' "$ffmpeg_slices_buffer_pool_capacity_bytes"
+  printf 'ffmpeg_slices_buffer_pool_max_slot_bytes: %s\n' "$ffmpeg_slices_buffer_pool_max_slot_bytes"
+  printf 'ffmpeg_slices_buffer_max_src_range: %s\n' "$ffmpeg_slices_buffer_max_src_range"
   printf 'bitstream_total_payload_bytes: %s\n' "$bitstream_total_payload_bytes"
   printf 'bitstream_upload_count: %s\n' "$bitstream_upload_count"
   printf 'bitstream_uploaded_bytes: %s\n' "$bitstream_uploaded_bytes"
@@ -1058,7 +1062,6 @@ fi
   printf 'present_over_budget_count: %s\n' "$present_over_budget_count"
   printf 'video_resource_memory_bytes: %s\n' "$resource_bytes"
   printf 'session_memory_bytes: %s\n' "$(jq -r '.session_memory_bytes' "$runtime_json")"
-  printf 'bitstream_buffer_bytes: %s\n' "$(jq -r '.bitstream_buffer_bytes' "$runtime_json")"
   printf 'performance_snapshot: %s\n' "$([[ "$performance_snapshot" -eq 1 ]] && printf yes || printf no)"
   if [[ "$performance_snapshot" -eq 1 ]]; then
     printf 'performance_dir: %s\n' "$performance_dir"

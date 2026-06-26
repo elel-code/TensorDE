@@ -22,7 +22,6 @@ use super::vulkanalia_backend::{
     NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
     NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot,
     NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot,
-    native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size,
     probe_native_vulkan_vulkanalia_video_present_session,
     run_native_vulkan_vulkanalia_av1_streaming_video_present_decode,
     run_native_vulkan_vulkanalia_clear_present,
@@ -126,7 +125,6 @@ pub fn run_vulkanalia_ready_prefix_video(
         NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10
     );
     let streaming_queue_capacity = native_vulkan_vulkanalia_streaming_packet_queue_capacity();
-    let bitstream_buffer_size = native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size(1, 1);
     let session = None;
     let video_present_session_options = NativeVulkanVulkanaliaVideoPresentSessionProbeOptions {
         host: options.host.clone(),
@@ -142,7 +140,6 @@ pub fn run_vulkanalia_ready_prefix_video(
                 session: video_present_session_options.clone(),
                 source: source.clone(),
                 queue_capacity: streaming_queue_capacity,
-                bitstream_buffer_size,
                 playback_frame_count,
             },
         )
@@ -153,7 +150,6 @@ pub fn run_vulkanalia_ready_prefix_video(
                 session: video_present_session_options.clone(),
                 source: source.clone(),
                 queue_capacity: streaming_queue_capacity,
-                bitstream_buffer_size,
                 playback_frame_count,
             },
         )
@@ -164,7 +160,6 @@ pub fn run_vulkanalia_ready_prefix_video(
                 session: video_present_session_options.clone(),
                 source: source.clone(),
                 queue_capacity: streaming_queue_capacity,
-                bitstream_buffer_size,
                 playback_frame_count,
             },
         )

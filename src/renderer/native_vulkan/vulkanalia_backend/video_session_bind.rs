@@ -119,7 +119,7 @@ type NativeVulkanVulkanaliaAfterFrameSubmitted<'a> = &'a mut dyn FnMut(
 ) -> Result<(), String>;
 type NativeVulkanVulkanaliaBeforeOutputSlotReuse<'a> = &'a mut dyn FnMut(u32) -> Result<(), String>;
 
-const NATIVE_VULKAN_VULKANALIA_STREAMING_DECODE_SUBMIT_FENCE_SYNC_MODEL: &str = "FFmpeg-style queue_submit2 async exec ring: command/bitstream slot reuse is independent from DPB output layer reuse; wait/reset an exec slot fence only before reusing that command/bitstream slot, then final drain; no per-frame submit wait and no queue_wait_idle";
+const NATIVE_VULKAN_VULKANALIA_STREAMING_DECODE_SUBMIT_FENCE_SYNC_MODEL: &str = "FFmpeg-style queue_submit2 async exec ring: each exec slot owns its mapped picture slices buffer until that slot fence completes; DPB output layer reuse stays independent; no per-frame submit wait and no queue_wait_idle";
 const NATIVE_VULKAN_VULKANALIA_DECODE_FRAME_TELEMETRY_RETAINED_FRAMES: usize = 8;
 const NATIVE_VULKAN_VULKANALIA_DECODE_FRAME_TELEMETRY_RETENTION_MODEL: &str = "compact head/tail decode-frame telemetry only; decode.frames retains first N and last N snapshots while scalar counters cover the full run";
 
@@ -460,80 +460,95 @@ fn native_vulkan_vulkanalia_align_up_u64(value: u64, alignment: u64) -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-fn native_vulkan_vulkanalia_align_down_u64(value: u64, alignment: u64) -> u64 {
-    let alignment = alignment.max(1);
-    value / alignment * alignment
+struct NativeVulkanVulkanaliaFfmpegSlicesBufferPool {
+    slots: Vec<Option<VulkanaliaVideoSessionBitstreamBuffer>>,
 }
 
-fn native_vulkan_vulkanalia_streaming_bitstream_slot_stride(
-    buffer_size: u64,
-    slot_count: usize,
-    min_offset_alignment: u64,
-) -> Result<u64, String> {
-    let slot_count_u64 = u64::try_from(slot_count.max(1)).unwrap_or(u64::MAX);
-    let raw_stride = buffer_size / slot_count_u64;
-    let stride = native_vulkan_vulkanalia_align_down_u64(raw_stride, min_offset_alignment.max(1));
-    if stride == 0 {
-        return Err(format!(
-            "Vulkanalia streaming bitstream buffer size {buffer_size} is too small for {slot_count} slot(s)"
-        ));
+impl NativeVulkanVulkanaliaFfmpegSlicesBufferPool {
+    fn new(slot_count: usize) -> Self {
+        let slots = (0..slot_count.max(1)).map(|_| None).collect();
+        Self { slots }
     }
-    Ok(stride)
-}
 
-#[allow(clippy::too_many_arguments)]
-fn native_vulkan_vulkanalia_streaming_bitstream_ring_buffer_for_payload<'a>(
-    device: &Device,
-    memory_properties: &vk::PhysicalDeviceMemoryProperties,
-    profile_info: &vk::VideoProfileInfoKHR,
-    requested_bitstream_buffer_size: u64,
-    min_offset_alignment: u64,
-    min_size_alignment: u64,
-    bitstream_buffer: &'a mut Option<VulkanaliaVideoSessionBitstreamBuffer>,
-    submit_ring: &mut NativeVulkanVulkanaliaStreamingDecodeSubmitRing,
-    command_buffer: &VulkanaliaDecodeCommandBuffer,
-    payload_len: u64,
-) -> Result<&'a VulkanaliaVideoSessionBitstreamBuffer, String> {
-    let slot_count_u64 = u64::try_from(submit_ring.slot_count().max(1)).unwrap_or(u64::MAX);
-    let aligned_payload =
-        native_vulkan_vulkanalia_align_up_u64(payload_len.max(1), min_size_alignment.max(1));
-    let required_total_payload = aligned_payload.saturating_mul(slot_count_u64);
-    let target_size = native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size(
-        required_total_payload,
-        min_size_alignment,
-    )
-    .max(requested_bitstream_buffer_size.max(min_size_alignment.max(1)));
-    let needs_grow = bitstream_buffer
-        .as_ref()
-        .map(|buffer| {
-            let slot_stride = native_vulkan_vulkanalia_streaming_bitstream_slot_stride(
-                buffer.snapshot.size,
-                submit_ring.slot_count(),
-                min_offset_alignment,
-            )
-            .unwrap_or(0);
-            buffer.snapshot.size < target_size || slot_stride < aligned_payload
-        })
-        .unwrap_or(true);
-    if needs_grow {
-        submit_ring.wait_all_submitted(device, command_buffer)?;
-        let new_buffer = native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
-            device,
-            memory_properties,
-            profile_info,
-            target_size,
+    fn buffer_for_payload<'a>(
+        &'a mut self,
+        device: &Device,
+        memory_properties: &vk::PhysicalDeviceMemoryProperties,
+        profile_info: &vk::VideoProfileInfoKHR,
+        slot: usize,
+        payload_len: u64,
+        min_size_alignment: u64,
+    ) -> Result<&'a VulkanaliaVideoSessionBitstreamBuffer, String> {
+        let slot_count = self.slots.len();
+        let slot_buffer = self.slots.get_mut(slot).ok_or_else(|| {
+            format!("Vulkanalia FFmpeg slices buffer slot {slot} exceeds pool size {slot_count}")
+        })?;
+        let ffmpeg_new_size = native_vulkan_vulkanalia_align_up_u64(
+            payload_len.max(1).saturating_add(min_size_alignment.max(1)),
+            min_size_alignment.max(1),
+        );
+        let target_size = native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size(
+            ffmpeg_new_size,
             min_size_alignment,
-            None,
-            true,
-        )?;
-        if let Some(old_buffer) = bitstream_buffer.replace(new_buffer) {
-            native_vulkan_vulkanalia_destroy_video_session_bitstream_buffer(device, old_buffer);
+        );
+        let needs_replace = slot_buffer
+            .as_ref()
+            .map(|buffer| buffer.snapshot.size < target_size)
+            .unwrap_or(true);
+        if needs_replace {
+            if let Some(old_buffer) = slot_buffer.take() {
+                native_vulkan_vulkanalia_destroy_video_session_bitstream_buffer(device, old_buffer);
+            }
+            *slot_buffer = Some(
+                native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
+                    device,
+                    memory_properties,
+                    profile_info,
+                    target_size,
+                    min_size_alignment,
+                    None,
+                    true,
+                )?,
+            );
+        }
+        slot_buffer.as_ref().ok_or_else(|| {
+            "Vulkanalia FFmpeg slices buffer pool failed to retain a slot buffer".to_owned()
+        })
+    }
+
+    fn slot_count(&self) -> u32 {
+        u32::try_from(self.slots.len()).unwrap_or(u32::MAX)
+    }
+
+    fn allocated_slot_count(&self) -> u32 {
+        u32::try_from(self.slots.iter().filter(|buffer| buffer.is_some()).count())
+            .unwrap_or(u32::MAX)
+    }
+
+    fn total_capacity_bytes(&self) -> u64 {
+        self.slots
+            .iter()
+            .filter_map(|buffer| buffer.as_ref())
+            .map(|buffer| buffer.snapshot.size)
+            .sum()
+    }
+
+    fn max_slot_capacity_bytes(&self) -> u64 {
+        self.slots
+            .iter()
+            .filter_map(|buffer| buffer.as_ref())
+            .map(|buffer| buffer.snapshot.size)
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn destroy_all(&mut self, device: &Device) {
+        for slot_buffer in &mut self.slots {
+            if let Some(buffer) = slot_buffer.take() {
+                native_vulkan_vulkanalia_destroy_video_session_bitstream_buffer(device, buffer);
+            }
         }
     }
-
-    bitstream_buffer.as_ref().ok_or_else(|| {
-        "Vulkanalia streaming bitstream ring buffer was not created for payload upload".to_owned()
-    })
 }
 
 fn native_vulkan_vulkanalia_trim_heap_after_decode_teardown() {
@@ -549,13 +564,13 @@ fn native_vulkan_vulkanalia_trim_heap_after_decode_teardown() {
 
 fn native_vulkan_vulkanalia_streaming_decode_submit_fence_command_order() -> Vec<&'static str> {
     vec![
-        "wait_for_slot_fence_before_command_and_bitstream_slot_reuse",
+        "wait_for_exec_slot_fence_before_command_and_slices_buffer_reuse",
         "reset_slot_fence_before_submit",
-        "write_persistent_mapped_bitstream_payload",
+        "write_ffmpeg_picture_slices_buffer",
         "reset_command_buffer_after_slot_first_use",
         "queue_submit2_per_frame",
         "defer_submit_fence_wait_until_slot_reuse_or_final_drain",
-        "final_wait_for_submitted_slot_fences_before_upload_teardown",
+        "final_wait_for_submitted_slot_fences_before_slices_buffer_pool_teardown",
         "no_queue_wait_idle_after_decode",
     ]
 }
@@ -607,7 +622,6 @@ pub struct NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
     pub height: u32,
     pub allocate_video_images: bool,
     pub allocate_bitstream_buffer: bool,
-    pub bitstream_buffer_size: u64,
     pub create_empty_session_parameters: bool,
     pub create_session_parameters: bool,
     pub h264_parameter_sets: Option<NativeVulkanH264ParameterSetSnapshot>,
@@ -623,7 +637,6 @@ impl Default for NativeVulkanVulkanaliaVideoSessionBindSmokeOptions {
             height: 2160,
             allocate_video_images: false,
             allocate_bitstream_buffer: false,
-            bitstream_buffer_size: 8 * 1024 * 1024,
             create_empty_session_parameters: false,
             create_session_parameters: false,
             h264_parameter_sets: None,
@@ -909,7 +922,10 @@ fn smoke_bind_vulkanalia_video_session_profile(
                     device,
                     memory_properties,
                     profile_info,
-                    options.bitstream_buffer_size,
+                    native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size(
+                        1,
+                        capabilities.min_bitstream_buffer_size_alignment,
+                    ),
                     capabilities.min_bitstream_buffer_size_alignment,
                     None,
                     false,
@@ -1078,7 +1094,6 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
     codec: NativeVulkanVideoSessionCodec,
     array_layers: u32,
     exec_ring_depth: u32,
-    requested_bitstream_buffer_size: u64,
     input: NativeVulkanVulkanaliaAv1StreamingDecodeInput<'_>,
     image: &super::video_session_images::VulkanaliaVideoSessionResourceImage,
     mut before_output_slot_reuse: Option<NativeVulkanVulkanaliaBeforeOutputSlotReuse<'_>>,
@@ -1099,16 +1114,6 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
     let array_layers = array_layers.max(1);
     let exec_ring_depth = exec_ring_depth.max(1);
     let sequence_header = input.sequence_header;
-    let bitstream_buffer = native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
-        device,
-        memory_properties,
-        profile_info,
-        requested_bitstream_buffer_size.max(capabilities.min_bitstream_buffer_size_alignment),
-        capabilities.min_bitstream_buffer_size_alignment,
-        None,
-        true,
-    )?;
-    let mut bitstream_buffer = Some(bitstream_buffer);
     let session_parameters = native_vulkan_vulkanalia_create_av1_video_session_parameters(
         device,
         session,
@@ -1122,6 +1127,10 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
         exec_ring_depth,
     )?;
     let mut command_buffer = Some(command_buffer);
+    let mut submit_ring =
+        NativeVulkanVulkanaliaStreamingDecodeSubmitRing::new(exec_ring_depth as usize);
+    let mut bitstream_buffers =
+        NativeVulkanVulkanaliaFfmpegSlicesBufferPool::new(exec_ring_depth as usize);
 
     let result = (|| -> Result<NativeVulkanVulkanaliaAv1CommandSmokeSnapshot, String> {
         let session_parameters_ref = session_parameters
@@ -1130,8 +1139,6 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
         let command_buffer_ref = command_buffer
             .as_ref()
             .expect("Vulkanalia streaming command buffer is alive during AV1 decode");
-        let mut submit_ring =
-            NativeVulkanVulkanaliaStreamingDecodeSubmitRing::new(exec_ring_depth as usize);
         let mut initialized_slots = vec![false; array_layers as usize];
         let mut layer_decode_complete_values = vec![0u64; array_layers as usize];
         let mut frame_telemetry = NativeVulkanVulkanaliaDecodeFrameTelemetry::new();
@@ -1239,33 +1246,22 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
             }
             let payload_len = frame.access_unit_payload.len() as u64;
             let stage_started_at = Instant::now();
-            let bitstream_buffer_ref =
-                native_vulkan_vulkanalia_streaming_bitstream_ring_buffer_for_payload(
-                    device,
-                    memory_properties,
-                    profile_info,
-                    requested_bitstream_buffer_size,
-                    capabilities.min_bitstream_buffer_offset_alignment,
-                    capabilities.min_bitstream_buffer_size_alignment,
-                    &mut bitstream_buffer,
-                    &mut submit_ring,
-                    command_buffer_ref,
-                    payload_len,
-                )?;
+            let bitstream_buffer_ref = bitstream_buffers.buffer_for_payload(
+                device,
+                memory_properties,
+                profile_info,
+                submit_slot,
+                payload_len,
+                capabilities.min_bitstream_buffer_size_alignment,
+            )?;
             frame_timing.bitstream_buffer_micros =
                 native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
-            let bitstream_slot_stride = native_vulkan_vulkanalia_streaming_bitstream_slot_stride(
-                bitstream_buffer_ref.snapshot.size,
-                submit_ring.slot_count(),
-                capabilities.min_bitstream_buffer_offset_alignment,
-            )?;
-            let src_buffer_offset = bitstream_slot_stride.saturating_mul(submit_slot as u64);
             let stage_started_at = Instant::now();
             let (src_buffer_offset, src_buffer_range) =
                 native_vulkan_vulkanalia_write_video_session_bitstream_payload_at_offset(
                     device,
                     bitstream_buffer_ref,
-                    src_buffer_offset,
+                    0,
                     frame.access_unit_payload.bytes(),
                     capabilities.min_bitstream_buffer_size_alignment,
                 )?;
@@ -1432,7 +1428,12 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
             submit_command_order:
                 native_vulkan_vulkanalia_streaming_decode_submit_fence_command_order(),
             queue_family_index,
-            bitstream_buffer_model: "streaming-persistent-mapped-reused-upload-buffer",
+            bitstream_buffer_model: "ffmpeg-picture-slices-buffer-pool-exec-owned",
+            ffmpeg_slices_buffer_pool_slot_count: bitstream_buffers.slot_count(),
+            ffmpeg_slices_buffer_pool_allocated_slot_count: bitstream_buffers
+                .allocated_slot_count(),
+            ffmpeg_slices_buffer_pool_capacity_bytes: bitstream_buffers.total_capacity_bytes(),
+            ffmpeg_slices_buffer_pool_max_slot_bytes: bitstream_buffers.max_slot_capacity_bytes(),
             input_payload_model: "bounded-streaming-packet-queue-per-frame-upload",
             src_buffer_total_bytes,
             streaming_decode_timing,
@@ -1461,14 +1462,17 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
         })
     })();
 
+    if result.is_err()
+        && let Some(command_buffer_ref) = command_buffer.as_ref()
+    {
+        let _ = submit_ring.wait_all_submitted(device, command_buffer_ref);
+    }
+    bitstream_buffers.destroy_all(device);
     if let Some(command_buffer) = command_buffer.take() {
         native_vulkan_vulkanalia_destroy_decode_command_buffer(device, command_buffer);
     }
     if let Some(session_parameters) = session_parameters.take() {
         native_vulkan_vulkanalia_destroy_video_session_parameters(device, session_parameters);
-    }
-    if let Some(bitstream_buffer) = bitstream_buffer.take() {
-        native_vulkan_vulkanalia_destroy_video_session_bitstream_buffer(device, bitstream_buffer);
     }
     native_vulkan_vulkanalia_trim_heap_after_decode_teardown();
 
@@ -1489,7 +1493,6 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_streaming_decode_into_image(
     codec: NativeVulkanVideoSessionCodec,
     array_layers: u32,
     exec_ring_depth: u32,
-    requested_bitstream_buffer_size: u64,
     input: NativeVulkanVulkanaliaH265StreamingDecodeInput<'_>,
     image: &super::video_session_images::VulkanaliaVideoSessionResourceImage,
     mut before_output_slot_reuse: Option<NativeVulkanVulkanaliaBeforeOutputSlotReuse<'_>>,
@@ -1510,16 +1513,6 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_streaming_decode_into_image(
     let array_layers = array_layers.max(1);
     let exec_ring_depth = exec_ring_depth.max(1);
     let parameter_sets = input.parameter_sets;
-    let bitstream_buffer = native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
-        device,
-        memory_properties,
-        profile_info,
-        requested_bitstream_buffer_size.max(capabilities.min_bitstream_buffer_size_alignment),
-        capabilities.min_bitstream_buffer_size_alignment,
-        None,
-        true,
-    )?;
-    let mut bitstream_buffer = Some(bitstream_buffer);
     let session_parameters = native_vulkan_vulkanalia_create_h265_video_session_parameters(
         device,
         session,
@@ -1533,6 +1526,10 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_streaming_decode_into_image(
         exec_ring_depth,
     )?;
     let mut command_buffer = Some(command_buffer);
+    let mut submit_ring =
+        NativeVulkanVulkanaliaStreamingDecodeSubmitRing::new(exec_ring_depth as usize);
+    let mut bitstream_buffers =
+        NativeVulkanVulkanaliaFfmpegSlicesBufferPool::new(exec_ring_depth as usize);
 
     let result =
         (|| -> Result<NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot, String> {
@@ -1544,8 +1541,6 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_streaming_decode_into_image(
             let command_buffer_ref = command_buffer
                 .as_ref()
                 .expect("Vulkanalia streaming command buffer is alive during decode");
-            let mut submit_ring =
-                NativeVulkanVulkanaliaStreamingDecodeSubmitRing::new(exec_ring_depth as usize);
             let mut initialized_slots = vec![false; array_layers as usize];
             let mut frame_telemetry = NativeVulkanVulkanaliaDecodeFrameTelemetry::new();
             let mut command_buffer_recorded = true;
@@ -1590,34 +1585,22 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_streaming_decode_into_image(
                 }
                 let payload_len = frame.access_unit_payload.len() as u64;
                 let stage_started_at = Instant::now();
-                let bitstream_buffer_ref =
-                    native_vulkan_vulkanalia_streaming_bitstream_ring_buffer_for_payload(
-                        device,
-                        memory_properties,
-                        profile_info,
-                        requested_bitstream_buffer_size,
-                        capabilities.min_bitstream_buffer_offset_alignment,
-                        capabilities.min_bitstream_buffer_size_alignment,
-                        &mut bitstream_buffer,
-                        &mut submit_ring,
-                        command_buffer_ref,
-                        payload_len,
-                    )?;
+                let bitstream_buffer_ref = bitstream_buffers.buffer_for_payload(
+                    device,
+                    memory_properties,
+                    profile_info,
+                    submit_slot,
+                    payload_len,
+                    capabilities.min_bitstream_buffer_size_alignment,
+                )?;
                 frame_timing.bitstream_buffer_micros =
                     native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
-                let bitstream_slot_stride =
-                    native_vulkan_vulkanalia_streaming_bitstream_slot_stride(
-                        bitstream_buffer_ref.snapshot.size,
-                        submit_ring.slot_count(),
-                        capabilities.min_bitstream_buffer_offset_alignment,
-                    )?;
-                let src_buffer_offset = bitstream_slot_stride.saturating_mul(submit_slot as u64);
                 let stage_started_at = Instant::now();
                 let (src_buffer_offset, src_buffer_range) =
                     native_vulkan_vulkanalia_write_video_session_bitstream_payload_at_offset(
                         device,
                         bitstream_buffer_ref,
-                        src_buffer_offset,
+                        0,
                         frame.access_unit_payload.bytes(),
                         capabilities.min_bitstream_buffer_size_alignment,
                     )?;
@@ -1773,7 +1756,13 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_streaming_decode_into_image(
                 submit_command_order:
                     native_vulkan_vulkanalia_streaming_decode_submit_fence_command_order(),
                 queue_family_index,
-                bitstream_buffer_model: "streaming-persistent-mapped-reused-upload-buffer",
+                bitstream_buffer_model: "ffmpeg-picture-slices-buffer-pool-exec-owned",
+                ffmpeg_slices_buffer_pool_slot_count: bitstream_buffers.slot_count(),
+                ffmpeg_slices_buffer_pool_allocated_slot_count: bitstream_buffers
+                    .allocated_slot_count(),
+                ffmpeg_slices_buffer_pool_capacity_bytes: bitstream_buffers.total_capacity_bytes(),
+                ffmpeg_slices_buffer_pool_max_slot_bytes: bitstream_buffers
+                    .max_slot_capacity_bytes(),
                 input_payload_model: "bounded-streaming-packet-queue-per-frame-upload",
                 src_buffer_total_bytes,
                 streaming_decode_timing,
@@ -1802,14 +1791,17 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_streaming_decode_into_image(
             })
         })();
 
+    if result.is_err()
+        && let Some(command_buffer_ref) = command_buffer.as_ref()
+    {
+        let _ = submit_ring.wait_all_submitted(device, command_buffer_ref);
+    }
+    bitstream_buffers.destroy_all(device);
     if let Some(command_buffer) = command_buffer.take() {
         native_vulkan_vulkanalia_destroy_decode_command_buffer(device, command_buffer);
     }
     if let Some(session_parameters) = session_parameters.take() {
         native_vulkan_vulkanalia_destroy_video_session_parameters(device, session_parameters);
-    }
-    if let Some(bitstream_buffer) = bitstream_buffer.take() {
-        native_vulkan_vulkanalia_destroy_video_session_bitstream_buffer(device, bitstream_buffer);
     }
     native_vulkan_vulkanalia_trim_heap_after_decode_teardown();
 
@@ -1830,7 +1822,6 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_streaming_decode_into_image(
     codec: NativeVulkanVideoSessionCodec,
     array_layers: u32,
     exec_ring_depth: u32,
-    requested_bitstream_buffer_size: u64,
     input: NativeVulkanVulkanaliaH264StreamingDecodeInput<'_>,
     image: &super::video_session_images::VulkanaliaVideoSessionResourceImage,
     mut before_output_slot_reuse: Option<NativeVulkanVulkanaliaBeforeOutputSlotReuse<'_>>,
@@ -1848,16 +1839,6 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_streaming_decode_into_image(
     let array_layers = array_layers.max(1);
     let exec_ring_depth = exec_ring_depth.max(1);
     let parameter_sets = input.parameter_sets;
-    let bitstream_buffer = native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
-        device,
-        memory_properties,
-        profile_info,
-        requested_bitstream_buffer_size.max(capabilities.min_bitstream_buffer_size_alignment),
-        capabilities.min_bitstream_buffer_size_alignment,
-        None,
-        true,
-    )?;
-    let mut bitstream_buffer = Some(bitstream_buffer);
     let session_parameters = native_vulkan_vulkanalia_create_h264_video_session_parameters(
         device,
         session,
@@ -1871,6 +1852,10 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_streaming_decode_into_image(
         exec_ring_depth,
     )?;
     let mut command_buffer = Some(command_buffer);
+    let mut submit_ring =
+        NativeVulkanVulkanaliaStreamingDecodeSubmitRing::new(exec_ring_depth as usize);
+    let mut bitstream_buffers =
+        NativeVulkanVulkanaliaFfmpegSlicesBufferPool::new(exec_ring_depth as usize);
 
     let result =
         (|| -> Result<NativeVulkanVulkanaliaH264ReadyPrefixCommandSmokeSnapshot, String> {
@@ -1882,8 +1867,6 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_streaming_decode_into_image(
             let command_buffer_ref = command_buffer
                 .as_ref()
                 .expect("Vulkanalia streaming command buffer is alive during decode");
-            let mut submit_ring =
-                NativeVulkanVulkanaliaStreamingDecodeSubmitRing::new(exec_ring_depth as usize);
             let mut initialized_slots = vec![false; array_layers as usize];
             let mut frame_telemetry = NativeVulkanVulkanaliaDecodeFrameTelemetry::new();
             let mut command_buffer_recorded = true;
@@ -1934,34 +1917,22 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_streaming_decode_into_image(
                 }
                 let payload_len = frame.access_unit_payload.len() as u64;
                 let stage_started_at = Instant::now();
-                let bitstream_buffer_ref =
-                    native_vulkan_vulkanalia_streaming_bitstream_ring_buffer_for_payload(
-                        device,
-                        memory_properties,
-                        profile_info,
-                        requested_bitstream_buffer_size,
-                        capabilities.min_bitstream_buffer_offset_alignment,
-                        capabilities.min_bitstream_buffer_size_alignment,
-                        &mut bitstream_buffer,
-                        &mut submit_ring,
-                        command_buffer_ref,
-                        payload_len,
-                    )?;
+                let bitstream_buffer_ref = bitstream_buffers.buffer_for_payload(
+                    device,
+                    memory_properties,
+                    profile_info,
+                    submit_slot,
+                    payload_len,
+                    capabilities.min_bitstream_buffer_size_alignment,
+                )?;
                 frame_timing.bitstream_buffer_micros =
                     native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
-                let bitstream_slot_stride =
-                    native_vulkan_vulkanalia_streaming_bitstream_slot_stride(
-                        bitstream_buffer_ref.snapshot.size,
-                        submit_ring.slot_count(),
-                        capabilities.min_bitstream_buffer_offset_alignment,
-                    )?;
-                let src_buffer_offset = bitstream_slot_stride.saturating_mul(submit_slot as u64);
                 let stage_started_at = Instant::now();
                 let (src_buffer_offset, src_buffer_range) =
                     native_vulkan_vulkanalia_write_video_session_bitstream_payload_at_offset(
                         device,
                         bitstream_buffer_ref,
-                        src_buffer_offset,
+                        0,
                         frame.access_unit_payload.bytes(),
                         capabilities.min_bitstream_buffer_size_alignment,
                     )?;
@@ -2117,7 +2088,13 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_streaming_decode_into_image(
                 submit_command_order:
                     native_vulkan_vulkanalia_streaming_decode_submit_fence_command_order(),
                 queue_family_index,
-                bitstream_buffer_model: "streaming-persistent-mapped-reused-upload-buffer",
+                bitstream_buffer_model: "ffmpeg-picture-slices-buffer-pool-exec-owned",
+                ffmpeg_slices_buffer_pool_slot_count: bitstream_buffers.slot_count(),
+                ffmpeg_slices_buffer_pool_allocated_slot_count: bitstream_buffers
+                    .allocated_slot_count(),
+                ffmpeg_slices_buffer_pool_capacity_bytes: bitstream_buffers.total_capacity_bytes(),
+                ffmpeg_slices_buffer_pool_max_slot_bytes: bitstream_buffers
+                    .max_slot_capacity_bytes(),
                 input_payload_model: "bounded-streaming-packet-queue-per-frame-upload",
                 src_buffer_total_bytes,
                 streaming_decode_timing,
@@ -2146,14 +2123,17 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_streaming_decode_into_image(
             })
         })();
 
+    if result.is_err()
+        && let Some(command_buffer_ref) = command_buffer.as_ref()
+    {
+        let _ = submit_ring.wait_all_submitted(device, command_buffer_ref);
+    }
+    bitstream_buffers.destroy_all(device);
     if let Some(command_buffer) = command_buffer.take() {
         native_vulkan_vulkanalia_destroy_decode_command_buffer(device, command_buffer);
     }
     if let Some(session_parameters) = session_parameters.take() {
         native_vulkan_vulkanalia_destroy_video_session_parameters(device, session_parameters);
-    }
-    if let Some(bitstream_buffer) = bitstream_buffer.take() {
-        native_vulkan_vulkanalia_destroy_video_session_bitstream_buffer(device, bitstream_buffer);
     }
     native_vulkan_vulkanalia_trim_heap_after_decode_teardown();
 

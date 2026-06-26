@@ -319,7 +319,6 @@ pub struct NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions {
     pub session: NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
     pub source: PathBuf,
     pub queue_capacity: usize,
-    pub bitstream_buffer_size: u64,
     pub playback_frame_count: u32,
 }
 
@@ -329,7 +328,6 @@ pub struct NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions {
     pub session: NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
     pub source: PathBuf,
     pub queue_capacity: usize,
-    pub bitstream_buffer_size: u64,
     pub playback_frame_count: u32,
 }
 
@@ -339,7 +337,6 @@ pub struct NativeVulkanVulkanaliaAv1StreamingVideoPresentDecodeOptions {
     pub session: NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
     pub source: PathBuf,
     pub queue_capacity: usize,
-    pub bitstream_buffer_size: u64,
     pub playback_frame_count: u32,
 }
 
@@ -1717,7 +1714,6 @@ fn create_video_present_session_pieces(
                                                 codec,
                                                 resource_image_array_layers,
                                                 ffmpeg_decode_async_exec_depth,
-                                                request.bitstream_buffer_size,
                                                 NativeVulkanVulkanaliaH264StreamingDecodeInput {
                                                     parameter_sets,
                                                     requested_frame_count: request.playback_frame_count,
@@ -1777,7 +1773,6 @@ fn create_video_present_session_pieces(
                                                 codec,
                                                 resource_image_array_layers,
                                                 ffmpeg_decode_async_exec_depth,
-                                                request.bitstream_buffer_size,
                                                 NativeVulkanVulkanaliaH265StreamingDecodeInput {
                                                     parameter_sets,
                                                     requested_frame_count: request.playback_frame_count,
@@ -1844,7 +1839,6 @@ fn create_video_present_session_pieces(
                                             codec,
                                             resource_image_array_layers,
                                             ffmpeg_decode_async_exec_depth,
-                                            request.bitstream_buffer_size,
                                             NativeVulkanVulkanaliaAv1StreamingDecodeInput {
                                                 sequence_header: sequence_header.clone(),
                                                 requested_frame_count: request.playback_frame_count,

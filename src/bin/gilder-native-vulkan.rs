@@ -250,13 +250,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .transpose()?
                     .ok_or("--height requires pixels")?;
             }
-            "--bitstream-buffer-size" => {
-                video_session_options.bitstream_buffer_size = args
-                    .next()
-                    .map(|value| value.parse::<u64>())
-                    .transpose()?
-                    .ok_or("--bitstream-buffer-size requires bytes")?;
-            }
             "--bitstream-samples" => {
                 video_session_options.bitstream_extract_max_samples = args
                     .next()
@@ -440,7 +433,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     height: video_session_options.height,
                     allocate_video_images: video_session_options.allocate_video_images,
                     allocate_bitstream_buffer: video_session_options.allocate_bitstream_buffer,
-                    bitstream_buffer_size: video_session_options.bitstream_buffer_size,
                     create_empty_session_parameters: vulkanalia_create_empty_session_parameters,
                     create_session_parameters: vulkanalia_create_session_parameters,
                     h264_parameter_sets,
@@ -748,7 +740,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --audio-clock-probe runs the explicit audio-only clock probe beside H.264 visible video and reports A/V drift.\n\
 --audio-output plan|clock-only|auto selects plan-following, clock-only telemetry, or tee-to-autoaudiosink output for --audio-clock-probe.\n\
 --allocate-video-images extends --probe-vulkanalia-video-session with codec-matching 2-plane 4:2:0 DPB/output sampled image allocation.\n\
---allocate-bitstream-buffer extends --probe-vulkanalia-video-session with a mapped VIDEO_DECODE_SRC bitstream buffer.\n\
+--allocate-bitstream-buffer extends --probe-vulkanalia-video-session with an FFmpeg-sized mapped VIDEO_DECODE_SRC slices buffer.\n\
 --create-empty-session-parameters extends --probe-vulkanalia-video-session with an H.264/H.265 empty capacity VkVideoSessionParametersKHR smoke.\n\
 --create-session-parameters extends --probe-vulkanalia-video-session with real H.264 SPS/PPS, H.265 VPS/SPS/PPS, or AV1 sequence-header VkVideoSessionParametersKHR creation from --source.\n\
 --decode-h264-ready-prefix N extends --probe-vulkanalia-video-session/--run-video with N reference-ready H.264 AU Vulkan Video decode submits.\n\
@@ -768,7 +760,7 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--decoder auto|hardware-preferred|hardware-required|software]\n\
          [--video-codec h264|h265|h265-main-10|av1|av1-main-10] [--width PX] [--height PX]\n\
-         [--allocate-video-images] [--allocate-bitstream-buffer] [--bitstream-buffer-size BYTES]\n\
+         [--allocate-video-images] [--allocate-bitstream-buffer]\n\
          [--create-session-parameters] [--bitstream-samples N]\n\
          [--decode-h264-ready-prefix N] [--require-h264-ready-prefix N]\n\
          [--decode-h265-ready-prefix N]\n\

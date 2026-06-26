@@ -140,40 +140,43 @@ pub(super) fn native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
             ));
         }
 
-        let mapped_write_bytes = if keep_mapped {
+        let mapped_size = if keep_mapped {
             memory_requirements.size
         } else {
             write_payload
                 .map(|payload| payload.len() as u64)
                 .unwrap_or_else(|| size.min(256))
         };
-        let map = match unsafe {
-            device.map_memory(memory, 0, mapped_write_bytes, vk::MemoryMapFlags::empty())
-        } {
-            Ok(map) => map,
-            Err(err) => {
-                unsafe {
-                    device.destroy_buffer(buffer, None);
-                    buffer_destroyed = true;
-                    device.free_memory(memory, None);
+        let map =
+            match unsafe { device.map_memory(memory, 0, mapped_size, vk::MemoryMapFlags::empty()) }
+            {
+                Ok(map) => map,
+                Err(err) => {
+                    unsafe {
+                        device.destroy_buffer(buffer, None);
+                        buffer_destroyed = true;
+                        device.free_memory(memory, None);
+                    }
+                    return Err(format!("vkMapMemory(vulkanalia video bitstream): {err:?}"));
                 }
-                return Err(format!("vkMapMemory(vulkanalia video bitstream): {err:?}"));
-            }
-        };
+            };
+        let mut mapped_write_bytes = 0u64;
         if let Some(payload) = write_payload {
             unsafe {
                 ptr::copy_nonoverlapping(payload.as_ptr(), map.cast::<u8>(), payload.len());
             }
-        } else {
+            mapped_write_bytes = payload.len() as u64;
+        } else if !keep_mapped {
             unsafe {
-                ptr::write_bytes(map.cast::<u8>(), 0, mapped_write_bytes as usize);
+                ptr::write_bytes(map.cast::<u8>(), 0, mapped_size as usize);
             }
+            mapped_write_bytes = mapped_size;
         }
 
         let host_coherent = memory_type.property_flags_bits
             & vk::MemoryPropertyFlags::HOST_COHERENT.bits()
             == vk::MemoryPropertyFlags::HOST_COHERENT.bits();
-        if !host_coherent {
+        if !host_coherent && mapped_write_bytes > 0 {
             let range = vk::MappedMemoryRange::builder()
                 .memory(memory)
                 .offset(0)
@@ -218,7 +221,7 @@ pub(super) fn native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
                 ),
                 mapped_write_bytes,
                 mapped_write_source: if keep_mapped {
-                    "persistent-mapped-reusable-slot"
+                    "persistent-mapped-no-initial-write"
                 } else if write_payload.is_some() {
                     "extracted-encoded-video-unit"
                 } else {
@@ -293,19 +296,12 @@ pub(super) fn native_vulkan_vulkanalia_write_video_session_bitstream_payload_at_
     unsafe {
         let dst = mapped_ptr.cast::<u8>().add(dst_offset as usize);
         ptr::copy_nonoverlapping(payload.as_ptr(), dst, payload.len());
-        if src_buffer_range as usize > payload.len() {
-            ptr::write_bytes(
-                dst.add(payload.len()),
-                0,
-                src_buffer_range as usize - payload.len(),
-            );
-        }
     }
     if !buffer.snapshot.host_coherent {
         let range = vk::MappedMemoryRange::builder()
             .memory(buffer.memory)
-            .offset(0)
-            .size(end_offset)
+            .offset(dst_offset)
+            .size(src_buffer_range)
             .build();
         unsafe {
             device.flush_mapped_memory_ranges(&[range]).map_err(|err| {
