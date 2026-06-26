@@ -7,6 +7,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 "${sudo_cmd[@]}" apt-get install -y \
+  ffmpeg \
   libwayland-bin \
   libwayland-dev \
   libxkbcommon-dev \

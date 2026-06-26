@@ -19,15 +19,9 @@ legacy decoded-frame and display-sink paths have been removed.
 - `src/bin/gilderd.rs`: daemon entry point for IPC, state, and renderer updates.
 - `src/bin/gilderctl.rs`: CLI client for daemon control.
 - `src/bin/gilder-convert.rs`: conversion tool for Wallpaper Engine projects.
-- `docs/design.md`: system design.
-- `docs/format.md`: Gilder wallpaper package format.
-- `docs/conversion.md`: Wallpaper Engine conversion plan.
-- `docs/ipc.md`: local IPC protocol.
+- `docs/native-vulkan-video.md`: current FFmpeg/Vulkan Video status,
+  hard gates, and H.264/H.265/AV1 evidence.
 - `docs/packaging.md`: packaging asset install notes.
-- `docs/wallpaper-types.md`: wallpaper type support matrix and runtime gaps.
-- `docs/vulkan-migration.md`: renderer backend boundaries and Vulkan migration
-  preparation plan.
-- `docs/todo.md`: staged implementation checklist.
 - `docs/man/`: man pages for the command line tools.
 - `completions/`: bash and zsh shell completions.
 - `packaging/systemd/`: systemd user service example.
@@ -70,8 +64,8 @@ is available at `packaging/build-dist.sh`.
 `manifest.gilder.json`.
 
 The daemon currently provides JSON-RPC over a Unix socket, persistent state, and
-policy decisions for desktop-state-based throttling. Rendering, native Vulkan
-integration, and Hyprland/niri output discovery are tracked in `docs/todo.md`.
+policy decisions for desktop-state-based throttling. Native Vulkan video status
+and evidence are tracked in `docs/native-vulkan-video.md`.
 
 The optional `native-vulkan-video` feature builds the native Wayland/Vulkan
 video helper. FFmpeg owns container parsing and parser-normalized bitstream
