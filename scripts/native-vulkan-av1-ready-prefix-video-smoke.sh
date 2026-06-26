@@ -29,6 +29,8 @@ Options:
                         Select audio clock probe output branch. Default: plan.
   --pacing-master <target|audio>
                         Select pacing master. audio requires --audio-clock-probe.
+  --allocator-profile <system|glibc-low-dirty>
+                        Runtime allocator env profile. Default: system.
   --muted|--unmuted     Select effective video plan audio policy. Default: muted.
   --performance-snapshot
                         Capture process CPU/RSS/PSS/USS/Private_Dirty/smaps while running.
@@ -60,6 +62,7 @@ height=2160
 audio_clock_probe=0
 audio_output="plan"
 pacing_master="target"
+allocator_profile="system"
 plan_muted=1
 performance_snapshot=0
 performance_duration=10
@@ -128,6 +131,10 @@ while [[ $# -gt 0 ]]; do
       pacing_master="${2:-}"
       shift 2
       ;;
+    --allocator-profile)
+      allocator_profile="${2:-}"
+      shift 2
+      ;;
     --muted)
       plan_muted=1
       shift
@@ -194,6 +201,13 @@ case "$pacing_master" in
   target|audio) ;;
   *)
     printf 'FAIL: --pacing-master must be target or audio\n' >&2
+    exit 2
+    ;;
+esac
+case "$allocator_profile" in
+  system|glibc-low-dirty) ;;
+  *)
+    printf 'FAIL: --allocator-profile must be system or glibc-low-dirty\n' >&2
     exit 2
     ;;
 esac
@@ -322,7 +336,7 @@ if [[ "$pacing_master" == "audio" ]]; then
 else
   runtime_env+=(GILDER_VIDEO_PACING_MASTER=target)
 fi
-gilder_append_ready_prefix_runtime_env runtime_env
+gilder_append_ready_prefix_runtime_env runtime_env "$allocator_profile"
 
 performance_status=0
 if [[ "$performance_snapshot" -eq 1 ]]; then
@@ -449,6 +463,7 @@ fi
   printf 'source: %s\n' "$source"
   printf 'codec: %s\n' "$codec"
   printf 'source_frame_count: %s\n' "$source_frame_count"
+  printf 'allocator_profile: %s\n' "$allocator_profile"
   printf 'decode_prefix: %s\n' "$decode_prefix"
   printf 'playback_frames: %s\n' "$playback_frames"
   printf 'submitted_frame_count: %s\n' "$submitted"
