@@ -6,6 +6,7 @@ use serde::Serialize;
 use crate::core::FitMode;
 
 use super::audio_policy::NativeVulkanAudioOutputMode;
+use super::demux::NATIVE_VULKAN_PACKET_HANDOFF_FRAMES;
 use super::video_codec::NativeVulkanVideoSessionCodec;
 use super::vulkanalia_backend::{
     NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeSnapshot,
@@ -29,8 +30,6 @@ use super::vulkanalia_backend::{
     run_native_vulkan_vulkanalia_h265_streaming_video_present_decode,
 };
 use super::{NativeVulkanError, NativeVulkanOptions};
-
-const NATIVE_VULKAN_VULKANALIA_STREAMING_PACKET_QUEUE_CAPACITY: usize = 32;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
@@ -99,6 +98,8 @@ pub fn run_vulkanalia_ready_prefix_video(
     audio_clock_probe_requested: bool,
     audio_output_mode: NativeVulkanAudioOutputMode,
 ) -> Result<NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot, NativeVulkanError> {
+    super::native_vulkan_configure_process_allocator_for_streaming_video();
+
     if width == 0 || height == 0 {
         return Err(NativeVulkanError::Video(
             "Vulkanalia ready-prefix run requires a non-zero source extent".to_owned(),
@@ -442,11 +443,7 @@ fn native_vulkan_vulkanalia_visible_present_duration(
 }
 
 fn native_vulkan_vulkanalia_streaming_packet_queue_capacity() -> usize {
-    std::env::var("GILDER_VULKAN_STREAMING_PACKET_QUEUE_CAPACITY")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(NATIVE_VULKAN_VULKANALIA_STREAMING_PACKET_QUEUE_CAPACITY)
+    NATIVE_VULKAN_PACKET_HANDOFF_FRAMES
 }
 
 #[cfg(test)]

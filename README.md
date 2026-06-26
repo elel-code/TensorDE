@@ -6,10 +6,9 @@ between simple static wallpaper tools and richer Wallpaper Engine style
 packages on Linux.
 
 Current status: daemon IPC, state persistence, wallpaper planning, and
-feature-gated native Wayland/Vulkan renderer paths. Video work is converging on
-GStreamer demux/parser/audio frontend feeding Vulkanalia/Vulkan Video
-decode/render/present; the old GTK, native waylandsink/playbin display, and
-decoded appsink importer paths have been removed.
+feature-gated native Wayland/Vulkan renderer paths. Video work uses an FFmpeg
+demux/bitstream frontend feeding Vulkanalia/Vulkan Video decode/render/present;
+legacy decoded-frame and display-sink paths have been removed.
 
 ## Project Layout
 
@@ -25,7 +24,6 @@ decoded appsink importer paths have been removed.
 - `docs/conversion.md`: Wallpaper Engine conversion plan.
 - `docs/ipc.md`: local IPC protocol.
 - `docs/packaging.md`: packaging asset install notes.
-- `docs/video-validation.md`: video codec smoke validation notes.
 - `docs/wallpaper-types.md`: wallpaper type support matrix and runtime gaps.
 - `docs/vulkan-migration.md`: renderer backend boundaries and Vulkan migration
   preparation plan.
@@ -33,11 +31,10 @@ decoded appsink importer paths have been removed.
 - `docs/man/`: man pages for the command line tools.
 - `completions/`: bash and zsh shell completions.
 - `packaging/systemd/`: systemd user service example.
-- `scripts/video-codec-smoke.sh`: MP4/WebM codec smoke validation helper.
-- `scripts/install-video-codec-smoke-deps-ubuntu.sh`: Ubuntu/Debian dependency
-  helper for codec smoke validation.
-- `scripts/install-video-codec-smoke-deps-arch.sh`: Arch-like dependency
-  helper for codec smoke validation.
+- `scripts/native-vulkan-h264-ready-prefix-video-smoke.sh`: real Wayland native
+  Vulkan H.264 decode/present evidence helper.
+- `scripts/native-vulkan-av1-ready-prefix-video-smoke.sh`: real Wayland native
+  Vulkan AV1 decode/present evidence helper.
 - `scripts/native-vulkan-h265-ready-prefix-video-smoke.sh`: real Wayland native
   Vulkan H.265 decode/present evidence helper.
 - `scripts/native-vulkan-surface-video-queue-smoke.sh`: native Vulkan surface
@@ -51,9 +48,8 @@ decoded appsink importer paths have been removed.
 
 ```sh
 cargo check
-cargo check --features video-renderer
 cargo check --features native-vulkan-renderer
-cargo check --features native-vulkan-gst-video --bin gilder-native-vulkan
+cargo check --features native-vulkan-video --bin gilder-native-vulkan
 cargo run --bin gilderd
 cargo run --bin gilderctl -- ping
 cargo run --bin gilderctl -- outputs
@@ -77,11 +73,6 @@ The daemon currently provides JSON-RPC over a Unix socket, persistent state, and
 policy decisions for desktop-state-based throttling. Rendering, native Vulkan
 integration, and Hyprland/niri output discovery are tracked in `docs/todo.md`.
 
-The optional `video-renderer` feature builds the GStreamer controller for video
-wallpaper pipeline lifecycle. It expects GStreamer 1.0 development files and
-plugins from the host system.
-
-The optional `native-vulkan-gst-video` feature builds the native Wayland/Vulkan
-video helper. GStreamer owns container parsing, parser-normalized bitstream
-handoff and audio probing; Vulkanalia/native Vulkan owns decode, render and
-present.
+The optional `native-vulkan-video` feature builds the native Wayland/Vulkan
+video helper. FFmpeg owns container parsing and parser-normalized bitstream
+handoff; Vulkanalia/native Vulkan owns decode, render and present.

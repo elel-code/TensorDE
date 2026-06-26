@@ -96,7 +96,7 @@ fi
 mkdir -p "$report_dir"
 
 if [[ "$no_build" -eq 0 ]]; then
-  cargo build --release --features native-vulkan-gst-video --bin gilder-native-vulkan
+  cargo build --release --features native-vulkan-video --bin gilder-native-vulkan
 fi
 
 probe_json="$report_dir/probe-surface.json"

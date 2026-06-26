@@ -1,4 +1,4 @@
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 pub(super) struct NativeVulkanByteSummary {
     pub(super) hash: u64,
     pub(super) nonzero_bytes: u64,
@@ -7,7 +7,7 @@ pub(super) struct NativeVulkanByteSummary {
     pub(super) unique_values: u32,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 pub(super) fn native_vulkan_byte_summary(bytes: &[u8]) -> NativeVulkanByteSummary {
     let mut seen = [false; 256];
     let mut nonzero_bytes = 0u64;

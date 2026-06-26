@@ -27,7 +27,7 @@ use super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE;
 use super::video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot;
 use super::video_session_images::VulkanaliaVideoSessionResourceImage;
 
-pub(super) const DECODED_IMAGE_PRESENT_TELEMETRY_RETAINED_FRAMES: usize = 8;
+pub(super) const DECODED_IMAGE_PRESENT_TELEMETRY_RETAINED_FRAMES: usize = 0;
 
 fn native_vulkan_vulkanalia_elapsed_micros(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)
@@ -89,6 +89,8 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
     pub present_frame_index: u32,
     pub sampled_array_layer: u32,
     pub sampled_array_layer_source: &'static str,
+    pub source_frame_pts_ns: Option<u64>,
+    pub source_frame_duration_ns: Option<u64>,
     pub source_frame_pts_ms: Option<u64>,
     pub source_frame_duration_ms: Option<u64>,
     pub display_order_key: i64,
@@ -144,10 +146,19 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
     pub present_interval_elapsed_micros: u64,
     pub present_teardown_inclusive_elapsed_micros: u64,
     pub retained_frame_telemetry_limit: usize,
+    pub distinct_sampled_array_layer_count: u32,
     pub sampled_array_layers_head: Vec<u32>,
     pub sampled_array_layers_tail: Vec<u32>,
+    pub source_frame_pts_ns_head: Vec<Option<u64>>,
+    pub source_frame_pts_ns_tail: Vec<Option<u64>>,
+    pub source_frame_pts_delta_min_ns: Option<u64>,
+    pub source_frame_pts_delta_max_ns: Option<u64>,
+    pub source_frame_duration_ns_head: Vec<Option<u64>>,
+    pub source_frame_duration_ns_tail: Vec<Option<u64>>,
     pub source_frame_pts_ms_head: Vec<Option<u64>>,
     pub source_frame_pts_ms_tail: Vec<Option<u64>>,
+    pub source_frame_pts_delta_min_ms: Option<u64>,
+    pub source_frame_pts_delta_max_ms: Option<u64>,
     pub source_frame_duration_ms_head: Vec<Option<u64>>,
     pub source_frame_duration_ms_tail: Vec<Option<u64>>,
     pub display_order_keys_head: Vec<i64>,
@@ -541,6 +552,8 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_once(
         false,
         None,
         None,
+        None,
+        None,
         0,
         "single-frame-present",
         0,
@@ -570,6 +583,8 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
     sampled_array_layer: u32,
     present_frame_index: u32,
     present_frame_slot_prepared: bool,
+    source_frame_pts_ns: Option<u64>,
+    source_frame_duration_ns: Option<u64>,
     source_frame_pts_ms: Option<u64>,
     source_frame_duration_ms: Option<u64>,
     display_order_key: i64,
@@ -751,11 +766,6 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
     }
     let present_submit_command_buffer_micros =
         native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
-    if let Some(after_render_submit_before_present) =
-        after_render_submit_before_present.as_deref_mut()
-    {
-        after_render_submit_before_present(present_frame_slot as u32)?;
-    }
 
     let swapchains = [swapchain];
     let image_indices = [image_index];
@@ -795,6 +805,11 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
     }
     drop(queue_host_access_guard);
     let present_queue_present_micros = native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
+    if let Some(after_render_submit_before_present) =
+        after_render_submit_before_present.as_deref_mut()
+    {
+        after_render_submit_before_present(present_frame_slot as u32)?;
+    }
     let stage_started_at = Instant::now();
     let present_wait_after_present = present_timing.wait_after_queue_present(
         device,
@@ -813,6 +828,8 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         present_frame_index,
         sampled_array_layer,
         sampled_array_layer_source: "submitted-dst-base-array-layer-via-draw-first-instance",
+        source_frame_pts_ns,
+        source_frame_duration_ns,
         source_frame_pts_ms,
         source_frame_duration_ms,
         display_order_key,

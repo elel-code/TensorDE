@@ -3,7 +3,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NativeVulkanVideoFlowOwner {
-    ReplaceableFrontend,
+    FfmpegFrontend,
     NativePacketBoundary,
     NativeCodec,
     NativeRender,
@@ -125,12 +125,12 @@ pub fn native_vulkan_video_flow_contract() -> NativeVulkanVideoFlowContract {
         threads: vec![
             NativeVulkanVideoFlowThreadContract {
                 kind: NativeVulkanVideoFlowThreadKind::Read,
-                owner: NativeVulkanVideoFlowOwner::ReplaceableFrontend,
+                owner: NativeVulkanVideoFlowOwner::FfmpegFrontend,
                 ffmpeg_reference: "ffplay.c read_thread and ffmpeg_demux.c demux_thread_func/av_read_frame/demux_send",
                 input: "container source",
                 output: "packet queue boundary",
                 blocking_rule: "may block in demux/read; must wake or stop cleanly on EOS, loop, seek and shutdown",
-                replaceable_rule: "GStreamer, libavformat or native demux can own this stage if the packet contract is identical",
+                replaceable_rule: "FFmpeg owns this stage; replacement requires an identical AVPacket/serial/BSF contract",
             },
             NativeVulkanVideoFlowThreadContract {
                 kind: NativeVulkanVideoFlowThreadKind::VideoDecode,
@@ -139,7 +139,7 @@ pub fn native_vulkan_video_flow_contract() -> NativeVulkanVideoFlowContract {
                 input: "packet queue boundary",
                 output: "decoded frame queue",
                 blocking_rule: "blocks on packet/frame readiness; never owns display sink or present loop",
-                replaceable_rule: "direct route keeps decode in Gilder; decoded-frame route can replace this with provider decode",
+                replaceable_rule: "decode stays in Gilder native Vulkan Video for the supported video formats",
             },
             NativeVulkanVideoFlowThreadContract {
                 kind: NativeVulkanVideoFlowThreadKind::AudioDecode,
@@ -148,7 +148,7 @@ pub fn native_vulkan_video_flow_contract() -> NativeVulkanVideoFlowContract {
                 input: "audio packets or frontend audio runtime",
                 output: "audio clock/frame queue",
                 blocking_rule: "serial-aware worker drops obsolete clock samples before doing frontend work",
-                replaceable_rule: "GStreamer audio clock is current frontend; libav/audio backends can replace it behind the same telemetry",
+                replaceable_rule: "audio clock backend can change only behind the same FFmpeg-style serial telemetry",
             },
             NativeVulkanVideoFlowThreadContract {
                 kind: NativeVulkanVideoFlowThreadKind::RenderRefresh,
@@ -171,7 +171,7 @@ pub fn native_vulkan_video_flow_contract() -> NativeVulkanVideoFlowContract {
         ],
         invariants: &[
             "FFmpeg under references/ffmpeg is the first source for queue, serial, clock and refresh semantics",
-            "the frontend may be GStreamer, libavformat or native demux, but it must not own native Vulkan render/present",
+            "FFmpeg frontend owns demux/bitstream filtering only; it must not own native Vulkan decode/render/present",
             "PacketQueue semantics apply to compressed packets; FrameQueue semantics apply to decoded images and keep-last refresh",
             "every cross-thread video/audio handoff carries a serial or is explicitly proven not to cross loop/seek state",
             "lock-free structures are optional; FFmpeg alignment requires bounded ownership, serial invalidation and sleep/wakeup behavior first",
@@ -229,8 +229,8 @@ mod tests {
         assert!(contract.threads.iter().any(|thread| {
             thread.kind == NativeVulkanVideoFlowThreadKind::Read
                 && thread.ffmpeg_reference.contains("read_thread")
-                && thread.replaceable_rule.contains("GStreamer")
-                && thread.replaceable_rule.contains("libavformat")
+                && thread.replaceable_rule.contains("FFmpeg")
+                && thread.replaceable_rule.contains("AVPacket")
         }));
         assert!(contract.threads.iter().any(|thread| {
             thread.kind == NativeVulkanVideoFlowThreadKind::RenderRefresh

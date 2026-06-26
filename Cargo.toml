@@ -6,6 +6,7 @@ license = "MPL-2.0"
 repository = "https://github.com/elel-code/Gilder"
 homepage = "https://github.com/elel-code/Gilder"
 rust-version = "1.96"
+build = "build.rs"
 
 [features]
 default = []
@@ -20,11 +21,8 @@ native-vulkan-renderer = [
     "dep:image",
     "dep:vulkanalia",
 ]
-native-vulkan-gst-video = ["native-vulkan-renderer", "video-renderer"]
-native-vulkan-gst-cuda = ["native-vulkan-gst-video"]
-native-vulkan-gst-va = ["native-vulkan-gst-video"]
+native-vulkan-video = ["native-vulkan-renderer"]
 native-vulkan-vulkanalia = ["native-vulkan-renderer"]
-video-renderer = ["dep:gstreamer", "dep:gstreamer-video"]
 
 [[bin]]
 name = "gilderd"
@@ -44,8 +42,6 @@ path = "src/bin/gilder-native-vulkan.rs"
 required-features = ["native-vulkan-renderer"]
 
 [dependencies]
-gstreamer = { version = "0.25", optional = true }
-gstreamer-video = { version = "0.25", optional = true }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"], optional = true }
 jiff = "0.2"
 serde = { version = "1", features = ["derive"] }
@@ -57,6 +53,7 @@ vulkanalia = { version = "0.35", features = ["libloading"], optional = true }
 wayland-client = { version = "0.31", features = ["system", "libwayland_1_23"], optional = true }
 wayland-protocols = { version = "0.32", features = ["client", "staging"], optional = true }
 zip = { version = "4", default-features = false, features = ["deflate"] }
+
 
 [lints.rust]
 unsafe_code = "warn"

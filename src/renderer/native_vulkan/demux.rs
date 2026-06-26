@@ -3,14 +3,17 @@
 //! This module follows the same broad split as FFmpeg: demux/parser output is
 //! retained as codec access units, while decode/render code consumes packets
 //! with explicit timestamps, loop serials, and parameter-set snapshots. The
-//! packet queue is frontend-agnostic; provider modules own demux implementation
-//! details such as GStreamer or a future libav/FFmpeg reader.
+//! packet queue is frontend-agnostic inside the renderer; the current provider
+//! is the FFmpeg reader.
 
 use std::collections::VecDeque;
 
 use serde::Serialize;
 
 use super::{NativeVulkanError, native_vulkan_streaming_bootstrap_scan_limit};
+
+pub(super) const FFMPEG_VIDEO_PICTURE_QUEUE_SIZE: usize = 3;
+pub(super) const NATIVE_VULKAN_PACKET_HANDOFF_FRAMES: usize = FFMPEG_VIDEO_PICTURE_QUEUE_SIZE;
 
 pub(super) trait NativeVulkanStreamingAccessUnit: Sized {
     type ParameterSets: Clone;
@@ -105,7 +108,7 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
             boundary: "replaceable-demux-parser-to-native-decode",
             first_reference: "FFmpeg ffplay PacketQueue serial and bounded packet ownership",
             frontend_contract: "frontend supplies encoded access units/temporal units; native Vulkan owns codec state, decode, render and present",
-            queue_policy: "bounded FIFO queue with bootstrap keep-last window and no long payload retention after bitstream upload",
+            queue_policy: "bounded FIFO packet handoff with FFmpeg av_packet_move_ref-style ownership; payload is released immediately after bitstream upload and decoded-frame keep_last=1 is downstream",
             frame_keep_last_policy: "decoded-frame keep-last/direct-DPB ownership is downstream of this packet queue",
             serial_model: "source loop count is the packet serial; stale packets/frames are rejected across loop or seek boundaries",
             capacity: self.capacity.min(u32::MAX as usize) as u32,
@@ -306,14 +309,14 @@ pub(super) fn native_vulkan_start_streaming_packet_queue_from_frontend<
 ) -> Result<NativeVulkanStreamingPacketQueue<A>, NativeVulkanError> {
     let capacity = capacity.max(1);
     let mut pending = VecDeque::<A>::with_capacity(capacity);
-    let mut selected_parameter_sets_access_unit = None::<Vec<u8>>;
+    let mut selected_parameter_sets = None::<A::ParameterSets>;
     let mut pulled_count = 0u32;
     let mut max_payload_bytes = 0u64;
     let mut bootstrap_discarded_access_units = 0u32;
     let bootstrap_scan_limit = native_vulkan_streaming_bootstrap_scan_limit(capacity);
 
-    while pending.len() < capacity || selected_parameter_sets_access_unit.is_none() {
-        if selected_parameter_sets_access_unit.is_none()
+    while pending.len() < capacity || selected_parameter_sets.is_none() {
+        if selected_parameter_sets.is_none()
             && usize::try_from(pulled_count).unwrap_or(usize::MAX) >= bootstrap_scan_limit
         {
             return Err(NativeVulkanError::Video(format!(
@@ -327,8 +330,10 @@ pub(super) fn native_vulkan_start_streaming_packet_queue_from_frontend<
         };
         pulled_count = pulled_count.saturating_add(1);
         max_payload_bytes = max_payload_bytes.max(access_unit.bytes().len() as u64);
-        if selected_parameter_sets_access_unit.is_none() && access_unit.has_parameter_sets() {
-            selected_parameter_sets_access_unit = Some(access_unit.bytes().to_vec());
+        if selected_parameter_sets.is_none() && access_unit.has_parameter_sets() {
+            selected_parameter_sets = Some(
+                A::parse_parameter_sets(access_unit.bytes()).map_err(NativeVulkanError::Video)?,
+            );
         }
         pending.push_back(access_unit);
         while pending.len() > capacity {
@@ -343,17 +348,14 @@ pub(super) fn native_vulkan_start_streaming_packet_queue_from_frontend<
             A::CODEC_LABEL
         )));
     }
-    let selected_parameter_sets_access_unit =
-        selected_parameter_sets_access_unit.ok_or_else(|| {
-            NativeVulkanError::Video(format!(
-                "{} streaming packet queue did not find {} in {} bootstrap packet(s)",
-                A::CODEC_LABEL,
-                A::PARAMETER_SETS_LABEL,
-                pulled_count
-            ))
-        })?;
-    let parameter_sets = A::parse_parameter_sets(&selected_parameter_sets_access_unit)
-        .map_err(NativeVulkanError::Video)?;
+    let parameter_sets = selected_parameter_sets.ok_or_else(|| {
+        NativeVulkanError::Video(format!(
+            "{} streaming packet queue did not find {} in {} bootstrap packet(s)",
+            A::CODEC_LABEL,
+            A::PARAMETER_SETS_LABEL,
+            pulled_count
+        ))
+    })?;
 
     let mut queued = VecDeque::with_capacity(capacity);
     for (index, access_unit) in pending.into_iter().enumerate() {

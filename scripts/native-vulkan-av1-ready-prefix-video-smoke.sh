@@ -279,7 +279,7 @@ performance_dir="$report_dir/performance"
 performance_log="$report_dir/performance.log"
 
 if [[ "$no_build" -ne 1 ]]; then
-  cargo build --release --features native-vulkan-gst-video --bin gilder-native-vulkan
+  cargo build --release --features native-vulkan-video --bin gilder-native-vulkan
 fi
 
 codec="av1-main-8"
@@ -313,13 +313,15 @@ if [[ -n "$output_name" ]]; then
 fi
 
 runtime_env=(WAYLAND_DISPLAY="$display")
+if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+  runtime_env+=(XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR")
+fi
 if [[ "$pacing_master" == "audio" ]]; then
   runtime_env+=(GILDER_VIDEO_PACING_MASTER=audio)
 else
   runtime_env+=(GILDER_VIDEO_PACING_MASTER=target)
 fi
 for passthrough_env in \
-  GILDER_VULKAN_STREAMING_PACKET_QUEUE_CAPACITY \
   MALLOC_ARENA_MAX \
   MALLOC_MMAP_THRESHOLD_ \
   MALLOC_TRIM_THRESHOLD_ \
@@ -395,7 +397,7 @@ ffmpeg_slices_buffer_pool_slot_count="$(jq -r '(.av1_retained_video_present_deco
 ffmpeg_slices_buffer_pool_allocated_slot_count="$(jq -r '(.av1_retained_video_present_decode.decode.ffmpeg_slices_buffer_pool_allocated_slot_count // 0)' "$runtime_json")"
 ffmpeg_slices_buffer_pool_capacity_bytes="$(jq -r '(.av1_retained_video_present_decode.decode.ffmpeg_slices_buffer_pool_capacity_bytes // 0)' "$runtime_json")"
 ffmpeg_slices_buffer_pool_max_slot_bytes="$(jq -r '(.av1_retained_video_present_decode.decode.ffmpeg_slices_buffer_pool_max_slot_bytes // 0)' "$runtime_json")"
-ffmpeg_slices_buffer_max_src_range="$(jq -r '(.av1_retained_video_present_decode.decode.max_src_buffer_range // ([.av1_retained_video_present_decode.decode.frames[]?.src_buffer_range] | max) // 0)' "$runtime_json")"
+ffmpeg_slices_buffer_max_src_range="$(jq -r '(.av1_retained_video_present_decode.decode.max_src_buffer_range // 0)' "$runtime_json")"
 bitstream_total_payload_bytes="$(jq -r '(.av1_retained_video_present_decode.decode.src_buffer_total_bytes // 0)' "$runtime_json")"
 session_dpb_slots="$(jq -r '.av1_retained_video_present_decode.session.session_max_dpb_slots // 0' "$runtime_json")"
 picture_format="$(jq -r '.av1_retained_video_present_decode.session.picture_format // "none"' "$runtime_json")"

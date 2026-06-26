@@ -1,4 +1,4 @@
-//! Native Wayland layer-shell host for future non-GTK renderers.
+//! Native Wayland layer-shell host for native renderers.
 //!
 //! This module owns only the Wayland surface lifecycle. Content renderers
 //! such as video, web, shader, or scene runtimes should be layered on top of

@@ -90,6 +90,8 @@ pub struct NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput {
 pub struct NativeVulkanVulkanaliaH264ReadyPrefixFrameInput {
     pub entry: NativeVulkanH264DecodeReferencePlanEntrySnapshot,
     pub first_slice: NativeVulkanH264AccessUnitSliceSnapshot,
+    pub pts_ns: Option<u64>,
+    pub duration_ns: Option<u64>,
     pub duration_ms: Option<u64>,
     pub access_unit_payload: NativeVulkanEncodedAccessUnitPayload,
     pub slice_offsets: Vec<u32>,
@@ -143,6 +145,7 @@ pub struct NativeVulkanVulkanaliaH264ReadyPrefixCommandSmokeSnapshot {
     pub retained_frame_telemetry_count: u32,
     pub frame_telemetry_retention_model: &'static str,
     pub max_src_buffer_range: u64,
+    pub first_frame_reset_control_recorded: bool,
     pub reset_control_recorded_frame_count: u32,
     pub p_frame_count: u32,
     pub b_frame_count: u32,

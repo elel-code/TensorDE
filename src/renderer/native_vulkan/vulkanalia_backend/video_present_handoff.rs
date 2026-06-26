@@ -24,6 +24,8 @@ pub struct NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot {
 pub(super) struct NativeVulkanVulkanaliaDecodedPresentHandoffFrame {
     pub(super) decode_frame_index: u32,
     pub(super) sampled_array_layer: u32,
+    pub(super) source_frame_pts_ns: Option<u64>,
+    pub(super) source_frame_duration_ns: Option<u64>,
     pub(super) source_frame_pts_ms: Option<u64>,
     pub(super) source_frame_duration_ms: Option<u64>,
     pub(super) display_order_key: i64,
@@ -160,23 +162,22 @@ impl NativeVulkanVulkanaliaDecodedPresentHandoff {
             ));
         }
         *queued -= 1;
-        let release = state.in_flight_by_layer[layer].get_or_insert(
+        Self::store_available_layer_release(
+            &mut state,
             NativeVulkanVulkanaliaDecodedPresentLayerRelease {
                 sampled_array_layer,
                 present_frame_slot,
-                frame_count: 0,
+                frame_count: 1,
             },
-        );
-        release.present_frame_slot = present_frame_slot;
-        release.frame_count = release.frame_count.saturating_add(1);
+        )?;
         self.inner.changed.notify_all();
         Ok(())
     }
 
-    pub(super) fn take_layer_present_release(
+    pub(super) fn wait_layer_present_release_completed(
         &self,
         sampled_array_layer: u32,
-    ) -> Result<Option<NativeVulkanVulkanaliaDecodedPresentLayerRelease>, String> {
+    ) -> Result<(), String> {
         let mut state = self.lock_state()?;
         let layer = sampled_array_layer as usize;
         if layer >= state.queued_by_layer.len() {
@@ -185,46 +186,43 @@ impl NativeVulkanVulkanaliaDecodedPresentHandoff {
                 state.queued_by_layer.len()
             ));
         }
-        while state.queued_by_layer[layer] > 0 && !state.closed && state.error.is_none() {
+        while (state.queued_by_layer[layer] > 0 || state.in_flight_by_layer[layer].is_some())
+            && !state.closed
+            && state.error.is_none()
+        {
             state = self.wait_state(state)?;
         }
         if let Some(err) = state.error.clone() {
             return Err(err);
         }
-        Ok(state.in_flight_by_layer[layer].take())
-    }
-
-    pub(super) fn complete_layer_present_release(
-        &self,
-        sampled_array_layer: u32,
-        frame_count: u32,
-    ) -> Result<(), String> {
-        let mut state = self.lock_state()?;
-        let layer = sampled_array_layer as usize;
-        if layer >= state.queued_by_layer.len() {
-            return Err(format!(
-                "decoded present handoff completed layer {sampled_array_layer} exceeds {} tracked layer(s)",
-                state.queued_by_layer.len()
-            ));
-        }
-        state.drained_frame_count = state.drained_frame_count.saturating_add(frame_count);
-        self.inner.changed.notify_all();
         Ok(())
     }
 
-    pub(super) fn take_all_layer_present_releases(
+    pub(super) fn complete_present_frame_slot_releases(
         &self,
-    ) -> Result<Vec<NativeVulkanVulkanaliaDecodedPresentLayerRelease>, String> {
+        present_frame_slot: u32,
+    ) -> Result<u32, String> {
         let mut state = self.lock_state()?;
         if let Some(err) = state.error.clone() {
             return Err(err);
         }
-        let releases = state
-            .in_flight_by_layer
-            .iter_mut()
-            .filter_map(Option::take)
-            .collect();
-        Ok(releases)
+        let mut completed_frame_count = 0u32;
+        for release in &mut state.in_flight_by_layer {
+            if release
+                .as_ref()
+                .is_some_and(|release| release.present_frame_slot == present_frame_slot)
+            {
+                if let Some(release) = release.take() {
+                    completed_frame_count =
+                        completed_frame_count.saturating_add(release.frame_count);
+                }
+            }
+        }
+        state.drained_frame_count = state
+            .drained_frame_count
+            .saturating_add(completed_frame_count);
+        self.inner.changed.notify_all();
+        Ok(completed_frame_count)
     }
 
     pub(super) fn mark_frame_released(&self, sampled_array_layer: u32) -> Result<(), String> {
@@ -314,5 +312,82 @@ impl NativeVulkanVulkanaliaDecodedPresentHandoff {
             .changed
             .wait(state)
             .map_err(|_| "decoded present handoff condvar wait is poisoned".to_owned())
+    }
+
+    fn store_available_layer_release(
+        state: &mut NativeVulkanVulkanaliaDecodedPresentHandoffState,
+        release: NativeVulkanVulkanaliaDecodedPresentLayerRelease,
+    ) -> Result<(), String> {
+        let layer = release.sampled_array_layer as usize;
+        if layer >= state.in_flight_by_layer.len() {
+            return Err(format!(
+                "decoded present handoff available release layer {} exceeds {} tracked layer(s)",
+                release.sampled_array_layer,
+                state.in_flight_by_layer.len()
+            ));
+        }
+        if let Some(existing) = &mut state.in_flight_by_layer[layer] {
+            existing.present_frame_slot = release.present_frame_slot;
+            existing.frame_count = existing.frame_count.saturating_add(release.frame_count);
+        } else {
+            state.in_flight_by_layer[layer] = Some(release);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(
+        decode_frame_index: u32,
+        sampled_array_layer: u32,
+    ) -> NativeVulkanVulkanaliaDecodedPresentHandoffFrame {
+        NativeVulkanVulkanaliaDecodedPresentHandoffFrame {
+            decode_frame_index,
+            sampled_array_layer,
+            source_frame_pts_ns: None,
+            source_frame_duration_ns: None,
+            source_frame_pts_ms: None,
+            source_frame_duration_ms: None,
+            display_order_key: i64::from(decode_frame_index),
+            display_order_key_source: "test",
+            decode_complete_value: u64::from(decode_frame_index) + 1,
+        }
+    }
+
+    #[test]
+    fn render_submit_release_keeps_three_frame_metadata_window() {
+        let handoff = NativeVulkanVulkanaliaDecodedPresentHandoff::new(3, 2);
+
+        handoff.enqueue(frame(0, 0)).expect("enqueue first");
+        handoff.enqueue(frame(1, 1)).expect("enqueue second");
+        handoff.enqueue(frame(2, 1)).expect("enqueue third");
+
+        let first = handoff.recv().expect("recv first").expect("first frame");
+        handoff
+            .record_layer_present_release(first.sampled_array_layer, 0)
+            .expect("record first");
+        assert_eq!(
+            handoff
+                .complete_present_frame_slot_releases(0)
+                .expect("complete slot releases"),
+            1
+        );
+
+        let second = handoff.recv().expect("recv second").expect("second frame");
+        handoff
+            .record_layer_present_release(second.sampled_array_layer, 1)
+            .expect("record second");
+        handoff.enqueue(frame(3, 0)).expect("enqueue after next");
+
+        let snapshot = handoff
+            .snapshot("test", "test", "test", "test", "test", "test")
+            .expect("snapshot");
+        assert_eq!(snapshot.capacity_frames, 3);
+        assert_eq!(snapshot.peak_depth, 3);
+        assert_eq!(snapshot.enqueued_frame_count, 4);
+        assert_eq!(snapshot.drained_frame_count, 1);
     }
 }

@@ -390,7 +390,7 @@ fi
 
 cd "$repo_root"
 if [[ "$run_video" -eq 1 && "$build_binary" -eq 1 ]]; then
-  cargo build --release --features native-vulkan-gst-video --bin gilder-native-vulkan
+  cargo build --release --features native-vulkan-video --bin gilder-native-vulkan
 fi
 
 passed=0

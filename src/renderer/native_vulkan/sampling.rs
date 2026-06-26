@@ -8,7 +8,7 @@ pub(super) fn native_vulkan_video_fit_push_constants(
     let (offset, scale) = native_vulkan_video_uv_transform(fit, source_size, surface_size);
     // The embedded fullscreen-triangle vertex shader emits raw uv.y=1 at the
     // screen top and uv.y=0 at the bottom. Video frames follow the normal
-    // top-left origin used by FFmpeg/GStreamer, so fold the vertical flip into
+    // top-left origin used by FFmpeg, so fold the vertical flip into
     // the existing offset/scale push constants.
     [offset[0], offset[1] + scale[1], scale[0], -scale[1]]
 }

@@ -181,50 +181,6 @@ Options:
                      Require latest renderer video pipeline unique source bytes to be at most bytes
   --expect-adaptive-action <type>
                      Require at least one telemetry row with this adaptive action type
-  --expect-decoder-policy-status <status>
-                     Require at least one video runtime row with this decoder policy status
-  --expect-decoder-class <hardware|software|unknown>
-                     Require at least one video runtime row with this decoder class
-  --expect-memory-feature <feature>
-                     Require at least one video runtime row with this caps memory feature
-  --expect-sink-memory-feature <feature>
-                     Require at least one video runtime row with this sink-side caps memory feature
-  --expect-zero-copy-evidence <level>
-                     Require at least one video runtime row with this zero-copy evidence level
-  --expect-zero-copy-evidence-at-least <level>
-                     Require at least one video runtime row at this zero-copy evidence level or stronger
-  --expect-zero-copy-profile <profile>
-                     Require a grouped zero-copy evidence profile:
-                     hardware-decode, runtime-gpu-path, runtime-dmabuf-path,
-                     gtk-gpu-surface, gtk-dmabuf-surface, gtk-timed-gpu-surface.
-                     gtk-* profiles are legacy compatibility gates for archived
-                     GTK evidence; native Vulkan presentation should be checked
-                     with native Vulkan smoke/runtime telemetry.
-  --expect-memory-retention-level-at-most <level>
-                     Require sampled video memory-retention risk to be at most unknown, low, medium, or high
-  --expect-memory-retention-system-pools-at-most <count>
-                     Require sampled system-memory allocation pool reports to be at most count
-  --expect-memory-retention-min-pool-bytes-at-most <bytes>
-                     Require sampled minimum allocation pool capacity to be at most bytes
-  --expect-memory-retention-sink-frame-retention <state>
-                     Require sampled sink frame retention state: unknown, disabled, last-sample, preroll-frame, or last-sample-and-preroll-frame
-  --expect-video-position-progress
-                     Require sampled video position to advance on at least one output
-  --expect-frame-limiter-enabled
-                     Require at least one video runtime row with an enabled frame limiter
-  --expect-frame-limiter-max-fps <fps>
-                     Require at least one video runtime row with this frame limiter max_fps
-  --expect-video-qos
-                     Require at least one video runtime row with observed GStreamer QoS messages
-  --expect-qos-dropped-max-at-most <count>
-                     Require observed QoS dropped max to be at most count
-  --expect-gtk-frame-clock
-                     Require observed GTK frame clock ticks in video runtime rows
-  --expect-gtk-frame-clock-phase <phase>
-                     Require legacy GTK frame clock phase ticks from archived-compatible runtime rows.
-                     Phase: before-paint, update, layout, paint, after-paint, or all
-  --expect-gtk-frame-timings
-                     Require legacy completed GDK frame timings in video runtime rows.
   --allow-missing     Report missing daemon/tools as skips instead of failures
   --keep              Keep generated evidence after the script exits
   -h, --help          Show this help text
@@ -323,26 +279,6 @@ expect_renderer_video_pipeline_source_reference_bytes_latest_at_most=""
 expect_renderer_video_pipeline_unique_sources_latest_at_most=""
 expect_renderer_video_pipeline_unique_source_bytes_latest_at_most=""
 expect_adaptive_action=""
-expect_decoder_policy_status=""
-expect_decoder_class=""
-expect_memory_feature=""
-expect_sink_memory_feature=""
-expect_zero_copy_evidence=""
-expect_zero_copy_evidence_at_least=""
-expect_zero_copy_profile=""
-expect_memory_retention_level_at_most=""
-expect_memory_retention_system_pools_at_most=""
-expect_memory_retention_min_pool_bytes_at_most=""
-expect_memory_retention_sink_frame_retention=""
-expect_video_position_progress=0
-expect_frame_limiter_enabled=0
-expect_frame_limiter_max_fps=""
-expect_video_qos=0
-expect_qos_dropped_max_at_most=""
-expect_gtk_frame_clock=0
-expect_gtk_frame_clock_phases=()
-expect_gtk_frame_timings=0
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --pid)
@@ -791,107 +727,6 @@ while [[ $# -gt 0 ]]; do
       expect_adaptive_action="$2"
       shift 2
       ;;
-    --expect-decoder-policy-status)
-      [[ $# -ge 2 ]] || { echo "--expect-decoder-policy-status requires a value" >&2; exit 2; }
-      expect_decoder_policy_status="$2"
-      shift 2
-      ;;
-    --expect-decoder-class)
-      [[ $# -ge 2 ]] || { echo "--expect-decoder-class requires a value" >&2; exit 2; }
-      expect_decoder_class="$2"
-      shift 2
-      ;;
-    --expect-memory-feature)
-      [[ $# -ge 2 ]] || { echo "--expect-memory-feature requires a value" >&2; exit 2; }
-      expect_memory_feature="$2"
-      shift 2
-      ;;
-    --expect-sink-memory-feature)
-      [[ $# -ge 2 ]] || { echo "--expect-sink-memory-feature requires a value" >&2; exit 2; }
-      expect_sink_memory_feature="$2"
-      shift 2
-      ;;
-    --expect-zero-copy-evidence)
-      [[ $# -ge 2 ]] || { echo "--expect-zero-copy-evidence requires a value" >&2; exit 2; }
-      expect_zero_copy_evidence="$2"
-      shift 2
-      ;;
-    --expect-zero-copy-evidence-at-least)
-      [[ $# -ge 2 ]] || { echo "--expect-zero-copy-evidence-at-least requires a value" >&2; exit 2; }
-      expect_zero_copy_evidence_at_least="$2"
-      shift 2
-      ;;
-    --expect-zero-copy-profile)
-      [[ $# -ge 2 ]] || { echo "--expect-zero-copy-profile requires a value" >&2; exit 2; }
-      expect_zero_copy_profile="$2"
-      shift 2
-      ;;
-    --expect-memory-retention-level-at-most)
-      [[ $# -ge 2 ]] || { echo "--expect-memory-retention-level-at-most requires a value" >&2; exit 2; }
-      expect_memory_retention_level_at_most="$2"
-      shift 2
-      ;;
-    --expect-memory-retention-system-pools-at-most)
-      [[ $# -ge 2 ]] || { echo "--expect-memory-retention-system-pools-at-most requires a value" >&2; exit 2; }
-      expect_memory_retention_system_pools_at_most="$2"
-      shift 2
-      ;;
-    --expect-memory-retention-min-pool-bytes-at-most)
-      [[ $# -ge 2 ]] || { echo "--expect-memory-retention-min-pool-bytes-at-most requires a value" >&2; exit 2; }
-      expect_memory_retention_min_pool_bytes_at_most="$2"
-      shift 2
-      ;;
-    --expect-memory-retention-sink-frame-retention)
-      [[ $# -ge 2 ]] || { echo "--expect-memory-retention-sink-frame-retention requires a value" >&2; exit 2; }
-      expect_memory_retention_sink_frame_retention="$2"
-      shift 2
-      ;;
-    --expect-video-position-progress)
-      expect_video_position_progress=1
-      shift
-      ;;
-    --expect-frame-limiter-enabled)
-      expect_frame_limiter_enabled=1
-      shift
-      ;;
-    --expect-frame-limiter-max-fps)
-      [[ $# -ge 2 ]] || { echo "--expect-frame-limiter-max-fps requires a value" >&2; exit 2; }
-      expect_frame_limiter_max_fps="$2"
-      shift 2
-      ;;
-    --expect-video-qos)
-      expect_video_qos=1
-      shift
-      ;;
-    --expect-qos-dropped-max-at-most)
-      [[ $# -ge 2 ]] || { echo "--expect-qos-dropped-max-at-most requires a value" >&2; exit 2; }
-      expect_qos_dropped_max_at_most="$2"
-      shift 2
-      ;;
-    --expect-gtk-frame-clock)
-      expect_gtk_frame_clock=1
-      shift
-      ;;
-    --expect-gtk-frame-clock-phase)
-      [[ $# -ge 2 ]] || { echo "--expect-gtk-frame-clock-phase requires a value" >&2; exit 2; }
-      case "$2" in
-        before-paint|update|layout|paint|after-paint)
-          expect_gtk_frame_clock_phases+=("$2")
-          ;;
-        all)
-          expect_gtk_frame_clock_phases+=(before-paint update layout paint after-paint)
-          ;;
-        *)
-          echo "--expect-gtk-frame-clock-phase must be one of before-paint, update, layout, paint, after-paint, all" >&2
-          exit 2
-          ;;
-      esac
-      shift 2
-      ;;
-    --expect-gtk-frame-timings)
-      expect_gtk_frame_timings=1
-      shift
-      ;;
     --allow-missing)
       allow_missing=1
       shift
@@ -929,13 +764,17 @@ pass() {
   note "PASS: $*"
 }
 
+fail() {
+  failures=$((failures + 1))
+  note "FAIL: $*"
+}
+
 skip_or_fail() {
   if [[ "$allow_missing" -eq 1 ]]; then
     skips=$((skips + 1))
     note "SKIP: $*"
   else
-    failures=$((failures + 1))
-    note "FAIL: $*"
+    fail "$*"
   fi
 }
 
@@ -1051,7 +890,6 @@ write_smaps_mapping_summary() {
       if (mapping ~ /\/libnvidia/ || mapping ~ /\/libcuda/ || mapping ~ /\/libnvcuvid/) {
         return "nvidia-library"
       }
-      if (mapping ~ /\/gstreamer-1\.0\// || mapping ~ /\/libgst/) { return "gstreamer-library" }
       if (mapping ~ /\/libgtk/ || mapping ~ /\/libgdk/) { return "gtk-library" }
       if (mapping ~ /\/target\/(debug|release)\/gilderd$/) { return "gilder-binary" }
       if (mapping ~ /^\/usr\/lib/) { return "system-library" }
@@ -1155,7 +993,7 @@ append_smaps_mapping_category_summary() {
       return tolower(value)
     }
     BEGIN {
-      known_count = split("nvidia-device dri-device heap stack anonymous shared-memory nvidia-library gstreamer-library gtk-library gilder-binary system-library file-mapping other", known_categories, " ")
+      known_count = split("nvidia-device dri-device heap stack anonymous shared-memory nvidia-library gtk-library gilder-binary system-library file-mapping other", known_categories, " ")
       for (known_index = 1; known_index <= known_count; known_index++) {
         category = known_categories[known_index]
         known[category] = 1
@@ -1473,32 +1311,6 @@ append_status_telemetry() {
   return 0
 }
 
-append_status_video_runtime() {
-  local sample="$1"
-  local elapsed="$2"
-  local status_file="$3"
-  local video_runtime_csv="$4"
-  local video_runtime_error_file="$5"
-  local temp_video_runtime="$work_dir/video-runtime-$(printf '%03d' "$sample").tmp"
-
-  if ! "$gilderctl" status --video-runtime-csv --from-file "$status_file" > "$temp_video_runtime" 2> "$video_runtime_error_file"; then
-    rm -f "$temp_video_runtime"
-    return 1
-  fi
-  if [[ ! -s "$video_runtime_error_file" ]]; then
-    rm -f "$video_runtime_error_file"
-  fi
-
-  awk -v sample="$sample" -v elapsed="$elapsed" '
-    NR == 1 { next }
-    {
-      print sample "," elapsed "," $0
-    }
-  ' "$temp_video_runtime" >> "$video_runtime_csv"
-  rm -f "$temp_video_runtime"
-  return 0
-}
-
 write_decision_summary() {
   local decisions_csv="$1"
   local summary="$2"
@@ -1567,59 +1379,48 @@ write_telemetry_summary() {
       renderer_video_pipelines = $55 + 0
       renderer_video_qos_messages = $56 + 0
       renderer_video_qos_dropped_max = $57
-      renderer_video_gtk_frame_clock_ticks = $58 + 0
-      renderer_video_gtk_frame_clock_interval_us_max = $59
-      renderer_video_gtk_frame_clock_fps_x1000_max = $60
-      renderer_video_gtk_frame_timings_complete = $61 + 0
-      renderer_video_gtk_frame_timings_presentation_interval_us_max = $62
-      renderer_video_gtk_frame_timings_presentation_time_us_max = $63
-      renderer_video_gtk_frame_clock_before_paint_ticks = $64 + 0
-      renderer_video_gtk_frame_clock_update_ticks = $65 + 0
-      renderer_video_gtk_frame_clock_layout_ticks = $66 + 0
-      renderer_video_gtk_frame_clock_paint_ticks = $67 + 0
-      renderer_video_gtk_frame_clock_after_paint_ticks = $68 + 0
-      planned_static_image_resource_bytes = $69 + 0
-      planned_video_poster_resource_bytes = $70 + 0
-      planned_slideshow_image_resource_bytes = $71 + 0
-      planned_image_resource_reference_bytes = $72 + 0
-      planned_unique_image_resource_bytes = $73 + 0
-      package_cache_retained_resource_references = $74 + 0
-      package_cache_retained_unique_resources = $75 + 0
-      package_cache_retained_resource_bytes = $76 + 0
-      package_cache_retained_unique_resource_bytes = $77 + 0
-      renderer_static_surface_resource_references = $78 + 0
-      renderer_static_surface_resource_bytes = $79 + 0
-      renderer_slideshow_resource_references = $80 + 0
-      renderer_slideshow_resource_bytes = $81 + 0
-      renderer_static_surface_unique_resources = $82 + 0
-      renderer_static_surface_unique_resource_bytes = $83 + 0
-      renderer_static_surface_estimated_decoded_bytes = $84 + 0
-      renderer_slideshow_unique_resources = $85 + 0
-      renderer_slideshow_unique_resource_bytes = $86 + 0
-      static_image_cache_entries = $87 + 0
-      static_image_cache_max_entries = $88 + 0
-      static_image_cache_generations = $89 + 0
-      static_image_cache_reuses = $90 + 0
-      static_image_cache_generation_errors = $91 + 0
-      static_image_cache_evictions = $92 + 0
-      static_image_cache_eviction_errors = $93 + 0
-      planned_video_source_references = $94 + 0
-      planned_unique_video_sources = $95 + 0
-      planned_duplicate_video_source_references = $96 + 0
-      planned_max_video_source_outputs = $97 + 0
-      planned_video_source_reference_bytes = $98 + 0
-      planned_unique_video_source_bytes = $99 + 0
-      renderer_video_pipeline_source_references = $100 + 0
-      renderer_video_pipeline_source_reference_bytes = $101 + 0
-      renderer_video_pipeline_unique_sources = $102 + 0
-      renderer_video_pipeline_unique_source_bytes = $103 + 0
-      package_cache_max_retained_unique_resource_bytes = $104 + 0
-      static_image_cache_bytes = $105 + 0
-      static_image_cache_max_bytes = $106 + 0
-      package_cache_retained_preview_resource_references = $107 + 0
-      package_cache_retained_unique_preview_resources = $108 + 0
-      package_cache_retained_preview_resource_bytes = $109 + 0
-      package_cache_retained_unique_preview_resource_bytes = $110 + 0
+      planned_static_image_resource_bytes = $58 + 0
+      planned_video_poster_resource_bytes = $59 + 0
+      planned_slideshow_image_resource_bytes = $60 + 0
+      planned_image_resource_reference_bytes = $61 + 0
+      planned_unique_image_resource_bytes = $62 + 0
+      package_cache_retained_resource_references = $63 + 0
+      package_cache_retained_unique_resources = $64 + 0
+      package_cache_retained_resource_bytes = $65 + 0
+      package_cache_retained_unique_resource_bytes = $66 + 0
+      renderer_static_surface_resource_references = $67 + 0
+      renderer_static_surface_resource_bytes = $68 + 0
+      renderer_slideshow_resource_references = $69 + 0
+      renderer_slideshow_resource_bytes = $70 + 0
+      renderer_static_surface_unique_resources = $71 + 0
+      renderer_static_surface_unique_resource_bytes = $72 + 0
+      renderer_static_surface_estimated_decoded_bytes = $73 + 0
+      renderer_slideshow_unique_resources = $74 + 0
+      renderer_slideshow_unique_resource_bytes = $75 + 0
+      static_image_cache_entries = $76 + 0
+      static_image_cache_max_entries = $77 + 0
+      static_image_cache_generations = $78 + 0
+      static_image_cache_reuses = $79 + 0
+      static_image_cache_generation_errors = $80 + 0
+      static_image_cache_evictions = $81 + 0
+      static_image_cache_eviction_errors = $82 + 0
+      planned_video_source_references = $83 + 0
+      planned_unique_video_sources = $84 + 0
+      planned_duplicate_video_source_references = $85 + 0
+      planned_max_video_source_outputs = $86 + 0
+      planned_video_source_reference_bytes = $87 + 0
+      planned_unique_video_source_bytes = $88 + 0
+      renderer_video_pipeline_source_references = $89 + 0
+      renderer_video_pipeline_source_reference_bytes = $90 + 0
+      renderer_video_pipeline_unique_sources = $91 + 0
+      renderer_video_pipeline_unique_source_bytes = $92 + 0
+      package_cache_max_retained_unique_resource_bytes = $93 + 0
+      static_image_cache_bytes = $94 + 0
+      static_image_cache_max_bytes = $95 + 0
+      package_cache_retained_preview_resource_references = $96 + 0
+      package_cache_retained_unique_preview_resources = $97 + 0
+      package_cache_retained_preview_resource_bytes = $98 + 0
+      package_cache_retained_unique_preview_resource_bytes = $99 + 0
 
       if (rows == 1) {
         first_refreshes = refreshes
@@ -1790,52 +1591,6 @@ write_telemetry_summary() {
           max_renderer_video_qos_dropped = renderer_video_qos_dropped_max + 0
         }
       }
-      last_renderer_video_gtk_frame_clock_ticks = renderer_video_gtk_frame_clock_ticks
-      if (renderer_video_gtk_frame_clock_ticks > max_renderer_video_gtk_frame_clock_ticks) {
-        max_renderer_video_gtk_frame_clock_ticks = renderer_video_gtk_frame_clock_ticks
-      }
-      last_renderer_video_gtk_frame_clock_before_paint_ticks = renderer_video_gtk_frame_clock_before_paint_ticks
-      if (renderer_video_gtk_frame_clock_before_paint_ticks > max_renderer_video_gtk_frame_clock_before_paint_ticks) {
-        max_renderer_video_gtk_frame_clock_before_paint_ticks = renderer_video_gtk_frame_clock_before_paint_ticks
-      }
-      last_renderer_video_gtk_frame_clock_update_ticks = renderer_video_gtk_frame_clock_update_ticks
-      if (renderer_video_gtk_frame_clock_update_ticks > max_renderer_video_gtk_frame_clock_update_ticks) {
-        max_renderer_video_gtk_frame_clock_update_ticks = renderer_video_gtk_frame_clock_update_ticks
-      }
-      last_renderer_video_gtk_frame_clock_layout_ticks = renderer_video_gtk_frame_clock_layout_ticks
-      if (renderer_video_gtk_frame_clock_layout_ticks > max_renderer_video_gtk_frame_clock_layout_ticks) {
-        max_renderer_video_gtk_frame_clock_layout_ticks = renderer_video_gtk_frame_clock_layout_ticks
-      }
-      last_renderer_video_gtk_frame_clock_paint_ticks = renderer_video_gtk_frame_clock_paint_ticks
-      if (renderer_video_gtk_frame_clock_paint_ticks > max_renderer_video_gtk_frame_clock_paint_ticks) {
-        max_renderer_video_gtk_frame_clock_paint_ticks = renderer_video_gtk_frame_clock_paint_ticks
-      }
-      last_renderer_video_gtk_frame_clock_after_paint_ticks = renderer_video_gtk_frame_clock_after_paint_ticks
-      if (renderer_video_gtk_frame_clock_after_paint_ticks > max_renderer_video_gtk_frame_clock_after_paint_ticks) {
-        max_renderer_video_gtk_frame_clock_after_paint_ticks = renderer_video_gtk_frame_clock_after_paint_ticks
-      }
-      if (renderer_video_gtk_frame_clock_interval_us_max != "") {
-        if (renderer_video_gtk_frame_clock_interval_us_max + 0 > max_renderer_video_gtk_frame_clock_interval_us) {
-          max_renderer_video_gtk_frame_clock_interval_us = renderer_video_gtk_frame_clock_interval_us_max + 0
-        }
-      }
-      if (renderer_video_gtk_frame_clock_fps_x1000_max != "") {
-        if (renderer_video_gtk_frame_clock_fps_x1000_max + 0 > max_renderer_video_gtk_frame_clock_fps_x1000) {
-          max_renderer_video_gtk_frame_clock_fps_x1000 = renderer_video_gtk_frame_clock_fps_x1000_max + 0
-        }
-      }
-      last_renderer_video_gtk_frame_timings_complete = renderer_video_gtk_frame_timings_complete
-      if (renderer_video_gtk_frame_timings_complete > max_renderer_video_gtk_frame_timings_complete) {
-        max_renderer_video_gtk_frame_timings_complete = renderer_video_gtk_frame_timings_complete
-      }
-      if (renderer_video_gtk_frame_timings_presentation_interval_us_max != "") {
-        if (renderer_video_gtk_frame_timings_presentation_interval_us_max + 0 > max_renderer_video_gtk_frame_timings_presentation_interval_us) {
-          max_renderer_video_gtk_frame_timings_presentation_interval_us = renderer_video_gtk_frame_timings_presentation_interval_us_max + 0
-        }
-      }
-      if (renderer_video_gtk_frame_timings_presentation_time_us_max != "") {
-        last_renderer_video_gtk_frame_timings_presentation_time_us_max = renderer_video_gtk_frame_timings_presentation_time_us_max
-      }
     }
     END {
       refresh_delta = last_refreshes - first_refreshes
@@ -1973,754 +1728,9 @@ write_telemetry_summary() {
         printf "renderer_video_qos_messages_max: %d\n", max_renderer_video_qos_messages
         printf "renderer_video_qos_dropped_max_latest: %s\n", last_renderer_video_qos_dropped_max
         printf "renderer_video_qos_dropped_max: %d\n", max_renderer_video_qos_dropped
-        printf "renderer_video_gtk_frame_clock_ticks_latest: %d\n", last_renderer_video_gtk_frame_clock_ticks
-        printf "renderer_video_gtk_frame_clock_ticks_max: %d\n", max_renderer_video_gtk_frame_clock_ticks
-        printf "renderer_video_gtk_frame_clock_before_paint_ticks_latest: %d\n", last_renderer_video_gtk_frame_clock_before_paint_ticks
-        printf "renderer_video_gtk_frame_clock_before_paint_ticks_max: %d\n", max_renderer_video_gtk_frame_clock_before_paint_ticks
-        printf "renderer_video_gtk_frame_clock_update_ticks_latest: %d\n", last_renderer_video_gtk_frame_clock_update_ticks
-        printf "renderer_video_gtk_frame_clock_update_ticks_max: %d\n", max_renderer_video_gtk_frame_clock_update_ticks
-        printf "renderer_video_gtk_frame_clock_layout_ticks_latest: %d\n", last_renderer_video_gtk_frame_clock_layout_ticks
-        printf "renderer_video_gtk_frame_clock_layout_ticks_max: %d\n", max_renderer_video_gtk_frame_clock_layout_ticks
-        printf "renderer_video_gtk_frame_clock_paint_ticks_latest: %d\n", last_renderer_video_gtk_frame_clock_paint_ticks
-        printf "renderer_video_gtk_frame_clock_paint_ticks_max: %d\n", max_renderer_video_gtk_frame_clock_paint_ticks
-        printf "renderer_video_gtk_frame_clock_after_paint_ticks_latest: %d\n", last_renderer_video_gtk_frame_clock_after_paint_ticks
-        printf "renderer_video_gtk_frame_clock_after_paint_ticks_max: %d\n", max_renderer_video_gtk_frame_clock_after_paint_ticks
-        printf "renderer_video_gtk_frame_clock_interval_us_max: %d\n", max_renderer_video_gtk_frame_clock_interval_us
-        printf "renderer_video_gtk_frame_clock_fps_x1000_max: %d\n", max_renderer_video_gtk_frame_clock_fps_x1000
-        printf "renderer_video_gtk_frame_timings_complete_latest: %d\n", last_renderer_video_gtk_frame_timings_complete
-        printf "renderer_video_gtk_frame_timings_complete_max: %d\n", max_renderer_video_gtk_frame_timings_complete
-        printf "renderer_video_gtk_frame_timings_presentation_interval_us_max: %d\n", max_renderer_video_gtk_frame_timings_presentation_interval_us
-        printf "renderer_video_gtk_frame_timings_presentation_time_us_latest: %s\n", last_renderer_video_gtk_frame_timings_presentation_time_us_max
       }
     }
   ' "$telemetry_csv" > "$summary"
-}
-
-write_video_runtime_summary() {
-  local video_runtime_csv="$1"
-  local summary="$2"
-  awk -F, '
-    function record_pipe_values(value, counts,    item, part_count, parts, part_index) {
-      if (value == "") {
-        return
-      }
-      part_count = split(value, parts, /\|/)
-      for (part_index = 1; part_index <= part_count; part_index++) {
-        item = parts[part_index]
-        if (item != "") {
-          counts[item] += 1
-        }
-      }
-    }
-    function pipe_numeric_max(value,    current, field_count, fields, item, part_count, parts, part_index) {
-      current = 0
-      if (value == "") {
-        return current
-      }
-      part_count = split(value, parts, /\|/)
-      for (part_index = 1; part_index <= part_count; part_index++) {
-        item = parts[part_index]
-        if (item == "") {
-          continue
-        }
-        field_count = split(item, fields, /:/)
-        if (field_count > 0 && fields[field_count] ~ /^[0-9]+$/ && fields[field_count] + 0 > current) {
-          current = fields[field_count] + 0
-        }
-      }
-      return current
-    }
-    NR == 1 { next }
-    {
-      rows += 1
-      sample = $1
-      output = $3
-      mode = $4
-      gst_state = $5
-      decoder_policy = $6
-      decoder_policy_status = $7
-      actual_decoders = $8
-      decoder_classes = $9
-      caps_report_count = $10
-      memory_features = $11
-      sink_memory_features = $12
-      zero_copy_level = $13
-      zero_copy_notes = $14
-      memory_path_level = $15
-      memory_path_notes = $16
-      memory_path_segments = $17
-      allocation_report_count = $18
-      allocation_pools = $19
-      allocation_allocators = $20
-      position = $23
-      duration = $24
-      limiter_enabled = $25
-      limiter_fps = $26
-      qos_messages = $27
-      qos_processed = $28
-      qos_dropped = $29
-      qos_format = $30
-      qos_jitter = $31
-      qos_jitter_abs = $32
-      qos_proportion = $33
-      gtk_clock_ticks = $34
-      gtk_clock_counter = $35
-      gtk_clock_time = $36
-      gtk_clock_interval = $37
-      gtk_clock_interval_max = $38
-      gtk_clock_fps = $39
-      gtk_clock_refresh = $40
-      gtk_clock_presentation = $41
-      gtk_timings_observed = $42
-      gtk_timings_complete = $43
-      gtk_timings_counter = $44
-      gtk_timings_complete_counter = $45
-      gtk_timings_frame_time = $46
-      gtk_timings_predicted_presentation = $47
-      gtk_timings_presentation = $48
-      gtk_timings_presentation_interval = $49
-      gtk_timings_presentation_interval_max = $50
-      gtk_timings_refresh = $51
-      gtk_clock_before_paint_ticks = $53
-      gtk_clock_update_ticks = $54
-      gtk_clock_layout_ticks = $55
-      gtk_clock_paint_ticks = $56
-      gtk_clock_after_paint_ticks = $57
-      sink_element = $58
-      sink_async_enabled = $59
-      sink_last_sample_enabled = $60
-      sink_qos_enabled = $61
-      sink_max_lateness = $62
-      sink_render_delay = $63
-      sink_processing_deadline = $64
-      sink_preroll_frame_enabled = $65
-      memory_retention_level = $66
-      memory_retention_notes = $67
-      memory_retention_estimated_min_pool_bytes = $68
-      memory_retention_estimated_max_pool_bytes = $69
-      memory_retention_pool_reports = $70
-      memory_retention_system_memory_pool_reports = $71
-      memory_retention_gpu_memory_pool_reports = $72
-      memory_retention_dmabuf_pool_reports = $73
-      memory_retention_other_memory_pool_reports = $74
-      memory_retention_sink_frame_retention = $75
-      queue_report_count = $76
-      queue_elements = $77
-      queue_max_size_buffers = $78
-      queue_max_size_bytes = $79
-      queue_max_size_time = $80
-      queue_current_level_buffers = $81
-      queue_current_level_bytes = $82
-      queue_current_level_time = $83
-      formats = $84
-      sink_formats = $85
-      format_paths = $86
-      frame_sizes = $87
-      caps_sources = $88
-
-      if (output != "" && !(output in seen_output)) {
-        seen_output[output] = 1
-        outputs += 1
-      }
-      if (sample != "" && !(sample in seen_sample)) {
-        seen_sample[sample] = 1
-        samples += 1
-      }
-      if (mode != "") {
-        video_modes[mode] += 1
-        last_mode = mode
-      }
-      if (gst_state != "") {
-        gst_states[gst_state] += 1
-        last_gst_state = gst_state
-      }
-      if (decoder_policy != "") {
-        decoder_policies[decoder_policy] += 1
-        last_decoder_policy = decoder_policy
-      }
-      if (decoder_policy_status != "") {
-        decoder_policy_statuses[decoder_policy_status] += 1
-        last_decoder_policy_status = decoder_policy_status
-      }
-      if (actual_decoders != "") {
-        last_actual_decoders = actual_decoders
-        record_pipe_values(actual_decoders, actual_decoder_counts)
-      }
-      if (decoder_classes != "") {
-        last_decoder_classes = decoder_classes
-        record_pipe_values(decoder_classes, decoder_class_counts)
-      }
-      if (caps_report_count != "" && caps_report_count + 0 > max_caps_report_count) {
-        max_caps_report_count = caps_report_count + 0
-      }
-      if (memory_features != "") {
-        last_memory_features = memory_features
-        record_pipe_values(memory_features, memory_feature_counts)
-      }
-      if (sink_memory_features != "") {
-        last_sink_memory_features = sink_memory_features
-        record_pipe_values(sink_memory_features, sink_memory_feature_counts)
-      }
-      if (formats != "") {
-        last_formats = formats
-        record_pipe_values(formats, format_counts)
-      }
-      if (sink_formats != "") {
-        last_sink_formats = sink_formats
-        record_pipe_values(sink_formats, sink_format_counts)
-      }
-      if (format_paths != "") {
-        last_format_paths = format_paths
-        record_pipe_values(format_paths, format_path_counts)
-      }
-      if (frame_sizes != "") {
-        last_frame_sizes = frame_sizes
-        record_pipe_values(frame_sizes, frame_size_counts)
-      }
-      if (caps_sources != "") {
-        last_caps_sources = caps_sources
-        record_pipe_values(caps_sources, caps_source_counts)
-      }
-      if (zero_copy_level != "") {
-        zero_copy_rows += 1
-        zero_copy_levels[zero_copy_level] += 1
-        last_zero_copy_level = zero_copy_level
-      }
-      if (zero_copy_notes != "") {
-        last_zero_copy_notes = zero_copy_notes
-      }
-      if (memory_path_level != "") {
-        memory_path_rows += 1
-        memory_path_levels[memory_path_level] += 1
-        last_memory_path_level = memory_path_level
-      }
-      if (memory_path_notes != "") {
-        last_memory_path_notes = memory_path_notes
-      }
-      if (memory_path_segments != "") {
-        last_memory_path_segments = memory_path_segments
-        record_pipe_values(memory_path_segments, memory_path_segment_counts)
-      }
-      if (allocation_report_count != "" && allocation_report_count + 0 > max_allocation_report_count) {
-        max_allocation_report_count = allocation_report_count + 0
-      }
-      if (allocation_pools != "") {
-        last_allocation_pools = allocation_pools
-        record_pipe_values(allocation_pools, allocation_pool_counts)
-      }
-      if (allocation_allocators != "") {
-        last_allocation_allocators = allocation_allocators
-        record_pipe_values(allocation_allocators, allocation_allocator_counts)
-      }
-      if (position != "") {
-        position_samples += 1
-        if (!(output in min_position)) {
-          min_position[output] = position + 0
-          max_position[output] = position + 0
-        }
-        if (position + 0 < min_position[output]) {
-          min_position[output] = position + 0
-        }
-        if (position + 0 > max_position[output]) {
-          max_position[output] = position + 0
-        }
-        last_position[output] = position + 0
-      }
-      if (duration != "") {
-        duration_samples += 1
-        if (duration + 0 > max_duration) { max_duration = duration + 0 }
-      }
-      if (limiter_enabled == "true") {
-        frame_limiter_enabled_rows += 1
-      }
-      if (limiter_fps != "") {
-        limiter_fps_samples += 1
-        if (limiter_fps_samples == 1 || limiter_fps + 0 < min_limiter_fps) {
-          min_limiter_fps = limiter_fps + 0
-        }
-        if (limiter_fps + 0 > max_limiter_fps) {
-          max_limiter_fps = limiter_fps + 0
-        }
-      }
-      if (qos_messages != "") {
-        qos_rows += 1
-        if (qos_messages + 0 > max_qos_messages) { max_qos_messages = qos_messages + 0 }
-      }
-      if (qos_processed != "" && qos_processed + 0 > max_qos_processed) {
-        max_qos_processed = qos_processed + 0
-      }
-      if (qos_dropped != "" && qos_dropped + 0 > max_qos_dropped) {
-        max_qos_dropped = qos_dropped + 0
-      }
-      if (qos_format != "") {
-        last_qos_format = qos_format
-      }
-      if (qos_jitter != "") {
-        last_qos_jitter = qos_jitter
-      }
-      if (qos_jitter_abs != "" && qos_jitter_abs + 0 > max_qos_jitter_abs) {
-        max_qos_jitter_abs = qos_jitter_abs + 0
-      }
-      if (qos_proportion != "") {
-        last_qos_proportion = qos_proportion
-      }
-      if (gtk_clock_ticks != "") {
-        if (gtk_clock_ticks + 0 > 0) { gtk_clock_rows += 1 }
-        if (gtk_clock_ticks + 0 > max_gtk_clock_ticks) {
-          max_gtk_clock_ticks = gtk_clock_ticks + 0
-        }
-      }
-      if (gtk_clock_before_paint_ticks != "" && gtk_clock_before_paint_ticks + 0 > max_gtk_clock_before_paint_ticks) {
-        max_gtk_clock_before_paint_ticks = gtk_clock_before_paint_ticks + 0
-      }
-      if (gtk_clock_update_ticks != "" && gtk_clock_update_ticks + 0 > max_gtk_clock_update_ticks) {
-        max_gtk_clock_update_ticks = gtk_clock_update_ticks + 0
-      }
-      if (gtk_clock_layout_ticks != "" && gtk_clock_layout_ticks + 0 > max_gtk_clock_layout_ticks) {
-        max_gtk_clock_layout_ticks = gtk_clock_layout_ticks + 0
-      }
-      if (gtk_clock_paint_ticks != "" && gtk_clock_paint_ticks + 0 > max_gtk_clock_paint_ticks) {
-        max_gtk_clock_paint_ticks = gtk_clock_paint_ticks + 0
-      }
-      if (gtk_clock_after_paint_ticks != "" && gtk_clock_after_paint_ticks + 0 > max_gtk_clock_after_paint_ticks) {
-        max_gtk_clock_after_paint_ticks = gtk_clock_after_paint_ticks + 0
-      }
-      if (gtk_clock_counter != "") {
-        last_gtk_clock_counter = gtk_clock_counter
-      }
-      if (gtk_clock_time != "") {
-        last_gtk_clock_time = gtk_clock_time
-      }
-      if (gtk_clock_interval != "") {
-        last_gtk_clock_interval = gtk_clock_interval
-      }
-      if (gtk_clock_interval_max != "" && gtk_clock_interval_max + 0 > max_gtk_clock_interval) {
-        max_gtk_clock_interval = gtk_clock_interval_max + 0
-      }
-      if (gtk_clock_fps != "") {
-        last_gtk_clock_fps = gtk_clock_fps
-      }
-      if (gtk_clock_refresh != "") {
-        last_gtk_clock_refresh = gtk_clock_refresh
-      }
-      if (gtk_clock_presentation != "") {
-        last_gtk_clock_presentation = gtk_clock_presentation
-      }
-      if (gtk_timings_observed != "") {
-        if (gtk_timings_observed + 0 > 0) { gtk_timings_rows += 1 }
-        if (gtk_timings_observed + 0 > max_gtk_timings_observed) {
-          max_gtk_timings_observed = gtk_timings_observed + 0
-        }
-      }
-      if (gtk_timings_complete != "") {
-        if (gtk_timings_complete + 0 > max_gtk_timings_complete) {
-          max_gtk_timings_complete = gtk_timings_complete + 0
-        }
-      }
-      if (gtk_timings_counter != "") {
-        last_gtk_timings_counter = gtk_timings_counter
-      }
-      if (gtk_timings_complete_counter != "") {
-        last_gtk_timings_complete_counter = gtk_timings_complete_counter
-      }
-      if (gtk_timings_frame_time != "") {
-        last_gtk_timings_frame_time = gtk_timings_frame_time
-      }
-      if (gtk_timings_predicted_presentation != "") {
-        last_gtk_timings_predicted_presentation = gtk_timings_predicted_presentation
-      }
-      if (gtk_timings_presentation != "") {
-        last_gtk_timings_presentation = gtk_timings_presentation
-      }
-      if (gtk_timings_presentation_interval != "") {
-        last_gtk_timings_presentation_interval = gtk_timings_presentation_interval
-      }
-      if (gtk_timings_presentation_interval_max != "" && gtk_timings_presentation_interval_max + 0 > max_gtk_timings_presentation_interval) {
-        max_gtk_timings_presentation_interval = gtk_timings_presentation_interval_max + 0
-      }
-      if (gtk_timings_refresh != "") {
-        last_gtk_timings_refresh = gtk_timings_refresh
-      }
-      if (sink_element != "") {
-        last_sink_element = sink_element
-        sink_elements[sink_element] += 1
-      }
-      if (sink_async_enabled != "") {
-        last_sink_async_enabled = sink_async_enabled
-        sink_async_enabled_values[sink_async_enabled] += 1
-      }
-      if (sink_last_sample_enabled != "") {
-        last_sink_last_sample_enabled = sink_last_sample_enabled
-        sink_last_sample_enabled_values[sink_last_sample_enabled] += 1
-      }
-      if (sink_qos_enabled != "") {
-        last_sink_qos_enabled = sink_qos_enabled
-        sink_qos_enabled_values[sink_qos_enabled] += 1
-      }
-      if (sink_max_lateness != "") {
-        last_sink_max_lateness = sink_max_lateness
-      }
-      if (sink_render_delay != "") {
-        last_sink_render_delay = sink_render_delay
-      }
-      if (sink_processing_deadline != "") {
-        last_sink_processing_deadline = sink_processing_deadline
-      }
-      if (sink_preroll_frame_enabled != "") {
-        last_sink_preroll_frame_enabled = sink_preroll_frame_enabled
-        sink_preroll_frame_enabled_values[sink_preroll_frame_enabled] += 1
-      }
-      if (memory_retention_level != "") {
-        memory_retention_rows += 1
-        last_memory_retention_level = memory_retention_level
-        memory_retention_levels[memory_retention_level] += 1
-      }
-      if (memory_retention_notes != "") {
-        last_memory_retention_notes = memory_retention_notes
-      }
-      if (memory_retention_estimated_min_pool_bytes != "" && memory_retention_estimated_min_pool_bytes + 0 > max_memory_retention_estimated_min_pool_bytes) {
-        max_memory_retention_estimated_min_pool_bytes = memory_retention_estimated_min_pool_bytes + 0
-      }
-      if (memory_retention_estimated_max_pool_bytes != "" && memory_retention_estimated_max_pool_bytes + 0 > max_memory_retention_estimated_max_pool_bytes) {
-        max_memory_retention_estimated_max_pool_bytes = memory_retention_estimated_max_pool_bytes + 0
-      }
-      if (memory_retention_pool_reports != "" && memory_retention_pool_reports + 0 > max_memory_retention_pool_reports) {
-        max_memory_retention_pool_reports = memory_retention_pool_reports + 0
-      }
-      if (memory_retention_system_memory_pool_reports != "" && memory_retention_system_memory_pool_reports + 0 > max_memory_retention_system_memory_pool_reports) {
-        max_memory_retention_system_memory_pool_reports = memory_retention_system_memory_pool_reports + 0
-      }
-      if (memory_retention_gpu_memory_pool_reports != "" && memory_retention_gpu_memory_pool_reports + 0 > max_memory_retention_gpu_memory_pool_reports) {
-        max_memory_retention_gpu_memory_pool_reports = memory_retention_gpu_memory_pool_reports + 0
-      }
-      if (memory_retention_dmabuf_pool_reports != "" && memory_retention_dmabuf_pool_reports + 0 > max_memory_retention_dmabuf_pool_reports) {
-        max_memory_retention_dmabuf_pool_reports = memory_retention_dmabuf_pool_reports + 0
-      }
-      if (memory_retention_other_memory_pool_reports != "" && memory_retention_other_memory_pool_reports + 0 > max_memory_retention_other_memory_pool_reports) {
-        max_memory_retention_other_memory_pool_reports = memory_retention_other_memory_pool_reports + 0
-      }
-      if (memory_retention_sink_frame_retention != "") {
-        last_memory_retention_sink_frame_retention = memory_retention_sink_frame_retention
-        memory_retention_sink_frame_retention_values[memory_retention_sink_frame_retention] += 1
-      }
-      if (queue_report_count != "" && queue_report_count + 0 > max_queue_report_count) {
-        max_queue_report_count = queue_report_count + 0
-      }
-      if (queue_elements != "") {
-        last_queue_elements = queue_elements
-      }
-      if (queue_max_size_buffers != "") {
-        last_queue_max_size_buffers = queue_max_size_buffers
-      }
-      if (queue_max_size_bytes != "") {
-        last_queue_max_size_bytes = queue_max_size_bytes
-      }
-      if (queue_max_size_time != "") {
-        last_queue_max_size_time = queue_max_size_time
-      }
-      current_queue_level_buffers = pipe_numeric_max(queue_current_level_buffers)
-      if (current_queue_level_buffers > max_queue_current_level_buffers) {
-        max_queue_current_level_buffers = current_queue_level_buffers
-      }
-      current_queue_level_bytes = pipe_numeric_max(queue_current_level_bytes)
-      if (current_queue_level_bytes > max_queue_current_level_bytes) {
-        max_queue_current_level_bytes = current_queue_level_bytes
-      }
-      current_queue_level_time = pipe_numeric_max(queue_current_level_time)
-      if (current_queue_level_time > max_queue_current_level_time) {
-        max_queue_current_level_time = current_queue_level_time
-      }
-    }
-    END {
-      for (output in last_position) {
-        delta = max_position[output] - min_position[output]
-        if (delta > 0) {
-          moving_outputs += 1
-        }
-        if (delta > max_position_delta) {
-          max_position_delta = delta
-        }
-      }
-
-      printf "video_runtime_rows: %d\n", rows
-      printf "video_runtime_samples: %d\n", samples
-      printf "video_runtime_outputs: %d\n", outputs
-      if (last_mode != "") {
-        printf "video_mode_latest: %s\n", last_mode
-      }
-      for (mode in video_modes) {
-        printf "video_mode.%s: %d\n", mode, video_modes[mode]
-      }
-      if (last_gst_state != "") {
-        printf "video_gst_state_latest: %s\n", last_gst_state
-      }
-      for (gst_state in gst_states) {
-        printf "video_gst_state.%s: %d\n", gst_state, gst_states[gst_state]
-      }
-      if (last_decoder_policy != "") {
-        printf "video_decoder_policy_latest: %s\n", last_decoder_policy
-      }
-      for (decoder_policy in decoder_policies) {
-        printf "video_decoder_policy.%s: %d\n", decoder_policy, decoder_policies[decoder_policy]
-      }
-      if (last_decoder_policy_status != "") {
-        printf "video_decoder_policy_status_latest: %s\n", last_decoder_policy_status
-      }
-      for (decoder_policy_status in decoder_policy_statuses) {
-        printf "video_decoder_policy_status.%s: %d\n", decoder_policy_status, decoder_policy_statuses[decoder_policy_status]
-      }
-      if (last_actual_decoders != "") {
-        printf "video_actual_decoders_latest: %s\n", last_actual_decoders
-      }
-      for (actual_decoder in actual_decoder_counts) {
-        printf "video_actual_decoder.%s: %d\n", actual_decoder, actual_decoder_counts[actual_decoder]
-      }
-      if (last_decoder_classes != "") {
-        printf "video_decoder_classes_latest: %s\n", last_decoder_classes
-      }
-      for (decoder_class in decoder_class_counts) {
-        printf "video_decoder_class.%s: %d\n", decoder_class, decoder_class_counts[decoder_class]
-      }
-      printf "video_caps_report_count_max: %d\n", max_caps_report_count
-      if (last_memory_features != "") {
-        printf "video_memory_features_latest: %s\n", last_memory_features
-      }
-      for (memory_feature in memory_feature_counts) {
-        printf "video_memory_feature.%s: %d\n", memory_feature, memory_feature_counts[memory_feature]
-      }
-      if (last_sink_memory_features != "") {
-        printf "video_sink_memory_features_latest: %s\n", last_sink_memory_features
-      }
-      for (sink_memory_feature in sink_memory_feature_counts) {
-        printf "video_sink_memory_feature.%s: %d\n", sink_memory_feature, sink_memory_feature_counts[sink_memory_feature]
-      }
-      if (last_formats != "") {
-        printf "video_formats_latest: %s\n", last_formats
-      }
-      for (format in format_counts) {
-        printf "video_format.%s: %d\n", format, format_counts[format]
-      }
-      if (last_sink_formats != "") {
-        printf "video_sink_formats_latest: %s\n", last_sink_formats
-      }
-      for (sink_format in sink_format_counts) {
-        printf "video_sink_format.%s: %d\n", sink_format, sink_format_counts[sink_format]
-      }
-      if (last_format_paths != "") {
-        printf "video_format_paths_latest: %s\n", last_format_paths
-      }
-      for (format_path in format_path_counts) {
-        printf "video_format_path.%s: %d\n", format_path, format_path_counts[format_path]
-      }
-      if (last_frame_sizes != "") {
-        printf "video_frame_sizes_latest: %s\n", last_frame_sizes
-      }
-      for (frame_size in frame_size_counts) {
-        printf "video_frame_size.%s: %d\n", frame_size, frame_size_counts[frame_size]
-      }
-      if (last_caps_sources != "") {
-        printf "video_caps_sources_latest: %s\n", last_caps_sources
-      }
-      for (caps_source in caps_source_counts) {
-        printf "video_caps_source.%s: %d\n", caps_source, caps_source_counts[caps_source]
-      }
-      printf "video_zero_copy_evidence_rows: %d\n", zero_copy_rows
-      if (last_zero_copy_level != "") {
-        printf "video_zero_copy_evidence_latest: %s\n", last_zero_copy_level
-      }
-      if (last_zero_copy_notes != "") {
-        printf "video_zero_copy_evidence_notes_latest: %s\n", last_zero_copy_notes
-      }
-      for (level in zero_copy_levels) {
-        printf "video_zero_copy_evidence.%s: %d\n", level, zero_copy_levels[level]
-      }
-      printf "video_memory_path_rows: %d\n", memory_path_rows
-      if (last_memory_path_level != "") {
-        printf "video_memory_path_latest: %s\n", last_memory_path_level
-      }
-      if (last_memory_path_notes != "") {
-        printf "video_memory_path_notes_latest: %s\n", last_memory_path_notes
-      }
-      if (last_memory_path_segments != "") {
-        printf "video_memory_path_segments_latest: %s\n", last_memory_path_segments
-      }
-      for (memory_path_level in memory_path_levels) {
-        printf "video_memory_path.%s: %d\n", memory_path_level, memory_path_levels[memory_path_level]
-      }
-      for (memory_path_segment in memory_path_segment_counts) {
-        printf "video_memory_path_segment.%s: %d\n", memory_path_segment, memory_path_segment_counts[memory_path_segment]
-      }
-      printf "video_allocation_report_count_max: %d\n", max_allocation_report_count
-      if (last_allocation_pools != "") {
-        printf "video_allocation_pools_latest: %s\n", last_allocation_pools
-      }
-      if (last_allocation_allocators != "") {
-        printf "video_allocation_allocators_latest: %s\n", last_allocation_allocators
-      }
-      for (allocation_pool in allocation_pool_counts) {
-        printf "video_allocation_pool.%s: %d\n", allocation_pool, allocation_pool_counts[allocation_pool]
-      }
-      for (allocation_allocator in allocation_allocator_counts) {
-        printf "video_allocation_allocator.%s: %d\n", allocation_allocator, allocation_allocator_counts[allocation_allocator]
-      }
-      printf "video_position_samples: %d\n", position_samples
-      printf "video_position_moving_outputs: %d\n", moving_outputs
-      printf "video_position_delta_ms_max: %d\n", max_position_delta
-      printf "video_duration_samples: %d\n", duration_samples
-      if (duration_samples > 0) {
-        printf "video_duration_ms_max: %d\n", max_duration
-      }
-      printf "video_frame_limiter_enabled_rows: %d\n", frame_limiter_enabled_rows
-      printf "video_frame_limiter_fps_samples: %d\n", limiter_fps_samples
-      if (limiter_fps_samples > 0) {
-        printf "video_frame_limiter_fps_min: %d\n", min_limiter_fps
-        printf "video_frame_limiter_fps_max: %d\n", max_limiter_fps
-      }
-      printf "video_qos_rows: %d\n", qos_rows
-      printf "video_qos_messages_max: %d\n", max_qos_messages
-      printf "video_qos_processed_max: %d\n", max_qos_processed
-      printf "video_qos_dropped_max: %d\n", max_qos_dropped
-      if (last_qos_format != "") {
-        printf "video_qos_stats_format_latest: %s\n", last_qos_format
-      }
-      if (last_qos_jitter != "") {
-        printf "video_qos_jitter_ns_latest: %s\n", last_qos_jitter
-      }
-      printf "video_qos_jitter_ns_abs_max: %d\n", max_qos_jitter_abs
-      if (last_qos_proportion != "") {
-        printf "video_qos_proportion_x1000_latest: %s\n", last_qos_proportion
-      }
-      printf "video_gtk_frame_clock_rows: %d\n", gtk_clock_rows
-      printf "video_gtk_frame_clock_ticks_max: %d\n", max_gtk_clock_ticks
-      printf "video_gtk_frame_clock_before_paint_ticks_max: %d\n", max_gtk_clock_before_paint_ticks
-      printf "video_gtk_frame_clock_update_ticks_max: %d\n", max_gtk_clock_update_ticks
-      printf "video_gtk_frame_clock_layout_ticks_max: %d\n", max_gtk_clock_layout_ticks
-      printf "video_gtk_frame_clock_paint_ticks_max: %d\n", max_gtk_clock_paint_ticks
-      printf "video_gtk_frame_clock_after_paint_ticks_max: %d\n", max_gtk_clock_after_paint_ticks
-      if (last_gtk_clock_counter != "") {
-        printf "video_gtk_frame_clock_counter_latest: %s\n", last_gtk_clock_counter
-      }
-      if (last_gtk_clock_time != "") {
-        printf "video_gtk_frame_clock_time_us_latest: %s\n", last_gtk_clock_time
-      }
-      if (last_gtk_clock_interval != "") {
-        printf "video_gtk_frame_clock_interval_us_latest: %s\n", last_gtk_clock_interval
-      }
-      printf "video_gtk_frame_clock_interval_us_max: %d\n", max_gtk_clock_interval
-      if (last_gtk_clock_fps != "") {
-        printf "video_gtk_frame_clock_fps_x1000_latest: %s\n", last_gtk_clock_fps
-      }
-      if (last_gtk_clock_refresh != "") {
-        printf "video_gtk_frame_clock_refresh_interval_us_latest: %s\n", last_gtk_clock_refresh
-      }
-      if (last_gtk_clock_presentation != "") {
-        printf "video_gtk_frame_clock_predicted_presentation_time_us_latest: %s\n", last_gtk_clock_presentation
-      }
-      printf "video_gtk_frame_timings_rows: %d\n", gtk_timings_rows
-      printf "video_gtk_frame_timings_observed_max: %d\n", max_gtk_timings_observed
-      printf "video_gtk_frame_timings_complete_max: %d\n", max_gtk_timings_complete
-      if (last_gtk_timings_counter != "") {
-        printf "video_gtk_frame_timings_counter_latest: %s\n", last_gtk_timings_counter
-      }
-      if (last_gtk_timings_complete_counter != "") {
-        printf "video_gtk_frame_timings_complete_counter_latest: %s\n", last_gtk_timings_complete_counter
-      }
-      if (last_gtk_timings_frame_time != "") {
-        printf "video_gtk_frame_timings_frame_time_us_latest: %s\n", last_gtk_timings_frame_time
-      }
-      if (last_gtk_timings_predicted_presentation != "") {
-        printf "video_gtk_frame_timings_predicted_presentation_time_us_latest: %s\n", last_gtk_timings_predicted_presentation
-      }
-      if (last_gtk_timings_presentation != "") {
-        printf "video_gtk_frame_timings_presentation_time_us_latest: %s\n", last_gtk_timings_presentation
-      }
-      if (last_gtk_timings_presentation_interval != "") {
-        printf "video_gtk_frame_timings_presentation_interval_us_latest: %s\n", last_gtk_timings_presentation_interval
-      }
-      printf "video_gtk_frame_timings_presentation_interval_us_max: %d\n", max_gtk_timings_presentation_interval
-      if (last_gtk_timings_refresh != "") {
-        printf "video_gtk_frame_timings_refresh_interval_us_latest: %s\n", last_gtk_timings_refresh
-      }
-      if (last_sink_element != "") {
-        printf "video_sink_element_latest: %s\n", last_sink_element
-      }
-      for (sink_element in sink_elements) {
-        printf "video_sink_element.%s: %d\n", sink_element, sink_elements[sink_element]
-      }
-      if (last_sink_async_enabled != "") {
-        printf "video_sink_async_enabled_latest: %s\n", last_sink_async_enabled
-      }
-      for (sink_async_enabled in sink_async_enabled_values) {
-        printf "video_sink_async_enabled.%s: %d\n", sink_async_enabled, sink_async_enabled_values[sink_async_enabled]
-      }
-      if (last_sink_last_sample_enabled != "") {
-        printf "video_sink_last_sample_enabled_latest: %s\n", last_sink_last_sample_enabled
-      }
-      for (sink_last_sample_enabled in sink_last_sample_enabled_values) {
-        printf "video_sink_last_sample_enabled.%s: %d\n", sink_last_sample_enabled, sink_last_sample_enabled_values[sink_last_sample_enabled]
-      }
-      if (last_sink_qos_enabled != "") {
-        printf "video_sink_qos_enabled_latest: %s\n", last_sink_qos_enabled
-      }
-      for (sink_qos_enabled in sink_qos_enabled_values) {
-        printf "video_sink_qos_enabled.%s: %d\n", sink_qos_enabled, sink_qos_enabled_values[sink_qos_enabled]
-      }
-      if (last_sink_max_lateness != "") {
-        printf "video_sink_max_lateness_ns_latest: %s\n", last_sink_max_lateness
-      }
-      if (last_sink_render_delay != "") {
-        printf "video_sink_render_delay_ns_latest: %s\n", last_sink_render_delay
-      }
-      if (last_sink_processing_deadline != "") {
-        printf "video_sink_processing_deadline_ns_latest: %s\n", last_sink_processing_deadline
-      }
-      if (last_sink_preroll_frame_enabled != "") {
-        printf "video_sink_preroll_frame_enabled_latest: %s\n", last_sink_preroll_frame_enabled
-      }
-      for (sink_preroll_frame_enabled in sink_preroll_frame_enabled_values) {
-        printf "video_sink_preroll_frame_enabled.%s: %d\n", sink_preroll_frame_enabled, sink_preroll_frame_enabled_values[sink_preroll_frame_enabled]
-      }
-      if (last_memory_retention_level != "") {
-        printf "video_memory_retention_level_latest: %s\n", last_memory_retention_level
-      }
-      printf "video_memory_retention_rows: %d\n", memory_retention_rows
-      if (last_memory_retention_notes != "") {
-        printf "video_memory_retention_notes_latest: %s\n", last_memory_retention_notes
-      }
-      for (memory_retention_level in memory_retention_levels) {
-        printf "video_memory_retention_level.%s: %d\n", memory_retention_level, memory_retention_levels[memory_retention_level]
-      }
-      printf "video_memory_retention_estimated_min_pool_bytes_max: %d\n", max_memory_retention_estimated_min_pool_bytes
-      printf "video_memory_retention_estimated_max_pool_bytes_max: %d\n", max_memory_retention_estimated_max_pool_bytes
-      printf "video_memory_retention_pool_reports_max: %d\n", max_memory_retention_pool_reports
-      printf "video_memory_retention_system_memory_pool_reports_max: %d\n", max_memory_retention_system_memory_pool_reports
-      printf "video_memory_retention_gpu_memory_pool_reports_max: %d\n", max_memory_retention_gpu_memory_pool_reports
-      printf "video_memory_retention_dmabuf_pool_reports_max: %d\n", max_memory_retention_dmabuf_pool_reports
-      printf "video_memory_retention_other_memory_pool_reports_max: %d\n", max_memory_retention_other_memory_pool_reports
-      if (last_memory_retention_sink_frame_retention != "") {
-        printf "video_memory_retention_sink_frame_retention_latest: %s\n", last_memory_retention_sink_frame_retention
-      }
-      for (memory_retention_sink_frame_retention in memory_retention_sink_frame_retention_values) {
-        printf "video_memory_retention_sink_frame_retention.%s: %d\n", memory_retention_sink_frame_retention, memory_retention_sink_frame_retention_values[memory_retention_sink_frame_retention]
-      }
-      printf "video_queue_report_count_max: %d\n", max_queue_report_count
-      if (last_queue_elements != "") {
-        printf "video_queue_elements_latest: %s\n", last_queue_elements
-      }
-      if (last_queue_max_size_buffers != "") {
-        printf "video_queue_max_size_buffers_latest: %s\n", last_queue_max_size_buffers
-      }
-      if (last_queue_max_size_bytes != "") {
-        printf "video_queue_max_size_bytes_latest: %s\n", last_queue_max_size_bytes
-      }
-      if (last_queue_max_size_time != "") {
-        printf "video_queue_max_size_time_ns_latest: %s\n", last_queue_max_size_time
-      }
-      printf "video_queue_current_level_buffers_max: %d\n", max_queue_current_level_buffers
-      printf "video_queue_current_level_bytes_max: %d\n", max_queue_current_level_bytes
-      printf "video_queue_current_level_time_ns_max: %d\n", max_queue_current_level_time
-    }
-  ' "$video_runtime_csv" > "$summary"
 }
 
 summary_value_or_none() {
@@ -2732,50 +1742,6 @@ summary_value_or_none() {
   fi
   awk -v key="$key" -F': ' '$1 == key { print $2; found = 1; exit } END { exit found ? 0 : 1 }' "$summary" \
     || printf 'none\n'
-}
-
-write_video_source_codec_report() {
-  local video_runtime_csv="$1"
-  local report="$2"
-  local source
-  local source_index=0
-
-  while IFS= read -r source; do
-    source_index=$((source_index + 1))
-    printf 'source.%d.path: %s\n' "$source_index" "$source" >> "$report"
-    if [[ ! -r "$source" ]]; then
-      printf 'source.%d.readable: no\n' "$source_index" >> "$report"
-      continue
-    fi
-    printf 'source.%d.readable: yes\n' "$source_index" >> "$report"
-    if ! command -v ffprobe >/dev/null 2>&1; then
-      printf 'source.%d.ffprobe: unavailable\n' "$source_index" >> "$report"
-      continue
-    fi
-    local probed=0
-    while IFS= read -r line; do
-      [[ -n "$line" && "$line" == *=* ]] || continue
-      local key="${line%%=*}"
-      local value="${line#*=}"
-      printf 'source.%d.%s: %s\n' "$source_index" "$key" "$value" >> "$report"
-      probed=1
-    done < <(
-      ffprobe -v error \
-        -select_streams v:0 \
-        -show_entries stream=codec_name,codec_long_name,profile,width,height,pix_fmt,r_frame_rate,avg_frame_rate \
-        -of default=noprint_wrappers=1 \
-        "$source" 2>/dev/null || true
-    )
-    if [[ "$probed" -eq 0 ]]; then
-      printf 'source.%d.ffprobe: no-video-stream\n' "$source_index" >> "$report"
-    fi
-  done < <(awk -F, 'NR > 1 && $52 != "" && !seen[$52]++ { print $52 }' "$video_runtime_csv")
-
-  if [[ "$source_index" -eq 0 ]]; then
-    printf 'source.count: 0\n' >> "$report"
-  else
-    printf 'source.count: %d\n' "$source_index" >> "$report"
-  fi
 }
 
 read_sysfs_value_or_unknown() {
@@ -2852,10 +1818,8 @@ write_gpu_driver_report() {
 
 write_video_hardware_report() {
   local process_summary="$1"
-  local video_runtime_summary="$2"
-  local video_runtime_csv="$3"
-  local report="$4"
-  local target_pid="${5:-}"
+  local report="$2"
+  local target_pid="${3:-}"
 
   {
     printf 'report: video-hardware\n'
@@ -2869,34 +1833,8 @@ write_video_hardware_report() {
     printf 'process.max_private_dirty_kib: %s\n' "$(summary_value_or_none "$process_summary" max_private_dirty_kib)"
     printf 'process.max_private_kib: %s\n' "$(summary_value_or_none "$process_summary" max_private_kib)"
     printf 'process.max_uss_kib: %s\n' "$(summary_value_or_none "$process_summary" max_uss_kib)"
-    printf 'video.decoder_policy_status_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_decoder_policy_status_latest)"
-    printf 'video.actual_decoders_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_actual_decoders_latest)"
-    printf 'video.decoder_classes_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_decoder_classes_latest)"
-    printf 'video.caps_report_count_max: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_caps_report_count_max)"
-    printf 'video.memory_features_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_memory_features_latest)"
-    printf 'video.sink_memory_features_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_sink_memory_features_latest)"
-    printf 'video.formats_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_formats_latest)"
-    printf 'video.sink_formats_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_sink_formats_latest)"
-    printf 'video.format_paths_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_format_paths_latest)"
-    printf 'video.frame_sizes_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_frame_sizes_latest)"
-    printf 'video.caps_sources_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_caps_sources_latest)"
-    printf 'video.sink_element_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_sink_element_latest)"
-    printf 'video.sink_async_enabled_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_sink_async_enabled_latest)"
-    printf 'video.sink_last_sample_enabled_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_sink_last_sample_enabled_latest)"
-    printf 'video.sink_preroll_frame_enabled_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_sink_preroll_frame_enabled_latest)"
-    printf 'video.zero_copy_evidence_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_zero_copy_evidence_latest)"
-    printf 'video.zero_copy_evidence_notes_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_zero_copy_evidence_notes_latest)"
-    printf 'video.memory_retention_level_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_memory_retention_level_latest)"
-    printf 'video.memory_retention_notes_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_memory_retention_notes_latest)"
-    printf 'video.memory_retention_estimated_min_pool_bytes_max: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_memory_retention_estimated_min_pool_bytes_max)"
-    printf 'video.memory_retention_system_memory_pool_reports_max: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_memory_retention_system_memory_pool_reports_max)"
-    printf 'video.memory_retention_sink_frame_retention_latest: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_memory_retention_sink_frame_retention_latest)"
-    printf 'video.position_delta_ms_max: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_position_delta_ms_max)"
-    printf 'video.qos_messages_max: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_qos_messages_max)"
-    printf 'video.qos_dropped_max: %s\n' "$(summary_value_or_none "$video_runtime_summary" video_qos_dropped_max)"
   } > "$report"
 
-  write_video_source_codec_report "$video_runtime_csv" "$report"
   write_gpu_driver_report "$report" "$target_pid"
 }
 
@@ -2993,16 +1931,16 @@ expect_process_summary_maximum() {
     if [[ "$require_observed" -eq 1 ]] && awk -v value="$value" 'BEGIN { exit (value + 0 > 0) ? 0 : 1 }'; then
       :
     elif [[ "$require_observed" -eq 1 ]]; then
-      skip_or_fail "process memory expectation not met: ${description} was not observed; /proc/<pid>/smaps_rollup may be unavailable"
+      fail "process memory expectation not met: ${description} was not observed; /proc/<pid>/smaps_rollup may be unavailable"
       return 0
     fi
     if awk -v value="$value" -v maximum="$maximum" 'BEGIN { exit (value + 0 <= maximum + 0) ? 0 : 1 }'; then
       pass "process memory expectation matched ${description}: ${value} ${unit}"
     else
-      skip_or_fail "process memory expectation not met: ${description} was ${value} ${unit}, expected at most ${maximum} ${unit}"
+      fail "process memory expectation not met: ${description} was ${value} ${unit}, expected at most ${maximum} ${unit}"
     fi
   else
-    skip_or_fail "process memory expectation not met: missing ${description}"
+    fail "process memory expectation not met: missing ${description}"
   fi
 }
 
@@ -3019,17 +1957,17 @@ expect_process_summary_delta_maximum() {
       if observed="$(summary_value "$observed_key" "$summary_path")" && [[ "$observed" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk -v value="$observed" 'BEGIN { exit (value + 0 > 0) ? 0 : 1 }'; then
         :
       else
-        skip_or_fail "process memory expectation not met: ${description} base memory was not observed; /proc/<pid>/smaps_rollup may be unavailable"
+        fail "process memory expectation not met: ${description} base memory was not observed; /proc/<pid>/smaps_rollup may be unavailable"
         return 0
       fi
     fi
     if awk -v value="$value" -v maximum="$maximum" 'BEGIN { exit (value + 0 <= maximum + 0) ? 0 : 1 }'; then
       pass "process memory expectation matched ${description}: ${value} KiB"
     else
-      skip_or_fail "process memory expectation not met: ${description} was ${value} KiB, expected at most ${maximum} KiB"
+      fail "process memory expectation not met: ${description} was ${value} KiB, expected at most ${maximum} KiB"
     fi
   else
-    skip_or_fail "process memory expectation not met: missing ${description}"
+    fail "process memory expectation not met: missing ${description}"
   fi
 }
 
@@ -3037,7 +1975,7 @@ validate_process_memory_expectations() {
   has_process_memory_expectations || return 0
   local rows
   if ! rows="$(summary_value "samples" "$summary_path")" || [[ "$rows" == "0" ]]; then
-    skip_or_fail "cannot validate process memory expectations because no process samples were recorded"
+    fail "cannot validate process memory expectations because no process samples were recorded"
     return 0
   fi
 
@@ -3378,348 +2316,6 @@ validate_telemetry_expectations() {
   fi
 }
 
-has_video_runtime_expectations() {
-  [[ -n "$expect_decoder_policy_status" ||
-    -n "$expect_decoder_class" ||
-    -n "$expect_memory_feature" ||
-    -n "$expect_sink_memory_feature" ||
-    -n "$expect_zero_copy_evidence" ||
-    -n "$expect_zero_copy_evidence_at_least" ||
-    -n "$expect_zero_copy_profile" ||
-    -n "$expect_memory_retention_level_at_most" ||
-    -n "$expect_memory_retention_system_pools_at_most" ||
-    -n "$expect_memory_retention_min_pool_bytes_at_most" ||
-    -n "$expect_memory_retention_sink_frame_retention" ||
-    "$expect_video_position_progress" -eq 1 ||
-    "$expect_frame_limiter_enabled" -eq 1 ||
-    -n "$expect_frame_limiter_max_fps" ||
-    "$expect_video_qos" -eq 1 ||
-    -n "$expect_qos_dropped_max_at_most" ||
-    "$expect_gtk_frame_clock" -eq 1 ||
-    "${#expect_gtk_frame_clock_phases[@]}" -gt 0 ||
-    "$expect_gtk_frame_timings" -eq 1 ]]
-}
-
-expect_video_runtime_field() {
-  local column="$1"
-  local expected="$2"
-  local description="$3"
-
-  if awk -F, -v column="$column" -v expected="$expected" '
-    NR == 1 { next }
-    {
-      count = split($column, values, /\|/)
-      for (i = 1; i <= count; i += 1) {
-        if (values[i] == expected) {
-          found = 1
-          exit
-        }
-      }
-    }
-    END { exit found ? 0 : 1 }
-  ' "$video_runtime_path"; then
-    pass "video runtime expectation matched ${description}: ${expected}"
-  else
-    skip_or_fail "video runtime expectation not met: ${description} ${expected}"
-  fi
-}
-
-expect_memory_retention_level_maximum() {
-  local maximum="$1"
-  local matched
-
-  if matched="$(awk -F, -v maximum="$maximum" '
-    function rank(level) {
-      if (level == "unknown") { return 0 }
-      if (level == "low") { return 1 }
-      if (level == "medium") { return 2 }
-      if (level == "high") { return 3 }
-      return -1
-    }
-    BEGIN {
-      maximum_rank = rank(maximum)
-      worst_rank = -1
-    }
-    NR == 1 { next }
-    {
-      count = split($66, values, /\|/)
-      for (i = 1; i <= count; i += 1) {
-        value_rank = rank(values[i])
-        if (value_rank >= 0) {
-          observed += 1
-          if (value_rank > worst_rank) {
-            worst_rank = value_rank
-            worst = values[i]
-          }
-        }
-      }
-    }
-    END {
-      if (observed == 0) {
-        exit 2
-      }
-      print worst
-      exit (worst_rank <= maximum_rank) ? 0 : 1
-    }
-  ' "$video_runtime_path")"; then
-    pass "video runtime expectation matched memory retention level at most ${maximum}: ${matched}"
-  else
-    skip_or_fail "video runtime expectation not met: memory retention level at most ${maximum}${matched:+, worst observed ${matched}}"
-  fi
-}
-
-expect_zero_copy_evidence_minimum() {
-  local minimum="$1"
-  local matched
-
-  if matched="$(awk -F, -v minimum="$minimum" '
-    function rank(level) {
-      if (level == "missing") { return 0 }
-      if (level == "software-decode") { return 1 }
-      if (level == "hardware-decode") { return 2 }
-      if (level == "gpu-memory-caps") { return 3 }
-      if (level == "dmabuf-caps") { return 4 }
-      if (level == "sink-gpu-memory-caps") { return 5 }
-      if (level == "sink-dmabuf-caps") { return 6 }
-      return -1
-    }
-    BEGIN {
-      minimum_rank = rank(minimum)
-    }
-    NR == 1 { next }
-    {
-      count = split($13, values, /\|/)
-      for (i = 1; i <= count; i += 1) {
-        value_rank = rank(values[i])
-        if (value_rank >= minimum_rank) {
-          print values[i]
-          found = 1
-          exit
-        }
-      }
-    }
-    END { exit found ? 0 : 1 }
-  ' "$video_runtime_path")"; then
-    pass "video runtime expectation matched zero-copy evidence at least ${minimum}: ${matched}"
-  else
-    skip_or_fail "video runtime expectation not met: zero-copy evidence at least ${minimum}"
-  fi
-}
-
-expect_video_runtime_summary_minimum() {
-  local key="$1"
-  local minimum="$2"
-  local description="$3"
-  local value
-  if value="$(summary_value "$key" "$video_runtime_summary_path")" && [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-    if awk -v value="$value" -v minimum="$minimum" 'BEGIN { exit (value + 0 >= minimum + 0) ? 0 : 1 }'; then
-      pass "video runtime expectation matched ${description}: ${value}"
-    else
-      skip_or_fail "video runtime expectation not met: ${description} was ${value}, expected at least ${minimum}"
-    fi
-  else
-    skip_or_fail "video runtime expectation not met: missing ${description}"
-  fi
-}
-
-expect_video_runtime_summary_maximum() {
-  local key="$1"
-  local maximum="$2"
-  local description="$3"
-  local value
-  if value="$(summary_value "$key" "$video_runtime_summary_path")" && [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-    if awk -v value="$value" -v maximum="$maximum" 'BEGIN { exit (value + 0 <= maximum + 0) ? 0 : 1 }'; then
-      pass "video runtime expectation matched ${description}: ${value}"
-    else
-      skip_or_fail "video runtime expectation not met: ${description} was ${value}, expected at most ${maximum}"
-    fi
-  else
-    skip_or_fail "video runtime expectation not met: missing ${description}"
-  fi
-}
-
-expect_zero_copy_profile_runtime_row() {
-  local minimum="$1"
-  local profile="$2"
-  local matched
-
-  if matched="$(awk -F, -v minimum="$minimum" '
-    function rank(level) {
-      if (level == "missing") { return 0 }
-      if (level == "software-decode") { return 1 }
-      if (level == "hardware-decode") { return 2 }
-      if (level == "gpu-memory-caps") { return 3 }
-      if (level == "dmabuf-caps") { return 4 }
-      if (level == "sink-gpu-memory-caps") { return 5 }
-      if (level == "sink-dmabuf-caps") { return 6 }
-      return -1
-    }
-    function pipe_contains(value, expected,    count, values, index) {
-      count = split(value, values, /\|/)
-      for (index = 1; index <= count; index += 1) {
-        if (values[index] == expected) {
-          return 1
-        }
-      }
-      return 0
-    }
-    BEGIN {
-      minimum_rank = rank(minimum)
-    }
-    NR == 1 { next }
-    pipe_contains($9, "hardware") && rank($13) >= minimum_rank {
-      print $3 ":" $8 ":" $13
-      found = 1
-      exit
-    }
-    END { exit found ? 0 : 1 }
-  ' "$video_runtime_path")"; then
-    pass "video runtime expectation matched zero-copy profile ${profile} runtime row: ${matched}"
-  else
-    skip_or_fail "video runtime expectation not met: zero-copy profile ${profile} requires hardware decoder and ${minimum} or stronger on the same runtime row"
-  fi
-}
-
-expect_zero_copy_profile_evidence() {
-  local profile="$1"
-
-  case "$profile" in
-    hardware-decode)
-      expect_zero_copy_profile_runtime_row "hardware-decode" "$profile"
-      expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "zero-copy profile ${profile} moving video output count"
-      ;;
-    runtime-gpu-path)
-      expect_zero_copy_profile_runtime_row "sink-gpu-memory-caps" "$profile"
-      expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "zero-copy profile ${profile} moving video output count"
-      ;;
-    runtime-dmabuf-path)
-      expect_zero_copy_profile_runtime_row "sink-dmabuf-caps" "$profile"
-      expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "zero-copy profile ${profile} moving video output count"
-      ;;
-    gtk-gpu-surface)
-      expect_zero_copy_profile_runtime_row "sink-gpu-memory-caps" "$profile"
-      expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "zero-copy profile ${profile} moving video output count"
-      expect_video_runtime_summary_minimum "video_gtk_frame_clock_ticks_max" 1 "zero-copy profile ${profile} GTK frame clock tick max count"
-      expect_video_runtime_summary_minimum "video_gtk_frame_clock_after_paint_ticks_max" 1 "zero-copy profile ${profile} GTK after-paint tick max count"
-      ;;
-    gtk-dmabuf-surface)
-      expect_zero_copy_profile_runtime_row "sink-dmabuf-caps" "$profile"
-      expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "zero-copy profile ${profile} moving video output count"
-      expect_video_runtime_summary_minimum "video_gtk_frame_clock_ticks_max" 1 "zero-copy profile ${profile} GTK frame clock tick max count"
-      expect_video_runtime_summary_minimum "video_gtk_frame_clock_after_paint_ticks_max" 1 "zero-copy profile ${profile} GTK after-paint tick max count"
-      ;;
-    gtk-timed-gpu-surface)
-      expect_zero_copy_profile_runtime_row "sink-gpu-memory-caps" "$profile"
-      expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "zero-copy profile ${profile} moving video output count"
-      expect_video_runtime_summary_minimum "video_gtk_frame_clock_ticks_max" 1 "zero-copy profile ${profile} GTK frame clock tick max count"
-      expect_video_runtime_summary_minimum "video_gtk_frame_clock_after_paint_ticks_max" 1 "zero-copy profile ${profile} GTK after-paint tick max count"
-      expect_video_runtime_summary_minimum "video_gtk_frame_timings_complete_max" 1 "zero-copy profile ${profile} GDK frame timings complete max count"
-      ;;
-  esac
-}
-
-gtk_frame_clock_phase_summary_key() {
-  case "$1" in
-    before-paint)
-      printf '%s\n' "video_gtk_frame_clock_before_paint_ticks_max"
-      ;;
-    update)
-      printf '%s\n' "video_gtk_frame_clock_update_ticks_max"
-      ;;
-    layout)
-      printf '%s\n' "video_gtk_frame_clock_layout_ticks_max"
-      ;;
-    paint)
-      printf '%s\n' "video_gtk_frame_clock_paint_ticks_max"
-      ;;
-    after-paint)
-      printf '%s\n' "video_gtk_frame_clock_after_paint_ticks_max"
-      ;;
-  esac
-}
-
-validate_video_runtime_expectations() {
-  has_video_runtime_expectations || return 0
-  if [[ "$status_enabled" -ne 1 || "$video_runtime_failures" -gt 0 ]]; then
-    skip_or_fail "cannot validate video runtime expectations without complete video runtime samples"
-    return 0
-  fi
-
-  local rows
-  rows="$(awk 'NR > 1 { rows += 1 } END { print rows + 0 }' "$video_runtime_path")"
-  if [[ "$rows" == "0" ]]; then
-    skip_or_fail "cannot validate video runtime expectations because no video runtime rows were sampled"
-    return 0
-  fi
-
-  if [[ -n "$expect_decoder_policy_status" ]]; then
-    expect_video_runtime_field 7 "$expect_decoder_policy_status" "decoder policy status"
-  fi
-  if [[ -n "$expect_decoder_class" ]]; then
-    expect_video_runtime_field 9 "$expect_decoder_class" "decoder class"
-  fi
-  if [[ -n "$expect_memory_feature" ]]; then
-    expect_video_runtime_field 11 "$expect_memory_feature" "caps memory feature"
-  fi
-  if [[ -n "$expect_sink_memory_feature" ]]; then
-    expect_video_runtime_field 12 "$expect_sink_memory_feature" "sink caps memory feature"
-  fi
-  if [[ -n "$expect_zero_copy_evidence" ]]; then
-    expect_video_runtime_field 13 "$expect_zero_copy_evidence" "zero-copy evidence level"
-  fi
-  if [[ -n "$expect_zero_copy_evidence_at_least" ]]; then
-    expect_zero_copy_evidence_minimum "$expect_zero_copy_evidence_at_least"
-  fi
-  if [[ -n "$expect_zero_copy_profile" ]]; then
-    expect_zero_copy_profile_evidence "$expect_zero_copy_profile"
-  fi
-  if [[ -n "$expect_memory_retention_level_at_most" ||
-    -n "$expect_memory_retention_system_pools_at_most" ||
-    -n "$expect_memory_retention_min_pool_bytes_at_most" ||
-    -n "$expect_memory_retention_sink_frame_retention" ]]; then
-    expect_video_runtime_summary_minimum "video_memory_retention_rows" 1 "memory retention runtime row count"
-  fi
-  if [[ -n "$expect_memory_retention_level_at_most" ]]; then
-    expect_memory_retention_level_maximum "$expect_memory_retention_level_at_most"
-  fi
-  if [[ -n "$expect_memory_retention_system_pools_at_most" ]]; then
-    expect_video_runtime_summary_maximum "video_memory_retention_system_memory_pool_reports_max" "$expect_memory_retention_system_pools_at_most" "memory retention system-memory pool reports max count"
-  fi
-  if [[ -n "$expect_memory_retention_min_pool_bytes_at_most" ]]; then
-    expect_video_runtime_summary_maximum "video_memory_retention_estimated_min_pool_bytes_max" "$expect_memory_retention_min_pool_bytes_at_most" "memory retention minimum pool bytes max"
-  fi
-  if [[ -n "$expect_memory_retention_sink_frame_retention" ]]; then
-    expect_video_runtime_field 75 "$expect_memory_retention_sink_frame_retention" "memory retention sink frame retention"
-  fi
-  if [[ "$expect_video_position_progress" -eq 1 ]]; then
-    expect_video_runtime_summary_minimum "video_position_moving_outputs" 1 "moving video output count"
-  fi
-  if [[ "$expect_frame_limiter_enabled" -eq 1 ]]; then
-    expect_video_runtime_field 25 "true" "frame limiter enabled"
-  fi
-  if [[ -n "$expect_frame_limiter_max_fps" ]]; then
-    expect_video_runtime_field 26 "$expect_frame_limiter_max_fps" "frame limiter max_fps"
-  fi
-  if [[ "$expect_video_qos" -eq 1 ]]; then
-    expect_video_runtime_summary_minimum "video_qos_messages_max" 1 "QoS message max count"
-  fi
-  if [[ -n "$expect_qos_dropped_max_at_most" ]]; then
-    expect_video_runtime_summary_maximum "video_qos_dropped_max" "$expect_qos_dropped_max_at_most" "QoS dropped max count"
-  fi
-  if [[ "$expect_gtk_frame_clock" -eq 1 ]]; then
-    expect_video_runtime_summary_minimum "video_gtk_frame_clock_ticks_max" 1 "GTK frame clock tick max count"
-  fi
-  local phase
-  local phase_key
-  for phase in "${expect_gtk_frame_clock_phases[@]}"; do
-    phase_key="$(gtk_frame_clock_phase_summary_key "$phase")"
-    expect_video_runtime_summary_minimum "$phase_key" 1 "GTK frame clock ${phase} phase tick max count"
-  done
-  if [[ "$expect_gtk_frame_timings" -eq 1 ]]; then
-    expect_video_runtime_summary_minimum "video_gtk_frame_timings_complete_max" 1 "GDK frame timings complete max count"
-  fi
-}
-
 if ! is_positive_integer "$duration"; then
   echo "--duration must be a positive integer" >&2
   exit 2
@@ -3732,23 +2328,6 @@ if [[ -n "$expect_max_fps" && ! "$expect_max_fps" =~ ^[0-9]+$ ]]; then
   echo "--expect-max-fps must be a non-negative integer" >&2
   exit 2
 fi
-if [[ -n "$expect_frame_limiter_max_fps" && ! "$expect_frame_limiter_max_fps" =~ ^[0-9]+$ ]]; then
-  echo "--expect-frame-limiter-max-fps must be a non-negative integer" >&2
-  exit 2
-fi
-if [[ -n "$expect_qos_dropped_max_at_most" && ! "$expect_qos_dropped_max_at_most" =~ ^[0-9]+$ ]]; then
-  echo "--expect-qos-dropped-max-at-most must be a non-negative integer" >&2
-  exit 2
-fi
-for memory_retention_expectation in \
-  "$expect_memory_retention_system_pools_at_most" \
-  "$expect_memory_retention_min_pool_bytes_at_most"
-do
-  if [[ -n "$memory_retention_expectation" && ! "$memory_retention_expectation" =~ ^[0-9]+$ ]]; then
-    echo "memory retention numeric expectations must be non-negative integers" >&2
-    exit 2
-  fi
-done
 for memory_expectation in \
   "$expect_max_rss_kib_at_most" \
   "$expect_max_pss_kib_at_most" \
@@ -3783,62 +2362,6 @@ do
     exit 2
   fi
 done
-case "$expect_decoder_policy_status" in
-  ""|not-applicable|not-observed|satisfied|software-fallback|violated|unknown-decoder)
-    ;;
-  *)
-    echo "--expect-decoder-policy-status must be one of not-applicable, not-observed, satisfied, software-fallback, violated, unknown-decoder" >&2
-    exit 2
-    ;;
-esac
-case "$expect_decoder_class" in
-  ""|hardware|software|unknown)
-    ;;
-  *)
-    echo "--expect-decoder-class must be one of hardware, software, unknown" >&2
-    exit 2
-    ;;
-esac
-case "$expect_zero_copy_evidence" in
-  ""|missing|software-decode|hardware-decode|gpu-memory-caps|dmabuf-caps|sink-gpu-memory-caps|sink-dmabuf-caps)
-    ;;
-  *)
-    echo "--expect-zero-copy-evidence must be one of missing, software-decode, hardware-decode, gpu-memory-caps, dmabuf-caps, sink-gpu-memory-caps, sink-dmabuf-caps" >&2
-    exit 2
-    ;;
-esac
-case "$expect_zero_copy_evidence_at_least" in
-  ""|missing|software-decode|hardware-decode|gpu-memory-caps|dmabuf-caps|sink-gpu-memory-caps|sink-dmabuf-caps)
-    ;;
-  *)
-    echo "--expect-zero-copy-evidence-at-least must be one of missing, software-decode, hardware-decode, gpu-memory-caps, dmabuf-caps, sink-gpu-memory-caps, sink-dmabuf-caps" >&2
-    exit 2
-    ;;
-esac
-case "$expect_zero_copy_profile" in
-  ""|hardware-decode|runtime-gpu-path|runtime-dmabuf-path|gtk-gpu-surface|gtk-dmabuf-surface|gtk-timed-gpu-surface)
-    ;;
-  *)
-    echo "--expect-zero-copy-profile must be one of hardware-decode, runtime-gpu-path, runtime-dmabuf-path, gtk-gpu-surface, gtk-dmabuf-surface, gtk-timed-gpu-surface" >&2
-    exit 2
-    ;;
-esac
-case "$expect_memory_retention_level_at_most" in
-  ""|unknown|low|medium|high)
-    ;;
-  *)
-    echo "--expect-memory-retention-level-at-most must be one of unknown, low, medium, high" >&2
-    exit 2
-    ;;
-esac
-case "$expect_memory_retention_sink_frame_retention" in
-  ""|unknown|disabled|last-sample|preroll-frame|last-sample-and-preroll-frame)
-    ;;
-  *)
-    echo "--expect-memory-retention-sink-frame-retention must be one of unknown, disabled, last-sample, preroll-frame, last-sample-and-preroll-frame" >&2
-    exit 2
-    ;;
-esac
 case "$expect_adaptive_action" in
   ""|throttle|pause-unfocused|pause-dynamic)
     ;;
@@ -3962,8 +2485,6 @@ decisions_path="$work_dir/decisions.csv"
 decision_summary_path="$work_dir/decision-summary.txt"
 telemetry_path="$work_dir/telemetry.csv"
 telemetry_summary_path="$work_dir/telemetry-summary.txt"
-video_runtime_path="$work_dir/video-runtime.csv"
-video_runtime_summary_path="$work_dir/video-runtime-summary.txt"
 video_hardware_report_path="$work_dir/video-hardware-report.txt"
 memory_mapping_summary_path="$work_dir/memory-mapping-summary.txt"
 memory_mapping_categories_path="$work_dir/memory-mapping-categories.csv"
@@ -4052,37 +2573,16 @@ expect_renderer_video_pipeline_source_reference_bytes_latest_at_most: ${expect_r
 expect_renderer_video_pipeline_unique_sources_latest_at_most: ${expect_renderer_video_pipeline_unique_sources_latest_at_most:-none}
 expect_renderer_video_pipeline_unique_source_bytes_latest_at_most: ${expect_renderer_video_pipeline_unique_source_bytes_latest_at_most:-none}
 expect_adaptive_action: ${expect_adaptive_action:-none}
-expect_decoder_policy_status: ${expect_decoder_policy_status:-none}
-expect_decoder_class: ${expect_decoder_class:-none}
-expect_memory_feature: ${expect_memory_feature:-none}
-expect_sink_memory_feature: ${expect_sink_memory_feature:-none}
-expect_zero_copy_evidence: ${expect_zero_copy_evidence:-none}
-expect_zero_copy_evidence_at_least: ${expect_zero_copy_evidence_at_least:-none}
-expect_zero_copy_profile: ${expect_zero_copy_profile:-none}
-expect_memory_retention_level_at_most: ${expect_memory_retention_level_at_most:-none}
-expect_memory_retention_system_pools_at_most: ${expect_memory_retention_system_pools_at_most:-none}
-expect_memory_retention_min_pool_bytes_at_most: ${expect_memory_retention_min_pool_bytes_at_most:-none}
-expect_memory_retention_sink_frame_retention: ${expect_memory_retention_sink_frame_retention:-none}
-expect_video_position_progress: ${expect_video_position_progress}
-expect_frame_limiter_enabled: ${expect_frame_limiter_enabled}
-expect_frame_limiter_max_fps: ${expect_frame_limiter_max_fps:-none}
-expect_video_qos: ${expect_video_qos}
-expect_qos_dropped_max_at_most: ${expect_qos_dropped_max_at_most:-none}
-expect_gtk_frame_clock: ${expect_gtk_frame_clock}
-expect_gtk_frame_clock_phases: ${expect_gtk_frame_clock_phases[*]:-none}
-expect_gtk_frame_timings: ${expect_gtk_frame_timings}
 gpu_busy_sources: drm gpu_busy_percent sysfs when readable; nvidia-smi utilization.gpu when available
 EOF
 
 printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,nvidia_process_gpu_memory_mib\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
-printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,render_sync_package_cache_entries,render_sync_package_cache_max_entries,render_sync_package_cache_hits,render_sync_package_cache_misses,render_sync_package_cache_evictions,render_sync_archive_cache_entries,render_sync_archive_cache_max_entries,render_sync_archive_cache_reuses,render_sync_archive_cache_extractions,render_sync_archive_cache_evictions,render_sync_archive_cache_evictions_latest,render_sync_archive_cache_eviction_errors,render_sync_archive_cache_eviction_errors_latest,render_sync_planned_static_image_resources,render_sync_planned_video_poster_resources,render_sync_planned_slideshow_image_resources,render_sync_planned_image_resource_references,render_sync_planned_unique_image_resources,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps,renderer_output_windows,renderer_static_surfaces,renderer_static_picture_surfaces,renderer_static_css_surfaces,renderer_static_color_surfaces,renderer_slideshow_surfaces,renderer_video_surfaces,renderer_video_shared_runtimes,renderer_video_pipelines,renderer_video_qos_messages,renderer_video_qos_dropped_max,renderer_video_gtk_frame_clock_ticks,renderer_video_gtk_frame_clock_interval_us_max,renderer_video_gtk_frame_clock_fps_x1000_max,renderer_video_gtk_frame_timings_complete,renderer_video_gtk_frame_timings_presentation_interval_us_max,renderer_video_gtk_frame_timings_presentation_time_us_max,renderer_video_gtk_frame_clock_before_paint_ticks,renderer_video_gtk_frame_clock_update_ticks,renderer_video_gtk_frame_clock_layout_ticks,renderer_video_gtk_frame_clock_paint_ticks,renderer_video_gtk_frame_clock_after_paint_ticks,render_sync_planned_static_image_resource_bytes,render_sync_planned_video_poster_resource_bytes,render_sync_planned_slideshow_image_resource_bytes,render_sync_planned_image_resource_reference_bytes,render_sync_planned_unique_image_resource_bytes,render_sync_package_cache_retained_resource_references,render_sync_package_cache_retained_unique_resources,render_sync_package_cache_retained_resource_bytes,render_sync_package_cache_retained_unique_resource_bytes,renderer_static_surface_resource_references,renderer_static_surface_resource_bytes,renderer_slideshow_resource_references,renderer_slideshow_resource_bytes,renderer_static_surface_unique_resources,renderer_static_surface_unique_resource_bytes,renderer_static_surface_estimated_decoded_bytes,renderer_slideshow_unique_resources,renderer_slideshow_unique_resource_bytes,render_sync_static_image_cache_entries,render_sync_static_image_cache_max_entries,render_sync_static_image_cache_generations,render_sync_static_image_cache_reuses,render_sync_static_image_cache_generation_errors,render_sync_static_image_cache_evictions,render_sync_static_image_cache_eviction_errors,render_sync_planned_video_source_references,render_sync_planned_unique_video_sources,render_sync_planned_duplicate_video_source_references,render_sync_planned_max_video_source_outputs,render_sync_planned_video_source_reference_bytes,render_sync_planned_unique_video_source_bytes,renderer_video_pipeline_source_references,renderer_video_pipeline_source_reference_bytes,renderer_video_pipeline_unique_sources,renderer_video_pipeline_unique_source_bytes,render_sync_package_cache_max_retained_unique_resource_bytes,render_sync_static_image_cache_bytes,render_sync_static_image_cache_max_bytes,render_sync_package_cache_retained_preview_resource_references,render_sync_package_cache_retained_unique_preview_resources,render_sync_package_cache_retained_preview_resource_bytes,render_sync_package_cache_retained_unique_preview_resource_bytes\n' > "$telemetry_path"
-printf 'sample,elapsed_seconds,output_name,mode,gst_state,decoder_policy,decoder_policy_status,actual_decoders,decoder_classes,caps_report_count,memory_features,sink_memory_features,zero_copy_evidence_level,zero_copy_evidence_notes,memory_path_level,memory_path_notes,memory_path_segments,allocation_report_count,allocation_pools,allocation_allocators,media_types,caps_paths,position_ms,duration_ms,frame_limiter_enabled,frame_limiter_max_fps,qos_messages,qos_processed_max,qos_dropped_max,qos_stats_format,qos_jitter_ns_latest,qos_jitter_ns_abs_max,qos_proportion_x1000_latest,gtk_frame_clock_ticks,gtk_frame_clock_counter_latest,gtk_frame_clock_time_us_latest,gtk_frame_clock_interval_us_latest,gtk_frame_clock_interval_us_max,gtk_frame_clock_fps_x1000_latest,gtk_frame_clock_refresh_interval_us_latest,gtk_frame_clock_predicted_presentation_time_us_latest,gtk_frame_timings_observed,gtk_frame_timings_complete,gtk_frame_timings_counter_latest,gtk_frame_timings_complete_counter_latest,gtk_frame_timings_frame_time_us_latest,gtk_frame_timings_predicted_presentation_time_us_latest,gtk_frame_timings_presentation_time_us_latest,gtk_frame_timings_presentation_interval_us_latest,gtk_frame_timings_presentation_interval_us_max,gtk_frame_timings_refresh_interval_us_latest,source,gtk_frame_clock_before_paint_ticks,gtk_frame_clock_update_ticks,gtk_frame_clock_layout_ticks,gtk_frame_clock_paint_ticks,gtk_frame_clock_after_paint_ticks,sink_element,sink_async_enabled,sink_last_sample_enabled,sink_qos_enabled,sink_max_lateness_ns,sink_render_delay_ns,sink_processing_deadline_ns,sink_preroll_frame_enabled,memory_retention_level,memory_retention_notes,memory_retention_estimated_min_pool_bytes,memory_retention_estimated_max_pool_bytes,memory_retention_pool_reports,memory_retention_system_memory_pool_reports,memory_retention_gpu_memory_pool_reports,memory_retention_dmabuf_pool_reports,memory_retention_other_memory_pool_reports,memory_retention_sink_frame_retention,queue_report_count,queue_elements,queue_max_size_buffers,queue_max_size_bytes,queue_max_size_time_ns,queue_current_level_buffers,queue_current_level_bytes,queue_current_level_time_ns,formats,sink_formats,format_paths,frame_sizes,caps_sources\n' > "$video_runtime_path"
+printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,render_sync_package_cache_entries,render_sync_package_cache_max_entries,render_sync_package_cache_hits,render_sync_package_cache_misses,render_sync_package_cache_evictions,render_sync_archive_cache_entries,render_sync_archive_cache_max_entries,render_sync_archive_cache_reuses,render_sync_archive_cache_extractions,render_sync_archive_cache_evictions,render_sync_archive_cache_evictions_latest,render_sync_archive_cache_eviction_errors,render_sync_archive_cache_eviction_errors_latest,render_sync_planned_static_image_resources,render_sync_planned_video_poster_resources,render_sync_planned_slideshow_image_resources,render_sync_planned_image_resource_references,render_sync_planned_unique_image_resources,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps,renderer_output_windows,renderer_static_surfaces,renderer_static_picture_surfaces,renderer_static_css_surfaces,renderer_static_color_surfaces,renderer_slideshow_surfaces,renderer_video_surfaces,renderer_video_shared_runtimes,renderer_video_pipelines,renderer_video_qos_messages,renderer_video_qos_dropped_max,render_sync_planned_static_image_resource_bytes,render_sync_planned_video_poster_resource_bytes,render_sync_planned_slideshow_image_resource_bytes,render_sync_planned_image_resource_reference_bytes,render_sync_planned_unique_image_resource_bytes,render_sync_package_cache_retained_resource_references,render_sync_package_cache_retained_unique_resources,render_sync_package_cache_retained_resource_bytes,render_sync_package_cache_retained_unique_resource_bytes,renderer_static_surface_resource_references,renderer_static_surface_resource_bytes,renderer_slideshow_resource_references,renderer_slideshow_resource_bytes,renderer_static_surface_unique_resources,renderer_static_surface_unique_resource_bytes,renderer_static_surface_estimated_decoded_bytes,renderer_slideshow_unique_resources,renderer_slideshow_unique_resource_bytes,render_sync_static_image_cache_entries,render_sync_static_image_cache_max_entries,render_sync_static_image_cache_generations,render_sync_static_image_cache_reuses,render_sync_static_image_cache_generation_errors,render_sync_static_image_cache_evictions,render_sync_static_image_cache_eviction_errors,render_sync_planned_video_source_references,render_sync_planned_unique_video_sources,render_sync_planned_duplicate_video_source_references,render_sync_planned_max_video_source_outputs,render_sync_planned_video_source_reference_bytes,render_sync_planned_unique_video_source_bytes,renderer_video_pipeline_source_references,renderer_video_pipeline_source_reference_bytes,renderer_video_pipeline_unique_sources,renderer_video_pipeline_unique_source_bytes,render_sync_package_cache_max_retained_unique_resource_bytes,render_sync_static_image_cache_bytes,render_sync_static_image_cache_max_bytes,render_sync_package_cache_retained_preview_resource_references,render_sync_package_cache_retained_unique_preview_resources,render_sync_package_cache_retained_preview_resource_bytes,render_sync_package_cache_retained_unique_preview_resource_bytes\n' > "$telemetry_path"
 
 status_failures=0
 decision_failures=0
 telemetry_failures=0
-video_runtime_failures=0
 for sample in $(seq 1 "$samples"); do
   if ! kill -0 "$pid" >/dev/null 2>&1; then
     skip_or_fail "process $pid exited during sampling"
@@ -4137,11 +2637,6 @@ for sample in $(seq 1 "$samples"); do
         telemetry_failures=$((telemetry_failures + 1))
         skip_or_fail "failed to extract daemon telemetry for sample $sample"
       fi
-      video_runtime_error_file="$work_dir/video-runtime-$(printf '%03d' "$sample").err"
-      if ! append_status_video_runtime "$sample" "$elapsed" "$status_file" "$video_runtime_path" "$video_runtime_error_file"; then
-        video_runtime_failures=$((video_runtime_failures + 1))
-        skip_or_fail "failed to extract video runtime for sample $sample"
-      fi
     fi
   fi
 
@@ -4181,10 +2676,9 @@ done
 write_summary "$csv_path" "$summary_path"
 write_decision_summary "$decisions_path" "$decision_summary_path"
 write_telemetry_summary "$telemetry_path" "$telemetry_summary_path"
-write_video_runtime_summary "$video_runtime_path" "$video_runtime_summary_path"
 write_smaps_mapping_summary "$pid" "$memory_mapping_summary_path" "$memory_mapping_categories_path"
 append_smaps_mapping_category_summary "$memory_mapping_categories_path" "$summary_path"
-write_video_hardware_report "$summary_path" "$video_runtime_summary_path" "$video_runtime_path" "$video_hardware_report_path" "$pid"
+write_video_hardware_report "$summary_path" "$video_hardware_report_path" "$pid"
 pass "wrote process samples to $csv_path"
 pass "wrote summary to $summary_path"
 pass "wrote process memory mapping summary to $memory_mapping_summary_path"
@@ -4208,17 +2702,10 @@ if [[ "$status_enabled" -eq 1 && "$telemetry_failures" -eq 0 ]]; then
 elif [[ "$status_enabled" -eq 1 ]]; then
   note "daemon telemetry extraction had ${telemetry_failures} failed samples"
 fi
-if [[ "$status_enabled" -eq 1 && "$video_runtime_failures" -eq 0 ]]; then
-  pass "wrote video runtime samples to $video_runtime_path"
-  pass "wrote video runtime summary to $video_runtime_summary_path"
-  pass "wrote video hardware report to $video_hardware_report_path"
-elif [[ "$status_enabled" -eq 1 ]]; then
-  note "video runtime extraction had ${video_runtime_failures} failed samples"
-fi
+pass "wrote video hardware report to $video_hardware_report_path"
 validate_decision_expectations
 validate_process_memory_expectations
 validate_telemetry_expectations
-validate_video_runtime_expectations
 
 if [[ "$keep" -eq 1 ]]; then
   note "kept work dir: $work_dir"
@@ -4234,8 +2721,6 @@ note "decisions: $decisions_path"
 note "decision summary: $decision_summary_path"
 note "telemetry: $telemetry_path"
 note "telemetry summary: $telemetry_summary_path"
-note "video runtime: $video_runtime_path"
-note "video runtime summary: $video_runtime_summary_path"
 note "video hardware report: $video_hardware_report_path"
 note "summary: ${passes} passed, ${skips} skipped, ${failures} failed"
 if [[ "$failures" -gt 0 ]]; then

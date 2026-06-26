@@ -8,10 +8,10 @@ usage: scripts/native-vulkan-h264-ready-prefix-video-smoke.sh [options]
 Generate or use a 4K/240 H.264 High source, then run the native Vulkan direct
 H.264 ready-prefix path on a real Wayland background surface. Each ready AU is
 decoded with Vulkan Video into a sampled NV12 array layer and presented through
-the native Vulkan swapchain. It does not use a GStreamer display sink.
+the native Vulkan swapchain.
 By default, --playback-frames also expands the decoded ready prefix so the
 generated source is a continuous 4K/240 stream comparable with the
-GStreamer/appsink video source.
+FFmpeg packet frontend.
 
 Options:
   --display <name>      Wayland display name. Default: WAYLAND_DISPLAY.
@@ -336,7 +336,7 @@ fi
 mkdir -p "$report_dir"
 
 if [[ "$no_build" -eq 0 ]]; then
-  cargo build --release --features native-vulkan-gst-video --bin gilder-native-vulkan
+  cargo build --release --features native-vulkan-video --bin gilder-native-vulkan
 fi
 
 if [[ -z "$source" ]]; then
@@ -430,17 +430,21 @@ if [[ -n "$output_name" ]]; then
 fi
 
 runtime_env=(WAYLAND_DISPLAY="$display")
+if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+  runtime_env+=(XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR")
+fi
 if [[ "$pacing_master" == "audio" ]]; then
   runtime_env+=(GILDER_VIDEO_PACING_MASTER=audio)
 else
   runtime_env+=(GILDER_VIDEO_PACING_MASTER=target)
 fi
 for passthrough_env in \
-  GILDER_VULKAN_STREAMING_PACKET_QUEUE_CAPACITY \
   MALLOC_ARENA_MAX \
   MALLOC_MMAP_THRESHOLD_ \
   MALLOC_TRIM_THRESHOLD_ \
-  GLIBC_TUNABLES; do
+  GLIBC_TUNABLES \
+  VK_LOADER_LAYERS_ENABLE \
+  VK_LAYER_KHRONOS_validation_LOG_FILENAME; do
   if [[ -n "${!passthrough_env:-}" ]]; then
     runtime_env+=("${passthrough_env}=${!passthrough_env}")
   fi
@@ -514,20 +518,17 @@ average_present_result_drop_first_60_fps="$average_present_fps"
 present_budget_us=$(((1000000 + target_fps - 1) / target_fps))
 present_result_first_interval_us="$(jq -r '
   def seq: (.h264_retained_video_present_decode.decoded_image_present_sequence // {});
-  def deltas($values): [range(1; ($values | length)) as $i | (($values[$i] - $values[$i - 1]) * 1000) | select(. > 0)];
-  (deltas(seq.source_frame_pts_ms_head // []) | first // 0)
+  (seq.source_frame_pts_delta_min_ms // 0) * 1000
 ' "$runtime_json")"
 present_result_max_interval_us="$(jq -r '
   def seq: (.h264_retained_video_present_decode.decoded_image_present_sequence // {});
-  def deltas($values): [range(1; ($values | length)) as $i | (($values[$i] - $values[$i - 1]) * 1000) | select(. > 0)];
-  (deltas(seq.source_frame_pts_ms_head // []) + deltas(seq.source_frame_pts_ms_tail // []) | max // 0)
+  (seq.source_frame_pts_delta_max_ms // 0) * 1000
 ' "$runtime_json")"
 present_result_max_interval_after_warmup_us="$present_result_max_interval_us"
 present_result_over_budget_count="$(jq -r '
   def seq: (.h264_retained_video_present_decode.decoded_image_present_sequence // {});
-  def deltas($values): [range(1; ($values | length)) as $i | (($values[$i] - $values[$i - 1]) * 1000) | select(. > 0)];
-  (deltas(seq.source_frame_pts_ms_head // []) + deltas(seq.source_frame_pts_ms_tail // [])) as $deltas
-  | [ $deltas[] | select(. > (1000000 / (('"$target_fps"')|tonumber))) ] | length
+  (seq.source_frame_pts_delta_max_ms // 0) as $max_delta_ms
+  | if ($max_delta_ms * 1000) > (1000000 / (('"$target_fps"')|tonumber)) then 1 else 0 end
 ' "$runtime_json")"
 present_result_over_budget_after_warmup_count="$present_result_over_budget_count"
 present_result_missed_vblank_threshold_us="$present_budget_us"
@@ -536,7 +537,7 @@ present_result_missed_vblank_after_warmup_count="$present_result_over_budget_cou
 acquire_over_budget_count=0
 queue_present_over_budget_count=0
 present_over_budget_count=0
-distinct_layers="$(jq -r '((.h264_retained_video_present_decode.decoded_image_present_sequence.sampled_array_layers_head // []) + (.h264_retained_video_present_decode.decoded_image_present_sequence.sampled_array_layers_tail // [])) | unique | length' "$runtime_json")"
+distinct_layers="$(jq -r '(.h264_retained_video_present_decode.decoded_image_present_sequence.distinct_sampled_array_layer_count // 0)' "$runtime_json")"
 ready_prefix_count="$(jq -r '(.h264_retained_video_present_decode.decode.requested_frame_count // 0)' "$runtime_json")"
 requested_playback_count="$(jq -r '(.playback_frame_count // 0)' "$runtime_json")"
 if [[ "$ready_prefix_count" -gt 0 ]]; then
@@ -547,15 +548,11 @@ fi
 loop_boundary_reset_count=$(( playback_loop_count > 0 ? playback_loop_count - 1 : 0 ))
 pts_delta_min="$(jq -r '
   def seq: (.h264_retained_video_present_decode.decoded_image_present_sequence // {});
-  def deltas($values): [range(1; ($values | length)) as $i | (($values[$i] - $values[$i - 1])) | select(. > 0)];
-  (deltas(seq.source_frame_pts_ms_head // []) + deltas(seq.source_frame_pts_ms_tail // [])) as $deltas
-  | if ($deltas | length) > 0 then ($deltas | min) else "none" end
+  seq.source_frame_pts_delta_min_ms // "none"
 ' "$runtime_json")"
 pts_delta_max="$(jq -r '
   def seq: (.h264_retained_video_present_decode.decoded_image_present_sequence // {});
-  def deltas($values): [range(1; ($values | length)) as $i | (($values[$i] - $values[$i - 1])) | select(. > 0)];
-  (deltas(seq.source_frame_pts_ms_head // []) + deltas(seq.source_frame_pts_ms_tail // [])) as $deltas
-  | if ($deltas | length) > 0 then ($deltas | max) else "none" end
+  seq.source_frame_pts_delta_max_ms // "none"
 ' "$runtime_json")"
 read -r script_pts_delta_expected_min script_pts_delta_expected_max < <(gilder_pts_delta_expected_bounds_ms "$target_fps")
 pts_delta_expected_min="$script_pts_delta_expected_min"
@@ -579,7 +576,7 @@ h264_stream_profile="$(jq -r '.h264_stream_profile // "none"' "$runtime_json")"
 h264_stream_profile_idc="$(jq -r '.h264_stream_profile_idc // "none"' "$runtime_json")"
 h264_vulkan_std_profile_idc="$(jq -r '.h264_vulkan_std_profile_idc // "none"' "$runtime_json")"
 present_mode="$(jq -r '(.h264_retained_video_present_decode.session.device.swapchain.present_mode // "none")' "$runtime_json")"
-pacing_strategy="$(jq -r '(.h264_retained_video_present_decode.decoded_image_present_sequence.latest_draw.pacing_clock_model // .h264_retained_video_present_decode.decoded_image_present_sequence.draws_tail[-1].pacing_clock_model // "none")' "$runtime_json")"
+pacing_strategy="$(jq -r '(.h264_retained_video_present_decode.decoded_image_present_sequence.latest_draw.pacing_clock_model // "none")' "$runtime_json")"
 expected_pacing_strategy="$(gilder_expected_pacing_strategy_with_master "$present_mode" "$target_fps" "$pacing_master")"
 frame_sleep_count_value="$(jq -r '.frame_sleep_count // 0' "$runtime_json")"
 ffmpeg_slices_buffer_model="$(jq -r '(.h264_retained_video_present_decode.decode.bitstream_buffer_model // "none")' "$runtime_json")"
@@ -587,7 +584,7 @@ ffmpeg_slices_buffer_pool_slot_count="$(jq -r '(.h264_retained_video_present_dec
 ffmpeg_slices_buffer_pool_allocated_slot_count="$(jq -r '(.h264_retained_video_present_decode.decode.ffmpeg_slices_buffer_pool_allocated_slot_count // 0)' "$runtime_json")"
 ffmpeg_slices_buffer_pool_capacity_bytes="$(jq -r '(.h264_retained_video_present_decode.decode.ffmpeg_slices_buffer_pool_capacity_bytes // 0)' "$runtime_json")"
 ffmpeg_slices_buffer_pool_max_slot_bytes="$(jq -r '(.h264_retained_video_present_decode.decode.ffmpeg_slices_buffer_pool_max_slot_bytes // 0)' "$runtime_json")"
-ffmpeg_slices_buffer_max_src_range="$(jq -r '(.h264_retained_video_present_decode.decode.max_src_buffer_range // ([.h264_retained_video_present_decode.decode.frames[]?.src_buffer_range] | max) // 0)' "$runtime_json")"
+ffmpeg_slices_buffer_max_src_range="$(jq -r '(.h264_retained_video_present_decode.decode.max_src_buffer_range // 0)' "$runtime_json")"
 bitstream_total_payload_bytes="$(jq -r '(.h264_retained_video_present_decode.decode.src_buffer_total_bytes // 0)' "$runtime_json")"
 bitstream_uploaded_bytes="$bitstream_total_payload_bytes"
 h264_input_mode="$(jq -r '(.h264_retained_video_present_decode.decode.input_payload_model // "none")' "$runtime_json")"
@@ -599,27 +596,13 @@ h264_video_queue_sync_strategy="$(jq -r '.h264_video_queue_sync_strategy // "non
 h264_present_frame_preroll_count="$(jq -r '(.h264_retained_video_present_decode.decoded_image_present_sequence.present_handoff.queued_frame_count_before_drain // 0)' "$runtime_json")"
 h264_present_queue_count="$(jq -r '(.h264_retained_video_present_decode.decoded_image_present_sequence.present_handoff.capacity_frames // 0)' "$runtime_json")"
 h264_async_present_depth="$(jq -r '(.h264_retained_video_present_decode.decoded_image_present_sequence.present_handoff.peak_depth // 0)' "$runtime_json")"
-h264_present_result_wait_count="$(jq -r '(.h264_retained_video_present_decode.decoded_image_present_sequence.latest_draw.present_wait_available // .h264_retained_video_present_decode.decoded_image_present_draw.present_wait_available // false) | if . then 1 else 0 end' "$runtime_json")"
+h264_present_result_wait_count="$(jq -r '(.h264_retained_video_present_decode.decoded_image_present_sequence.latest_draw.present_wait_available // false) | if . then 1 else 0 end' "$runtime_json")"
 h264_present_result_wait_elapsed_us="$(jq -r '(.h264_retained_video_present_decode.decoded_image_present_sequence.total_pacing_sleep_micros // 0)' "$runtime_json")"
 h264_present_result_wait_max_us="$(jq -r '(.h264_retained_video_present_decode.decoded_image_present_sequence.total_pacing_sleep_micros // 0)' "$runtime_json")"
 h264_acquire_not_ready_count=0
 h264_acquire_wait_present_result_count=0
 h264_acquire_wait_present_result_elapsed_us=0
 h264_acquire_wait_present_result_max_us=0
-h264_display_ring_slot_count="$(jq -r '(.video_present_session_probe.resource_image.resource_image.array_layers // .h264_retained_video_present_decode.session.resource_image.resource_image.array_layers // 0)' "$runtime_json")"
-h264_display_ring_memory_bytes="$(jq -r '(.video_present_session_probe.resource_image.resource_image.memory_size // .h264_retained_video_present_decode.session.resource_image.resource_image.memory_size // 0)' "$runtime_json")"
-h264_display_copy_count=0
-h264_display_copy_record_elapsed_us=0
-h264_display_copy_submit_elapsed_us=0
-h264_decode_ahead_strategy="none"
-h264_decode_ahead_attempt_count=0
-h264_decode_ahead_submit_count=0
-h264_decode_ahead_skip_unready_count=0
-h264_decode_ahead_skip_output_hazard_count=0
-h264_decode_ahead_skip_reference_hazard_count=0
-h264_decode_ahead_skip_bitstream_overlap_count=0
-h264_decode_ahead_copy_wait_output_hazard_count=0
-h264_decode_ahead_copy_wait_reference_hazard_count=0
 audio_clock_probe_present="$(jq -r '(.audio_clock_probe != null)' "$runtime_json")"
 audio_output_mode="$(jq -r '.audio_clock_probe.audio_output_mode // "none"' "$runtime_json")"
 audio_output_sink_count="$(jq -r '(.audio_clock_probe.audio_output_sinks // []) | length' "$runtime_json")"
@@ -660,17 +643,17 @@ audio_video_clock_drift_latest_ns="$(jq -r '.audio_clock_probe.audio_video_clock
 audio_video_clock_drift_abs_max_ns="$(jq -r '.audio_clock_probe.audio_video_clock_drift_abs_max_ns // "none"' "$runtime_json")"
 audio_video_master_clock_drift_latest_ns="$(jq -r '.audio_clock_probe.audio_video_master_clock_drift_latest_ns // "none"' "$runtime_json")"
 audio_video_master_clock_drift_abs_max_ns="$(jq -r '.audio_clock_probe.audio_video_master_clock_drift_abs_max_ns // "none"' "$runtime_json")"
-first_frame_idr="$(jq -r '(.h264_retained_video_present_decode.decode.frames[0].reset_control_recorded // false)' "$runtime_json")"
+first_frame_idr="$(jq -r '(.h264_retained_video_present_decode.decode.first_frame_reset_control_recorded // false)' "$runtime_json")"
 loop_first_non_idr_count=0
 first_frame_recovery="$first_frame_idr"
 loop_first_unrecovered_count=0
 swapchain_images="$(jq -r '(.h264_retained_video_present_decode.session.device.swapchain.image_count // 0)' "$runtime_json")"
 resource_bytes="$(jq -r '(.h264_retained_video_present_decode.session.resource_image.resource_image.memory_size // 0)' "$runtime_json")"
-idr_frames="$(jq -r '(.h264_retained_video_present_decode.decode.reset_control_recorded_frame_count // ((.h264_retained_video_present_decode.decode.frames // []) | map(select(.reset_control_recorded == true or .idr == true)) | length))' "$runtime_json")"
-p_frames="$(jq -r '(.h264_retained_video_present_decode.decode.p_frame_count // ((.h264_retained_video_present_decode.decode.frames // []) | map(select(.reset_control_recorded == false and .decode_reference_slot_count > 0)) | length))' "$runtime_json")"
-b_frames="$(jq -r '(.h264_retained_video_present_decode.decode.b_frame_count // ((.h264_retained_video_present_decode.decode.frames // []) | map(select(.begin_reference_slot_count > .decode_reference_slot_count)) | length))' "$runtime_json")"
-max_requested_reference_count="$(jq -r '(.h264_retained_video_present_decode.decode.max_begin_reference_slot_count // ((.h264_retained_video_present_decode.decode.frames // []) | map(.begin_reference_slot_count) | max) // 0)' "$runtime_json")"
-max_reference_count="$(jq -r '(.h264_retained_video_present_decode.decode.max_decode_reference_slot_count // ((.h264_retained_video_present_decode.decode.frames // []) | map(.decode_reference_slot_count) | max) // 0)' "$runtime_json")"
+idr_frames="$(jq -r '(.h264_retained_video_present_decode.decode.reset_control_recorded_frame_count // 0)' "$runtime_json")"
+p_frames="$(jq -r '(.h264_retained_video_present_decode.decode.p_frame_count // 0)' "$runtime_json")"
+b_frames="$(jq -r '(.h264_retained_video_present_decode.decode.b_frame_count // 0)' "$runtime_json")"
+max_requested_reference_count="$(jq -r '(.h264_retained_video_present_decode.decode.max_begin_reference_slot_count // 0)' "$runtime_json")"
+max_reference_count="$(jq -r '(.h264_retained_video_present_decode.decode.max_decode_reference_slot_count // 0)' "$runtime_json")"
 reference_gate_failed=0
 if [[ "$generated_source" -eq 1 && "$decode_prefix" -gt "$refs" && ( "$idr_frames" -lt 1 || "$p_frames" -lt 1 || "$max_requested_reference_count" -lt "$refs" || "$max_reference_count" -lt "$refs" ) ]]; then
   reference_gate_failed=1
@@ -693,7 +676,7 @@ if [[ "$arbitrary_entry_source" -eq 1 && "$first_frame_recovery" != "true" ]]; t
   arbitrary_entry_gate_failed=1
 fi
 pacing_gate_failed=0
-if [[ "$pacing_strategy" != "$expected_pacing_strategy" && ! ( "$pacing_strategy" == "pts-video-clock-sleep" && "$target_fps" -gt 0 ) ]]; then
+if [[ "$pacing_strategy" != "$expected_pacing_strategy" && ! ( ( "$pacing_strategy" == "pts-video-clock-sleep" || "$pacing_strategy" == "pts-ns-video-clock-sleep" ) && "$target_fps" -gt 0 ) ]]; then
   pacing_gate_failed=1
 fi
 dpb_gate_failed=0
@@ -838,20 +821,6 @@ if [[ "$decoded_count" -ne "$expected_decoded_count" || "$presented_count" -ne "
     printf 'h264_acquire_wait_present_result_count: %s\n' "$h264_acquire_wait_present_result_count"
     printf 'h264_acquire_wait_present_result_elapsed_us: %s\n' "$h264_acquire_wait_present_result_elapsed_us"
     printf 'h264_acquire_wait_present_result_max_us: %s\n' "$h264_acquire_wait_present_result_max_us"
-    printf 'h264_display_ring_slot_count: %s\n' "$h264_display_ring_slot_count"
-    printf 'h264_display_ring_memory_bytes: %s\n' "$h264_display_ring_memory_bytes"
-    printf 'h264_display_copy_count: %s\n' "$h264_display_copy_count"
-    printf 'h264_display_copy_record_elapsed_us: %s\n' "$h264_display_copy_record_elapsed_us"
-    printf 'h264_display_copy_submit_elapsed_us: %s\n' "$h264_display_copy_submit_elapsed_us"
-    printf 'h264_decode_ahead_strategy: %s\n' "$h264_decode_ahead_strategy"
-    printf 'h264_decode_ahead_attempt_count: %s\n' "$h264_decode_ahead_attempt_count"
-    printf 'h264_decode_ahead_submit_count: %s\n' "$h264_decode_ahead_submit_count"
-    printf 'h264_decode_ahead_skip_unready_count: %s\n' "$h264_decode_ahead_skip_unready_count"
-    printf 'h264_decode_ahead_skip_output_hazard_count: %s\n' "$h264_decode_ahead_skip_output_hazard_count"
-    printf 'h264_decode_ahead_skip_reference_hazard_count: %s\n' "$h264_decode_ahead_skip_reference_hazard_count"
-    printf 'h264_decode_ahead_skip_bitstream_overlap_count: %s\n' "$h264_decode_ahead_skip_bitstream_overlap_count"
-    printf 'h264_decode_ahead_copy_wait_output_hazard_count: %s\n' "$h264_decode_ahead_copy_wait_output_hazard_count"
-    printf 'h264_decode_ahead_copy_wait_reference_hazard_count: %s\n' "$h264_decode_ahead_copy_wait_reference_hazard_count"
     printf 'arbitrary_entry_source: %s\n' "$([[ "$arbitrary_entry_source" -eq 1 ]] && printf yes || printf no)"
     printf 'arbitrary_entry_offset: %s\n' "${arbitrary_entry_offset:-none}"
     printf 'arbitrary_entry_gate_failed: %s\n' "$arbitrary_entry_gate_failed"
@@ -965,37 +934,10 @@ fi
   printf 'h264_acquire_wait_present_result_count: %s\n' "$h264_acquire_wait_present_result_count"
   printf 'h264_acquire_wait_present_result_elapsed_us: %s\n' "$h264_acquire_wait_present_result_elapsed_us"
   printf 'h264_acquire_wait_present_result_max_us: %s\n' "$h264_acquire_wait_present_result_max_us"
-  printf 'h264_display_ring_slot_count: %s\n' "$h264_display_ring_slot_count"
-  printf 'h264_display_ring_memory_bytes: %s\n' "$h264_display_ring_memory_bytes"
-  printf 'h264_display_copy_count: %s\n' "$h264_display_copy_count"
-  printf 'h264_display_copy_record_elapsed_us: %s\n' "$h264_display_copy_record_elapsed_us"
-  printf 'h264_display_copy_submit_elapsed_us: %s\n' "$h264_display_copy_submit_elapsed_us"
-  printf 'h264_decode_ahead_strategy: %s\n' "$h264_decode_ahead_strategy"
-  printf 'h264_decode_ahead_attempt_count: %s\n' "$h264_decode_ahead_attempt_count"
-  printf 'h264_decode_ahead_submit_count: %s\n' "$h264_decode_ahead_submit_count"
-  printf 'h264_decode_ahead_skip_unready_count: %s\n' "$h264_decode_ahead_skip_unready_count"
-  printf 'h264_decode_ahead_skip_output_hazard_count: %s\n' "$h264_decode_ahead_skip_output_hazard_count"
-  printf 'h264_decode_ahead_skip_reference_hazard_count: %s\n' "$h264_decode_ahead_skip_reference_hazard_count"
-  printf 'h264_decode_ahead_skip_bitstream_overlap_count: %s\n' "$h264_decode_ahead_skip_bitstream_overlap_count"
-  printf 'h264_decode_ahead_copy_wait_output_hazard_count: %s\n' "$h264_decode_ahead_copy_wait_output_hazard_count"
-  printf 'h264_decode_ahead_copy_wait_reference_hazard_count: %s\n' "$h264_decode_ahead_copy_wait_reference_hazard_count"
   printf 'first_frame_idr: %s\n' "$first_frame_idr"
   printf 'loop_first_non_idr_count: %s\n' "$loop_first_non_idr_count"
   printf 'first_frame_recovery: %s\n' "$first_frame_recovery"
   printf 'loop_first_unrecovered_count: %s\n' "$loop_first_unrecovered_count"
-  printf 'frame_layers_head: %s\n' "$(jq -c '[.frames[0:32][]?.dst_base_array_layer]' "$runtime_json")"
-  printf 'frame_layers_tail: %s\n' "$(jq -c '[.frames[-32:][]?.dst_base_array_layer]' "$runtime_json")"
-  printf 'frame_display_slots_head: %s\n' "$(jq -c '[.frames[0:32][]?.display_slot]' "$runtime_json")"
-  printf 'frame_display_slots_tail: %s\n' "$(jq -c '[.frames[-32:][]?.display_slot]' "$runtime_json")"
-  printf 'frame_access_units_head: %s\n' "$(jq -c '[.frames[0:32][]?.access_unit_index]' "$runtime_json")"
-  printf 'frame_access_units_tail: %s\n' "$(jq -c '[.frames[-32:][]?.access_unit_index]' "$runtime_json")"
-  printf 'frame_requested_reference_counts_head: %s\n' "$(jq -c '[.frames[0:32][]?.requested_reference_count]' "$runtime_json")"
-  printf 'frame_reference_counts_head: %s\n' "$(jq -c '[.frames[0:32][]?.decode_reference_slot_count]' "$runtime_json")"
-  printf 'frame_reference_counts_tail: %s\n' "$(jq -c '[.frames[-32:][]?.decode_reference_slot_count]' "$runtime_json")"
-  printf 'frame_loop_indices_head: %s\n' "$(jq -c '[.frames[0:32][]?.playback_loop_index]' "$runtime_json")"
-  printf 'frame_loop_indices_tail: %s\n' "$(jq -c '[.frames[-32:][]?.playback_loop_index]' "$runtime_json")"
-  printf 'frame_bitstream_offsets_head: %s\n' "$(jq -c '[.frames[0:32][]?.src_buffer_offset]' "$runtime_json")"
-  printf 'frame_bitstream_offsets_tail: %s\n' "$(jq -c '[.frames[-32:][]?.src_buffer_offset]' "$runtime_json")"
   printf 'pts_delta_min_ms: %s\n' "$pts_delta_min"
   printf 'pts_delta_max_ms: %s\n' "$pts_delta_max"
   printf 'pts_delta_expected_min_ms: %s\n' "$pts_delta_expected_min"
@@ -1039,26 +981,9 @@ fi
   printf 'audio_video_clock_drift_abs_max_ns: %s\n' "$audio_video_clock_drift_abs_max_ns"
   printf 'audio_video_master_clock_drift_latest_ns: %s\n' "$audio_video_master_clock_drift_latest_ns"
   printf 'audio_video_master_clock_drift_abs_max_ns: %s\n' "$audio_video_master_clock_drift_abs_max_ns"
-  printf 'max_bitstream_upload_elapsed_us: %s\n' "$(jq -r '([.frames[]?.bitstream_upload_elapsed_us | select(. != null)] | if length > 0 then max else "none" end)' "$runtime_json")"
-  printf 'max_decode_elapsed_us: %s\n' "$(jq -r '([.frames[]?.decode_elapsed_us | select(. != null)] | if length > 0 then max else "none" end)' "$runtime_json")"
-  printf 'avg_display_slot_wait_elapsed_us: %s\n' "$(jq -r '([.frames[]?.display_slot_wait_elapsed_us | select(. != null)] | if length > 0 then add / length else "none" end)' "$runtime_json")"
-  printf 'max_display_slot_wait_elapsed_us: %s\n' "$(jq -r '([.frames[]?.display_slot_wait_elapsed_us | select(. != null)] | if length > 0 then max else "none" end)' "$runtime_json")"
-  printf 'avg_display_copy_record_elapsed_us: %s\n' "$(jq -r '([.frames[]?.display_copy_record_elapsed_us | select(. != null)] | if length > 0 then add / length else "none" end)' "$runtime_json")"
-  printf 'max_display_copy_record_elapsed_us: %s\n' "$(jq -r '([.frames[]?.display_copy_record_elapsed_us | select(. != null)] | if length > 0 then max else "none" end)' "$runtime_json")"
-  printf 'avg_display_copy_submit_elapsed_us: %s\n' "$(jq -r '([.frames[]?.display_copy_submit_elapsed_us | select(. != null)] | if length > 0 then add / length else "none" end)' "$runtime_json")"
-  printf 'max_display_copy_submit_elapsed_us: %s\n' "$(jq -r '([.frames[]?.display_copy_submit_elapsed_us | select(. != null)] | if length > 0 then max else "none" end)' "$runtime_json")"
-  printf 'avg_acquire_elapsed_us: %s\n' "$(jq -r '([.frames[]?.acquire_elapsed_us | select(. != null)] | if length > 0 then add / length else "none" end)' "$runtime_json")"
-  printf 'max_acquire_elapsed_us: %s\n' "$(jq -r '([.frames[]?.acquire_elapsed_us | select(. != null)] | if length > 0 then max else "none" end)' "$runtime_json")"
   printf 'present_budget_us: %s\n' "$present_budget_us"
   printf 'acquire_over_budget_count: %s\n' "$acquire_over_budget_count"
-  printf 'avg_record_elapsed_us: %s\n' "$(jq -r '([.frames[]?.record_elapsed_us | select(. != null)] | if length > 0 then add / length else "none" end)' "$runtime_json")"
-  printf 'max_record_elapsed_us: %s\n' "$(jq -r '([.frames[]?.record_elapsed_us | select(. != null)] | if length > 0 then max else "none" end)' "$runtime_json")"
-  printf 'avg_submit_elapsed_us: %s\n' "$(jq -r '([.frames[]?.submit_elapsed_us | select(. != null)] | if length > 0 then add / length else "none" end)' "$runtime_json")"
-  printf 'max_submit_elapsed_us: %s\n' "$(jq -r '([.frames[]?.submit_elapsed_us | select(. != null)] | if length > 0 then max else "none" end)' "$runtime_json")"
-  printf 'avg_queue_present_elapsed_us: %s\n' "$(jq -r '([.frames[]?.queue_present_elapsed_us | select(. != null)] | if length > 0 then add / length else "none" end)' "$runtime_json")"
-  printf 'max_queue_present_elapsed_us: %s\n' "$(jq -r '([.frames[]?.queue_present_elapsed_us | select(. != null)] | if length > 0 then max else "none" end)' "$runtime_json")"
   printf 'queue_present_over_budget_count: %s\n' "$queue_present_over_budget_count"
-  printf 'max_present_elapsed_us: %s\n' "$(jq -r '([.frames[]?.present_elapsed_us | select(. != null)] | if length > 0 then max else "none" end)' "$runtime_json")"
   printf 'present_over_budget_count: %s\n' "$present_over_budget_count"
   printf 'video_resource_memory_bytes: %s\n' "$resource_bytes"
   printf 'session_memory_bytes: %s\n' "$(jq -r '.session_memory_bytes' "$runtime_json")"

@@ -88,6 +88,7 @@ pub struct NativeVulkanVulkanaliaAv1CommandSmokeSnapshot {
     pub retained_frame_telemetry_count: u32,
     pub frame_telemetry_retention_model: &'static str,
     pub max_src_buffer_range: u64,
+    pub first_frame_reset_control_recorded: bool,
     pub reset_control_recorded_frame_count: u32,
     pub p_frame_count: u32,
     pub b_frame_count: u32,
@@ -320,7 +321,7 @@ pub(super) fn native_vulkan_vulkanalia_av1_decode_submit_plan(
     extent: vk::Extent2D,
     codec: NativeVulkanVideoSessionCodec,
     entry: &NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
-    frame: &NativeVulkanVulkanaliaAv1FrameSubmitInput,
+    frame: NativeVulkanVulkanaliaAv1FrameSubmitInput,
     src_buffer_offset: u64,
     src_buffer_range: u64,
     reset_control_recorded: bool,
@@ -414,9 +415,9 @@ pub(super) fn native_vulkan_vulkanalia_av1_decode_submit_plan(
     let picture = NativeVulkanVulkanaliaAv1PictureInfoPlan {
         ffmpeg_reference: FFMPEG_AV1_PICTURE_REFERENCE,
         frame_header_offset: frame.frame_header_offset_for_vulkan,
-        tile_offsets: frame.tile_offsets.clone(),
-        tile_sizes: frame.tile_sizes.clone(),
-        tile_info: frame.tile_info.clone(),
+        tile_offsets: frame.tile_offsets,
+        tile_sizes: frame.tile_sizes,
+        tile_info: frame.tile_info,
         frame_type: frame.frame_type,
         show_frame: frame.show_frame,
         error_resilient_mode: frame.error_resilient_mode,
@@ -463,12 +464,11 @@ pub(super) fn native_vulkan_vulkanalia_av1_decode_submit_plan(
         cdef: frame.cdef,
         loop_restoration: frame.loop_restoration,
         global_motion: frame.global_motion,
-        setup_reference: frame.setup_reference.clone(),
+        setup_reference: frame.setup_reference,
         references: frame
             .references
-            .iter()
+            .into_iter()
             .take(decode_reference_slot_ids.len())
-            .cloned()
             .collect(),
     };
 
@@ -899,7 +899,7 @@ mod tests {
             },
             NativeVulkanVideoSessionCodec::Av1Main10,
             &entry,
-            &frame,
+            frame,
             4096,
             8192,
             false,
@@ -932,7 +932,7 @@ mod tests {
             },
             NativeVulkanVideoSessionCodec::Av1Main8,
             &test_av1_entry(),
-            &test_av1_frame(),
+            test_av1_frame(),
             2048,
             4096,
             true,

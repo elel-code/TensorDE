@@ -5,7 +5,7 @@ use serde::Serialize;
 pub enum NativeVulkanVideoPipelineStageKind {
     Source,
     Demux,
-    Parse,
+    BitstreamFilter,
     PacketQueue,
     CodecState,
     Decode,
@@ -22,14 +22,12 @@ pub struct NativeVulkanVideoPipelineStageContract {
     pub owner: &'static str,
     pub boundary: &'static str,
     pub ffmpeg_reference: &'static str,
-    pub gstreamer_reference: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NativeVulkanVideoPipelineRouteKind {
     BitstreamNativeDecode,
-    DecodedFrameFrontend,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -46,8 +44,7 @@ pub struct NativeVulkanVideoPipelineRouteContract {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVideoPipelineContract {
-    pub first_reference: &'static str,
-    pub second_reference: &'static str,
+    pub reference: &'static str,
     pub routes: Vec<NativeVulkanVideoPipelineRouteContract>,
     pub stages: Vec<NativeVulkanVideoPipelineStageContract>,
     pub invariants: &'static [&'static str],
@@ -55,30 +52,17 @@ pub struct NativeVulkanVideoPipelineContract {
 
 pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContract {
     NativeVulkanVideoPipelineContract {
-        first_reference: "FFmpeg packet/frame/clock model",
-        second_reference: "replaceable GStreamer demux/parser/appsink/audio frontend",
-        routes: vec![
-            NativeVulkanVideoPipelineRouteContract {
-                kind: NativeVulkanVideoPipelineRouteKind::BitstreamNativeDecode,
-                frontend_role: "demux/parser/encoded access-unit provider",
-                decode_owner: "gilder-native-vulkan",
-                gilder_role: "Vulkan Video decode, decoded image ownership, render and present",
-                handoff_contract: "bounded encoded AU/TU packets with timestamps, loop serial and parameter-set snapshots",
-                compressed_payload_copy_scope: "frontend CPU packet payloads are copied into the Vulkan Video bitstream ring",
-                decoded_frame_copy_scope: "decoded DPB/output images stay GPU-owned and may be sampled directly by render",
-                zero_copy_claim: "decoded-frame display handoff only when display-copy telemetry is zero; not a full-pipeline zero-copy claim",
-            },
-            NativeVulkanVideoPipelineRouteContract {
-                kind: NativeVulkanVideoPipelineRouteKind::DecodedFrameFrontend,
-                frontend_role: "decoded frame provider; current implementation is GStreamer decodebin/appsink",
-                decode_owner: "gstreamer",
-                gilder_role: "provider-neutral decoded sample import, render and present",
-                handoff_contract: "decoded frame samples with caps, timestamps and memory route; gst-dma is a DMABuf/VA memory route under this contract",
-                compressed_payload_copy_scope: "compressed payload lifetime is internal to the provider decoder",
-                decoded_frame_copy_scope: "decoded samples avoid CPU copies only after a confirmed DMABuf/DRM-PRIME Vulkan import contract",
-                zero_copy_claim: "provider-decoded import/display handoff only; hardware decode or GPU memory labels alone are insufficient",
-            },
-        ],
+        reference: "FFmpeg packet/frame/clock model",
+        routes: vec![NativeVulkanVideoPipelineRouteContract {
+            kind: NativeVulkanVideoPipelineRouteKind::BitstreamNativeDecode,
+            frontend_role: "FFmpeg demux/bitstream-filter encoded access-unit provider",
+            decode_owner: "gilder-native-vulkan",
+            gilder_role: "Vulkan Video decode, decoded image ownership, render and present",
+            handoff_contract: "bounded encoded AU/TU packets with timestamps, loop serial and parameter-set snapshots",
+            compressed_payload_copy_scope: "AVPacket payload is borrowed until upload into the Vulkan Video bitstream ring",
+            decoded_frame_copy_scope: "decoded DPB/output images stay GPU-owned and may be sampled directly by render",
+            zero_copy_claim: "decoded-image render/present only; compressed packet upload is a named bitstream-ring copy",
+        }],
         stages: vec![
             NativeVulkanVideoPipelineStageContract {
                 order: 0,
@@ -86,31 +70,27 @@ pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContr
                 owner: "render-plan",
                 boundary: "manifest/render sync selects source, fit, loop, mute, target fps and decoder policy",
                 ffmpeg_reference: "AVFormatContext input URL/options and stream selection",
-                gstreamer_reference: "filesrc plus source-specific demux setup",
             },
             NativeVulkanVideoPipelineStageContract {
                 order: 1,
                 kind: NativeVulkanVideoPipelineStageKind::Demux,
-                owner: "replaceable-frontend",
-                boundary: "container packets are selected by codec stream without instantiating video display sinks",
+                owner: "ffmpeg-frontend",
+                boundary: "container packets are selected by codec stream without decoded-frame handoff",
                 ffmpeg_reference: "av_read_frame packet ownership and stream_index filtering",
-                gstreamer_reference: "qtdemux/matroskademux pad-added filtering",
             },
             NativeVulkanVideoPipelineStageContract {
                 order: 2,
-                kind: NativeVulkanVideoPipelineStageKind::Parse,
-                owner: "replaceable-frontend",
-                boundary: "codec parser normalizes access units/temporal units and preserves timestamps",
-                ffmpeg_reference: "parser/bitstream filter normalization before decoder submit",
-                gstreamer_reference: "h264parse/h265parse/av1parse appsink handoff",
+                kind: NativeVulkanVideoPipelineStageKind::BitstreamFilter,
+                owner: "ffmpeg-frontend",
+                boundary: "codec bitstream filters normalize access units/temporal units and preserve timestamps",
+                ffmpeg_reference: "h264_mp4toannexb, hevc_mp4toannexb and av1_frame_merge BSF send/drain contract",
             },
             NativeVulkanVideoPipelineStageContract {
                 order: 3,
                 kind: NativeVulkanVideoPipelineStageKind::PacketQueue,
                 owner: "native-vulkan-demux-boundary",
-                boundary: "bounded keep-last queue owns compressed payload lifetime until bitstream ring upload",
-                ffmpeg_reference: "bounded PacketQueue with serial changes across seek/loop",
-                gstreamer_reference: "appsink pull-sample plus EOS/seek replay accounting",
+                boundary: "bounded keep-last queue owns packet refs until bitstream ring upload",
+                ffmpeg_reference: "ffplay PacketQueue av_packet_move_ref, serial changes across seek/loop",
             },
             NativeVulkanVideoPipelineStageContract {
                 order: 4,
@@ -118,7 +98,6 @@ pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContr
                 owner: "native-vulkan-codec",
                 boundary: "parameter sets, sequence headers, DPB/reference maps and recovery points are rebuilt from stream evidence",
                 ffmpeg_reference: "codec parser state, reference lists, reorder and recovery-point handling",
-                gstreamer_reference: "parser output caps/headers and timestamp segments",
             },
             NativeVulkanVideoPipelineStageContract {
                 order: 5,
@@ -126,15 +105,13 @@ pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContr
                 owner: "native-vulkan-codec",
                 boundary: "Vulkan Video submissions consume a fixed-capacity bitstream ring and write decoded DPB/output images",
                 ffmpeg_reference: "decoder consumes AVPacket and emits reference-managed frames",
-                gstreamer_reference: "hardware/software decoder remains comparison path, not the direct display owner",
             },
             NativeVulkanVideoPipelineStageContract {
                 order: 6,
                 kind: NativeVulkanVideoPipelineStageKind::DisplayHandoff,
                 owner: "native-vulkan-codec-render-boundary",
-                boundary: "decoded image layer, layout, fence/timeline and descriptor identity are handed to render without copying compressed payloads",
+                boundary: "decoded image layer, layout, fence/timeline and descriptor heap identity are handed to render",
                 ffmpeg_reference: "AVFrame ownership/refcount handoff after decode",
-                gstreamer_reference: "appsink buffer lifetime and caps memory feature diagnostics",
             },
             NativeVulkanVideoPipelineStageContract {
                 order: 7,
@@ -142,7 +119,6 @@ pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContr
                 owner: "native-vulkan-render",
                 boundary: "YUV planes are sampled directly into the swapchain-sized composition pass with fit handling",
                 ffmpeg_reference: "filter/display stage consumes frames without mutating decoder state",
-                gstreamer_reference: "display sink is bypassed; GStreamer remains a frontend only",
             },
             NativeVulkanVideoPipelineStageContract {
                 order: 8,
@@ -150,7 +126,6 @@ pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContr
                 owner: "native-vulkan-present",
                 boundary: "Wayland surface and Vulkan swapchain present are paced by target fps and compositor feedback",
                 ffmpeg_reference: "ffplay video refresh delay and master-clock comparison",
-                gstreamer_reference: "QoS/presentation diagnostics are reference signals, not display ownership",
             },
             NativeVulkanVideoPipelineStageContract {
                 order: 9,
@@ -158,20 +133,15 @@ pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContr
                 owner: "separate-audio-pipeline",
                 boundary: "audio decode/clock stays separate from video texture ownership and advances serial on loop/seek",
                 ffmpeg_reference: "ffplay audio master clock, packet serial and stale sample rejection",
-                gstreamer_reference: "AAC-only appsink clock probe with no video decoder contamination",
             },
         ],
         invariants: &[
-            "FFmpeg is the first reference for codec packet/frame/clock semantics",
-            "GStreamer is the second reference and current replaceable container/parser/audio frontend",
-            "the bitstream route uses GStreamer/libav only before decode; Gilder owns native Vulkan decode",
-            "the decoded frame route lets the provider decode; current gst-dma work belongs to this route as a memory handoff, not as a display bypass",
-            "frontend implementations may be replaced by libav/ffmpeg or native demux as long as the packet/audio/clock contracts remain stable",
-            "decoded video frontends must expose provider-neutral telemetry and samples before render/import",
-            "audio clock frontends must expose provider-neutral runtime telemetry before pacing/render integration",
-            "demux/parser ownership must not imply display-sink ownership",
+            "FFmpeg is the only frontend reference for codec packet/frame/clock semantics",
+            "the bitstream route uses FFmpeg only before decode; Gilder owns native Vulkan decode",
+            "decoded-frame provider routes are deleted from the native Vulkan video mainline",
+            "demux/parser ownership must not imply decoded frame or display-sink ownership",
             "compressed payload retention must stay bounded by the packet queue and bitstream ring",
-            "zero-copy claims must name scope: bitstream upload, decoded-frame handoff, import, render or compositor present",
+            "zero-copy claims must name scope: packet borrow, bitstream upload, decoded-image handoff, render or compositor present",
             "decode, render and present telemetry must be independently attributable",
             "audio clock serial changes must invalidate stale video/audio samples across loop or seek",
         ],
@@ -183,33 +153,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn video_pipeline_contract_keeps_ffmpeg_first() {
+    fn video_pipeline_contract_keeps_ffmpeg_as_frontend_reference() {
         let contract = native_vulkan_video_pipeline_contract();
 
-        assert!(contract.first_reference.contains("FFmpeg"));
-        assert!(contract.second_reference.contains("GStreamer"));
-        assert!(contract.second_reference.contains("replaceable"));
+        assert!(contract.reference.contains("FFmpeg"));
         assert_eq!(contract.stages.len(), 10);
-        assert_eq!(contract.routes.len(), 2);
+        assert_eq!(contract.routes.len(), 1);
         assert!(contract.routes.iter().any(|route| {
             route.kind == NativeVulkanVideoPipelineRouteKind::BitstreamNativeDecode
                 && route.decode_owner == "gilder-native-vulkan"
+                && route.frontend_role.contains("FFmpeg")
                 && route.handoff_contract.contains("encoded")
                 && route
                     .compressed_payload_copy_scope
                     .contains("bitstream ring")
                 && route.decoded_frame_copy_scope.contains("GPU-owned")
-                && route.zero_copy_claim.contains("not a full-pipeline")
-        }));
-        assert!(contract.routes.iter().any(|route| {
-            route.kind == NativeVulkanVideoPipelineRouteKind::DecodedFrameFrontend
-                && route.decode_owner == "gstreamer"
-                && route.handoff_contract.contains("gst-dma")
-                && route
-                    .compressed_payload_copy_scope
-                    .contains("internal to the provider")
-                && route.decoded_frame_copy_scope.contains("DMABuf/DRM-PRIME")
-                && route.zero_copy_claim.contains("insufficient")
+                && route.zero_copy_claim.contains("bitstream-ring copy")
         }));
         assert_eq!(
             contract.stages[0].kind,
@@ -226,34 +185,19 @@ mod tests {
                 .filter(|stage| matches!(
                     stage.kind,
                     NativeVulkanVideoPipelineStageKind::Demux
-                        | NativeVulkanVideoPipelineStageKind::Parse
+                        | NativeVulkanVideoPipelineStageKind::BitstreamFilter
                 ))
-                .all(|stage| stage.owner == "replaceable-frontend")
+                .all(|stage| stage.owner == "ffmpeg-frontend")
         );
-        assert!(contract.stages.iter().any(|stage| stage.kind
-            == NativeVulkanVideoPipelineStageKind::PacketQueue
-            && stage.ffmpeg_reference.contains("PacketQueue")));
         assert!(
-            contract
-                .invariants
-                .iter()
-                .any(|invariant| invariant.contains("packet/audio/clock contracts remain stable"))
+            contract.stages[3].kind == NativeVulkanVideoPipelineStageKind::PacketQueue
+                && contract.stages[3].boundary.contains("keep-last")
         );
         assert!(
             contract
                 .invariants
                 .iter()
-                .any(|invariant| invariant.contains("provider-neutral telemetry and samples"))
-        );
-        assert!(contract.invariants.iter().any(|invariant| {
-            invariant
-                .contains("audio clock frontends must expose provider-neutral runtime telemetry")
-        }));
-        assert!(
-            contract
-                .invariants
-                .iter()
-                .any(|invariant| invariant.contains("zero-copy claims must name scope"))
+                .any(|invariant| invariant.contains("provider routes are deleted"))
         );
     }
 }

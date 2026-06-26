@@ -31,26 +31,20 @@ jobs:
       - name: Check
         run: cargo check
 
-      - name: Check video renderer
-        run: cargo check --features video-renderer
-
       - name: Check native Vulkan renderer
         run: cargo check --features native-vulkan-renderer --bin gilder-native-vulkan
 
-      - name: Check native Vulkan GStreamer video
-        run: cargo check --features native-vulkan-gst-video --bin gilder-native-vulkan
+      - name: Check native Vulkan video
+        run: cargo check --features native-vulkan-video --bin gilder-native-vulkan
 
       - name: Test
         run: cargo test
 
-      - name: Test video renderer
-        run: cargo test --features video-renderer
-
       - name: Test native Vulkan renderer
         run: cargo test --features native-vulkan-renderer
 
-      - name: Test native Vulkan GStreamer video
-        run: cargo test --features native-vulkan-gst-video
+      - name: Test native Vulkan video
+        run: cargo test --features native-vulkan-video
 
       - name: Desktop policy smoke
         run: scripts/desktop-policy-smoke.sh --report-dir /tmp/gilder-desktop-policy-smoke
@@ -61,15 +55,4 @@ jobs:
         with:
           name: desktop-policy-smoke
           path: /tmp/gilder-desktop-policy-smoke
-          if-no-files-found: ignore
-
-      - name: Video codec smoke
-        run: scripts/video-codec-smoke.sh --install-missing --report-dir /tmp/gilder-video-codec-smoke
-
-      - name: Upload video codec smoke report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: video-codec-smoke
-          path: /tmp/gilder-video-codec-smoke
           if-no-files-found: ignore

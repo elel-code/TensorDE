@@ -1,8 +1,3 @@
-#[cfg(all(
-    feature = "native-vulkan-renderer",
-    feature = "native-vulkan-gst-video"
-))]
-use gilder::renderer::native_vulkan::NativeVulkanAudioOutputPolicy;
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::native_vulkan::NativeVulkanClearColor;
 
@@ -23,14 +18,14 @@ fn main() {
 #[cfg(feature = "native-vulkan-renderer")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::StaticWallpaperPlan;
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     use gilder::renderer::native_vulkan::native_vulkan_video_playback_frame_count;
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     use gilder::renderer::native_vulkan::{
-        NativeVulkanAudioClockProbeOptions, NativeVulkanVideoSessionCodec,
+        NativeVulkanAudioOutputMode, NativeVulkanVideoSessionCodec,
         native_vulkan_extract_av1_sequence_header_for_vulkanalia,
         native_vulkan_extract_h264_parameter_sets_for_vulkanalia,
-        native_vulkan_extract_h265_parameter_sets_for_vulkanalia, probe_native_vulkan_audio_clock,
+        native_vulkan_extract_h265_parameter_sets_for_vulkanalia,
         run_vulkanalia_ready_prefix_video,
     };
     use gilder::renderer::native_vulkan::{
@@ -62,14 +57,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut options = NativeVulkanOptions::default();
     let mut duration = Duration::from_secs(5);
     let mut duration_set = false;
-    let mut audio_probe_duration = Duration::from_secs(10);
-    #[cfg(feature = "native-vulkan-gst-video")]
-    let mut audio_output_policy = NativeVulkanAudioOutputPolicy::Plan;
-    let mut audio_clock_probe_with_video = false;
     let mut source = None::<PathBuf>;
     let mut fit = gilder::core::FitMode::Cover;
     let mut background = None::<String>;
-    let mut muted = true;
+    let mut _muted = true;
     let mut allow_foreground_layer = false;
     let mut video_session_options = NativeVulkanVideoSessionSmokeOptions::default();
     let mut vulkanalia_create_empty_session_parameters = false;
@@ -95,22 +86,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--probe-vulkanalia-video-present-session" => {
                 mode = NativeVulkanCliMode::ProbeVulkanaliaVideoPresentSession
-            }
-            "--probe-audio-clock" => mode = NativeVulkanCliMode::ProbeAudioClock,
-            "--audio-clock-probe" => audio_clock_probe_with_video = true,
-            "--audio-output" => {
-                let value = args
-                    .next()
-                    .ok_or("--audio-output requires plan, clock-only, or auto")?;
-                #[cfg(feature = "native-vulkan-gst-video")]
-                {
-                    audio_output_policy = NativeVulkanAudioOutputPolicy::parse_cli(&value)?;
-                }
-                #[cfg(not(feature = "native-vulkan-gst-video"))]
-                {
-                    let _ = value;
-                    return Err("--audio-output requires native-vulkan-gst-video feature".into());
-                }
             }
             "--run-vulkanalia-ready-prefix-video" => {
                 mode = NativeVulkanCliMode::RunVulkanaliaReadyPrefixVideo
@@ -192,15 +167,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map(Duration::from_secs)
                     .ok_or("--duration requires seconds")?;
                 duration_set = true;
-                audio_probe_duration = duration;
-            }
-            "--audio-probe-duration" => {
-                audio_probe_duration = args
-                    .next()
-                    .map(|value| value.parse::<u64>())
-                    .transpose()?
-                    .map(Duration::from_secs)
-                    .ok_or("--audio-probe-duration requires seconds")?;
             }
             "--target-fps" => {
                 options.target_max_fps =
@@ -226,8 +192,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--loop" => {}
             "--no-loop" => {}
-            "--muted" => muted = true,
-            "--unmuted" => muted = false,
+            "--muted" => _muted = true,
+            "--unmuted" => _muted = false,
             "--decoder" => {
                 let value = args.next().ok_or("--decoder requires a value")?;
                 let _ = parse_decoder_policy(&value)?;
@@ -382,7 +348,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         )
                         .into());
                     }
-                    #[cfg(feature = "native-vulkan-gst-video")]
+                    #[cfg(feature = "native-vulkan-video")]
                     {
                         match video_session_options.codec {
                             NativeVulkanVideoSessionCodec::H264High8 => {
@@ -415,11 +381,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                    #[cfg(not(feature = "native-vulkan-gst-video"))]
+                    #[cfg(not(feature = "native-vulkan-video"))]
                     {
                         let _ = source;
                         return Err(
-                            "--create-session-parameters requires native-vulkan-gst-video feature"
+                            "--create-session-parameters requires native-vulkan-video feature"
                                 .into(),
                         );
                     }
@@ -440,28 +406,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     av1_sequence_header,
                 }
             )?)
-        }
-        NativeVulkanCliMode::ProbeAudioClock => {
-            let source = source.ok_or("--probe-audio-clock requires --source")?;
-            if !source.is_file() {
-                return Err(
-                    format!("audio probe source does not exist: {}", source.display()).into(),
-                );
-            }
-            #[cfg(feature = "native-vulkan-gst-video")]
-            {
-                json!(probe_native_vulkan_audio_clock(
-                    NativeVulkanAudioClockProbeOptions {
-                        source,
-                        duration: audio_probe_duration,
-                    }
-                )?)
-            }
-            #[cfg(not(feature = "native-vulkan-gst-video"))]
-            {
-                let _ = (source, audio_probe_duration);
-                return Err("--probe-audio-clock requires native-vulkan-gst-video feature".into());
-            }
         }
         NativeVulkanCliMode::RunClear => json!(run_clear(options, duration)?),
         NativeVulkanCliMode::RunVulkanaliaSceneLiteSolidQuad => {
@@ -531,10 +475,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ready_prefix_playback_frames,
                 duration_playback_frames,
             );
-            #[cfg(feature = "native-vulkan-gst-video")]
+            #[cfg(feature = "native-vulkan-video")]
             {
                 if route.is_vulkanalia_ready_prefix() {
-                    let audio_output_mode = audio_output_policy.resolve(muted);
                     json!(run_vulkanalia_ready_prefix_video(
                         options,
                         video_session_options.codec,
@@ -545,8 +488,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         video_session_options.bitstream_extract_max_samples,
                         route.ready_prefix_frames,
                         route.playback_frames,
-                        audio_clock_probe_with_video,
-                        audio_output_mode,
+                        false,
+                        NativeVulkanAudioOutputMode::ClockOnly,
                     )?)
                 } else {
                     return Err(format!(
@@ -556,11 +499,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .into());
                 }
             }
-            #[cfg(not(feature = "native-vulkan-gst-video"))]
+            #[cfg(not(feature = "native-vulkan-video"))]
             {
-                let _ = (options, source, fit, muted, route);
+                let _ = (options, source, fit, _muted, route);
                 return Err(
-                    "--run-video Vulkanalia ready-prefix route requires native-vulkan-gst-video feature"
+                    "--run-video Vulkanalia ready-prefix route requires native-vulkan-video feature"
                         .into(),
                 );
             }
@@ -570,7 +513,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if !source.is_file() {
                 return Err(format!("video source does not exist: {}", source.display()).into());
             }
-            #[cfg(feature = "native-vulkan-gst-video")]
+            #[cfg(feature = "native-vulkan-video")]
             let ready_prefix_frames = match video_session_options.codec {
                 NativeVulkanVideoSessionCodec::H264High8 => {
                     video_session_options.decode_h264_ready_prefix_frames
@@ -584,7 +527,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     video_session_options.decode_av1_ready_prefix_frames
                 }
             };
-            #[cfg(not(feature = "native-vulkan-gst-video"))]
+            #[cfg(not(feature = "native-vulkan-video"))]
             let ready_prefix_frames = 0u32;
             if ready_prefix_frames == 0 {
                 return Err(
@@ -592,14 +535,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .into(),
                 );
             }
-            #[cfg(feature = "native-vulkan-gst-video")]
+            #[cfg(feature = "native-vulkan-video")]
             {
                 let playback_frames = native_vulkan_video_playback_frame_count(
                     ready_prefix_frames,
                     ready_prefix_playback_frames,
                     duration_playback_frames,
                 );
-                let audio_output_mode = audio_output_policy.resolve(muted);
                 json!(run_vulkanalia_ready_prefix_video(
                     options,
                     video_session_options.codec,
@@ -610,11 +552,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     video_session_options.bitstream_extract_max_samples,
                     ready_prefix_frames,
                     playback_frames,
-                    audio_clock_probe_with_video,
-                    audio_output_mode,
+                    false,
+                    NativeVulkanAudioOutputMode::ClockOnly,
                 )?)
             }
-            #[cfg(not(feature = "native-vulkan-gst-video"))]
+            #[cfg(not(feature = "native-vulkan-video"))]
             {
                 let _ = (
                     options,
@@ -625,10 +567,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     video_session_options.bitstream_extract_max_samples,
                     ready_prefix_frames,
                     ready_prefix_playback_frames,
-                    audio_clock_probe_with_video,
                 );
                 return Err(
-                    "--run-vulkanalia-ready-prefix-video requires native-vulkan-gst-video feature"
+                    "--run-vulkanalia-ready-prefix-video requires native-vulkan-video feature"
                         .into(),
                 );
             }
@@ -714,7 +655,6 @@ enum NativeVulkanCliMode {
     ProbeVulkanaliaVideoPresent,
     ProbeVulkanaliaVideoPresentSession,
     ProbeVulkanaliaVideoSession,
-    ProbeAudioClock,
     RunClear,
     RunVulkanaliaSceneLiteSolidQuad,
     RunVulkanaliaSceneLiteSampledImage,
@@ -726,7 +666,7 @@ enum NativeVulkanCliMode {
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--probe-audio-clock|--run-clear|--run-vulkanalia-clear|--run-vulkanalia-scene-lite-solid-quad|--run-vulkanalia-scene-lite-sampled-image|--run-static|--run-vulkanalia-static|--run-video|--run-vulkanalia-ready-prefix-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--run-clear|--run-vulkanalia-clear|--run-vulkanalia-scene-lite-solid-quad|--run-vulkanalia-scene-lite-sampled-image|--run-static|--run-vulkanalia-static|--run-video|--run-vulkanalia-ready-prefix-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
@@ -736,9 +676,6 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --probe-vulkanalia-video-present creates one Vulkanalia device with video-decode and graphics/present queues plus a Wayland swapchain, then exits.\n\
 --probe-vulkanalia-video-present-session creates one Vulkanalia video+present device, video session, sampled DPB/output image, and Wayland swapchain, then exits.\n\
 --probe-vulkanalia-video-session creates and binds a Vulkanalia Vulkan Video session for --video-codec, then exits.\n\
---probe-audio-clock runs an explicit audio-only GStreamer clock probe for --source, then exits.\n\
---audio-clock-probe runs the explicit audio-only clock probe beside H.264 visible video and reports A/V drift.\n\
---audio-output plan|clock-only|auto selects plan-following, clock-only telemetry, or tee-to-autoaudiosink output for --audio-clock-probe.\n\
 --allocate-video-images extends --probe-vulkanalia-video-session with codec-matching 2-plane 4:2:0 DPB/output sampled image allocation.\n\
 --allocate-bitstream-buffer extends --probe-vulkanalia-video-session with an FFmpeg-sized mapped VIDEO_DECODE_SRC slices buffer.\n\
 --create-empty-session-parameters extends --probe-vulkanalia-video-session with an H.264/H.265 empty capacity VkVideoSessionParametersKHR smoke.\n\
@@ -747,7 +684,6 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --decode-h265-ready-prefix N extends --probe-vulkanalia-video-session/--run-video with N ready H.265 AU Vulkan Video decode submits.\n\
 --decode-av1-ready-prefix N extends --run-video with N visible AV1 temporal units through Vulkan Video decode/present.\n\
 --playback-frames N repeats the ready-prefix AU window for N direct Vulkan Video decode/present frames.\n\
---audio-probe-duration N overrides the default 10s audio clock probe duration.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
 --run-vulkanalia-clear is an explicit alias for --run-clear.\n\
 --run-vulkanalia-scene-lite-solid-quad uses Vulkanalia dynamic rendering to draw a retained scene-lite solid quad to the Wayland swapchain.\n\
@@ -758,7 +694,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
-         [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--decoder auto|hardware-preferred|hardware-required|software]\n\
+         [--loop|--no-loop] [--muted|--unmuted] [--decoder auto|hardware-preferred|hardware-required|software]\n\
          [--video-codec h264|h265|h265-main-10|av1|av1-main-10] [--width PX] [--height PX]\n\
          [--allocate-video-images] [--allocate-bitstream-buffer]\n\
          [--create-session-parameters] [--bitstream-samples N]\n\

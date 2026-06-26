@@ -236,7 +236,7 @@ pub use video_present_runtime::{
     NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot,
     NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot,
 };
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 pub use video_present_runtime::{
     NativeVulkanVulkanaliaAv1StreamingVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions,

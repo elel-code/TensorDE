@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::thread;
@@ -13,15 +13,15 @@ use vulkanalia::vk::{
 };
 
 use crate::renderer::native_vulkan::NativeVulkanVideoSessionCodec;
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 use crate::renderer::native_vulkan::video_extract::{
     native_vulkan_h265_slice_segment_offset, native_vulkan_start_av1_streaming_packet_queue,
     native_vulkan_start_h264_streaming_packet_queue,
     native_vulkan_start_h265_streaming_packet_queue,
 };
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 use crate::renderer::native_vulkan::vulkanalia_extract::native_vulkan_vulkanalia_av1_frame_submit_input_from_temporal_unit;
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 use crate::renderer::native_vulkan::{
     NativeVulkanAv1ActiveDpbReference, NativeVulkanAv1DecodeReferencePlanner,
     NativeVulkanAv1StreamingBootstrap, NativeVulkanAv1StreamingPacketQueue,
@@ -47,9 +47,11 @@ use super::render_present::{
     native_vulkan_vulkanalia_create_decoded_image_present_frame_resources,
     native_vulkan_vulkanalia_create_decoded_image_present_pipeline_resources,
     native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources,
+    native_vulkan_vulkanalia_decoded_image_present_frame_slot_count,
     native_vulkan_vulkanalia_destroy_decoded_image_present_frame_resources,
     native_vulkan_vulkanalia_destroy_decoded_image_present_pipeline_resources,
     native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_resources,
+    native_vulkan_vulkanalia_prepare_decoded_image_present_frame_slot,
     native_vulkan_vulkanalia_present_decoded_image_frame,
     native_vulkan_vulkanalia_present_decoded_image_once,
     native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_layer,
@@ -114,6 +116,8 @@ pub(super) const VIDEO_PRESENT_SESSION_RETAINED_RESOURCE_ROUTE: &str =
     "video-present-session-retained-resource";
 const FFMPEG_VIDEO_PICTURE_QUEUE_SIZE: usize = 3;
 const FFMPEG_SINGLE_DECODE_THREAD_COUNT: u32 = 1;
+const VIDEO_PRESENT_SLEEP_GUARD: Duration = Duration::from_micros(300);
+const VIDEO_PRESENT_SPIN_GUARD: Duration = Duration::from_micros(80);
 
 pub(super) struct NativeVulkanVulkanaliaVideoPresentSessionRuntime {
     resources: Option<NativeVulkanVulkanaliaVideoPresentSessionRuntimeResources>,
@@ -313,7 +317,7 @@ pub struct NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot {
     pub decoded_image_zero_copy_presented: bool,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions {
     pub session: NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
@@ -322,7 +326,7 @@ pub struct NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions {
     pub playback_frame_count: u32,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions {
     pub session: NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
@@ -331,7 +335,7 @@ pub struct NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions {
     pub playback_frame_count: u32,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaAv1StreamingVideoPresentDecodeOptions {
     pub session: NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
@@ -342,22 +346,22 @@ pub struct NativeVulkanVulkanaliaAv1StreamingVideoPresentDecodeOptions {
 
 #[derive(Default)]
 struct NativeVulkanVulkanaliaStreamingDecodeRequests {
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     h264: Option<NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions>,
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     h265: Option<NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions>,
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     av1: Option<NativeVulkanVulkanaliaAv1StreamingVideoPresentDecodeOptions>,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 struct NativeVulkanVulkanaliaPreparedStreamingDecode {
     h264: Option<NativeVulkanVulkanaliaPreparedH264StreamingDecode>,
     h265: Option<NativeVulkanVulkanaliaPreparedH265StreamingDecode>,
     av1: Option<NativeVulkanVulkanaliaPreparedAv1StreamingDecode>,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 struct NativeVulkanVulkanaliaPreparedH264StreamingDecode {
     request: NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions,
     queue: NativeVulkanH264StreamingPacketQueue,
@@ -365,7 +369,7 @@ struct NativeVulkanVulkanaliaPreparedH264StreamingDecode {
     bootstrap: NativeVulkanH264StreamingBootstrap,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 struct NativeVulkanVulkanaliaPreparedH265StreamingDecode {
     request: NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions,
     queue: NativeVulkanH265StreamingPacketQueue,
@@ -373,7 +377,7 @@ struct NativeVulkanVulkanaliaPreparedH265StreamingDecode {
     bootstrap: NativeVulkanH265StreamingBootstrap,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 struct NativeVulkanVulkanaliaPreparedAv1StreamingDecode {
     request: NativeVulkanVulkanaliaAv1StreamingVideoPresentDecodeOptions,
     queue: NativeVulkanAv1StreamingPacketQueue,
@@ -381,7 +385,7 @@ struct NativeVulkanVulkanaliaPreparedAv1StreamingDecode {
     bootstrap: NativeVulkanAv1StreamingBootstrap,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_vulkanalia_prepare_streaming_decode_requests(
     requests: NativeVulkanVulkanaliaStreamingDecodeRequests,
     codec: NativeVulkanVideoSessionCodec,
@@ -480,7 +484,7 @@ fn native_vulkan_vulkanalia_prepare_streaming_decode_requests(
     Ok(NativeVulkanVulkanaliaPreparedStreamingDecode { h264, h265, av1 })
 }
 
-#[cfg(not(feature = "native-vulkan-gst-video"))]
+#[cfg(not(feature = "native-vulkan-video"))]
 fn native_vulkan_vulkanalia_prepare_streaming_decode_requests(
     _requests: NativeVulkanVulkanaliaStreamingDecodeRequests,
     _codec: NativeVulkanVideoSessionCodec,
@@ -502,24 +506,24 @@ fn native_vulkan_vulkanalia_require_streaming_dpb_slots(
     ))
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 struct NativeVulkanVulkanaliaStreamingPtsState {
     source_loop_index: u32,
-    pts_offset_ms: u64,
-    loop_base_source_pts_ms: Option<u64>,
-    last_adjusted_pts_ms: Option<u64>,
-    last_duration_ms: Option<u64>,
+    pts_offset_ns: u64,
+    loop_base_source_pts_ns: Option<u64>,
+    last_adjusted_pts_ns: Option<u64>,
+    last_duration_ns: Option<u64>,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 impl NativeVulkanVulkanaliaStreamingPtsState {
     fn new(source_loop_index: u32) -> Self {
         Self {
             source_loop_index,
-            pts_offset_ms: 0,
-            loop_base_source_pts_ms: None,
-            last_adjusted_pts_ms: None,
-            last_duration_ms: None,
+            pts_offset_ns: 0,
+            loop_base_source_pts_ns: None,
+            last_adjusted_pts_ns: None,
+            last_duration_ns: None,
         }
     }
 
@@ -528,34 +532,40 @@ impl NativeVulkanVulkanaliaStreamingPtsState {
             return false;
         }
         self.source_loop_index = source_loop_index;
-        self.pts_offset_ms = self
-            .last_adjusted_pts_ms
-            .map(|pts| pts.saturating_add(self.last_duration_ms.unwrap_or(1).max(1)))
-            .unwrap_or(self.pts_offset_ms);
-        self.loop_base_source_pts_ms = None;
+        self.pts_offset_ns = self
+            .last_adjusted_pts_ns
+            .map(|pts| pts.saturating_add(self.last_duration_ns.unwrap_or(1).max(1)))
+            .unwrap_or(self.pts_offset_ns);
+        self.loop_base_source_pts_ns = None;
         true
     }
 
-    fn adjusted_pts(
+    fn adjusted_pts_ns(
         &mut self,
+        source_pts_ns: Option<u64>,
         source_pts_ms: Option<u64>,
+        source_duration_ns: Option<u64>,
         source_duration_ms: Option<u64>,
     ) -> Option<u64> {
-        let adjusted = source_pts_ms.map(|pts| {
-            let base = *self.loop_base_source_pts_ms.get_or_insert(pts);
-            pts.saturating_sub(base).saturating_add(self.pts_offset_ms)
+        let pts_ns =
+            source_pts_ns.or_else(|| source_pts_ms.map(|pts| pts.saturating_mul(1_000_000)));
+        let duration_ns = source_duration_ns
+            .or_else(|| source_duration_ms.map(|duration| duration.saturating_mul(1_000_000)));
+        let adjusted = pts_ns.map(|pts| {
+            let base = *self.loop_base_source_pts_ns.get_or_insert(pts);
+            pts.saturating_sub(base).saturating_add(self.pts_offset_ns)
         });
         if let Some(adjusted) = adjusted {
-            self.last_adjusted_pts_ms = Some(adjusted);
+            self.last_adjusted_pts_ns = Some(adjusted);
         }
-        if let Some(duration) = source_duration_ms {
-            self.last_duration_ms = Some(duration);
+        if let Some(duration) = duration_ns {
+            self.last_duration_ns = Some(duration);
         }
         adjusted
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_vulkanalia_next_h264_streaming_frame(
     queue: &mut NativeVulkanH264StreamingPacketQueue,
     planner: &mut NativeVulkanH264DecodeReferencePlanner,
@@ -565,8 +575,15 @@ fn native_vulkan_vulkanalia_next_h264_streaming_frame(
     if pts_state.sync_loop(packet.source_loop_index) {
         planner.reset();
     }
-    let mut entry = planner.plan_next(&packet.snapshot);
-    entry.pts_ms = pts_state.adjusted_pts(packet.snapshot.pts_ms, packet.snapshot.duration_ms);
+    let mut snapshot = packet.snapshot;
+    let mut entry = planner.plan_next(&snapshot);
+    let pts_ns = pts_state.adjusted_pts_ns(
+        snapshot.pts_ns,
+        snapshot.pts_ms,
+        snapshot.duration_ns,
+        snapshot.duration_ms,
+    );
+    entry.pts_ms = pts_ns.map(|pts| pts / 1_000_000).or(snapshot.pts_ms);
     if !entry.ready_for_decode_submit {
         return Err(format!(
             "Vulkanalia H.264 streaming AU {} is not decode-ready: {}",
@@ -577,34 +594,37 @@ fn native_vulkan_vulkanalia_next_h264_streaming_frame(
                 .unwrap_or("missing references")
         ));
     }
-    if let Some(err) = &packet.snapshot.first_slice_parse_error {
+    if let Some(err) = &snapshot.first_slice_parse_error {
         return Err(format!(
             "Vulkanalia H.264 streaming AU {} first slice parse failed: {err}",
-            packet.snapshot.index
+            snapshot.index
         ));
     }
-    let first_slice = packet.snapshot.first_slice.clone().ok_or_else(|| {
+    let mut first_slice = snapshot.first_slice.take().ok_or_else(|| {
         format!(
             "Vulkanalia H.264 streaming AU {} has no parsed first slice",
-            packet.snapshot.index
+            snapshot.index
         )
     })?;
     if first_slice.slice_offsets.is_empty() {
         return Err(format!(
             "Vulkanalia H.264 streaming AU {} has no slice offsets",
-            packet.snapshot.index
+            snapshot.index
         ));
     }
+    let slice_offsets = std::mem::take(&mut first_slice.slice_offsets);
     Ok(NativeVulkanVulkanaliaH264ReadyPrefixFrameInput {
         entry,
-        slice_offsets: first_slice.slice_offsets.clone(),
+        slice_offsets,
         first_slice,
-        duration_ms: packet.snapshot.duration_ms,
+        pts_ns,
+        duration_ns: snapshot.duration_ns,
+        duration_ms: snapshot.duration_ms,
         access_unit_payload: packet.access_unit.payload,
     })
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_vulkanalia_next_h265_streaming_frame(
     queue: &mut NativeVulkanH265StreamingPacketQueue,
     planner: &mut NativeVulkanH265DecodeReferencePlanner,
@@ -614,24 +634,31 @@ fn native_vulkan_vulkanalia_next_h265_streaming_frame(
     if pts_state.sync_loop(packet.source_loop_index) {
         planner.reset_for_idr();
     }
-    let mut entry = planner.plan_next(&packet.snapshot);
-    entry.pts_ms = pts_state.adjusted_pts(packet.snapshot.pts_ms, packet.snapshot.duration_ms);
+    let mut snapshot = packet.snapshot;
+    let mut entry = planner.plan_next(&snapshot);
+    let pts_ns = pts_state.adjusted_pts_ns(
+        snapshot.pts_ns,
+        snapshot.pts_ms,
+        snapshot.duration_ns,
+        snapshot.duration_ms,
+    );
+    entry.pts_ms = pts_ns.map(|pts| pts / 1_000_000).or(snapshot.pts_ms);
     if !entry.ready_for_decode_submit {
         return Err(format!(
             "Vulkanalia H.265 streaming AU {} is not decode-ready; missing POCs {:?}",
             entry.access_unit_index, entry.missing_reference_pocs
         ));
     }
-    if let Some(err) = &packet.snapshot.first_slice_parse_error {
+    if let Some(err) = &snapshot.first_slice_parse_error {
         return Err(format!(
             "Vulkanalia H.265 streaming AU {} first slice parse failed: {err}",
-            packet.snapshot.index
+            snapshot.index
         ));
     }
-    let first_slice = packet.snapshot.first_slice.clone().ok_or_else(|| {
+    let first_slice = snapshot.first_slice.take().ok_or_else(|| {
         format!(
             "Vulkanalia H.265 streaming AU {} has no parsed first slice",
-            packet.snapshot.index
+            snapshot.index
         )
     })?;
     let slice_segment_offset =
@@ -640,13 +667,15 @@ fn native_vulkan_vulkanalia_next_h265_streaming_frame(
     Ok(NativeVulkanVulkanaliaH265ReadyPrefixFrameInput {
         entry,
         first_slice,
-        duration_ms: packet.snapshot.duration_ms,
+        pts_ns,
+        duration_ns: snapshot.duration_ns,
+        duration_ms: snapshot.duration_ms,
         access_unit_payload: packet.access_unit.payload,
         slice_segment_offset,
     })
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_vulkanalia_next_av1_streaming_frame(
     queue: &mut NativeVulkanAv1StreamingPacketQueue,
     planner: &mut NativeVulkanAv1DecodeReferencePlanner,
@@ -660,11 +689,19 @@ fn native_vulkan_vulkanalia_next_av1_streaming_frame(
         active_dpb_refs.fill(None);
     }
     let entry = planner.plan_next(&packet.snapshot);
-    let pts_ms = pts_state.adjusted_pts(packet.snapshot.pts_ms, packet.snapshot.duration_ms);
+    let pts_ns = pts_state.adjusted_pts_ns(
+        packet.snapshot.pts_ns,
+        packet.snapshot.pts_ms,
+        packet.snapshot.duration_ns,
+        packet.snapshot.duration_ms,
+    );
+    let pts_ms = pts_ns.map(|pts| pts / 1_000_000).or(packet.snapshot.pts_ms);
     if entry.ready_for_display_handoff {
         return Ok(NativeVulkanVulkanaliaAv1StreamingFrameInput {
             entry,
             frame: None,
+            pts_ns,
+            duration_ns: packet.snapshot.duration_ns,
             pts_ms,
             duration_ms: packet.snapshot.duration_ms,
             access_unit_payload: packet.access_unit.payload,
@@ -691,13 +728,15 @@ fn native_vulkan_vulkanalia_next_av1_streaming_frame(
     Ok(NativeVulkanVulkanaliaAv1StreamingFrameInput {
         entry,
         frame: Some(frame),
+        pts_ns,
+        duration_ns: packet.snapshot.duration_ns,
         pts_ms,
         duration_ms: packet.snapshot.duration_ms,
         access_unit_payload: packet.access_unit.payload,
     })
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 impl NativeVulkanVulkanaliaPreparedStreamingDecode {
     fn coded_extent(&self) -> Option<vk::Extent2D> {
         let (width, height) = self
@@ -773,19 +812,19 @@ impl NativeVulkanVulkanaliaPreparedStreamingDecode {
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_vulkanalia_streaming_decode_requested(
     prepared: &NativeVulkanVulkanaliaPreparedStreamingDecode,
 ) -> bool {
     prepared.h264.is_some() || prepared.h265.is_some() || prepared.av1.is_some()
 }
 
-#[cfg(not(feature = "native-vulkan-gst-video"))]
+#[cfg(not(feature = "native-vulkan-video"))]
 fn native_vulkan_vulkanalia_streaming_decode_requested(_prepared: &()) -> bool {
     false
 }
 
-#[cfg(not(feature = "native-vulkan-gst-video"))]
+#[cfg(not(feature = "native-vulkan-video"))]
 trait NativeVulkanVulkanaliaNoStreamingDecodeLayers {
     fn coded_extent(&self) -> Option<vk::Extent2D>;
     fn av1_sequence_header(
@@ -795,7 +834,7 @@ trait NativeVulkanVulkanaliaNoStreamingDecodeLayers {
     fn required_max_active_reference_pictures(&self) -> u32;
 }
 
-#[cfg(not(feature = "native-vulkan-gst-video"))]
+#[cfg(not(feature = "native-vulkan-video"))]
 impl NativeVulkanVulkanaliaNoStreamingDecodeLayers for () {
     fn coded_extent(&self) -> Option<vk::Extent2D> {
         None
@@ -857,7 +896,7 @@ pub(super) fn probe_native_vulkan_vulkanalia_retained_video_present_session(
     Ok(runtime.snapshot().clone())
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 pub fn run_native_vulkan_vulkanalia_h264_streaming_video_present_decode(
     options: NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions,
 ) -> Result<NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot, String> {
@@ -907,7 +946,7 @@ pub fn run_native_vulkan_vulkanalia_h264_streaming_video_present_decode(
     )
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 pub fn run_native_vulkan_vulkanalia_h265_streaming_video_present_decode(
     options: NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions,
 ) -> Result<NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot, String> {
@@ -959,7 +998,7 @@ pub fn run_native_vulkan_vulkanalia_h265_streaming_video_present_decode(
     )
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 pub fn run_native_vulkan_vulkanalia_av1_streaming_video_present_decode(
     options: NativeVulkanVulkanaliaAv1StreamingVideoPresentDecodeOptions,
 ) -> Result<NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeSnapshot, String> {
@@ -1242,14 +1281,16 @@ fn create_video_present_session_pieces(
                     queried.capabilities.max_active_reference_pictures,
                     driver_session_max_dpb_slots,
                 );
-            #[cfg(feature = "native-vulkan-gst-video")]
+            #[cfg(feature = "native-vulkan-video")]
             let mut prepared_streaming_decode =
                 native_vulkan_vulkanalia_prepare_streaming_decode_requests(
                     streaming_decode,
                     codec,
                     driver_session_max_dpb_slots,
                 )?;
-            #[cfg(not(feature = "native-vulkan-gst-video"))]
+            #[cfg(feature = "native-vulkan-video")]
+            crate::renderer::native_vulkan::native_vulkan_trim_process_heap();
+            #[cfg(not(feature = "native-vulkan-video"))]
             let prepared_streaming_decode =
                 native_vulkan_vulkanalia_prepare_streaming_decode_requests(
                     streaming_decode,
@@ -1283,7 +1324,11 @@ fn create_video_present_session_pieces(
                     driver_session_max_active_reference_pictures,
                     session_max_dpb_slots,
                 )?;
-            let resource_image_array_layers = session_max_dpb_slots.max(1);
+            let resource_image_array_layers =
+                native_vulkan_vulkanalia_select_stream_resource_image_array_layers(
+                    required_dpb_slots,
+                    session_max_dpb_slots,
+                )?;
             let picture_format = native_vulkan_vulkanalia_video_session_effective_picture_format(
                 codec,
                 av1_sequence_header,
@@ -1523,129 +1568,139 @@ fn create_video_present_session_pieces(
                             let device = &context.device;
                             let present_queue = context.present_queue;
                             Some(scope.spawn(move || {
-                                        let worker_result = (|| -> Result<_, String> {
-                                            let mut first_present_pts_ms = None;
-                                            let mut present_frame_index = 0u32;
-                                            let mut worker_sequence_started_at =
-                                                sequence_started_at;
-                                            while let Some(frame) = worker_handoff.recv()? {
-                                                if present_frame_index
-                                                    >= requested_present_frame_count_for_sequence
-                                                {
-                                                    worker_handoff.mark_frame_released(
-                                                        frame.sampled_array_layer,
-                                                    )?;
-                                                    continue;
-                                                }
-                                                if present_frame_index == 0 {
-                                                    worker_sequence_started_at = Instant::now();
-                                                    worker_sequence_builder.started_at =
-                                                        worker_sequence_started_at;
-                                                }
-                                                native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_layer(
-                                                    device,
-                                                    resource_image_ref,
-                                                    picture_format,
-                                                    sampler,
-                                                    frame.sampled_array_layer,
-                                                )?;
-                                                let (pacing_sleep_micros, pacing_clock_model) =
-                                                    native_vulkan_vulkanalia_pace_present_frame(
-                                                        worker_sequence_started_at,
-                                                        &mut first_present_pts_ms,
-                                                        present_frame_index,
-                                                        frame.source_frame_pts_ms,
-                                                        frame.source_frame_duration_ms,
-                                                        target_max_fps,
-                                                    );
-                                                let mut record_layer_present_release =
-                                                    |present_frame_slot: u32| {
-                                                        worker_handoff.record_layer_present_release(
-                                                            frame.sampled_array_layer,
-                                                            present_frame_slot,
-                                                        )
-                                                    };
-                                                let draw =
-                                                    native_vulkan_vulkanalia_present_decoded_image_frame(
-                                                        device,
-                                                        present_queue,
-                                                        swapchain_handle,
-                                                        swapchain_images,
-                                                        swapchain_format,
-                                                        swapchain_extent,
-                                                        resource_image_ref,
-                                                        sampler,
-                                                        pipeline,
-                                                        frame_resources,
-                                                        frame.sampled_array_layer,
-                                                        present_frame_index,
-                                                        false,
-                                                        frame.source_frame_pts_ms,
-                                                        frame.source_frame_duration_ms,
-                                                        frame.display_order_key,
-                                                        frame.display_order_key_source,
-                                                        pacing_sleep_micros,
-                                                        pacing_clock_model,
-                                                        decoded_image_present_timing,
-                                                        decode_complete_semaphore,
-                                                        frame.decode_complete_value,
-                                                        queue_host_access_lock,
-                                                        Some(&mut record_layer_present_release),
-                                                    )?;
-                                                worker_sequence_builder.push(draw);
-                                                present_frame_index =
-                                                    present_frame_index.saturating_add(1);
-                                            }
-                                            for release in
-                                                worker_handoff.take_all_layer_present_releases()?
-                                            {
-                                                native_vulkan_vulkanalia_wait_decoded_image_present_frame_slot(
-                                                    device,
-                                                    frame_resources,
-                                                    release.present_frame_slot,
-                                                )?;
-                                                worker_handoff.complete_layer_present_release(
-                                                    release.sampled_array_layer,
-                                                    release.frame_count,
-                                                )?;
-                                            }
-                                            Ok(worker_sequence_builder)
-                                        })();
-                                        if let Err(err) = &worker_result {
-                                            worker_handoff.fail(err.clone());
+                                let worker_result = (|| -> Result<_, String> {
+                                    let mut first_present_pts_ns = None;
+                                    let mut present_frame_index = 0u32;
+                                    let mut worker_sequence_started_at = sequence_started_at;
+                                    while let Some(frame) = worker_handoff.recv()? {
+                                        if present_frame_index
+                                            >= requested_present_frame_count_for_sequence
+                                        {
+                                            worker_handoff
+                                                .mark_frame_released(frame.sampled_array_layer)?;
+                                            continue;
                                         }
-                                        worker_result
-                                    }))
+                                        if present_frame_index == 0 {
+                                            worker_sequence_started_at = Instant::now();
+                                            worker_sequence_builder.started_at =
+                                                worker_sequence_started_at;
+                                        }
+                                        let present_frame_slot_count =
+                                            native_vulkan_vulkanalia_decoded_image_present_frame_slot_count(
+                                                frame_resources,
+                                            )
+                                            .max(1);
+                                        let present_frame_slot =
+                                            present_frame_index as usize % present_frame_slot_count;
+                                        native_vulkan_vulkanalia_prepare_decoded_image_present_frame_slot(
+                                            device,
+                                            frame_resources,
+                                            present_frame_slot as u32,
+                                        )?;
+                                        worker_handoff.complete_present_frame_slot_releases(
+                                            present_frame_slot as u32,
+                                        )?;
+                                        native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_layer(
+                                            device,
+                                            resource_image_ref,
+                                            picture_format,
+                                            sampler,
+                                            frame.sampled_array_layer,
+                                        )?;
+                                        let (pacing_sleep_micros, pacing_clock_model) =
+                                            native_vulkan_vulkanalia_pace_present_frame(
+                                                worker_sequence_started_at,
+                                                &mut first_present_pts_ns,
+                                                present_frame_index,
+                                                frame.source_frame_pts_ns,
+                                                frame.source_frame_duration_ns,
+                                                frame.source_frame_pts_ms,
+                                                frame.source_frame_duration_ms,
+                                                target_max_fps,
+                                            );
+                                        let mut record_layer_present_release =
+                                            |present_frame_slot: u32| {
+                                                worker_handoff.record_layer_present_release(
+                                                    frame.sampled_array_layer,
+                                                    present_frame_slot,
+                                                )
+                                            };
+                                        let draw =
+                                            native_vulkan_vulkanalia_present_decoded_image_frame(
+                                                device,
+                                                present_queue,
+                                                swapchain_handle,
+                                                swapchain_images,
+                                                swapchain_format,
+                                                swapchain_extent,
+                                                resource_image_ref,
+                                                sampler,
+                                                pipeline,
+                                                frame_resources,
+                                                frame.sampled_array_layer,
+                                                present_frame_index,
+                                                true,
+                                                frame.source_frame_pts_ns,
+                                                frame.source_frame_duration_ns,
+                                                frame.source_frame_pts_ms,
+                                                frame.source_frame_duration_ms,
+                                                frame.display_order_key,
+                                                frame.display_order_key_source,
+                                                pacing_sleep_micros,
+                                                pacing_clock_model,
+                                                decoded_image_present_timing,
+                                                decode_complete_semaphore,
+                                                frame.decode_complete_value,
+                                                queue_host_access_lock,
+                                                Some(&mut record_layer_present_release),
+                                            )?;
+                                        native_vulkan_vulkanalia_wait_decoded_image_present_frame_slot(
+                                            device,
+                                            frame_resources,
+                                            draw.present_frame_slot,
+                                        )?;
+                                        worker_handoff.complete_present_frame_slot_releases(
+                                            draw.present_frame_slot,
+                                        )?;
+                                        worker_sequence_builder.push(draw);
+                                        present_frame_index =
+                                            present_frame_index.saturating_add(1);
+                                    }
+                                    let present_frame_slot_count =
+                                        native_vulkan_vulkanalia_decoded_image_present_frame_slot_count(
+                                            frame_resources,
+                                        );
+                                    for present_frame_slot in 0..present_frame_slot_count {
+                                        native_vulkan_vulkanalia_wait_decoded_image_present_frame_slot(
+                                            device,
+                                            frame_resources,
+                                            present_frame_slot as u32,
+                                        )?;
+                                        worker_handoff.complete_present_frame_slot_releases(
+                                            present_frame_slot as u32,
+                                        )?;
+                                    }
+                                    Ok(worker_sequence_builder)
+                                })();
+                                if let Err(err) = &worker_result {
+                                    worker_handoff.fail(err.clone());
+                                }
+                                worker_result
+                            }))
                         } else {
                             None
                         };
 
                         let mut wait_for_output_slot_present_release =
                             |sampled_array_layer: u32| -> Result<(), String> {
-                                let Some(release) = present_handoff
-                                    .take_layer_present_release(sampled_array_layer)?
-                                else {
-                                    return Ok(());
-                                };
-                                let frame_resources = decoded_image_present_frame_resources
-                                    .as_ref()
-                                    .ok_or_else(|| {
-                                        "decoded image present release has no frame resources"
-                                            .to_owned()
-                                    })?;
-                                native_vulkan_vulkanalia_wait_decoded_image_present_frame_slot(
-                                    &context.device,
-                                    frame_resources,
-                                    release.present_frame_slot,
-                                )?;
-                                present_handoff.complete_layer_present_release(
-                                    release.sampled_array_layer,
-                                    release.frame_count,
-                                )
+                                present_handoff
+                                    .wait_layer_present_release_completed(sampled_array_layer)
                             };
                         let mut enqueue_decoded_frame =
                             |decode_frame_index: u32,
                              sampled_array_layer: u32,
+                             source_frame_pts_ns: Option<u64>,
+                             source_frame_duration_ns: Option<u64>,
                              source_frame_pts_ms: Option<u64>,
                              source_frame_duration_ms: Option<u64>,
                              display_order_key: i64,
@@ -1663,6 +1718,8 @@ fn create_video_present_session_pieces(
                                     NativeVulkanVulkanaliaDecodedPresentHandoffFrame {
                                         decode_frame_index,
                                         sampled_array_layer,
+                                        source_frame_pts_ns,
+                                        source_frame_duration_ns,
                                         source_frame_pts_ms,
                                         source_frame_duration_ms,
                                         display_order_key,
@@ -1672,7 +1729,7 @@ fn create_video_present_session_pieces(
                                 )
                             };
                         let decode_result = (|| -> Result<_, String> {
-                            #[cfg(feature = "native-vulkan-gst-video")]
+                            #[cfg(feature = "native-vulkan-video")]
                             let h264_ready_prefix_decode = if let Some(prepared) =
                                 prepared_streaming_decode.h264.take()
                             {
@@ -1683,7 +1740,7 @@ fn create_video_present_session_pieces(
                                     bootstrap,
                                 } = prepared;
                                 let mut planner = NativeVulkanH264DecodeReferencePlanner::new(
-                                    bootstrap.stream_dpb_slots,
+                                    resource_image_array_layers,
                                     bootstrap.stream_max_active_reference_pictures,
                                     bootstrap.max_frame_num,
                                     parameter_sets.sps.gaps_in_frame_num_value_allowed_flag,
@@ -1732,9 +1789,9 @@ fn create_video_present_session_pieces(
                             } else {
                                 None
                             };
-                            #[cfg(not(feature = "native-vulkan-gst-video"))]
+                            #[cfg(not(feature = "native-vulkan-video"))]
                             let h264_ready_prefix_decode = None;
-                            #[cfg(feature = "native-vulkan-gst-video")]
+                            #[cfg(feature = "native-vulkan-video")]
                             let h265_ready_prefix_decode = if let Some(prepared) =
                                 prepared_streaming_decode.h265.take()
                             {
@@ -1745,7 +1802,7 @@ fn create_video_present_session_pieces(
                                     bootstrap,
                                 } = prepared;
                                 let mut planner = NativeVulkanH265DecodeReferencePlanner::new(
-                                    bootstrap.stream_dpb_slots,
+                                    resource_image_array_layers,
                                     bootstrap.stream_max_pic_order_cnt_lsb,
                                 );
                                 let mut pts_state =
@@ -1792,9 +1849,9 @@ fn create_video_present_session_pieces(
                             } else {
                                 None
                             };
-                            #[cfg(not(feature = "native-vulkan-gst-video"))]
+                            #[cfg(not(feature = "native-vulkan-video"))]
                             let h265_ready_prefix_decode = None;
-                            #[cfg(feature = "native-vulkan-gst-video")]
+                            #[cfg(feature = "native-vulkan-video")]
                             let av1_ready_prefix_decode = if let Some(prepared) =
                                 prepared_streaming_decode.av1.take()
                             {
@@ -1802,9 +1859,9 @@ fn create_video_present_session_pieces(
                                     request,
                                     mut queue,
                                     sequence_header,
-                                    bootstrap,
+                                    bootstrap: _,
                                 } = prepared;
-                                let av1_planner_dpb_slots = bootstrap.stream_dpb_slots.max(1);
+                                let av1_planner_dpb_slots = resource_image_array_layers.max(1);
                                 let mut planner = NativeVulkanAv1DecodeReferencePlanner::new(
                                     av1_planner_dpb_slots,
                                 );
@@ -1859,7 +1916,7 @@ fn create_video_present_session_pieces(
                             } else {
                                 None
                             };
-                            #[cfg(not(feature = "native-vulkan-gst-video"))]
+                            #[cfg(not(feature = "native-vulkan-video"))]
                             let av1_ready_prefix_decode = None;
                             Ok((
                                 h264_ready_prefix_decode,
@@ -1887,10 +1944,10 @@ fn create_video_present_session_pieces(
                     if let Some(sequence_builder) = sequence_builder.take() {
                         let handoff_snapshot = present_handoff.snapshot(
                             "decoded-image-present-worker-layer-ring",
-                            "FFmpeg FrameQueue-style decoded-frame handoff: decode enqueues metadata into a fixed ring, present drains one readable frame, and keep_last retains exactly the last displayed layer until the next frame is shown",
-                            "no frame drop in ready-prefix evidence; frame_queue_next keep_last=1 prevents overwrite while preserving exact presented frame count",
-                            "present worker drains decode-order metadata carrying PTS/POC/order-hint; layer release follows FFmpeg frame_queue_next keep_last semantics",
-                            "frame pixels stay in the Vulkan decode image; the handoff stores only layer/timestamp/timeline metadata and samples through VK_EXT_descriptor_heap",
+                            "FFmpeg FrameQueue-style decoded-frame handoff: decode enqueues FIFO metadata into a fixed 3-frame ring; WSI owns the last displayed pixels after render submit",
+                            "no frame drop in ready-prefix evidence; decoded layer reuse waits on render fence instead of retaining stale compatibility copies",
+                            "present worker drains FIFO metadata carrying FFmpeg-style PTS/POC/order-hint keys; decoded layer release is render-fence driven",
+                            "frame pixels are sampled from the Vulkan decode image through VK_EXT_descriptor_heap, then the swapchain image owns the displayed result",
                             FFMPEG_VULKAN_DECODE_REFERENCE,
                         )?;
                         decoded_image_present_sequence = sequence_builder.finish(handoff_snapshot);
@@ -2010,7 +2067,12 @@ struct NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
     total_present_wait_after_queue_present_micros: u64,
     max_present_wait_after_queue_present_micros: u64,
     pts_monotonic: bool,
+    last_pts_ns: Option<u64>,
+    source_frame_pts_delta_min_ns: Option<u64>,
+    source_frame_pts_delta_max_ns: Option<u64>,
     last_pts_ms: Option<u64>,
+    source_frame_pts_delta_min_ms: Option<u64>,
+    source_frame_pts_delta_max_ms: Option<u64>,
     display_order_monotonic: bool,
     last_display_order_key: Option<i64>,
     uses_present_id: bool,
@@ -2019,6 +2081,8 @@ struct NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
     present_wait2_available: bool,
     present_wait_after_present: bool,
     all_zero_copy_presented: bool,
+    sampled_array_layer_mask: u128,
+    latest_draw: Option<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
     draws_head: Vec<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
     draws_tail: Vec<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
 }
@@ -2048,7 +2112,12 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
             total_present_wait_after_queue_present_micros: 0,
             max_present_wait_after_queue_present_micros: 0,
             pts_monotonic: true,
+            last_pts_ns: None,
+            source_frame_pts_delta_min_ns: None,
+            source_frame_pts_delta_max_ns: None,
             last_pts_ms: None,
+            source_frame_pts_delta_min_ms: None,
+            source_frame_pts_delta_max_ms: None,
             display_order_monotonic: true,
             last_display_order_key: None,
             uses_present_id: false,
@@ -2057,6 +2126,8 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
             present_wait2_available: false,
             present_wait_after_present: false,
             all_zero_copy_presented: true,
+            sampled_array_layer_mask: 0,
+            latest_draw: None,
             draws_head: Vec::with_capacity(DECODED_IMAGE_PRESENT_TELEMETRY_RETAINED_FRAMES),
             draws_tail: Vec::with_capacity(DECODED_IMAGE_PRESENT_TELEMETRY_RETAINED_FRAMES),
         }
@@ -2119,8 +2190,24 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
             .max_present_wait_after_queue_present_micros
             .max(draw.present_wait_after_queue_present_micros);
         if let Some(pts_ms) = draw.source_frame_pts_ms {
-            if self.last_pts_ms.is_some_and(|last| last > pts_ms) {
-                self.pts_monotonic = false;
+            if let Some(last) = self.last_pts_ms {
+                if last > pts_ms {
+                    self.pts_monotonic = false;
+                } else {
+                    let delta = pts_ms.saturating_sub(last);
+                    if delta > 0 {
+                        self.source_frame_pts_delta_min_ms = Some(
+                            self.source_frame_pts_delta_min_ms
+                                .map(|current| current.min(delta))
+                                .unwrap_or(delta),
+                        );
+                        self.source_frame_pts_delta_max_ms = Some(
+                            self.source_frame_pts_delta_max_ms
+                                .map(|current| current.max(delta))
+                                .unwrap_or(delta),
+                        );
+                    }
+                }
             }
             self.last_pts_ms = Some(pts_ms);
         }
@@ -2137,7 +2224,37 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
         self.present_wait2_available |= draw.present_wait2_available;
         self.present_wait_after_present |= draw.present_wait_after_present;
         self.all_zero_copy_presented &= draw.zero_copy_presented;
+        if draw.sampled_array_layer < 128 {
+            self.sampled_array_layer_mask |= 1u128 << draw.sampled_array_layer;
+        }
+        if let Some(pts_ns) = draw.source_frame_pts_ns {
+            if let Some(last) = self.last_pts_ns {
+                if last > pts_ns {
+                    self.pts_monotonic = false;
+                } else {
+                    let delta = pts_ns.saturating_sub(last);
+                    if delta > 0 {
+                        self.source_frame_pts_delta_min_ns = Some(
+                            self.source_frame_pts_delta_min_ns
+                                .map(|current| current.min(delta))
+                                .unwrap_or(delta),
+                        );
+                        self.source_frame_pts_delta_max_ns = Some(
+                            self.source_frame_pts_delta_max_ns
+                                .map(|current| current.max(delta))
+                                .unwrap_or(delta),
+                        );
+                    }
+                }
+            }
+            self.last_pts_ns = Some(pts_ns);
+        }
 
+        if DECODED_IMAGE_PRESENT_TELEMETRY_RETAINED_FRAMES == 0 {
+            self.latest_draw = Some(draw);
+            return;
+        }
+        self.latest_draw = Some(draw.clone());
         if self.draws_head.len() < DECODED_IMAGE_PRESENT_TELEMETRY_RETAINED_FRAMES {
             self.draws_head.push(draw.clone());
         }
@@ -2151,10 +2268,10 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
         self,
         present_handoff: NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot,
     ) -> Option<NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot> {
-        if self.draws_head.is_empty() && self.draws_tail.is_empty() {
+        let latest_draw = self.latest_draw;
+        if latest_draw.is_none() {
             return None;
         }
-        let latest_draw = self.draws_tail.last().cloned();
         let teardown_inclusive_elapsed = self.started_at.elapsed();
         let average_present_teardown_inclusive_fps =
             if self.presented_frame_count == 0 || teardown_inclusive_elapsed.is_zero() {
@@ -2192,6 +2309,7 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
                 teardown_inclusive_elapsed,
             ),
             retained_frame_telemetry_limit: DECODED_IMAGE_PRESENT_TELEMETRY_RETAINED_FRAMES,
+            distinct_sampled_array_layer_count: self.sampled_array_layer_mask.count_ones(),
             sampled_array_layers_head: self
                 .draws_head
                 .iter()
@@ -2201,6 +2319,28 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
                 .draws_tail
                 .iter()
                 .map(|draw| draw.sampled_array_layer)
+                .collect(),
+            source_frame_pts_ns_head: self
+                .draws_head
+                .iter()
+                .map(|draw| draw.source_frame_pts_ns)
+                .collect(),
+            source_frame_pts_ns_tail: self
+                .draws_tail
+                .iter()
+                .map(|draw| draw.source_frame_pts_ns)
+                .collect(),
+            source_frame_pts_delta_min_ns: self.source_frame_pts_delta_min_ns,
+            source_frame_pts_delta_max_ns: self.source_frame_pts_delta_max_ns,
+            source_frame_duration_ns_head: self
+                .draws_head
+                .iter()
+                .map(|draw| draw.source_frame_duration_ns)
+                .collect(),
+            source_frame_duration_ns_tail: self
+                .draws_tail
+                .iter()
+                .map(|draw| draw.source_frame_duration_ns)
                 .collect(),
             source_frame_pts_ms_head: self
                 .draws_head
@@ -2212,6 +2352,8 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
                 .iter()
                 .map(|draw| draw.source_frame_pts_ms)
                 .collect(),
+            source_frame_pts_delta_min_ms: self.source_frame_pts_delta_min_ms,
+            source_frame_pts_delta_max_ms: self.source_frame_pts_delta_max_ms,
             source_frame_duration_ms_head: self
                 .draws_head
                 .iter()
@@ -2274,7 +2416,7 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
             latest_draw,
             draws_head: self.draws_head,
             draws_tail: self.draws_tail,
-            frame_order_model: "FFmpeg-style display-key scheduler: decode submissions enqueue into a bounded keep-last handoff, then present drain sorts by PTS/POC/order-hint with decode-index tie-break; ready-prefix windows may be looped as metadata-only sampled-layer references before Vulkanalia dynamic rendering",
+            frame_order_model: "FFmpeg-style display queue: decode submissions enqueue FIFO metadata carrying PTS/POC/order-hint keys with decode-index fallback; ready-prefix windows may be looped as metadata-only sampled-layer references before Vulkanalia dynamic rendering",
             present_resource_reuse_model: "one swapchain image-view set, one command pool, one semaphore pair, one fence set and one bounded decoded-frame handoff reused across decoded-image present frames",
             telemetry_retention_model: "compact head/tail/latest frame telemetry only; hot video runtime does not retain every draw snapshot",
             all_zero_copy_presented: self.all_zero_copy_presented,
@@ -2288,22 +2430,36 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
 
 fn native_vulkan_vulkanalia_pace_present_frame(
     sequence_started_at: Instant,
-    first_present_pts_ms: &mut Option<u64>,
+    first_present_pts_ns: &mut Option<u64>,
     present_frame_index: u32,
+    source_frame_pts_ns: Option<u64>,
+    source_frame_duration_ns: Option<u64>,
     source_frame_pts_ms: Option<u64>,
     source_frame_duration_ms: Option<u64>,
     target_max_fps: Option<u32>,
 ) -> (u64, &'static str) {
-    let (target_offset, clock_model) = if let Some(pts_ms) = source_frame_pts_ms {
-        let base_pts_ms = *first_present_pts_ms.get_or_insert(pts_ms);
+    let (target_offset, clock_model) = if let Some(pts_ns) = source_frame_pts_ns {
+        let base_pts_ns = *first_present_pts_ns.get_or_insert(pts_ns);
         (
-            Duration::from_millis(pts_ms.saturating_sub(base_pts_ms)),
-            "pts-video-clock-sleep",
+            Duration::from_nanos(pts_ns.saturating_sub(base_pts_ns)),
+            "pts-ns-video-clock-sleep",
+        )
+    } else if let Some(pts_ms) = source_frame_pts_ms {
+        let pts_ns = pts_ms.saturating_mul(1_000_000);
+        let base_pts_ns = *first_present_pts_ns.get_or_insert(pts_ns);
+        (
+            Duration::from_nanos(pts_ns.saturating_sub(base_pts_ns)),
+            "pts-ms-video-clock-sleep",
         )
     } else if let Some(target_max_fps) = target_max_fps {
         (
             native_vulkan_vulkanalia_frame_index_duration(present_frame_index, target_max_fps),
             "target-fps-video-clock-sleep",
+        )
+    } else if let Some(duration_ns) = source_frame_duration_ns {
+        (
+            Duration::from_nanos(duration_ns.saturating_mul(u64::from(present_frame_index))),
+            "duration-ns-video-clock-sleep",
         )
     } else if let Some(duration_ms) = source_frame_duration_ms {
         (
@@ -2315,16 +2471,33 @@ fn native_vulkan_vulkanalia_pace_present_frame(
     };
 
     let deadline = sequence_started_at + target_offset;
-    let now = Instant::now();
-    if deadline <= now {
+    let wait_started_at = Instant::now();
+    if deadline <= wait_started_at {
         return (0, clock_model);
     }
-    let sleep_duration = deadline.duration_since(now);
-    thread::sleep(sleep_duration);
+    let wait_duration = native_vulkan_vulkanalia_wait_until_video_present_deadline(deadline);
     (
-        u64::try_from(sleep_duration.as_micros()).unwrap_or(u64::MAX),
+        u64::try_from(wait_duration.as_micros()).unwrap_or(u64::MAX),
         clock_model,
     )
+}
+
+fn native_vulkan_vulkanalia_wait_until_video_present_deadline(deadline: Instant) -> Duration {
+    let started_at = Instant::now();
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return now.saturating_duration_since(started_at);
+        }
+        let remaining = deadline.duration_since(now);
+        if remaining > VIDEO_PRESENT_SLEEP_GUARD {
+            thread::sleep(remaining - VIDEO_PRESENT_SLEEP_GUARD);
+        } else if remaining > VIDEO_PRESENT_SPIN_GUARD {
+            thread::yield_now();
+        } else {
+            std::hint::spin_loop();
+        }
+    }
 }
 
 fn native_vulkan_vulkanalia_frame_index_duration(
@@ -2360,11 +2533,24 @@ fn native_vulkan_vulkanalia_select_stream_session_dpb_slots(
             "streaming decode requires {required_dpb_slots} DPB slot(s), but the selected Vulkan video session exposes only {driver_session_max_dpb_slots}"
         ));
     }
-    if driver_session_max_dpb_slots != 0 {
-        Ok(required_dpb_slots.min(driver_session_max_dpb_slots))
-    } else {
+    if driver_session_max_dpb_slots == 0 {
         Ok(required_dpb_slots)
+    } else {
+        Ok(driver_session_max_dpb_slots)
     }
+}
+
+fn native_vulkan_vulkanalia_select_stream_resource_image_array_layers(
+    required_dpb_slots: u32,
+    session_max_dpb_slots: u32,
+) -> Result<u32, String> {
+    let required_dpb_slots = required_dpb_slots.max(1);
+    if session_max_dpb_slots != 0 && required_dpb_slots > session_max_dpb_slots {
+        return Err(format!(
+            "streaming decode requires {required_dpb_slots} resource image layer(s), but the selected Vulkan video session exposes only {session_max_dpb_slots}"
+        ));
+    }
+    Ok(required_dpb_slots)
 }
 
 fn native_vulkan_vulkanalia_select_stream_session_active_reference_pictures(
@@ -2393,41 +2579,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn h264_h265_stream_session_sizing_uses_stream_dpb_slots_not_work_surfaces() {
+    fn stream_session_sizing_uses_driver_max_and_stream_dpb_resource_layers() {
         assert_eq!(
             native_vulkan_vulkanalia_select_stream_session_dpb_slots(3, 16).unwrap(),
-            3
+            16
         );
         assert_eq!(
             native_vulkan_vulkanalia_select_stream_session_dpb_slots(3, 5).unwrap(),
+            5
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_select_stream_resource_image_array_layers(3, 16).unwrap(),
             3
         );
         assert_eq!(
-            native_vulkan_vulkanalia_select_stream_session_active_reference_pictures(3, 16, 3)
+            native_vulkan_vulkanalia_select_stream_resource_image_array_layers(3, 5).unwrap(),
+            3
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_select_stream_session_active_reference_pictures(3, 16, 16)
                 .unwrap(),
             3
         );
     }
 
     #[test]
-    fn av1_stream_session_sizing_keeps_av1_stream_dpb_slots() {
+    fn av1_stream_resource_layers_follow_stream_dpb_slots() {
         assert_eq!(
             native_vulkan_vulkanalia_select_stream_session_dpb_slots(9, 16).unwrap(),
+            16
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_select_stream_resource_image_array_layers(9, 16).unwrap(),
             9
         );
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn streaming_pts_state_rebases_each_source_loop_to_segment_start() {
         let mut pts = NativeVulkanVulkanaliaStreamingPtsState::new(0);
 
-        assert_eq!(pts.adjusted_pts(Some(650), Some(4)), Some(0));
-        assert_eq!(pts.adjusted_pts(Some(654), Some(4)), Some(4));
+        assert_eq!(
+            pts.adjusted_pts_ns(Some(650_000_000), Some(650), Some(4_166_667), Some(4)),
+            Some(0)
+        );
+        assert_eq!(
+            pts.adjusted_pts_ns(Some(654_166_667), Some(654), Some(4_166_667), Some(4)),
+            Some(4_166_667)
+        );
 
         assert!(pts.sync_loop(1));
-        assert_eq!(pts.adjusted_pts(Some(650), Some(4)), Some(8));
-        assert_eq!(pts.adjusted_pts(Some(654), Some(4)), Some(12));
+        assert_eq!(
+            pts.adjusted_pts_ns(Some(650_000_000), Some(650), Some(4_166_667), Some(4)),
+            Some(8_333_334)
+        );
+        assert_eq!(
+            pts.adjusted_pts_ns(Some(654_166_667), Some(654), Some(4_166_667), Some(4)),
+            Some(12_500_001)
+        );
     }
 
     #[test]

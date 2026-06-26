@@ -1,6 +1,4 @@
 use std::collections::BTreeMap;
-#[cfg(feature = "video-renderer")]
-use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -88,24 +86,9 @@ fn bind_ipc_listener() -> Result<UnixListener, String> {
 }
 
 fn renderer_update_senders(
-    renderer_runtime: Arc<Mutex<RendererRuntimeSnapshot>>,
+    _renderer_runtime: Arc<Mutex<RendererRuntimeSnapshot>>,
 ) -> Vec<mpsc::Sender<StaticRenderSyncPlan>> {
-    #[cfg(not(feature = "video-renderer"))]
-    {
-        let _ = renderer_runtime;
-        Vec::new()
-    }
-
-    #[cfg(feature = "video-renderer")]
-    {
-        let mut senders = Vec::new();
-
-        let (sender, receiver) = mpsc::channel::<StaticRenderSyncPlan>();
-        spawn_video_renderer_loop(receiver, renderer_runtime);
-        senders.push(sender);
-
-        senders
-    }
+    Vec::new()
 }
 
 fn run_ipc_daemon(
@@ -136,49 +119,6 @@ fn spawn_desktop_refresh_loop(runtime: Arc<DaemonRuntime>) {
             if let Err(err) = refresh_runtime_desktop_if_changed(&runtime) {
                 eprintln!("gilderd: failed to refresh desktop state: {err}");
             }
-        }
-    });
-}
-
-#[cfg(feature = "video-renderer")]
-fn spawn_video_renderer_loop(
-    receiver: mpsc::Receiver<StaticRenderSyncPlan>,
-    renderer_runtime: Arc<Mutex<RendererRuntimeSnapshot>>,
-) {
-    thread::spawn(move || {
-        let mut renderer = match gilder::renderer::video::GstVideoRenderer::new() {
-            Ok(renderer) => renderer,
-            Err(err) => {
-                eprintln!("gilderd: failed to initialize video renderer: {err}");
-                return;
-            }
-        };
-
-        loop {
-            match receiver.recv_timeout(std::time::Duration::from_millis(50)) {
-                Ok(mut sync) => {
-                    while let Ok(newer_sync) = receiver.try_recv() {
-                        sync = newer_sync;
-                    }
-                    if let Err(err) = renderer.sync_render_plan(&sync) {
-                        eprintln!("gilderd: failed to sync video renderer: {err}");
-                    }
-                    store_renderer_runtime_snapshot(
-                        &renderer_runtime,
-                        RendererRuntimeSnapshot::from_video_pipeline_snapshots(renderer.snapshot()),
-                    );
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-
-            if let Err(err) = renderer.poll_bus() {
-                eprintln!("gilderd: video renderer pipeline error: {err}");
-            }
-            store_renderer_runtime_snapshot(
-                &renderer_runtime,
-                RendererRuntimeSnapshot::from_video_pipeline_snapshots(renderer.snapshot()),
-            );
         }
     });
 }
@@ -417,56 +357,6 @@ struct RendererRuntimeSnapshot {
     video_pipelines: Vec<Value>,
 }
 
-impl RendererRuntimeSnapshot {
-    #[cfg(feature = "video-renderer")]
-    fn from_video_pipeline_snapshots(
-        snapshots: Vec<gilder::renderer::video::VideoPipelineSnapshot>,
-    ) -> Self {
-        let footprint = video_pipeline_source_footprint(
-            snapshots
-                .iter()
-                .map(|snapshot| Path::new(snapshot.source.as_str())),
-        );
-        let video_pipelines = video_pipeline_snapshots_to_values(snapshots);
-        Self {
-            output_windows: 0,
-            static_surfaces: 0,
-            static_picture_surfaces: 0,
-            static_css_surfaces: 0,
-            static_color_surfaces: 0,
-            slideshow_surfaces: 0,
-            video_surfaces: 0,
-            static_surface_resource_references: 0,
-            static_surface_resource_bytes: 0,
-            static_surface_unique_resources: 0,
-            static_surface_unique_resource_bytes: 0,
-            static_surface_estimated_decoded_bytes: 0,
-            slideshow_resource_references: 0,
-            slideshow_resource_bytes: 0,
-            slideshow_unique_resources: 0,
-            slideshow_unique_resource_bytes: 0,
-            video_shared_runtimes: 0,
-            video_pipeline_source_references: footprint.references,
-            video_pipeline_source_reference_bytes: footprint.reference_bytes,
-            video_pipeline_unique_sources: footprint.unique_sources,
-            video_pipeline_unique_source_bytes: footprint.unique_source_bytes,
-            video_pipelines,
-        }
-    }
-}
-
-#[cfg(feature = "video-renderer")]
-fn store_renderer_runtime_snapshot(
-    renderer_runtime: &Arc<Mutex<RendererRuntimeSnapshot>>,
-    snapshot: RendererRuntimeSnapshot,
-) {
-    let Ok(mut runtime) = renderer_runtime.lock() else {
-        eprintln!("gilderd: renderer runtime snapshot lock poisoned");
-        return;
-    };
-    *runtime = snapshot;
-}
-
 fn renderer_runtime_report(snapshot: &RendererRuntimeSnapshot) -> Value {
     json!({
         "output_windows": snapshot.output_windows,
@@ -494,36 +384,9 @@ fn renderer_runtime_report(snapshot: &RendererRuntimeSnapshot) -> Value {
     })
 }
 
-#[cfg(feature = "video-renderer")]
-fn video_pipeline_snapshots_to_values(
-    snapshots: Vec<gilder::renderer::video::VideoPipelineSnapshot>,
-) -> Vec<Value> {
-    snapshots
-        .into_iter()
-        .map(|snapshot| {
-            serde_json::to_value(snapshot).unwrap_or_else(|err| {
-                json!({
-                    "serialization_error": err.to_string(),
-                })
-            })
-        })
-        .collect()
-}
-
 fn renderer_telemetry_report(snapshot: &RendererRuntimeSnapshot) -> Value {
     let mut video_qos_messages = 0_u64;
     let mut video_qos_dropped_max = None;
-    let mut video_gtk_frame_clock_ticks = 0_u64;
-    let mut video_gtk_frame_clock_before_paint_ticks = 0_u64;
-    let mut video_gtk_frame_clock_update_ticks = 0_u64;
-    let mut video_gtk_frame_clock_layout_ticks = 0_u64;
-    let mut video_gtk_frame_clock_paint_ticks = 0_u64;
-    let mut video_gtk_frame_clock_after_paint_ticks = 0_u64;
-    let mut video_gtk_frame_clock_interval_us_max = None;
-    let mut video_gtk_frame_clock_fps_x1000_max = None;
-    let mut video_gtk_frame_timings_complete = 0_u64;
-    let mut video_gtk_frame_timings_presentation_interval_us_max = None;
-    let mut video_gtk_frame_timings_presentation_time_us_max = None;
 
     for pipeline in &snapshot.video_pipelines {
         let Some(frame_stats) = pipeline.get("frame_stats") else {
@@ -534,47 +397,6 @@ fn renderer_telemetry_report(snapshot: &RendererRuntimeSnapshot) -> Value {
         update_optional_max(
             &mut video_qos_dropped_max,
             json_u64(frame_stats, "qos_dropped_max"),
-        );
-        video_gtk_frame_clock_ticks = video_gtk_frame_clock_ticks
-            .saturating_add(json_u64(frame_stats, "gtk_frame_clock_ticks").unwrap_or_default());
-        video_gtk_frame_clock_before_paint_ticks = video_gtk_frame_clock_before_paint_ticks
-            .saturating_add(
-                json_u64(frame_stats, "gtk_frame_clock_before_paint_ticks").unwrap_or_default(),
-            );
-        video_gtk_frame_clock_update_ticks = video_gtk_frame_clock_update_ticks.saturating_add(
-            json_u64(frame_stats, "gtk_frame_clock_update_ticks").unwrap_or_default(),
-        );
-        video_gtk_frame_clock_layout_ticks = video_gtk_frame_clock_layout_ticks.saturating_add(
-            json_u64(frame_stats, "gtk_frame_clock_layout_ticks").unwrap_or_default(),
-        );
-        video_gtk_frame_clock_paint_ticks = video_gtk_frame_clock_paint_ticks.saturating_add(
-            json_u64(frame_stats, "gtk_frame_clock_paint_ticks").unwrap_or_default(),
-        );
-        video_gtk_frame_clock_after_paint_ticks = video_gtk_frame_clock_after_paint_ticks
-            .saturating_add(
-                json_u64(frame_stats, "gtk_frame_clock_after_paint_ticks").unwrap_or_default(),
-            );
-        update_optional_max(
-            &mut video_gtk_frame_clock_interval_us_max,
-            json_u64(frame_stats, "gtk_frame_clock_interval_us_max"),
-        );
-        update_optional_max(
-            &mut video_gtk_frame_clock_fps_x1000_max,
-            json_u64(frame_stats, "gtk_frame_clock_fps_x1000_latest"),
-        );
-        video_gtk_frame_timings_complete = video_gtk_frame_timings_complete.saturating_add(
-            json_u64(frame_stats, "gtk_frame_timings_complete").unwrap_or_default(),
-        );
-        update_optional_max(
-            &mut video_gtk_frame_timings_presentation_interval_us_max,
-            json_u64(
-                frame_stats,
-                "gtk_frame_timings_presentation_interval_us_max",
-            ),
-        );
-        update_optional_max(
-            &mut video_gtk_frame_timings_presentation_time_us_max,
-            json_u64(frame_stats, "gtk_frame_timings_presentation_time_us_latest"),
         );
     }
 
@@ -603,17 +425,6 @@ fn renderer_telemetry_report(snapshot: &RendererRuntimeSnapshot) -> Value {
         "video_pipelines": snapshot.video_pipelines.len(),
         "video_qos_messages": video_qos_messages,
         "video_qos_dropped_max": video_qos_dropped_max,
-        "video_gtk_frame_clock_ticks": video_gtk_frame_clock_ticks,
-        "video_gtk_frame_clock_before_paint_ticks": video_gtk_frame_clock_before_paint_ticks,
-        "video_gtk_frame_clock_update_ticks": video_gtk_frame_clock_update_ticks,
-        "video_gtk_frame_clock_layout_ticks": video_gtk_frame_clock_layout_ticks,
-        "video_gtk_frame_clock_paint_ticks": video_gtk_frame_clock_paint_ticks,
-        "video_gtk_frame_clock_after_paint_ticks": video_gtk_frame_clock_after_paint_ticks,
-        "video_gtk_frame_clock_interval_us_max": video_gtk_frame_clock_interval_us_max,
-        "video_gtk_frame_clock_fps_x1000_max": video_gtk_frame_clock_fps_x1000_max,
-        "video_gtk_frame_timings_complete": video_gtk_frame_timings_complete,
-        "video_gtk_frame_timings_presentation_interval_us_max": video_gtk_frame_timings_presentation_interval_us_max,
-        "video_gtk_frame_timings_presentation_time_us_max": video_gtk_frame_timings_presentation_time_us_max,
     })
 }
 
@@ -626,44 +437,6 @@ fn update_optional_max(slot: &mut Option<u64>, value: Option<u64>) {
         return;
     };
     *slot = Some(slot.map_or(value, |current| current.max(value)));
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[cfg(feature = "video-renderer")]
-struct VideoPipelineSourceFootprint {
-    references: usize,
-    reference_bytes: u64,
-    unique_sources: usize,
-    unique_source_bytes: u64,
-}
-
-#[cfg(feature = "video-renderer")]
-fn video_pipeline_source_footprint<'a>(
-    sources: impl IntoIterator<Item = &'a Path>,
-) -> VideoPipelineSourceFootprint {
-    let mut footprint = VideoPipelineSourceFootprint::default();
-    let mut unique_sources = BTreeSet::new();
-    for source in sources {
-        footprint.references += 1;
-        footprint.reference_bytes += file_size(source);
-        unique_sources.insert(source.to_path_buf());
-    }
-    footprint.unique_sources = unique_sources.len();
-    footprint.unique_source_bytes = unique_sources.iter().map(|source| file_size(source)).sum();
-    footprint
-}
-
-#[cfg(feature = "video-renderer")]
-fn file_size(path: &Path) -> u64 {
-    fs::metadata(path)
-        .map(|metadata| {
-            if metadata.is_file() {
-                metadata.len()
-            } else {
-                0
-            }
-        })
-        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1240,12 +1013,9 @@ fn renderer_action_response(
     });
     if !cfg!(any(
         feature = "native-vulkan-renderer",
-        feature = "native-wayland-renderer",
-        feature = "video-renderer"
+        feature = "native-wayland-renderer"
     )) {
         result["note"] = json!("renderer was built without native renderer features");
-    } else if cfg!(feature = "video-renderer") && !cfg!(feature = "native-vulkan-renderer") {
-        result["note"] = json!("headless video worker enabled without a visible native renderer");
     }
     gilder::ipc::success_response(id, result)
 }
@@ -1253,17 +1023,12 @@ fn renderer_action_response(
 fn renderer_name() -> &'static str {
     match (
         cfg!(feature = "native-vulkan-renderer"),
-        cfg!(feature = "video-renderer"),
         cfg!(feature = "native-wayland-renderer"),
     ) {
-        (true, true, true) => "native-vulkan+native-wayland-host+gstreamer-video",
-        (true, false, true) => "native-vulkan+native-wayland-host",
-        (true, true, false) => "native-vulkan+gstreamer-video",
-        (true, false, false) => "native-vulkan",
-        (false, true, true) => "native-wayland-host+headless-gstreamer-video",
-        (false, false, true) => "native-wayland-host",
-        (false, true, false) => "headless-gstreamer-video",
-        (false, false, false) => "not-implemented",
+        (true, true) => "native-vulkan+native-wayland-host",
+        (true, false) => "native-vulkan",
+        (false, true) => "native-wayland-host",
+        (false, false) => "not-implemented",
     }
 }
 
@@ -1614,13 +1379,15 @@ fn elapsed_millis_u64(instant: Instant) -> u64 {
     instant.elapsed().as_millis().min(u64::MAX as u128) as u64
 }
 
-#[cfg(feature = "video-renderer")]
 fn video_renderer_capabilities() -> Value {
     json!({
-        "built": true,
-        "headless_worker": true,
-        "visible_surface_path": "native-vulkan-gst-video",
-        "gstreamer": gilder::renderer::video::runtime_capabilities(),
+        "built": cfg!(feature = "native-vulkan-video"),
+        "headless_worker": false,
+        "visible_surface_path": if cfg!(feature = "native-vulkan-video") {
+            Some("native-vulkan-video")
+        } else {
+            None::<&str>
+        },
     })
 }
 
@@ -1671,15 +1438,6 @@ fn native_vulkan_renderer_capabilities() -> Value {
             "unsafe_policy": "unsafe is not used by this build",
         },
         "backend_contract": null,
-    })
-}
-
-#[cfg(not(feature = "video-renderer"))]
-fn video_renderer_capabilities() -> Value {
-    json!({
-        "built": false,
-        "headless_worker": false,
-        "visible_surface_path": null,
     })
 }
 
@@ -2091,17 +1849,6 @@ mod tests {
                     "frame_stats": {
                         "qos_messages": 3,
                         "qos_dropped_max": 2,
-                        "gtk_frame_clock_ticks": 9,
-                        "gtk_frame_clock_before_paint_ticks": 8,
-                        "gtk_frame_clock_update_ticks": 7,
-                        "gtk_frame_clock_layout_ticks": 6,
-                        "gtk_frame_clock_paint_ticks": 5,
-                        "gtk_frame_clock_after_paint_ticks": 9,
-                        "gtk_frame_clock_interval_us_max": 20000,
-                        "gtk_frame_clock_fps_x1000_latest": 59940,
-                        "gtk_frame_timings_complete": 5,
-                        "gtk_frame_timings_presentation_interval_us_max": 21000,
-                        "gtk_frame_timings_presentation_time_us_latest": 100000,
                     },
                 }),
                 json!({
@@ -2110,17 +1857,6 @@ mod tests {
                     "frame_stats": {
                         "qos_messages": 4,
                         "qos_dropped_max": 3,
-                        "gtk_frame_clock_ticks": 31,
-                        "gtk_frame_clock_before_paint_ticks": 20,
-                        "gtk_frame_clock_update_ticks": 21,
-                        "gtk_frame_clock_layout_ticks": 22,
-                        "gtk_frame_clock_paint_ticks": 23,
-                        "gtk_frame_clock_after_paint_ticks": 31,
-                        "gtk_frame_clock_interval_us_max": 18000,
-                        "gtk_frame_clock_fps_x1000_latest": 60000,
-                        "gtk_frame_timings_complete": 7,
-                        "gtk_frame_timings_presentation_interval_us_max": 19000,
-                        "gtk_frame_timings_presentation_time_us_latest": 150000,
                     },
                 }),
             ],
@@ -2414,50 +2150,6 @@ mod tests {
         assert_eq!(
             response["result"]["telemetry"]["renderer"]["video_qos_dropped_max"],
             json!(3)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_ticks"],
-            json!(40)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_before_paint_ticks"],
-            json!(28)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_update_ticks"],
-            json!(28)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_layout_ticks"],
-            json!(28)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_paint_ticks"],
-            json!(28)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_after_paint_ticks"],
-            json!(40)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_interval_us_max"],
-            json!(20000)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["renderer"]["video_gtk_frame_clock_fps_x1000_max"],
-            json!(60000)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["renderer"]["video_gtk_frame_timings_complete"],
-            json!(12)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["renderer"]["video_gtk_frame_timings_presentation_interval_us_max"],
-            json!(21000)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["renderer"]["video_gtk_frame_timings_presentation_time_us_max"],
-            json!(150000)
         );
     }
 

@@ -113,6 +113,8 @@ type NativeVulkanVulkanaliaAfterFrameSubmitted<'a> = &'a mut dyn FnMut(
     u32,
     Option<u64>,
     Option<u64>,
+    Option<u64>,
+    Option<u64>,
     i64,
     &'static str,
     u64,
@@ -120,14 +122,15 @@ type NativeVulkanVulkanaliaAfterFrameSubmitted<'a> = &'a mut dyn FnMut(
 type NativeVulkanVulkanaliaBeforeOutputSlotReuse<'a> = &'a mut dyn FnMut(u32) -> Result<(), String>;
 
 const NATIVE_VULKAN_VULKANALIA_STREAMING_DECODE_SUBMIT_FENCE_SYNC_MODEL: &str = "FFmpeg-style queue_submit2 async exec ring: each exec slot owns its mapped picture slices buffer until that slot fence completes; DPB output layer reuse stays independent; no per-frame submit wait and no queue_wait_idle";
-const NATIVE_VULKAN_VULKANALIA_DECODE_FRAME_TELEMETRY_RETAINED_FRAMES: usize = 8;
-const NATIVE_VULKAN_VULKANALIA_DECODE_FRAME_TELEMETRY_RETENTION_MODEL: &str = "compact head/tail decode-frame telemetry only; decode.frames retains first N and last N snapshots while scalar counters cover the full run";
+const NATIVE_VULKAN_VULKANALIA_DECODE_FRAME_TELEMETRY_RETAINED_FRAMES: usize = 0;
+const NATIVE_VULKAN_VULKANALIA_DECODE_FRAME_TELEMETRY_RETENTION_MODEL: &str = "FFmpeg-style scalar decode telemetry only; per-frame snapshots are dropped after counters and last frame are updated";
 
 struct NativeVulkanVulkanaliaDecodeFrameTelemetry<T> {
     frames: Vec<T>,
     submitted_frame_count: u32,
     last_frame: Option<T>,
     max_src_buffer_range: u64,
+    first_frame_reset_control_recorded: Option<bool>,
     reset_control_recorded_frame_count: u32,
     p_frame_count: u32,
     b_frame_count: u32,
@@ -144,6 +147,7 @@ impl<T: Clone> NativeVulkanVulkanaliaDecodeFrameTelemetry<T> {
             submitted_frame_count: 0,
             last_frame: None,
             max_src_buffer_range: 0,
+            first_frame_reset_control_recorded: None,
             reset_control_recorded_frame_count: 0,
             p_frame_count: 0,
             b_frame_count: 0,
@@ -161,6 +165,9 @@ impl<T: Clone> NativeVulkanVulkanaliaDecodeFrameTelemetry<T> {
         decode_reference_slot_count: u32,
     ) {
         self.max_src_buffer_range = self.max_src_buffer_range.max(src_buffer_range);
+        if self.submitted_frame_count == 0 {
+            self.first_frame_reset_control_recorded = Some(reset_control_recorded);
+        }
         if reset_control_recorded {
             self.reset_control_recorded_frame_count =
                 self.reset_control_recorded_frame_count.saturating_add(1);
@@ -342,6 +349,8 @@ pub(super) struct NativeVulkanVulkanaliaAv1StreamingDecodeInput<'a> {
 pub(super) struct NativeVulkanVulkanaliaAv1StreamingFrameInput {
     pub(super) entry: NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
     pub(super) frame: Option<NativeVulkanVulkanaliaAv1FrameSubmitInput>,
+    pub(super) pts_ns: Option<u64>,
+    pub(super) duration_ns: Option<u64>,
     pub(super) pts_ms: Option<u64>,
     pub(super) duration_ms: Option<u64>,
     pub(super) access_unit_payload: NativeVulkanEncodedAccessUnitPayload,
@@ -555,7 +564,7 @@ impl NativeVulkanVulkanaliaFfmpegSlicesBufferPool {
 
 fn native_vulkan_vulkanalia_trim_heap_after_decode_teardown() {
     #[cfg(all(
-        feature = "native-vulkan-gst-video",
+        feature = "native-vulkan-video",
         target_os = "linux",
         target_env = "gnu"
     ))]
@@ -579,9 +588,12 @@ fn native_vulkan_vulkanalia_streaming_decode_submit_fence_command_order() -> Vec
 
 fn native_vulkan_vulkanalia_h264_display_order_key(
     entry: &NativeVulkanH264DecodeReferencePlanEntrySnapshot,
+    pts_ns: Option<u64>,
     frame_index: u32,
 ) -> (i64, &'static str) {
-    if let Some(pts_ms) = entry.pts_ms {
+    if let Some(pts_ns) = pts_ns {
+        (i64::try_from(pts_ns).unwrap_or(i64::MAX), "pts-ns")
+    } else if let Some(pts_ms) = entry.pts_ms {
         (i64::try_from(pts_ms).unwrap_or(i64::MAX), "pts-ms")
     } else if let Some(poc) = entry.current_pic_order_cnt_val {
         (i64::from(poc), "h264-pic-order-count")
@@ -592,9 +604,12 @@ fn native_vulkan_vulkanalia_h264_display_order_key(
 
 fn native_vulkan_vulkanalia_h265_display_order_key(
     entry: &NativeVulkanH265DecodeReferencePlanEntrySnapshot,
+    pts_ns: Option<u64>,
     frame_index: u32,
 ) -> (i64, &'static str) {
-    if let Some(pts_ms) = entry.pts_ms {
+    if let Some(pts_ns) = pts_ns {
+        (i64::try_from(pts_ns).unwrap_or(i64::MAX), "pts-ns")
+    } else if let Some(pts_ms) = entry.pts_ms {
         (i64::try_from(pts_ms).unwrap_or(i64::MAX), "pts-ms")
     } else if let Some(poc) = entry.current_poc {
         (i64::from(poc), "h265-pic-order-count")
@@ -605,10 +620,13 @@ fn native_vulkan_vulkanalia_h265_display_order_key(
 
 fn native_vulkan_vulkanalia_av1_display_order_key(
     entry: &NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
+    pts_ns: Option<u64>,
     pts_ms: Option<u64>,
     frame_index: u32,
 ) -> (i64, &'static str) {
-    if let Some(pts_ms) = pts_ms {
+    if let Some(pts_ns) = pts_ns {
+        (i64::try_from(pts_ns).unwrap_or(i64::MAX), "pts-ns")
+    } else if let Some(pts_ms) = pts_ms {
         (i64::try_from(pts_ms).unwrap_or(i64::MAX), "pts-ms")
     } else if let Some(order_hint) = entry.order_hint {
         (i64::from(order_hint), "av1-order-hint")
@@ -1167,6 +1185,7 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
             let (display_order_key, display_order_key_source) =
                 native_vulkan_vulkanalia_av1_display_order_key(
                     &frame.entry,
+                    frame.pts_ns,
                     frame.pts_ms,
                     displayed_frame_count,
                 );
@@ -1196,6 +1215,8 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
                     after_frame_submitted(
                         displayed_frame_count,
                         sampled_array_layer,
+                        frame.pts_ns,
+                        frame.duration_ns,
                         frame.pts_ms,
                         frame.duration_ms,
                         display_order_key,
@@ -1211,12 +1232,14 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
                 continue;
             }
 
-            let submit_frame = frame.frame.as_ref().ok_or_else(|| {
+            let submit_frame = frame.frame.take().ok_or_else(|| {
                 format!(
                     "Vulkanalia AV1 TU {} has no decode payload and is not a display handoff",
                     frame.entry.temporal_unit_index
                 )
             })?;
+            let submit_frame_show_frame = submit_frame.show_frame;
+            let reset_control_recorded = submit_frame.frame_type == 0;
             let output_slot = frame.entry.output_slot.ok_or_else(|| {
                 format!(
                     "Vulkanalia AV1 TU {} has no planned output slot",
@@ -1275,7 +1298,6 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
             frame.access_unit_payload.clear();
             src_buffer_total_bytes = src_buffer_total_bytes.saturating_add(payload_len);
 
-            let reset_control_recorded = submit_frame.frame_type == 0;
             let stage_started_at = Instant::now();
             let plan = native_vulkan_vulkanalia_av1_decode_submit_plan(
                 extent,
@@ -1348,7 +1370,7 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
             uses_synchronization2 &= record_plan.uses_synchronization2;
             uses_submit2 &= submit_plan.uses_submit2;
 
-            if submit_frame.show_frame {
+            if submit_frame_show_frame {
                 let sampled_array_layer = frame.entry.displayed_slot.ok_or_else(|| {
                     format!(
                         "Vulkanalia AV1 TU {} is show_frame but has no displayed slot",
@@ -1360,6 +1382,8 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
                     after_frame_submitted(
                         displayed_frame_count,
                         sampled_array_layer,
+                        frame.pts_ns,
+                        frame.duration_ns,
                         frame.pts_ms,
                         frame.duration_ms,
                         display_order_key,
@@ -1448,6 +1472,9 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
             frame_telemetry_retention_model:
                 NATIVE_VULKAN_VULKANALIA_DECODE_FRAME_TELEMETRY_RETENTION_MODEL,
             max_src_buffer_range: frame_telemetry.max_src_buffer_range,
+            first_frame_reset_control_recorded: frame_telemetry
+                .first_frame_reset_control_recorded
+                .unwrap_or(false),
             reset_control_recorded_frame_count: frame_telemetry.reset_control_recorded_frame_count,
             p_frame_count: frame_telemetry.p_frame_count,
             b_frame_count: frame_telemetry.b_frame_count,
@@ -1690,13 +1717,19 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_streaming_decode_into_image(
                 uses_synchronization2 &= record_plan.uses_synchronization2;
                 uses_submit2 &= submit_plan.uses_submit2;
                 let (display_order_key, display_order_key_source) =
-                    native_vulkan_vulkanalia_h265_display_order_key(&frame.entry, frame_index);
+                    native_vulkan_vulkanalia_h265_display_order_key(
+                        &frame.entry,
+                        frame.pts_ns,
+                        frame_index,
+                    );
 
                 if let Some(after_frame_submitted) = after_frame_submitted.as_deref_mut() {
                     let stage_started_at = Instant::now();
                     after_frame_submitted(
                         frame_index,
                         plan.common.dst_picture_resource.base_array_layer,
+                        frame.pts_ns,
+                        frame.duration_ns,
                         frame.entry.pts_ms,
                         frame.duration_ms,
                         display_order_key,
@@ -1779,6 +1812,9 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_streaming_decode_into_image(
                 frame_telemetry_retention_model:
                     NATIVE_VULKAN_VULKANALIA_DECODE_FRAME_TELEMETRY_RETENTION_MODEL,
                 max_src_buffer_range: frame_telemetry.max_src_buffer_range,
+                first_frame_reset_control_recorded: frame_telemetry
+                    .first_frame_reset_control_recorded
+                    .unwrap_or(false),
                 reset_control_recorded_frame_count: frame_telemetry
                     .reset_control_recorded_frame_count,
                 p_frame_count: frame_telemetry.p_frame_count,
@@ -1952,6 +1988,7 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_streaming_decode_into_image(
 
                 let reset_control_recorded = frame.first_slice.idr;
                 let stage_started_at = Instant::now();
+                let slice_offsets = std::mem::take(&mut frame.slice_offsets);
                 let plan = native_vulkan_vulkanalia_h264_ready_prefix_decode_submit_plan(
                     extent,
                     parameter_ids,
@@ -1959,7 +1996,7 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_streaming_decode_into_image(
                     &frame.first_slice,
                     src_buffer_offset,
                     src_buffer_range,
-                    frame.slice_offsets.clone(),
+                    slice_offsets,
                     reset_control_recorded,
                 )?;
                 frame_timing.decode_plan_micros =
@@ -2024,13 +2061,19 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_streaming_decode_into_image(
                 uses_synchronization2 &= record_plan.uses_synchronization2;
                 uses_submit2 &= submit_plan.uses_submit2;
                 let (display_order_key, display_order_key_source) =
-                    native_vulkan_vulkanalia_h264_display_order_key(&frame.entry, frame_index);
+                    native_vulkan_vulkanalia_h264_display_order_key(
+                        &frame.entry,
+                        frame.pts_ns,
+                        frame_index,
+                    );
 
                 if let Some(after_frame_submitted) = after_frame_submitted.as_deref_mut() {
                     let stage_started_at = Instant::now();
                     after_frame_submitted(
                         frame_index,
                         plan.common.dst_picture_resource.base_array_layer,
+                        frame.pts_ns,
+                        frame.duration_ns,
                         frame.entry.pts_ms,
                         frame.duration_ms,
                         display_order_key,
@@ -2113,6 +2156,9 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_streaming_decode_into_image(
                 frame_telemetry_retention_model:
                     NATIVE_VULKAN_VULKANALIA_DECODE_FRAME_TELEMETRY_RETENTION_MODEL,
                 max_src_buffer_range: frame_telemetry.max_src_buffer_range,
+                first_frame_reset_control_recorded: frame_telemetry
+                    .first_frame_reset_control_recorded
+                    .unwrap_or(false),
                 reset_control_recorded_frame_count: frame_telemetry
                     .reset_control_recorded_frame_count,
                 p_frame_count: frame_telemetry.p_frame_count,

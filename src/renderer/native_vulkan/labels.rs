@@ -73,7 +73,7 @@ pub(super) fn native_vulkan_h264_picture_layout_label(
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 pub(super) fn native_vulkan_image_layout_label(layout: vk::ImageLayout) -> &'static str {
     match layout {
         vk::ImageLayout::UNDEFINED => "undefined",

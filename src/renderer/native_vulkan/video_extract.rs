@@ -1,8 +1,8 @@
 //! Encoded video extraction for Vulkanalia-facing decode setup.
 //!
-//! The boundary here is intentionally packet-queue shaped: GStreamer remains a
-//! replaceable demux/parser frontend, while native code owns parameter sets,
-//! reference plans, payload windows, and Vulkanalia decode inputs.
+//! The boundary here is intentionally packet-queue shaped: FFmpeg owns
+//! demux/bitstream filtering, while native code owns parameter sets, reference
+//! plans, payload windows, and Vulkanalia decode inputs.
 
 use std::path::Path;
 
@@ -200,7 +200,7 @@ fn native_vulkan_h264_bitstream_extract_from_queue(
 
     let snapshot = NativeVulkanVideoBitstreamExtractSnapshot {
         source: source.display().to_string(),
-        frontend: "gstreamer-demux-h264parse-streaming-queue",
+        frontend: "ffmpeg-demux-h264-mp4toannexb-streaming-queue",
         requested_max_samples: max_samples,
         samples: queue.queued.len() as u32,
         total_bytes,
@@ -333,7 +333,7 @@ fn native_vulkan_h265_bitstream_extract_from_queue(
 
     let snapshot = NativeVulkanVideoBitstreamExtractSnapshot {
         source: source.display().to_string(),
-        frontend: "gstreamer-demux-h265parse-streaming-queue",
+        frontend: "ffmpeg-demux-hevc-mp4toannexb-streaming-queue",
         requested_max_samples: max_samples,
         samples: queue.queued.len() as u32,
         total_bytes,
@@ -461,7 +461,7 @@ fn native_vulkan_av1_bitstream_extract_from_queue(
 
     let snapshot = NativeVulkanVideoBitstreamExtractSnapshot {
         source: source.display().to_string(),
-        frontend: "gstreamer-demux-av1parse-streaming-queue",
+        frontend: "ffmpeg-demux-av1-frame-merge-streaming-queue",
         requested_max_samples: max_samples,
         samples: queue.queued.len() as u32,
         total_bytes,

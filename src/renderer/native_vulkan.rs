@@ -7,38 +7,33 @@
 #![allow(unsafe_code)]
 
 use serde::Serialize;
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 use std::collections::BTreeMap;
 use std::fmt;
-#[cfg(feature = "native-vulkan-gst-video")]
-use std::path::Path;
 use std::path::PathBuf;
-#[cfg(feature = "native-vulkan-gst-video")]
-use std::time::Duration;
 
 #[cfg(test)]
 use crate::core::FitMode;
 use crate::renderer::native_wayland::{NativeWaylandError, NativeWaylandHostOptions};
 #[cfg(test)]
 use crate::renderer::{StaticWallpaperPlan, VideoWallpaperPlan};
-#[cfg(feature = "native-vulkan-gst-video")]
-use gstreamer as gst;
 use vulkanalia::vk;
 
 #[cfg(all(
-    feature = "native-vulkan-gst-video",
+    feature = "native-vulkan-video",
     target_os = "linux",
     target_env = "gnu"
 ))]
 unsafe extern "C" {
+    fn mallopt(param: i32, value: i32) -> i32;
     fn malloc_trim(pad: usize) -> i32;
 }
 
 pub enum NativeVulkanEncodedAccessUnitPayload {
     Empty,
     Owned(Vec<u8>),
-    #[cfg(feature = "native-vulkan-gst-video")]
-    GstMapped(gst::MappedBuffer<gst::buffer::Readable>),
+    #[cfg(feature = "native-vulkan-video")]
+    FfmpegPacket(demux_ffmpeg::NativeVulkanFfmpegPacketPayload),
 }
 
 impl NativeVulkanEncodedAccessUnitPayload {
@@ -46,27 +41,17 @@ impl NativeVulkanEncodedAccessUnitPayload {
         Self::Owned(bytes)
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
-    fn from_gst_buffer(
-        buffer: gst::Buffer,
-        codec_label: &'static str,
-    ) -> Result<Self, NativeVulkanError> {
-        buffer
-            .into_mapped_buffer_readable()
-            .map(Self::GstMapped)
-            .map_err(|_| {
-                NativeVulkanError::Video(format!(
-                    "{codec_label} bitstream buffer map_readable failed"
-                ))
-            })
+    #[cfg(feature = "native-vulkan-video")]
+    fn from_ffmpeg_packet(payload: demux_ffmpeg::NativeVulkanFfmpegPacketPayload) -> Self {
+        Self::FfmpegPacket(payload)
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {
         match self {
             Self::Empty => &[],
             Self::Owned(bytes) => bytes,
-            #[cfg(feature = "native-vulkan-gst-video")]
-            Self::GstMapped(map) => map.as_slice(),
+            #[cfg(feature = "native-vulkan-video")]
+            Self::FfmpegPacket(packet) => packet.bytes(),
         }
     }
 
@@ -86,8 +71,8 @@ impl NativeVulkanEncodedAccessUnitPayload {
         match self {
             Self::Empty => Vec::new(),
             Self::Owned(bytes) => bytes,
-            #[cfg(feature = "native-vulkan-gst-video")]
-            Self::GstMapped(map) => map.as_slice().to_vec(),
+            #[cfg(feature = "native-vulkan-video")]
+            Self::FfmpegPacket(packet) => packet.bytes().to_vec(),
         }
     }
 }
@@ -106,8 +91,8 @@ impl fmt::Debug for NativeVulkanEncodedAccessUnitPayload {
                 &match self {
                     Self::Empty => "empty",
                     Self::Owned(_) => "owned-vec",
-                    #[cfg(feature = "native-vulkan-gst-video")]
-                    Self::GstMapped(_) => "gst-mapped-buffer",
+                    #[cfg(feature = "native-vulkan-video")]
+                    Self::FfmpegPacket(_) => "ffmpeg-avpacket",
                 },
             )
             .field("bytes", &self.len())
@@ -117,21 +102,21 @@ impl fmt::Debug for NativeVulkanEncodedAccessUnitPayload {
 
 #[cfg(any(
     feature = "native-vulkan-renderer",
-    feature = "native-vulkan-gst-video",
+    feature = "native-vulkan-video",
     test
 ))]
 #[path = "native_vulkan/h264.rs"]
 mod h264;
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[path = "native_vulkan/byte_summary.rs"]
 mod byte_summary;
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 #[path = "native_vulkan/sampling.rs"]
 mod sampling;
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 #[path = "native_vulkan/pacing.rs"]
 mod pacing;
 
@@ -150,15 +135,15 @@ mod interop;
 #[path = "native_vulkan/vulkanalia_backend.rs"]
 mod vulkanalia_backend;
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 #[path = "native_vulkan/video_extract.rs"]
 mod video_extract;
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 #[path = "native_vulkan/vulkanalia_extract.rs"]
 mod vulkanalia_extract;
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 #[path = "native_vulkan/vulkanalia_direct.rs"]
 mod vulkanalia_direct;
 
@@ -189,37 +174,17 @@ mod scene_lite_present_runtime;
 #[path = "native_vulkan/audio_policy.rs"]
 mod audio_policy;
 
-#[path = "native_vulkan/audio_telemetry.rs"]
-mod audio_telemetry;
-
-#[path = "native_vulkan/audio_runtime.rs"]
-mod audio_runtime;
-#[cfg(feature = "native-vulkan-gst-video")]
-#[path = "native_vulkan/audio_sync.rs"]
-mod audio_sync;
-#[cfg(feature = "native-vulkan-gst-video")]
-#[path = "native_vulkan/audio_worker.rs"]
-mod audio_worker;
-
-#[cfg(feature = "native-vulkan-gst-video")]
-#[path = "native_vulkan/audio_frontend.rs"]
-mod audio_frontend;
-
-#[cfg(feature = "native-vulkan-gst-video")]
-#[path = "native_vulkan/audio_clock.rs"]
-mod audio_clock;
-
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 #[path = "native_vulkan/timeline.rs"]
 mod timeline;
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 #[path = "native_vulkan/demux.rs"]
 mod demux;
 
-#[cfg(feature = "native-vulkan-gst-video")]
-#[path = "native_vulkan/demux_gst.rs"]
-mod demux_gst;
+#[cfg(feature = "native-vulkan-video")]
+#[path = "native_vulkan/demux_ffmpeg.rs"]
+mod demux_ffmpeg;
 
 #[path = "native_vulkan/video_probe_snapshots.rs"]
 mod video_probe_snapshots;
@@ -230,7 +195,7 @@ mod codec_snapshots;
 #[path = "native_vulkan/video_codec.rs"]
 mod video_codec;
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 #[path = "native_vulkan/codec_reference.rs"]
 mod codec_reference;
 
@@ -238,10 +203,10 @@ mod codec_reference;
 mod video_session_snapshots;
 
 pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy};
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 use byte_summary::native_vulkan_stable_byte_hash;
 pub use clear_present_runtime::run_clear;
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 use codec_reference::*;
 pub use codec_snapshots::*;
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
@@ -261,14 +226,14 @@ pub use video_route::{
     NativeVulkanVideoRunRouteKind, native_vulkan_video_duration_playback_frames,
     native_vulkan_video_playback_frame_count, native_vulkan_video_run_route,
 };
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 pub use video_session_snapshots::*;
 pub use vulkanalia_backend::*;
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 pub use vulkanalia_direct::{
     NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot, run_vulkanalia_ready_prefix_video,
 };
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 pub use vulkanalia_extract::{
     native_vulkan_extract_av1_decode_frames_for_vulkanalia,
     native_vulkan_extract_av1_sequence_header_for_vulkanalia,
@@ -278,19 +243,13 @@ pub use vulkanalia_extract::{
     native_vulkan_extract_h265_ready_prefix_for_vulkanalia,
 };
 
-#[cfg(feature = "native-vulkan-gst-video")]
-pub use audio_clock::{
-    NativeVulkanAudioClockProbeOptions, NativeVulkanAudioClockProbeSnapshot,
-    NativeVulkanAudioClockRuntimeSnapshot, probe_native_vulkan_audio_clock,
-};
-
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 use demux::{NativeVulkanStreamingAccessUnit, NativeVulkanStreamingPacketQueue};
-#[cfg(feature = "native-vulkan-gst-video")]
-use demux_gst::{
-    NativeVulkanGstStreamingAccessUnit, native_vulkan_av1_bitstream_pipeline,
-    native_vulkan_h264_bitstream_pipeline, native_vulkan_h265_bitstream_pipeline,
-    native_vulkan_start_gst_streaming_packet_queue as native_vulkan_start_streaming_packet_queue,
+#[cfg(feature = "native-vulkan-video")]
+use demux_ffmpeg::{
+    NativeVulkanFfmpegCodec, NativeVulkanFfmpegPacketMetadata, NativeVulkanFfmpegPacketPayload,
+    NativeVulkanFfmpegStreamingAccessUnit,
+    native_vulkan_start_ffmpeg_streaming_packet_queue as native_vulkan_start_streaming_packet_queue,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -536,7 +495,23 @@ pub struct NativeVulkanDrmDeviceSnapshot {
     pub render_node: Option<String>,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
+fn native_vulkan_configure_process_allocator_for_streaming_video() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        const M_TRIM_THRESHOLD: i32 = -1;
+        const M_TOP_PAD: i32 = -2;
+        const M_MMAP_THRESHOLD: i32 = -3;
+        const M_ARENA_MAX: i32 = -8;
+
+        let _ = mallopt(M_ARENA_MAX, 1);
+        let _ = mallopt(M_TRIM_THRESHOLD, 128 * 1024);
+        let _ = mallopt(M_TOP_PAD, 0);
+        let _ = mallopt(M_MMAP_THRESHOLD, 128 * 1024);
+    }
+}
+
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_trim_process_heap() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     unsafe {
@@ -544,43 +519,7 @@ fn native_vulkan_trim_process_heap() {
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_clock_time_ms(value: Option<gst::ClockTime>) -> Option<u64> {
-    value.map(|value| value.mseconds())
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_clock_time_ns(value: Option<gst::ClockTime>) -> Option<u64> {
-    value.map(|value| value.nseconds())
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_elapsed_us(value: Duration) -> u64 {
-    value.as_micros().min(u128::from(u64::MAX)) as u64
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_pace_video_after_frame(
-    frame_pacer: &mut pacing::NativeVulkanVideoClockPacer,
-    pacing_master: pacing::NativeVulkanVideoPacingMaster,
-    audio_clock_probe: Option<&audio_frontend::NativeVulkanAudioClockRuntimeFrontend>,
-    is_last_frame: bool,
-    next_video_clock_ns: Option<u64>,
-) -> pacing::NativeVulkanVideoClockPaceResult {
-    match pacing_master {
-        pacing::NativeVulkanVideoPacingMaster::AudioClock => frame_pacer
-            .pace_after_frame_with_master_clock(
-                is_last_frame,
-                next_video_clock_ns,
-                audio_clock_probe.and_then(|probe| probe.audio_master_clock_estimate_ns()),
-            ),
-        pacing::NativeVulkanVideoPacingMaster::TargetFps => {
-            frame_pacer.pace_after_frame(is_last_frame)
-        }
-    }
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 struct NativeVulkanAv1FirstFrameDecodeInfo {
     frame_header_obu_offset: u64,
     frame_header_payload_offset: u64,
@@ -589,27 +528,11 @@ struct NativeVulkanAv1FirstFrameDecodeInfo {
     tile_sizes: Vec<u32>,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
-#[derive(Debug, Clone)]
-struct NativeVulkanH265AccessUnitSampleMetadata {
-    pts_ns: Option<u64>,
-    duration_ns: Option<u64>,
-    pts_ms: Option<u64>,
-    duration_ms: Option<u64>,
-    caps: Option<String>,
-    stream_format: Option<String>,
-    alignment: Option<String>,
-    width: Option<u32>,
-    height: Option<u32>,
-    framerate: Option<String>,
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-type NativeVulkanAv1TemporalUnitSampleMetadata = NativeVulkanH265AccessUnitSampleMetadata;
-
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 struct NativeVulkanH265AccessUnitExtract {
     payload: NativeVulkanEncodedAccessUnitPayload,
+    pts_ns: Option<u64>,
+    duration_ns: Option<u64>,
     pts_ms: Option<u64>,
     duration_ms: Option<u64>,
     caps: Option<String>,
@@ -621,9 +544,11 @@ struct NativeVulkanH265AccessUnitExtract {
     stats: NativeVulkanH265NalStats,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 struct NativeVulkanH264AccessUnitExtract {
     payload: NativeVulkanEncodedAccessUnitPayload,
+    pts_ns: Option<u64>,
+    duration_ns: Option<u64>,
     pts_ms: Option<u64>,
     duration_ms: Option<u64>,
     caps: Option<String>,
@@ -635,7 +560,7 @@ struct NativeVulkanH264AccessUnitExtract {
     stats: NativeVulkanH264NalStats,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 impl NativeVulkanStreamingAccessUnit for NativeVulkanH264AccessUnitExtract {
     type ParameterSets = NativeVulkanH264ParameterSetSnapshot;
     type Snapshot = NativeVulkanH264AccessUnitSnapshot;
@@ -676,7 +601,7 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH264AccessUnitExtract {
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 #[derive(Debug, Clone, Copy)]
 struct NativeVulkanAv1ActiveDpbReference {
     frame_type: u8,
@@ -694,7 +619,7 @@ struct NativeVulkanAv1ActiveDpbReference {
     loop_filter_mode_deltas: [i8; 2],
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_temporal_unit_decode_info(
     bytes: &[u8],
     obus: &[NativeVulkanAv1ObuSnapshot],
@@ -770,7 +695,7 @@ fn native_vulkan_av1_temporal_unit_decode_info(
     )
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_validate_temporal_unit_decode_info(
     frame_header_obu_offset: u64,
     frame_header_payload_offset: u64,
@@ -807,17 +732,17 @@ fn native_vulkan_av1_validate_temporal_unit_decode_info(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_primary_ref_none(primary_ref_frame: Option<u8>) -> bool {
     primary_ref_frame.is_none_or(|primary_ref_frame| primary_ref_frame == 7)
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_final_force_integer_mv(frame_type: u8, force_integer_mv: u8) -> bool {
     matches!(frame_type, 0 | 2) || force_integer_mv == 1
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_skip_mode_parse_disabled() -> bool {
     matches!(
         std::env::var("GILDER_VULKAN_AV1_SKIP_MODE").ok().as_deref(),
@@ -825,7 +750,7 @@ fn native_vulkan_av1_skip_mode_parse_disabled() -> bool {
     )
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_submit_warped_motion_disabled() -> bool {
     matches!(
         std::env::var("GILDER_VULKAN_AV1_SUBMIT_WARPED_MOTION")
@@ -835,7 +760,7 @@ fn native_vulkan_av1_submit_warped_motion_disabled() -> bool {
     )
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_submit_ref_frame_mvs_disabled() -> bool {
     matches!(
         std::env::var("GILDER_VULKAN_AV1_SUBMIT_REF_FRAME_MVS")
@@ -845,7 +770,7 @@ fn native_vulkan_av1_submit_ref_frame_mvs_disabled() -> bool {
     )
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_frame_header_offset_for_vulkan(
     frame: &NativeVulkanAv1FirstFrameDecodeInfo,
 ) -> Result<u32, NativeVulkanError> {
@@ -863,7 +788,7 @@ fn native_vulkan_av1_frame_header_offset_for_vulkan(
     })
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_bitstream_offsets_use_buffer_base() -> bool {
     matches!(
         std::env::var("GILDER_VULKAN_AV1_OFFSET_BASE")
@@ -873,7 +798,7 @@ fn native_vulkan_av1_bitstream_offsets_use_buffer_base() -> bool {
     )
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_offset_for_vulkan(
     offset: u32,
     src_buffer_offset: u64,
@@ -889,7 +814,7 @@ fn native_vulkan_av1_offset_for_vulkan(
     })
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_offsets_for_vulkan(
     offsets: &[u32],
     src_buffer_offset: u64,
@@ -922,7 +847,7 @@ fn native_vulkan_av1_offsets_for_vulkan(
         .collect()
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeVulkanAv1BeginReferenceSlotStrategy {
     FullDpbGeneric,
@@ -931,7 +856,7 @@ enum NativeVulkanAv1BeginReferenceSlotStrategy {
     ActiveRefs,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 impl NativeVulkanAv1BeginReferenceSlotStrategy {
     fn from_env() -> Self {
         match std::env::var("GILDER_VULKAN_AV1_BEGIN_REFERENCE_SLOTS")
@@ -958,7 +883,7 @@ impl NativeVulkanAv1BeginReferenceSlotStrategy {
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_relative_dist_from_order_hint_bits(
     enable_order_hint: bool,
     order_hint_bits_minus_1: Option<u8>,
@@ -977,7 +902,7 @@ fn native_vulkan_av1_relative_dist_from_order_hint_bits(
     (diff & (midpoint - 1)) - (diff & midpoint)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_relative_dist(
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
     a: u8,
@@ -991,7 +916,7 @@ fn native_vulkan_av1_relative_dist(
     )
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_ref_frame_sign_bias_from_order_hints(
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
     current_order_hint: u8,
@@ -1014,7 +939,7 @@ fn native_vulkan_av1_ref_frame_sign_bias_from_order_hints(
     packed
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_current_ref_frame_sign_bias(
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
     frame_type: u8,
@@ -1031,7 +956,7 @@ fn native_vulkan_av1_current_ref_frame_sign_bias(
     )
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_dpb_reference_sign_bias(
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
     frame_type: u8,
@@ -1059,7 +984,7 @@ fn native_vulkan_av1_dpb_reference_sign_bias(
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_setup_saved_order_hints(
     order_hints: [u8; 8],
     refresh_frame_flags: u8,
@@ -1082,7 +1007,7 @@ fn native_vulkan_av1_setup_saved_order_hints(
     saved_order_hints
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_current_setup_saved_order_hints(
     order_hints: [u8; 8],
     refresh_frame_flags: u8,
@@ -1112,7 +1037,7 @@ fn native_vulkan_av1_current_setup_saved_order_hints(
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_expected_frame_ids_array(expected_frame_ids: &[u32]) -> [u32; 8] {
     let mut values = [0u32; 8];
     for (index, value) in expected_frame_ids.iter().take(8).copied().enumerate() {
@@ -1121,7 +1046,7 @@ fn native_vulkan_av1_expected_frame_ids_array(expected_frame_ids: &[u32]) -> [u3
     values
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_order_hint_offset_enabled(_vendor_id: u32) -> bool {
     match std::env::var("GILDER_VULKAN_AV1_ORDER_HINT_OFFSET")
         .ok()
@@ -1134,7 +1059,7 @@ fn native_vulkan_av1_order_hint_offset_enabled(_vendor_id: u32) -> bool {
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_std_order_hints(
     order_hints: [u8; 8],
     order_hint_offset_enabled: bool,
@@ -1147,7 +1072,7 @@ fn native_vulkan_av1_std_order_hints(
     shifted
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_order_hints_array(hints: &[Option<u8>]) -> [u8; 8] {
     let mut values = [0u8; 8];
     for (index, hint) in hints.iter().take(8).enumerate() {
@@ -1156,7 +1081,7 @@ fn native_vulkan_av1_order_hints_array(hints: &[Option<u8>]) -> [u8; 8] {
     values
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_picture_order_hints_for_submit(
     reference_name_order_hints: [u8; 8],
     order_hint_offset_enabled: bool,
@@ -1164,7 +1089,7 @@ fn native_vulkan_av1_picture_order_hints_for_submit(
     native_vulkan_av1_std_order_hints(reference_name_order_hints, order_hint_offset_enabled)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeVulkanAv1ReferenceHistory {
     frame_width: u32,
@@ -1176,7 +1101,7 @@ struct NativeVulkanAv1ReferenceHistory {
     loop_filter_mode_deltas: [i8; 2],
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 impl From<NativeVulkanAv1ActiveDpbReference> for NativeVulkanAv1ReferenceHistory {
     fn from(reference: NativeVulkanAv1ActiveDpbReference) -> Self {
         Self {
@@ -1191,7 +1116,7 @@ impl From<NativeVulkanAv1ActiveDpbReference> for NativeVulkanAv1ReferenceHistory
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeVulkanAv1FrameHeaderReferenceContext {
     reference_name_order_hints: [u8; 8],
@@ -1200,7 +1125,7 @@ struct NativeVulkanAv1FrameHeaderReferenceContext {
         [Option<NativeVulkanAv1ReferenceHistory>; vk::MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR],
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 #[derive(Debug, Clone, Copy)]
 struct NativeVulkanAv1PreparedReferenceContext {
     reference_name_order_hints: [u8; 8],
@@ -1208,7 +1133,7 @@ struct NativeVulkanAv1PreparedReferenceContext {
     reference_context: NativeVulkanAv1FrameHeaderReferenceContext,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_prepared_reference_context(
     entry: &NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
     active_dpb_refs: &[Option<NativeVulkanAv1ActiveDpbReference>],
@@ -1238,7 +1163,7 @@ fn native_vulkan_av1_prepared_reference_context(
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 impl NativeVulkanAv1FrameHeaderReferenceContext {
     fn primary_reference_history(
         &self,
@@ -1252,7 +1177,7 @@ impl NativeVulkanAv1FrameHeaderReferenceContext {
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_skip_mode_frame_from_order_hints(
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
     frame_type: u8,
@@ -1333,7 +1258,7 @@ fn native_vulkan_av1_skip_mode_frame_from_order_hints(
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_reference_name_slot_indices(
     entry: &NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
 ) -> [i32; vk::MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR] {
@@ -1349,7 +1274,7 @@ fn native_vulkan_av1_reference_name_slot_indices(
     slots
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_reference_name_decode_slot_indices(
     reference_name_dpb_slot_indices: [i32; vk::MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR],
     unique_reference_slots: &[u32],
@@ -1369,7 +1294,7 @@ fn native_vulkan_av1_reference_name_decode_slot_indices(
     slots
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_reference_info_from_active(
     reference: NativeVulkanAv1ActiveDpbReference,
     order_hint_offset_enabled: bool,
@@ -1393,7 +1318,7 @@ fn native_vulkan_av1_reference_info_from_active(
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_reference_info_from_decode_info(
     decode_info: &NativeVulkanAv1FirstFrameDecodeInfo,
     ref_frame_sign_bias: u8,
@@ -1419,7 +1344,7 @@ fn native_vulkan_av1_reference_info_from_decode_info(
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 struct NativeVulkanAv1TemporalUnitExtract {
     payload: NativeVulkanEncodedAccessUnitPayload,
     pts_ns: Option<u64>,
@@ -1435,35 +1360,52 @@ struct NativeVulkanAv1TemporalUnitExtract {
     stats: NativeVulkanAv1ObuStats,
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 type NativeVulkanH264StreamingPacketQueue =
     NativeVulkanStreamingPacketQueue<NativeVulkanH264AccessUnitExtract>;
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 type NativeVulkanH265StreamingPacketQueue =
     NativeVulkanStreamingPacketQueue<NativeVulkanH265AccessUnitExtract>;
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 #[allow(dead_code)]
 type NativeVulkanAv1StreamingPacketQueue =
     NativeVulkanStreamingPacketQueue<NativeVulkanAv1TemporalUnitExtract>;
 
-#[cfg(feature = "native-vulkan-gst-video")]
-impl NativeVulkanGstStreamingAccessUnit for NativeVulkanH264AccessUnitExtract {
-    fn pipeline(source: &Path) -> Result<gst::Pipeline, NativeVulkanError> {
-        native_vulkan_h264_bitstream_pipeline(source)
-    }
+#[cfg(feature = "native-vulkan-video")]
+impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanH264AccessUnitExtract {
+    const FFMPEG_CODEC: NativeVulkanFfmpegCodec = NativeVulkanFfmpegCodec::H264;
 
-    fn sink_name() -> &'static str {
-        "gilder-native-vulkan-h264-bitstream-appsink"
-    }
-
-    fn from_sample(sample: &gst::Sample) -> Result<Self, NativeVulkanError> {
-        native_vulkan_h264_access_unit_from_sample(sample)
+    fn from_ffmpeg_packet(
+        payload: NativeVulkanFfmpegPacketPayload,
+        metadata: NativeVulkanFfmpegPacketMetadata,
+    ) -> Result<Self, NativeVulkanError> {
+        let payload = NativeVulkanEncodedAccessUnitPayload::from_ffmpeg_packet(payload);
+        if payload.is_empty() {
+            return Err(NativeVulkanError::Video(
+                "H.264 FFmpeg packet is empty".to_owned(),
+            ));
+        }
+        let stats = native_vulkan_h264_nal_stats(payload.bytes());
+        Ok(Self {
+            payload,
+            pts_ns: metadata.pts_ns,
+            duration_ns: metadata.duration_ns,
+            pts_ms: metadata.pts_ms,
+            duration_ms: metadata.duration_ms,
+            caps: metadata.caps,
+            stream_format: metadata.stream_format,
+            alignment: metadata.alignment,
+            width: metadata.width,
+            height: metadata.height,
+            framerate: metadata.framerate,
+            stats,
+        })
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 impl NativeVulkanStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
     type ParameterSets = NativeVulkanH265ParameterSetSnapshot;
     type Snapshot = NativeVulkanH265AccessUnitSnapshot;
@@ -1504,22 +1446,39 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
-impl NativeVulkanGstStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
-    fn pipeline(source: &Path) -> Result<gst::Pipeline, NativeVulkanError> {
-        native_vulkan_h265_bitstream_pipeline(source)
-    }
+#[cfg(feature = "native-vulkan-video")]
+impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
+    const FFMPEG_CODEC: NativeVulkanFfmpegCodec = NativeVulkanFfmpegCodec::H265;
 
-    fn sink_name() -> &'static str {
-        "gilder-native-vulkan-h265-bitstream-appsink"
-    }
-
-    fn from_sample(sample: &gst::Sample) -> Result<Self, NativeVulkanError> {
-        native_vulkan_h265_access_unit_from_sample(sample)
+    fn from_ffmpeg_packet(
+        payload: NativeVulkanFfmpegPacketPayload,
+        metadata: NativeVulkanFfmpegPacketMetadata,
+    ) -> Result<Self, NativeVulkanError> {
+        let payload = NativeVulkanEncodedAccessUnitPayload::from_ffmpeg_packet(payload);
+        if payload.is_empty() {
+            return Err(NativeVulkanError::Video(
+                "H.265 FFmpeg packet is empty".to_owned(),
+            ));
+        }
+        let stats = native_vulkan_h265_nal_stats(payload.bytes());
+        Ok(Self {
+            payload,
+            pts_ns: metadata.pts_ns,
+            duration_ns: metadata.duration_ns,
+            pts_ms: metadata.pts_ms,
+            duration_ms: metadata.duration_ms,
+            caps: metadata.caps,
+            stream_format: metadata.stream_format,
+            alignment: metadata.alignment,
+            width: metadata.width,
+            height: metadata.height,
+            framerate: metadata.framerate,
+            stats,
+        })
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 impl NativeVulkanStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
     type ParameterSets = NativeVulkanAv1SequenceHeaderSnapshot;
     type Snapshot = NativeVulkanAv1TemporalUnitSnapshot;
@@ -1583,92 +1542,40 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
-impl NativeVulkanGstStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
-    fn pipeline(source: &Path) -> Result<gst::Pipeline, NativeVulkanError> {
-        native_vulkan_av1_bitstream_pipeline(source)
-    }
+#[cfg(feature = "native-vulkan-video")]
+impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
+    const FFMPEG_CODEC: NativeVulkanFfmpegCodec = NativeVulkanFfmpegCodec::Av1;
 
-    fn sink_name() -> &'static str {
-        "gilder-native-vulkan-av1-bitstream-appsink"
-    }
-
-    fn from_sample(sample: &gst::Sample) -> Result<Self, NativeVulkanError> {
-        native_vulkan_av1_temporal_unit_from_sample(sample)
+    fn from_ffmpeg_packet(
+        payload: NativeVulkanFfmpegPacketPayload,
+        metadata: NativeVulkanFfmpegPacketMetadata,
+    ) -> Result<Self, NativeVulkanError> {
+        let payload = NativeVulkanEncodedAccessUnitPayload::from_ffmpeg_packet(payload);
+        if payload.is_empty() {
+            return Err(NativeVulkanError::Video(
+                "AV1 FFmpeg packet is empty".to_owned(),
+            ));
+        }
+        let stats =
+            native_vulkan_av1_obu_stats(payload.bytes()).map_err(NativeVulkanError::Video)?;
+        Ok(Self {
+            payload,
+            pts_ns: metadata.pts_ns,
+            duration_ns: metadata.duration_ns,
+            pts_ms: metadata.pts_ms,
+            duration_ms: metadata.duration_ms,
+            caps: metadata.caps,
+            stream_format: metadata.stream_format,
+            alignment: metadata.alignment,
+            width: metadata.width,
+            height: metadata.height,
+            framerate: metadata.framerate,
+            stats,
+        })
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_h264_access_unit_from_sample(
-    sample: &gst::Sample,
-) -> Result<NativeVulkanH264AccessUnitExtract, NativeVulkanError> {
-    let buffer = sample.buffer_owned().ok_or_else(|| {
-        NativeVulkanError::Video("H.264 bitstream sample has no buffer".to_owned())
-    })?;
-    let metadata = native_vulkan_h265_access_unit_metadata_from_sample(sample, buffer.as_ref());
-    let payload = NativeVulkanEncodedAccessUnitPayload::from_gst_buffer(buffer, "H.264")?;
-    if payload.is_empty() {
-        return Err(NativeVulkanError::Video(
-            "H.264 bitstream sample is empty".to_owned(),
-        ));
-    }
-    let stats = native_vulkan_h264_nal_stats(payload.bytes());
-
-    Ok(NativeVulkanH264AccessUnitExtract {
-        payload,
-        pts_ms: metadata.pts_ms,
-        duration_ms: metadata.duration_ms,
-        caps: metadata.caps,
-        stream_format: metadata.stream_format,
-        alignment: metadata.alignment,
-        width: metadata.width,
-        height: metadata.height,
-        framerate: metadata.framerate,
-        stats,
-    })
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_av1_temporal_unit_from_sample(
-    sample: &gst::Sample,
-) -> Result<NativeVulkanAv1TemporalUnitExtract, NativeVulkanError> {
-    let buffer = sample
-        .buffer_owned()
-        .ok_or_else(|| NativeVulkanError::Video("AV1 bitstream sample has no buffer".to_owned()))?;
-    let metadata = native_vulkan_av1_temporal_unit_metadata_from_sample(sample, buffer.as_ref());
-    let payload = NativeVulkanEncodedAccessUnitPayload::from_gst_buffer(buffer, "AV1")?;
-    if payload.is_empty() {
-        return Err(NativeVulkanError::Video(
-            "AV1 bitstream sample is empty".to_owned(),
-        ));
-    }
-    let stats = native_vulkan_av1_obu_stats(payload.bytes()).map_err(NativeVulkanError::Video)?;
-
-    Ok(NativeVulkanAv1TemporalUnitExtract {
-        payload,
-        pts_ns: metadata.pts_ns,
-        duration_ns: metadata.duration_ns,
-        pts_ms: metadata.pts_ms,
-        duration_ms: metadata.duration_ms,
-        caps: metadata.caps,
-        stream_format: metadata.stream_format,
-        alignment: metadata.alignment,
-        width: metadata.width,
-        height: metadata.height,
-        framerate: metadata.framerate,
-        stats,
-    })
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_av1_temporal_unit_metadata_from_sample(
-    sample: &gst::Sample,
-    buffer: &gst::BufferRef,
-) -> NativeVulkanAv1TemporalUnitSampleMetadata {
-    native_vulkan_h265_access_unit_metadata_from_sample(sample, buffer)
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_temporal_unit_snapshot(
     index: u32,
     temporal_unit: &NativeVulkanAv1TemporalUnitExtract,
@@ -1713,7 +1620,7 @@ fn native_vulkan_av1_temporal_unit_snapshot(
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_h264_access_unit_snapshot(
     index: u32,
     access_unit: &NativeVulkanH264AccessUnitExtract,
@@ -1785,6 +1692,8 @@ fn native_vulkan_h264_access_unit_snapshot(
         index,
         bytes: access_unit.stats.bytes,
         byte_hash: native_vulkan_stable_byte_hash(access_unit.payload.bytes()),
+        pts_ns: access_unit.pts_ns,
+        duration_ns: access_unit.duration_ns,
         pts_ms: access_unit.pts_ms,
         duration_ms: access_unit.duration_ms,
         has_annex_b_start_codes: access_unit.stats.has_annex_b_start_codes,
@@ -1800,81 +1709,7 @@ fn native_vulkan_h264_access_unit_snapshot(
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_h265_access_unit_from_sample(
-    sample: &gst::Sample,
-) -> Result<NativeVulkanH265AccessUnitExtract, NativeVulkanError> {
-    let buffer = sample.buffer_owned().ok_or_else(|| {
-        NativeVulkanError::Video("H.265 bitstream sample has no buffer".to_owned())
-    })?;
-    let metadata = native_vulkan_h265_access_unit_metadata_from_sample(sample, buffer.as_ref());
-    let payload = NativeVulkanEncodedAccessUnitPayload::from_gst_buffer(buffer, "H.265")?;
-    if payload.is_empty() {
-        return Err(NativeVulkanError::Video(
-            "H.265 bitstream sample is empty".to_owned(),
-        ));
-    }
-    let stats = native_vulkan_h265_nal_stats(payload.bytes());
-
-    Ok(NativeVulkanH265AccessUnitExtract {
-        payload,
-        pts_ms: metadata.pts_ms,
-        duration_ms: metadata.duration_ms,
-        caps: metadata.caps,
-        stream_format: metadata.stream_format,
-        alignment: metadata.alignment,
-        width: metadata.width,
-        height: metadata.height,
-        framerate: metadata.framerate,
-        stats,
-    })
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
-fn native_vulkan_h265_access_unit_metadata_from_sample(
-    sample: &gst::Sample,
-    buffer: &gst::BufferRef,
-) -> NativeVulkanH265AccessUnitSampleMetadata {
-    let mut stream_format = None;
-    let mut alignment = None;
-    let mut width = None;
-    let mut height = None;
-    let mut framerate = None;
-    let caps = sample.caps().map(|caps| {
-        if let Some(structure) = caps.structure(0) {
-            stream_format = structure.get::<String>("stream-format").ok();
-            alignment = structure.get::<String>("alignment").ok();
-            width = structure
-                .get::<i32>("width")
-                .ok()
-                .and_then(|width| u32::try_from(width).ok());
-            height = structure
-                .get::<i32>("height")
-                .ok()
-                .and_then(|height| u32::try_from(height).ok());
-            framerate = structure
-                .get::<gst::Fraction>("framerate")
-                .ok()
-                .map(|value| value.to_string());
-        }
-        caps.to_string()
-    });
-
-    NativeVulkanH265AccessUnitSampleMetadata {
-        pts_ns: native_vulkan_clock_time_ns(buffer.pts()),
-        duration_ns: native_vulkan_clock_time_ns(buffer.duration()),
-        pts_ms: native_vulkan_clock_time_ms(buffer.pts()),
-        duration_ms: native_vulkan_clock_time_ms(buffer.duration()),
-        caps,
-        stream_format,
-        alignment,
-        width,
-        height,
-        framerate,
-    }
-}
-
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_h265_access_unit_snapshot(
     index: u32,
     access_unit: &NativeVulkanH265AccessUnitExtract,
@@ -1890,6 +1725,8 @@ fn native_vulkan_h265_access_unit_snapshot(
         index,
         bytes: access_unit.stats.bytes,
         byte_hash: native_vulkan_stable_byte_hash(access_unit.payload.bytes()),
+        pts_ns: access_unit.pts_ns,
+        duration_ns: access_unit.duration_ns,
         pts_ms: access_unit.pts_ms,
         duration_ms: access_unit.duration_ms,
         has_annex_b_start_codes: access_unit.stats.has_annex_b_start_codes,
@@ -1904,7 +1741,7 @@ fn native_vulkan_h265_access_unit_snapshot(
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_sps_short_term_ref_pic_sets_supported(
     ref_pic_sets: &[NativeVulkanH265ShortTermRefPicSetSnapshot],
 ) -> bool {
@@ -1924,28 +1761,28 @@ fn native_vulkan_h265_sps_short_term_ref_pic_sets_supported(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_sps_long_term_ref_pics_supported(
     ref_pics: &[NativeVulkanH265LongTermRefPicSpsSnapshot],
 ) -> bool {
     ref_pics.len() <= 32
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_h264_sps_max_frame_num(sps: &NativeVulkanH264SpsSnapshot) -> u32 {
     1u32.checked_shl(sps.log2_max_frame_num_minus4.saturating_add(4))
         .unwrap_or(u32::MAX)
         .max(1)
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_h265_sps_max_pic_order_cnt_lsb(sps: &NativeVulkanH265SpsSnapshot) -> u32 {
     1u32.checked_shl(sps.log2_max_pic_order_cnt_lsb_minus4.saturating_add(4))
         .unwrap_or(u32::MAX)
         .max(1)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_first_slice_probe_snapshot(
     access_unit: &[u8],
     parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
@@ -2076,7 +1913,7 @@ fn native_vulkan_h265_first_slice_probe_snapshot(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_read_long_term_references(
     bits: &mut NativeVulkanH265BitReader<'_>,
     sps: &NativeVulkanH265SpsSnapshot,
@@ -2167,7 +2004,7 @@ fn native_vulkan_h265_read_long_term_references(
     Ok(references)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_ceil_log2(value: u32) -> u32 {
     if value <= 1 {
         0
@@ -2176,7 +2013,7 @@ fn native_vulkan_h265_ceil_log2(value: u32) -> u32 {
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_h265_parameter_sets(
     access_unit: &[u8],
 ) -> Result<NativeVulkanH265ParameterSetSnapshot, String> {
@@ -2349,7 +2186,7 @@ fn native_vulkan_parse_h265_parameter_sets(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_dec_pic_buf_mgr_snapshot(
     dec_pic_buf_mgr: &NativeVulkanH265ParsedDecPicBufMgr,
 ) -> NativeVulkanH265DecPicBufMgrSnapshot {
@@ -2360,7 +2197,7 @@ fn native_vulkan_h265_dec_pic_buf_mgr_snapshot(
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_vui_snapshot(vui: &NativeVulkanH265ParsedVui) -> NativeVulkanH265VuiSnapshot {
     NativeVulkanH265VuiSnapshot {
         aspect_ratio_info_present_flag: vui.aspect_ratio_info_present_flag,
@@ -2405,7 +2242,7 @@ fn native_vulkan_h265_vui_snapshot(vui: &NativeVulkanH265ParsedVui) -> NativeVul
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_h264_parameter_sets(
     access_unit: &[u8],
 ) -> Result<NativeVulkanH264ParameterSetSnapshot, String> {
@@ -2444,7 +2281,7 @@ fn native_vulkan_parse_h264_parameter_sets(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_h264_sps(payload: &[u8]) -> Result<NativeVulkanH264SpsSnapshot, String> {
     let rbsp = native_vulkan_h264_rbsp(payload)?;
     if rbsp.len() < 4 {
@@ -2618,7 +2455,7 @@ fn native_vulkan_parse_h264_sps(payload: &[u8]) -> Result<NativeVulkanH264SpsSna
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_h264_pps(
     payload: &[u8],
     sps: &NativeVulkanH264SpsSnapshot,
@@ -2698,7 +2535,7 @@ fn native_vulkan_parse_h264_pps(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h264_sps_dimensions(
     chroma_format_idc: u32,
     separate_colour_plane_flag: bool,
@@ -2758,7 +2595,7 @@ fn native_vulkan_h264_sps_dimensions(
     ))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h264_skip_scaling_list(
     bits: &mut NativeVulkanH264BitReader<'_>,
     size: u32,
@@ -2777,7 +2614,7 @@ fn native_vulkan_h264_skip_scaling_list(
     Ok(())
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h264_chroma_format_label(chroma_format_idc: u32) -> &'static str {
     match chroma_format_idc {
         0 => "monochrome",
@@ -2788,7 +2625,7 @@ fn native_vulkan_h264_chroma_format_label(chroma_format_idc: u32) -> &'static st
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h264_level_idc_byte_label(level_idc: u8) -> Option<&'static str> {
     match level_idc {
         10 => Some("1.0"),
@@ -2818,7 +2655,7 @@ pub(super) fn native_vulkan_h264_u8(value: u32, label: &'static str) -> Result<u
     u8::try_from(value).map_err(|_| format!("{label}={value} exceeds u8 range"))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h264_u16(value: u32, label: &'static str) -> Result<u16, String> {
     u16::try_from(value).map_err(|_| format!("{label}={value} exceeds u16 range"))
 }
@@ -2827,7 +2664,7 @@ pub(super) fn native_vulkan_h264_i8(value: i32, label: &'static str) -> Result<i
     i8::try_from(value).map_err(|_| format!("{label}={value} exceeds i8 range"))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h264_rbsp(payload: &[u8]) -> Result<Vec<u8>, String> {
     if payload.is_empty() {
         return Err("H.264 NAL payload is empty".to_owned());
@@ -2849,7 +2686,7 @@ fn native_vulkan_h264_rbsp(payload: &[u8]) -> Result<Vec<u8>, String> {
     Ok(rbsp)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_rbsp_more_data(bytes: &[u8], bit_offset: usize) -> bool {
     let total_bits = bytes.len().saturating_mul(8);
     if bit_offset >= total_bits {
@@ -2866,7 +2703,7 @@ fn native_vulkan_rbsp_more_data(bytes: &[u8], bit_offset: usize) -> bool {
     last_one_bit.is_some_and(|last| bit_offset < last)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Copy)]
 struct NativeVulkanH264NalPayload<'a> {
     nal_type: u8,
@@ -2875,7 +2712,7 @@ struct NativeVulkanH264NalPayload<'a> {
     payload: &'a [u8],
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h264_nal_payloads(bytes: &[u8]) -> Vec<NativeVulkanH264NalPayload<'_>> {
     let mut payloads = Vec::new();
     let mut offset = 0usize;
@@ -2903,7 +2740,7 @@ fn native_vulkan_h264_nal_payloads(bytes: &[u8]) -> Vec<NativeVulkanH264NalPaylo
     payloads
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h264_annex_b_slice_offset(
     start_code_offset: usize,
     payload_offset: usize,
@@ -2914,13 +2751,13 @@ fn native_vulkan_h264_annex_b_slice_offset(
         .unwrap_or(start_code_offset)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 struct NativeVulkanH264BitReader<'a> {
     bytes: &'a [u8],
     bit_offset: usize,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 impl<'a> NativeVulkanH264BitReader<'a> {
     fn new(bytes: &'a [u8]) -> Self {
         Self {
@@ -2984,7 +2821,7 @@ impl<'a> NativeVulkanH264BitReader<'a> {
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h264_chroma_array_type(sps: &NativeVulkanH264SpsSnapshot) -> u32 {
     if sps.separate_colour_plane_flag {
         0
@@ -2993,7 +2830,7 @@ fn native_vulkan_h264_chroma_array_type(sps: &NativeVulkanH264SpsSnapshot) -> u3
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h264_skip_pred_weight_table(
     bits: &mut NativeVulkanH264BitReader<'_>,
     parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
@@ -3029,7 +2866,7 @@ fn native_vulkan_h264_skip_pred_weight_table(
     Ok(())
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h264_skip_pred_weight_table_entries(
     bits: &mut NativeVulkanH264BitReader<'_>,
     count: u32,
@@ -3056,7 +2893,7 @@ fn native_vulkan_h264_skip_pred_weight_table_entries(
     Ok(())
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h264_read_ref_pic_list_modifications(
     bits: &mut NativeVulkanH264BitReader<'_>,
     flag_label: &'static str,
@@ -3099,7 +2936,7 @@ struct NativeVulkanH265NalPayload<'a> {
     start_code_offset: usize,
     slice_segment_offset: usize,
     payload_offset: usize,
-    #[cfg_attr(not(feature = "native-vulkan-gst-video"), allow(dead_code))]
+    #[cfg_attr(not(feature = "native-vulkan-video"), allow(dead_code))]
     payload: &'a [u8],
 }
 
@@ -3141,7 +2978,7 @@ fn native_vulkan_h265_annex_b_slice_segment_offset(
         .unwrap_or(start_code_offset)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeVulkanH265FirstSliceDecodeInfo {
     nal_type: u8,
@@ -3155,7 +2992,7 @@ struct NativeVulkanH265FirstSliceDecodeInfo {
     irap: bool,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeVulkanH264FirstFrameDecodeInfo {
     nal_type: u8,
@@ -3190,7 +3027,7 @@ struct NativeVulkanH264FirstFrameDecodeInfo {
     irap: bool,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h264_first_frame_decode_info(
     access_unit: &[u8],
     parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
@@ -3211,7 +3048,7 @@ fn native_vulkan_h264_first_frame_decode_info(
     Ok(picture)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h264_picture_decode_info(
     access_unit: &[u8],
     parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
@@ -3252,7 +3089,7 @@ fn native_vulkan_h264_picture_decode_info(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h264_slice_decode_info(
     slice: &NativeVulkanH264NalPayload<'_>,
     parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
@@ -3487,7 +3324,7 @@ fn native_vulkan_h264_slice_decode_info(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_first_slice_decode_info(
     access_unit: &[u8],
     parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
@@ -3551,7 +3388,7 @@ fn native_vulkan_h265_first_slice_decode_info(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeVulkanH265ParsedVps {
     id: u8,
@@ -3567,7 +3404,7 @@ struct NativeVulkanH265ParsedVps {
     num_ticks_poc_diff_one_minus1: Option<u32>,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeVulkanH265ParsedDecPicBufMgr {
     sub_layer_ordering_info_present_flag: bool,
@@ -3576,7 +3413,7 @@ struct NativeVulkanH265ParsedDecPicBufMgr {
     max_num_reorder_pics: [u8; 7],
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeVulkanH265ParsedSps {
     id: u32,
@@ -3620,7 +3457,7 @@ struct NativeVulkanH265ParsedSps {
     sps_extension_present_flag: bool,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeVulkanH265ParsedVui {
     aspect_ratio_info_present_flag: bool,
@@ -3664,7 +3501,7 @@ struct NativeVulkanH265ParsedVui {
     log2_max_mv_length_vertical: u8,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeVulkanH265ParsedPps {
     id: u32,
@@ -3706,7 +3543,7 @@ struct NativeVulkanH265ParsedPps {
     pps_extension_present_flag: bool,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeVulkanH265ParsedProfileTierLevel {
     profile_idc: u8,
@@ -3719,7 +3556,7 @@ struct NativeVulkanH265ParsedProfileTierLevel {
     level_idc: u8,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 impl NativeVulkanH265ParsedProfileTierLevel {
     fn main_compatible(&self) -> bool {
         self.profile_idc == 1 || self.profile_compatibility_flags[1]
@@ -3730,7 +3567,7 @@ impl NativeVulkanH265ParsedProfileTierLevel {
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_h265_dec_pic_buf_mgr(
     bits: &mut NativeVulkanH265BitReader<'_>,
     max_sub_layers_minus1: u8,
@@ -3774,7 +3611,7 @@ fn native_vulkan_parse_h265_dec_pic_buf_mgr(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_h265_vps(payload: &[u8]) -> Result<NativeVulkanH265ParsedVps, String> {
     let rbsp = native_vulkan_h265_rbsp(payload)?;
     let mut bits = NativeVulkanH265BitReader::new(&rbsp);
@@ -3830,7 +3667,7 @@ fn native_vulkan_parse_h265_vps(payload: &[u8]) -> Result<NativeVulkanH265Parsed
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_h265_sps(payload: &[u8]) -> Result<NativeVulkanH265ParsedSps, String> {
     let rbsp = native_vulkan_h265_rbsp(payload)?;
     let mut bits = NativeVulkanH265BitReader::new(&rbsp);
@@ -3984,7 +3821,7 @@ fn native_vulkan_parse_h265_sps(payload: &[u8]) -> Result<NativeVulkanH265Parsed
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_h265_pps(payload: &[u8]) -> Result<NativeVulkanH265ParsedPps, String> {
     let rbsp = native_vulkan_h265_rbsp(payload)?;
     let mut bits = NativeVulkanH265BitReader::new(&rbsp);
@@ -4108,7 +3945,7 @@ fn native_vulkan_parse_h265_pps(payload: &[u8]) -> Result<NativeVulkanH265Parsed
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_h265_vui_parameters(
     bits: &mut NativeVulkanH265BitReader<'_>,
     max_sub_layers_minus1: u8,
@@ -4293,7 +4130,7 @@ fn native_vulkan_parse_h265_vui_parameters(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_skip_hrd_parameters(
     bits: &mut NativeVulkanH265BitReader<'_>,
     common_inf_present_flag: bool,
@@ -4360,7 +4197,7 @@ fn native_vulkan_h265_skip_hrd_parameters(
     Ok(())
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_skip_sub_layer_hrd_parameters(
     bits: &mut NativeVulkanH265BitReader<'_>,
     cpb_cnt_minus1: u32,
@@ -4378,7 +4215,7 @@ fn native_vulkan_h265_skip_sub_layer_hrd_parameters(
     Ok(())
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_h265_profile_tier_level(
     bits: &mut NativeVulkanH265BitReader<'_>,
     max_sub_layers_minus1: u8,
@@ -4434,7 +4271,7 @@ fn native_vulkan_parse_h265_profile_tier_level(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_skip_scaling_list_data(
     bits: &mut NativeVulkanH265BitReader<'_>,
 ) -> Result<(), String> {
@@ -4460,7 +4297,7 @@ fn native_vulkan_h265_skip_scaling_list_data(
     Ok(())
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_read_short_term_ref_pic_set(
     bits: &mut NativeVulkanH265BitReader<'_>,
     st_rps_idx: u32,
@@ -4693,7 +4530,7 @@ fn native_vulkan_h265_read_short_term_ref_pic_set(
     ))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[allow(clippy::too_many_arguments)]
 fn native_vulkan_h265_short_term_ref_pic_set_snapshot(
     inter_ref_pic_set_prediction_flag: bool,
@@ -4757,7 +4594,7 @@ pub(super) fn native_vulkan_h265_u16(value: u32, label: &'static str) -> Result<
     u16::try_from(value).map_err(|_| format!("{label}={value} exceeds u16 range"))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_rbsp(payload: &[u8]) -> Result<Vec<u8>, String> {
     if payload.len() < 2 {
         return Err("H.265 NAL payload is too short".to_owned());
@@ -4779,13 +4616,13 @@ fn native_vulkan_h265_rbsp(payload: &[u8]) -> Result<Vec<u8>, String> {
     Ok(rbsp)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 struct NativeVulkanH265BitReader<'a> {
     bytes: &'a [u8],
     bit_offset: usize,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 impl<'a> NativeVulkanH265BitReader<'a> {
     fn new(bytes: &'a [u8]) -> Self {
         Self {
@@ -4859,7 +4696,7 @@ impl<'a> NativeVulkanH265BitReader<'a> {
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_profile_idc_label(profile_idc: u8) -> &'static str {
     match profile_idc {
         1 => "main",
@@ -4877,7 +4714,7 @@ fn native_vulkan_h265_profile_idc_label(profile_idc: u8) -> &'static str {
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_chroma_format_label(chroma_format_idc: u32) -> &'static str {
     match chroma_format_idc {
         0 => "monochrome",
@@ -4888,7 +4725,7 @@ fn native_vulkan_h265_chroma_format_label(chroma_format_idc: u32) -> &'static st
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_level_idc_byte_label(level_idc: u8) -> Option<&'static str> {
     match level_idc {
         30 => Some("1.0"),
@@ -4908,7 +4745,7 @@ fn native_vulkan_h265_level_idc_byte_label(level_idc: u8) -> Option<&'static str
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct NativeVulkanH265NalStats {
     bytes: u64,
@@ -4921,14 +4758,14 @@ struct NativeVulkanH265NalStats {
     nal_units: Vec<NativeVulkanH265NalUnitSnapshot>,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 impl NativeVulkanH265NalStats {
     fn parameter_sets_present(&self) -> bool {
         self.vps_count > 0 && self.sps_count > 0 && self.pps_count > 0
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct NativeVulkanH264NalStats {
     bytes: u64,
@@ -4939,14 +4776,14 @@ struct NativeVulkanH264NalStats {
     slice_count: u32,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 impl NativeVulkanH264NalStats {
     fn parameter_sets_present(&self) -> bool {
         self.sps_count > 0 && self.pps_count > 0
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct NativeVulkanAv1ObuStats {
     bytes: u64,
@@ -4965,7 +4802,7 @@ struct NativeVulkanAv1ObuStats {
     obus: Vec<NativeVulkanAv1ObuSnapshot>,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 impl NativeVulkanAv1ObuStats {
     fn sequence_header_present(&self) -> bool {
         self.sequence_header_count > 0
@@ -4977,7 +4814,7 @@ impl NativeVulkanAv1ObuStats {
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_obu_stats(bytes: &[u8]) -> Result<NativeVulkanAv1ObuStats, String> {
     let mut stats = NativeVulkanAv1ObuStats {
         bytes: bytes.len() as u64,
@@ -5082,7 +4919,7 @@ fn native_vulkan_av1_obu_stats(bytes: &[u8]) -> Result<NativeVulkanAv1ObuStats, 
     Ok(stats)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_first_frame_submit_snapshot(
     bytes: &[u8],
     obus: &[NativeVulkanAv1ObuSnapshot],
@@ -5107,7 +4944,7 @@ fn native_vulkan_av1_first_frame_submit_snapshot(
     ))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_frame_submit_from_frame_obu(
     bytes: &[u8],
     frame_obu: &NativeVulkanAv1ObuSnapshot,
@@ -5166,7 +5003,7 @@ fn native_vulkan_av1_frame_submit_from_frame_obu(
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_frame_submit_from_split_obus(
     bytes: &[u8],
     frame_header_obu: &NativeVulkanAv1ObuSnapshot,
@@ -5247,7 +5084,7 @@ fn native_vulkan_av1_frame_submit_from_split_obus(
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_frame_submit_snapshot_from_header(
     frame_header_obu: &NativeVulkanAv1ObuSnapshot,
     frame_header_payload_offset: u64,
@@ -5339,7 +5176,7 @@ fn native_vulkan_av1_frame_submit_snapshot_from_header(
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_unsupported_frame_submit_snapshot(
     frame_header_obu: &NativeVulkanAv1ObuSnapshot,
     frame_header_payload_offset: u64,
@@ -5402,7 +5239,7 @@ fn native_vulkan_av1_unsupported_frame_submit_snapshot(
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeVulkanAv1ParsedFrameHeader {
     frame_header_bytes: usize,
@@ -5462,7 +5299,7 @@ struct NativeVulkanAv1ParsedFrameHeader {
     unsupported_reason: Option<String>,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Copy)]
 struct NativeVulkanAv1ParsedFrameHeaderPrefix {
     frame_type: u8,
@@ -5491,7 +5328,7 @@ struct NativeVulkanAv1ParsedFrameHeaderPrefix {
     refresh_frame_flags: u8,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_partial_frame_header(
     bits: &NativeVulkanAv1BitReader<'_>,
     prefix: NativeVulkanAv1ParsedFrameHeaderPrefix,
@@ -5625,7 +5462,7 @@ fn native_vulkan_av1_partial_frame_header(
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeVulkanAv1ParsedQuantization {
     base_q_idx: u8,
@@ -5641,7 +5478,7 @@ struct NativeVulkanAv1ParsedQuantization {
     qm_v: u8,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeVulkanAv1ParsedSegmentation {
     enabled: bool,
@@ -5652,14 +5489,14 @@ struct NativeVulkanAv1ParsedSegmentation {
     feature_data: [[i16; 8]; 8],
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeVulkanAv1ParsedDeltaQ {
     present: bool,
     res: u8,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeVulkanAv1ParsedDeltaLf {
     present: bool,
@@ -5667,7 +5504,7 @@ struct NativeVulkanAv1ParsedDeltaLf {
     multi: bool,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeVulkanAv1ParsedLoopFilter {
     level: [u8; 4],
@@ -5680,7 +5517,7 @@ struct NativeVulkanAv1ParsedLoopFilter {
     mode_deltas: [i8; 2],
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeVulkanAv1ParsedCdef {
     damping_minus_3: u8,
@@ -5691,7 +5528,7 @@ struct NativeVulkanAv1ParsedCdef {
     uv_sec_strength: [u8; 8],
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeVulkanAv1ParsedLoopRestoration {
     frame_restoration_type: [u32; 3],
@@ -5700,14 +5537,14 @@ struct NativeVulkanAv1ParsedLoopRestoration {
     uses_chroma_lr: bool,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeVulkanAv1ParsedGlobalMotion {
     gm_type: [u8; 8],
     gm_params: [[i32; 6]; 8],
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_frame_header_for_submit(
     payload: &[u8],
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
@@ -5715,7 +5552,7 @@ fn native_vulkan_parse_av1_frame_header_for_submit(
     native_vulkan_parse_av1_frame_header_for_submit_with_context(payload, sequence_header, None)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_frame_header_for_submit_with_context(
     payload: &[u8],
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
@@ -6267,7 +6104,7 @@ fn native_vulkan_parse_av1_frame_header_for_submit_with_context(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_frame_size(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
@@ -6296,7 +6133,7 @@ fn native_vulkan_parse_av1_frame_size(
     ))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_render_size(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     frame_size: (u32, u32),
@@ -6317,7 +6154,7 @@ fn native_vulkan_parse_av1_render_size(
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_frame_size_with_refs(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
@@ -6351,7 +6188,7 @@ fn native_vulkan_parse_av1_frame_size_with_refs(
     Ok((frame_size, render_size, use_superres, coded_denom))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_superres_params(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
@@ -6379,7 +6216,7 @@ fn native_vulkan_parse_av1_superres_params(
     ))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_interpolation_filter(
     bits: &mut NativeVulkanAv1BitReader<'_>,
 ) -> Result<(vk::video::StdVideoAV1InterpolationFilter, bool), String> {
@@ -6400,7 +6237,7 @@ fn native_vulkan_parse_av1_interpolation_filter(
     Ok((filter, false))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_skip_mode_present_field_allowed(
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
     error_resilient_mode: bool,
@@ -6409,7 +6246,7 @@ fn native_vulkan_av1_skip_mode_present_field_allowed(
     sequence_header.enable_order_hint && !error_resilient_mode && frame_type == 1
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_global_motion_params(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
@@ -6481,24 +6318,24 @@ fn native_vulkan_parse_av1_global_motion_params(
     Ok(global_motion)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 const AV1_GM_ABS_TRANS_BITS: u32 = 12;
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 const AV1_GM_ABS_TRANS_ONLY_BITS: u32 = 9;
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 const AV1_GM_ABS_ALPHA_BITS: u32 = 12;
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 const AV1_GM_ALPHA_PREC_BITS: u32 = 15;
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 const AV1_GM_TRANS_PREC_BITS: u32 = 6;
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 const AV1_GM_TRANS_ONLY_PREC_BITS: u32 = 3;
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 const AV1_WARPEDMODEL_PREC_BITS: u32 = 16;
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 const AV1_SUBEXP_K: u32 = 3;
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_default_global_motion() -> NativeVulkanAv1ParsedGlobalMotion {
     let mut gm_params = [[0i32; 6]; 8];
     for params in &mut gm_params {
@@ -6511,7 +6348,7 @@ fn native_vulkan_av1_default_global_motion() -> NativeVulkanAv1ParsedGlobalMotio
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_read_global_param(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     gm_type: u8,
@@ -6553,7 +6390,7 @@ fn native_vulkan_av1_read_global_param(
         .ok_or_else(|| "AV1 global motion parameter overflow".to_owned())
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_decode_signed_subexp_with_ref(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     low: i32,
@@ -6576,7 +6413,7 @@ fn native_vulkan_av1_decode_signed_subexp_with_ref(
         .map_err(|_| format!("{label} value exceeds i32"))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_decode_unsigned_subexp_with_ref(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     mx: u32,
@@ -6593,7 +6430,7 @@ fn native_vulkan_av1_decode_unsigned_subexp_with_ref(
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_decode_subexp(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     num_syms: u32,
@@ -6619,7 +6456,7 @@ fn native_vulkan_av1_decode_subexp(
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_inverse_recenter(reference: u32, value: u32) -> Result<u32, String> {
     if value > reference.saturating_mul(2) {
         return Ok(value);
@@ -6635,7 +6472,7 @@ fn native_vulkan_av1_inverse_recenter(reference: u32, value: u32) -> Result<u32,
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeVulkanAv1ParsedTileInfo {
     tile_count: u32,
@@ -6651,7 +6488,7 @@ struct NativeVulkanAv1ParsedTileInfo {
     height_in_sbs_minus_1: Vec<u16>,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_tile_info(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
@@ -6816,7 +6653,7 @@ fn native_vulkan_parse_av1_tile_info(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_uniform_tile_sizes(total_sb: u32, tile_size_sb: u32) -> Vec<u32> {
     let tile_size_sb = tile_size_sb.max(1);
     let mut sizes = Vec::new();
@@ -6829,7 +6666,7 @@ fn native_vulkan_av1_uniform_tile_sizes(total_sb: u32, tile_size_sb: u32) -> Vec
     sizes
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_tile_axis_layout(
     sizes_in_sb: &[u32],
     mi_size_per_sb: u32,
@@ -6858,7 +6695,7 @@ fn native_vulkan_av1_tile_axis_layout(
     Ok((starts, sizes_minus_1))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_tile_group_offsets_from_payload(
     absolute_payload_base_offset: u64,
     tile_payload_offset: usize,
@@ -6955,7 +6792,7 @@ fn native_vulkan_av1_tile_group_offsets_from_payload(
     Ok((tile_offsets, tile_sizes))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_single_tile_leading_padding_bytes(
     header: &NativeVulkanAv1ParsedFrameHeader,
     tile_payload: &[u8],
@@ -6973,7 +6810,7 @@ fn native_vulkan_av1_single_tile_leading_padding_bytes(
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_quantization_params(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
@@ -7029,7 +6866,7 @@ fn native_vulkan_parse_av1_quantization_params(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_segmentation_params(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     primary_ref_frame: Option<u8>,
@@ -7096,7 +6933,7 @@ fn native_vulkan_parse_av1_segmentation_params(
     Ok(segmentation)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_zero_align_to_byte_with_reason(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     label: &'static str,
@@ -7107,7 +6944,7 @@ fn native_vulkan_av1_zero_align_to_byte_with_reason(
     Ok(None)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_delta_q_params(
     bits: &mut NativeVulkanAv1BitReader<'_>,
 ) -> Result<NativeVulkanAv1ParsedDeltaQ, String> {
@@ -7122,7 +6959,7 @@ fn native_vulkan_parse_av1_delta_q_params(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_delta_lf_params(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     delta_q_present: bool,
@@ -7144,7 +6981,7 @@ fn native_vulkan_parse_av1_delta_lf_params(
     Ok(delta_lf)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_loop_filter_params(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
@@ -7215,7 +7052,7 @@ fn native_vulkan_parse_av1_loop_filter_params(
     Ok(loop_filter)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_cdef_params(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
@@ -7258,7 +7095,7 @@ fn native_vulkan_parse_av1_cdef_params(
     Ok(cdef)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_loop_restoration_params(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
@@ -7327,14 +7164,14 @@ fn native_vulkan_parse_av1_loop_restoration_params(
     Ok(loop_restoration)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_tx_mode(
     bits: &mut NativeVulkanAv1BitReader<'_>,
 ) -> Result<bool, String> {
     bits.read_bool("tx_mode_select")
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_read_delta_q(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     label: &'static str,
@@ -7346,7 +7183,7 @@ fn native_vulkan_av1_read_delta_q(
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_read_signed_literal(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     count: u32,
@@ -7367,7 +7204,7 @@ fn native_vulkan_av1_read_signed_literal(
     i8::try_from(signed).map_err(|_| format!("{label}={signed} exceeds i8 range"))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_std_frame_restoration_type(value: u32) -> Result<u32, String> {
     match value {
         0 => Ok(vk::video::STD_VIDEO_AV1_FRAME_RESTORATION_TYPE_NONE.0 as u32),
@@ -7378,7 +7215,7 @@ fn native_vulkan_av1_std_frame_restoration_type(value: u32) -> Result<u32, Strin
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_loop_restoration_size(
     lr_unit_shift: bool,
     lr_unit_extra_shift: bool,
@@ -7397,7 +7234,7 @@ fn native_vulkan_av1_loop_restoration_size(
     u16::try_from(size).map_err(|_| format!("AV1 loop restoration size {size} exceeds u16 range"))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_ceil_log2(value: u32) -> u32 {
     if value <= 1 {
         0
@@ -7406,7 +7243,7 @@ fn native_vulkan_av1_ceil_log2(value: u32) -> u32 {
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_read_le_uint(bytes: &[u8]) -> Result<u32, ()> {
     if bytes.len() > 4 {
         return Err(());
@@ -7418,7 +7255,7 @@ fn native_vulkan_av1_read_le_uint(bytes: &[u8]) -> Result<u32, ()> {
     Ok(value)
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_sequence_header(
     payload: &[u8],
 ) -> Result<NativeVulkanAv1SequenceHeaderSnapshot, String> {
@@ -7712,7 +7549,7 @@ fn native_vulkan_parse_av1_sequence_header(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_parse_av1_color_config(
     bits: &mut NativeVulkanAv1BitReader<'_>,
     seq_profile: u8,
@@ -7817,13 +7654,13 @@ fn native_vulkan_parse_av1_color_config(
     })
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 struct NativeVulkanAv1BitReader<'a> {
     bytes: &'a [u8],
     bit_offset: usize,
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 impl<'a> NativeVulkanAv1BitReader<'a> {
     fn new(bytes: &'a [u8]) -> Self {
         Self {
@@ -7911,22 +7748,22 @@ impl<'a> NativeVulkanAv1BitReader<'a> {
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_u8(value: u32, label: &'static str) -> Result<u8, String> {
     u8::try_from(value).map_err(|_| format!("{label}={value} exceeds u8 range"))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_i8(value: u32, label: &'static str) -> Result<i8, String> {
     i8::try_from(value).map_err(|_| format!("{label}={value} exceeds i8 range"))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_u16(value: u32, label: &'static str) -> Result<u16, String> {
     u16::try_from(value).map_err(|_| format!("{label}={value} exceeds u16 range"))
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_read_leb128(bytes: &[u8]) -> Result<(u64, usize), String> {
     let mut value = 0u64;
     for (index, byte) in bytes.iter().copied().take(8).enumerate() {
@@ -7938,7 +7775,7 @@ fn native_vulkan_av1_read_leb128(bytes: &[u8]) -> Result<(u64, usize), String> {
     Err("AV1 LEB128 size field is missing terminator within 8 bytes".to_owned())
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_obu_type_label(obu_type: u8) -> &'static str {
     match obu_type {
         1 => "sequence-header",
@@ -7954,7 +7791,7 @@ fn native_vulkan_av1_obu_type_label(obu_type: u8) -> &'static str {
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_frame_type_label(frame_type: u8) -> &'static str {
     match frame_type {
         0 => "key",
@@ -7965,7 +7802,7 @@ fn native_vulkan_av1_frame_type_label(frame_type: u8) -> &'static str {
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_interpolation_filter_label(
     filter: vk::video::StdVideoAV1InterpolationFilter,
 ) -> &'static str {
@@ -7979,7 +7816,7 @@ fn native_vulkan_av1_interpolation_filter_label(
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_profile_label(profile: u8) -> &'static str {
     match profile {
         0 => "main",
@@ -7989,7 +7826,7 @@ fn native_vulkan_av1_profile_label(profile: u8) -> &'static str {
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_av1_sequence_level_idx_label(level_idx: u8) -> Option<&'static str> {
     match level_idx {
         0 => Some("2.0"),
@@ -8020,7 +7857,7 @@ fn native_vulkan_av1_sequence_level_idx_label(level_idx: u8) -> Option<&'static 
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_nal_stats(bytes: &[u8]) -> NativeVulkanH265NalStats {
     let mut stats = NativeVulkanH265NalStats {
         bytes: bytes.len() as u64,
@@ -8064,7 +7901,7 @@ fn native_vulkan_h265_nal_stats(bytes: &[u8]) -> NativeVulkanH265NalStats {
     stats
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h264_nal_stats(bytes: &[u8]) -> NativeVulkanH264NalStats {
     let mut stats = NativeVulkanH264NalStats {
         bytes: bytes.len() as u64,
@@ -8112,7 +7949,7 @@ fn native_vulkan_next_annex_b_start_code(bytes: &[u8], from: usize) -> Option<(u
     None
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h264_nal_type_label(nal_type: u8) -> &'static str {
     match nal_type {
         1 => "non-idr",
@@ -8139,7 +7976,7 @@ fn native_vulkan_h264_nal_type_label(nal_type: u8) -> &'static str {
     }
 }
 
-#[cfg(any(feature = "native-vulkan-gst-video", test))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 fn native_vulkan_h265_nal_type_label(nal_type: u8) -> &'static str {
     match nal_type {
         0 => "trail-n",
@@ -8324,7 +8161,7 @@ mod tests {
     };
     use std::path::PathBuf;
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     struct NativeVulkanTestDecodeReadbackLayout {
         format: &'static str,
         y_plane_bytes: u64,
@@ -8332,13 +8169,13 @@ mod tests {
         size: u64,
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     struct NativeVulkanTestDecodedPlaneFormats {
         y_view_format: vk::Format,
         uv_view_format: vk::Format,
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     fn native_vulkan_video_decode_readback_layout(
         format: vk::Format,
         extent: vk::Extent2D,
@@ -8363,7 +8200,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     fn native_vulkan_decoded_video_plane_formats(
         format: vk::Format,
     ) -> Option<NativeVulkanTestDecodedPlaneFormats> {
@@ -8382,7 +8219,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     fn native_vulkan_h264_reference_info_flags(
         field_pic_flag: bool,
         bottom_field_flag: bool,
@@ -8420,7 +8257,7 @@ mod tests {
         assert!(capabilities.direct_video_memory_status.contains("DMABuf"));
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn sizes_video_decode_readback_layouts_by_output_format() {
         let extent = vk::Extent2D {
@@ -8449,7 +8286,7 @@ mod tests {
         assert_eq!(p010.size, 3840 * 2160 * 3);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn chooses_decoded_plane_view_formats_by_output_format() {
         let nv12 = native_vulkan_decoded_video_plane_formats(vk::Format::G8_B8R8_2PLANE_420_UNORM)
@@ -9243,7 +9080,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_av1_reference_map_for_inter_and_show_existing_frames() {
         fn submit(
@@ -9856,7 +9693,7 @@ mod tests {
         assert_eq!(submit.frame_height, Some(368));
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn av1_temporal_unit_snapshot_uses_bootstrap_sequence_header_for_frame_only_tu() {
         fn push_bits(bits: &mut Vec<bool>, value: u32, count: u32) {
@@ -10213,7 +10050,7 @@ mod tests {
         assert!(sequence_header.vulkan_std_session_parameters_ready);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     fn h264_test_access_unit(
         index: u32,
         frame_num: u16,
@@ -10224,6 +10061,8 @@ mod tests {
             index,
             bytes: 0,
             byte_hash: 0,
+            pts_ns: Some(u64::from(index) * 4_166_667),
+            duration_ns: Some(4_166_667),
             pts_ms: Some(u64::from(index) * 4),
             duration_ms: Some(4),
             has_annex_b_start_codes: true,
@@ -10269,7 +10108,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     fn h264_test_sps(frame_mbs_only_flag: bool) -> NativeVulkanH264SpsSnapshot {
         NativeVulkanH264SpsSnapshot {
             id: 0,
@@ -10315,7 +10154,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     fn h264_test_mmco(
         memory_management_control_operation: u32,
         difference_of_pic_nums_minus1: Option<u32>,
@@ -10332,7 +10171,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     fn h264_test_long_term_l0_modification(
         long_term_pic_num: u32,
     ) -> NativeVulkanH264RefPicListModificationSnapshot {
@@ -10343,7 +10182,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn keys_h264_short_term_field_pictures_by_frame_num_and_field_kind() {
         let top_key = NativeVulkanH264ShortTermPictureKey {
@@ -10390,7 +10229,7 @@ mod tests {
         assert_eq!(keys, vec![top_key, bottom_key]);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn sets_h264_reference_info_field_flags() {
         let frame = native_vulkan_h264_reference_info_flags(false, false, false, false);
@@ -10407,7 +10246,7 @@ mod tests {
         assert_eq!(bottom.is_non_existing(), 1);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_complementary_field_pair_without_frame_num_gap() {
         let mut access_units = vec![
@@ -10454,7 +10293,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn chooses_h264_picture_layout_candidates_from_sps_and_field_window() {
         assert_eq!(
@@ -10478,7 +10317,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn finds_h264_recovery_offset_after_non_idr_prefix() {
         let access_units = vec![
@@ -10499,7 +10338,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn chooses_minimum_h264_dpb_slots_for_ippp_ready_prefix() {
         let access_units = vec![
@@ -10536,7 +10375,7 @@ mod tests {
         assert_eq!(plan[2].references[0].source_access_unit_index, Some(1));
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_multi_reference_ippp_ready_prefix() {
         let mut access_units = vec![
@@ -10590,7 +10429,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_references_with_full_pic_order_count_pair() {
         let mut access_units = vec![
@@ -10607,7 +10446,7 @@ mod tests {
         assert_eq!(plan[1].references[0].pic_order_cnt, [0, 2]);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_short_term_ref_list_modification_p_slice() {
         let mut access_units = vec![
@@ -10632,7 +10471,7 @@ mod tests {
         assert_eq!(plan[2].references[0].source_access_unit_index, Some(0));
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn computes_h264_short_term_pic_num_across_frame_num_wrap() {
         assert_eq!(native_vulkan_h264_short_term_pic_num(15, 0, 16), -1);
@@ -10641,7 +10480,7 @@ mod tests {
         assert_eq!(native_vulkan_h264_short_term_pic_num(1, 1, 16), 1);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn computes_h264_field_pic_num_for_same_and_opposite_fields() {
         let top_key = NativeVulkanH264ShortTermPictureKey {
@@ -10677,7 +10516,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn computes_h264_field_long_term_pic_num_for_same_and_opposite_fields() {
         let top_key = NativeVulkanH264LongTermPictureKey {
@@ -10721,7 +10560,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_short_term_default_list_by_pic_num_across_wrap() {
         let mut access_units = vec![
@@ -10748,7 +10587,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_short_term_ref_list_modification_by_pic_num_across_wrap() {
         let mut access_units = vec![
@@ -10772,7 +10611,7 @@ mod tests {
         assert_eq!(plan[2].references[0].source_access_unit_index, Some(1));
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_short_term_ref_list_increment_modification_by_pic_num_across_wrap() {
         let mut access_units = vec![
@@ -10796,7 +10635,7 @@ mod tests {
         assert_eq!(plan[2].references[0].source_access_unit_index, Some(1));
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn rejects_h264_frame_num_gap_when_sps_disallows_gaps() {
         let access_units = vec![
@@ -10818,7 +10657,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn infers_h264_non_existing_short_term_reference_for_allowed_gap() {
         let access_units = vec![
@@ -10838,7 +10677,7 @@ mod tests {
         assert_eq!(plan[1].references[0].source_access_unit_index, None);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn infers_h264_non_existing_short_term_reference_across_u16_frame_num_wrap() {
         let access_units = vec![
@@ -10855,7 +10694,7 @@ mod tests {
         assert!(plan[1].references[0].non_existing);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn slides_h264_inferred_non_existing_references_through_short_term_window() {
         let access_units = vec![
@@ -10882,7 +10721,7 @@ mod tests {
         assert_eq!(plan[1].dropped_reference_frame_nums, vec![1]);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_adaptive_marking_short_term_unused_for_reference() {
         let mut access_units = vec![
@@ -10923,7 +10762,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_mmco1_short_term_unused_across_frame_num_wrap() {
         let mut access_units = vec![
@@ -10948,7 +10787,7 @@ mod tests {
         assert_eq!(plan[5].dropped_reference_frame_nums, vec![11]);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_field_mmco1_drops_only_target_field() {
         let mut access_units = vec![
@@ -10991,7 +10830,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_long_term_reference_marking_and_ref_list_modification() {
         let mut access_units = vec![
@@ -11040,7 +10879,7 @@ mod tests {
         assert_eq!(plan[3].dropped_long_term_frame_indices, vec![0]);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_field_long_term_ref_list_and_mmco2_by_long_term_pic_num() {
         let mut access_units = vec![
@@ -11095,7 +10934,7 @@ mod tests {
         assert_eq!(plan[4].dropped_long_term_frame_indices, vec![2]);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_idr_long_term_reference_flag() {
         let mut access_units = vec![
@@ -11120,7 +10959,7 @@ mod tests {
         assert_eq!(plan[1].references[0].long_term_frame_idx, Some(0));
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn slides_h264_short_term_window_with_existing_long_term_reference() {
         let mut access_units = vec![
@@ -11160,7 +10999,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_mmco6_current_picture_as_long_term_reference() {
         let mut access_units = vec![
@@ -11186,7 +11025,7 @@ mod tests {
         assert_eq!(plan[2].references[0].source_access_unit_index, Some(1));
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_mmco4_drops_long_term_references_above_limit() {
         let mut access_units = vec![
@@ -11219,7 +11058,7 @@ mod tests {
         assert_eq!(plan[3].dropped_long_term_frame_indices, vec![2]);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_mmco5_clears_all_existing_references_before_current_picture() {
         let mut access_units = vec![
@@ -11242,7 +11081,7 @@ mod tests {
         assert_eq!(plan[3].references[0].source_access_unit_index, Some(2));
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_long_term_index_replacement() {
         let mut access_units = vec![
@@ -11273,7 +11112,7 @@ mod tests {
         assert_eq!(plan[3].references[0].source_access_unit_index, Some(1));
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_non_reference_pictures_as_scratch_outputs() {
         let mut access_units = vec![
@@ -11307,7 +11146,7 @@ mod tests {
         assert_eq!(plan[3].references[0].source_access_unit_index, Some(1));
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_default_b_slice_short_term_references() {
         let mut access_units = vec![
@@ -11357,7 +11196,7 @@ mod tests {
         assert_eq!(plan[3].references[0].source_access_unit_index, Some(1));
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h264_b_slice_l1_short_term_ref_list_modification() {
         let mut access_units = vec![
@@ -11452,7 +11291,7 @@ mod tests {
         assert_eq!(payloads[1].payload_offset, 10);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     fn h265_test_access_unit(
         index: u32,
         poc: u32,
@@ -11492,6 +11331,8 @@ mod tests {
             index,
             bytes: 0,
             byte_hash: 0,
+            pts_ns: Some(u64::from(index) * 4_166_667),
+            duration_ns: Some(4_166_667),
             pts_ms: Some(u64::from(index) * 4),
             duration_ms: Some(4),
             has_annex_b_start_codes: true,
@@ -11522,7 +11363,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn maps_h265_sps_long_term_refs_to_vulkan_std() {
         let std_refs =
@@ -11544,7 +11385,7 @@ mod tests {
         assert_eq!(std_refs.lt_ref_pic_poc_lsb_sps[1], 9);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_h265_long_term_reference_by_poc_lsb() {
         let mut access_units = vec![
@@ -11585,7 +11426,7 @@ mod tests {
         assert_eq!(&lt_curr[1..], &[0xff; 7]);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn counts_h265_mixed_short_and_long_term_active_references() {
         let mut access_units = vec![
@@ -11625,7 +11466,7 @@ mod tests {
         assert_eq!(plan[2].available_reference_count, 2);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn h265_begin_slots_preserve_current_long_term_reference_flags() {
         let active_refs = vec![
@@ -11669,7 +11510,7 @@ mod tests {
         assert_eq!(reset_slot_1.1, None);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn parses_predicted_h265_short_term_ref_pic_set() {
         fn push_bits(bits: &mut Vec<bool>, value: u32, count: u32) {
@@ -11757,7 +11598,7 @@ mod tests {
         assert_eq!(std_rps.num_positive_pics, 1);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn marks_h265_self_evicted_reference_unready() {
         let access_units = vec![
@@ -11776,7 +11617,7 @@ mod tests {
         assert!(!plan[1].references[0].available);
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn keeps_h265_b_frame_references_when_reusing_full_dpb() {
         let access_units = vec![
@@ -11805,7 +11646,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn chooses_minimum_h265_dpb_slots_by_reference_distance() {
         let access_units = vec![
@@ -11830,7 +11671,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "native-vulkan-gst-video")]
+    #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn unwraps_h265_poc_lsb_across_continuous_stream() {
         let mut access_units = Vec::new();
@@ -11872,7 +11713,7 @@ mod tests {
         );
         assert!(contract.video_interop.avoids_default_rgba_upload);
         assert_eq!(
-            contract.video_pipeline.first_reference,
+            contract.video_pipeline.reference,
             "FFmpeg packet/frame/clock model"
         );
         assert_eq!(contract.video_pipeline.stages.len(), 10);

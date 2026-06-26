@@ -136,6 +136,8 @@ pub fn native_vulkan_extract_h264_ready_prefix_for_vulkanalia(
             entry: entry.clone(),
             slice_offsets: first_slice.slice_offsets.clone(),
             first_slice,
+            pts_ns: access_unit.pts_ns,
+            duration_ns: access_unit.duration_ns,
             duration_ms: access_unit.duration_ms,
             access_unit_payload: NativeVulkanEncodedAccessUnitPayload::owned(payload),
         });
@@ -178,7 +180,7 @@ pub fn native_vulkan_extract_av1_sequence_header_for_vulkanalia(
     })
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 pub fn native_vulkan_extract_av1_decode_frames_for_vulkanalia(
     source: PathBuf,
     codec: NativeVulkanVideoSessionCodec,
@@ -532,7 +534,7 @@ pub fn native_vulkan_extract_av1_decode_frames_for_vulkanalia(
     })
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_av1_frame_submit_input_from_temporal_unit(
     sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
     active_dpb_refs: &mut [Option<super::NativeVulkanAv1ActiveDpbReference>],
@@ -801,7 +803,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_av1_frame_sub
     Ok(frame)
 }
 
-#[cfg(not(feature = "native-vulkan-gst-video"))]
+#[cfg(not(feature = "native-vulkan-video"))]
 pub fn native_vulkan_extract_av1_decode_frames_for_vulkanalia(
     _source: PathBuf,
     _codec: NativeVulkanVideoSessionCodec,
@@ -809,11 +811,11 @@ pub fn native_vulkan_extract_av1_decode_frames_for_vulkanalia(
     _frame_count: u32,
 ) -> Result<NativeVulkanVulkanaliaAv1DecodeFrameBatchInput, NativeVulkanError> {
     Err(NativeVulkanError::Video(
-        "Vulkanalia AV1 decode-frame extraction requires native-vulkan-gst-video".to_owned(),
+        "Vulkanalia AV1 decode-frame extraction requires native-vulkan-video".to_owned(),
     ))
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_vulkanalia_av1_reference_info_from_active(
     slot_index: i32,
     reference: super::NativeVulkanAv1ActiveDpbReference,
@@ -833,7 +835,7 @@ fn native_vulkan_vulkanalia_av1_reference_info_from_active(
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_vulkanalia_av1_reference_info_from_decode_info(
     slot_index: i32,
     decode_info: &super::NativeVulkanAv1FirstFrameDecodeInfo,
@@ -855,7 +857,7 @@ fn native_vulkan_vulkanalia_av1_reference_info_from_decode_info(
     }
 }
 
-#[cfg(feature = "native-vulkan-gst-video")]
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_vulkanalia_update_av1_active_dpb_refs_after_decode(
     active_dpb_refs: &mut [Option<super::NativeVulkanAv1ActiveDpbReference>],
     entry: &super::NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
@@ -1039,6 +1041,8 @@ pub fn native_vulkan_extract_h265_ready_prefix_for_vulkanalia(
         frames.push(NativeVulkanVulkanaliaH265ReadyPrefixFrameInput {
             entry: entry.clone(),
             first_slice,
+            pts_ns: access_unit.pts_ns,
+            duration_ns: access_unit.duration_ns,
             duration_ms: access_unit.duration_ms,
             access_unit_payload: NativeVulkanEncodedAccessUnitPayload::owned(access_unit_payload),
             slice_segment_offset,

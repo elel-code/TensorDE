@@ -13,14 +13,6 @@ impl NativeVulkanAudioOutputMode {
             Self::Auto => "auto",
         }
     }
-
-    #[cfg(feature = "native-vulkan-gst-video")]
-    pub(super) fn pipeline_label(self) -> &'static str {
-        match self {
-            Self::ClockOnly => "qtdemux-aacparse-avdec_aac-appsink-clock-probe",
-            Self::Auto => "qtdemux-aacparse-avdec_aac-tee-appsink-autoaudiosink",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

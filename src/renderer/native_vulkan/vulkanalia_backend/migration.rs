@@ -86,7 +86,7 @@ pub fn native_vulkan_vulkanalia_migration_contract() -> NativeVulkanVulkanaliaMi
                 kind: NativeVulkanVulkanaliaMigrationStageKind::ExternalMemoryImport,
                 legacy_boundary: "DMABuf/DRM modifier import, external semaphore fd import and memory type selection",
                 vulkanalia_target_module: "vulkanalia_backend/external_memory.rs",
-                validation_gate: "gst-dma decoded-frame route reports import/display handoff without CPU frame copies when the driver supports it",
+                validation_gate: "direct Vulkan Video decoded-image route reports render/present handoff without CPU frame copies",
             },
             NativeVulkanVulkanaliaMigrationStage {
                 order: 7,
