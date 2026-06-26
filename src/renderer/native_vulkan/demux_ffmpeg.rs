@@ -5,7 +5,10 @@
 //! bounded PacketQueue, `references/ffmpeg/fftools/ffplay.c:3154-3215` filters
 //! the target stream in the read loop, and
 //! `references/ffmpeg/libavcodec/bsf.h:162-222` defines the
-//! send-packet/drain-packet BSF contract used here.
+//! send-packet/drain-packet BSF contract used for H.264/H.265. AV1 follows
+//! `references/ffmpeg/libavcodec/av1dec.c:1456-1474`: container packets are read
+//! directly as OBU packets instead of being forced through the raw AV1 demuxer's
+//! `av1_frame_merge` Temporal Delimiter contract.
 
 use std::ffi::{CStr, CString};
 use std::fmt;
@@ -115,7 +118,7 @@ impl NativeVulkanFfmpegCodec {
         match self {
             Self::H264 => c"h264_mp4toannexb",
             Self::H265 => c"hevc_mp4toannexb",
-            Self::Av1 => c"av1_frame_merge",
+            Self::Av1 => c"",
         }
     }
 

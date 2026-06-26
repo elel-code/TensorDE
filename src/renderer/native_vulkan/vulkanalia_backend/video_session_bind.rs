@@ -349,8 +349,6 @@ pub(super) struct NativeVulkanVulkanaliaAv1StreamingDecodeInput<'a> {
 pub(super) struct NativeVulkanVulkanaliaAv1StreamingFrameInput {
     pub(super) entry: NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
     pub(super) frame: Option<NativeVulkanVulkanaliaAv1FrameSubmitInput>,
-    pub(super) pts_ns: Option<u64>,
-    pub(super) duration_ns: Option<u64>,
     pub(super) pts_ms: Option<u64>,
     pub(super) duration_ms: Option<u64>,
     pub(super) access_unit_payload: NativeVulkanEncodedAccessUnitPayload,
@@ -628,10 +626,9 @@ fn native_vulkan_vulkanalia_av1_display_order_key(
         (i64::try_from(pts_ns).unwrap_or(i64::MAX), "pts-ns")
     } else if let Some(pts_ms) = pts_ms {
         (i64::try_from(pts_ms).unwrap_or(i64::MAX), "pts-ms")
-    } else if let Some(order_hint) = entry.order_hint {
-        (i64::from(order_hint), "av1-order-hint")
     } else {
-        (i64::from(frame_index), "decode-submit-index")
+        let _ = entry;
+        (i64::from(frame_index), "display-frame-index")
     }
 }
 
@@ -1185,8 +1182,8 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
             let (display_order_key, display_order_key_source) =
                 native_vulkan_vulkanalia_av1_display_order_key(
                     &frame.entry,
-                    frame.pts_ns,
-                    frame.pts_ms,
+                    None,
+                    None,
                     displayed_frame_count,
                 );
 
@@ -1215,10 +1212,10 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
                     after_frame_submitted(
                         displayed_frame_count,
                         sampled_array_layer,
-                        frame.pts_ns,
-                        frame.duration_ns,
-                        frame.pts_ms,
-                        frame.duration_ms,
+                        None,
+                        None,
+                        None,
+                        None,
                         display_order_key,
                         display_order_key_source,
                         decode_complete_value_for_frame,
@@ -1382,10 +1379,10 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
                     after_frame_submitted(
                         displayed_frame_count,
                         sampled_array_layer,
-                        frame.pts_ns,
-                        frame.duration_ns,
-                        frame.pts_ms,
-                        frame.duration_ms,
+                        None,
+                        None,
+                        None,
+                        None,
                         display_order_key,
                         display_order_key_source,
                         decode_complete_value_for_frame,

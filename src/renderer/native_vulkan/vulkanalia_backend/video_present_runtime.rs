@@ -700,8 +700,6 @@ fn native_vulkan_vulkanalia_next_av1_streaming_frame(
         return Ok(NativeVulkanVulkanaliaAv1StreamingFrameInput {
             entry,
             frame: None,
-            pts_ns,
-            duration_ns: packet.snapshot.duration_ns,
             pts_ms,
             duration_ms: packet.snapshot.duration_ms,
             access_unit_payload: packet.access_unit.payload,
@@ -728,8 +726,6 @@ fn native_vulkan_vulkanalia_next_av1_streaming_frame(
     Ok(NativeVulkanVulkanaliaAv1StreamingFrameInput {
         entry,
         frame: Some(frame),
-        pts_ns,
-        duration_ns: packet.snapshot.duration_ns,
         pts_ms,
         duration_ms: packet.snapshot.duration_ms,
         access_unit_payload: packet.access_unit.payload,

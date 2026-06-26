@@ -159,8 +159,7 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
             ))
         })?;
         if self.queued.len() < self.capacity {
-            let refill_may_loop = loop_on_eos && self.queued.is_empty();
-            let _ = self.try_fill_one(refill_may_loop)?;
+            let _ = self.try_fill_one(loop_on_eos)?;
         }
         Ok(packet)
     }
@@ -685,13 +684,86 @@ mod tests {
         assert_eq!(recovered.access_unit.pts_ms(), Some(8));
         assert_eq!(recovered.source_loop_index, 1);
         assert_eq!(queue.loop_skip_access_units, 2);
-        assert_eq!(queue.loop_skipped_access_units, 2);
+        assert_eq!(queue.loop_skipped_access_units, 4);
 
         let snapshot = queue.runtime_snapshot();
         assert_eq!(snapshot.loop_skip_packets, 2);
-        assert_eq!(snapshot.loop_skipped_packets, 2);
-        assert_eq!(snapshot.current_serial, 1);
+        assert_eq!(snapshot.loop_skipped_packets, 4);
+        assert_eq!(snapshot.current_serial, 2);
         assert_eq!(snapshot.front_serial, Some(1));
+        assert_eq!(snapshot.back_serial, Some(2));
         assert_eq!(snapshot.front_pts_ms, Some(12));
+    }
+
+    #[test]
+    fn packet_queue_refill_honors_loop_before_queue_is_empty() {
+        let bootstrap = vec![
+            TestAccessUnit {
+                bytes: vec![1, 2, 3],
+                pts_ms: Some(0),
+                parameter_sets: true,
+                random_access: true,
+            },
+            TestAccessUnit {
+                bytes: vec![4, 5, 6],
+                pts_ms: Some(4),
+                parameter_sets: false,
+                random_access: false,
+            },
+            TestAccessUnit {
+                bytes: vec![7, 8, 9],
+                pts_ms: Some(8),
+                parameter_sets: false,
+                random_access: false,
+            },
+        ];
+        let loop_access_units = vec![
+            TestAccessUnit {
+                bytes: vec![1, 2, 3],
+                pts_ms: Some(0),
+                parameter_sets: true,
+                random_access: true,
+            },
+            TestAccessUnit {
+                bytes: vec![10],
+                pts_ms: Some(4),
+                parameter_sets: false,
+                random_access: false,
+            },
+        ];
+        let mut queue = native_vulkan_start_streaming_packet_queue_from_frontend(
+            Box::new(TestLoopingPacketFrontend::new(bootstrap, loop_access_units)),
+            3,
+        )
+        .expect("packet queue");
+
+        assert_eq!(
+            queue.next_packet(true).expect("packet 0").source_loop_index,
+            0
+        );
+        assert_eq!(
+            queue.next_packet(true).expect("packet 1").source_loop_index,
+            0
+        );
+        assert_eq!(
+            queue.next_packet(true).expect("packet 2").source_loop_index,
+            0
+        );
+        assert_eq!(
+            queue
+                .next_packet(true)
+                .expect("loop packet")
+                .source_loop_index,
+            1
+        );
+        assert_eq!(
+            queue
+                .next_packet(true)
+                .expect("same-loop packet")
+                .source_loop_index,
+            1
+        );
+        assert!(queue.eos_count >= 1);
+        assert!(queue.loop_count >= 1);
     }
 }

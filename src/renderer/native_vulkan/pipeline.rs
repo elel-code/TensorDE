@@ -83,7 +83,7 @@ pub fn native_vulkan_video_pipeline_contract() -> NativeVulkanVideoPipelineContr
                 kind: NativeVulkanVideoPipelineStageKind::BitstreamFilter,
                 owner: "ffmpeg-frontend",
                 boundary: "codec bitstream filters normalize access units/temporal units and preserve timestamps",
-                ffmpeg_reference: "h264_mp4toannexb, hevc_mp4toannexb and av1_frame_merge BSF send/drain contract",
+                ffmpeg_reference: "h264_mp4toannexb/hevc_mp4toannexb BSF send-drain contract; AV1 container packets follow libavcodec/av1dec.c ff_cbs_read_packet",
             },
             NativeVulkanVideoPipelineStageContract {
                 order: 3,

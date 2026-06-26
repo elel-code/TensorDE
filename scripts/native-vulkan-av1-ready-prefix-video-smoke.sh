@@ -416,6 +416,15 @@ if [[ "$requested" -ne "$playback_frames" || "$presented" -ne "$playback_frames"
   printf 'FAIL: AV1 presented/displayed count mismatch\n' | tee "$summary"
   exit 1
 fi
+if ! awk -v fps="$average_fps" -v target="$target_fps" 'BEGIN { exit (fps + 0.001 >= target) ? 0 : 1 }'; then
+  printf 'FAIL: AV1 average_present_fps %s is below target %s\n' "$average_fps" "$target_fps" | tee "$summary"
+  exit 1
+fi
+if ! awk -v fps="$average_teardown_inclusive_fps" -v target="$target_fps" 'BEGIN { exit (fps + 0.001 >= target) ? 0 : 1 }'; then
+  printf 'FAIL: AV1 average_present_teardown_inclusive_fps %s is below target %s\n' \
+    "$average_teardown_inclusive_fps" "$target_fps" | tee "$summary"
+  exit 1
+fi
 if [[ "$descriptor_model" != "VK_EXT_descriptor_heap" || "$descriptor_sets" -ne 0 ]]; then
   printf 'FAIL: AV1 present path used non-heap descriptors\n' | tee "$summary"
   exit 1
