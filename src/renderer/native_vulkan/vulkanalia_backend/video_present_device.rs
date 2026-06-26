@@ -133,7 +133,6 @@ pub struct NativeVulkanVulkanaliaVideoPresentFeatureSnapshot {
     pub descriptor_heap_enabled: bool,
     pub descriptor_heap_capture_replay_enabled: bool,
     pub descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
-    pub sampler_ycbcr_conversion_enabled: bool,
     pub video_maintenance1_enabled: bool,
     pub video_maintenance2_enabled: bool,
     pub inline_session_parameters_enabled: bool,
@@ -327,9 +326,6 @@ fn with_video_present_device(
                 .core_features
                 .descriptor_heap_capture_replay,
             descriptor_heap_properties: context.video_feature_selection.descriptor_heap_properties,
-            sampler_ycbcr_conversion_enabled: context
-                .video_feature_selection
-                .sampler_ycbcr_conversion_enabled,
             video_maintenance1_enabled: context.video_feature_selection.video_maintenance1_enabled,
             video_maintenance2_enabled: context.video_feature_selection.video_maintenance2_enabled,
             inline_session_parameters_enabled: context
@@ -619,10 +615,6 @@ pub(super) fn create_video_present_device(
     let mut descriptor_heap_features = native_vulkan_vulkanalia_descriptor_heap_device_features(
         video_feature_selection.core_features,
     );
-    let mut sampler_ycbcr_conversion_features =
-        vk::PhysicalDeviceSamplerYcbcrConversionFeatures::builder()
-            .sampler_ycbcr_conversion(true)
-            .build();
     let mut video_maintenance1_features = vk::PhysicalDeviceVideoMaintenance1FeaturesKHR::builder()
         .video_maintenance1(true)
         .build();
@@ -672,9 +664,6 @@ pub(super) fn create_video_present_device(
         .enables_descriptor_heap_features()
     {
         device_create_info = device_create_info.push_next(&mut descriptor_heap_features);
-    }
-    if video_feature_selection.sampler_ycbcr_conversion_enabled {
-        device_create_info = device_create_info.push_next(&mut sampler_ycbcr_conversion_features);
     }
     if video_feature_selection.video_maintenance1_enabled {
         device_create_info = device_create_info.push_next(&mut video_maintenance1_features);
@@ -794,9 +783,6 @@ pub(super) fn feature_snapshot_from_context(
             .core_features
             .descriptor_heap_capture_replay,
         descriptor_heap_properties: context.video_feature_selection.descriptor_heap_properties,
-        sampler_ycbcr_conversion_enabled: context
-            .video_feature_selection
-            .sampler_ycbcr_conversion_enabled,
         video_maintenance1_enabled: context.video_feature_selection.video_maintenance1_enabled,
         video_maintenance2_enabled: context.video_feature_selection.video_maintenance2_enabled,
         inline_session_parameters_enabled: context

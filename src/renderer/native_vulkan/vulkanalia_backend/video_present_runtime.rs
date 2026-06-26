@@ -610,6 +610,19 @@ impl NativeVulkanVulkanaliaPreparedStreamingDecode {
             .unwrap_or(1)
             .max(1)
     }
+
+    fn required_max_active_reference_pictures(&self) -> u32 {
+        self.h264
+            .as_ref()
+            .map(|prepared| prepared.bootstrap.stream_max_active_reference_pictures)
+            .or_else(|| {
+                self.h265
+                    .as_ref()
+                    .map(|prepared| prepared.bootstrap.stream_max_active_reference_pictures)
+            })
+            .unwrap_or(1)
+            .max(1)
+    }
 }
 
 #[cfg(feature = "native-vulkan-gst-video")]
@@ -628,6 +641,7 @@ fn native_vulkan_vulkanalia_streaming_decode_requested(_prepared: &()) -> bool {
 trait NativeVulkanVulkanaliaNoStreamingDecodeLayers {
     fn coded_extent(&self) -> Option<vk::Extent2D>;
     fn required_resource_image_array_layers(&self) -> u32;
+    fn required_max_active_reference_pictures(&self) -> u32;
 }
 
 #[cfg(not(feature = "native-vulkan-gst-video"))]
@@ -637,6 +651,10 @@ impl NativeVulkanVulkanaliaNoStreamingDecodeLayers for () {
     }
 
     fn required_resource_image_array_layers(&self) -> u32 {
+        1
+    }
+
+    fn required_max_active_reference_pictures(&self) -> u32 {
         1
     }
 }
@@ -993,27 +1011,27 @@ fn create_video_present_session_pieces(
         None,
         None,
         |profile_info, queried| {
-            let session_max_dpb_slots = native_vulkan_vulkanalia_video_session_max_dpb_slots(
+            let driver_session_max_dpb_slots = native_vulkan_vulkanalia_video_session_max_dpb_slots(
                 queried.capabilities.max_dpb_slots,
             );
-            let session_max_active_reference_pictures =
+            let driver_session_max_active_reference_pictures =
                 native_vulkan_vulkanalia_video_session_max_active_reference_pictures(
                     queried.capabilities.max_active_reference_pictures,
-                    session_max_dpb_slots,
+                    driver_session_max_dpb_slots,
                 );
             #[cfg(feature = "native-vulkan-gst-video")]
             let mut prepared_streaming_decode =
                 native_vulkan_vulkanalia_prepare_streaming_decode_requests(
                     streaming_decode,
                     codec,
-                    session_max_dpb_slots,
+                    driver_session_max_dpb_slots,
                 )?;
             #[cfg(not(feature = "native-vulkan-gst-video"))]
             let prepared_streaming_decode =
                 native_vulkan_vulkanalia_prepare_streaming_decode_requests(
                     streaming_decode,
                     codec,
-                    session_max_dpb_slots,
+                    driver_session_max_dpb_slots,
                 )?;
             let requested_extent = prepared_streaming_decode
                 .coded_extent()
@@ -1027,11 +1045,22 @@ fn create_video_present_session_pieces(
                     requested_extent.width, requested_extent.height
                 ));
             }
-            let resource_image_array_layers =
-                native_vulkan_vulkanalia_clamp_ready_prefix_resource_image_array_layers(
-                    prepared_streaming_decode.required_resource_image_array_layers(),
+            let required_dpb_slots =
+                prepared_streaming_decode.required_resource_image_array_layers();
+            let session_max_dpb_slots = native_vulkan_vulkanalia_select_stream_session_dpb_slots(
+                required_dpb_slots,
+                driver_session_max_dpb_slots,
+            )?;
+            let required_active_reference_pictures = prepared_streaming_decode
+                .required_max_active_reference_pictures()
+                .max(required_dpb_slots);
+            let session_max_active_reference_pictures =
+                native_vulkan_vulkanalia_select_stream_session_active_reference_pictures(
+                    required_active_reference_pictures,
+                    driver_session_max_active_reference_pictures,
                     session_max_dpb_slots,
-                );
+                )?;
+            let resource_image_array_layers = session_max_dpb_slots.max(1);
             let picture_format =
                 native_vulkan_vulkanalia_video_session_effective_picture_format(codec, None);
             let create_info = vk::VideoSessionCreateInfoKHR::builder()
@@ -1096,38 +1125,26 @@ fn create_video_present_session_pieces(
                 let same_queue_family =
                     selection.video_queue_family_index == selection.present_queue_family_index;
                 let (decoded_image_present_sampler_snapshot, decoded_image_present_sampler_error) =
-                    if context
-                        .video_feature_selection
-                        .sampler_ycbcr_conversion_enabled
-                    {
-                        match native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources(
-                            &context.device,
-                            &memory_properties,
-                            resource_image_ref,
-                            picture_format,
-                            0,
-                            selection.video_queue_family_index,
-                            selection.present_queue_family_index,
-                            context.video_feature_selection.core_features.descriptor_heap,
-                            context
-                                .video_feature_selection
-                                .descriptor_heap_properties,
-                        ) {
-                            Ok(resources) => {
-                                let snapshot = resources.snapshot.clone();
-                                decoded_image_present_sampler = Some(resources);
-                                (Some(snapshot), None)
-                            }
-                            Err(err) => (None, Some(err)),
+                    match native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources(
+                        &context.device,
+                        &memory_properties,
+                        resource_image_ref,
+                        picture_format,
+                        0,
+                        selection.video_queue_family_index,
+                        selection.present_queue_family_index,
+                        context
+                            .video_feature_selection
+                            .core_features
+                            .descriptor_heap,
+                        context.video_feature_selection.descriptor_heap_properties,
+                    ) {
+                        Ok(resources) => {
+                            let snapshot = resources.snapshot.clone();
+                            decoded_image_present_sampler = Some(resources);
+                            (Some(snapshot), None)
                         }
-                    } else {
-                        (
-                            None,
-                            Some(
-                                "samplerYcbcrConversion feature is unavailable on selected Vulkanalia video+present device"
-                                    .to_owned(),
-                            ),
-                        )
+                        Err(err) => (None, Some(err)),
                     };
                 let (decoded_image_present_pipeline_snapshot, decoded_image_present_pipeline_error) =
                     if !context.video_feature_selection.dynamic_rendering_enabled {
@@ -1148,7 +1165,6 @@ fn create_video_present_session_pieces(
                             swapchain_format,
                             target_extent,
                             &sampler.snapshot.descriptor_heap_plan,
-                            sampler.conversion,
                         ) {
                             Ok(resources) => {
                                 let snapshot = resources.snapshot.clone();
@@ -1161,7 +1177,7 @@ fn create_video_present_session_pieces(
                         (
                             None,
                             Some(
-                                "decoded image present pipeline requires a live YCbCr descriptor-heap sampler resource"
+                                "decoded image present pipeline requires a live plane descriptor-heap sampler resource"
                                     .to_owned(),
                             ),
                         )
@@ -1173,7 +1189,7 @@ fn create_video_present_session_pieces(
                 if decoded_image_present_sequence_requested {
                     if decoded_image_present_sampler.is_none() {
                         decoded_image_present_sequence_error = Some(
-                            "decoded image present sequence requires a live YCbCr descriptor-heap sampler resource"
+                            "decoded image present sequence requires a live plane descriptor-heap sampler resource"
                                 .to_owned(),
                         );
                     } else if decoded_image_present_pipeline.is_none() {
@@ -1502,7 +1518,7 @@ fn create_video_present_session_pieces(
                         decoded_image_present_sampler_error,
                         decoded_image_present_pipeline: decoded_image_present_pipeline_snapshot,
                         decoded_image_present_pipeline_error,
-                        decoded_image_present_boundary: "retained Vulkanalia runtime owns video session memory, coincident sampled DPB/output image, YCbCr sampler/descriptor resources when supported, and Wayland swapchain until the caller drops the runtime; next step records the dynamic-rendering fullscreen draw into the graphics present pass",
+                        decoded_image_present_boundary: "retained Vulkanalia runtime owns video session memory, coincident sampled DPB/output image, descriptor-heap Y/UV plane sampler resources, and Wayland swapchain until the caller drops the runtime; next step records the dynamic-rendering fullscreen draw into the graphics present pass",
                         ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,
                     },
                     h265_ready_prefix_decode,
@@ -1779,14 +1795,66 @@ fn native_vulkan_vulkanalia_frame_index_duration(
     Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
 }
 
-fn native_vulkan_vulkanalia_clamp_ready_prefix_resource_image_array_layers(
-    required_layers: u32,
+fn native_vulkan_vulkanalia_select_stream_session_dpb_slots(
+    required_dpb_slots: u32,
+    driver_session_max_dpb_slots: u32,
+) -> Result<u32, String> {
+    let required_dpb_slots = required_dpb_slots.max(1);
+    if driver_session_max_dpb_slots != 0 && required_dpb_slots > driver_session_max_dpb_slots {
+        return Err(format!(
+            "streaming decode requires {required_dpb_slots} DPB slot(s), but the selected Vulkan video session exposes only {driver_session_max_dpb_slots}"
+        ));
+    }
+    Ok(required_dpb_slots)
+}
+
+fn native_vulkan_vulkanalia_select_stream_session_active_reference_pictures(
+    required_active_reference_pictures: u32,
+    driver_session_max_active_reference_pictures: u32,
     session_max_dpb_slots: u32,
-) -> u32 {
-    let required_layers = required_layers.max(1);
+) -> Result<u32, String> {
     if session_max_dpb_slots == 0 {
-        required_layers
-    } else {
-        required_layers.min(session_max_dpb_slots).max(1)
+        return Ok(0);
+    }
+    let required_active_reference_pictures = required_active_reference_pictures
+        .max(1)
+        .min(session_max_dpb_slots);
+    if driver_session_max_active_reference_pictures != 0
+        && required_active_reference_pictures > driver_session_max_active_reference_pictures
+    {
+        return Err(format!(
+            "streaming decode requires {required_active_reference_pictures} active reference picture(s), but the selected Vulkan video session exposes only {driver_session_max_active_reference_pictures}"
+        ));
+    }
+    Ok(required_active_reference_pictures)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_session_sizing_uses_required_dpb_slots_not_driver_max() {
+        assert_eq!(
+            native_vulkan_vulkanalia_select_stream_session_dpb_slots(3, 16).unwrap(),
+            3
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_select_stream_session_active_reference_pictures(3, 16, 3)
+                .unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn stream_session_sizing_rejects_driver_capability_overflow() {
+        let dpb_err = native_vulkan_vulkanalia_select_stream_session_dpb_slots(4, 3)
+            .expect_err("driver max must bound DPB sizing");
+        assert!(dpb_err.contains("requires 4 DPB slot"));
+
+        let refs_err =
+            native_vulkan_vulkanalia_select_stream_session_active_reference_pictures(4, 3, 4)
+                .expect_err("driver max must bound active reference sizing");
+        assert!(refs_err.contains("requires 4 active reference picture"));
     }
 }

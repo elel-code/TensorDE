@@ -328,11 +328,11 @@ pub fn run_vulkanalia_ready_prefix_video(
         present_runtime_error,
         decoded_image_zero_copy_presented,
         decoded_image_present_boundary: if decoded_image_zero_copy_presented {
-            "ready-prefix decode writes into the retained Vulkanalia DPB/output image, then Vulkanalia samples that decoded image through an immutable YCbCr descriptor in a dynamic-rendering fullscreen pass and presents it to the Wayland swapchain"
+            "ready-prefix decode writes into the retained Vulkanalia DPB/output image, then Vulkanalia samples Y/UV plane descriptors through VK_EXT_descriptor_heap in a dynamic-rendering fullscreen pass and presents it to the Wayland swapchain"
         } else if h264_streaming_decode_requested {
-            "H.264 ready-prefix decode writes into the retained Vulkanalia video-present DPB/output image and creates a Vulkanalia YCbCr sampler/descriptor/pipeline resource for that image; decoded-image present falls back to the clear placeholder until the draw/present gate succeeds"
+            "H.264 ready-prefix decode writes into the retained Vulkanalia video-present DPB/output image and creates Vulkanalia descriptor-heap Y/UV plane sampler resources for that image; decoded-image present falls back to the clear placeholder until the draw/present gate succeeds"
         } else if h265_streaming_decode_requested {
-            "H.265 ready-prefix decode writes into the retained Vulkanalia video-present DPB/output image and creates a Vulkanalia YCbCr sampler/descriptor/pipeline resource for that image; decoded-image present falls back to the clear placeholder until the draw/present gate succeeds"
+            "H.265 ready-prefix decode writes into the retained Vulkanalia video-present DPB/output image and creates Vulkanalia descriptor-heap Y/UV plane sampler resources for that image; decoded-image present falls back to the clear placeholder until the draw/present gate succeeds"
         } else {
             "Vulkanalia decodes the real ready-prefix source and presents a Vulkanalia-owned visible swapchain placeholder; next gate replaces the clear image with decoded DPB/output image sampling/import"
         },

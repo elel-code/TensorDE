@@ -46,7 +46,6 @@ pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendP
             std::any::type_name::<vulkanalia::vk::RenderingInfo>(),
             std::any::type_name::<vulkanalia::vk::PhysicalDeviceDescriptorHeapFeaturesEXT>(),
             std::any::type_name::<vulkanalia::vk::BindHeapInfoEXT>(),
-            std::any::type_name::<vulkanalia::vk::SamplerYcbcrConversionCreateInfo>(),
             std::any::type_name::<vulkanalia::vk::VideoBeginCodingInfoKHR>(),
             std::any::type_name::<vulkanalia::vk::VideoDecodeH264PictureInfoKHR>(),
             std::any::type_name::<vulkanalia::vk::VideoDecodeH265PictureInfoKHR>(),
@@ -85,7 +84,6 @@ pub fn native_vulkan_vulkanalia_backend_plan() -> NativeVulkanVulkanaliaBackendP
         prioritized_vulkan_1_4_features: &[
             "dynamic-rendering",
             "dynamic-rendering-local-read",
-            "sampler-ycbcr-conversion",
             "descriptor-heap",
             "push-descriptor",
             "maintenance5",
@@ -167,11 +165,6 @@ mod tests {
             plan.api_type_evidence
                 .iter()
                 .any(|name| { name.ends_with("BindHeapInfoEXT") })
-        );
-        assert!(
-            plan.api_type_evidence
-                .iter()
-                .any(|name| { name.ends_with("SamplerYcbcrConversionCreateInfo") })
         );
         assert!(
             plan.api_type_evidence

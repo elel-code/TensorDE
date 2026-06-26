@@ -48,6 +48,8 @@ pub struct NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
     pub resource_heap_alignment: u64,
     pub max_sampler_heap_size: u64,
     pub max_resource_heap_size: u64,
+    pub min_sampler_heap_reserved_range: u64,
+    pub min_sampler_heap_reserved_range_with_embedded: u64,
     pub min_resource_heap_reserved_range: u64,
     pub sampler_descriptor_size: u64,
     pub image_descriptor_size: u64,
@@ -188,6 +190,10 @@ pub(super) fn native_vulkan_vulkanalia_core_feature_snapshot(
             resource_heap_alignment: descriptor_heap_properties.resource_heap_alignment,
             max_sampler_heap_size: descriptor_heap_properties.max_sampler_heap_size,
             max_resource_heap_size: descriptor_heap_properties.max_resource_heap_size,
+            min_sampler_heap_reserved_range: descriptor_heap_properties
+                .min_sampler_heap_reserved_range,
+            min_sampler_heap_reserved_range_with_embedded: descriptor_heap_properties
+                .min_sampler_heap_reserved_range_with_embedded,
             min_resource_heap_reserved_range: descriptor_heap_properties
                 .min_resource_heap_reserved_range,
             sampler_descriptor_size: descriptor_heap_properties.sampler_descriptor_size,
@@ -363,6 +369,8 @@ mod tests {
             resource_heap_alignment: 64,
             max_sampler_heap_size: 1024,
             max_resource_heap_size: 4096,
+            min_sampler_heap_reserved_range: 0,
+            min_sampler_heap_reserved_range_with_embedded: 0,
             min_resource_heap_reserved_range: 0,
             sampler_descriptor_size: 16,
             image_descriptor_size: 32,

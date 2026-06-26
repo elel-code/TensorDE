@@ -14,7 +14,6 @@ const HOST_VISIBLE_COHERENT_DEVICE_LOCAL_MEMORY_FLAG_BITS: u32 =
 const HOST_VISIBLE_COHERENT_MEMORY_FLAG_BITS: u32 =
     vk::MemoryPropertyFlags::HOST_VISIBLE.bits() | vk::MemoryPropertyFlags::HOST_COHERENT.bits();
 const HOST_VISIBLE_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::HOST_VISIBLE.bits();
-pub(super) const DESCRIPTOR_HEAP_PUSH_INDEX_OFFSET: u32 = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput {
@@ -40,6 +39,8 @@ pub struct NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot {
     pub sampler_heap_bytes: u64,
     pub resource_heap_reserved_range_offset: u64,
     pub resource_heap_reserved_range_size: u64,
+    pub sampler_heap_reserved_range_offset: u64,
+    pub sampler_heap_reserved_range_size: u64,
     pub image_descriptor_offsets: Vec<u64>,
     pub sampler_descriptor_offsets: Vec<u64>,
     pub max_resource_heap_size: u64,
@@ -130,11 +131,21 @@ pub(super) fn native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan(
     );
     let resource_heap_bytes =
         resource_heap_reserved_range_offset.saturating_add(resource_heap_reserved_range_size);
-    let sampler_heap_bytes = descriptor_heap_bytes(
+    let sampler_descriptor_region_bytes = descriptor_heap_bytes(
         input.image_count,
         sampler_descriptor_stride,
         properties.sampler_heap_alignment,
     );
+    let sampler_heap_reserved_range_offset = align_up(
+        sampler_descriptor_region_bytes,
+        properties.sampler_heap_alignment,
+    );
+    let sampler_heap_reserved_range_size = align_up(
+        properties.min_sampler_heap_reserved_range,
+        properties.sampler_heap_alignment,
+    );
+    let sampler_heap_bytes =
+        sampler_heap_reserved_range_offset.saturating_add(sampler_heap_reserved_range_size);
     let descriptor_sizes_ready = properties.image_descriptor_size > 0
         && properties.sampler_descriptor_size > 0
         && image_descriptor_stride > 0
@@ -174,6 +185,8 @@ pub(super) fn native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan(
         sampler_heap_bytes,
         resource_heap_reserved_range_offset,
         resource_heap_reserved_range_size,
+        sampler_heap_reserved_range_offset,
+        sampler_heap_reserved_range_size,
         image_descriptor_offsets: descriptor_offsets(input.image_count, image_descriptor_stride),
         sampler_descriptor_offsets: descriptor_offsets(
             input.image_count,
@@ -339,6 +352,18 @@ pub(super) fn native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_ma
     plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     image_index: usize,
 ) -> Result<vk::DescriptorSetAndBindingMappingEXT, String> {
+    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
+        plan,
+        0,
+        image_index,
+    )
+}
+
+pub(super) fn native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
+    plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
+    binding: u32,
+    image_index: usize,
+) -> Result<vk::DescriptorSetAndBindingMappingEXT, String> {
     let heap_offset = descriptor_offset_u32(&plan.image_descriptor_offsets, image_index)?;
     let sampler_heap_offset = descriptor_offset_u32(&plan.sampler_descriptor_offsets, image_index)?;
     let heap_array_stride = u32::try_from(plan.image_descriptor_stride)
@@ -354,7 +379,7 @@ pub(super) fn native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_ma
 
     Ok(vk::DescriptorSetAndBindingMappingEXT::builder()
         .descriptor_set(0)
-        .first_binding(0)
+        .first_binding(binding)
         .binding_count(1)
         .resource_mask(vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE)
         .source(vk::DescriptorMappingSourceEXT::HEAP_WITH_CONSTANT_OFFSET)
@@ -362,77 +387,6 @@ pub(super) fn native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_ma
             constant_offset: source,
         })
         .build())
-}
-
-pub(super) fn native_vulkan_vulkanalia_descriptor_heap_combined_image_embedded_sampler_mapping(
-    plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
-    image_index: usize,
-    embedded_sampler: &vk::SamplerCreateInfo,
-) -> Result<vk::DescriptorSetAndBindingMappingEXT, String> {
-    let heap_offset = descriptor_offset_u32(&plan.image_descriptor_offsets, image_index)?;
-    let heap_array_stride = u32::try_from(plan.image_descriptor_stride)
-        .map_err(|_| "descriptor heap image stride exceeds u32".to_owned())?;
-    let source = vk::DescriptorMappingSourceConstantOffsetEXT::builder()
-        .heap_offset(heap_offset)
-        .heap_array_stride(heap_array_stride)
-        .embedded_sampler(embedded_sampler)
-        .build();
-
-    Ok(vk::DescriptorSetAndBindingMappingEXT::builder()
-        .descriptor_set(0)
-        .first_binding(0)
-        .binding_count(1)
-        .resource_mask(vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE)
-        .source(vk::DescriptorMappingSourceEXT::HEAP_WITH_CONSTANT_OFFSET)
-        .source_data(vk::DescriptorMappingSourceDataEXT {
-            constant_offset: source,
-        })
-        .build())
-}
-
-pub(super) fn native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_push_index_mapping(
-    plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
-    push_offset: u32,
-) -> Result<vk::DescriptorSetAndBindingMappingEXT, String> {
-    let heap_index_stride = u32::try_from(plan.image_descriptor_stride)
-        .map_err(|_| "descriptor heap image stride exceeds u32".to_owned())?;
-    let heap_array_stride = heap_index_stride;
-    let sampler_heap_index_stride = u32::try_from(plan.sampler_descriptor_stride)
-        .map_err(|_| "descriptor heap sampler stride exceeds u32".to_owned())?;
-    let sampler_heap_array_stride = sampler_heap_index_stride;
-    let source = vk::DescriptorMappingSourcePushIndexEXT::builder()
-        .heap_offset(0)
-        .push_offset(push_offset)
-        .heap_index_stride(heap_index_stride)
-        .heap_array_stride(heap_array_stride)
-        .use_combined_image_sampler_index(true)
-        .sampler_heap_offset(0)
-        .sampler_push_offset(push_offset)
-        .sampler_heap_index_stride(sampler_heap_index_stride)
-        .sampler_heap_array_stride(sampler_heap_array_stride)
-        .build();
-
-    Ok(vk::DescriptorSetAndBindingMappingEXT::builder()
-        .descriptor_set(0)
-        .first_binding(0)
-        .binding_count(1)
-        .resource_mask(vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE)
-        .source(vk::DescriptorMappingSourceEXT::HEAP_WITH_PUSH_INDEX)
-        .source_data(vk::DescriptorMappingSourceDataEXT { push_index: source })
-        .build())
-}
-
-pub(super) fn native_vulkan_vulkanalia_descriptor_heap_push_image_index_info(
-    image_index: &u32,
-    push_offset: u32,
-) -> vk::PushDataInfoEXT {
-    vk::PushDataInfoEXT::builder()
-        .offset(push_offset)
-        .data(vk::HostAddressRangeConstEXT {
-            address: (image_index as *const u32).cast(),
-            size: std::mem::size_of::<u32>(),
-        })
-        .build()
 }
 
 pub(super) fn native_vulkan_vulkanalia_descriptor_heap_resource_bind_info(
@@ -460,6 +414,8 @@ pub(super) fn native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info(
                 .size(resources.sampler_heap.snapshot.requested_bytes)
                 .build(),
         )
+        .reserved_range_offset(resources.plan.sampler_heap_reserved_range_offset)
+        .reserved_range_size(resources.plan.sampler_heap_reserved_range_size)
         .build()
 }
 
@@ -765,8 +721,9 @@ mod tests {
                     resource_heap_alignment: 64,
                     sampler_heap_alignment: 32,
                     max_resource_heap_size: 4096,
-                    min_resource_heap_reserved_range: 0,
+                    min_resource_heap_reserved_range: 96,
                     max_sampler_heap_size: 2048,
+                    min_sampler_heap_reserved_range: 48,
                     image_descriptor_size: 24,
                     sampler_descriptor_size: 16,
                     image_descriptor_alignment: 32,
@@ -780,8 +737,12 @@ mod tests {
         assert_eq!(snapshot.descriptor_model, "VK_EXT_descriptor_heap");
         assert_eq!(snapshot.image_descriptor_stride, 32);
         assert_eq!(snapshot.sampler_descriptor_stride, 16);
-        assert_eq!(snapshot.resource_heap_bytes, 128);
-        assert_eq!(snapshot.sampler_heap_bytes, 64);
+        assert_eq!(snapshot.resource_heap_reserved_range_offset, 128);
+        assert_eq!(snapshot.resource_heap_reserved_range_size, 128);
+        assert_eq!(snapshot.sampler_heap_reserved_range_offset, 64);
+        assert_eq!(snapshot.sampler_heap_reserved_range_size, 64);
+        assert_eq!(snapshot.resource_heap_bytes, 256);
+        assert_eq!(snapshot.sampler_heap_bytes, 128);
         assert_eq!(snapshot.image_descriptor_offsets, vec![0, 32, 64]);
         assert_eq!(snapshot.sampler_descriptor_offsets, vec![0, 16, 32]);
         assert!(
@@ -817,10 +778,10 @@ mod tests {
     }
 
     #[test]
-    fn video_present_ycbcr_plan_uses_single_heap_descriptor_pair() {
+    fn video_present_plane_plan_uses_one_descriptor_pair_per_plane() {
         let snapshot = native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan(
             NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput {
-                image_count: 1,
+                image_count: 2,
                 properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
                     resource_heap_alignment: 64,
                     sampler_heap_alignment: 64,
@@ -831,16 +792,15 @@ mod tests {
                     sampler_descriptor_size: 16,
                     image_descriptor_alignment: 32,
                     sampler_descriptor_alignment: 16,
-                    sampler_ycbcr_conversion_count: 1,
                     ..NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default()
                 },
             },
         );
 
         assert!(snapshot.backend_ready);
-        assert_eq!(snapshot.image_count, 1);
-        assert_eq!(snapshot.image_descriptor_offsets, vec![0]);
-        assert_eq!(snapshot.sampler_descriptor_offsets, vec![0]);
+        assert_eq!(snapshot.image_count, 2);
+        assert_eq!(snapshot.image_descriptor_offsets, vec![0, 32]);
+        assert_eq!(snapshot.sampler_descriptor_offsets, vec![0, 16]);
         assert!(snapshot.resource_heap_bytes >= snapshot.image_descriptor_size);
         assert!(snapshot.sampler_heap_bytes >= snapshot.sampler_descriptor_size);
         assert!(
@@ -888,54 +848,6 @@ mod tests {
         unsafe {
             assert_eq!(mapping.source_data.constant_offset.heap_offset, 32);
             assert_eq!(mapping.source_data.constant_offset.sampler_heap_offset, 16);
-        }
-    }
-
-    #[test]
-    fn combined_image_sampler_push_index_mapping_uses_heap_push_index_source() {
-        let snapshot = native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan(
-            NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput {
-                image_count: 3,
-                properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
-                    resource_heap_alignment: 32,
-                    sampler_heap_alignment: 32,
-                    max_resource_heap_size: 4096,
-                    min_resource_heap_reserved_range: 0,
-                    max_sampler_heap_size: 4096,
-                    image_descriptor_size: 24,
-                    sampler_descriptor_size: 16,
-                    image_descriptor_alignment: 8,
-                    sampler_descriptor_alignment: 8,
-                    ..NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default()
-                },
-            },
-        );
-
-        let mapping =
-            native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_push_index_mapping(
-                &snapshot,
-                DESCRIPTOR_HEAP_PUSH_INDEX_OFFSET,
-            )
-            .expect("push-index mapping should fit u32 strides");
-
-        assert_eq!(
-            mapping.source,
-            vk::DescriptorMappingSourceEXT::HEAP_WITH_PUSH_INDEX
-        );
-        unsafe {
-            assert_eq!(
-                mapping.source_data.push_index.push_offset,
-                DESCRIPTOR_HEAP_PUSH_INDEX_OFFSET
-            );
-            assert_eq!(mapping.source_data.push_index.heap_index_stride, 24);
-            assert_eq!(mapping.source_data.push_index.sampler_heap_index_stride, 16);
-            assert_eq!(
-                mapping
-                    .source_data
-                    .push_index
-                    .use_combined_image_sampler_index,
-                vk::TRUE
-            );
         }
     }
 }

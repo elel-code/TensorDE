@@ -9,15 +9,15 @@ use vulkanalia::vk::{
 use super::descriptor_heap::{
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     VulkanaliaDescriptorHeapImageSamplerResources,
-    native_vulkan_vulkanalia_descriptor_heap_combined_image_embedded_sampler_mapping,
+    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_bind_info,
+    native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info,
 };
 pub(super) use super::present_timing::VulkanaliaPresentTimingConfig as VulkanaliaDecodedImagePresentTimingConfig;
 pub(super) use super::render_present_descriptors::{
     NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot,
     VulkanaliaDecodedImagePresentSamplerResources,
     native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources,
-    native_vulkan_vulkanalia_decoded_image_sampler_create_info,
     native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_resources,
     native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_layer,
 };
@@ -43,11 +43,11 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot {
     pub descriptor_sets: u32,
     pub descriptor_model: &'static str,
     pub descriptor_heap_mapping_enabled: bool,
-    pub descriptor_heap_embedded_sampler_enabled: bool,
+    pub descriptor_heap_plane_sampler_enabled: bool,
     pub descriptor_heap_pipeline_flag_enabled: bool,
     pub uses_pipeline_rendering_create_info: bool,
     pub uses_dynamic_rendering: bool,
-    pub uses_ycbcr_sampler_descriptor: bool,
+    pub uses_plane_sampler_descriptors: bool,
     pub ffmpeg_reference: &'static str,
 }
 
@@ -166,7 +166,6 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_pipeline_res
     target_format: vk::Format,
     extent: vk::Extent2D,
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
-    descriptor_heap_embedded_sampler_conversion: vk::SamplerYcbcrConversion,
 ) -> Result<VulkanaliaDecodedImagePresentPipelineResources, String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("decoded image present pipeline requires non-zero extent".to_owned());
@@ -187,34 +186,33 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_pipeline_res
     let result = (|| -> Result<VulkanaliaDecodedImagePresentPipelineResources, String> {
         let vertex_module = native_vulkan_vulkanalia_create_shader_module(
             device,
-            &NATIVE_VULKAN_VULKANALIA_YCBCR_PRESENT_VERTEX_SPIRV,
+            &NATIVE_VULKAN_VULKANALIA_PLANE_PRESENT_VERTEX_SPIRV,
             "decoded present vertex",
         )?;
         let result = (|| -> Result<VulkanaliaDecodedImagePresentPipelineResources, String> {
             let fragment_module = native_vulkan_vulkanalia_create_shader_module(
                 device,
-                &NATIVE_VULKAN_VULKANALIA_YCBCR_PRESENT_FRAGMENT_SPIRV,
+                &NATIVE_VULKAN_VULKANALIA_PLANE_PRESENT_FRAGMENT_SPIRV,
                 "decoded present fragment",
             )?;
             let result = (|| -> Result<VulkanaliaDecodedImagePresentPipelineResources, String> {
                 let shader_entry = b"main\0";
                 let descriptor_heap_mapping_enabled = true;
-                let descriptor_heap_embedded_sampler_enabled = true;
-                let mut embedded_sampler_conversion_info =
-                    vk::SamplerYcbcrConversionInfo::builder()
-                        .conversion(descriptor_heap_embedded_sampler_conversion)
-                        .build();
-                let embedded_sampler_info =
-                    native_vulkan_vulkanalia_decoded_image_sampler_create_info(
-                        &mut embedded_sampler_conversion_info,
-                    );
-                let descriptor_heap_mapping =
-                    native_vulkan_vulkanalia_descriptor_heap_combined_image_embedded_sampler_mapping(
+                let descriptor_heap_plane_sampler_enabled = true;
+                let y_descriptor_heap_mapping =
+                    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
                         descriptor_heap_plan,
                         0,
-                        &embedded_sampler_info,
+                        0,
                     )?;
-                let descriptor_heap_mappings = [descriptor_heap_mapping];
+                let uv_descriptor_heap_mapping =
+                    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
+                        descriptor_heap_plan,
+                        1,
+                        1,
+                    )?;
+                let descriptor_heap_mappings =
+                    [y_descriptor_heap_mapping, uv_descriptor_heap_mapping];
                 let mut descriptor_heap_mapping_info =
                     vk::ShaderDescriptorSetAndBindingMappingInfoEXT::builder()
                         .mappings(&descriptor_heap_mappings)
@@ -331,15 +329,15 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_pipeline_res
                         render_pass_compatibility: "dynamic-rendering-no-render-pass",
                         primitive_topology: "fullscreen-triangle",
                         vertex_shader_model: "gl_VertexIndex fullscreen triangle",
-                        fragment_shader_model: "single combined YCbCr sampler2D",
+                        fragment_shader_model: "two plane combined sampler2D descriptors",
                         descriptor_sets: 0,
                         descriptor_model: "VK_EXT_descriptor_heap",
                         descriptor_heap_mapping_enabled,
-                        descriptor_heap_embedded_sampler_enabled,
+                        descriptor_heap_plane_sampler_enabled,
                         descriptor_heap_pipeline_flag_enabled: true,
                         uses_pipeline_rendering_create_info: true,
                         uses_dynamic_rendering: true,
-                        uses_ycbcr_sampler_descriptor: false,
+                        uses_plane_sampler_descriptors: true,
                         ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,
                     },
                 })
@@ -706,7 +704,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         presented: true,
         decoded_image_layout_transition: "video-decode-dpb -> shader-read-only-optimal -> video-decode-dpb",
         swapchain_layout_transition: "undefined -> color-attachment-optimal -> present-src-khr",
-        render_model: "VK_EXT_descriptor_heap embedded YCbCr sampler mapping -> Vulkan 1.3/1.4 dynamic rendering fullscreen triangle -> Wayland swapchain",
+        render_model: "VK_EXT_descriptor_heap Y/UV plane sampler mapping -> Vulkan 1.3/1.4 dynamic rendering fullscreen triangle -> Wayland swapchain",
         command_order: native_vulkan_vulkanalia_decoded_image_present_command_order(
             true,
             present_timing.present_id_mode(),
@@ -901,7 +899,10 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
         device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
         let resource_bind =
             native_vulkan_vulkanalia_descriptor_heap_resource_bind_info(descriptor_heap);
+        let sampler_bind =
+            native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info(descriptor_heap);
         device.cmd_bind_resource_heap_ext(command_buffer, &resource_bind);
+        device.cmd_bind_sampler_heap_ext(command_buffer, &sampler_bind);
         device.cmd_draw(command_buffer, 3, 1, 0, 0);
         device.cmd_end_rendering(command_buffer);
 
@@ -1006,7 +1007,8 @@ pub(super) fn native_vulkan_vulkanalia_decoded_image_present_command_order(
     let bind_steps = [
         "cmd_pipeline_barrier2_descriptor_heap_host_write_to_shader_read",
         "cmd_bind_resource_heap_ext",
-        "draw_with_descriptor_heap_embedded_sampler_mapping",
+        "cmd_bind_sampler_heap_ext",
+        "draw_with_descriptor_heap_plane_sampler_mapping",
     ];
     let mut order = if same_queue_family {
         let mut order = vec![
@@ -1100,7 +1102,7 @@ fn native_vulkan_vulkanalia_decoded_image_layer_subresource_range(
         .build()
 }
 
-const NATIVE_VULKAN_VULKANALIA_YCBCR_PRESENT_VERTEX_SPIRV: [u32; 357] = [
+const NATIVE_VULKAN_VULKANALIA_PLANE_PRESENT_VERTEX_SPIRV: [u32; 357] = [
     119734787, 65536, 851979, 51, 0, 131089, 1, 393227, 1, 1280527431, 1685353262, 808793134, 0,
     196622, 0, 1, 524303, 0, 4, 1852399981, 0, 32, 36, 47, 196611, 2, 450, 655364, 1197427783,
     1279741775, 1885560645, 1953718128, 1600482425, 1701734764, 1919509599, 1769235301, 25974,
@@ -1125,17 +1127,38 @@ const NATIVE_VULKAN_VULKANALIA_YCBCR_PRESENT_VERTEX_SPIRV: [u32; 357] = [
     327745, 38, 49, 19, 48, 262205, 7, 50, 49, 196670, 47, 50, 65789, 65592,
 ];
 
-const NATIVE_VULKAN_VULKANALIA_YCBCR_PRESENT_FRAGMENT_SPIRV: [u32; 157] = [
-    119734787, 65536, 851979, 20, 0, 131089, 1, 393227, 1, 1280527431, 1685353262, 808793134, 0,
-    196622, 0, 1, 458767, 4, 4, 1852399981, 0, 9, 17, 196624, 4, 7, 196611, 2, 450, 655364,
+const NATIVE_VULKAN_VULKANALIA_PLANE_PRESENT_FRAGMENT_SPIRV: [u32; 554] = [
+    119734787, 65536, 851979, 90, 0, 131089, 1, 393227, 1, 1280527431, 1685353262, 808793134, 0,
+    196622, 0, 1, 458767, 4, 4, 1852399981, 0, 16, 82, 196624, 4, 7, 196611, 2, 450, 655364,
     1197427783, 1279741775, 1885560645, 1953718128, 1600482425, 1701734764, 1919509599, 1769235301,
     25974, 524292, 1197427783, 1279741775, 1852399429, 1685417059, 1768185701, 1952671090, 6649449,
-    262149, 4, 1852399981, 0, 327685, 9, 1601467759, 1869377379, 114, 262149, 13, 1769365365,
-    7300452, 262149, 17, 1987403638, 0, 262215, 9, 30, 0, 262215, 13, 33, 0, 262215, 13, 34, 0,
-    262215, 17, 30, 0, 131091, 2, 196641, 3, 2, 196630, 6, 32, 262167, 7, 6, 4, 262176, 8, 3, 7,
-    262203, 8, 9, 3, 589849, 10, 6, 1, 0, 0, 0, 1, 0, 196635, 11, 10, 262176, 12, 0, 11, 262203,
-    12, 13, 0, 262167, 15, 6, 2, 262176, 16, 1, 15, 262203, 16, 17, 1, 327734, 2, 4, 0, 3, 131320,
-    5, 262205, 11, 14, 13, 262205, 15, 18, 17, 327767, 7, 19, 14, 18, 196670, 9, 19, 65789, 65592,
+    262149, 4, 1852399981, 0, 196613, 8, 121, 327685, 12, 1702125433, 1920300152, 101, 262149, 16,
+    1987403638, 0, 196613, 24, 30325, 327685, 25, 1952413301, 1970567269, 25970, 196613, 30, 117,
+    196613, 33, 118, 196613, 54, 114, 196613, 62, 103, 196613, 74, 98, 327685, 82, 1601467759,
+    1869377379, 114, 262215, 12, 33, 0, 262215, 12, 34, 0, 262215, 16, 30, 0, 262215, 25, 33, 1,
+    262215, 25, 34, 0, 262215, 82, 30, 0, 131091, 2, 196641, 3, 2, 196630, 6, 32, 262176, 7, 7, 6,
+    589849, 9, 6, 1, 0, 0, 0, 1, 0, 196635, 10, 9, 262176, 11, 0, 10, 262203, 11, 12, 0, 262167,
+    14, 6, 2, 262176, 15, 1, 14, 262203, 15, 16, 1, 262167, 18, 6, 4, 262165, 20, 32, 0, 262187,
+    20, 21, 0, 262176, 23, 7, 14, 262203, 11, 25, 0, 262187, 20, 34, 1, 262187, 6, 38, 1031831681,
+    262187, 6, 40, 1062984668, 262187, 6, 42, 0, 262187, 6, 43, 1065353216, 262187, 6, 47,
+    1063313633, 262187, 6, 56, 1070174988, 262187, 6, 58, 1056964608, 262187, 6, 64, 1044368274,
+    262187, 6, 69, 1055894222, 262187, 6, 76, 1072530509, 262176, 81, 3, 18, 262203, 81, 82, 3,
+    327734, 2, 4, 0, 3, 131320, 5, 262203, 7, 8, 7, 262203, 23, 24, 7, 262203, 7, 30, 7, 262203, 7,
+    33, 7, 262203, 7, 54, 7, 262203, 7, 62, 7, 262203, 7, 74, 7, 262205, 10, 13, 12, 262205, 14,
+    17, 16, 327767, 18, 19, 13, 17, 327761, 6, 22, 19, 0, 196670, 8, 22, 262205, 10, 26, 25,
+    262205, 14, 27, 16, 327767, 18, 28, 26, 27, 458831, 14, 29, 28, 28, 0, 1, 196670, 24, 29,
+    327745, 7, 31, 24, 21, 262205, 6, 32, 31, 196670, 30, 32, 327745, 7, 35, 24, 34, 262205, 6, 36,
+    35, 196670, 33, 36, 262205, 6, 37, 8, 327811, 6, 39, 37, 38, 327816, 6, 41, 39, 40, 524300, 6,
+    44, 1, 43, 41, 42, 43, 196670, 8, 44, 262205, 6, 45, 30, 327811, 6, 46, 45, 38, 327816, 6, 48,
+    46, 47, 524300, 6, 49, 1, 43, 48, 42, 43, 196670, 30, 49, 262205, 6, 50, 33, 327811, 6, 51, 50,
+    38, 327816, 6, 52, 51, 47, 524300, 6, 53, 1, 43, 52, 42, 43, 196670, 33, 53, 262205, 6, 55, 8,
+    262205, 6, 57, 33, 327811, 6, 59, 57, 58, 327813, 6, 60, 56, 59, 327809, 6, 61, 55, 60, 196670,
+    54, 61, 262205, 6, 63, 8, 262205, 6, 65, 30, 327811, 6, 66, 65, 58, 327813, 6, 67, 64, 66,
+    327811, 6, 68, 63, 67, 262205, 6, 70, 33, 327811, 6, 71, 70, 58, 327813, 6, 72, 69, 71, 327811,
+    6, 73, 68, 72, 196670, 62, 73, 262205, 6, 75, 8, 262205, 6, 77, 30, 327811, 6, 78, 77, 58,
+    327813, 6, 79, 76, 78, 327809, 6, 80, 75, 79, 196670, 74, 80, 262205, 6, 83, 54, 524300, 6, 84,
+    1, 43, 83, 42, 43, 262205, 6, 85, 62, 524300, 6, 86, 1, 43, 85, 42, 43, 262205, 6, 87, 74,
+    524300, 6, 88, 1, 43, 87, 42, 43, 458832, 18, 89, 84, 86, 88, 43, 196670, 82, 89, 65789, 65592,
 ];
 
 #[cfg(test)]
@@ -1151,7 +1174,8 @@ mod tests {
         assert!(split.contains(&"cmd_pipeline_barrier2_graphics_acquire_shader_read"));
         assert!(split.contains(&"cmd_begin_rendering"));
         assert!(split.contains(&"cmd_bind_resource_heap_ext"));
-        assert!(split.contains(&"draw_with_descriptor_heap_embedded_sampler_mapping"));
+        assert!(split.contains(&"cmd_bind_sampler_heap_ext"));
+        assert!(split.contains(&"draw_with_descriptor_heap_plane_sampler_mapping"));
         assert!(split.contains(&"cmd_pipeline_barrier2_decoded_restore"));
         assert!(split.contains(&"queue_submit2_present"));
         assert!(split.contains(&"no_queue_wait_idle_after_present"));
@@ -1161,8 +1185,8 @@ mod tests {
         );
         assert!(!same.contains(&"cmd_pipeline_barrier2_video_release"));
         assert!(same.contains(&"cmd_bind_resource_heap_ext"));
-        assert!(!same.contains(&"cmd_bind_sampler_heap_ext"));
-        assert!(same.contains(&"draw_with_descriptor_heap_embedded_sampler_mapping"));
+        assert!(same.contains(&"cmd_bind_sampler_heap_ext"));
+        assert!(same.contains(&"draw_with_descriptor_heap_plane_sampler_mapping"));
 
         let present_id2 = native_vulkan_vulkanalia_decoded_image_present_command_order(
             true,
@@ -1183,9 +1207,9 @@ mod tests {
     fn shader_module_code_size_uses_bytes_not_words() {
         assert_eq!(
             native_vulkan_vulkanalia_shader_code_size_bytes(
-                &NATIVE_VULKAN_VULKANALIA_YCBCR_PRESENT_VERTEX_SPIRV
+                &NATIVE_VULKAN_VULKANALIA_PLANE_PRESENT_VERTEX_SPIRV
             ),
-            NATIVE_VULKAN_VULKANALIA_YCBCR_PRESENT_VERTEX_SPIRV.len() * 4
+            NATIVE_VULKAN_VULKANALIA_PLANE_PRESENT_VERTEX_SPIRV.len() * 4
         );
     }
 }
