@@ -93,6 +93,9 @@ pub(super) struct VulkanaliaDescriptorHeapBuffer {
     snapshot: NativeVulkanVulkanaliaDescriptorHeapBufferSnapshot,
 }
 
+// The mapped pointer moves with the owning Vulkan resource and is not shared.
+unsafe impl Send for VulkanaliaDescriptorHeapBuffer {}
+
 pub(super) struct VulkanaliaDescriptorHeapImageSamplerResources {
     pub(super) resource_heap: VulkanaliaDescriptorHeapBuffer,
     pub(super) sampler_heap: VulkanaliaDescriptorHeapBuffer,

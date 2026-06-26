@@ -11,6 +11,7 @@ pub(super) struct NativeVulkanVulkanaliaDecodeCommandBufferSnapshot {
     pub command_buffer_allocated: bool,
     pub command_buffer_count: u32,
     pub submit_fence_created: bool,
+    pub submit_fence_count: u32,
     pub transient_pool: bool,
     pub reset_command_buffer_enabled: bool,
     pub command_buffer_level: &'static str,
@@ -22,6 +23,7 @@ pub(super) struct VulkanaliaDecodeCommandBuffer {
     pub(super) command_buffer: vk::CommandBuffer,
     pub(super) command_buffers: Vec<vk::CommandBuffer>,
     pub(super) submit_fence: vk::Fence,
+    pub(super) submit_fences: Vec<vk::Fence>,
     pub(super) snapshot: NativeVulkanVulkanaliaDecodeCommandBufferSnapshot,
 }
 
@@ -39,6 +41,15 @@ impl VulkanaliaDecodeCommandBuffer {
                     self.command_buffers.len()
                 )
             })
+    }
+
+    pub(super) fn submit_fence_at(&self, frame_index: usize) -> Result<vk::Fence, String> {
+        self.submit_fences.get(frame_index).copied().ok_or_else(|| {
+            format!(
+                "Vulkanalia decode submit fence index {frame_index} exceeds allocated count {}",
+                self.submit_fences.len()
+            )
+        })
     }
 }
 
@@ -68,6 +79,7 @@ pub(super) fn native_vulkan_vulkanalia_create_decode_command_buffers(
     let command_pool = unsafe { device.create_command_pool(&command_pool_info, None) }
         .map_err(|err| format!("vkCreateCommandPool(vulkanalia decode): {err:?}"))?;
     let mut submit_fence = vk::Fence::null();
+    let mut submit_fences = Vec::new();
 
     let result = (|| -> Result<VulkanaliaDecodeCommandBuffer, String> {
         let command_buffer_info = vk::CommandBufferAllocateInfo::builder()
@@ -83,20 +95,30 @@ pub(super) fn native_vulkan_vulkanalia_create_decode_command_buffers(
             "vkAllocateCommandBuffers(vulkanalia decode) returned none".to_owned()
         })?;
         let fence_info = vk::FenceCreateInfo::builder();
-        submit_fence = unsafe { device.create_fence(&fence_info, None) }
-            .map_err(|err| format!("vkCreateFence(vulkanalia decode submit): {err:?}"))?;
+        for _ in 0..command_buffer_count {
+            let fence = unsafe { device.create_fence(&fence_info, None) }
+                .map_err(|err| format!("vkCreateFence(vulkanalia decode submit): {err:?}"))?;
+            submit_fences.push(fence);
+        }
+        submit_fence = submit_fences
+            .first()
+            .copied()
+            .ok_or_else(|| "Vulkanalia decode command buffer has no submit fence".to_owned())?;
+        let submit_fence_count = u32::try_from(submit_fences.len()).unwrap_or(u32::MAX);
 
         Ok(VulkanaliaDecodeCommandBuffer {
             command_pool,
             command_buffer,
             command_buffers,
             submit_fence,
+            submit_fences: std::mem::take(&mut submit_fences),
             snapshot: NativeVulkanVulkanaliaDecodeCommandBufferSnapshot {
                 queue_family_index,
                 command_pool_created: true,
                 command_buffer_allocated: true,
                 command_buffer_count,
                 submit_fence_created: true,
+                submit_fence_count,
                 transient_pool: pool_flags.contains(vk::CommandPoolCreateFlags::TRANSIENT),
                 reset_command_buffer_enabled: pool_flags
                     .contains(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
@@ -108,8 +130,10 @@ pub(super) fn native_vulkan_vulkanalia_create_decode_command_buffers(
 
     if result.is_err() {
         unsafe {
-            if submit_fence != vk::Fence::null() {
-                device.destroy_fence(submit_fence, None);
+            for fence in submit_fences {
+                if fence != vk::Fence::null() {
+                    device.destroy_fence(fence, None);
+                }
             }
             device.destroy_command_pool(command_pool, None);
         }
@@ -123,8 +147,10 @@ pub(super) fn native_vulkan_vulkanalia_destroy_decode_command_buffer(
     command_buffer: VulkanaliaDecodeCommandBuffer,
 ) {
     unsafe {
-        if command_buffer.submit_fence != vk::Fence::null() {
-            device.destroy_fence(command_buffer.submit_fence, None);
+        for fence in command_buffer.submit_fences {
+            if fence != vk::Fence::null() {
+                device.destroy_fence(fence, None);
+            }
         }
         device.free_command_buffers(command_buffer.command_pool, &command_buffer.command_buffers);
         device.destroy_command_pool(command_buffer.command_pool, None);
@@ -143,6 +169,7 @@ mod tests {
             command_buffer_allocated: true,
             command_buffer_count: 3,
             submit_fence_created: true,
+            submit_fence_count: 3,
             transient_pool: true,
             reset_command_buffer_enabled: true,
             command_buffer_level: "primary",
@@ -151,6 +178,7 @@ mod tests {
 
         assert_eq!(snapshot.queue_family_index, 3);
         assert_eq!(snapshot.command_buffer_count, 3);
+        assert_eq!(snapshot.submit_fence_count, 3);
         assert!(snapshot.transient_pool);
         assert!(snapshot.reset_command_buffer_enabled);
         assert_eq!(snapshot.command_buffer_level, "primary");

@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
 use serde::Serialize;
+use std::sync::Mutex;
+use std::time::Instant;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{
     self, ExtDescriptorHeapExtensionDeviceCommands, HasBuilder, KhrSwapchainExtensionDeviceCommands,
@@ -26,6 +28,10 @@ use super::video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffSna
 use super::video_session_images::VulkanaliaVideoSessionResourceImage;
 
 pub(super) const DECODED_IMAGE_PRESENT_TELEMETRY_RETAINED_FRAMES: usize = 8;
+
+fn native_vulkan_vulkanalia_elapsed_micros(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot {
@@ -88,6 +94,13 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
     pub display_order_key_source: &'static str,
     pub pacing_sleep_micros: u64,
     pub pacing_clock_model: &'static str,
+    pub present_call_total_micros: u64,
+    pub present_wait_frame_slot_micros: u64,
+    pub present_acquire_next_image_micros: u64,
+    pub present_record_command_buffer_micros: u64,
+    pub present_submit_command_buffer_micros: u64,
+    pub present_queue_present_micros: u64,
+    pub present_wait_after_queue_present_micros: u64,
     pub present_frame_slot: u32,
     pub present_sync_model: &'static str,
     pub wait_idle_after_present: bool,
@@ -140,6 +153,20 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
     pub present_ids_head: Vec<Option<u64>>,
     pub present_ids_tail: Vec<Option<u64>>,
     pub total_pacing_sleep_micros: u64,
+    pub total_present_call_micros: u64,
+    pub max_present_call_micros: u64,
+    pub total_present_wait_frame_slot_micros: u64,
+    pub max_present_wait_frame_slot_micros: u64,
+    pub total_present_acquire_next_image_micros: u64,
+    pub max_present_acquire_next_image_micros: u64,
+    pub total_present_record_command_buffer_micros: u64,
+    pub max_present_record_command_buffer_micros: u64,
+    pub total_present_submit_command_buffer_micros: u64,
+    pub max_present_submit_command_buffer_micros: u64,
+    pub total_present_queue_present_micros: u64,
+    pub max_present_queue_present_micros: u64,
+    pub total_present_wait_after_queue_present_micros: u64,
+    pub max_present_wait_after_queue_present_micros: u64,
     pub pts_monotonic: bool,
     pub display_order_monotonic: bool,
     pub uses_present_id: bool,
@@ -515,6 +542,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_once(
         present_timing,
         vk::Semaphore::null(),
         0,
+        None,
     );
     native_vulkan_vulkanalia_destroy_decoded_image_present_frame_resources(device, frame_resources);
     result
@@ -543,6 +571,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
     present_timing: VulkanaliaDecodedImagePresentTimingConfig,
     decode_complete_semaphore: vk::Semaphore,
     decode_complete_value: u64,
+    queue_host_access_lock: Option<&Mutex<()>>,
 ) -> Result<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot, String> {
     if swapchain_images.is_empty() {
         return Err("decoded image present requires at least one swapchain image".to_owned());
@@ -579,7 +608,9 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
     let image_available = frame_resources.image_available[present_frame_slot];
     let render_finished = frame_resources.render_finished[present_frame_slot];
     let in_flight = frame_resources.in_flight[present_frame_slot];
+    let present_call_started_at = Instant::now();
 
+    let stage_started_at = Instant::now();
     unsafe {
         device
             .wait_for_fences(&[in_flight], true, u64::MAX)
@@ -588,10 +619,14 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
             .reset_fences(&[in_flight])
             .map_err(|err| format!("vkResetFences(vulkanalia decoded image present): {err:?}"))?;
     }
+    let present_wait_frame_slot_micros = native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
+    let stage_started_at = Instant::now();
     let (image_index, _) = unsafe {
         device.acquire_next_image_khr(swapchain, u64::MAX, image_available, vk::Fence::null())
     }
     .map_err(|err| format!("vkAcquireNextImageKHR(vulkanalia decoded image present): {err:?}"))?;
+    let present_acquire_next_image_micros =
+        native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
     let image_index_usize = image_index as usize;
     let command_buffer = frame_resources
         .command_buffers
@@ -608,6 +643,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         .get(image_index_usize)
         .ok_or_else(|| format!("swapchain view index {image_index_usize} is unavailable"))?;
 
+    let stage_started_at = Instant::now();
     native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
         device,
         command_buffer,
@@ -620,6 +656,17 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         pipeline.pipeline_layout,
         pipeline.pipeline,
     )?;
+    let present_record_command_buffer_micros =
+        native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
+    let stage_started_at = Instant::now();
+    let queue_host_access_guard =
+        if let Some(lock) = queue_host_access_lock {
+            Some(lock.lock().map_err(|_| {
+                "decoded image present queue host-access lock is poisoned".to_owned()
+            })?)
+        } else {
+            None
+        };
     native_vulkan_vulkanalia_submit_decoded_image_present_command_buffer2(
         device,
         queue,
@@ -630,6 +677,8 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         decode_complete_semaphore,
         decode_complete_value,
     )?;
+    let present_submit_command_buffer_micros =
+        native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
 
     let swapchains = [swapchain];
     let image_indices = [image_index];
@@ -659,6 +708,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
             present_info = present_info.push_next(present_id_info);
         }
     }
+    let stage_started_at = Instant::now();
     unsafe {
         device
             .queue_present_khr(queue, &present_info)
@@ -666,12 +716,19 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
                 format!("vkQueuePresentKHR(vulkanalia decoded image present): {err:?}")
             })?;
     }
+    drop(queue_host_access_guard);
+    let present_queue_present_micros = native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
+    let stage_started_at = Instant::now();
     let present_wait_after_present = present_timing.wait_after_queue_present(
         device,
         swapchain,
         present_id,
         "decoded image present",
     )?;
+    let present_wait_after_queue_present_micros =
+        native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
+    let present_call_total_micros =
+        native_vulkan_vulkanalia_elapsed_micros(present_call_started_at);
 
     Ok(NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
         binding: "vulkanalia",
@@ -685,6 +742,13 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         display_order_key_source,
         pacing_sleep_micros,
         pacing_clock_model,
+        present_call_total_micros,
+        present_wait_frame_slot_micros,
+        present_acquire_next_image_micros,
+        present_record_command_buffer_micros,
+        present_submit_command_buffer_micros,
+        present_queue_present_micros,
+        present_wait_after_queue_present_micros,
         present_frame_slot: present_frame_slot as u32,
         present_sync_model: "frame-slot semaphore/fence reuse; no per-present queue_wait_idle",
         wait_idle_after_present: false,
@@ -718,6 +782,29 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         descriptor_model: "VK_EXT_descriptor_heap",
         ffmpeg_reference: FFMPEG_VULKAN_DECODE_REFERENCE,
     })
+}
+
+pub(super) fn native_vulkan_vulkanalia_wait_decoded_image_present_frame_slot(
+    device: &Device,
+    resources: &VulkanaliaDecodedImagePresentFrameResources,
+    present_frame_slot: u32,
+) -> Result<u64, String> {
+    let slot = present_frame_slot as usize;
+    let fence = resources.in_flight.get(slot).copied().ok_or_else(|| {
+        format!(
+            "decoded image present frame slot {slot} exceeds {} in-flight fence(s)",
+            resources.in_flight.len()
+        )
+    })?;
+    let started_at = Instant::now();
+    unsafe {
+        device
+            .wait_for_fences(&[fence], true, u64::MAX)
+            .map_err(|err| {
+                format!("vkWaitForFences(vulkanalia decoded image present layer release): {err:?}")
+            })?;
+    }
+    Ok(native_vulkan_vulkanalia_elapsed_micros(started_at))
 }
 
 pub(super) fn native_vulkan_vulkanalia_destroy_decoded_image_present_frame_resources(

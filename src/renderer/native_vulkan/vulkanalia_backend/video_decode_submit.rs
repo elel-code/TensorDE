@@ -8,6 +8,33 @@ use crate::renderer::native_vulkan::NativeVulkanVideoSessionCodec;
 pub(super) const FFMPEG_VULKAN_DECODE_REFERENCE: &str =
     "references/ffmpeg/libavcodec/vulkan_decode.c";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+pub struct NativeVulkanVulkanaliaStreamingDecodeTimingSnapshot {
+    pub measured_frame_count: u32,
+    pub total_loop_micros: u64,
+    pub total_frame_micros: u64,
+    pub max_frame_micros: u64,
+    pub total_next_frame_micros: u64,
+    pub max_next_frame_micros: u64,
+    pub total_bitstream_buffer_micros: u64,
+    pub max_bitstream_buffer_micros: u64,
+    pub total_payload_write_micros: u64,
+    pub max_payload_write_micros: u64,
+    pub total_decode_plan_micros: u64,
+    pub max_decode_plan_micros: u64,
+    pub total_image_view_bind_micros: u64,
+    pub max_image_view_bind_micros: u64,
+    pub total_record_command_buffer_micros: u64,
+    pub max_record_command_buffer_micros: u64,
+    pub total_submit_wait_micros: u64,
+    pub max_submit_wait_micros: u64,
+    pub total_slot_reuse_wait_micros: u64,
+    pub max_slot_reuse_wait_micros: u64,
+    pub final_drain_wait_micros: u64,
+    pub total_after_frame_submitted_micros: u64,
+    pub max_after_frame_submitted_micros: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct NativeVulkanVulkanaliaPictureResourcePlan {
     pub coded_offset: (i32, i32),

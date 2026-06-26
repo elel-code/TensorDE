@@ -12,7 +12,7 @@ use crate::renderer::native_vulkan::{
 use super::video_decode_submit::{
     NativeVulkanVulkanaliaDecodeImageViewBindings, NativeVulkanVulkanaliaDecodeSubmitPlan,
     NativeVulkanVulkanaliaPictureResourcePlan, NativeVulkanVulkanaliaReferenceSlotPlan,
-    NativeVulkanVulkanaliaReferenceSlotRole,
+    NativeVulkanVulkanaliaReferenceSlotRole, NativeVulkanVulkanaliaStreamingDecodeTimingSnapshot,
 };
 
 const FFMPEG_H265_PICTURE_REFERENCE: &str = "references/ffmpeg/libavcodec/vulkan_hevc.c";
@@ -135,6 +135,7 @@ pub struct NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot {
     pub bitstream_buffer_model: &'static str,
     pub input_payload_model: &'static str,
     pub src_buffer_total_bytes: u64,
+    pub streaming_decode_timing: NativeVulkanVulkanaliaStreamingDecodeTimingSnapshot,
     pub retained_frame_telemetry_limit: usize,
     pub retained_frame_telemetry_count: u32,
     pub frame_telemetry_retention_model: &'static str,

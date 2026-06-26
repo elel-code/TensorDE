@@ -189,6 +189,7 @@ pub use video_bitstream_buffer::{
     NativeVulkanVulkanaliaVideoSessionBitstreamBufferSmokeSnapshot,
     NativeVulkanVulkanaliaVideoSessionBitstreamBufferSnapshot,
 };
+pub use video_decode_submit::NativeVulkanVulkanaliaStreamingDecodeTimingSnapshot;
 pub use video_decode_submit_av1::{
     NativeVulkanVulkanaliaAv1CdefPlan, NativeVulkanVulkanaliaAv1CommandFrameSnapshot,
     NativeVulkanVulkanaliaAv1CommandSmokeSnapshot, NativeVulkanVulkanaliaAv1DecodeFrameBatchInput,

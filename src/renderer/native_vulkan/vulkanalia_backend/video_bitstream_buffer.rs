@@ -266,12 +266,13 @@ pub(crate) fn native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size(
     1u64.checked_shl(floor_log2 + 1).unwrap_or(u64::MAX)
 }
 
-pub(super) fn native_vulkan_vulkanalia_write_video_session_bitstream_payload(
+pub(super) fn native_vulkan_vulkanalia_write_video_session_bitstream_payload_at_offset(
     device: &Device,
     buffer: &VulkanaliaVideoSessionBitstreamBuffer,
+    dst_offset: u64,
     payload: &[u8],
     min_size_alignment: u64,
-) -> Result<u64, String> {
+) -> Result<(u64, u64), String> {
     if payload.is_empty() {
         return Err("Vulkanalia streaming bitstream payload cannot be empty".to_owned());
     }
@@ -280,17 +281,21 @@ pub(super) fn native_vulkan_vulkanalia_write_video_session_bitstream_payload(
     })?;
     let src_buffer_range =
         native_vulkan_vulkanalia_align_up(payload.len() as u64, min_size_alignment.max(1));
-    if src_buffer_range > buffer.snapshot.size {
+    let end_offset = dst_offset
+        .checked_add(src_buffer_range)
+        .ok_or_else(|| "Vulkanalia streaming bitstream payload offset overflow".to_owned())?;
+    if end_offset > buffer.snapshot.size {
         return Err(format!(
-            "Vulkanalia streaming bitstream payload range {src_buffer_range} exceeds buffer size {}",
+            "Vulkanalia streaming bitstream payload offset {dst_offset} range {src_buffer_range} exceeds buffer size {}",
             buffer.snapshot.size
         ));
     }
     unsafe {
-        ptr::copy_nonoverlapping(payload.as_ptr(), mapped_ptr.cast::<u8>(), payload.len());
+        let dst = mapped_ptr.cast::<u8>().add(dst_offset as usize);
+        ptr::copy_nonoverlapping(payload.as_ptr(), dst, payload.len());
         if src_buffer_range as usize > payload.len() {
             ptr::write_bytes(
-                mapped_ptr.cast::<u8>().add(payload.len()),
+                dst.add(payload.len()),
                 0,
                 src_buffer_range as usize - payload.len(),
             );
@@ -300,7 +305,7 @@ pub(super) fn native_vulkan_vulkanalia_write_video_session_bitstream_payload(
         let range = vk::MappedMemoryRange::builder()
             .memory(buffer.memory)
             .offset(0)
-            .size(src_buffer_range)
+            .size(end_offset)
             .build();
         unsafe {
             device.flush_mapped_memory_ranges(&[range]).map_err(|err| {
@@ -308,7 +313,7 @@ pub(super) fn native_vulkan_vulkanalia_write_video_session_bitstream_payload(
             })?;
         }
     }
-    Ok(src_buffer_range)
+    Ok((dst_offset, src_buffer_range))
 }
 
 fn native_vulkan_vulkanalia_bitstream_memory_type_index(
