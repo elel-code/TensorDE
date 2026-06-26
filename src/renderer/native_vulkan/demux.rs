@@ -149,12 +149,17 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
         while self.queued.is_empty() {
             self.fill_one(loop_on_eos)?;
         }
-        self.queued.pop_front().ok_or_else(|| {
+        let packet = self.queued.pop_front().ok_or_else(|| {
             NativeVulkanError::Video(format!(
                 "{} streaming packet queue is empty",
                 A::CODEC_LABEL
             ))
-        })
+        })?;
+        if self.queued.len() < self.capacity {
+            let refill_may_loop = loop_on_eos && self.queued.is_empty();
+            let _ = self.try_fill_one(refill_may_loop)?;
+        }
+        Ok(packet)
     }
 
     pub(super) fn ensure_front_packet(
@@ -461,6 +466,7 @@ mod tests {
         eos_count: u32,
         loop_count: u32,
         bootstrapping: bool,
+        pending_loop_after_eos: bool,
     }
 
     impl TestLoopingPacketFrontend {
@@ -472,6 +478,7 @@ mod tests {
                 eos_count: 0,
                 loop_count: 0,
                 bootstrapping: true,
+                pending_loop_after_eos: false,
             }
         }
     }
@@ -502,6 +509,14 @@ mod tests {
             &mut self,
             loop_on_eos: bool,
         ) -> Result<Option<TestAccessUnit>, NativeVulkanError> {
+            if self.pending_loop_after_eos {
+                if !loop_on_eos {
+                    return Ok(None);
+                }
+                self.pending_loop_after_eos = false;
+                self.loop_count = self.loop_count.saturating_add(1);
+                self.loop_position = 0;
+            }
             if self.bootstrapping {
                 if let Some(access_unit) = self.bootstrap.pop_front() {
                     return Ok(Some(access_unit));
@@ -509,6 +524,7 @@ mod tests {
                 self.bootstrapping = false;
                 self.eos_count = self.eos_count.saturating_add(1);
                 if !loop_on_eos {
+                    self.pending_loop_after_eos = true;
                     return Ok(None);
                 }
                 self.loop_count = self.loop_count.saturating_add(1);
@@ -522,6 +538,7 @@ mod tests {
             if self.loop_position >= self.loop_access_units.len() {
                 self.eos_count = self.eos_count.saturating_add(1);
                 if !loop_on_eos {
+                    self.pending_loop_after_eos = true;
                     return Ok(None);
                 }
                 self.loop_count = self.loop_count.saturating_add(1);
@@ -672,6 +689,7 @@ mod tests {
         assert_eq!(snapshot.loop_skip_packets, 2);
         assert_eq!(snapshot.loop_skipped_packets, 2);
         assert_eq!(snapshot.current_serial, 1);
-        assert_eq!(snapshot.front_serial, None);
+        assert_eq!(snapshot.front_serial, Some(1));
+        assert_eq!(snapshot.front_pts_ms, Some(12));
     }
 }

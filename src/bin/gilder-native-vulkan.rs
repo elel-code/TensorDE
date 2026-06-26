@@ -145,6 +145,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 video_session_options.allocate_bitstream_buffer = true;
                 video_session_options.allocate_video_images = true;
             }
+            "--decode-av1-ready-prefix" => {
+                let count = args
+                    .next()
+                    .map(|value| value.parse::<u32>())
+                    .transpose()?
+                    .ok_or("--decode-av1-ready-prefix requires a count")?;
+                video_session_options.decode_av1_ready_prefix_frames = count;
+                video_session_options.av1_required_ready_prefix_temporal_units = count;
+                video_session_options.extract_bitstream = true;
+                video_session_options.allocate_bitstream_buffer = true;
+                video_session_options.allocate_video_images = true;
+            }
             "--run-clear" | "--run-vulkanalia-clear" => mode = NativeVulkanCliMode::RunClear,
             "--run-vulkanalia-scene-lite-solid-quad" => {
                 mode = NativeVulkanCliMode::RunVulkanaliaSceneLiteSolidQuad
@@ -358,6 +370,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         NativeVulkanCliMode::ProbeVulkanaliaVideoSession => {
             if video_session_options.decode_h264_ready_prefix_frames > 0
                 || video_session_options.decode_h265_ready_prefix_frames > 0
+                || video_session_options.decode_av1_ready_prefix_frames > 0
             {
                 return Err(
                     "--decode-*-ready-prefix session-bind decode was removed; use the streaming video runtime"
@@ -575,13 +588,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     video_session_options.decode_h265_ready_prefix_frames
                 }
                 NativeVulkanVideoSessionCodec::Av1Main8
-                | NativeVulkanVideoSessionCodec::Av1Main10 => 0,
+                | NativeVulkanVideoSessionCodec::Av1Main10 => {
+                    video_session_options.decode_av1_ready_prefix_frames
+                }
             };
             #[cfg(not(feature = "native-vulkan-gst-video"))]
             let ready_prefix_frames = 0u32;
             if ready_prefix_frames == 0 {
                 return Err(
-                    "--run-vulkanalia-ready-prefix-video requires --decode-h264-ready-prefix N or --decode-h265-ready-prefix N matching --video-codec"
+                    "--run-vulkanalia-ready-prefix-video requires --decode-h264-ready-prefix N, --decode-h265-ready-prefix N, or --decode-av1-ready-prefix N matching --video-codec"
                         .into(),
                 );
             }
@@ -738,6 +753,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --create-session-parameters extends --probe-vulkanalia-video-session with real H.264 SPS/PPS, H.265 VPS/SPS/PPS, or AV1 sequence-header VkVideoSessionParametersKHR creation from --source.\n\
 --decode-h264-ready-prefix N extends --probe-vulkanalia-video-session/--run-video with N reference-ready H.264 AU Vulkan Video decode submits.\n\
 --decode-h265-ready-prefix N extends --probe-vulkanalia-video-session/--run-video with N ready H.265 AU Vulkan Video decode submits.\n\
+--decode-av1-ready-prefix N extends --run-video with N visible AV1 temporal units through Vulkan Video decode/present.\n\
 --playback-frames N repeats the ready-prefix AU window for N direct Vulkan Video decode/present frames.\n\
 --audio-probe-duration N overrides the default 10s audio clock probe duration.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
@@ -756,6 +772,7 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--create-session-parameters] [--bitstream-samples N]\n\
          [--decode-h264-ready-prefix N] [--require-h264-ready-prefix N]\n\
          [--decode-h265-ready-prefix N]\n\
+         [--decode-av1-ready-prefix N]\n\
          [--require-h265-ready-prefix N] [--playback-frames N]\n\
          [--start-offset-ms MS]"
     );

@@ -11,8 +11,7 @@ decoded with Vulkan Video into a sampled NV12 array layer and presented through
 the native Vulkan swapchain. It does not use a GStreamer display sink.
 By default, --playback-frames also expands the decoded ready prefix so the
 generated source is a continuous 4K/240 stream comparable with the
-GStreamer/appsink video source. Passing an explicit shorter --decode-prefix keeps
-the old loop-window diagnostic mode.
+GStreamer/appsink video source.
 
 Options:
   --display <name>      Wayland display name. Default: WAYLAND_DISPLAY.
@@ -40,9 +39,6 @@ Options:
                         Copy the source from a non-keyframe entry with -copyinkf,
                         then require streaming bootstrap to discard the broken
                         prefix and resume from the next decodable IDR.
-  --require-loop-skip-replay
-                        Require arbitrary-entry playback to cross EOS, seek,
-                        skip the broken prefix again, and restart each loop on IDR.
   --audio-clock-probe  Run explicit AAC audio-only clock probe beside H.264 video
                         and gate clocked playback / no video decoder contamination.
   --audio-output <plan|clock-only|auto>
@@ -51,7 +47,6 @@ Options:
   --pacing-master <target|audio>
                         Select pacing master. audio requires --audio-clock-probe.
   --muted|--unmuted    Select the effective video plan audio policy for plan output.
-  --allow-short-loop    Allow looped visible playback with a ready-prefix shorter than 1 second.
   --performance-snapshot
                         Capture process CPU/RSS/PSS/USS/Private_Dirty/smaps while the
                         native Vulkan process is running.
@@ -59,6 +54,8 @@ Options:
                         Performance sampling duration. Default: 10.
   --performance-interval <sec>
                         Performance sampling interval. Default: 1.
+  --max-private-dirty-kib <kib>
+                        With --performance-snapshot, fail if max Private_Dirty exceeds this.
   --layer <layer>       Wayland layer. Default: background.
   --fit <mode>          Render fit. Default: cover.
   --no-build            Reuse existing target/release/gilder-native-vulkan.
@@ -88,12 +85,10 @@ frames=0
 frames_explicit=0
 arbitrary_entry_offset=""
 arbitrary_entry_source=0
-require_loop_skip_replay=0
 audio_clock_probe=0
 audio_output="plan"
 plan_muted=1
 pacing_master="target"
-allow_short_loop=0
 layer="background"
 fit="cover"
 no_build=0
@@ -102,6 +97,7 @@ source_duration_seconds=0
 performance_snapshot=0
 performance_duration=10
 performance_interval=1
+max_private_dirty_kib_limit=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -183,10 +179,6 @@ while [[ $# -gt 0 ]]; do
       arbitrary_entry_offset="${2:-}"
       shift 2
       ;;
-    --require-loop-skip-replay)
-      require_loop_skip_replay=1
-      shift
-      ;;
     --audio-clock-probe)
       audio_clock_probe=1
       shift
@@ -207,10 +199,6 @@ while [[ $# -gt 0 ]]; do
       pacing_master="${2:-}"
       shift 2
       ;;
-    --allow-short-loop)
-      allow_short_loop=1
-      shift
-      ;;
     --performance-snapshot)
       performance_snapshot=1
       shift
@@ -221,6 +209,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --performance-interval)
       performance_interval="${2:-}"
+      shift 2
+      ;;
+    --max-private-dirty-kib)
+      max_private_dirty_kib_limit="${2:-}"
       shift 2
       ;;
     --layer)
@@ -308,6 +300,14 @@ if [[ "$decode_prefix" -lt 2 || "$playback_frames" -lt 0 || "$target_fps" -lt 1 
   printf 'FAIL: decode-prefix/playback-frames/target-fps/gop-size/refs/bframes/weightp/weightb must be valid and width/height must be at least 128\n' >&2
   exit 1
 fi
+if [[ -n "$max_private_dirty_kib_limit" && ! "$max_private_dirty_kib_limit" =~ ^[0-9]+$ ]]; then
+  printf 'FAIL: --max-private-dirty-kib must be a non-negative integer\n' >&2
+  exit 1
+fi
+if [[ -n "$max_private_dirty_kib_limit" && "$performance_snapshot" -ne 1 ]]; then
+  printf 'FAIL: --max-private-dirty-kib requires --performance-snapshot\n' >&2
+  exit 1
+fi
 if (( width % 16 != 0 || height % 16 != 0 )); then
   printf 'FAIL: H.264 Vulkan Video source dimensions must be 16-pixel aligned; got %sx%s\n' "$width" "$height" >&2
   exit 1
@@ -317,14 +317,13 @@ if [[ "$playback_frames" -gt 0 ]]; then
   expected_frames="$playback_frames"
 fi
 ready_prefix_loop_period_ms=$((decode_prefix * 1000 / target_fps))
-if [[ "$expected_frames" -gt "$decode_prefix" && "$decode_prefix" -lt "$target_fps" && "$allow_short_loop" -eq 0 ]]; then
+if [[ "$expected_frames" -gt "$decode_prefix" && "$decode_prefix" -lt "$target_fps" ]]; then
   {
     printf 'FAIL: visible H.264 ready-prefix loop is too short for smoothness\n'
     printf 'decode_prefix: %s\n' "$decode_prefix"
     printf 'target_fps: %s\n' "$target_fps"
     printf 'ready_prefix_loop_period_ms: %s\n' "$ready_prefix_loop_period_ms"
     printf 'expected_playback_frames: %s\n' "$expected_frames"
-    printf 'Pass --allow-short-loop only for deliberate short-loop diagnostics.\n'
   } >&2
   exit 1
 fi
@@ -353,7 +352,7 @@ if [[ -z "$source" ]]; then
   if [[ "$frames_explicit" -eq 0 && -n "$arbitrary_entry_offset" ]]; then
     offset_frames="$(awk -v offset="$arbitrary_entry_offset" -v fps="$target_fps" 'BEGIN { value = offset * fps; printf "%d", (value == int(value)) ? value : int(value) + 1 }')"
     arbitrary_window_frames="$expected_frames"
-    if [[ "$require_loop_skip_replay" -eq 1 || "$expected_frames" -gt "$decode_prefix" ]]; then
+    if [[ "$expected_frames" -gt "$decode_prefix" ]]; then
       arbitrary_window_frames="$decode_prefix"
     fi
     arbitrary_min_frames=$((offset_frames + gop_size + arbitrary_window_frames + 2))
@@ -397,10 +396,6 @@ if [[ -n "$arbitrary_entry_offset" ]]; then
     exit 1
   fi
 fi
-if [[ "$arbitrary_entry_source" -eq 1 && "$expected_frames" -gt "$decode_prefix" ]]; then
-  require_loop_skip_replay=1
-fi
-
 runtime_json="$report_dir/runtime.json"
 runtime_stderr="$report_dir/runtime.stderr"
 summary="$report_dir/summary.txt"
@@ -463,15 +458,19 @@ if [[ "$performance_snapshot" -eq 1 ]]; then
     "${args[@]}" \
     >"$runtime_json" 2>"$runtime_stderr" &
   runtime_pid=$!
-  scripts/performance-snapshot.sh \
-    --pid "$runtime_pid" \
-    --label "native-vulkan-h264-ready-prefix-video" \
-    --duration "$performance_duration" \
-    --interval "$performance_interval" \
-    --output-dir "$performance_dir" \
-    --allow-missing \
-    --keep \
-    >"$performance_log" 2>&1
+  performance_args=(
+    --pid "$runtime_pid"
+    --label "native-vulkan-h264-ready-prefix-video"
+    --duration "$performance_duration"
+    --interval "$performance_interval"
+    --output-dir "$performance_dir"
+    --allow-missing
+    --keep
+  )
+  if [[ -n "$max_private_dirty_kib_limit" ]]; then
+    performance_args+=(--expect-max-private-dirty-kib-at-most "$max_private_dirty_kib_limit")
+  fi
+  scripts/performance-snapshot.sh "${performance_args[@]}" >"$performance_log" 2>&1
   performance_status=$?
   wait "$runtime_pid"
   runtime_status=$?
@@ -506,6 +505,9 @@ presented_count="$(jq -r '(.h264_retained_video_present_decode.decoded_image_pre
 frame_count="$presented_count"
 bad_frames="$(jq -r 'if ((.h264_retained_video_present_decode.decoded_image_present_sequence_error // null) == null and (.h264_retained_video_present_decode.decoded_image_present_draw_error // null) == null) then 0 else 1 end' "$runtime_json")"
 average_present_fps="$(jq -r '(.h264_retained_video_present_decode.decoded_image_present_sequence.average_present_fps // 0)' "$runtime_json")"
+average_present_teardown_inclusive_fps="$(jq -r '(.h264_retained_video_present_decode.decoded_image_present_sequence.average_present_teardown_inclusive_fps // 0)' "$runtime_json")"
+present_interval_elapsed_us="$(jq -r '(.h264_retained_video_present_decode.decoded_image_present_sequence.present_interval_elapsed_micros // 0)' "$runtime_json")"
+present_teardown_inclusive_elapsed_us="$(jq -r '(.h264_retained_video_present_decode.decoded_image_present_sequence.present_teardown_inclusive_elapsed_micros // 0)' "$runtime_json")"
 average_present_result_fps="$average_present_fps"
 average_present_result_drop_first_fps="$average_present_fps"
 average_present_result_drop_first_60_fps="$average_present_fps"
@@ -688,10 +690,6 @@ arbitrary_entry_gate_failed=0
 if [[ "$arbitrary_entry_source" -eq 1 && "$first_frame_recovery" != "true" ]]; then
   arbitrary_entry_gate_failed=1
 fi
-loop_skip_replay_gate_failed=0
-if [[ "$require_loop_skip_replay" -eq 1 && ( "$playback_loop_count" -le 1 || "$loop_boundary_reset_count" -le 0 || "$first_frame_recovery" != "true" || "$loop_first_unrecovered_count" -ne 0 ) ]]; then
-  loop_skip_replay_gate_failed=1
-fi
 pacing_gate_failed=0
 if [[ "$pacing_strategy" != "$expected_pacing_strategy" && ! ( "$pacing_strategy" == "pts-video-clock-sleep" && "$target_fps" -gt 0 ) ]]; then
   pacing_gate_failed=1
@@ -718,7 +716,7 @@ if [[ "$audio_clock_probe" -eq 1 && "$loop_boundary_reset_count" -gt 0 && "$audi
   audio_clock_gate_failed=1
 fi
 
-if [[ "$decoded_count" -ne "$expected_decoded_count" || "$presented_count" -ne "$requested_playback_count" || "$frame_count" -ne "$requested_playback_count" || "$expected_decoded_count" -le 0 || "$requested_playback_count" -le 0 || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$reference_gate_failed" -ne 0 || "$b_frame_gate_failed" -ne 0 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$arbitrary_entry_gate_failed" -ne 0 || "$loop_skip_replay_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$pts_delta_gate_failed" -ne 0 || "$audio_clock_gate_failed" -ne 0 || "$present_queue" == "none" || "$video_queue" == "none" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
+if [[ "$decoded_count" -ne "$expected_decoded_count" || "$presented_count" -ne "$requested_playback_count" || "$frame_count" -ne "$requested_playback_count" || "$expected_decoded_count" -le 0 || "$requested_playback_count" -le 0 || "$bad_frames" -ne 0 || "$distinct_layers" -le 1 || "$reference_gate_failed" -ne 0 || "$b_frame_gate_failed" -ne 0 || "$loop_gate_failed" -ne 0 || "$bitstream_gate_failed" -ne 0 || "$input_gate_failed" -ne 0 || "$arbitrary_entry_gate_failed" -ne 0 || "$pacing_gate_failed" -ne 0 || "$dpb_gate_failed" -ne 0 || "$pts_delta_gate_failed" -ne 0 || "$audio_clock_gate_failed" -ne 0 || "$present_queue" == "none" || "$video_queue" == "none" || "$swapchain_images" -lt 2 || "$resource_bytes" -le 0 ]]; then
   {
     printf 'FAIL: native Vulkan direct H.264 ready-prefix video output was not valid\n'
     printf 'decoded_count: %s\n' "$decoded_count"
@@ -801,6 +799,9 @@ if [[ "$decoded_count" -ne "$expected_decoded_count" || "$presented_count" -ne "
     printf 'expected_pacing_strategy: %s\n' "$expected_pacing_strategy"
     printf 'frame_sleep_count: %s\n' "$frame_sleep_count_value"
     printf 'average_present_fps: %s\n' "$average_present_fps"
+    printf 'average_present_teardown_inclusive_fps: %s\n' "$average_present_teardown_inclusive_fps"
+    printf 'present_interval_elapsed_us: %s\n' "$present_interval_elapsed_us"
+    printf 'present_teardown_inclusive_elapsed_us: %s\n' "$present_teardown_inclusive_elapsed_us"
     printf 'average_present_result_fps: %s\n' "$average_present_result_fps"
     printf 'average_present_result_drop_first_fps: %s\n' "$average_present_result_drop_first_fps"
     printf 'average_present_result_drop_first_60_fps: %s\n' "$average_present_result_drop_first_60_fps"
@@ -850,8 +851,6 @@ if [[ "$decoded_count" -ne "$expected_decoded_count" || "$presented_count" -ne "
     printf 'arbitrary_entry_source: %s\n' "$([[ "$arbitrary_entry_source" -eq 1 ]] && printf yes || printf no)"
     printf 'arbitrary_entry_offset: %s\n' "${arbitrary_entry_offset:-none}"
     printf 'arbitrary_entry_gate_failed: %s\n' "$arbitrary_entry_gate_failed"
-    printf 'require_loop_skip_replay: %s\n' "$([[ "$require_loop_skip_replay" -eq 1 ]] && printf yes || printf no)"
-    printf 'loop_skip_replay_gate_failed: %s\n' "$loop_skip_replay_gate_failed"
     printf 'first_frame_idr: %s\n' "$first_frame_idr"
     printf 'loop_first_non_idr_count: %s\n' "$loop_first_non_idr_count"
     printf 'first_frame_recovery: %s\n' "$first_frame_recovery"
@@ -878,7 +877,6 @@ fi
   printf 'generated_source_level: %s\n' "$([[ "$generated_source" -eq 1 ]] && printf '%s' "$level" || printf none)"
   printf 'arbitrary_entry_source: %s\n' "$([[ "$arbitrary_entry_source" -eq 1 ]] && printf yes || printf no)"
   printf 'arbitrary_entry_offset: %s\n' "${arbitrary_entry_offset:-none}"
-  printf 'require_loop_skip_replay: %s\n' "$([[ "$require_loop_skip_replay" -eq 1 ]] && printf yes || printf no)"
   printf 'decode_prefix_explicit: %s\n' "$([[ "$decode_prefix_explicit" -eq 1 ]] && printf yes || printf no)"
   printf 'selected_device: %s\n' "$(jq -r '.selected_physical_device_name' "$runtime_json")"
   printf 'requested_output_name: %s\n' "${output_name:-auto}"
@@ -909,6 +907,9 @@ fi
   printf 'total_frame_sleep_us: %s\n' "$(jq -r '.total_frame_sleep_us // 0' "$runtime_json")"
   printf 'max_frame_pacing_late_us: %s\n' "$(jq -r '.max_frame_pacing_late_us // 0' "$runtime_json")"
   printf 'average_present_fps: %s\n' "$average_present_fps"
+  printf 'average_present_teardown_inclusive_fps: %s\n' "$average_present_teardown_inclusive_fps"
+  printf 'present_interval_elapsed_us: %s\n' "$present_interval_elapsed_us"
+  printf 'present_teardown_inclusive_elapsed_us: %s\n' "$present_teardown_inclusive_elapsed_us"
   printf 'average_present_result_fps: %s\n' "$average_present_result_fps"
   printf 'average_present_result_drop_first_fps: %s\n' "$average_present_result_drop_first_fps"
   printf 'average_present_result_drop_first_60_fps: %s\n' "$average_present_result_drop_first_60_fps"

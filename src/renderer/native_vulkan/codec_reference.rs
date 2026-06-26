@@ -1183,10 +1183,12 @@ pub(super) fn native_vulkan_av1_align_streaming_bootstrap(
         let stream_max_active_reference_pictures =
             native_vulkan_av1_temporal_units_max_active_references(&bootstrap_temporal_units)
                 .max(1);
-        let (stream_dpb_slots, bootstrap_plan) = native_vulkan_av1_min_decodable_dpb_plan(
-            &bootstrap_temporal_units,
-            stream_max_dpb_slots,
-        );
+        let (stream_dpb_slots_for_window, bootstrap_plan) =
+            native_vulkan_av1_min_decodable_dpb_plan(
+                &bootstrap_temporal_units,
+                stream_max_dpb_slots,
+            );
+        let stream_dpb_slots = stream_dpb_slots_for_window.max(9).min(stream_max_dpb_slots);
         let recovery_offset = bootstrap_temporal_units.iter().position(|temporal_unit| {
             native_vulkan_av1_temporal_unit_starts_recovery(temporal_unit, sequence_header)
         });

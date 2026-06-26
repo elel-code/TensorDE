@@ -15,6 +15,7 @@ pub enum NativeVulkanVideoRunRouteKind {
 pub struct NativeVulkanVideoReadyPrefixCounts {
     pub h264: u32,
     pub h265: u32,
+    pub av1: u32,
 }
 
 impl NativeVulkanVideoReadyPrefixCounts {
@@ -22,6 +23,7 @@ impl NativeVulkanVideoReadyPrefixCounts {
         Self {
             h264: options.decode_h264_ready_prefix_frames,
             h265: options.decode_h265_ready_prefix_frames,
+            av1: options.decode_av1_ready_prefix_frames,
         }
     }
 
@@ -30,12 +32,14 @@ impl NativeVulkanVideoReadyPrefixCounts {
             NativeVulkanVideoSessionCodec::H264High8 => self.h264,
             NativeVulkanVideoSessionCodec::H265Main8
             | NativeVulkanVideoSessionCodec::H265Main10 => self.h265,
-            NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => 0,
+            NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => {
+                self.av1
+            }
         }
     }
 
     pub fn any(self) -> bool {
-        self.h264 > 0 || self.h265 > 0
+        self.h264 > 0 || self.h265 > 0 || self.av1 > 0
     }
 }
 
@@ -63,8 +67,9 @@ pub fn native_vulkan_video_default_ready_prefix_frames(
     match codec {
         NativeVulkanVideoSessionCodec::H264High8
         | NativeVulkanVideoSessionCodec::H265Main8
-        | NativeVulkanVideoSessionCodec::H265Main10 => 16,
-        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => 0,
+        | NativeVulkanVideoSessionCodec::H265Main10
+        | NativeVulkanVideoSessionCodec::Av1Main8
+        | NativeVulkanVideoSessionCodec::Av1Main10 => 16,
     }
 }
 
@@ -74,21 +79,6 @@ pub fn native_vulkan_video_run_route(
     duration_playback_frames: Option<u32>,
 ) -> NativeVulkanVideoRunRouteDecision {
     let counts = NativeVulkanVideoReadyPrefixCounts::from_smoke_options(options);
-    if matches!(
-        options.codec,
-        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10
-    ) {
-        return NativeVulkanVideoRunRouteDecision {
-            kind: NativeVulkanVideoRunRouteKind::LegacyVideo,
-            status: "av1-continuous-streaming-runtime-not-implemented",
-            fallback_allowed: false,
-            codec: options.codec,
-            width: options.width,
-            height: options.height,
-            ready_prefix_frames: 0,
-            playback_frames: 0,
-        };
-    }
     let requested_ready_prefix_frames = counts.matching(options.codec);
     let default_ready_prefix_frames =
         native_vulkan_video_default_ready_prefix_frames(options.codec);
@@ -217,18 +207,20 @@ mod tests {
     }
 
     #[test]
-    fn av1_main10_continuous_runtime_is_required() {
+    fn av1_main10_defaults_to_streaming_ready_prefix() {
         let options = options(NativeVulkanVideoSessionCodec::Av1Main10);
 
         let route = native_vulkan_video_run_route(&options, 0, None);
 
-        assert_eq!(route.kind, NativeVulkanVideoRunRouteKind::LegacyVideo);
         assert_eq!(
-            route.status,
-            "av1-continuous-streaming-runtime-not-implemented"
+            route.kind,
+            NativeVulkanVideoRunRouteKind::VulkanaliaReadyPrefix
         );
-        assert_eq!(route.ready_prefix_frames, 0);
-        assert_eq!(route.playback_frames, 0);
+        assert_eq!(
+            route.ready_prefix_frames,
+            native_vulkan_video_default_ready_prefix_frames(options.codec)
+        );
+        assert_eq!(route.playback_frames, route.ready_prefix_frames);
     }
 
     #[test]

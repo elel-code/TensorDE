@@ -70,6 +70,7 @@ pub(super) struct VulkanaliaDecodedImagePresentFrameResources {
     image_available: Vec<vk::Semaphore>,
     render_finished: Vec<vk::Semaphore>,
     in_flight: Vec<vk::Fence>,
+    swapchain_image_in_flight: Mutex<Vec<vk::Fence>>,
     // Timeline semaphore signalled by the video-queue decode submit and waited on by
     // the present submit, providing the decode->present cross-queue dependency.
     decode_complete: vk::Semaphore,
@@ -139,6 +140,9 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
     pub submitted_present_frame_count: u32,
     pub presented_frame_count: u32,
     pub average_present_fps: f64,
+    pub average_present_teardown_inclusive_fps: f64,
+    pub present_interval_elapsed_micros: u64,
+    pub present_teardown_inclusive_elapsed_micros: u64,
     pub retained_frame_telemetry_limit: usize,
     pub sampled_array_layers_head: Vec<u32>,
     pub sampled_array_layers_tail: Vec<u32>,
@@ -356,7 +360,7 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_pipeline_res
                         render_pass_compatibility: "dynamic-rendering-no-render-pass",
                         primitive_topology: "fullscreen-triangle",
                         vertex_shader_model: "gl_VertexIndex fullscreen triangle",
-                        fragment_shader_model: "two plane combined sampler2D descriptors",
+                        fragment_shader_model: "two retained plane sampler2DArray descriptors with instance-index layer selection",
                         descriptor_sets: 0,
                         descriptor_model: "VK_EXT_descriptor_heap",
                         descriptor_heap_mapping_enabled,
@@ -481,6 +485,7 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_frame_resour
             image_available: std::mem::take(&mut image_available),
             render_finished: std::mem::take(&mut render_finished),
             in_flight: std::mem::take(&mut in_flight),
+            swapchain_image_in_flight: Mutex::new(vec![vk::Fence::null(); swapchain_images.len()]),
             decode_complete,
         })
     })();
@@ -533,6 +538,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_once(
         &frame_resources,
         sampler.snapshot.sampled_array_layer,
         0,
+        false,
         None,
         None,
         0,
@@ -542,6 +548,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_once(
         present_timing,
         vk::Semaphore::null(),
         0,
+        None,
         None,
     );
     native_vulkan_vulkanalia_destroy_decoded_image_present_frame_resources(device, frame_resources);
@@ -562,6 +569,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
     frame_resources: &VulkanaliaDecodedImagePresentFrameResources,
     sampled_array_layer: u32,
     present_frame_index: u32,
+    present_frame_slot_prepared: bool,
     source_frame_pts_ms: Option<u64>,
     source_frame_duration_ms: Option<u64>,
     display_order_key: i64,
@@ -572,6 +580,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
     decode_complete_semaphore: vk::Semaphore,
     decode_complete_value: u64,
     queue_host_access_lock: Option<&Mutex<()>>,
+    mut after_render_submit_before_present: Option<&mut dyn FnMut(u32) -> Result<(), String>>,
 ) -> Result<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot, String> {
     if swapchain_images.is_empty() {
         return Err("decoded image present requires at least one swapchain image".to_owned());
@@ -606,20 +615,31 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
     }
     let present_frame_slot = present_frame_index as usize % frame_slot_count;
     let image_available = frame_resources.image_available[present_frame_slot];
-    let render_finished = frame_resources.render_finished[present_frame_slot];
     let in_flight = frame_resources.in_flight[present_frame_slot];
     let present_call_started_at = Instant::now();
 
-    let stage_started_at = Instant::now();
-    unsafe {
-        device
-            .wait_for_fences(&[in_flight], true, u64::MAX)
-            .map_err(|err| format!("vkWaitForFences(vulkanalia decoded image present): {err:?}"))?;
-        device
-            .reset_fences(&[in_flight])
-            .map_err(|err| format!("vkResetFences(vulkanalia decoded image present): {err:?}"))?;
+    let mut present_wait_frame_slot_micros = if present_frame_slot_prepared {
+        0
+    } else {
+        native_vulkan_vulkanalia_prepare_decoded_image_present_frame_slot(
+            device,
+            frame_resources,
+            present_frame_slot as u32,
+        )?
+    };
+    {
+        let mut swapchain_image_in_flight = frame_resources
+            .swapchain_image_in_flight
+            .lock()
+            .map_err(|_| {
+                "decoded image present swapchain-image fence cache is poisoned".to_owned()
+            })?;
+        for cached_fence in swapchain_image_in_flight.iter_mut() {
+            if *cached_fence == in_flight {
+                *cached_fence = vk::Fence::null();
+            }
+        }
     }
-    let present_wait_frame_slot_micros = native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
     let stage_started_at = Instant::now();
     let (image_index, _) = unsafe {
         device.acquire_next_image_khr(swapchain, u64::MAX, image_available, vk::Fence::null())
@@ -628,6 +648,44 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
     let present_acquire_next_image_micros =
         native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
     let image_index_usize = image_index as usize;
+    let render_finished = frame_resources
+        .render_finished
+        .get(image_index_usize)
+        .copied()
+        .ok_or_else(|| {
+            format!("swapchain image index {image_index_usize} has no present semaphore")
+        })?;
+    let previous_swapchain_image_fence = {
+        let swapchain_image_in_flight =
+            frame_resources
+                .swapchain_image_in_flight
+                .lock()
+                .map_err(|_| {
+                    "decoded image present swapchain-image fence cache is poisoned".to_owned()
+                })?;
+        swapchain_image_in_flight
+            .get(image_index_usize)
+            .copied()
+            .ok_or_else(|| {
+                format!("swapchain image index {image_index_usize} has no tracked fence")
+            })?
+    };
+    if previous_swapchain_image_fence != vk::Fence::null()
+        && previous_swapchain_image_fence != in_flight
+    {
+        let stage_started_at = Instant::now();
+        unsafe {
+            device
+                .wait_for_fences(&[previous_swapchain_image_fence], true, u64::MAX)
+                .map_err(|err| {
+                    format!(
+                        "vkWaitForFences(vulkanalia decoded image present swapchain image reuse): {err:?}"
+                    )
+                })?;
+        }
+        present_wait_frame_slot_micros = present_wait_frame_slot_micros
+            .saturating_add(native_vulkan_vulkanalia_elapsed_micros(stage_started_at));
+    }
     let command_buffer = frame_resources
         .command_buffers
         .get(image_index_usize)
@@ -677,8 +735,27 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         decode_complete_semaphore,
         decode_complete_value,
     )?;
+    {
+        let mut swapchain_image_in_flight = frame_resources
+            .swapchain_image_in_flight
+            .lock()
+            .map_err(|_| {
+                "decoded image present swapchain-image fence cache is poisoned".to_owned()
+            })?;
+        let slot = swapchain_image_in_flight
+            .get_mut(image_index_usize)
+            .ok_or_else(|| {
+                format!("swapchain image index {image_index_usize} has no tracked fence")
+            })?;
+        *slot = in_flight;
+    }
     let present_submit_command_buffer_micros =
         native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
+    if let Some(after_render_submit_before_present) =
+        after_render_submit_before_present.as_deref_mut()
+    {
+        after_render_submit_before_present(present_frame_slot as u32)?;
+    }
 
     let swapchains = [swapchain];
     let image_indices = [image_index];
@@ -735,7 +812,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         route: "decoded-image-dynamic-rendering-present-draw",
         present_frame_index,
         sampled_array_layer,
-        sampled_array_layer_source: "submitted-dst-base-array-layer",
+        sampled_array_layer_source: "submitted-dst-base-array-layer-via-draw-first-instance",
         source_frame_pts_ms,
         source_frame_duration_ms,
         display_order_key,
@@ -768,7 +845,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
         presented: true,
         decoded_image_layout_transition: "video-decode-dpb -> shader-read-only-optimal -> video-decode-dpb",
         swapchain_layout_transition: "undefined -> color-attachment-optimal -> present-src-khr",
-        render_model: "VK_EXT_descriptor_heap Y/UV plane sampler mapping -> Vulkan 1.3/1.4 dynamic rendering fullscreen triangle -> Wayland swapchain",
+        render_model: "VK_EXT_descriptor_heap retained Y/UV plane-array sampler mapping -> Vulkan 1.3/1.4 dynamic rendering fullscreen triangle -> Wayland swapchain",
         command_order: native_vulkan_vulkanalia_decoded_image_present_command_order(
             true,
             present_timing.present_id_mode(),
@@ -803,6 +880,36 @@ pub(super) fn native_vulkan_vulkanalia_wait_decoded_image_present_frame_slot(
             .map_err(|err| {
                 format!("vkWaitForFences(vulkanalia decoded image present layer release): {err:?}")
             })?;
+    }
+    Ok(native_vulkan_vulkanalia_elapsed_micros(started_at))
+}
+
+pub(super) fn native_vulkan_vulkanalia_decoded_image_present_frame_slot_count(
+    resources: &VulkanaliaDecodedImagePresentFrameResources,
+) -> usize {
+    resources.in_flight.len()
+}
+
+pub(super) fn native_vulkan_vulkanalia_prepare_decoded_image_present_frame_slot(
+    device: &Device,
+    resources: &VulkanaliaDecodedImagePresentFrameResources,
+    present_frame_slot: u32,
+) -> Result<u64, String> {
+    let slot = present_frame_slot as usize;
+    let fence = resources.in_flight.get(slot).copied().ok_or_else(|| {
+        format!(
+            "decoded image present frame slot {slot} exceeds {} in-flight fence(s)",
+            resources.in_flight.len()
+        )
+    })?;
+    let started_at = Instant::now();
+    unsafe {
+        device
+            .wait_for_fences(&[fence], true, u64::MAX)
+            .map_err(|err| format!("vkWaitForFences(vulkanalia decoded image present): {err:?}"))?;
+        device
+            .reset_fences(&[fence])
+            .map_err(|err| format!("vkResetFences(vulkanalia decoded image present): {err:?}"))?;
     }
     Ok(native_vulkan_vulkanalia_elapsed_micros(started_at))
 }
@@ -948,17 +1055,6 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
             .image_memory_barriers(&image_barriers)
             .build();
         device.cmd_pipeline_barrier2(command_buffer, &dependency);
-        let descriptor_heap_host_to_shader = vk::MemoryBarrier2::builder()
-            .src_stage_mask(vk::PipelineStageFlags2::HOST)
-            .src_access_mask(vk::AccessFlags2::HOST_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
-            .dst_access_mask(vk::AccessFlags2::RESOURCE_HEAP_READ_EXT)
-            .build();
-        let descriptor_heap_memory_barriers = [descriptor_heap_host_to_shader];
-        let descriptor_heap_dependency = vk::DependencyInfo::builder()
-            .memory_barriers(&descriptor_heap_memory_barriers)
-            .build();
-        device.cmd_pipeline_barrier2(command_buffer, &descriptor_heap_dependency);
 
         let clear_value = vk::ClearValue {
             color: vk::ClearColorValue {
@@ -990,7 +1086,7 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
             native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info(descriptor_heap);
         device.cmd_bind_resource_heap_ext(command_buffer, &resource_bind);
         device.cmd_bind_sampler_heap_ext(command_buffer, &sampler_bind);
-        device.cmd_draw(command_buffer, 3, 1, 0, 0);
+        device.cmd_draw(command_buffer, 3, 1, 0, sampled_array_layer);
         device.cmd_end_rendering(command_buffer);
 
         let decoded_to_decode = vk::ImageMemoryBarrier2::builder()
@@ -1092,10 +1188,9 @@ pub(super) fn native_vulkan_vulkanalia_decoded_image_present_command_order(
     present_wait_mode: &'static str,
 ) -> Vec<&'static str> {
     let bind_steps = [
-        "cmd_pipeline_barrier2_descriptor_heap_host_write_to_shader_read",
         "cmd_bind_resource_heap_ext",
         "cmd_bind_sampler_heap_ext",
-        "draw_with_descriptor_heap_plane_sampler_mapping",
+        "draw_with_descriptor_heap_plane_array_sampler_mapping",
     ];
     let mut order = if same_queue_family {
         let mut order = vec![
@@ -1109,8 +1204,8 @@ pub(super) fn native_vulkan_vulkanalia_decoded_image_present_command_order(
             "cmd_pipeline_barrier2_decoded_restore",
             "cmd_pipeline_barrier2_present",
             "queue_submit2_present",
+            "defer_frame_slot_reuse_until_render_fence",
             "queue_present_khr",
-            "defer_frame_slot_reuse_until_fence",
             "no_queue_wait_idle_after_present",
         ]);
         order
@@ -1127,20 +1222,20 @@ pub(super) fn native_vulkan_vulkanalia_decoded_image_present_command_order(
             "cmd_pipeline_barrier2_decoded_restore",
             "cmd_pipeline_barrier2_present",
             "queue_submit2_present",
+            "defer_frame_slot_reuse_until_render_fence",
             "queue_present_khr",
-            "defer_frame_slot_reuse_until_fence",
             "no_queue_wait_idle_after_present",
         ]);
         order
     };
     match present_id_mode {
-        "present-id2-khr" => order.insert(order.len().saturating_sub(3), "present_id2_khr"),
-        "present-id-khr" => order.insert(order.len().saturating_sub(3), "present_id_khr"),
+        "present-id2-khr" => order.insert(order.len().saturating_sub(2), "present_id2_khr"),
+        "present-id-khr" => order.insert(order.len().saturating_sub(2), "present_id_khr"),
         _ => {}
     }
     match present_wait_mode {
-        "present-wait2-khr" => order.insert(order.len().saturating_sub(2), "wait_for_present2_khr"),
-        "present-wait-khr" => order.insert(order.len().saturating_sub(2), "wait_for_present_khr"),
+        "present-wait2-khr" => order.insert(order.len().saturating_sub(1), "wait_for_present2_khr"),
+        "present-wait-khr" => order.insert(order.len().saturating_sub(1), "wait_for_present_khr"),
         _ => {}
     }
     order
@@ -1189,63 +1284,86 @@ fn native_vulkan_vulkanalia_decoded_image_layer_subresource_range(
         .build()
 }
 
-const NATIVE_VULKAN_VULKANALIA_PLANE_PRESENT_VERTEX_SPIRV: [u32; 357] = [
-    119734787, 65536, 851979, 51, 0, 131089, 1, 393227, 1, 1280527431, 1685353262, 808793134, 0,
-    196622, 0, 1, 524303, 0, 4, 1852399981, 0, 32, 36, 47, 196611, 2, 450, 655364, 1197427783,
-    1279741775, 1885560645, 1953718128, 1600482425, 1701734764, 1919509599, 1769235301, 25974,
-    524292, 1197427783, 1279741775, 1852399429, 1685417059, 1768185701, 1952671090, 6649449,
-    262149, 4, 1852399981, 0, 196613, 12, 7565168, 196613, 19, 30325, 393221, 30, 1348430951,
-    1700164197, 2019914866, 0, 393222, 30, 0, 1348430951, 1953067887, 7237481, 458758, 30, 1,
-    1348430951, 1953393007, 1702521171, 0, 458758, 30, 2, 1130327143, 1148217708, 1635021673,
-    6644590, 458758, 30, 3, 1130327143, 1147956341, 1635021673, 6644590, 196613, 32, 0, 393221, 36,
-    1449094247, 1702130277, 1684949368, 30821, 262149, 47, 1987403638, 0, 196679, 30, 2, 327752,
-    30, 0, 11, 0, 327752, 30, 1, 11, 1, 327752, 30, 2, 11, 3, 327752, 30, 3, 11, 4, 262215, 36, 11,
-    42, 262215, 47, 30, 0, 131091, 2, 196641, 3, 2, 196630, 6, 32, 262167, 7, 6, 2, 262165, 8, 32,
-    0, 262187, 8, 9, 3, 262172, 10, 7, 9, 262176, 11, 7, 10, 262187, 6, 13, 3212836864, 327724, 7,
-    14, 13, 13, 262187, 6, 15, 1077936128, 327724, 7, 16, 15, 13, 327724, 7, 17, 13, 15, 393260,
-    10, 18, 14, 16, 17, 262187, 6, 20, 0, 262187, 6, 21, 1065353216, 327724, 7, 22, 20, 21, 262187,
-    6, 23, 1073741824, 327724, 7, 24, 23, 21, 327724, 7, 25, 20, 13, 393260, 10, 26, 22, 24, 25,
-    262167, 27, 6, 4, 262187, 8, 28, 1, 262172, 29, 6, 28, 393246, 30, 27, 6, 29, 29, 262176, 31,
-    3, 30, 262203, 31, 32, 3, 262165, 33, 32, 1, 262187, 33, 34, 0, 262176, 35, 1, 33, 262203, 35,
-    36, 1, 262176, 38, 7, 7, 262176, 44, 3, 27, 262176, 46, 3, 7, 262203, 46, 47, 3, 327734, 2, 4,
-    0, 3, 131320, 5, 262203, 11, 12, 7, 262203, 11, 19, 7, 196670, 12, 18, 196670, 19, 26, 262205,
-    33, 37, 36, 327745, 38, 39, 12, 37, 262205, 7, 40, 39, 327761, 6, 41, 40, 0, 327761, 6, 42, 40,
-    1, 458832, 27, 43, 41, 42, 20, 21, 327745, 44, 45, 32, 34, 196670, 45, 43, 262205, 33, 48, 36,
-    327745, 38, 49, 19, 48, 262205, 7, 50, 49, 196670, 47, 50, 65789, 65592,
+const NATIVE_VULKAN_VULKANALIA_PLANE_PRESENT_VERTEX_SPIRV: [u32; 312] = [
+    0x07230203, 0x00010000, 0x000d000b, 0x00000038, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x000a000f, 0x00000000, 0x00000004, 0x6e69616d, 0x00000000, 0x0000001f, 0x00000023, 0x0000002f,
+    0x00000034, 0x00000035, 0x00030047, 0x0000001d, 0x00000002, 0x00050048, 0x0000001d, 0x00000000,
+    0x0000000b, 0x00000000, 0x00050048, 0x0000001d, 0x00000001, 0x0000000b, 0x00000001, 0x00050048,
+    0x0000001d, 0x00000002, 0x0000000b, 0x00000003, 0x00050048, 0x0000001d, 0x00000003, 0x0000000b,
+    0x00000004, 0x00040047, 0x00000023, 0x0000000b, 0x0000002a, 0x00040047, 0x0000002f, 0x0000001e,
+    0x00000000, 0x00030047, 0x00000034, 0x0000000e, 0x00040047, 0x00000034, 0x0000001e, 0x00000001,
+    0x00040047, 0x00000035, 0x0000000b, 0x0000002b, 0x00020013, 0x00000002, 0x00030021, 0x00000003,
+    0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017, 0x00000007, 0x00000006, 0x00000002,
+    0x00040015, 0x00000008, 0x00000020, 0x00000000, 0x0004002b, 0x00000008, 0x00000009, 0x00000003,
+    0x0004001c, 0x0000000a, 0x00000007, 0x00000009, 0x00040020, 0x0000000b, 0x00000007, 0x0000000a,
+    0x0004002b, 0x00000006, 0x0000000d, 0xbf800000, 0x0005002c, 0x00000007, 0x0000000e, 0x0000000d,
+    0x0000000d, 0x0004002b, 0x00000006, 0x0000000f, 0x40400000, 0x0005002c, 0x00000007, 0x00000010,
+    0x0000000f, 0x0000000d, 0x0005002c, 0x00000007, 0x00000011, 0x0000000d, 0x0000000f, 0x0006002c,
+    0x0000000a, 0x00000012, 0x0000000e, 0x00000010, 0x00000011, 0x0004002b, 0x00000006, 0x00000014,
+    0x00000000, 0x0005002c, 0x00000007, 0x00000015, 0x00000014, 0x00000014, 0x0004002b, 0x00000006,
+    0x00000016, 0x40000000, 0x0005002c, 0x00000007, 0x00000017, 0x00000016, 0x00000014, 0x0005002c,
+    0x00000007, 0x00000018, 0x00000014, 0x00000016, 0x0006002c, 0x0000000a, 0x00000019, 0x00000015,
+    0x00000017, 0x00000018, 0x00040017, 0x0000001a, 0x00000006, 0x00000004, 0x0004002b, 0x00000008,
+    0x0000001b, 0x00000001, 0x0004001c, 0x0000001c, 0x00000006, 0x0000001b, 0x0006001e, 0x0000001d,
+    0x0000001a, 0x00000006, 0x0000001c, 0x0000001c, 0x00040020, 0x0000001e, 0x00000003, 0x0000001d,
+    0x0004003b, 0x0000001e, 0x0000001f, 0x00000003, 0x00040015, 0x00000020, 0x00000020, 0x00000001,
+    0x0004002b, 0x00000020, 0x00000021, 0x00000000, 0x00040020, 0x00000022, 0x00000001, 0x00000020,
+    0x0004003b, 0x00000022, 0x00000023, 0x00000001, 0x00040020, 0x00000025, 0x00000007, 0x00000007,
+    0x0004002b, 0x00000006, 0x00000028, 0x3f800000, 0x00040020, 0x0000002c, 0x00000003, 0x0000001a,
+    0x00040020, 0x0000002e, 0x00000003, 0x00000007, 0x0004003b, 0x0000002e, 0x0000002f, 0x00000003,
+    0x00040020, 0x00000033, 0x00000003, 0x00000008, 0x0004003b, 0x00000033, 0x00000034, 0x00000003,
+    0x0004003b, 0x00000022, 0x00000035, 0x00000001, 0x00050036, 0x00000002, 0x00000004, 0x00000000,
+    0x00000003, 0x000200f8, 0x00000005, 0x0004003b, 0x0000000b, 0x0000000c, 0x00000007, 0x0004003b,
+    0x0000000b, 0x00000013, 0x00000007, 0x0003003e, 0x0000000c, 0x00000012, 0x0003003e, 0x00000013,
+    0x00000019, 0x0004003d, 0x00000020, 0x00000024, 0x00000023, 0x00050041, 0x00000025, 0x00000026,
+    0x0000000c, 0x00000024, 0x0004003d, 0x00000007, 0x00000027, 0x00000026, 0x00050051, 0x00000006,
+    0x00000029, 0x00000027, 0x00000000, 0x00050051, 0x00000006, 0x0000002a, 0x00000027, 0x00000001,
+    0x00070050, 0x0000001a, 0x0000002b, 0x00000029, 0x0000002a, 0x00000014, 0x00000028, 0x00050041,
+    0x0000002c, 0x0000002d, 0x0000001f, 0x00000021, 0x0003003e, 0x0000002d, 0x0000002b, 0x00050041,
+    0x00000025, 0x00000031, 0x00000013, 0x00000024, 0x0004003d, 0x00000007, 0x00000032, 0x00000031,
+    0x0003003e, 0x0000002f, 0x00000032, 0x0004003d, 0x00000020, 0x00000036, 0x00000035, 0x0004007c,
+    0x00000008, 0x00000037, 0x00000036, 0x0003003e, 0x00000034, 0x00000037, 0x000100fd, 0x00010038,
 ];
 
-const NATIVE_VULKAN_VULKANALIA_PLANE_PRESENT_FRAGMENT_SPIRV: [u32; 554] = [
-    119734787, 65536, 851979, 90, 0, 131089, 1, 393227, 1, 1280527431, 1685353262, 808793134, 0,
-    196622, 0, 1, 458767, 4, 4, 1852399981, 0, 16, 82, 196624, 4, 7, 196611, 2, 450, 655364,
-    1197427783, 1279741775, 1885560645, 1953718128, 1600482425, 1701734764, 1919509599, 1769235301,
-    25974, 524292, 1197427783, 1279741775, 1852399429, 1685417059, 1768185701, 1952671090, 6649449,
-    262149, 4, 1852399981, 0, 196613, 8, 121, 327685, 12, 1702125433, 1920300152, 101, 262149, 16,
-    1987403638, 0, 196613, 24, 30325, 327685, 25, 1952413301, 1970567269, 25970, 196613, 30, 117,
-    196613, 33, 118, 196613, 54, 114, 196613, 62, 103, 196613, 74, 98, 327685, 82, 1601467759,
-    1869377379, 114, 262215, 12, 33, 0, 262215, 12, 34, 0, 262215, 16, 30, 0, 262215, 25, 33, 1,
-    262215, 25, 34, 0, 262215, 82, 30, 0, 131091, 2, 196641, 3, 2, 196630, 6, 32, 262176, 7, 7, 6,
-    589849, 9, 6, 1, 0, 0, 0, 1, 0, 196635, 10, 9, 262176, 11, 0, 10, 262203, 11, 12, 0, 262167,
-    14, 6, 2, 262176, 15, 1, 14, 262203, 15, 16, 1, 262167, 18, 6, 4, 262165, 20, 32, 0, 262187,
-    20, 21, 0, 262176, 23, 7, 14, 262203, 11, 25, 0, 262187, 20, 34, 1, 262187, 6, 38, 1031831681,
-    262187, 6, 40, 1062984668, 262187, 6, 42, 0, 262187, 6, 43, 1065353216, 262187, 6, 47,
-    1063313633, 262187, 6, 56, 1070174988, 262187, 6, 58, 1056964608, 262187, 6, 64, 1044368274,
-    262187, 6, 69, 1055894222, 262187, 6, 76, 1072530509, 262176, 81, 3, 18, 262203, 81, 82, 3,
-    327734, 2, 4, 0, 3, 131320, 5, 262203, 7, 8, 7, 262203, 23, 24, 7, 262203, 7, 30, 7, 262203, 7,
-    33, 7, 262203, 7, 54, 7, 262203, 7, 62, 7, 262203, 7, 74, 7, 262205, 10, 13, 12, 262205, 14,
-    17, 16, 327767, 18, 19, 13, 17, 327761, 6, 22, 19, 0, 196670, 8, 22, 262205, 10, 26, 25,
-    262205, 14, 27, 16, 327767, 18, 28, 26, 27, 458831, 14, 29, 28, 28, 0, 1, 196670, 24, 29,
-    327745, 7, 31, 24, 21, 262205, 6, 32, 31, 196670, 30, 32, 327745, 7, 35, 24, 34, 262205, 6, 36,
-    35, 196670, 33, 36, 262205, 6, 37, 8, 327811, 6, 39, 37, 38, 327816, 6, 41, 39, 40, 524300, 6,
-    44, 1, 43, 41, 42, 43, 196670, 8, 44, 262205, 6, 45, 30, 327811, 6, 46, 45, 38, 327816, 6, 48,
-    46, 47, 524300, 6, 49, 1, 43, 48, 42, 43, 196670, 30, 49, 262205, 6, 50, 33, 327811, 6, 51, 50,
-    38, 327816, 6, 52, 51, 47, 524300, 6, 53, 1, 43, 52, 42, 43, 196670, 33, 53, 262205, 6, 55, 8,
-    262205, 6, 57, 33, 327811, 6, 59, 57, 58, 327813, 6, 60, 56, 59, 327809, 6, 61, 55, 60, 196670,
-    54, 61, 262205, 6, 63, 8, 262205, 6, 65, 30, 327811, 6, 66, 65, 58, 327813, 6, 67, 64, 66,
-    327811, 6, 68, 63, 67, 262205, 6, 70, 33, 327811, 6, 71, 70, 58, 327813, 6, 72, 69, 71, 327811,
-    6, 73, 68, 72, 196670, 62, 73, 262205, 6, 75, 8, 262205, 6, 77, 30, 327811, 6, 78, 77, 58,
-    327813, 6, 79, 76, 78, 327809, 6, 80, 75, 79, 196670, 74, 80, 262205, 6, 83, 54, 524300, 6, 84,
-    1, 43, 83, 42, 43, 262205, 6, 85, 62, 524300, 6, 86, 1, 43, 85, 42, 43, 262205, 6, 87, 74,
-    524300, 6, 88, 1, 43, 87, 42, 43, 458832, 18, 89, 84, 86, 88, 43, 196670, 82, 89, 65789, 65592,
+const NATIVE_VULKAN_VULKANALIA_PLANE_PRESENT_FRAGMENT_SPIRV: [u32; 291] = [
+    0x07230203, 0x00010000, 0x000d000b, 0x0000004e, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x0008000f, 0x00000004, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000c, 0x00000010, 0x00000048,
+    0x00030010, 0x00000004, 0x00000007, 0x00040047, 0x0000000c, 0x0000001e, 0x00000000, 0x00030047,
+    0x00000010, 0x0000000e, 0x00040047, 0x00000010, 0x0000001e, 0x00000001, 0x00040047, 0x0000001b,
+    0x00000021, 0x00000000, 0x00040047, 0x0000001b, 0x00000022, 0x00000000, 0x00040047, 0x00000024,
+    0x00000021, 0x00000001, 0x00040047, 0x00000024, 0x00000022, 0x00000000, 0x00040047, 0x00000048,
+    0x0000001e, 0x00000000, 0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00030016,
+    0x00000006, 0x00000020, 0x00040017, 0x00000007, 0x00000006, 0x00000003, 0x00040017, 0x0000000a,
+    0x00000006, 0x00000002, 0x00040020, 0x0000000b, 0x00000001, 0x0000000a, 0x0004003b, 0x0000000b,
+    0x0000000c, 0x00000001, 0x00040015, 0x0000000e, 0x00000020, 0x00000000, 0x00040020, 0x0000000f,
+    0x00000001, 0x0000000e, 0x0004003b, 0x0000000f, 0x00000010, 0x00000001, 0x00090019, 0x00000018,
+    0x00000006, 0x00000001, 0x00000000, 0x00000001, 0x00000000, 0x00000001, 0x00000000, 0x0003001b,
+    0x00000019, 0x00000018, 0x00040020, 0x0000001a, 0x00000000, 0x00000019, 0x0004003b, 0x0000001a,
+    0x0000001b, 0x00000000, 0x00040017, 0x0000001e, 0x00000006, 0x00000004, 0x0004003b, 0x0000001a,
+    0x00000024, 0x00000000, 0x0004002b, 0x00000006, 0x00000029, 0x3f000000, 0x0005002c, 0x0000000a,
+    0x0000002a, 0x00000029, 0x00000029, 0x0004002b, 0x00000006, 0x0000002e, 0x3fb374bc, 0x0004002b,
+    0x00000006, 0x00000036, 0x3eb03298, 0x0004002b, 0x00000006, 0x0000003b, 0x3f36d19e, 0x0004002b,
+    0x00000006, 0x00000042, 0x3fe2d0e5, 0x00040020, 0x00000047, 0x00000003, 0x0000001e, 0x0004003b,
+    0x00000047, 0x00000048, 0x00000003, 0x0004002b, 0x00000006, 0x0000004c, 0x3f800000, 0x00050036,
+    0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0004003d, 0x0000000a,
+    0x0000000d, 0x0000000c, 0x0004003d, 0x0000000e, 0x00000011, 0x00000010, 0x00040070, 0x00000006,
+    0x00000012, 0x00000011, 0x00050051, 0x00000006, 0x00000013, 0x0000000d, 0x00000000, 0x00050051,
+    0x00000006, 0x00000014, 0x0000000d, 0x00000001, 0x00060050, 0x00000007, 0x00000015, 0x00000013,
+    0x00000014, 0x00000012, 0x0004003d, 0x00000019, 0x0000001c, 0x0000001b, 0x00050057, 0x0000001e,
+    0x0000001f, 0x0000001c, 0x00000015, 0x00050051, 0x00000006, 0x00000021, 0x0000001f, 0x00000000,
+    0x0004003d, 0x00000019, 0x00000025, 0x00000024, 0x00050057, 0x0000001e, 0x00000027, 0x00000025,
+    0x00000015, 0x0007004f, 0x0000000a, 0x00000028, 0x00000027, 0x00000027, 0x00000000, 0x00000001,
+    0x00050083, 0x0000000a, 0x0000002b, 0x00000028, 0x0000002a, 0x00050051, 0x00000006, 0x00000031,
+    0x0000002b, 0x00000001, 0x00050085, 0x00000006, 0x00000032, 0x0000002e, 0x00000031, 0x00050081,
+    0x00000006, 0x00000033, 0x00000021, 0x00000032, 0x00050051, 0x00000006, 0x00000038, 0x0000002b,
+    0x00000000, 0x00050085, 0x00000006, 0x00000039, 0x00000036, 0x00000038, 0x00050083, 0x00000006,
+    0x0000003a, 0x00000021, 0x00000039, 0x00050085, 0x00000006, 0x0000003e, 0x0000003b, 0x00000031,
+    0x00050083, 0x00000006, 0x0000003f, 0x0000003a, 0x0000003e, 0x00050085, 0x00000006, 0x00000045,
+    0x00000042, 0x00000038, 0x00050081, 0x00000006, 0x00000046, 0x00000021, 0x00000045, 0x00070050,
+    0x0000001e, 0x0000004d, 0x00000033, 0x0000003f, 0x00000046, 0x0000004c, 0x0003003e, 0x00000048,
+    0x0000004d, 0x000100fd, 0x00010038,
 ];
 
 #[cfg(test)]
@@ -1262,9 +1380,10 @@ mod tests {
         assert!(split.contains(&"cmd_begin_rendering"));
         assert!(split.contains(&"cmd_bind_resource_heap_ext"));
         assert!(split.contains(&"cmd_bind_sampler_heap_ext"));
-        assert!(split.contains(&"draw_with_descriptor_heap_plane_sampler_mapping"));
+        assert!(split.contains(&"draw_with_descriptor_heap_plane_array_sampler_mapping"));
         assert!(split.contains(&"cmd_pipeline_barrier2_decoded_restore"));
         assert!(split.contains(&"queue_submit2_present"));
+        assert!(split.contains(&"defer_frame_slot_reuse_until_render_fence"));
         assert!(split.contains(&"no_queue_wait_idle_after_present"));
 
         let same = native_vulkan_vulkanalia_decoded_image_present_command_order(
@@ -1273,7 +1392,8 @@ mod tests {
         assert!(!same.contains(&"cmd_pipeline_barrier2_video_release"));
         assert!(same.contains(&"cmd_bind_resource_heap_ext"));
         assert!(same.contains(&"cmd_bind_sampler_heap_ext"));
-        assert!(same.contains(&"draw_with_descriptor_heap_plane_sampler_mapping"));
+        assert!(same.contains(&"draw_with_descriptor_heap_plane_array_sampler_mapping"));
+        assert!(same.contains(&"defer_frame_slot_reuse_until_render_fence"));
 
         let present_id2 = native_vulkan_vulkanalia_decoded_image_present_command_order(
             true,

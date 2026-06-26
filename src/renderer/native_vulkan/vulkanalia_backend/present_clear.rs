@@ -211,26 +211,34 @@ fn with_vulkanalia_clear_present(
             ));
         }
     };
-    let render_finished = match unsafe { device.create_semaphore(&semaphore_info, None) } {
-        Ok(semaphore) => semaphore,
-        Err(err) => {
-            unsafe {
-                device.destroy_semaphore(image_available, None);
-                device.destroy_command_pool(command_pool, None);
-                device.destroy_swapchain_khr(swapchain, None);
-                present_device.device.destroy_device(None);
+    let mut render_finished = Vec::with_capacity(swapchain_images.len());
+    for image_index in 0..swapchain_images.len() {
+        match unsafe { device.create_semaphore(&semaphore_info, None) } {
+            Ok(semaphore) => render_finished.push(semaphore),
+            Err(err) => {
+                unsafe {
+                    for semaphore in render_finished {
+                        device.destroy_semaphore(semaphore, None);
+                    }
+                    device.destroy_semaphore(image_available, None);
+                    device.destroy_command_pool(command_pool, None);
+                    device.destroy_swapchain_khr(swapchain, None);
+                    present_device.device.destroy_device(None);
+                }
+                return Err(format!(
+                    "vkCreateSemaphore(render_finished image {image_index} vulkanalia clear present): {err:?}"
+                ));
             }
-            return Err(format!(
-                "vkCreateSemaphore(render_finished vulkanalia clear present): {err:?}"
-            ));
         }
-    };
+    }
     let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
     let in_flight = match unsafe { device.create_fence(&fence_info, None) } {
         Ok(fence) => fence,
         Err(err) => {
             unsafe {
-                device.destroy_semaphore(render_finished, None);
+                for semaphore in render_finished {
+                    device.destroy_semaphore(semaphore, None);
+                }
                 device.destroy_semaphore(image_available, None);
                 device.destroy_command_pool(command_pool, None);
                 device.destroy_swapchain_khr(swapchain, None);
@@ -263,6 +271,9 @@ fn with_vulkanalia_clear_present(
         }
         .map_err(|err| format!("vkAcquireNextImageKHR(vulkanalia clear present): {err:?}"))?;
         let image_index = image_index as usize;
+        let render_finished = *render_finished.get(image_index).ok_or_else(|| {
+            format!("swapchain image index {image_index} has no present semaphore")
+        })?;
         let command_buffer = command_buffers
             .get(image_index)
             .copied()
@@ -311,7 +322,9 @@ fn with_vulkanalia_clear_present(
     let elapsed = started_at.elapsed();
     unsafe {
         device.destroy_fence(in_flight, None);
-        device.destroy_semaphore(render_finished, None);
+        for semaphore in render_finished {
+            device.destroy_semaphore(semaphore, None);
+        }
         device.destroy_semaphore(image_available, None);
         device.destroy_command_pool(command_pool, None);
         device.destroy_swapchain_khr(swapchain, None);

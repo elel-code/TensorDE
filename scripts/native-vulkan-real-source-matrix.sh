@@ -528,9 +528,19 @@ for source in "${unique_sources[@]}"; do
       )
       ;;
     av1)
-      append_summary_row "$index" "skip-av1-streaming-runtime-missing" "$direct_codec" "$profile" "$width" "$height" "$smoke_width" "$smoke_height" "$pix_fmt" "$bit_depth" "$fps" "$audio_codec" "$frames" "" "implement heap-only continuous AV1 streaming runtime before matrix playback" "$source"
-      skipped=$((skipped + 1))
-      continue
+      smoke_script="scripts/native-vulkan-av1-ready-prefix-video-smoke.sh"
+      smoke_args=(
+        "$smoke_script"
+        --no-build
+        --source "$source"
+        --width "$smoke_width"
+        --height "$smoke_height"
+        --target-fps "$fps"
+        --decode-prefix "$frames"
+        --playback-frames "$frames"
+        --bit-depth "$bit_depth"
+        --report-dir "$run_report"
+      )
       ;;
   esac
   if [[ -n "$display" ]]; then

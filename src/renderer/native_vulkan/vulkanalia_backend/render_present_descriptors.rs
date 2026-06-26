@@ -109,7 +109,7 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_reso
         memory_properties,
         resource_image.image,
         plane_formats,
-        sampled_array_layer,
+        resource_image.snapshot.array_layers,
         &sampler_info,
         &descriptor_heap_plan,
     )?;
@@ -137,9 +137,9 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_reso
             descriptor_heap_resource_descriptor_written,
             descriptor_heap_sampler_descriptor_written,
             descriptor_heap_plan,
-            descriptor_type: "combined-image-sampler-plane-pair",
+            descriptor_type: "combined-image-sampler-plane-array-pair",
             image_layout_for_shader: "shader-read-only-optimal",
-            present_pass_model: "decoded image planes -> VK_EXT_descriptor_heap Y/UV sampler mapping -> dynamic rendering fullscreen graphics pass -> swapchain",
+            present_pass_model: "decoded image 2D_ARRAY planes -> retained VK_EXT_descriptor_heap Y/UV sampler mapping -> per-draw layer index -> dynamic rendering fullscreen graphics pass -> swapchain",
             queue_transfer_model: native_vulkan_vulkanalia_decoded_image_present_queue_model(
                 video_queue_family_index,
                 present_queue_family_index,
@@ -153,9 +153,9 @@ pub(super) fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_reso
 }
 
 pub(super) fn native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_layer(
-    device: &Device,
+    _device: &Device,
     resource_image: &VulkanaliaVideoSessionResourceImage,
-    picture_format: vk::Format,
+    _picture_format: vk::Format,
     resources: &mut VulkanaliaDecodedImagePresentSamplerResources,
     sampled_array_layer: u32,
 ) -> Result<(), String> {
@@ -168,28 +168,6 @@ pub(super) fn native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_la
     if sampled_array_layer == resources.snapshot.sampled_array_layer {
         return Ok(());
     }
-    let plane_formats = native_vulkan_vulkanalia_decoded_image_plane_formats(picture_format)?;
-    let sampler_info = native_vulkan_vulkanalia_decoded_image_descriptor_heap_sampler_create_info();
-    native_vulkan_vulkanalia_write_decoded_image_present_plane_descriptors(
-        device,
-        &mut resources.descriptor_heap,
-        resource_image.image,
-        plane_formats,
-        sampled_array_layer,
-        &sampler_info,
-    )?;
-    resources
-        .snapshot
-        .descriptor_heap_resource_descriptor_written = resources
-        .descriptor_heap
-        .snapshot
-        .resource_descriptor_written;
-    resources
-        .snapshot
-        .descriptor_heap_sampler_descriptor_written = resources
-        .descriptor_heap
-        .snapshot
-        .sampler_descriptor_written;
     resources.snapshot.sampled_array_layer = sampled_array_layer;
     Ok(())
 }
@@ -209,7 +187,7 @@ fn native_vulkan_vulkanalia_create_decoded_image_present_descriptor_heap(
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
     image: vk::Image,
     plane_formats: VulkanaliaDecodedImagePlaneFormats,
-    sampled_array_layer: u32,
+    array_layers: u32,
     sampler_info: &vk::SamplerCreateInfo,
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
 ) -> Result<VulkanaliaDescriptorHeapImageSamplerResources, String> {
@@ -224,7 +202,7 @@ fn native_vulkan_vulkanalia_create_decoded_image_present_descriptor_heap(
         &mut heap_resources,
         image,
         plane_formats,
-        sampled_array_layer,
+        array_layers,
         sampler_info,
     ) {
         native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(
@@ -241,7 +219,7 @@ fn native_vulkan_vulkanalia_write_decoded_image_present_plane_descriptors(
     resources: &mut VulkanaliaDescriptorHeapImageSamplerResources,
     image: vk::Image,
     plane_formats: VulkanaliaDecodedImagePlaneFormats,
-    sampled_array_layer: u32,
+    array_layers: u32,
     sampler_info: &vk::SamplerCreateInfo,
 ) -> Result<(), String> {
     let mut y_view_usage_info = vk::ImageViewUsageCreateInfo::builder()
@@ -251,7 +229,7 @@ fn native_vulkan_vulkanalia_write_decoded_image_present_plane_descriptors(
         image,
         vk::ImageAspectFlags::PLANE_0,
         plane_formats.y_view_format,
-        sampled_array_layer,
+        array_layers,
         &mut y_view_usage_info,
     );
     native_vulkan_vulkanalia_write_descriptor_heap_image_sampler(
@@ -270,7 +248,7 @@ fn native_vulkan_vulkanalia_write_decoded_image_present_plane_descriptors(
         image,
         vk::ImageAspectFlags::PLANE_1,
         plane_formats.uv_view_format,
-        sampled_array_layer,
+        array_layers,
         &mut uv_view_usage_info,
     );
     native_vulkan_vulkanalia_write_descriptor_heap_image_sampler(
@@ -301,19 +279,19 @@ fn native_vulkan_vulkanalia_decoded_image_plane_view_create_info<'a>(
     image: vk::Image,
     aspect_mask: vk::ImageAspectFlags,
     plane_format: vk::Format,
-    sampled_array_layer: u32,
+    array_layers: u32,
     view_usage_info: &'a mut vk::ImageViewUsageCreateInfo,
 ) -> vk::ImageViewCreateInfo {
     let subresource_range = vk::ImageSubresourceRange::builder()
         .aspect_mask(aspect_mask)
         .base_mip_level(0)
         .level_count(1)
-        .base_array_layer(sampled_array_layer)
-        .layer_count(1)
+        .base_array_layer(0)
+        .layer_count(array_layers)
         .build();
     vk::ImageViewCreateInfo::builder()
         .image(image)
-        .view_type(vk::ImageViewType::_2D)
+        .view_type(vk::ImageViewType::_2D_ARRAY)
         .format(plane_format)
         .components(native_vulkan_vulkanalia_identity_component_mapping())
         .subresource_range(subresource_range)

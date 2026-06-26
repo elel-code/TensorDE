@@ -13,7 +13,7 @@ use crate::renderer::native_vulkan::{
 use super::video_decode_submit::{
     NativeVulkanVulkanaliaDecodeImageViewBindings, NativeVulkanVulkanaliaDecodeSubmitPlan,
     NativeVulkanVulkanaliaPictureResourcePlan, NativeVulkanVulkanaliaReferenceSlotPlan,
-    NativeVulkanVulkanaliaReferenceSlotRole,
+    NativeVulkanVulkanaliaReferenceSlotRole, NativeVulkanVulkanaliaStreamingDecodeTimingSnapshot,
 };
 
 const FFMPEG_AV1_PICTURE_REFERENCE: &str = "references/ffmpeg/libavcodec/vulkan_av1.c";
@@ -61,6 +61,9 @@ pub struct NativeVulkanVulkanaliaAv1CommandSmokeSnapshot {
     pub requested_frame_count: u32,
     pub recorded_frame_count: u32,
     pub submitted_frame_count: u32,
+    pub displayed_frame_count: u32,
+    pub show_existing_frame_count: u32,
+    pub hidden_frame_count: u32,
     pub ffmpeg_reference: &'static str,
     pub command_buffer_recorded: bool,
     pub submitted: bool,
@@ -76,6 +79,16 @@ pub struct NativeVulkanVulkanaliaAv1CommandSmokeSnapshot {
     pub bitstream_buffer_model: &'static str,
     pub input_payload_model: &'static str,
     pub src_buffer_total_bytes: u64,
+    pub streaming_decode_timing: NativeVulkanVulkanaliaStreamingDecodeTimingSnapshot,
+    pub retained_frame_telemetry_limit: usize,
+    pub retained_frame_telemetry_count: u32,
+    pub frame_telemetry_retention_model: &'static str,
+    pub max_src_buffer_range: u64,
+    pub reset_control_recorded_frame_count: u32,
+    pub p_frame_count: u32,
+    pub b_frame_count: u32,
+    pub max_begin_reference_slot_count: u32,
+    pub max_decode_reference_slot_count: u32,
     pub src_buffer_offset: u64,
     pub src_buffer_range: u64,
     pub dst_base_array_layer: u32,

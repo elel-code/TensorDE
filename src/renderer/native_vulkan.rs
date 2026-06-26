@@ -416,10 +416,12 @@ pub struct NativeVulkanVideoSessionSmokeOptions {
     pub extract_bitstream: bool,
     pub decode_h264_ready_prefix_frames: u32,
     pub decode_h265_ready_prefix_frames: u32,
+    pub decode_av1_ready_prefix_frames: u32,
     pub bitstream_source: Option<PathBuf>,
     pub bitstream_extract_max_samples: u32,
     pub h264_required_ready_prefix_access_units: u32,
     pub h265_required_ready_prefix_access_units: u32,
+    pub av1_required_ready_prefix_temporal_units: u32,
 }
 
 impl Default for NativeVulkanVideoSessionSmokeOptions {
@@ -434,10 +436,12 @@ impl Default for NativeVulkanVideoSessionSmokeOptions {
             extract_bitstream: false,
             decode_h264_ready_prefix_frames: 0,
             decode_h265_ready_prefix_frames: 0,
+            decode_av1_ready_prefix_frames: 0,
             bitstream_source: None,
             bitstream_extract_max_samples: 8,
             h264_required_ready_prefix_access_units: 0,
             h265_required_ready_prefix_access_units: 0,
+            av1_required_ready_prefix_temporal_units: 0,
         }
     }
 }

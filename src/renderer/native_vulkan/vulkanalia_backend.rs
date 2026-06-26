@@ -233,13 +233,16 @@ pub use video_present_device::{
 };
 pub use video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot;
 pub use video_present_runtime::{
+    NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeSnapshot,
     NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot,
     NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot,
 };
 #[cfg(feature = "native-vulkan-gst-video")]
 pub use video_present_runtime::{
+    NativeVulkanVulkanaliaAv1StreamingVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions,
+    run_native_vulkan_vulkanalia_av1_streaming_video_present_decode,
     run_native_vulkan_vulkanalia_h264_streaming_video_present_decode,
     run_native_vulkan_vulkanalia_h265_streaming_video_present_decode,
 };
