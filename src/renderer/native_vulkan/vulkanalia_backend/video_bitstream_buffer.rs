@@ -8,8 +8,6 @@ use super::video_session::{
     NativeVulkanVulkanaliaMemoryTypeCandidate, native_vulkan_vulkanalia_memory_type_candidates,
 };
 
-const HOST_VISIBLE_COHERENT_MEMORY_FLAG_BITS: u32 =
-    vk::MemoryPropertyFlags::HOST_VISIBLE.bits() | vk::MemoryPropertyFlags::HOST_COHERENT.bits();
 const HOST_VISIBLE_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::HOST_VISIBLE.bits();
 const FFMPEG_DECODE_MIN_BITSTREAM_BUFFER_SIZE: u64 = 1024 * 1024;
 
@@ -112,15 +110,8 @@ pub(super) fn native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
         let memory_type = native_vulkan_vulkanalia_bitstream_memory_type_index(
             &memory_type_candidates,
             memory_requirements.memory_type_bits,
-            HOST_VISIBLE_COHERENT_MEMORY_FLAG_BITS,
+            HOST_VISIBLE_MEMORY_FLAG_BITS,
         )
-        .or_else(|| {
-            native_vulkan_vulkanalia_bitstream_memory_type_index(
-                &memory_type_candidates,
-                memory_requirements.memory_type_bits,
-                HOST_VISIBLE_MEMORY_FLAG_BITS,
-            )
-        })
         .ok_or_else(|| {
             format!(
                 "video bitstream buffer has no host-visible memory type for bits 0x{:08x}",
@@ -432,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn bitstream_memory_type_selection_prefers_host_visible_coherent() {
+    fn bitstream_memory_type_selection_matches_ffmpeg_host_visible_only() {
         let memory_types = vec![
             NativeVulkanVulkanaliaMemoryTypeCandidate {
                 index: 0,
@@ -448,11 +439,11 @@ mod tests {
         let selected = native_vulkan_vulkanalia_bitstream_memory_type_index(
             &memory_types,
             0b11,
-            HOST_VISIBLE_COHERENT_MEMORY_FLAG_BITS,
+            HOST_VISIBLE_MEMORY_FLAG_BITS,
         )
-        .expect("host-visible coherent memory type");
+        .expect("host-visible memory type");
 
-        assert_eq!(selected.index, 1);
+        assert_eq!(selected.index, 0);
     }
 
     #[test]

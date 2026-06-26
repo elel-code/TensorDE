@@ -7,8 +7,9 @@ usage: scripts/native-vulkan-av1-ready-prefix-video-smoke.sh [options]
 
 Run the native Vulkanalia AV1 ready-prefix video path on a real Wayland
 background surface. This script only exercises the heap-only Vulkanalia runtime:
-bounded streaming packet queue, reused bitstream upload ring, AV1 DPB/reference
-ring, decoded-image present handoff, and VK_EXT_descriptor_heap sampling.
+bounded streaming packet queue, FFmpeg picture slices buffer pool, AV1
+DPB/reference planner, decoded-image present handoff, and VK_EXT_descriptor_heap
+sampling.
 
 Options:
   --display <name>      Wayland display name. Default: WAYLAND_DISPLAY.
@@ -389,6 +390,13 @@ present_teardown_inclusive_elapsed_us="$(jq -r '.av1_retained_video_present_deco
 zero_copy="$(jq -r '.av1_retained_video_present_decode.decoded_image_present_sequence.all_zero_copy_presented // false' "$runtime_json")"
 descriptor_model="$(jq -r '.av1_retained_video_present_decode.session.decoded_image_present_pipeline.descriptor_model // "none"' "$runtime_json")"
 descriptor_sets="$(jq -r '.av1_retained_video_present_decode.session.decoded_image_present_pipeline.descriptor_sets // -1' "$runtime_json")"
+ffmpeg_slices_buffer_model="$(jq -r '(.av1_retained_video_present_decode.decode.bitstream_buffer_model // "none")' "$runtime_json")"
+ffmpeg_slices_buffer_pool_slot_count="$(jq -r '(.av1_retained_video_present_decode.decode.ffmpeg_slices_buffer_pool_slot_count // 0)' "$runtime_json")"
+ffmpeg_slices_buffer_pool_allocated_slot_count="$(jq -r '(.av1_retained_video_present_decode.decode.ffmpeg_slices_buffer_pool_allocated_slot_count // 0)' "$runtime_json")"
+ffmpeg_slices_buffer_pool_capacity_bytes="$(jq -r '(.av1_retained_video_present_decode.decode.ffmpeg_slices_buffer_pool_capacity_bytes // 0)' "$runtime_json")"
+ffmpeg_slices_buffer_pool_max_slot_bytes="$(jq -r '(.av1_retained_video_present_decode.decode.ffmpeg_slices_buffer_pool_max_slot_bytes // 0)' "$runtime_json")"
+ffmpeg_slices_buffer_max_src_range="$(jq -r '(.av1_retained_video_present_decode.decode.max_src_buffer_range // ([.av1_retained_video_present_decode.decode.frames[]?.src_buffer_range] | max) // 0)' "$runtime_json")"
+bitstream_total_payload_bytes="$(jq -r '(.av1_retained_video_present_decode.decode.src_buffer_total_bytes // 0)' "$runtime_json")"
 session_dpb_slots="$(jq -r '.av1_retained_video_present_decode.session.session_max_dpb_slots // 0' "$runtime_json")"
 picture_format="$(jq -r '.av1_retained_video_present_decode.session.picture_format // "none"' "$runtime_json")"
 max_private_dirty_kib="none"
@@ -408,6 +416,10 @@ if [[ "$requested" -ne "$playback_frames" || "$presented" -ne "$playback_frames"
 fi
 if [[ "$descriptor_model" != "VK_EXT_descriptor_heap" || "$descriptor_sets" -ne 0 ]]; then
   printf 'FAIL: AV1 present path used non-heap descriptors\n' | tee "$summary"
+  exit 1
+fi
+if [[ "$ffmpeg_slices_buffer_model" != "ffmpeg-picture-slices-buffer-pool-exec-owned" || "$ffmpeg_slices_buffer_pool_slot_count" -le 0 || "$ffmpeg_slices_buffer_pool_allocated_slot_count" -le 0 || "$ffmpeg_slices_buffer_pool_capacity_bytes" -le 0 || "$ffmpeg_slices_buffer_pool_max_slot_bytes" -le 0 || "$ffmpeg_slices_buffer_max_src_range" -le 0 || "$bitstream_total_payload_bytes" -le 0 ]]; then
+  printf 'FAIL: AV1 decode did not use FFmpeg picture slices buffer pool\n' | tee "$summary"
   exit 1
 fi
 if [[ "$zero_copy" != "true" ]]; then
@@ -442,6 +454,13 @@ fi
   printf 'present_teardown_inclusive_elapsed_us: %s\n' "$present_teardown_inclusive_elapsed_us"
   printf 'descriptor_model: %s\n' "$descriptor_model"
   printf 'descriptor_sets: %s\n' "$descriptor_sets"
+  printf 'ffmpeg_slices_buffer_model: %s\n' "$ffmpeg_slices_buffer_model"
+  printf 'ffmpeg_slices_buffer_pool_slot_count: %s\n' "$ffmpeg_slices_buffer_pool_slot_count"
+  printf 'ffmpeg_slices_buffer_pool_allocated_slot_count: %s\n' "$ffmpeg_slices_buffer_pool_allocated_slot_count"
+  printf 'ffmpeg_slices_buffer_pool_capacity_bytes: %s\n' "$ffmpeg_slices_buffer_pool_capacity_bytes"
+  printf 'ffmpeg_slices_buffer_pool_max_slot_bytes: %s\n' "$ffmpeg_slices_buffer_pool_max_slot_bytes"
+  printf 'ffmpeg_slices_buffer_max_src_range: %s\n' "$ffmpeg_slices_buffer_max_src_range"
+  printf 'bitstream_total_payload_bytes: %s\n' "$bitstream_total_payload_bytes"
   printf 'all_zero_copy_presented: %s\n' "$zero_copy"
   printf 'session_max_dpb_slots: %s\n' "$session_dpb_slots"
   printf 'picture_format: %s\n' "$picture_format"
