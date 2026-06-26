@@ -21,7 +21,7 @@ use super::video_bitstream_buffer::{
     native_vulkan_vulkanalia_destroy_video_session_bitstream_buffer,
     native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size,
     native_vulkan_vulkanalia_smoke_create_video_session_bitstream_buffer,
-    native_vulkan_vulkanalia_write_video_session_bitstream_payload_at_offset,
+    native_vulkan_vulkanalia_write_ffmpeg_picture_slices_buffer,
 };
 use super::video_codec::{
     native_vulkan_vulkanalia_video_session_codec_name as vulkanalia_video_session_codec_name,
@@ -478,6 +478,7 @@ impl NativeVulkanVulkanaliaFfmpegSlicesBufferPool {
         slot: usize,
         payload_len: u64,
         min_size_alignment: u64,
+        non_coherent_atom_size: u64,
     ) -> Result<&'a VulkanaliaVideoSessionBitstreamBuffer, String> {
         let slot_count = self.slots.len();
         let slot_buffer = self.slots.get_mut(slot).ok_or_else(|| {
@@ -506,6 +507,7 @@ impl NativeVulkanVulkanaliaFfmpegSlicesBufferPool {
                     profile_info,
                     target_size,
                     min_size_alignment,
+                    non_coherent_atom_size,
                     None,
                     true,
                 )?,
@@ -927,6 +929,7 @@ fn smoke_bind_vulkanalia_video_session_profile(
                         capabilities.min_bitstream_buffer_size_alignment,
                     ),
                     capabilities.min_bitstream_buffer_size_alignment,
+                    selection.properties.limits.non_coherent_atom_size,
                     None,
                     false,
                 )?,
@@ -1094,6 +1097,7 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
     codec: NativeVulkanVideoSessionCodec,
     array_layers: u32,
     exec_ring_depth: u32,
+    non_coherent_atom_size: u64,
     input: NativeVulkanVulkanaliaAv1StreamingDecodeInput<'_>,
     image: &super::video_session_images::VulkanaliaVideoSessionResourceImage,
     mut before_output_slot_reuse: Option<NativeVulkanVulkanaliaBeforeOutputSlotReuse<'_>>,
@@ -1253,17 +1257,18 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
                 submit_slot,
                 payload_len,
                 capabilities.min_bitstream_buffer_size_alignment,
+                non_coherent_atom_size,
             )?;
             frame_timing.bitstream_buffer_micros =
                 native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
             let stage_started_at = Instant::now();
             let (src_buffer_offset, src_buffer_range) =
-                native_vulkan_vulkanalia_write_video_session_bitstream_payload_at_offset(
+                native_vulkan_vulkanalia_write_ffmpeg_picture_slices_buffer(
                     device,
                     bitstream_buffer_ref,
-                    0,
                     frame.access_unit_payload.bytes(),
                     capabilities.min_bitstream_buffer_size_alignment,
+                    non_coherent_atom_size,
                 )?;
             frame_timing.payload_write_micros =
                 native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
@@ -1493,6 +1498,7 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_streaming_decode_into_image(
     codec: NativeVulkanVideoSessionCodec,
     array_layers: u32,
     exec_ring_depth: u32,
+    non_coherent_atom_size: u64,
     input: NativeVulkanVulkanaliaH265StreamingDecodeInput<'_>,
     image: &super::video_session_images::VulkanaliaVideoSessionResourceImage,
     mut before_output_slot_reuse: Option<NativeVulkanVulkanaliaBeforeOutputSlotReuse<'_>>,
@@ -1592,17 +1598,18 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_streaming_decode_into_image(
                     submit_slot,
                     payload_len,
                     capabilities.min_bitstream_buffer_size_alignment,
+                    non_coherent_atom_size,
                 )?;
                 frame_timing.bitstream_buffer_micros =
                     native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
                 let stage_started_at = Instant::now();
                 let (src_buffer_offset, src_buffer_range) =
-                    native_vulkan_vulkanalia_write_video_session_bitstream_payload_at_offset(
+                    native_vulkan_vulkanalia_write_ffmpeg_picture_slices_buffer(
                         device,
                         bitstream_buffer_ref,
-                        0,
                         frame.access_unit_payload.bytes(),
                         capabilities.min_bitstream_buffer_size_alignment,
+                        non_coherent_atom_size,
                     )?;
                 frame_timing.payload_write_micros =
                     native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
@@ -1822,6 +1829,7 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_streaming_decode_into_image(
     codec: NativeVulkanVideoSessionCodec,
     array_layers: u32,
     exec_ring_depth: u32,
+    non_coherent_atom_size: u64,
     input: NativeVulkanVulkanaliaH264StreamingDecodeInput<'_>,
     image: &super::video_session_images::VulkanaliaVideoSessionResourceImage,
     mut before_output_slot_reuse: Option<NativeVulkanVulkanaliaBeforeOutputSlotReuse<'_>>,
@@ -1924,17 +1932,18 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_streaming_decode_into_image(
                     submit_slot,
                     payload_len,
                     capabilities.min_bitstream_buffer_size_alignment,
+                    non_coherent_atom_size,
                 )?;
                 frame_timing.bitstream_buffer_micros =
                     native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
                 let stage_started_at = Instant::now();
                 let (src_buffer_offset, src_buffer_range) =
-                    native_vulkan_vulkanalia_write_video_session_bitstream_payload_at_offset(
+                    native_vulkan_vulkanalia_write_ffmpeg_picture_slices_buffer(
                         device,
                         bitstream_buffer_ref,
-                        0,
                         frame.access_unit_payload.bytes(),
                         capabilities.min_bitstream_buffer_size_alignment,
+                        non_coherent_atom_size,
                     )?;
                 frame_timing.payload_write_micros =
                     native_vulkan_vulkanalia_elapsed_micros(stage_started_at);

@@ -34,6 +34,7 @@ pub struct NativeVulkanVulkanaliaVideoSessionBitstreamBufferSnapshot {
     pub selected_memory_type_index: u32,
     pub selected_memory_property_flags: Vec<&'static str>,
     pub mapped_write_bytes: u64,
+    pub mapped_flush_bytes: u64,
     pub mapped_write_source: &'static str,
     pub mapped_write_hash: Option<u64>,
     pub host_visible: bool,
@@ -54,6 +55,7 @@ pub(super) fn native_vulkan_vulkanalia_smoke_create_video_session_bitstream_buff
     profile_info: &vk::VideoProfileInfoKHR,
     requested_size: u64,
     min_size_alignment: u64,
+    non_coherent_atom_size: u64,
     write_payload: Option<&[u8]>,
     keep_mapped: bool,
 ) -> Result<NativeVulkanVulkanaliaVideoSessionBitstreamBufferSmokeSnapshot, String> {
@@ -63,6 +65,7 @@ pub(super) fn native_vulkan_vulkanalia_smoke_create_video_session_bitstream_buff
         profile_info,
         requested_size,
         min_size_alignment,
+        non_coherent_atom_size,
         write_payload,
         keep_mapped,
     )?;
@@ -83,6 +86,7 @@ pub(super) fn native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
     profile_info: &vk::VideoProfileInfoKHR,
     requested_size: u64,
     min_size_alignment: u64,
+    non_coherent_atom_size: u64,
     write_payload: Option<&[u8]>,
     keep_mapped: bool,
 ) -> Result<VulkanaliaVideoSessionBitstreamBuffer, String> {
@@ -142,10 +146,19 @@ pub(super) fn native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
 
         let mapped_size = if keep_mapped {
             memory_requirements.size
+        } else if let Some(payload) = write_payload {
+            let payload_flush_size = native_vulkan_vulkanalia_non_coherent_flush_size(
+                payload.len() as u64,
+                memory_requirements.size,
+                non_coherent_atom_size,
+            );
+            if payload_flush_size == vk::WHOLE_SIZE {
+                memory_requirements.size
+            } else {
+                payload_flush_size.max(1)
+            }
         } else {
-            write_payload
-                .map(|payload| payload.len() as u64)
-                .unwrap_or_else(|| size.min(256))
+            1
         };
         let map =
             match unsafe { device.map_memory(memory, 0, mapped_size, vk::MemoryMapFlags::empty()) }
@@ -166,21 +179,21 @@ pub(super) fn native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
                 ptr::copy_nonoverlapping(payload.as_ptr(), map.cast::<u8>(), payload.len());
             }
             mapped_write_bytes = payload.len() as u64;
-        } else if !keep_mapped {
-            unsafe {
-                ptr::write_bytes(map.cast::<u8>(), 0, mapped_size as usize);
-            }
-            mapped_write_bytes = mapped_size;
         }
 
         let host_coherent = memory_type.property_flags_bits
             & vk::MemoryPropertyFlags::HOST_COHERENT.bits()
             == vk::MemoryPropertyFlags::HOST_COHERENT.bits();
-        if !host_coherent && mapped_write_bytes > 0 {
+        let mapped_flush_bytes = if !host_coherent && mapped_write_bytes > 0 {
+            let flush_size = native_vulkan_vulkanalia_non_coherent_flush_size(
+                mapped_write_bytes,
+                mapped_size,
+                non_coherent_atom_size,
+            );
             let range = vk::MappedMemoryRange::builder()
                 .memory(memory)
                 .offset(0)
-                .size(mapped_write_bytes)
+                .size(flush_size)
                 .build();
             if let Err(err) = unsafe { device.flush_mapped_memory_ranges(&[range]) } {
                 unsafe {
@@ -193,7 +206,10 @@ pub(super) fn native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
                     "vkFlushMappedMemoryRanges(vulkanalia video bitstream): {err:?}"
                 ));
             }
-        }
+            flush_size
+        } else {
+            0
+        };
         let mapped_ptr = if keep_mapped {
             Some(map)
         } else {
@@ -220,12 +236,13 @@ pub(super) fn native_vulkan_vulkanalia_create_video_session_bitstream_buffer(
                     memory_type.property_flags_bits,
                 ),
                 mapped_write_bytes,
+                mapped_flush_bytes,
                 mapped_write_source: if keep_mapped {
                     "persistent-mapped-no-initial-write"
                 } else if write_payload.is_some() {
                     "extracted-encoded-video-unit"
                 } else {
-                    "zero-fill-smoke-pattern"
+                    "no-initial-write-smoke-map"
                 },
                 mapped_write_hash: write_payload.map(stable_byte_hash),
                 host_visible: memory_type.property_flags_bits
@@ -269,12 +286,12 @@ pub(crate) fn native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size(
     1u64.checked_shl(floor_log2 + 1).unwrap_or(u64::MAX)
 }
 
-pub(super) fn native_vulkan_vulkanalia_write_video_session_bitstream_payload_at_offset(
+pub(super) fn native_vulkan_vulkanalia_write_ffmpeg_picture_slices_buffer(
     device: &Device,
     buffer: &VulkanaliaVideoSessionBitstreamBuffer,
-    dst_offset: u64,
     payload: &[u8],
     min_size_alignment: u64,
+    non_coherent_atom_size: u64,
 ) -> Result<(u64, u64), String> {
     if payload.is_empty() {
         return Err("Vulkanalia streaming bitstream payload cannot be empty".to_owned());
@@ -284,32 +301,34 @@ pub(super) fn native_vulkan_vulkanalia_write_video_session_bitstream_payload_at_
     })?;
     let src_buffer_range =
         native_vulkan_vulkanalia_align_up(payload.len() as u64, min_size_alignment.max(1));
-    let end_offset = dst_offset
-        .checked_add(src_buffer_range)
-        .ok_or_else(|| "Vulkanalia streaming bitstream payload offset overflow".to_owned())?;
-    if end_offset > buffer.snapshot.size {
+    if src_buffer_range > buffer.snapshot.size {
         return Err(format!(
-            "Vulkanalia streaming bitstream payload offset {dst_offset} range {src_buffer_range} exceeds buffer size {}",
+            "Vulkanalia FFmpeg picture slices range {src_buffer_range} exceeds buffer size {}",
             buffer.snapshot.size
         ));
     }
     unsafe {
-        let dst = mapped_ptr.cast::<u8>().add(dst_offset as usize);
+        let dst = mapped_ptr.cast::<u8>();
         ptr::copy_nonoverlapping(payload.as_ptr(), dst, payload.len());
     }
     if !buffer.snapshot.host_coherent {
+        let flush_size = native_vulkan_vulkanalia_non_coherent_flush_size(
+            payload.len() as u64,
+            buffer.snapshot.memory_size,
+            non_coherent_atom_size,
+        );
         let range = vk::MappedMemoryRange::builder()
             .memory(buffer.memory)
-            .offset(dst_offset)
-            .size(src_buffer_range)
+            .offset(0)
+            .size(flush_size)
             .build();
         unsafe {
             device.flush_mapped_memory_ranges(&[range]).map_err(|err| {
-                format!("vkFlushMappedMemoryRanges(vulkanalia streaming bitstream): {err:?}")
+                format!("vkFlushMappedMemoryRanges(vulkanalia FFmpeg picture slices): {err:?}")
             })?;
         }
     }
-    Ok((dst_offset, src_buffer_range))
+    Ok((0, src_buffer_range))
 }
 
 fn native_vulkan_vulkanalia_bitstream_memory_type_index(
@@ -332,6 +351,20 @@ fn native_vulkan_vulkanalia_align_up(value: u64, alignment: u64) -> u64 {
         .checked_add(alignment.saturating_sub(1))
         .map(|aligned| aligned / alignment * alignment)
         .unwrap_or(value)
+}
+
+fn native_vulkan_vulkanalia_non_coherent_flush_size(
+    written_size: u64,
+    mapped_size: u64,
+    non_coherent_atom_size: u64,
+) -> u64 {
+    let aligned =
+        native_vulkan_vulkanalia_align_up(written_size.max(1), non_coherent_atom_size.max(1));
+    if aligned <= mapped_size {
+        aligned
+    } else {
+        vk::WHOLE_SIZE
+    }
 }
 
 fn buffer_usage_flag_labels(flags: vk::BufferUsageFlags) -> Vec<&'static str> {
@@ -427,6 +460,18 @@ mod tests {
         assert_eq!(native_vulkan_vulkanalia_align_up(257, 256), 512);
         assert_eq!(native_vulkan_vulkanalia_align_up(256, 256), 256);
         assert_eq!(native_vulkan_vulkanalia_align_up(1, 0), 1);
+    }
+
+    #[test]
+    fn non_coherent_flush_size_uses_atom_alignment_or_whole_size() {
+        assert_eq!(
+            native_vulkan_vulkanalia_non_coherent_flush_size(257, 4096, 256),
+            512
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_non_coherent_flush_size(257, 300, 256),
+            vk::WHOLE_SIZE
+        );
     }
 
     #[test]

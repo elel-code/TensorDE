@@ -1714,6 +1714,7 @@ fn create_video_present_session_pieces(
                                                 codec,
                                                 resource_image_array_layers,
                                                 ffmpeg_decode_async_exec_depth,
+                                                selection.properties.limits.non_coherent_atom_size,
                                                 NativeVulkanVulkanaliaH264StreamingDecodeInput {
                                                     parameter_sets,
                                                     requested_frame_count: request.playback_frame_count,
@@ -1773,6 +1774,7 @@ fn create_video_present_session_pieces(
                                                 codec,
                                                 resource_image_array_layers,
                                                 ffmpeg_decode_async_exec_depth,
+                                                selection.properties.limits.non_coherent_atom_size,
                                                 NativeVulkanVulkanaliaH265StreamingDecodeInput {
                                                     parameter_sets,
                                                     requested_frame_count: request.playback_frame_count,
@@ -1839,6 +1841,7 @@ fn create_video_present_session_pieces(
                                             codec,
                                             resource_image_array_layers,
                                             ffmpeg_decode_async_exec_depth,
+                                            selection.properties.limits.non_coherent_atom_size,
                                             NativeVulkanVulkanaliaAv1StreamingDecodeInput {
                                                 sequence_header: sequence_header.clone(),
                                                 requested_frame_count: request.playback_frame_count,
