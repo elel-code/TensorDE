@@ -61,6 +61,13 @@ pub(super) struct NativeVulkanStreamingPacket<A: NativeVulkanStreamingAccessUnit
     pub(super) timeline: NativeVulkanStreamingPacketTimeline,
 }
 
+pub(super) struct NativeVulkanQueuedStreamingPacket<A: NativeVulkanStreamingAccessUnit> {
+    pub(super) access_unit: A,
+    pub(super) source_loop_index: u32,
+    #[allow(dead_code)]
+    pub(super) timeline: NativeVulkanStreamingPacketTimeline,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanStreamingPacketQueueRuntimeSnapshot {
     pub codec: &'static str,
@@ -89,7 +96,7 @@ pub struct NativeVulkanStreamingPacketQueueRuntimeSnapshot {
 pub(super) struct NativeVulkanStreamingPacketQueue<A: NativeVulkanStreamingAccessUnit> {
     frontend: Box<dyn NativeVulkanStreamingPacketFrontend<A>>,
     pub(super) parameter_sets: A::ParameterSets,
-    pub(super) queued: VecDeque<NativeVulkanStreamingPacket<A>>,
+    pub(super) queued: VecDeque<NativeVulkanQueuedStreamingPacket<A>>,
     pub(super) capacity: usize,
     next_access_unit_index: u32,
     pub(super) pulled_count: u32,
@@ -106,9 +113,9 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
         NativeVulkanStreamingPacketQueueRuntimeSnapshot {
             codec: A::CODEC_LABEL,
             boundary: "replaceable-demux-parser-to-native-decode",
-            first_reference: "FFmpeg ffplay PacketQueue serial and bounded packet ownership",
+            first_reference: "FFmpeg ffplay PacketQueue serial and bounded packet ownership (references/ffmpeg/fftools/ffplay.c:114-123,420-456)",
             frontend_contract: "frontend supplies encoded access units/temporal units; native Vulkan owns codec state, decode, render and present",
-            queue_policy: "bounded FIFO packet handoff with FFmpeg av_packet_move_ref-style ownership; payload is released immediately after bitstream upload and decoded-frame keep_last=1 is downstream",
+            queue_policy: "bounded FIFO packet handoff with FFmpeg av_packet_move_ref-style ownership; queued packets do not retain parsed snapshots; payload is released immediately after bitstream upload and decoded-frame keep_last=1 is downstream",
             frame_keep_last_policy: "decoded-frame keep-last/direct-DPB ownership is downstream of this packet queue",
             serial_model: "source loop count is the packet serial; stale packets/frames are rejected across loop or seek boundaries",
             capacity: self.capacity.min(u32::MAX as usize) as u32,
@@ -134,7 +141,13 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
     pub(super) fn bootstrap_access_units(&self) -> Vec<A::Snapshot> {
         self.queued
             .iter()
-            .map(|packet| packet.snapshot.clone())
+            .map(|packet| {
+                A::snapshot(
+                    packet.timeline.access_unit_index,
+                    &packet.access_unit,
+                    &self.parameter_sets,
+                )
+            })
             .collect()
     }
 
@@ -158,51 +171,35 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
                 A::CODEC_LABEL
             ))
         })?;
+        let snapshot = A::snapshot(
+            packet.timeline.access_unit_index,
+            &packet.access_unit,
+            &self.parameter_sets,
+        );
         if self.queued.len() < self.capacity {
             let _ = self.try_fill_one(loop_on_eos)?;
         }
-        Ok(packet)
-    }
-
-    pub(super) fn ensure_front_packet(
-        &mut self,
-        loop_on_eos: bool,
-    ) -> Result<bool, NativeVulkanError> {
-        while self.queued.is_empty() {
-            if !self.try_fill_one(loop_on_eos)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
-    pub(super) fn front_packet(&self) -> Option<&NativeVulkanStreamingPacket<A>> {
-        self.queued.front()
-    }
-
-    pub(super) fn replace_parameter_sets(&mut self, parameter_sets: A::ParameterSets) {
-        self.parameter_sets = parameter_sets;
-        for packet in &mut self.queued {
-            packet.snapshot = A::snapshot(
-                packet.timeline.access_unit_index,
-                &packet.access_unit,
-                &self.parameter_sets,
-            );
-        }
+        Ok(NativeVulkanStreamingPacket {
+            access_unit: packet.access_unit,
+            snapshot,
+            source_loop_index: packet.source_loop_index,
+            timeline: packet.timeline,
+        })
     }
 
     pub(super) fn discard_front_for_bootstrap(
         &mut self,
-    ) -> Result<Option<NativeVulkanStreamingPacket<A>>, NativeVulkanError> {
+    ) -> Result<Option<NativeVulkanStreamingPacketTimeline>, NativeVulkanError> {
         let dropped = self.queued.pop_front();
-        if dropped.is_some() {
+        let dropped_timeline = dropped.map(|packet| packet.timeline);
+        if dropped_timeline.is_some() {
             self.bootstrap_discarded_access_units =
                 self.bootstrap_discarded_access_units.saturating_add(1);
             if self.eos_count == 0 {
                 let _ = self.try_fill_one(false)?;
             }
         }
-        Ok(dropped)
+        Ok(dropped_timeline)
     }
 
     pub(super) fn set_loop_skip_access_units(&mut self, skip_access_units: u32) {
@@ -253,9 +250,8 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
         self.pulled_count = self.pulled_count.saturating_add(1);
         self.max_payload_bytes = self.max_payload_bytes.max(access_unit.bytes().len() as u64);
         let access_unit_index = self.next_access_unit_index;
-        let snapshot = A::snapshot(access_unit_index, &access_unit, &self.parameter_sets);
         self.next_access_unit_index = self.next_access_unit_index.saturating_add(1);
-        self.queued.push_back(NativeVulkanStreamingPacket {
+        self.queued.push_back(NativeVulkanQueuedStreamingPacket {
             timeline: NativeVulkanStreamingPacketTimeline {
                 access_unit_index,
                 source_loop_index: self.loop_count,
@@ -263,7 +259,6 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
                 duration_ms: access_unit.duration_ms(),
             },
             access_unit,
-            snapshot,
             source_loop_index: self.loop_count,
         });
         Ok(true)
@@ -359,8 +354,7 @@ pub(super) fn native_vulkan_start_streaming_packet_queue_from_frontend<
     let mut queued = VecDeque::with_capacity(capacity);
     for (index, access_unit) in pending.into_iter().enumerate() {
         let access_unit_index = index as u32;
-        let snapshot = A::snapshot(access_unit_index, &access_unit, &parameter_sets);
-        queued.push_back(NativeVulkanStreamingPacket {
+        queued.push_back(NativeVulkanQueuedStreamingPacket {
             timeline: NativeVulkanStreamingPacketTimeline {
                 access_unit_index,
                 source_loop_index: frontend.loop_count(),
@@ -368,7 +362,6 @@ pub(super) fn native_vulkan_start_streaming_packet_queue_from_frontend<
                 duration_ms: access_unit.duration_ms(),
             },
             access_unit,
-            snapshot,
             source_loop_index: frontend.loop_count(),
         });
     }

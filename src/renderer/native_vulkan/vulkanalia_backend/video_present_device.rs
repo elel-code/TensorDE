@@ -90,6 +90,7 @@ pub struct NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot {
     pub video_queue: NativeVulkanVulkanaliaVideoPresentQueueSnapshot,
     pub present_queue: NativeVulkanVulkanaliaVideoPresentQueueSnapshot,
     pub same_queue_family: bool,
+    pub same_queue_handle: bool,
     pub queue_family_model: &'static str,
     pub decoded_image_resource_sharing_model: &'static str,
     pub swapchain: NativeVulkanVulkanaliaSwapchainSnapshot,
@@ -146,6 +147,7 @@ pub struct NativeVulkanVulkanaliaVideoPresentFeatureSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaVideoPresentQueueSnapshot {
     pub queue_family_index: u32,
+    pub queue_index: u32,
     pub queue_count: u32,
     pub queue_flags: Vec<&'static str>,
     pub supports_video_decode: bool,
@@ -172,6 +174,8 @@ pub(super) struct NativeVulkanVulkanaliaVideoPresentDeviceContext {
     pub(super) device: Device,
     pub(super) video_queue: vk::Queue,
     pub(super) present_queue: vk::Queue,
+    pub(super) video_queue_index: u32,
+    pub(super) present_queue_index: u32,
     pub(super) enabled_device_extensions: Vec<&'static str>,
     pub(super) video_enabled_device_extensions: Vec<&'static str>,
     pub(super) present_enabled_device_extensions: Vec<&'static str>,
@@ -291,6 +295,8 @@ fn with_video_present_device(
 
     let same_queue_family =
         selection.video_queue_family_index == selection.present_queue_family_index;
+    let same_queue_handle =
+        same_queue_family && context.video_queue_index == context.present_queue_index;
     Ok(NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot {
         binding: "vulkanalia",
         route: "video-present-device",
@@ -341,6 +347,7 @@ fn with_video_present_device(
         },
         video_queue: queue_snapshot(
             selection.video_queue_family_index,
+            context.video_queue_index,
             selection.video_queue_count,
             selection.video_queue_flags,
             true,
@@ -350,6 +357,7 @@ fn with_video_present_device(
         ),
         present_queue: queue_snapshot(
             selection.present_queue_family_index,
+            context.present_queue_index,
             selection.present_queue_count,
             selection.present_queue_flags,
             selection
@@ -359,7 +367,8 @@ fn with_video_present_device(
             selection.present_supports_wayland,
         ),
         same_queue_family,
-        queue_family_model: video_present_queue_family_model(same_queue_family),
+        same_queue_handle,
+        queue_family_model: video_present_queue_family_model(same_queue_family, same_queue_handle),
         decoded_image_resource_sharing_model: decoded_image_resource_sharing_model(
             same_queue_family,
         ),
@@ -591,20 +600,45 @@ pub(super) fn create_video_present_device(
         .map(|extension| extension.as_ptr())
         .collect::<Vec<_>>();
 
-    let priorities = [1.0_f32];
+    let one_queue_priorities = [1.0_f32];
+    let two_queue_priorities = [1.0_f32, 1.0_f32];
+    let same_queue_family =
+        selection.video_queue_family_index == selection.present_queue_family_index;
+    let (video_queue_index, present_queue_index) =
+        video_present_queue_indices(same_queue_family, selection.video_queue_count);
     let queue_family_indices = video_present_queue_family_indices(
         selection.video_queue_family_index,
         selection.present_queue_family_index,
     );
-    let queue_create_infos = queue_family_indices
-        .iter()
-        .map(|queue_family_index| {
+    // FFmpeg's Vulkan hwcontext keeps the queue count for each selected family
+    // and locks individual queue indices, not the whole queue family
+    // (references/ffmpeg/libavutil/hwcontext_vulkan.c:1580-1665,2005-2035).
+    // Request two queues when decode and present share a family and the driver
+    // exposes them, so FIFO present cannot serialize decode submits through one
+    // host-side VkQueue lock.
+    let queue_create_infos = if same_queue_family {
+        let priorities = if selection.video_queue_count > 1 {
+            &two_queue_priorities[..]
+        } else {
+            &one_queue_priorities[..]
+        };
+        vec![
             vk::DeviceQueueCreateInfo::builder()
-                .queue_family_index(*queue_family_index)
-                .queue_priorities(&priorities)
-                .build()
-        })
-        .collect::<Vec<_>>();
+                .queue_family_index(selection.video_queue_family_index)
+                .queue_priorities(priorities)
+                .build(),
+        ]
+    } else {
+        queue_family_indices
+            .iter()
+            .map(|queue_family_index| {
+                vk::DeviceQueueCreateInfo::builder()
+                    .queue_family_index(*queue_family_index)
+                    .queue_priorities(&one_queue_priorities)
+                    .build()
+            })
+            .collect::<Vec<_>>()
+    };
 
     let mut vulkan12_features =
         native_vulkan_vulkanalia_vulkan12_device_features(video_feature_selection.core_features);
@@ -690,13 +724,18 @@ pub(super) fn create_video_present_device(
     let device =
         unsafe { instance.create_device(selection.physical_device, &device_create_info, None) }
             .map_err(|err| format!("vkCreateDevice(vulkanalia video+present): {err:?}"))?;
-    let video_queue = unsafe { device.get_device_queue(selection.video_queue_family_index, 0) };
-    let present_queue = unsafe { device.get_device_queue(selection.present_queue_family_index, 0) };
+    let video_queue =
+        unsafe { device.get_device_queue(selection.video_queue_family_index, video_queue_index) };
+    let present_queue = unsafe {
+        device.get_device_queue(selection.present_queue_family_index, present_queue_index)
+    };
 
     Ok(NativeVulkanVulkanaliaVideoPresentDeviceContext {
         device,
         video_queue,
         present_queue,
+        video_queue_index,
+        present_queue_index,
         enabled_device_extensions,
         video_enabled_device_extensions,
         present_enabled_device_extensions,
@@ -714,6 +753,8 @@ pub(super) fn device_snapshot_from_selection(
 ) -> NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot {
     let same_queue_family =
         selection.video_queue_family_index == selection.present_queue_family_index;
+    let same_queue_handle =
+        same_queue_family && context.video_queue_index == context.present_queue_index;
     NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot {
         binding: "vulkanalia",
         route: "video-present-device",
@@ -738,6 +779,7 @@ pub(super) fn device_snapshot_from_selection(
         feature_selection: feature_snapshot_from_context(context),
         video_queue: queue_snapshot(
             selection.video_queue_family_index,
+            context.video_queue_index,
             selection.video_queue_count,
             selection.video_queue_flags,
             true,
@@ -746,6 +788,7 @@ pub(super) fn device_snapshot_from_selection(
         ),
         present_queue: queue_snapshot(
             selection.present_queue_family_index,
+            context.present_queue_index,
             selection.present_queue_count,
             selection.present_queue_flags,
             selection
@@ -755,7 +798,8 @@ pub(super) fn device_snapshot_from_selection(
             selection.present_supports_wayland,
         ),
         same_queue_family,
-        queue_family_model: video_present_queue_family_model(same_queue_family),
+        same_queue_handle,
+        queue_family_model: video_present_queue_family_model(same_queue_family, same_queue_handle),
         decoded_image_resource_sharing_model: decoded_image_resource_sharing_model(
             same_queue_family,
         ),
@@ -820,6 +864,7 @@ pub(super) fn swapchain_plan_snapshot(
 
 fn queue_snapshot(
     queue_family_index: u32,
+    queue_index: u32,
     queue_count: u32,
     queue_flags: vk::QueueFlags,
     supports_video_decode: bool,
@@ -828,6 +873,7 @@ fn queue_snapshot(
 ) -> NativeVulkanVulkanaliaVideoPresentQueueSnapshot {
     NativeVulkanVulkanaliaVideoPresentQueueSnapshot {
         queue_family_index,
+        queue_index,
         queue_count,
         queue_flags: queue_flag_labels(queue_flags),
         supports_video_decode,
@@ -845,9 +891,22 @@ pub(super) fn video_present_queue_family_indices(video: u32, present: u32) -> Ve
     }
 }
 
-pub(super) fn video_present_queue_family_model(same_queue_family: bool) -> &'static str {
-    if same_queue_family {
-        "single-video-graphics-present-queue-family"
+pub(super) fn video_present_queue_indices(same_queue_family: bool, queue_count: u32) -> (u32, u32) {
+    if same_queue_family && queue_count > 1 {
+        (0, 1)
+    } else {
+        (0, 0)
+    }
+}
+
+pub(super) fn video_present_queue_family_model(
+    same_queue_family: bool,
+    same_queue_handle: bool,
+) -> &'static str {
+    if same_queue_handle {
+        "single-video-graphics-present-queue-family-single-queue"
+    } else if same_queue_family {
+        "single-video-graphics-present-queue-family-split-queue-indices"
     } else {
         "dedicated-video-decode-queue-plus-graphics-present-queue"
     }
@@ -884,6 +943,13 @@ mod tests {
     }
 
     #[test]
+    fn same_family_queue_indices_split_when_driver_exposes_multiple_queues() {
+        assert_eq!(video_present_queue_indices(true, 1), (0, 0));
+        assert_eq!(video_present_queue_indices(true, 2), (0, 1));
+        assert_eq!(video_present_queue_indices(false, 2), (0, 0));
+    }
+
+    #[test]
     fn extension_union_keeps_first_order_and_dedupes() {
         let extensions = dedup_static_extensions([
             "VK_KHR_video_queue",
@@ -909,8 +975,12 @@ mod tests {
             "concurrent-image-sharing-or-explicit-ownership-transfer-between-video-and-present-queue-families"
         );
         assert_eq!(
-            video_present_queue_family_model(true),
-            "single-video-graphics-present-queue-family"
+            video_present_queue_family_model(true, true),
+            "single-video-graphics-present-queue-family-single-queue"
+        );
+        assert_eq!(
+            video_present_queue_family_model(true, false),
+            "single-video-graphics-present-queue-family-split-queue-indices"
         );
     }
 }

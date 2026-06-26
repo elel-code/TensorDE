@@ -7,6 +7,16 @@ use crate::renderer::native_vulkan::NativeVulkanVideoSessionCodec;
 
 pub(super) const FFMPEG_VULKAN_DECODE_REFERENCE: &str =
     "references/ffmpeg/libavcodec/vulkan_decode.c";
+pub(super) const FFMPEG_VULKAN_DECODE_PICTURE_REFERENCE: &str =
+    "references/ffmpeg/libavcodec/vulkan_decode.h:88-93";
+pub(super) const FFMPEG_VULKAN_DECODE_BEGIN_CURRENT_REFERENCE: &str =
+    "references/ffmpeg/libavcodec/vulkan_decode.c:529-532";
+
+// FFmpeg keeps `refs[36]` and `ref_slots[36]` inside FFVulkanDecodePicture,
+// then appends the current picture as one inactive begin-coding reference.
+pub(super) const NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS: usize = 36;
+pub(super) const NATIVE_VULKAN_VULKANALIA_MAX_BEGIN_REFERENCE_SLOTS: usize =
+    NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS + 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 pub struct NativeVulkanVulkanaliaStreamingDecodeTimingSnapshot {
@@ -39,7 +49,7 @@ pub struct NativeVulkanVulkanaliaStreamingDecodeTimingSnapshot {
     pub max_after_frame_submitted_micros: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(super) struct NativeVulkanVulkanaliaPictureResourcePlan {
     pub coded_offset: (i32, i32),
     pub coded_extent: (u32, u32),
@@ -93,21 +103,23 @@ impl NativeVulkanVulkanaliaPictureResourcePlan {
             .image_view_binding(image_view_binding)
             .build()
     }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub(super) enum NativeVulkanVulkanaliaReferenceSlotRole {
-    BeginInactive,
-    DecodeReference,
-    SetupCurrent,
+    pub(super) fn with_base_array_layer(&self, base_array_layer: u32) -> Self {
+        Self {
+            base_array_layer,
+            ..*self
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct NativeVulkanVulkanaliaDecodeImageViewBindings {
     pub dst_picture_image_view: vk::ImageView,
     pub setup_reference_image_view: vk::ImageView,
-    pub begin_reference_image_views: Vec<vk::ImageView>,
-    pub decode_reference_image_views: Vec<vk::ImageView>,
+    pub begin_reference_image_view: vk::ImageView,
+    pub begin_reference_image_view_count: usize,
+    pub decode_reference_image_view: vk::ImageView,
+    pub decode_reference_image_view_count: usize,
 }
 
 impl NativeVulkanVulkanaliaDecodeImageViewBindings {
@@ -120,51 +132,28 @@ impl NativeVulkanVulkanaliaDecodeImageViewBindings {
         Self {
             dst_picture_image_view: image_view,
             setup_reference_image_view: image_view,
-            begin_reference_image_views: vec![image_view; begin_reference_slot_count],
-            decode_reference_image_views: vec![image_view; decode_reference_slot_count],
+            begin_reference_image_view: image_view,
+            begin_reference_image_view_count: begin_reference_slot_count,
+            decode_reference_image_view: image_view,
+            decode_reference_image_view_count: decode_reference_slot_count,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(super) struct NativeVulkanVulkanaliaReferenceSlotPlan {
-    pub role: NativeVulkanVulkanaliaReferenceSlotRole,
     pub slot_index: i32,
     pub resource: NativeVulkanVulkanaliaPictureResourcePlan,
-    pub codec_dpb_info_required: bool,
 }
 
 impl NativeVulkanVulkanaliaReferenceSlotPlan {
-    pub(super) fn begin_inactive(resource: NativeVulkanVulkanaliaPictureResourcePlan) -> Self {
-        Self {
-            role: NativeVulkanVulkanaliaReferenceSlotRole::BeginInactive,
-            slot_index: -1,
-            resource,
-            codec_dpb_info_required: true,
-        }
-    }
-
-    pub(super) fn decode_reference(
-        slot_index: i32,
-        resource: NativeVulkanVulkanaliaPictureResourcePlan,
-    ) -> Self {
-        Self {
-            role: NativeVulkanVulkanaliaReferenceSlotRole::DecodeReference,
-            slot_index,
-            resource,
-            codec_dpb_info_required: true,
-        }
-    }
-
     pub(super) fn setup_current(
         slot_index: i32,
         resource: NativeVulkanVulkanaliaPictureResourcePlan,
     ) -> Self {
         Self {
-            role: NativeVulkanVulkanaliaReferenceSlotRole::SetupCurrent,
             slot_index,
             resource,
-            codec_dpb_info_required: true,
         }
     }
 }
@@ -173,14 +162,14 @@ impl NativeVulkanVulkanaliaReferenceSlotPlan {
 pub(super) struct NativeVulkanVulkanaliaDecodeSubmitPlan {
     pub codec: NativeVulkanVideoSessionCodec,
     pub ffmpeg_reference: &'static str,
-    pub command_order: Vec<&'static str>,
+    pub command_order: &'static [&'static str],
     pub reset_control_recorded: bool,
     pub src_buffer_offset: u64,
     pub src_buffer_range: u64,
     pub dst_picture_resource: NativeVulkanVulkanaliaPictureResourcePlan,
     pub setup_reference_slot: NativeVulkanVulkanaliaReferenceSlotPlan,
-    pub begin_reference_slots: Vec<NativeVulkanVulkanaliaReferenceSlotPlan>,
-    pub decode_reference_slots: Vec<NativeVulkanVulkanaliaReferenceSlotPlan>,
+    pub begin_reference_slot_count: usize,
+    pub decode_reference_slot_count: usize,
 }
 
 impl NativeVulkanVulkanaliaDecodeSubmitPlan {
@@ -190,8 +179,8 @@ impl NativeVulkanVulkanaliaDecodeSubmitPlan {
         src_buffer_range: u64,
         dst_picture_resource: NativeVulkanVulkanaliaPictureResourcePlan,
         setup_reference_slot: NativeVulkanVulkanaliaReferenceSlotPlan,
-        begin_reference_slots: Vec<NativeVulkanVulkanaliaReferenceSlotPlan>,
-        decode_reference_slots: Vec<NativeVulkanVulkanaliaReferenceSlotPlan>,
+        begin_reference_slot_count: usize,
+        decode_reference_slot_count: usize,
         reset_control_recorded: bool,
     ) -> Self {
         Self {
@@ -203,25 +192,37 @@ impl NativeVulkanVulkanaliaDecodeSubmitPlan {
             src_buffer_range,
             dst_picture_resource,
             setup_reference_slot,
-            begin_reference_slots,
-            decode_reference_slots,
+            begin_reference_slot_count,
+            decode_reference_slot_count,
         }
     }
 }
 
+const NATIVE_VULKAN_VULKANALIA_DECODE_COMMAND_ORDER: &[&str] = &[
+    "cmd_pipeline_barrier2",
+    "cmd_begin_video_coding_khr",
+    "cmd_decode_video_khr",
+    "cmd_end_video_coding_khr",
+    "queue_submit2",
+];
+
+const NATIVE_VULKAN_VULKANALIA_DECODE_COMMAND_ORDER_WITH_RESET: &[&str] = &[
+    "cmd_pipeline_barrier2",
+    "cmd_begin_video_coding_khr",
+    "cmd_control_video_coding_khr",
+    "cmd_decode_video_khr",
+    "cmd_end_video_coding_khr",
+    "queue_submit2",
+];
+
 pub(super) fn native_vulkan_vulkanalia_decode_command_order(
     reset_control_recorded: bool,
-) -> Vec<&'static str> {
-    let mut order = vec!["cmd_pipeline_barrier2", "cmd_begin_video_coding_khr"];
+) -> &'static [&'static str] {
     if reset_control_recorded {
-        order.push("cmd_control_video_coding_khr");
+        NATIVE_VULKAN_VULKANALIA_DECODE_COMMAND_ORDER_WITH_RESET
+    } else {
+        NATIVE_VULKAN_VULKANALIA_DECODE_COMMAND_ORDER
     }
-    order.extend([
-        "cmd_decode_video_khr",
-        "cmd_end_video_coding_khr",
-        "queue_submit2",
-    ]);
-    order
 }
 
 #[cfg(test)]
@@ -232,7 +233,7 @@ mod tests {
     fn decode_command_order_matches_ffmpeg_begin_decode_end_shape() {
         assert_eq!(
             native_vulkan_vulkanalia_decode_command_order(false),
-            vec![
+            &[
                 "cmd_pipeline_barrier2",
                 "cmd_begin_video_coding_khr",
                 "cmd_decode_video_khr",
@@ -242,7 +243,7 @@ mod tests {
         );
         assert_eq!(
             native_vulkan_vulkanalia_decode_command_order(true),
-            vec![
+            &[
                 "cmd_pipeline_barrier2",
                 "cmd_begin_video_coding_khr",
                 "cmd_control_video_coding_khr",
@@ -251,24 +252,5 @@ mod tests {
                 "queue_submit2",
             ]
         );
-    }
-
-    #[test]
-    fn reference_slot_roles_preserve_inactive_and_codec_dpb_requirements() {
-        let resource = NativeVulkanVulkanaliaPictureResourcePlan::new(
-            vk::Extent2D {
-                width: 640,
-                height: 368,
-            },
-            3,
-        );
-
-        let inactive = NativeVulkanVulkanaliaReferenceSlotPlan::begin_inactive(resource.clone());
-        assert_eq!(inactive.slot_index, -1);
-        assert!(inactive.codec_dpb_info_required);
-
-        let setup = NativeVulkanVulkanaliaReferenceSlotPlan::setup_current(3, resource);
-        assert_eq!(setup.slot_index, 3);
-        assert!(setup.codec_dpb_info_required);
     }
 }

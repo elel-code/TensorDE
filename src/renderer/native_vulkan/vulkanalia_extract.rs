@@ -134,7 +134,6 @@ pub fn native_vulkan_extract_h264_ready_prefix_for_vulkanalia(
         }
         frames.push(NativeVulkanVulkanaliaH264ReadyPrefixFrameInput {
             entry: entry.clone(),
-            slice_offsets: first_slice.slice_offsets.clone(),
             first_slice,
             pts_ns: access_unit.pts_ns,
             duration_ns: access_unit.duration_ns,
@@ -248,6 +247,11 @@ pub fn native_vulkan_extract_av1_decode_frames_for_vulkanalia(
         }
         if !entry.ready_for_decode_submit {
             if entry.ready_for_display_handoff {
+                super::native_vulkan_av1_update_active_dpb_refs_after_display_handoff(
+                    &mut active_dpb_refs,
+                    entry,
+                )
+                .map_err(NativeVulkanError::Video)?;
                 continue;
             }
             return Err(NativeVulkanError::Video(format!(
@@ -498,7 +502,7 @@ pub fn native_vulkan_extract_av1_decode_frames_for_vulkanalia(
             references,
         };
 
-        native_vulkan_vulkanalia_update_av1_active_dpb_refs_after_decode(
+        super::native_vulkan_av1_update_active_dpb_refs_after_decode(
             &mut active_dpb_refs,
             entry,
             &decode_info,
@@ -791,7 +795,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_av1_frame_sub
         references,
     };
 
-    native_vulkan_vulkanalia_update_av1_active_dpb_refs_after_decode(
+    super::native_vulkan_av1_update_active_dpb_refs_after_decode(
         active_dpb_refs,
         entry,
         &decode_info,
@@ -854,70 +858,6 @@ fn native_vulkan_vulkanalia_av1_reference_info_from_decode_info(
         ),
         disable_frame_end_update_cdf: decode_info.header.disable_frame_end_update_cdf,
         segmentation_enabled: decode_info.header.segmentation.enabled,
-    }
-}
-
-#[cfg(feature = "native-vulkan-video")]
-fn native_vulkan_vulkanalia_update_av1_active_dpb_refs_after_decode(
-    active_dpb_refs: &mut [Option<super::NativeVulkanAv1ActiveDpbReference>],
-    entry: &super::NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
-    decode_info: &super::NativeVulkanAv1FirstFrameDecodeInfo,
-    ref_frame_sign_bias: u8,
-    reference_name_order_hints: [u8; 8],
-    sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
-) {
-    let active_slots_after = entry
-        .map_slot_indices_after
-        .iter()
-        .filter_map(|slot| u32::try_from(*slot).ok())
-        .collect::<Vec<_>>();
-    let current_reference = entry.output_slot.and_then(|output_slot| {
-        (!entry.refreshed_reference_names.is_empty()).then_some((
-            output_slot,
-            super::NativeVulkanAv1ActiveDpbReference {
-                frame_type: decode_info.header.frame_type,
-                order_hint: decode_info.header.order_hint.unwrap_or(0),
-                ref_frame_sign_bias,
-                saved_order_hints: super::native_vulkan_av1_setup_saved_order_hints(
-                    reference_name_order_hints,
-                    decode_info.header.refresh_frame_flags,
-                    decode_info.header.order_hint.unwrap_or(0),
-                ),
-                frame_width: decode_info
-                    .header
-                    .frame_width
-                    .unwrap_or(sequence_header.max_frame_width),
-                frame_height: decode_info
-                    .header
-                    .frame_height
-                    .unwrap_or(sequence_header.max_frame_height),
-                render_width: decode_info
-                    .header
-                    .render_width
-                    .unwrap_or(sequence_header.max_frame_width),
-                render_height: decode_info
-                    .header
-                    .render_height
-                    .unwrap_or(sequence_header.max_frame_height),
-                disable_frame_end_update_cdf: decode_info.header.disable_frame_end_update_cdf,
-                segmentation_enabled: decode_info.header.segmentation.enabled,
-                segmentation: decode_info.header.segmentation,
-                loop_filter_ref_deltas: decode_info.header.loop_filter.ref_deltas,
-                loop_filter_mode_deltas: decode_info.header.loop_filter.mode_deltas,
-            },
-        ))
-    });
-    for (slot_index, slot) in active_dpb_refs.iter_mut().enumerate() {
-        let slot_index = slot_index as u32;
-        if !active_slots_after.contains(&slot_index) {
-            *slot = None;
-            continue;
-        }
-        if let Some((output_slot, reference)) = current_reference
-            && output_slot == slot_index
-        {
-            *slot = Some(reference);
-        }
     }
 }
 

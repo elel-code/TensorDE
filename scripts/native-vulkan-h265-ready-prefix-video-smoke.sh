@@ -448,17 +448,7 @@ if [[ "$pacing_master" == "audio" ]]; then
 else
   runtime_env+=(GILDER_VIDEO_PACING_MASTER=target)
 fi
-for passthrough_env in \
-  MALLOC_ARENA_MAX \
-  MALLOC_MMAP_THRESHOLD_ \
-  MALLOC_TRIM_THRESHOLD_ \
-  GLIBC_TUNABLES \
-  VK_LOADER_LAYERS_ENABLE \
-  VK_LAYER_KHRONOS_validation_LOG_FILENAME; do
-  if [[ -n "${!passthrough_env:-}" ]]; then
-    runtime_env+=("${passthrough_env}=${!passthrough_env}")
-  fi
-done
+gilder_append_ready_prefix_runtime_env runtime_env
 
 performance_status=0
 if [[ "$performance_snapshot" -eq 1 ]]; then
@@ -649,7 +639,7 @@ if [[ "$generated_source" -eq 1 && "$bframes" -gt 0 && "$b_frames" -lt 1 ]]; the
 fi
 loop_gate_failed=0
 pacing_gate_failed=0
-if [[ "$pacing_strategy" != "$expected_pacing_strategy" && ! ( ( "$pacing_strategy" == "pts-video-clock-sleep" || "$pacing_strategy" == "pts-ns-video-clock-sleep" ) && "$target_fps" -gt 0 ) ]]; then
+if ! gilder_pacing_strategy_matches_expected "$pacing_strategy" "$expected_pacing_strategy" "$target_fps"; then
   pacing_gate_failed=1
 fi
 dpb_gate_failed=0

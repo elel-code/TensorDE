@@ -135,6 +135,21 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanVulkanaliaDecodedImagePresentSlowFrameSnapshot {
+    pub present_frame_index: u32,
+    pub present_frame_slot: u32,
+    pub sampled_array_layer: u32,
+    pub delta_micros: u64,
+    pub present_call_total_micros: u64,
+    pub present_record_command_buffer_micros: u64,
+    pub present_submit_command_buffer_micros: u64,
+    pub present_queue_present_micros: u64,
+    pub present_wait_frame_slot_micros: u64,
+    pub source_frame_pts_ns: Option<u64>,
+    pub display_order_key: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
     pub binding: &'static str,
     pub route: &'static str,
@@ -145,6 +160,12 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
     pub average_present_teardown_inclusive_fps: f64,
     pub present_interval_elapsed_micros: u64,
     pub present_teardown_inclusive_elapsed_micros: u64,
+    pub present_delta_min_micros: Option<u64>,
+    pub present_delta_max_micros: Option<u64>,
+    pub present_delta_over_6250us_count: u32,
+    pub present_delta_over_8334us_count: u32,
+    pub slow_frame_telemetry_limit: usize,
+    pub slow_frames: Vec<NativeVulkanVulkanaliaDecodedImagePresentSlowFrameSnapshot>,
     pub retained_frame_telemetry_limit: usize,
     pub distinct_sampled_array_layer_count: u32,
     pub sampled_array_layers_head: Vec<u32>,
@@ -766,6 +787,17 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
     }
     let present_submit_command_buffer_micros =
         native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
+    // FFmpeg/libplacebo unmaps the AVFrame immediately after the rendered
+    // frame is submitted/swapped, not after the next FIFO pacing wait
+    // (references/ffmpeg/fftools/ffplay_renderer.c:780-786).
+    let after_render_submit_before_present_result =
+        if let Some(after_render_submit_before_present) =
+            after_render_submit_before_present.as_deref_mut()
+        {
+            after_render_submit_before_present(present_frame_slot as u32)
+        } else {
+            Ok(())
+        };
 
     let swapchains = [swapchain];
     let image_indices = [image_index];
@@ -805,11 +837,7 @@ pub(super) fn native_vulkan_vulkanalia_present_decoded_image_frame(
     }
     drop(queue_host_access_guard);
     let present_queue_present_micros = native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
-    if let Some(after_render_submit_before_present) =
-        after_render_submit_before_present.as_deref_mut()
-    {
-        after_render_submit_before_present(present_frame_slot as u32)?;
-    }
+    after_render_submit_before_present_result?;
     let stage_started_at = Instant::now();
     let present_wait_after_present = present_timing.wait_after_queue_present(
         device,
@@ -899,6 +927,32 @@ pub(super) fn native_vulkan_vulkanalia_wait_decoded_image_present_frame_slot(
             })?;
     }
     Ok(native_vulkan_vulkanalia_elapsed_micros(started_at))
+}
+
+pub(super) fn native_vulkan_vulkanalia_try_complete_decoded_image_present_frame_slot(
+    device: &Device,
+    resources: &VulkanaliaDecodedImagePresentFrameResources,
+    present_frame_slot: u32,
+) -> Result<bool, String> {
+    let slot = present_frame_slot as usize;
+    let fence = resources.in_flight.get(slot).copied().ok_or_else(|| {
+        format!(
+            "decoded image present frame slot {slot} exceeds {} in-flight fence(s)",
+            resources.in_flight.len()
+        )
+    })?;
+    let status = unsafe { device.get_fence_status(fence) }.map_err(|err| {
+        format!("vkGetFenceStatus(vulkanalia decoded image present layer release): {err:?}")
+    })?;
+    if status == vk::SuccessCode::SUCCESS {
+        Ok(true)
+    } else if status == vk::SuccessCode::NOT_READY {
+        Ok(false)
+    } else {
+        Err(format!(
+            "vkGetFenceStatus(vulkanalia decoded image present layer release) returned unexpected status {status:?}"
+        ))
+    }
 }
 
 pub(super) fn native_vulkan_vulkanalia_decoded_image_present_frame_slot_count(
@@ -1156,10 +1210,13 @@ fn native_vulkan_vulkanalia_submit_decoded_image_present_command_buffer2(
     decode_complete_semaphore: vk::Semaphore,
     decode_complete_value: u64,
 ) -> Result<(), String> {
-    // Wait for the swapchain image to be acquired, and (for freshly decoded frames)
-    // for the video-queue decode submit to finish writing the decoded image. The
-    // decode wait uses ALL_COMMANDS so it also gates the layout-transition barrier at
-    // the start of the present command buffer, not just the fragment shader sample.
+    // Wait for the swapchain image to be acquired, and for freshly decoded
+    // frames to finish on the video queue before this graphics command buffer
+    // touches the decoded image. FFmpeg tracks AVVkFrame semaphore values as
+    // image dependencies (references/ffmpeg/libavutil/vulkan.c:800-863,
+    // references/ffmpeg/libavcodec/vulkan_decode.c:575-586); this retained
+    // image path uses one timeline semaphore and gates the whole present submit
+    // so the layout transition and fragment sample observe the same decode.
     let image_available_wait = vk::SemaphoreSubmitInfo::builder()
         .semaphore(image_available)
         .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)

@@ -10,6 +10,7 @@
 //! directly as OBU packets instead of being forced through the raw AV1 demuxer's
 //! `av1_frame_merge` Temporal Delimiter contract.
 
+use std::collections::VecDeque;
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::marker::PhantomData;
@@ -160,6 +161,13 @@ pub(super) trait NativeVulkanFfmpegStreamingAccessUnit:
         payload: NativeVulkanFfmpegPacketPayload,
         metadata: NativeVulkanFfmpegPacketMetadata,
     ) -> Result<Self, NativeVulkanError>;
+
+    fn from_ffmpeg_packet_many(
+        payload: NativeVulkanFfmpegPacketPayload,
+        metadata: NativeVulkanFfmpegPacketMetadata,
+    ) -> Result<Vec<Self>, NativeVulkanError> {
+        Ok(vec![Self::from_ffmpeg_packet(payload, metadata)?])
+    }
 }
 
 pub(super) fn native_vulkan_start_ffmpeg_streaming_packet_queue<
@@ -321,6 +329,7 @@ struct NativeVulkanFfmpegStreamingPacketWorker<A: NativeVulkanFfmpegStreamingAcc
     eos_count: u32,
     loop_count: u32,
     eof_sent_to_bsf: bool,
+    pending_access_units: VecDeque<A>,
     _access_unit: PhantomData<A>,
 }
 
@@ -351,11 +360,15 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit> NativeVulkanFfmpegStreamingPacket
             eos_count: 0,
             loop_count: 0,
             eof_sent_to_bsf: false,
+            pending_access_units: VecDeque::new(),
             _access_unit: PhantomData,
         })
     }
 
     fn pull_next(&mut self, loop_on_eos: bool) -> Result<Option<A>, NativeVulkanError> {
+        if let Some(access_unit) = self.pending_access_units.pop_front() {
+            return Ok(Some(access_unit));
+        }
         loop {
             let output = native_vulkan_ffmpeg_alloc_packet()?;
             let receive_ret =
@@ -364,7 +377,13 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit> NativeVulkanFfmpegStreamingPacket
                 let time_base = unsafe { gilder_av_bsf_time_base_out(self.bsf.ptr.as_ptr()) };
                 let metadata = self.metadata_for_packet(output, time_base);
                 let payload = NativeVulkanFfmpegPacketPayload::from_raw(output)?;
-                return A::from_ffmpeg_packet(payload, metadata).map(Some);
+                let mut access_units = A::from_ffmpeg_packet_many(payload, metadata)?;
+                if access_units.is_empty() {
+                    continue;
+                }
+                let first = access_units.remove(0);
+                self.pending_access_units.extend(access_units);
+                return Ok(Some(first));
             }
             native_vulkan_ffmpeg_free_packet(output);
 
@@ -429,6 +448,7 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit> NativeVulkanFfmpegStreamingPacket
             gilder_av_bsf_flush(self.bsf.ptr.as_ptr());
         }
         self.eof_sent_to_bsf = false;
+        self.pending_access_units.clear();
         self.loop_count = self.loop_count.saturating_add(1);
         Ok(())
     }

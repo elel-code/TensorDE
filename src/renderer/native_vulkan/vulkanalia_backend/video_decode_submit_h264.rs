@@ -10,9 +10,11 @@ use crate::renderer::native_vulkan::{
 };
 
 use super::video_decode_submit::{
+    NATIVE_VULKAN_VULKANALIA_MAX_BEGIN_REFERENCE_SLOTS,
+    NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS,
     NativeVulkanVulkanaliaDecodeImageViewBindings, NativeVulkanVulkanaliaDecodeSubmitPlan,
     NativeVulkanVulkanaliaPictureResourcePlan, NativeVulkanVulkanaliaReferenceSlotPlan,
-    NativeVulkanVulkanaliaReferenceSlotRole, NativeVulkanVulkanaliaStreamingDecodeTimingSnapshot,
+    NativeVulkanVulkanaliaStreamingDecodeTimingSnapshot,
 };
 
 const FFMPEG_H264_PICTURE_REFERENCE: &str = "references/ffmpeg/libavcodec/vulkan_h264.c";
@@ -47,7 +49,7 @@ pub(super) struct NativeVulkanVulkanaliaH264ReferenceInfoPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(super) struct NativeVulkanVulkanaliaH264PictureInfoPlan {
+pub(super) struct NativeVulkanVulkanaliaH264PictureInfoPlan<'a> {
     pub ffmpeg_reference: &'static str,
     pub field_pic_flag: bool,
     pub is_intra: bool,
@@ -59,14 +61,14 @@ pub(super) struct NativeVulkanVulkanaliaH264PictureInfoPlan {
     pub frame_num: u16,
     pub idr_pic_id: u16,
     pub pic_order_cnt: [i32; 2],
-    pub slice_offsets: Vec<u32>,
-    pub references: Vec<NativeVulkanVulkanaliaH264ReferenceInfoPlan>,
+    pub slice_offsets: &'a [u32],
+    pub references: &'a [NativeVulkanVulkanaliaH264ReferenceInfoPlan],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(super) struct NativeVulkanVulkanaliaH264DecodeSubmitPlan {
+pub(super) struct NativeVulkanVulkanaliaH264DecodeSubmitPlan<'a> {
     pub common: NativeVulkanVulkanaliaDecodeSubmitPlan,
-    pub picture: NativeVulkanVulkanaliaH264PictureInfoPlan,
+    pub picture: NativeVulkanVulkanaliaH264PictureInfoPlan<'a>,
 }
 
 pub(super) struct NativeVulkanVulkanaliaH264VkSubmitInfo<'a> {
@@ -94,7 +96,6 @@ pub struct NativeVulkanVulkanaliaH264ReadyPrefixFrameInput {
     pub duration_ns: Option<u64>,
     pub duration_ms: Option<u64>,
     pub access_unit_payload: NativeVulkanEncodedAccessUnitPayload,
-    pub slice_offsets: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -163,16 +164,17 @@ pub struct NativeVulkanVulkanaliaH264ReadyPrefixCommandSmokeSnapshot {
     pub frames: Vec<NativeVulkanVulkanaliaH264ReadyPrefixCommandFrameSnapshot>,
 }
 
-pub(super) fn native_vulkan_vulkanalia_h264_ready_prefix_decode_submit_plan(
+pub(super) fn native_vulkan_vulkanalia_h264_ready_prefix_decode_submit_plan<'a>(
     extent: vk::Extent2D,
     parameter_ids: NativeVulkanVulkanaliaH264ParameterIds,
     entry: &NativeVulkanH264DecodeReferencePlanEntrySnapshot,
     first_slice: &NativeVulkanH264AccessUnitSliceSnapshot,
     src_buffer_offset: u64,
     src_buffer_range: u64,
-    slice_offsets: Vec<u32>,
+    slice_offsets: &'a [u32],
     reset_control_recorded: bool,
-) -> Result<NativeVulkanVulkanaliaH264DecodeSubmitPlan, String> {
+    reference_infos: &'a mut Vec<NativeVulkanVulkanaliaH264ReferenceInfoPlan>,
+) -> Result<NativeVulkanVulkanaliaH264DecodeSubmitPlan<'a>, String> {
     if src_buffer_range == 0 {
         return Err("Vulkanalia H.264 decode submit requires non-empty bitstream range".to_owned());
     }
@@ -198,12 +200,24 @@ pub(super) fn native_vulkan_vulkanalia_h264_ready_prefix_decode_submit_plan(
             entry.access_unit_index
         )
     })?;
-    let available_references = entry
-        .references
-        .iter()
-        .filter(|reference| reference.available)
-        .collect::<Vec<_>>();
-    if available_references.len() as u32 != entry.available_reference_count
+    let mut available_reference_indices =
+        [0usize; NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS];
+    let mut available_reference_count = 0usize;
+    for (index, reference) in entry.references.iter().enumerate() {
+        if !reference.available {
+            continue;
+        }
+        if available_reference_count == available_reference_indices.len() {
+            return Err(format!(
+                "Vulkanalia H.264 AU {} exceeds FFmpeg fixed reference index capacity {}",
+                entry.access_unit_index,
+                available_reference_indices.len()
+            ));
+        }
+        available_reference_indices[available_reference_count] = index;
+        available_reference_count += 1;
+    }
+    if available_reference_count as u32 != entry.available_reference_count
         || entry.missing_reference_count != 0
     {
         return Err(format!(
@@ -228,9 +242,9 @@ pub(super) fn native_vulkan_vulkanalia_h264_ready_prefix_decode_submit_plan(
         dst_picture_resource.clone(),
     );
 
-    let mut reference_infos = Vec::with_capacity(available_references.len());
-    let mut decode_reference_slots = Vec::with_capacity(available_references.len());
-    for reference in available_references {
+    reference_infos.clear();
+    for index in &available_reference_indices[..available_reference_count] {
+        let reference = &entry.references[*index];
         let dpb_slot = reference.dpb_slot.ok_or_else(|| {
             format!(
                 "Vulkanalia H.264 AU {} reference frame_num {} has no DPB slot",
@@ -249,16 +263,7 @@ pub(super) fn native_vulkan_vulkanalia_h264_ready_prefix_decode_submit_plan(
             non_existing: reference.non_existing,
             pic_order_cnt: reference.pic_order_cnt,
         });
-        decode_reference_slots.push(NativeVulkanVulkanaliaReferenceSlotPlan::decode_reference(
-            slot_index,
-            NativeVulkanVulkanaliaPictureResourcePlan::new(extent, dpb_slot),
-        ));
     }
-
-    let mut begin_reference_slots = decode_reference_slots.clone();
-    begin_reference_slots.push(NativeVulkanVulkanaliaReferenceSlotPlan::begin_inactive(
-        dst_picture_resource.clone(),
-    ));
 
     let common = NativeVulkanVulkanaliaDecodeSubmitPlan::new(
         NativeVulkanVideoSessionCodec::H264High8,
@@ -266,8 +271,8 @@ pub(super) fn native_vulkan_vulkanalia_h264_ready_prefix_decode_submit_plan(
         src_buffer_range,
         dst_picture_resource,
         setup_reference_slot,
-        begin_reference_slots,
-        decode_reference_slots,
+        available_reference_count + 1,
+        available_reference_count,
         reset_control_recorded,
     );
     let picture = NativeVulkanVulkanaliaH264PictureInfoPlan {
@@ -283,32 +288,52 @@ pub(super) fn native_vulkan_vulkanalia_h264_ready_prefix_decode_submit_plan(
         idr_pic_id: first_slice.idr_pic_id,
         pic_order_cnt,
         slice_offsets,
-        references: reference_infos,
+        references: reference_infos.as_slice(),
     };
 
     Ok(NativeVulkanVulkanaliaH264DecodeSubmitPlan { common, picture })
 }
 
 pub(super) fn native_vulkan_vulkanalia_h264_with_vk_submit_info<R>(
-    plan: &NativeVulkanVulkanaliaH264DecodeSubmitPlan,
+    plan: &NativeVulkanVulkanaliaH264DecodeSubmitPlan<'_>,
     video_session: vk::VideoSessionKHR,
     session_parameters: vk::VideoSessionParametersKHR,
     src_buffer: vk::Buffer,
     image_views: &NativeVulkanVulkanaliaDecodeImageViewBindings,
     use_submit_info: impl FnOnce(NativeVulkanVulkanaliaH264VkSubmitInfo<'_>) -> R,
 ) -> Result<R, String> {
-    if image_views.begin_reference_image_views.len() != plan.common.begin_reference_slots.len() {
+    if image_views.begin_reference_image_view_count != plan.common.begin_reference_slot_count {
         return Err(format!(
             "Vulkanalia H.264 begin image-view count {} does not match begin slot count {}",
-            image_views.begin_reference_image_views.len(),
-            plan.common.begin_reference_slots.len()
+            image_views.begin_reference_image_view_count, plan.common.begin_reference_slot_count
         ));
     }
-    if image_views.decode_reference_image_views.len() != plan.common.decode_reference_slots.len() {
+    if image_views.decode_reference_image_view_count != plan.common.decode_reference_slot_count {
         return Err(format!(
             "Vulkanalia H.264 decode image-view count {} does not match decode slot count {}",
-            image_views.decode_reference_image_views.len(),
-            plan.common.decode_reference_slots.len()
+            image_views.decode_reference_image_view_count, plan.common.decode_reference_slot_count
+        ));
+    }
+    if plan.common.decode_reference_slot_count > NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS
+    {
+        return Err(format!(
+            "Vulkanalia H.264 decode reference slot count {} exceeds FFmpeg fixed refs[{}]",
+            plan.common.decode_reference_slot_count,
+            NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS
+        ));
+    }
+    if plan.common.begin_reference_slot_count > NATIVE_VULKAN_VULKANALIA_MAX_BEGIN_REFERENCE_SLOTS {
+        return Err(format!(
+            "Vulkanalia H.264 begin reference slot count {} exceeds FFmpeg fixed begin refs[{}]",
+            plan.common.begin_reference_slot_count,
+            NATIVE_VULKAN_VULKANALIA_MAX_BEGIN_REFERENCE_SLOTS
+        ));
+    }
+    if plan.picture.references.len() != plan.common.decode_reference_slot_count {
+        return Err(format!(
+            "Vulkanalia H.264 picture reference count {} does not match decode slot count {}",
+            plan.picture.references.len(),
+            plan.common.decode_reference_slot_count
         ));
     }
 
@@ -339,87 +364,101 @@ pub(super) fn native_vulkan_vulkanalia_h264_with_vk_submit_info<R>(
         .push_next(&mut setup_h264_slot_info)
         .build();
 
-    let decode_reference_resources = plan
-        .common
-        .decode_reference_slots
-        .iter()
-        .zip(image_views.decode_reference_image_views.iter().copied())
-        .map(|(slot, image_view)| slot.resource.to_vk(image_view))
-        .collect::<Vec<_>>();
-    let decode_reference_std_infos = plan
-        .picture
-        .references
-        .iter()
-        .map(|reference| {
-            native_vulkan_vulkanalia_h264_std_reference_info(
-                reference.frame_num,
-                reference.field_pic_flag,
-                reference.bottom_field_flag,
-                reference.used_for_long_term_reference,
-                reference.long_term_frame_idx,
-                reference.non_existing,
-                reference.pic_order_cnt,
-            )
-        })
-        .collect::<Vec<_>>();
-    let mut decode_reference_dpb_infos = decode_reference_std_infos
-        .iter()
-        .map(|std_reference_info| {
-            vk::VideoDecodeH264DpbSlotInfoKHR::builder()
-                .std_reference_info(std_reference_info)
-                .build()
-        })
-        .collect::<Vec<_>>();
-    let mut decode_reference_slots = Vec::with_capacity(plan.common.decode_reference_slots.len());
-    for (index, slot) in plan.common.decode_reference_slots.iter().enumerate() {
-        decode_reference_slots.push(
-            vk::VideoReferenceSlotInfoKHR::builder()
-                .picture_resource(&decode_reference_resources[index])
-                .slot_index(slot.slot_index)
-                .push_next(&mut decode_reference_dpb_infos[index])
-                .build(),
+    let mut decode_reference_resources: [vk::VideoPictureResourceInfoKHR;
+        NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS] =
+        std::array::from_fn(|_| vk::VideoPictureResourceInfoKHR::default());
+    let mut decode_reference_std_infos: [vk::video::StdVideoDecodeH264ReferenceInfo;
+        NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS] =
+        std::array::from_fn(|_| native_vulkan_vulkanalia_h264_empty_std_reference_info());
+    let mut decode_reference_dpb_infos: [vk::VideoDecodeH264DpbSlotInfoKHR;
+        NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS] =
+        std::array::from_fn(|_| vk::VideoDecodeH264DpbSlotInfoKHR::default());
+    let mut decode_reference_slot_infos: [vk::VideoReferenceSlotInfoKHR;
+        NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS] =
+        std::array::from_fn(|_| vk::VideoReferenceSlotInfoKHR::default());
+    let mut decode_reference_slot_count = 0usize;
+    for (index, reference) in plan.picture.references.iter().enumerate() {
+        let reference_resource =
+            native_vulkan_vulkanalia_h264_reference_resource(plan, reference.slot_index)?;
+        decode_reference_resources[index] =
+            reference_resource.to_vk(image_views.decode_reference_image_view);
+        decode_reference_std_infos[index] = native_vulkan_vulkanalia_h264_std_reference_info(
+            reference.frame_num,
+            reference.field_pic_flag,
+            reference.bottom_field_flag,
+            reference.used_for_long_term_reference,
+            reference.long_term_frame_idx,
+            reference.non_existing,
+            reference.pic_order_cnt,
         );
+        decode_reference_dpb_infos[index] = vk::VideoDecodeH264DpbSlotInfoKHR::builder()
+            .std_reference_info(&decode_reference_std_infos[index])
+            .build();
+        decode_reference_slot_infos[index] = vk::VideoReferenceSlotInfoKHR::builder()
+            .picture_resource(&decode_reference_resources[index])
+            .slot_index(reference.slot_index)
+            .push_next(&mut decode_reference_dpb_infos[index])
+            .build();
+        decode_reference_slot_count += 1;
     }
+    let decode_reference_slots = &decode_reference_slot_infos[..decode_reference_slot_count];
 
-    let begin_reference_resources = plan
-        .common
-        .begin_reference_slots
-        .iter()
-        .zip(image_views.begin_reference_image_views.iter().copied())
-        .map(|(slot, image_view)| slot.resource.to_vk(image_view))
-        .collect::<Vec<_>>();
-    let begin_reference_sources = plan
-        .common
-        .begin_reference_slots
-        .iter()
-        .map(|slot| native_vulkan_vulkanalia_h264_begin_reference_source(plan, slot))
-        .collect::<Result<Vec<_>, _>>()?;
-    let begin_reference_std_infos = begin_reference_sources
-        .iter()
-        .filter_map(|source| {
-            source.map(native_vulkan_vulkanalia_h264_std_reference_info_from_source)
-        })
-        .collect::<Vec<_>>();
-    let mut begin_reference_dpb_infos = begin_reference_std_infos
-        .iter()
-        .map(|std_reference_info| {
-            vk::VideoDecodeH264DpbSlotInfoKHR::builder()
-                .std_reference_info(std_reference_info)
-                .build()
-        })
-        .collect::<Vec<_>>();
-    let mut begin_reference_slots = Vec::with_capacity(plan.common.begin_reference_slots.len());
-    let mut begin_dpb_index = 0usize;
-    for (index, slot) in plan.common.begin_reference_slots.iter().enumerate() {
-        let mut builder = vk::VideoReferenceSlotInfoKHR::builder()
+    let mut begin_reference_resources: [vk::VideoPictureResourceInfoKHR;
+        NATIVE_VULKAN_VULKANALIA_MAX_BEGIN_REFERENCE_SLOTS] =
+        std::array::from_fn(|_| vk::VideoPictureResourceInfoKHR::default());
+    let mut begin_reference_std_infos: [vk::video::StdVideoDecodeH264ReferenceInfo;
+        NATIVE_VULKAN_VULKANALIA_MAX_BEGIN_REFERENCE_SLOTS] =
+        std::array::from_fn(|_| native_vulkan_vulkanalia_h264_empty_std_reference_info());
+    let mut begin_reference_dpb_infos: [vk::VideoDecodeH264DpbSlotInfoKHR;
+        NATIVE_VULKAN_VULKANALIA_MAX_BEGIN_REFERENCE_SLOTS] =
+        std::array::from_fn(|_| vk::VideoDecodeH264DpbSlotInfoKHR::default());
+    let mut begin_reference_slot_infos: [vk::VideoReferenceSlotInfoKHR;
+        NATIVE_VULKAN_VULKANALIA_MAX_BEGIN_REFERENCE_SLOTS] =
+        std::array::from_fn(|_| vk::VideoReferenceSlotInfoKHR::default());
+    let mut begin_reference_slot_count = 0usize;
+    for (index, reference) in plan.picture.references.iter().enumerate() {
+        let reference_resource =
+            native_vulkan_vulkanalia_h264_reference_resource(plan, reference.slot_index)?;
+        begin_reference_resources[index] =
+            reference_resource.to_vk(image_views.begin_reference_image_view);
+        begin_reference_std_infos[index] =
+            native_vulkan_vulkanalia_h264_std_reference_info_from_reference(reference);
+        begin_reference_dpb_infos[index] = vk::VideoDecodeH264DpbSlotInfoKHR::builder()
+            .std_reference_info(&begin_reference_std_infos[index])
+            .build();
+        begin_reference_slot_infos[index] = vk::VideoReferenceSlotInfoKHR::builder()
             .picture_resource(&begin_reference_resources[index])
-            .slot_index(slot.slot_index);
-        if begin_reference_sources[index].is_some() {
-            builder = builder.push_next(&mut begin_reference_dpb_infos[begin_dpb_index]);
-            begin_dpb_index += 1;
-        }
-        begin_reference_slots.push(builder.build());
+            .slot_index(reference.slot_index)
+            .push_next(&mut begin_reference_dpb_infos[index])
+            .build();
+        begin_reference_slot_count += 1;
     }
+    {
+        let index = begin_reference_slot_count;
+        begin_reference_resources[index] = plan
+            .common
+            .dst_picture_resource
+            .to_vk(image_views.begin_reference_image_view);
+        begin_reference_std_infos[index] = native_vulkan_vulkanalia_h264_std_reference_info(
+            plan.picture.frame_num,
+            plan.picture.field_pic_flag,
+            plan.picture.bottom_field_flag,
+            false,
+            None,
+            false,
+            plan.picture.pic_order_cnt,
+        );
+        begin_reference_dpb_infos[index] = vk::VideoDecodeH264DpbSlotInfoKHR::builder()
+            .std_reference_info(&begin_reference_std_infos[index])
+            .build();
+        begin_reference_slot_infos[index] = vk::VideoReferenceSlotInfoKHR::builder()
+            .picture_resource(&begin_reference_resources[index])
+            .slot_index(-1)
+            .push_next(&mut begin_reference_dpb_infos[index])
+            .build();
+        begin_reference_slot_count += 1;
+    }
+    let begin_reference_slots = &begin_reference_slot_infos[..begin_reference_slot_count];
 
     let std_picture_info = vk::video::StdVideoDecodeH264PictureInfo {
         flags: vk::video::StdVideoDecodeH264PictureInfoFlags {
@@ -444,7 +483,7 @@ pub(super) fn native_vulkan_vulkanalia_h264_with_vk_submit_info<R>(
     };
     let mut h264_picture_info = vk::VideoDecodeH264PictureInfoKHR::builder()
         .std_picture_info(&std_picture_info)
-        .slice_offsets(&plan.picture.slice_offsets)
+        .slice_offsets(plan.picture.slice_offsets)
         .build();
     let begin_info = vk::VideoBeginCodingInfoKHR::builder()
         .video_session(video_session)
@@ -472,74 +511,35 @@ pub(super) fn native_vulkan_vulkanalia_h264_with_vk_submit_info<R>(
     }))
 }
 
-#[derive(Debug, Clone, Copy)]
-struct NativeVulkanVulkanaliaH264ReferenceSource {
-    frame_num: u16,
-    field_pic_flag: bool,
-    bottom_field_flag: bool,
-    used_for_long_term_reference: bool,
-    long_term_frame_idx: Option<u16>,
-    non_existing: bool,
-    pic_order_cnt: [i32; 2],
+fn native_vulkan_vulkanalia_h264_reference_resource(
+    plan: &NativeVulkanVulkanaliaH264DecodeSubmitPlan<'_>,
+    slot_index: i32,
+) -> Result<NativeVulkanVulkanaliaPictureResourcePlan, String> {
+    let base_array_layer = u32::try_from(slot_index)
+        .map_err(|_| format!("Vulkanalia H.264 reference slot {slot_index} is negative"))?;
+    Ok(plan
+        .common
+        .dst_picture_resource
+        .with_base_array_layer(base_array_layer))
 }
 
-fn native_vulkan_vulkanalia_h264_begin_reference_source(
-    plan: &NativeVulkanVulkanaliaH264DecodeSubmitPlan,
-    slot: &NativeVulkanVulkanaliaReferenceSlotPlan,
-) -> Result<Option<NativeVulkanVulkanaliaH264ReferenceSource>, String> {
-    if !slot.codec_dpb_info_required {
-        return Ok(None);
-    }
-    match slot.role {
-        NativeVulkanVulkanaliaReferenceSlotRole::BeginInactive
-        | NativeVulkanVulkanaliaReferenceSlotRole::SetupCurrent => {
-            Ok(Some(NativeVulkanVulkanaliaH264ReferenceSource {
-                frame_num: plan.picture.frame_num,
-                field_pic_flag: plan.picture.field_pic_flag,
-                bottom_field_flag: plan.picture.bottom_field_flag,
-                used_for_long_term_reference: false,
-                long_term_frame_idx: None,
-                non_existing: false,
-                pic_order_cnt: plan.picture.pic_order_cnt,
-            }))
-        }
-        NativeVulkanVulkanaliaReferenceSlotRole::DecodeReference => plan
-            .picture
-            .references
-            .iter()
-            .find(|reference| reference.slot_index == slot.slot_index)
-            .map(|reference| {
-                Some(NativeVulkanVulkanaliaH264ReferenceSource {
-                    frame_num: reference.frame_num,
-                    field_pic_flag: reference.field_pic_flag,
-                    bottom_field_flag: reference.bottom_field_flag,
-                    used_for_long_term_reference: reference.used_for_long_term_reference,
-                    long_term_frame_idx: reference.long_term_frame_idx,
-                    non_existing: reference.non_existing,
-                    pic_order_cnt: reference.pic_order_cnt,
-                })
-            })
-            .ok_or_else(|| {
-                format!(
-                    "Vulkanalia H.264 begin reference slot {} has no matching decode reference",
-                    slot.slot_index
-                )
-            }),
-    }
-}
-
-fn native_vulkan_vulkanalia_h264_std_reference_info_from_source(
-    source: NativeVulkanVulkanaliaH264ReferenceSource,
+fn native_vulkan_vulkanalia_h264_std_reference_info_from_reference(
+    reference: &NativeVulkanVulkanaliaH264ReferenceInfoPlan,
 ) -> vk::video::StdVideoDecodeH264ReferenceInfo {
     native_vulkan_vulkanalia_h264_std_reference_info(
-        source.frame_num,
-        source.field_pic_flag,
-        source.bottom_field_flag,
-        source.used_for_long_term_reference,
-        source.long_term_frame_idx,
-        source.non_existing,
-        source.pic_order_cnt,
+        reference.frame_num,
+        reference.field_pic_flag,
+        reference.bottom_field_flag,
+        reference.used_for_long_term_reference,
+        reference.long_term_frame_idx,
+        reference.non_existing,
+        reference.pic_order_cnt,
     )
+}
+
+fn native_vulkan_vulkanalia_h264_empty_std_reference_info()
+-> vk::video::StdVideoDecodeH264ReferenceInfo {
+    native_vulkan_vulkanalia_h264_std_reference_info(0, false, false, false, None, false, [0; 2])
 }
 
 fn native_vulkan_vulkanalia_h264_std_reference_info(
@@ -643,6 +643,7 @@ mod tests {
             ready_for_decode_submit: true,
         };
 
+        let mut reference_infos = Vec::new();
         let plan = native_vulkan_vulkanalia_h264_ready_prefix_decode_submit_plan(
             vk::Extent2D {
                 width: 640,
@@ -656,19 +657,18 @@ mod tests {
             &test_h264_slice(false, false),
             1024,
             4096,
-            vec![0],
+            &[0],
             false,
+            &mut reference_infos,
         )
         .unwrap();
 
         assert_eq!(plan.common.src_buffer_offset, 1024);
         assert_eq!(plan.common.src_buffer_range, 4096);
         assert_eq!(plan.common.setup_reference_slot.slot_index, 2);
-        assert_eq!(plan.common.decode_reference_slots[0].slot_index, 1);
-        assert_eq!(
-            plan.common.begin_reference_slots.last().unwrap().slot_index,
-            -1
-        );
+        assert_eq!(plan.common.decode_reference_slot_count, 1);
+        assert_eq!(plan.common.begin_reference_slot_count, 2);
+        assert_eq!(plan.picture.references[0].slot_index, 1);
         assert_eq!(plan.picture.frame_num, 4);
         assert_eq!(plan.picture.pic_order_cnt, [8, 8]);
         assert_eq!(plan.picture.references[0].frame_num, 3);
@@ -681,6 +681,7 @@ mod tests {
         let mut entry = test_h264_entry_with_reference();
         entry.planned_output_slot = 4;
         entry.setup_slot_index = Some(4);
+        let mut reference_infos = Vec::new();
         let plan = native_vulkan_vulkanalia_h264_ready_prefix_decode_submit_plan(
             vk::Extent2D {
                 width: 1280,
@@ -694,14 +695,15 @@ mod tests {
             &test_h264_slice(false, true),
             2048,
             8192,
-            vec![16],
+            &[16],
             true,
+            &mut reference_infos,
         )
         .unwrap();
         let image_views = NativeVulkanVulkanaliaDecodeImageViewBindings::repeated(
             vk::ImageView::default(),
-            plan.common.begin_reference_slots.len(),
-            plan.common.decode_reference_slots.len(),
+            plan.common.begin_reference_slot_count,
+            plan.common.decode_reference_slot_count,
         );
 
         native_vulkan_vulkanalia_h264_with_vk_submit_info(

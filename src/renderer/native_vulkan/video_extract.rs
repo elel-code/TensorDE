@@ -124,11 +124,7 @@ fn native_vulkan_h264_bitstream_extract_from_queue(
         NativeVulkanError::Video("H.264 streaming queue produced no packets".to_owned())
     })?;
     let parameter_sets = queue.parameter_sets.clone();
-    let h264_access_units = queue
-        .queued
-        .iter()
-        .map(|packet| packet.snapshot.clone())
-        .collect::<Vec<_>>();
+    let h264_access_units = queue.bootstrap_access_units();
     let h264_idr_decode_ready_count = h264_access_units
         .iter()
         .filter(|access_unit| access_unit.idr_decode_ready)
@@ -298,11 +294,7 @@ fn native_vulkan_h265_bitstream_extract_from_queue(
         NativeVulkanError::Video("H.265 streaming queue produced no packets".to_owned())
     })?;
     let parameter_sets = queue.parameter_sets.clone();
-    let h265_access_units = queue
-        .queued
-        .iter()
-        .map(|packet| packet.snapshot.clone())
-        .collect::<Vec<_>>();
+    let h265_access_units = queue.bootstrap_access_units();
     let h265_reference_plan_dpb_slots = native_vulkan_h265_sps_dpb_slot_count(&parameter_sets.sps);
     let h265_decode_reference_plan = native_vulkan_h265_decode_reference_plan(
         &h265_access_units,
@@ -431,11 +423,7 @@ fn native_vulkan_av1_bitstream_extract_from_queue(
         NativeVulkanError::Video("AV1 streaming queue produced no packets".to_owned())
     })?;
     let parameter_sets = queue.parameter_sets.clone();
-    let av1_temporal_units = queue
-        .queued
-        .iter()
-        .map(|packet| packet.snapshot.clone())
-        .collect::<Vec<_>>();
+    let av1_temporal_units = queue.bootstrap_access_units();
     let (av1_reference_plan_dpb_slots, av1_decode_reference_plan) =
         native_vulkan_av1_min_decodable_dpb_plan(&av1_temporal_units, 16);
     let av1_decode_ready_count = av1_decode_reference_plan

@@ -34,6 +34,13 @@ pub(super) struct NativeVulkanVulkanaliaDecodedPresentHandoffFrame {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeVulkanVulkanaliaDecodedPresentHandoffRecv {
+    Frame(NativeVulkanVulkanaliaDecodedPresentHandoffFrame),
+    ReleaseWaiter,
+    Closed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct NativeVulkanVulkanaliaDecodedPresentLayerRelease {
     pub(super) sampled_array_layer: u32,
     pub(super) present_frame_slot: u32,
@@ -60,6 +67,7 @@ struct NativeVulkanVulkanaliaDecodedPresentHandoffState {
     drained_frame_count: u32,
     peak_depth: usize,
     queued_frame_count_before_drain: usize,
+    release_waiter_count: u32,
     closed: bool,
     error: Option<String>,
 }
@@ -80,6 +88,7 @@ impl NativeVulkanVulkanaliaDecodedPresentHandoff {
                     drained_frame_count: 0,
                     peak_depth: 0,
                     queued_frame_count_before_drain: 0,
+                    release_waiter_count: 0,
                     closed: false,
                     error: None,
                 }),
@@ -137,6 +146,68 @@ impl NativeVulkanVulkanaliaDecodedPresentHandoff {
         }
     }
 
+    pub(super) fn recv_after_preroll(
+        &self,
+        min_queued_frames: usize,
+    ) -> Result<Option<NativeVulkanVulkanaliaDecodedPresentHandoffFrame>, String> {
+        let mut state = self.lock_state()?;
+        let min_queued_frames = min_queued_frames.max(1).min(state.capacity_frames.max(1));
+        loop {
+            if state.queue.len() >= min_queued_frames || (state.closed && !state.queue.is_empty()) {
+                let frame = state.queue.pop_front().ok_or_else(|| {
+                    "decoded present handoff preroll queue became empty".to_owned()
+                })?;
+                self.inner.changed.notify_all();
+                return Ok(Some(frame));
+            }
+            if let Some(err) = state.error.clone() {
+                return Err(err);
+            }
+            if state.closed {
+                return Ok(None);
+            }
+            state = self.wait_state(state)?;
+        }
+    }
+
+    pub(super) fn recv_or_release_waiter(
+        &self,
+    ) -> Result<NativeVulkanVulkanaliaDecodedPresentHandoffRecv, String> {
+        let mut state = self.lock_state()?;
+        loop {
+            if let Some(frame) = state.queue.pop_front() {
+                self.inner.changed.notify_all();
+                return Ok(NativeVulkanVulkanaliaDecodedPresentHandoffRecv::Frame(
+                    frame,
+                ));
+            }
+            if let Some(err) = state.error.clone() {
+                return Err(err);
+            }
+            if state.closed {
+                return Ok(NativeVulkanVulkanaliaDecodedPresentHandoffRecv::Closed);
+            }
+            if state.release_waiter_count > 0 {
+                return Ok(NativeVulkanVulkanaliaDecodedPresentHandoffRecv::ReleaseWaiter);
+            }
+            state = self.wait_state(state)?;
+        }
+    }
+
+    pub(super) fn try_recv(
+        &self,
+    ) -> Result<Option<NativeVulkanVulkanaliaDecodedPresentHandoffFrame>, String> {
+        let mut state = self.lock_state()?;
+        if let Some(frame) = state.queue.pop_front() {
+            self.inner.changed.notify_all();
+            return Ok(Some(frame));
+        }
+        if let Some(err) = state.error.clone() {
+            return Err(err);
+        }
+        Ok(None)
+    }
+
     pub(super) fn record_layer_present_release(
         &self,
         sampled_array_layer: u32,
@@ -186,11 +257,21 @@ impl NativeVulkanVulkanaliaDecodedPresentHandoff {
                 state.queued_by_layer.len()
             ));
         }
+        let mut registered_waiter = false;
         while (state.queued_by_layer[layer] > 0 || state.in_flight_by_layer[layer].is_some())
             && !state.closed
             && state.error.is_none()
         {
+            if !registered_waiter {
+                state.release_waiter_count = state.release_waiter_count.saturating_add(1);
+                registered_waiter = true;
+                self.inner.changed.notify_all();
+            }
             state = self.wait_state(state)?;
+        }
+        if registered_waiter {
+            state.release_waiter_count = state.release_waiter_count.saturating_sub(1);
+            self.inner.changed.notify_all();
         }
         if let Some(err) = state.error.clone() {
             return Err(err);
@@ -389,5 +470,57 @@ mod tests {
         assert_eq!(snapshot.peak_depth, 3);
         assert_eq!(snapshot.enqueued_frame_count, 4);
         assert_eq!(snapshot.drained_frame_count, 1);
+    }
+
+    #[test]
+    fn recv_after_preroll_waits_for_ffmpeg_sized_fifo_depth() {
+        let handoff = NativeVulkanVulkanaliaDecodedPresentHandoff::new(3, 3);
+
+        handoff.enqueue(frame(0, 0)).expect("enqueue first");
+        handoff.enqueue(frame(1, 1)).expect("enqueue second");
+        handoff.enqueue(frame(2, 2)).expect("enqueue third");
+
+        let first = handoff
+            .recv_after_preroll(3)
+            .expect("recv after preroll")
+            .expect("first frame");
+        assert_eq!(first.decode_frame_index, 0);
+
+        let second = handoff.recv().expect("recv second").expect("second frame");
+        assert_eq!(second.decode_frame_index, 1);
+        let third = handoff.recv().expect("recv third").expect("third frame");
+        assert_eq!(third.decode_frame_index, 2);
+    }
+
+    #[test]
+    fn recv_reports_release_waiter_only_when_decode_blocks_on_layer_reuse() {
+        let handoff = NativeVulkanVulkanaliaDecodedPresentHandoff::new(3, 1);
+
+        handoff.enqueue(frame(0, 0)).expect("enqueue frame");
+        let first = handoff.recv().expect("recv").expect("frame");
+        handoff
+            .record_layer_present_release(first.sampled_array_layer, 0)
+            .expect("record in-flight release");
+
+        let wait_handoff = handoff.clone();
+        let waiter = std::thread::spawn(move || {
+            wait_handoff
+                .wait_layer_present_release_completed(0)
+                .expect("layer release completed");
+        });
+
+        assert_eq!(
+            handoff
+                .recv_or_release_waiter()
+                .expect("recv or release waiter"),
+            NativeVulkanVulkanaliaDecodedPresentHandoffRecv::ReleaseWaiter
+        );
+        assert_eq!(
+            handoff
+                .complete_present_frame_slot_releases(0)
+                .expect("complete slot release"),
+            1
+        );
+        waiter.join().expect("release waiter joined");
     }
 }

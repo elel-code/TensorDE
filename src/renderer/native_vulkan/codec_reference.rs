@@ -1223,7 +1223,7 @@ pub(super) fn native_vulkan_av1_align_streaming_bootstrap(
                         queue.bootstrap_discarded_access_units
                     )));
                 };
-                skipped_temporal_unit_indices.push(dropped.snapshot.index);
+                skipped_temporal_unit_indices.push(dropped.access_unit_index);
             }
             continue;
         };
@@ -1263,7 +1263,7 @@ pub(super) fn native_vulkan_av1_align_streaming_bootstrap(
                     queue.bootstrap_discarded_access_units
                 )));
             };
-            skipped_temporal_unit_indices.push(dropped.snapshot.index);
+            skipped_temporal_unit_indices.push(dropped.access_unit_index);
         }
     }
 }
@@ -2161,7 +2161,7 @@ pub(super) fn native_vulkan_h264_align_streaming_bootstrap(
                         queue.bootstrap_discarded_access_units
                     )));
                 };
-                skipped_access_unit_indices.push(dropped.snapshot.index);
+                skipped_access_unit_indices.push(dropped.access_unit_index);
             }
             continue;
         };
@@ -2201,7 +2201,7 @@ pub(super) fn native_vulkan_h264_align_streaming_bootstrap(
                     queue.bootstrap_discarded_access_units
                 )));
             };
-            skipped_access_unit_indices.push(dropped.snapshot.index);
+            skipped_access_unit_indices.push(dropped.access_unit_index);
         }
     }
 }
@@ -2764,7 +2764,7 @@ pub(super) fn native_vulkan_h265_align_streaming_bootstrap(
                         queue.bootstrap_discarded_access_units
                     )));
                 };
-                skipped_access_unit_indices.push(dropped.snapshot.index);
+                skipped_access_unit_indices.push(dropped.access_unit_index);
             }
             continue;
         };
@@ -2797,7 +2797,7 @@ pub(super) fn native_vulkan_h265_align_streaming_bootstrap(
                     queue.bootstrap_discarded_access_units
                 )));
             };
-            skipped_access_unit_indices.push(dropped.snapshot.index);
+            skipped_access_unit_indices.push(dropped.access_unit_index);
         }
     }
 }

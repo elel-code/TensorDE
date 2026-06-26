@@ -647,7 +647,7 @@ pub(super) fn query_vulkanalia_present_feature_selection(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     device_extensions: &[String],
-    surface_maintenance1_enabled: bool,
+    _surface_maintenance1_enabled: bool,
 ) -> NativeVulkanVulkanaliaPresentFeatureSelection {
     let (mut core_features, vulkan_1_4_properties, descriptor_heap_properties) =
         native_vulkan_vulkanalia_core_feature_snapshot(instance, physical_device);
@@ -657,19 +657,6 @@ pub(super) fn query_vulkanalia_present_feature_selection(
     }
     let synchronization2_enabled = core_features.synchronization2;
     let dynamic_rendering_enabled = core_features.dynamic_rendering;
-    let present_id_supported = extension_available(device_extensions, PRESENT_ID_EXTENSION_NAME)
-        && query_present_id_feature(instance, physical_device);
-    let present_wait_supported = present_id_supported
-        && extension_available(device_extensions, PRESENT_WAIT_EXTENSION_NAME)
-        && query_present_wait_feature(instance, physical_device);
-    let present_id2_supported = extension_available(device_extensions, PRESENT_ID2_EXTENSION_NAME)
-        && query_present_id2_feature(instance, physical_device);
-    let present_wait2_supported = present_id2_supported
-        && extension_available(device_extensions, PRESENT_WAIT2_EXTENSION_NAME)
-        && query_present_wait2_feature(instance, physical_device);
-    let swapchain_maintenance1_supported = surface_maintenance1_enabled
-        && extension_available(device_extensions, SWAPCHAIN_MAINTENANCE1_EXTENSION_NAME)
-        && query_swapchain_maintenance1_feature(instance, physical_device);
 
     NativeVulkanVulkanaliaPresentFeatureSelection {
         core_features,
@@ -677,11 +664,11 @@ pub(super) fn query_vulkanalia_present_feature_selection(
         descriptor_heap_properties,
         synchronization2_enabled,
         dynamic_rendering_enabled,
-        present_id_enabled: present_id_supported,
-        present_id2_enabled: present_id2_supported,
-        present_wait_enabled: present_wait_supported,
-        present_wait2_enabled: present_wait2_supported,
-        swapchain_maintenance1_enabled: swapchain_maintenance1_supported,
+        present_id_enabled: false,
+        present_id2_enabled: false,
+        present_wait_enabled: false,
+        present_wait2_enabled: false,
+        swapchain_maintenance1_enabled: false,
     }
 }
 
@@ -885,34 +872,16 @@ fn choose_surface_format(formats: &[vk::SurfaceFormatKHR]) -> Result<vk::Surface
 }
 
 fn choose_present_mode(present_modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
-    if let Some(requested) = std::env::var("GILDER_VULKAN_PRESENT_MODE")
-        .ok()
-        .and_then(|value| present_mode_from_label(value.as_str()))
-        && present_modes.contains(&requested)
-    {
-        return requested;
-    }
-    if present_modes.contains(&vk::PresentModeKHR::FIFO) {
-        vk::PresentModeKHR::FIFO
-    } else {
-        present_modes
-            .first()
-            .copied()
-            .unwrap_or(vk::PresentModeKHR::FIFO)
-    }
-}
-
-fn present_mode_from_label(label: &str) -> Option<vk::PresentModeKHR> {
-    match label {
-        "immediate" | "IMMEDIATE" => Some(vk::PresentModeKHR::IMMEDIATE),
-        "mailbox" | "MAILBOX" => Some(vk::PresentModeKHR::MAILBOX),
-        "fifo" | "FIFO" => Some(vk::PresentModeKHR::FIFO),
-        "fifo-relaxed" | "fifo_relaxed" | "FIFO_RELAXED" => Some(vk::PresentModeKHR::FIFO_RELAXED),
-        "fifo-latest-ready" | "fifo_latest_ready" | "FIFO_LATEST_READY" => {
-            Some(vk::PresentModeKHR::FIFO_LATEST_READY)
-        }
-        _ => None,
-    }
+    [
+        vk::PresentModeKHR::MAILBOX,
+        vk::PresentModeKHR::FIFO_LATEST_READY,
+        vk::PresentModeKHR::FIFO_RELAXED,
+        vk::PresentModeKHR::FIFO,
+    ]
+    .into_iter()
+    .find(|mode| present_modes.contains(mode))
+    .or_else(|| present_modes.first().copied())
+    .unwrap_or(vk::PresentModeKHR::FIFO)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1232,6 +1201,22 @@ mod tests {
         assert_eq!(
             swapchain_create_flag_labels(wait2),
             vec!["present-id2", "present-wait2"]
+        );
+    }
+
+    #[test]
+    fn present_mode_prefers_low_blocking_video_swapchain_modes() {
+        assert_eq!(
+            choose_present_mode(&[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::MAILBOX]),
+            vk::PresentModeKHR::MAILBOX
+        );
+        assert_eq!(
+            choose_present_mode(&[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::FIFO_RELAXED,]),
+            vk::PresentModeKHR::FIFO_RELAXED
+        );
+        assert_eq!(
+            choose_present_mode(&[vk::PresentModeKHR::FIFO]),
+            vk::PresentModeKHR::FIFO
         );
     }
 

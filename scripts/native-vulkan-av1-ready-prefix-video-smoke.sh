@@ -227,6 +227,7 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 cd "$repo_root"
+source "$script_dir/native-vulkan-ready-prefix-video-common.sh"
 
 if [[ -z "$source" ]]; then
   source="artifacts/video-sources/av1/av1-main${bit_depth}-${width}x${height}-${target_fps}fps-566frames-g${target_fps}.webm"
@@ -321,17 +322,7 @@ if [[ "$pacing_master" == "audio" ]]; then
 else
   runtime_env+=(GILDER_VIDEO_PACING_MASTER=target)
 fi
-for passthrough_env in \
-  MALLOC_ARENA_MAX \
-  MALLOC_MMAP_THRESHOLD_ \
-  MALLOC_TRIM_THRESHOLD_ \
-  GLIBC_TUNABLES \
-  VK_LOADER_LAYERS_ENABLE \
-  VK_LAYER_KHRONOS_validation_LOG_FILENAME; do
-  if [[ -n "${!passthrough_env:-}" ]]; then
-    runtime_env+=("${passthrough_env}=${!passthrough_env}")
-  fi
-done
+gilder_append_ready_prefix_runtime_env runtime_env
 
 performance_status=0
 if [[ "$performance_snapshot" -eq 1 ]]; then
@@ -389,6 +380,10 @@ average_fps="$(jq -r '.av1_retained_video_present_decode.decoded_image_present_s
 average_teardown_inclusive_fps="$(jq -r '.av1_retained_video_present_decode.decoded_image_present_sequence.average_present_teardown_inclusive_fps // 0' "$runtime_json")"
 present_interval_elapsed_us="$(jq -r '.av1_retained_video_present_decode.decoded_image_present_sequence.present_interval_elapsed_micros // 0' "$runtime_json")"
 present_teardown_inclusive_elapsed_us="$(jq -r '.av1_retained_video_present_decode.decoded_image_present_sequence.present_teardown_inclusive_elapsed_micros // 0' "$runtime_json")"
+present_delta_min_us="$(jq -r '.av1_retained_video_present_decode.decoded_image_present_sequence.present_delta_min_micros // "none"' "$runtime_json")"
+present_delta_max_us="$(jq -r '.av1_retained_video_present_decode.decoded_image_present_sequence.present_delta_max_micros // "none"' "$runtime_json")"
+present_delta_over_6250us_count="$(jq -r '.av1_retained_video_present_decode.decoded_image_present_sequence.present_delta_over_6250us_count // 0' "$runtime_json")"
+present_delta_over_8334us_count="$(jq -r '.av1_retained_video_present_decode.decoded_image_present_sequence.present_delta_over_8334us_count // 0' "$runtime_json")"
 zero_copy="$(jq -r '.av1_retained_video_present_decode.decoded_image_present_sequence.all_zero_copy_presented // false' "$runtime_json")"
 descriptor_model="$(jq -r '.av1_retained_video_present_decode.session.decoded_image_present_pipeline.descriptor_model // "none"' "$runtime_json")"
 descriptor_sets="$(jq -r '.av1_retained_video_present_decode.session.decoded_image_present_pipeline.descriptor_sets // -1' "$runtime_json")"
@@ -463,6 +458,10 @@ fi
   printf 'average_present_teardown_inclusive_fps: %s\n' "$average_teardown_inclusive_fps"
   printf 'present_interval_elapsed_us: %s\n' "$present_interval_elapsed_us"
   printf 'present_teardown_inclusive_elapsed_us: %s\n' "$present_teardown_inclusive_elapsed_us"
+  printf 'present_delta_min_us: %s\n' "$present_delta_min_us"
+  printf 'present_delta_max_us: %s\n' "$present_delta_max_us"
+  printf 'present_delta_over_6250us_count: %s\n' "$present_delta_over_6250us_count"
+  printf 'present_delta_over_8334us_count: %s\n' "$present_delta_over_8334us_count"
   printf 'descriptor_model: %s\n' "$descriptor_model"
   printf 'descriptor_sets: %s\n' "$descriptor_sets"
   printf 'ffmpeg_slices_buffer_model: %s\n' "$ffmpeg_slices_buffer_model"

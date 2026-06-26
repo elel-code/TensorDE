@@ -20,9 +20,7 @@ pub(super) struct NativeVulkanVulkanaliaDecodeCommandBufferSnapshot {
 
 pub(super) struct VulkanaliaDecodeCommandBuffer {
     pub(super) command_pool: vk::CommandPool,
-    pub(super) command_buffer: vk::CommandBuffer,
     pub(super) command_buffers: Vec<vk::CommandBuffer>,
-    pub(super) submit_fence: vk::Fence,
     pub(super) submit_fences: Vec<vk::Fence>,
     pub(super) snapshot: NativeVulkanVulkanaliaDecodeCommandBufferSnapshot,
 }
@@ -53,13 +51,6 @@ impl VulkanaliaDecodeCommandBuffer {
     }
 }
 
-pub(super) fn native_vulkan_vulkanalia_create_decode_command_buffer(
-    device: &Device,
-    queue_family_index: u32,
-) -> Result<VulkanaliaDecodeCommandBuffer, String> {
-    native_vulkan_vulkanalia_create_decode_command_buffers(device, queue_family_index, 1)
-}
-
 pub(super) fn native_vulkan_vulkanalia_create_decode_command_buffers(
     device: &Device,
     queue_family_index: u32,
@@ -78,8 +69,7 @@ pub(super) fn native_vulkan_vulkanalia_create_decode_command_buffers(
         .build();
     let command_pool = unsafe { device.create_command_pool(&command_pool_info, None) }
         .map_err(|err| format!("vkCreateCommandPool(vulkanalia decode): {err:?}"))?;
-    let mut submit_fence = vk::Fence::null();
-    let mut submit_fences = Vec::new();
+    let mut submit_fences = Vec::with_capacity(command_buffer_count as usize);
 
     let result = (|| -> Result<VulkanaliaDecodeCommandBuffer, String> {
         let command_buffer_info = vk::CommandBufferAllocateInfo::builder()
@@ -88,10 +78,8 @@ pub(super) fn native_vulkan_vulkanalia_create_decode_command_buffers(
             .command_buffer_count(command_buffer_count)
             .build();
         let command_buffers = unsafe { device.allocate_command_buffers(&command_buffer_info) }
-            .map_err(|err| format!("vkAllocateCommandBuffers(vulkanalia decode): {err:?}"))?
-            .into_iter()
-            .collect::<Vec<_>>();
-        let command_buffer = command_buffers.first().copied().ok_or_else(|| {
+            .map_err(|err| format!("vkAllocateCommandBuffers(vulkanalia decode): {err:?}"))?;
+        command_buffers.first().copied().ok_or_else(|| {
             "vkAllocateCommandBuffers(vulkanalia decode) returned none".to_owned()
         })?;
         let fence_info = vk::FenceCreateInfo::builder();
@@ -100,17 +88,11 @@ pub(super) fn native_vulkan_vulkanalia_create_decode_command_buffers(
                 .map_err(|err| format!("vkCreateFence(vulkanalia decode submit): {err:?}"))?;
             submit_fences.push(fence);
         }
-        submit_fence = submit_fences
-            .first()
-            .copied()
-            .ok_or_else(|| "Vulkanalia decode command buffer has no submit fence".to_owned())?;
         let submit_fence_count = u32::try_from(submit_fences.len()).unwrap_or(u32::MAX);
 
         Ok(VulkanaliaDecodeCommandBuffer {
             command_pool,
-            command_buffer,
             command_buffers,
-            submit_fence,
             submit_fences: std::mem::take(&mut submit_fences),
             snapshot: NativeVulkanVulkanaliaDecodeCommandBufferSnapshot {
                 queue_family_index,

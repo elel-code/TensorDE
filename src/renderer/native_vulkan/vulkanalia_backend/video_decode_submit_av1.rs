@@ -11,9 +11,11 @@ use crate::renderer::native_vulkan::{
 };
 
 use super::video_decode_submit::{
+    NATIVE_VULKAN_VULKANALIA_MAX_BEGIN_REFERENCE_SLOTS,
+    NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS,
     NativeVulkanVulkanaliaDecodeImageViewBindings, NativeVulkanVulkanaliaDecodeSubmitPlan,
     NativeVulkanVulkanaliaPictureResourcePlan, NativeVulkanVulkanaliaReferenceSlotPlan,
-    NativeVulkanVulkanaliaReferenceSlotRole, NativeVulkanVulkanaliaStreamingDecodeTimingSnapshot,
+    NativeVulkanVulkanaliaStreamingDecodeTimingSnapshot,
 };
 
 const FFMPEG_AV1_PICTURE_REFERENCE: &str = "references/ffmpeg/libavcodec/vulkan_av1.c";
@@ -248,7 +250,7 @@ pub struct NativeVulkanVulkanaliaAv1ReferenceInfoPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(super) struct NativeVulkanVulkanaliaAv1PictureInfoPlan {
+pub(super) struct NativeVulkanVulkanaliaAv1PictureInfoPlan<'a> {
     pub ffmpeg_reference: &'static str,
     pub frame_header_offset: u32,
     pub tile_offsets: Vec<u32>,
@@ -298,13 +300,13 @@ pub(super) struct NativeVulkanVulkanaliaAv1PictureInfoPlan {
     pub loop_restoration: NativeVulkanVulkanaliaAv1LoopRestorationPlan,
     pub global_motion: NativeVulkanVulkanaliaAv1GlobalMotionPlan,
     pub setup_reference: NativeVulkanVulkanaliaAv1ReferenceInfoPlan,
-    pub references: Vec<NativeVulkanVulkanaliaAv1ReferenceInfoPlan>,
+    pub references: &'a [NativeVulkanVulkanaliaAv1ReferenceInfoPlan],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(super) struct NativeVulkanVulkanaliaAv1DecodeSubmitPlan {
+pub(super) struct NativeVulkanVulkanaliaAv1DecodeSubmitPlan<'a> {
     pub common: NativeVulkanVulkanaliaDecodeSubmitPlan,
-    pub picture: NativeVulkanVulkanaliaAv1PictureInfoPlan,
+    pub picture: NativeVulkanVulkanaliaAv1PictureInfoPlan<'a>,
 }
 
 pub(super) struct NativeVulkanVulkanaliaAv1VkSubmitInfo<'a> {
@@ -317,7 +319,7 @@ pub(super) struct NativeVulkanVulkanaliaAv1VkSubmitInfo<'a> {
     pub decode_reference_slots: &'a [vk::VideoReferenceSlotInfoKHR],
 }
 
-pub(super) fn native_vulkan_vulkanalia_av1_decode_submit_plan(
+pub(super) fn native_vulkan_vulkanalia_av1_decode_submit_plan<'a>(
     extent: vk::Extent2D,
     codec: NativeVulkanVideoSessionCodec,
     entry: &NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
@@ -325,7 +327,8 @@ pub(super) fn native_vulkan_vulkanalia_av1_decode_submit_plan(
     src_buffer_offset: u64,
     src_buffer_range: u64,
     reset_control_recorded: bool,
-) -> Result<NativeVulkanVulkanaliaAv1DecodeSubmitPlan, String> {
+    reference_infos: &'a mut Vec<NativeVulkanVulkanaliaAv1ReferenceInfoPlan>,
+) -> Result<NativeVulkanVulkanaliaAv1DecodeSubmitPlan<'a>, String> {
     if !matches!(
         codec,
         NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10
@@ -371,36 +374,57 @@ pub(super) fn native_vulkan_vulkanalia_av1_decode_submit_plan(
         dst_picture_resource.clone(),
     );
 
-    let mut decode_reference_slot_ids = entry
-        .decode_reference_slots
-        .iter()
-        .filter_map(|slot| u32::try_from(*slot).ok())
-        .collect::<Vec<_>>();
-    decode_reference_slot_ids.sort_unstable();
-    decode_reference_slot_ids.dedup();
-    if decode_reference_slot_ids.len() > frame.references.len() {
+    let mut decode_reference_slot_ids = [0u32; NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS];
+    let mut decode_reference_slot_id_count = 0usize;
+    for slot in &entry.decode_reference_slots {
+        let Ok(slot) = u32::try_from(*slot) else {
+            continue;
+        };
+        if decode_reference_slot_ids[..decode_reference_slot_id_count].contains(&slot) {
+            continue;
+        }
+        if decode_reference_slot_id_count == decode_reference_slot_ids.len() {
+            return Err(format!(
+                "Vulkanalia AV1 TU {} exceeds FFmpeg fixed reference slot capacity {}",
+                entry.temporal_unit_index,
+                decode_reference_slot_ids.len()
+            ));
+        }
+        decode_reference_slot_ids[decode_reference_slot_id_count] = slot;
+        decode_reference_slot_id_count += 1;
+    }
+    if decode_reference_slot_id_count > frame.references.len() {
         return Err(format!(
             "Vulkanalia AV1 TU {} has {} decode slots but only {} reference infos",
             entry.temporal_unit_index,
-            decode_reference_slot_ids.len(),
+            decode_reference_slot_id_count,
             frame.references.len()
         ));
     }
-    let decode_reference_slots = decode_reference_slot_ids
-        .iter()
-        .map(|slot| {
-            let slot_index = i32::try_from(*slot)
-                .map_err(|_| format!("Vulkanalia AV1 DPB slot {slot} exceeds i32"))?;
-            Ok(NativeVulkanVulkanaliaReferenceSlotPlan::decode_reference(
-                slot_index,
-                NativeVulkanVulkanaliaPictureResourcePlan::new(extent, *slot),
-            ))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let mut begin_reference_slots = decode_reference_slots.clone();
-    begin_reference_slots.push(NativeVulkanVulkanaliaReferenceSlotPlan::begin_inactive(
-        dst_picture_resource.clone(),
-    ));
+    for slot in &decode_reference_slot_ids[..decode_reference_slot_id_count] {
+        let slot_index = i32::try_from(*slot)
+            .map_err(|_| format!("Vulkanalia AV1 DPB slot {slot} exceeds i32"))?;
+        if !frame
+            .references
+            .iter()
+            .take(decode_reference_slot_id_count)
+            .any(|reference| reference.slot_index == slot_index)
+        {
+            return Err(format!(
+                "Vulkanalia AV1 TU {} decode slot {} has no reference info",
+                entry.temporal_unit_index, slot_index
+            ));
+        }
+    }
+
+    reference_infos.clear();
+    reference_infos.extend(
+        frame
+            .references
+            .iter()
+            .take(decode_reference_slot_id_count)
+            .cloned(),
+    );
 
     let common = NativeVulkanVulkanaliaDecodeSubmitPlan::new(
         codec,
@@ -408,8 +432,8 @@ pub(super) fn native_vulkan_vulkanalia_av1_decode_submit_plan(
         src_buffer_range,
         dst_picture_resource,
         setup_reference_slot,
-        begin_reference_slots,
-        decode_reference_slots,
+        decode_reference_slot_id_count + 1,
+        decode_reference_slot_id_count,
         reset_control_recorded,
     );
     let picture = NativeVulkanVulkanaliaAv1PictureInfoPlan {
@@ -465,36 +489,52 @@ pub(super) fn native_vulkan_vulkanalia_av1_decode_submit_plan(
         loop_restoration: frame.loop_restoration,
         global_motion: frame.global_motion,
         setup_reference: frame.setup_reference,
-        references: frame
-            .references
-            .into_iter()
-            .take(decode_reference_slot_ids.len())
-            .collect(),
+        references: reference_infos.as_slice(),
     };
 
     Ok(NativeVulkanVulkanaliaAv1DecodeSubmitPlan { common, picture })
 }
 
 pub(super) fn native_vulkan_vulkanalia_av1_with_vk_submit_info<R>(
-    plan: &NativeVulkanVulkanaliaAv1DecodeSubmitPlan,
+    plan: &NativeVulkanVulkanaliaAv1DecodeSubmitPlan<'_>,
     video_session: vk::VideoSessionKHR,
     session_parameters: vk::VideoSessionParametersKHR,
     src_buffer: vk::Buffer,
     image_views: &NativeVulkanVulkanaliaDecodeImageViewBindings,
     use_submit_info: impl FnOnce(NativeVulkanVulkanaliaAv1VkSubmitInfo<'_>) -> R,
 ) -> Result<R, String> {
-    if image_views.begin_reference_image_views.len() != plan.common.begin_reference_slots.len() {
+    if image_views.begin_reference_image_view_count != plan.common.begin_reference_slot_count {
         return Err(format!(
             "Vulkanalia AV1 begin image-view count {} does not match begin slot count {}",
-            image_views.begin_reference_image_views.len(),
-            plan.common.begin_reference_slots.len()
+            image_views.begin_reference_image_view_count, plan.common.begin_reference_slot_count
         ));
     }
-    if image_views.decode_reference_image_views.len() != plan.common.decode_reference_slots.len() {
+    if image_views.decode_reference_image_view_count != plan.common.decode_reference_slot_count {
         return Err(format!(
             "Vulkanalia AV1 decode image-view count {} does not match decode slot count {}",
-            image_views.decode_reference_image_views.len(),
-            plan.common.decode_reference_slots.len()
+            image_views.decode_reference_image_view_count, plan.common.decode_reference_slot_count
+        ));
+    }
+    if plan.common.decode_reference_slot_count > NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS
+    {
+        return Err(format!(
+            "Vulkanalia AV1 decode reference slot count {} exceeds FFmpeg fixed refs[{}]",
+            plan.common.decode_reference_slot_count,
+            NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS
+        ));
+    }
+    if plan.common.begin_reference_slot_count > NATIVE_VULKAN_VULKANALIA_MAX_BEGIN_REFERENCE_SLOTS {
+        return Err(format!(
+            "Vulkanalia AV1 begin reference slot count {} exceeds FFmpeg fixed begin refs[{}]",
+            plan.common.begin_reference_slot_count,
+            NATIVE_VULKAN_VULKANALIA_MAX_BEGIN_REFERENCE_SLOTS
+        ));
+    }
+    if plan.picture.references.len() != plan.common.decode_reference_slot_count {
+        return Err(format!(
+            "Vulkanalia AV1 picture reference count {} does not match decode slot count {}",
+            plan.picture.references.len(),
+            plan.common.decode_reference_slot_count
         ));
     }
 
@@ -517,76 +557,84 @@ pub(super) fn native_vulkan_vulkanalia_av1_with_vk_submit_info<R>(
         .push_next(&mut setup_av1_slot_info)
         .build();
 
-    let decode_reference_resources = plan
-        .common
-        .decode_reference_slots
-        .iter()
-        .zip(image_views.decode_reference_image_views.iter().copied())
-        .map(|(slot, image_view)| slot.resource.to_vk(image_view))
-        .collect::<Vec<_>>();
-    let decode_reference_std_infos = plan
-        .picture
-        .references
-        .iter()
-        .map(av1_std_reference_info)
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut decode_reference_dpb_infos = decode_reference_std_infos
-        .iter()
-        .map(|std_reference_info| {
-            vk::VideoDecodeAV1DpbSlotInfoKHR::builder()
-                .std_reference_info(std_reference_info)
-                .build()
-        })
-        .collect::<Vec<_>>();
-    let mut decode_reference_slots = Vec::with_capacity(plan.common.decode_reference_slots.len());
-    for (index, slot) in plan.common.decode_reference_slots.iter().enumerate() {
-        decode_reference_slots.push(
-            vk::VideoReferenceSlotInfoKHR::builder()
-                .picture_resource(&decode_reference_resources[index])
-                .slot_index(slot.slot_index)
-                .push_next(&mut decode_reference_dpb_infos[index])
-                .build(),
-        );
+    let mut decode_reference_resources: [vk::VideoPictureResourceInfoKHR;
+        NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS] =
+        std::array::from_fn(|_| vk::VideoPictureResourceInfoKHR::default());
+    let mut decode_reference_std_infos: [vk::video::StdVideoDecodeAV1ReferenceInfo;
+        NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS] =
+        std::array::from_fn(|_| av1_empty_std_reference_info());
+    let mut decode_reference_dpb_infos: [vk::VideoDecodeAV1DpbSlotInfoKHR;
+        NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS] =
+        std::array::from_fn(|_| vk::VideoDecodeAV1DpbSlotInfoKHR::default());
+    let mut decode_reference_slot_infos: [vk::VideoReferenceSlotInfoKHR;
+        NATIVE_VULKAN_VULKANALIA_MAX_DECODE_REFERENCE_SLOTS] =
+        std::array::from_fn(|_| vk::VideoReferenceSlotInfoKHR::default());
+    let mut decode_reference_slot_count = 0usize;
+    for (index, reference) in plan.picture.references.iter().enumerate() {
+        let reference_resource =
+            native_vulkan_vulkanalia_av1_reference_resource(plan, reference.slot_index)?;
+        decode_reference_resources[index] =
+            reference_resource.to_vk(image_views.decode_reference_image_view);
+        decode_reference_std_infos[index] = av1_std_reference_info(reference)?;
+        decode_reference_dpb_infos[index] = vk::VideoDecodeAV1DpbSlotInfoKHR::builder()
+            .std_reference_info(&decode_reference_std_infos[index])
+            .build();
+        decode_reference_slot_infos[index] = vk::VideoReferenceSlotInfoKHR::builder()
+            .picture_resource(&decode_reference_resources[index])
+            .slot_index(reference.slot_index)
+            .push_next(&mut decode_reference_dpb_infos[index])
+            .build();
+        decode_reference_slot_count += 1;
     }
+    let decode_reference_slots = &decode_reference_slot_infos[..decode_reference_slot_count];
 
-    let begin_reference_resources = plan
-        .common
-        .begin_reference_slots
-        .iter()
-        .zip(image_views.begin_reference_image_views.iter().copied())
-        .map(|(slot, image_view)| slot.resource.to_vk(image_view))
-        .collect::<Vec<_>>();
-    let begin_reference_sources = plan
-        .common
-        .begin_reference_slots
-        .iter()
-        .map(|slot| native_vulkan_vulkanalia_av1_begin_reference_source(plan, slot))
-        .collect::<Result<Vec<_>, _>>()?;
-    let begin_reference_std_infos = begin_reference_sources
-        .iter()
-        .filter_map(|source| source.as_ref())
-        .map(av1_std_reference_info)
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut begin_reference_dpb_infos = begin_reference_std_infos
-        .iter()
-        .map(|std_reference_info| {
-            vk::VideoDecodeAV1DpbSlotInfoKHR::builder()
-                .std_reference_info(std_reference_info)
-                .build()
-        })
-        .collect::<Vec<_>>();
-    let mut begin_reference_slots = Vec::with_capacity(plan.common.begin_reference_slots.len());
-    let mut begin_dpb_index = 0usize;
-    for (index, slot) in plan.common.begin_reference_slots.iter().enumerate() {
-        let mut builder = vk::VideoReferenceSlotInfoKHR::builder()
+    let mut begin_reference_resources: [vk::VideoPictureResourceInfoKHR;
+        NATIVE_VULKAN_VULKANALIA_MAX_BEGIN_REFERENCE_SLOTS] =
+        std::array::from_fn(|_| vk::VideoPictureResourceInfoKHR::default());
+    let mut begin_reference_std_infos: [vk::video::StdVideoDecodeAV1ReferenceInfo;
+        NATIVE_VULKAN_VULKANALIA_MAX_BEGIN_REFERENCE_SLOTS] =
+        std::array::from_fn(|_| av1_empty_std_reference_info());
+    let mut begin_reference_dpb_infos: [vk::VideoDecodeAV1DpbSlotInfoKHR;
+        NATIVE_VULKAN_VULKANALIA_MAX_BEGIN_REFERENCE_SLOTS] =
+        std::array::from_fn(|_| vk::VideoDecodeAV1DpbSlotInfoKHR::default());
+    let mut begin_reference_slot_infos: [vk::VideoReferenceSlotInfoKHR;
+        NATIVE_VULKAN_VULKANALIA_MAX_BEGIN_REFERENCE_SLOTS] =
+        std::array::from_fn(|_| vk::VideoReferenceSlotInfoKHR::default());
+    let mut begin_reference_slot_count = 0usize;
+    for (index, reference) in plan.picture.references.iter().enumerate() {
+        let reference_resource =
+            native_vulkan_vulkanalia_av1_reference_resource(plan, reference.slot_index)?;
+        begin_reference_resources[index] =
+            reference_resource.to_vk(image_views.begin_reference_image_view);
+        begin_reference_std_infos[index] = av1_std_reference_info(reference)?;
+        begin_reference_dpb_infos[index] = vk::VideoDecodeAV1DpbSlotInfoKHR::builder()
+            .std_reference_info(&begin_reference_std_infos[index])
+            .build();
+        begin_reference_slot_infos[index] = vk::VideoReferenceSlotInfoKHR::builder()
             .picture_resource(&begin_reference_resources[index])
-            .slot_index(slot.slot_index);
-        if begin_reference_sources[index].is_some() {
-            builder = builder.push_next(&mut begin_reference_dpb_infos[begin_dpb_index]);
-            begin_dpb_index += 1;
-        }
-        begin_reference_slots.push(builder.build());
+            .slot_index(reference.slot_index)
+            .push_next(&mut begin_reference_dpb_infos[index])
+            .build();
+        begin_reference_slot_count += 1;
     }
+    {
+        let index = begin_reference_slot_count;
+        begin_reference_resources[index] = plan
+            .common
+            .dst_picture_resource
+            .to_vk(image_views.begin_reference_image_view);
+        begin_reference_std_infos[index] = av1_std_reference_info(&plan.picture.setup_reference)?;
+        begin_reference_dpb_infos[index] = vk::VideoDecodeAV1DpbSlotInfoKHR::builder()
+            .std_reference_info(&begin_reference_std_infos[index])
+            .build();
+        begin_reference_slot_infos[index] = vk::VideoReferenceSlotInfoKHR::builder()
+            .picture_resource(&begin_reference_resources[index])
+            .slot_index(-1)
+            .push_next(&mut begin_reference_dpb_infos[index])
+            .build();
+        begin_reference_slot_count += 1;
+    }
+    let begin_reference_slots = &begin_reference_slot_infos[..begin_reference_slot_count];
 
     let tile_info = &plan.picture.tile_info;
     let std_tile_info = vk::video::StdVideoAV1TileInfo {
@@ -769,32 +817,16 @@ pub(super) fn native_vulkan_vulkanalia_av1_with_vk_submit_info<R>(
     }))
 }
 
-fn native_vulkan_vulkanalia_av1_begin_reference_source(
-    plan: &NativeVulkanVulkanaliaAv1DecodeSubmitPlan,
-    slot: &NativeVulkanVulkanaliaReferenceSlotPlan,
-) -> Result<Option<NativeVulkanVulkanaliaAv1ReferenceInfoPlan>, String> {
-    if !slot.codec_dpb_info_required {
-        return Ok(None);
-    }
-    match slot.role {
-        NativeVulkanVulkanaliaReferenceSlotRole::BeginInactive
-        | NativeVulkanVulkanaliaReferenceSlotRole::SetupCurrent => {
-            Ok(Some(plan.picture.setup_reference.clone()))
-        }
-        NativeVulkanVulkanaliaReferenceSlotRole::DecodeReference => plan
-            .picture
-            .references
-            .iter()
-            .find(|reference| reference.slot_index == slot.slot_index)
-            .cloned()
-            .map(Some)
-            .ok_or_else(|| {
-                format!(
-                    "Vulkanalia AV1 begin reference slot {} has no matching decode reference",
-                    slot.slot_index
-                )
-            }),
-    }
+fn native_vulkan_vulkanalia_av1_reference_resource(
+    plan: &NativeVulkanVulkanaliaAv1DecodeSubmitPlan<'_>,
+    slot_index: i32,
+) -> Result<NativeVulkanVulkanaliaPictureResourcePlan, String> {
+    let base_array_layer = u32::try_from(slot_index)
+        .map_err(|_| format!("Vulkanalia AV1 reference slot {slot_index} is negative"))?;
+    Ok(plan
+        .common
+        .dst_picture_resource
+        .with_base_array_layer(base_array_layer))
 }
 
 fn av1_std_reference_info(
@@ -814,6 +846,19 @@ fn av1_std_reference_info(
         OrderHint: reference.order_hint,
         SavedOrderHints: reference.saved_order_hints,
     })
+}
+
+fn av1_empty_std_reference_info() -> vk::video::StdVideoDecodeAV1ReferenceInfo {
+    vk::video::StdVideoDecodeAV1ReferenceInfo {
+        flags: vk::video::StdVideoDecodeAV1ReferenceInfoFlags {
+            _bitfield_align_1: [],
+            _bitfield_1: vk::video::StdVideoDecodeAV1ReferenceInfoFlags::new_bitfield_1(0, 0, 0),
+        },
+        frame_type: 0,
+        RefFrameSignBias: 0,
+        OrderHint: 0,
+        SavedOrderHints: [0; 8],
+    }
 }
 
 fn av1_expected_frame_ids_array(ids: &[u32]) -> [u32; 8] {
@@ -891,6 +936,7 @@ mod tests {
     fn av1_decode_submit_plan_matches_ffmpeg_slot_shape() {
         let entry = test_av1_entry();
         let frame = test_av1_frame();
+        let mut reference_infos = Vec::new();
 
         let plan = native_vulkan_vulkanalia_av1_decode_submit_plan(
             vk::Extent2D {
@@ -903,17 +949,16 @@ mod tests {
             4096,
             8192,
             false,
+            &mut reference_infos,
         )
         .unwrap();
 
         assert_eq!(plan.common.src_buffer_offset, 4096);
         assert_eq!(plan.common.src_buffer_range, 8192);
         assert_eq!(plan.common.setup_reference_slot.slot_index, 2);
-        assert_eq!(plan.common.decode_reference_slots[0].slot_index, 1);
-        assert_eq!(
-            plan.common.begin_reference_slots.last().unwrap().slot_index,
-            -1
-        );
+        assert_eq!(plan.common.decode_reference_slot_count, 1);
+        assert_eq!(plan.common.begin_reference_slot_count, 2);
+        assert_eq!(plan.picture.references[0].slot_index, 1);
         assert_eq!(plan.picture.ffmpeg_reference, FFMPEG_AV1_PICTURE_REFERENCE);
         assert_eq!(plan.picture.frame_type, 1);
         assert_eq!(plan.picture.order_hint, 6);
@@ -925,6 +970,7 @@ mod tests {
 
     #[test]
     fn av1_decode_submit_plan_lowers_to_vulkanalia_decode_info() {
+        let mut reference_infos = Vec::new();
         let plan = native_vulkan_vulkanalia_av1_decode_submit_plan(
             vk::Extent2D {
                 width: 1280,
@@ -936,12 +982,13 @@ mod tests {
             2048,
             4096,
             true,
+            &mut reference_infos,
         )
         .unwrap();
         let image_views = NativeVulkanVulkanaliaDecodeImageViewBindings::repeated(
             vk::ImageView::default(),
-            plan.common.begin_reference_slots.len(),
-            plan.common.decode_reference_slots.len(),
+            plan.common.begin_reference_slot_count,
+            plan.common.decode_reference_slot_count,
         );
 
         native_vulkan_vulkanalia_av1_with_vk_submit_info(

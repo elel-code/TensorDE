@@ -620,6 +620,139 @@ struct NativeVulkanAv1ActiveDpbReference {
 }
 
 #[cfg(feature = "native-vulkan-video")]
+fn native_vulkan_av1_active_dpb_reference_from_decode_info(
+    decode_info: &NativeVulkanAv1FirstFrameDecodeInfo,
+    ref_frame_sign_bias: u8,
+    reference_name_order_hints: [u8; 8],
+    sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
+) -> NativeVulkanAv1ActiveDpbReference {
+    let order_hint = decode_info.header.order_hint.unwrap_or(0);
+    NativeVulkanAv1ActiveDpbReference {
+        frame_type: decode_info.header.frame_type,
+        order_hint,
+        ref_frame_sign_bias,
+        // FFmpeg stores the current frame's ref-name order hints in the frame
+        // state and later passes them to Vulkan as SavedOrderHints for refs.
+        // See references/ffmpeg/libavcodec/av1dec.c:369-379 and
+        // references/ffmpeg/libavcodec/vulkan_av1.c:318.
+        saved_order_hints: native_vulkan_av1_setup_saved_order_hints(
+            reference_name_order_hints,
+            decode_info.header.refresh_frame_flags,
+            order_hint,
+        ),
+        frame_width: decode_info
+            .header
+            .frame_width
+            .unwrap_or(sequence_header.max_frame_width),
+        frame_height: decode_info
+            .header
+            .frame_height
+            .unwrap_or(sequence_header.max_frame_height),
+        render_width: decode_info
+            .header
+            .render_width
+            .unwrap_or(sequence_header.max_frame_width),
+        render_height: decode_info
+            .header
+            .render_height
+            .unwrap_or(sequence_header.max_frame_height),
+        disable_frame_end_update_cdf: decode_info.header.disable_frame_end_update_cdf,
+        segmentation_enabled: decode_info.header.segmentation.enabled,
+        segmentation: decode_info.header.segmentation,
+        loop_filter_ref_deltas: decode_info.header.loop_filter.ref_deltas,
+        loop_filter_mode_deltas: decode_info.header.loop_filter.mode_deltas,
+    }
+}
+
+#[cfg(feature = "native-vulkan-video")]
+fn native_vulkan_av1_active_dpb_slots_after(
+    entry: &NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
+) -> Vec<u32> {
+    let mut active_slots_after = entry
+        .map_slot_indices_after
+        .iter()
+        .filter_map(|slot| u32::try_from(*slot).ok())
+        .collect::<Vec<_>>();
+    active_slots_after.sort_unstable();
+    active_slots_after.dedup();
+    active_slots_after
+}
+
+#[cfg(feature = "native-vulkan-video")]
+fn native_vulkan_av1_update_active_dpb_refs_after_decode(
+    active_dpb_refs: &mut [Option<NativeVulkanAv1ActiveDpbReference>],
+    entry: &NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
+    decode_info: &NativeVulkanAv1FirstFrameDecodeInfo,
+    ref_frame_sign_bias: u8,
+    reference_name_order_hints: [u8; 8],
+    sequence_header: &NativeVulkanAv1SequenceHeaderSnapshot,
+) {
+    let active_slots_after = native_vulkan_av1_active_dpb_slots_after(entry);
+    let current_reference = entry.output_slot.and_then(|output_slot| {
+        (!entry.refreshed_reference_names.is_empty()).then_some((
+            output_slot,
+            native_vulkan_av1_active_dpb_reference_from_decode_info(
+                decode_info,
+                ref_frame_sign_bias,
+                reference_name_order_hints,
+                sequence_header,
+            ),
+        ))
+    });
+    for (slot_index, slot) in active_dpb_refs.iter_mut().enumerate() {
+        let slot_index = slot_index as u32;
+        if !active_slots_after.contains(&slot_index) {
+            *slot = None;
+            continue;
+        }
+        if let Some((output_slot, reference)) = current_reference
+            && output_slot == slot_index
+        {
+            *slot = Some(reference);
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-video")]
+fn native_vulkan_av1_update_active_dpb_refs_after_display_handoff(
+    active_dpb_refs: &mut [Option<NativeVulkanAv1ActiveDpbReference>],
+    entry: &NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
+) -> Result<(), String> {
+    let displayed_slot = entry.displayed_slot.ok_or_else(|| {
+        format!(
+            "AV1 TU {} show_existing_frame has no displayed DPB slot",
+            entry.temporal_unit_index
+        )
+    })?;
+    let displayed_reference = active_dpb_refs
+        .get(displayed_slot as usize)
+        .and_then(|reference| *reference)
+        .ok_or_else(|| {
+            format!(
+                "AV1 TU {} show_existing_frame references inactive DPB slot {}",
+                entry.temporal_unit_index, displayed_slot
+            )
+        })?;
+    let active_slots_after = native_vulkan_av1_active_dpb_slots_after(entry);
+    for (slot_index, slot) in active_dpb_refs.iter_mut().enumerate() {
+        let slot_index = slot_index as u32;
+        if !active_slots_after.contains(&slot_index) {
+            *slot = None;
+            continue;
+        }
+        if slot_index == displayed_slot {
+            // FFmpeg's show_existing_frame path replaces cur_frame from ref[idx]
+            // and then updates the reference list. Key show-existing therefore
+            // collapses all ref names onto the displayed frame state.
+            // See references/ffmpeg/libavcodec/av1dec.c:1292-1300 and
+            // references/ffmpeg/libavcodec/cbs_av1_syntax_template.c:1346-1402.
+            *slot = Some(displayed_reference);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_temporal_unit_decode_info(
     bytes: &[u8],
     obus: &[NativeVulkanAv1ObuSnapshot],
@@ -987,54 +1120,19 @@ fn native_vulkan_av1_dpb_reference_sign_bias(
 #[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_setup_saved_order_hints(
     order_hints: [u8; 8],
-    refresh_frame_flags: u8,
-    current_order_hint: u8,
+    _refresh_frame_flags: u8,
+    _current_order_hint: u8,
 ) -> [u8; 8] {
-    if !matches!(
-        std::env::var("GILDER_VULKAN_AV1_SETUP_SAVED_ORDER_HINTS")
-            .ok()
-            .as_deref(),
-        Some("post-refresh") | Some("after-refresh")
-    ) {
-        return order_hints;
-    }
-    let mut saved_order_hints = order_hints;
-    for (index, hint) in saved_order_hints.iter_mut().enumerate() {
-        if refresh_frame_flags & (1u8 << index) != 0 {
-            *hint = current_order_hint;
-        }
-    }
-    saved_order_hints
+    order_hints
 }
 
 #[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_av1_current_setup_saved_order_hints(
-    order_hints: [u8; 8],
-    refresh_frame_flags: u8,
-    current_order_hint: u8,
+    _order_hints: [u8; 8],
+    _refresh_frame_flags: u8,
+    _current_order_hint: u8,
 ) -> [u8; 8] {
-    match std::env::var("GILDER_VULKAN_AV1_CURRENT_SETUP_SAVED_ORDER_HINTS")
-        .ok()
-        .as_deref()
-    {
-        Some("legacy") | Some("reference-map") | Some("saved") => {
-            native_vulkan_av1_setup_saved_order_hints(
-                order_hints,
-                refresh_frame_flags,
-                current_order_hint,
-            )
-        }
-        Some("post-refresh") | Some("after-refresh") => {
-            let mut saved_order_hints = order_hints;
-            for (index, hint) in saved_order_hints.iter_mut().enumerate() {
-                if refresh_frame_flags & (1u8 << index) != 0 {
-                    *hint = current_order_hint;
-                }
-            }
-            saved_order_hints
-        }
-        _ => [0; 8],
-    }
+    [0; 8]
 }
 
 #[cfg(feature = "native-vulkan-video")]
@@ -1573,6 +1671,41 @@ impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtrac
             stats,
         })
     }
+
+    fn from_ffmpeg_packet_many(
+        payload: NativeVulkanFfmpegPacketPayload,
+        metadata: NativeVulkanFfmpegPacketMetadata,
+    ) -> Result<Vec<Self>, NativeVulkanError> {
+        let units = native_vulkan_av1_split_ffmpeg_packet_frames(payload.bytes())
+            .map_err(NativeVulkanError::Video)?;
+        units
+            .into_iter()
+            .map(|unit| {
+                let payload = NativeVulkanEncodedAccessUnitPayload::owned(unit);
+                if payload.is_empty() {
+                    return Err(NativeVulkanError::Video(
+                        "AV1 FFmpeg packet frame unit is empty".to_owned(),
+                    ));
+                }
+                let stats = native_vulkan_av1_obu_stats(payload.bytes())
+                    .map_err(NativeVulkanError::Video)?;
+                Ok(Self {
+                    payload,
+                    pts_ns: metadata.pts_ns,
+                    duration_ns: metadata.duration_ns,
+                    pts_ms: metadata.pts_ms,
+                    duration_ms: metadata.duration_ms,
+                    caps: metadata.caps.clone(),
+                    stream_format: metadata.stream_format.clone(),
+                    alignment: metadata.alignment.clone(),
+                    width: metadata.width,
+                    height: metadata.height,
+                    framerate: metadata.framerate.clone(),
+                    stats,
+                })
+            })
+            .collect()
+    }
 }
 
 #[cfg(feature = "native-vulkan-video")]
@@ -1626,8 +1759,11 @@ fn native_vulkan_h264_access_unit_snapshot(
     access_unit: &NativeVulkanH264AccessUnitExtract,
     parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
 ) -> NativeVulkanH264AccessUnitSnapshot {
-    let first_frame =
-        native_vulkan_h264_picture_decode_info(access_unit.payload.bytes(), parameter_sets);
+    let first_frame = native_vulkan_h264_picture_decode_info(
+        access_unit.payload.bytes(),
+        parameter_sets,
+        access_unit.stats.slice_count as usize,
+    );
     let (first_slice, first_slice_parse_error) = match first_frame {
         Ok(first_frame) => (
             Some(NativeVulkanH264AccessUnitSliceSnapshot {
@@ -2751,7 +2887,6 @@ fn native_vulkan_h264_annex_b_slice_offset(
         .unwrap_or(start_code_offset)
 }
 
-#[cfg(any(feature = "native-vulkan-video", test))]
 struct NativeVulkanH264BitReader<'a> {
     bytes: &'a [u8],
     bit_offset: usize,
@@ -3032,7 +3167,7 @@ fn native_vulkan_h264_first_frame_decode_info(
     access_unit: &[u8],
     parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
 ) -> Result<NativeVulkanH264FirstFrameDecodeInfo, String> {
-    let picture = native_vulkan_h264_picture_decode_info(access_unit, parameter_sets)?;
+    let picture = native_vulkan_h264_picture_decode_info(access_unit, parameter_sets, 0)?;
     if !picture.idr {
         return Err(format!(
             "H.264 first-frame decode currently supports IDR only, got {}",
@@ -3052,41 +3187,57 @@ fn native_vulkan_h264_first_frame_decode_info(
 fn native_vulkan_h264_picture_decode_info(
     access_unit: &[u8],
     parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
+    slice_count_hint: usize,
 ) -> Result<NativeVulkanH264FirstFrameDecodeInfo, String> {
-    let nal_units = native_vulkan_h264_nal_payloads(access_unit);
-    let slices = nal_units
-        .iter()
-        .filter(|unit| matches!(unit.nal_type, 1..=5))
-        .collect::<Vec<_>>();
-    let first = slices
-        .first()
-        .ok_or_else(|| "H.264 access unit has no slice NAL".to_owned())?;
-    let first_slice = native_vulkan_h264_slice_decode_info(first, parameter_sets)?;
-
-    let mut slice_offsets = Vec::with_capacity(slices.len());
-    for slice in slices {
-        let info = native_vulkan_h264_slice_decode_info(slice, parameter_sets)?;
-        if info.pps_id != first_slice.pps_id
-            || info.frame_num != first_slice.frame_num
-            || info.idr_pic_id != first_slice.idr_pic_id
-            || info.field_pic_flag != first_slice.field_pic_flag
-            || info.bottom_field_flag != first_slice.bottom_field_flag
+    let mut first_slice = None;
+    let mut slice_offsets = Vec::with_capacity(slice_count_hint);
+    let mut offset = 0usize;
+    while let Some((start_code_offset, payload_offset)) =
+        native_vulkan_next_annex_b_start_code(access_unit, offset)
+    {
+        let next_start = native_vulkan_next_annex_b_start_code(access_unit, payload_offset)
+            .map(|(next_start, _)| next_start)
+            .unwrap_or(access_unit.len());
+        if payload_offset < next_start
+            && let Some(header) = access_unit.get(payload_offset).copied()
         {
-            return Err("H.264 access unit slice headers do not describe one picture".to_owned());
+            let nal_type = header & 0x1f;
+            if matches!(nal_type, 1..=5) {
+                let slice = NativeVulkanH264NalPayload {
+                    nal_type,
+                    nal_ref_idc: (header >> 5) & 0x03,
+                    slice_offset: native_vulkan_h264_annex_b_slice_offset(
+                        start_code_offset,
+                        payload_offset,
+                    ),
+                    payload: &access_unit[payload_offset..next_start],
+                };
+                if first_slice.is_none() {
+                    first_slice = Some(native_vulkan_h264_slice_decode_info(
+                        &slice,
+                        parameter_sets,
+                    )?);
+                }
+                slice_offsets.push(
+                    u32::try_from(slice.slice_offset)
+                        .map_err(|_| "H.264 slice offset exceeds u32 range".to_owned())?,
+                );
+            }
         }
-        slice_offsets.push(
-            u32::try_from(slice.slice_offset)
-                .map_err(|_| "H.264 slice offset exceeds u32 range".to_owned())?,
-        );
+        offset = next_start;
     }
+    let mut first_slice =
+        first_slice.ok_or_else(|| "H.264 access unit has no slice NAL".to_owned())?;
     if slice_offsets.is_empty() {
         return Err("H.264 access unit has no slice offsets".to_owned());
     }
-
-    Ok(NativeVulkanH264FirstFrameDecodeInfo {
-        slice_offsets,
-        ..first_slice
-    })
+    // FFmpeg's Vulkan H.264 path takes the already-parsed first slice context
+    // as picture info and appends every NAL through ff_vk_decode_add_slice(),
+    // which only grows the reusable slice-offset array.
+    // See references/ffmpeg/libavcodec/vulkan_h264.c:481-495 and
+    // references/ffmpeg/libavcodec/vulkan_decode.c:309-340.
+    first_slice.slice_offsets = slice_offsets;
+    Ok(first_slice)
 }
 
 #[cfg(any(feature = "native-vulkan-video", test))]
@@ -4917,6 +5068,132 @@ fn native_vulkan_av1_obu_stats(bytes: &[u8]) -> Result<NativeVulkanAv1ObuStats, 
             native_vulkan_av1_first_frame_submit_snapshot(bytes, &stats.obus, sequence_header);
     }
     Ok(stats)
+}
+
+#[cfg(any(feature = "native-vulkan-video", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeVulkanAv1ObuRange {
+    offset: usize,
+    end: usize,
+    obu_type: u8,
+}
+
+#[cfg(any(feature = "native-vulkan-video", test))]
+fn native_vulkan_av1_obu_ranges(bytes: &[u8]) -> Result<Vec<NativeVulkanAv1ObuRange>, String> {
+    let mut ranges = Vec::new();
+    let mut offset = 0usize;
+    while offset < bytes.len() {
+        let header_offset = offset;
+        let header = bytes[offset];
+        if header & 0x80 != 0 {
+            return Err(format!(
+                "AV1 OBU forbidden bit set at byte offset {header_offset}"
+            ));
+        }
+        let obu_type = (header >> 3) & 0x0f;
+        let has_extension = header & 0x04 != 0;
+        let has_size_field = header & 0x02 != 0;
+        if header & 0x01 != 0 {
+            return Err(format!(
+                "AV1 OBU reserved bit set at byte offset {header_offset}"
+            ));
+        }
+        offset += 1;
+        if has_extension {
+            if offset >= bytes.len() {
+                return Err("AV1 OBU extension flag set without extension byte".to_owned());
+            }
+            offset += 1;
+        }
+        if !has_size_field {
+            return Err(format!(
+                "AV1 OBU at byte offset {header_offset} has no size field; annexb AV1 extraction is not supported yet"
+            ));
+        }
+        let (payload_size, leb_size) = native_vulkan_av1_read_leb128(&bytes[offset..])?;
+        offset = offset
+            .checked_add(leb_size)
+            .ok_or_else(|| "AV1 OBU offset overflow after LEB128".to_owned())?;
+        let payload_size_usize = usize::try_from(payload_size)
+            .map_err(|_| format!("AV1 OBU payload size {payload_size} exceeds usize"))?;
+        let payload_end = offset
+            .checked_add(payload_size_usize)
+            .ok_or_else(|| "AV1 OBU payload end overflow".to_owned())?;
+        if payload_end > bytes.len() {
+            return Err(format!(
+                "AV1 OBU payload at byte offset {offset} extends past sample end"
+            ));
+        }
+        ranges.push(NativeVulkanAv1ObuRange {
+            offset: header_offset,
+            end: payload_end,
+            obu_type,
+        });
+        offset = payload_end;
+    }
+    Ok(ranges)
+}
+
+#[cfg(any(feature = "native-vulkan-video", test))]
+fn native_vulkan_av1_split_ffmpeg_packet_frames(bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    let ranges = native_vulkan_av1_obu_ranges(bytes)?;
+    let mut units = Vec::<Vec<u8>>::new();
+    let mut pending_prefix = Vec::<u8>::new();
+    let mut current_frame = None::<Vec<u8>>;
+
+    for range in ranges {
+        let obu = bytes
+            .get(range.offset..range.end)
+            .ok_or_else(|| "AV1 OBU range exceeds packet bytes".to_owned())?;
+        match range.obu_type {
+            1 | 2 => {
+                if let Some(unit) = current_frame.take() {
+                    units.push(unit);
+                }
+                pending_prefix.extend_from_slice(obu);
+            }
+            3 => {
+                if let Some(unit) = current_frame.take() {
+                    units.push(unit);
+                }
+                let mut unit = std::mem::take(&mut pending_prefix);
+                unit.extend_from_slice(obu);
+                current_frame = Some(unit);
+            }
+            4 => {
+                if let Some(unit) = current_frame.as_mut() {
+                    unit.extend_from_slice(obu);
+                } else {
+                    let mut unit = std::mem::take(&mut pending_prefix);
+                    unit.extend_from_slice(obu);
+                    current_frame = Some(unit);
+                }
+            }
+            6 => {
+                if let Some(unit) = current_frame.take() {
+                    units.push(unit);
+                }
+                let mut unit = std::mem::take(&mut pending_prefix);
+                unit.extend_from_slice(obu);
+                units.push(unit);
+            }
+            _ => {
+                if let Some(unit) = current_frame.as_mut() {
+                    unit.extend_from_slice(obu);
+                } else {
+                    pending_prefix.extend_from_slice(obu);
+                }
+            }
+        }
+    }
+
+    if let Some(unit) = current_frame.take() {
+        units.push(unit);
+    }
+    if units.is_empty() && !pending_prefix.is_empty() {
+        units.push(pending_prefix);
+    }
+    Ok(units)
 }
 
 #[cfg(any(feature = "native-vulkan-video", test))]
@@ -8535,7 +8812,7 @@ mod tests {
         access_unit.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x61]);
         access_unit.extend_from_slice(&pack_rbsp(slice_bits));
 
-        let picture = native_vulkan_h264_picture_decode_info(&access_unit, &parameter_sets)
+        let picture = native_vulkan_h264_picture_decode_info(&access_unit, &parameter_sets, 1)
             .expect("weighted P-slice header should parse");
 
         assert!(picture.is_p);
@@ -8622,7 +8899,7 @@ mod tests {
         access_unit.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x61]);
         access_unit.extend_from_slice(&pack_rbsp(slice_bits));
 
-        let picture = native_vulkan_h264_picture_decode_info(&access_unit, &parameter_sets)
+        let picture = native_vulkan_h264_picture_decode_info(&access_unit, &parameter_sets, 1)
             .expect("B-slice L1 modification header should parse");
 
         assert!(picture.is_b);
@@ -9080,6 +9357,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn splits_av1_ffmpeg_packet_into_frame_units() {
+        fn push_obu(bytes: &mut Vec<u8>, obu_type: u8, payload: &[u8]) {
+            bytes.push((obu_type << 3) | 0x02);
+            bytes.push(payload.len() as u8);
+            bytes.extend_from_slice(payload);
+        }
+
+        let mut packet = Vec::new();
+        push_obu(&mut packet, 1, &[0xaa]); // sequence header prefixes next frame
+        push_obu(&mut packet, 6, &[0x80, 0x01]); // complete frame OBU
+        push_obu(&mut packet, 3, &[0xc8]); // show-existing style frame header
+        push_obu(&mut packet, 3, &[0x40]); // split frame header
+        push_obu(&mut packet, 4, &[0x11, 0x22]); // tile group for split header
+
+        let units = native_vulkan_av1_split_ffmpeg_packet_frames(&packet).unwrap();
+        assert_eq!(units.len(), 3);
+
+        let unit_obu_types = units
+            .iter()
+            .map(|unit| {
+                native_vulkan_av1_obu_ranges(unit)
+                    .unwrap()
+                    .into_iter()
+                    .map(|range| range.obu_type)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(unit_obu_types[0], vec![1, 6]);
+        assert_eq!(unit_obu_types[1], vec![3]);
+        assert_eq!(unit_obu_types[2], vec![3, 4]);
+    }
+
     #[cfg(feature = "native-vulkan-video")]
     #[test]
     fn plans_av1_reference_map_for_inter_and_show_existing_frames() {
@@ -9322,6 +9632,81 @@ mod tests {
             min_plan[1].decode_reference_slots,
             vec![0, 0, 0, 0, 0, 0, 0]
         );
+    }
+
+    #[cfg(feature = "native-vulkan-video")]
+    #[test]
+    fn updates_av1_active_dpb_refs_for_show_existing_key_handoff() {
+        let segmentation = NativeVulkanAv1ParsedSegmentation {
+            enabled: false,
+            update_map: false,
+            temporal_update: false,
+            update_data: false,
+            feature_enabled: [0; 8],
+            feature_data: [[0; 8]; 8],
+        };
+        let displayed = NativeVulkanAv1ActiveDpbReference {
+            frame_type: 0,
+            order_hint: 11,
+            ref_frame_sign_bias: 0,
+            saved_order_hints: [0, 7, 8, 9, 10, 0, 0, 0],
+            frame_width: 3840,
+            frame_height: 2160,
+            render_width: 3840,
+            render_height: 2160,
+            disable_frame_end_update_cdf: true,
+            segmentation_enabled: false,
+            segmentation,
+            loop_filter_ref_deltas: [1, 0, 0, 0, -1, 0, -1, -1],
+            loop_filter_mode_deltas: [0, 0],
+        };
+        let stale = NativeVulkanAv1ActiveDpbReference {
+            order_hint: 99,
+            frame_type: 1,
+            ..displayed
+        };
+        let mut active_dpb_refs = vec![Some(displayed), Some(stale), Some(stale)];
+        let entry = NativeVulkanAv1DecodeReferencePlanEntrySnapshot {
+            temporal_unit_index: 6,
+            frame_type_label: "key",
+            show_existing_frame: true,
+            frame_to_show_map_idx: Some(2),
+            show_frame: true,
+            order_hint: Some(11),
+            current_frame_id: None,
+            expected_frame_ids: Vec::new(),
+            refresh_frame_flags: 0xff,
+            output_slot: None,
+            displayed_slot: Some(0),
+            reference_name_slot_indices: vec![0, 1, 2, -1, -1, -1, -1, -1],
+            reference_name_order_hints: vec![None; 8],
+            map_order_hints: vec![Some(11), Some(99), Some(99), None, None, None, None, None],
+            ref_frame_indices: Vec::new(),
+            decode_reference_slots: Vec::new(),
+            refreshed_reference_names: (0..8).collect(),
+            missing_reference_names: Vec::new(),
+            missing_reference_count: 0,
+            references_resolved: true,
+            submit_fields_ready: false,
+            ready_for_decode_submit: false,
+            ready_for_display_handoff: true,
+            unsupported_reason: None,
+            map_slot_indices_after: vec![0; 8],
+            map_order_hints_after: vec![Some(11); 8],
+        };
+
+        native_vulkan_av1_update_active_dpb_refs_after_display_handoff(
+            &mut active_dpb_refs,
+            &entry,
+        )
+        .expect("show-existing handoff updates active refs");
+
+        assert_eq!(
+            active_dpb_refs[0].map(|reference| reference.order_hint),
+            Some(11)
+        );
+        assert!(active_dpb_refs[1].is_none());
+        assert!(active_dpb_refs[2].is_none());
     }
 
     #[test]
