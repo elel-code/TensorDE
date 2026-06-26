@@ -107,13 +107,12 @@ install -m 0644 docs/man/*.1 "$stage_dir/share/man/man1/"
 install -m 0644 completions/bash/* "$stage_dir/share/bash-completion/completions/"
 install -m 0644 completions/zsh/* "$stage_dir/share/zsh/site-functions/"
 install -m 0644 packaging/systemd/gilder.service "$stage_dir/lib/systemd/user/gilder.service"
-install -m 0644 README.md docs/packaging.md docs/native-vulkan-video.md "$stage_dir/share/doc/gilder/"
+install -m 0644 README.md README.zh-CN.md docs/packaging.md docs/native-vulkan-video.md "$stage_dir/share/doc/gilder/"
 install -m 0755 scripts/native-vulkan-h264-ready-prefix-video-smoke.sh "$stage_dir/share/doc/gilder/scripts/native-vulkan-h264-ready-prefix-video-smoke.sh"
 install -m 0755 scripts/native-vulkan-av1-ready-prefix-video-smoke.sh "$stage_dir/share/doc/gilder/scripts/native-vulkan-av1-ready-prefix-video-smoke.sh"
 install -m 0755 scripts/native-vulkan-h265-ready-prefix-video-smoke.sh "$stage_dir/share/doc/gilder/scripts/native-vulkan-h265-ready-prefix-video-smoke.sh"
 install -m 0755 scripts/native-vulkan-ready-prefix-video-common.sh "$stage_dir/share/doc/gilder/scripts/native-vulkan-ready-prefix-video-common.sh"
 install -m 0755 scripts/native-vulkan-real-source-matrix.sh "$stage_dir/share/doc/gilder/scripts/native-vulkan-real-source-matrix.sh"
-install -m 0755 scripts/native-vulkan-surface-video-queue-smoke.sh "$stage_dir/share/doc/gilder/scripts/native-vulkan-surface-video-queue-smoke.sh"
 install -m 0755 scripts/performance-snapshot.sh "$stage_dir/share/doc/gilder/scripts/performance-snapshot.sh"
 install -m 0644 scripts/performance-decision-summary.awk "$stage_dir/share/doc/gilder/scripts/performance-decision-summary.awk"
 
@@ -138,14 +137,14 @@ contents:
   share/zsh/site-functions/_gilder-convert
   lib/systemd/user/gilder.service
   share/doc/gilder/README.md
+  share/doc/gilder/README.zh-CN.md
   share/doc/gilder/packaging.md
-  share/doc/gilder/todo.md
+  share/doc/gilder/native-vulkan-video.md
   share/doc/gilder/scripts/native-vulkan-h264-ready-prefix-video-smoke.sh
   share/doc/gilder/scripts/native-vulkan-av1-ready-prefix-video-smoke.sh
   share/doc/gilder/scripts/native-vulkan-h265-ready-prefix-video-smoke.sh
   share/doc/gilder/scripts/native-vulkan-ready-prefix-video-common.sh
   share/doc/gilder/scripts/native-vulkan-real-source-matrix.sh
-  share/doc/gilder/scripts/native-vulkan-surface-video-queue-smoke.sh
   share/doc/gilder/scripts/performance-snapshot.sh
   share/doc/gilder/scripts/performance-decision-summary.awk
 EOF

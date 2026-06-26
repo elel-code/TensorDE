@@ -1,72 +1,112 @@
 # Gilder
 
-Gilder is a native Wayland wallpaper engine for independent compositors such as
-niri and Hyprland. The project aims to cover the gap
-between simple static wallpaper tools and richer Wallpaper Engine style
-packages on Linux.
+[中文说明](README.zh-CN.md)
 
-Current status: daemon IPC, state persistence, wallpaper planning, and
-feature-gated native Wayland/Vulkan renderer paths. Video work uses an FFmpeg
-demux/bitstream frontend feeding Vulkanalia/Vulkan Video decode/render/present;
-legacy decoded-frame and display-sink paths have been removed.
+Gilder is a native Wayland wallpaper engine for niri, Hyprland, and other
+independent compositors. The current renderer direction is FFmpeg demux/parser
+frontends feeding a Vulkanalia/Vulkan Video GPU path for decode, render, and
+Wayland present.
 
-## Project Layout
+Legacy GStreamer display-sink, decoded-frame CPU copy, descriptor-set fallback,
+and old planning documents have been removed. Native video evidence must use
+`VK_EXT_descriptor_heap`, report `descriptor_sets=0`, and include CPU, GPU,
+memory, FPS, frame-count, descriptor-heap, and zero-copy fields when it is used
+as a performance result.
 
-- `src/core.rs`: core module entry and re-exports.
-- `src/core/`: wallpaper package format primitives.
-- `src/ipc.rs`: IPC module entry and re-exports.
-- `src/ipc/`: command, protocol, and socket helpers.
-- `src/bin/gilderd.rs`: daemon entry point for IPC, state, and renderer updates.
+## Current Status
+
+- Daemon IPC, state persistence, package loading, and desktop-state policy are
+  present.
+- Native Vulkan video supports H.264, H.265 Main8/Main10, and AV1 Main8/Main10
+  through FFmpeg packet/parsing semantics and Vulkan Video decode.
+- The active render path samples GPU Y/UV plane descriptors through
+  `VK_EXT_descriptor_heap` and presents through Wayland without decoded-frame
+  CPU copies.
+- Current validated 4K240 gates are recorded in
+  `docs/native-vulkan-video.md`.
+
+## Next Work
+
+1. Audio integration: align audio demux/clock/loop semantics with FFmpeg, then
+   wire muted clock-only and audible output modes into the daemon/runtime path.
+2. Full scene wallpaper support: connect native Vulkan video, static images,
+   properties, scene transforms, and daemon output routing into the normal
+   wallpaper lifecycle.
+3. Broader bitstream coverage: expand real-source and generated matrices for
+   H.264, H.265, and AV1 profiles, bit depths, reference patterns, arbitrary
+   entry points, loop boundaries, and long-run resource stability.
+4. Script hygiene: keep only current CI, codec smoke, real-source matrix,
+   performance, packaging, and workshop helpers. Remove one-off migration or
+   spike scripts instead of carrying compatibility wrappers.
+
+## Repository Layout
+
+- `src/bin/gilderd.rs`: daemon entry point.
 - `src/bin/gilderctl.rs`: CLI client for daemon control.
-- `src/bin/gilder-convert.rs`: conversion tool for Wallpaper Engine projects.
-- `docs/native-vulkan-video.md`: current FFmpeg/Vulkan Video status,
-  hard gates, and H.264/H.265/AV1 evidence.
-- `docs/packaging.md`: packaging asset install notes.
-- `docs/man/`: man pages for the command line tools.
-- `completions/`: bash and zsh shell completions.
-- `packaging/systemd/`: systemd user service example.
-- `scripts/native-vulkan-h264-ready-prefix-video-smoke.sh`: real Wayland native
-  Vulkan H.264 decode/present evidence helper.
-- `scripts/native-vulkan-av1-ready-prefix-video-smoke.sh`: real Wayland native
-  Vulkan AV1 decode/present evidence helper.
-- `scripts/native-vulkan-h265-ready-prefix-video-smoke.sh`: real Wayland native
-  Vulkan H.265 decode/present evidence helper.
-- `scripts/native-vulkan-surface-video-queue-smoke.sh`: native Vulkan surface
-  queue helper.
-- `scripts/performance-snapshot.sh`: daemon CPU/RSS/PSS/USS/status sampling
-  helper.
-- `scripts/desktop-policy-smoke.sh`: headless desktop-state performance policy
-  validation helper.
+- `src/bin/gilder-convert.rs`: Wallpaper Engine conversion and pack tool.
+- `src/bin/gilder-native-vulkan.rs`: native Vulkan diagnostics and video smoke
+  runner.
+- `src/core/`: package and manifest primitives.
+- `src/ipc/`: command, protocol, and socket helpers.
+- `src/renderer/native_vulkan/`: native Vulkan render, FFmpeg demux, video, and
+  present code.
+- `docs/native-vulkan-video.md`: current FFmpeg/Vulkan Video gates, evidence,
+  and next validation rules.
+- `docs/packaging.md`: install and distribution notes.
+- `docs/man/`: man pages.
+- `scripts/native-vulkan-{h264,h265,av1}-ready-prefix-video-smoke.sh`: current
+  codec evidence scripts.
+- `scripts/native-vulkan-real-source-matrix.sh`: real-source coverage runner.
+- `scripts/performance-snapshot.sh`: CPU/RSS/PSS/USS/Private_Dirty/GPU memory
+  sampler.
+- `scripts/desktop-policy-smoke.sh`: CI desktop-policy smoke.
 
-## Early commands
+## Commands
 
 ```sh
+scripts/install-ci-deps-ubuntu.sh
 cargo check
 cargo check --features native-vulkan-renderer
 cargo check --features native-vulkan-video --bin gilder-native-vulkan
+cargo test --features native-vulkan-video
 cargo run --bin gilderd
 cargo run --bin gilderctl -- ping
 cargo run --bin gilderctl -- outputs
 cargo run --bin gilderctl -- watch
 cargo run --bin gilderctl -- set ./examples/wallpapers/static-demo.gwpdir --output eDP-1
-cargo run --bin gilderctl -- properties set speed 0.5 --output eDP-1
 cargo run --bin gilder-convert -- wallpaper-engine /path/to/we/project ./out.gwpdir
 cargo run --bin gilder-convert -- pack ./examples/wallpapers/static-demo.gwpdir ./static-demo.gwp
 ```
 
-Distribution assets are documented in `docs/packaging.md`. The repository ships
-example systemd user service, man pages, and shell completions, but install
-paths are intentionally left to distro/user packaging. A tarball staging helper
-is available at `packaging/build-dist.sh`.
-
-`.gwpdir` packages can use either `manifest.gilder.json` or authoring-friendly
+Distribution assets are staged by `packaging/build-dist.sh`. `.gwpdir`
+packages can use `manifest.gilder.json` or authoring-friendly
 `manifest.gilder.toml`; `.gwp` archives are packed with canonical
 `manifest.gilder.json`.
 
-The daemon currently provides JSON-RPC over a Unix socket, persistent state, and
-policy decisions for desktop-state-based throttling. Native Vulkan video status
-and evidence are tracked in `docs/native-vulkan-video.md`.
+## Video Evidence
 
-The optional `native-vulkan-video` feature builds the native Wayland/Vulkan
-video helper. FFmpeg owns container parsing and parser-normalized bitstream
-handoff; Vulkanalia/native Vulkan owns decode, render and present.
+Performance evidence must be long enough for sampling and must pass
+`--performance-snapshot`. Functional-only smoke output is not enough for CPU,
+GPU, or memory claims.
+
+Example shape:
+
+```sh
+scripts/native-vulkan-h264-ready-prefix-video-smoke.sh \
+  --no-build \
+  --display wayland-1 \
+  --output HDMI-A-1 \
+  --source /path/to/source.mp4 \
+  --target-fps 60 \
+  --decode-prefix 600 \
+  --playback-frames 600 \
+  --arbitrary-entry-offset 2.3 \
+  --performance-snapshot \
+  --performance-duration 6 \
+  --performance-interval 1 \
+  --report-dir /tmp/gilder-h264-real-source
+```
+
+The required fields are `average_present_fps`, decoded/presented counts,
+average CPU percent, RSS/PSS/USS, `Private_Dirty`, process GPU memory,
+`descriptor_sets`, `descriptor_heap_only`, and zero-copy state.
