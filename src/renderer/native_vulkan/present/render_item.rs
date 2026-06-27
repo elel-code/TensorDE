@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::config::VideoDecoderPolicy;
-use crate::core::{FitMode, SceneNodeKind, SceneSystems, SceneTransform, Transition};
+use crate::core::{FitMode, SceneNodeKind, SceneSize, SceneSystems, SceneTransform, Transition};
 use crate::renderer::{
     SceneDisplayPlan, SceneRenderLayer, SceneWallpaperPlan, SlideshowWallpaperPlan,
     StaticRenderSyncPlan, StaticWallpaperPlan, VideoWallpaperPlan,
@@ -66,6 +66,8 @@ pub enum NativeVulkanRenderItem {
         timeline_animated_layer_count: usize,
         property_binding_count: usize,
         snapshot_time_ms: u64,
+        scene_size: Option<SceneSize>,
+        scene_fit: FitMode,
         target_max_fps: Option<u32>,
         renderer_status: &'static str,
     },
@@ -153,6 +155,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
         timeline_animated_layer_count: 0,
         property_binding_count: 0,
         snapshot_time_ms: 0,
+        scene_size: None,
+        scene_fit: plan.fit,
         target_max_fps: None,
         renderer_status: NATIVE_VULKAN_STATIC_SCENE_RENDERER_STATUS,
     }
@@ -263,6 +267,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_item(
         timeline_animated_layer_count: plan.timeline_animated_layer_count,
         property_binding_count: plan.property_binding_count,
         snapshot_time_ms: plan.snapshot_time_ms,
+        scene_size: plan.scene_size,
+        scene_fit: plan.scene_fit,
         target_max_fps: plan.target_max_fps,
         renderer_status: "deterministic-scene-snapshot-ready-for-vulkan-passes",
     }

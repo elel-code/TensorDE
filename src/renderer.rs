@@ -15,8 +15,8 @@ use crate::core::manifest::{Manifest, PropertySpec, Variant};
 use crate::core::scene::SceneSnapshotLayer;
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
-    SceneAudioCue, SceneDocument, SceneNodeKind, SceneResource, SceneResourceKind, SceneSystems,
-    SceneTextAlign, SceneTextureRegion, SceneTransform, Transition, WallpaperEntry,
+    SceneAudioCue, SceneDocument, SceneNodeKind, SceneResource, SceneResourceKind, SceneSize,
+    SceneSystems, SceneTextAlign, SceneTextureRegion, SceneTransform, Transition, WallpaperEntry,
     WallpaperPackage,
 };
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot, PowerState};
@@ -74,6 +74,10 @@ pub struct SceneWallpaperPlan {
     pub target_max_fps: Option<u32>,
     pub snapshot_time_ms: u64,
     #[serde(default)]
+    pub scene_size: Option<SceneSize>,
+    #[serde(default = "default_scene_fit")]
+    pub scene_fit: FitMode,
+    #[serde(default)]
     pub scene_systems: SceneSystems,
     #[serde(default)]
     pub audio_cue_count: usize,
@@ -100,6 +104,10 @@ pub enum SceneDisplayPlan {
     Color {
         color: String,
     },
+}
+
+fn default_scene_fit() -> FitMode {
+    FitMode::Cover
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -193,6 +201,8 @@ pub fn scene_wallpaper_plan_from_gscene_path(
         manifest_max_fps: None,
         target_max_fps,
         snapshot_time_ms: snapshot.time_ms,
+        scene_size: document.size,
+        scene_fit: fit_override.unwrap_or(FitMode::Cover),
         scene_systems: document.systems.clone(),
         audio_cue_count: layers.iter().map(|layer| layer.audio.len()).sum(),
         bound_properties: scene_bound_properties(&document),
@@ -1553,6 +1563,8 @@ fn scene_wallpaper_plan(
         manifest_max_fps,
         target_max_fps: effective_max_fps(manifest_max_fps, performance.max_fps),
         snapshot_time_ms: snapshot.time_ms,
+        scene_size: document.size,
+        scene_fit: fit_override.unwrap_or(FitMode::Cover),
         scene_systems: document.systems.clone(),
         audio_cue_count: layers.iter().map(|layer| layer.audio.len()).sum(),
         bound_properties: scene_bound_properties(&document),

@@ -171,6 +171,8 @@ pub fn run_scene(
                             target_max_fps,
                             quad_color: options.clear_color,
                             geometry: Some(geometry),
+                            scene_size: runtime.scene_size,
+                            scene_fit: runtime.scene_fit,
                         },
                     )
                     .map_err(NativeVulkanError::Scene)
@@ -215,6 +217,8 @@ pub fn run_scene(
                             fit,
                             solid_geometry,
                             geometry,
+                            scene_size: runtime.scene_size,
+                            scene_fit: runtime.scene_fit,
                         },
                     )
                     .map_err(NativeVulkanError::Scene)
@@ -577,6 +581,8 @@ mod tests {
             manifest_max_fps: None,
             target_max_fps: Some(60),
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             scene_systems: SceneSystems::default(),
             audio_cue_count: 0,
             bound_properties: Vec::new(),

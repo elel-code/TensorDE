@@ -1,7 +1,9 @@
 use serde::Serialize;
 use std::path::PathBuf;
 
-use crate::core::{FitMode, SceneSystemStatus, SceneTextAlign, SceneTextureRegion, SceneTransform};
+use crate::core::{
+    FitMode, SceneSize, SceneSystemStatus, SceneTextAlign, SceneTextureRegion, SceneTransform,
+};
 
 use super::super::present::render_item::NativeVulkanRenderItem;
 use super::super::present::render_plan::NativeVulkanSceneDrawPlan;
@@ -22,6 +24,8 @@ use super::draw_pass::native_vulkan_scene_draw_pass_plan;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneRuntimeSnapshot {
     pub snapshot_time_ms: u64,
+    pub scene_size: Option<SceneSize>,
+    pub scene_fit: FitMode,
     pub full_scene: NativeVulkanFullSceneRuntimeSnapshot,
     pub scene_input_model: &'static str,
     pub scene_resource_model: &'static str,
@@ -199,6 +203,7 @@ impl NativeVulkanSceneRuntimeSnapshot {
                 first_index: step.first_index,
                 index_count: step.index_count,
                 fit: Some(step.fit),
+                texture_region: step.texture_region,
             })
             .collect::<Vec<_>>();
 
@@ -463,6 +468,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
     let scene_video_native_layer_count = full_scene.video_native_layer_count;
     Some(NativeVulkanSceneRuntimeSnapshot {
         snapshot_time_ms: plan.snapshot_time_ms,
+        scene_size: plan.scene_size,
+        scene_fit: plan.scene_fit,
         full_scene,
         scene_input_model: "core scene snapshot layers; groups must be flattened before native Vulkan planning",
         scene_resource_model,
@@ -990,6 +997,8 @@ mod tests {
             timeline_animated_layer_count,
             property_binding_count,
             snapshot_time_ms: 1234,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             target_max_fps: Some(60),
             renderer_status: "deterministic-scene-snapshot-ready-for-vulkan-passes",
         }

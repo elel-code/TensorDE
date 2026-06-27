@@ -880,6 +880,8 @@ fn scene_cli_plan(
                 timeline_animation_count: 0,
                 timeline_animated_layer_count: 0,
                 property_binding_count: 0,
+                scene_size: None,
+                scene_fit: fit,
                 display,
                 layers,
             });
@@ -899,6 +901,8 @@ fn scene_cli_plan(
             timeline_animation_count: 0,
             timeline_animated_layer_count: 0,
             property_binding_count: 0,
+            scene_size: None,
+            scene_fit: fit,
             display: Some(SceneDisplayPlan::Image {
                 source,
                 fit,
@@ -932,6 +936,8 @@ fn scene_cli_plan(
             timeline_animation_count: 0,
             timeline_animated_layer_count: 0,
             property_binding_count: 0,
+            scene_size: None,
+            scene_fit: fit,
             display: Some(SceneDisplayPlan::Color { color: background }),
             layers: vec![layer],
         });
@@ -962,6 +968,8 @@ fn scene_cli_plan(
             timeline_animation_count: 0,
             timeline_animated_layer_count: 0,
             property_binding_count: 0,
+            scene_size: None,
+            scene_fit: fit,
             display: Some(SceneDisplayPlan::Color { color: background }),
             layers: vec![layer],
         });
@@ -982,6 +990,8 @@ fn scene_cli_plan(
         timeline_animation_count: 0,
         timeline_animated_layer_count: 0,
         property_binding_count: 0,
+        scene_size: None,
+        scene_fit: fit,
         display: Some(SceneDisplayPlan::Color { color }),
         layers: vec![layer],
     })

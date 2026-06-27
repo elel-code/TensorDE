@@ -416,8 +416,7 @@ fn native_vulkan_scene_background_clear_color(
     if draw_ops.len() <= 1
         || op.kind != NativeVulkanSceneDrawOpKind::ColorQuad
         || op.opacity < 1.0
-        || op.width.is_some()
-        || op.height.is_some()
+        || (!native_vulkan_scene_render_clear_op(op) && (op.width.is_some() || op.height.is_some()))
         || op.transform != SceneTransform::default()
     {
         return None;
@@ -426,6 +425,10 @@ fn native_vulkan_scene_background_clear_color(
         .as_deref()
         .filter(|color| !color.is_empty())
         .map(str::to_owned)
+}
+
+fn native_vulkan_scene_render_clear_op(op: &NativeVulkanSceneDrawOp) -> bool {
+    op.layer_id == "scene-render-clear-color"
 }
 
 struct NativeVulkanSceneQuadRecordingPayload {
@@ -1457,6 +1460,10 @@ fn native_vulkan_scene_sampled_image_vertices(
         v_max: 1.0,
         frame_index: 0,
         frame_count: 1,
+        columns: 1,
+        rows: 1,
+        fps: None,
+        loop_playback: true,
     });
     let uvs = [
         [region.u_min as f32, region.v_min as f32],
@@ -2026,6 +2033,8 @@ mod tests {
         color.color = Some("#102030".to_owned());
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             draw_ops: vec![color],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -2061,6 +2070,8 @@ mod tests {
         let path = draw_op(2, NativeVulkanSceneDrawOpKind::Path);
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             draw_ops: vec![image, text, path],
             unsupported_layers: Vec::new(),
             runtime_display_available: true,
@@ -2094,6 +2105,8 @@ mod tests {
         video.fit = FitMode::Cover;
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             draw_ops: vec![video],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -2128,6 +2141,8 @@ mod tests {
         image.transform.y = 8.0;
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             draw_ops: vec![image],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -2177,9 +2192,15 @@ mod tests {
             v_max: 0.5,
             frame_index: 5,
             frame_count: 12,
+            columns: 3,
+            rows: 4,
+            fps: Some(12.0),
+            loop_playback: true,
         });
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 416,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             draw_ops: vec![image],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -2197,10 +2218,62 @@ mod tests {
                 v_max: 0.5,
                 frame_index: 5,
                 frame_count: 12,
+                columns: 3,
+                rows: 4,
+                fps: Some(12.0),
+                loop_playback: true,
             })
         );
         assert_eq!(pass_plan.sampled_image_vertices[0].uv, [2.0 / 3.0, 0.25]);
         assert_eq!(pass_plan.sampled_image_vertices[3].uv, [1.0, 0.5]);
+    }
+
+    #[test]
+    fn draw_pass_plan_treats_sized_scene_render_clear_as_background_for_atlas_scene() {
+        let mut clear = draw_op(0, NativeVulkanSceneDrawOpKind::ColorQuad);
+        clear.layer_id = "scene-render-clear-color".to_owned();
+        clear.color = Some("#b3b3b3".to_owned());
+        clear.width = Some(2160.0);
+        clear.height = Some(1440.0);
+        let mut image = draw_op(1, NativeVulkanSceneDrawOpKind::Image);
+        image.source = Some(PathBuf::from("/tmp/atlas.png"));
+        image.width = Some(2160.0);
+        image.height = Some(1440.0);
+        image.texture_region = Some(SceneTextureRegion {
+            u_min: 0.0,
+            v_min: 0.25,
+            u_max: 1.0 / 3.0,
+            v_max: 0.5,
+            frame_index: 3,
+            frame_count: 12,
+            columns: 3,
+            rows: 4,
+            fps: Some(12.0),
+            loop_playback: true,
+        });
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 1000,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            draw_ops: vec![clear, image],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: true,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(pass_plan.backend_ready);
+        assert_eq!(
+            pass_plan.backend_status,
+            "clear-background-sampled-image-recording-ready"
+        );
+        assert_eq!(pass_plan.blocking_reason, None);
+        assert_eq!(pass_plan.clear_background_op_count, 1);
+        assert_eq!(pass_plan.background_clear_color.as_deref(), Some("#b3b3b3"));
+        assert!(pass_plan.sampled_image_recording_ready);
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 1);
+        assert_eq!(pass_plan.quad_recording_steps.len(), 0);
     }
 
     #[test]
@@ -2210,6 +2283,8 @@ mod tests {
         image.fit = FitMode::Cover;
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             draw_ops: vec![image],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -2246,6 +2321,8 @@ mod tests {
         rectangle.height = Some(180.0);
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             draw_ops: vec![image, rectangle],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -2286,6 +2363,8 @@ mod tests {
         image.opacity = 0.5;
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             draw_ops: vec![rectangle, image],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -2323,6 +2402,8 @@ mod tests {
         rounded.corner_radius = Some(8.0);
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             draw_ops: vec![rectangle, rounded],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -2376,6 +2457,8 @@ mod tests {
         ellipse.transform.x = 10.0;
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             draw_ops: vec![ellipse],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -2407,6 +2490,8 @@ mod tests {
         path.transform.x = 4.0;
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -2438,6 +2523,8 @@ mod tests {
         path.path_data = Some("M0 0 L100 0 L100 100 L50 50 L0 100 Z".to_owned());
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -2471,6 +2558,8 @@ mod tests {
         text.transform.x = 10.0;
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             draw_ops: vec![text],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -2510,6 +2599,8 @@ mod tests {
         path.path_data = Some("M0 0 L100 0 L100 50 L0 50 Z".to_owned());
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -2552,6 +2643,8 @@ mod tests {
         path.path_data = Some("M0 0 L100 0 L100 50".to_owned());
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -2590,6 +2683,8 @@ mod tests {
         ellipse.height = Some(40.0);
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             draw_ops: vec![rectangle, ellipse],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -2627,6 +2722,8 @@ mod tests {
         rectangle.transform.x = 24.0;
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             draw_ops: vec![rectangle],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,

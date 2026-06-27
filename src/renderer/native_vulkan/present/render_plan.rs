@@ -2,7 +2,9 @@
 
 use std::path::PathBuf;
 
-use crate::core::{FitMode, SceneNodeKind, SceneTextAlign, SceneTextureRegion, SceneTransform};
+use crate::core::{
+    FitMode, SceneNodeKind, SceneSize, SceneTextAlign, SceneTextureRegion, SceneTransform,
+};
 use crate::renderer::{SceneDisplayPlan, SceneRenderLayer};
 
 use super::super::NativeVulkanClearColor;
@@ -127,6 +129,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneUnsupportedLayer 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneDrawPlan {
     pub(in crate::renderer::native_vulkan) snapshot_time_ms: u64,
+    pub(in crate::renderer::native_vulkan) scene_size: Option<SceneSize>,
+    pub(in crate::renderer::native_vulkan) scene_fit: FitMode,
     pub(in crate::renderer::native_vulkan) draw_ops: Vec<NativeVulkanSceneDrawOp>,
     pub(in crate::renderer::native_vulkan) unsupported_layers:
         Vec<NativeVulkanSceneUnsupportedLayer>,
@@ -146,6 +150,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_draw_plan(
         layers,
         display,
         snapshot_time_ms,
+        scene_size,
+        scene_fit,
         ..
     } = render_item
     else {
@@ -155,6 +161,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_draw_plan(
 
     Some(NativeVulkanSceneDrawPlan {
         snapshot_time_ms: *snapshot_time_ms,
+        scene_size: *scene_size,
+        scene_fit: *scene_fit,
         draw_ops,
         unsupported_layers,
         runtime_display_available: display.is_some(),
@@ -336,6 +344,8 @@ mod tests {
             timeline_animated_layer_count: 0,
             property_binding_count: 0,
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             target_max_fps: Some(60),
             renderer_status: "deterministic-scene-snapshot-ready-for-vulkan-passes",
         };
@@ -373,6 +383,8 @@ mod tests {
             timeline_animated_layer_count: 0,
             property_binding_count: 0,
             snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             target_max_fps: Some(60),
             renderer_status: "deterministic-scene-snapshot-ready-for-vulkan-passes",
         };

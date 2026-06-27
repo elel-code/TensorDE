@@ -1245,6 +1245,14 @@ pub struct SceneTextureRegion {
     pub v_max: f64,
     pub frame_index: u32,
     pub frame_count: u32,
+    #[serde(default)]
+    pub columns: u32,
+    #[serde(default)]
+    pub rows: u32,
+    #[serde(default)]
+    pub fps: Option<f64>,
+    #[serde(default = "default_scene_texture_region_loop_playback")]
+    pub loop_playback: bool,
 }
 
 impl SceneTextureRegion {
@@ -1261,12 +1269,19 @@ impl SceneTextureRegion {
             && self.v_min < self.v_max
             && self.frame_count > 0
             && self.frame_index < self.frame_count
+            && self.columns > 0
+            && self.rows > 0
+            && self.fps.is_none_or(|fps| fps.is_finite() && fps > 0.0)
         {
             Some(self)
         } else {
             None
         }
     }
+}
+
+fn default_scene_texture_region_loop_playback() -> bool {
+    true
 }
 
 fn scene_texture_region_from_properties(
@@ -1333,6 +1348,10 @@ fn scene_texture_region_from_properties(
         v_max: f64::from((row + 1) * frame_height) / f64::from(atlas_height),
         frame_index,
         frame_count,
+        columns,
+        rows,
+        fps: Some(fps),
+        loop_playback,
     }
     .validate()
 }
@@ -1687,6 +1706,10 @@ mod tests {
                 v_max: 0.25,
                 frame_index: 0,
                 frame_count: 12,
+                columns: 3,
+                rows: 4,
+                fps: Some(12.0),
+                loop_playback: true,
             })
         );
 
@@ -1700,6 +1723,10 @@ mod tests {
                 v_max: 0.5,
                 frame_index: 5,
                 frame_count: 12,
+                columns: 3,
+                rows: 4,
+                fps: Some(12.0),
+                loop_playback: true,
             })
         );
     }

@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use crate::core::FitMode;
 use crate::renderer::StaticWallpaperPlan;
 
 use super::super::scene::runtime::native_vulkan_scene_runtime_snapshot;
@@ -44,6 +45,8 @@ pub fn run_static_image(
             source,
             clear_color,
             fit,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
             solid_geometry,
             geometry,
         },

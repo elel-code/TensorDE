@@ -12291,6 +12291,8 @@ mod tests {
                 manifest_max_fps: Some(60),
                 target_max_fps: Some(30),
                 snapshot_time_ms: 1234,
+                scene_size: None,
+                scene_fit: FitMode::Cover,
                 scene_systems: Default::default(),
                 audio_cue_count: 0,
                 bound_properties: vec!["scene_opacity".to_owned()],
