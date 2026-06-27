@@ -5,6 +5,10 @@ use serde::Serialize;
 
 use crate::core::FitMode;
 
+use super::super::audio::clock::{
+    NativeVulkanAudioClockProbeOptions, NativeVulkanAudioClockRuntimeSnapshot,
+    native_vulkan_probe_ffmpeg_audio_clock, native_vulkan_unattached_audio_clock_snapshot,
+};
 use super::super::audio::policy::NativeVulkanAudioOutputMode;
 use super::super::vulkan::{
     NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeSnapshot,
@@ -44,6 +48,7 @@ pub struct NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
     pub target_max_fps: Option<u32>,
     pub audio_clock_probe_requested: bool,
     pub audio_output_mode: &'static str,
+    pub audio_clock: Option<NativeVulkanAudioClockRuntimeSnapshot>,
     pub decode_submit_backend: &'static str,
     pub command_submit_model: &'static str,
     pub present_backend: &'static str,
@@ -372,6 +377,18 @@ pub fn run_vulkanalia_ready_prefix_video(
     } else {
         "vulkanalia-clear-present-runtime-visible-placeholder"
     };
+    let audio_clock = if audio_clock_probe_requested {
+        let mut probe_options = NativeVulkanAudioClockProbeOptions::clock_only(source.clone());
+        probe_options.output_mode = audio_output_mode;
+        probe_options.packets_to_probe = playback_frame_count.max(1).min(64);
+        Some(native_vulkan_probe_ffmpeg_audio_clock(probe_options)?)
+    } else if audio_output_mode == NativeVulkanAudioOutputMode::ClockOnly {
+        Some(native_vulkan_unattached_audio_clock_snapshot(
+            audio_output_mode,
+        ))
+    } else {
+        None
+    };
 
     Ok(NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
         route: "direct-video-ready-prefix",
@@ -385,6 +402,7 @@ pub fn run_vulkanalia_ready_prefix_video(
         target_max_fps: options.target_max_fps,
         audio_clock_probe_requested,
         audio_output_mode: audio_output_mode.as_str(),
+        audio_clock,
         decode_submit_backend: "vulkanalia-video-session-bind",
         command_submit_model: "CmdPipelineBarrier2 -> CmdBeginVideoCodingKHR -> CmdDecodeVideoKHR -> CmdEndVideoCodingKHR -> QueueSubmit2",
         present_backend,

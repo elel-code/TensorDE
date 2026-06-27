@@ -57,6 +57,20 @@ int gilder_av_find_video_stream_for_codec(AVFormatContext *ctx, int codec_id) {
     return AVERROR_STREAM_NOT_FOUND;
 }
 
+int gilder_av_find_audio_stream(AVFormatContext *ctx) {
+    int best = av_find_best_stream(ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+    if (best >= 0)
+        return best;
+
+    for (unsigned int i = 0; i < ctx->nb_streams; i++) {
+        AVStream *stream = ctx->streams[i];
+        if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
+            return (int)i;
+    }
+
+    return best;
+}
+
 AVPacket *gilder_av_packet_alloc(void) {
     return av_packet_alloc();
 }

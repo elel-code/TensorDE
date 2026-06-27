@@ -2,12 +2,14 @@ use std::time::Duration;
 
 use crate::renderer::StaticWallpaperPlan;
 
+use super::super::scene::lite_runtime::native_vulkan_scene_lite_runtime_snapshot;
 use super::super::{
     NativeVulkanClearColor, NativeVulkanError, NativeVulkanOptions,
     NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions,
     NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot,
     run_native_vulkan_vulkanalia_scene_lite_sampled_image_present,
 };
+use super::render_item::native_vulkan_static_scene_lite_item;
 
 pub fn run_static_image(
     mut options: NativeVulkanOptions,
@@ -18,6 +20,20 @@ pub fn run_static_image(
         options.host.output_name = Some(plan.output_name.clone());
     }
     let clear_color = native_vulkan_static_background_clear_color(plan.background.as_deref());
+    let scene_render_item = native_vulkan_static_scene_lite_item(&plan);
+    let scene_geometry =
+        native_vulkan_scene_lite_runtime_snapshot(&scene_render_item).and_then(|runtime| {
+            let solid_geometry = runtime.vulkanalia_mixed_solid_quad_geometry_input();
+            runtime
+                .vulkanalia_sampled_image_geometry_input()
+                .map(|(source, geometry)| (source, geometry, solid_geometry))
+        });
+    let source = plan.source.clone();
+    let fit = plan.fit;
+    let (source, fit, geometry, solid_geometry) = match scene_geometry {
+        Some((source, geometry, solid_geometry)) => (source, None, Some(geometry), solid_geometry),
+        None => (source, Some(fit), None, None),
+    };
 
     run_native_vulkan_vulkanalia_scene_lite_sampled_image_present(
         NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions {
@@ -25,11 +41,11 @@ pub fn run_static_image(
             wait_configure_roundtrips: options.wait_configure_roundtrips,
             duration,
             target_max_fps: options.target_max_fps,
-            source: plan.source,
+            source,
             clear_color,
-            fit: Some(plan.fit),
-            solid_geometry: None,
-            geometry: None,
+            fit,
+            solid_geometry,
+            geometry,
         },
     )
     .map_err(NativeVulkanError::StaticImage)

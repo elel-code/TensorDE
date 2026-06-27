@@ -21,7 +21,14 @@ use crate::renderer::native_wayland::{NativeWaylandError, NativeWaylandHostOptio
 use crate::renderer::{StaticWallpaperPlan, VideoWallpaperPlan};
 use vulkanalia::vk;
 
-#[cfg(all(any(feature = "native-vulkan-video", test), target_family = "unix"))]
+#[cfg(all(
+    any(
+        feature = "native-vulkan-renderer",
+        feature = "native-vulkan-video",
+        test
+    ),
+    target_family = "unix"
+))]
 unsafe extern "C" {
     #[link_name = "memchr"]
     fn native_vulkan_c_memchr(
@@ -8171,7 +8178,11 @@ fn native_vulkan_next_annex_b_start_code(bytes: &[u8], from: usize) -> Option<(u
     None
 }
 
-#[cfg(any(feature = "native-vulkan-video", test))]
+#[cfg(any(
+    feature = "native-vulkan-renderer",
+    feature = "native-vulkan-video",
+    test
+))]
 fn native_vulkan_memchr_zero(bytes: &[u8]) -> Option<usize> {
     #[cfg(target_family = "unix")]
     {
@@ -8305,7 +8316,7 @@ pub fn wallpaper_type_support_matrix() -> Vec<NativeVulkanWallpaperTypeSupport> 
         NativeVulkanWallpaperTypeSupport {
             wallpaper_type: NativeVulkanWallpaperType::StaticImage,
             current_vulkan_item: true,
-            current_renderer_status: "--run-static uses Vulkanalia sampled-image dynamic rendering; ash static session and staging-copy runtime are removed",
+            current_renderer_status: "--run-static lowers static images into a single scene sampled-image layer, then uses Vulkanalia sampled-image dynamic rendering; ash static session and staging-copy runtime are removed",
             target_vulkan_path: "decode image once -> retained sampled Vulkan image -> fit-aware dynamic-rendering pass shared with scene/image layers",
         },
         NativeVulkanWallpaperTypeSupport {
@@ -8323,7 +8334,7 @@ pub fn wallpaper_type_support_matrix() -> Vec<NativeVulkanWallpaperTypeSupport> 
         NativeVulkanWallpaperTypeSupport {
             wallpaper_type: NativeVulkanWallpaperType::SceneLite,
             current_vulkan_item: true,
-            current_renderer_status: "deterministic scene snapshot layers carried by Vulkan render item; native draw-pass plan, fast-clear color path and color/rectangle quad payloads exist, general draw recording remains pending",
+            current_renderer_status: "deterministic scene snapshot layers carried by Vulkan render item; static images lower into single-image scene layers; native draw-pass plan, fast-clear color path, color/rectangle quads and sampled-image geometry exist, text/path rasterization remains pending",
             target_vulkan_path: "deterministic scene snapshot -> Vulkan shape/image/text passes",
         },
         NativeVulkanWallpaperTypeSupport {

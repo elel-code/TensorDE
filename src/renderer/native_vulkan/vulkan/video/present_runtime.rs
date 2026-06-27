@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-#[cfg(feature = "native-vulkan-video")]
 use std::collections::VecDeque;
 #[cfg(feature = "native-vulkan-video")]
 use std::path::PathBuf;

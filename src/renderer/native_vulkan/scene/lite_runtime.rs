@@ -296,7 +296,7 @@ pub struct NativeVulkanSceneLiteUnsupportedLayerSnapshot {
     pub reason: &'static str,
 }
 
-pub(super) fn native_vulkan_scene_lite_runtime_snapshot(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snapshot(
     render_item: &NativeVulkanRenderItem,
 ) -> Option<NativeVulkanSceneLiteRuntimeSnapshot> {
     let plan = native_vulkan_scene_lite_draw_plan(render_item)?;

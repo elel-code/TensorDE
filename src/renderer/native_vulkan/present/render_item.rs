@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::config::VideoDecoderPolicy;
-use crate::core::{FitMode, Transition};
+use crate::core::{FitMode, SceneLiteLayerKind, SceneLiteTransform, Transition};
 use crate::renderer::{
     SceneLiteDisplayPlan, SceneLiteRenderLayer, SceneLiteWallpaperPlan, SlideshowWallpaperPlan,
     StaticRenderSyncPlan, StaticWallpaperPlan, VideoWallpaperPlan,
@@ -12,6 +12,8 @@ use crate::renderer::{
 use super::super::NativeVulkanWallpaperType;
 
 const NATIVE_VULKAN_STATIC_RENDERER_STATUS: &str = "vulkanalia-static-sampled-image";
+const NATIVE_VULKAN_STATIC_SCENE_RENDERER_STATUS: &str =
+    "static-image-lowered-to-scene-lite-sampled-image-layer";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -107,6 +109,49 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_item(
     }
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_lite_item(
+    plan: &StaticWallpaperPlan,
+) -> NativeVulkanRenderItem {
+    NativeVulkanRenderItem::SceneLite {
+        output_name: plan.output_name.clone(),
+        scene_source: None,
+        fallback: Some(plan.source.clone()),
+        display: Some(SceneLiteDisplayPlan::Image {
+            source: plan.source.clone(),
+            fit: plan.fit,
+            background: plan.background.clone(),
+        }),
+        display_image: Some(plan.source.clone()),
+        display_color: None,
+        manifest_max_fps: None,
+        layer_count: 1,
+        layers: vec![SceneLiteRenderLayer {
+            id: "static-image".to_owned(),
+            kind: SceneLiteLayerKind::Image,
+            source: Some(plan.source.clone()),
+            color: None,
+            stroke_color: None,
+            stroke_width: None,
+            corner_radius: None,
+            width: None,
+            height: None,
+            text: None,
+            font_size: None,
+            font_family: None,
+            font_weight: None,
+            text_align: None,
+            path_data: None,
+            fit: plan.fit,
+            opacity: 1.0,
+            transform: SceneLiteTransform::default(),
+        }],
+        bound_properties: Vec::new(),
+        snapshot_time_ms: 0,
+        target_max_fps: None,
+        renderer_status: NATIVE_VULKAN_STATIC_SCENE_RENDERER_STATUS,
+    }
+}
+
 pub(in crate::renderer::native_vulkan) fn native_vulkan_video_item(
     plan: &VideoWallpaperPlan,
 ) -> NativeVulkanRenderItem {
@@ -134,6 +179,58 @@ fn native_vulkan_slideshow_item(plan: &SlideshowWallpaperPlan) -> NativeVulkanRe
         fit: plan.fit,
         target_max_fps: plan.target_max_fps,
         renderer_status: "planned-slideshow-static-texture-sequence",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn static_wallpaper_lowers_to_single_image_scene_layer() {
+        let plan = StaticWallpaperPlan {
+            output_name: "HDMI-A-1".to_owned(),
+            source: PathBuf::from("/tmp/static.png"),
+            fit: FitMode::Contain,
+            background: Some("#010203".to_owned()),
+        };
+
+        let item = native_vulkan_static_scene_lite_item(&plan);
+
+        let NativeVulkanRenderItem::SceneLite {
+            output_name,
+            scene_source,
+            fallback,
+            display,
+            display_image,
+            layer_count,
+            layers,
+            bound_properties,
+            renderer_status,
+            ..
+        } = item
+        else {
+            panic!("static image should lower to a scene-lite render item");
+        };
+        assert_eq!(output_name, "HDMI-A-1");
+        assert_eq!(scene_source, None);
+        assert_eq!(fallback, Some(PathBuf::from("/tmp/static.png")));
+        assert_eq!(display_image, Some(PathBuf::from("/tmp/static.png")));
+        assert_eq!(
+            display,
+            Some(SceneLiteDisplayPlan::Image {
+                source: PathBuf::from("/tmp/static.png"),
+                fit: FitMode::Contain,
+                background: Some("#010203".to_owned()),
+            })
+        );
+        assert_eq!(layer_count, 1);
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].kind, SceneLiteLayerKind::Image);
+        assert_eq!(layers[0].source, Some(PathBuf::from("/tmp/static.png")));
+        assert_eq!(layers[0].fit, FitMode::Contain);
+        assert!(bound_properties.is_empty());
+        assert_eq!(renderer_status, NATIVE_VULKAN_STATIC_SCENE_RENDERER_STATUS);
     }
 }
 

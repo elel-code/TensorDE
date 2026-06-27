@@ -22,7 +22,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::native_vulkan::native_vulkan_video_playback_frame_count;
     #[cfg(feature = "native-vulkan-video")]
     use gilder::renderer::native_vulkan::{
-        NativeVulkanAudioOutputMode, NativeVulkanVideoSessionCodec,
+        NativeVulkanAudioOutputPolicy, NativeVulkanVideoSessionCodec,
         native_vulkan_extract_av1_sequence_header_for_vulkanalia,
         native_vulkan_extract_h264_parameter_sets_for_vulkanalia,
         native_vulkan_extract_h265_parameter_sets_for_vulkanalia,
@@ -61,6 +61,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut fit = gilder::core::FitMode::Cover;
     let mut background = None::<String>;
     let mut _muted = true;
+    #[cfg(feature = "native-vulkan-video")]
+    let mut audio_clock_probe_requested = false;
+    #[cfg(feature = "native-vulkan-video")]
+    let mut audio_output_policy = NativeVulkanAudioOutputPolicy::Plan;
     let mut allow_foreground_layer = false;
     let mut video_session_options = NativeVulkanVideoSessionSmokeOptions::default();
     let mut vulkanalia_create_empty_session_parameters = false;
@@ -194,6 +198,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--no-loop" => {}
             "--muted" => _muted = true,
             "--unmuted" => _muted = false,
+            "--audio-clock-probe" => {
+                #[cfg(feature = "native-vulkan-video")]
+                {
+                    audio_clock_probe_requested = true;
+                }
+                #[cfg(not(feature = "native-vulkan-video"))]
+                {
+                    return Err("--audio-clock-probe requires native-vulkan-video feature".into());
+                }
+            }
+            "--audio-output" => {
+                let value = args.next().ok_or("--audio-output requires a value")?;
+                #[cfg(feature = "native-vulkan-video")]
+                {
+                    audio_output_policy = NativeVulkanAudioOutputPolicy::parse_cli(&value)?;
+                }
+                #[cfg(not(feature = "native-vulkan-video"))]
+                {
+                    let _ = value;
+                    return Err("--audio-output requires native-vulkan-video feature".into());
+                }
+            }
             "--decoder" => {
                 let value = args.next().ok_or("--decoder requires a value")?;
                 let _ = parse_decoder_policy(&value)?;
@@ -488,8 +514,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         video_session_options.bitstream_extract_max_samples,
                         route.ready_prefix_frames,
                         route.playback_frames,
-                        false,
-                        NativeVulkanAudioOutputMode::ClockOnly,
+                        audio_clock_probe_requested,
+                        audio_output_policy.resolve(_muted),
                     )?)
                 } else {
                     return Err(format!(
@@ -552,8 +578,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     video_session_options.bitstream_extract_max_samples,
                     ready_prefix_frames,
                     playback_frames,
-                    false,
-                    NativeVulkanAudioOutputMode::ClockOnly,
+                    audio_clock_probe_requested,
+                    audio_output_policy.resolve(_muted),
                 )?)
             }
             #[cfg(not(feature = "native-vulkan-video"))]
@@ -694,7 +720,8 @@ Print native Vulkan spike capabilities and backend contract.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
-         [--loop|--no-loop] [--muted|--unmuted] [--decoder auto|hardware-preferred|hardware-required|software]\n\
+         [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\
+         [--decoder auto|hardware-preferred|hardware-required|software]\n\
          [--video-codec h264|h265|h265-main-10|av1|av1-main-10] [--width PX] [--height PX]\n\
          [--allocate-video-images] [--allocate-bitstream-buffer]\n\
          [--create-session-parameters] [--bitstream-samples N]\n\
