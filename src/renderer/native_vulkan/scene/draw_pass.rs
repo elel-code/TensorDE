@@ -15,6 +15,7 @@ const SCENE_FULL_TEXT_GLYPH_COLUMNS: usize = 5;
 const SCENE_FULL_TEXT_GLYPH_ROWS: usize = 7;
 const SCENE_FULL_TEXT_GLYPH_ADVANCE_COLUMNS: f64 = 6.0;
 const SCENE_FULL_TEXT_LINE_ADVANCE_ROWS: f64 = 8.0;
+const SCENE_FULL_PATH_CURVE_SEGMENTS: usize = 16;
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT: u32 = 4;
 const SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT: u32 = 6;
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_BYTES: u64 = 20;
@@ -1678,6 +1679,8 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
     let mut points = Vec::new();
     let mut current = [0.0, 0.0];
     let mut start = [0.0, 0.0];
+    let mut previous_cubic_control = None::<[f64; 2]>;
+    let mut previous_quadratic_control = None::<[f64; 2]>;
     let mut started = false;
 
     while index < tokens.len() {
@@ -1709,6 +1712,8 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
                         first = false;
                     }
                     points.push(point);
+                    previous_cubic_control = None;
+                    previous_quadratic_control = None;
                     if index < tokens.len()
                         && matches!(tokens[index], NativeVulkanScenePathToken::Command(_))
                     {
@@ -1728,6 +1733,8 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
                         [x, y]
                     };
                     points.push(current);
+                    previous_cubic_control = None;
+                    previous_quadratic_control = None;
                     if index < tokens.len()
                         && matches!(tokens[index], NativeVulkanScenePathToken::Command(_))
                     {
@@ -1743,6 +1750,8 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
                     index = next_index;
                     current[0] = if relative { current[0] + x } else { x };
                     points.push(current);
+                    previous_cubic_control = None;
+                    previous_quadratic_control = None;
                     if index < tokens.len()
                         && matches!(tokens[index], NativeVulkanScenePathToken::Command(_))
                     {
@@ -1758,6 +1767,122 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
                     index = next_index;
                     current[1] = if relative { current[1] + y } else { y };
                     points.push(current);
+                    previous_cubic_control = None;
+                    previous_quadratic_control = None;
+                    if index < tokens.len()
+                        && matches!(tokens[index], NativeVulkanScenePathToken::Command(_))
+                    {
+                        break;
+                    }
+                }
+            }
+            'C' | 'c' => {
+                let relative = command == 'c';
+                while let Some((x1, y1, next_index)) =
+                    native_vulkan_scene_take_path_pair(&tokens, index)
+                {
+                    let (x2, y2, next_index) =
+                        native_vulkan_scene_take_path_pair(&tokens, next_index)?;
+                    let (x, y, next_index) =
+                        native_vulkan_scene_take_path_pair(&tokens, next_index)?;
+                    index = next_index;
+                    let control_1 = native_vulkan_scene_path_point(current, x1, y1, relative);
+                    let control_2 = native_vulkan_scene_path_point(current, x2, y2, relative);
+                    let end = native_vulkan_scene_path_point(current, x, y, relative);
+                    native_vulkan_scene_push_cubic_curve_points(
+                        &mut points,
+                        current,
+                        control_1,
+                        control_2,
+                        end,
+                    )?;
+                    current = end;
+                    previous_cubic_control = Some(control_2);
+                    previous_quadratic_control = None;
+                    if index < tokens.len()
+                        && matches!(tokens[index], NativeVulkanScenePathToken::Command(_))
+                    {
+                        break;
+                    }
+                }
+            }
+            'S' | 's' => {
+                let relative = command == 's';
+                while let Some((x2, y2, next_index)) =
+                    native_vulkan_scene_take_path_pair(&tokens, index)
+                {
+                    let (x, y, next_index) =
+                        native_vulkan_scene_take_path_pair(&tokens, next_index)?;
+                    index = next_index;
+                    let control_1 = native_vulkan_scene_reflected_control_point(
+                        current,
+                        previous_cubic_control,
+                    );
+                    let control_2 = native_vulkan_scene_path_point(current, x2, y2, relative);
+                    let end = native_vulkan_scene_path_point(current, x, y, relative);
+                    native_vulkan_scene_push_cubic_curve_points(
+                        &mut points,
+                        current,
+                        control_1,
+                        control_2,
+                        end,
+                    )?;
+                    current = end;
+                    previous_cubic_control = Some(control_2);
+                    previous_quadratic_control = None;
+                    if index < tokens.len()
+                        && matches!(tokens[index], NativeVulkanScenePathToken::Command(_))
+                    {
+                        break;
+                    }
+                }
+            }
+            'Q' | 'q' => {
+                let relative = command == 'q';
+                while let Some((x1, y1, next_index)) =
+                    native_vulkan_scene_take_path_pair(&tokens, index)
+                {
+                    let (x, y, next_index) =
+                        native_vulkan_scene_take_path_pair(&tokens, next_index)?;
+                    index = next_index;
+                    let control = native_vulkan_scene_path_point(current, x1, y1, relative);
+                    let end = native_vulkan_scene_path_point(current, x, y, relative);
+                    native_vulkan_scene_push_quadratic_curve_points(
+                        &mut points,
+                        current,
+                        control,
+                        end,
+                    )?;
+                    current = end;
+                    previous_cubic_control = None;
+                    previous_quadratic_control = Some(control);
+                    if index < tokens.len()
+                        && matches!(tokens[index], NativeVulkanScenePathToken::Command(_))
+                    {
+                        break;
+                    }
+                }
+            }
+            'T' | 't' => {
+                let relative = command == 't';
+                while let Some((x, y, next_index)) =
+                    native_vulkan_scene_take_path_pair(&tokens, index)
+                {
+                    index = next_index;
+                    let control = native_vulkan_scene_reflected_control_point(
+                        current,
+                        previous_quadratic_control,
+                    );
+                    let end = native_vulkan_scene_path_point(current, x, y, relative);
+                    native_vulkan_scene_push_quadratic_curve_points(
+                        &mut points,
+                        current,
+                        control,
+                        end,
+                    )?;
+                    current = end;
+                    previous_cubic_control = None;
+                    previous_quadratic_control = Some(control);
                     if index < tokens.len()
                         && matches!(tokens[index], NativeVulkanScenePathToken::Command(_))
                     {
@@ -1770,6 +1895,8 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
                 if points.last().copied() == Some(start) {
                     let _ = points.pop();
                 }
+                previous_cubic_control = None;
+                previous_quadratic_control = None;
             }
             _ => return None,
         }
@@ -1794,7 +1921,23 @@ fn native_vulkan_scene_path_tokens(path: &str) -> Option<Vec<NativeVulkanScenePa
         let ch = byte as char;
         if matches!(
             ch,
-            'M' | 'm' | 'L' | 'l' | 'H' | 'h' | 'V' | 'v' | 'Z' | 'z'
+            'M' | 'm'
+                | 'L'
+                | 'l'
+                | 'H'
+                | 'h'
+                | 'V'
+                | 'v'
+                | 'C'
+                | 'c'
+                | 'S'
+                | 's'
+                | 'Q'
+                | 'q'
+                | 'T'
+                | 't'
+                | 'Z'
+                | 'z'
         ) {
             tokens.push(NativeVulkanScenePathToken::Command(ch));
             index += 1;
@@ -1854,6 +1997,68 @@ fn native_vulkan_scene_take_path_pair(
     let (x, index) = native_vulkan_scene_take_path_number(tokens, index)?;
     let (y, index) = native_vulkan_scene_take_path_number(tokens, index)?;
     Some((x, y, index))
+}
+
+fn native_vulkan_scene_path_point(current: [f64; 2], x: f64, y: f64, relative: bool) -> [f64; 2] {
+    if relative {
+        [current[0] + x, current[1] + y]
+    } else {
+        [x, y]
+    }
+}
+
+fn native_vulkan_scene_reflected_control_point(
+    current: [f64; 2],
+    previous_control: Option<[f64; 2]>,
+) -> [f64; 2] {
+    previous_control
+        .map(|control| [current[0] * 2.0 - control[0], current[1] * 2.0 - control[1]])
+        .unwrap_or(current)
+}
+
+fn native_vulkan_scene_push_cubic_curve_points(
+    points: &mut Vec<[f64; 2]>,
+    start: [f64; 2],
+    control_1: [f64; 2],
+    control_2: [f64; 2],
+    end: [f64; 2],
+) -> Option<()> {
+    for segment in 1..=SCENE_FULL_PATH_CURVE_SEGMENTS {
+        let t = segment as f64 / SCENE_FULL_PATH_CURVE_SEGMENTS as f64;
+        let inverse = 1.0 - t;
+        let x = inverse.powi(3) * start[0]
+            + 3.0 * inverse.powi(2) * t * control_1[0]
+            + 3.0 * inverse * t.powi(2) * control_2[0]
+            + t.powi(3) * end[0];
+        let y = inverse.powi(3) * start[1]
+            + 3.0 * inverse.powi(2) * t * control_1[1]
+            + 3.0 * inverse * t.powi(2) * control_2[1]
+            + t.powi(3) * end[1];
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        points.push([x, y]);
+    }
+    Some(())
+}
+
+fn native_vulkan_scene_push_quadratic_curve_points(
+    points: &mut Vec<[f64; 2]>,
+    start: [f64; 2],
+    control: [f64; 2],
+    end: [f64; 2],
+) -> Option<()> {
+    for segment in 1..=SCENE_FULL_PATH_CURVE_SEGMENTS {
+        let t = segment as f64 / SCENE_FULL_PATH_CURVE_SEGMENTS as f64;
+        let inverse = 1.0 - t;
+        let x = inverse.powi(2) * start[0] + 2.0 * inverse * t * control[0] + t.powi(2) * end[0];
+        let y = inverse.powi(2) * start[1] + 2.0 * inverse * t * control[1] + t.powi(2) * end[1];
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        points.push([x, y]);
+    }
+    Some(())
 }
 
 fn native_vulkan_scene_polygon_is_convex(points: &[[f64; 2]]) -> bool {
@@ -2543,6 +2748,79 @@ mod tests {
         assert_eq!(pass_plan.quad_recording_steps[0].index_count, 9);
         assert_eq!(pass_plan.quad_vertices.len(), 5);
         assert_eq!(pass_plan.quad_indices.len(), 9);
+        assert_eq!(pass_plan.path_op_count, 1);
+        assert!(!pass_plan.requires_path_tessellation);
+    }
+
+    #[test]
+    fn draw_pass_plan_records_cubic_curve_path_as_solid_geometry() {
+        let mut path = draw_op(0, NativeVulkanSceneDrawOpKind::Path);
+        path.color = Some("#cc3300".to_owned());
+        path.path_data = Some("M0 0 C25 80 75 -80 100 0 S175 80 200 0 L200 80 L0 80 Z".to_owned());
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            draw_ops: vec![path],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.backend_status, "solid-quad-recording-ready");
+        assert_eq!(pass_plan.blocking_reason, None);
+        assert!(pass_plan.quad_recording_ready);
+        assert_eq!(pass_plan.quad_recording_steps.len(), 1);
+        assert_eq!(pass_plan.quad_recording_steps[0].kind, "path");
+        assert_eq!(
+            pass_plan.quad_recording_steps[0].vertex_count,
+            (SCENE_FULL_PATH_CURVE_SEGMENTS * 2 + 3) as u32
+        );
+        assert!(pass_plan.quad_recording_steps[0].index_count > 6);
+        assert_eq!(pass_plan.path_op_count, 1);
+        assert!(!pass_plan.requires_path_tessellation);
+        assert_eq!(
+            pass_plan.quad_vertices.last().map(|vertex| vertex.position),
+            Some([0.0, 80.0])
+        );
+    }
+
+    #[test]
+    fn draw_pass_plan_records_quadratic_curve_path_stroke_as_solid_geometry() {
+        let mut path = draw_op(0, NativeVulkanSceneDrawOpKind::Path);
+        path.stroke_color = Some("#ffffff".to_owned());
+        path.stroke_width = Some(6.0);
+        path.path_data = Some("M0 0 Q50 100 100 0 T200 0".to_owned());
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            draw_ops: vec![path],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.backend_status, "solid-quad-recording-ready");
+        assert_eq!(pass_plan.blocking_reason, None);
+        assert!(pass_plan.quad_recording_ready);
+        assert_eq!(pass_plan.quad_recording_steps.len(), 1);
+        assert_eq!(pass_plan.quad_recording_steps[0].kind, "path");
+        assert!(pass_plan.quad_recording_steps[0].stroke_geometry);
+        assert_eq!(
+            pass_plan.quad_recording_steps[0].vertex_count,
+            (SCENE_FULL_PATH_CURVE_SEGMENTS * 2 * 4) as u32
+        );
+        assert_eq!(
+            pass_plan.quad_recording_steps[0].index_count,
+            (SCENE_FULL_PATH_CURVE_SEGMENTS * 2 * 6) as u32
+        );
         assert_eq!(pass_plan.path_op_count, 1);
         assert!(!pass_plan.requires_path_tessellation);
     }
