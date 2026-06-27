@@ -82,9 +82,6 @@ impl SceneDocument {
         for resource in &self.resources {
             paths.push(resource.source.clone());
         }
-        if let Some(fallback) = &self.native_lowering.fallback {
-            paths.push(fallback.clone());
-        }
         paths
     }
 
@@ -1183,8 +1180,6 @@ pub struct SceneNativeLowering {
     #[serde(default)]
     pub current_runtime: Option<String>,
     #[serde(default)]
-    pub fallback: Option<PackagePath>,
-    #[serde(default)]
     pub completed_boundaries: Vec<String>,
     #[serde(default)]
     pub pending_boundaries: Vec<String>,
@@ -1504,8 +1499,7 @@ mod tests {
             ],
             "native_lowering": {
                 "target_runtime": "native-vulkan-full-scene",
-                "current_runtime": "native-vulkan-scene-runtime",
-                "fallback": "previews/poster.svg"
+                "current_runtime": "native-vulkan-scene-runtime"
             }
         }))
         .unwrap();
@@ -1516,7 +1510,6 @@ mod tests {
             vec![
                 PackagePath::new("metadata/source-scene.json").unwrap(),
                 PackagePath::new("assets/scene-resources/background.png").unwrap(),
-                PackagePath::new("previews/poster.svg").unwrap(),
             ]
         );
     }

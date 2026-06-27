@@ -53,7 +53,6 @@ pub enum NativeVulkanRenderItem {
     Scene {
         output_name: String,
         scene_source: Option<PathBuf>,
-        fallback: Option<PathBuf>,
         display: Option<SceneDisplayPlan>,
         display_image: Option<PathBuf>,
         display_color: Option<String>,
@@ -116,7 +115,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
     NativeVulkanRenderItem::Scene {
         output_name: plan.output_name.clone(),
         scene_source: None,
-        fallback: Some(plan.source.clone()),
         display: Some(SceneDisplayPlan::Image {
             source: plan.source.clone(),
             fit: plan.fit,
@@ -208,7 +206,6 @@ mod tests {
         let NativeVulkanRenderItem::Scene {
             output_name,
             scene_source,
-            fallback,
             display,
             display_image,
             layer_count,
@@ -222,7 +219,6 @@ mod tests {
         };
         assert_eq!(output_name, "HDMI-A-1");
         assert_eq!(scene_source, None);
-        assert_eq!(fallback, Some(PathBuf::from("/tmp/static.png")));
         assert_eq!(display_image, Some(PathBuf::from("/tmp/static.png")));
         assert_eq!(
             display,
@@ -248,7 +244,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_item(
     NativeVulkanRenderItem::Scene {
         output_name: plan.output_name.clone(),
         scene_source: plan.source.clone(),
-        fallback: plan.fallback.clone(),
         display: plan.display.clone(),
         display_image: match &plan.display {
             Some(SceneDisplayPlan::Image { source, .. }) => Some(source.clone()),

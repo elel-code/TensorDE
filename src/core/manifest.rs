@@ -139,8 +139,6 @@ pub enum WallpaperEntry {
     Scene {
         source: PackagePath,
         #[serde(default)]
-        fallback: Option<PackagePath>,
-        #[serde(default)]
         max_fps: Option<u32>,
     },
     Shader {
@@ -263,14 +261,7 @@ impl WallpaperEntry {
                     paths.push(path.clone());
                 }
             }
-            Self::Scene {
-                source, fallback, ..
-            } => {
-                paths.push(source.clone());
-                if let Some(path) = fallback {
-                    paths.push(path.clone());
-                }
-            }
+            Self::Scene { source, .. } => paths.push(source.clone()),
             Self::Shader {
                 source, fallback, ..
             } => {

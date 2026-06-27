@@ -12288,7 +12288,6 @@ mod tests {
             scene_plans: vec![SceneWallpaperPlan {
                 output_name: "HDMI-A-1".to_owned(),
                 source: Some(PathBuf::from("/tmp/scene.json")),
-                fallback: Some(PathBuf::from("/tmp/scene-fallback.svg")),
                 manifest_max_fps: Some(60),
                 target_max_fps: Some(30),
                 snapshot_time_ms: 1234,
@@ -12364,7 +12363,6 @@ mod tests {
         assert_eq!(items[2].wallpaper_type(), NativeVulkanWallpaperType::Scene);
         let NativeVulkanRenderItem::Scene {
             scene_source,
-            fallback,
             display,
             display_image,
             display_color,
@@ -12384,7 +12382,6 @@ mod tests {
             unreachable!("item already matched as scene");
         };
         assert_eq!(scene_source, &Some(PathBuf::from("/tmp/scene.json")));
-        assert_eq!(fallback, &Some(PathBuf::from("/tmp/scene-fallback.svg")));
         assert_eq!(display_image, &None);
         assert_eq!(display_color.as_deref(), Some("#102030"));
         assert!(matches!(

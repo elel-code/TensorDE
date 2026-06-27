@@ -698,8 +698,7 @@ mod tests {
               "kind": "scene",
               "entry": {
                 "type": "scene",
-                "source": "assets/scene.gscene.json",
-                "fallback": "previews/poster.svg"
+                "source": "assets/scene.gscene.json"
               }
             }
             "#,
@@ -725,16 +724,12 @@ mod tests {
                   "type": "image",
                   "resource": "resource-background"
                 }
-              ],
-              "native_lowering": {
-                "fallback": "previews/poster.svg"
-              }
+              ]
             }
             "##,
         );
         package_dir.write_file("assets/background.svg", "<svg></svg>");
         package_dir.write_file("metadata/source-scene.json", "{}");
-        package_dir.write_file("previews/poster.svg", "<svg></svg>");
 
         let package = load_gwpdir(package_dir.path()).unwrap();
 

@@ -26,7 +26,7 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub scene_input_model: &'static str,
     pub scene_resource_model: &'static str,
     pub native_draw_ready: bool,
-    pub manifest_preview_available: bool,
+    pub runtime_display_available: bool,
     pub draw_pass_plan_ready: bool,
     pub draw_pass_backend_ready: bool,
     pub draw_pass_backend_status: &'static str,
@@ -467,7 +467,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
         scene_input_model: "core scene snapshot layers; groups must be flattened before native Vulkan planning",
         scene_resource_model,
         native_draw_ready: plan.native_draw_ready(),
-        manifest_preview_available: plan.manifest_preview_available,
+        runtime_display_available: plan.runtime_display_available,
         draw_pass_plan_ready: pass_plan.plan_ready,
         draw_pass_backend_ready: pass_plan.backend_ready,
         draw_pass_backend_status: pass_plan.backend_status,
@@ -770,6 +770,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
         "native-runtime-layer-coverage-metric",
         "timeline-animation-runtime",
         "scene-geometry-field-animation-runtime",
+        "native-scene-graph-transform-opacity-execution",
         "parallax-property-camera-model",
         "property-update-runtime",
         "pause-resume-policy-runtime",
@@ -834,7 +835,6 @@ fn native_vulkan_full_scene_runtime_snapshot(
         pending_boundaries.push("path-tessellation-runtime");
     }
     pending_boundaries.extend([
-        "full-wallpaper-engine-scene-graph",
         "arbitrary-scenescript-runtime",
         "shader-material-graph",
         "particle-systems",
@@ -845,9 +845,9 @@ fn native_vulkan_full_scene_runtime_snapshot(
     NativeVulkanFullSceneRuntimeSnapshot {
         target_runtime: "native-vulkan-full-scene",
         current_runtime: "native-vulkan-scene-runtime",
-        progress_estimate_percent: 94,
+        progress_estimate_percent: 95,
         full_scene_complete: false,
-        execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries with scene timeline animation, geometry field animation, deterministic SceneScript expression lowering, parallax property camera input, property update, pause/resume policy, state persistence, converted keyframe timeline input, converted WE .tex image resources, spritesheet atlas UV-frame animation, and scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
+        execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries with native scene graph transform/opacity execution, scene timeline animation, geometry field animation, deterministic SceneScript expression lowering, parallax property camera input, property update, pause/resume policy, state persistence, converted keyframe timeline input, converted WE .tex image resources, spritesheet atlas UV-frame animation, and scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
         native_scene_graph_lowering_ready: plan.native_draw_ready(),
         native_present_route_ready: pass_plan.backend_ready,
         retained_resource_model_ready,
@@ -961,15 +961,13 @@ mod tests {
     fn scene_test_item(
         layers: Vec<SceneRenderLayer>,
         display: Option<SceneDisplayPlan>,
-        fallback: Option<PathBuf>,
     ) -> NativeVulkanRenderItem {
-        scene_test_item_with_scene_metadata(layers, display, fallback, Vec::new(), 0, 0, 0)
+        scene_test_item_with_scene_metadata(layers, display, Vec::new(), 0, 0, 0)
     }
 
     fn scene_test_item_with_scene_metadata(
         layers: Vec<SceneRenderLayer>,
         display: Option<SceneDisplayPlan>,
-        fallback: Option<PathBuf>,
         bound_properties: Vec<String>,
         timeline_animation_count: usize,
         timeline_animated_layer_count: usize,
@@ -979,7 +977,6 @@ mod tests {
         NativeVulkanRenderItem::Scene {
             output_name: "HDMI-A-1".to_owned(),
             scene_source: Some(PathBuf::from("/tmp/scene.json")),
-            fallback,
             display,
             display_image: None,
             display_color: None,
@@ -1024,7 +1021,6 @@ mod tests {
             Some(SceneDisplayPlan::Color {
                 color: "#010203".to_owned(),
             }),
-            None,
         );
 
         let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
@@ -1035,7 +1031,7 @@ mod tests {
             "core scene snapshot layers; groups must be flattened before native Vulkan planning"
         );
         assert!(snapshot.native_draw_ready);
-        assert!(snapshot.manifest_preview_available);
+        assert!(snapshot.runtime_display_available);
         assert!(snapshot.draw_pass_plan_ready);
         assert!(snapshot.draw_pass_backend_ready);
         assert_eq!(
@@ -1128,7 +1124,7 @@ mod tests {
         video.fit = FitMode::Cover;
         video.width = Some(1280.0);
         video.height = Some(720.0);
-        let item = scene_test_item(vec![video], None, None);
+        let item = scene_test_item(vec![video], None);
 
         let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
 
@@ -1185,7 +1181,7 @@ mod tests {
         let mut video = scene_test_layer("cinematic", SceneNodeKind::Video);
         video.source = Some(PathBuf::from("/tmp/scene-video.mp4"));
         video.fit = FitMode::Contain;
-        let item = scene_test_item(vec![background, video], None, None);
+        let item = scene_test_item(vec![background, video], None);
 
         let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
 
@@ -1244,7 +1240,6 @@ mod tests {
         let item = scene_test_item_with_scene_metadata(
             vec![background, clip, label],
             None,
-            Some(PathBuf::from("/tmp/fallback.png")),
             vec!["scene_opacity".to_owned()],
             2,
             1,
@@ -1261,7 +1256,7 @@ mod tests {
             snapshot.full_scene.current_runtime,
             "native-vulkan-scene-runtime"
         );
-        assert_eq!(snapshot.full_scene.progress_estimate_percent, 94);
+        assert_eq!(snapshot.full_scene.progress_estimate_percent, 95);
         assert!(!snapshot.full_scene.full_scene_complete);
         assert!(snapshot.full_scene.timeline_snapshot_runtime_ready);
         assert_eq!(snapshot.full_scene.timeline_snapshot_time_ms, 1234);
@@ -1313,6 +1308,12 @@ mod tests {
                 .full_scene
                 .completed_boundaries
                 .contains(&"scene-geometry-field-animation-runtime")
+        );
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"native-scene-graph-transform-opacity-execution")
         );
         assert!(
             snapshot
@@ -1380,6 +1381,12 @@ mod tests {
                 .pending_boundaries
                 .contains(&"package-state-persistence")
         );
+        assert!(
+            !snapshot
+                .full_scene
+                .pending_boundaries
+                .contains(&"full-wallpaper-engine-scene-graph")
+        );
     }
 
     #[test]
@@ -1392,7 +1399,7 @@ mod tests {
             volume: None,
             start_silent: false,
         });
-        let item = scene_test_item(vec![image], None, None);
+        let item = scene_test_item(vec![image], None);
 
         let snapshot = native_vulkan_scene_runtime_snapshot(&item).unwrap();
 
@@ -1424,14 +1431,15 @@ mod tests {
         let group = scene_test_layer("group", SceneNodeKind::Group);
         let item = scene_test_item(
             vec![color, image, text, path, group],
-            None,
-            Some(PathBuf::from("/tmp/scene-fallback.svg")),
+            Some(SceneDisplayPlan::Color {
+                color: "#010203".to_owned(),
+            }),
         );
 
         let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
 
         assert!(!snapshot.native_draw_ready);
-        assert!(snapshot.manifest_preview_available);
+        assert!(snapshot.runtime_display_available);
         assert!(!snapshot.draw_pass_plan_ready);
         assert!(!snapshot.draw_pass_backend_ready);
         assert_eq!(
@@ -1465,7 +1473,7 @@ mod tests {
     fn scene_runtime_snapshot_reports_fast_clear_draw_pass() {
         let mut color = scene_test_layer("background", SceneNodeKind::Color);
         color.color = Some("#203040".to_owned());
-        let item = scene_test_item(vec![color], None, None);
+        let item = scene_test_item(vec![color], None);
 
         let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
 
@@ -1513,7 +1521,7 @@ mod tests {
         rectangle.width = Some(320.0);
         rectangle.height = Some(180.0);
         rectangle.transform.y = 12.0;
-        let item = scene_test_item(vec![rectangle], None, None);
+        let item = scene_test_item(vec![rectangle], None);
 
         let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
 
@@ -1596,7 +1604,7 @@ mod tests {
         image.width = Some(200.0);
         image.height = Some(100.0);
         image.transform.x = 10.0;
-        let item = scene_test_item(vec![image], None, None);
+        let item = scene_test_item(vec![image], None);
 
         let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
 
@@ -1714,7 +1722,7 @@ mod tests {
         image.opacity = 0.5;
         image.width = Some(320.0);
         image.height = Some(180.0);
-        let item = scene_test_item(vec![background, image], None, None);
+        let item = scene_test_item(vec![background, image], None);
 
         let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
         let solid_geometry = snapshot
@@ -1792,7 +1800,7 @@ mod tests {
         image.opacity = 0.75;
         image.width = Some(320.0);
         image.height = Some(180.0);
-        let item = scene_test_item(vec![background, image], None, None);
+        let item = scene_test_item(vec![background, image], None);
 
         let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
         let (source, sampled_geometry) = snapshot
@@ -1827,7 +1835,7 @@ mod tests {
         let mut path = scene_test_layer("triangle", SceneNodeKind::Path);
         path.path_data = Some("M0,0 L64,0 L32,48 Z".to_owned());
         path.color = Some("#cc8844".to_owned());
-        let item = scene_test_item(vec![path], None, None);
+        let item = scene_test_item(vec![path], None);
 
         let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
         let solid_geometry = snapshot
@@ -1861,7 +1869,7 @@ mod tests {
         path.path_data = Some("M0,0 L64,0 L32,48 Z".to_owned());
         path.stroke_color = Some("#f8fafc".to_owned());
         path.stroke_width = Some(4.0);
-        let item = scene_test_item(vec![path], None, None);
+        let item = scene_test_item(vec![path], None);
 
         let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
         let solid_geometry = snapshot
@@ -1914,7 +1922,7 @@ mod tests {
         overlay.width = Some(320.0);
         overlay.height = Some(180.0);
         overlay.transform.x = 64.0;
-        let item = scene_test_item(vec![background, overlay], None, None);
+        let item = scene_test_item(vec![background, overlay], None);
 
         let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
         let (source, sampled_geometry) = snapshot

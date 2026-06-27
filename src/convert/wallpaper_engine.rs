@@ -313,11 +313,6 @@ fn convert_scene(
         report,
         MissingPreviewFallback::Scene { source },
     )?;
-    let fallback = preview
-        .as_ref()
-        .and_then(|preview| preview.poster.clone())
-        .map(Value::String)
-        .unwrap_or(Value::Null);
     let source_scene = read_wallpaper_engine_scene_metadata(project, source, report);
     let scene_source = write_scene_document(
         project,
@@ -325,7 +320,6 @@ fn convert_scene(
         source,
         &original_scene.package_path,
         source_scene.as_ref(),
-        fallback.as_str(),
         report,
     )?;
 
@@ -353,7 +347,6 @@ fn convert_scene(
         json!({
             "type": "scene",
             "source": scene_source,
-            "fallback": fallback,
             "max_fps": 60
         }),
     ))
@@ -537,20 +530,13 @@ fn convert_playlist_item(
             })
         }
         SourceType::Scene => {
-            let scene_source = convert_playlist_scene_item(
-                project,
-                output_dir,
-                index,
-                &source,
-                playlist_fallback,
-                report,
-            )?;
+            let scene_source =
+                convert_playlist_scene_item(project, output_dir, index, &source, report)?;
             push_unique(&mut report.converted_features, "playlist-item:scene");
             record_scene_runtime_gaps(report);
             json!({
                 "type": "scene",
                 "source": scene_source,
-                "fallback": playlist_fallback.map(|path| Value::String(path.to_owned())).unwrap_or(Value::Null),
                 "max_fps": 60
             })
         }
@@ -630,7 +616,6 @@ fn convert_playlist_scene_item(
     output_dir: &Path,
     index: usize,
     source: &str,
-    fallback: Option<&str>,
     report: &mut ConversionReport,
 ) -> Result<String, ConversionError> {
     let original_scene = copy_project_file(
@@ -648,7 +633,6 @@ fn convert_playlist_scene_item(
         &original_scene.package_path,
         source_scene.as_ref(),
         &format!("assets/playlist-{index}-scene.gscene.json"),
-        fallback,
         report,
     )?;
     report.warnings.push(format!(
@@ -819,7 +803,6 @@ fn write_scene_document(
     source_entry: &str,
     source_metadata: &str,
     source_scene: Option<&Value>,
-    fallback: Option<&str>,
     report: &mut ConversionReport,
 ) -> Result<String, ConversionError> {
     write_scene_document_to(
@@ -829,7 +812,6 @@ fn write_scene_document(
         source_metadata,
         source_scene,
         "assets/scene.gscene.json",
-        fallback,
         report,
     )
 }
@@ -841,7 +823,6 @@ fn write_scene_document_to(
     source_metadata: &str,
     source_scene: Option<&Value>,
     package_path: &str,
-    fallback: Option<&str>,
     report: &mut ConversionReport,
 ) -> Result<String, ConversionError> {
     let scene_path = output_dir.join(package_path);
@@ -876,21 +857,13 @@ fn write_scene_document_to(
         push_unique(&mut report.converted_features, "scene-keyframe-timeline");
     }
     nodes = scene_rebuild_parent_graph(nodes);
-    if let Some(source) = fallback
-        && nodes.is_empty()
-    {
-        resources.push(json!({
-            "id": "resource-preview-fallback",
-            "type": "image",
-            "source": source,
-            "role": "preview-fallback"
-        }));
-        nodes.push(json!({
-            "id": "node-preview-fallback",
-            "type": "image",
-            "resource": "resource-preview-fallback",
-            "fit": "cover"
-        }));
+    if nodes.is_empty() {
+        scene_push_unsupported(
+            &mut context,
+            "empty-scene-graph",
+            "Wallpaper Engine scene conversion produced no native gscene nodes; preview images remain package metadata and are not used as a scene runtime fallback.",
+            Some(source_entry),
+        );
     }
 
     let document = json!({
@@ -910,7 +883,7 @@ fn write_scene_document_to(
         "timelines": context.timelines,
         "property_bindings": context.property_bindings,
         "systems": scene_system_statuses(report),
-        "native_lowering": scene_native_lowering(fallback),
+        "native_lowering": scene_native_lowering(),
         "unsupported_features": scene_unsupported_features(report, context.unsupported_features)
     });
     fs::write(
@@ -4255,12 +4228,11 @@ fn scene_system_status(report: &ConversionReport, feature: &str) -> &'static str
     }
 }
 
-fn scene_native_lowering(fallback: Option<&str>) -> Value {
+fn scene_native_lowering() -> Value {
     let status = FullSceneConversionStatus::native_vulkan_scene_boundary();
     json!({
         "target_runtime": status.target_runtime,
         "current_runtime": status.current_runtime,
-        "fallback": fallback,
         "completed_boundaries": status.completed_boundaries,
         "pending_boundaries": status.pending_boundaries
     })
@@ -6395,8 +6367,8 @@ impl FullSceneConversionStatus {
         Self {
             target_runtime: "native-vulkan-full-scene".to_owned(),
             current_runtime: "native-vulkan-scene-runtime".to_owned(),
-            progress_estimate_percent: 94,
-            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, WE text/value wrappers, visible property bindings, shape/solid/radius objects, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, geometry field animation, parallax depth, and WE TEXV0005/TEXB0004 RGBA textures including spritesheet atlases into gscene text/property/shape/timeline/camera/image fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime, and explicit unsupported Wallpaper Engine systems without legacy fallback".to_owned(),
+            progress_estimate_percent: 95,
+            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, native scene graph transform/opacity execution, WE text/value wrappers, visible property bindings, shape/solid/radius objects, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, geometry field animation, parallax depth, and WE TEXV0005/TEXB0004 RGBA textures including spritesheet atlases into gscene text/property/shape/timeline/camera/image fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime, and explicit unsupported Wallpaper Engine systems without legacy fallback or preview-image scene substitution".to_owned(),
             source_scene_metadata: Vec::new(),
             completed_boundaries: vec![
                 "package-scene-detection".to_owned(),
@@ -6405,6 +6377,7 @@ impl FullSceneConversionStatus {
                 "first-class-gscene-document".to_owned(),
                 "scene-resource-copy-graph".to_owned(),
                 "wallpaper-engine-parent-graph-lowering".to_owned(),
+                "native-scene-graph-transform-opacity-execution".to_owned(),
                 "render-clear-color-snapshot-layer".to_owned(),
                 "wallpaper-engine-text-and-visible-property-lowering".to_owned(),
                 "wallpaper-engine-shape-solid-radius-lowering".to_owned(),
@@ -6437,7 +6410,6 @@ impl FullSceneConversionStatus {
                 "scene-audio-cue-pipewire-present-runtime".to_owned(),
             ],
             pending_boundaries: vec![
-                "full-wallpaper-engine-scene-graph".to_owned(),
                 "arbitrary-scenescript-runtime".to_owned(),
                 "shader-material-graph".to_owned(),
                 "particle-systems".to_owned(),
@@ -7126,7 +7098,7 @@ void main() {}
     }
 
     #[test]
-    fn converts_scene_project_to_scene_with_fallback() {
+    fn converts_scene_project_to_native_scene_document() {
         let source = TestDir::new("we-scene-source");
         let output = TestDir::new("we-scene-output");
         output.remove();
@@ -7151,7 +7123,8 @@ void main() {}
         assert_eq!(manifest["kind"], "scene");
         assert_eq!(manifest["entry"]["type"], "scene");
         assert_eq!(manifest["entry"]["source"], "assets/scene.gscene.json");
-        assert_eq!(manifest["entry"]["fallback"], "previews/poster.svg");
+        assert!(manifest["entry"].get("fallback").is_none());
+        assert_eq!(manifest["preview"]["poster"], "previews/poster.svg");
         assert!(output.path().join("metadata/source-scene.json").exists());
         let scene: Value = serde_json::from_str(
             &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
@@ -7167,7 +7140,7 @@ void main() {}
             scene["resources"][0]["source"],
             "assets/scene-resources/scene/resource-1-background.png"
         );
-        assert_eq!(scene["native_lowering"]["fallback"], "previews/poster.svg");
+        assert!(scene["native_lowering"].get("fallback").is_none());
         assert!(output.path().join("previews/poster.svg").exists());
         assert!(output.path().join("previews/thumbnail.svg").exists());
         let report: ConversionReport = serde_json::from_str(
@@ -7178,7 +7151,7 @@ void main() {}
         let full_scene = report.full_scene.as_ref().expect("full scene status");
         assert_eq!(full_scene.target_runtime, "native-vulkan-full-scene");
         assert_eq!(full_scene.current_runtime, "native-vulkan-scene-runtime");
-        assert_eq!(full_scene.progress_estimate_percent, 94);
+        assert_eq!(full_scene.progress_estimate_percent, 95);
         assert!(
             full_scene
                 .source_scene_metadata
@@ -7193,6 +7166,11 @@ void main() {}
             full_scene
                 .completed_boundaries
                 .contains(&"wallpaper-engine-parent-graph-lowering".to_owned())
+        );
+        assert!(
+            full_scene
+                .completed_boundaries
+                .contains(&"native-scene-graph-transform-opacity-execution".to_owned())
         );
         assert!(
             full_scene
@@ -7295,6 +7273,11 @@ void main() {}
         assert!(
             !full_scene
                 .pending_boundaries
+                .contains(&"full-wallpaper-engine-scene-graph".to_owned())
+        );
+        assert!(
+            !full_scene
+                .pending_boundaries
                 .contains(&"spritesheet-animation-runtime".to_owned())
         );
         assert!(
@@ -7308,6 +7291,45 @@ void main() {}
                 .contains(&"scene-layers".to_owned())
         );
         assert!(report.detected_features.contains(&"image-layer".to_owned()));
+    }
+
+    #[test]
+    fn scene_conversion_does_not_substitute_preview_fallback_node() {
+        let source = TestDir::new("we-scene-empty-source");
+        let output = TestDir::new("we-scene-empty-output");
+        output.remove();
+        source.write_file("scene.json", r#"{ "objects": [] }"#);
+        source.write_file("preview.png", "not real png");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Empty Scene",
+              "file": "scene.json",
+              "preview": "preview.png"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(scene["nodes"].as_array().unwrap().is_empty());
+        assert!(
+            scene["resources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|resource| resource["id"] != "resource-preview-fallback")
+        );
+        assert!(
+            scene["unsupported_features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| feature["feature"] == "empty-scene-graph")
+        );
     }
 
     #[test]
@@ -8372,7 +8394,7 @@ void main() {}
             items[1]["entry"]["source"],
             "assets/playlist-1-scene.gscene.json"
         );
-        assert_eq!(items[1]["entry"]["fallback"], "previews/poster.jpg");
+        assert!(items[1]["entry"].get("fallback").is_none());
         assert!(
             output
                 .path()

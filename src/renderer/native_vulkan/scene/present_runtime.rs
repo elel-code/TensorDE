@@ -566,7 +566,6 @@ mod tests {
         SceneWallpaperPlan {
             output_name: "HDMI-A-1".to_owned(),
             source: None,
-            fallback: None,
             manifest_max_fps: None,
             target_max_fps: Some(60),
             snapshot_time_ms: 0,

@@ -130,7 +130,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneDrawPlan {
     pub(in crate::renderer::native_vulkan) draw_ops: Vec<NativeVulkanSceneDrawOp>,
     pub(in crate::renderer::native_vulkan) unsupported_layers:
         Vec<NativeVulkanSceneUnsupportedLayer>,
-    pub(in crate::renderer::native_vulkan) manifest_preview_available: bool,
+    pub(in crate::renderer::native_vulkan) runtime_display_available: bool,
 }
 
 impl NativeVulkanSceneDrawPlan {
@@ -145,7 +145,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_draw_plan(
     let NativeVulkanRenderItem::Scene {
         layers,
         display,
-        fallback,
         snapshot_time_ms,
         ..
     } = render_item
@@ -158,7 +157,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_draw_plan(
         snapshot_time_ms: *snapshot_time_ms,
         draw_ops,
         unsupported_layers,
-        manifest_preview_available: display.is_some() || fallback.is_some(),
+        runtime_display_available: display.is_some(),
     })
 }
 
@@ -320,7 +319,6 @@ mod tests {
         let item = NativeVulkanRenderItem::Scene {
             output_name: "HDMI-A-1".to_owned(),
             scene_source: Some(PathBuf::from("/tmp/scene.json")),
-            fallback: Some(PathBuf::from("/tmp/scene-fallback.svg")),
             display: Some(SceneDisplayPlan::Image {
                 source: PathBuf::from("/tmp/scene-snapshot.png"),
                 fit: FitMode::Contain,
@@ -360,7 +358,6 @@ mod tests {
         let item = NativeVulkanRenderItem::Scene {
             output_name: "HDMI-A-1".to_owned(),
             scene_source: Some(PathBuf::from("/tmp/scene.json")),
-            fallback: None,
             display: Some(SceneDisplayPlan::Color {
                 color: "#102030".to_owned(),
             }),

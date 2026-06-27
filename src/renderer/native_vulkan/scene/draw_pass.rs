@@ -2028,7 +2028,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![color],
             unsupported_layers: Vec::new(),
-            manifest_preview_available: false,
+            runtime_display_available: false,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
@@ -2063,7 +2063,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![image, text, path],
             unsupported_layers: Vec::new(),
-            manifest_preview_available: true,
+            runtime_display_available: true,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
@@ -2096,7 +2096,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![video],
             unsupported_layers: Vec::new(),
-            manifest_preview_available: false,
+            runtime_display_available: false,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
@@ -2130,7 +2130,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![image],
             unsupported_layers: Vec::new(),
-            manifest_preview_available: false,
+            runtime_display_available: false,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
@@ -2182,7 +2182,7 @@ mod tests {
             snapshot_time_ms: 416,
             draw_ops: vec![image],
             unsupported_layers: Vec::new(),
-            manifest_preview_available: false,
+            runtime_display_available: false,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
@@ -2212,7 +2212,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![image],
             unsupported_layers: Vec::new(),
-            manifest_preview_available: false,
+            runtime_display_available: false,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
@@ -2248,7 +2248,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![image, rectangle],
             unsupported_layers: Vec::new(),
-            manifest_preview_available: false,
+            runtime_display_available: false,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
@@ -2288,7 +2288,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![rectangle, image],
             unsupported_layers: Vec::new(),
-            manifest_preview_available: false,
+            runtime_display_available: false,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
@@ -2325,7 +2325,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![rectangle, rounded],
             unsupported_layers: Vec::new(),
-            manifest_preview_available: false,
+            runtime_display_available: false,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
@@ -2378,7 +2378,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![ellipse],
             unsupported_layers: Vec::new(),
-            manifest_preview_available: false,
+            runtime_display_available: false,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
@@ -2409,7 +2409,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
-            manifest_preview_available: false,
+            runtime_display_available: false,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
@@ -2440,7 +2440,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
-            manifest_preview_available: false,
+            runtime_display_available: false,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
@@ -2473,7 +2473,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![text],
             unsupported_layers: Vec::new(),
-            manifest_preview_available: false,
+            runtime_display_available: false,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
@@ -2512,7 +2512,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
-            manifest_preview_available: false,
+            runtime_display_available: false,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
@@ -2554,7 +2554,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
-            manifest_preview_available: false,
+            runtime_display_available: false,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
@@ -2592,7 +2592,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![rectangle, ellipse],
             unsupported_layers: Vec::new(),
-            manifest_preview_available: false,
+            runtime_display_available: false,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
@@ -2629,7 +2629,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![rectangle],
             unsupported_layers: Vec::new(),
-            manifest_preview_available: false,
+            runtime_display_available: false,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);

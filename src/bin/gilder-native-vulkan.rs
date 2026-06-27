@@ -871,7 +871,6 @@ fn scene_cli_plan(
             return Ok(SceneWallpaperPlan {
                 output_name,
                 source: None,
-                fallback: None,
                 manifest_max_fps: None,
                 target_max_fps,
                 snapshot_time_ms,
@@ -891,7 +890,6 @@ fn scene_cli_plan(
         return Ok(SceneWallpaperPlan {
             output_name,
             source: None,
-            fallback: Some(source.clone()),
             manifest_max_fps: None,
             target_max_fps,
             snapshot_time_ms,
@@ -925,7 +923,6 @@ fn scene_cli_plan(
         return Ok(SceneWallpaperPlan {
             output_name,
             source: None,
-            fallback: None,
             manifest_max_fps: None,
             target_max_fps,
             snapshot_time_ms,
@@ -956,7 +953,6 @@ fn scene_cli_plan(
         return Ok(SceneWallpaperPlan {
             output_name,
             source: None,
-            fallback: None,
             manifest_max_fps: None,
             target_max_fps,
             snapshot_time_ms,
@@ -977,7 +973,6 @@ fn scene_cli_plan(
     Ok(SceneWallpaperPlan {
         output_name,
         source: None,
-        fallback: None,
         manifest_max_fps: None,
         target_max_fps,
         snapshot_time_ms,
@@ -1091,7 +1086,6 @@ mod tests {
         .expect("image scene plan");
 
         assert_eq!(plan.source, None);
-        assert_eq!(plan.fallback, Some(PathBuf::from("/tmp/wall.png")));
         assert_eq!(plan.target_max_fps, Some(30));
         assert_eq!(plan.snapshot_time_ms, 2468);
         assert_eq!(
@@ -1342,7 +1336,6 @@ mod tests {
         assert_eq!(plan.layers[1].kind, SceneNodeKind::Video);
         assert_eq!(plan.layers[1].source, Some(PathBuf::from("/tmp/clip.hevc")));
         assert_eq!(plan.layers[1].fit, FitMode::Contain);
-        assert_eq!(plan.fallback, None);
     }
 }
 

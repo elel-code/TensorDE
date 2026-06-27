@@ -70,7 +70,6 @@ pub struct SlideshowWallpaperPlan {
 pub struct SceneWallpaperPlan {
     pub output_name: String,
     pub source: Option<PathBuf>,
-    pub fallback: Option<PathBuf>,
     pub manifest_max_fps: Option<u32>,
     pub target_max_fps: Option<u32>,
     pub snapshot_time_ms: u64,
@@ -179,15 +178,9 @@ pub fn scene_wallpaper_plan_from_gscene_path(
     let document = load_scene_document(&source_path)?;
     let snapshot = document.snapshot_at_with_property_resolver(snapshot_time_ms, |_property| None);
     let layers = scene_render_layers_from_snapshot(package_root, &document, snapshot.layers)?;
-    let fallback = document
-        .native_lowering
-        .fallback
-        .as_ref()
-        .map(|fallback| fallback.join_to(package_root));
     let display = scene_display_plan(
         Some(source_path.as_path()),
         &document,
-        fallback.as_ref(),
         &layers,
         fit_override,
         None,
@@ -197,7 +190,6 @@ pub fn scene_wallpaper_plan_from_gscene_path(
     Ok(SceneWallpaperPlan {
         output_name,
         source: Some(source_path),
-        fallback,
         manifest_max_fps: None,
         target_max_fps,
         snapshot_time_ms: snapshot.time_ms,
@@ -1494,22 +1486,19 @@ fn wallpaper_entry_plan_with_target(
                 background: Some("#000000".to_owned()),
             }))
         }
-        WallpaperEntry::Scene {
-            source,
-            fallback,
-            max_fps,
-        } => Ok(WallpaperRenderPlan::Scene(scene_wallpaper_plan(
-            output_name.to_owned(),
-            package,
-            source,
-            fallback.as_ref(),
-            *max_fps,
-            performance,
-            fit_override,
-            render_target,
-            render_properties,
-            scene_snapshot_cache,
-        )?)),
+        WallpaperEntry::Scene { source, max_fps } => {
+            Ok(WallpaperRenderPlan::Scene(scene_wallpaper_plan(
+                output_name.to_owned(),
+                package,
+                source,
+                *max_fps,
+                performance,
+                fit_override,
+                render_target,
+                render_properties,
+                scene_snapshot_cache,
+            )?))
+        }
         WallpaperEntry::Playlist { items, selection } => {
             let item = select_playlist_item(items, *selection, playlist_context)
                 .ok_or(RendererPlanError::PlaylistNoMatch)?;
@@ -1536,7 +1525,6 @@ fn scene_wallpaper_plan(
     output_name: String,
     package: &WallpaperPackage,
     source: &PackagePath,
-    fallback: Option<&PackagePath>,
     manifest_max_fps: Option<u32>,
     performance: &PerformanceDecision,
     fit_override: Option<FitMode>,
@@ -1550,16 +1538,9 @@ fn scene_wallpaper_plan(
         scene_property_value(property, render_properties, &package.manifest.properties)
     });
     let layers = scene_render_layers_from_snapshot(&package.root, &document, snapshot.layers)?;
-    let fallback = document
-        .native_lowering
-        .fallback
-        .as_ref()
-        .or(fallback)
-        .map(|fallback| fallback.join_to(&package.root));
     let display = scene_display_plan(
         Some(source_path.as_path()),
         &document,
-        fallback.as_ref(),
         &layers,
         fit_override,
         render_target,
@@ -1569,7 +1550,6 @@ fn scene_wallpaper_plan(
     Ok(SceneWallpaperPlan {
         output_name,
         source: Some(source_path),
-        fallback,
         manifest_max_fps,
         target_max_fps: effective_max_fps(manifest_max_fps, performance.max_fps),
         snapshot_time_ms: snapshot.time_ms,
@@ -1782,7 +1762,6 @@ fn load_scene_document(path: &Path) -> Result<SceneDocument, RendererPlanError> 
 fn scene_display_plan(
     source_path: Option<&Path>,
     document: &SceneDocument,
-    fallback: Option<&PathBuf>,
     layers: &[SceneRenderLayer],
     fit_override: Option<FitMode>,
     render_target: Option<RenderTargetSize>,
@@ -1804,13 +1783,6 @@ fn scene_display_plan(
         scene_snapshot_cache,
     ) {
         return Some(snapshot);
-    }
-    if let Some(fallback) = fallback {
-        return Some(SceneDisplayPlan::Image {
-            source: fallback.clone(),
-            fit: effective_fit(FitMode::Cover, fit_override),
-            background: scene_background_color(layers).or_else(|| Some("#000000".to_owned())),
-        });
     }
     if let Some(layer) = layers.iter().find(|layer| layer.source.is_some()) {
         return Some(SceneDisplayPlan::Image {
@@ -4822,7 +4794,7 @@ exit 0
     }
 
     #[test]
-    fn scene_fallback_builds_scene_plan() {
+    fn scene_document_builds_native_scene_plan() {
         let test_dir = TestDir::new("gilder-scene-plan");
         let package_dir = test_dir.path.join("scene-demo.gwpdir");
         write_minimal_scene_gwpdir(&package_dir);
@@ -4849,12 +4821,6 @@ exit 0
                 .as_ref()
                 .unwrap()
                 .ends_with("assets/scene.gscene.json")
-        );
-        assert!(
-            plan.fallback
-                .as_ref()
-                .unwrap()
-                .ends_with("previews/poster.svg")
         );
         assert_eq!(plan.layers.len(), 1);
         assert!(
@@ -4933,7 +4899,6 @@ exit 0
         assert!(sync.errors.is_empty());
         assert_eq!(sync.scene_plans.len(), 1);
         let plan = &sync.scene_plans[0];
-        assert!(plan.fallback.is_none());
         assert!(matches!(
             &plan.display,
             Some(SceneDisplayPlan::Color { color }) if color == "#203040"
@@ -6453,7 +6418,6 @@ void main() {}
             "entry": {
                 "type": "scene",
                 "source": "assets/scene.gscene.json",
-                "fallback": "previews/poster.svg",
                 "max_fps": 60
             }
         });
@@ -6517,7 +6481,6 @@ void main() {}
             "entry": {
                 "type": "scene",
                 "source": "assets/scene.gscene.json",
-                "fallback": "previews/poster.svg",
                 "max_fps": 60
             }
         });
