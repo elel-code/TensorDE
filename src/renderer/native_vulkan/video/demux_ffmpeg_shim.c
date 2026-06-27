@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <dlfcn.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -48,7 +49,144 @@ typedef struct GilderAudioOutput {
     int64_t ready_state_change_count;
 } GilderAudioOutput;
 
+typedef struct GilderPipeWireApi {
+    void *library;
+    void (*pw_init)(int *argc, char **argv[]);
+    int (*pw_thread_loop_get_time)(struct pw_thread_loop *loop, struct timespec *abstime, int64_t timeout);
+    int (*pw_thread_loop_timed_wait_full)(struct pw_thread_loop *loop, const struct timespec *abstime);
+    void (*pw_thread_loop_signal)(struct pw_thread_loop *loop, bool wait_for_accept);
+    struct pw_buffer *(*pw_stream_dequeue_buffer)(struct pw_stream *stream);
+    void (*pw_stream_return_buffer)(struct pw_stream *stream, struct pw_buffer *buffer);
+    int (*pw_stream_queue_buffer)(struct pw_stream *stream, struct pw_buffer *buffer);
+    void (*pw_thread_loop_lock)(struct pw_thread_loop *loop);
+    void (*pw_thread_loop_unlock)(struct pw_thread_loop *loop);
+    void (*pw_stream_destroy)(struct pw_stream *stream);
+    void (*pw_thread_loop_stop)(struct pw_thread_loop *loop);
+    void (*pw_thread_loop_destroy)(struct pw_thread_loop *loop);
+    struct pw_thread_loop *(*pw_thread_loop_new)(const char *name, const struct spa_dict *props);
+    struct pw_loop *(*pw_thread_loop_get_loop)(struct pw_thread_loop *loop);
+    struct pw_properties *(*pw_properties_new)(const char *key, ...);
+    struct pw_stream *(*pw_stream_new_simple)(
+        struct pw_loop *loop,
+        const char *name,
+        struct pw_properties *props,
+        const struct pw_stream_events *events,
+        void *data
+    );
+    int (*pw_stream_connect)(
+        struct pw_stream *stream,
+        enum pw_direction direction,
+        uint32_t target_id,
+        enum pw_stream_flags flags,
+        const struct spa_pod **params,
+        uint32_t n_params
+    );
+    int (*pw_thread_loop_start)(struct pw_thread_loop *loop);
+    int (*pw_stream_trigger_process)(struct pw_stream *stream);
+} GilderPipeWireApi;
+
+typedef struct GilderSwresampleApi {
+    void *library;
+    void (*swr_free)(struct SwrContext **s);
+    int (*swr_alloc_set_opts2)(
+        struct SwrContext **ps,
+        const AVChannelLayout *out_ch_layout,
+        enum AVSampleFormat out_sample_fmt,
+        int out_sample_rate,
+        const AVChannelLayout *in_ch_layout,
+        enum AVSampleFormat in_sample_fmt,
+        int in_sample_rate,
+        int log_offset,
+        void *log_ctx
+    );
+    int (*swr_init)(struct SwrContext *s);
+    int64_t (*swr_get_delay)(struct SwrContext *s, int64_t base);
+    int (*swr_convert)(
+        struct SwrContext *s,
+        uint8_t **out,
+        int out_count,
+        const uint8_t **in,
+        int in_count
+    );
+} GilderSwresampleApi;
+
+static GilderPipeWireApi gilder_pipewire_api;
+static GilderSwresampleApi gilder_swresample_api;
 static int gilder_pipewire_initialized = 0;
+
+static int gilder_pipewire_load_symbol(void **target, const char *name) {
+    *target = dlsym(gilder_pipewire_api.library, name);
+    return *target ? 0 : AVERROR(ENOSYS);
+}
+
+static int gilder_pipewire_load_once(void) {
+    if (gilder_pipewire_api.library)
+        return 0;
+
+    gilder_pipewire_api.library = dlopen("libpipewire-0.3.so.0", RTLD_NOW | RTLD_LOCAL);
+    if (!gilder_pipewire_api.library)
+        return AVERROR(ENOSYS);
+
+#define GILDER_PIPEWIRE_LOAD(name) \
+    do { \
+        if (gilder_pipewire_load_symbol((void **)&gilder_pipewire_api.name, #name) < 0) \
+            return AVERROR(ENOSYS); \
+    } while (0)
+
+    GILDER_PIPEWIRE_LOAD(pw_init);
+    GILDER_PIPEWIRE_LOAD(pw_thread_loop_get_time);
+    GILDER_PIPEWIRE_LOAD(pw_thread_loop_timed_wait_full);
+    GILDER_PIPEWIRE_LOAD(pw_thread_loop_signal);
+    GILDER_PIPEWIRE_LOAD(pw_stream_dequeue_buffer);
+    GILDER_PIPEWIRE_LOAD(pw_stream_return_buffer);
+    GILDER_PIPEWIRE_LOAD(pw_stream_queue_buffer);
+    GILDER_PIPEWIRE_LOAD(pw_thread_loop_lock);
+    GILDER_PIPEWIRE_LOAD(pw_thread_loop_unlock);
+    GILDER_PIPEWIRE_LOAD(pw_stream_destroy);
+    GILDER_PIPEWIRE_LOAD(pw_thread_loop_stop);
+    GILDER_PIPEWIRE_LOAD(pw_thread_loop_destroy);
+    GILDER_PIPEWIRE_LOAD(pw_thread_loop_new);
+    GILDER_PIPEWIRE_LOAD(pw_thread_loop_get_loop);
+    GILDER_PIPEWIRE_LOAD(pw_properties_new);
+    GILDER_PIPEWIRE_LOAD(pw_stream_new_simple);
+    GILDER_PIPEWIRE_LOAD(pw_stream_connect);
+    GILDER_PIPEWIRE_LOAD(pw_thread_loop_start);
+    GILDER_PIPEWIRE_LOAD(pw_stream_trigger_process);
+
+#undef GILDER_PIPEWIRE_LOAD
+
+    return 0;
+}
+
+static int gilder_swresample_load_symbol(void **target, const char *name) {
+    *target = dlsym(gilder_swresample_api.library, name);
+    return *target ? 0 : AVERROR(ENOSYS);
+}
+
+static int gilder_swresample_load_once(void) {
+    if (gilder_swresample_api.library)
+        return 0;
+
+    gilder_swresample_api.library = dlopen("libswresample.so.6", RTLD_NOW | RTLD_LOCAL);
+    if (!gilder_swresample_api.library)
+        return AVERROR(ENOSYS);
+
+#define GILDER_SWRESAMPLE_LOAD(name) \
+    do { \
+        if (gilder_swresample_load_symbol((void **)&gilder_swresample_api.name, #name) < 0) \
+            return AVERROR(ENOSYS); \
+    } while (0)
+
+    GILDER_SWRESAMPLE_LOAD(swr_free);
+    GILDER_SWRESAMPLE_LOAD(swr_alloc_set_opts2);
+    GILDER_SWRESAMPLE_LOAD(swr_init);
+    GILDER_SWRESAMPLE_LOAD(swr_get_delay);
+    GILDER_SWRESAMPLE_LOAD(swr_convert);
+
+#undef GILDER_SWRESAMPLE_LOAD
+
+    return 0;
+}
 
 int gilder_av_error_eof(void) {
     return AVERROR_EOF;
@@ -248,17 +386,17 @@ GilderAudioOutput *gilder_audio_output_alloc(void) {
 
 static void gilder_pipewire_init_once(void) {
     if (!gilder_pipewire_initialized) {
-        pw_init(NULL, NULL);
+        gilder_pipewire_api.pw_init(NULL, NULL);
         gilder_pipewire_initialized = 1;
     }
 }
 
 static int gilder_audio_output_wait_locked(GilderAudioOutput *out, int64_t timeout_ns) {
     struct timespec timeout;
-    int ret = pw_thread_loop_get_time(out->loop, &timeout, timeout_ns);
+    int ret = gilder_pipewire_api.pw_thread_loop_get_time(out->loop, &timeout, timeout_ns);
     if (ret < 0)
         return ret;
-    ret = pw_thread_loop_timed_wait_full(out->loop, &timeout);
+    ret = gilder_pipewire_api.pw_thread_loop_timed_wait_full(out->loop, &timeout);
     return ret < 0 ? ret : 0;
 }
 
@@ -290,27 +428,27 @@ static void gilder_audio_output_on_state_changed(
         out->ready_state_change_count++;
     if (state == PW_STREAM_STATE_ERROR)
         out->stream_error = errno != 0 ? AVERROR(errno) : AVERROR(EPIPE);
-    pw_thread_loop_signal(out->loop, false);
+    gilder_pipewire_api.pw_thread_loop_signal(out->loop, false);
 }
 
 static void gilder_audio_output_on_process(void *data) {
     GilderAudioOutput *out = data;
     out->process_callback_count++;
-    struct pw_buffer *buffer = pw_stream_dequeue_buffer(out->stream);
+    struct pw_buffer *buffer = gilder_pipewire_api.pw_stream_dequeue_buffer(out->stream);
     if (!buffer) {
         out->buffer_error_count++;
         out->pending_error = AVERROR(EPIPE);
-        pw_thread_loop_signal(out->loop, false);
+        gilder_pipewire_api.pw_thread_loop_signal(out->loop, false);
         return;
     }
 
     struct spa_buffer *spa_buffer = buffer->buffer;
     if (!spa_buffer || spa_buffer->n_datas == 0 || !spa_buffer->datas[0].data ||
         !spa_buffer->datas[0].chunk) {
-        pw_stream_return_buffer(out->stream, buffer);
+        gilder_pipewire_api.pw_stream_return_buffer(out->stream, buffer);
         out->buffer_error_count++;
         out->pending_error = AVERROR(EINVAL);
-        pw_thread_loop_signal(out->loop, false);
+        gilder_pipewire_api.pw_thread_loop_signal(out->loop, false);
         return;
     }
 
@@ -331,10 +469,10 @@ static void gilder_audio_output_on_process(void *data) {
     dst->chunk->size = copied > UINT32_MAX ? UINT32_MAX : (uint32_t)copied;
     dst->chunk->stride = out->channels > 0 ? out->channels * (int)sizeof(int16_t) : 0;
     dst->chunk->flags = copied == 0 ? SPA_CHUNK_FLAG_EMPTY : SPA_CHUNK_FLAG_NONE;
-    pw_stream_queue_buffer(out->stream, buffer);
+    gilder_pipewire_api.pw_stream_queue_buffer(out->stream, buffer);
 
     if (copied > 0 || remaining == 0 || out->pending_error < 0)
-        pw_thread_loop_signal(out->loop, false);
+        gilder_pipewire_api.pw_thread_loop_signal(out->loop, false);
 }
 
 static const struct pw_stream_events gilder_audio_output_stream_events = {
@@ -345,17 +483,17 @@ static const struct pw_stream_events gilder_audio_output_stream_events = {
 
 static void gilder_audio_output_destroy_stream(GilderAudioOutput *out) {
     if (out->loop && out->stream) {
-        pw_thread_loop_lock(out->loop);
-        pw_stream_destroy(out->stream);
+        gilder_pipewire_api.pw_thread_loop_lock(out->loop);
+        gilder_pipewire_api.pw_stream_destroy(out->stream);
         out->stream = NULL;
-        pw_thread_loop_unlock(out->loop);
+        gilder_pipewire_api.pw_thread_loop_unlock(out->loop);
     }
     if (out->loop_started) {
-        pw_thread_loop_stop(out->loop);
+        gilder_pipewire_api.pw_thread_loop_stop(out->loop);
         out->loop_started = false;
     }
     if (out->loop) {
-        pw_thread_loop_destroy(out->loop);
+        gilder_pipewire_api.pw_thread_loop_destroy(out->loop);
         out->loop = NULL;
     }
     out->stream_state = PW_STREAM_STATE_UNCONNECTED;
@@ -371,7 +509,8 @@ void gilder_audio_output_free(GilderAudioOutput **output) {
         return;
     GilderAudioOutput *out = *output;
     gilder_audio_output_destroy_stream(out);
-    swr_free(&out->swr);
+    if (gilder_swresample_api.swr_free)
+        gilder_swresample_api.swr_free(&out->swr);
     av_free(out);
     *output = NULL;
 }
@@ -396,17 +535,20 @@ static int gilder_audio_output_sample_rate(const AVFrame *frame, const AVCodecCo
 }
 
 static int gilder_audio_output_start_stream(GilderAudioOutput *out, int sample_rate, int channels) {
+    int load_ret = gilder_pipewire_load_once();
+    if (load_ret < 0)
+        return load_ret;
     gilder_pipewire_init_once();
-    out->loop = pw_thread_loop_new("gilder-native-vulkan-audio", NULL);
+    out->loop = gilder_pipewire_api.pw_thread_loop_new("gilder-native-vulkan-audio", NULL);
     if (!out->loop)
         return AVERROR(ENOMEM);
 
     out->stream_state = PW_STREAM_STATE_UNCONNECTED;
     out->stream_error = 0;
-    out->stream = pw_stream_new_simple(
-        pw_thread_loop_get_loop(out->loop),
+    out->stream = gilder_pipewire_api.pw_stream_new_simple(
+        gilder_pipewire_api.pw_thread_loop_get_loop(out->loop),
         "Gilder Native Vulkan Audio",
-        pw_properties_new(
+        gilder_pipewire_api.pw_properties_new(
             PW_KEY_MEDIA_TYPE,
             "Audio",
             PW_KEY_MEDIA_CATEGORY,
@@ -443,8 +585,8 @@ static int gilder_audio_output_start_stream(GilderAudioOutput *out, int sample_r
         return AVERROR(EINVAL);
     }
 
-    pw_thread_loop_lock(out->loop);
-    int ret = pw_stream_connect(
+    gilder_pipewire_api.pw_thread_loop_lock(out->loop);
+    int ret = gilder_pipewire_api.pw_stream_connect(
         out->stream,
         PW_DIRECTION_OUTPUT,
         PW_ID_ANY,
@@ -453,14 +595,14 @@ static int gilder_audio_output_start_stream(GilderAudioOutput *out, int sample_r
         1
     );
     if (ret < 0) {
-        pw_thread_loop_unlock(out->loop);
+        gilder_pipewire_api.pw_thread_loop_unlock(out->loop);
         gilder_audio_output_destroy_stream(out);
         return ret;
     }
 
-    ret = pw_thread_loop_start(out->loop);
+    ret = gilder_pipewire_api.pw_thread_loop_start(out->loop);
     if (ret < 0) {
-        pw_thread_loop_unlock(out->loop);
+        gilder_pipewire_api.pw_thread_loop_unlock(out->loop);
         gilder_audio_output_destroy_stream(out);
         return ret;
     }
@@ -474,7 +616,7 @@ static int gilder_audio_output_start_stream(GilderAudioOutput *out, int sample_r
             break;
     }
     int stream_error = gilder_audio_output_stream_error(out);
-    pw_thread_loop_unlock(out->loop);
+    gilder_pipewire_api.pw_thread_loop_unlock(out->loop);
     if (stream_error < 0) {
         gilder_audio_output_destroy_stream(out);
         return stream_error;
@@ -502,7 +644,10 @@ static int gilder_audio_output_ensure_started(
         return 0;
 
     gilder_audio_output_destroy_stream(out);
-    swr_free(&out->swr);
+    int swr_load_ret = gilder_swresample_load_once();
+    if (swr_load_ret < 0)
+        return swr_load_ret;
+    gilder_swresample_api.swr_free(&out->swr);
 
     AVChannelLayout out_layout;
     AVChannelLayout in_layout;
@@ -513,7 +658,7 @@ static int gilder_audio_output_ensure_started(
         av_channel_layout_copy(&in_layout, &codec_ctx->ch_layout);
     else
         av_channel_layout_default(&in_layout, channels);
-    int ret = swr_alloc_set_opts2(
+    int ret = gilder_swresample_api.swr_alloc_set_opts2(
         &out->swr,
         &out_layout,
         AV_SAMPLE_FMT_S16,
@@ -528,7 +673,7 @@ static int gilder_audio_output_ensure_started(
     av_channel_layout_uninit(&in_layout);
     if (ret < 0)
         return ret;
-    ret = swr_init(out->swr);
+    ret = gilder_swresample_api.swr_init(out->swr);
     if (ret < 0)
         return ret;
 
@@ -545,10 +690,10 @@ static int gilder_audio_output_write_bytes(GilderAudioOutput *out, const uint8_t
     if (size == 0)
         return 0;
     out->write_call_count++;
-    pw_thread_loop_lock(out->loop);
+    gilder_pipewire_api.pw_thread_loop_lock(out->loop);
     int ret = gilder_audio_output_stream_error(out);
     if (ret < 0) {
-        pw_thread_loop_unlock(out->loop);
+        gilder_pipewire_api.pw_thread_loop_unlock(out->loop);
         return ret;
     }
 
@@ -561,7 +706,7 @@ static int gilder_audio_output_write_bytes(GilderAudioOutput *out, const uint8_t
         ret = gilder_audio_output_stream_error(out);
         if (ret < 0)
             break;
-        (void)pw_stream_trigger_process(out->stream);
+        (void)gilder_pipewire_api.pw_stream_trigger_process(out->stream);
         out->write_wait_count++;
         ret = gilder_audio_output_wait_locked(out, GILDER_AUDIO_PIPEWIRE_WRITE_TIMEOUT_NS);
         if (ret < 0) {
@@ -581,7 +726,7 @@ static int gilder_audio_output_write_bytes(GilderAudioOutput *out, const uint8_t
     out->pending_size = 0;
     out->pending_offset = 0;
     out->pending_error = 0;
-    pw_thread_loop_unlock(out->loop);
+    gilder_pipewire_api.pw_thread_loop_unlock(out->loop);
     return ret;
 }
 
@@ -610,7 +755,7 @@ int gilder_audio_output_write_frame(
         return ret;
 
     int dst_samples = (int)av_rescale_rnd(
-        swr_get_delay(out->swr, out->sample_rate) + frame->nb_samples,
+        gilder_swresample_api.swr_get_delay(out->swr, out->sample_rate) + frame->nb_samples,
         out->sample_rate,
         out->sample_rate,
         AV_ROUND_UP
@@ -631,7 +776,7 @@ int gilder_audio_output_write_frame(
     if (ret < 0)
         return ret;
 
-    int converted = swr_convert(
+    int converted = gilder_swresample_api.swr_convert(
         out->swr,
         dst_data,
         dst_samples,

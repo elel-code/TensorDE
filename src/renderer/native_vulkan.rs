@@ -12129,6 +12129,7 @@ mod tests {
                     id: "panel".to_owned(),
                     kind: crate::core::SceneNodeKind::Rectangle,
                     source: None,
+                    texture_region: None,
                     color: Some("#102030".to_owned()),
                     stroke_color: Some("#ffffff".to_owned()),
                     stroke_width: Some(2.0),

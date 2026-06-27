@@ -163,6 +163,7 @@ impl SceneDocument {
             id: "scene-render-clear-color".to_owned(),
             kind: SceneNodeKind::Color,
             source: None,
+            texture_region: None,
             color: Some(color.to_owned()),
             stroke_color: None,
             stroke_width: None,
@@ -561,6 +562,7 @@ impl SceneNode {
         let transform = parent_transform.compose(transform);
         let opacity = (parent_opacity * opacity).clamp(0.0, 1.0);
         if self.kind != SceneNodeKind::Group {
+            let texture_region = scene_texture_region_from_properties(&self.properties, time_ms);
             output.push(SceneSnapshotLayer {
                 id: self.id.clone(),
                 kind: self.kind,
@@ -569,6 +571,7 @@ impl SceneNode {
                     .as_deref()
                     .and_then(|resource| resources.get(resource))
                     .map(|resource| resource.source.clone()),
+                texture_region,
                 color: self.color.clone(),
                 stroke_color: self.stroke_color.clone(),
                 stroke_width: self.stroke_width,
@@ -1217,6 +1220,7 @@ pub struct SceneSnapshotLayer {
     pub id: String,
     pub kind: SceneNodeKind,
     pub source: Option<PackagePath>,
+    pub texture_region: Option<SceneTextureRegion>,
     pub color: Option<String>,
     pub stroke_color: Option<String>,
     pub stroke_width: Option<f64>,
@@ -1233,6 +1237,135 @@ pub struct SceneSnapshotLayer {
     pub fit: FitMode,
     pub opacity: f64,
     pub transform: SceneTransform,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SceneTextureRegion {
+    pub u_min: f64,
+    pub v_min: f64,
+    pub u_max: f64,
+    pub v_max: f64,
+    pub frame_index: u32,
+    pub frame_count: u32,
+}
+
+impl SceneTextureRegion {
+    fn validate(self) -> Option<Self> {
+        if self.u_min.is_finite()
+            && self.v_min.is_finite()
+            && self.u_max.is_finite()
+            && self.v_max.is_finite()
+            && self.u_min >= 0.0
+            && self.v_min >= 0.0
+            && self.u_max <= 1.0
+            && self.v_max <= 1.0
+            && self.u_min < self.u_max
+            && self.v_min < self.v_max
+            && self.frame_count > 0
+            && self.frame_index < self.frame_count
+        {
+            Some(self)
+        } else {
+            None
+        }
+    }
+}
+
+fn scene_texture_region_from_properties(
+    properties: &BTreeMap<String, Value>,
+    time_ms: u64,
+) -> Option<SceneTextureRegion> {
+    let spritesheet = properties.get("spritesheet")?.as_object()?;
+    let atlas_width = scene_property_u32(spritesheet, "atlas_width")?;
+    let atlas_height = scene_property_u32(spritesheet, "atlas_height")?;
+    let frame_width = scene_property_u32(spritesheet, "frame_width")?;
+    let frame_height = scene_property_u32(spritesheet, "frame_height")?;
+    let columns = scene_property_u32(spritesheet, "columns").unwrap_or_else(|| {
+        if frame_width == 0 {
+            0
+        } else {
+            atlas_width / frame_width
+        }
+    });
+    let rows = scene_property_u32(spritesheet, "rows").unwrap_or_else(|| {
+        if frame_height == 0 {
+            0
+        } else {
+            atlas_height / frame_height
+        }
+    });
+    let frame_count = scene_property_u32(spritesheet, "frame_count")
+        .unwrap_or_else(|| columns.saturating_mul(rows));
+    if atlas_width == 0
+        || atlas_height == 0
+        || frame_width == 0
+        || frame_height == 0
+        || columns == 0
+        || rows == 0
+        || frame_count == 0
+    {
+        return None;
+    }
+    let max_frames = columns.saturating_mul(rows);
+    let frame_count = frame_count.min(max_frames);
+    if frame_count == 0 {
+        return None;
+    }
+    let fps = scene_property_f64(spritesheet, "fps")
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(12.0);
+    let loop_playback = scene_property_bool(spritesheet, "loop").unwrap_or(true);
+    let frame = ((time_ms as f64 / 1000.0) * fps).floor();
+    let frame_index = if frame.is_finite() && frame >= 0.0 {
+        let frame = frame as u64;
+        if loop_playback {
+            (frame % u64::from(frame_count)) as u32
+        } else {
+            frame.min(u64::from(frame_count - 1)) as u32
+        }
+    } else {
+        0
+    };
+    let column = frame_index % columns;
+    let row = frame_index / columns;
+    SceneTextureRegion {
+        u_min: f64::from(column * frame_width) / f64::from(atlas_width),
+        v_min: f64::from(row * frame_height) / f64::from(atlas_height),
+        u_max: f64::from((column + 1) * frame_width) / f64::from(atlas_width),
+        v_max: f64::from((row + 1) * frame_height) / f64::from(atlas_height),
+        frame_index,
+        frame_count,
+    }
+    .validate()
+}
+
+fn scene_property_u32(object: &serde_json::Map<String, Value>, key: &str) -> Option<u32> {
+    match object.get(key)? {
+        Value::Number(value) => value.as_u64().and_then(|value| u32::try_from(value).ok()),
+        Value::String(value) => value.parse().ok(),
+        _ => None,
+    }
+}
+
+fn scene_property_f64(object: &serde_json::Map<String, Value>, key: &str) -> Option<f64> {
+    match object.get(key)? {
+        Value::Number(value) => value.as_f64(),
+        Value::String(value) => value.parse().ok(),
+        _ => None,
+    }
+}
+
+fn scene_property_bool(object: &serde_json::Map<String, Value>, key: &str) -> Option<bool> {
+    match object.get(key)? {
+        Value::Bool(value) => Some(*value),
+        Value::Number(value) => value.as_i64().map(|value| value != 0),
+        Value::String(value) => match value.to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Some(true),
+            "false" | "0" | "no" | "off" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn apply_scene_animated_value(
@@ -1511,6 +1644,68 @@ mod tests {
         assert_eq!(snapshot.layers[0].width, Some(150.0));
         assert_eq!(snapshot.layers[0].height, Some(100.0));
         assert_eq!(snapshot.layers[0].corner_radius, Some(12.0));
+    }
+
+    #[test]
+    fn spritesheet_properties_drive_time_sampled_texture_region() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                {
+                    "id": "resource-atlas",
+                    "type": "image",
+                    "source": "assets/atlas.png"
+                }
+            ],
+            "nodes": [
+                {
+                    "id": "node-atlas",
+                    "type": "image",
+                    "resource": "resource-atlas",
+                    "properties": {
+                        "spritesheet": {
+                            "type": "atlas-grid",
+                            "atlas_width": 300,
+                            "atlas_height": 400,
+                            "frame_width": 100,
+                            "frame_height": 100,
+                            "columns": 3,
+                            "rows": 4,
+                            "frame_count": 12,
+                            "fps": 12,
+                            "loop": true
+                        }
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let first = document.snapshot_at_with_property_resolver(0, |_| None);
+        assert_eq!(
+            first.layers[0].texture_region,
+            Some(SceneTextureRegion {
+                u_min: 0.0,
+                v_min: 0.0,
+                u_max: 1.0 / 3.0,
+                v_max: 0.25,
+                frame_index: 0,
+                frame_count: 12,
+            })
+        );
+
+        let sixth = document.snapshot_at_with_property_resolver(417, |_| None);
+        assert_eq!(
+            sixth.layers[0].texture_region,
+            Some(SceneTextureRegion {
+                u_min: 2.0 / 3.0,
+                v_min: 0.25,
+                u_max: 1.0,
+                v_max: 0.5,
+                frame_index: 5,
+                frame_count: 12,
+            })
+        );
     }
 
     #[test]

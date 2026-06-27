@@ -130,7 +130,7 @@ pub fn run_vulkanalia_ready_prefix_video(
     width: u32,
     height: u32,
     fit: FitMode,
-    _bitstream_samples: u32,
+    bitstream_samples: u32,
     ready_prefix_frame_count: u32,
     playback_frame_count: u32,
     audio_clock_probe_requested: bool,
@@ -161,7 +161,10 @@ pub fn run_vulkanalia_ready_prefix_video(
         codec,
         NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10
     );
-    let streaming_queue_capacity = native_vulkan_vulkanalia_streaming_packet_queue_capacity();
+    let streaming_queue_capacity = native_vulkan_vulkanalia_streaming_packet_queue_capacity(
+        bitstream_samples,
+        ready_prefix_frame_count,
+    );
     let audio_clock = if audio_clock_probe_requested {
         let mut probe_options = NativeVulkanAudioClockProbeOptions::clock_only(source.clone());
         probe_options.output_mode = audio_output_mode;
@@ -487,7 +490,10 @@ fn duration_ns_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
-fn native_vulkan_vulkanalia_streaming_packet_queue_capacity() -> usize {
+fn native_vulkan_vulkanalia_streaming_packet_queue_capacity(
+    _bitstream_samples: u32,
+    _ready_prefix_frame_count: u32,
+) -> usize {
     NATIVE_VULKAN_PACKET_HANDOFF_FRAMES
 }
 
@@ -655,5 +661,21 @@ mod tests {
         assert_eq!(short, 78);
         assert!(ten_seconds > 1000);
         assert!(ten_seconds <= 4096);
+    }
+
+    #[test]
+    fn streaming_packet_queue_capacity_stays_ffmpeg_handoff_bounded() {
+        assert_eq!(
+            native_vulkan_vulkanalia_streaming_packet_queue_capacity(0, 0),
+            NATIVE_VULKAN_PACKET_HANDOFF_FRAMES
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_streaming_packet_queue_capacity(8, 4),
+            NATIVE_VULKAN_PACKET_HANDOFF_FRAMES
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_streaming_packet_queue_capacity(360, 360),
+            NATIVE_VULKAN_PACKET_HANDOFF_FRAMES
+        );
     }
 }

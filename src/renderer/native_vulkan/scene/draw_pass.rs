@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::core::{FitMode, SceneTextAlign, SceneTransform};
+use crate::core::{FitMode, SceneTextAlign, SceneTextureRegion, SceneTransform};
 
 use super::super::present::render_plan::{
     NativeVulkanSceneDrawOp, NativeVulkanSceneDrawOpKind, NativeVulkanSceneDrawPlan,
@@ -71,6 +71,7 @@ pub(super) struct NativeVulkanSceneSampledImageQuad {
     pub(super) opacity: f64,
     pub(super) width: f64,
     pub(super) height: f64,
+    pub(super) texture_region: Option<SceneTextureRegion>,
     pub(super) transform: SceneTransform,
 }
 
@@ -80,6 +81,7 @@ pub(super) struct NativeVulkanSceneSampledImageRecordingStep {
     pub(super) layer_id: String,
     pub(super) source: PathBuf,
     pub(super) fit: FitMode,
+    pub(super) texture_region: Option<SceneTextureRegion>,
     pub(super) pipeline: &'static str,
     pub(super) resource_index: u32,
     pub(super) first_vertex: u32,
@@ -508,6 +510,7 @@ fn native_vulkan_scene_sampled_image_recording_payload(
                 layer_id: quad.layer_id.clone(),
                 source: quad.source.clone(),
                 fit: quad.fit,
+                texture_region: quad.texture_region,
                 pipeline: "sampled-image-alpha-blend",
                 resource_index,
                 first_vertex,
@@ -1447,7 +1450,20 @@ fn native_vulkan_scene_sampled_image_vertices(
     quad: &NativeVulkanSceneSampledImageQuad,
 ) -> Option<[NativeVulkanSceneSampledImageVertex; 4]> {
     let points = native_vulkan_scene_quad_positions(quad.width, quad.height, quad.transform)?;
-    let uvs = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+    let region = quad.texture_region.unwrap_or(SceneTextureRegion {
+        u_min: 0.0,
+        v_min: 0.0,
+        u_max: 1.0,
+        v_max: 1.0,
+        frame_index: 0,
+        frame_count: 1,
+    });
+    let uvs = [
+        [region.u_min as f32, region.v_min as f32],
+        [region.u_max as f32, region.v_min as f32],
+        [region.u_min as f32, region.v_max as f32],
+        [region.u_max as f32, region.v_max as f32],
+    ];
     let mut vertices = [NativeVulkanSceneSampledImageVertex {
         position: [0.0, 0.0],
         uv: [0.0, 0.0],
@@ -1570,6 +1586,7 @@ fn native_vulkan_scene_sampled_image_quad(
         opacity: op.opacity,
         width: op.width?,
         height: op.height?,
+        texture_region: op.texture_region,
         transform: op.transform,
     })
 }
@@ -1976,7 +1993,7 @@ fn native_vulkan_scene_rgba_from_hex(color: &str, opacity: f64) -> Option<[f32; 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::FitMode;
+    use crate::core::{FitMode, SceneTextureRegion};
 
     fn draw_op(layer_index: usize, kind: NativeVulkanSceneDrawOpKind) -> NativeVulkanSceneDrawOp {
         NativeVulkanSceneDrawOp {
@@ -1985,6 +2002,7 @@ mod tests {
             kind,
             opacity: 1.0,
             source: None,
+            texture_region: None,
             color: None,
             stroke_color: None,
             stroke_width: None,
@@ -2144,6 +2162,45 @@ mod tests {
         assert_eq!(pass_plan.sampled_image_vertices[0].uv, [0.0, 0.0]);
         assert_eq!(pass_plan.sampled_image_vertices[3].uv, [1.0, 1.0]);
         assert_eq!(pass_plan.sampled_image_vertices[0].opacity, 0.75);
+    }
+
+    #[test]
+    fn draw_pass_plan_uses_sampled_image_texture_region_uvs() {
+        let mut image = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
+        image.source = Some(PathBuf::from("/tmp/atlas.png"));
+        image.width = Some(2160.0);
+        image.height = Some(1440.0);
+        image.texture_region = Some(SceneTextureRegion {
+            u_min: 2.0 / 3.0,
+            v_min: 1.0 / 4.0,
+            u_max: 1.0,
+            v_max: 0.5,
+            frame_index: 5,
+            frame_count: 12,
+        });
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 416,
+            draw_ops: vec![image],
+            unsupported_layers: Vec::new(),
+            manifest_preview_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.sampled_image_recording_ready);
+        assert_eq!(
+            pass_plan.sampled_image_recording_steps[0].texture_region,
+            Some(SceneTextureRegion {
+                u_min: 2.0 / 3.0,
+                v_min: 1.0 / 4.0,
+                u_max: 1.0,
+                v_max: 0.5,
+                frame_index: 5,
+                frame_count: 12,
+            })
+        );
+        assert_eq!(pass_plan.sampled_image_vertices[0].uv, [2.0 / 3.0, 0.25]);
+        assert_eq!(pass_plan.sampled_image_vertices[3].uv, [1.0, 0.5]);
     }
 
     #[test]

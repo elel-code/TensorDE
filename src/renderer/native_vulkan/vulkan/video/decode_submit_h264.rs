@@ -643,7 +643,8 @@ mod tests {
                 available: true,
                 source_access_unit_index: Some(3),
                 dpb_slot: Some(1),
-            }],
+            }]
+            .into(),
             available_reference_count: 1,
             missing_reference_count: 0,
             unsupported_reason: None,
@@ -784,7 +785,8 @@ mod tests {
                 available: true,
                 source_access_unit_index: Some(3),
                 dpb_slot: Some(1),
-            }],
+            }]
+            .into(),
             available_reference_count: 1,
             missing_reference_count: 0,
             unsupported_reason: None,

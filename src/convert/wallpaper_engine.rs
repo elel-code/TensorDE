@@ -9,9 +9,10 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const PROJECT_FILE: &str = "project.json";
+const SCENE_PACKAGE_FILE: &str = "scene.pkg";
 const FFMPEG_BINARY: &str = "ffmpeg";
 const FFPROBE_BINARY: &str = "ffprobe";
 const VIDEO_POSTER_WIDTH: u32 = 1920;
@@ -329,6 +330,14 @@ fn convert_scene(
     )?;
 
     report.converted_features.push("scene".to_owned());
+    if let Some(scene_package) = &project.scene_package {
+        push_unique(&mut report.converted_features, "scene-we-package-import");
+        report.warnings.push(format!(
+            "Imported Wallpaper Engine {SCENE_PACKAGE_FILE} {} with {} entries into the first-class gscene conversion path.",
+            scene_package.version,
+            scene_package.entry_count
+        ));
+    }
     record_scene_runtime_gaps(report);
     record_full_scene_runtime_boundary(report, Some(&original_scene.package_path));
     report.warnings.push(format!(
@@ -1121,7 +1130,36 @@ struct SceneDocumentBuildContext {
 struct SceneSourceModelConversion {
     value: Value,
     render_resource: Option<String>,
+    render_properties: Option<Value>,
     original_path: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SceneWeModelFrameSize {
+    width: u32,
+    height: u32,
+}
+
+#[derive(Debug, Clone)]
+struct SceneWeTexImage {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+struct SceneDecodedTexResource {
+    resource_id: String,
+    spritesheet: Option<Value>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SceneWeTexFrameLayout {
+    frame_width: u32,
+    frame_height: u32,
+    columns: u32,
+    rows: u32,
+    frame_count: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2593,6 +2631,11 @@ fn scene_node_from_object(
     {
         node.insert("resource".to_owned(), Value::String(resource.clone()));
     }
+    if let Some(source_model) = &source_model
+        && let Some(properties) = &source_model.render_properties
+    {
+        node.insert("properties".to_owned(), properties.clone());
+    }
     if let Some(source_path) = &source_path {
         if let Some(resource_id) = scene_copy_resource(
             project,
@@ -2815,6 +2858,7 @@ fn scene_source_model_from_object(
         return Some(SceneSourceModelConversion {
             value: Value::Object(model),
             render_resource: None,
+            render_properties: None,
             original_path: model_path,
         });
     };
@@ -2842,14 +2886,16 @@ fn scene_source_model_from_object(
                 report,
                 context,
             ) {
-                let (textures, texture_resources, render_resource) = scene_material_textures(
-                    project,
-                    output_dir,
-                    &material_json,
-                    report,
-                    context,
-                    resources,
-                );
+                let (textures, texture_resources, render_resource, render_properties) =
+                    scene_material_textures(
+                        project,
+                        output_dir,
+                        &material_json,
+                        scene_model_frame_size(model_object),
+                        report,
+                        context,
+                        resources,
+                    );
                 if !textures.is_empty() {
                     model.insert(
                         "textures".to_owned(),
@@ -2878,6 +2924,7 @@ fn scene_source_model_from_object(
                 return Some(SceneSourceModelConversion {
                     value: Value::Object(model),
                     render_resource,
+                    render_properties,
                     original_path: model_path,
                 });
             }
@@ -2898,6 +2945,7 @@ fn scene_source_model_from_object(
     Some(SceneSourceModelConversion {
         value: Value::Object(model),
         render_resource: None,
+        render_properties: None,
         original_path: model_path,
     })
 }
@@ -2907,6 +2955,16 @@ fn scene_model_solid_layer(source_model: Option<&SceneSourceModelConversion>) ->
         .and_then(|model| model.value.get("solid_layer"))
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+fn scene_model_frame_size(model_object: &Map<String, Value>) -> Option<SceneWeModelFrameSize> {
+    let width = model_object.get("width").and_then(value_to_u32)?;
+    let height = model_object.get("height").and_then(value_to_u32)?;
+    if width == 0 || height == 0 {
+        None
+    } else {
+        Some(SceneWeModelFrameSize { width, height })
+    }
 }
 
 fn scene_node_provenance_from_object(
@@ -3152,13 +3210,16 @@ fn scene_material_textures(
     project: &WallpaperEngineProject,
     output_dir: &Path,
     material_json: &Value,
+    frame_size: Option<SceneWeModelFrameSize>,
     report: &mut ConversionReport,
     context: &mut SceneDocumentBuildContext,
     resources: &mut Vec<Value>,
-) -> (Vec<String>, Vec<String>, Option<String>) {
+) -> (Vec<String>, Vec<String>, Option<String>, Option<Value>) {
     let texture_paths = scene_material_texture_paths(material_json);
+    let spritesheet_enabled = scene_material_spritesheet_enabled(material_json);
     let mut texture_resources = Vec::new();
     let mut render_resource = None;
+    let mut render_properties = None;
     for texture in &texture_paths {
         if texture.starts_with("_rt_") {
             scene_push_unsupported(
@@ -3174,7 +3235,7 @@ fn scene_material_textures(
         } else {
             "texture"
         };
-        if let Some(resource) = scene_copy_resource_as(
+        let raw_resource = scene_copy_resource_as(
             project,
             output_dir,
             texture,
@@ -3183,21 +3244,49 @@ fn scene_material_textures(
             report,
             context,
             resources,
-        ) {
+        );
+        if let Some(resource) = raw_resource {
             if render_resource.is_none() && is_image_path(texture) {
                 render_resource = Some(resource.clone());
             }
             texture_resources.push(resource);
-        } else if texture.ends_with(".tex") {
-            scene_push_unsupported(
+        }
+        if texture.ends_with(".tex") {
+            if let Some(decoded) = scene_copy_decoded_tex_resource_as(
+                project,
+                output_dir,
+                texture,
+                frame_size,
+                spritesheet_enabled,
+                report,
                 context,
-                "we-tex-decode",
-                "Wallpaper Engine .tex texture is preserved but not decoded into a native sampled image yet.",
-                Some(texture),
-            );
+                resources,
+            ) {
+                if render_resource.is_none() {
+                    render_resource = Some(decoded.resource_id.clone());
+                }
+                if render_properties.is_none()
+                    && let Some(spritesheet) = decoded.spritesheet
+                {
+                    render_properties = Some(json!({ "spritesheet": spritesheet }));
+                }
+                texture_resources.push(decoded.resource_id);
+            } else {
+                scene_push_unsupported(
+                    context,
+                    "we-tex-decode",
+                    "Wallpaper Engine .tex texture is preserved but not decoded into a native sampled image yet.",
+                    Some(texture),
+                );
+            }
         }
     }
-    (texture_paths, texture_resources, render_resource)
+    (
+        texture_paths,
+        texture_resources,
+        render_resource,
+        render_properties,
+    )
 }
 
 fn scene_material_texture_paths(material_json: &Value) -> Vec<String> {
@@ -3471,6 +3560,392 @@ fn scene_copy_resource_as(
     }
     resources.push(resource);
     Some(resource_id)
+}
+
+fn scene_copy_decoded_tex_resource_as(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    source_path: &str,
+    frame_size: Option<SceneWeModelFrameSize>,
+    spritesheet_enabled: bool,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) -> Option<SceneDecodedTexResource> {
+    let relative = match normalize_relative_path(source_path) {
+        Ok(relative) => relative,
+        Err(err) => {
+            scene_push_unsupported(
+                context,
+                "resource-path",
+                &err.to_string(),
+                Some(source_path),
+            );
+            return None;
+        }
+    };
+    let source = project.root.join(&relative);
+    let bytes = match fs::read(&source) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            report.warnings.push(format!(
+                "Scene .tex resource {source_path:?} was referenced but not read at {}: {err}.",
+                source.display()
+            ));
+            return None;
+        }
+    };
+    let decoded = match scene_decode_we_tex_image(&bytes) {
+        Ok(decoded) => decoded,
+        Err(err) => {
+            report.warnings.push(format!(
+                "Scene .tex resource {source_path:?} could not be decoded as a native RGBA texture: {err}."
+            ));
+            return None;
+        }
+    };
+    let atlas_width = decoded.width;
+    let atlas_height = decoded.height;
+    let layout = scene_we_tex_frame_layout(&decoded, frame_size);
+    let (decoded, role, resource_suffix, spritesheet) = if spritesheet_enabled
+        && layout.frame_count > 1
+    {
+        let spritesheet = json!({
+            "type": "atlas-grid",
+            "atlas_width": atlas_width,
+            "atlas_height": atlas_height,
+            "frame_width": layout.frame_width,
+            "frame_height": layout.frame_height,
+            "columns": layout.columns,
+            "rows": layout.rows,
+            "frame_count": layout.frame_count,
+            "fps": 12.0,
+            "loop": true,
+            "source_format": "wallpaper-engine-spritesheet"
+        });
+        (
+            decoded,
+            "we-material-texture-decoded-atlas",
+            "atlas",
+            Some(spritesheet),
+        )
+    } else {
+        let decoded = match scene_we_tex_crop_first_frame(decoded, layout) {
+            Ok(decoded) => decoded,
+            Err(err) => {
+                report.warnings.push(format!(
+                        "Scene .tex resource {source_path:?} could not be cropped to its model frame: {err}."
+                    ));
+                return None;
+            }
+        };
+        (
+            decoded,
+            "we-material-texture-decoded-frame",
+            "frame-0",
+            None,
+        )
+    };
+    let frame_count = layout.frame_count;
+    if spritesheet_enabled && frame_count > 1 {
+        push_unique(
+            &mut context.converted_features,
+            "scene-we-spritesheet-atlas-runtime",
+        );
+    }
+    let stem = source
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("texture");
+    let resource_id =
+        scene_next_resource_id(context, "image", &format!("{stem}-{resource_suffix}"));
+    let dest_dir = output_dir
+        .join("assets/scene-resources")
+        .join(&context.resource_scope);
+    if let Err(err) = fs::create_dir_all(&dest_dir) {
+        report
+            .errors
+            .push(format!("Failed to create scene resource directory: {err}."));
+        return None;
+    }
+    let dest = dest_dir.join(format!("{resource_id}.png"));
+    if let Err(err) = scene_write_rgba_png(&dest, &decoded) {
+        report.errors.push(format!(
+            "Failed to write decoded scene .tex resource {} to {}: {err}.",
+            source.display(),
+            dest.display()
+        ));
+        return None;
+    }
+    let package_path = path_to_package_string(dest.strip_prefix(output_dir).unwrap_or(&dest));
+    report.generated_assets.push(package_path.clone());
+    resources.push(json!({
+        "id": resource_id,
+        "type": "image",
+        "source": package_path,
+        "original_source": source_path,
+        "role": role
+    }));
+    push_unique(
+        &mut context.converted_features,
+        "scene-we-tex-rgba-frame-decode",
+    );
+    Some(SceneDecodedTexResource {
+        resource_id,
+        spritesheet,
+    })
+}
+
+fn scene_we_tex_frame_layout(
+    image: &SceneWeTexImage,
+    frame_size: Option<SceneWeModelFrameSize>,
+) -> SceneWeTexFrameLayout {
+    let frame_width = frame_size
+        .map(|frame| frame.width)
+        .filter(|width| *width > 0 && *width <= image.width && image.width % *width == 0)
+        .unwrap_or(image.width);
+    let frame_height = frame_size
+        .map(|frame| frame.height)
+        .filter(|height| *height > 0 && *height <= image.height && image.height % *height == 0)
+        .unwrap_or(image.height);
+    let columns = (image.width / frame_width).max(1);
+    let rows = (image.height / frame_height).max(1);
+    let frame_count = columns.saturating_mul(rows).max(1);
+    SceneWeTexFrameLayout {
+        frame_width,
+        frame_height,
+        columns,
+        rows,
+        frame_count,
+    }
+}
+
+fn scene_we_tex_crop_first_frame(
+    image: SceneWeTexImage,
+    layout: SceneWeTexFrameLayout,
+) -> Result<SceneWeTexImage, String> {
+    if layout.frame_width == image.width && layout.frame_height == image.height {
+        return Ok(image);
+    }
+    let row_bytes = usize::try_from(layout.frame_width)
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .ok_or_else(|| "frame row byte count overflowed".to_owned())?;
+    let stride = usize::try_from(image.width)
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .ok_or_else(|| "atlas row byte count overflowed".to_owned())?;
+    let frame_len = scene_rgba_len(layout.frame_width, layout.frame_height)?;
+    let mut rgba = Vec::with_capacity(frame_len);
+    for row in 0..usize::try_from(layout.frame_height)
+        .map_err(|_| "frame height does not fit this platform".to_owned())?
+    {
+        let start = row
+            .checked_mul(stride)
+            .ok_or_else(|| "atlas row offset overflowed".to_owned())?;
+        let end = start
+            .checked_add(row_bytes)
+            .ok_or_else(|| "atlas row range overflowed".to_owned())?;
+        let row = image
+            .rgba
+            .get(start..end)
+            .ok_or_else(|| "decoded atlas is shorter than declared dimensions".to_owned())?;
+        rgba.extend_from_slice(row);
+    }
+    Ok(SceneWeTexImage {
+        width: layout.frame_width,
+        height: layout.frame_height,
+        rgba,
+    })
+}
+
+#[cfg(test)]
+fn scene_we_tex_first_frame(
+    image: SceneWeTexImage,
+    frame_size: Option<SceneWeModelFrameSize>,
+) -> Result<(SceneWeTexImage, u32), String> {
+    let layout = scene_we_tex_frame_layout(&image, frame_size);
+    let frame_count = layout.frame_count;
+    scene_we_tex_crop_first_frame(image, layout).map(|image| (image, frame_count))
+}
+
+fn scene_decode_we_tex_image(bytes: &[u8]) -> Result<SceneWeTexImage, String> {
+    if !bytes.starts_with(b"TEXV0005\0TEXI0001\0") {
+        return Err("unsupported .tex header; expected TEXV0005/TEXI0001".to_owned());
+    }
+    let block_marker = find_bytes(bytes, b"TEXB0004")
+        .ok_or_else(|| "unsupported .tex payload; missing TEXB0004 block".to_owned())?;
+    let width = read_u32_le_at(bytes, block_marker + 25)
+        .ok_or_else(|| "truncated TEXB0004 block width".to_owned())?;
+    let height = read_u32_le_at(bytes, block_marker + 29)
+        .ok_or_else(|| "truncated TEXB0004 block height".to_owned())?;
+    if width == 0 || height == 0 {
+        return Err("TEXB0004 block has zero dimensions".to_owned());
+    }
+    let declared_size = read_u32_le_at(bytes, block_marker + 37)
+        .ok_or_else(|| "truncated TEXB0004 decoded size".to_owned())?;
+    let encoded_size = read_u32_le_at(bytes, block_marker + 41)
+        .ok_or_else(|| "truncated TEXB0004 encoded size".to_owned())?;
+    let expected_len = scene_rgba_len(width, height)?;
+    if usize::try_from(declared_size).ok() != Some(expected_len) {
+        return Err(format!(
+            "TEXB0004 decoded size {declared_size} does not match {width}x{height} RGBA"
+        ));
+    }
+    let payload_offset = block_marker + 45;
+    let encoded_size = usize::try_from(encoded_size)
+        .map_err(|_| "TEXB0004 encoded size does not fit this platform".to_owned())?;
+    let payload_end = payload_offset
+        .checked_add(encoded_size)
+        .ok_or_else(|| "TEXB0004 encoded payload range overflowed".to_owned())?;
+    let payload = bytes
+        .get(payload_offset..payload_end)
+        .ok_or_else(|| "truncated TEXB0004 encoded payload".to_owned())?;
+    let rgba = lz4_block_decode(payload, expected_len)?;
+    Ok(SceneWeTexImage {
+        width,
+        height,
+        rgba,
+    })
+}
+
+fn scene_write_rgba_png(path: &Path, image: &SceneWeTexImage) -> Result<(), String> {
+    let expected_len = scene_rgba_len(image.width, image.height)?;
+    if image.rgba.len() != expected_len {
+        return Err(format!(
+            "RGBA payload has {} bytes, expected {expected_len}",
+            image.rgba.len()
+        ));
+    }
+    let file = fs::File::create(path).map_err(|err| err.to_string())?;
+    let writer = io::BufWriter::new(file);
+    let mut encoder = png::Encoder::new(writer, image.width, image.height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().map_err(|err| err.to_string())?;
+    writer
+        .write_image_data(&image.rgba)
+        .map_err(|err| err.to_string())
+}
+
+fn scene_material_spritesheet_enabled(material_json: &Value) -> bool {
+    material_json
+        .get("passes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .filter_map(|pass| pass.get("combos").and_then(Value::as_object))
+        .any(|combos| {
+            combos.iter().any(|(key, value)| {
+                key.eq_ignore_ascii_case("SPRITESHEET") && scene_combo_value_enabled(value)
+            })
+        })
+}
+
+fn scene_combo_value_enabled(value: &Value) -> bool {
+    value_to_i64(value).is_some_and(|value| value != 0) || value.as_bool().unwrap_or(false)
+}
+
+fn scene_rgba_len(width: u32, height: u32) -> Result<usize, String> {
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "RGBA dimension byte count overflowed".to_owned())?;
+    usize::try_from(pixels).map_err(|_| "RGBA payload does not fit this platform".to_owned())
+}
+
+fn read_u32_le_at(bytes: &[u8], offset: usize) -> Option<u32> {
+    let end = offset.checked_add(4)?;
+    let bytes = bytes.get(offset..end)?;
+    Some(u32::from_le_bytes(bytes.try_into().ok()?))
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn lz4_block_decode(input: &[u8], expected_len: usize) -> Result<Vec<u8>, String> {
+    let mut output = Vec::with_capacity(expected_len);
+    let mut cursor = 0;
+    while cursor < input.len() && output.len() < expected_len {
+        let token = input[cursor];
+        cursor += 1;
+
+        let literal_len = lz4_sequence_length((token >> 4) as usize, input, &mut cursor)?;
+        let literal_end = cursor
+            .checked_add(literal_len)
+            .ok_or_else(|| "LZ4 literal range overflowed".to_owned())?;
+        let literals = input
+            .get(cursor..literal_end)
+            .ok_or_else(|| "LZ4 literal run exceeds encoded payload".to_owned())?;
+        output.extend_from_slice(literals);
+        cursor = literal_end;
+        if output.len() == expected_len {
+            break;
+        }
+        if output.len() > expected_len {
+            return Err("LZ4 literal run exceeded decoded size".to_owned());
+        }
+
+        let offset_end = cursor
+            .checked_add(2)
+            .ok_or_else(|| "LZ4 match offset range overflowed".to_owned())?;
+        let offset_bytes = input
+            .get(cursor..offset_end)
+            .ok_or_else(|| "LZ4 sequence is missing match offset".to_owned())?;
+        let offset = u16::from_le_bytes([offset_bytes[0], offset_bytes[1]]) as usize;
+        cursor = offset_end;
+        if offset == 0 || offset > output.len() {
+            return Err("LZ4 sequence has invalid match offset".to_owned());
+        }
+        let match_len = lz4_sequence_length((token & 0x0f) as usize, input, &mut cursor)?
+            .checked_add(4)
+            .ok_or_else(|| "LZ4 match length overflowed".to_owned())?;
+        if output
+            .len()
+            .checked_add(match_len)
+            .is_none_or(|len| len > expected_len)
+        {
+            return Err("LZ4 match run exceeded decoded size".to_owned());
+        }
+        let start = output.len() - offset;
+        for index in 0..match_len {
+            let value = output[start + index];
+            output.push(value);
+        }
+    }
+    if output.len() != expected_len {
+        return Err(format!(
+            "LZ4 decoded {} bytes, expected {expected_len}",
+            output.len()
+        ));
+    }
+    Ok(output)
+}
+
+fn lz4_sequence_length(base: usize, input: &[u8], cursor: &mut usize) -> Result<usize, String> {
+    let mut length = base;
+    if base != 15 {
+        return Ok(length);
+    }
+    loop {
+        let value = *input
+            .get(*cursor)
+            .ok_or_else(|| "LZ4 extended length exceeds encoded payload".to_owned())?;
+        *cursor += 1;
+        length = length
+            .checked_add(usize::from(value))
+            .ok_or_else(|| "LZ4 extended length overflowed".to_owned())?;
+        if value != 255 {
+            return Ok(length);
+        }
+    }
 }
 
 fn scene_resource_scope(package_path: &str) -> String {
@@ -5146,6 +5621,22 @@ struct WallpaperEngineProject {
     preview_file: Option<String>,
     title: String,
     authors: Vec<String>,
+    scene_package: Option<ScenePackageImport>,
+}
+
+#[derive(Debug)]
+struct ScenePackageImport {
+    version: String,
+    entry_count: usize,
+    staging_root: PathBuf,
+}
+
+#[derive(Debug)]
+struct ScenePackageEntry {
+    source_path: String,
+    relative_path: PathBuf,
+    data_offset: usize,
+    size: usize,
 }
 
 impl WallpaperEngineProject {
@@ -5178,15 +5669,30 @@ impl WallpaperEngineProject {
         let authors = string_field(object, &["author", "creator"])
             .map(|author| vec![author])
             .unwrap_or_default();
+        let mut project_root = root.to_path_buf();
+        let mut scene_package = None;
+        if source_type == SourceType::Scene
+            && wallpaper_engine_scene_entry_missing(root, entry_file.as_deref())
+            && root.join(SCENE_PACKAGE_FILE).is_file()
+        {
+            let imported = extract_wallpaper_engine_scene_package(
+                root,
+                &project_json,
+                preview_file.as_deref(),
+            )?;
+            project_root = imported.staging_root.clone();
+            scene_package = Some(imported);
+        }
 
         Ok(Self {
-            root: root.to_path_buf(),
+            root: project_root,
             raw,
             source_type,
             entry_file,
             preview_file,
             title,
             authors,
+            scene_package,
         })
     }
 
@@ -5221,6 +5727,9 @@ impl WallpaperEngineProject {
         if self.preview_file.is_some() {
             features.insert("preview".to_owned());
         }
+        if self.scene_package.is_some() {
+            features.insert("scene-package".to_owned());
+        }
         collect_feature_hints_from_value(self.source_type, &self.raw, &mut features);
         if let Some(entry_file) = &self.entry_file {
             collect_feature_hints_from_entry(
@@ -5236,6 +5745,225 @@ impl WallpaperEngineProject {
     fn audio_requested(&self) -> bool {
         explicit_audio_request(&self.raw)
     }
+}
+
+impl Drop for WallpaperEngineProject {
+    fn drop(&mut self) {
+        if let Some(scene_package) = &self.scene_package {
+            let _ = fs::remove_dir_all(&scene_package.staging_root);
+        }
+    }
+}
+
+fn wallpaper_engine_scene_entry_missing(root: &Path, entry_file: Option<&str>) -> bool {
+    let Some(entry_file) = entry_file else {
+        return false;
+    };
+    normalize_relative_path(entry_file)
+        .map(|relative| !root.join(relative).is_file())
+        .unwrap_or(false)
+}
+
+fn extract_wallpaper_engine_scene_package(
+    root: &Path,
+    project_json: &str,
+    preview_file: Option<&str>,
+) -> Result<ScenePackageImport, ConversionError> {
+    let package_path = root.join(SCENE_PACKAGE_FILE);
+    let bytes = fs::read(&package_path).map_err(|source| ConversionError::ReadFile {
+        path: package_path.clone(),
+        source,
+    })?;
+    let (version, entries) = parse_wallpaper_engine_scene_package(&bytes)?;
+    let staging_root = create_scene_package_staging_root(root)?;
+    fs::write(staging_root.join(PROJECT_FILE), project_json).map_err(ConversionError::WriteFile)?;
+    copy_scene_package_preview(root, &staging_root, preview_file)?;
+
+    let mut seen_paths = BTreeSet::new();
+    for entry in &entries {
+        if !seen_paths.insert(entry.relative_path.clone()) {
+            return Err(ConversionError::InvalidProject(format!(
+                "{SCENE_PACKAGE_FILE} contains duplicate entry {}",
+                entry.source_path
+            )));
+        }
+        let end = entry
+            .data_offset
+            .checked_add(entry.size)
+            .ok_or_else(|| scene_package_invalid("entry byte range overflowed"))?;
+        let payload = bytes
+            .get(entry.data_offset..end)
+            .ok_or_else(|| scene_package_invalid("entry byte range is outside the package"))?;
+        let dest = staging_root.join(&entry.relative_path);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(ConversionError::CreateDir)?;
+        }
+        fs::write(&dest, payload).map_err(ConversionError::WriteFile)?;
+    }
+
+    Ok(ScenePackageImport {
+        version,
+        entry_count: entries.len(),
+        staging_root,
+    })
+}
+
+fn copy_scene_package_preview(
+    source_root: &Path,
+    staging_root: &Path,
+    preview_file: Option<&str>,
+) -> Result<(), ConversionError> {
+    let Some(preview_file) = preview_file else {
+        return Ok(());
+    };
+    let Ok(relative) = normalize_relative_path(preview_file) else {
+        return Ok(());
+    };
+    let source = source_root.join(&relative);
+    if !source.is_file() {
+        return Ok(());
+    }
+    let dest = staging_root.join(relative);
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(ConversionError::CreateDir)?;
+    }
+    fs::copy(source, dest).map_err(ConversionError::CopyFile)?;
+    Ok(())
+}
+
+fn parse_wallpaper_engine_scene_package(
+    bytes: &[u8],
+) -> Result<(String, Vec<ScenePackageEntry>), ConversionError> {
+    let mut cursor = 0usize;
+    let version_len = scene_package_read_len(bytes, &mut cursor, "version length")?;
+    if version_len == 0 || version_len > 64 {
+        return Err(scene_package_invalid("version length is invalid"));
+    }
+    let version_bytes = scene_package_take(bytes, &mut cursor, version_len, "version")?;
+    let version = std::str::from_utf8(version_bytes)
+        .map_err(|_| scene_package_invalid("version is not UTF-8"))?
+        .to_owned();
+    if !version.starts_with("PKGV") {
+        return Err(scene_package_invalid("version marker is not PKGV"));
+    }
+
+    let file_count = scene_package_read_len(bytes, &mut cursor, "file count")?;
+    if file_count > 100_000 {
+        return Err(scene_package_invalid("file count is unrealistically large"));
+    }
+    let mut parsed_entries = Vec::with_capacity(file_count);
+    for _ in 0..file_count {
+        let path_len = scene_package_read_len(bytes, &mut cursor, "entry path length")?;
+        if path_len == 0 || path_len > 4096 {
+            return Err(scene_package_invalid("entry path length is invalid"));
+        }
+        let path_bytes = scene_package_take(bytes, &mut cursor, path_len, "entry path")?;
+        let source_path = std::str::from_utf8(path_bytes)
+            .map_err(|_| scene_package_invalid("entry path is not UTF-8"))?
+            .to_owned();
+        let relative_path = normalize_relative_path(&source_path)?;
+        let relative_offset = scene_package_read_len(bytes, &mut cursor, "entry offset")?;
+        let size = scene_package_read_len(bytes, &mut cursor, "entry size")?;
+        parsed_entries.push((source_path, relative_path, relative_offset, size));
+    }
+
+    let data_start = cursor;
+    let mut entries = Vec::with_capacity(parsed_entries.len());
+    for (source_path, relative_path, relative_offset, size) in parsed_entries {
+        let data_offset = data_start
+            .checked_add(relative_offset)
+            .ok_or_else(|| scene_package_invalid("entry data offset overflowed"))?;
+        let end = data_offset
+            .checked_add(size)
+            .ok_or_else(|| scene_package_invalid("entry data range overflowed"))?;
+        if end > bytes.len() {
+            return Err(scene_package_invalid(
+                "entry data range is outside the package",
+            ));
+        }
+        entries.push(ScenePackageEntry {
+            source_path,
+            relative_path,
+            data_offset,
+            size,
+        });
+    }
+    Ok((version, entries))
+}
+
+fn scene_package_read_len(
+    bytes: &[u8],
+    cursor: &mut usize,
+    field: &str,
+) -> Result<usize, ConversionError> {
+    let end = cursor
+        .checked_add(4)
+        .ok_or_else(|| scene_package_invalid("package cursor overflowed"))?;
+    let value = bytes
+        .get(*cursor..end)
+        .ok_or_else(|| scene_package_invalid(&format!("{field} is truncated")))?;
+    *cursor = end;
+    let value = u32::from_le_bytes(value.try_into().expect("slice length checked"));
+    usize::try_from(value).map_err(|_| scene_package_invalid(&format!("{field} is too large")))
+}
+
+fn scene_package_take<'a>(
+    bytes: &'a [u8],
+    cursor: &mut usize,
+    len: usize,
+    field: &str,
+) -> Result<&'a [u8], ConversionError> {
+    let end = cursor
+        .checked_add(len)
+        .ok_or_else(|| scene_package_invalid("package cursor overflowed"))?;
+    let value = bytes
+        .get(*cursor..end)
+        .ok_or_else(|| scene_package_invalid(&format!("{field} is truncated")))?;
+    *cursor = end;
+    Ok(value)
+}
+
+fn scene_package_invalid(message: &str) -> ConversionError {
+    ConversionError::InvalidProject(format!("{SCENE_PACKAGE_FILE}: {message}"))
+}
+
+fn create_scene_package_staging_root(root: &Path) -> Result<PathBuf, ConversionError> {
+    let name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("scene")
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let name = if name.is_empty() { "scene" } else { &name };
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    for index in 0..32 {
+        let path = env::temp_dir().join(format!(
+            "gilder-we-scene-pkg-{}-{nanos}-{index}-{name}",
+            std::process::id()
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(ConversionError::CreateDir(err)),
+        }
+    }
+    Err(ConversionError::InvalidProject(format!(
+        "could not create a unique {SCENE_PACKAGE_FILE} staging directory"
+    )))
 }
 
 fn collect_feature_hints_from_entry(
@@ -5667,11 +6395,12 @@ impl FullSceneConversionStatus {
         Self {
             target_runtime: "native-vulkan-full-scene".to_owned(),
             current_runtime: "native-vulkan-scene-runtime".to_owned(),
-            progress_estimate_percent: 90,
-            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE parent ids into gscene children, WE text/value wrappers, visible property bindings, shape/solid/radius objects, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, geometry field animation, and parallax depth into gscene text/property/shape/timeline/camera fields, render clear color into snapshot layers, retained sampled-image resources, clear-background composition, rounded-rectangle/simple/concave-path tessellation, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, and explicit unsupported Wallpaper Engine systems without legacy fallback".to_owned(),
+            progress_estimate_percent: 92,
+            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, WE text/value wrappers, visible property bindings, shape/solid/radius objects, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, geometry field animation, parallax depth, and WE TEXV0005/TEXB0004 RGBA textures including spritesheet atlases into gscene text/property/shape/timeline/camera/image fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, and explicit unsupported Wallpaper Engine systems without legacy fallback".to_owned(),
             source_scene_metadata: Vec::new(),
             completed_boundaries: vec![
                 "package-scene-detection".to_owned(),
+                "wallpaper-engine-scene-pkg-import".to_owned(),
                 "source-scene-metadata-preservation".to_owned(),
                 "first-class-gscene-document".to_owned(),
                 "scene-resource-copy-graph".to_owned(),
@@ -5683,6 +6412,8 @@ impl FullSceneConversionStatus {
                 "wallpaper-engine-deterministic-scenescript-expression-lowering".to_owned(),
                 "wallpaper-engine-geometry-user-property-binding-lowering".to_owned(),
                 "wallpaper-engine-explicit-keyframe-timeline-lowering".to_owned(),
+                "wallpaper-engine-tex-rgba-frame-decode".to_owned(),
+                "scene-we-spritesheet-atlas-runtime".to_owned(),
                 "scene-geometry-field-animation-runtime".to_owned(),
                 "parallax-property-camera-model".to_owned(),
                 "native-vulkan-sampled-image-scene-path".to_owned(),
@@ -5738,6 +6469,10 @@ pub enum ConversionError {
         path: PathBuf,
         source: io::Error,
     },
+    ReadFile {
+        path: PathBuf,
+        source: io::Error,
+    },
     ParseProject {
         path: PathBuf,
         source: serde_json::Error,
@@ -5770,6 +6505,9 @@ impl fmt::Display for ConversionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ReadProject { path, source } => {
+                write!(f, "failed to read {}: {source}", path.display())
+            }
+            Self::ReadFile { path, source } => {
                 write!(f, "failed to read {}: {source}", path.display())
             }
             Self::ParseProject { path, source } => {
@@ -6438,7 +7176,7 @@ void main() {}
         let full_scene = report.full_scene.as_ref().expect("full scene status");
         assert_eq!(full_scene.target_runtime, "native-vulkan-full-scene");
         assert_eq!(full_scene.current_runtime, "native-vulkan-scene-runtime");
-        assert_eq!(full_scene.progress_estimate_percent, 90);
+        assert_eq!(full_scene.progress_estimate_percent, 92);
         assert!(
             full_scene
                 .source_scene_metadata
@@ -6505,6 +7243,21 @@ void main() {}
         assert!(
             full_scene
                 .completed_boundaries
+                .contains(&"wallpaper-engine-tex-rgba-frame-decode".to_owned())
+        );
+        assert!(
+            full_scene
+                .completed_boundaries
+                .contains(&"wallpaper-engine-scene-pkg-import".to_owned())
+        );
+        assert!(
+            full_scene
+                .completed_boundaries
+                .contains(&"scene-we-spritesheet-atlas-runtime".to_owned())
+        );
+        assert!(
+            full_scene
+                .completed_boundaries
                 .contains(&"parallax-property-camera-model".to_owned())
         );
         assert!(
@@ -6538,6 +7291,11 @@ void main() {}
                 .contains(&"package-state-persistence".to_owned())
         );
         assert!(
+            !full_scene
+                .pending_boundaries
+                .contains(&"spritesheet-animation-runtime".to_owned())
+        );
+        assert!(
             report
                 .unsupported_features
                 .contains(&"scene-runtime".to_owned())
@@ -6548,6 +7306,71 @@ void main() {}
                 .contains(&"scene-layers".to_owned())
         );
         assert!(report.detected_features.contains(&"image-layer".to_owned()));
+    }
+
+    #[test]
+    fn converts_wallpaper_engine_scene_pkg_without_preextracted_scene_files() {
+        let source = TestDir::new("we-scene-pkg-source");
+        let output = TestDir::new("we-scene-pkg-output");
+        output.remove();
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Packaged Scene",
+              "file": "scene.json",
+              "preview": "preview.jpg"
+            }"#,
+        );
+        source.write_bytes("preview.jpg", b"preview");
+        source.write_bytes(
+            SCENE_PACKAGE_FILE,
+            &test_scene_pkg(&[
+                (
+                    "scene.json",
+                    br#"{"objects":[{"type":"image","path":"background.png"}]}"#,
+                ),
+                ("background.png", b"not real png"),
+            ]),
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(output.path().join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(manifest["kind"], "scene");
+        assert_eq!(manifest["entry"]["source"], "assets/scene.gscene.json");
+        assert_eq!(manifest["preview"]["poster"], "previews/poster.jpg");
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene["source"]["entry"], "scene.json");
+        assert_eq!(scene["nodes"][0]["resource"], "resource-1-background");
+        assert_eq!(
+            scene["resources"][0]["source"],
+            "assets/scene-resources/scene/resource-1-background.png"
+        );
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .detected_features
+                .contains(&"scene-package".to_owned())
+        );
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-package-import".to_owned())
+        );
+        let full_scene = report.full_scene.as_ref().expect("full scene status");
+        assert!(
+            full_scene
+                .completed_boundaries
+                .contains(&"wallpaper-engine-scene-pkg-import".to_owned())
+        );
     }
 
     #[test]
@@ -6821,6 +7644,128 @@ void main() {}
         assert_eq!(
             scene["nodes"][0]["provenance"]["model"]["texture_resources"][0],
             "resource-3-albedo"
+        );
+    }
+
+    #[test]
+    fn decodes_wallpaper_engine_scene_tex_material_to_renderable_frame_resource() {
+        let rgba = vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 1, 1, 1, 255, 2, 2, 2, 255, 0, 0, 255, 255, 255, 255,
+            0, 255, 3, 3, 3, 255, 4, 4, 4, 255,
+        ];
+        let tex = test_we_tex_rgba(4, 2, &rgba);
+        let decoded = scene_decode_we_tex_image(&tex).unwrap();
+        assert_eq!(decoded.width, 4);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.rgba, rgba);
+        let (frame, frame_count) = scene_we_tex_first_frame(
+            decoded,
+            Some(SceneWeModelFrameSize {
+                width: 2,
+                height: 2,
+            }),
+        )
+        .unwrap();
+        assert_eq!(frame_count, 2);
+        assert_eq!(frame.width, 2);
+        assert_eq!(frame.height, 2);
+        assert_eq!(
+            frame.rgba,
+            vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
+            ]
+        );
+
+        let source = TestDir::new("we-scene-tex-renderable-model-source");
+        let output = TestDir::new("we-scene-tex-renderable-model-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                {
+                  "id": 1,
+                  "name": "Renderable Tex",
+                  "image": "models/renderable.json"
+                }
+              ]
+            }"#,
+        );
+        source.write_file(
+            "models/renderable.json",
+            r#"{ "material": "materials/renderable.json", "width": 2, "height": 2 }"#,
+        );
+        source.write_file(
+            "materials/renderable.json",
+            r#"{ "passes": [{ "textures": ["atlas"], "combos": { "SPRITESHEET": 1 } }] }"#,
+        );
+        source.write_bytes("materials/atlas.tex", &tex);
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Renderable Tex Scene Model",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene["nodes"][0]["type"], "image");
+        assert_eq!(scene["nodes"][0]["resource"], "resource-4-atlas-atlas");
+        assert_eq!(
+            scene["nodes"][0]["properties"]["spritesheet"]["type"],
+            "atlas-grid"
+        );
+        assert_eq!(
+            scene["nodes"][0]["properties"]["spritesheet"]["atlas_width"],
+            4
+        );
+        assert_eq!(
+            scene["nodes"][0]["properties"]["spritesheet"]["frame_width"],
+            2
+        );
+        assert_eq!(
+            scene["nodes"][0]["properties"]["spritesheet"]["frame_count"],
+            2
+        );
+        assert_eq!(scene["resources"][2]["type"], "texture");
+        assert_eq!(scene["resources"][3]["type"], "image");
+        assert_eq!(
+            scene["resources"][3]["source"],
+            "assets/scene-resources/scene/resource-4-atlas-atlas.png"
+        );
+        assert_eq!(
+            scene["resources"][3]["role"],
+            "we-material-texture-decoded-atlas"
+        );
+        assert_eq!(
+            scene["nodes"][0]["provenance"]["model"]["texture_resources"][1],
+            "resource-4-atlas-atlas"
+        );
+        assert!(
+            output
+                .path()
+                .join("assets/scene-resources/scene/resource-4-atlas-atlas.png")
+                .exists()
+        );
+        assert!(scene["unsupported_features"].as_array().unwrap().is_empty());
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-tex-rgba-frame-decode".to_owned())
+        );
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-spritesheet-atlas-runtime".to_owned())
         );
     }
 
@@ -7631,6 +8576,14 @@ void main() {}
             fs::write(path, contents).unwrap();
         }
 
+        fn write_bytes(&self, relative_path: &str, contents: &[u8]) {
+            let path = self.path.join(relative_path);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(path, contents).unwrap();
+        }
+
         fn remove(&self) {
             let _ = fs::remove_dir_all(&self.path);
         }
@@ -7668,5 +8621,68 @@ void main() {}
         }
         make_executable(&temporary_path);
         fs::rename(&temporary_path, path).unwrap();
+    }
+
+    fn test_we_tex_rgba(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+        assert_eq!(rgba.len(), scene_rgba_len(width, height).unwrap());
+        let compressed = test_lz4_literal_block(rgba);
+        let mut bytes = vec![0; 91];
+        bytes[0..8].copy_from_slice(b"TEXV0005");
+        bytes[9..17].copy_from_slice(b"TEXI0001");
+        test_write_u32_le(&mut bytes, 22, 7);
+        test_write_u32_le(&mut bytes, 26, width);
+        test_write_u32_le(&mut bytes, 30, height);
+        test_write_u32_le(&mut bytes, 34, width);
+        test_write_u32_le(&mut bytes, 38, height);
+        bytes[46..54].copy_from_slice(b"TEXB0004");
+        test_write_u32_le(&mut bytes, 55, 1);
+        test_write_u32_le(&mut bytes, 67, 1);
+        test_write_u32_le(&mut bytes, 71, width);
+        test_write_u32_le(&mut bytes, 75, height);
+        test_write_u32_le(&mut bytes, 79, 1);
+        test_write_u32_le(&mut bytes, 83, u32::try_from(rgba.len()).unwrap());
+        test_write_u32_le(&mut bytes, 87, u32::try_from(compressed.len()).unwrap());
+        bytes.extend_from_slice(&compressed);
+        bytes
+    }
+
+    fn test_scene_pkg(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let version = b"PKGV0023";
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(version.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(version);
+        bytes.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        let mut payload = Vec::new();
+        for (path, contents) in entries {
+            bytes.extend_from_slice(&(path.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(path.as_bytes());
+            bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&(contents.len() as u32).to_le_bytes());
+            payload.extend_from_slice(contents);
+        }
+        bytes.extend_from_slice(&payload);
+        bytes
+    }
+
+    fn test_lz4_literal_block(bytes: &[u8]) -> Vec<u8> {
+        let mut output = Vec::with_capacity(bytes.len() + 8);
+        let literal_len = bytes.len();
+        if literal_len < 15 {
+            output.push((literal_len as u8) << 4);
+        } else {
+            output.push(0xf0);
+            let mut remaining = literal_len - 15;
+            while remaining >= 255 {
+                output.push(255);
+                remaining -= 255;
+            }
+            output.push(remaining as u8);
+        }
+        output.extend_from_slice(bytes);
+        output
+    }
+
+    fn test_write_u32_le(bytes: &mut [u8], offset: usize, value: u32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
 }

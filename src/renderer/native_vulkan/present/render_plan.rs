@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::core::{FitMode, SceneNodeKind, SceneTextAlign, SceneTransform};
+use crate::core::{FitMode, SceneNodeKind, SceneTextAlign, SceneTextureRegion, SceneTransform};
 use crate::renderer::{SceneDisplayPlan, SceneRenderLayer};
 
 use super::super::NativeVulkanClearColor;
@@ -100,6 +100,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneDrawOp {
     pub(in crate::renderer::native_vulkan) kind: NativeVulkanSceneDrawOpKind,
     pub(in crate::renderer::native_vulkan) opacity: f64,
     pub(in crate::renderer::native_vulkan) source: Option<PathBuf>,
+    pub(in crate::renderer::native_vulkan) texture_region: Option<SceneTextureRegion>,
     pub(in crate::renderer::native_vulkan) color: Option<String>,
     pub(in crate::renderer::native_vulkan) stroke_color: Option<String>,
     pub(in crate::renderer::native_vulkan) stroke_width: Option<f64>,
@@ -180,6 +181,7 @@ fn native_vulkan_scene_draw_layers(
                 kind,
                 opacity: layer.opacity.clamp(0.0, 1.0),
                 source: layer.source.clone(),
+                texture_region: layer.texture_region,
                 color: layer.color.clone(),
                 stroke_color: layer.stroke_color.clone(),
                 stroke_width: layer.stroke_width,

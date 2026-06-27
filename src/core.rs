@@ -24,6 +24,6 @@ pub use scene::{
     SceneAnimatedProperty, SceneCurve, SceneDocument, SceneError, SceneKeyframe,
     SceneNativeLowering, SceneNode, SceneNodeKind, SceneProfile, ScenePropertyBinding,
     SceneResource, SceneResourceKind, SceneSize, SceneSourceMetadata, SceneSystemStatus,
-    SceneSystems, SceneTextAlign, SceneTimeline, SceneTimelineChannel, SceneTransform,
-    SceneUnsupportedFeature,
+    SceneSystems, SceneTextAlign, SceneTextureRegion, SceneTimeline, SceneTimelineChannel,
+    SceneTransform, SceneUnsupportedFeature,
 };

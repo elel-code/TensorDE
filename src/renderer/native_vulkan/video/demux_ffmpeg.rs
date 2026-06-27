@@ -962,6 +962,7 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit + Send + 'static>
         let source = source.to_path_buf();
         let worker = thread::Builder::new()
             .name(format!("gilder-ffmpeg-{}-read-thread", A::CODEC_LABEL))
+            .stack_size(128 * 1024)
             .spawn(move || {
                 native_vulkan_ffmpeg_streaming_packet_worker::<A>(
                     source.as_path(),

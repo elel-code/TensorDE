@@ -14,8 +14,8 @@ use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPo
 use crate::core::manifest::{Manifest, PropertySpec, Variant};
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
-    SceneDocument, SceneNodeKind, SceneTextAlign, SceneTransform, Transition, WallpaperEntry,
-    WallpaperPackage,
+    SceneDocument, SceneNodeKind, SceneTextAlign, SceneTextureRegion, SceneTransform, Transition,
+    WallpaperEntry, WallpaperPackage,
 };
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot, PowerState};
 use crate::policy::{PerformanceDecision, RenderMode};
@@ -102,6 +102,7 @@ pub struct SceneRenderLayer {
     pub id: String,
     pub kind: SceneNodeKind,
     pub source: Option<PathBuf>,
+    pub texture_region: Option<SceneTextureRegion>,
     pub color: Option<String>,
     pub stroke_color: Option<String>,
     pub stroke_width: Option<f64>,
@@ -1492,6 +1493,7 @@ fn scene_wallpaper_plan(
             id: layer.id,
             kind: layer.kind,
             source: layer.source.map(|source| source.join_to(&package.root)),
+            texture_region: layer.texture_region,
             color: layer.color,
             stroke_color: layer.stroke_color,
             stroke_width: layer.stroke_width,

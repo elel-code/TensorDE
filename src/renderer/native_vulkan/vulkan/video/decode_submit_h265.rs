@@ -183,8 +183,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_h265_
     }
     if !entry.ready_for_decode_submit {
         return Err(format!(
-            "Vulkanalia H.265 AU {} is not ready for decode submit",
-            entry.access_unit_index
+            "Vulkanalia H.265 AU {} is not ready for decode submit: {}",
+            entry.access_unit_index,
+            entry
+                .unsupported_reason
+                .as_deref()
+                .unwrap_or("missing references")
         ));
     }
     let current_poc = entry.current_poc.ok_or_else(|| {
@@ -597,10 +601,12 @@ mod tests {
                 available: true,
                 source_access_unit_index: Some(3),
                 dpb_slot: Some(1),
-            }],
+            }]
+            .into(),
             available_reference_count: 1,
             missing_reference_count: 0,
             missing_reference_pocs: Vec::new(),
+            unsupported_reason: None,
             ready_for_decode_submit: true,
         };
         let first_slice = test_h265_slice(false, false);
@@ -666,10 +672,12 @@ mod tests {
                     source_access_unit_index: Some(10),
                     dpb_slot: Some(3),
                 },
-            ],
+            ]
+            .into(),
             available_reference_count: 2,
             missing_reference_count: 0,
             missing_reference_pocs: Vec::new(),
+            unsupported_reason: None,
             ready_for_decode_submit: true,
         };
         let first_slice = test_h265_slice(false, false);
@@ -751,10 +759,12 @@ mod tests {
                 available: true,
                 source_access_unit_index: Some(7),
                 dpb_slot: None,
-            }],
+            }]
+            .into(),
             available_reference_count: 1,
             missing_reference_count: 0,
             missing_reference_pocs: Vec::new(),
+            unsupported_reason: None,
             ready_for_decode_submit: true,
         };
 

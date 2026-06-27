@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::path::PathBuf;
 
-use crate::core::{FitMode, SceneTextAlign, SceneTransform};
+use crate::core::{FitMode, SceneTextAlign, SceneTextureRegion, SceneTransform};
 
 use super::super::present::render_item::NativeVulkanRenderItem;
 use super::super::present::render_plan::NativeVulkanSceneDrawPlan;
@@ -289,6 +289,7 @@ pub struct NativeVulkanSceneDrawOpSnapshot {
     pub kind: &'static str,
     pub opacity: f64,
     pub source: Option<PathBuf>,
+    pub texture_region: Option<SceneTextureRegion>,
     pub color: Option<String>,
     pub stroke_color: Option<String>,
     pub stroke_width: Option<f64>,
@@ -352,6 +353,7 @@ pub struct NativeVulkanSceneSampledImageQuadSnapshot {
     pub layer_id: String,
     pub source: PathBuf,
     pub fit: FitMode,
+    pub texture_region: Option<SceneTextureRegion>,
     pub opacity: f64,
     pub width: f64,
     pub height: f64,
@@ -364,6 +366,7 @@ pub struct NativeVulkanSceneSampledImageRecordingStepSnapshot {
     pub layer_id: String,
     pub source: PathBuf,
     pub fit: FitMode,
+    pub texture_region: Option<SceneTextureRegion>,
     pub pipeline: &'static str,
     pub resource_index: u32,
     pub first_vertex: u32,
@@ -533,6 +536,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 layer_id: quad.layer_id,
                 source: quad.source,
                 fit: quad.fit,
+                texture_region: quad.texture_region,
                 opacity: quad.opacity,
                 width: quad.width,
                 height: quad.height,
@@ -551,6 +555,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 layer_id: step.layer_id,
                 source: step.source,
                 fit: step.fit,
+                texture_region: step.texture_region,
                 pipeline: step.pipeline,
                 resource_index: step.resource_index,
                 first_vertex: step.first_vertex,
@@ -607,6 +612,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 kind: op.kind.as_str(),
                 opacity: op.opacity,
                 source: op.source,
+                texture_region: op.texture_region,
                 color: op.color,
                 stroke_color: op.stroke_color,
                 stroke_width: op.stroke_width,
@@ -777,6 +783,13 @@ fn native_vulkan_full_scene_runtime_snapshot(
     if pass_plan.sampled_image_op_count > 0 && sampled_image_native_layer_count > 0 {
         completed_boundaries.push("sampled-image-scene-composition");
     }
+    if pass_plan
+        .sampled_image_recording_steps
+        .iter()
+        .any(|step| step.texture_region.is_some())
+    {
+        completed_boundaries.push("scene-we-spritesheet-atlas-runtime");
+    }
     if video_native_layer_count > 0 {
         completed_boundaries.push("vulkan-video-scene-layer-composition");
     }
@@ -815,9 +828,9 @@ fn native_vulkan_full_scene_runtime_snapshot(
     NativeVulkanFullSceneRuntimeSnapshot {
         target_runtime: "native-vulkan-full-scene",
         current_runtime: "native-vulkan-scene-runtime",
-        progress_estimate_percent: 90,
+        progress_estimate_percent: 92,
         full_scene_complete: false,
-        execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries with scene timeline animation, geometry field animation, deterministic SceneScript expression lowering, parallax property camera input, property update, pause/resume policy, state persistence, and converted keyframe timeline input boundaries; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
+        execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries with scene timeline animation, geometry field animation, deterministic SceneScript expression lowering, parallax property camera input, property update, pause/resume policy, state persistence, converted keyframe timeline input, converted WE .tex image resources, and spritesheet atlas UV-frame animation; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
         native_scene_graph_lowering_ready: plan.native_draw_ready(),
         native_present_route_ready: pass_plan.backend_ready,
         retained_resource_model_ready,
@@ -905,6 +918,7 @@ mod tests {
             id: id.to_owned(),
             kind,
             source: None,
+            texture_region: None,
             color: None,
             stroke_color: None,
             stroke_width: None,
@@ -1223,7 +1237,7 @@ mod tests {
             snapshot.full_scene.current_runtime,
             "native-vulkan-scene-runtime"
         );
-        assert_eq!(snapshot.full_scene.progress_estimate_percent, 90);
+        assert_eq!(snapshot.full_scene.progress_estimate_percent, 92);
         assert!(!snapshot.full_scene.full_scene_complete);
         assert!(snapshot.full_scene.timeline_snapshot_runtime_ready);
         assert_eq!(snapshot.full_scene.timeline_snapshot_time_ms, 1234);

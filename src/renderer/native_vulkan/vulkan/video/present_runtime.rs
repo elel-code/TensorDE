@@ -131,7 +131,7 @@ const FFMPEG_FFPLAY_FRAME_QUEUE_REFERENCE: &str =
     "references/ffmpeg/fftools/ffplay.c:125-179,2205-2210";
 const FFMPEG_AV_SYNC_THRESHOLD_MAX: Duration = Duration::from_millis(100);
 const DECODED_IMAGE_PRESENT_SLOW_FRAME_THRESHOLD_MICROS: u64 = 6_250;
-const DECODED_IMAGE_PRESENT_SLOW_FRAME_TELEMETRY_LIMIT: usize = 16;
+const DECODED_IMAGE_PRESENT_SLOW_FRAME_TELEMETRY_LIMIT: usize = 0;
 const VIDEO_PRESENT_SLEEP_GUARD: Duration = Duration::from_micros(300);
 const VIDEO_PRESENT_SPIN_GUARD: Duration = Duration::from_micros(80);
 
@@ -606,13 +606,33 @@ fn native_vulkan_vulkanalia_next_h264_streaming_frame(
     );
     entry.pts_ms = pts_ns.map(|pts| pts / 1_000_000).or(snapshot.pts_ms);
     if !entry.ready_for_decode_submit {
+        let references = entry
+            .references
+            .iter()
+            .map(|reference| {
+                format!(
+                    "frame_num={} slot={:?} available={} source_au={:?}",
+                    reference.frame_num,
+                    reference.dpb_slot,
+                    reference.available,
+                    reference.source_access_unit_index
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
         return Err(format!(
-            "Vulkanalia H.264 streaming AU {} is not decode-ready: {}",
+            "Vulkanalia H.264 streaming AU {} is not decode-ready: {}; frame_num={:?}; requested_refs={}; available_refs={}; missing_refs={}; planned_output_slot={}; refs=[{}]",
             entry.access_unit_index,
             entry
                 .unsupported_reason
                 .as_deref()
-                .unwrap_or("missing references")
+                .unwrap_or("missing references"),
+            entry.current_frame_num,
+            entry.requested_reference_count,
+            entry.available_reference_count,
+            entry.missing_reference_count,
+            entry.planned_output_slot,
+            references
         ));
     }
     if let Some(err) = &snapshot.first_slice_parse_error {

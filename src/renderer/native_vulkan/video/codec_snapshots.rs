@@ -6,7 +6,9 @@ use serde::ser::SerializeSeq;
 use serde::{Serialize, Serializer};
 
 const NATIVE_VULKAN_H264_INLINE_SLICE_OFFSETS: usize = 32;
+const NATIVE_VULKAN_H264_INLINE_DECODE_REFERENCES: usize = 4;
 const NATIVE_VULKAN_H265_INLINE_REFERENCE_DELTAS: usize = 4;
+const NATIVE_VULKAN_H265_INLINE_DECODE_REFERENCES: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanH264SliceOffsets {
@@ -399,7 +401,7 @@ pub struct NativeVulkanH264DecodeReferencePlanEntrySnapshot {
     pub long_term_reference_conversions: Vec<NativeVulkanH264LongTermReferenceConversionSnapshot>,
     pub dropped_reference_slots: Vec<u32>,
     pub requested_reference_count: u32,
-    pub references: Vec<NativeVulkanH264DecodeReferenceSnapshot>,
+    pub references: NativeVulkanH264DecodeReferences,
     pub available_reference_count: u32,
     pub missing_reference_count: u32,
     pub unsupported_reason: Option<String>,
@@ -416,7 +418,7 @@ pub struct NativeVulkanH264InferredNonExistingReferenceSnapshot {
     pub dpb_slot: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanH264DecodeReferenceSnapshot {
     pub frame_num: u16,
     pub field_pic_flag: bool,
@@ -430,6 +432,140 @@ pub struct NativeVulkanH264DecodeReferenceSnapshot {
     pub available: bool,
     pub source_access_unit_index: Option<u32>,
     pub dpb_slot: Option<u32>,
+}
+
+impl NativeVulkanH264DecodeReferenceSnapshot {
+    const EMPTY: Self = Self {
+        frame_num: 0,
+        field_pic_flag: false,
+        bottom_field_flag: false,
+        used_for_long_term_reference: false,
+        long_term_frame_idx: None,
+        long_term_pic_num: None,
+        non_existing: false,
+        pic_order_cnt_val: 0,
+        pic_order_cnt: [0, 0],
+        available: false,
+        source_access_unit_index: None,
+        dpb_slot: None,
+    };
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeVulkanH264DecodeReferences {
+    inline: [NativeVulkanH264DecodeReferenceSnapshot; NATIVE_VULKAN_H264_INLINE_DECODE_REFERENCES],
+    len: u8,
+    overflow: Vec<NativeVulkanH264DecodeReferenceSnapshot>,
+}
+
+impl NativeVulkanH264DecodeReferences {
+    pub fn new() -> Self {
+        Self {
+            inline: [NativeVulkanH264DecodeReferenceSnapshot::EMPTY;
+                NATIVE_VULKAN_H264_INLINE_DECODE_REFERENCES],
+            len: 0,
+            overflow: Vec::new(),
+        }
+    }
+
+    pub fn from_vec(values: Vec<NativeVulkanH264DecodeReferenceSnapshot>) -> Self {
+        if values.len() > NATIVE_VULKAN_H264_INLINE_DECODE_REFERENCES {
+            return Self {
+                inline: [NativeVulkanH264DecodeReferenceSnapshot::EMPTY;
+                    NATIVE_VULKAN_H264_INLINE_DECODE_REFERENCES],
+                len: 0,
+                overflow: values,
+            };
+        }
+
+        let mut references = Self::new();
+        for value in values {
+            references.push(value);
+        }
+        references
+    }
+
+    pub fn push(&mut self, value: NativeVulkanH264DecodeReferenceSnapshot) {
+        if !self.overflow.is_empty() {
+            self.overflow.push(value);
+            return;
+        }
+
+        let len = usize::from(self.len);
+        if len < NATIVE_VULKAN_H264_INLINE_DECODE_REFERENCES {
+            self.inline[len] = value;
+            self.len += 1;
+            return;
+        }
+
+        self.overflow =
+            Vec::with_capacity(NATIVE_VULKAN_H264_INLINE_DECODE_REFERENCES.saturating_mul(2));
+        self.overflow
+            .extend_from_slice(&self.inline[..NATIVE_VULKAN_H264_INLINE_DECODE_REFERENCES]);
+        self.overflow.push(value);
+        self.len = 0;
+    }
+
+    pub fn as_slice(&self) -> &[NativeVulkanH264DecodeReferenceSnapshot] {
+        if self.overflow.is_empty() {
+            &self.inline[..usize::from(self.len)]
+        } else {
+            &self.overflow
+        }
+    }
+}
+
+impl Default for NativeVulkanH264DecodeReferences {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl From<Vec<NativeVulkanH264DecodeReferenceSnapshot>> for NativeVulkanH264DecodeReferences {
+    fn from(values: Vec<NativeVulkanH264DecodeReferenceSnapshot>) -> Self {
+        Self::from_vec(values)
+    }
+}
+
+impl FromIterator<NativeVulkanH264DecodeReferenceSnapshot> for NativeVulkanH264DecodeReferences {
+    fn from_iter<T: IntoIterator<Item = NativeVulkanH264DecodeReferenceSnapshot>>(iter: T) -> Self {
+        let mut references = Self::new();
+        for value in iter {
+            references.push(value);
+        }
+        references
+    }
+}
+
+impl Deref for NativeVulkanH264DecodeReferences {
+    type Target = [NativeVulkanH264DecodeReferenceSnapshot];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl<'a> IntoIterator for &'a NativeVulkanH264DecodeReferences {
+    type Item = &'a NativeVulkanH264DecodeReferenceSnapshot;
+    type IntoIter = std::slice::Iter<'a, NativeVulkanH264DecodeReferenceSnapshot>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.as_slice().iter()
+    }
+}
+
+impl Serialize for NativeVulkanH264DecodeReferences {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let values = self.as_slice();
+        let mut seq = serializer.serialize_seq(Some(values.len()))?;
+        for value in values {
+            seq.serialize_element(value)?;
+        }
+        seq.end()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -705,14 +841,15 @@ pub struct NativeVulkanH265DecodeReferencePlanEntrySnapshot {
     pub planned_output_slot: u32,
     pub setup_slot_index: Option<i32>,
     pub evicted_poc: Option<i32>,
-    pub references: Vec<NativeVulkanH265DecodeReferenceSnapshot>,
+    pub references: NativeVulkanH265DecodeReferences,
     pub available_reference_count: u32,
     pub missing_reference_count: u32,
     pub missing_reference_pocs: Vec<i32>,
+    pub unsupported_reason: Option<String>,
     pub ready_for_decode_submit: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanH265DecodeReferenceSnapshot {
     pub delta_poc: i32,
     pub poc: i32,
@@ -720,6 +857,134 @@ pub struct NativeVulkanH265DecodeReferenceSnapshot {
     pub available: bool,
     pub source_access_unit_index: Option<u32>,
     pub dpb_slot: Option<u32>,
+}
+
+impl NativeVulkanH265DecodeReferenceSnapshot {
+    const EMPTY: Self = Self {
+        delta_poc: 0,
+        poc: 0,
+        used_for_long_term_reference: false,
+        available: false,
+        source_access_unit_index: None,
+        dpb_slot: None,
+    };
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeVulkanH265DecodeReferences {
+    inline: [NativeVulkanH265DecodeReferenceSnapshot; NATIVE_VULKAN_H265_INLINE_DECODE_REFERENCES],
+    len: u8,
+    overflow: Vec<NativeVulkanH265DecodeReferenceSnapshot>,
+}
+
+impl NativeVulkanH265DecodeReferences {
+    pub fn new() -> Self {
+        Self {
+            inline: [NativeVulkanH265DecodeReferenceSnapshot::EMPTY;
+                NATIVE_VULKAN_H265_INLINE_DECODE_REFERENCES],
+            len: 0,
+            overflow: Vec::new(),
+        }
+    }
+
+    pub fn from_vec(values: Vec<NativeVulkanH265DecodeReferenceSnapshot>) -> Self {
+        if values.len() > NATIVE_VULKAN_H265_INLINE_DECODE_REFERENCES {
+            return Self {
+                inline: [NativeVulkanH265DecodeReferenceSnapshot::EMPTY;
+                    NATIVE_VULKAN_H265_INLINE_DECODE_REFERENCES],
+                len: 0,
+                overflow: values,
+            };
+        }
+
+        let mut references = Self::new();
+        for value in values {
+            references.push(value);
+        }
+        references
+    }
+
+    pub fn push(&mut self, value: NativeVulkanH265DecodeReferenceSnapshot) {
+        if !self.overflow.is_empty() {
+            self.overflow.push(value);
+            return;
+        }
+
+        let len = usize::from(self.len);
+        if len < NATIVE_VULKAN_H265_INLINE_DECODE_REFERENCES {
+            self.inline[len] = value;
+            self.len += 1;
+            return;
+        }
+
+        self.overflow =
+            Vec::with_capacity(NATIVE_VULKAN_H265_INLINE_DECODE_REFERENCES.saturating_mul(2));
+        self.overflow
+            .extend_from_slice(&self.inline[..NATIVE_VULKAN_H265_INLINE_DECODE_REFERENCES]);
+        self.overflow.push(value);
+        self.len = 0;
+    }
+
+    pub fn as_slice(&self) -> &[NativeVulkanH265DecodeReferenceSnapshot] {
+        if self.overflow.is_empty() {
+            &self.inline[..usize::from(self.len)]
+        } else {
+            &self.overflow
+        }
+    }
+}
+
+impl Default for NativeVulkanH265DecodeReferences {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl From<Vec<NativeVulkanH265DecodeReferenceSnapshot>> for NativeVulkanH265DecodeReferences {
+    fn from(values: Vec<NativeVulkanH265DecodeReferenceSnapshot>) -> Self {
+        Self::from_vec(values)
+    }
+}
+
+impl FromIterator<NativeVulkanH265DecodeReferenceSnapshot> for NativeVulkanH265DecodeReferences {
+    fn from_iter<T: IntoIterator<Item = NativeVulkanH265DecodeReferenceSnapshot>>(iter: T) -> Self {
+        let mut references = Self::new();
+        for value in iter {
+            references.push(value);
+        }
+        references
+    }
+}
+
+impl Deref for NativeVulkanH265DecodeReferences {
+    type Target = [NativeVulkanH265DecodeReferenceSnapshot];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl<'a> IntoIterator for &'a NativeVulkanH265DecodeReferences {
+    type Item = &'a NativeVulkanH265DecodeReferenceSnapshot;
+    type IntoIter = std::slice::Iter<'a, NativeVulkanH265DecodeReferenceSnapshot>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.as_slice().iter()
+    }
+}
+
+impl Serialize for NativeVulkanH265DecodeReferences {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let values = self.as_slice();
+        let mut seq = serializer.serialize_seq(Some(values.len()))?;
+        for value in values {
+            seq.serialize_element(value)?;
+        }
+        seq.end()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -153,8 +153,17 @@ fn native_vulkan_h264_bitstream_extract_from_queue(
             })
             .unwrap_or_else(|| format!("H.264 AU {} has no parsed first slice", access_unit.index))
     });
-    let max_h264_dpb_slots = native_vulkan_h264_sps_dpb_slot_count(&parameter_sets.sps).max(2);
-    let max_h264_references = parameter_sets.sps.max_num_ref_frames.max(1);
+    let max_h264_references = parameter_sets
+        .sps
+        .max_num_ref_frames
+        .max(native_vulkan_h264_access_units_max_active_references(
+            &h264_access_units,
+        ))
+        .max(1);
+    let max_h264_dpb_slots = native_vulkan_h264_streaming_dpb_slot_budget(
+        native_vulkan_h264_sps_dpb_slot_count(&parameter_sets.sps),
+        max_h264_references,
+    );
     let max_h264_frame_num = native_vulkan_h264_sps_max_frame_num(&parameter_sets.sps);
     let (h264_reference_plan_dpb_slots, h264_decode_reference_plan) =
         native_vulkan_h264_min_decodable_dpb_plan_with_gaps(

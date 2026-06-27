@@ -22,19 +22,30 @@ fn main() {
             "libavformat",
             "libavcodec",
             "libavutil",
-            "libswresample",
-            "libpipewire-0.3",
         ])
         .output()
         .expect("run pkg-config for FFmpeg");
     if !pkg_config.status.success() {
         panic!(
-            "pkg-config libavformat/libavcodec/libavutil/libswresample/libpipewire-0.3 failed: {}",
+            "pkg-config libavformat/libavcodec/libavutil failed: {}",
             String::from_utf8_lossy(&pkg_config.stderr)
         );
     }
     let pkg_flags = String::from_utf8(pkg_config.stdout).expect("pkg-config output is UTF-8");
-    let flags = pkg_flags.split_whitespace().collect::<Vec<_>>();
+    let mut flags = pkg_flags.split_whitespace().collect::<Vec<_>>();
+
+    let audio_cflags = Command::new("pkg-config")
+        .args(["--cflags", "libpipewire-0.3", "libswresample"])
+        .output()
+        .expect("run pkg-config for audio cflags");
+    if !audio_cflags.status.success() {
+        panic!(
+            "pkg-config libpipewire-0.3/libswresample --cflags failed: {}",
+            String::from_utf8_lossy(&audio_cflags.stderr)
+        );
+    }
+    let audio_cflags = String::from_utf8(audio_cflags.stdout).expect("pkg-config output is UTF-8");
+    flags.extend(audio_cflags.split_whitespace());
 
     let mut cc = Command::new("cc");
     cc.args(["-std=c11", "-fPIC", "-O2", "-c"]);
@@ -69,6 +80,7 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=gilder_demux_ffmpeg_shim");
+    println!("cargo:rustc-link-lib=dl");
     for flag in flags {
         if let Some(lib) = flag.strip_prefix("-l") {
             println!("cargo:rustc-link-lib={lib}");

@@ -128,6 +128,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
             id: "static-image".to_owned(),
             kind: SceneNodeKind::Image,
             source: Some(plan.source.clone()),
+            texture_region: None,
             color: None,
             stroke_color: None,
             stroke_width: None,

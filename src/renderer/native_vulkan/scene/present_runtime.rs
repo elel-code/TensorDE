@@ -264,6 +264,7 @@ mod tests {
             id: id.to_owned(),
             kind,
             source: None,
+            texture_region: None,
             color: None,
             stroke_color: None,
             stroke_width: None,
