@@ -9,6 +9,9 @@ use std::path::PathBuf;
 
 #[cfg(feature = "native-vulkan-renderer")]
 fn main() {
+    #[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
+    native_vulkan_video_allocator_env_bootstrap();
+
     if let Err(err) = run() {
         eprintln!("gilder-native-vulkan: {err}");
         std::process::exit(1);
@@ -19,6 +22,76 @@ fn main() {
 fn main() {
     eprintln!("gilder-native-vulkan requires native-vulkan-renderer feature");
     std::process::exit(1);
+}
+
+#[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
+fn native_vulkan_video_allocator_env_bootstrap() {
+    const BOOTSTRAPPED: &str = "GILDER_NATIVE_VULKAN_ALLOCATOR_BOOTSTRAPPED";
+    const REQUIRED_ENV: &[(&str, &str)] = &[
+        ("MALLOC_ARENA_MAX", "1"),
+        ("MALLOC_MMAP_THRESHOLD_", "131072"),
+        ("MALLOC_TRIM_THRESHOLD_", "0"),
+        ("MALLOC_TOP_PAD_", "0"),
+    ];
+
+    let mut needs_reexec = REQUIRED_ENV
+        .iter()
+        .any(|(name, value)| std::env::var(name).as_deref() != Ok(*value));
+    needs_reexec |= !native_vulkan_video_glibc_tcache_disabled();
+
+    if !needs_reexec {
+        return;
+    }
+    if std::env::var_os(BOOTSTRAPPED).as_deref() == Some(std::ffi::OsStr::new("1")) {
+        eprintln!("gilder-native-vulkan: allocator bootstrap environment was not applied");
+        std::process::exit(127);
+    }
+
+    let executable = match std::env::current_exe() {
+        Ok(executable) => executable,
+        Err(err) => {
+            eprintln!(
+                "gilder-native-vulkan: failed to locate executable for allocator bootstrap: {err}"
+            );
+            std::process::exit(127);
+        }
+    };
+    let mut command = std::process::Command::new(executable);
+    command.args(std::env::args_os().skip(1));
+    command.env(BOOTSTRAPPED, "1");
+    for (name, value) in REQUIRED_ENV {
+        command.env(name, value);
+    }
+    command.env(
+        "GLIBC_TUNABLES",
+        native_vulkan_video_glibc_tunables_with_tcache_disabled(),
+    );
+
+    use std::os::unix::process::CommandExt;
+    let err = command.exec();
+    eprintln!("gilder-native-vulkan: failed to exec allocator-bootstrapped process: {err}");
+    std::process::exit(127);
+}
+
+#[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
+fn native_vulkan_video_glibc_tcache_disabled() -> bool {
+    std::env::var("GLIBC_TUNABLES").ok().is_some_and(|value| {
+        value
+            .split(':')
+            .any(|entry| entry == "glibc.malloc.tcache_count=0")
+    })
+}
+
+#[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
+fn native_vulkan_video_glibc_tunables_with_tcache_disabled() -> String {
+    let mut entries = std::env::var("GLIBC_TUNABLES")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|entry| !entry.is_empty() && !entry.starts_with("glibc.malloc.tcache_count="))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    entries.push("glibc.malloc.tcache_count=0".to_owned());
+    entries.join(":")
 }
 
 #[cfg(feature = "native-vulkan-renderer")]

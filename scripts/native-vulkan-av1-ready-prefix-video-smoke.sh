@@ -56,6 +56,7 @@ decode_prefix_explicit=0
 playback_frames=0
 target_fps=240
 bit_depth=8
+bit_depth_explicit=0
 width=3840
 height=2160
 audio_clock_probe=0
@@ -108,6 +109,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --bit-depth)
       bit_depth="${2:-}"
+      bit_depth_explicit=1
       shift 2
       ;;
     --width)
@@ -247,6 +249,28 @@ fi
 if [[ ! -f "$source" ]]; then
   printf 'FAIL: AV1 source does not exist: %s\n' "$source" >&2
   exit 1
+fi
+source_pix_fmt=""
+if command -v ffprobe >/dev/null 2>&1; then
+  source_pix_fmt="$(ffprobe -hide_banner -v error -select_streams v:0 -show_entries stream=pix_fmt -of default=noprint_wrappers=1:nokey=1 "$source" | head -n 1)"
+  source_bit_depth=""
+  if [[ "$source_pix_fmt" == *10* ]]; then
+    source_bit_depth=10
+  elif [[ "$source_pix_fmt" == yuv420p ]]; then
+    source_bit_depth=8
+  fi
+  if [[ -n "$source_bit_depth" ]]; then
+    if [[ "$bit_depth_explicit" -eq 0 ]]; then
+      bit_depth="$source_bit_depth"
+    elif [[ "$bit_depth" != "$source_bit_depth" ]]; then
+      {
+        printf 'FAIL: --bit-depth %s does not match AV1 source bit depth %s\n' "$bit_depth" "$source_bit_depth"
+        printf 'source: %s\n' "$source"
+        printf 'source_pix_fmt: %s\n' "$source_pix_fmt"
+      } >&2
+      exit 1
+    fi
+  fi
 fi
 
 source_frame_count=0
@@ -801,7 +825,7 @@ fi
   printf 'source: %s\n' "$source"
   printf 'codec: %s\n' "$codec"
   printf 'source_frame_count: %s\n' "$source_frame_count"
-  printf 'allocator_tuning: none\n'
+  printf 'allocator_tuning: process-glibc-mallopt-tcache-off\n'
   printf 'decode_prefix: %s\n' "$decode_prefix"
   printf 'playback_frames: %s\n' "$playback_frames"
   printf 'submitted_frame_count: %s\n' "$submitted"

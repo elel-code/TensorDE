@@ -48,7 +48,14 @@ fn main() {
     flags.extend(audio_cflags.split_whitespace());
 
     let mut cc = Command::new("cc");
-    cc.args(["-std=c11", "-fPIC", "-O2", "-c"]);
+    cc.args([
+        "-std=c11",
+        "-fPIC",
+        "-O2",
+        "-ffunction-sections",
+        "-fdata-sections",
+        "-c",
+    ]);
     cc.args(
         flags.iter().copied().filter(|flag| {
             flag.starts_with("-I") || flag.starts_with("-D") || flag.starts_with("-f")
@@ -81,6 +88,8 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=gilder_demux_ffmpeg_shim");
     println!("cargo:rustc-link-lib=dl");
+    println!("cargo:rustc-link-arg-bin=gilder-native-vulkan=-Wl,--gc-sections");
+    println!("cargo:rustc-link-arg-bin=gilder-native-vulkan=-Wl,-z,pack-relative-relocs");
     for flag in flags {
         if let Some(lib) = flag.strip_prefix("-l") {
             println!("cargo:rustc-link-lib={lib}");

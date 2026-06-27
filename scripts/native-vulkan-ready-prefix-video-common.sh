@@ -136,6 +136,7 @@ gilder_append_ready_prefix_runtime_env() {
     -u MALLOC_ARENA_MAX
     -u MALLOC_MMAP_THRESHOLD_
     -u MALLOC_TRIM_THRESHOLD_
+    -u MALLOC_TOP_PAD_
     -u GLIBC_TUNABLES
     "${runtime_env_ref[@]}"
   )

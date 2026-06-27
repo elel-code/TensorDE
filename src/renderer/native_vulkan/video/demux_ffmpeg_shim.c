@@ -2,6 +2,9 @@
 
 #include <errno.h>
 #include <dlfcn.h>
+#if defined(__linux__)
+#include <malloc.h>
+#endif
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -12,6 +15,7 @@
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
 #include <libavutil/mem.h>
@@ -20,15 +24,26 @@
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/raw-utils.h>
 #include <spa/param/param.h>
+#include <spa/support/thread.h>
+#include <spa/utils/dict.h>
 
 #define GILDER_AUDIO_PIPEWIRE_CONNECT_TIMEOUT_NS (2LL * 1000LL * 1000LL * 1000LL)
 #define GILDER_AUDIO_PIPEWIRE_WRITE_TIMEOUT_NS (2LL * 1000LL * 1000LL * 1000LL)
 #define GILDER_AUDIO_PIPEWIRE_FORMAT_BUFFER_BYTES 1024
+#define GILDER_AUDIO_PIPEWIRE_THREAD_STACK_SIZE "262144"
+#define GILDER_FFMPEG_POOL_PACKET_CAPACITY 4
+#define GILDER_FFMPEG_POOL_FRAME_CAPACITY 2
+#define GILDER_FFMPEG_STREAMING_PROBESIZE_BYTES 32768
+#define GILDER_FFMPEG_STREAMING_FORMAT_PROBESIZE_BYTES 32768
+#define GILDER_FFMPEG_STREAMING_DURATION_PROBESIZE_BYTES 0
+#define GILDER_FFMPEG_STREAMING_MAX_ANALYZE_DURATION_US 0
 
 typedef struct GilderAudioOutput {
     SwrContext *swr;
     struct pw_thread_loop *loop;
     struct pw_stream *stream;
+    uint8_t *pcm_buffer;
+    int pcm_buffer_capacity;
     enum pw_stream_state stream_state;
     int stream_error;
     const uint8_t *pending_data;
@@ -48,6 +63,21 @@ typedef struct GilderAudioOutput {
     int64_t state_change_count;
     int64_t ready_state_change_count;
 } GilderAudioOutput;
+
+typedef struct GilderFfmpegObjectPool {
+    AVPacket *packets[GILDER_FFMPEG_POOL_PACKET_CAPACITY];
+    AVFrame *frames[GILDER_FFMPEG_POOL_FRAME_CAPACITY];
+    int packet_count;
+    int frame_count;
+    int64_t packet_allocations;
+    int64_t packet_reuses;
+    int64_t packet_releases;
+    int64_t packet_frees;
+    int64_t frame_allocations;
+    int64_t frame_reuses;
+    int64_t frame_releases;
+    int64_t frame_frees;
+} GilderFfmpegObjectPool;
 
 typedef struct GilderPipeWireApi {
     void *library;
@@ -82,7 +112,6 @@ typedef struct GilderPipeWireApi {
         uint32_t n_params
     );
     int (*pw_thread_loop_start)(struct pw_thread_loop *loop);
-    int (*pw_stream_trigger_process)(struct pw_stream *stream);
 } GilderPipeWireApi;
 
 typedef struct GilderSwresampleApi {
@@ -113,6 +142,21 @@ typedef struct GilderSwresampleApi {
 static GilderPipeWireApi gilder_pipewire_api;
 static GilderSwresampleApi gilder_swresample_api;
 static int gilder_pipewire_initialized = 0;
+
+void gilder_configure_process_allocator_for_streaming_video(void) {
+#if defined(__GLIBC__)
+    (void)mallopt(M_ARENA_MAX, 1);
+    (void)mallopt(M_TRIM_THRESHOLD, 0);
+    (void)mallopt(M_TOP_PAD, 0);
+    (void)mallopt(M_MMAP_THRESHOLD, 128 * 1024);
+#endif
+}
+
+void gilder_trim_process_heap(void) {
+#if defined(__GLIBC__)
+    (void)malloc_trim(0);
+#endif
+}
 
 static int gilder_pipewire_load_symbol(void **target, const char *name) {
     *target = dlsym(gilder_pipewire_api.library, name);
@@ -151,7 +195,6 @@ static int gilder_pipewire_load_once(void) {
     GILDER_PIPEWIRE_LOAD(pw_stream_new_simple);
     GILDER_PIPEWIRE_LOAD(pw_stream_connect);
     GILDER_PIPEWIRE_LOAD(pw_thread_loop_start);
-    GILDER_PIPEWIRE_LOAD(pw_stream_trigger_process);
 
 #undef GILDER_PIPEWIRE_LOAD
 
@@ -217,7 +260,23 @@ int gilder_av_strerror(int errnum, char *errbuf, size_t errbuf_size) {
 }
 
 int gilder_avformat_open_input(AVFormatContext **ctx, const char *url) {
-    return avformat_open_input(ctx, url, NULL, NULL);
+    if (!ctx || !url)
+        return AVERROR(EINVAL);
+
+    AVFormatContext *allocated = avformat_alloc_context();
+    if (!allocated)
+        return AVERROR(ENOMEM);
+
+    allocated->flags |= AVFMT_FLAG_NOBUFFER | AVFMT_FLAG_IGNIDX | AVFMT_FLAG_FAST_SEEK;
+    allocated->probesize = GILDER_FFMPEG_STREAMING_PROBESIZE_BYTES;
+    allocated->format_probesize = GILDER_FFMPEG_STREAMING_FORMAT_PROBESIZE_BYTES;
+    allocated->duration_probesize = GILDER_FFMPEG_STREAMING_DURATION_PROBESIZE_BYTES;
+    allocated->max_analyze_duration = GILDER_FFMPEG_STREAMING_MAX_ANALYZE_DURATION_US;
+    allocated->fps_probe_size = 0;
+
+    *ctx = allocated;
+    int ret = avformat_open_input(ctx, url, NULL, NULL);
+    return ret;
 }
 
 void gilder_avformat_close_input(AVFormatContext **ctx) {
@@ -255,16 +314,103 @@ int gilder_av_find_audio_stream(AVFormatContext *ctx) {
     return best;
 }
 
-AVPacket *gilder_av_packet_alloc(void) {
-    return av_packet_alloc();
-}
-
-void gilder_av_packet_free(AVPacket **packet) {
-    av_packet_free(packet);
-}
-
 void gilder_av_packet_unref(AVPacket *packet) {
     av_packet_unref(packet);
+}
+
+void gilder_av_packet_move_ref(AVPacket *dst, AVPacket *src) {
+    av_packet_move_ref(dst, src);
+}
+
+GilderFfmpegObjectPool *gilder_ffmpeg_pool_alloc(void) {
+    return av_mallocz(sizeof(GilderFfmpegObjectPool));
+}
+
+void gilder_ffmpeg_pool_free(GilderFfmpegObjectPool **pool) {
+    if (!pool || !*pool)
+        return;
+
+    GilderFfmpegObjectPool *owned = *pool;
+    for (int i = 0; i < owned->packet_count; i++) {
+        if (owned->packets[i]) {
+            av_packet_free(&owned->packets[i]);
+            owned->packet_frees++;
+        }
+    }
+    for (int i = 0; i < owned->frame_count; i++) {
+        if (owned->frames[i]) {
+            av_frame_free(&owned->frames[i]);
+            owned->frame_frees++;
+        }
+    }
+    av_free(owned);
+    *pool = NULL;
+}
+
+AVPacket *gilder_ffmpeg_pool_get_packet(GilderFfmpegObjectPool *pool) {
+    if (!pool)
+        return NULL;
+    if (pool->packet_count > 0) {
+        AVPacket *packet = pool->packets[--pool->packet_count];
+        pool->packets[pool->packet_count] = NULL;
+        pool->packet_reuses++;
+        return packet;
+    }
+
+    AVPacket *packet = av_packet_alloc();
+    if (packet)
+        pool->packet_allocations++;
+    return packet;
+}
+
+void gilder_ffmpeg_pool_put_packet(GilderFfmpegObjectPool *pool, AVPacket **packet) {
+    if (!packet || !*packet)
+        return;
+
+    AVPacket *owned = *packet;
+    av_packet_unref(owned);
+    if (pool && pool->packet_count < GILDER_FFMPEG_POOL_PACKET_CAPACITY) {
+        pool->packets[pool->packet_count++] = owned;
+        pool->packet_releases++;
+    } else {
+        av_packet_free(&owned);
+        if (pool)
+            pool->packet_frees++;
+    }
+    *packet = NULL;
+}
+
+AVFrame *gilder_ffmpeg_pool_get_frame(GilderFfmpegObjectPool *pool) {
+    if (!pool)
+        return NULL;
+    if (pool->frame_count > 0) {
+        AVFrame *frame = pool->frames[--pool->frame_count];
+        pool->frames[pool->frame_count] = NULL;
+        pool->frame_reuses++;
+        return frame;
+    }
+
+    AVFrame *frame = av_frame_alloc();
+    if (frame)
+        pool->frame_allocations++;
+    return frame;
+}
+
+void gilder_ffmpeg_pool_put_frame(GilderFfmpegObjectPool *pool, AVFrame **frame) {
+    if (!frame || !*frame)
+        return;
+
+    AVFrame *owned = *frame;
+    av_frame_unref(owned);
+    if (pool && pool->frame_count < GILDER_FFMPEG_POOL_FRAME_CAPACITY) {
+        pool->frames[pool->frame_count++] = owned;
+        pool->frame_releases++;
+    } else {
+        av_frame_free(&owned);
+        if (pool)
+            pool->frame_frees++;
+    }
+    *frame = NULL;
 }
 
 int gilder_av_read_frame(AVFormatContext *ctx, AVPacket *packet) {
@@ -303,6 +449,18 @@ AVRational gilder_av_stream_time_base(AVFormatContext *ctx, int stream_index) {
     return ctx->streams[stream_index]->time_base;
 }
 
+int64_t gilder_av_stream_duration(AVFormatContext *ctx, int stream_index) {
+    return ctx->streams[stream_index]->duration;
+}
+
+int gilder_av_stream_sample_rate(AVFormatContext *ctx, int stream_index) {
+    return ctx->streams[stream_index]->codecpar->sample_rate;
+}
+
+int gilder_av_stream_channels(AVFormatContext *ctx, int stream_index) {
+    return ctx->streams[stream_index]->codecpar->ch_layout.nb_channels;
+}
+
 int gilder_av_seek_stream_start(AVFormatContext *ctx, int stream_index) {
     int64_t start_time = ctx->streams[stream_index]->start_time;
     if (start_time == AV_NOPTS_VALUE)
@@ -337,6 +495,8 @@ int gilder_avcodec_parameters_to_context_for_stream(
 }
 
 int gilder_avcodec_open2(AVCodecContext *ctx, const AVCodec *codec) {
+    ctx->thread_count = 1;
+    ctx->thread_type = 0;
     return avcodec_open2(ctx, codec, NULL);
 }
 
@@ -354,14 +514,6 @@ int gilder_avcodec_context_sample_rate(const AVCodecContext *ctx) {
 
 int gilder_avcodec_context_channels(const AVCodecContext *ctx) {
     return ctx->ch_layout.nb_channels;
-}
-
-AVFrame *gilder_av_frame_alloc(void) {
-    return av_frame_alloc();
-}
-
-void gilder_av_frame_free(AVFrame **frame) {
-    av_frame_free(frame);
 }
 
 void gilder_av_frame_unref(AVFrame *frame) {
@@ -511,6 +663,7 @@ void gilder_audio_output_free(GilderAudioOutput **output) {
     gilder_audio_output_destroy_stream(out);
     if (gilder_swresample_api.swr_free)
         gilder_swresample_api.swr_free(&out->swr);
+    av_freep(&out->pcm_buffer);
     av_free(out);
     *output = NULL;
 }
@@ -539,12 +692,33 @@ static int gilder_audio_output_start_stream(GilderAudioOutput *out, int sample_r
     if (load_ret < 0)
         return load_ret;
     gilder_pipewire_init_once();
-    out->loop = gilder_pipewire_api.pw_thread_loop_new("gilder-native-vulkan-audio", NULL);
+    const struct spa_dict_item loop_props_items[] = {
+        { SPA_KEY_THREAD_STACK_SIZE, GILDER_AUDIO_PIPEWIRE_THREAD_STACK_SIZE },
+    };
+    const struct spa_dict loop_props = SPA_DICT_INIT_ARRAY(loop_props_items);
+    out->loop = gilder_pipewire_api.pw_thread_loop_new("gilder-native-vulkan-audio", &loop_props);
     if (!out->loop)
         return AVERROR(ENOMEM);
 
     out->stream_state = PW_STREAM_STATE_UNCONNECTED;
     out->stream_error = 0;
+    uint8_t buffer[GILDER_AUDIO_PIPEWIRE_FORMAT_BUFFER_BYTES];
+    struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
+    struct spa_audio_info_raw audio_info = {
+        .format = SPA_AUDIO_FORMAT_S16_LE,
+        .flags = SPA_AUDIO_FLAG_UNPOSITIONED,
+        .rate = (uint32_t)sample_rate,
+        .channels = (uint32_t)channels,
+    };
+    const struct spa_pod *params[1] = {
+        spa_format_audio_raw_build(&builder, SPA_PARAM_EnumFormat, &audio_info),
+    };
+    if (!params[0]) {
+        gilder_audio_output_destroy_stream(out);
+        return AVERROR(EINVAL);
+    }
+
+    int ret = 0;
     out->stream = gilder_pipewire_api.pw_stream_new_simple(
         gilder_pipewire_api.pw_thread_loop_get_loop(out->loop),
         "Gilder Native Vulkan Audio",
@@ -568,25 +742,8 @@ static int gilder_audio_output_start_stream(GilderAudioOutput *out, int sample_r
         gilder_audio_output_destroy_stream(out);
         return AVERROR(ENOMEM);
     }
-
-    uint8_t buffer[GILDER_AUDIO_PIPEWIRE_FORMAT_BUFFER_BYTES];
-    struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
-    struct spa_audio_info_raw audio_info = {
-        .format = SPA_AUDIO_FORMAT_S16_LE,
-        .flags = SPA_AUDIO_FLAG_UNPOSITIONED,
-        .rate = (uint32_t)sample_rate,
-        .channels = (uint32_t)channels,
-    };
-    const struct spa_pod *params[1] = {
-        spa_format_audio_raw_build(&builder, SPA_PARAM_EnumFormat, &audio_info),
-    };
-    if (!params[0]) {
-        gilder_audio_output_destroy_stream(out);
-        return AVERROR(EINVAL);
-    }
-
     gilder_pipewire_api.pw_thread_loop_lock(out->loop);
-    int ret = gilder_pipewire_api.pw_stream_connect(
+    ret = gilder_pipewire_api.pw_stream_connect(
         out->stream,
         PW_DIRECTION_OUTPUT,
         PW_ID_ANY,
@@ -599,7 +756,6 @@ static int gilder_audio_output_start_stream(GilderAudioOutput *out, int sample_r
         gilder_audio_output_destroy_stream(out);
         return ret;
     }
-
     ret = gilder_pipewire_api.pw_thread_loop_start(out->loop);
     if (ret < 0) {
         gilder_pipewire_api.pw_thread_loop_unlock(out->loop);
@@ -706,7 +862,6 @@ static int gilder_audio_output_write_bytes(GilderAudioOutput *out, const uint8_t
         ret = gilder_audio_output_stream_error(out);
         if (ret < 0)
             break;
-        (void)gilder_pipewire_api.pw_stream_trigger_process(out->stream);
         out->write_wait_count++;
         ret = gilder_audio_output_wait_locked(out, GILDER_AUDIO_PIPEWIRE_WRITE_TIMEOUT_NS);
         if (ret < 0) {
@@ -763,18 +918,24 @@ int gilder_audio_output_write_frame(
     if (dst_samples <= 0)
         return 0;
 
-    uint8_t **dst_data = NULL;
-    int dst_linesize = 0;
-    ret = av_samples_alloc_array_and_samples(
-        &dst_data,
-        &dst_linesize,
+    int dst_buffer_size = av_samples_get_buffer_size(
+        NULL,
         out->channels,
         dst_samples,
         AV_SAMPLE_FMT_S16,
-        0
+        1
     );
-    if (ret < 0)
-        return ret;
+    if (dst_buffer_size < 0)
+        return dst_buffer_size;
+    if (dst_buffer_size > out->pcm_buffer_capacity) {
+        uint8_t *resized = av_realloc(out->pcm_buffer, (size_t)dst_buffer_size);
+        if (!resized)
+            return AVERROR(ENOMEM);
+        out->pcm_buffer = resized;
+        out->pcm_buffer_capacity = dst_buffer_size;
+    }
+
+    uint8_t *dst_data[1] = { out->pcm_buffer };
 
     int converted = gilder_swresample_api.swr_convert(
         out->swr,
@@ -783,11 +944,8 @@ int gilder_audio_output_write_frame(
         (const uint8_t **)frame->extended_data,
         frame->nb_samples
     );
-    if (converted < 0) {
-        av_freep(&dst_data[0]);
-        av_freep(&dst_data);
+    if (converted < 0)
         return converted;
-    }
 
     int byte_count = av_samples_get_buffer_size(
         NULL,
@@ -796,11 +954,8 @@ int gilder_audio_output_write_frame(
         AV_SAMPLE_FMT_S16,
         1
     );
-    if (byte_count < 0) {
-        av_freep(&dst_data[0]);
-        av_freep(&dst_data);
+    if (byte_count < 0)
         return byte_count;
-    }
 
     ret = gilder_audio_output_write_bytes(out, dst_data[0], (size_t)byte_count);
     if (write_calls)
@@ -821,8 +976,6 @@ int gilder_audio_output_write_frame(
         *ready_state_changes = out->ready_state_change_count;
     if (stream_state)
         *stream_state = (int)out->stream_state;
-    av_freep(&dst_data[0]);
-    av_freep(&dst_data);
     if (ret < 0)
         return ret;
 

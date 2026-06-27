@@ -1070,11 +1070,11 @@ fn choose_swapchain_extent(
 }
 
 fn swapchain_image_count(capabilities: &vk::SurfaceCapabilitiesKHR) -> u32 {
-    let preferred = capabilities.min_image_count.saturating_add(1).max(3);
+    let required = capabilities.min_image_count.max(1);
     if capabilities.max_image_count > 0 {
-        preferred.min(capabilities.max_image_count)
+        required.min(capabilities.max_image_count)
     } else {
-        preferred
+        required
     }
 }
 
@@ -1433,12 +1433,13 @@ mod tests {
     }
 
     #[test]
-    fn swapchain_image_count_prefers_triple_buffering() {
+    fn swapchain_image_count_uses_surface_minimum_for_wallpaper_present() {
         let mut capabilities = vk::SurfaceCapabilitiesKHR::default();
         capabilities.min_image_count = 2;
         capabilities.max_image_count = 0;
-        assert_eq!(swapchain_image_count(&capabilities), 3);
+        assert_eq!(swapchain_image_count(&capabilities), 2);
 
+        capabilities.min_image_count = 3;
         capabilities.max_image_count = 2;
         assert_eq!(swapchain_image_count(&capabilities), 2);
     }

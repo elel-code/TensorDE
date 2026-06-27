@@ -610,6 +610,204 @@ fn native_vulkan_vulkanalia_h265_display_order_key(
     }
 }
 
+fn native_vulkan_vulkanalia_h264_initial_has_b_frames(
+    parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
+) -> usize {
+    parameter_sets
+        .sps
+        .vui
+        .as_ref()
+        .filter(|vui| vui.bitstream_restriction_flag)
+        .map(|vui| vui.num_reorder_frames as usize)
+        .unwrap_or(0)
+        .min(16)
+}
+
+fn native_vulkan_vulkanalia_h265_max_output_reorder_pics(
+    parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
+) -> usize {
+    let layer_index = usize::from(parameter_sets.sps.max_sub_layers_minus1).min(
+        parameter_sets
+            .sps
+            .dec_pic_buf_mgr
+            .max_num_reorder_pics
+            .len()
+            - 1,
+    );
+    usize::from(parameter_sets.sps.dec_pic_buf_mgr.max_num_reorder_pics[layer_index])
+}
+
+struct NativeVulkanVulkanaliaDisplayOrderHandoffFrame {
+    decode_frame_index: u32,
+    sampled_array_layer: u32,
+    h264_b_picture: bool,
+    source_frame_pts_ns: Option<u64>,
+    source_frame_duration_ns: Option<u64>,
+    source_frame_pts_ms: Option<u64>,
+    source_frame_duration_ms: Option<u64>,
+    display_order_key: i64,
+    display_order_key_source: &'static str,
+    decode_complete_value: u64,
+}
+
+impl NativeVulkanVulkanaliaDisplayOrderHandoffFrame {
+    fn submit<F>(self, after_frame_submitted: &mut F) -> Result<(), String>
+    where
+        F: FnMut(
+                u32,
+                u32,
+                Option<u64>,
+                Option<u64>,
+                Option<u64>,
+                Option<u64>,
+                i64,
+                &'static str,
+                u64,
+            ) -> Result<(), String>
+            + ?Sized,
+    {
+        after_frame_submitted(
+            self.decode_frame_index,
+            self.sampled_array_layer,
+            self.source_frame_pts_ns,
+            self.source_frame_duration_ns,
+            self.source_frame_pts_ms,
+            self.source_frame_duration_ms,
+            self.display_order_key,
+            self.display_order_key_source,
+            self.decode_complete_value,
+        )
+    }
+}
+
+struct NativeVulkanVulkanaliaDisplayOrderHandoff {
+    reorder_depth: usize,
+    max_reorder_depth: usize,
+    adaptive_h264_reorder: bool,
+    recent_decode_order_keys: Vec<i64>,
+    frames: Vec<NativeVulkanVulkanaliaDisplayOrderHandoffFrame>,
+}
+
+impl NativeVulkanVulkanaliaDisplayOrderHandoff {
+    fn fixed(reorder_depth: usize) -> Self {
+        Self {
+            reorder_depth,
+            max_reorder_depth: reorder_depth,
+            adaptive_h264_reorder: false,
+            recent_decode_order_keys: Vec::new(),
+            frames: Vec::with_capacity(reorder_depth.saturating_add(1)),
+        }
+    }
+
+    fn h264_ffmpeg(initial_has_b_frames: usize) -> Self {
+        let reorder_depth = initial_has_b_frames.min(16);
+        Self {
+            reorder_depth,
+            max_reorder_depth: 16,
+            adaptive_h264_reorder: true,
+            recent_decode_order_keys: Vec::with_capacity(16),
+            frames: Vec::with_capacity(reorder_depth.saturating_add(1)),
+        }
+    }
+
+    fn push<F>(
+        &mut self,
+        frame: NativeVulkanVulkanaliaDisplayOrderHandoffFrame,
+        after_frame_submitted: &mut F,
+    ) -> Result<(), String>
+    where
+        F: FnMut(
+                u32,
+                u32,
+                Option<u64>,
+                Option<u64>,
+                Option<u64>,
+                Option<u64>,
+                i64,
+                &'static str,
+                u64,
+            ) -> Result<(), String>
+            + ?Sized,
+    {
+        self.observe_h264_reorder_depth(&frame);
+        self.frames.push(frame);
+        while self.frames.len() > self.reorder_depth {
+            self.submit_next(after_frame_submitted)?;
+        }
+        Ok(())
+    }
+
+    fn observe_h264_reorder_depth(
+        &mut self,
+        frame: &NativeVulkanVulkanaliaDisplayOrderHandoffFrame,
+    ) {
+        if !self.adaptive_h264_reorder {
+            return;
+        }
+
+        let out_of_order = self
+            .recent_decode_order_keys
+            .iter()
+            .filter(|key| frame.display_order_key < **key)
+            .count()
+            .max(usize::from(frame.h264_b_picture));
+        if out_of_order > self.reorder_depth {
+            self.reorder_depth = out_of_order.min(self.max_reorder_depth);
+        }
+
+        self.recent_decode_order_keys.push(frame.display_order_key);
+        if self.recent_decode_order_keys.len() > self.max_reorder_depth {
+            self.recent_decode_order_keys.remove(0);
+        }
+    }
+
+    fn flush<F>(&mut self, after_frame_submitted: &mut F) -> Result<(), String>
+    where
+        F: FnMut(
+                u32,
+                u32,
+                Option<u64>,
+                Option<u64>,
+                Option<u64>,
+                Option<u64>,
+                i64,
+                &'static str,
+                u64,
+            ) -> Result<(), String>
+            + ?Sized,
+    {
+        while !self.frames.is_empty() {
+            self.submit_next(after_frame_submitted)?;
+        }
+        Ok(())
+    }
+
+    fn submit_next<F>(&mut self, after_frame_submitted: &mut F) -> Result<(), String>
+    where
+        F: FnMut(
+                u32,
+                u32,
+                Option<u64>,
+                Option<u64>,
+                Option<u64>,
+                Option<u64>,
+                i64,
+                &'static str,
+                u64,
+            ) -> Result<(), String>
+            + ?Sized,
+    {
+        let next_index = self
+            .frames
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, frame)| (frame.display_order_key, frame.decode_frame_index))
+            .map(|(index, _)| index)
+            .ok_or_else(|| "decoded display-order handoff has no frame to submit".to_owned())?;
+        self.frames.remove(next_index).submit(after_frame_submitted)
+    }
+}
+
 fn native_vulkan_vulkanalia_av1_display_order_key(
     entry: &NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
     pts_ns: Option<u64>,
@@ -1561,6 +1759,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             let decode_loop_started_at = Instant::now();
             let mut streaming_decode_timing =
                 NativeVulkanVulkanaliaStreamingDecodeTiming::default();
+            let mut display_handoff = NativeVulkanVulkanaliaDisplayOrderHandoff::fixed(
+                native_vulkan_vulkanalia_h265_max_output_reorder_pics(&parameter_sets),
+            );
 
             for frame_index in 0..requested_frame_count {
                 let mut frame_timing = NativeVulkanVulkanaliaStreamingDecodeFrameTiming::default();
@@ -1703,16 +1904,20 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
 
                 if let Some(after_frame_submitted) = after_frame_submitted.as_deref_mut() {
                     let stage_started_at = Instant::now();
-                    after_frame_submitted(
-                        frame_index,
-                        plan.common.dst_picture_resource.base_array_layer,
-                        frame.pts_ns,
-                        frame.duration_ns,
-                        frame.entry.pts_ms,
-                        frame.duration_ms,
-                        display_order_key,
-                        display_order_key_source,
-                        decode_complete_value_for_frame,
+                    display_handoff.push(
+                        NativeVulkanVulkanaliaDisplayOrderHandoffFrame {
+                            decode_frame_index: frame_index,
+                            sampled_array_layer: plan.common.dst_picture_resource.base_array_layer,
+                            h264_b_picture: false,
+                            source_frame_pts_ns: frame.pts_ns,
+                            source_frame_duration_ns: frame.duration_ns,
+                            source_frame_pts_ms: frame.entry.pts_ms,
+                            source_frame_duration_ms: frame.duration_ms,
+                            display_order_key,
+                            display_order_key_source,
+                            decode_complete_value: decode_complete_value_for_frame,
+                        },
+                        after_frame_submitted,
                     )?;
                     frame_timing.after_frame_submitted_micros =
                         native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
@@ -1732,6 +1937,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                     reset_control_recorded,
                 });
                 streaming_decode_timing.push(frame_timing);
+            }
+            if let Some(after_frame_submitted) = after_frame_submitted.as_deref_mut() {
+                display_handoff.flush(after_frame_submitted)?;
             }
             let last_frame =
                 frame_telemetry.last_frame("Vulkanalia H.265 streaming submitted no frames")?;
@@ -1881,6 +2089,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             let decode_loop_started_at = Instant::now();
             let mut streaming_decode_timing =
                 NativeVulkanVulkanaliaStreamingDecodeTiming::default();
+            let mut display_handoff = NativeVulkanVulkanaliaDisplayOrderHandoff::h264_ffmpeg(
+                native_vulkan_vulkanalia_h264_initial_has_b_frames(&parameter_sets),
+            );
 
             for frame_index in 0..requested_frame_count {
                 let mut frame_timing = NativeVulkanVulkanaliaStreamingDecodeFrameTiming::default();
@@ -2028,16 +2239,20 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
 
                 if let Some(after_frame_submitted) = after_frame_submitted.as_deref_mut() {
                     let stage_started_at = Instant::now();
-                    after_frame_submitted(
-                        frame_index,
-                        plan.common.dst_picture_resource.base_array_layer,
-                        frame.pts_ns,
-                        frame.duration_ns,
-                        frame.entry.pts_ms,
-                        frame.duration_ms,
-                        display_order_key,
-                        display_order_key_source,
-                        decode_complete_value_for_frame,
+                    display_handoff.push(
+                        NativeVulkanVulkanaliaDisplayOrderHandoffFrame {
+                            decode_frame_index: frame_index,
+                            sampled_array_layer: plan.common.dst_picture_resource.base_array_layer,
+                            h264_b_picture: frame.first_slice.is_b,
+                            source_frame_pts_ns: frame.pts_ns,
+                            source_frame_duration_ns: frame.duration_ns,
+                            source_frame_pts_ms: frame.entry.pts_ms,
+                            source_frame_duration_ms: frame.duration_ms,
+                            display_order_key,
+                            display_order_key_source,
+                            decode_complete_value: decode_complete_value_for_frame,
+                        },
+                        after_frame_submitted,
                     )?;
                     frame_timing.after_frame_submitted_micros =
                         native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
@@ -2057,6 +2272,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                     reset_control_recorded,
                 });
                 streaming_decode_timing.push(frame_timing);
+            }
+            if let Some(after_frame_submitted) = after_frame_submitted.as_deref_mut() {
+                display_handoff.flush(after_frame_submitted)?;
             }
             let last_frame =
                 frame_telemetry.last_frame("Vulkanalia H.264 streaming submitted no frames")?;

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::thread;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -6,8 +7,9 @@ use serde::Serialize;
 use crate::core::FitMode;
 
 use super::super::audio::clock::{
-    NativeVulkanAudioClockProbeOptions, NativeVulkanAudioClockRuntimeSnapshot,
-    native_vulkan_probe_ffmpeg_audio_clock, native_vulkan_unattached_audio_clock_snapshot,
+    NATIVE_VULKAN_AUDIO_CLOCK_QUEUE_PACKETS, NativeVulkanAudioClockProbeOptions,
+    NativeVulkanAudioClockRuntimeSnapshot, native_vulkan_probe_ffmpeg_audio_clock,
+    native_vulkan_unattached_audio_clock_snapshot,
 };
 use super::super::audio::policy::NativeVulkanAudioOutputMode;
 use super::super::vulkan::{
@@ -35,6 +37,8 @@ use super::super::vulkan::{
 use super::super::{NativeVulkanError, NativeVulkanOptions};
 use super::codec::NativeVulkanVideoSessionCodec;
 use super::demux::NATIVE_VULKAN_PACKET_HANDOFF_FRAMES;
+
+const NATIVE_VULKAN_AUDIO_OUTPUT_WORKER_STACK_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
@@ -165,7 +169,8 @@ pub fn run_vulkanalia_ready_prefix_video(
         bitstream_samples,
         ready_prefix_frame_count,
     );
-    let audio_clock = if audio_clock_probe_requested {
+    let mut audio_output_worker = None;
+    let mut audio_clock = if audio_clock_probe_requested {
         let mut probe_options = NativeVulkanAudioClockProbeOptions::clock_only(source.clone());
         probe_options.output_mode = audio_output_mode;
         let audio_playback_duration = native_vulkan_vulkanalia_visible_present_duration(
@@ -179,7 +184,27 @@ pub fn run_vulkanalia_ready_prefix_video(
             audio_playback_duration,
             playback_frame_count,
         );
-        Some(native_vulkan_probe_ffmpeg_audio_clock(probe_options)?)
+        if audio_output_mode == NativeVulkanAudioOutputMode::Auto {
+            let mut clock_probe_options = probe_options.clone();
+            clock_probe_options.output_mode = NativeVulkanAudioOutputMode::ClockOnly;
+            clock_probe_options.packets_to_probe = NATIVE_VULKAN_AUDIO_CLOCK_QUEUE_PACKETS as u32;
+            clock_probe_options.target_playback_clock_ns = None;
+            let clock = native_vulkan_probe_ffmpeg_audio_clock(clock_probe_options)?;
+            audio_output_worker = Some(
+                thread::Builder::new()
+                    .name("gilder-pipewire-audio-output".to_owned())
+                    .stack_size(NATIVE_VULKAN_AUDIO_OUTPUT_WORKER_STACK_BYTES)
+                    .spawn(move || native_vulkan_probe_ffmpeg_audio_clock(probe_options))
+                    .map_err(|err| {
+                        NativeVulkanError::Video(format!(
+                            "spawn PipeWire audio output worker: {err}"
+                        ))
+                    })?,
+            );
+            Some(clock)
+        } else {
+            Some(native_vulkan_probe_ffmpeg_audio_clock(probe_options)?)
+        }
     } else if audio_output_mode == NativeVulkanAudioOutputMode::ClockOnly {
         Some(native_vulkan_unattached_audio_clock_snapshot(
             audio_output_mode,
@@ -357,6 +382,12 @@ pub fn run_vulkanalia_ready_prefix_video(
     let decoded_image_present_sequence_requested = false;
     let decoded_image_present_sequence = None;
     let decoded_image_present_sequence_error = None;
+    if let Some(worker) = audio_output_worker {
+        let output_clock = worker.join().map_err(|_| {
+            NativeVulkanError::Video("PipeWire audio output worker panicked".to_owned())
+        })??;
+        audio_clock = Some(output_clock);
+    }
     let decoded_image_zero_copy_presented = h264_retained_video_present_decode
         .as_ref()
         .is_some_and(|snapshot| snapshot.decoded_image_zero_copy_presented)

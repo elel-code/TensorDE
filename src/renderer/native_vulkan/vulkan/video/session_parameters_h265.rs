@@ -111,7 +111,42 @@ fn native_vulkan_vulkanalia_validate_h265_session_parameter_inputs(
             "H.265 parameter sets are not in the first supported Vulkanalia STD subset".to_owned(),
         );
     }
+    native_vulkan_vulkanalia_validate_h265_requested_profile_bit_depth(
+        codec,
+        parameter_sets.vps.profile_idc,
+        parameter_sets.sps.profile_idc,
+        parameter_sets.sps.bit_depth_luma_minus8,
+        parameter_sets.sps.bit_depth_chroma_minus8,
+    )?;
 
+    Ok(())
+}
+
+fn native_vulkan_vulkanalia_validate_h265_requested_profile_bit_depth(
+    codec: NativeVulkanVideoSessionCodec,
+    vps_profile_idc: u8,
+    sps_profile_idc: u8,
+    bit_depth_luma_minus8: u32,
+    bit_depth_chroma_minus8: u32,
+) -> Result<(), String> {
+    let (expected_profile_idc, expected_bit_depth_minus8, label) = match codec {
+        NativeVulkanVideoSessionCodec::H265Main8 => (1, 0, "h265-main-8"),
+        NativeVulkanVideoSessionCodec::H265Main10 => (2, 2, "h265-main-10"),
+        _ => {
+            return Err(
+                "Vulkanalia H.265 profile/bit-depth validation requires an H.265 codec".to_owned(),
+            );
+        }
+    };
+    if vps_profile_idc != expected_profile_idc
+        || sps_profile_idc != expected_profile_idc
+        || bit_depth_luma_minus8 != expected_bit_depth_minus8
+        || bit_depth_chroma_minus8 != expected_bit_depth_minus8
+    {
+        return Err(format!(
+            "H.265 stream profile/bit-depth does not match requested {label}: VPS profile_idc={vps_profile_idc}, SPS profile_idc={sps_profile_idc}, SPS bit_depth_luma_minus8={bit_depth_luma_minus8}, SPS bit_depth_chroma_minus8={bit_depth_chroma_minus8}"
+        ));
+    }
     Ok(())
 }
 
@@ -827,5 +862,29 @@ mod tests {
             0b101
         );
         assert!(native_vulkan_vulkanalia_h265_used_by_current_mask(&[false; 17]).is_err());
+    }
+
+    #[test]
+    fn h265_profile_bit_depth_validation_rejects_main10_as_main8() {
+        assert!(
+            native_vulkan_vulkanalia_validate_h265_requested_profile_bit_depth(
+                NativeVulkanVideoSessionCodec::H265Main8,
+                2,
+                2,
+                2,
+                2,
+            )
+            .is_err()
+        );
+        assert!(
+            native_vulkan_vulkanalia_validate_h265_requested_profile_bit_depth(
+                NativeVulkanVideoSessionCodec::H265Main10,
+                2,
+                2,
+                2,
+                2,
+            )
+            .is_ok()
+        );
     }
 }

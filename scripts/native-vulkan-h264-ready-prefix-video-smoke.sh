@@ -1136,7 +1136,7 @@ fi
   printf 'max_requested_reference_count: %s\n' "$max_requested_reference_count"
   printf 'max_reference_count: %s\n' "$max_reference_count"
   printf 'pacing_master: %s\n' "$pacing_master"
-  printf 'allocator_tuning: none\n'
+  printf 'allocator_tuning: process-glibc-mallopt-tcache-off\n'
   printf 'pacing_strategy: %s\n' "$pacing_strategy"
   printf 'expected_pacing_strategy: %s\n' "$expected_pacing_strategy"
   printf 'frame_sleep_count: %s\n' "$frame_sleep_count_value"

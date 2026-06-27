@@ -2423,6 +2423,14 @@ fn native_vulkan_parse_h264_sps(payload: &[u8]) -> Result<NativeVulkanH264SpsSna
         (0, 0, 0, 0)
     };
     let vui_parameters_present_flag = bits.read_bool("vui_parameters_present_flag")?;
+    let vui = if vui_parameters_present_flag {
+        Some(native_vulkan_parse_h264_vui_parameters(
+            &mut bits,
+            &rbsp[1..],
+        )?)
+    } else {
+        None
+    };
     let (width, height) = native_vulkan_h264_sps_dimensions(
         chroma_format_idc,
         separate_colour_plane_flag,
@@ -2474,6 +2482,7 @@ fn native_vulkan_parse_h264_sps(payload: &[u8]) -> Result<NativeVulkanH264SpsSna
         frame_crop_top_offset,
         frame_crop_bottom_offset,
         vui_parameters_present_flag,
+        vui,
         width,
         height,
     })
@@ -2635,6 +2644,169 @@ fn native_vulkan_h264_skip_scaling_list(
             last_scale = next_scale;
         }
     }
+    Ok(())
+}
+
+#[cfg(any(feature = "native-vulkan-video", test))]
+fn native_vulkan_parse_h264_vui_parameters(
+    bits: &mut NativeVulkanH264BitReader<'_>,
+    rbsp_payload: &[u8],
+) -> Result<NativeVulkanH264VuiSnapshot, String> {
+    let aspect_ratio_info_present_flag = bits.read_bool("aspect_ratio_info_present_flag")?;
+    let mut aspect_ratio_idc = 0;
+    let mut sar_width = 0;
+    let mut sar_height = 0;
+    if aspect_ratio_info_present_flag {
+        aspect_ratio_idc = bits.read_bits(8, "aspect_ratio_idc")?;
+        if aspect_ratio_idc == 255 {
+            sar_width = bits.read_bits(16, "sar_width")?;
+            sar_height = bits.read_bits(16, "sar_height")?;
+        }
+    }
+
+    let overscan_info_present_flag = bits.read_bool("overscan_info_present_flag")?;
+    let overscan_appropriate_flag = if overscan_info_present_flag {
+        bits.read_bool("overscan_appropriate_flag")?
+    } else {
+        false
+    };
+
+    let video_signal_type_present_flag = bits.read_bool("video_signal_type_present_flag")?;
+    let mut video_format = 5;
+    let mut video_full_range_flag = false;
+    let mut colour_description_present_flag = false;
+    let mut colour_primaries = 2;
+    let mut transfer_characteristics = 2;
+    let mut matrix_coeffs = 2;
+    if video_signal_type_present_flag {
+        video_format = bits.read_bits(3, "video_format")?;
+        video_full_range_flag = bits.read_bool("video_full_range_flag")?;
+        colour_description_present_flag = bits.read_bool("colour_description_present_flag")?;
+        if colour_description_present_flag {
+            colour_primaries = bits.read_bits(8, "colour_primaries")?;
+            transfer_characteristics = bits.read_bits(8, "transfer_characteristics")?;
+            matrix_coeffs = bits.read_bits(8, "matrix_coeffs")?;
+        }
+    }
+
+    let chroma_loc_info_present_flag = bits.read_bool("chroma_loc_info_present_flag")?;
+    let mut chroma_sample_loc_type_top_field = 0;
+    let mut chroma_sample_loc_type_bottom_field = 0;
+    if chroma_loc_info_present_flag {
+        chroma_sample_loc_type_top_field = bits.read_ue("chroma_sample_loc_type_top_field")?;
+        chroma_sample_loc_type_bottom_field =
+            bits.read_ue("chroma_sample_loc_type_bottom_field")?;
+    }
+
+    let timing_info_present_flag = bits.read_bool("timing_info_present_flag")?;
+    let mut num_units_in_tick = 0;
+    let mut time_scale = 0;
+    let mut fixed_frame_rate_flag = false;
+    if timing_info_present_flag {
+        num_units_in_tick = bits.read_bits(32, "num_units_in_tick")?;
+        time_scale = bits.read_bits(32, "time_scale")?;
+        fixed_frame_rate_flag = bits.read_bool("fixed_frame_rate_flag")?;
+    }
+
+    let nal_hrd_parameters_present_flag = bits.read_bool("nal_hrd_parameters_present_flag")?;
+    if nal_hrd_parameters_present_flag {
+        native_vulkan_skip_h264_hrd_parameters(bits)?;
+    }
+    let vcl_hrd_parameters_present_flag = bits.read_bool("vcl_hrd_parameters_present_flag")?;
+    if vcl_hrd_parameters_present_flag {
+        native_vulkan_skip_h264_hrd_parameters(bits)?;
+    }
+    let low_delay_hrd_flag = if nal_hrd_parameters_present_flag || vcl_hrd_parameters_present_flag {
+        bits.read_bool("low_delay_hrd_flag")?
+    } else {
+        false
+    };
+    let pic_struct_present_flag = bits.read_bool("pic_struct_present_flag")?;
+
+    let mut bitstream_restriction_flag = false;
+    let mut motion_vectors_over_pic_boundaries_flag = false;
+    let mut max_bytes_per_pic_denom = 0;
+    let mut max_bits_per_mb_denom = 0;
+    let mut log2_max_mv_length_horizontal = 0;
+    let mut log2_max_mv_length_vertical = 0;
+    let mut num_reorder_frames = 0;
+    let mut max_dec_frame_buffering = 0;
+    if native_vulkan_rbsp_more_data(rbsp_payload, bits.bit_offset()) {
+        bitstream_restriction_flag = bits.read_bool("bitstream_restriction_flag")?;
+        if bitstream_restriction_flag {
+            motion_vectors_over_pic_boundaries_flag =
+                bits.read_bool("motion_vectors_over_pic_boundaries_flag")?;
+            max_bytes_per_pic_denom = bits.read_ue("max_bytes_per_pic_denom")?;
+            max_bits_per_mb_denom = bits.read_ue("max_bits_per_mb_denom")?;
+            log2_max_mv_length_horizontal = bits.read_ue("log2_max_mv_length_horizontal")?;
+            log2_max_mv_length_vertical = bits.read_ue("log2_max_mv_length_vertical")?;
+            num_reorder_frames = bits.read_ue("num_reorder_frames")?;
+            max_dec_frame_buffering = bits.read_ue("max_dec_frame_buffering")?;
+            if num_reorder_frames > 16 {
+                return Err(format!(
+                    "H.264 num_reorder_frames {num_reorder_frames} exceeds Vulkan Video DPB bound"
+                ));
+            }
+        }
+    }
+
+    Ok(NativeVulkanH264VuiSnapshot {
+        aspect_ratio_info_present_flag,
+        aspect_ratio_idc,
+        sar_width,
+        sar_height,
+        overscan_info_present_flag,
+        overscan_appropriate_flag,
+        video_signal_type_present_flag,
+        video_format,
+        video_full_range_flag,
+        colour_description_present_flag,
+        colour_primaries,
+        transfer_characteristics,
+        matrix_coeffs,
+        chroma_loc_info_present_flag,
+        chroma_sample_loc_type_top_field,
+        chroma_sample_loc_type_bottom_field,
+        timing_info_present_flag,
+        num_units_in_tick,
+        time_scale,
+        fixed_frame_rate_flag,
+        nal_hrd_parameters_present_flag,
+        vcl_hrd_parameters_present_flag,
+        low_delay_hrd_flag,
+        pic_struct_present_flag,
+        bitstream_restriction_flag,
+        motion_vectors_over_pic_boundaries_flag,
+        max_bytes_per_pic_denom,
+        max_bits_per_mb_denom,
+        log2_max_mv_length_horizontal,
+        log2_max_mv_length_vertical,
+        num_reorder_frames,
+        max_dec_frame_buffering,
+    })
+}
+
+#[cfg(any(feature = "native-vulkan-video", test))]
+fn native_vulkan_skip_h264_hrd_parameters(
+    bits: &mut NativeVulkanH264BitReader<'_>,
+) -> Result<(), String> {
+    let cpb_cnt_minus1 = bits.read_ue("cpb_cnt_minus1")?;
+    if cpb_cnt_minus1 > 31 {
+        return Err(format!(
+            "H.264 cpb_cnt_minus1 {cpb_cnt_minus1} exceeds HRD bound"
+        ));
+    }
+    bits.read_bits(4, "bit_rate_scale")?;
+    bits.read_bits(4, "cpb_size_scale")?;
+    for _ in 0..=cpb_cnt_minus1 {
+        bits.read_ue("bit_rate_value_minus1")?;
+        bits.read_ue("cpb_size_value_minus1")?;
+        bits.read_bool("cbr_flag")?;
+    }
+    bits.read_bits(5, "initial_cpb_removal_delay_length_minus1")?;
+    bits.read_bits(5, "cpb_removal_delay_length_minus1")?;
+    bits.read_bits(5, "dpb_output_delay_length_minus1")?;
+    bits.read_bits(5, "time_offset_length")?;
     Ok(())
 }
 
@@ -10504,6 +10676,7 @@ mod tests {
             frame_crop_top_offset: 0,
             frame_crop_bottom_offset: 0,
             vui_parameters_present_flag: false,
+            vui: None,
             width: 1920,
             height: 1080,
         }

@@ -42,7 +42,7 @@ use std::ptr::{self, NonNull};
 use std::slice;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 use std::thread::{self, JoinHandle};
 
 use super::super::NativeVulkanError;
@@ -65,12 +65,20 @@ struct AVPacket {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
+struct GilderFfmpegObjectPool {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
 struct AVRational {
     num: c_int,
     den: c_int,
 }
 
 unsafe extern "C" {
+    fn gilder_configure_process_allocator_for_streaming_video();
+    fn gilder_trim_process_heap();
     fn gilder_av_error_eof() -> c_int;
     fn gilder_av_nopts_value() -> i64;
     fn gilder_av_codec_id_h264() -> c_int;
@@ -80,9 +88,12 @@ unsafe extern "C" {
     fn gilder_avformat_open_input(ctx: *mut *mut AVFormatContext, url: *const c_char) -> c_int;
     fn gilder_avformat_close_input(ctx: *mut *mut AVFormatContext);
     fn gilder_av_find_video_stream_for_codec(ctx: *mut AVFormatContext, codec_id: c_int) -> c_int;
-    fn gilder_av_packet_alloc() -> *mut AVPacket;
-    fn gilder_av_packet_free(packet: *mut *mut AVPacket);
     fn gilder_av_packet_unref(packet: *mut AVPacket);
+    fn gilder_av_packet_move_ref(dst: *mut AVPacket, src: *mut AVPacket);
+    fn gilder_ffmpeg_pool_alloc() -> *mut GilderFfmpegObjectPool;
+    fn gilder_ffmpeg_pool_free(pool: *mut *mut GilderFfmpegObjectPool);
+    fn gilder_ffmpeg_pool_get_packet(pool: *mut GilderFfmpegObjectPool) -> *mut AVPacket;
+    fn gilder_ffmpeg_pool_put_packet(pool: *mut GilderFfmpegObjectPool, packet: *mut *mut AVPacket);
     fn gilder_av_read_frame(ctx: *mut AVFormatContext, packet: *mut AVPacket) -> c_int;
     fn gilder_av_packet_stream_index(packet: *const AVPacket) -> c_int;
     fn gilder_av_packet_data(packet: *const AVPacket) -> *const c_uchar;
@@ -94,6 +105,19 @@ unsafe extern "C" {
     fn gilder_av_stream_extradata_size(ctx: *mut AVFormatContext, stream_index: c_int) -> c_int;
     fn gilder_av_stream_time_base(ctx: *mut AVFormatContext, stream_index: c_int) -> AVRational;
     fn gilder_av_seek_stream_start(ctx: *mut AVFormatContext, stream_index: c_int) -> c_int;
+}
+
+fn native_vulkan_ffmpeg_configure_process_allocator_for_streaming_video() {
+    static CONFIGURE_ALLOCATOR: Once = Once::new();
+    CONFIGURE_ALLOCATOR.call_once(|| unsafe {
+        gilder_configure_process_allocator_for_streaming_video();
+    });
+}
+
+fn native_vulkan_ffmpeg_trim_process_heap() {
+    unsafe {
+        gilder_trim_process_heap();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,9 +188,14 @@ pub struct NativeVulkanFfmpegPacketPayload {
 }
 
 enum NativeVulkanFfmpegPacketPayloadStorage {
-    AvPacket(NonNull<AVPacket>),
+    AvPacket(NativeVulkanFfmpegOwnedPacket),
     Pooled(NativeVulkanFfmpegPooledPacketPayload),
     SharedSlice(NativeVulkanFfmpegSharedPacketPayload),
+}
+
+struct NativeVulkanFfmpegOwnedPacket {
+    packet: NonNull<AVPacket>,
+    pool: Arc<NativeVulkanFfmpegAvObjectPool>,
 }
 
 struct NativeVulkanFfmpegPooledPacketPayload {
@@ -182,6 +211,52 @@ struct NativeVulkanFfmpegSharedPacketPayload {
 #[derive(Default)]
 struct NativeVulkanFfmpegPacketPayloadPool {
     buffers: Mutex<Vec<Vec<u8>>>,
+}
+
+struct NativeVulkanFfmpegAvObjectPool {
+    ptr: Mutex<NonNull<GilderFfmpegObjectPool>>,
+}
+
+unsafe impl Send for NativeVulkanFfmpegAvObjectPool {}
+unsafe impl Sync for NativeVulkanFfmpegAvObjectPool {}
+
+impl NativeVulkanFfmpegAvObjectPool {
+    fn new() -> Result<Arc<Self>, NativeVulkanError> {
+        let pool = unsafe { gilder_ffmpeg_pool_alloc() };
+        let ptr = NonNull::new(pool).ok_or_else(|| {
+            NativeVulkanError::Video("FFmpeg object pool allocation failed".to_owned())
+        })?;
+        Ok(Arc::new(Self {
+            ptr: Mutex::new(ptr),
+        }))
+    }
+
+    fn take_packet(&self) -> Result<NonNull<AVPacket>, NativeVulkanError> {
+        let pool = self.ptr.lock().unwrap_or_else(|err| err.into_inner());
+        let packet = unsafe { gilder_ffmpeg_pool_get_packet(pool.as_ptr()) };
+        NonNull::new(packet).ok_or_else(|| {
+            NativeVulkanError::Video("FFmpeg AVPacket pool allocation failed".to_owned())
+        })
+    }
+
+    fn recycle_packet(&self, packet: NonNull<AVPacket>) {
+        let pool = self.ptr.lock().unwrap_or_else(|err| err.into_inner());
+        let mut packet = packet.as_ptr();
+        unsafe {
+            gilder_ffmpeg_pool_put_packet(pool.as_ptr(), &mut packet);
+        }
+    }
+}
+
+impl Drop for NativeVulkanFfmpegAvObjectPool {
+    fn drop(&mut self) {
+        let pool = self.ptr.lock().unwrap_or_else(|err| err.into_inner());
+        let mut ptr = pool.as_ptr();
+        unsafe {
+            gilder_ffmpeg_pool_free(&mut ptr);
+        }
+        native_vulkan_ffmpeg_trim_process_heap();
+    }
 }
 
 impl NativeVulkanFfmpegPacketPayloadPool {
@@ -215,16 +290,21 @@ impl Drop for NativeVulkanFfmpegPooledPacketPayload {
     }
 }
 
+impl Drop for NativeVulkanFfmpegOwnedPacket {
+    fn drop(&mut self) {
+        self.pool.recycle_packet(self.packet);
+    }
+}
+
 unsafe impl Send for NativeVulkanFfmpegPacketPayload {}
 
 impl NativeVulkanFfmpegPacketPayload {
-    fn from_raw(packet: *mut AVPacket) -> Result<Self, NativeVulkanError> {
-        let packet = NonNull::new(packet).ok_or_else(|| {
-            NativeVulkanError::Video("FFmpeg produced a null AVPacket".to_owned())
-        })?;
-        Ok(Self {
-            storage: NativeVulkanFfmpegPacketPayloadStorage::AvPacket(packet),
-        })
+    fn from_packet(packet: NonNull<AVPacket>, pool: Arc<NativeVulkanFfmpegAvObjectPool>) -> Self {
+        Self {
+            storage: NativeVulkanFfmpegPacketPayloadStorage::AvPacket(
+                NativeVulkanFfmpegOwnedPacket { packet, pool },
+            ),
+        }
     }
 
     fn from_pooled(bytes: Vec<u8>, pool: Arc<NativeVulkanFfmpegPacketPayloadPool>) -> Self {
@@ -238,11 +318,11 @@ impl NativeVulkanFfmpegPacketPayload {
     pub(in crate::renderer::native_vulkan) fn bytes(&self) -> &[u8] {
         match &self.storage {
             NativeVulkanFfmpegPacketPayloadStorage::AvPacket(packet) => {
-                let size = unsafe { gilder_av_packet_size(packet.as_ptr()) };
+                let size = unsafe { gilder_av_packet_size(packet.packet.as_ptr()) };
                 if size <= 0 {
                     return &[];
                 }
-                let data = unsafe { gilder_av_packet_data(packet.as_ptr()) };
+                let data = unsafe { gilder_av_packet_data(packet.packet.as_ptr()) };
                 if data.is_null() {
                     return &[];
                 }
@@ -297,17 +377,6 @@ impl NativeVulkanFfmpegPacketPayload {
     }
 }
 
-impl Drop for NativeVulkanFfmpegPacketPayload {
-    fn drop(&mut self) {
-        if let NativeVulkanFfmpegPacketPayloadStorage::AvPacket(packet) = &mut self.storage {
-            let mut packet = packet.as_ptr();
-            unsafe {
-                gilder_av_packet_free(&mut packet);
-            }
-        }
-    }
-}
-
 impl fmt::Debug for NativeVulkanFfmpegPacketPayload {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NativeVulkanFfmpegPacketPayload")
@@ -330,15 +399,13 @@ impl fmt::Debug for NativeVulkanFfmpegPacketPayload {
 
 struct NativeVulkanFfmpegReusablePacket {
     packet: NonNull<AVPacket>,
+    pool: Arc<NativeVulkanFfmpegAvObjectPool>,
 }
 
 impl NativeVulkanFfmpegReusablePacket {
-    fn new() -> Result<Self, NativeVulkanError> {
-        let packet = native_vulkan_ffmpeg_alloc_packet()?;
-        let packet = NonNull::new(packet).ok_or_else(|| {
-            NativeVulkanError::Video("FFmpeg av_packet_alloc returned null".to_owned())
-        })?;
-        Ok(Self { packet })
+    fn new(pool: Arc<NativeVulkanFfmpegAvObjectPool>) -> Result<Self, NativeVulkanError> {
+        let packet = pool.take_packet()?;
+        Ok(Self { packet, pool })
     }
 
     fn as_mut_ptr(&mut self) -> *mut AVPacket {
@@ -363,22 +430,23 @@ impl NativeVulkanFfmpegReusablePacket {
         }
     }
 
-    fn replace_with_empty_and_take(&mut self) -> Result<*mut AVPacket, NativeVulkanError> {
-        let replacement = native_vulkan_ffmpeg_alloc_packet()?;
-        let replacement = NonNull::new(replacement).ok_or_else(|| {
-            NativeVulkanError::Video("FFmpeg av_packet_alloc returned null".to_owned())
-        })?;
-        let packet = std::mem::replace(&mut self.packet, replacement);
-        Ok(packet.as_ptr())
+    fn move_ref_to_payload(
+        &mut self,
+    ) -> Result<NativeVulkanFfmpegPacketPayload, NativeVulkanError> {
+        let packet = self.pool.take_packet()?;
+        unsafe {
+            gilder_av_packet_move_ref(packet.as_ptr(), self.packet.as_ptr());
+        }
+        Ok(NativeVulkanFfmpegPacketPayload::from_packet(
+            packet,
+            Arc::clone(&self.pool),
+        ))
     }
 }
 
 impl Drop for NativeVulkanFfmpegReusablePacket {
     fn drop(&mut self) {
-        let mut packet = self.packet.as_ptr();
-        unsafe {
-            gilder_av_packet_free(&mut packet);
-        }
+        self.pool.recycle_packet(self.packet);
     }
 }
 
@@ -393,6 +461,7 @@ impl NativeVulkanFfmpegFormatContext {
         source: &Path,
         codec: NativeVulkanFfmpegCodec,
     ) -> Result<(Self, c_int), NativeVulkanError> {
+        native_vulkan_ffmpeg_configure_process_allocator_for_streaming_video();
         let source = CString::new(source.as_os_str().as_bytes()).map_err(|_| {
             NativeVulkanError::Video("FFmpeg source path contains an interior NUL".to_owned())
         })?;
@@ -435,6 +504,7 @@ impl Drop for NativeVulkanFfmpegFormatContext {
         unsafe {
             gilder_avformat_close_input(&mut ptr);
         }
+        native_vulkan_ffmpeg_trim_process_heap();
     }
 }
 
@@ -475,10 +545,7 @@ impl NativeVulkanFfmpegPacketNormalizer {
                 packet.unref();
                 result.map_err(NativeVulkanError::Video)
             }
-            Self::Av1 => {
-                let packet = packet.replace_with_empty_and_take()?;
-                NativeVulkanFfmpegPacketPayload::from_raw(packet)
-            }
+            Self::Av1 => packet.move_ref_to_payload(),
         }
     }
 }
@@ -828,8 +895,9 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit> NativeVulkanFfmpegStreamingPacket
             format.stream_extradata(stream_index),
         )?;
         let stream_time_base = format.stream_time_base(stream_index);
+        let av_pool = NativeVulkanFfmpegAvObjectPool::new()?;
         let payload_pool = Arc::new(NativeVulkanFfmpegPacketPayloadPool::default());
-        let input_packet = NativeVulkanFfmpegReusablePacket::new()?;
+        let input_packet = NativeVulkanFfmpegReusablePacket::new(av_pool)?;
         Ok(Self {
             format,
             normalizer,
@@ -1082,16 +1150,6 @@ fn native_vulkan_ffmpeg_streaming_packet_worker<A: NativeVulkanFfmpegStreamingAc
             break;
         }
     }
-}
-
-fn native_vulkan_ffmpeg_alloc_packet() -> Result<*mut AVPacket, NativeVulkanError> {
-    let packet = unsafe { gilder_av_packet_alloc() };
-    if packet.is_null() {
-        return Err(NativeVulkanError::Video(
-            "FFmpeg av_packet_alloc failed".to_owned(),
-        ));
-    }
-    Ok(packet)
 }
 
 fn native_vulkan_ffmpeg_timestamp_ns(value: i64, time_base: AVRational) -> Option<u64> {

@@ -76,6 +76,7 @@ gop_size=0
 refs=1
 bframes=0
 bit_depth=8
+bit_depth_explicit=0
 width=3840
 height=2160
 frames=0
@@ -150,6 +151,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --bit-depth)
       bit_depth="${2:-}"
+      bit_depth_explicit=1
       shift 2
       ;;
     --width)
@@ -300,6 +302,29 @@ if [[ -n "$max_private_dirty_kib_limit" && "$performance_snapshot" -ne 1 ]]; the
 fi
 if [[ "$performance_snapshot" -eq 1 && -z "$max_private_dirty_kib_limit" ]]; then
   max_private_dirty_kib_limit="$default_max_private_dirty_kib_limit"
+fi
+if [[ -n "$source" && -f "$source" ]]; then
+  source_pix_fmt="$(ffprobe -hide_banner -v error -select_streams v:0 -show_entries stream=pix_fmt -of default=noprint_wrappers=1:nokey=1 "$source" | head -n 1)"
+  source_profile="$(ffprobe -hide_banner -v error -select_streams v:0 -show_entries stream=profile -of default=noprint_wrappers=1:nokey=1 "$source" | head -n 1)"
+  source_bit_depth=""
+  if [[ "$source_pix_fmt" == *10* || "$source_profile" == *"Main 10"* ]]; then
+    source_bit_depth=10
+  elif [[ "$source_pix_fmt" == yuv420p || "$source_profile" == "Main" ]]; then
+    source_bit_depth=8
+  fi
+  if [[ -n "$source_bit_depth" ]]; then
+    if [[ "$bit_depth_explicit" -eq 0 ]]; then
+      bit_depth="$source_bit_depth"
+    elif [[ "$bit_depth" != "$source_bit_depth" ]]; then
+      {
+        printf 'FAIL: --bit-depth %s does not match H.265 source bit depth %s\n' "$bit_depth" "$source_bit_depth"
+        printf 'source: %s\n' "$source"
+        printf 'source_profile: %s\n' "$source_profile"
+        printf 'source_pix_fmt: %s\n' "$source_pix_fmt"
+      } >&2
+      exit 1
+    fi
+  fi
 fi
 case "$bit_depth" in
   8)
@@ -1087,7 +1112,7 @@ fi
   printf 'b_frames: %s\n' "$b_frames"
   printf 'max_reference_count: %s\n' "$max_reference_count"
   printf 'pacing_master: %s\n' "$pacing_master"
-  printf 'allocator_tuning: none\n'
+  printf 'allocator_tuning: process-glibc-mallopt-tcache-off\n'
   printf 'pacing_strategy: %s\n' "$pacing_strategy"
   printf 'expected_pacing_strategy: %s\n' "$expected_pacing_strategy"
   printf 'frame_sleep_count: %s\n' "$frame_sleep_count_value"

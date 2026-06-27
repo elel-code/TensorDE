@@ -126,6 +126,7 @@ use super::video_session_images::{
 pub(in crate::renderer::native_vulkan::vulkan) const VIDEO_PRESENT_SESSION_RETAINED_RESOURCE_ROUTE: &str =
     "video-present-session-retained-resource";
 const FFMPEG_VIDEO_PICTURE_QUEUE_SIZE: usize = 3;
+const DECODED_IMAGE_PRESENT_STARTUP_PREROLL_FRAMES: usize = 1;
 const FFMPEG_SINGLE_DECODE_THREAD_COUNT: u32 = 1;
 const FFMPEG_FFPLAY_FRAME_QUEUE_REFERENCE: &str =
     "references/ffmpeg/fftools/ffplay.c:125-179,2205-2210";
@@ -1650,10 +1651,7 @@ fn create_video_present_session_pieces(
                                         let frame = if first_frame_preroll_pending {
                                             first_frame_preroll_pending = false;
                                             worker_handoff.recv_after_preroll(
-                                                FFMPEG_VIDEO_PICTURE_QUEUE_SIZE.min(
-                                                    requested_present_frame_count_for_sequence
-                                                        as usize,
-                                                ),
+                                                DECODED_IMAGE_PRESENT_STARTUP_PREROLL_FRAMES,
                                             )?
                                         } else {
                                             match worker_handoff.try_recv()? {
@@ -2104,9 +2102,9 @@ fn create_video_present_session_pieces(
                     if let Some(sequence_builder) = sequence_builder.take() {
                         let handoff_snapshot = present_handoff.snapshot(
                             "decoded-image-present-worker-layer-ring",
-                            "FFmpeg FrameQueue-style decoded-frame handoff: decode enqueues FIFO metadata into a fixed 3-frame ring and present starts after initial FIFO preroll",
+                            "FFmpeg FrameQueue-style decoded-frame handoff: decode enqueues FIFO metadata into a fixed 3-frame ring and present starts as soon as the first display frame is available",
                             "no frame drop in ready-prefix evidence; decoded layer reuse waits on render-fence/final-drain completion instead of retaining stale copied frames",
-                            "present worker prerolls then drains FIFO metadata carrying FFmpeg-style PTS/POC/order-hint keys; decoded layer release is fence driven",
+                            "present worker drains FIFO metadata carrying FFmpeg-style PTS/POC/order-hint keys without a startup preroll gate; decoded layer release is fence driven",
                             "frame pixels are sampled from the Vulkan decode image through VK_EXT_descriptor_heap, then the swapchain image owns the displayed result",
                             FFMPEG_FFPLAY_FRAME_QUEUE_REFERENCE,
                         )?;
@@ -3110,6 +3108,12 @@ mod tests {
                 "audio-clock-master-pts-sync-sleep"
             ))
         );
+    }
+
+    #[test]
+    fn decoded_present_startup_preroll_is_first_frame_driven() {
+        assert_eq!(DECODED_IMAGE_PRESENT_STARTUP_PREROLL_FRAMES, 1);
+        assert!(DECODED_IMAGE_PRESENT_STARTUP_PREROLL_FRAMES <= FFMPEG_VIDEO_PICTURE_QUEUE_SIZE);
     }
 
     #[cfg(feature = "native-vulkan-video")]
