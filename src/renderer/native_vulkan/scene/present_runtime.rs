@@ -1,12 +1,22 @@
+#[cfg(feature = "native-vulkan-video")]
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::renderer::SceneWallpaperPlan;
+use crate::renderer::{SceneRenderAudioCue, SceneWallpaperPlan};
 
+use super::super::audio::clock::{
+    NativeVulkanAudioClockProbeOptions, NativeVulkanAudioClockRuntimeSnapshot,
+    native_vulkan_probe_ffmpeg_audio_clock,
+};
 use super::super::present::render_item::native_vulkan_scene_item;
 use super::super::present::render_plan::{
     native_vulkan_clear_color_from_hex, native_vulkan_render_item_clear_color,
+};
+#[cfg(feature = "native-vulkan-video")]
+use super::super::video::direct::{
+    NATIVE_VULKAN_AUDIO_OUTPUT_WORKER_STACK_BYTES, native_vulkan_audio_runtime_packet_budget,
 };
 use super::super::{
     NativeVulkanAudioOutputMode, NativeVulkanError, NativeVulkanOptions,
@@ -25,6 +35,18 @@ use super::super::{
 use super::runtime::{NativeVulkanSceneRuntimeSnapshot, native_vulkan_scene_runtime_snapshot};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneAudioCueRuntimeSnapshot {
+    pub route: &'static str,
+    pub boundary: &'static str,
+    pub cue_index: usize,
+    pub layer_id: String,
+    pub source: std::path::PathBuf,
+    pub playback_mode: Option<String>,
+    pub start_silent: bool,
+    pub runtime: NativeVulkanAudioClockRuntimeSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(
     tag = "scene_present_route",
     content = "snapshot",
@@ -33,19 +55,23 @@ use super::runtime::{NativeVulkanSceneRuntimeSnapshot, native_vulkan_scene_runti
 pub enum NativeVulkanScenePresentSnapshot {
     Clear {
         runtime: NativeVulkanSceneRuntimeSnapshot,
+        scene_audio: Vec<NativeVulkanSceneAudioCueRuntimeSnapshot>,
         present: NativeVulkanVulkanaliaClearPresentSnapshot,
     },
     SolidQuad {
         runtime: NativeVulkanSceneRuntimeSnapshot,
+        scene_audio: Vec<NativeVulkanSceneAudioCueRuntimeSnapshot>,
         present: NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot,
     },
     SampledImage {
         runtime: NativeVulkanSceneRuntimeSnapshot,
+        scene_audio: Vec<NativeVulkanSceneAudioCueRuntimeSnapshot>,
         present: NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot,
     },
     #[cfg(feature = "native-vulkan-video")]
     Video {
         runtime: NativeVulkanSceneRuntimeSnapshot,
+        scene_audio: Vec<NativeVulkanSceneAudioCueRuntimeSnapshot>,
         present: NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot,
     },
 }
@@ -75,6 +101,7 @@ pub fn run_scene(
     mut options: NativeVulkanOptions,
     duration: Duration,
     plan: SceneWallpaperPlan,
+    scene_audio_output_mode: NativeVulkanAudioOutputMode,
     video_bridge: Option<NativeVulkanSceneVideoBridgeOptions>,
 ) -> Result<NativeVulkanScenePresentSnapshot, NativeVulkanError> {
     #[cfg(not(feature = "native-vulkan-video"))]
@@ -109,8 +136,17 @@ pub fn run_scene(
                     )
                 })?;
             options.clear_color = color;
-            run_clear(options, duration)
-                .map(|present| NativeVulkanScenePresentSnapshot::Clear { runtime, present })
+            let (present, scene_audio) = native_vulkan_scene_present_with_audio(
+                &plan,
+                duration,
+                scene_audio_output_mode,
+                || run_clear(options, duration),
+            )?;
+            Ok(NativeVulkanScenePresentSnapshot::Clear {
+                runtime,
+                scene_audio,
+                present,
+            })
         }
         NativeVulkanScenePresentRouteKind::SolidQuad => {
             let geometry = runtime
@@ -122,18 +158,29 @@ pub fn run_scene(
                     ))
                 })?;
 
-            run_native_vulkan_vulkanalia_scene_solid_quad_present(
-                NativeVulkanVulkanaliaSceneSolidQuadPresentOptions {
-                    host: options.host,
-                    wait_configure_roundtrips: options.wait_configure_roundtrips,
-                    duration,
-                    target_max_fps,
-                    quad_color: options.clear_color,
-                    geometry: Some(geometry),
+            let (present, scene_audio) = native_vulkan_scene_present_with_audio(
+                &plan,
+                duration,
+                scene_audio_output_mode,
+                || {
+                    run_native_vulkan_vulkanalia_scene_solid_quad_present(
+                        NativeVulkanVulkanaliaSceneSolidQuadPresentOptions {
+                            host: options.host,
+                            wait_configure_roundtrips: options.wait_configure_roundtrips,
+                            duration,
+                            target_max_fps,
+                            quad_color: options.clear_color,
+                            geometry: Some(geometry),
+                        },
+                    )
+                    .map_err(NativeVulkanError::Scene)
                 },
-            )
-            .map(|present| NativeVulkanScenePresentSnapshot::SolidQuad { runtime, present })
-            .map_err(NativeVulkanError::Scene)
+            )?;
+            Ok(NativeVulkanScenePresentSnapshot::SolidQuad {
+                runtime,
+                scene_audio,
+                present,
+            })
         }
         NativeVulkanScenePresentRouteKind::SampledImage => {
             let (source, fit, geometry) = if let Some((source, geometry)) =
@@ -152,21 +199,32 @@ pub fn run_scene(
             };
             let solid_geometry = runtime.vulkanalia_mixed_solid_quad_geometry_input();
 
-            run_native_vulkan_vulkanalia_scene_sampled_image_present(
-                NativeVulkanVulkanaliaSceneSampledImagePresentOptions {
-                    host: options.host,
-                    wait_configure_roundtrips: options.wait_configure_roundtrips,
-                    duration,
-                    target_max_fps,
-                    source,
-                    clear_color: options.clear_color,
-                    fit,
-                    solid_geometry,
-                    geometry,
+            let (present, scene_audio) = native_vulkan_scene_present_with_audio(
+                &plan,
+                duration,
+                scene_audio_output_mode,
+                || {
+                    run_native_vulkan_vulkanalia_scene_sampled_image_present(
+                        NativeVulkanVulkanaliaSceneSampledImagePresentOptions {
+                            host: options.host,
+                            wait_configure_roundtrips: options.wait_configure_roundtrips,
+                            duration,
+                            target_max_fps,
+                            source,
+                            clear_color: options.clear_color,
+                            fit,
+                            solid_geometry,
+                            geometry,
+                        },
+                    )
+                    .map_err(NativeVulkanError::Scene)
                 },
-            )
-            .map(|present| NativeVulkanScenePresentSnapshot::SampledImage { runtime, present })
-            .map_err(NativeVulkanError::Scene)
+            )?;
+            Ok(NativeVulkanScenePresentSnapshot::SampledImage {
+                runtime,
+                scene_audio,
+                present,
+            })
         }
         #[cfg(feature = "native-vulkan-video")]
         NativeVulkanScenePresentRouteKind::Video => {
@@ -188,22 +246,242 @@ pub fn run_scene(
             let width = native_vulkan_scene_video_extent(video_bridge.width, video.width);
             let height = native_vulkan_scene_video_extent(video_bridge.height, video.height);
 
-            run_vulkanalia_ready_prefix_video(
-                options,
-                video_bridge.codec,
-                source,
-                width,
-                height,
-                video.fit,
-                video_bridge.bitstream_extract_max_samples,
-                video_bridge.ready_prefix_frames,
-                video_bridge.playback_frames,
-                video_bridge.audio_clock_probe_requested,
-                video_bridge.audio_output_mode,
-            )
-            .map(|present| NativeVulkanScenePresentSnapshot::Video { runtime, present })
+            let (present, scene_audio) = native_vulkan_scene_present_with_audio(
+                &plan,
+                duration,
+                scene_audio_output_mode,
+                || {
+                    run_vulkanalia_ready_prefix_video(
+                        options,
+                        video_bridge.codec,
+                        source,
+                        width,
+                        height,
+                        video.fit,
+                        video_bridge.bitstream_extract_max_samples,
+                        video_bridge.ready_prefix_frames,
+                        video_bridge.playback_frames,
+                        video_bridge.audio_clock_probe_requested,
+                        video_bridge.audio_output_mode,
+                    )
+                },
+            )?;
+            Ok(NativeVulkanScenePresentSnapshot::Video {
+                runtime,
+                scene_audio,
+                present,
+            })
         }
     }
+}
+
+#[cfg(feature = "native-vulkan-video")]
+type NativeVulkanSceneAudioWorker =
+    JoinHandle<Result<NativeVulkanSceneAudioCueRuntimeSnapshot, NativeVulkanError>>;
+
+#[cfg(not(feature = "native-vulkan-video"))]
+struct NativeVulkanSceneAudioWorker;
+
+#[derive(Debug, Clone, PartialEq)]
+struct NativeVulkanSceneAudioCuePlayback {
+    cue_index: usize,
+    layer_id: String,
+    cue: SceneRenderAudioCue,
+}
+
+fn native_vulkan_scene_present_with_audio<T>(
+    plan: &SceneWallpaperPlan,
+    duration: Duration,
+    output_mode: NativeVulkanAudioOutputMode,
+    present: impl FnOnce() -> Result<T, NativeVulkanError>,
+) -> Result<(T, Vec<NativeVulkanSceneAudioCueRuntimeSnapshot>), NativeVulkanError> {
+    let audio_workers = native_vulkan_scene_start_audio_workers(plan, duration, output_mode)?;
+    let present_result = present();
+    let audio_result = native_vulkan_scene_join_audio_workers(audio_workers);
+    match (present_result, audio_result) {
+        (Ok(present), Ok(audio)) => Ok((present, audio)),
+        (Err(err), _) => Err(err),
+        (Ok(_), Err(err)) => Err(err),
+    }
+}
+
+#[cfg(feature = "native-vulkan-video")]
+fn native_vulkan_scene_start_audio_workers(
+    plan: &SceneWallpaperPlan,
+    duration: Duration,
+    output_mode: NativeVulkanAudioOutputMode,
+) -> Result<Vec<NativeVulkanSceneAudioWorker>, NativeVulkanError> {
+    native_vulkan_scene_active_audio_cues(plan)
+        .into_iter()
+        .map(|playback| {
+            if !playback.cue.source.is_file() {
+                return Err(NativeVulkanError::Scene(format!(
+                    "scene audio cue source does not exist: {}",
+                    playback.cue.source.display()
+                )));
+            }
+            let target_playback_clock_ns = Some(native_vulkan_scene_duration_ns(duration).max(1));
+            let playback_frame_count =
+                native_vulkan_scene_audio_playback_frame_count(duration, plan.target_max_fps);
+            let packets_to_probe =
+                native_vulkan_audio_runtime_packet_budget(duration, playback_frame_count);
+            thread::Builder::new()
+                .name(format!("gilder-scene-audio-{}", playback.cue_index))
+                .stack_size(NATIVE_VULKAN_AUDIO_OUTPUT_WORKER_STACK_BYTES)
+                .spawn(move || {
+                    let mut options =
+                        NativeVulkanAudioClockProbeOptions::clock_only(playback.cue.source.clone());
+                    options.output_mode = output_mode;
+                    options.queue_capacity =
+                        super::super::audio::clock::NATIVE_VULKAN_AUDIO_CLOCK_QUEUE_PACKETS;
+                    options.packets_to_probe = packets_to_probe;
+                    options.loop_on_eos = native_vulkan_scene_audio_loop_on_eos(&playback.cue);
+                    options.target_playback_clock_ns = target_playback_clock_ns;
+                    let runtime = native_vulkan_probe_ffmpeg_audio_clock(options)?;
+                    native_vulkan_scene_audio_validate_runtime(&playback, output_mode, &runtime)?;
+                    Ok(NativeVulkanSceneAudioCueRuntimeSnapshot {
+                        route: "native-vulkan-scene-audio-cue-runtime",
+                        boundary: "gscene audio cue -> FFmpeg audio decode -> PipeWire-only output",
+                        cue_index: playback.cue_index,
+                        layer_id: playback.layer_id,
+                        source: playback.cue.source,
+                        playback_mode: playback.cue.playback_mode,
+                        start_silent: playback.cue.start_silent,
+                        runtime,
+                    })
+                })
+                .map_err(|err| {
+                    NativeVulkanError::Scene(format!(
+                        "spawn PipeWire scene audio output worker: {err}"
+                    ))
+                })
+        })
+        .collect()
+}
+
+#[cfg(not(feature = "native-vulkan-video"))]
+fn native_vulkan_scene_start_audio_workers(
+    plan: &SceneWallpaperPlan,
+    _duration: Duration,
+    _output_mode: NativeVulkanAudioOutputMode,
+) -> Result<Vec<NativeVulkanSceneAudioWorker>, NativeVulkanError> {
+    if native_vulkan_scene_active_audio_cues(plan).is_empty() {
+        Ok(Vec::new())
+    } else {
+        Err(NativeVulkanError::Scene(
+            "scene audio cues require native-vulkan-video FFmpeg/PipeWire runtime".to_owned(),
+        ))
+    }
+}
+
+#[cfg(feature = "native-vulkan-video")]
+fn native_vulkan_scene_join_audio_workers(
+    workers: Vec<NativeVulkanSceneAudioWorker>,
+) -> Result<Vec<NativeVulkanSceneAudioCueRuntimeSnapshot>, NativeVulkanError> {
+    workers
+        .into_iter()
+        .map(|worker| match worker.join() {
+            Ok(result) => result,
+            Err(_) => Err(NativeVulkanError::Scene(
+                "scene audio output worker panicked".to_owned(),
+            )),
+        })
+        .collect()
+}
+
+#[cfg(not(feature = "native-vulkan-video"))]
+fn native_vulkan_scene_join_audio_workers(
+    workers: Vec<NativeVulkanSceneAudioWorker>,
+) -> Result<Vec<NativeVulkanSceneAudioCueRuntimeSnapshot>, NativeVulkanError> {
+    let _ = workers;
+    Ok(Vec::new())
+}
+
+fn native_vulkan_scene_active_audio_cues(
+    plan: &SceneWallpaperPlan,
+) -> Vec<NativeVulkanSceneAudioCuePlayback> {
+    plan.layers
+        .iter()
+        .flat_map(|layer| {
+            layer
+                .audio
+                .iter()
+                .enumerate()
+                .filter(|(_, cue)| !cue.start_silent)
+                .map(|(cue_index, cue)| NativeVulkanSceneAudioCuePlayback {
+                    cue_index,
+                    layer_id: layer.id.clone(),
+                    cue: cue.clone(),
+                })
+        })
+        .collect()
+}
+
+#[cfg(feature = "native-vulkan-video")]
+fn native_vulkan_scene_audio_validate_runtime(
+    playback: &NativeVulkanSceneAudioCuePlayback,
+    output_mode: NativeVulkanAudioOutputMode,
+    runtime: &NativeVulkanAudioClockRuntimeSnapshot,
+) -> Result<(), NativeVulkanError> {
+    if !runtime.audio_stream_found {
+        return Err(NativeVulkanError::Scene(format!(
+            "scene audio cue {:?} did not open an FFmpeg audio stream: {}",
+            playback.cue.source,
+            runtime
+                .audio_stream_error
+                .as_deref()
+                .unwrap_or("missing audio stream")
+        )));
+    }
+    if native_vulkan_scene_audio_loop_on_eos(&playback.cue) && !runtime.playback_target_reached {
+        return Err(NativeVulkanError::Scene(format!(
+            "scene audio cue {:?} did not cover requested playback duration",
+            playback.cue.source
+        )));
+    }
+    match output_mode {
+        NativeVulkanAudioOutputMode::Auto => {
+            if runtime.audible_output_started
+                && runtime.audio_output_backend == "pipewire-s16le"
+                && runtime.audio_output_xrun_count == 0
+                && runtime.audio_output_stream_ready
+            {
+                Ok(())
+            } else {
+                Err(NativeVulkanError::Scene(format!(
+                    "scene audio cue {:?} did not start clean PipeWire output",
+                    playback.cue.source
+                )))
+            }
+        }
+        NativeVulkanAudioOutputMode::ClockOnly => Ok(()),
+    }
+}
+
+#[cfg(feature = "native-vulkan-video")]
+fn native_vulkan_scene_audio_loop_on_eos(cue: &SceneRenderAudioCue) -> bool {
+    cue.playback_mode.as_deref() == Some("loop")
+}
+
+#[cfg(feature = "native-vulkan-video")]
+fn native_vulkan_scene_duration_ns(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+#[cfg(feature = "native-vulkan-video")]
+fn native_vulkan_scene_audio_playback_frame_count(
+    duration: Duration,
+    target_max_fps: Option<u32>,
+) -> u32 {
+    let fps = u128::from(target_max_fps.unwrap_or(60).max(1));
+    let frames = duration
+        .as_nanos()
+        .saturating_mul(fps)
+        .saturating_add(999_999_999)
+        / 1_000_000_000;
+    u32::try_from(frames.min(u128::from(u32::MAX)))
+        .unwrap_or(u32::MAX)
+        .max(1)
 }
 
 fn native_vulkan_scene_present_route(
@@ -256,7 +534,7 @@ fn native_vulkan_scene_video_extent(option_extent: u32, layer_extent: Option<f64
 mod tests {
     use super::*;
     use crate::core::{FitMode, SceneNodeKind, SceneSystems, SceneTransform};
-    use crate::renderer::{SceneDisplayPlan, SceneRenderLayer};
+    use crate::renderer::{SceneDisplayPlan, SceneRenderAudioCue, SceneRenderLayer};
     use std::path::PathBuf;
 
     fn layer(id: &str, kind: SceneNodeKind) -> SceneRenderLayer {
@@ -375,5 +653,31 @@ mod tests {
             route_for_layers(vec![background, overlay]).unwrap(),
             NativeVulkanScenePresentRouteKind::SampledImage
         );
+    }
+
+    #[test]
+    fn scene_audio_runtime_uses_only_active_cues() {
+        let mut image = layer("speaker", SceneNodeKind::Image);
+        image.audio.push(SceneRenderAudioCue {
+            source: PathBuf::from("/tmp/theme.ogg"),
+            playback_mode: Some("loop".to_owned()),
+            volume: None,
+            start_silent: false,
+        });
+        image.audio.push(SceneRenderAudioCue {
+            source: PathBuf::from("/tmp/response.ogg"),
+            playback_mode: None,
+            volume: None,
+            start_silent: true,
+        });
+        let plan = plan(vec![image]);
+
+        let active = native_vulkan_scene_active_audio_cues(&plan);
+
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].layer_id, "speaker");
+        assert_eq!(active[0].cue.source, PathBuf::from("/tmp/theme.ogg"));
+        #[cfg(feature = "native-vulkan-video")]
+        assert!(native_vulkan_scene_audio_loop_on_eos(&active[0].cue));
     }
 }

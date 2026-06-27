@@ -3,9 +3,11 @@ use gilder::core::{FitMode, SceneNodeKind, SceneSystems, SceneTransform};
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::native_vulkan::NativeVulkanClearColor;
 #[cfg(feature = "native-vulkan-renderer")]
-use gilder::renderer::{SceneDisplayPlan, SceneRenderLayer, SceneWallpaperPlan};
+use gilder::renderer::{
+    SceneDisplayPlan, SceneRenderLayer, SceneWallpaperPlan, scene_wallpaper_plan_from_gscene_path,
+};
 #[cfg(feature = "native-vulkan-renderer")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(feature = "native-vulkan-renderer")]
 fn main() {
@@ -143,6 +145,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut scene_stroke_color = None::<String>;
     let mut scene_stroke_width = None::<f64>;
     let mut scene_video_layer = false;
+    let mut scene_root = None::<PathBuf>;
     let mut scene_snapshot_time_ms = 0u64;
     let mut _muted = true;
     #[cfg(feature = "native-vulkan-video")]
@@ -316,6 +319,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|value| value.parse::<u64>())
                     .transpose()?
                     .ok_or("--scene-time-ms requires milliseconds")?;
+            }
+            "--scene-root" => {
+                scene_root = Some(PathBuf::from(
+                    args.next().ok_or("--scene-root requires PATH")?,
+                ));
             }
             "--loop" => {}
             "--no-loop" => {}
@@ -576,6 +584,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 output_name,
                 source,
                 scene_video_layer,
+                scene_root,
                 fit,
                 background,
                 scene_color,
@@ -624,7 +633,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 None
             };
-            json!(run_scene(options, duration, plan, video_bridge)?)
+            json!(run_scene(
+                options,
+                duration,
+                plan,
+                audio_output_policy.resolve(_muted),
+                video_bridge
+            )?)
         }
         NativeVulkanCliMode::RunStatic => {
             let source = source.ok_or("--run-static requires --source")?;
@@ -811,6 +826,7 @@ fn scene_cli_plan(
     output_name: String,
     source: Option<PathBuf>,
     source_is_video: bool,
+    scene_root: Option<PathBuf>,
     fit: FitMode,
     background: Option<String>,
     color: Option<String>,
@@ -824,6 +840,18 @@ fn scene_cli_plan(
     target_max_fps: Option<u32>,
 ) -> Result<SceneWallpaperPlan, Box<dyn std::error::Error>> {
     if let Some(source) = source {
+        if !source_is_video && scene_cli_source_is_gscene(&source) {
+            let package_root =
+                scene_root.unwrap_or_else(|| scene_cli_default_gscene_package_root(&source));
+            return Ok(scene_wallpaper_plan_from_gscene_path(
+                output_name,
+                &package_root,
+                source,
+                target_max_fps,
+                snapshot_time_ms,
+                Some(fit),
+            )?);
+        }
         if source_is_video {
             let mut layers = Vec::new();
             let display = if let Some(background) = background {
@@ -965,6 +993,24 @@ fn scene_cli_plan(
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
+fn scene_cli_source_is_gscene(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|file_name| file_name.to_str())
+        .is_some_and(|file_name| file_name.ends_with(".gscene.json"))
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+fn scene_cli_default_gscene_package_root(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    if parent.file_name().and_then(|name| name.to_str()) == Some("assets")
+        && let Some(root) = parent.parent()
+    {
+        return root.to_path_buf();
+    }
+    parent.to_path_buf()
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
 fn scene_cli_layer(id: &str, kind: SceneNodeKind) -> SceneRenderLayer {
     SceneRenderLayer {
         id: id.to_owned(),
@@ -1029,6 +1075,7 @@ mod tests {
             "HDMI-A-1".to_owned(),
             Some(PathBuf::from("/tmp/wall.png")),
             false,
+            None,
             FitMode::Contain,
             Some("#010203".to_owned()),
             None,
@@ -1064,11 +1111,102 @@ mod tests {
     }
 
     #[test]
+    fn scene_cli_detects_gscene_package_root() {
+        let source = Path::new("/tmp/package/assets/scene.gscene.json");
+
+        assert!(scene_cli_source_is_gscene(source));
+        assert_eq!(
+            scene_cli_default_gscene_package_root(source),
+            PathBuf::from("/tmp/package")
+        );
+        assert!(!scene_cli_source_is_gscene(Path::new(
+            "/tmp/package/assets/scene.json"
+        )));
+    }
+
+    #[test]
+    fn scene_cli_plan_loads_gscene_document_source() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gilder-native-vulkan-cli-gscene-{}-{nonce}",
+            std::process::id()
+        ));
+        let assets = root.join("assets");
+        std::fs::create_dir_all(assets.join("audio")).unwrap();
+        std::fs::write(assets.join("background.svg"), b"<svg/>").unwrap();
+        std::fs::write(assets.join("audio/theme.ogg"), b"not real ogg").unwrap();
+        std::fs::write(
+            assets.join("scene.gscene.json"),
+            br##"{
+              "resources": [
+                { "id": "background-resource", "type": "image", "source": "assets/background.svg" },
+                { "id": "theme-audio", "type": "audio", "source": "assets/audio/theme.ogg" }
+              ],
+              "nodes": [
+                {
+                  "id": "background",
+                  "type": "image",
+                  "resource": "background-resource",
+                  "audio": [
+                    { "resource": "theme-audio", "playback_mode": "loop" }
+                  ]
+                }
+              ]
+            }"##,
+        )
+        .unwrap();
+        let source = assets.join("scene.gscene.json");
+
+        let plan = scene_cli_plan(
+            "HDMI-A-1".to_owned(),
+            Some(source.clone()),
+            false,
+            None,
+            FitMode::Contain,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            2468,
+            Some(30),
+        )
+        .expect("gscene scene plan");
+
+        assert_eq!(plan.source, Some(source));
+        assert_eq!(plan.snapshot_time_ms, 2468);
+        assert_eq!(plan.audio_cue_count, 1);
+        assert!(
+            plan.layers[0]
+                .source
+                .as_ref()
+                .unwrap()
+                .ends_with("assets/background.svg")
+        );
+        assert!(
+            plan.layers[0].audio[0]
+                .source
+                .ends_with("assets/audio/theme.ogg")
+        );
+        assert_eq!(
+            plan.layers[0].audio[0].playback_mode.as_deref(),
+            Some("loop")
+        );
+    }
+
+    #[test]
     fn scene_cli_plan_builds_color_layer() {
         let plan = scene_cli_plan(
             "HDMI-A-1".to_owned(),
             None,
             false,
+            None,
             FitMode::Cover,
             None,
             Some("#102030".to_owned()),
@@ -1101,6 +1239,7 @@ mod tests {
             "HDMI-A-1".to_owned(),
             None,
             false,
+            None,
             FitMode::Cover,
             Some("#101010".to_owned()),
             None,
@@ -1139,6 +1278,7 @@ mod tests {
             "HDMI-A-1".to_owned(),
             None,
             false,
+            None,
             FitMode::Cover,
             Some("#101010".to_owned()),
             None,
@@ -1178,6 +1318,7 @@ mod tests {
             "HDMI-A-1".to_owned(),
             Some(PathBuf::from("/tmp/clip.hevc")),
             true,
+            None,
             FitMode::Contain,
             Some("#101010".to_owned()),
             None,
@@ -1248,13 +1389,13 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --decode-av1-ready-prefix N extends --run-video with N visible AV1 temporal units through Vulkan Video decode/present.\n\
 --playback-frames N repeats the ready-prefix AU window for N direct Vulkan Video decode/present frames.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
---run-scene builds a scene plan from --source, --scene-video, --path-data, --text, or hex --color and runs the unified native scene presenter.\n\
+--run-scene builds a scene plan from --source, --scene-root, --scene-video, --path-data, --text, or hex --color and runs the unified native scene presenter.\n\
 --run-static uses Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
 --run-video uses Vulkanalia ready-prefix video. Without explicit --decode-*-ready-prefix, it uses the codec default ready-prefix window.\n\
 --run-vulkanalia-ready-prefix-video decodes a streaming H.264/H.265 source through Vulkanalia CmdPipelineBarrier2/QueueSubmit2 and prints runtime JSON.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
-         [--source PATH] [--scene-video] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb] [--text TEXT] [--text-color #rrggbb] [--font-size PX]\n\
+         [--source PATH] [--scene-root PATH] [--scene-video] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb] [--text TEXT] [--text-color #rrggbb] [--font-size PX]\n\
          [--path-data SVG_PATH] [--stroke-color #rrggbb] [--stroke-width PX]\n\
          [--scene-time-ms MS]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\

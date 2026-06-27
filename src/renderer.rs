@@ -12,10 +12,12 @@ use self::scene_display::{
 };
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, PropertySpec, Variant};
+use crate::core::scene::SceneSnapshotLayer;
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
-    SceneAudioCue, SceneDocument, SceneNodeKind, SceneSystems, SceneTextAlign, SceneTextureRegion,
-    SceneTransform, Transition, WallpaperEntry, WallpaperPackage,
+    SceneAudioCue, SceneDocument, SceneNodeKind, SceneResource, SceneResourceKind, SceneSystems,
+    SceneTextAlign, SceneTextureRegion, SceneTransform, Transition, WallpaperEntry,
+    WallpaperPackage,
 };
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot, PowerState};
 use crate::policy::{PerformanceDecision, RenderMode};
@@ -108,7 +110,7 @@ pub struct SceneRenderLayer {
     pub source: Option<PathBuf>,
     pub texture_region: Option<SceneTextureRegion>,
     #[serde(default)]
-    pub audio: Vec<SceneAudioCue>,
+    pub audio: Vec<SceneRenderAudioCue>,
     pub color: Option<String>,
     pub stroke_color: Option<String>,
     pub stroke_width: Option<f64>,
@@ -124,6 +126,17 @@ pub struct SceneRenderLayer {
     pub fit: FitMode,
     pub opacity: f64,
     pub transform: SceneTransform,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneRenderAudioCue {
+    pub source: PathBuf,
+    #[serde(default)]
+    pub playback_mode: Option<String>,
+    #[serde(default)]
+    pub volume: Option<Value>,
+    #[serde(default)]
+    pub start_silent: bool,
 }
 
 impl SceneWallpaperPlan {
@@ -153,6 +166,50 @@ pub enum WallpaperRenderPlan {
     Video(VideoWallpaperPlan),
     Slideshow(SlideshowWallpaperPlan),
     Scene(SceneWallpaperPlan),
+}
+
+pub fn scene_wallpaper_plan_from_gscene_path(
+    output_name: String,
+    package_root: &Path,
+    source_path: PathBuf,
+    target_max_fps: Option<u32>,
+    snapshot_time_ms: u64,
+    fit_override: Option<FitMode>,
+) -> Result<SceneWallpaperPlan, RendererPlanError> {
+    let document = load_scene_document(&source_path)?;
+    let snapshot = document.snapshot_at_with_property_resolver(snapshot_time_ms, |_property| None);
+    let layers = scene_render_layers_from_snapshot(package_root, &document, snapshot.layers)?;
+    let fallback = document
+        .native_lowering
+        .fallback
+        .as_ref()
+        .map(|fallback| fallback.join_to(package_root));
+    let display = scene_display_plan(
+        Some(source_path.as_path()),
+        &document,
+        fallback.as_ref(),
+        &layers,
+        fit_override,
+        None,
+        None,
+    );
+
+    Ok(SceneWallpaperPlan {
+        output_name,
+        source: Some(source_path),
+        fallback,
+        manifest_max_fps: None,
+        target_max_fps,
+        snapshot_time_ms: snapshot.time_ms,
+        scene_systems: document.systems.clone(),
+        audio_cue_count: layers.iter().map(|layer| layer.audio.len()).sum(),
+        bound_properties: scene_bound_properties(&document),
+        timeline_animation_count: scene_timeline_animation_count(&document),
+        timeline_animated_layer_count: scene_timeline_animated_layer_count(&document),
+        property_binding_count: document.property_bindings.len(),
+        display,
+        layers,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1492,32 +1549,7 @@ fn scene_wallpaper_plan(
     let snapshot = document.snapshot_at_with_property_resolver(0, |property| {
         scene_property_value(property, render_properties, &package.manifest.properties)
     });
-    let layers = snapshot
-        .layers
-        .into_iter()
-        .map(|layer| SceneRenderLayer {
-            id: layer.id,
-            kind: layer.kind,
-            source: layer.source.map(|source| source.join_to(&package.root)),
-            texture_region: layer.texture_region,
-            audio: layer.audio,
-            color: layer.color,
-            stroke_color: layer.stroke_color,
-            stroke_width: layer.stroke_width,
-            corner_radius: layer.corner_radius,
-            width: layer.width,
-            height: layer.height,
-            text: layer.text,
-            font_size: layer.font_size,
-            font_family: layer.font_family,
-            font_weight: layer.font_weight,
-            text_align: layer.text_align,
-            path_data: layer.path_data,
-            fit: layer.fit,
-            opacity: layer.opacity,
-            transform: layer.transform,
-        })
-        .collect::<Vec<_>>();
+    let layers = scene_render_layers_from_snapshot(&package.root, &document, snapshot.layers)?;
     let fallback = document
         .native_lowering
         .fallback
@@ -1550,6 +1582,105 @@ fn scene_wallpaper_plan(
         display,
         layers,
     })
+}
+
+fn scene_render_layers_from_snapshot(
+    package_root: &Path,
+    document: &SceneDocument,
+    layers: Vec<SceneSnapshotLayer>,
+) -> Result<Vec<SceneRenderLayer>, RendererPlanError> {
+    let scene_resource_lookup = document
+        .resources
+        .iter()
+        .map(|resource| (resource.id.as_str(), resource))
+        .collect::<BTreeMap<_, _>>();
+    layers
+        .into_iter()
+        .map(|layer| {
+            let audio = scene_render_audio_cues(
+                package_root,
+                &scene_resource_lookup,
+                &layer.id,
+                layer.audio,
+            )?;
+            Ok(SceneRenderLayer {
+                id: layer.id,
+                kind: layer.kind,
+                source: layer.source.map(|source| source.join_to(package_root)),
+                texture_region: layer.texture_region,
+                audio,
+                color: layer.color,
+                stroke_color: layer.stroke_color,
+                stroke_width: layer.stroke_width,
+                corner_radius: layer.corner_radius,
+                width: layer.width,
+                height: layer.height,
+                text: layer.text,
+                font_size: layer.font_size,
+                font_family: layer.font_family,
+                font_weight: layer.font_weight,
+                text_align: layer.text_align,
+                path_data: layer.path_data,
+                fit: layer.fit,
+                opacity: layer.opacity,
+                transform: layer.transform,
+            })
+        })
+        .collect()
+}
+
+fn scene_render_audio_cues(
+    package_root: &Path,
+    resources: &BTreeMap<&str, &SceneResource>,
+    layer_id: &str,
+    cues: Vec<SceneAudioCue>,
+) -> Result<Vec<SceneRenderAudioCue>, RendererPlanError> {
+    cues.into_iter()
+        .enumerate()
+        .map(|(index, cue)| {
+            let source = scene_render_audio_source(package_root, resources, layer_id, index, &cue)?;
+            Ok(SceneRenderAudioCue {
+                source,
+                playback_mode: cue.playback_mode,
+                volume: cue.volume,
+                start_silent: cue.start_silent.unwrap_or(false),
+            })
+        })
+        .collect()
+}
+
+fn scene_render_audio_source(
+    package_root: &Path,
+    resources: &BTreeMap<&str, &SceneResource>,
+    layer_id: &str,
+    cue_index: usize,
+    cue: &SceneAudioCue,
+) -> Result<PathBuf, RendererPlanError> {
+    if let Some(resource_id) = cue.resource.as_deref() {
+        let resource = resources.get(resource_id).ok_or_else(|| {
+            RendererPlanError::PackageLoad(format!(
+                "scene layer {layer_id:?} audio cue {cue_index} references missing resource {resource_id:?}"
+            ))
+        })?;
+        if resource.kind != SceneResourceKind::Audio {
+            return Err(RendererPlanError::PackageLoad(format!(
+                "scene layer {layer_id:?} audio cue {cue_index} references non-audio resource {resource_id:?}"
+            )));
+        }
+        return Ok(resource.source.join_to(package_root));
+    }
+
+    let source = cue.source.as_deref().ok_or_else(|| {
+        RendererPlanError::PackageLoad(format!(
+            "scene layer {layer_id:?} audio cue {cue_index} has no source"
+        ))
+    })?;
+    let package_path = PackagePath::new(source).map_err(|err| {
+        RendererPlanError::PackageLoad(format!(
+            "scene layer {layer_id:?} audio cue {cue_index} source is not a package path: {err}"
+        ))
+    })?;
+    Ok(package_path.join_to(package_root))
 }
 
 fn scene_bound_properties(document: &SceneDocument) -> Vec<String> {
@@ -4754,6 +4885,35 @@ exit 0
     }
 
     #[test]
+    fn scene_plan_resolves_audio_cue_resources_to_package_paths() {
+        let test_dir = TestDir::new("gilder-scene-audio-plan");
+        let package_dir = test_dir.path.join("scene-audio.gwpdir");
+        write_scene_audio_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.scene_plans.len(), 1);
+        let plan = &sync.scene_plans[0];
+        assert_eq!(plan.audio_cue_count, 1);
+        assert_eq!(plan.layers[0].audio.len(), 1);
+        let cue = &plan.layers[0].audio[0];
+        assert!(cue.source.ends_with("assets/audio/theme.ogg"));
+        assert_eq!(cue.playback_mode.as_deref(), Some("loop"));
+        assert_eq!(cue.volume, Some(json!(0.75)));
+        assert!(!cue.start_silent);
+    }
+
+    #[test]
     fn scene_color_layer_uses_direct_display_without_snapshot() {
         let test_dir = TestDir::new("gilder-scene-color-plan");
         let package_dir = test_dir.path.join("scene-color.gwpdir");
@@ -6286,6 +6446,70 @@ void main() {}
             "id": "org.example.scene-demo",
             "version": "1.0.0",
             "title": "Scene Demo",
+            "kind": "scene",
+            "preview": {
+                "poster": "previews/poster.svg"
+            },
+            "entry": {
+                "type": "scene",
+                "source": "assets/scene.gscene.json",
+                "fallback": "previews/poster.svg",
+                "max_fps": 60
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_scene_audio_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets/audio")).unwrap();
+        fs::create_dir_all(path.join("previews")).unwrap();
+        fs::write(
+            path.join("assets/scene.gscene.json"),
+            br##"{
+              "resources": [
+                {
+                  "id": "background-resource",
+                  "type": "image",
+                  "source": "assets/background.svg"
+                },
+                {
+                  "id": "theme-audio",
+                  "type": "audio",
+                  "source": "assets/audio/theme.ogg"
+                }
+              ],
+              "nodes": [
+                {
+                  "id": "background",
+                  "type": "image",
+                  "resource": "background-resource",
+                  "audio": [
+                    {
+                      "resource": "theme-audio",
+                      "source": "sounds/theme.ogg",
+                      "playback_mode": "loop",
+                      "volume": 0.75,
+                      "start_silent": false
+                    }
+                  ]
+                }
+              ]
+            }"##,
+        )
+        .unwrap();
+        fs::write(path.join("assets/background.svg"), b"<svg/>").unwrap();
+        fs::write(path.join("assets/audio/theme.ogg"), b"not real ogg").unwrap();
+        fs::write(path.join("previews/poster.svg"), b"<svg/>").unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.scene-audio",
+            "version": "1.0.0",
+            "title": "Scene Audio",
             "kind": "scene",
             "preview": {
                 "poster": "previews/poster.svg"

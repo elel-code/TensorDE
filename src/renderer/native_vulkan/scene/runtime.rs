@@ -817,6 +817,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
     }
     if scene_audio_cue_resource_model_ready {
         completed_boundaries.push("scene-audio-cue-renderer-boundary");
+        completed_boundaries.push("scene-audio-cue-pipewire-present-runtime");
     }
 
     let mut pending_boundaries = Vec::new();
@@ -844,9 +845,9 @@ fn native_vulkan_full_scene_runtime_snapshot(
     NativeVulkanFullSceneRuntimeSnapshot {
         target_runtime: "native-vulkan-full-scene",
         current_runtime: "native-vulkan-scene-runtime",
-        progress_estimate_percent: 93,
+        progress_estimate_percent: 94,
         full_scene_complete: false,
-        execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries with scene timeline animation, geometry field animation, deterministic SceneScript expression lowering, parallax property camera input, property update, pause/resume policy, state persistence, converted keyframe timeline input, converted WE .tex image resources, spritesheet atlas UV-frame animation, and scene audio cues carried through the renderer/runtime boundary; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
+        execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries with scene timeline animation, geometry field animation, deterministic SceneScript expression lowering, parallax property camera input, property update, pause/resume policy, state persistence, converted keyframe timeline input, converted WE .tex image resources, spritesheet atlas UV-frame animation, and scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
         native_scene_graph_lowering_ready: plan.native_draw_ready(),
         native_present_route_ready: pass_plan.backend_ready,
         retained_resource_model_ready,
@@ -927,11 +928,9 @@ fn native_vulkan_scene_resource_model(backend_status: &str, video_op_count: usiz
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{
-        FitMode, SceneAudioCue, SceneNodeKind, SceneSystems, SceneTextAlign, SceneTransform,
-    };
+    use crate::core::{FitMode, SceneNodeKind, SceneSystems, SceneTextAlign, SceneTransform};
     use crate::renderer::native_vulkan::NativeVulkanRenderItem;
-    use crate::renderer::{SceneDisplayPlan, SceneRenderLayer};
+    use crate::renderer::{SceneDisplayPlan, SceneRenderAudioCue, SceneRenderLayer};
     use std::path::{Path, PathBuf};
 
     fn scene_test_layer(id: &str, kind: SceneNodeKind) -> SceneRenderLayer {
@@ -1262,7 +1261,7 @@ mod tests {
             snapshot.full_scene.current_runtime,
             "native-vulkan-scene-runtime"
         );
-        assert_eq!(snapshot.full_scene.progress_estimate_percent, 93);
+        assert_eq!(snapshot.full_scene.progress_estimate_percent, 94);
         assert!(!snapshot.full_scene.full_scene_complete);
         assert!(snapshot.full_scene.timeline_snapshot_runtime_ready);
         assert_eq!(snapshot.full_scene.timeline_snapshot_time_ms, 1234);
@@ -1387,12 +1386,11 @@ mod tests {
     fn full_scene_runtime_snapshot_tracks_scene_audio_cue_boundary() {
         let mut image = scene_test_layer("speaker", SceneNodeKind::Image);
         image.source = Some(PathBuf::from("/tmp/cover.png"));
-        image.audio.push(SceneAudioCue {
-            resource: Some("resource-audio".to_owned()),
-            source: Some("sounds/theme.ogg".to_owned()),
+        image.audio.push(SceneRenderAudioCue {
+            source: PathBuf::from("/tmp/sounds/theme.ogg"),
             playback_mode: Some("loop".to_owned()),
             volume: None,
-            start_silent: Some(false),
+            start_silent: false,
         });
         let item = scene_test_item(vec![image], None, None);
 
@@ -1405,6 +1403,12 @@ mod tests {
                 .full_scene
                 .completed_boundaries
                 .contains(&"scene-audio-cue-renderer-boundary")
+        );
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"scene-audio-cue-pipewire-present-runtime")
         );
     }
 

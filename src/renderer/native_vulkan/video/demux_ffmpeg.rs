@@ -883,7 +883,7 @@ struct NativeVulkanFfmpegStreamingPacketWorker<A: NativeVulkanFfmpegStreamingAcc
     stream_time_base: AVRational,
     eos_count: u32,
     loop_count: u32,
-    pending_access_units: VecDeque<A>,
+    pending_access_units: Option<VecDeque<A>>,
     _access_unit: PhantomData<A>,
 }
 
@@ -908,13 +908,15 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit> NativeVulkanFfmpegStreamingPacket
             stream_time_base,
             eos_count: 0,
             loop_count: 0,
-            pending_access_units: VecDeque::new(),
+            pending_access_units: A::FFMPEG_PACKET_SPLITS_ACCESS_UNITS.then(VecDeque::new),
             _access_unit: PhantomData,
         })
     }
 
     fn pull_next(&mut self, loop_on_eos: bool) -> Result<Option<A>, NativeVulkanError> {
-        if let Some(access_unit) = self.pending_access_units.pop_front() {
+        if let Some(pending_access_units) = self.pending_access_units.as_mut()
+            && let Some(access_unit) = pending_access_units.pop_front()
+        {
             return Ok(Some(access_unit));
         }
         loop {
@@ -930,7 +932,10 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit> NativeVulkanFfmpegStreamingPacket
             }
             let mut access_units = access_units.into_iter();
             let first = access_units.next().expect("access_units is not empty");
-            self.pending_access_units.extend(access_units);
+            self.pending_access_units
+                .as_mut()
+                .expect("split access unit codecs own a pending access-unit queue")
+                .extend(access_units);
             return Ok(Some(first));
         }
     }
@@ -979,7 +984,9 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit> NativeVulkanFfmpegStreamingPacket
         let ret =
             unsafe { gilder_av_seek_stream_start(self.format.ptr.as_ptr(), self.stream_index) };
         native_vulkan_ffmpeg_ok(ret, "av_seek_frame stream start")?;
-        self.pending_access_units.clear();
+        if let Some(pending_access_units) = self.pending_access_units.as_mut() {
+            pending_access_units.clear();
+        }
         self.loop_count = self.loop_count.saturating_add(1);
         Ok(())
     }

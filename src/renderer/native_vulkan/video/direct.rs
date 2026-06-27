@@ -38,7 +38,8 @@ use super::super::{NativeVulkanError, NativeVulkanOptions};
 use super::codec::NativeVulkanVideoSessionCodec;
 use super::demux::NATIVE_VULKAN_PACKET_HANDOFF_FRAMES;
 
-const NATIVE_VULKAN_AUDIO_OUTPUT_WORKER_STACK_BYTES: usize = 128 * 1024;
+pub(in crate::renderer::native_vulkan) const NATIVE_VULKAN_AUDIO_OUTPUT_WORKER_STACK_BYTES: usize =
+    128 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
@@ -504,7 +505,7 @@ fn native_vulkan_vulkanalia_visible_present_duration(
     Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
 }
 
-fn native_vulkan_audio_runtime_packet_budget(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_audio_runtime_packet_budget(
     playback_duration: Duration,
     playback_frame_count: u32,
 ) -> u32 {
