@@ -21,12 +21,14 @@ zero-copy 状态。
 
 ## 下一步计划
 
-1. Audio 集成：按 FFmpeg 对齐 audio demux、clock、loop 语义，再接入 muted clock-only
-   和有声输出模式。
-2. 完整 scene 壁纸能力：把 native Vulkan video、静态图、属性、scene transform 和 daemon
-   output routing 接入正常壁纸生命周期。
-3. 更多码流覆盖：扩展 H.264、H.265、AV1 的真实源和生成源矩阵，覆盖 profile、bit depth、
-   reference pattern、任意入口、loop boundary 和长跑资源稳定性。
+1. Audio 集成：先加入 FFmpeg 拥有的 audio demux/packet queue 和 clock serial 路径，
+   先证明 muted clock-only 驱动 video pacing，再开启有声输出。
+2. 完整 scene 壁纸能力：把静态壁纸视为单 image layer 的 scene 特例，再把静态图、
+   video、properties、transform、daemon output routing、pause/resume 和 package state
+   接入统一 scene lifecycle。
+3. Video 覆盖和回归：核心 H.264/H.265/AV1 Vulkan Video 路径进入覆盖/稳定性阶段。
+   继续扩展真实源和生成源矩阵，覆盖 profile、bit depth、reference pattern、container、
+   任意入口、loop boundary、长跑资源稳定性和 audio/scene 集成回归。
 4. 脚本清理：只保留当前 CI、codec smoke、real-source matrix、performance、packaging 和
    workshop helper。一次性试验脚本直接删除，不做兼容 wrapper。
 

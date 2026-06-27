@@ -27,14 +27,16 @@ as a performance result.
 
 ## Next Work
 
-1. Audio integration: align audio demux/clock/loop semantics with FFmpeg, then
-   wire muted clock-only and audible output modes into the daemon/runtime path.
-2. Full scene wallpaper support: connect native Vulkan video, static images,
-   properties, scene transforms, and daemon output routing into the normal
-   wallpaper lifecycle.
-3. Broader bitstream coverage: expand real-source and generated matrices for
-   H.264, H.265, and AV1 profiles, bit depths, reference patterns, arbitrary
-   entry points, loop boundaries, and long-run resource stability.
+1. Audio integration: add an FFmpeg-owned audio demux/packet queue and clock
+   serial path first, prove muted clock-only video pacing, then enable audible
+   output.
+2. Full scene wallpaper support: treat static wallpapers as a single-image
+   scene case, then connect static image, video, properties, transforms, daemon
+   output routing, pause/resume, and package state into one scene lifecycle.
+3. Video coverage and regression: the core H.264/H.265/AV1 Vulkan Video path is
+   in coverage/stability mode. Expand real-source and generated matrices for
+   profiles, bit depths, reference patterns, containers, arbitrary entry
+   points, loop boundaries, long-run resources, and integration regressions.
 4. Script hygiene: keep only current CI, codec smoke, real-source matrix,
    performance, packaging, and workshop helpers. Remove one-off spike scripts
    instead of carrying compatibility wrappers.
