@@ -860,6 +860,9 @@ fn write_scene_document_to(
     if let Some(scene) = source_scene {
         scene_collect_root_timelines(scene, &mut context);
     }
+    for feature in &context.converted_features {
+        push_unique(&mut report.converted_features, feature);
+    }
     if !context.timelines.is_empty() {
         push_unique(&mut report.converted_features, "scene-keyframe-timeline");
     }
@@ -1110,6 +1113,7 @@ struct SceneDocumentBuildContext {
     source_node_ids: BTreeMap<String, String>,
     timelines: Vec<Value>,
     property_bindings: Vec<Value>,
+    converted_features: Vec<String>,
     unsupported_features: Vec<Value>,
 }
 
@@ -1124,6 +1128,20 @@ struct SceneSourceModelConversion {
 struct SceneVisibleConversion {
     static_visible: Option<bool>,
     initial_opacity: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SceneNumericPropertyBinding {
+    property: String,
+    scale: f64,
+    offset: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SceneScriptLinearExpression {
+    property: Option<String>,
+    scale: f64,
+    offset: f64,
 }
 
 fn collect_scene_nodes_from_value(
@@ -1649,6 +1667,27 @@ fn scene_timeline_property_mappings(property: &str) -> Vec<SceneTimelineProperty
         min_value: None,
         max_value: None,
     };
+    let width = SceneTimelinePropertyMapping {
+        property: "width",
+        component: None,
+        value_scale: 1.0,
+        min_value: Some(0.0),
+        max_value: None,
+    };
+    let height = SceneTimelinePropertyMapping {
+        property: "height",
+        component: None,
+        value_scale: 1.0,
+        min_value: Some(0.0),
+        max_value: None,
+    };
+    let corner_radius = SceneTimelinePropertyMapping {
+        property: "corner-radius",
+        component: None,
+        value_scale: 1.0,
+        min_value: Some(0.0),
+        max_value: None,
+    };
     match normalized.as_str() {
         "x" | "left" | "originx" | "positionx" | "translationx" => vec![x],
         "y" | "top" | "originy" | "positiony" | "translationy" => vec![y],
@@ -1685,6 +1724,19 @@ fn scene_timeline_property_mappings(property: &str) -> Vec<SceneTimelineProperty
             value_scale: to_degrees,
             ..rotation_deg
         }],
+        "width" | "w" | "sizex" => vec![width],
+        "height" | "h" | "sizey" => vec![height],
+        "size" | "dimensions" => vec![
+            SceneTimelinePropertyMapping {
+                component: Some(0),
+                ..width
+            },
+            SceneTimelinePropertyMapping {
+                component: Some(1),
+                ..height
+            },
+        ],
+        "radius" | "cornerradius" | "borderradius" => vec![corner_radius],
         _ => Vec::new(),
     }
 }
@@ -1825,6 +1877,561 @@ fn scene_visible_from_object(
     }
 }
 
+fn scene_push_numeric_property_binding(
+    object: &Map<String, Value>,
+    keys: &[&str],
+    node_id: &str,
+    target: &str,
+    context: &mut SceneDocumentBuildContext,
+    scale: f64,
+    offset: f64,
+) {
+    let Some(binding) = keys
+        .iter()
+        .filter_map(|key| object.get(*key))
+        .find_map(|value| scene_numeric_property_binding(value, context))
+    else {
+        return;
+    };
+    let target_scale = scale;
+    let scale = binding.scale * target_scale;
+    let offset = binding.offset * target_scale + offset;
+    context.property_bindings.push(json!({
+        "property": binding.property,
+        "target_node": node_id,
+        "target": target,
+        "scale": scale,
+        "offset": offset
+    }));
+}
+
+fn scene_numeric_property_binding(
+    value: &Value,
+    context: &mut SceneDocumentBuildContext,
+) -> Option<SceneNumericPropertyBinding> {
+    let object = value.as_object()?;
+    let default_property = string_field(object, &["user", "property"]);
+    let default_value = object.get("value").and_then(value_to_f64);
+    if let Some(script) = string_field(object, &["script"]) {
+        return match scene_script_linear_property_binding(
+            &script,
+            default_property.as_deref(),
+            default_value,
+        ) {
+            Some(binding) => {
+                push_unique(
+                    &mut context.converted_features,
+                    "scene-deterministic-scenescript-expression",
+                );
+                Some(binding)
+            }
+            None => {
+                if default_property.is_some() {
+                    scene_push_unsupported(
+                        context,
+                        "scenescript-expression-lowering",
+                        "Wallpaper Engine numeric SceneScript expression references a user property but is outside the deterministic gscene linear-expression lowering subset.",
+                        None,
+                    );
+                }
+                None
+            }
+        };
+    }
+    default_property.map(|property| SceneNumericPropertyBinding {
+        property,
+        scale: 1.0,
+        offset: 0.0,
+    })
+}
+
+fn scene_script_linear_property_binding(
+    script: &str,
+    default_property: Option<&str>,
+    default_value: Option<f64>,
+) -> Option<SceneNumericPropertyBinding> {
+    let expression = scene_script_return_expression(script)?;
+    let expression =
+        SceneScriptLinearParser::new(expression, default_property, default_value).parse()?;
+    let property = expression.property?;
+    if expression.scale.is_finite() && expression.offset.is_finite() {
+        Some(SceneNumericPropertyBinding {
+            property,
+            scale: expression.scale,
+            offset: expression.offset,
+        })
+    } else {
+        None
+    }
+}
+
+fn scene_script_return_expression(script: &str) -> Option<&str> {
+    let script = script.trim();
+    if let Some(index) = scene_script_return_keyword(script) {
+        let returned = &script[index + "return".len()..];
+        let end = scene_script_expression_end(returned).unwrap_or(returned.len());
+        return scene_script_trim_expression(&returned[..end]);
+    }
+    if script.contains('{') || script.contains('=') {
+        None
+    } else {
+        scene_script_trim_expression(script)
+    }
+}
+
+fn scene_script_return_keyword(script: &str) -> Option<usize> {
+    let mut search_offset = 0;
+    while let Some(index) = script[search_offset..].find("return") {
+        let index = search_offset + index;
+        let before = script[..index].chars().next_back();
+        let after = script[index + "return".len()..].chars().next();
+        let before_boundary =
+            before.is_none_or(|character| !scene_script_identifier_character(character));
+        let after_boundary =
+            after.is_none_or(|character| !scene_script_identifier_character(character));
+        if before_boundary && after_boundary {
+            return Some(index);
+        }
+        search_offset = index + "return".len();
+    }
+    None
+}
+
+fn scene_script_expression_end(expression: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut string_quote = None;
+    let mut escaped = false;
+    for (index, character) in expression.char_indices() {
+        if let Some(quote) = string_quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == quote {
+                string_quote = None;
+            }
+            continue;
+        }
+        match character {
+            '"' | '\'' => string_quote = Some(character),
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ';' if depth == 0 => return Some(index),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn scene_script_trim_expression(expression: &str) -> Option<&str> {
+    let mut expression = expression.trim();
+    while let Some(trimmed) = expression
+        .strip_suffix(';')
+        .or_else(|| expression.strip_suffix('}'))
+    {
+        expression = trimmed.trim();
+    }
+    if expression.is_empty() {
+        None
+    } else {
+        Some(expression)
+    }
+}
+
+impl SceneScriptLinearExpression {
+    fn constant(offset: f64) -> Self {
+        Self {
+            property: None,
+            scale: 0.0,
+            offset,
+        }
+    }
+
+    fn variable(property: String) -> Self {
+        Self {
+            property: Some(property),
+            scale: 1.0,
+            offset: 0.0,
+        }
+    }
+
+    fn add(self, other: Self) -> Option<Self> {
+        Some(Self {
+            property: scene_script_merge_property(self.property, other.property)?,
+            scale: self.scale + other.scale,
+            offset: self.offset + other.offset,
+        })
+    }
+
+    fn sub(self, other: Self) -> Option<Self> {
+        Some(Self {
+            property: scene_script_merge_property(self.property, other.property)?,
+            scale: self.scale - other.scale,
+            offset: self.offset - other.offset,
+        })
+    }
+
+    fn mul(self, other: Self) -> Option<Self> {
+        if self.property.is_some() && other.property.is_some() {
+            return None;
+        }
+        if self.property.is_some() {
+            return Some(Self {
+                property: self.property,
+                scale: self.scale * other.offset,
+                offset: self.offset * other.offset,
+            });
+        }
+        if other.property.is_some() {
+            return Some(Self {
+                property: other.property,
+                scale: other.scale * self.offset,
+                offset: other.offset * self.offset,
+            });
+        }
+        Some(Self::constant(self.offset * other.offset))
+    }
+
+    fn div(self, other: Self) -> Option<Self> {
+        if other.property.is_some() || other.offset == 0.0 {
+            return None;
+        }
+        Some(Self {
+            property: self.property,
+            scale: self.scale / other.offset,
+            offset: self.offset / other.offset,
+        })
+    }
+
+    fn neg(self) -> Self {
+        Self {
+            property: self.property,
+            scale: -self.scale,
+            offset: -self.offset,
+        }
+    }
+}
+
+fn scene_script_merge_property(
+    left: Option<String>,
+    right: Option<String>,
+) -> Option<Option<String>> {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            if left == right || normalize_project_key(&left) == normalize_project_key(&right) {
+                Some(Some(left))
+            } else {
+                None
+            }
+        }
+        (Some(property), None) | (None, Some(property)) => Some(Some(property)),
+        (None, None) => Some(None),
+    }
+}
+
+struct SceneScriptLinearParser<'a> {
+    expression: &'a str,
+    position: usize,
+    default_property: Option<&'a str>,
+    default_value: Option<f64>,
+}
+
+impl<'a> SceneScriptLinearParser<'a> {
+    fn new(
+        expression: &'a str,
+        default_property: Option<&'a str>,
+        default_value: Option<f64>,
+    ) -> Self {
+        Self {
+            expression,
+            position: 0,
+            default_property,
+            default_value,
+        }
+    }
+
+    fn parse(mut self) -> Option<SceneScriptLinearExpression> {
+        let expression = self.parse_expression()?;
+        self.skip_whitespace();
+        if self.position == self.expression.len() {
+            Some(expression)
+        } else {
+            None
+        }
+    }
+
+    fn parse_expression(&mut self) -> Option<SceneScriptLinearExpression> {
+        let mut expression = self.parse_term()?;
+        loop {
+            self.skip_whitespace();
+            if self.consume_byte(b'+') {
+                expression = expression.add(self.parse_term()?)?;
+            } else if self.consume_byte(b'-') {
+                expression = expression.sub(self.parse_term()?)?;
+            } else {
+                return Some(expression);
+            }
+        }
+    }
+
+    fn parse_term(&mut self) -> Option<SceneScriptLinearExpression> {
+        let mut expression = self.parse_unary()?;
+        loop {
+            self.skip_whitespace();
+            if self.consume_byte(b'*') {
+                expression = expression.mul(self.parse_unary()?)?;
+            } else if self.consume_byte(b'/') {
+                expression = expression.div(self.parse_unary()?)?;
+            } else {
+                return Some(expression);
+            }
+        }
+    }
+
+    fn parse_unary(&mut self) -> Option<SceneScriptLinearExpression> {
+        self.skip_whitespace();
+        if self.consume_byte(b'+') {
+            self.parse_unary()
+        } else if self.consume_byte(b'-') {
+            Some(self.parse_unary()?.neg())
+        } else {
+            self.parse_atom()
+        }
+    }
+
+    fn parse_atom(&mut self) -> Option<SceneScriptLinearExpression> {
+        self.skip_whitespace();
+        if self.consume_byte(b'(') {
+            let expression = self.parse_expression()?;
+            self.skip_whitespace();
+            return self.consume_byte(b')').then_some(expression);
+        }
+        if self.peek_byte().is_some_and(scene_script_number_start) {
+            return self
+                .parse_number()
+                .map(SceneScriptLinearExpression::constant);
+        }
+        let identifier = self.parse_identifier()?;
+        self.skip_whitespace();
+        if self.consume_byte(b'(') {
+            return self.parse_call(&identifier);
+        }
+        self.resolve_identifier(&identifier)
+    }
+
+    fn parse_call(&mut self, identifier: &str) -> Option<SceneScriptLinearExpression> {
+        if scene_script_user_property_call(identifier) {
+            self.skip_whitespace();
+            let property = self.parse_string_literal()?;
+            self.skip_call_remainder()?;
+            return Some(SceneScriptLinearExpression::variable(property));
+        }
+        if scene_script_identity_numeric_call(identifier) {
+            let expression = self.parse_expression()?;
+            self.skip_whitespace();
+            return self.consume_byte(b')').then_some(expression);
+        }
+        None
+    }
+
+    fn resolve_identifier(&self, identifier: &str) -> Option<SceneScriptLinearExpression> {
+        match identifier {
+            "value" => self
+                .default_value
+                .map(SceneScriptLinearExpression::constant),
+            "true" => Some(SceneScriptLinearExpression::constant(1.0)),
+            "false" => Some(SceneScriptLinearExpression::constant(0.0)),
+            _ => scene_script_property_from_identifier(identifier, self.default_property)
+                .map(SceneScriptLinearExpression::variable),
+        }
+    }
+
+    fn parse_number(&mut self) -> Option<f64> {
+        let start = self.position;
+        let mut saw_digit = false;
+        while let Some(byte) = self.peek_byte() {
+            match byte {
+                b'0'..=b'9' => {
+                    saw_digit = true;
+                    self.position += 1;
+                }
+                b'.' => self.position += 1,
+                b'e' | b'E' => {
+                    self.position += 1;
+                    if self
+                        .peek_byte()
+                        .is_some_and(|byte| byte == b'+' || byte == b'-')
+                    {
+                        self.position += 1;
+                    }
+                }
+                _ => break,
+            }
+        }
+        if !saw_digit {
+            return None;
+        }
+        self.expression[start..self.position].parse().ok()
+    }
+
+    fn parse_identifier(&mut self) -> Option<String> {
+        let start = self.position;
+        let first = self.peek_byte()?;
+        if !scene_script_identifier_start_byte(first) {
+            return None;
+        }
+        self.position += 1;
+        while self
+            .peek_byte()
+            .is_some_and(scene_script_identifier_continue_byte)
+        {
+            self.position += 1;
+        }
+        Some(self.expression[start..self.position].to_owned())
+    }
+
+    fn parse_string_literal(&mut self) -> Option<String> {
+        let quote = self.peek_byte()?;
+        if quote != b'"' && quote != b'\'' {
+            return None;
+        }
+        self.position += 1;
+        let mut value = String::new();
+        while let Some(byte) = self.peek_byte() {
+            self.position += 1;
+            if byte == quote {
+                return Some(value);
+            }
+            if byte == b'\\' {
+                let escaped = self.peek_byte()?;
+                self.position += 1;
+                value.push(escaped as char);
+            } else {
+                value.push(byte as char);
+            }
+        }
+        None
+    }
+
+    fn skip_call_remainder(&mut self) -> Option<()> {
+        let mut depth = 1usize;
+        let mut quote = None;
+        let mut escaped = false;
+        while let Some(byte) = self.peek_byte() {
+            self.position += 1;
+            if let Some(active_quote) = quote {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == active_quote {
+                    quote = None;
+                }
+                continue;
+            }
+            match byte {
+                b'"' | b'\'' => quote = Some(byte),
+                b'(' => depth += 1,
+                b')' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return Some(());
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn skip_whitespace(&mut self) {
+        while self
+            .peek_byte()
+            .is_some_and(|byte| (byte as char).is_ascii_whitespace())
+        {
+            self.position += 1;
+        }
+    }
+
+    fn consume_byte(&mut self, byte: u8) -> bool {
+        if self.peek_byte() == Some(byte) {
+            self.position += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn peek_byte(&self) -> Option<u8> {
+        self.expression.as_bytes().get(self.position).copied()
+    }
+}
+
+fn scene_script_property_from_identifier(
+    identifier: &str,
+    default_property: Option<&str>,
+) -> Option<String> {
+    if let Some(default_property) = default_property {
+        let normalized_identifier = normalize_project_key(identifier);
+        if matches!(identifier, "user" | "input" | "property")
+            || normalized_identifier == normalize_project_key(default_property)
+        {
+            return Some(default_property.to_owned());
+        }
+    }
+    let parts = identifier
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    for (index, part) in parts.iter().enumerate() {
+        let normalized = normalize_project_key(part);
+        if matches!(
+            normalized.as_str(),
+            "user" | "users" | "properties" | "property" | "input" | "inputs"
+        ) {
+            if let Some(property) = parts.get(index + 1)
+                && normalize_project_key(property) != "value"
+            {
+                return Some((*property).to_owned());
+            }
+            if let Some(default_property) = default_property {
+                return Some(default_property.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn scene_script_user_property_call(identifier: &str) -> bool {
+    matches!(
+        normalize_project_key(identifier).as_str(),
+        "getuserproperty" | "userproperty" | "getproperty" | "wallpapergetuserproperty"
+    )
+}
+
+fn scene_script_identity_numeric_call(identifier: &str) -> bool {
+    matches!(
+        normalize_project_key(identifier).as_str(),
+        "number" | "parsefloat"
+    )
+}
+
+fn scene_script_number_start(byte: u8) -> bool {
+    byte.is_ascii_digit() || byte == b'.'
+}
+
+fn scene_script_identifier_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '_' | '$')
+}
+
+fn scene_script_identifier_start_byte(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'$')
+}
+
+fn scene_script_identifier_continue_byte(byte: u8) -> bool {
+    scene_script_identifier_start_byte(byte) || byte.is_ascii_digit() || byte == b'.'
+}
+
 fn scene_node_from_object(
     project: &WallpaperEngineProject,
     output_dir: &Path,
@@ -1868,7 +2475,16 @@ fn scene_node_from_object(
     if let Some(visible) = visible.static_visible {
         node.insert("visible".to_owned(), Value::Bool(visible));
     }
-    if let Some(opacity) = number_field(object, &["opacity", "alpha"]) {
+    scene_push_numeric_property_binding(
+        object,
+        &["opacity", "alpha"],
+        &node_id,
+        "opacity",
+        context,
+        1.0,
+        0.0,
+    );
+    if let Some(opacity) = number_value_field(object, &["opacity", "alpha"]) {
         let opacity = if let Some(visible_opacity) = visible.initial_opacity {
             opacity * visible_opacity
         } else {
@@ -1878,8 +2494,11 @@ fn scene_node_from_object(
     } else if let Some(opacity) = visible.initial_opacity {
         node.insert("opacity".to_owned(), json!(opacity.clamp(0.0, 1.0)));
     }
-    if let Some(transform) = scene_transform_from_object(object) {
+    if let Some(transform) = scene_transform_from_object(object, &node_id, context) {
         node.insert("transform".to_owned(), transform);
+    }
+    if let Some(depth) = number_value_field(object, &["parallax_depth", "parallaxDepth"]) {
+        node.insert("parallax_depth".to_owned(), json!(depth));
     }
     if let Some(color) = scene_color_from_object(object) {
         node.insert("color".to_owned(), Value::String(color));
@@ -1888,14 +2507,32 @@ fn scene_node_from_object(
         node.insert("stroke_color".to_owned(), Value::String(stroke));
     }
     if let Some(stroke_width) =
-        number_field(object, &["stroke_width", "strokeWidth", "strokewidth"])
+        number_value_field(object, &["stroke_width", "strokeWidth", "strokewidth"])
     {
         node.insert("stroke_width".to_owned(), json!(stroke_width.max(0.0)));
     }
-    if let Some(width) = number_field(object, &["width", "w"]) {
+    scene_push_numeric_property_binding(
+        object,
+        &["width", "w"],
+        &node_id,
+        "width",
+        context,
+        1.0,
+        0.0,
+    );
+    scene_push_numeric_property_binding(
+        object,
+        &["height", "h"],
+        &node_id,
+        "height",
+        context,
+        1.0,
+        0.0,
+    );
+    if let Some(width) = number_value_field(object, &["width", "w"]) {
         node.insert("width".to_owned(), json!(width.max(0.0)));
     }
-    if let Some(height) = number_field(object, &["height", "h"]) {
+    if let Some(height) = number_value_field(object, &["height", "h"]) {
         node.insert("height".to_owned(), json!(height.max(0.0)));
     }
     if let Some(text) = scene_text_from_object(object) {
@@ -1932,6 +2569,22 @@ fn scene_node_from_object(
     if kind == "rectangle"
         && let Some(radius) = scene_corner_radius_from_object(object)
     {
+        scene_push_numeric_property_binding(
+            object,
+            &[
+                "radius",
+                "corner_radius",
+                "cornerRadius",
+                "cornerradius",
+                "border_radius",
+                "borderRadius",
+            ],
+            &node_id,
+            "corner-radius",
+            context,
+            1.0,
+            0.0,
+        );
         node.insert("corner_radius".to_owned(), json!(radius));
     }
 
@@ -2869,32 +3522,65 @@ fn scene_next_timeline_id(context: &mut SceneDocumentBuildContext, hint: Option<
     }
 }
 
-fn scene_transform_from_object(object: &Map<String, Value>) -> Option<Value> {
+fn scene_transform_from_object(
+    object: &Map<String, Value>,
+    node_id: &str,
+    context: &mut SceneDocumentBuildContext,
+) -> Option<Value> {
     let mut transform = Map::new();
     if let Some(origin) = object.get("origin").and_then(vector3_components_from_value) {
         transform.insert("x".to_owned(), json!(origin.0));
         transform.insert("y".to_owned(), json!(origin.1));
     }
-    if let Some(x) = number_field(object, &["x", "left"]) {
+    scene_push_numeric_property_binding(object, &["x", "left"], node_id, "x", context, 1.0, 0.0);
+    scene_push_numeric_property_binding(object, &["y", "top"], node_id, "y", context, 1.0, 0.0);
+    scene_push_numeric_property_binding(
+        object,
+        &["scale_x", "scaleX", "scalex"],
+        node_id,
+        "scale-x",
+        context,
+        1.0,
+        0.0,
+    );
+    scene_push_numeric_property_binding(
+        object,
+        &["scale_y", "scaleY", "scaley"],
+        node_id,
+        "scale-y",
+        context,
+        1.0,
+        0.0,
+    );
+    scene_push_numeric_property_binding(
+        object,
+        &["rotation_deg", "rotationDeg", "rotation", "angle"],
+        node_id,
+        "rotation-deg",
+        context,
+        1.0,
+        0.0,
+    );
+    if let Some(x) = number_value_field(object, &["x", "left"]) {
         transform.insert("x".to_owned(), json!(x));
     }
-    if let Some(y) = number_field(object, &["y", "top"]) {
+    if let Some(y) = number_value_field(object, &["y", "top"]) {
         transform.insert("y".to_owned(), json!(y));
     }
     if let Some(scale) = object.get("scale").and_then(vector3_components_from_value) {
         transform.insert("scale_x".to_owned(), json!(scale.0.abs().max(f64::EPSILON)));
         transform.insert("scale_y".to_owned(), json!(scale.1.abs().max(f64::EPSILON)));
     }
-    if let Some(scale_x) = number_field(object, &["scale_x", "scaleX", "scalex"]) {
+    if let Some(scale_x) = number_value_field(object, &["scale_x", "scaleX", "scalex"]) {
         transform.insert("scale_x".to_owned(), json!(scale_x.max(f64::EPSILON)));
     }
-    if let Some(scale_y) = number_field(object, &["scale_y", "scaleY", "scaley"]) {
+    if let Some(scale_y) = number_value_field(object, &["scale_y", "scaleY", "scaley"]) {
         transform.insert("scale_y".to_owned(), json!(scale_y.max(f64::EPSILON)));
     }
     if let Some(angles) = object.get("angles").and_then(vector3_components_from_value) {
         transform.insert("rotation_deg".to_owned(), json!(angles.2.to_degrees()));
     }
-    if let Some(rotation) = number_field(
+    if let Some(rotation) = number_value_field(
         object,
         &["rotation_deg", "rotationDeg", "rotation", "angle"],
     ) {
@@ -2988,7 +3674,7 @@ fn scene_color_from_object(object: &Map<String, Value>) -> Option<String> {
         let Some(value) = object.get(key) else {
             continue;
         };
-        if let Some(raw) = value_to_string(value)
+        if let Some(raw) = value_to_string_unwrapped(value)
             && is_scene_resource_path(&raw)
         {
             continue;
@@ -3230,7 +3916,7 @@ fn record_scene_runtime_gaps(report: &mut ConversionReport) {
         ("shader", "custom-shader"),
         ("particles", "complex-particles"),
         ("timeline", "timeline-animation"),
-        ("parallax", "parallax"),
+        ("parallax", "cursor-parallax-input-source"),
         ("audio-response", "audio-runtime"),
     ] {
         if report
@@ -4311,7 +4997,7 @@ fn value_to_string_unwrapped(value: &Value) -> Option<String> {
 }
 
 fn scene_color_from_value(value: &Value) -> Option<String> {
-    if let Some(value) = value_to_string(value) {
+    if let Some(value) = value_to_string_unwrapped(value) {
         return Some(normalize_color(&value));
     }
     let (r, g, b) = vector3_components_from_value(value)?;
@@ -4341,6 +5027,11 @@ fn vector3_components_from_value(value: &Value) -> Option<(f64, f64, f64)> {
             Some((x, y, z))
         }
         Value::Object(object) => {
+            if let Some(value) = object.get("value")
+                && let Some(components) = vector3_components_from_value(value)
+            {
+                return Some(components);
+            }
             let x = object
                 .get("x")
                 .or_else(|| object.get("r"))
@@ -4976,8 +5667,8 @@ impl FullSceneConversionStatus {
         Self {
             target_runtime: "native-vulkan-full-scene".to_owned(),
             current_runtime: "native-vulkan-scene-runtime".to_owned(),
-            progress_estimate_percent: 82,
-            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE parent ids into gscene children, WE text/value wrappers, visible property bindings, shape/solid/radius objects, and explicit keyframe timelines into gscene text/property/shape/timeline fields, render clear color into snapshot layers, retained sampled-image resources, clear-background composition, rounded-rectangle/simple/concave-path tessellation, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, and explicit unsupported Wallpaper Engine systems without legacy fallback".to_owned(),
+            progress_estimate_percent: 90,
+            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE parent ids into gscene children, WE text/value wrappers, visible property bindings, shape/solid/radius objects, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, geometry field animation, and parallax depth into gscene text/property/shape/timeline/camera fields, render clear color into snapshot layers, retained sampled-image resources, clear-background composition, rounded-rectangle/simple/concave-path tessellation, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, and explicit unsupported Wallpaper Engine systems without legacy fallback".to_owned(),
             source_scene_metadata: Vec::new(),
             completed_boundaries: vec![
                 "package-scene-detection".to_owned(),
@@ -4988,7 +5679,12 @@ impl FullSceneConversionStatus {
                 "render-clear-color-snapshot-layer".to_owned(),
                 "wallpaper-engine-text-and-visible-property-lowering".to_owned(),
                 "wallpaper-engine-shape-solid-radius-lowering".to_owned(),
+                "wallpaper-engine-script-value-wrapper-lowering".to_owned(),
+                "wallpaper-engine-deterministic-scenescript-expression-lowering".to_owned(),
+                "wallpaper-engine-geometry-user-property-binding-lowering".to_owned(),
                 "wallpaper-engine-explicit-keyframe-timeline-lowering".to_owned(),
+                "scene-geometry-field-animation-runtime".to_owned(),
+                "parallax-property-camera-model".to_owned(),
                 "native-vulkan-sampled-image-scene-path".to_owned(),
                 "descriptor-heap-sampled-image-resources".to_owned(),
                 "native-vulkan-full-scene-runtime-status".to_owned(),
@@ -5009,10 +5705,10 @@ impl FullSceneConversionStatus {
             ],
             pending_boundaries: vec![
                 "full-wallpaper-engine-scene-graph".to_owned(),
-                "scenescript-runtime".to_owned(),
+                "arbitrary-scenescript-runtime".to_owned(),
                 "shader-material-graph".to_owned(),
                 "particle-systems".to_owned(),
-                "parallax-camera-model".to_owned(),
+                "cursor-parallax-input-source".to_owned(),
                 "audio-response-runtime".to_owned(),
                 "mixed-video-scene-composition".to_owned(),
             ],
@@ -5742,7 +6438,7 @@ void main() {}
         let full_scene = report.full_scene.as_ref().expect("full scene status");
         assert_eq!(full_scene.target_runtime, "native-vulkan-full-scene");
         assert_eq!(full_scene.current_runtime, "native-vulkan-scene-runtime");
-        assert_eq!(full_scene.progress_estimate_percent, 82);
+        assert_eq!(full_scene.progress_estimate_percent, 90);
         assert!(
             full_scene
                 .source_scene_metadata
@@ -5768,6 +6464,9 @@ void main() {}
                 .completed_boundaries
                 .contains(&"wallpaper-engine-text-and-visible-property-lowering".to_owned())
         );
+        assert!(full_scene.completed_boundaries.contains(
+            &"wallpaper-engine-deterministic-scenescript-expression-lowering".to_owned()
+        ));
         assert!(
             full_scene
                 .completed_boundaries
@@ -5797,6 +6496,16 @@ void main() {}
             full_scene
                 .completed_boundaries
                 .contains(&"timeline-animation-runtime".to_owned())
+        );
+        assert!(
+            full_scene
+                .completed_boundaries
+                .contains(&"scene-geometry-field-animation-runtime".to_owned())
+        );
+        assert!(
+            full_scene
+                .completed_boundaries
+                .contains(&"parallax-property-camera-model".to_owned())
         );
         assert!(
             full_scene
@@ -5897,7 +6606,7 @@ void main() {}
             "timeline-animation",
             "scenescript",
             "custom-shader",
-            "parallax",
+            "cursor-parallax-input-source",
             "audio-runtime",
         ] {
             assert!(
@@ -6309,6 +7018,185 @@ void main() {}
         assert_eq!(snapshot.layers[0].corner_radius, Some(12.0));
         assert_eq!(snapshot.layers[1].kind, crate::core::SceneNodeKind::Ellipse);
         assert_eq!(snapshot.layers[1].color.as_deref(), Some("#ff0000"));
+    }
+
+    #[test]
+    fn converts_wallpaper_engine_scene_wrapped_geometry_properties() {
+        let source = TestDir::new("we-scene-wrapped-geometry-source");
+        let output = TestDir::new("we-scene-wrapped-geometry-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r##"{
+              "general": {
+                "cameraparallaxamount": 10
+              },
+              "objects": [
+                {
+                  "id": 45,
+                  "shape": "rectangle",
+                  "backgroundcolor": { "script": "return [0.2, 0.4, 0.6];", "value": [0.2, 0.4, 0.6] },
+                  "x": { "value": 10, "user": "panel_x" },
+                  "y": { "value": 20, "user": "panel_y" },
+                  "width": { "value": 100, "user": "panel_width" },
+                  "height": { "value": 50, "user": "panel_height" },
+                  "radius": { "value": 6, "user": "panel_radius" },
+                  "parallax_depth": { "script": "return 0.5;", "value": 0.5 },
+                  "alpha": { "value": 0.4, "user": "panel_alpha" }
+                }
+              ]
+            }"##,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Wrapped Geometry Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let node = &scene["nodes"][0];
+        assert_eq!(node["type"], "rectangle");
+        assert_eq!(node["color"], "#336699");
+        assert_eq!(node["transform"]["x"], 10.0);
+        assert_eq!(node["transform"]["y"], 20.0);
+        assert_eq!(node["width"], 100.0);
+        assert_eq!(node["height"], 50.0);
+        assert_eq!(node["corner_radius"], 6.0);
+        assert_eq!(node["parallax_depth"], 0.5);
+        assert_eq!(node["opacity"], 0.4);
+        let bindings = scene["property_bindings"].as_array().unwrap();
+        for (property, target) in [
+            ("panel_x", "x"),
+            ("panel_y", "y"),
+            ("panel_width", "width"),
+            ("panel_height", "height"),
+            ("panel_radius", "corner-radius"),
+            ("panel_alpha", "opacity"),
+        ] {
+            assert!(
+                bindings.iter().any(|binding| {
+                    binding["property"] == property && binding["target"] == target
+                }),
+                "missing property binding {property} -> {target}: {bindings:?}"
+            );
+        }
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(0, |property| match property {
+            "panel_x" => Some(30.0),
+            "panel_y" => Some(40.0),
+            "panel_width" => Some(220.0),
+            "panel_height" => Some(90.0),
+            "panel_radius" => Some(18.0),
+            "panel_alpha" => Some(0.75),
+            "scene.parallax.x" => Some(2.0),
+            "scene.parallax.y" => Some(-1.0),
+            _ => None,
+        });
+        assert_eq!(snapshot.layers[0].transform.x, 40.0);
+        assert_eq!(snapshot.layers[0].transform.y, 35.0);
+        assert_eq!(snapshot.layers[0].width, Some(220.0));
+        assert_eq!(snapshot.layers[0].height, Some(90.0));
+        assert_eq!(snapshot.layers[0].corner_radius, Some(18.0));
+        assert_eq!(snapshot.layers[0].parallax_depth, Some(0.5));
+        assert_eq!(snapshot.layers[0].opacity, 0.75);
+    }
+
+    #[test]
+    fn lowers_wallpaper_engine_scene_linear_scenescript_bindings_without_js_engine() {
+        let source = TestDir::new("we-scene-linear-script-binding-source");
+        let output = TestDir::new("we-scene-linear-script-binding-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r##"{
+              "objects": [
+                {
+                  "id": 46,
+                  "shape": "rectangle",
+                  "backgroundcolor": "#203040",
+                  "x": {
+                    "value": 10,
+                    "user": "panel_x",
+                    "script": "return value + user * 2 + 5;"
+                  },
+                  "width": {
+                    "value": 100,
+                    "script": "return this.user.panel_width.value / 2 + value;"
+                  },
+                  "height": {
+                    "value": 50,
+                    "script": "return getUserProperty(\"panel_height\") * 0.25 + value;"
+                  },
+                  "alpha": {
+                    "value": 0.2,
+                    "user": "panel_alpha",
+                    "script": "return Number(user) * 0.5 + 0.1;"
+                  }
+                }
+              ]
+            }"##,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Linear SceneScript Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let bindings = scene["property_bindings"].as_array().unwrap();
+        for (property, target, scale, offset) in [
+            ("panel_x", "x", 2.0, 15.0),
+            ("panel_width", "width", 0.5, 100.0),
+            ("panel_height", "height", 0.25, 50.0),
+            ("panel_alpha", "opacity", 0.5, 0.1),
+        ] {
+            let binding = bindings
+                .iter()
+                .find(|binding| binding["property"] == property && binding["target"] == target)
+                .unwrap_or_else(|| panic!("missing binding {property} -> {target}: {bindings:?}"));
+            assert_eq!(binding["scale"], scale);
+            assert_eq!(binding["offset"], offset);
+        }
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(0, |property| match property {
+            "panel_x" => Some(7.0),
+            "panel_width" => Some(80.0),
+            "panel_height" => Some(40.0),
+            "panel_alpha" => Some(1.0),
+            _ => None,
+        });
+        assert_eq!(snapshot.layers[0].transform.x, 29.0);
+        assert_eq!(snapshot.layers[0].width, Some(140.0));
+        assert_eq!(snapshot.layers[0].height, Some(60.0));
+        assert_eq!(snapshot.layers[0].opacity, 0.6);
+
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-deterministic-scenescript-expression".to_owned())
+        );
     }
 
     #[test]

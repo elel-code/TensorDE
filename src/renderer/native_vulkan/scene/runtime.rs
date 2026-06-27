@@ -750,6 +750,8 @@ fn native_vulkan_full_scene_runtime_snapshot(
         "synchronization2-submit2-scene-submit-model",
         "native-runtime-layer-coverage-metric",
         "timeline-animation-runtime",
+        "scene-geometry-field-animation-runtime",
+        "parallax-property-camera-model",
         "property-update-runtime",
         "pause-resume-policy-runtime",
         "package-state-persistence",
@@ -803,19 +805,19 @@ fn native_vulkan_full_scene_runtime_snapshot(
     }
     pending_boundaries.extend([
         "full-wallpaper-engine-scene-graph",
-        "scenescript-runtime",
+        "arbitrary-scenescript-runtime",
         "shader-material-graph",
         "particle-systems",
-        "parallax-camera-model",
+        "cursor-parallax-input-source",
         "pipewire-audio-response-runtime",
     ]);
 
     NativeVulkanFullSceneRuntimeSnapshot {
         target_runtime: "native-vulkan-full-scene",
         current_runtime: "native-vulkan-scene-runtime",
-        progress_estimate_percent: 82,
+        progress_estimate_percent: 90,
         full_scene_complete: false,
-        execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries with scene timeline animation, property update, pause/resume policy, state persistence, and converted keyframe timeline input boundaries; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
+        execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries with scene timeline animation, geometry field animation, deterministic SceneScript expression lowering, parallax property camera input, property update, pause/resume policy, state persistence, and converted keyframe timeline input boundaries; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
         native_scene_graph_lowering_ready: plan.native_draw_ready(),
         native_present_route_ready: pass_plan.backend_ready,
         retained_resource_model_ready,
@@ -1221,7 +1223,7 @@ mod tests {
             snapshot.full_scene.current_runtime,
             "native-vulkan-scene-runtime"
         );
-        assert_eq!(snapshot.full_scene.progress_estimate_percent, 82);
+        assert_eq!(snapshot.full_scene.progress_estimate_percent, 90);
         assert!(!snapshot.full_scene.full_scene_complete);
         assert!(snapshot.full_scene.timeline_snapshot_runtime_ready);
         assert_eq!(snapshot.full_scene.timeline_snapshot_time_ms, 1234);
@@ -1264,6 +1266,18 @@ mod tests {
                 .full_scene
                 .completed_boundaries
                 .contains(&"timeline-animation-runtime")
+        );
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"scene-geometry-field-animation-runtime")
+        );
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"parallax-property-camera-model")
         );
         assert!(
             snapshot

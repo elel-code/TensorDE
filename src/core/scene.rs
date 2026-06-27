@@ -105,11 +105,13 @@ impl SceneDocument {
         if let Some(clear_layer) = self.render_clear_layer() {
             layers.push(clear_layer);
         }
+        let parallax = self.parallax_offset(&resolve_property);
         for node in &self.nodes {
             node.push_snapshot_layers(
                 time_ms,
                 SceneTransform::default(),
                 1.0,
+                parallax,
                 &resources,
                 &self.timelines,
                 &self.property_bindings,
@@ -118,6 +120,35 @@ impl SceneDocument {
             );
         }
         SceneSnapshot { time_ms, layers }
+    }
+
+    fn parallax_offset(
+        &self,
+        resolve_property: &impl Fn(&str) -> Option<f64>,
+    ) -> SceneParallaxOffset {
+        let amount = self
+            .render
+            .parallax
+            .as_ref()
+            .and_then(|parallax| parallax.amount)
+            .unwrap_or(0.0);
+        if amount == 0.0 {
+            return SceneParallaxOffset::default();
+        }
+        let x = resolve_scene_property(
+            resolve_property,
+            &["scene.parallax.x", "scene_parallax_x", "parallax_x"],
+        )
+        .unwrap_or(0.0);
+        let y = resolve_scene_property(
+            resolve_property,
+            &["scene.parallax.y", "scene_parallax_y", "parallax_y"],
+        )
+        .unwrap_or(0.0);
+        SceneParallaxOffset {
+            x: x * amount,
+            y: y * amount,
+        }
     }
 
     fn render_clear_layer(&self) -> Option<SceneSnapshotLayer> {
@@ -138,6 +169,7 @@ impl SceneDocument {
             corner_radius: None,
             width: self.size.map(|size| f64::from(size.width)),
             height: self.size.map(|size| f64::from(size.height)),
+            parallax_depth: None,
             text: None,
             font_size: None,
             font_family: None,
@@ -398,6 +430,8 @@ pub struct SceneNode {
     #[serde(default)]
     pub height: Option<f64>,
     #[serde(default)]
+    pub parallax_depth: Option<f64>,
+    #[serde(default)]
     pub text: Option<String>,
     #[serde(default)]
     pub font_size: Option<f64>,
@@ -444,6 +478,7 @@ impl SceneNode {
         if let Some(provenance) = &self.provenance {
             provenance.validate(&self.id)?;
         }
+        validate_optional_finite("scene node parallax_depth", self.parallax_depth)?;
         for effect in &self.effects {
             effect.validate(&self.id)?;
         }
@@ -462,6 +497,7 @@ impl SceneNode {
         time_ms: u64,
         parent_transform: SceneTransform,
         parent_opacity: f64,
+        parallax: SceneParallaxOffset,
         resources: &BTreeMap<&str, &SceneResource>,
         timelines: &[SceneTimeline],
         property_bindings: &[ScenePropertyBinding],
@@ -473,13 +509,24 @@ impl SceneNode {
         }
         let mut transform = self.transform;
         let mut opacity = self.opacity;
+        let mut width = self.width;
+        let mut height = self.height;
+        let mut corner_radius = self.corner_radius;
         for timeline in timelines
             .iter()
             .filter(|timeline| timeline.target_node.as_deref() == Some(self.id.as_str()))
         {
             for channel in &timeline.channels {
                 let value = channel.value_at(time_ms);
-                apply_scene_animated_value(&mut transform, &mut opacity, channel.property, value);
+                apply_scene_animated_value(
+                    &mut transform,
+                    &mut opacity,
+                    &mut width,
+                    &mut height,
+                    &mut corner_radius,
+                    channel.property,
+                    value,
+                );
             }
         }
         for binding in property_bindings.iter().filter(|binding| {
@@ -493,10 +540,24 @@ impl SceneNode {
             };
             let value = raw_value * binding.scale.unwrap_or(1.0) + binding.offset.unwrap_or(0.0);
             if value.is_finite() {
-                apply_scene_animated_value(&mut transform, &mut opacity, binding.target, value);
+                apply_scene_animated_value(
+                    &mut transform,
+                    &mut opacity,
+                    &mut width,
+                    &mut height,
+                    &mut corner_radius,
+                    binding.target,
+                    value,
+                );
             }
         }
 
+        if let Some(depth) = self.parallax_depth
+            && depth.is_finite()
+        {
+            transform.x += parallax.x * depth;
+            transform.y += parallax.y * depth;
+        }
         let transform = parent_transform.compose(transform);
         let opacity = (parent_opacity * opacity).clamp(0.0, 1.0);
         if self.kind != SceneNodeKind::Group {
@@ -511,9 +572,10 @@ impl SceneNode {
                 color: self.color.clone(),
                 stroke_color: self.stroke_color.clone(),
                 stroke_width: self.stroke_width,
-                corner_radius: self.corner_radius,
-                width: self.width,
-                height: self.height,
+                corner_radius,
+                width,
+                height,
+                parallax_depth: self.parallax_depth,
                 text: self.text.clone(),
                 font_size: self.font_size,
                 font_family: self.font_family.clone(),
@@ -530,6 +592,7 @@ impl SceneNode {
                 time_ms,
                 transform,
                 opacity,
+                parallax,
                 resources,
                 timelines,
                 property_bindings,
@@ -966,6 +1029,9 @@ pub enum SceneAnimatedProperty {
     ScaleX,
     ScaleY,
     RotationDeg,
+    Width,
+    Height,
+    CornerRadius,
     Custom,
 }
 
@@ -994,6 +1060,17 @@ impl SceneKeyframe {
         {
             return Err(SceneError::invalid(format!(
                 "scene timeline {property:?} scale value must be greater than 0"
+            )));
+        }
+        if matches!(
+            property,
+            SceneAnimatedProperty::Width
+                | SceneAnimatedProperty::Height
+                | SceneAnimatedProperty::CornerRadius
+        ) && self.value < 0.0
+        {
+            return Err(SceneError::invalid(format!(
+                "scene timeline {property:?} geometry value must be non-negative"
             )));
         }
         Ok(())
@@ -1129,6 +1206,12 @@ pub struct SceneSnapshot {
     pub layers: Vec<SceneSnapshotLayer>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct SceneParallaxOffset {
+    x: f64,
+    y: f64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneSnapshotLayer {
     pub id: String,
@@ -1140,6 +1223,7 @@ pub struct SceneSnapshotLayer {
     pub corner_radius: Option<f64>,
     pub width: Option<f64>,
     pub height: Option<f64>,
+    pub parallax_depth: Option<f64>,
     pub text: Option<String>,
     pub font_size: Option<f64>,
     pub font_family: Option<String>,
@@ -1154,6 +1238,9 @@ pub struct SceneSnapshotLayer {
 fn apply_scene_animated_value(
     transform: &mut SceneTransform,
     opacity: &mut f64,
+    width: &mut Option<f64>,
+    height: &mut Option<f64>,
+    corner_radius: &mut Option<f64>,
     property: SceneAnimatedProperty,
     value: f64,
 ) {
@@ -1165,8 +1252,21 @@ fn apply_scene_animated_value(
         SceneAnimatedProperty::ScaleY if value > 0.0 => transform.scale_y = value,
         SceneAnimatedProperty::ScaleX | SceneAnimatedProperty::ScaleY => {}
         SceneAnimatedProperty::RotationDeg => transform.rotation_deg = value,
+        SceneAnimatedProperty::Width => *width = Some(value.max(0.0)),
+        SceneAnimatedProperty::Height => *height = Some(value.max(0.0)),
+        SceneAnimatedProperty::CornerRadius => *corner_radius = Some(value.max(0.0)),
         SceneAnimatedProperty::Custom => {}
     }
+}
+
+fn resolve_scene_property(
+    resolve_property: &impl Fn(&str) -> Option<f64>,
+    names: &[&str],
+) -> Option<f64> {
+    names
+        .iter()
+        .filter_map(|name| resolve_property(name))
+        .find(|value| value.is_finite())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1353,5 +1453,100 @@ mod tests {
         let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
         assert_eq!(snapshot.layers.len(), 1);
         assert_eq!(snapshot.layers[0].id, "node-panel");
+    }
+
+    #[test]
+    fn timeline_and_property_bindings_drive_scene_geometry_fields() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "nodes": [
+                {
+                    "id": "node-panel",
+                    "type": "rectangle",
+                    "color": "#ffffff",
+                    "width": 100,
+                    "height": 50,
+                    "corner_radius": 4
+                }
+            ],
+            "timelines": [
+                {
+                    "id": "panel-size",
+                    "target_node": "node-panel",
+                    "channels": [
+                        {
+                            "property": "width",
+                            "keyframes": [
+                                { "time_ms": 0, "value": 100 },
+                                { "time_ms": 1000, "value": 200 }
+                            ]
+                        },
+                        {
+                            "property": "height",
+                            "keyframes": [
+                                { "time_ms": 0, "value": 50 },
+                                { "time_ms": 1000, "value": 150 }
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "property_bindings": [
+                {
+                    "property": "panel_radius",
+                    "target_node": "node-panel",
+                    "target": "corner-radius"
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(500, |property| {
+            if property == "panel_radius" {
+                Some(12.0)
+            } else {
+                None
+            }
+        });
+        assert_eq!(snapshot.layers[0].width, Some(150.0));
+        assert_eq!(snapshot.layers[0].height, Some(100.0));
+        assert_eq!(snapshot.layers[0].corner_radius, Some(12.0));
+    }
+
+    #[test]
+    fn parallax_properties_offset_node_transforms_by_depth() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "render": {
+                "parallax": { "amount": 10 }
+            },
+            "nodes": [
+                {
+                    "id": "near",
+                    "type": "rectangle",
+                    "color": "#ffffff",
+                    "transform": { "x": 3, "y": 4 },
+                    "parallax_depth": 0.5
+                },
+                {
+                    "id": "flat",
+                    "type": "rectangle",
+                    "color": "#ffffff",
+                    "transform": { "x": 1, "y": 2 }
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(0, |property| match property {
+            "scene.parallax.x" => Some(2.0),
+            "scene.parallax.y" => Some(-1.0),
+            _ => None,
+        });
+        assert_eq!(snapshot.layers[0].transform.x, 13.0);
+        assert_eq!(snapshot.layers[0].transform.y, -1.0);
+        assert_eq!(snapshot.layers[0].parallax_depth, Some(0.5));
+        assert_eq!(snapshot.layers[1].transform.x, 1.0);
+        assert_eq!(snapshot.layers[1].transform.y, 2.0);
     }
 }

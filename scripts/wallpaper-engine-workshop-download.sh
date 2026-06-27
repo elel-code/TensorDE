@@ -314,17 +314,32 @@ fi
 "${steamcmd_args[@]}"
 
 downloaded_count=0
+missing_item_dirs=()
 for item_id in "${unique_ids[@]}"; do
   item_dir="$content_dir/$item_id"
   if [[ -d "$item_dir" ]]; then
     downloaded_count=$((downloaded_count + 1))
   else
+    missing_item_dirs+=("$item_dir")
     printf 'WARN: expected downloaded item directory is missing: %s\n' "$item_dir" >&2
   fi
 done
 {
   printf 'downloaded_item_dirs: %s\n' "$downloaded_count"
+  if [[ "${#missing_item_dirs[@]}" -gt 0 ]]; then
+    printf 'missing_item_dirs:'
+    for item_dir in "${missing_item_dirs[@]}"; do
+      printf ' %s' "$item_dir"
+    done
+    printf '\n'
+  fi
 } >>"$summary"
+
+if [[ "$downloaded_count" -ne "${#unique_ids[@]}" ]]; then
+  printf 'FAIL: SteamCMD did not create every requested Workshop item directory\n' >&2
+  printf 'summary: %s\n' "$summary" >&2
+  exit 1
+fi
 
 if [[ "$probe_after_download" -eq 1 ]]; then
   "${matrix_command[@]}"
