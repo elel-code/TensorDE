@@ -48,8 +48,9 @@ as a performance result.
   runner.
 - `src/core/`: package and manifest primitives.
 - `src/ipc/`: command, protocol, and socket helpers.
-- `src/renderer/native_vulkan/`: native Vulkan facade and shared parser/snapshot
-  code.
+- `src/renderer/native_vulkan.rs`: native Vulkan facade and public contract.
+- `src/renderer/native_vulkan/`: native Vulkan submodules and shared
+  parser/snapshot code.
 - `src/renderer/native_vulkan/video/`: FFmpeg demux, codec parsing, pacing,
   timeline, route, and video evidence helpers.
 - `src/renderer/native_vulkan/vulkan/`: the single Vulkanalia backend, split

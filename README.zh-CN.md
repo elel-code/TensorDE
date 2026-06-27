@@ -38,7 +38,8 @@ zero-copy 状态。
 - `src/bin/gilder-native-vulkan.rs`：原生 Vulkan 诊断和视频 smoke runner。
 - `src/core/`：包格式和 manifest 基础类型。
 - `src/ipc/`：命令、协议和 socket helper。
-- `src/renderer/native_vulkan/`：原生 Vulkan facade 和共享 parser/snapshot 代码。
+- `src/renderer/native_vulkan.rs`：原生 Vulkan facade 和公开 contract。
+- `src/renderer/native_vulkan/`：原生 Vulkan 子模块和共享 parser/snapshot 代码。
 - `src/renderer/native_vulkan/video/`：FFmpeg demux、codec parsing、pacing、timeline、route
   和视频证据 helper。
 - `src/renderer/native_vulkan/vulkan/`：唯一 Vulkanalia 后端，按 `core/`、`present/`、
