@@ -158,6 +158,13 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentSlowFrameSnapshot {
 pub struct NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
     pub binding: &'static str,
     pub route: &'static str,
+    pub execution_model: &'static str,
+    pub ffmpeg_thread_model: &'static str,
+    pub ffmpeg_read_thread_active: bool,
+    pub video_decode_worker_active: bool,
+    pub present_worker_active: bool,
+    pub decode_thread_count: u32,
+    pub decode_async_exec_depth: u32,
     pub requested_present_frame_count: u32,
     pub submitted_present_frame_count: u32,
     pub presented_frame_count: u32,

@@ -47,7 +47,7 @@ pub(in crate::renderer::native_vulkan) trait NativeVulkanStreamingAccessUnit:
 
 pub(in crate::renderer::native_vulkan) trait NativeVulkanStreamingPacketFrontend<
     A: NativeVulkanStreamingAccessUnit,
->
+>: Send
 {
     fn pull_next_access_unit(&mut self, loop_on_eos: bool) -> Result<Option<A>, NativeVulkanError>;
     fn eos_count(&self) -> u32;

@@ -489,8 +489,16 @@ fn native_vulkan_scene_present_route(
 ) -> Result<NativeVulkanScenePresentRouteKind, NativeVulkanError> {
     if !runtime.draw_pass_backend_ready {
         return Err(NativeVulkanError::Scene(format!(
-            "scene draw plan is not presentable by the native Vulkan scene backend: {}",
-            runtime.draw_pass_backend_status
+            "scene draw plan is not presentable by the native Vulkan scene backend: {}; draw_ops={}, unsupported_layers={}, clear_background_ops={}, sampled_image_ops={}, sampled_image_steps={}, sampled_image_recording_ready={}, sampled_image_implicit_full_extent_ready={}, quad_steps={}",
+            runtime.draw_pass_backend_status,
+            runtime.draw_op_count,
+            runtime.unsupported_layer_count,
+            runtime.draw_pass_clear_background_op_count,
+            runtime.draw_pass_sampled_image_op_count,
+            runtime.draw_pass_sampled_image_recording_step_count,
+            runtime.draw_pass_sampled_image_recording_ready,
+            runtime.draw_pass_sampled_image_implicit_full_extent_ready,
+            runtime.draw_pass_quad_recording_step_count
         )));
     }
 

@@ -1584,6 +1584,18 @@ fn create_video_present_session_pieces(
                     let queue_host_access_mutex = Mutex::new(());
                     let queue_host_access_lock =
                         same_queue_handle.then_some(&queue_host_access_mutex);
+                    #[cfg(feature = "native-vulkan-video")]
+                    let decode_async_exec_depth_for_sequence = ffmpeg_decode_async_exec_depth;
+                    #[cfg(not(feature = "native-vulkan-video"))]
+                    let decode_async_exec_depth_for_sequence = 0;
+                    let sequence_execution_evidence =
+                        NativeVulkanVulkanaliaDecodedImagePresentExecutionEvidence {
+                            ffmpeg_read_thread_active: decoded_image_present_sequence_requested,
+                            video_decode_worker_active: decoded_image_present_sequence_requested,
+                            present_worker_active: sequence_builder.is_some(),
+                            decode_thread_count: FFMPEG_SINGLE_DECODE_THREAD_COUNT,
+                            decode_async_exec_depth: decode_async_exec_depth_for_sequence,
+                        };
                     // Persistent timeline semaphore shared by the decode submits and the
                     // present submits. Seed the per-frame counter from its current value so
                     // signalled values stay strictly increasing across present sequences.
@@ -1637,7 +1649,11 @@ fn create_video_present_session_pieces(
                                 })?;
                             let device = &context.device;
                             let present_queue = context.present_queue;
-                            Some(scope.spawn(move || {
+                            Some(
+                                thread::Builder::new()
+                                    .name("gilder-ffmpeg-video-present-worker".to_owned())
+                                    .stack_size(256 * 1024)
+                                    .spawn_scoped(scope, move || {
                                 let worker_result = (|| -> Result<_, String> {
                                     let mut present_frame_index = 0u32;
                                     let mut present_frame_timer =
@@ -1842,51 +1858,91 @@ fn create_video_present_session_pieces(
                                     worker_handoff.fail(err.clone());
                                 }
                                 worker_result
-                            }))
+                                    })
+                                    .map_err(|err| {
+                                        format!(
+                                            "spawn FFmpeg-style video present worker: {err}"
+                                        )
+                                    })?,
+                            )
                         } else {
                             None
                         };
 
                         #[cfg(feature = "native-vulkan-video")]
-                        let mut wait_for_output_slot_present_release =
-                            |sampled_array_layer: u32| -> Result<(), String> {
-                                present_handoff
-                                    .wait_layer_present_release_completed(sampled_array_layer)
-                            };
+                        let decode_handoff = present_handoff.clone();
                         #[cfg(feature = "native-vulkan-video")]
-                        let mut enqueue_decoded_frame =
-                            |decode_frame_index: u32,
-                             sampled_array_layer: u32,
-                             source_frame_pts_ns: Option<u64>,
-                             source_frame_duration_ns: Option<u64>,
-                             source_frame_pts_ms: Option<u64>,
-                             source_frame_duration_ms: Option<u64>,
-                             display_order_key: i64,
-                             display_order_key_source: &'static str,
-                             decode_complete_value: u64|
-                             -> Result<(), String> {
-                                if decoded_image_present_sequence_error.is_some() {
-                                    return Ok(());
-                                }
-                                if decode_frame_index >= requested_present_frame_count_for_sequence
-                                {
-                                    return Ok(());
-                                }
-                                present_handoff.enqueue(
-                                    NativeVulkanVulkanaliaDecodedPresentHandoffFrame {
-                                        decode_frame_index,
-                                        sampled_array_layer,
-                                        source_frame_pts_ns,
-                                        source_frame_duration_ns,
-                                        source_frame_pts_ms,
-                                        source_frame_duration_ms,
-                                        display_order_key,
-                                        display_order_key_source,
-                                        decode_complete_value,
-                                    },
-                                )
-                            };
-                        let decode_result = (|| -> Result<_, String> {
+                        let decoded_image_present_sequence_failed =
+                            decoded_image_present_sequence_error.is_some();
+                        #[cfg(feature = "native-vulkan-video")]
+                        let decode_device = &context.device;
+                        #[cfg(feature = "native-vulkan-video")]
+                        let decode_video_queue = context.video_queue;
+                        #[cfg(feature = "native-vulkan-video")]
+                        let decode_video_queue_family_index = selection.video_queue_family_index;
+                        #[cfg(feature = "native-vulkan-video")]
+                        let decode_capabilities = queried.capabilities;
+                        #[cfg(feature = "native-vulkan-video")]
+                        let decode_memory_properties = &memory_properties;
+                        #[cfg(feature = "native-vulkan-video")]
+                        let decode_video_session = session
+                            .as_ref()
+                            .copied()
+                            .expect("Vulkanalia video session is live");
+                        #[cfg(feature = "native-vulkan-video")]
+                        let decode_resource_image = resource_image
+                            .as_ref()
+                            .expect("Vulkanalia resource image is live");
+                        #[cfg(feature = "native-vulkan-video")]
+                        let decode_non_coherent_atom_size =
+                            selection.properties.limits.non_coherent_atom_size;
+                        #[cfg(feature = "native-vulkan-video")]
+                        let decode_codec = codec;
+                        let decode_worker = thread::Builder::new()
+                            .name("gilder-ffmpeg-video-decode-worker".to_owned())
+                            .stack_size(256 * 1024)
+                            .spawn_scoped(scope, move || {
+                            #[cfg(feature = "native-vulkan-video")]
+                            let mut wait_for_output_slot_present_release =
+                                |sampled_array_layer: u32| -> Result<(), String> {
+                                    decode_handoff
+                                        .wait_layer_present_release_completed(sampled_array_layer)
+                                };
+                            #[cfg(feature = "native-vulkan-video")]
+                            let mut enqueue_decoded_frame =
+                                |decode_frame_index: u32,
+                                 sampled_array_layer: u32,
+                                 source_frame_pts_ns: Option<u64>,
+                                 source_frame_duration_ns: Option<u64>,
+                                 source_frame_pts_ms: Option<u64>,
+                                 source_frame_duration_ms: Option<u64>,
+                                 display_order_key: i64,
+                                 display_order_key_source: &'static str,
+                                 decode_complete_value: u64|
+                                 -> Result<(), String> {
+                                    if decoded_image_present_sequence_failed {
+                                        return Ok(());
+                                    }
+                                    if decode_frame_index
+                                        >= requested_present_frame_count_for_sequence
+                                    {
+                                        return Ok(());
+                                    }
+                                    decode_handoff.enqueue(
+                                        NativeVulkanVulkanaliaDecodedPresentHandoffFrame {
+                                            decode_frame_index,
+                                            sampled_array_layer,
+                                            source_frame_pts_ns,
+                                            source_frame_duration_ns,
+                                            source_frame_pts_ms,
+                                            source_frame_duration_ms,
+                                            display_order_key,
+                                            display_order_key_source,
+                                            decode_complete_value,
+                                        },
+                                    )
+                                };
+                            (|| -> Result<_, String> {
                             #[cfg(feature = "native-vulkan-video")]
                             let h264_ready_prefix_decode = if let Some(prepared) =
                                 prepared_streaming_decode.h264.take()
@@ -1914,30 +1970,25 @@ fn create_video_present_session_pieces(
                                 };
                                 Some(
                                             native_vulkan_vulkanalia_record_h264_streaming_decode_into_image(
-                                                &context.device,
-                                                context.video_queue,
+                                                decode_device,
+                                                decode_video_queue,
                                                 queue_host_access_lock,
-                                                &memory_properties,
-                                                selection.video_queue_family_index,
+                                                decode_memory_properties,
+                                                decode_video_queue_family_index,
                                                 profile_info,
                                                 requested_extent,
-                                                queried.capabilities,
-                                                session
-                                                    .as_ref()
-                                                    .copied()
-                                                    .expect("Vulkanalia video session is live"),
-                                                codec,
+                                                decode_capabilities,
+                                                decode_video_session,
+                                                decode_codec,
                                                 resource_image_array_layers,
                                                 ffmpeg_decode_async_exec_depth,
-                                                selection.properties.limits.non_coherent_atom_size,
+                                                decode_non_coherent_atom_size,
                                                 NativeVulkanVulkanaliaH264StreamingDecodeInput {
                                                     parameter_sets,
                                                     requested_frame_count: request.playback_frame_count,
                                                     next_frame: &mut next_frame,
                                                 },
-                                                resource_image
-                                                    .as_ref()
-                                                    .expect("Vulkanalia resource image is live"),
+                                                decode_resource_image,
                                                 Some(&mut wait_for_output_slot_present_release),
                                                 Some(&mut enqueue_decoded_frame),
                                                 decode_complete_semaphore,
@@ -1974,30 +2025,25 @@ fn create_video_present_session_pieces(
                                 };
                                 Some(
                                             native_vulkan_vulkanalia_record_h265_streaming_decode_into_image(
-                                                &context.device,
-                                                context.video_queue,
+                                                decode_device,
+                                                decode_video_queue,
                                                 queue_host_access_lock,
-                                                &memory_properties,
-                                                selection.video_queue_family_index,
+                                                decode_memory_properties,
+                                                decode_video_queue_family_index,
                                                 profile_info,
                                                 requested_extent,
-                                                queried.capabilities,
-                                                session
-                                                    .as_ref()
-                                                    .copied()
-                                                    .expect("Vulkanalia video session is live"),
-                                                codec,
+                                                decode_capabilities,
+                                                decode_video_session,
+                                                decode_codec,
                                                 resource_image_array_layers,
                                                 ffmpeg_decode_async_exec_depth,
-                                                selection.properties.limits.non_coherent_atom_size,
+                                                decode_non_coherent_atom_size,
                                                 NativeVulkanVulkanaliaH265StreamingDecodeInput {
                                                     parameter_sets,
                                                     requested_frame_count: request.playback_frame_count,
                                                     next_frame: &mut next_frame,
                                                 },
-                                                resource_image
-                                                    .as_ref()
-                                                    .expect("Vulkanalia resource image is live"),
+                                                decode_resource_image,
                                                 Some(&mut wait_for_output_slot_present_release),
                                                 Some(&mut enqueue_decoded_frame),
                                                 decode_complete_semaphore,
@@ -2041,30 +2087,25 @@ fn create_video_present_session_pieces(
                                 };
                                 Some(
                                         native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
-                                            &context.device,
-                                            context.video_queue,
+                                            decode_device,
+                                            decode_video_queue,
                                             queue_host_access_lock,
-                                            &memory_properties,
-                                            selection.video_queue_family_index,
+                                            decode_memory_properties,
+                                            decode_video_queue_family_index,
                                             profile_info,
                                             requested_extent,
-                                            queried.capabilities,
-                                            session
-                                                .as_ref()
-                                                .copied()
-                                                .expect("Vulkanalia video session is live"),
-                                            codec,
+                                            decode_capabilities,
+                                            decode_video_session,
+                                            decode_codec,
                                             resource_image_array_layers,
                                             ffmpeg_decode_async_exec_depth,
-                                            selection.properties.limits.non_coherent_atom_size,
+                                            decode_non_coherent_atom_size,
                                             NativeVulkanVulkanaliaAv1StreamingDecodeInput {
                                                 sequence_header: sequence_header.clone(),
                                                 requested_frame_count: request.playback_frame_count,
                                                 next_frame: &mut next_frame,
                                             },
-                                            resource_image
-                                                .as_ref()
-                                                .expect("Vulkanalia resource image is live"),
+                                            decode_resource_image,
                                             Some(&mut wait_for_output_slot_present_release),
                                             Some(&mut enqueue_decoded_frame),
                                             decode_complete_semaphore,
@@ -2081,7 +2122,15 @@ fn create_video_present_session_pieces(
                                 h265_ready_prefix_decode,
                                 av1_ready_prefix_decode,
                             ))
-                        })();
+                            })()
+                            })
+                            .map_err(|err| {
+                                format!("spawn FFmpeg-style video decode worker: {err}")
+                            })?;
+                        let decode_result = match decode_worker.join() {
+                            Ok(result) => result,
+                            Err(_) => Err("video decode worker panicked".to_owned()),
+                        };
                         let close_result = present_handoff.close();
                         let present_result = if let Some(present_worker) = present_worker {
                             match present_worker.join() {
@@ -2108,7 +2157,8 @@ fn create_video_present_session_pieces(
                             "frame pixels are sampled from the Vulkan decode image through VK_EXT_descriptor_heap, then the swapchain image owns the displayed result",
                             FFMPEG_FFPLAY_FRAME_QUEUE_REFERENCE,
                         )?;
-                        decoded_image_present_sequence = sequence_builder.finish(handoff_snapshot);
+                        decoded_image_present_sequence =
+                            sequence_builder.finish(handoff_snapshot, sequence_execution_evidence);
                     }
                     (
                         h264_ready_prefix_decode,
@@ -2252,6 +2302,15 @@ struct NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
     latest_draw: Option<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
     draws_head: Vec<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
     draws_tail: Vec<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeVulkanVulkanaliaDecodedImagePresentExecutionEvidence {
+    ffmpeg_read_thread_active: bool,
+    video_decode_worker_active: bool,
+    present_worker_active: bool,
+    decode_thread_count: u32,
+    decode_async_exec_depth: u32,
 }
 
 impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
@@ -2486,6 +2545,7 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
     fn finish(
         self,
         present_handoff: NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot,
+        execution: NativeVulkanVulkanaliaDecodedImagePresentExecutionEvidence,
     ) -> Option<NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot> {
         let latest_draw = self.latest_draw;
         if latest_draw.is_none() {
@@ -2518,6 +2578,13 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
         Some(NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
             binding: "vulkanalia",
             route: "decoded-image-dynamic-rendering-present-sequence",
+            execution_model: "FFmpeg-style read thread -> bounded packet queue -> single video decode worker -> bounded decoded-frame handoff -> present worker",
+            ffmpeg_thread_model: "one FFmpeg packet read thread per streaming source, one native video decode worker, one native present worker; decode thread_count stays 1 while Vulkan async-depth follows FFmpeg Vulkan decode formula",
+            ffmpeg_read_thread_active: execution.ffmpeg_read_thread_active,
+            video_decode_worker_active: execution.video_decode_worker_active,
+            present_worker_active: execution.present_worker_active,
+            decode_thread_count: execution.decode_thread_count,
+            decode_async_exec_depth: execution.decode_async_exec_depth,
             requested_present_frame_count: self.requested_present_frame_count,
             submitted_present_frame_count: self.submitted_present_frame_count,
             presented_frame_count: self.presented_frame_count,
