@@ -33,6 +33,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanAudioClockProbeOptions
     pub(in crate::renderer::native_vulkan) queue_capacity: usize,
     pub(in crate::renderer::native_vulkan) packets_to_probe: u32,
     pub(in crate::renderer::native_vulkan) loop_on_eos: bool,
+    pub(in crate::renderer::native_vulkan) target_playback_clock_ns: Option<u64>,
 }
 
 impl NativeVulkanAudioClockProbeOptions {
@@ -43,6 +44,7 @@ impl NativeVulkanAudioClockProbeOptions {
             queue_capacity: NATIVE_VULKAN_AUDIO_CLOCK_QUEUE_PACKETS,
             packets_to_probe: NATIVE_VULKAN_AUDIO_CLOCK_QUEUE_PACKETS as u32,
             loop_on_eos: false,
+            target_playback_clock_ns: None,
         }
     }
 }
@@ -82,6 +84,17 @@ pub struct NativeVulkanAudioClockRuntimeSnapshot {
     pub audio_output_bytes: u64,
     pub audio_output_sample_rate_hz: Option<u32>,
     pub audio_output_channel_count: Option<u32>,
+    pub audio_output_write_calls: u64,
+    pub audio_output_write_waits: u64,
+    pub audio_output_process_callbacks: u64,
+    pub audio_output_buffer_errors: u64,
+    pub audio_output_timeout_errors: u64,
+    pub audio_output_stream_ready: bool,
+    pub playback_runtime_model: &'static str,
+    pub playback_target_clock_ns: Option<u64>,
+    pub playback_covered_clock_ns: Option<u64>,
+    pub playback_coverage_percent: u32,
+    pub playback_target_reached: bool,
     pub decoded_frames: u32,
     pub decoded_samples: u64,
     pub audio_sample_rate_hz: Option<u32>,
@@ -128,6 +141,12 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanAudioClockPacket {
     pub(in crate::renderer::native_vulkan) output_bytes: u64,
     pub(in crate::renderer::native_vulkan) output_sample_rate_hz: Option<u32>,
     pub(in crate::renderer::native_vulkan) output_channel_count: Option<u32>,
+    pub(in crate::renderer::native_vulkan) output_write_calls: u64,
+    pub(in crate::renderer::native_vulkan) output_write_waits: u64,
+    pub(in crate::renderer::native_vulkan) output_process_callbacks: u64,
+    pub(in crate::renderer::native_vulkan) output_buffer_errors: u64,
+    pub(in crate::renderer::native_vulkan) output_timeout_errors: u64,
+    pub(in crate::renderer::native_vulkan) output_stream_ready: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -287,6 +306,13 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanAudioClockRuntime {
     audio_output_bytes: u64,
     audio_output_sample_rate_hz: Option<u32>,
     audio_output_channel_count: Option<u32>,
+    audio_output_write_calls: u64,
+    audio_output_write_waits: u64,
+    audio_output_process_callbacks: u64,
+    audio_output_buffer_errors: u64,
+    audio_output_timeout_errors: u64,
+    audio_output_stream_ready: bool,
+    playback_target_clock_ns: Option<u64>,
     eos_count: u32,
     loop_count: u32,
     video_master_start_clock_ns: Option<u64>,
@@ -321,6 +347,13 @@ impl NativeVulkanAudioClockRuntime {
             audio_output_bytes: 0,
             audio_output_sample_rate_hz: None,
             audio_output_channel_count: None,
+            audio_output_write_calls: 0,
+            audio_output_write_waits: 0,
+            audio_output_process_callbacks: 0,
+            audio_output_buffer_errors: 0,
+            audio_output_timeout_errors: 0,
+            audio_output_stream_ready: false,
+            playback_target_clock_ns: None,
             eos_count: 0,
             loop_count: 0,
             video_master_start_clock_ns: None,
@@ -359,6 +392,13 @@ impl NativeVulkanAudioClockRuntime {
         self.loop_count = loop_count;
     }
 
+    pub(in crate::renderer::native_vulkan) fn set_playback_target_clock_ns(
+        &mut self,
+        target_clock_ns: Option<u64>,
+    ) {
+        self.playback_target_clock_ns = target_clock_ns.filter(|target| *target > 0);
+    }
+
     pub(in crate::renderer::native_vulkan) fn push_and_advance(
         &mut self,
         packet_index: u32,
@@ -390,6 +430,20 @@ impl NativeVulkanAudioClockRuntime {
         if self.audio_output_channel_count.is_none() {
             self.audio_output_channel_count = packet.output_channel_count;
         }
+        self.audio_output_write_calls =
+            self.audio_output_write_calls.max(packet.output_write_calls);
+        self.audio_output_write_waits =
+            self.audio_output_write_waits.max(packet.output_write_waits);
+        self.audio_output_process_callbacks = self
+            .audio_output_process_callbacks
+            .max(packet.output_process_callbacks);
+        self.audio_output_buffer_errors = self
+            .audio_output_buffer_errors
+            .max(packet.output_buffer_errors);
+        self.audio_output_timeout_errors = self
+            .audio_output_timeout_errors
+            .max(packet.output_timeout_errors);
+        self.audio_output_stream_ready |= packet.output_stream_ready;
         if packet.serial > self.clock.current_serial {
             self.current_serial_start_clock_ns = None;
             self.current_serial_start_serial = None;
@@ -428,12 +482,37 @@ impl NativeVulkanAudioClockRuntime {
         }
     }
 
+    pub(in crate::renderer::native_vulkan) fn playback_target_reached(&self) -> bool {
+        match (self.playback_target_clock_ns, self.clock.clock_ns) {
+            (Some(target), Some(covered)) => covered >= target,
+            _ => false,
+        }
+    }
+
     pub(in crate::renderer::native_vulkan) fn snapshot(
         &self,
     ) -> NativeVulkanAudioClockRuntimeSnapshot {
+        let playback_covered_clock_ns = self.clock.clock_ns;
+        let playback_target_reached =
+            match (self.playback_target_clock_ns, playback_covered_clock_ns) {
+                (Some(target), Some(covered)) => covered >= target,
+                (None, _) => false,
+                _ => false,
+            };
+        let playback_coverage_percent =
+            match (self.playback_target_clock_ns, playback_covered_clock_ns) {
+                (Some(target), Some(covered)) if target > 0 => {
+                    let percent = u128::from(covered)
+                        .saturating_mul(100)
+                        .checked_div(u128::from(target))
+                        .unwrap_or(0);
+                    percent.min(u128::from(u32::MAX)) as u32
+                }
+                _ => 0,
+            };
         NativeVulkanAudioClockRuntimeSnapshot {
-            route: "native-vulkan-audio-clock-only",
-            boundary: "FFmpeg audio demux metadata -> serial-scoped muted audio clock -> video pacing master input",
+            route: "native-vulkan-audio-runtime",
+            boundary: "FFmpeg audio decode -> serial-scoped audio clock -> PipeWire-only output/runtime telemetry -> video pacing master input",
             output_mode: self.output_mode.as_str(),
             source: self.source.clone(),
             audio_stream_found: self.audio_stream_found,
@@ -456,6 +535,20 @@ impl NativeVulkanAudioClockRuntime {
             audio_output_bytes: self.audio_output_bytes,
             audio_output_sample_rate_hz: self.audio_output_sample_rate_hz,
             audio_output_channel_count: self.audio_output_channel_count,
+            audio_output_write_calls: self.audio_output_write_calls,
+            audio_output_write_waits: self.audio_output_write_waits,
+            audio_output_process_callbacks: self.audio_output_process_callbacks,
+            audio_output_buffer_errors: self.audio_output_buffer_errors,
+            audio_output_timeout_errors: self.audio_output_timeout_errors,
+            audio_output_stream_ready: self.audio_output_stream_ready,
+            playback_runtime_model: match self.output_mode {
+                NativeVulkanAudioOutputMode::Auto => "pipewire-duration-covered-runtime",
+                NativeVulkanAudioOutputMode::ClockOnly => "clock-only-duration-covered-runtime",
+            },
+            playback_target_clock_ns: self.playback_target_clock_ns,
+            playback_covered_clock_ns,
+            playback_coverage_percent,
+            playback_target_reached,
             decoded_frames: self.decoded_frames,
             decoded_samples: self.decoded_samples,
             audio_sample_rate_hz: self.audio_sample_rate_hz,
@@ -534,6 +627,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_probe_ffmpeg_audio_clock
     let mut runtime =
         NativeVulkanAudioClockRuntime::new(options.output_mode, options.queue_capacity)
             .with_source(options.source.clone());
+    runtime.set_playback_target_clock_ns(options.target_playback_clock_ns);
     let mut reader =
         match NativeVulkanFfmpegAudioClockReader::open(&options.source, options.output_mode) {
             Ok(reader) => reader,
@@ -549,6 +643,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_probe_ffmpeg_audio_clock
             break;
         };
         runtime.push_and_advance(packet_index, packet);
+        if runtime.playback_target_reached() {
+            break;
+        }
     }
     runtime.set_eos_counts(reader.eos_count, reader.loop_count);
     Ok(runtime.snapshot())
@@ -561,6 +658,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_probe_ffmpeg_audio_clock
     let mut runtime =
         NativeVulkanAudioClockRuntime::new(options.output_mode, options.queue_capacity)
             .with_source(options.source);
+    runtime.set_playback_target_clock_ns(options.target_playback_clock_ns);
     runtime.set_audio_stream_error(
         "native-vulkan-video feature is required for FFmpeg audio clock probing".to_owned(),
     );
@@ -665,6 +763,12 @@ unsafe extern "C" {
         bytes_written: *mut c_longlong,
         sample_rate: *mut c_int,
         channels: *mut c_int,
+        write_calls: *mut c_longlong,
+        write_waits: *mut c_longlong,
+        process_callbacks: *mut c_longlong,
+        buffer_errors: *mut c_longlong,
+        timeout_errors: *mut c_longlong,
+        stream_ready: *mut c_int,
     ) -> c_int;
 }
 
@@ -744,6 +848,12 @@ impl NativeVulkanFfmpegAudioClockReader {
                     output_bytes: decoded.output_bytes,
                     output_sample_rate_hz: decoded.output_sample_rate_hz,
                     output_channel_count: decoded.output_channel_count,
+                    output_write_calls: decoded.output_write_calls,
+                    output_write_waits: decoded.output_write_waits,
+                    output_process_callbacks: decoded.output_process_callbacks,
+                    output_buffer_errors: decoded.output_buffer_errors,
+                    output_timeout_errors: decoded.output_timeout_errors,
+                    output_stream_ready: decoded.output_stream_ready,
                 };
                 self.input_packet.unref();
                 return Ok(Some(packet));
@@ -788,6 +898,12 @@ struct NativeVulkanFfmpegAudioDecodedPacket {
     output_bytes: u64,
     output_sample_rate_hz: Option<u32>,
     output_channel_count: Option<u32>,
+    output_write_calls: u64,
+    output_write_waits: u64,
+    output_process_callbacks: u64,
+    output_buffer_errors: u64,
+    output_timeout_errors: u64,
+    output_stream_ready: bool,
 }
 
 #[cfg(feature = "native-vulkan-video")]
@@ -956,6 +1072,12 @@ impl NativeVulkanFfmpegAudioDecoder {
         let mut bytes_written: c_longlong = 0;
         let mut sample_rate: c_int = 0;
         let mut channels: c_int = 0;
+        let mut write_calls: c_longlong = 0;
+        let mut write_waits: c_longlong = 0;
+        let mut process_callbacks: c_longlong = 0;
+        let mut buffer_errors: c_longlong = 0;
+        let mut timeout_errors: c_longlong = 0;
+        let mut stream_ready: c_int = 0;
         let ret = unsafe {
             gilder_audio_output_write_frame(
                 output.as_ptr(),
@@ -965,6 +1087,12 @@ impl NativeVulkanFfmpegAudioDecoder {
                 &mut bytes_written,
                 &mut sample_rate,
                 &mut channels,
+                &mut write_calls,
+                &mut write_waits,
+                &mut process_callbacks,
+                &mut buffer_errors,
+                &mut timeout_errors,
+                &mut stream_ready,
             )
         };
         if ret < 0 {
@@ -988,6 +1116,25 @@ impl NativeVulkanFfmpegAudioDecoder {
         if decoded.output_channel_count.is_none() {
             decoded.output_channel_count = native_vulkan_audio_positive_c_int(channels);
         }
+        decoded.output_write_calls = decoded
+            .output_write_calls
+            .max(native_vulkan_audio_positive_c_longlong_u64(write_calls));
+        decoded.output_write_waits = decoded
+            .output_write_waits
+            .max(native_vulkan_audio_positive_c_longlong_u64(write_waits));
+        decoded.output_process_callbacks =
+            decoded
+                .output_process_callbacks
+                .max(native_vulkan_audio_positive_c_longlong_u64(
+                    process_callbacks,
+                ));
+        decoded.output_buffer_errors = decoded
+            .output_buffer_errors
+            .max(native_vulkan_audio_positive_c_longlong_u64(buffer_errors));
+        decoded.output_timeout_errors = decoded
+            .output_timeout_errors
+            .max(native_vulkan_audio_positive_c_longlong_u64(timeout_errors));
+        decoded.output_stream_ready |= stream_ready != 0;
         Ok(())
     }
 }
@@ -1303,6 +1450,12 @@ mod tests {
         assert_eq!(snapshot.audio_output_bytes, 0);
         assert_eq!(snapshot.audio_output_sample_rate_hz, None);
         assert_eq!(snapshot.audio_output_channel_count, None);
+        assert_eq!(snapshot.audio_output_write_calls, 0);
+        assert_eq!(snapshot.audio_output_write_waits, 0);
+        assert_eq!(snapshot.audio_output_process_callbacks, 0);
+        assert_eq!(snapshot.audio_output_buffer_errors, 0);
+        assert_eq!(snapshot.audio_output_timeout_errors, 0);
+        assert!(!snapshot.audio_output_stream_ready);
         assert_eq!(snapshot.retained_payload_bytes, 0);
         assert_eq!(snapshot.retained_pcm_frame_bytes, 0);
         assert_eq!(snapshot.decoded_frames, 1);
@@ -1345,6 +1498,12 @@ mod tests {
                 output_bytes: 4032,
                 output_sample_rate_hz: Some(48_000),
                 output_channel_count: Some(2),
+                output_write_calls: 1,
+                output_write_waits: 1,
+                output_process_callbacks: 1,
+                output_buffer_errors: 0,
+                output_timeout_errors: 0,
+                output_stream_ready: true,
             },
         );
 
@@ -1359,6 +1518,82 @@ mod tests {
         assert_eq!(snapshot.audio_output_bytes, 4032);
         assert_eq!(snapshot.audio_output_sample_rate_hz, Some(48_000));
         assert_eq!(snapshot.audio_output_channel_count, Some(2));
+        assert_eq!(snapshot.audio_output_write_calls, 1);
+        assert_eq!(snapshot.audio_output_write_waits, 1);
+        assert_eq!(snapshot.audio_output_process_callbacks, 1);
+        assert_eq!(snapshot.audio_output_buffer_errors, 0);
+        assert_eq!(snapshot.audio_output_timeout_errors, 0);
+        assert!(snapshot.audio_output_stream_ready);
+    }
+
+    #[test]
+    fn audio_runtime_reports_playback_target_coverage() {
+        let mut runtime = NativeVulkanAudioClockRuntime::new(
+            NativeVulkanAudioOutputMode::Auto,
+            NATIVE_VULKAN_AUDIO_CLOCK_QUEUE_PACKETS,
+        );
+        runtime.set_audio_stream(2);
+        runtime.set_playback_target_clock_ns(Some(42_000_000));
+        runtime.push_and_advance(
+            0,
+            NativeVulkanAudioClockPacket {
+                serial: 0,
+                pts_ns: Some(0),
+                duration_ns: Some(21_000_000),
+                payload_bytes: 512,
+                decoded_frames: 1,
+                decoded_samples: 1008,
+                sample_rate_hz: Some(48_000),
+                channel_count: Some(2),
+                output_frames: 1,
+                output_samples: 1008,
+                output_bytes: 4032,
+                output_sample_rate_hz: Some(48_000),
+                output_channel_count: Some(2),
+                output_write_calls: 1,
+                output_write_waits: 1,
+                output_process_callbacks: 1,
+                output_buffer_errors: 0,
+                output_timeout_errors: 0,
+                output_stream_ready: true,
+            },
+        );
+
+        let partial = runtime.snapshot();
+        assert_eq!(partial.playback_target_clock_ns, Some(42_000_000));
+        assert_eq!(partial.playback_covered_clock_ns, Some(21_000_000));
+        assert_eq!(partial.playback_coverage_percent, 50);
+        assert!(!partial.playback_target_reached);
+
+        runtime.push_and_advance(
+            1,
+            NativeVulkanAudioClockPacket {
+                serial: 0,
+                pts_ns: Some(21_000_000),
+                duration_ns: Some(21_000_000),
+                payload_bytes: 512,
+                decoded_frames: 1,
+                decoded_samples: 1008,
+                sample_rate_hz: Some(48_000),
+                channel_count: Some(2),
+                output_frames: 1,
+                output_samples: 1008,
+                output_bytes: 4032,
+                output_sample_rate_hz: Some(48_000),
+                output_channel_count: Some(2),
+                output_write_calls: 2,
+                output_write_waits: 2,
+                output_process_callbacks: 2,
+                output_buffer_errors: 0,
+                output_timeout_errors: 0,
+                output_stream_ready: true,
+            },
+        );
+
+        let covered = runtime.snapshot();
+        assert_eq!(covered.playback_covered_clock_ns, Some(42_000_000));
+        assert_eq!(covered.playback_coverage_percent, 100);
+        assert!(covered.playback_target_reached);
     }
 
     #[test]

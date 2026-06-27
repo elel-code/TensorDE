@@ -135,12 +135,17 @@ pub fn run_vulkanalia_ready_prefix_video(
     let audio_clock = if audio_clock_probe_requested {
         let mut probe_options = NativeVulkanAudioClockProbeOptions::clock_only(source.clone());
         probe_options.output_mode = audio_output_mode;
-        probe_options.loop_on_eos = playback_frame_count > ready_prefix_frame_count;
-        probe_options.packets_to_probe = if probe_options.loop_on_eos {
-            playback_frame_count.max(512).min(1024)
-        } else {
-            playback_frame_count.max(1).min(64)
-        };
+        let audio_playback_duration = native_vulkan_vulkanalia_visible_present_duration(
+            playback_frame_count,
+            options.target_max_fps,
+        );
+        probe_options.target_playback_clock_ns =
+            Some(duration_ns_u64(audio_playback_duration).max(1));
+        probe_options.loop_on_eos = true;
+        probe_options.packets_to_probe = native_vulkan_audio_runtime_packet_budget(
+            audio_playback_duration,
+            playback_frame_count,
+        );
         Some(native_vulkan_probe_ffmpeg_audio_clock(probe_options)?)
     } else if audio_output_mode == NativeVulkanAudioOutputMode::ClockOnly {
         Some(native_vulkan_unattached_audio_clock_snapshot(
@@ -422,6 +427,23 @@ fn native_vulkan_vulkanalia_visible_present_duration(
     Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
 }
 
+fn native_vulkan_audio_runtime_packet_budget(
+    playback_duration: Duration,
+    playback_frame_count: u32,
+) -> u32 {
+    let duration_packets = playback_duration.as_nanos().saturating_add(9_999_999) / 10_000_000;
+    let packet_budget = duration_packets
+        .saturating_add(u128::from(playback_frame_count.max(1)))
+        .saturating_add(64);
+    u32::try_from(packet_budget.min(4096))
+        .unwrap_or(4096)
+        .max(64)
+}
+
+fn duration_ns_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
 fn native_vulkan_vulkanalia_streaming_packet_queue_capacity() -> usize {
     NATIVE_VULKAN_PACKET_HANDOFF_FRAMES
 }
@@ -436,5 +458,15 @@ mod tests {
             std::any::type_name::<NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot>();
 
         assert!(snapshot_type.contains("VulkanaliaReadyPrefixRuntimeSnapshot"));
+    }
+
+    #[test]
+    fn audio_runtime_packet_budget_scales_with_playback_duration() {
+        let short = native_vulkan_audio_runtime_packet_budget(Duration::from_millis(100), 4);
+        let ten_seconds = native_vulkan_audio_runtime_packet_budget(Duration::from_secs(10), 2400);
+
+        assert_eq!(short, 78);
+        assert!(ten_seconds > 1000);
+        assert!(ten_seconds <= 4096);
     }
 }

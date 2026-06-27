@@ -39,6 +39,11 @@ typedef struct GilderAudioOutput {
     int channels;
     int64_t written_samples;
     int64_t written_bytes;
+    int64_t write_call_count;
+    int64_t write_wait_count;
+    int64_t process_callback_count;
+    int64_t buffer_error_count;
+    int64_t timeout_error_count;
 } GilderAudioOutput;
 
 static int gilder_pipewire_initialized = 0;
@@ -263,6 +268,11 @@ static int gilder_audio_output_stream_error(const GilderAudioOutput *out) {
     return 0;
 }
 
+static bool gilder_audio_output_stream_ready(const GilderAudioOutput *out) {
+    return out->stream_state == PW_STREAM_STATE_PAUSED ||
+           out->stream_state == PW_STREAM_STATE_STREAMING;
+}
+
 static void gilder_audio_output_on_state_changed(
     void *data,
     enum pw_stream_state old,
@@ -280,8 +290,10 @@ static void gilder_audio_output_on_state_changed(
 
 static void gilder_audio_output_on_process(void *data) {
     GilderAudioOutput *out = data;
+    out->process_callback_count++;
     struct pw_buffer *buffer = pw_stream_dequeue_buffer(out->stream);
     if (!buffer) {
+        out->buffer_error_count++;
         out->pending_error = AVERROR(EPIPE);
         pw_thread_loop_signal(out->loop, false);
         return;
@@ -291,6 +303,7 @@ static void gilder_audio_output_on_process(void *data) {
     if (!spa_buffer || spa_buffer->n_datas == 0 || !spa_buffer->datas[0].data ||
         !spa_buffer->datas[0].chunk) {
         pw_stream_return_buffer(out->stream, buffer);
+        out->buffer_error_count++;
         out->pending_error = AVERROR(EINVAL);
         pw_thread_loop_signal(out->loop, false);
         return;
@@ -304,6 +317,9 @@ static void gilder_audio_output_on_process(void *data) {
     if (copied > 0) {
         memcpy(dst->data, out->pending_data + out->pending_offset, copied);
         out->pending_offset += copied;
+    } else if (remaining > 0) {
+        out->buffer_error_count++;
+        out->pending_error = AVERROR(EPIPE);
     }
 
     dst->chunk->offset = 0;
@@ -312,7 +328,7 @@ static void gilder_audio_output_on_process(void *data) {
     dst->chunk->flags = copied == 0 ? SPA_CHUNK_FLAG_EMPTY : SPA_CHUNK_FLAG_NONE;
     pw_stream_queue_buffer(out->stream, buffer);
 
-    if (copied > 0 || remaining == 0)
+    if (copied > 0 || remaining == 0 || out->pending_error < 0)
         pw_thread_loop_signal(out->loop, false);
 }
 
@@ -523,6 +539,7 @@ static int gilder_audio_output_ensure_started(
 static int gilder_audio_output_write_bytes(GilderAudioOutput *out, const uint8_t *data, size_t size) {
     if (size == 0)
         return 0;
+    out->write_call_count++;
     pw_thread_loop_lock(out->loop);
     int ret = gilder_audio_output_stream_error(out);
     if (ret < 0) {
@@ -540,14 +557,20 @@ static int gilder_audio_output_write_bytes(GilderAudioOutput *out, const uint8_t
         if (ret < 0)
             break;
         (void)pw_stream_trigger_process(out->stream);
+        out->write_wait_count++;
         ret = gilder_audio_output_wait_locked(out, GILDER_AUDIO_PIPEWIRE_WRITE_TIMEOUT_NS);
-        if (ret < 0)
+        if (ret < 0) {
+            if (ret == AVERROR(ETIMEDOUT))
+                out->timeout_error_count++;
             break;
+        }
     }
     if (ret >= 0 && out->pending_error < 0)
         ret = out->pending_error;
-    if (ret >= 0 && out->pending_offset < out->pending_size)
+    if (ret >= 0 && out->pending_offset < out->pending_size) {
+        out->timeout_error_count++;
         ret = AVERROR(ETIMEDOUT);
+    }
 
     out->pending_data = NULL;
     out->pending_size = 0;
@@ -564,7 +587,13 @@ int gilder_audio_output_write_frame(
     int64_t *samples_written,
     int64_t *bytes_written,
     int *sample_rate,
-    int *channels
+    int *channels,
+    int64_t *write_calls,
+    int64_t *write_waits,
+    int64_t *process_callbacks,
+    int64_t *buffer_errors,
+    int64_t *timeout_errors,
+    int *stream_ready
 ) {
     if (!out || !codec_ctx || !frame)
         return AVERROR(EINVAL);
@@ -621,6 +650,18 @@ int gilder_audio_output_write_frame(
     }
 
     ret = gilder_audio_output_write_bytes(out, dst_data[0], (size_t)byte_count);
+    if (write_calls)
+        *write_calls = out->write_call_count;
+    if (write_waits)
+        *write_waits = out->write_wait_count;
+    if (process_callbacks)
+        *process_callbacks = out->process_callback_count;
+    if (buffer_errors)
+        *buffer_errors = out->buffer_error_count;
+    if (timeout_errors)
+        *timeout_errors = out->timeout_error_count;
+    if (stream_ready)
+        *stream_ready = gilder_audio_output_stream_ready(out) ? 1 : 0;
     av_freep(&dst_data[0]);
     av_freep(&dst_data);
     if (ret < 0)
