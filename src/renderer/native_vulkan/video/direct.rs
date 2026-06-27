@@ -52,6 +52,7 @@ pub struct NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
     pub audio_clock: Option<NativeVulkanAudioClockRuntimeSnapshot>,
     pub audio_master_clock_enabled: bool,
     pub audio_master_clock_start_ns: Option<u64>,
+    pub audio_video_sync: NativeVulkanReadyPrefixAudioVideoSyncSnapshot,
     pub decode_submit_backend: &'static str,
     pub command_submit_model: &'static str,
     pub present_backend: &'static str,
@@ -90,6 +91,35 @@ pub struct NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
     pub decoded_image_present_boundary: &'static str,
     pub ffmpeg_reference: &'static str,
     pub session: Option<NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NativeVulkanReadyPrefixAudioVideoSyncSnapshot {
+    pub route: &'static str,
+    pub model: &'static str,
+    pub enabled: bool,
+    pub ready: bool,
+    pub blocking_reason: Option<&'static str>,
+    pub max_allowed_drift_ns: u64,
+    pub drift_within_policy: bool,
+    pub requested_playback_clock_ns: u64,
+    pub audio_target_clock_ns: Option<u64>,
+    pub audio_covered_clock_ns: Option<u64>,
+    pub audio_video_target_drift_ns: i64,
+    pub audio_video_target_drift_abs_ns: u64,
+    pub audio_clock_coverage_ready: bool,
+    pub audio_output_quality_ready: bool,
+    pub audio_output_lifecycle_ready: bool,
+    pub audio_output_xrun_count: u64,
+    pub audio_master_clock_start_ns: Option<u64>,
+    pub audio_current_serial_start_clock_ns: Option<u64>,
+    pub video_present_sequence_ready: bool,
+    pub video_requested_frame_count: u32,
+    pub video_presented_frame_count: u32,
+    pub video_pts_monotonic: bool,
+    pub video_source_frame_pts_delta_min_ns: Option<u64>,
+    pub video_source_frame_pts_delta_max_ns: Option<u64>,
+    pub present_pacing_clock_model: &'static str,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -332,6 +362,17 @@ pub fn run_vulkanalia_ready_prefix_video(
         || av1_retained_video_present_decode
             .as_ref()
             .is_some_and(|snapshot| snapshot.decoded_image_zero_copy_presented);
+    let audio_video_present_sequence = native_vulkan_ready_prefix_present_sequence(
+        h264_retained_video_present_decode.as_ref(),
+        h265_retained_video_present_decode.as_ref(),
+        av1_retained_video_present_decode.as_ref(),
+    );
+    let audio_video_sync = native_vulkan_ready_prefix_audio_video_sync_snapshot(
+        audio_clock.as_ref(),
+        audio_video_present_sequence,
+        playback_frame_count,
+        options.target_max_fps,
+    );
     let present_runtime_requested = !decoded_image_zero_copy_presented;
     let (present_runtime, present_runtime_error) = if present_runtime_requested {
         let present_runtime =
@@ -372,6 +413,7 @@ pub fn run_vulkanalia_ready_prefix_video(
         audio_clock,
         audio_master_clock_enabled,
         audio_master_clock_start_ns,
+        audio_video_sync,
         decode_submit_backend: "vulkanalia-video-session-bind",
         command_submit_model: "CmdPipelineBarrier2 -> CmdBeginVideoCodingKHR -> CmdDecodeVideoKHR -> CmdEndVideoCodingKHR -> QueueSubmit2",
         present_backend,
@@ -446,6 +488,150 @@ fn duration_ns_u64(duration: Duration) -> u64 {
 
 fn native_vulkan_vulkanalia_streaming_packet_queue_capacity() -> usize {
     NATIVE_VULKAN_PACKET_HANDOFF_FRAMES
+}
+
+fn native_vulkan_ready_prefix_present_sequence<'a>(
+    h264: Option<&'a NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot>,
+    h265: Option<&'a NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot>,
+    av1: Option<&'a NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeSnapshot>,
+) -> Option<&'a NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot> {
+    h264.and_then(|snapshot| snapshot.decoded_image_present_sequence.as_ref())
+        .or_else(|| h265.and_then(|snapshot| snapshot.decoded_image_present_sequence.as_ref()))
+        .or_else(|| av1.and_then(|snapshot| snapshot.decoded_image_present_sequence.as_ref()))
+}
+
+fn native_vulkan_ready_prefix_audio_video_sync_snapshot(
+    audio: Option<&NativeVulkanAudioClockRuntimeSnapshot>,
+    sequence: Option<&NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot>,
+    playback_frame_count: u32,
+    target_max_fps: Option<u32>,
+) -> NativeVulkanReadyPrefixAudioVideoSyncSnapshot {
+    const MAX_ALLOWED_DRIFT_NS: u64 = 100_000_000;
+
+    let requested_playback_clock_ns = duration_ns_u64(
+        native_vulkan_vulkanalia_visible_present_duration(playback_frame_count, target_max_fps),
+    )
+    .max(1);
+    let audio_clock_coverage_ready = audio.is_some_and(|audio| {
+        audio.playback_target_reached
+            && audio.playback_coverage_percent >= 100
+            && audio.playback_target_clock_ns.is_some()
+            && audio.playback_covered_clock_ns.is_some()
+            && audio.video_master_clock_ready
+    });
+    let audio_output_quality_ready = audio.is_some_and(|audio| match audio.output_mode {
+        "auto" => {
+            audio.audio_output_backend == "pipewire-s16le"
+                && audio.audible_output_started
+                && audio.audio_output_write_calls > 0
+                && audio.audio_output_write_waits > 0
+                && audio.audio_output_process_callbacks > 0
+                && audio.audio_output_xrun_count == 0
+                && audio.audio_output_stream_ready
+        }
+        "clock-only" => {
+            audio.audio_output_backend == "none"
+                && audio.audio_output_write_calls == 0
+                && audio.audio_output_write_waits == 0
+                && audio.audio_output_process_callbacks == 0
+                && audio.audio_output_xrun_count == 0
+                && !audio.audio_output_stream_ready
+        }
+        _ => false,
+    });
+    let audio_output_lifecycle_ready = audio.is_some_and(|audio| match audio.output_mode {
+        "auto" => {
+            audio.audio_output_state_changes > 0
+                && audio.audio_output_ready_state_changes > 0
+                && matches!(audio.audio_output_stream_state, "paused" | "streaming")
+        }
+        "clock-only" => {
+            audio.audio_output_state_changes == 0
+                && audio.audio_output_ready_state_changes == 0
+                && audio.audio_output_stream_state == "unconnected"
+        }
+        _ => false,
+    });
+    let video_present_sequence_ready = sequence.is_some_and(|sequence| {
+        sequence.presented_frame_count == sequence.requested_present_frame_count
+            && sequence.presented_frame_count == playback_frame_count
+            && sequence.pts_monotonic
+            && sequence.display_order_monotonic
+            && sequence.all_zero_copy_presented
+    });
+    let audio_covered_clock_ns = audio.and_then(|audio| audio.playback_covered_clock_ns);
+    let audio_video_target_drift_ns = native_vulkan_audio_video_signed_delta_ns(
+        audio_covered_clock_ns,
+        requested_playback_clock_ns,
+    );
+    let audio_video_target_drift_abs_ns = audio_video_target_drift_ns.unsigned_abs();
+    let drift_within_policy = audio_video_target_drift_abs_ns <= MAX_ALLOWED_DRIFT_NS;
+    let enabled = audio.is_some();
+    let ready = enabled
+        && audio_clock_coverage_ready
+        && audio_output_quality_ready
+        && audio_output_lifecycle_ready
+        && video_present_sequence_ready
+        && drift_within_policy;
+    let blocking_reason = if ready {
+        None
+    } else if audio.is_none() {
+        Some("audio-runtime-not-attached")
+    } else if !audio_clock_coverage_ready {
+        Some("audio-clock-coverage-incomplete")
+    } else if !audio_output_quality_ready {
+        Some("audio-output-quality-gate-failed")
+    } else if !audio_output_lifecycle_ready {
+        Some("audio-output-lifecycle-gate-failed")
+    } else if !video_present_sequence_ready {
+        Some("video-present-sequence-incomplete")
+    } else {
+        Some("audio-video-drift-outside-policy")
+    };
+    NativeVulkanReadyPrefixAudioVideoSyncSnapshot {
+        route: "ready-prefix-audio-video-sync",
+        model: "PipeWire audio runtime coverage plus decoded-image present sequence PTS/pacing evidence",
+        enabled,
+        ready,
+        blocking_reason,
+        max_allowed_drift_ns: MAX_ALLOWED_DRIFT_NS,
+        drift_within_policy,
+        requested_playback_clock_ns,
+        audio_target_clock_ns: audio.and_then(|audio| audio.playback_target_clock_ns),
+        audio_covered_clock_ns,
+        audio_video_target_drift_ns,
+        audio_video_target_drift_abs_ns,
+        audio_clock_coverage_ready,
+        audio_output_quality_ready,
+        audio_output_lifecycle_ready,
+        audio_output_xrun_count: audio.map_or(0, |audio| audio.audio_output_xrun_count),
+        audio_master_clock_start_ns: audio.and_then(|audio| audio.video_master_start_clock_ns),
+        audio_current_serial_start_clock_ns: audio
+            .and_then(|audio| audio.current_serial_start_clock_ns),
+        video_present_sequence_ready,
+        video_requested_frame_count: sequence
+            .map_or(0, |sequence| sequence.requested_present_frame_count),
+        video_presented_frame_count: sequence.map_or(0, |sequence| sequence.presented_frame_count),
+        video_pts_monotonic: sequence.is_some_and(|sequence| sequence.pts_monotonic),
+        video_source_frame_pts_delta_min_ns: sequence
+            .and_then(|sequence| sequence.source_frame_pts_delta_min_ns),
+        video_source_frame_pts_delta_max_ns: sequence
+            .and_then(|sequence| sequence.source_frame_pts_delta_max_ns),
+        present_pacing_clock_model: sequence
+            .and_then(|sequence| sequence.latest_draw.as_ref())
+            .map_or("none", |draw| draw.pacing_clock_model),
+    }
+}
+
+fn native_vulkan_audio_video_signed_delta_ns(
+    audio_clock_ns: Option<u64>,
+    video_clock_ns: u64,
+) -> i64 {
+    let Some(audio_clock_ns) = audio_clock_ns else {
+        return i64::MAX;
+    };
+    let delta = i128::from(audio_clock_ns) - i128::from(video_clock_ns);
+    delta.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
 }
 
 #[cfg(test)]

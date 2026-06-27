@@ -777,12 +777,24 @@ audio_output_write_waits="$(jq -r '(.audio_clock.audio_output_write_waits // 0)'
 audio_output_process_callbacks="$(jq -r '(.audio_clock.audio_output_process_callbacks // 0)' "$runtime_json")"
 audio_output_buffer_errors="$(jq -r '(.audio_clock.audio_output_buffer_errors // 0)' "$runtime_json")"
 audio_output_timeout_errors="$(jq -r '(.audio_clock.audio_output_timeout_errors // 0)' "$runtime_json")"
+audio_output_xrun_count="$(jq -r '(.audio_clock.audio_output_xrun_count // 0)' "$runtime_json")"
+audio_output_state_changes="$(jq -r '(.audio_clock.audio_output_state_changes // 0)' "$runtime_json")"
+audio_output_ready_state_changes="$(jq -r '(.audio_clock.audio_output_ready_state_changes // 0)' "$runtime_json")"
+audio_output_stream_state="$(jq -r '(.audio_clock.audio_output_stream_state // "none")' "$runtime_json")"
 audio_output_stream_ready="$(jq -r '(.audio_clock.audio_output_stream_ready // false)' "$runtime_json")"
+audio_output_lifecycle_model="$(jq -r '(.audio_clock.audio_output_lifecycle_model // "none")' "$runtime_json")"
+audio_output_latency_policy="$(jq -r '(.audio_clock.audio_output_latency_policy // "none")' "$runtime_json")"
 audio_playback_runtime_model="$(jq -r '(.audio_clock.playback_runtime_model // "none")' "$runtime_json")"
 audio_playback_target_clock_ns="$(jq -r '(.audio_clock.playback_target_clock_ns // "none")' "$runtime_json")"
 audio_playback_covered_clock_ns="$(jq -r '(.audio_clock.playback_covered_clock_ns // "none")' "$runtime_json")"
 audio_playback_coverage_percent="$(jq -r '(.audio_clock.playback_coverage_percent // 0)' "$runtime_json")"
 audio_playback_target_reached="$(jq -r '(.audio_clock.playback_target_reached // false)' "$runtime_json")"
+audio_video_sync_ready="$(jq -r '(.audio_video_sync.ready // false)' "$runtime_json")"
+audio_video_sync_blocking_reason="$(jq -r '(.audio_video_sync.blocking_reason // "none")' "$runtime_json")"
+audio_video_sync_drift_abs_ns="$(jq -r '(.audio_video_sync.audio_video_target_drift_abs_ns // 0)' "$runtime_json")"
+audio_video_sync_max_allowed_drift_ns="$(jq -r '(.audio_video_sync.max_allowed_drift_ns // 0)' "$runtime_json")"
+audio_video_sync_presented_frames="$(jq -r '(.audio_video_sync.video_presented_frame_count // 0)' "$runtime_json")"
+audio_video_sync_pacing_clock_model="$(jq -r '(.audio_video_sync.present_pacing_clock_model // "none")' "$runtime_json")"
 if [[ "$audio_output" == "plan" ]]; then
   if [[ "$plan_muted" -eq 1 ]]; then
     expected_audio_output_mode="clock-only"
@@ -887,16 +899,16 @@ audio_loop_probe_expected=0
 if [[ "$audio_clock_probe" -eq 1 && "$generated_source" -eq 1 && "$expected_frames" -gt "$decode_prefix" ]]; then
   audio_loop_probe_expected=1
 fi
-if [[ "$audio_clock_probe" -eq 1 && ( "$audio_clock_probe_present" != "true" || "$audio_reached_clocked_playback" != "true" || "$audio_no_video_decoder_instantiated" != "true" || "$audio_playback_started" != "true" || "$audio_playback_target_reached" != "true" || "$audio_playback_coverage_percent" -lt 100 || "$audio_playback_target_clock_ns" == "none" || "$audio_playback_covered_clock_ns" == "none" || "$audio_buffer_count" -le 0 || "$audio_decoded_frames" -le 0 || "$audio_decoded_samples" -le 0 || "$audio_sample_rate" == "none" || "$audio_channels" == "none" || "$audio_position_query_count" -le 0 || "$audio_position_query_hit_count" -le 0 || "$audio_sampled_video_frame_count" -le 0 || "$audio_master_clock_estimate_ns" == "none" || "$audio_video_master_clock_drift_latest_ns" == "none" || "$audio_loop_seek_error_count" -ne 0 ) ]]; then
+if [[ "$audio_clock_probe" -eq 1 && ( "$audio_clock_probe_present" != "true" || "$audio_reached_clocked_playback" != "true" || "$audio_no_video_decoder_instantiated" != "true" || "$audio_playback_started" != "true" || "$audio_playback_target_reached" != "true" || "$audio_playback_coverage_percent" -lt 100 || "$audio_playback_target_clock_ns" == "none" || "$audio_playback_covered_clock_ns" == "none" || "$audio_video_sync_ready" != "true" || "$audio_video_sync_drift_abs_ns" -gt "$audio_video_sync_max_allowed_drift_ns" || "$audio_video_sync_presented_frames" -ne "$requested_playback_count" || "$audio_buffer_count" -le 0 || "$audio_decoded_frames" -le 0 || "$audio_decoded_samples" -le 0 || "$audio_sample_rate" == "none" || "$audio_channels" == "none" || "$audio_position_query_count" -le 0 || "$audio_position_query_hit_count" -le 0 || "$audio_sampled_video_frame_count" -le 0 || "$audio_master_clock_estimate_ns" == "none" || "$audio_video_master_clock_drift_latest_ns" == "none" || "$audio_loop_seek_error_count" -ne 0 ) ]]; then
   audio_clock_gate_failed=1
 fi
 if [[ "$audio_clock_probe" -eq 1 && "$audio_output_mode" != "$expected_audio_output_mode" ]]; then
   audio_clock_gate_failed=1
 fi
-if [[ "$expected_audio_output_mode" == "auto" && ( "$audio_output_backend" != "pipewire-s16le" || "$audio_output_sink_count" -le 0 || "$audio_output_samples" -le 0 || "$audio_output_bytes" -le 0 || "$audio_output_sample_rate" == "none" || "$audio_output_channels" == "none" || "$audio_output_write_calls" -le 0 || "$audio_output_write_waits" -le 0 || "$audio_output_process_callbacks" -le 0 || "$audio_output_buffer_errors" -ne 0 || "$audio_output_timeout_errors" -ne 0 || "$audio_output_stream_ready" != "true" ) ]]; then
+if [[ "$expected_audio_output_mode" == "auto" && ( "$audio_output_backend" != "pipewire-s16le" || "$audio_output_sink_count" -le 0 || "$audio_output_samples" -le 0 || "$audio_output_bytes" -le 0 || "$audio_output_sample_rate" == "none" || "$audio_output_channels" == "none" || "$audio_output_write_calls" -le 0 || "$audio_output_write_waits" -le 0 || "$audio_output_process_callbacks" -le 0 || "$audio_output_buffer_errors" -ne 0 || "$audio_output_timeout_errors" -ne 0 || "$audio_output_xrun_count" -ne 0 || "$audio_output_state_changes" -le 0 || "$audio_output_ready_state_changes" -le 0 || ( "$audio_output_stream_state" != "paused" && "$audio_output_stream_state" != "streaming" ) || "$audio_output_stream_ready" != "true" || "$audio_output_lifecycle_model" == "none" || "$audio_output_latency_policy" == "none" ) ]]; then
   audio_clock_gate_failed=1
 fi
-if [[ "$expected_audio_output_mode" == "clock-only" && ( "$audio_output_backend" != "none" || "$audio_output_sink_count" -ne 0 || "$audio_output_samples" -ne 0 || "$audio_output_bytes" -ne 0 || "$audio_output_write_calls" -ne 0 || "$audio_output_write_waits" -ne 0 || "$audio_output_process_callbacks" -ne 0 || "$audio_output_buffer_errors" -ne 0 || "$audio_output_timeout_errors" -ne 0 || "$audio_output_stream_ready" != "false" ) ]]; then
+if [[ "$expected_audio_output_mode" == "clock-only" && ( "$audio_output_backend" != "none" || "$audio_output_sink_count" -ne 0 || "$audio_output_samples" -ne 0 || "$audio_output_bytes" -ne 0 || "$audio_output_write_calls" -ne 0 || "$audio_output_write_waits" -ne 0 || "$audio_output_process_callbacks" -ne 0 || "$audio_output_buffer_errors" -ne 0 || "$audio_output_timeout_errors" -ne 0 || "$audio_output_xrun_count" -ne 0 || "$audio_output_state_changes" -ne 0 || "$audio_output_ready_state_changes" -ne 0 || "$audio_output_stream_state" != "unconnected" || "$audio_output_stream_ready" != "false" ) ]]; then
   audio_clock_gate_failed=1
 fi
 audio_loop_serial_gate_failed=0
@@ -960,12 +972,24 @@ if [[ "$decoded_count" -ne "$expected_decoded_count" || "$presented_count" -ne "
     printf 'audio_output_process_callbacks: %s\n' "$audio_output_process_callbacks"
     printf 'audio_output_buffer_errors: %s\n' "$audio_output_buffer_errors"
     printf 'audio_output_timeout_errors: %s\n' "$audio_output_timeout_errors"
+    printf 'audio_output_xrun_count: %s\n' "$audio_output_xrun_count"
+    printf 'audio_output_state_changes: %s\n' "$audio_output_state_changes"
+    printf 'audio_output_ready_state_changes: %s\n' "$audio_output_ready_state_changes"
+    printf 'audio_output_stream_state: %s\n' "$audio_output_stream_state"
     printf 'audio_output_stream_ready: %s\n' "$audio_output_stream_ready"
+    printf 'audio_output_lifecycle_model: %s\n' "$audio_output_lifecycle_model"
+    printf 'audio_output_latency_policy: %s\n' "$audio_output_latency_policy"
     printf 'audio_playback_runtime_model: %s\n' "$audio_playback_runtime_model"
     printf 'audio_playback_target_clock_ns: %s\n' "$audio_playback_target_clock_ns"
     printf 'audio_playback_covered_clock_ns: %s\n' "$audio_playback_covered_clock_ns"
     printf 'audio_playback_coverage_percent: %s\n' "$audio_playback_coverage_percent"
     printf 'audio_playback_target_reached: %s\n' "$audio_playback_target_reached"
+    printf 'audio_video_sync_ready: %s\n' "$audio_video_sync_ready"
+    printf 'audio_video_sync_blocking_reason: %s\n' "$audio_video_sync_blocking_reason"
+    printf 'audio_video_sync_drift_abs_ns: %s\n' "$audio_video_sync_drift_abs_ns"
+    printf 'audio_video_sync_max_allowed_drift_ns: %s\n' "$audio_video_sync_max_allowed_drift_ns"
+    printf 'audio_video_sync_presented_frames: %s\n' "$audio_video_sync_presented_frames"
+    printf 'audio_video_sync_pacing_clock_model: %s\n' "$audio_video_sync_pacing_clock_model"
     printf 'audio_clock_gate_failed: %s\n' "$audio_clock_gate_failed"
     printf 'audio_loop_probe_expected: %s\n' "$audio_loop_probe_expected"
     printf 'audio_loop_serial_gate_failed: %s\n' "$audio_loop_serial_gate_failed"
@@ -1203,12 +1227,24 @@ fi
   printf 'audio_output_process_callbacks: %s\n' "$audio_output_process_callbacks"
   printf 'audio_output_buffer_errors: %s\n' "$audio_output_buffer_errors"
   printf 'audio_output_timeout_errors: %s\n' "$audio_output_timeout_errors"
+  printf 'audio_output_xrun_count: %s\n' "$audio_output_xrun_count"
+  printf 'audio_output_state_changes: %s\n' "$audio_output_state_changes"
+  printf 'audio_output_ready_state_changes: %s\n' "$audio_output_ready_state_changes"
+  printf 'audio_output_stream_state: %s\n' "$audio_output_stream_state"
   printf 'audio_output_stream_ready: %s\n' "$audio_output_stream_ready"
+  printf 'audio_output_lifecycle_model: %s\n' "$audio_output_lifecycle_model"
+  printf 'audio_output_latency_policy: %s\n' "$audio_output_latency_policy"
   printf 'audio_playback_runtime_model: %s\n' "$audio_playback_runtime_model"
   printf 'audio_playback_target_clock_ns: %s\n' "$audio_playback_target_clock_ns"
   printf 'audio_playback_covered_clock_ns: %s\n' "$audio_playback_covered_clock_ns"
   printf 'audio_playback_coverage_percent: %s\n' "$audio_playback_coverage_percent"
   printf 'audio_playback_target_reached: %s\n' "$audio_playback_target_reached"
+  printf 'audio_video_sync_ready: %s\n' "$audio_video_sync_ready"
+  printf 'audio_video_sync_blocking_reason: %s\n' "$audio_video_sync_blocking_reason"
+  printf 'audio_video_sync_drift_abs_ns: %s\n' "$audio_video_sync_drift_abs_ns"
+  printf 'audio_video_sync_max_allowed_drift_ns: %s\n' "$audio_video_sync_max_allowed_drift_ns"
+  printf 'audio_video_sync_presented_frames: %s\n' "$audio_video_sync_presented_frames"
+  printf 'audio_video_sync_pacing_clock_model: %s\n' "$audio_video_sync_pacing_clock_model"
   printf 'audio_loop_probe_expected: %s\n' "$audio_loop_probe_expected"
   printf 'audio_loop_serial_gate_failed: %s\n' "$audio_loop_serial_gate_failed"
   printf 'audio_reached_clocked_playback: %s\n' "$audio_reached_clocked_playback"

@@ -28,9 +28,18 @@ use super::lite_runtime::{
     rename_all = "kebab-case"
 )]
 pub enum NativeVulkanSceneLitePresentSnapshot {
-    Clear(NativeVulkanVulkanaliaClearPresentSnapshot),
-    SolidQuad(NativeVulkanVulkanaliaSceneLiteSolidQuadPresentSnapshot),
-    SampledImage(NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot),
+    Clear {
+        runtime: NativeVulkanSceneLiteRuntimeSnapshot,
+        present: NativeVulkanVulkanaliaClearPresentSnapshot,
+    },
+    SolidQuad {
+        runtime: NativeVulkanSceneLiteRuntimeSnapshot,
+        present: NativeVulkanVulkanaliaSceneLiteSolidQuadPresentSnapshot,
+    },
+    SampledImage {
+        runtime: NativeVulkanSceneLiteRuntimeSnapshot,
+        present: NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +76,8 @@ pub fn run_scene_lite(
                     )
                 })?;
             options.clear_color = color;
-            run_clear(options, duration).map(NativeVulkanSceneLitePresentSnapshot::Clear)
+            run_clear(options, duration)
+                .map(|present| NativeVulkanSceneLitePresentSnapshot::Clear { runtime, present })
         }
         NativeVulkanSceneLitePresentRouteKind::SolidQuad => {
             let geometry = runtime
@@ -89,7 +99,7 @@ pub fn run_scene_lite(
                     geometry: Some(geometry),
                 },
             )
-            .map(NativeVulkanSceneLitePresentSnapshot::SolidQuad)
+            .map(|present| NativeVulkanSceneLitePresentSnapshot::SolidQuad { runtime, present })
             .map_err(NativeVulkanError::SceneLite)
         }
         NativeVulkanSceneLitePresentRouteKind::SampledImage => {
@@ -122,7 +132,7 @@ pub fn run_scene_lite(
                     geometry,
                 },
             )
-            .map(NativeVulkanSceneLitePresentSnapshot::SampledImage)
+            .map(|present| NativeVulkanSceneLitePresentSnapshot::SampledImage { runtime, present })
             .map_err(NativeVulkanError::SceneLite)
         }
     }

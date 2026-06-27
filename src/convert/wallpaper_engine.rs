@@ -2478,9 +2478,8 @@ impl FullSceneConversionStatus {
         Self {
             target_runtime: "native-vulkan-full-scene".to_owned(),
             current_runtime: "scene-lite-subset".to_owned(),
-            progress_estimate_percent: 22,
-            execution_model: "original scene metadata preserved; full scene runtime not executed"
-                .to_owned(),
+            progress_estimate_percent: 36,
+            execution_model: "original scene metadata preserved; native Vulkan full-scene boundaries now lower layer order, retained sampled-image resources, time-sampled scene state, and explicit unsupported Wallpaper Engine systems without legacy fallback".to_owned(),
             source_scene_metadata: Vec::new(),
             completed_boundaries: vec![
                 "package-scene-detection".to_owned(),
@@ -2488,6 +2487,9 @@ impl FullSceneConversionStatus {
                 "scene-lite-fallback-graph".to_owned(),
                 "native-vulkan-sampled-image-scene-path".to_owned(),
                 "descriptor-heap-sampled-image-resources".to_owned(),
+                "native-vulkan-full-scene-runtime-status".to_owned(),
+                "time-sampled-scene-state".to_owned(),
+                "solid-vector-shape-quad-geometry".to_owned(),
                 "scene-video-layer-bridge-detection".to_owned(),
             ],
             pending_boundaries: vec![
@@ -3218,7 +3220,7 @@ void main() {}
         let full_scene = report.full_scene.as_ref().expect("full scene status");
         assert_eq!(full_scene.target_runtime, "native-vulkan-full-scene");
         assert_eq!(full_scene.current_runtime, "scene-lite-subset");
-        assert_eq!(full_scene.progress_estimate_percent, 22);
+        assert_eq!(full_scene.progress_estimate_percent, 36);
         assert!(
             full_scene
                 .source_scene_metadata
@@ -3228,6 +3230,11 @@ void main() {}
             full_scene
                 .completed_boundaries
                 .contains(&"descriptor-heap-sampled-image-resources".to_owned())
+        );
+        assert!(
+            full_scene
+                .completed_boundaries
+                .contains(&"native-vulkan-full-scene-runtime-status".to_owned())
         );
         assert!(
             full_scene

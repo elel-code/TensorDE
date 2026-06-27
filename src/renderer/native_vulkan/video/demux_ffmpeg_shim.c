@@ -44,6 +44,8 @@ typedef struct GilderAudioOutput {
     int64_t process_callback_count;
     int64_t buffer_error_count;
     int64_t timeout_error_count;
+    int64_t state_change_count;
+    int64_t ready_state_change_count;
 } GilderAudioOutput;
 
 static int gilder_pipewire_initialized = 0;
@@ -283,6 +285,9 @@ static void gilder_audio_output_on_state_changed(
     (void)error;
     GilderAudioOutput *out = data;
     out->stream_state = state;
+    out->state_change_count++;
+    if (gilder_audio_output_stream_ready(out))
+        out->ready_state_change_count++;
     if (state == PW_STREAM_STATE_ERROR)
         out->stream_error = errno != 0 ? AVERROR(errno) : AVERROR(EPIPE);
     pw_thread_loop_signal(out->loop, false);
@@ -593,7 +598,10 @@ int gilder_audio_output_write_frame(
     int64_t *process_callbacks,
     int64_t *buffer_errors,
     int64_t *timeout_errors,
-    int *stream_ready
+    int *stream_ready,
+    int64_t *state_changes,
+    int64_t *ready_state_changes,
+    int *stream_state
 ) {
     if (!out || !codec_ctx || !frame)
         return AVERROR(EINVAL);
@@ -662,6 +670,12 @@ int gilder_audio_output_write_frame(
         *timeout_errors = out->timeout_error_count;
     if (stream_ready)
         *stream_ready = gilder_audio_output_stream_ready(out) ? 1 : 0;
+    if (state_changes)
+        *state_changes = out->state_change_count;
+    if (ready_state_changes)
+        *ready_state_changes = out->ready_state_change_count;
+    if (stream_state)
+        *stream_state = (int)out->stream_state;
     av_freep(&dst_data[0]);
     av_freep(&dst_data);
     if (ret < 0)

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use crate::core::{FitMode, SceneLiteTextAlign, SceneLiteTransform};
 
 use super::super::present::render_item::NativeVulkanRenderItem;
+use super::super::present::render_plan::NativeVulkanSceneLiteDrawPlan;
 use super::super::present::render_plan::native_vulkan_scene_lite_draw_plan;
 use super::super::vulkan::{
     NativeVulkanVulkanaliaSceneLiteDrawPassInput, NativeVulkanVulkanaliaSceneLiteDrawPassSnapshot,
@@ -23,6 +24,7 @@ use super::lite_draw_pass::native_vulkan_scene_lite_draw_pass_plan;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneLiteRuntimeSnapshot {
     pub snapshot_time_ms: u64,
+    pub full_scene: NativeVulkanFullSceneRuntimeSnapshot,
     pub scene_input_model: &'static str,
     pub scene_resource_model: &'static str,
     pub native_draw_ready: bool,
@@ -72,6 +74,36 @@ pub struct NativeVulkanSceneLiteRuntimeSnapshot {
     pub unsupported_layer_count: usize,
     pub draw_ops: Vec<NativeVulkanSceneLiteDrawOpSnapshot>,
     pub unsupported_layers: Vec<NativeVulkanSceneLiteUnsupportedLayerSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanFullSceneRuntimeSnapshot {
+    pub target_runtime: &'static str,
+    pub current_runtime: &'static str,
+    pub progress_estimate_percent: u8,
+    pub full_scene_complete: bool,
+    pub execution_model: &'static str,
+    pub native_scene_graph_lowering_ready: bool,
+    pub native_present_route_ready: bool,
+    pub retained_resource_model_ready: bool,
+    pub timeline_snapshot_runtime_ready: bool,
+    pub timeline_snapshot_time_ms: u64,
+    pub source_layer_count: usize,
+    pub flattened_draw_layer_count: usize,
+    pub unsupported_layer_count: usize,
+    pub color_layer_count: usize,
+    pub sampled_image_layer_count: usize,
+    pub video_layer_count: usize,
+    pub vector_shape_layer_count: usize,
+    pub text_layer_count: usize,
+    pub path_layer_count: usize,
+    pub property_binding_count: usize,
+    pub scene_audio_response_ready: bool,
+    pub scene_video_composition_ready: bool,
+    pub scene_text_atlas_ready: bool,
+    pub scene_path_tessellation_ready: bool,
+    pub completed_boundaries: Vec<&'static str>,
+    pub pending_boundaries: Vec<&'static str>,
 }
 
 impl NativeVulkanSceneLiteRuntimeSnapshot {
@@ -374,8 +406,16 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snaps
     let scene_sampled_image_resource_count = vulkanalia_sampled_image.resource_count;
     let scene_sampled_image_descriptor_heap_required = scene_sampled_image_resource_count > 0;
     let scene_video_layer_resource_count = pass_plan.required_video_resources.len();
+    let full_scene = native_vulkan_full_scene_runtime_snapshot(
+        render_item,
+        &plan,
+        &pass_plan,
+        scene_resource_model,
+        scene_sampled_image_descriptor_heap_required,
+    );
     Some(NativeVulkanSceneLiteRuntimeSnapshot {
         snapshot_time_ms: plan.snapshot_time_ms,
+        full_scene,
         scene_input_model: "core scene-lite snapshot layers; groups must be flattened before native Vulkan planning",
         scene_resource_model,
         native_draw_ready: plan.native_draw_ready(),
@@ -537,6 +577,104 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snaps
             })
             .collect(),
     })
+}
+
+fn native_vulkan_full_scene_runtime_snapshot(
+    render_item: &NativeVulkanRenderItem,
+    plan: &NativeVulkanSceneLiteDrawPlan,
+    pass_plan: &super::lite_draw_pass::NativeVulkanSceneLiteDrawPassPlan,
+    scene_resource_model: &'static str,
+    scene_sampled_image_descriptor_heap_required: bool,
+) -> NativeVulkanFullSceneRuntimeSnapshot {
+    let (source_layer_count, property_binding_count) = match render_item {
+        NativeVulkanRenderItem::SceneLite {
+            layer_count,
+            bound_properties,
+            ..
+        } => (*layer_count, bound_properties.len()),
+        _ => (0, 0),
+    };
+    let retained_resource_model_ready = matches!(
+        scene_resource_model,
+        "fast-clear-only-no-scene-resources"
+            | "retained-solid-quad-geometry"
+            | "retained-sampled-images-descriptor-heap"
+            | "retained-solid-quad-geometry-and-sampled-images-descriptor-heap"
+    ) || scene_sampled_image_descriptor_heap_required;
+    let timeline_snapshot_runtime_ready = plan.snapshot_time_ms > 0;
+    let scene_video_composition_ready =
+        pass_plan.video_op_count == 0 && !pass_plan.requires_video_decode;
+    let scene_text_atlas_ready = pass_plan.text_op_count == 0 && !pass_plan.requires_text_atlas;
+    let scene_path_tessellation_ready =
+        pass_plan.path_op_count == 0 && !pass_plan.requires_path_tessellation;
+    let mut completed_boundaries = vec![
+        "scene-package-to-core-layer-snapshot",
+        "flattened-layer-ordering",
+        "native-vulkan-draw-plan",
+        "dynamic-rendering-present-route-selection",
+        "synchronization2-submit2-scene-submit-model",
+    ];
+    if retained_resource_model_ready {
+        completed_boundaries.push("retained-scene-resource-model");
+    }
+    if scene_sampled_image_descriptor_heap_required {
+        completed_boundaries.push("descriptor-heap-sampled-image-scene-resources");
+    }
+    if timeline_snapshot_runtime_ready {
+        completed_boundaries.push("time-sampled-scene-state");
+    }
+    if pass_plan.vector_shape_op_count > 0 && !pass_plan.requires_path_tessellation {
+        completed_boundaries.push("solid-vector-shape-quad-geometry");
+    }
+
+    let mut pending_boundaries = Vec::new();
+    if pass_plan.video_op_count > 0 {
+        pending_boundaries.push("video-as-scene-composition");
+    }
+    if pass_plan.text_op_count > 0 || pass_plan.requires_text_atlas {
+        pending_boundaries.push("text-atlas-gpu-rasterization");
+    }
+    if pass_plan.path_op_count > 0 && pass_plan.requires_path_tessellation {
+        pending_boundaries.push("path-tessellation-runtime");
+    }
+    pending_boundaries.extend([
+        "full-wallpaper-engine-scene-graph",
+        "scenescript-runtime",
+        "shader-material-graph",
+        "particle-systems",
+        "parallax-camera-model",
+        "pipewire-audio-response-runtime",
+        "package-state-persistence",
+    ]);
+
+    NativeVulkanFullSceneRuntimeSnapshot {
+        target_runtime: "native-vulkan-full-scene",
+        current_runtime: "native-vulkan-scene-runtime-subset",
+        progress_estimate_percent: 36,
+        full_scene_complete: false,
+        execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
+        native_scene_graph_lowering_ready: plan.native_draw_ready(),
+        native_present_route_ready: pass_plan.backend_ready,
+        retained_resource_model_ready,
+        timeline_snapshot_runtime_ready,
+        timeline_snapshot_time_ms: plan.snapshot_time_ms,
+        source_layer_count,
+        flattened_draw_layer_count: plan.draw_ops.len(),
+        unsupported_layer_count: plan.unsupported_layers.len(),
+        color_layer_count: pass_plan.color_op_count,
+        sampled_image_layer_count: pass_plan.sampled_image_op_count,
+        video_layer_count: pass_plan.video_op_count,
+        vector_shape_layer_count: pass_plan.vector_shape_op_count,
+        text_layer_count: pass_plan.text_op_count,
+        path_layer_count: pass_plan.path_op_count,
+        property_binding_count,
+        scene_audio_response_ready: false,
+        scene_video_composition_ready,
+        scene_text_atlas_ready,
+        scene_path_tessellation_ready,
+        completed_boundaries,
+        pending_boundaries,
+    }
 }
 
 fn native_vulkan_scene_lite_resource_model(
@@ -756,6 +894,62 @@ mod tests {
         assert_eq!(
             snapshot.draw_ops[0].source.as_deref(),
             Some(Path::new("/tmp/scene-video.mp4"))
+        );
+    }
+
+    #[test]
+    fn full_scene_runtime_snapshot_tracks_scene_scope_and_remaining_boundaries() {
+        let mut background = scene_lite_test_layer("background", SceneLiteLayerKind::Image);
+        background.source = Some(PathBuf::from("/tmp/background.png"));
+        let mut clip = scene_lite_test_layer("clip", SceneLiteLayerKind::Video);
+        clip.source = Some(PathBuf::from("/tmp/clip.mp4"));
+        let mut label = scene_lite_test_layer("label", SceneLiteLayerKind::Text);
+        label.text = Some("Now Playing".to_owned());
+        label.color = Some("#ffffff".to_owned());
+        let item = scene_lite_test_item(
+            vec![background, clip, label],
+            None,
+            Some(PathBuf::from("/tmp/fallback.png")),
+        );
+
+        let snapshot = native_vulkan_scene_lite_runtime_snapshot(&item).unwrap();
+
+        assert_eq!(
+            snapshot.full_scene.target_runtime,
+            "native-vulkan-full-scene"
+        );
+        assert_eq!(
+            snapshot.full_scene.current_runtime,
+            "native-vulkan-scene-runtime-subset"
+        );
+        assert_eq!(snapshot.full_scene.progress_estimate_percent, 36);
+        assert!(!snapshot.full_scene.full_scene_complete);
+        assert!(snapshot.full_scene.timeline_snapshot_runtime_ready);
+        assert_eq!(snapshot.full_scene.timeline_snapshot_time_ms, 1234);
+        assert_eq!(snapshot.full_scene.source_layer_count, 3);
+        assert_eq!(snapshot.full_scene.flattened_draw_layer_count, 3);
+        assert_eq!(snapshot.full_scene.sampled_image_layer_count, 1);
+        assert_eq!(snapshot.full_scene.video_layer_count, 1);
+        assert_eq!(snapshot.full_scene.text_layer_count, 1);
+        assert!(!snapshot.full_scene.scene_audio_response_ready);
+        assert!(!snapshot.full_scene.scene_video_composition_ready);
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"time-sampled-scene-state")
+        );
+        assert!(
+            snapshot
+                .full_scene
+                .pending_boundaries
+                .contains(&"video-as-scene-composition")
+        );
+        assert!(
+            snapshot
+                .full_scene
+                .pending_boundaries
+                .contains(&"pipewire-audio-response-runtime")
         );
     }
 

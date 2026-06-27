@@ -89,7 +89,13 @@ pub struct NativeVulkanAudioClockRuntimeSnapshot {
     pub audio_output_process_callbacks: u64,
     pub audio_output_buffer_errors: u64,
     pub audio_output_timeout_errors: u64,
+    pub audio_output_xrun_count: u64,
+    pub audio_output_state_changes: u64,
+    pub audio_output_ready_state_changes: u64,
+    pub audio_output_stream_state: &'static str,
     pub audio_output_stream_ready: bool,
+    pub audio_output_lifecycle_model: &'static str,
+    pub audio_output_latency_policy: &'static str,
     pub playback_runtime_model: &'static str,
     pub playback_target_clock_ns: Option<u64>,
     pub playback_covered_clock_ns: Option<u64>,
@@ -146,6 +152,9 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanAudioClockPacket {
     pub(in crate::renderer::native_vulkan) output_process_callbacks: u64,
     pub(in crate::renderer::native_vulkan) output_buffer_errors: u64,
     pub(in crate::renderer::native_vulkan) output_timeout_errors: u64,
+    pub(in crate::renderer::native_vulkan) output_state_changes: u64,
+    pub(in crate::renderer::native_vulkan) output_ready_state_changes: u64,
+    pub(in crate::renderer::native_vulkan) output_stream_state: i32,
     pub(in crate::renderer::native_vulkan) output_stream_ready: bool,
 }
 
@@ -311,6 +320,9 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanAudioClockRuntime {
     audio_output_process_callbacks: u64,
     audio_output_buffer_errors: u64,
     audio_output_timeout_errors: u64,
+    audio_output_state_changes: u64,
+    audio_output_ready_state_changes: u64,
+    audio_output_stream_state: i32,
     audio_output_stream_ready: bool,
     playback_target_clock_ns: Option<u64>,
     eos_count: u32,
@@ -352,6 +364,9 @@ impl NativeVulkanAudioClockRuntime {
             audio_output_process_callbacks: 0,
             audio_output_buffer_errors: 0,
             audio_output_timeout_errors: 0,
+            audio_output_state_changes: 0,
+            audio_output_ready_state_changes: 0,
+            audio_output_stream_state: 0,
             audio_output_stream_ready: false,
             playback_target_clock_ns: None,
             eos_count: 0,
@@ -443,6 +458,15 @@ impl NativeVulkanAudioClockRuntime {
         self.audio_output_timeout_errors = self
             .audio_output_timeout_errors
             .max(packet.output_timeout_errors);
+        self.audio_output_state_changes = self
+            .audio_output_state_changes
+            .max(packet.output_state_changes);
+        self.audio_output_ready_state_changes = self
+            .audio_output_ready_state_changes
+            .max(packet.output_ready_state_changes);
+        if packet.output_stream_state != 0 {
+            self.audio_output_stream_state = packet.output_stream_state;
+        }
         self.audio_output_stream_ready |= packet.output_stream_ready;
         if packet.serial > self.clock.current_serial {
             self.current_serial_start_clock_ns = None;
@@ -540,7 +564,27 @@ impl NativeVulkanAudioClockRuntime {
             audio_output_process_callbacks: self.audio_output_process_callbacks,
             audio_output_buffer_errors: self.audio_output_buffer_errors,
             audio_output_timeout_errors: self.audio_output_timeout_errors,
+            audio_output_xrun_count: self
+                .audio_output_buffer_errors
+                .saturating_add(self.audio_output_timeout_errors),
+            audio_output_state_changes: self.audio_output_state_changes,
+            audio_output_ready_state_changes: self.audio_output_ready_state_changes,
+            audio_output_stream_state: native_vulkan_pipewire_stream_state_label(
+                self.audio_output_stream_state,
+            ),
             audio_output_stream_ready: self.audio_output_stream_ready,
+            audio_output_lifecycle_model: match self.output_mode {
+                NativeVulkanAudioOutputMode::Auto => {
+                    "pipewire-thread-loop-stream-state-owned-by-audio-runtime"
+                }
+                NativeVulkanAudioOutputMode::ClockOnly => "clock-only-no-output-stream-lifecycle",
+            },
+            audio_output_latency_policy: match self.output_mode {
+                NativeVulkanAudioOutputMode::Auto => {
+                    "bounded-pipewire-write-wait-with-zero-buffer-timeout-error-gate"
+                }
+                NativeVulkanAudioOutputMode::ClockOnly => "clock-only-no-output-latency",
+            },
             playback_runtime_model: match self.output_mode {
                 NativeVulkanAudioOutputMode::Auto => "pipewire-duration-covered-runtime",
                 NativeVulkanAudioOutputMode::ClockOnly => "clock-only-duration-covered-runtime",
@@ -769,6 +813,9 @@ unsafe extern "C" {
         buffer_errors: *mut c_longlong,
         timeout_errors: *mut c_longlong,
         stream_ready: *mut c_int,
+        state_changes: *mut c_longlong,
+        ready_state_changes: *mut c_longlong,
+        stream_state: *mut c_int,
     ) -> c_int;
 }
 
@@ -853,6 +900,9 @@ impl NativeVulkanFfmpegAudioClockReader {
                     output_process_callbacks: decoded.output_process_callbacks,
                     output_buffer_errors: decoded.output_buffer_errors,
                     output_timeout_errors: decoded.output_timeout_errors,
+                    output_state_changes: decoded.output_state_changes,
+                    output_ready_state_changes: decoded.output_ready_state_changes,
+                    output_stream_state: decoded.output_stream_state,
                     output_stream_ready: decoded.output_stream_ready,
                 };
                 self.input_packet.unref();
@@ -903,6 +953,9 @@ struct NativeVulkanFfmpegAudioDecodedPacket {
     output_process_callbacks: u64,
     output_buffer_errors: u64,
     output_timeout_errors: u64,
+    output_state_changes: u64,
+    output_ready_state_changes: u64,
+    output_stream_state: i32,
     output_stream_ready: bool,
 }
 
@@ -1078,6 +1131,9 @@ impl NativeVulkanFfmpegAudioDecoder {
         let mut buffer_errors: c_longlong = 0;
         let mut timeout_errors: c_longlong = 0;
         let mut stream_ready: c_int = 0;
+        let mut state_changes: c_longlong = 0;
+        let mut ready_state_changes: c_longlong = 0;
+        let mut stream_state: c_int = 0;
         let ret = unsafe {
             gilder_audio_output_write_frame(
                 output.as_ptr(),
@@ -1093,6 +1149,9 @@ impl NativeVulkanFfmpegAudioDecoder {
                 &mut buffer_errors,
                 &mut timeout_errors,
                 &mut stream_ready,
+                &mut state_changes,
+                &mut ready_state_changes,
+                &mut stream_state,
             )
         };
         if ret < 0 {
@@ -1134,6 +1193,18 @@ impl NativeVulkanFfmpegAudioDecoder {
         decoded.output_timeout_errors = decoded
             .output_timeout_errors
             .max(native_vulkan_audio_positive_c_longlong_u64(timeout_errors));
+        decoded.output_state_changes = decoded
+            .output_state_changes
+            .max(native_vulkan_audio_positive_c_longlong_u64(state_changes));
+        decoded.output_ready_state_changes =
+            decoded
+                .output_ready_state_changes
+                .max(native_vulkan_audio_positive_c_longlong_u64(
+                    ready_state_changes,
+                ));
+        if stream_state != 0 {
+            decoded.output_stream_state = stream_state;
+        }
         decoded.output_stream_ready |= stream_ready != 0;
         Ok(())
     }
@@ -1246,6 +1317,17 @@ fn native_vulkan_audio_positive_c_longlong_u32(value: c_longlong) -> u32 {
 #[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_audio_positive_c_longlong_u64(value: c_longlong) -> u64 {
     if value <= 0 { 0 } else { value as u64 }
+}
+
+fn native_vulkan_pipewire_stream_state_label(state: i32) -> &'static str {
+    match state {
+        -1 => "error",
+        0 => "unconnected",
+        1 => "connecting",
+        2 => "paused",
+        3 => "streaming",
+        _ => "unknown",
+    }
 }
 
 #[cfg(feature = "native-vulkan-video")]
@@ -1455,7 +1537,19 @@ mod tests {
         assert_eq!(snapshot.audio_output_process_callbacks, 0);
         assert_eq!(snapshot.audio_output_buffer_errors, 0);
         assert_eq!(snapshot.audio_output_timeout_errors, 0);
+        assert_eq!(snapshot.audio_output_xrun_count, 0);
+        assert_eq!(snapshot.audio_output_state_changes, 0);
+        assert_eq!(snapshot.audio_output_ready_state_changes, 0);
+        assert_eq!(snapshot.audio_output_stream_state, "unconnected");
         assert!(!snapshot.audio_output_stream_ready);
+        assert_eq!(
+            snapshot.audio_output_lifecycle_model,
+            "clock-only-no-output-stream-lifecycle"
+        );
+        assert_eq!(
+            snapshot.audio_output_latency_policy,
+            "clock-only-no-output-latency"
+        );
         assert_eq!(snapshot.retained_payload_bytes, 0);
         assert_eq!(snapshot.retained_pcm_frame_bytes, 0);
         assert_eq!(snapshot.decoded_frames, 1);
@@ -1503,6 +1597,9 @@ mod tests {
                 output_process_callbacks: 1,
                 output_buffer_errors: 0,
                 output_timeout_errors: 0,
+                output_state_changes: 2,
+                output_ready_state_changes: 1,
+                output_stream_state: 3,
                 output_stream_ready: true,
             },
         );
@@ -1523,7 +1620,19 @@ mod tests {
         assert_eq!(snapshot.audio_output_process_callbacks, 1);
         assert_eq!(snapshot.audio_output_buffer_errors, 0);
         assert_eq!(snapshot.audio_output_timeout_errors, 0);
+        assert_eq!(snapshot.audio_output_xrun_count, 0);
+        assert_eq!(snapshot.audio_output_state_changes, 2);
+        assert_eq!(snapshot.audio_output_ready_state_changes, 1);
+        assert_eq!(snapshot.audio_output_stream_state, "streaming");
         assert!(snapshot.audio_output_stream_ready);
+        assert_eq!(
+            snapshot.audio_output_lifecycle_model,
+            "pipewire-thread-loop-stream-state-owned-by-audio-runtime"
+        );
+        assert_eq!(
+            snapshot.audio_output_latency_policy,
+            "bounded-pipewire-write-wait-with-zero-buffer-timeout-error-gate"
+        );
     }
 
     #[test]
@@ -1555,6 +1664,9 @@ mod tests {
                 output_process_callbacks: 1,
                 output_buffer_errors: 0,
                 output_timeout_errors: 0,
+                output_state_changes: 2,
+                output_ready_state_changes: 1,
+                output_stream_state: 3,
                 output_stream_ready: true,
             },
         );
@@ -1586,6 +1698,9 @@ mod tests {
                 output_process_callbacks: 2,
                 output_buffer_errors: 0,
                 output_timeout_errors: 0,
+                output_state_changes: 2,
+                output_ready_state_changes: 1,
+                output_stream_state: 3,
                 output_stream_ready: true,
             },
         );
