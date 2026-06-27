@@ -589,6 +589,7 @@ mod tests {
             timeline_animation_count: 0,
             timeline_animated_layer_count: 0,
             property_binding_count: 0,
+            cursor_parallax_input_ready: false,
             display: Some(SceneDisplayPlan::Color {
                 color: "#000000".to_owned(),
             }),

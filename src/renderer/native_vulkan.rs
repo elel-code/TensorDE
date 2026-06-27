@@ -12299,6 +12299,7 @@ mod tests {
                 timeline_animation_count: 2,
                 timeline_animated_layer_count: 1,
                 property_binding_count: 1,
+                cursor_parallax_input_ready: true,
                 display: Some(SceneDisplayPlan::Color {
                     color: "#102030".to_owned(),
                 }),
@@ -12375,6 +12376,7 @@ mod tests {
             timeline_animation_count,
             timeline_animated_layer_count,
             property_binding_count,
+            cursor_parallax_input_ready,
             snapshot_time_ms,
             target_max_fps,
             renderer_status,
@@ -12403,6 +12405,7 @@ mod tests {
         assert_eq!(*timeline_animation_count, 2);
         assert_eq!(*timeline_animated_layer_count, 1);
         assert_eq!(*property_binding_count, 1);
+        assert!(*cursor_parallax_input_ready);
         assert_eq!(*snapshot_time_ms, 1234);
         assert_eq!(
             *renderer_status,

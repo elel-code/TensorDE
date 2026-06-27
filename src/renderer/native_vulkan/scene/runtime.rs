@@ -126,6 +126,7 @@ pub struct NativeVulkanFullSceneRuntimeSnapshot {
     pub scene_audio_cue_resource_model_ready: bool,
     pub scene_audio_response_detected: bool,
     pub scene_audio_response_ready: bool,
+    pub cursor_parallax_input_ready: bool,
     pub scene_video_composition_required: bool,
     pub scene_video_composition_ready: bool,
     pub scene_text_geometry_required: bool,
@@ -663,6 +664,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
         timeline_animation_count,
         timeline_animated_layer_count,
         property_binding_count,
+        cursor_parallax_input_ready,
         scene_audio_response_detected,
         scene_audio_cue_count,
     ) = match render_item {
@@ -671,6 +673,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
             timeline_animation_count,
             timeline_animated_layer_count,
             property_binding_count,
+            cursor_parallax_input_ready,
             scene_systems,
             audio_cue_count,
             ..
@@ -679,13 +682,14 @@ fn native_vulkan_full_scene_runtime_snapshot(
             *timeline_animation_count,
             *timeline_animated_layer_count,
             *property_binding_count,
+            *cursor_parallax_input_ready,
             matches!(
                 scene_systems.audio_response,
                 SceneSystemStatus::Detected | SceneSystemStatus::Ready
             ),
             *audio_cue_count,
         ),
-        _ => (0, 0, 0, 0, false, 0),
+        _ => (0, 0, 0, 0, false, false, 0),
     };
     let scene_audio_cue_resource_model_ready = scene_audio_cue_count > 0;
     let retained_resource_model_ready = matches!(
@@ -827,6 +831,9 @@ fn native_vulkan_full_scene_runtime_snapshot(
         completed_boundaries.push("scene-audio-cue-renderer-boundary");
         completed_boundaries.push("scene-audio-cue-pipewire-present-runtime");
     }
+    if cursor_parallax_input_ready {
+        completed_boundaries.push("cursor-parallax-input-source");
+    }
 
     let mut pending_boundaries = Vec::new();
     if native_runtime_pending_layer_count > 0 {
@@ -845,9 +852,11 @@ fn native_vulkan_full_scene_runtime_snapshot(
         "arbitrary-scenescript-runtime",
         "shader-material-graph",
         "particle-systems",
-        "cursor-parallax-input-source",
         "pipewire-audio-response-runtime",
     ]);
+    if !cursor_parallax_input_ready {
+        pending_boundaries.push("cursor-parallax-input-source");
+    }
 
     NativeVulkanFullSceneRuntimeSnapshot {
         target_runtime: "native-vulkan-full-scene",
@@ -893,6 +902,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
         scene_audio_cue_resource_model_ready,
         scene_audio_response_detected,
         scene_audio_response_ready: false,
+        cursor_parallax_input_ready,
         scene_video_composition_required,
         scene_video_composition_ready,
         scene_text_geometry_required,
@@ -972,6 +982,22 @@ mod tests {
         scene_test_item_with_scene_metadata(layers, display, Vec::new(), 0, 0, 0)
     }
 
+    fn scene_test_item_with_cursor_parallax(
+        layers: Vec<SceneRenderLayer>,
+        display: Option<SceneDisplayPlan>,
+    ) -> NativeVulkanRenderItem {
+        let mut item = scene_test_item(layers, display);
+        let NativeVulkanRenderItem::Scene {
+            cursor_parallax_input_ready,
+            ..
+        } = &mut item
+        else {
+            unreachable!("scene_test_item always returns a scene item");
+        };
+        *cursor_parallax_input_ready = true;
+        item
+    }
+
     fn scene_test_item_with_scene_metadata(
         layers: Vec<SceneRenderLayer>,
         display: Option<SceneDisplayPlan>,
@@ -996,6 +1022,7 @@ mod tests {
             timeline_animation_count,
             timeline_animated_layer_count,
             property_binding_count,
+            cursor_parallax_input_ready: false,
             snapshot_time_ms: 1234,
             scene_size: None,
             scene_fit: FitMode::Cover,
@@ -1295,6 +1322,7 @@ mod tests {
         assert_eq!(snapshot.full_scene.scene_audio_cue_count, 0);
         assert!(!snapshot.full_scene.scene_audio_cue_resource_model_ready);
         assert!(!snapshot.full_scene.scene_audio_response_detected);
+        assert!(!snapshot.full_scene.cursor_parallax_input_ready);
         assert!(snapshot.full_scene.scene_video_composition_required);
         assert!(!snapshot.full_scene.scene_video_composition_ready);
         assert!(snapshot.full_scene.scene_text_geometry_required);
@@ -1379,6 +1407,12 @@ mod tests {
                 .contains(&"pipewire-audio-response-runtime")
         );
         assert!(
+            snapshot
+                .full_scene
+                .pending_boundaries
+                .contains(&"cursor-parallax-input-source")
+        );
+        assert!(
             !snapshot
                 .full_scene
                 .pending_boundaries
@@ -1425,6 +1459,31 @@ mod tests {
                 .full_scene
                 .completed_boundaries
                 .contains(&"scene-audio-cue-pipewire-present-runtime")
+        );
+    }
+
+    #[test]
+    fn full_scene_runtime_snapshot_tracks_cursor_parallax_input_boundary() {
+        let mut panel = scene_test_layer("panel", SceneNodeKind::Rectangle);
+        panel.color = Some("#203040".to_owned());
+        panel.width = Some(320.0);
+        panel.height = Some(180.0);
+        let item = scene_test_item_with_cursor_parallax(vec![panel], None);
+
+        let snapshot = native_vulkan_scene_runtime_snapshot(&item).unwrap();
+
+        assert!(snapshot.full_scene.cursor_parallax_input_ready);
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"cursor-parallax-input-source")
+        );
+        assert!(
+            !snapshot
+                .full_scene
+                .pending_boundaries
+                .contains(&"cursor-parallax-input-source")
         );
     }
 

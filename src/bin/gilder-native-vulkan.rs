@@ -1,10 +1,13 @@
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::core::{FitMode, SceneNodeKind, SceneSystems, SceneTransform};
 #[cfg(feature = "native-vulkan-renderer")]
+use gilder::desktop::DesktopCursorParallax;
+#[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::native_vulkan::NativeVulkanClearColor;
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::{
-    SceneDisplayPlan, SceneRenderLayer, SceneWallpaperPlan, scene_wallpaper_plan_from_gscene_path,
+    SceneDisplayPlan, SceneRenderLayer, SceneWallpaperPlan,
+    scene_wallpaper_plan_from_gscene_path_with_properties,
 };
 #[cfg(feature = "native-vulkan-renderer")]
 use std::path::{Path, PathBuf};
@@ -843,13 +846,17 @@ fn scene_cli_plan(
         if !source_is_video && scene_cli_source_is_gscene(&source) {
             let package_root =
                 scene_root.unwrap_or_else(|| scene_cli_default_gscene_package_root(&source));
-            return Ok(scene_wallpaper_plan_from_gscene_path(
+            let (render_properties, cursor_parallax_input_ready) =
+                scene_cli_cursor_parallax_properties(&output_name);
+            return Ok(scene_wallpaper_plan_from_gscene_path_with_properties(
                 output_name,
                 &package_root,
                 source,
                 target_max_fps,
                 snapshot_time_ms,
                 Some(fit),
+                render_properties.as_ref(),
+                cursor_parallax_input_ready,
             )?);
         }
         if source_is_video {
@@ -880,6 +887,7 @@ fn scene_cli_plan(
                 timeline_animation_count: 0,
                 timeline_animated_layer_count: 0,
                 property_binding_count: 0,
+                cursor_parallax_input_ready: false,
                 scene_size: None,
                 scene_fit: fit,
                 display,
@@ -901,6 +909,7 @@ fn scene_cli_plan(
             timeline_animation_count: 0,
             timeline_animated_layer_count: 0,
             property_binding_count: 0,
+            cursor_parallax_input_ready: false,
             scene_size: None,
             scene_fit: fit,
             display: Some(SceneDisplayPlan::Image {
@@ -936,6 +945,7 @@ fn scene_cli_plan(
             timeline_animation_count: 0,
             timeline_animated_layer_count: 0,
             property_binding_count: 0,
+            cursor_parallax_input_ready: false,
             scene_size: None,
             scene_fit: fit,
             display: Some(SceneDisplayPlan::Color { color: background }),
@@ -968,6 +978,7 @@ fn scene_cli_plan(
             timeline_animation_count: 0,
             timeline_animated_layer_count: 0,
             property_binding_count: 0,
+            cursor_parallax_input_ready: false,
             scene_size: None,
             scene_fit: fit,
             display: Some(SceneDisplayPlan::Color { color: background }),
@@ -990,6 +1001,7 @@ fn scene_cli_plan(
         timeline_animation_count: 0,
         timeline_animated_layer_count: 0,
         property_binding_count: 0,
+        cursor_parallax_input_ready: false,
         scene_size: None,
         scene_fit: fit,
         display: Some(SceneDisplayPlan::Color { color }),
@@ -1002,6 +1014,48 @@ fn scene_cli_source_is_gscene(path: &Path) -> bool {
     path.file_name()
         .and_then(|file_name| file_name.to_str())
         .is_some_and(|file_name| file_name.ends_with(".gscene.json"))
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+fn scene_cli_cursor_parallax_properties(
+    output_name: &str,
+) -> (
+    Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    bool,
+) {
+    std::env::var("GILDER_CURSOR_PARALLAX")
+        .ok()
+        .map(|value| scene_cli_cursor_parallax_properties_from_override(output_name, &value))
+        .unwrap_or((None, false))
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+fn scene_cli_cursor_parallax_properties_from_override(
+    output_name: &str,
+    value: &str,
+) -> (
+    Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    bool,
+) {
+    let Some((target_output, parallax)) = DesktopCursorParallax::parse_override(value) else {
+        return (None, false);
+    };
+    if target_output
+        .as_deref()
+        .is_some_and(|target_output| target_output != output_name)
+    {
+        return (None, false);
+    }
+    let mut properties = std::collections::BTreeMap::new();
+    properties.insert(
+        "scene.parallax.x".to_owned(),
+        serde_json::Value::from(parallax.x),
+    );
+    properties.insert(
+        "scene.parallax.y".to_owned(),
+        serde_json::Value::from(parallax.y),
+    );
+    (Some(properties), true)
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
@@ -1129,6 +1183,38 @@ mod tests {
     }
 
     #[test]
+    fn scene_cli_cursor_parallax_override_builds_render_properties() {
+        let (properties, ready) =
+            scene_cli_cursor_parallax_properties_from_override("HDMI-A-1", "HDMI-A-1:0.25,-0.5");
+        let properties = properties.expect("cursor parallax properties");
+
+        assert!(ready);
+        assert_eq!(
+            properties["scene.parallax.x"],
+            serde_json::Value::from(0.25)
+        );
+        assert_eq!(
+            properties["scene.parallax.y"],
+            serde_json::Value::from(-0.5)
+        );
+
+        let (properties, ready) =
+            scene_cli_cursor_parallax_properties_from_override("HDMI-A-1", "DP-1:0.25,-0.5");
+        assert!(!ready);
+        assert_eq!(properties, None);
+
+        let (properties, ready) =
+            scene_cli_cursor_parallax_properties_from_override("HDMI-A-1", "2,-2");
+        let properties = properties.expect("unnamed cursor parallax properties");
+        assert!(ready);
+        assert_eq!(properties["scene.parallax.x"], serde_json::Value::from(1.0));
+        assert_eq!(
+            properties["scene.parallax.y"],
+            serde_json::Value::from(-1.0)
+        );
+    }
+
+    #[test]
     fn scene_cli_plan_loads_gscene_document_source() {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1185,6 +1271,7 @@ mod tests {
 
         assert_eq!(plan.source, Some(source));
         assert_eq!(plan.snapshot_time_ms, 2468);
+        assert!(!plan.cursor_parallax_input_ready);
         assert_eq!(plan.audio_cue_count, 1);
         assert!(
             plan.layers[0]

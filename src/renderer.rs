@@ -89,6 +89,8 @@ pub struct SceneWallpaperPlan {
     pub timeline_animated_layer_count: usize,
     #[serde(default)]
     pub property_binding_count: usize,
+    #[serde(default)]
+    pub cursor_parallax_input_ready: bool,
     pub display: Option<SceneDisplayPlan>,
     pub layers: Vec<SceneRenderLayer>,
 }
@@ -183,8 +185,34 @@ pub fn scene_wallpaper_plan_from_gscene_path(
     snapshot_time_ms: u64,
     fit_override: Option<FitMode>,
 ) -> Result<SceneWallpaperPlan, RendererPlanError> {
+    scene_wallpaper_plan_from_gscene_path_with_properties(
+        output_name,
+        package_root,
+        source_path,
+        target_max_fps,
+        snapshot_time_ms,
+        fit_override,
+        None,
+        false,
+    )
+}
+
+pub fn scene_wallpaper_plan_from_gscene_path_with_properties(
+    output_name: String,
+    package_root: &Path,
+    source_path: PathBuf,
+    target_max_fps: Option<u32>,
+    snapshot_time_ms: u64,
+    fit_override: Option<FitMode>,
+    render_properties: Option<&BTreeMap<String, Value>>,
+    cursor_parallax_input_ready: bool,
+) -> Result<SceneWallpaperPlan, RendererPlanError> {
     let document = load_scene_document(&source_path)?;
-    let snapshot = document.snapshot_at_with_property_resolver(snapshot_time_ms, |_property| None);
+    let snapshot = document.snapshot_at_with_property_resolver(snapshot_time_ms, |property| {
+        render_properties
+            .and_then(|properties| properties.get(property))
+            .and_then(scene_json_property_number)
+    });
     let layers = scene_render_layers_from_snapshot(package_root, &document, snapshot.layers)?;
     let display = scene_display_plan(
         Some(source_path.as_path()),
@@ -209,6 +237,7 @@ pub fn scene_wallpaper_plan_from_gscene_path(
         timeline_animation_count: scene_timeline_animation_count(&document),
         timeline_animated_layer_count: scene_timeline_animated_layer_count(&document),
         property_binding_count: document.property_bindings.len(),
+        cursor_parallax_input_ready,
         display,
         layers,
     })
@@ -642,12 +671,17 @@ fn static_render_sync_plan_inner(
                     render_target,
                     Some(&playlist_context),
                     None,
+                    false,
                     Some(&mut static_image_cache),
                     None,
                 )
             }
             WallpaperEntry::Scene { .. } => {
-                let render_properties = effective_output_render_properties(state, &output_state);
+                let render_properties =
+                    effective_output_render_properties(state, &output_state, desktop_output);
+                let cursor_parallax_input_ready = desktop_output
+                    .and_then(|output| output.cursor_parallax)
+                    .is_some();
                 let mut scene_snapshot_cache = SceneSnapshotCacheContext {
                     cache_dir,
                     max_entries: cache_config.static_image_cache_max_entries,
@@ -664,6 +698,7 @@ fn static_render_sync_plan_inner(
                     render_target,
                     Some(&playlist_context),
                     Some(&render_properties),
+                    cursor_parallax_input_ready,
                     None,
                     Some(&mut scene_snapshot_cache),
                 )
@@ -678,6 +713,7 @@ fn static_render_sync_plan_inner(
                 render_target,
                 Some(&playlist_context),
                 None,
+                false,
                 None,
                 None,
             ),
@@ -926,9 +962,14 @@ fn output_fit_override(config: Option<&GilderConfig>, output_name: &str) -> Opti
 fn effective_output_render_properties(
     state: &AppState,
     output_state: &OutputState,
+    output: Option<&DesktopOutput>,
 ) -> BTreeMap<String, Value> {
     let mut properties = state.properties.clone();
     properties.extend(output_state.properties.clone());
+    if let Some(parallax) = output.and_then(|output| output.cursor_parallax) {
+        properties.insert("scene.parallax.x".to_owned(), Value::from(parallax.x));
+        properties.insert("scene.parallax.y".to_owned(), Value::from(parallax.y));
+    }
     properties
 }
 
@@ -1329,6 +1370,7 @@ fn wallpaper_plan_for_assignment_with_target(
         render_target,
         None,
         None,
+        false,
         None,
         None,
     )
@@ -1351,6 +1393,7 @@ pub fn wallpaper_plan(
         None,
         None,
         None,
+        false,
         None,
         None,
     )
@@ -1366,6 +1409,7 @@ fn wallpaper_plan_with_target(
     render_target: Option<RenderTargetSize>,
     playlist_context: Option<&PlaylistRenderContext<'_>>,
     render_properties: Option<&BTreeMap<String, Value>>,
+    cursor_parallax_input_ready: bool,
     static_image_cache: Option<&mut StaticImageCacheContext<'_>>,
     scene_snapshot_cache: Option<&mut SceneSnapshotCacheContext<'_>>,
 ) -> Result<WallpaperRenderPlan, RendererPlanError> {
@@ -1383,6 +1427,7 @@ fn wallpaper_plan_with_target(
         render_target,
         playlist_context,
         render_properties,
+        cursor_parallax_input_ready,
         static_image_cache,
         scene_snapshot_cache,
     )
@@ -1400,6 +1445,7 @@ fn wallpaper_entry_plan_with_target(
     render_target: Option<RenderTargetSize>,
     playlist_context: Option<&PlaylistRenderContext<'_>>,
     render_properties: Option<&BTreeMap<String, Value>>,
+    cursor_parallax_input_ready: bool,
     static_image_cache: Option<&mut StaticImageCacheContext<'_>>,
     scene_snapshot_cache: Option<&mut SceneSnapshotCacheContext<'_>>,
 ) -> Result<WallpaperRenderPlan, RendererPlanError> {
@@ -1506,6 +1552,7 @@ fn wallpaper_entry_plan_with_target(
                 fit_override,
                 render_target,
                 render_properties,
+                cursor_parallax_input_ready,
                 scene_snapshot_cache,
             )?))
         }
@@ -1524,6 +1571,7 @@ fn wallpaper_entry_plan_with_target(
                 render_target,
                 playlist_context,
                 render_properties,
+                cursor_parallax_input_ready,
                 static_image_cache,
                 scene_snapshot_cache,
             )
@@ -1540,6 +1588,7 @@ fn scene_wallpaper_plan(
     fit_override: Option<FitMode>,
     render_target: Option<RenderTargetSize>,
     render_properties: Option<&BTreeMap<String, Value>>,
+    cursor_parallax_input_ready: bool,
     scene_snapshot_cache: Option<&mut SceneSnapshotCacheContext<'_>>,
 ) -> Result<SceneWallpaperPlan, RendererPlanError> {
     let source_path = source.join_to(&package.root);
@@ -1571,6 +1620,7 @@ fn scene_wallpaper_plan(
         timeline_animation_count: scene_timeline_animation_count(&document),
         timeline_animated_layer_count: scene_timeline_animated_layer_count(&document),
         property_binding_count: document.property_bindings.len(),
+        cursor_parallax_input_ready,
         display,
         layers,
     })
@@ -3191,7 +3241,7 @@ mod tests {
         PowerPolicy, VideoDecoderPolicy,
     };
     use crate::core::pack_gwp;
-    use crate::desktop::{DesktopOutput, PowerState};
+    use crate::desktop::{DesktopCursorParallax, DesktopOutput, PowerState};
     use crate::policy::{DecisionReason, PerformanceDecision, RenderMode};
     use crate::state::{OutputState, WallpaperAssignment};
     use serde_json::json;
@@ -3832,6 +3882,7 @@ exit 0
                 }),
                 None,
                 None,
+                false,
                 Some(&mut context),
                 None,
             )
@@ -3869,6 +3920,7 @@ exit 0
                 }),
                 None,
                 None,
+                false,
                 Some(&mut context),
                 None,
             )
@@ -5142,6 +5194,39 @@ exit 0
                 .unwrap()
                 .contains(r#"opacity="0.25""#)
         );
+    }
+
+    #[test]
+    fn scene_cursor_parallax_from_desktop_output_offsets_scene_transform() {
+        let test_dir = TestDir::new("gilder-scene-cursor-parallax");
+        let package_dir = test_dir.path.join("scene-parallax.gwpdir");
+        let cache_dir = test_dir.path.join("cache");
+        write_scene_parallax_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        state.set_property(None, "scene.parallax.x", json!(-1.0));
+        state.set_property(Some("eDP-1"), "scene.parallax.y", json!(1.0));
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                cursor_parallax: Some(DesktopCursorParallax { x: 0.4, y: -0.2 }),
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, &cache_dir);
+
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.scene_plans.len(), 1);
+        let plan = &sync.scene_plans[0];
+        assert!(plan.cursor_parallax_input_ready);
+        assert_eq!(plan.layers.len(), 1);
+        assert_eq!(plan.layers[0].kind, SceneNodeKind::Rectangle);
+        assert!((plan.layers[0].transform.x - 5.0).abs() < f64::EPSILON);
+        assert!((plan.layers[0].transform.y - 3.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -6800,6 +6885,48 @@ void main() {}
                     "default": 0.6
                 }
             },
+            "entry": {
+                "type": "scene",
+                "source": "assets/scene.gscene.json",
+                "max_fps": 60
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_scene_parallax_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(
+            path.join("assets/scene.gscene.json"),
+            br##"{
+              "render": {
+                "parallax": { "amount": 10 }
+              },
+              "nodes": [
+                {
+                  "id": "near-panel",
+                  "type": "rectangle",
+                  "color": "#203040",
+                  "width": 320,
+                  "height": 180,
+                  "transform": { "x": 3, "y": 4 },
+                  "parallax_depth": 0.5
+                }
+              ]
+            }"##,
+        )
+        .unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.scene-parallax",
+            "version": "1.0.0",
+            "title": "Scene Parallax",
+            "kind": "scene",
             "entry": {
                 "type": "scene",
                 "source": "assets/scene.gscene.json",

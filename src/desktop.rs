@@ -54,6 +54,10 @@ pub enum CompositorKind {
 pub struct DesktopOutput {
     pub name: String,
     #[serde(default)]
+    pub logical_x: Option<i32>,
+    #[serde(default)]
+    pub logical_y: Option<i32>,
+    #[serde(default)]
     pub make: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
@@ -71,12 +75,47 @@ pub struct DesktopOutput {
     pub has_fullscreen: bool,
     #[serde(default)]
     pub active_workspace: Option<String>,
+    #[serde(default)]
+    pub cursor_parallax: Option<DesktopCursorParallax>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DesktopCursorParallax {
+    pub x: f64,
+    pub y: f64,
+}
+
+impl DesktopCursorParallax {
+    pub fn parse_override(value: &str) -> Option<(Option<String>, Self)> {
+        let value = value.trim();
+        if value.is_empty() || matches!(value.to_ascii_lowercase().as_str(), "auto" | "compositor")
+        {
+            return None;
+        }
+        let (output_name, coords) = match value.split_once(':') {
+            Some((output_name, coords)) => (Some(output_name.trim()), coords.trim()),
+            None => (None, value),
+        };
+        let output_name = output_name
+            .filter(|output_name| !output_name.is_empty())
+            .map(str::to_owned);
+        let (x, y) = coords.split_once(',')?;
+        Some((
+            output_name,
+            Self {
+                x: x.trim().parse::<f64>().ok()?.clamp(-1.0, 1.0),
+                y: y.trim().parse::<f64>().ok()?.clamp(-1.0, 1.0),
+            },
+        ))
+    }
 }
 
 impl DesktopOutput {
     pub fn virtual_output(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            logical_x: None,
+            logical_y: None,
             make: None,
             model: None,
             width: None,
@@ -86,6 +125,7 @@ impl DesktopOutput {
             visible: true,
             has_fullscreen: false,
             active_workspace: None,
+            cursor_parallax: None,
         }
     }
 }
