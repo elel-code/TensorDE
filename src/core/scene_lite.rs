@@ -170,9 +170,14 @@ impl SceneLiteLayer {
                 }
             }
             SceneLiteLayerKind::Rectangle | SceneLiteLayerKind::Ellipse => {
-                if self.color.as_deref().is_none_or(str::is_empty) {
+                let has_visible_stroke = self
+                    .stroke_color
+                    .as_deref()
+                    .is_some_and(|color| !color.is_empty())
+                    && self.stroke_width.unwrap_or(1.0) > 0.0;
+                if self.color.as_deref().is_none_or(str::is_empty) && !has_visible_stroke {
                     return Err(SceneLiteError::invalid(format!(
-                        "{:?} layer {:?} must define color",
+                        "{:?} layer {:?} must define color or visible stroke_color",
                         self.kind, self.id
                     )));
                 }
@@ -985,6 +990,14 @@ mod tests {
                   "width": 240,
                   "height": 160,
                   "opacity": 0.5
+                },
+                {
+                  "id": "outline",
+                  "type": "rectangle",
+                  "stroke_color": "#ffcc00",
+                  "stroke_width": 4,
+                  "width": 128,
+                  "height": 72
                 }
               ]
             }
@@ -996,7 +1009,7 @@ mod tests {
         assert!(document.referenced_paths().is_empty());
         let snapshot = document.snapshot_at(0);
 
-        assert_eq!(snapshot.layers.len(), 2);
+        assert_eq!(snapshot.layers.len(), 3);
         assert_eq!(snapshot.layers[0].kind, SceneLiteLayerKind::Rectangle);
         assert_eq!(snapshot.layers[0].stroke_color.as_deref(), Some("#ffffff"));
         assert_eq!(snapshot.layers[0].corner_radius, Some(12.0));
@@ -1004,6 +1017,10 @@ mod tests {
         assert_eq!(snapshot.layers[1].kind, SceneLiteLayerKind::Ellipse);
         assert_eq!(snapshot.layers[1].height, Some(160.0));
         assert_eq!(snapshot.layers[1].opacity, 0.5);
+        assert_eq!(snapshot.layers[2].kind, SceneLiteLayerKind::Rectangle);
+        assert_eq!(snapshot.layers[2].color, None);
+        assert_eq!(snapshot.layers[2].stroke_color.as_deref(), Some("#ffcc00"));
+        assert_eq!(snapshot.layers[2].stroke_width, Some(4.0));
     }
 
     #[test]

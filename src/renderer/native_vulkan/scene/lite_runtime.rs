@@ -103,6 +103,7 @@ pub struct NativeVulkanFullSceneRuntimeSnapshot {
     pub sampled_image_native_layer_count: usize,
     pub tessellated_path_layer_count: usize,
     pub text_geometry_layer_count: usize,
+    pub stroke_geometry_layer_count: usize,
     pub color_layer_count: usize,
     pub sampled_image_layer_count: usize,
     pub video_layer_count: usize,
@@ -304,6 +305,11 @@ pub struct NativeVulkanSceneLiteRecordableQuadSnapshot {
     pub kind: &'static str,
     pub color: String,
     pub rgba: [f32; 4],
+    pub fill_color: Option<String>,
+    pub fill_rgba: Option<[f32; 4]>,
+    pub stroke_color: Option<String>,
+    pub stroke_rgba: Option<[f32; 4]>,
+    pub stroke_width: Option<f64>,
     pub width: Option<f64>,
     pub height: Option<f64>,
     pub corner_radius: Option<f64>,
@@ -329,6 +335,8 @@ pub struct NativeVulkanSceneLiteQuadRecordingStepSnapshot {
     pub vertex_buffer_size_bytes: u64,
     pub index_buffer_offset_bytes: u64,
     pub index_buffer_size_bytes: u64,
+    pub fill_geometry: bool,
+    pub stroke_geometry: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -460,6 +468,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snaps
                 kind: quad.kind,
                 color: quad.color,
                 rgba: quad.rgba,
+                fill_color: quad.fill_color,
+                fill_rgba: quad.fill_rgba,
+                stroke_color: quad.stroke_color,
+                stroke_rgba: quad.stroke_rgba,
+                stroke_width: quad.stroke_width,
                 width: quad.width,
                 height: quad.height,
                 corner_radius: quad.corner_radius,
@@ -489,6 +502,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snaps
                 vertex_buffer_size_bytes: step.vertex_buffer_size_bytes,
                 index_buffer_offset_bytes: step.index_buffer_offset_bytes,
                 index_buffer_size_bytes: step.index_buffer_size_bytes,
+                fill_geometry: step.fill_geometry,
+                stroke_geometry: step.stroke_geometry,
             })
             .collect(),
         draw_pass_quad_vertices: pass_plan
@@ -653,6 +668,11 @@ fn native_vulkan_full_scene_runtime_snapshot(
         .iter()
         .filter(|step| step.kind == "text")
         .count();
+    let stroke_geometry_layer_count = pass_plan
+        .quad_recording_steps
+        .iter()
+        .filter(|step| step.stroke_geometry)
+        .count();
     let rounded_rectangle_layer_count = pass_plan
         .quad_recording_steps
         .iter()
@@ -721,6 +741,9 @@ fn native_vulkan_full_scene_runtime_snapshot(
     if text_geometry_layer_count > 0 {
         completed_boundaries.push("deterministic-text-glyph-geometry-runtime");
     }
+    if stroke_geometry_layer_count > 0 {
+        completed_boundaries.push("stroke-geometry-runtime");
+    }
 
     let mut pending_boundaries = Vec::new();
     if native_runtime_pending_layer_count > 0 {
@@ -748,7 +771,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
     NativeVulkanFullSceneRuntimeSnapshot {
         target_runtime: "native-vulkan-full-scene",
         current_runtime: "native-vulkan-scene-runtime-subset",
-        progress_estimate_percent: 55,
+        progress_estimate_percent: 60,
         full_scene_complete: false,
         execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
         native_scene_graph_lowering_ready: plan.native_draw_ready(),
@@ -769,6 +792,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
         sampled_image_native_layer_count,
         tessellated_path_layer_count,
         text_geometry_layer_count,
+        stroke_geometry_layer_count,
         color_layer_count: pass_plan.color_op_count,
         sampled_image_layer_count: pass_plan.sampled_image_op_count,
         video_layer_count: pass_plan.video_op_count,
@@ -988,6 +1012,7 @@ mod tests {
         assert_eq!(snapshot.full_scene.solid_geometry_layer_count, 2);
         assert_eq!(snapshot.full_scene.rounded_rectangle_layer_count, 1);
         assert_eq!(snapshot.full_scene.text_geometry_layer_count, 1);
+        assert_eq!(snapshot.full_scene.stroke_geometry_layer_count, 0);
         assert_eq!(snapshot.full_scene.native_runtime_layer_count, 3);
         assert_eq!(snapshot.full_scene.native_runtime_pending_layer_count, 0);
         assert_eq!(snapshot.full_scene.native_runtime_coverage_percent, 100);
@@ -1060,7 +1085,7 @@ mod tests {
             snapshot.full_scene.current_runtime,
             "native-vulkan-scene-runtime-subset"
         );
-        assert_eq!(snapshot.full_scene.progress_estimate_percent, 55);
+        assert_eq!(snapshot.full_scene.progress_estimate_percent, 60);
         assert!(!snapshot.full_scene.full_scene_complete);
         assert!(snapshot.full_scene.timeline_snapshot_runtime_ready);
         assert_eq!(snapshot.full_scene.timeline_snapshot_time_ms, 1234);
@@ -1074,6 +1099,7 @@ mod tests {
         assert_eq!(snapshot.full_scene.sampled_image_layer_count, 1);
         assert_eq!(snapshot.full_scene.video_layer_count, 1);
         assert_eq!(snapshot.full_scene.text_layer_count, 1);
+        assert_eq!(snapshot.full_scene.stroke_geometry_layer_count, 0);
         assert!(!snapshot.full_scene.scene_audio_response_ready);
         assert!(snapshot.full_scene.scene_video_composition_required);
         assert!(!snapshot.full_scene.scene_video_composition_ready);
@@ -1569,6 +1595,52 @@ mod tests {
         );
         assert_eq!(solid_geometry.draw_steps.len(), 1);
         assert_eq!(solid_geometry.indices.len(), 3);
+    }
+
+    #[test]
+    fn scene_lite_runtime_snapshot_counts_stroke_geometry_boundary() {
+        let mut path = scene_lite_test_layer("outline", SceneLiteLayerKind::Path);
+        path.path_data = Some("M0,0 L64,0 L32,48 Z".to_owned());
+        path.stroke_color = Some("#f8fafc".to_owned());
+        path.stroke_width = Some(4.0);
+        let item = scene_lite_test_item(vec![path], None, None);
+
+        let snapshot =
+            native_vulkan_scene_lite_runtime_snapshot(&item).expect("scene-lite snapshot");
+        let solid_geometry = snapshot
+            .vulkanalia_solid_quad_geometry_input()
+            .expect("stroke path solid geometry");
+
+        assert!(snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.draw_pass_backend_status,
+            "solid-quad-recording-ready"
+        );
+        assert_eq!(snapshot.draw_pass_recordable_quads[0].fill_rgba, None);
+        assert_eq!(
+            snapshot.draw_pass_recordable_quads[0]
+                .stroke_color
+                .as_deref(),
+            Some("#f8fafc")
+        );
+        assert_eq!(
+            snapshot.draw_pass_recordable_quads[0].stroke_rgba,
+            Some([248.0 / 255.0, 250.0 / 255.0, 252.0 / 255.0, 1.0])
+        );
+        assert_eq!(snapshot.draw_pass_quad_recording_steps.len(), 1);
+        assert!(!snapshot.draw_pass_quad_recording_steps[0].fill_geometry);
+        assert!(snapshot.draw_pass_quad_recording_steps[0].stroke_geometry);
+        assert_eq!(snapshot.full_scene.stroke_geometry_layer_count, 1);
+        assert_eq!(snapshot.full_scene.tessellated_path_layer_count, 1);
+        assert_eq!(snapshot.full_scene.native_runtime_coverage_percent, 100);
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"stroke-geometry-runtime")
+        );
+        assert_eq!(solid_geometry.draw_steps.len(), 1);
+        assert_eq!(solid_geometry.indices.len(), 18);
     }
 
     #[test]

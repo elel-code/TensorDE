@@ -224,16 +224,20 @@ fn native_vulkan_scene_lite_draw_op_kind(
             .as_ref()
             .map(|_| NativeVulkanSceneLiteDrawOpKind::ColorQuad)
             .ok_or("color-layer-missing-color"),
-        SceneLiteLayerKind::Rectangle => layer
-            .color
-            .as_ref()
-            .map(|_| NativeVulkanSceneLiteDrawOpKind::Rectangle)
-            .ok_or("rectangle-layer-missing-fill"),
-        SceneLiteLayerKind::Ellipse => layer
-            .color
-            .as_ref()
-            .map(|_| NativeVulkanSceneLiteDrawOpKind::Ellipse)
-            .ok_or("ellipse-layer-missing-fill"),
+        SceneLiteLayerKind::Rectangle => {
+            if native_vulkan_scene_lite_layer_has_shape_paint(layer) {
+                Ok(NativeVulkanSceneLiteDrawOpKind::Rectangle)
+            } else {
+                Err("rectangle-layer-missing-paint")
+            }
+        }
+        SceneLiteLayerKind::Ellipse => {
+            if native_vulkan_scene_lite_layer_has_shape_paint(layer) {
+                Ok(NativeVulkanSceneLiteDrawOpKind::Ellipse)
+            } else {
+                Err("ellipse-layer-missing-paint")
+            }
+        }
         SceneLiteLayerKind::Text => layer
             .text
             .as_ref()
@@ -269,6 +273,18 @@ fn native_vulkan_scene_lite_draw_op_kind(
             }),
         SceneLiteLayerKind::Group => Err("group-layer-needs-flattened-children"),
     }
+}
+
+fn native_vulkan_scene_lite_layer_has_shape_paint(layer: &SceneLiteRenderLayer) -> bool {
+    layer
+        .color
+        .as_deref()
+        .is_some_and(|color| !color.is_empty())
+        || (layer
+            .stroke_color
+            .as_deref()
+            .is_some_and(|color| !color.is_empty())
+            && layer.stroke_width.unwrap_or(1.0) > 0.0)
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_clear_color_from_hex(

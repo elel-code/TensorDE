@@ -70,10 +70,15 @@ pub(super) fn scene_lite_layer_is_snapshot_renderable(layer: &SceneLiteRenderLay
         }
         SceneLiteLayerKind::Rectangle | SceneLiteLayerKind::Ellipse => {
             layer.opacity > 0.0
-                && layer
+                && (layer
                     .color
                     .as_deref()
                     .is_some_and(|color| !color.is_empty())
+                    || (layer
+                        .stroke_color
+                        .as_deref()
+                        .is_some_and(|color| !color.is_empty())
+                        && layer.stroke_width.unwrap_or(1.0) > 0.0))
         }
         SceneLiteLayerKind::Text => {
             layer.opacity > 0.0

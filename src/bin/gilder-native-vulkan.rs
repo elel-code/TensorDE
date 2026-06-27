@@ -66,6 +66,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut scene_text = None::<String>;
     let mut scene_text_color = None::<String>;
     let mut scene_text_font_size = None::<f64>;
+    let mut scene_path_data = None::<String>;
+    let mut scene_stroke_color = None::<String>;
+    let mut scene_stroke_width = None::<f64>;
     let mut scene_snapshot_time_ms = 0u64;
     let mut _muted = true;
     #[cfg(feature = "native-vulkan-video")]
@@ -212,6 +215,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     return Err("--font-size must be finite and greater than zero".into());
                 }
                 scene_text_font_size = Some(font_size);
+            }
+            "--path-data" => {
+                scene_path_data = Some(args.next().ok_or("--path-data requires SVG path data")?);
+            }
+            "--stroke-color" => {
+                scene_stroke_color = Some(args.next().ok_or("--stroke-color requires #rrggbb")?);
+            }
+            "--stroke-width" => {
+                let stroke_width = args
+                    .next()
+                    .map(|value| value.parse::<f64>())
+                    .transpose()?
+                    .ok_or("--stroke-width requires a number")?;
+                if !stroke_width.is_finite() || stroke_width <= 0.0 {
+                    return Err("--stroke-width must be finite and greater than zero".into());
+                }
+                scene_stroke_width = Some(stroke_width);
             }
             "--scene-time-ms" | "--snapshot-time-ms" => {
                 scene_snapshot_time_ms = args
@@ -482,6 +502,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 fit,
                 background,
                 scene_color,
+                scene_path_data,
+                scene_stroke_color,
+                scene_stroke_width,
                 scene_text,
                 scene_text_color,
                 scene_text_font_size,
@@ -677,6 +700,9 @@ fn scene_lite_cli_plan(
     fit: FitMode,
     background: Option<String>,
     color: Option<String>,
+    path_data: Option<String>,
+    stroke_color: Option<String>,
+    stroke_width: Option<f64>,
     text: Option<String>,
     text_color: Option<String>,
     text_font_size: Option<f64>,
@@ -700,6 +726,31 @@ fn scene_lite_cli_plan(
                 fit,
                 background,
             }),
+            layers: vec![layer],
+        });
+    }
+
+    if let Some(path_data) = path_data {
+        if color.as_deref().is_none_or(str::is_empty)
+            && stroke_color.as_deref().is_none_or(str::is_empty)
+        {
+            return Err("--path-data requires --color or --stroke-color".into());
+        }
+        let mut layer = scene_lite_cli_layer("cli-path", SceneLiteLayerKind::Path);
+        layer.path_data = Some(path_data);
+        layer.color = color;
+        layer.stroke_color = stroke_color;
+        layer.stroke_width = stroke_width.or(Some(1.0));
+        let background = background.unwrap_or_else(|| "#000000".to_owned());
+        return Ok(SceneLiteWallpaperPlan {
+            output_name,
+            source: None,
+            fallback: None,
+            manifest_max_fps: None,
+            target_max_fps,
+            snapshot_time_ms,
+            bound_properties: Vec::new(),
+            display: Some(SceneLiteDisplayPlan::Color { color: background }),
             layers: vec![layer],
         });
     }
@@ -815,6 +866,9 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
             2468,
             Some(30),
         )
@@ -851,6 +905,9 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
             1357,
             None,
         )
@@ -876,6 +933,9 @@ mod tests {
             FitMode::Cover,
             Some("#101010".to_owned()),
             None,
+            None,
+            None,
+            None,
             Some("Native Text".to_owned()),
             Some("#f8fafc".to_owned()),
             Some(36.0),
@@ -900,6 +960,44 @@ mod tests {
         assert_eq!(plan.layers[0].width, Some(1024.0));
         assert_eq!(plan.layers[0].transform.anchor_x, 0.0);
         assert_eq!(plan.layers[0].transform.anchor_y, 0.0);
+    }
+
+    #[test]
+    fn scene_lite_cli_plan_builds_stroked_path_layer() {
+        let plan = scene_lite_cli_plan(
+            "HDMI-A-1".to_owned(),
+            None,
+            FitMode::Cover,
+            Some("#101010".to_owned()),
+            None,
+            Some("M0 0 L96 0 L48 64 Z".to_owned()),
+            Some("#f8fafc".to_owned()),
+            Some(5.0),
+            None,
+            None,
+            None,
+            2468,
+            Some(30),
+        )
+        .expect("path scene plan");
+
+        assert_eq!(plan.snapshot_time_ms, 2468);
+        assert_eq!(plan.target_max_fps, Some(30));
+        assert_eq!(
+            plan.display,
+            Some(SceneLiteDisplayPlan::Color {
+                color: "#101010".to_owned(),
+            })
+        );
+        assert_eq!(plan.layers.len(), 1);
+        assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Path);
+        assert_eq!(
+            plan.layers[0].path_data.as_deref(),
+            Some("M0 0 L96 0 L48 64 Z")
+        );
+        assert_eq!(plan.layers[0].color, None);
+        assert_eq!(plan.layers[0].stroke_color.as_deref(), Some("#f8fafc"));
+        assert_eq!(plan.layers[0].stroke_width, Some(5.0));
     }
 }
 
@@ -946,13 +1044,14 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --decode-av1-ready-prefix N extends --run-video with N visible AV1 temporal units through Vulkan Video decode/present.\n\
 --playback-frames N repeats the ready-prefix AU window for N direct Vulkan Video decode/present frames.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
---run-scene-lite builds a scene-lite plan from --source, --text, or hex --color and runs the unified native scene presenter.\n\
+--run-scene-lite builds a scene-lite plan from --source, --path-data, --text, or hex --color and runs the unified native scene presenter.\n\
 --run-static uses Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
 --run-video uses Vulkanalia ready-prefix video. Without explicit --decode-*-ready-prefix, it uses the codec default ready-prefix window.\n\
 --run-vulkanalia-ready-prefix-video decodes a streaming H.264/H.265 source through Vulkanalia CmdPipelineBarrier2/QueueSubmit2 and prints runtime JSON.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb] [--text TEXT] [--text-color #rrggbb] [--font-size PX]\n\
+         [--path-data SVG_PATH] [--stroke-color #rrggbb] [--stroke-width PX]\n\
          [--scene-time-ms MS]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\
          [--decoder auto|hardware-preferred|hardware-required|software]\n\

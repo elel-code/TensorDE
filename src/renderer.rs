@@ -1832,9 +1832,7 @@ fn scene_lite_snapshot_svg(layers: &[SceneLiteRenderLayer], size: RenderTargetSi
                 ));
             }
             SceneLiteLayerKind::Rectangle => {
-                let Some(color) = &layer.color else {
-                    continue;
-                };
+                let fill = layer.color.as_deref().unwrap_or("none");
                 let width = layer.width.unwrap_or(f64::from(size.width));
                 let height = layer.height.unwrap_or(f64::from(size.height));
                 svg.push_str(&format!(
@@ -1844,14 +1842,12 @@ fn scene_lite_snapshot_svg(layers: &[SceneLiteRenderLayer], size: RenderTargetSi
                     width = svg_number(width),
                     height = svg_number(height),
                     radius = svg_number(layer.corner_radius.unwrap_or(0.0)),
-                    color = xml_attr(color),
+                    color = xml_attr(fill),
                     stroke = scene_lite_svg_stroke(layer),
                 ));
             }
             SceneLiteLayerKind::Ellipse => {
-                let Some(color) = &layer.color else {
-                    continue;
-                };
+                let fill = layer.color.as_deref().unwrap_or("none");
                 let width = layer.width.unwrap_or(f64::from(size.width));
                 let height = layer.height.unwrap_or(f64::from(size.height));
                 svg.push_str(&format!(
@@ -1862,7 +1858,7 @@ fn scene_lite_snapshot_svg(layers: &[SceneLiteRenderLayer], size: RenderTargetSi
                     cy = svg_number(height / 2.0),
                     rx = svg_number(width / 2.0),
                     ry = svg_number(height / 2.0),
-                    color = xml_attr(color),
+                    color = xml_attr(fill),
                     stroke = scene_lite_svg_stroke(layer),
                 ));
             }
@@ -4861,10 +4857,13 @@ exit 0
         assert!(sync.errors.is_empty());
         assert_eq!(sync.scene_lite_plans.len(), 1);
         let plan = &sync.scene_lite_plans[0];
-        assert_eq!(plan.layers.len(), 2);
+        assert_eq!(plan.layers.len(), 3);
         assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Rectangle);
         assert_eq!(plan.layers[0].stroke_color.as_deref(), Some("#ffffff"));
         assert_eq!(plan.layers[1].kind, SceneLiteLayerKind::Ellipse);
+        assert_eq!(plan.layers[2].kind, SceneLiteLayerKind::Rectangle);
+        assert_eq!(plan.layers[2].color, None);
+        assert_eq!(plan.layers[2].stroke_color.as_deref(), Some("#ffcc00"));
         let display_source = scene_lite_display_source(plan);
         let snapshot = fs::read_to_string(display_source).unwrap();
         assert!(snapshot.contains("<rect"));
@@ -4872,6 +4871,8 @@ exit 0
         assert!(snapshot.contains(r##"stroke="#ffffff""##));
         assert!(snapshot.contains("<ellipse"));
         assert!(snapshot.contains(r##"fill="#80ffaa""##));
+        assert!(snapshot.contains(r##"stroke="#ffcc00""##));
+        assert!(snapshot.contains(r##"fill="none""##));
         assert_eq!(sync.cache.scene_lite_snapshot_cache_generations, 1);
     }
 
@@ -6386,6 +6387,15 @@ void main() {}
                   "height": 160,
                   "opacity": 0.5,
                   "transform": { "x": 420, "y": 260 }
+                },
+                {
+                  "id": "outline",
+                  "type": "rectangle",
+                  "stroke_color": "#ffcc00",
+                  "stroke_width": 4,
+                  "width": 128,
+                  "height": 72,
+                  "transform": { "x": 760, "y": 260 }
                 }
               ]
             }"##,
