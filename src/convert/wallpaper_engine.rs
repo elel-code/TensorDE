@@ -2478,8 +2478,8 @@ impl FullSceneConversionStatus {
         Self {
             target_runtime: "native-vulkan-full-scene".to_owned(),
             current_runtime: "scene-lite-subset".to_owned(),
-            progress_estimate_percent: 48,
-            execution_model: "original scene metadata preserved; native Vulkan full-scene boundaries now lower layer order, retained sampled-image resources, clear-background composition, rounded-rectangle/simple/concave-path tessellation, time-sampled scene state, and explicit unsupported Wallpaper Engine systems without legacy fallback".to_owned(),
+            progress_estimate_percent: 55,
+            execution_model: "original scene metadata preserved; native Vulkan full-scene boundaries now lower layer order, retained sampled-image resources, clear-background composition, rounded-rectangle/simple/concave-path tessellation, deterministic text glyph geometry, time-sampled scene state, and explicit unsupported Wallpaper Engine systems without legacy fallback".to_owned(),
             source_scene_metadata: Vec::new(),
             completed_boundaries: vec![
                 "package-scene-detection".to_owned(),
@@ -2494,6 +2494,7 @@ impl FullSceneConversionStatus {
                 "solid-vector-shape-quad-geometry".to_owned(),
                 "rounded-rectangle-tessellation-runtime".to_owned(),
                 "simple-path-tessellation-runtime".to_owned(),
+                "deterministic-text-glyph-geometry-runtime".to_owned(),
                 "scene-video-layer-bridge-detection".to_owned(),
             ],
             pending_boundaries: vec![
@@ -2504,7 +2505,6 @@ impl FullSceneConversionStatus {
                 "particle-systems".to_owned(),
                 "parallax-camera-model".to_owned(),
                 "audio-response-runtime".to_owned(),
-                "text-atlas-gpu-rasterization".to_owned(),
                 "video-as-scene-composition".to_owned(),
             ],
         }
@@ -3224,7 +3224,7 @@ void main() {}
         let full_scene = report.full_scene.as_ref().expect("full scene status");
         assert_eq!(full_scene.target_runtime, "native-vulkan-full-scene");
         assert_eq!(full_scene.current_runtime, "scene-lite-subset");
-        assert_eq!(full_scene.progress_estimate_percent, 48);
+        assert_eq!(full_scene.progress_estimate_percent, 55);
         assert!(
             full_scene
                 .source_scene_metadata
@@ -3244,6 +3244,11 @@ void main() {}
             full_scene
                 .completed_boundaries
                 .contains(&"native-runtime-layer-coverage-metric".to_owned())
+        );
+        assert!(
+            full_scene
+                .completed_boundaries
+                .contains(&"deterministic-text-glyph-geometry-runtime".to_owned())
         );
         assert!(
             full_scene

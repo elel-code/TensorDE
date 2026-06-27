@@ -31,7 +31,7 @@ pub(crate) struct NativeVulkanVulkanaliaSceneLiteDrawPassInput {
     pub(crate) quad_vertex_buffer_bytes: u64,
     pub(crate) quad_index_buffer_bytes: u64,
     pub(crate) sampled_image_recording_ready: bool,
-    pub(crate) sampled_image_full_extent_fallback_ready: bool,
+    pub(crate) sampled_image_implicit_full_extent_ready: bool,
     pub(crate) sampled_image_op_count: usize,
     pub(crate) sampled_image_recording_step_count: usize,
     pub(crate) sampled_image_vertex_buffer_bytes: u64,
@@ -319,16 +319,16 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
             .sampled_image_op_count
             .saturating_add(input.clear_background_op_count)
             == input.draw_op_count;
-    let sampled_image_full_extent_fallback_ready = input.plan_ready
+    let sampled_image_implicit_full_extent_ready = input.plan_ready
         && input.native_draw_ready
-        && input.sampled_image_full_extent_fallback_ready
+        && input.sampled_image_implicit_full_extent_ready
         && input
             .sampled_image_op_count
             .saturating_add(input.clear_background_op_count)
             == input.draw_op_count;
-    let mixed_quad_sampled_image_full_extent_fallback_ready = input.plan_ready
+    let mixed_quad_sampled_image_implicit_full_extent_ready = input.plan_ready
         && input.native_draw_ready
-        && input.sampled_image_full_extent_fallback_ready
+        && input.sampled_image_implicit_full_extent_ready
         && input.quad_recording_step_count > 0
         && input.sampled_image_op_count == 1
         && input
@@ -371,31 +371,31 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
                 None,
             )
         }
-    } else if mixed_quad_sampled_image_full_extent_fallback_ready {
+    } else if mixed_quad_sampled_image_implicit_full_extent_ready {
         if input.clear_background_op_count > 0 {
             (
                 true,
-                "clear-background-mixed-quad-sampled-image-full-extent-fallback-present-ready",
+                "clear-background-mixed-quad-sampled-image-implicit-full-extent-present-ready",
                 None,
             )
         } else {
             (
                 true,
-                "mixed-quad-sampled-image-full-extent-fallback-present-ready",
+                "mixed-quad-sampled-image-implicit-full-extent-present-ready",
                 None,
             )
         }
-    } else if sampled_image_full_extent_fallback_ready {
+    } else if sampled_image_implicit_full_extent_ready {
         if input.clear_background_op_count > 0 {
             (
                 true,
-                "clear-background-sampled-image-full-extent-fallback-present-ready",
+                "clear-background-sampled-image-implicit-full-extent-present-ready",
                 None,
             )
         } else {
             (
                 true,
-                "sampled-image-full-extent-fallback-present-ready",
+                "sampled-image-implicit-full-extent-present-ready",
                 None,
             )
         }
@@ -439,20 +439,20 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
 
     let pipeline_labels = if solid_quad_ready {
         vec!["scene-lite-solid-quad-alpha-blend"]
-    } else if mixed_quad_sampled_image_ready || mixed_quad_sampled_image_full_extent_fallback_ready
+    } else if mixed_quad_sampled_image_ready || mixed_quad_sampled_image_implicit_full_extent_ready
     {
         vec![
             "scene-lite-solid-quad-alpha-blend",
             "scene-lite-sampled-image-alpha-blend",
         ]
-    } else if sampled_image_pending || sampled_image_full_extent_fallback_ready {
+    } else if sampled_image_pending || sampled_image_implicit_full_extent_ready {
         vec!["scene-lite-sampled-image-alpha-blend"]
     } else {
         Vec::new()
     };
     let descriptor_set_count = 0;
     let (vertex_buffer_bytes, index_buffer_bytes, vertex_stride_bytes) =
-        if mixed_quad_sampled_image_ready || mixed_quad_sampled_image_full_extent_fallback_ready {
+        if mixed_quad_sampled_image_ready || mixed_quad_sampled_image_implicit_full_extent_ready {
             (
                 input
                     .quad_vertex_buffer_bytes
@@ -468,7 +468,7 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
                 input.sampled_image_index_buffer_bytes,
                 SCENE_LITE_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES,
             )
-        } else if sampled_image_full_extent_fallback_ready {
+        } else if sampled_image_implicit_full_extent_ready {
             (0, 0, SCENE_LITE_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES)
         } else {
             (
@@ -488,8 +488,8 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
         color_op_count: input.color_op_count,
         clear_background_op_count: input.clear_background_op_count,
         solid_quad_count: saturating_u32(input.quad_recording_step_count),
-        sampled_image_quad_count: if sampled_image_full_extent_fallback_ready
-            || mixed_quad_sampled_image_full_extent_fallback_ready
+        sampled_image_quad_count: if sampled_image_implicit_full_extent_ready
+            || mixed_quad_sampled_image_implicit_full_extent_ready
         {
             saturating_u32(input.sampled_image_op_count)
         } else {
@@ -513,7 +513,7 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
                     .quad_recording_step_count
                     .saturating_add(input.sampled_image_recording_step_count),
             )
-        } else if mixed_quad_sampled_image_full_extent_fallback_ready {
+        } else if mixed_quad_sampled_image_implicit_full_extent_ready {
             saturating_u32(
                 input
                     .quad_recording_step_count
@@ -521,15 +521,15 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
             )
         } else if sampled_image_pending {
             saturating_u32(input.sampled_image_recording_step_count)
-        } else if sampled_image_full_extent_fallback_ready {
+        } else if sampled_image_implicit_full_extent_ready {
             saturating_u32(input.sampled_image_op_count)
         } else {
             0
         },
         render_pass_compatibility: if solid_quad_ready
             || sampled_image_pending
-            || sampled_image_full_extent_fallback_ready
-            || mixed_quad_sampled_image_full_extent_fallback_ready
+            || sampled_image_implicit_full_extent_ready
+            || mixed_quad_sampled_image_implicit_full_extent_ready
             || mixed_quad_sampled_image_ready
         {
             "dynamic-rendering-no-render-pass"
@@ -540,45 +540,45 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
             "scene-lite solid quad vertices -> Vulkan 1.3/1.4 dynamic rendering indexed draw -> Wayland swapchain"
         } else if mixed_quad_sampled_image_ready {
             "scene-lite solid quad buffers + retained sampled images -> Vulkan 1.4 dynamic rendering ordered draws -> Wayland swapchain"
-        } else if mixed_quad_sampled_image_full_extent_fallback_ready {
+        } else if mixed_quad_sampled_image_implicit_full_extent_ready {
             "scene-lite solid quad buffers + extent-derived sampled-image geometry -> Vulkan 1.4 dynamic rendering ordered draws -> Wayland swapchain"
         } else if sampled_image_pending {
             "scene-lite image quad vertices -> retained sampled image descriptor heap -> Vulkan 1.4 dynamic rendering indexed draw -> Wayland swapchain"
-        } else if sampled_image_full_extent_fallback_ready {
+        } else if sampled_image_implicit_full_extent_ready {
             "scene-lite image layer -> extent-derived sampled-image geometry -> retained sampled image descriptor heap -> Vulkan 1.4 dynamic rendering indexed draw -> Wayland swapchain"
         } else {
             "scene-lite draw pass has not reached a vulkanalia-recordable backend"
         },
         command_order: native_vulkan_vulkanalia_scene_lite_draw_pass_command_order(
             solid_quad_ready,
-            sampled_image_pending || sampled_image_full_extent_fallback_ready,
+            sampled_image_pending || sampled_image_implicit_full_extent_ready,
             input.fast_clear_color_ready,
-            mixed_quad_sampled_image_ready || mixed_quad_sampled_image_full_extent_fallback_ready,
+            mixed_quad_sampled_image_ready || mixed_quad_sampled_image_implicit_full_extent_ready,
         )
         .to_vec(),
         uses_pipeline_rendering_create_info: solid_quad_ready
             || sampled_image_pending
-            || sampled_image_full_extent_fallback_ready
-            || mixed_quad_sampled_image_full_extent_fallback_ready
+            || sampled_image_implicit_full_extent_ready
+            || mixed_quad_sampled_image_implicit_full_extent_ready
             || mixed_quad_sampled_image_ready,
         uses_dynamic_rendering: solid_quad_ready
             || sampled_image_pending
-            || sampled_image_full_extent_fallback_ready
-            || mixed_quad_sampled_image_full_extent_fallback_ready
+            || sampled_image_implicit_full_extent_ready
+            || mixed_quad_sampled_image_implicit_full_extent_ready
             || mixed_quad_sampled_image_ready,
         uses_synchronization2: solid_quad_ready
             || sampled_image_pending
-            || sampled_image_full_extent_fallback_ready
-            || mixed_quad_sampled_image_full_extent_fallback_ready
+            || sampled_image_implicit_full_extent_ready
+            || mixed_quad_sampled_image_implicit_full_extent_ready
             || mixed_quad_sampled_image_ready,
         uses_submit2: solid_quad_ready
             || sampled_image_pending
-            || sampled_image_full_extent_fallback_ready
-            || mixed_quad_sampled_image_full_extent_fallback_ready
+            || sampled_image_implicit_full_extent_ready
+            || mixed_quad_sampled_image_implicit_full_extent_ready
             || mixed_quad_sampled_image_ready,
         uses_vulkan_1_4_dynamic_rendering_local_read: false,
         vulkan_1_4_dynamic_rendering_local_read_policy: "not-required-for-single-pass-solid-quad; reserve-for-multipass-scene-local-read",
-        zero_copy_scope: "scene-graph-geometry-to-swapchain; no decoded-video frame copy or fallback snapshot upload",
+        zero_copy_scope: "scene-graph-geometry-to-swapchain; no decoded-video frame copy or scene snapshot upload",
         primary_reference: "Vulkan dynamic rendering; FFmpeg remains first reference for video clock/queue discipline",
     }
 }
@@ -1733,7 +1733,7 @@ mod tests {
             quad_vertex_buffer_bytes: 96,
             quad_index_buffer_bytes: 24,
             sampled_image_recording_ready: false,
-            sampled_image_full_extent_fallback_ready: false,
+            sampled_image_implicit_full_extent_ready: false,
             sampled_image_op_count: 0,
             sampled_image_recording_step_count: 0,
             sampled_image_vertex_buffer_bytes: 0,
@@ -1825,15 +1825,15 @@ mod tests {
     }
 
     #[test]
-    fn sampled_image_full_extent_fallback_path_is_present_ready() {
+    fn sampled_image_implicit_full_extent_path_is_present_ready() {
         let mut input = input();
         input.draw_op_count = 1;
-        input.backend_status = "sampled-image-full-extent-fallback-ready";
+        input.backend_status = "sampled-image-implicit-full-extent-ready";
         input.quad_recording_ready = false;
         input.quad_recording_step_count = 0;
         input.quad_vertex_buffer_bytes = 0;
         input.quad_index_buffer_bytes = 0;
-        input.sampled_image_full_extent_fallback_ready = true;
+        input.sampled_image_implicit_full_extent_ready = true;
         input.sampled_image_op_count = 1;
         input.vector_shape_op_count = 0;
 
@@ -1842,7 +1842,7 @@ mod tests {
         assert!(snapshot.backend_ready);
         assert_eq!(
             snapshot.backend_status,
-            "sampled-image-full-extent-fallback-present-ready"
+            "sampled-image-implicit-full-extent-present-ready"
         );
         assert_eq!(snapshot.blocking_reason, None);
         assert_eq!(snapshot.sampled_image_quad_count, 1);
@@ -1869,8 +1869,8 @@ mod tests {
     fn mixed_full_extent_sampled_image_path_is_present_ready() {
         let mut input = input();
         input.draw_op_count = 2;
-        input.backend_status = "mixed-quad-sampled-image-full-extent-fallback-ready";
-        input.sampled_image_full_extent_fallback_ready = true;
+        input.backend_status = "mixed-quad-sampled-image-implicit-full-extent-ready";
+        input.sampled_image_implicit_full_extent_ready = true;
         input.sampled_image_op_count = 1;
 
         let snapshot = native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(input);
@@ -1878,7 +1878,7 @@ mod tests {
         assert!(snapshot.backend_ready);
         assert_eq!(
             snapshot.backend_status,
-            "mixed-quad-sampled-image-full-extent-fallback-present-ready"
+            "mixed-quad-sampled-image-implicit-full-extent-present-ready"
         );
         assert_eq!(snapshot.blocking_reason, None);
         assert_eq!(snapshot.solid_quad_count, 1);

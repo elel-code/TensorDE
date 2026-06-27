@@ -115,7 +115,7 @@ pub fn run_scene_lite(
             {
                 (source, None, Some(geometry))
             } else if let Some((source, fit)) =
-                runtime.vulkanalia_sampled_image_full_extent_fallback_input()
+                runtime.vulkanalia_sampled_image_implicit_full_extent_input()
             {
                 (source, Some(fit), None)
             } else {
@@ -162,10 +162,10 @@ fn native_vulkan_scene_lite_present_route(
         }
         "sampled-image-recording-ready"
         | "clear-background-sampled-image-recording-ready"
-        | "sampled-image-full-extent-fallback-ready"
-        | "clear-background-sampled-image-full-extent-fallback-ready"
-        | "mixed-quad-sampled-image-full-extent-fallback-ready"
-        | "clear-background-mixed-quad-sampled-image-full-extent-fallback-ready"
+        | "sampled-image-implicit-full-extent-ready"
+        | "clear-background-sampled-image-implicit-full-extent-ready"
+        | "mixed-quad-sampled-image-implicit-full-extent-ready"
+        | "clear-background-mixed-quad-sampled-image-implicit-full-extent-ready"
         | "clear-background-mixed-quad-sampled-image-recording-ready"
         | "mixed-quad-sampled-image-recording-ready" => {
             Ok(NativeVulkanSceneLitePresentRouteKind::SampledImage)

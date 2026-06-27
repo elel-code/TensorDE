@@ -28,7 +28,7 @@ pub struct NativeVulkanSceneLiteRuntimeSnapshot {
     pub scene_input_model: &'static str,
     pub scene_resource_model: &'static str,
     pub native_draw_ready: bool,
-    pub fallback_display_available: bool,
+    pub manifest_preview_available: bool,
     pub draw_pass_plan_ready: bool,
     pub draw_pass_backend_ready: bool,
     pub draw_pass_backend_status: &'static str,
@@ -44,7 +44,7 @@ pub struct NativeVulkanSceneLiteRuntimeSnapshot {
     pub draw_pass_quad_index_buffer_bytes: u64,
     pub draw_pass_sampled_image_quads: Vec<NativeVulkanSceneLiteSampledImageQuadSnapshot>,
     pub draw_pass_sampled_image_recording_ready: bool,
-    pub draw_pass_sampled_image_full_extent_fallback_ready: bool,
+    pub draw_pass_sampled_image_implicit_full_extent_ready: bool,
     pub draw_pass_sampled_image_recording_step_count: usize,
     pub draw_pass_sampled_image_recording_steps:
         Vec<NativeVulkanSceneLiteSampledImageRecordingStepSnapshot>,
@@ -66,7 +66,7 @@ pub struct NativeVulkanSceneLiteRuntimeSnapshot {
     pub draw_pass_path_op_count: usize,
     pub draw_pass_required_image_resources: Vec<PathBuf>,
     pub draw_pass_required_video_resources: Vec<PathBuf>,
-    pub draw_pass_requires_text_atlas: bool,
+    pub draw_pass_requires_text_geometry: bool,
     pub draw_pass_requires_path_tessellation: bool,
     pub draw_pass_requires_video_decode: bool,
     pub draw_pass_fast_clear_color: Option<String>,
@@ -102,6 +102,7 @@ pub struct NativeVulkanFullSceneRuntimeSnapshot {
     pub rounded_rectangle_layer_count: usize,
     pub sampled_image_native_layer_count: usize,
     pub tessellated_path_layer_count: usize,
+    pub text_geometry_layer_count: usize,
     pub color_layer_count: usize,
     pub sampled_image_layer_count: usize,
     pub video_layer_count: usize,
@@ -112,8 +113,8 @@ pub struct NativeVulkanFullSceneRuntimeSnapshot {
     pub scene_audio_response_ready: bool,
     pub scene_video_composition_required: bool,
     pub scene_video_composition_ready: bool,
-    pub scene_text_atlas_required: bool,
-    pub scene_text_atlas_ready: bool,
+    pub scene_text_geometry_required: bool,
+    pub scene_text_geometry_ready: bool,
     pub scene_path_tessellation_required: bool,
     pub scene_path_tessellation_ready: bool,
     pub completed_boundaries: Vec<&'static str>,
@@ -211,16 +212,16 @@ impl NativeVulkanSceneLiteRuntimeSnapshot {
         ))
     }
 
-    pub fn vulkanalia_sampled_image_full_extent_fallback_input(
+    pub fn vulkanalia_sampled_image_implicit_full_extent_input(
         &self,
     ) -> Option<(PathBuf, FitMode)> {
-        if !self.draw_pass_sampled_image_full_extent_fallback_ready
+        if !self.draw_pass_sampled_image_implicit_full_extent_ready
             || !matches!(
                 self.draw_pass_backend_status,
-                "sampled-image-full-extent-fallback-ready"
-                    | "clear-background-sampled-image-full-extent-fallback-ready"
-                    | "mixed-quad-sampled-image-full-extent-fallback-ready"
-                    | "clear-background-mixed-quad-sampled-image-full-extent-fallback-ready"
+                "sampled-image-implicit-full-extent-ready"
+                    | "clear-background-sampled-image-implicit-full-extent-ready"
+                    | "mixed-quad-sampled-image-implicit-full-extent-ready"
+                    | "clear-background-mixed-quad-sampled-image-implicit-full-extent-ready"
             )
         {
             return None;
@@ -236,8 +237,8 @@ impl NativeVulkanSceneLiteRuntimeSnapshot {
             self.vulkanalia_draw_pass.backend_status,
             "mixed-quad-sampled-image-dynamic-rendering-recording-ready"
                 | "clear-background-mixed-quad-sampled-image-dynamic-rendering-recording-ready"
-                | "mixed-quad-sampled-image-full-extent-fallback-present-ready"
-                | "clear-background-mixed-quad-sampled-image-full-extent-fallback-present-ready"
+                | "mixed-quad-sampled-image-implicit-full-extent-present-ready"
+                | "clear-background-mixed-quad-sampled-image-implicit-full-extent-present-ready"
         ) || self.draw_pass_quad_vertices.is_empty()
             || self.draw_pass_quad_indices.is_empty()
         {
@@ -306,6 +307,11 @@ pub struct NativeVulkanSceneLiteRecordableQuadSnapshot {
     pub width: Option<f64>,
     pub height: Option<f64>,
     pub corner_radius: Option<f64>,
+    pub text: Option<String>,
+    pub font_size: Option<f64>,
+    pub font_family: Option<String>,
+    pub font_weight: Option<String>,
+    pub text_align: Option<SceneLiteTextAlign>,
     pub transform: SceneLiteTransform,
 }
 
@@ -394,8 +400,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snaps
             quad_vertex_buffer_bytes: pass_plan.quad_vertex_buffer_bytes,
             quad_index_buffer_bytes: pass_plan.quad_index_buffer_bytes,
             sampled_image_recording_ready: pass_plan.sampled_image_recording_ready,
-            sampled_image_full_extent_fallback_ready: pass_plan
-                .sampled_image_full_extent_fallback_ready,
+            sampled_image_implicit_full_extent_ready: pass_plan
+                .sampled_image_implicit_full_extent_ready,
             sampled_image_op_count: pass_plan.sampled_image_op_count,
             sampled_image_recording_step_count: pass_plan.sampled_image_recording_steps.len(),
             sampled_image_vertex_buffer_bytes: pass_plan.sampled_image_vertex_buffer_bytes,
@@ -439,7 +445,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snaps
         scene_input_model: "core scene-lite snapshot layers; groups must be flattened before native Vulkan planning",
         scene_resource_model,
         native_draw_ready: plan.native_draw_ready(),
-        fallback_display_available: plan.fallback_display_available,
+        manifest_preview_available: plan.manifest_preview_available,
         draw_pass_plan_ready: pass_plan.plan_ready,
         draw_pass_backend_ready: pass_plan.backend_ready,
         draw_pass_backend_status: pass_plan.backend_status,
@@ -457,6 +463,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snaps
                 width: quad.width,
                 height: quad.height,
                 corner_radius: quad.corner_radius,
+                text: quad.text,
+                font_size: quad.font_size,
+                font_family: quad.font_family,
+                font_weight: quad.font_weight,
+                text_align: quad.text_align,
                 transform: quad.transform,
             })
             .collect(),
@@ -506,8 +517,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snaps
             })
             .collect(),
         draw_pass_sampled_image_recording_ready: pass_plan.sampled_image_recording_ready,
-        draw_pass_sampled_image_full_extent_fallback_ready: pass_plan
-            .sampled_image_full_extent_fallback_ready,
+        draw_pass_sampled_image_implicit_full_extent_ready: pass_plan
+            .sampled_image_implicit_full_extent_ready,
         draw_pass_sampled_image_recording_step_count: pass_plan.sampled_image_recording_steps.len(),
         draw_pass_sampled_image_recording_steps: pass_plan
             .sampled_image_recording_steps
@@ -557,7 +568,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snaps
         draw_pass_path_op_count: pass_plan.path_op_count,
         draw_pass_required_image_resources: pass_plan.required_image_resources,
         draw_pass_required_video_resources: pass_plan.required_video_resources,
-        draw_pass_requires_text_atlas: pass_plan.requires_text_atlas,
+        draw_pass_requires_text_geometry: pass_plan.requires_text_geometry,
         draw_pass_requires_path_tessellation: pass_plan.requires_path_tessellation,
         draw_pass_requires_video_decode: pass_plan.requires_video_decode,
         draw_pass_fast_clear_color: pass_plan.fast_clear_color,
@@ -637,6 +648,11 @@ fn native_vulkan_full_scene_runtime_snapshot(
         .iter()
         .filter(|step| step.kind == "path")
         .count();
+    let text_geometry_layer_count = pass_plan
+        .quad_recording_steps
+        .iter()
+        .filter(|step| step.kind == "text")
+        .count();
     let rounded_rectangle_layer_count = pass_plan
         .quad_recording_steps
         .iter()
@@ -645,7 +661,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
     let solid_geometry_layer_count = pass_plan.quad_recording_steps.len();
     let sampled_image_native_layer_count = if pass_plan.sampled_image_recording_ready {
         pass_plan.sampled_image_recording_steps.len()
-    } else if pass_plan.sampled_image_full_extent_fallback_ready {
+    } else if pass_plan.sampled_image_implicit_full_extent_ready {
         pass_plan.sampled_image_op_count
     } else {
         0
@@ -665,8 +681,8 @@ fn native_vulkan_full_scene_runtime_snapshot(
         pass_plan.video_op_count > 0 || pass_plan.requires_video_decode;
     let scene_video_composition_ready =
         pass_plan.video_op_count == 0 && !pass_plan.requires_video_decode;
-    let scene_text_atlas_required = pass_plan.text_op_count > 0 || pass_plan.requires_text_atlas;
-    let scene_text_atlas_ready = pass_plan.text_op_count == 0 && !pass_plan.requires_text_atlas;
+    let scene_text_geometry_required = pass_plan.text_op_count > 0;
+    let scene_text_geometry_ready = pass_plan.text_op_count == text_geometry_layer_count;
     let scene_path_tessellation_required =
         pass_plan.path_op_count > 0 && pass_plan.requires_path_tessellation;
     let scene_path_tessellation_ready = !pass_plan.requires_path_tessellation;
@@ -702,6 +718,9 @@ fn native_vulkan_full_scene_runtime_snapshot(
     if tessellated_path_layer_count > 0 {
         completed_boundaries.push("simple-path-tessellation-runtime");
     }
+    if text_geometry_layer_count > 0 {
+        completed_boundaries.push("deterministic-text-glyph-geometry-runtime");
+    }
 
     let mut pending_boundaries = Vec::new();
     if native_runtime_pending_layer_count > 0 {
@@ -710,8 +729,8 @@ fn native_vulkan_full_scene_runtime_snapshot(
     if pass_plan.video_op_count > 0 {
         pending_boundaries.push("video-as-scene-composition");
     }
-    if pass_plan.text_op_count > 0 || pass_plan.requires_text_atlas {
-        pending_boundaries.push("text-atlas-gpu-rasterization");
+    if pass_plan.requires_text_geometry {
+        pending_boundaries.push("text-glyph-geometry-runtime");
     }
     if pass_plan.path_op_count > 0 && pass_plan.requires_path_tessellation {
         pending_boundaries.push("path-tessellation-runtime");
@@ -729,7 +748,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
     NativeVulkanFullSceneRuntimeSnapshot {
         target_runtime: "native-vulkan-full-scene",
         current_runtime: "native-vulkan-scene-runtime-subset",
-        progress_estimate_percent: 48,
+        progress_estimate_percent: 55,
         full_scene_complete: false,
         execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
         native_scene_graph_lowering_ready: plan.native_draw_ready(),
@@ -749,6 +768,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
         rounded_rectangle_layer_count,
         sampled_image_native_layer_count,
         tessellated_path_layer_count,
+        text_geometry_layer_count,
         color_layer_count: pass_plan.color_op_count,
         sampled_image_layer_count: pass_plan.sampled_image_op_count,
         video_layer_count: pass_plan.video_op_count,
@@ -759,8 +779,8 @@ fn native_vulkan_full_scene_runtime_snapshot(
         scene_audio_response_ready: false,
         scene_video_composition_required,
         scene_video_composition_ready,
-        scene_text_atlas_required,
-        scene_text_atlas_ready,
+        scene_text_geometry_required,
+        scene_text_geometry_ready,
         scene_path_tessellation_required,
         scene_path_tessellation_ready,
         completed_boundaries,
@@ -782,15 +802,15 @@ fn native_vulkan_scene_lite_resource_model(
             "clear-background-and-retained-solid-quad-geometry"
         }
         "sampled-image-recording-ready"
-        | "sampled-image-full-extent-fallback-ready"
+        | "sampled-image-implicit-full-extent-ready"
         | "clear-background-sampled-image-recording-ready"
-        | "clear-background-sampled-image-full-extent-fallback-ready" => {
+        | "clear-background-sampled-image-implicit-full-extent-ready" => {
             "retained-sampled-images-descriptor-heap"
         }
         "mixed-quad-sampled-image-recording-ready"
-        | "mixed-quad-sampled-image-full-extent-fallback-ready"
+        | "mixed-quad-sampled-image-implicit-full-extent-ready"
         | "clear-background-mixed-quad-sampled-image-recording-ready"
-        | "clear-background-mixed-quad-sampled-image-full-extent-fallback-ready" => {
+        | "clear-background-mixed-quad-sampled-image-implicit-full-extent-ready" => {
             "retained-solid-quad-geometry-and-sampled-images-descriptor-heap"
         }
         _ => "not-native-vulkan-presentable-yet",
@@ -888,22 +908,19 @@ mod tests {
             "core scene-lite snapshot layers; groups must be flattened before native Vulkan planning"
         );
         assert!(snapshot.native_draw_ready);
-        assert!(snapshot.fallback_display_available);
+        assert!(snapshot.manifest_preview_available);
         assert!(snapshot.draw_pass_plan_ready);
-        assert!(!snapshot.draw_pass_backend_ready);
+        assert!(snapshot.draw_pass_backend_ready);
         assert_eq!(
             snapshot.scene_resource_model,
-            "not-native-vulkan-presentable-yet"
+            "retained-solid-quad-geometry-and-sampled-images-descriptor-heap"
         );
         assert_eq!(
             snapshot.draw_pass_backend_status,
-            "partial-solid-quad-recording-ready"
+            "mixed-quad-sampled-image-implicit-full-extent-ready"
         );
-        assert_eq!(
-            snapshot.draw_pass_blocking_reason,
-            Some("non-quad-draw-ops-need-recording-backend")
-        );
-        assert_eq!(snapshot.draw_pass_recordable_op_count, 1);
+        assert_eq!(snapshot.draw_pass_blocking_reason, None);
+        assert_eq!(snapshot.draw_pass_recordable_op_count, 2);
         assert_eq!(snapshot.draw_pass_color_op_count, 0);
         assert_eq!(snapshot.draw_pass_sampled_image_op_count, 1);
         assert_eq!(snapshot.draw_pass_video_op_count, 0);
@@ -915,7 +932,7 @@ mod tests {
             vec![PathBuf::from("/tmp/scene-hero.png")]
         );
         assert!(snapshot.draw_pass_required_video_resources.is_empty());
-        assert!(snapshot.draw_pass_requires_text_atlas);
+        assert!(!snapshot.draw_pass_requires_text_geometry);
         assert!(!snapshot.draw_pass_requires_path_tessellation);
         assert!(!snapshot.draw_pass_requires_video_decode);
         assert_eq!(snapshot.draw_pass_fast_clear_color, None);
@@ -960,11 +977,20 @@ mod tests {
             snapshot.draw_pass_recordable_quads[0].corner_radius,
             Some(12.0)
         );
-        assert_eq!(snapshot.full_scene.solid_geometry_layer_count, 1);
+        assert_eq!(snapshot.draw_pass_recordable_quads[1].kind, "text");
+        assert_eq!(
+            snapshot.draw_pass_recordable_quads[1].text.as_deref(),
+            Some("Now Playing")
+        );
+        assert_eq!(snapshot.draw_pass_quad_recording_steps.len(), 2);
+        assert_eq!(snapshot.draw_pass_quad_recording_steps[1].kind, "text");
+        assert!(snapshot.draw_pass_quad_recording_steps[1].vertex_count > 4);
+        assert_eq!(snapshot.full_scene.solid_geometry_layer_count, 2);
         assert_eq!(snapshot.full_scene.rounded_rectangle_layer_count, 1);
-        assert_eq!(snapshot.full_scene.native_runtime_layer_count, 2);
-        assert_eq!(snapshot.full_scene.native_runtime_pending_layer_count, 1);
-        assert_eq!(snapshot.full_scene.native_runtime_coverage_percent, 66);
+        assert_eq!(snapshot.full_scene.text_geometry_layer_count, 1);
+        assert_eq!(snapshot.full_scene.native_runtime_layer_count, 3);
+        assert_eq!(snapshot.full_scene.native_runtime_pending_layer_count, 0);
+        assert_eq!(snapshot.full_scene.native_runtime_coverage_percent, 100);
     }
 
     #[test]
@@ -1034,16 +1060,16 @@ mod tests {
             snapshot.full_scene.current_runtime,
             "native-vulkan-scene-runtime-subset"
         );
-        assert_eq!(snapshot.full_scene.progress_estimate_percent, 48);
+        assert_eq!(snapshot.full_scene.progress_estimate_percent, 55);
         assert!(!snapshot.full_scene.full_scene_complete);
         assert!(snapshot.full_scene.timeline_snapshot_runtime_ready);
         assert_eq!(snapshot.full_scene.timeline_snapshot_time_ms, 1234);
         assert_eq!(snapshot.full_scene.source_layer_count, 3);
         assert_eq!(snapshot.full_scene.active_scene_layer_count, 3);
         assert_eq!(snapshot.full_scene.flattened_draw_layer_count, 3);
-        assert_eq!(snapshot.full_scene.native_runtime_layer_count, 1);
-        assert_eq!(snapshot.full_scene.native_runtime_pending_layer_count, 2);
-        assert_eq!(snapshot.full_scene.native_runtime_coverage_percent, 33);
+        assert_eq!(snapshot.full_scene.native_runtime_layer_count, 2);
+        assert_eq!(snapshot.full_scene.native_runtime_pending_layer_count, 1);
+        assert_eq!(snapshot.full_scene.native_runtime_coverage_percent, 66);
         assert_eq!(snapshot.full_scene.sampled_image_native_layer_count, 1);
         assert_eq!(snapshot.full_scene.sampled_image_layer_count, 1);
         assert_eq!(snapshot.full_scene.video_layer_count, 1);
@@ -1051,8 +1077,9 @@ mod tests {
         assert!(!snapshot.full_scene.scene_audio_response_ready);
         assert!(snapshot.full_scene.scene_video_composition_required);
         assert!(!snapshot.full_scene.scene_video_composition_ready);
-        assert!(snapshot.full_scene.scene_text_atlas_required);
-        assert!(!snapshot.full_scene.scene_text_atlas_ready);
+        assert!(snapshot.full_scene.scene_text_geometry_required);
+        assert!(snapshot.full_scene.scene_text_geometry_ready);
+        assert_eq!(snapshot.full_scene.text_geometry_layer_count, 1);
         assert!(
             snapshot
                 .full_scene
@@ -1064,6 +1091,12 @@ mod tests {
                 .full_scene
                 .completed_boundaries
                 .contains(&"sampled-image-scene-composition")
+        );
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"deterministic-text-glyph-geometry-runtime")
         );
         assert!(
             snapshot
@@ -1105,7 +1138,7 @@ mod tests {
             native_vulkan_scene_lite_runtime_snapshot(&item).expect("scene-lite snapshot");
 
         assert!(!snapshot.native_draw_ready);
-        assert!(snapshot.fallback_display_available);
+        assert!(snapshot.manifest_preview_available);
         assert!(!snapshot.draw_pass_plan_ready);
         assert!(!snapshot.draw_pass_backend_ready);
         assert_eq!(

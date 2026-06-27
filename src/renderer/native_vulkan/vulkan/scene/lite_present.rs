@@ -784,7 +784,7 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
             present_device.device.destroy_device(None);
         }
         return Err(
-            "scene-lite sampled-image runtime requires VK_EXT_descriptor_heap; descriptor set and push descriptor fallback paths are disabled"
+            "scene-lite sampled-image runtime requires VK_EXT_descriptor_heap; descriptor set and push descriptor paths are disabled"
                 .to_owned(),
         );
     }
@@ -1591,7 +1591,7 @@ fn run_scene_lite_sampled_image_present_loop(
         uses_synchronization2: true,
         uses_submit2: true,
         zero_copy_scope: if solid_quad_draw.is_some() {
-            "scene geometry buffers and retained sampled images render directly to the swapchain; no fallback scene snapshot upload"
+            "scene geometry buffers and retained sampled images render directly to the swapchain; no scene snapshot upload"
         } else {
             "source image is uploaded once into a retained Vulkan sampled image and rendered directly to the swapchain"
         },
@@ -2062,12 +2062,12 @@ fn scene_lite_solid_quad_geometry_payload(
     extent: vk::Extent2D,
     color: NativeVulkanClearColor,
 ) -> Result<VulkanaliaSceneLiteSolidQuadGeometryPayload, String> {
-    let fallback;
+    let derived_geometry;
     let input = if let Some(input) = input {
         input
     } else {
-        fallback = scene_lite_solid_quad_full_extent_geometry_input(extent, color);
-        &fallback
+        derived_geometry = scene_lite_solid_quad_full_extent_geometry_input(extent, color);
+        &derived_geometry
     };
     scene_lite_solid_quad_geometry_payload_from_input(input)
 }
@@ -2155,15 +2155,15 @@ fn scene_lite_sampled_image_geometry_payload(
     fit: Option<FitMode>,
     source_extent: vk::Extent2D,
 ) -> Result<VulkanaliaSceneLiteSampledImageGeometryPayload, String> {
-    let fallback;
+    let derived_geometry;
     let input = if let Some(input) = input {
         input
     } else if let Some(fit) = fit {
-        fallback = scene_lite_sampled_image_fit_geometry_input(extent, source_extent, fit)?;
-        &fallback
+        derived_geometry = scene_lite_sampled_image_fit_geometry_input(extent, source_extent, fit)?;
+        &derived_geometry
     } else {
-        fallback = scene_lite_sampled_image_full_extent_geometry_input(extent);
-        &fallback
+        derived_geometry = scene_lite_sampled_image_full_extent_geometry_input(extent);
+        &derived_geometry
     };
     scene_lite_sampled_image_geometry_payload_from_input(input)
 }
@@ -2312,12 +2312,12 @@ fn scene_lite_sampled_image_sampler_mode(
 fn scene_lite_sampled_image_resource_sampler_mode(
     resource_index: usize,
     draw_steps: &[NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep],
-    fallback_fit: Option<FitMode>,
+    implicit_fit: Option<FitMode>,
 ) -> NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode {
     draw_steps
         .get(resource_index)
         .and_then(|step| step.fit)
-        .or(fallback_fit)
+        .or(implicit_fit)
         .map_or(
             NativeVulkanVulkanaliaSceneLiteSampledImageSamplerMode::ClampToEdge,
             |fit| scene_lite_sampled_image_sampler_mode(Some(fit)),

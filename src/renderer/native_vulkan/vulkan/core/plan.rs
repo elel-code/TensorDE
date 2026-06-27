@@ -90,6 +90,10 @@ pub fn native_vulkan_backend_plan() -> NativeVulkanBackendPlan {
             "VK_KHR_present_id2",
             "VK_KHR_present_wait2",
             "VK_KHR_swapchain_maintenance1",
+            "VK_KHR_maintenance7",
+            "VK_KHR_maintenance8",
+            "VK_KHR_maintenance9",
+            "VK_KHR_maintenance10",
         ],
         prioritized_vulkan_1_4_features: &[
             "dynamic-rendering",
@@ -146,6 +150,7 @@ pub fn native_vulkan_backend_plan() -> NativeVulkanBackendPlan {
             "probe Vulkan Video H.264/H.265/AV1 profile and format parity",
             "route H.264/H.265/AV1 direct-video submit through owned session/image/bitstream/command resources",
             "keep direct present timing telemetry on the native Vulkan main path",
+            "enable maintenance7/8/9/10 on the present device when feature bits are available",
             "keep descriptor_sets=0 and descriptor_heap_only=true in video evidence",
         ],
     }
@@ -184,6 +189,10 @@ mod tests {
         assert!(
             plan.preferred_optional_device_extensions
                 .contains(&"VK_KHR_present_wait2")
+        );
+        assert!(
+            plan.preferred_optional_device_extensions
+                .contains(&"VK_KHR_maintenance10")
         );
         assert!(
             plan.preferred_optional_device_extensions

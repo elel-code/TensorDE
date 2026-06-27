@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::core::{FitMode, SceneLiteTransform};
+use crate::core::{FitMode, SceneLiteTextAlign, SceneLiteTransform};
 
 use super::super::present::render_plan::{
     NativeVulkanSceneLiteDrawOp, NativeVulkanSceneLiteDrawOpKind, NativeVulkanSceneLiteDrawPlan,
@@ -10,6 +10,11 @@ const SCENE_LITE_SOLID_QUAD_VERTEX_BYTES: u64 = 24;
 const SCENE_LITE_SOLID_QUAD_INDEX_BYTES: u64 = 4;
 const SCENE_LITE_ELLIPSE_SEGMENTS: usize = 48;
 const SCENE_LITE_ROUNDED_RECT_CORNER_SEGMENTS: usize = 8;
+const SCENE_LITE_TEXT_DEFAULT_FONT_SIZE: f64 = 24.0;
+const SCENE_LITE_TEXT_GLYPH_COLUMNS: usize = 5;
+const SCENE_LITE_TEXT_GLYPH_ROWS: usize = 7;
+const SCENE_LITE_TEXT_GLYPH_ADVANCE_COLUMNS: f64 = 6.0;
+const SCENE_LITE_TEXT_LINE_ADVANCE_ROWS: f64 = 8.0;
 const SCENE_LITE_SAMPLED_IMAGE_VERTEX_COUNT: u32 = 4;
 const SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT: u32 = 6;
 const SCENE_LITE_SAMPLED_IMAGE_VERTEX_BYTES: u64 = 20;
@@ -25,6 +30,11 @@ pub(super) struct NativeVulkanSceneLiteRecordableQuad {
     pub(super) width: Option<f64>,
     pub(super) height: Option<f64>,
     pub(super) corner_radius: Option<f64>,
+    pub(super) text: Option<String>,
+    pub(super) font_size: Option<f64>,
+    pub(super) font_family: Option<String>,
+    pub(super) font_weight: Option<String>,
+    pub(super) text_align: Option<SceneLiteTextAlign>,
     pub(super) path_data: Option<String>,
     pub(super) transform: SceneLiteTransform,
 }
@@ -104,7 +114,7 @@ pub(super) struct NativeVulkanSceneLiteDrawPassPlan {
     pub(super) quad_index_buffer_bytes: u64,
     pub(super) sampled_image_quads: Vec<NativeVulkanSceneLiteSampledImageQuad>,
     pub(super) sampled_image_recording_ready: bool,
-    pub(super) sampled_image_full_extent_fallback_ready: bool,
+    pub(super) sampled_image_implicit_full_extent_ready: bool,
     pub(super) sampled_image_recording_steps: Vec<NativeVulkanSceneLiteSampledImageRecordingStep>,
     pub(super) sampled_image_vertices: Vec<NativeVulkanSceneLiteSampledImageVertex>,
     pub(super) sampled_image_indices: Vec<u32>,
@@ -120,7 +130,7 @@ pub(super) struct NativeVulkanSceneLiteDrawPassPlan {
     pub(super) path_op_count: usize,
     pub(super) required_image_resources: Vec<PathBuf>,
     pub(super) required_video_resources: Vec<PathBuf>,
-    pub(super) requires_text_atlas: bool,
+    pub(super) requires_text_geometry: bool,
     pub(super) requires_path_tessellation: bool,
     pub(super) requires_video_decode: bool,
     pub(super) fast_clear_color: Option<String>,
@@ -184,6 +194,11 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         .iter()
         .filter(|step| step.kind == "path")
         .count();
+    let recorded_text_geometry_count = quad_recording_payload
+        .steps
+        .iter()
+        .filter(|step| step.kind == "text")
+        .count();
     let quad_recording_ready = !quad_recording_payload.steps.is_empty()
         && quad_recording_payload
             .steps
@@ -201,7 +216,7 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         && sampled_image_recording_payload.steps.len() == sampled_image_op_count;
     let full_extent_sampled_image_op_count =
         native_vulkan_scene_lite_full_extent_sampled_image_op_count(&draw_plan.draw_ops);
-    let sampled_image_full_extent_fallback_ready =
+    let sampled_image_implicit_full_extent_ready =
         full_extent_sampled_image_op_count == 1 && sampled_image_op_count == 1;
     let mixed_quad_sampled_image_recording_ready = !quad_recording_payload.steps.is_empty()
         && sampled_image_recording_ready
@@ -211,7 +226,7 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
             .saturating_add(sampled_image_recording_payload.steps.len())
             .saturating_add(clear_background_op_count)
             == draw_plan.draw_ops.len();
-    let mixed_quad_sampled_image_full_extent_fallback_ready =
+    let mixed_quad_sampled_image_implicit_full_extent_ready =
         !quad_recording_payload.steps.is_empty()
             && full_extent_sampled_image_op_count > 0
             && full_extent_sampled_image_op_count == 1
@@ -238,15 +253,15 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
     let sampled_image_recording_complete = sampled_image_recording_ready
         && sampled_image_op_count.saturating_add(clear_background_op_count)
             == draw_plan.draw_ops.len();
-    let sampled_image_full_extent_fallback_backend_ready = sampled_image_full_extent_fallback_ready
+    let sampled_image_implicit_full_extent_backend_ready = sampled_image_implicit_full_extent_ready
         && sampled_image_op_count.saturating_add(clear_background_op_count)
             == draw_plan.draw_ops.len();
     let backend_ready = plan_ready
         && (fast_clear_color.is_some()
             || quad_recording_ready
             || sampled_image_recording_complete
-            || sampled_image_full_extent_fallback_backend_ready
-            || mixed_quad_sampled_image_full_extent_fallback_ready
+            || sampled_image_implicit_full_extent_backend_ready
+            || mixed_quad_sampled_image_implicit_full_extent_ready
             || mixed_quad_sampled_image_recording_ready);
     let (backend_status, blocking_reason) = if !plan_ready {
         (
@@ -272,23 +287,23 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
             )
         } else if mixed_quad_sampled_image_recording_ready {
             ("mixed-quad-sampled-image-recording-ready", None)
-        } else if mixed_quad_sampled_image_full_extent_fallback_ready
+        } else if mixed_quad_sampled_image_implicit_full_extent_ready
             && clear_background_op_count > 0
         {
             (
-                "clear-background-mixed-quad-sampled-image-full-extent-fallback-ready",
+                "clear-background-mixed-quad-sampled-image-implicit-full-extent-ready",
                 None,
             )
-        } else if mixed_quad_sampled_image_full_extent_fallback_ready {
-            ("mixed-quad-sampled-image-full-extent-fallback-ready", None)
-        } else if sampled_image_full_extent_fallback_backend_ready && clear_background_op_count > 0
+        } else if mixed_quad_sampled_image_implicit_full_extent_ready {
+            ("mixed-quad-sampled-image-implicit-full-extent-ready", None)
+        } else if sampled_image_implicit_full_extent_backend_ready && clear_background_op_count > 0
         {
             (
-                "clear-background-sampled-image-full-extent-fallback-ready",
+                "clear-background-sampled-image-implicit-full-extent-ready",
                 None,
             )
-        } else if sampled_image_full_extent_fallback_backend_ready {
-            ("sampled-image-full-extent-fallback-ready", None)
+        } else if sampled_image_implicit_full_extent_backend_ready {
+            ("sampled-image-implicit-full-extent-ready", None)
         } else if sampled_image_recording_complete && clear_background_op_count > 0 {
             ("clear-background-sampled-image-recording-ready", None)
         } else {
@@ -336,7 +351,7 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         quad_index_buffer_bytes,
         sampled_image_quads,
         sampled_image_recording_ready,
-        sampled_image_full_extent_fallback_ready,
+        sampled_image_implicit_full_extent_ready,
         sampled_image_recording_steps: sampled_image_recording_payload.steps,
         sampled_image_vertices: sampled_image_recording_payload.vertices,
         sampled_image_indices: sampled_image_recording_payload.indices,
@@ -352,7 +367,7 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         path_op_count,
         required_image_resources,
         required_video_resources,
-        requires_text_atlas: text_op_count > 0,
+        requires_text_geometry: text_op_count > recorded_text_geometry_count,
         requires_path_tessellation: path_op_count > recorded_path_geometry_count,
         requires_video_decode: video_op_count > 0,
         fast_clear_color,
@@ -527,6 +542,12 @@ fn native_vulkan_scene_lite_solid_has_recordable_geometry(
             .path_data
             .as_deref()
             .is_some_and(|path| !path.is_empty()),
+        "text" => {
+            quad.text
+                .as_deref()
+                .is_some_and(|text| !text.trim().is_empty())
+                && native_vulkan_scene_lite_text_font_size(quad).is_some()
+        }
         _ => false,
     }
 }
@@ -550,6 +571,7 @@ fn native_vulkan_scene_lite_solid_geometry(
         "rounded-rectangle" => native_vulkan_scene_lite_rounded_rectangle_geometry(quad),
         "ellipse" => native_vulkan_scene_lite_ellipse_geometry(quad),
         "path" => native_vulkan_scene_lite_path_geometry(quad),
+        "text" => native_vulkan_scene_lite_text_geometry(quad),
         _ => None,
     }
 }
@@ -731,6 +753,271 @@ fn native_vulkan_scene_lite_path_geometry(
     Some((vertices, indices))
 }
 
+fn native_vulkan_scene_lite_text_geometry(
+    quad: &NativeVulkanSceneLiteRecordableQuad,
+) -> Option<(Vec<NativeVulkanSceneLiteQuadVertex>, Vec<u32>)> {
+    let text = quad.text.as_deref()?.trim_end_matches(['\r', '\n']);
+    if text.trim().is_empty() {
+        return None;
+    }
+    let font_size = native_vulkan_scene_lite_text_font_size(quad)?;
+    let cell = font_size / SCENE_LITE_TEXT_GLYPH_ROWS as f64;
+    let line_advance = cell * SCENE_LITE_TEXT_LINE_ADVANCE_ROWS;
+    let lines = text.lines().collect::<Vec<_>>();
+    if lines.is_empty() {
+        return None;
+    }
+    let measured_width = lines
+        .iter()
+        .map(|line| native_vulkan_scene_lite_text_line_width(line, cell))
+        .fold(0.0, f64::max);
+    if measured_width <= 0.0 {
+        return None;
+    }
+    let layout_width = quad
+        .width
+        .filter(|width| width.is_finite() && *width > 0.0)
+        .unwrap_or(measured_width);
+    let measured_height = font_size + line_advance * lines.len().saturating_sub(1) as f64;
+    let layout_height = quad
+        .height
+        .filter(|height| height.is_finite() && *height > 0.0)
+        .unwrap_or(measured_height);
+    let left = -quad.transform.anchor_x * layout_width;
+    let top = -quad.transform.anchor_y * layout_height;
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    for (line_index, line) in lines.iter().enumerate() {
+        let line_width = native_vulkan_scene_lite_text_line_width(line, cell);
+        let align_offset = match quad.text_align.unwrap_or_default() {
+            SceneLiteTextAlign::Start => 0.0,
+            SceneLiteTextAlign::Middle => (layout_width - line_width) * 0.5,
+            SceneLiteTextAlign::End => layout_width - line_width,
+        };
+        let mut cursor_x = left + align_offset.max(0.0);
+        let line_top = top + line_index as f64 * line_advance;
+        for ch in line.chars() {
+            let pattern = native_vulkan_scene_lite_text_glyph_pattern(ch);
+            for (row, bits) in pattern.iter().enumerate() {
+                for column in 0..SCENE_LITE_TEXT_GLYPH_COLUMNS {
+                    let mask = 1u8 << (SCENE_LITE_TEXT_GLYPH_COLUMNS - 1 - column);
+                    if bits & mask == 0 {
+                        continue;
+                    }
+                    native_vulkan_scene_lite_push_solid_rect(
+                        &mut vertices,
+                        &mut indices,
+                        cursor_x + column as f64 * cell,
+                        line_top + row as f64 * cell,
+                        cell,
+                        cell,
+                        quad.rgba,
+                        quad.transform,
+                    )?;
+                }
+            }
+            cursor_x += cell * SCENE_LITE_TEXT_GLYPH_ADVANCE_COLUMNS;
+        }
+    }
+
+    if vertices.is_empty() || indices.is_empty() {
+        None
+    } else {
+        Some((vertices, indices))
+    }
+}
+
+fn native_vulkan_scene_lite_text_font_size(
+    quad: &NativeVulkanSceneLiteRecordableQuad,
+) -> Option<f64> {
+    let font_size = quad.font_size.unwrap_or(SCENE_LITE_TEXT_DEFAULT_FONT_SIZE);
+    if font_size.is_finite() && font_size > 0.0 {
+        Some(font_size)
+    } else {
+        None
+    }
+}
+
+fn native_vulkan_scene_lite_text_line_width(line: &str, cell: f64) -> f64 {
+    let char_count = line.chars().count();
+    if char_count == 0 {
+        0.0
+    } else {
+        let columns = SCENE_LITE_TEXT_GLYPH_COLUMNS as f64
+            + SCENE_LITE_TEXT_GLYPH_ADVANCE_COLUMNS * char_count.saturating_sub(1) as f64;
+        columns * cell
+    }
+}
+
+fn native_vulkan_scene_lite_push_solid_rect(
+    vertices: &mut Vec<NativeVulkanSceneLiteQuadVertex>,
+    indices: &mut Vec<u32>,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    rgba: [f32; 4],
+    transform: SceneLiteTransform,
+) -> Option<()> {
+    if vertices.len().saturating_add(4) > u32::MAX as usize {
+        return None;
+    }
+    let first_vertex = vertices.len() as u32;
+    let points = [
+        (x, y),
+        (x + width, y),
+        (x, y + height),
+        (x + width, y + height),
+    ];
+    for (x, y) in points {
+        vertices.push(NativeVulkanSceneLiteQuadVertex {
+            position: native_vulkan_scene_lite_transform_point(x, y, transform)?,
+            rgba,
+        });
+    }
+    indices.extend_from_slice(&[
+        first_vertex,
+        first_vertex + 1,
+        first_vertex + 2,
+        first_vertex + 2,
+        first_vertex + 1,
+        first_vertex + 3,
+    ]);
+    Some(())
+}
+
+fn native_vulkan_scene_lite_text_glyph_pattern(ch: char) -> [u8; SCENE_LITE_TEXT_GLYPH_ROWS] {
+    match ch.to_ascii_uppercase() {
+        'A' => [
+            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+        'B' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110,
+        ],
+        'C' => [
+            0b01111, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b01111,
+        ],
+        'D' => [
+            0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110,
+        ],
+        'E' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
+        ],
+        'F' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'G' => [
+            0b01111, 0b10000, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111,
+        ],
+        'H' => [
+            0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+        'I' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111,
+        ],
+        'J' => [
+            0b00111, 0b00010, 0b00010, 0b00010, 0b10010, 0b10010, 0b01100,
+        ],
+        'K' => [
+            0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001,
+        ],
+        'L' => [
+            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
+        ],
+        'M' => [
+            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
+        ],
+        'N' => [
+            0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001,
+        ],
+        'O' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'P' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'Q' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101,
+        ],
+        'R' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
+        ],
+        'S' => [
+            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        'T' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'U' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'V' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100,
+        ],
+        'W' => [
+            0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010,
+        ],
+        'X' => [
+            0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001,
+        ],
+        'Y' => [
+            0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'Z' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
+        ],
+        '0' => [
+            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+        ],
+        '1' => [
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        '2' => [
+            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
+        ],
+        '3' => [
+            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        '4' => [
+            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+        ],
+        '5' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110,
+        ],
+        '6' => [
+            0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+        ],
+        '7' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+        ],
+        '8' => [
+            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+        ],
+        '9' => [
+            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110,
+        ],
+        ' ' | '\t' => [0, 0, 0, 0, 0, 0, 0],
+        '-' => [0, 0, 0, 0b11111, 0, 0, 0],
+        '_' => [0, 0, 0, 0, 0, 0, 0b11111],
+        '.' => [0, 0, 0, 0, 0, 0b01100, 0b01100],
+        ',' => [0, 0, 0, 0, 0, 0b01100, 0b01000],
+        ':' => [0, 0b01100, 0b01100, 0, 0b01100, 0b01100, 0],
+        '/' => [
+            0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000,
+        ],
+        '#' => [
+            0b01010, 0b11111, 0b01010, 0b01010, 0b11111, 0b01010, 0b01010,
+        ],
+        '%' => [
+            0b11001, 0b11010, 0b00010, 0b00100, 0b01000, 0b01011, 0b10011,
+        ],
+        '?' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100],
+        '!' => [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0, 0b00100],
+        _ => [0b11111, 0b00001, 0b00010, 0b00100, 0b00100, 0, 0b00100],
+    }
+}
+
 fn native_vulkan_scene_lite_sampled_image_vertices(
     quad: &NativeVulkanSceneLiteSampledImageQuad,
 ) -> Option<[NativeVulkanSceneLiteSampledImageVertex; 4]> {
@@ -844,6 +1131,9 @@ fn native_vulkan_scene_lite_recordable_quad(
         {
             native_vulkan_scene_lite_recordable_quad_from_op(op, "path")
         }
+        NativeVulkanSceneLiteDrawOpKind::Text => {
+            native_vulkan_scene_lite_recordable_quad_from_op(op, "text")
+        }
         _ => None,
     }
 }
@@ -905,6 +1195,11 @@ fn native_vulkan_scene_lite_recordable_quad_from_op(
         width: op.width,
         height: op.height,
         corner_radius: op.corner_radius,
+        text: op.text.clone(),
+        font_size: op.font_size,
+        font_family: op.font_family.clone(),
+        font_weight: op.font_weight.clone(),
+        text_align: op.text_align,
         path_data: op.path_data.clone(),
         transform: op.transform,
     })
@@ -1285,7 +1580,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![color],
             unsupported_layers: Vec::new(),
-            fallback_display_available: false,
+            manifest_preview_available: false,
         };
 
         let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
@@ -1307,6 +1602,7 @@ mod tests {
         );
         assert_eq!(pass_plan.color_op_count, 1);
         assert_eq!(pass_plan.fast_clear_color.as_deref(), Some("#102030"));
+        assert_eq!(pass_plan.recordable_quads[0].text, None);
     }
 
     #[test]
@@ -1319,7 +1615,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![image, text, path],
             unsupported_layers: Vec::new(),
-            fallback_display_available: true,
+            manifest_preview_available: true,
         };
 
         let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
@@ -1338,7 +1634,7 @@ mod tests {
             pass_plan.required_image_resources,
             vec![PathBuf::from("/tmp/hero.png")]
         );
-        assert!(pass_plan.requires_text_atlas);
+        assert!(pass_plan.requires_text_geometry);
         assert!(pass_plan.requires_path_tessellation);
         assert!(!pass_plan.requires_video_decode);
     }
@@ -1352,7 +1648,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![video],
             unsupported_layers: Vec::new(),
-            fallback_display_available: false,
+            manifest_preview_available: false,
         };
 
         let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
@@ -1389,7 +1685,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![image],
             unsupported_layers: Vec::new(),
-            fallback_display_available: false,
+            manifest_preview_available: false,
         };
 
         let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
@@ -1424,7 +1720,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_pass_plan_reports_full_extent_sampled_image_fallback() {
+    fn draw_pass_plan_reports_implicit_full_extent_sampled_image() {
         let mut image = draw_op(0, NativeVulkanSceneLiteDrawOpKind::Image);
         image.source = Some(PathBuf::from("/tmp/fullscreen.png"));
         image.fit = FitMode::Cover;
@@ -1432,7 +1728,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![image],
             unsupported_layers: Vec::new(),
-            fallback_display_available: false,
+            manifest_preview_available: false,
         };
 
         let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
@@ -1441,12 +1737,12 @@ mod tests {
         assert!(pass_plan.backend_ready);
         assert_eq!(
             pass_plan.backend_status,
-            "sampled-image-full-extent-fallback-ready"
+            "sampled-image-implicit-full-extent-ready"
         );
         assert_eq!(pass_plan.blocking_reason, None);
         assert_eq!(pass_plan.sampled_image_op_count, 1);
         assert_eq!(pass_plan.sampled_image_quads.len(), 0);
-        assert!(pass_plan.sampled_image_full_extent_fallback_ready);
+        assert!(pass_plan.sampled_image_implicit_full_extent_ready);
         assert!(!pass_plan.sampled_image_recording_ready);
         assert_eq!(pass_plan.sampled_image_recording_steps.len(), 0);
         assert_eq!(
@@ -1456,7 +1752,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_pass_plan_reports_mixed_quad_and_full_extent_sampled_image_fallback() {
+    fn draw_pass_plan_reports_mixed_quad_and_implicit_full_extent_sampled_image() {
         let mut image = draw_op(0, NativeVulkanSceneLiteDrawOpKind::Image);
         image.source = Some(PathBuf::from("/tmp/fullscreen.png"));
         image.fit = FitMode::Cover;
@@ -1468,7 +1764,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![image, rectangle],
             unsupported_layers: Vec::new(),
-            fallback_display_available: false,
+            manifest_preview_available: false,
         };
 
         let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
@@ -1477,12 +1773,12 @@ mod tests {
         assert!(pass_plan.backend_ready);
         assert_eq!(
             pass_plan.backend_status,
-            "mixed-quad-sampled-image-full-extent-fallback-ready"
+            "mixed-quad-sampled-image-implicit-full-extent-ready"
         );
         assert_eq!(pass_plan.blocking_reason, None);
         assert_eq!(pass_plan.sampled_image_op_count, 1);
         assert_eq!(pass_plan.sampled_image_quads.len(), 0);
-        assert!(pass_plan.sampled_image_full_extent_fallback_ready);
+        assert!(pass_plan.sampled_image_implicit_full_extent_ready);
         assert!(!pass_plan.sampled_image_recording_ready);
         assert!(!pass_plan.quad_recording_ready);
         assert_eq!(pass_plan.quad_recording_steps.len(), 1);
@@ -1508,7 +1804,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![rectangle, image],
             unsupported_layers: Vec::new(),
-            fallback_display_available: false,
+            manifest_preview_available: false,
         };
 
         let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
@@ -1545,7 +1841,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![rectangle, rounded],
             unsupported_layers: Vec::new(),
-            fallback_display_available: false,
+            manifest_preview_available: false,
         };
 
         let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
@@ -1598,7 +1894,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![ellipse],
             unsupported_layers: Vec::new(),
-            fallback_display_available: false,
+            manifest_preview_available: false,
         };
 
         let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
@@ -1629,7 +1925,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
-            fallback_display_available: false,
+            manifest_preview_available: false,
         };
 
         let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
@@ -1660,7 +1956,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
-            fallback_display_available: false,
+            manifest_preview_available: false,
         };
 
         let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
@@ -1681,6 +1977,47 @@ mod tests {
     }
 
     #[test]
+    fn draw_pass_plan_records_text_as_solid_geometry() {
+        let mut text = draw_op(0, NativeVulkanSceneLiteDrawOpKind::Text);
+        text.text = Some("A1".to_owned());
+        text.color = Some("#ffffff".to_owned());
+        text.font_size = Some(14.0);
+        text.width = Some(80.0);
+        text.text_align = Some(SceneLiteTextAlign::Middle);
+        text.transform.x = 10.0;
+        let draw_plan = NativeVulkanSceneLiteDrawPlan {
+            snapshot_time_ms: 0,
+            draw_ops: vec![text],
+            unsupported_layers: Vec::new(),
+            manifest_preview_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.backend_status, "solid-quad-recording-ready");
+        assert_eq!(pass_plan.blocking_reason, None);
+        assert!(pass_plan.quad_recording_ready);
+        assert_eq!(pass_plan.recordable_op_count, 1);
+        assert_eq!(pass_plan.recordable_quads[0].kind, "text");
+        assert_eq!(pass_plan.recordable_quads[0].text.as_deref(), Some("A1"));
+        assert_eq!(pass_plan.recordable_quads[0].font_size, Some(14.0));
+        assert_eq!(
+            pass_plan.recordable_quads[0].text_align,
+            Some(SceneLiteTextAlign::Middle)
+        );
+        assert_eq!(pass_plan.quad_recording_steps.len(), 1);
+        assert_eq!(pass_plan.quad_recording_steps[0].kind, "text");
+        assert!(pass_plan.quad_recording_steps[0].vertex_count > 4);
+        assert!(pass_plan.quad_recording_steps[0].index_count > 6);
+        assert!(!pass_plan.quad_vertices.is_empty());
+        assert!(!pass_plan.quad_indices.is_empty());
+        assert_eq!(pass_plan.text_op_count, 1);
+        assert!(!pass_plan.requires_text_geometry);
+    }
+
+    #[test]
     fn draw_pass_plan_keeps_stroked_path_pending_until_stroke_geometry_exists() {
         let mut path = draw_op(0, NativeVulkanSceneLiteDrawOpKind::Path);
         path.color = Some("#cc3300".to_owned());
@@ -1690,7 +2027,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
-            fallback_display_available: false,
+            manifest_preview_available: false,
         };
 
         let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
@@ -1718,7 +2055,7 @@ mod tests {
             snapshot_time_ms: 0,
             draw_ops: vec![rectangle],
             unsupported_layers: Vec::new(),
-            fallback_display_available: false,
+            manifest_preview_available: false,
         };
 
         let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);

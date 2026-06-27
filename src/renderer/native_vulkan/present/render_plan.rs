@@ -129,7 +129,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLiteDrawPlan {
     pub(in crate::renderer::native_vulkan) draw_ops: Vec<NativeVulkanSceneLiteDrawOp>,
     pub(in crate::renderer::native_vulkan) unsupported_layers:
         Vec<NativeVulkanSceneLiteUnsupportedLayer>,
-    pub(in crate::renderer::native_vulkan) fallback_display_available: bool,
+    pub(in crate::renderer::native_vulkan) manifest_preview_available: bool,
 }
 
 impl NativeVulkanSceneLiteDrawPlan {
@@ -157,7 +157,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_draw_plan(
         snapshot_time_ms: *snapshot_time_ms,
         draw_ops,
         unsupported_layers,
-        fallback_display_available: display.is_some() || fallback.is_some(),
+        manifest_preview_available: display.is_some() || fallback.is_some(),
     })
 }
 

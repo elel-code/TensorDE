@@ -42,6 +42,10 @@ const PRESENT_ID2_EXTENSION_NAME: &str = "VK_KHR_present_id2";
 const PRESENT_WAIT2_EXTENSION_NAME: &str = "VK_KHR_present_wait2";
 const SWAPCHAIN_MAINTENANCE1_EXTENSION_NAME: &str = "VK_KHR_swapchain_maintenance1";
 const PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME: &str = "VK_KHR_present_mode_fifo_latest_ready";
+const MAINTENANCE7_EXTENSION_NAME: &str = "VK_KHR_maintenance7";
+const MAINTENANCE8_EXTENSION_NAME: &str = "VK_KHR_maintenance8";
+const MAINTENANCE9_EXTENSION_NAME: &str = "VK_KHR_maintenance9";
+const MAINTENANCE10_EXTENSION_NAME: &str = "VK_KHR_maintenance10";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions {
@@ -114,6 +118,14 @@ pub struct NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot {
     pub swapchain_maintenance1_enabled: bool,
     pub present_mode_fifo_latest_ready_available: bool,
     pub present_mode_fifo_latest_ready_enabled: bool,
+    pub maintenance7_available: bool,
+    pub maintenance7_enabled: bool,
+    pub maintenance8_available: bool,
+    pub maintenance8_enabled: bool,
+    pub maintenance9_available: bool,
+    pub maintenance9_enabled: bool,
+    pub maintenance10_available: bool,
+    pub maintenance10_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -201,6 +213,10 @@ pub(in crate::renderer::native_vulkan::vulkan) struct NativeVulkanVulkanaliaPres
     pub(in crate::renderer::native_vulkan::vulkan) present_wait2_enabled: bool,
     pub(in crate::renderer::native_vulkan::vulkan) swapchain_maintenance1_enabled: bool,
     pub(in crate::renderer::native_vulkan::vulkan) present_mode_fifo_latest_ready_enabled: bool,
+    pub(in crate::renderer::native_vulkan::vulkan) maintenance7_enabled: bool,
+    pub(in crate::renderer::native_vulkan::vulkan) maintenance8_enabled: bool,
+    pub(in crate::renderer::native_vulkan::vulkan) maintenance9_enabled: bool,
+    pub(in crate::renderer::native_vulkan::vulkan) maintenance10_enabled: bool,
 }
 
 pub(in crate::renderer::native_vulkan::vulkan) struct NativeVulkanVulkanaliaPresentDeviceContext {
@@ -529,6 +545,26 @@ fn present_device_extension_snapshot(
         ),
         present_mode_fifo_latest_ready_enabled: feature_selection
             .present_mode_fifo_latest_ready_enabled,
+        maintenance7_available: extension_available(
+            &selection.device_extensions,
+            MAINTENANCE7_EXTENSION_NAME,
+        ),
+        maintenance7_enabled: feature_selection.maintenance7_enabled,
+        maintenance8_available: extension_available(
+            &selection.device_extensions,
+            MAINTENANCE8_EXTENSION_NAME,
+        ),
+        maintenance8_enabled: feature_selection.maintenance8_enabled,
+        maintenance9_available: extension_available(
+            &selection.device_extensions,
+            MAINTENANCE9_EXTENSION_NAME,
+        ),
+        maintenance9_enabled: feature_selection.maintenance9_enabled,
+        maintenance10_available: extension_available(
+            &selection.device_extensions,
+            MAINTENANCE10_EXTENSION_NAME,
+        ),
+        maintenance10_enabled: feature_selection.maintenance10_enabled,
     })
 }
 
@@ -583,6 +619,18 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_present_devi
         vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR::builder()
             .present_mode_fifo_latest_ready(true)
             .build();
+    let mut maintenance7_features = vk::PhysicalDeviceMaintenance7FeaturesKHR::builder()
+        .maintenance7(true)
+        .build();
+    let mut maintenance8_features = vk::PhysicalDeviceMaintenance8FeaturesKHR::builder()
+        .maintenance8(true)
+        .build();
+    let mut maintenance9_features = vk::PhysicalDeviceMaintenance9FeaturesKHR::builder()
+        .maintenance9(true)
+        .build();
+    let mut maintenance10_features = vk::PhysicalDeviceMaintenance10FeaturesKHR::builder()
+        .maintenance10(true)
+        .build();
     let mut device_create_info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queue_create_infos)
         .enabled_extension_names(&extension_name_ptrs);
@@ -622,6 +670,18 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_present_devi
     if feature_selection.present_mode_fifo_latest_ready_enabled {
         device_create_info =
             device_create_info.push_next(&mut present_mode_fifo_latest_ready_features);
+    }
+    if feature_selection.maintenance7_enabled {
+        device_create_info = device_create_info.push_next(&mut maintenance7_features);
+    }
+    if feature_selection.maintenance8_enabled {
+        device_create_info = device_create_info.push_next(&mut maintenance8_features);
+    }
+    if feature_selection.maintenance9_enabled {
+        device_create_info = device_create_info.push_next(&mut maintenance9_features);
+    }
+    if feature_selection.maintenance10_enabled {
+        device_create_info = device_create_info.push_next(&mut maintenance10_features);
     }
 
     let device =
@@ -664,6 +724,15 @@ pub(in crate::renderer::native_vulkan::vulkan) fn query_vulkanalia_present_featu
             device_extensions,
             PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME,
         ) && query_present_mode_fifo_latest_ready_feature(instance, physical_device);
+    let maintenance7_enabled = extension_available(device_extensions, MAINTENANCE7_EXTENSION_NAME)
+        && query_maintenance7_feature(instance, physical_device);
+    let maintenance8_enabled = extension_available(device_extensions, MAINTENANCE8_EXTENSION_NAME)
+        && query_maintenance8_feature(instance, physical_device);
+    let maintenance9_enabled = extension_available(device_extensions, MAINTENANCE9_EXTENSION_NAME)
+        && query_maintenance9_feature(instance, physical_device);
+    let maintenance10_enabled =
+        extension_available(device_extensions, MAINTENANCE10_EXTENSION_NAME)
+            && query_maintenance10_feature(instance, physical_device);
 
     NativeVulkanVulkanaliaPresentFeatureSelection {
         core_features,
@@ -675,6 +744,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn query_vulkanalia_present_featu
         present_wait2_enabled,
         swapchain_maintenance1_enabled,
         present_mode_fifo_latest_ready_enabled,
+        maintenance7_enabled,
+        maintenance8_enabled,
+        maintenance9_enabled,
+        maintenance10_enabled,
     }
 }
 
@@ -705,6 +778,18 @@ pub(in crate::renderer::native_vulkan::vulkan) fn enabled_present_device_extensi
     }
     if feature_selection.core_features.descriptor_heap {
         extensions.push(DESCRIPTOR_HEAP_EXTENSION_NAME);
+    }
+    if feature_selection.maintenance7_enabled {
+        extensions.push(MAINTENANCE7_EXTENSION_NAME);
+    }
+    if feature_selection.maintenance8_enabled {
+        extensions.push(MAINTENANCE8_EXTENSION_NAME);
+    }
+    if feature_selection.maintenance9_enabled {
+        extensions.push(MAINTENANCE9_EXTENSION_NAME);
+    }
+    if feature_selection.maintenance10_enabled {
+        extensions.push(MAINTENANCE10_EXTENSION_NAME);
     }
     extensions
 }
@@ -1055,6 +1140,50 @@ fn query_present_mode_fifo_latest_ready_feature(
     feature.present_mode_fifo_latest_ready != 0
 }
 
+fn query_maintenance7_feature(instance: &Instance, physical_device: vk::PhysicalDevice) -> bool {
+    let mut feature = vk::PhysicalDeviceMaintenance7FeaturesKHR::default();
+    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
+        .push_next(&mut feature)
+        .build();
+    unsafe {
+        instance.get_physical_device_features2(physical_device, &mut features2);
+    }
+    feature.maintenance7 != 0
+}
+
+fn query_maintenance8_feature(instance: &Instance, physical_device: vk::PhysicalDevice) -> bool {
+    let mut feature = vk::PhysicalDeviceMaintenance8FeaturesKHR::default();
+    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
+        .push_next(&mut feature)
+        .build();
+    unsafe {
+        instance.get_physical_device_features2(physical_device, &mut features2);
+    }
+    feature.maintenance8 != 0
+}
+
+fn query_maintenance9_feature(instance: &Instance, physical_device: vk::PhysicalDevice) -> bool {
+    let mut feature = vk::PhysicalDeviceMaintenance9FeaturesKHR::default();
+    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
+        .push_next(&mut feature)
+        .build();
+    unsafe {
+        instance.get_physical_device_features2(physical_device, &mut features2);
+    }
+    feature.maintenance9 != 0
+}
+
+fn query_maintenance10_feature(instance: &Instance, physical_device: vk::PhysicalDevice) -> bool {
+    let mut feature = vk::PhysicalDeviceMaintenance10FeaturesKHR::default();
+    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
+        .push_next(&mut feature)
+        .build();
+    unsafe {
+        instance.get_physical_device_features2(physical_device, &mut features2);
+    }
+    feature.maintenance10 != 0
+}
+
 fn extension_available(available: &[String], extension: &str) -> bool {
     available.iter().any(|available| available == extension)
 }
@@ -1153,6 +1282,10 @@ mod tests {
             present_wait2_enabled: false,
             swapchain_maintenance1_enabled: false,
             present_mode_fifo_latest_ready_enabled: false,
+            maintenance7_enabled: false,
+            maintenance8_enabled: false,
+            maintenance9_enabled: false,
+            maintenance10_enabled: false,
         };
         let enabled = NativeVulkanVulkanaliaPresentFeatureSelection {
             swapchain_maintenance1_enabled: true,
@@ -1173,6 +1306,13 @@ mod tests {
         };
         let fifo_latest_ready_enabled = NativeVulkanVulkanaliaPresentFeatureSelection {
             present_mode_fifo_latest_ready_enabled: true,
+            ..disabled
+        };
+        let maintenance_roadmap_enabled = NativeVulkanVulkanaliaPresentFeatureSelection {
+            maintenance7_enabled: true,
+            maintenance8_enabled: true,
+            maintenance9_enabled: true,
+            maintenance10_enabled: true,
             ..disabled
         };
 
@@ -1202,6 +1342,16 @@ mod tests {
             vec![
                 "VK_KHR_swapchain",
                 PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME,
+            ]
+        );
+        assert_eq!(
+            enabled_present_device_extensions(&maintenance_roadmap_enabled),
+            vec![
+                "VK_KHR_swapchain",
+                MAINTENANCE7_EXTENSION_NAME,
+                MAINTENANCE8_EXTENSION_NAME,
+                MAINTENANCE9_EXTENSION_NAME,
+                MAINTENANCE10_EXTENSION_NAME,
             ]
         );
     }

@@ -222,7 +222,7 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_sampled_image_plan(
             "shader-read-only-optimal",
         ],
         upload_model: "decode source image to RGBA once, upload into retained sampled image with Vulkan 1.4 host image copy, reuse descriptor-heap records across present frames",
-        descriptor_model: "VK_EXT_descriptor_heap only; descriptor set and push descriptor fallbacks are disabled",
+        descriptor_model: "VK_EXT_descriptor_heap only; descriptor set and push descriptor paths are deleted",
         pipeline_label: "scene-lite-sampled-image-alpha-blend",
         draw_indexed_count: if backend_ready { descriptor_budget } else { 0 },
         command_order: scene_lite_sampled_image_command_order(backend_ready).to_vec(),
