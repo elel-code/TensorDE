@@ -64,6 +64,13 @@ pub fn run_scene_lite(
     let runtime = native_vulkan_scene_lite_runtime_snapshot(&render_item).ok_or_else(|| {
         NativeVulkanError::SceneLite("scene-lite runtime snapshot is unavailable".to_owned())
     })?;
+    if let Some(color) = runtime
+        .draw_pass_background_clear_color
+        .as_deref()
+        .and_then(native_vulkan_clear_color_from_hex)
+    {
+        options.clear_color = color;
+    }
     match native_vulkan_scene_lite_present_route(&runtime)? {
         NativeVulkanSceneLitePresentRouteKind::Clear => {
             let color = runtime
@@ -150,10 +157,16 @@ fn native_vulkan_scene_lite_present_route(
 
     match runtime.draw_pass_backend_status {
         "fast-clear-color-ready" => Ok(NativeVulkanSceneLitePresentRouteKind::Clear),
-        "solid-quad-recording-ready" => Ok(NativeVulkanSceneLitePresentRouteKind::SolidQuad),
+        "solid-quad-recording-ready" | "clear-background-solid-quad-recording-ready" => {
+            Ok(NativeVulkanSceneLitePresentRouteKind::SolidQuad)
+        }
         "sampled-image-recording-ready"
+        | "clear-background-sampled-image-recording-ready"
         | "sampled-image-full-extent-fallback-ready"
+        | "clear-background-sampled-image-full-extent-fallback-ready"
         | "mixed-quad-sampled-image-full-extent-fallback-ready"
+        | "clear-background-mixed-quad-sampled-image-full-extent-fallback-ready"
+        | "clear-background-mixed-quad-sampled-image-recording-ready"
         | "mixed-quad-sampled-image-recording-ready" => {
             Ok(NativeVulkanSceneLitePresentRouteKind::SampledImage)
         }

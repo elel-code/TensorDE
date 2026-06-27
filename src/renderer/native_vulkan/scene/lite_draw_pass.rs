@@ -108,6 +108,8 @@ pub(super) struct NativeVulkanSceneLiteDrawPassPlan {
     pub(super) sampled_image_indices: Vec<u32>,
     pub(super) sampled_image_vertex_buffer_bytes: u64,
     pub(super) sampled_image_index_buffer_bytes: u64,
+    pub(super) clear_background_op_count: usize,
+    pub(super) background_clear_color: Option<String>,
     pub(super) color_op_count: usize,
     pub(super) sampled_image_op_count: usize,
     pub(super) video_op_count: usize,
@@ -165,6 +167,9 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
     }
 
     let fast_clear_color = native_vulkan_scene_lite_fast_clear_color(&draw_plan.draw_ops);
+    let background_clear_color =
+        native_vulkan_scene_lite_background_clear_color(&draw_plan.draw_ops);
+    let clear_background_op_count = usize::from(background_clear_color.is_some());
     let recordable_quads = draw_plan
         .draw_ops
         .iter()
@@ -178,7 +183,11 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         .filter(|step| step.kind == "path")
         .count();
     let quad_recording_ready = !quad_recording_payload.steps.is_empty()
-        && quad_recording_payload.steps.len() == draw_plan.draw_ops.len();
+        && quad_recording_payload
+            .steps
+            .len()
+            .saturating_add(clear_background_op_count)
+            == draw_plan.draw_ops.len();
     let sampled_image_quads = draw_plan
         .draw_ops
         .iter()
@@ -192,14 +201,13 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         native_vulkan_scene_lite_full_extent_sampled_image_op_count(&draw_plan.draw_ops);
     let sampled_image_full_extent_fallback_ready =
         full_extent_sampled_image_op_count == 1 && sampled_image_op_count == 1;
-    let sampled_image_full_extent_fallback_backend_ready =
-        draw_plan.draw_ops.len() == 1 && sampled_image_full_extent_fallback_ready;
     let mixed_quad_sampled_image_recording_ready = !quad_recording_payload.steps.is_empty()
         && sampled_image_recording_ready
         && quad_recording_payload
             .steps
             .len()
             .saturating_add(sampled_image_recording_payload.steps.len())
+            .saturating_add(clear_background_op_count)
             == draw_plan.draw_ops.len();
     let mixed_quad_sampled_image_full_extent_fallback_ready =
         !quad_recording_payload.steps.is_empty()
@@ -210,6 +218,7 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
                 .steps
                 .len()
                 .saturating_add(sampled_image_op_count)
+                .saturating_add(clear_background_op_count)
                 == draw_plan.draw_ops.len();
     let quad_vertex_buffer_bytes =
         native_vulkan_scene_lite_solid_vertex_buffer_bytes(quad_recording_payload.vertices.len());
@@ -224,8 +233,12 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
             sampled_image_recording_payload.steps.len(),
         );
     let plan_ready = draw_plan.native_draw_ready();
-    let sampled_image_recording_complete =
-        sampled_image_recording_ready && sampled_image_op_count == draw_plan.draw_ops.len();
+    let sampled_image_recording_complete = sampled_image_recording_ready
+        && sampled_image_op_count.saturating_add(clear_background_op_count)
+            == draw_plan.draw_ops.len();
+    let sampled_image_full_extent_fallback_backend_ready = sampled_image_full_extent_fallback_ready
+        && sampled_image_op_count.saturating_add(clear_background_op_count)
+            == draw_plan.draw_ops.len();
     let backend_ready = plan_ready
         && (fast_clear_color.is_some()
             || quad_recording_ready
@@ -246,14 +259,36 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
     } else if backend_ready {
         if fast_clear_color.is_some() {
             ("fast-clear-color-ready", None)
+        } else if quad_recording_ready && clear_background_op_count > 0 {
+            ("clear-background-solid-quad-recording-ready", None)
         } else if quad_recording_ready {
             ("solid-quad-recording-ready", None)
+        } else if mixed_quad_sampled_image_recording_ready && clear_background_op_count > 0 {
+            (
+                "clear-background-mixed-quad-sampled-image-recording-ready",
+                None,
+            )
         } else if mixed_quad_sampled_image_recording_ready {
             ("mixed-quad-sampled-image-recording-ready", None)
+        } else if mixed_quad_sampled_image_full_extent_fallback_ready
+            && clear_background_op_count > 0
+        {
+            (
+                "clear-background-mixed-quad-sampled-image-full-extent-fallback-ready",
+                None,
+            )
         } else if mixed_quad_sampled_image_full_extent_fallback_ready {
             ("mixed-quad-sampled-image-full-extent-fallback-ready", None)
+        } else if sampled_image_full_extent_fallback_backend_ready && clear_background_op_count > 0
+        {
+            (
+                "clear-background-sampled-image-full-extent-fallback-ready",
+                None,
+            )
         } else if sampled_image_full_extent_fallback_backend_ready {
             ("sampled-image-full-extent-fallback-ready", None)
+        } else if sampled_image_recording_complete && clear_background_op_count > 0 {
+            ("clear-background-sampled-image-recording-ready", None)
         } else {
             ("sampled-image-recording-ready", None)
         }
@@ -305,6 +340,8 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         sampled_image_indices: sampled_image_recording_payload.indices,
         sampled_image_vertex_buffer_bytes,
         sampled_image_index_buffer_bytes,
+        clear_background_op_count,
+        background_clear_color,
         color_op_count,
         sampled_image_op_count,
         video_op_count,
@@ -328,6 +365,27 @@ fn native_vulkan_scene_lite_fast_clear_color(
     };
     if op.kind != NativeVulkanSceneLiteDrawOpKind::ColorQuad
         || op.opacity < 1.0
+        || op.transform != SceneLiteTransform::default()
+    {
+        return None;
+    }
+    op.color
+        .as_deref()
+        .filter(|color| !color.is_empty())
+        .map(str::to_owned)
+}
+
+fn native_vulkan_scene_lite_background_clear_color(
+    draw_ops: &[NativeVulkanSceneLiteDrawOp],
+) -> Option<String> {
+    let [op, ..] = draw_ops else {
+        return None;
+    };
+    if draw_ops.len() <= 1
+        || op.kind != NativeVulkanSceneLiteDrawOpKind::ColorQuad
+        || op.opacity < 1.0
+        || op.width.is_some()
+        || op.height.is_some()
         || op.transform != SceneLiteTransform::default()
     {
         return None;

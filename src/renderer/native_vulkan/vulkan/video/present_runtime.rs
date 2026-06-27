@@ -2219,9 +2219,7 @@ struct NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
     source_frame_pts_delta_max_ms: Option<u64>,
     display_order_monotonic: bool,
     last_display_order_key: Option<i64>,
-    uses_present_id: bool,
     uses_present_id2: bool,
-    present_wait_available: bool,
     present_wait2_available: bool,
     present_wait_after_present: bool,
     all_zero_copy_presented: bool,
@@ -2271,9 +2269,7 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
             source_frame_pts_delta_max_ms: None,
             display_order_monotonic: true,
             last_display_order_key: None,
-            uses_present_id: false,
             uses_present_id2: false,
-            present_wait_available: false,
             present_wait2_available: false,
             present_wait_after_present: false,
             all_zero_copy_presented: true,
@@ -2418,9 +2414,7 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
             self.display_order_monotonic = false;
         }
         self.last_display_order_key = Some(draw.display_order_key);
-        self.uses_present_id |= draw.uses_present_id;
         self.uses_present_id2 |= draw.uses_present_id2;
-        self.present_wait_available |= draw.present_wait_available;
         self.present_wait2_available |= draw.present_wait2_available;
         self.present_wait_after_present |= draw.present_wait_after_present;
         self.all_zero_copy_presented &= draw.zero_copy_presented;
@@ -2615,9 +2609,7 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
                 .max_present_wait_after_queue_present_micros,
             pts_monotonic: self.pts_monotonic,
             display_order_monotonic: self.display_order_monotonic,
-            uses_present_id: self.uses_present_id,
             uses_present_id2: self.uses_present_id2,
-            present_wait_available: self.present_wait_available,
             present_wait2_available: self.present_wait2_available,
             present_wait_after_present: self.present_wait_after_present,
             present_handoff,

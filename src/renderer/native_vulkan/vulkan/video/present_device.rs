@@ -160,8 +160,6 @@ pub struct NativeVulkanVulkanaliaVideoPresentFeatureSnapshot {
     pub video_maintenance1_enabled: bool,
     pub video_maintenance2_enabled: bool,
     pub inline_session_parameters_enabled: bool,
-    pub present_id_enabled: bool,
-    pub present_wait_enabled: bool,
     pub present_id2_enabled: bool,
     pub present_wait2_enabled: bool,
     pub swapchain_maintenance1_enabled: bool,
@@ -366,8 +364,6 @@ fn with_video_present_device(
             inline_session_parameters_enabled: context
                 .video_feature_selection
                 .inline_session_parameters_enabled,
-            present_id_enabled: context.present_feature_selection.present_id_enabled,
-            present_wait_enabled: context.present_feature_selection.present_wait_enabled,
             present_id2_enabled: context.present_feature_selection.present_id2_enabled,
             present_wait2_enabled: context.present_feature_selection.present_wait2_enabled,
             swapchain_maintenance1_enabled: context
@@ -860,8 +856,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn feature_snapshot_from_context(
         inline_session_parameters_enabled: context
             .video_feature_selection
             .inline_session_parameters_enabled,
-        present_id_enabled: context.present_feature_selection.present_id_enabled,
-        present_wait_enabled: context.present_feature_selection.present_wait_enabled,
         present_id2_enabled: context.present_feature_selection.present_id2_enabled,
         present_wait2_enabled: context.present_feature_selection.present_wait2_enabled,
         swapchain_maintenance1_enabled: context

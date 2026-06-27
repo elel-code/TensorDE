@@ -25,6 +25,7 @@ pub(crate) struct NativeVulkanVulkanaliaSceneLiteDrawPassInput {
     pub(crate) backend_status: &'static str,
     pub(crate) blocking_reason: Option<&'static str>,
     pub(crate) fast_clear_color_ready: bool,
+    pub(crate) clear_background_op_count: usize,
     pub(crate) quad_recording_ready: bool,
     pub(crate) quad_recording_step_count: usize,
     pub(crate) quad_vertex_buffer_bytes: u64,
@@ -50,6 +51,7 @@ pub struct NativeVulkanVulkanaliaSceneLiteDrawPassSnapshot {
     pub blocking_reason: Option<&'static str>,
     pub draw_op_count: usize,
     pub color_op_count: usize,
+    pub clear_background_op_count: usize,
     pub solid_quad_count: u32,
     pub sampled_image_quad_count: u32,
     pub vector_shape_op_count: usize,
@@ -304,19 +306,26 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
     let solid_quad_ready = input.plan_ready
         && input.native_draw_ready
         && input.quad_recording_ready
-        && input.quad_recording_step_count == input.draw_op_count
-        && input.sampled_image_op_count == 0
-        && input.text_op_count == 0
-        && input.path_op_count == 0;
+        && input
+            .quad_recording_step_count
+            .saturating_add(input.clear_background_op_count)
+            == input.draw_op_count
+        && input.sampled_image_op_count == 0;
     let sampled_image_pending = input.plan_ready
         && input.native_draw_ready
         && input.sampled_image_recording_ready
         && input.sampled_image_recording_step_count == input.sampled_image_op_count
-        && input.sampled_image_op_count == input.draw_op_count;
+        && input
+            .sampled_image_op_count
+            .saturating_add(input.clear_background_op_count)
+            == input.draw_op_count;
     let sampled_image_full_extent_fallback_ready = input.plan_ready
         && input.native_draw_ready
         && input.sampled_image_full_extent_fallback_ready
-        && input.sampled_image_op_count == input.draw_op_count;
+        && input
+            .sampled_image_op_count
+            .saturating_add(input.clear_background_op_count)
+            == input.draw_op_count;
     let mixed_quad_sampled_image_full_extent_fallback_ready = input.plan_ready
         && input.native_draw_ready
         && input.sampled_image_full_extent_fallback_ready
@@ -325,6 +334,7 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
         && input
             .quad_recording_step_count
             .saturating_add(input.sampled_image_op_count)
+            .saturating_add(input.clear_background_op_count)
             == input.draw_op_count;
     let mixed_quad_sampled_image_ready = input.plan_ready
         && input.native_draw_ready
@@ -334,28 +344,75 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
         && input
             .quad_recording_step_count
             .saturating_add(input.sampled_image_recording_step_count)
+            .saturating_add(input.clear_background_op_count)
             == input.draw_op_count;
 
     let (backend_ready, backend_status, blocking_reason) = if solid_quad_ready {
-        (true, "solid-quad-dynamic-rendering-recording-ready", None)
+        if input.clear_background_op_count > 0 {
+            (
+                true,
+                "clear-background-solid-quad-dynamic-rendering-recording-ready",
+                None,
+            )
+        } else {
+            (true, "solid-quad-dynamic-rendering-recording-ready", None)
+        }
     } else if mixed_quad_sampled_image_ready {
-        (
-            true,
-            "mixed-quad-sampled-image-dynamic-rendering-recording-ready",
-            None,
-        )
+        if input.clear_background_op_count > 0 {
+            (
+                true,
+                "clear-background-mixed-quad-sampled-image-dynamic-rendering-recording-ready",
+                None,
+            )
+        } else {
+            (
+                true,
+                "mixed-quad-sampled-image-dynamic-rendering-recording-ready",
+                None,
+            )
+        }
     } else if mixed_quad_sampled_image_full_extent_fallback_ready {
-        (
-            true,
-            "mixed-quad-sampled-image-full-extent-fallback-present-ready",
-            None,
-        )
+        if input.clear_background_op_count > 0 {
+            (
+                true,
+                "clear-background-mixed-quad-sampled-image-full-extent-fallback-present-ready",
+                None,
+            )
+        } else {
+            (
+                true,
+                "mixed-quad-sampled-image-full-extent-fallback-present-ready",
+                None,
+            )
+        }
     } else if sampled_image_full_extent_fallback_ready {
-        (
-            true,
-            "sampled-image-full-extent-fallback-present-ready",
-            None,
-        )
+        if input.clear_background_op_count > 0 {
+            (
+                true,
+                "clear-background-sampled-image-full-extent-fallback-present-ready",
+                None,
+            )
+        } else {
+            (
+                true,
+                "sampled-image-full-extent-fallback-present-ready",
+                None,
+            )
+        }
+    } else if sampled_image_pending {
+        if input.clear_background_op_count > 0 {
+            (
+                true,
+                "clear-background-sampled-image-dynamic-rendering-recording-ready",
+                None,
+            )
+        } else {
+            (
+                true,
+                "sampled-image-dynamic-rendering-recording-ready",
+                None,
+            )
+        }
     } else if !input.plan_ready || !input.native_draw_ready {
         (
             false,
@@ -369,12 +426,6 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
             false,
             "delegated-to-vulkanalia-clear-present",
             Some("fast-clear-uses-clear-present-not-draw-pass"),
-        )
-    } else if sampled_image_pending {
-        (
-            true,
-            "sampled-image-dynamic-rendering-recording-ready",
-            None,
         )
     } else {
         (
@@ -435,6 +486,7 @@ pub(crate) fn native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot(
         blocking_reason,
         draw_op_count: input.draw_op_count,
         color_op_count: input.color_op_count,
+        clear_background_op_count: input.clear_background_op_count,
         solid_quad_count: saturating_u32(input.quad_recording_step_count),
         sampled_image_quad_count: if sampled_image_full_extent_fallback_ready
             || mixed_quad_sampled_image_full_extent_fallback_ready
@@ -1022,6 +1074,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     vertex_buffer: vk::Buffer,
     index_buffer: vk::Buffer,
     index_count: u32,
+    clear_color: [f32; 4],
 ) -> Result<NativeVulkanVulkanaliaSceneLiteSolidQuadCommandSnapshot, String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("scene-lite solid quad command requires non-zero extent".to_owned());
@@ -1061,7 +1114,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
 
         let clear_value = vk::ClearValue {
             color: vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 1.0],
+                float32: clear_color,
             },
         };
         let color_attachment = vk::RenderingAttachmentInfo::builder()
@@ -1674,6 +1727,7 @@ mod tests {
             backend_status: "solid-quad-recording-ready",
             blocking_reason: None,
             fast_clear_color_ready: false,
+            clear_background_op_count: 0,
             quad_recording_ready: true,
             quad_recording_step_count: 1,
             quad_vertex_buffer_bytes: 96,

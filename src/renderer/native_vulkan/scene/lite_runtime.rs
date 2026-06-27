@@ -52,6 +52,8 @@ pub struct NativeVulkanSceneLiteRuntimeSnapshot {
     pub draw_pass_sampled_image_indices: Vec<u32>,
     pub draw_pass_sampled_image_vertex_buffer_bytes: u64,
     pub draw_pass_sampled_image_index_buffer_bytes: u64,
+    pub draw_pass_clear_background_op_count: usize,
+    pub draw_pass_background_clear_color: Option<String>,
     pub draw_pass_color_op_count: usize,
     pub draw_pass_sampled_image_op_count: usize,
     pub scene_solid_quad_draw_count: usize,
@@ -89,8 +91,16 @@ pub struct NativeVulkanFullSceneRuntimeSnapshot {
     pub timeline_snapshot_runtime_ready: bool,
     pub timeline_snapshot_time_ms: u64,
     pub source_layer_count: usize,
+    pub active_scene_layer_count: usize,
     pub flattened_draw_layer_count: usize,
     pub unsupported_layer_count: usize,
+    pub native_runtime_layer_count: usize,
+    pub native_runtime_pending_layer_count: usize,
+    pub native_runtime_coverage_percent: u8,
+    pub clear_background_layer_count: usize,
+    pub solid_geometry_layer_count: usize,
+    pub sampled_image_native_layer_count: usize,
+    pub tessellated_path_layer_count: usize,
     pub color_layer_count: usize,
     pub sampled_image_layer_count: usize,
     pub video_layer_count: usize,
@@ -99,8 +109,11 @@ pub struct NativeVulkanFullSceneRuntimeSnapshot {
     pub path_layer_count: usize,
     pub property_binding_count: usize,
     pub scene_audio_response_ready: bool,
+    pub scene_video_composition_required: bool,
     pub scene_video_composition_ready: bool,
+    pub scene_text_atlas_required: bool,
     pub scene_text_atlas_ready: bool,
+    pub scene_path_tessellation_required: bool,
     pub scene_path_tessellation_ready: bool,
     pub completed_boundaries: Vec<&'static str>,
     pub pending_boundaries: Vec<&'static str>,
@@ -110,7 +123,7 @@ impl NativeVulkanSceneLiteRuntimeSnapshot {
     pub fn vulkanalia_solid_quad_geometry_input(
         &self,
     ) -> Option<NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput> {
-        if !self.draw_pass_quad_recording_ready
+        if self.draw_pass_quad_recording_step_count == 0
             || self.draw_pass_quad_vertices.is_empty()
             || self.draw_pass_quad_indices.is_empty()
         {
@@ -204,7 +217,9 @@ impl NativeVulkanSceneLiteRuntimeSnapshot {
             || !matches!(
                 self.draw_pass_backend_status,
                 "sampled-image-full-extent-fallback-ready"
+                    | "clear-background-sampled-image-full-extent-fallback-ready"
                     | "mixed-quad-sampled-image-full-extent-fallback-ready"
+                    | "clear-background-mixed-quad-sampled-image-full-extent-fallback-ready"
             )
         {
             return None;
@@ -219,7 +234,9 @@ impl NativeVulkanSceneLiteRuntimeSnapshot {
         if !matches!(
             self.vulkanalia_draw_pass.backend_status,
             "mixed-quad-sampled-image-dynamic-rendering-recording-ready"
+                | "clear-background-mixed-quad-sampled-image-dynamic-rendering-recording-ready"
                 | "mixed-quad-sampled-image-full-extent-fallback-present-ready"
+                | "clear-background-mixed-quad-sampled-image-full-extent-fallback-present-ready"
         ) || self.draw_pass_quad_vertices.is_empty()
             || self.draw_pass_quad_indices.is_empty()
         {
@@ -369,6 +386,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snaps
             backend_status: pass_plan.backend_status,
             blocking_reason: pass_plan.blocking_reason,
             fast_clear_color_ready: pass_plan.fast_clear_color.is_some(),
+            clear_background_op_count: pass_plan.clear_background_op_count,
             quad_recording_ready: pass_plan.quad_recording_ready,
             quad_recording_step_count: pass_plan.quad_recording_steps.len(),
             quad_vertex_buffer_bytes: pass_plan.quad_vertex_buffer_bytes,
@@ -522,6 +540,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snaps
         draw_pass_sampled_image_indices: pass_plan.sampled_image_indices,
         draw_pass_sampled_image_vertex_buffer_bytes: pass_plan.sampled_image_vertex_buffer_bytes,
         draw_pass_sampled_image_index_buffer_bytes: pass_plan.sampled_image_index_buffer_bytes,
+        draw_pass_clear_background_op_count: pass_plan.clear_background_op_count,
+        draw_pass_background_clear_color: pass_plan.background_clear_color,
         draw_pass_color_op_count: pass_plan.color_op_count,
         draw_pass_sampled_image_op_count: pass_plan.sampled_image_op_count,
         scene_solid_quad_draw_count,
@@ -598,22 +618,61 @@ fn native_vulkan_full_scene_runtime_snapshot(
         scene_resource_model,
         "fast-clear-only-no-scene-resources"
             | "retained-solid-quad-geometry"
+            | "clear-background-and-retained-solid-quad-geometry"
             | "retained-sampled-images-descriptor-heap"
             | "retained-solid-quad-geometry-and-sampled-images-descriptor-heap"
     ) || scene_sampled_image_descriptor_heap_required;
     let timeline_snapshot_runtime_ready = plan.snapshot_time_ms > 0;
+    let active_scene_layer_count = plan
+        .draw_ops
+        .len()
+        .saturating_add(plan.unsupported_layers.len());
+    let clear_background_layer_count =
+        pass_plan.clear_background_op_count + usize::from(pass_plan.fast_clear_color.is_some());
+    let tessellated_path_layer_count = pass_plan
+        .quad_recording_steps
+        .iter()
+        .filter(|step| step.kind == "path")
+        .count();
+    let solid_geometry_layer_count = pass_plan.quad_recording_steps.len();
+    let sampled_image_native_layer_count = if pass_plan.sampled_image_recording_ready {
+        pass_plan.sampled_image_recording_steps.len()
+    } else if pass_plan.sampled_image_full_extent_fallback_ready {
+        pass_plan.sampled_image_op_count
+    } else {
+        0
+    };
+    let native_runtime_layer_count = clear_background_layer_count
+        .saturating_add(solid_geometry_layer_count)
+        .saturating_add(sampled_image_native_layer_count)
+        .min(active_scene_layer_count);
+    let native_runtime_pending_layer_count =
+        active_scene_layer_count.saturating_sub(native_runtime_layer_count);
+    let native_runtime_coverage_percent = if active_scene_layer_count == 0 {
+        0
+    } else {
+        ((native_runtime_layer_count.saturating_mul(100)) / active_scene_layer_count).min(100) as u8
+    };
+    let scene_video_composition_required =
+        pass_plan.video_op_count > 0 || pass_plan.requires_video_decode;
     let scene_video_composition_ready =
         pass_plan.video_op_count == 0 && !pass_plan.requires_video_decode;
+    let scene_text_atlas_required = pass_plan.text_op_count > 0 || pass_plan.requires_text_atlas;
     let scene_text_atlas_ready = pass_plan.text_op_count == 0 && !pass_plan.requires_text_atlas;
-    let scene_path_tessellation_ready =
-        pass_plan.path_op_count == 0 && !pass_plan.requires_path_tessellation;
+    let scene_path_tessellation_required =
+        pass_plan.path_op_count > 0 && pass_plan.requires_path_tessellation;
+    let scene_path_tessellation_ready = !pass_plan.requires_path_tessellation;
     let mut completed_boundaries = vec![
         "scene-package-to-core-layer-snapshot",
         "flattened-layer-ordering",
         "native-vulkan-draw-plan",
         "dynamic-rendering-present-route-selection",
         "synchronization2-submit2-scene-submit-model",
+        "native-runtime-layer-coverage-metric",
     ];
+    if clear_background_layer_count > 0 {
+        completed_boundaries.push("clear-background-layer-composition");
+    }
     if retained_resource_model_ready {
         completed_boundaries.push("retained-scene-resource-model");
     }
@@ -626,8 +685,17 @@ fn native_vulkan_full_scene_runtime_snapshot(
     if pass_plan.vector_shape_op_count > 0 && !pass_plan.requires_path_tessellation {
         completed_boundaries.push("solid-vector-shape-quad-geometry");
     }
+    if pass_plan.sampled_image_op_count > 0 && sampled_image_native_layer_count > 0 {
+        completed_boundaries.push("sampled-image-scene-composition");
+    }
+    if tessellated_path_layer_count > 0 {
+        completed_boundaries.push("simple-path-tessellation-runtime");
+    }
 
     let mut pending_boundaries = Vec::new();
+    if native_runtime_pending_layer_count > 0 {
+        pending_boundaries.push("remaining-scene-layer-runtime-coverage");
+    }
     if pass_plan.video_op_count > 0 {
         pending_boundaries.push("video-as-scene-composition");
     }
@@ -650,7 +718,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
     NativeVulkanFullSceneRuntimeSnapshot {
         target_runtime: "native-vulkan-full-scene",
         current_runtime: "native-vulkan-scene-runtime-subset",
-        progress_estimate_percent: 36,
+        progress_estimate_percent: 44,
         full_scene_complete: false,
         execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
         native_scene_graph_lowering_ready: plan.native_draw_ready(),
@@ -659,8 +727,16 @@ fn native_vulkan_full_scene_runtime_snapshot(
         timeline_snapshot_runtime_ready,
         timeline_snapshot_time_ms: plan.snapshot_time_ms,
         source_layer_count,
+        active_scene_layer_count,
         flattened_draw_layer_count: plan.draw_ops.len(),
         unsupported_layer_count: plan.unsupported_layers.len(),
+        native_runtime_layer_count,
+        native_runtime_pending_layer_count,
+        native_runtime_coverage_percent,
+        clear_background_layer_count,
+        solid_geometry_layer_count,
+        sampled_image_native_layer_count,
+        tessellated_path_layer_count,
         color_layer_count: pass_plan.color_op_count,
         sampled_image_layer_count: pass_plan.sampled_image_op_count,
         video_layer_count: pass_plan.video_op_count,
@@ -669,8 +745,11 @@ fn native_vulkan_full_scene_runtime_snapshot(
         path_layer_count: pass_plan.path_op_count,
         property_binding_count,
         scene_audio_response_ready: false,
+        scene_video_composition_required,
         scene_video_composition_ready,
+        scene_text_atlas_required,
         scene_text_atlas_ready,
+        scene_path_tessellation_required,
         scene_path_tessellation_ready,
         completed_boundaries,
         pending_boundaries,
@@ -687,11 +766,19 @@ fn native_vulkan_scene_lite_resource_model(
     match backend_status {
         "fast-clear-color-ready" => "fast-clear-only-no-scene-resources",
         "solid-quad-recording-ready" => "retained-solid-quad-geometry",
-        "sampled-image-recording-ready" | "sampled-image-full-extent-fallback-ready" => {
+        "clear-background-solid-quad-recording-ready" => {
+            "clear-background-and-retained-solid-quad-geometry"
+        }
+        "sampled-image-recording-ready"
+        | "sampled-image-full-extent-fallback-ready"
+        | "clear-background-sampled-image-recording-ready"
+        | "clear-background-sampled-image-full-extent-fallback-ready" => {
             "retained-sampled-images-descriptor-heap"
         }
         "mixed-quad-sampled-image-recording-ready"
-        | "mixed-quad-sampled-image-full-extent-fallback-ready" => {
+        | "mixed-quad-sampled-image-full-extent-fallback-ready"
+        | "clear-background-mixed-quad-sampled-image-recording-ready"
+        | "clear-background-mixed-quad-sampled-image-full-extent-fallback-ready" => {
             "retained-solid-quad-geometry-and-sampled-images-descriptor-heap"
         }
         _ => "not-native-vulkan-presentable-yet",
@@ -922,22 +1009,42 @@ mod tests {
             snapshot.full_scene.current_runtime,
             "native-vulkan-scene-runtime-subset"
         );
-        assert_eq!(snapshot.full_scene.progress_estimate_percent, 36);
+        assert_eq!(snapshot.full_scene.progress_estimate_percent, 44);
         assert!(!snapshot.full_scene.full_scene_complete);
         assert!(snapshot.full_scene.timeline_snapshot_runtime_ready);
         assert_eq!(snapshot.full_scene.timeline_snapshot_time_ms, 1234);
         assert_eq!(snapshot.full_scene.source_layer_count, 3);
+        assert_eq!(snapshot.full_scene.active_scene_layer_count, 3);
         assert_eq!(snapshot.full_scene.flattened_draw_layer_count, 3);
+        assert_eq!(snapshot.full_scene.native_runtime_layer_count, 1);
+        assert_eq!(snapshot.full_scene.native_runtime_pending_layer_count, 2);
+        assert_eq!(snapshot.full_scene.native_runtime_coverage_percent, 33);
+        assert_eq!(snapshot.full_scene.sampled_image_native_layer_count, 1);
         assert_eq!(snapshot.full_scene.sampled_image_layer_count, 1);
         assert_eq!(snapshot.full_scene.video_layer_count, 1);
         assert_eq!(snapshot.full_scene.text_layer_count, 1);
         assert!(!snapshot.full_scene.scene_audio_response_ready);
+        assert!(snapshot.full_scene.scene_video_composition_required);
         assert!(!snapshot.full_scene.scene_video_composition_ready);
+        assert!(snapshot.full_scene.scene_text_atlas_required);
+        assert!(!snapshot.full_scene.scene_text_atlas_ready);
         assert!(
             snapshot
                 .full_scene
                 .completed_boundaries
                 .contains(&"time-sampled-scene-state")
+        );
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"sampled-image-scene-composition")
+        );
+        assert!(
+            snapshot
+                .full_scene
+                .pending_boundaries
+                .contains(&"remaining-scene-layer-runtime-coverage")
         );
         assert!(
             snapshot
@@ -1329,6 +1436,81 @@ mod tests {
                 .command_order
                 .contains(&"cmd_draw_indexed_in_scene_layer_order")
         );
+    }
+
+    #[test]
+    fn scene_lite_runtime_snapshot_uses_clear_background_for_mixed_image_scene() {
+        let mut background = scene_lite_test_layer("background", SceneLiteLayerKind::Color);
+        background.color = Some("#102030".to_owned());
+        let mut image = scene_lite_test_layer("hero", SceneLiteLayerKind::Image);
+        image.source = Some(PathBuf::from("/tmp/scene-hero.png"));
+        image.fit = FitMode::Cover;
+        image.opacity = 0.75;
+        image.width = Some(320.0);
+        image.height = Some(180.0);
+        let item = scene_lite_test_item(vec![background, image], None, None);
+
+        let snapshot =
+            native_vulkan_scene_lite_runtime_snapshot(&item).expect("scene-lite snapshot");
+        let (source, sampled_geometry) = snapshot
+            .vulkanalia_sampled_image_geometry_input()
+            .expect("clear-background sampled image geometry");
+
+        assert!(snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.draw_pass_backend_status,
+            "clear-background-sampled-image-recording-ready"
+        );
+        assert_eq!(snapshot.draw_pass_clear_background_op_count, 1);
+        assert_eq!(
+            snapshot.draw_pass_background_clear_color.as_deref(),
+            Some("#102030")
+        );
+        assert_eq!(snapshot.full_scene.clear_background_layer_count, 1);
+        assert_eq!(snapshot.full_scene.native_runtime_layer_count, 2);
+        assert_eq!(snapshot.full_scene.native_runtime_pending_layer_count, 0);
+        assert_eq!(snapshot.full_scene.native_runtime_coverage_percent, 100);
+        assert_eq!(
+            snapshot.vulkanalia_draw_pass.backend_status,
+            "clear-background-sampled-image-dynamic-rendering-recording-ready"
+        );
+        assert_eq!(snapshot.vulkanalia_draw_pass.clear_background_op_count, 1);
+        assert_eq!(source, PathBuf::from("/tmp/scene-hero.png"));
+        assert_eq!(sampled_geometry.draw_steps.len(), 1);
+    }
+
+    #[test]
+    fn scene_lite_runtime_snapshot_counts_simple_path_tessellation_coverage() {
+        let mut path = scene_lite_test_layer("triangle", SceneLiteLayerKind::Path);
+        path.path_data = Some("M0,0 L64,0 L32,48 Z".to_owned());
+        path.color = Some("#cc8844".to_owned());
+        let item = scene_lite_test_item(vec![path], None, None);
+
+        let snapshot =
+            native_vulkan_scene_lite_runtime_snapshot(&item).expect("scene-lite snapshot");
+        let solid_geometry = snapshot
+            .vulkanalia_solid_quad_geometry_input()
+            .expect("path solid geometry");
+
+        assert!(snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.draw_pass_backend_status,
+            "solid-quad-recording-ready"
+        );
+        assert_eq!(snapshot.draw_pass_path_op_count, 1);
+        assert!(!snapshot.draw_pass_requires_path_tessellation);
+        assert_eq!(snapshot.full_scene.tessellated_path_layer_count, 1);
+        assert_eq!(snapshot.full_scene.native_runtime_coverage_percent, 100);
+        assert!(!snapshot.full_scene.scene_path_tessellation_required);
+        assert!(snapshot.full_scene.scene_path_tessellation_ready);
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"simple-path-tessellation-runtime")
+        );
+        assert_eq!(solid_geometry.draw_steps.len(), 1);
+        assert_eq!(solid_geometry.indices.len(), 3);
     }
 
     #[test]
