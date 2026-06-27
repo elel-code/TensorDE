@@ -6,10 +6,9 @@ use super::super::present::render_plan::{
     NativeVulkanSceneLiteDrawOp, NativeVulkanSceneLiteDrawOpKind, NativeVulkanSceneLiteDrawPlan,
 };
 
-const SCENE_LITE_SOLID_QUAD_VERTEX_COUNT: u32 = 4;
-const SCENE_LITE_SOLID_QUAD_INDEX_COUNT: u32 = 6;
 const SCENE_LITE_SOLID_QUAD_VERTEX_BYTES: u64 = 24;
 const SCENE_LITE_SOLID_QUAD_INDEX_BYTES: u64 = 4;
+const SCENE_LITE_ELLIPSE_SEGMENTS: usize = 48;
 const SCENE_LITE_SAMPLED_IMAGE_VERTEX_COUNT: u32 = 4;
 const SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT: u32 = 6;
 const SCENE_LITE_SAMPLED_IMAGE_VERTEX_BYTES: u64 = 20;
@@ -24,6 +23,7 @@ pub(super) struct NativeVulkanSceneLiteRecordableQuad {
     pub(super) rgba: [f32; 4],
     pub(super) width: Option<f64>,
     pub(super) height: Option<f64>,
+    pub(super) path_data: Option<String>,
     pub(super) transform: SceneLiteTransform,
 }
 
@@ -172,6 +172,11 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         .collect::<Vec<_>>();
     let recordable_op_count = recordable_quads.len();
     let quad_recording_payload = native_vulkan_scene_lite_quad_recording_payload(&recordable_quads);
+    let recorded_path_geometry_count = quad_recording_payload
+        .steps
+        .iter()
+        .filter(|step| step.kind == "path")
+        .count();
     let quad_recording_ready = !quad_recording_payload.steps.is_empty()
         && quad_recording_payload.steps.len() == draw_plan.draw_ops.len();
     let sampled_image_quads = draw_plan
@@ -207,9 +212,9 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
                 .saturating_add(sampled_image_op_count)
                 == draw_plan.draw_ops.len();
     let quad_vertex_buffer_bytes =
-        native_vulkan_scene_lite_quad_vertex_buffer_bytes(quad_recording_payload.steps.len());
+        native_vulkan_scene_lite_solid_vertex_buffer_bytes(quad_recording_payload.vertices.len());
     let quad_index_buffer_bytes =
-        native_vulkan_scene_lite_quad_index_buffer_bytes(quad_recording_payload.steps.len());
+        native_vulkan_scene_lite_solid_index_buffer_bytes(quad_recording_payload.indices.len());
     let sampled_image_vertex_buffer_bytes =
         native_vulkan_scene_lite_sampled_image_vertex_buffer_bytes(
             sampled_image_recording_payload.steps.len(),
@@ -309,7 +314,7 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         required_image_resources,
         required_video_resources,
         requires_text_atlas: text_op_count > 0,
-        requires_path_tessellation: path_op_count > 0,
+        requires_path_tessellation: path_op_count > recorded_path_geometry_count,
         requires_video_decode: video_op_count > 0,
         fast_clear_color,
     }
@@ -353,39 +358,38 @@ fn native_vulkan_scene_lite_quad_recording_payload(
     let mut indices = Vec::new();
     for quad in quads
         .iter()
-        .filter(|quad| native_vulkan_scene_lite_quad_has_recordable_geometry(quad))
+        .filter(|quad| native_vulkan_scene_lite_solid_has_recordable_geometry(quad))
     {
-        let index = steps.len();
-        if let Some(quad_vertices) = native_vulkan_scene_lite_quad_vertices(quad) {
-            let first_vertex = (index as u32).saturating_mul(SCENE_LITE_SOLID_QUAD_VERTEX_COUNT);
-            let first_index = (index as u32).saturating_mul(SCENE_LITE_SOLID_QUAD_INDEX_COUNT);
+        if let Some((solid_vertices, solid_indices)) = native_vulkan_scene_lite_solid_geometry(quad)
+        {
+            let first_vertex = vertices.len().min(u32::MAX as usize) as u32;
+            let first_index = indices.len().min(u32::MAX as usize) as u32;
+            let vertex_count = solid_vertices.len().min(u32::MAX as usize) as u32;
+            let index_count = solid_indices.len().min(u32::MAX as usize) as u32;
             steps.push(NativeVulkanSceneLiteQuadRecordingStep {
                 layer_index: quad.layer_index,
                 layer_id: quad.layer_id.clone(),
                 kind: quad.kind,
                 pipeline: "solid-quad-alpha-blend",
                 first_vertex,
-                vertex_count: SCENE_LITE_SOLID_QUAD_VERTEX_COUNT,
+                vertex_count,
                 first_index,
-                index_count: SCENE_LITE_SOLID_QUAD_INDEX_COUNT,
+                index_count,
                 vertex_buffer_offset_bytes: u64::from(first_vertex)
                     .saturating_mul(SCENE_LITE_SOLID_QUAD_VERTEX_BYTES),
-                vertex_buffer_size_bytes: u64::from(SCENE_LITE_SOLID_QUAD_VERTEX_COUNT)
+                vertex_buffer_size_bytes: u64::from(vertex_count)
                     .saturating_mul(SCENE_LITE_SOLID_QUAD_VERTEX_BYTES),
                 index_buffer_offset_bytes: u64::from(first_index)
                     .saturating_mul(SCENE_LITE_SOLID_QUAD_INDEX_BYTES),
-                index_buffer_size_bytes: u64::from(SCENE_LITE_SOLID_QUAD_INDEX_COUNT)
+                index_buffer_size_bytes: u64::from(index_count)
                     .saturating_mul(SCENE_LITE_SOLID_QUAD_INDEX_BYTES),
             });
-            vertices.extend(quad_vertices);
-            indices.extend_from_slice(&[
-                first_vertex,
-                first_vertex + 1,
-                first_vertex + 2,
-                first_vertex + 2,
-                first_vertex + 1,
-                first_vertex + 3,
-            ]);
+            vertices.extend(solid_vertices);
+            indices.extend(
+                solid_indices
+                    .into_iter()
+                    .map(|index| first_vertex.saturating_add(index)),
+            );
         }
     }
     NativeVulkanSceneLiteQuadRecordingPayload {
@@ -448,16 +452,23 @@ fn native_vulkan_scene_lite_sampled_image_recording_payload(
     }
 }
 
-fn native_vulkan_scene_lite_quad_has_recordable_geometry(
+fn native_vulkan_scene_lite_solid_has_recordable_geometry(
     quad: &NativeVulkanSceneLiteRecordableQuad,
 ) -> bool {
-    matches!(quad.kind, "rectangle")
-        && quad
-            .width
-            .is_some_and(|width| width.is_finite() && width > 0.0)
-        && quad
-            .height
-            .is_some_and(|height| height.is_finite() && height > 0.0)
+    match quad.kind {
+        "rectangle" | "ellipse" => {
+            quad.width
+                .is_some_and(|width| width.is_finite() && width > 0.0)
+                && quad
+                    .height
+                    .is_some_and(|height| height.is_finite() && height > 0.0)
+        }
+        "path" => quad
+            .path_data
+            .as_deref()
+            .is_some_and(|path| !path.is_empty()),
+        _ => false,
+    }
 }
 
 fn native_vulkan_scene_lite_sampled_image_quad_has_recordable_geometry(
@@ -471,19 +482,96 @@ fn native_vulkan_scene_lite_sampled_image_quad_has_recordable_geometry(
         && quad.opacity > 0.0
 }
 
-fn native_vulkan_scene_lite_quad_vertices(
+fn native_vulkan_scene_lite_solid_geometry(
     quad: &NativeVulkanSceneLiteRecordableQuad,
-) -> Option<[NativeVulkanSceneLiteQuadVertex; 4]> {
+) -> Option<(Vec<NativeVulkanSceneLiteQuadVertex>, Vec<u32>)> {
+    match quad.kind {
+        "rectangle" => native_vulkan_scene_lite_rectangle_geometry(quad),
+        "ellipse" => native_vulkan_scene_lite_ellipse_geometry(quad),
+        "path" => native_vulkan_scene_lite_path_geometry(quad),
+        _ => None,
+    }
+}
+
+fn native_vulkan_scene_lite_rectangle_geometry(
+    quad: &NativeVulkanSceneLiteRecordableQuad,
+) -> Option<(Vec<NativeVulkanSceneLiteQuadVertex>, Vec<u32>)> {
     let points =
         native_vulkan_scene_lite_quad_positions(quad.width?, quad.height?, quad.transform)?;
-    let mut vertices = [NativeVulkanSceneLiteQuadVertex {
-        position: [0.0, 0.0],
-        rgba: quad.rgba,
-    }; 4];
-    for (vertex, position) in vertices.iter_mut().zip(points) {
-        vertex.position = position;
+    let vertices = points
+        .into_iter()
+        .map(|position| NativeVulkanSceneLiteQuadVertex {
+            position,
+            rgba: quad.rgba,
+        })
+        .collect();
+    Some((vertices, vec![0, 1, 2, 2, 1, 3]))
+}
+
+fn native_vulkan_scene_lite_ellipse_geometry(
+    quad: &NativeVulkanSceneLiteRecordableQuad,
+) -> Option<(Vec<NativeVulkanSceneLiteQuadVertex>, Vec<u32>)> {
+    let width = quad.width?;
+    let height = quad.height?;
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return None;
     }
-    Some(vertices)
+
+    let left = -quad.transform.anchor_x * width;
+    let top = -quad.transform.anchor_y * height;
+    let center_x = left + width * 0.5;
+    let center_y = top + height * 0.5;
+    let radius_x = width * 0.5;
+    let radius_y = height * 0.5;
+    let mut vertices = Vec::with_capacity(SCENE_LITE_ELLIPSE_SEGMENTS + 1);
+    vertices.push(NativeVulkanSceneLiteQuadVertex {
+        position: native_vulkan_scene_lite_transform_point(center_x, center_y, quad.transform)?,
+        rgba: quad.rgba,
+    });
+    for segment in 0..SCENE_LITE_ELLIPSE_SEGMENTS {
+        let theta = (segment as f64) * std::f64::consts::TAU / (SCENE_LITE_ELLIPSE_SEGMENTS as f64);
+        let x = center_x + theta.cos() * radius_x;
+        let y = center_y + theta.sin() * radius_y;
+        vertices.push(NativeVulkanSceneLiteQuadVertex {
+            position: native_vulkan_scene_lite_transform_point(x, y, quad.transform)?,
+            rgba: quad.rgba,
+        });
+    }
+
+    let mut indices = Vec::with_capacity(SCENE_LITE_ELLIPSE_SEGMENTS * 3);
+    for segment in 0..SCENE_LITE_ELLIPSE_SEGMENTS {
+        let current = 1 + segment as u32;
+        let next = if segment + 1 == SCENE_LITE_ELLIPSE_SEGMENTS {
+            1
+        } else {
+            current + 1
+        };
+        indices.extend_from_slice(&[0, current, next]);
+    }
+    Some((vertices, indices))
+}
+
+fn native_vulkan_scene_lite_path_geometry(
+    quad: &NativeVulkanSceneLiteRecordableQuad,
+) -> Option<(Vec<NativeVulkanSceneLiteQuadVertex>, Vec<u32>)> {
+    let points = native_vulkan_scene_lite_simple_path_points(quad.path_data.as_deref()?)?;
+    if points.len() < 3 || !native_vulkan_scene_lite_polygon_is_convex(&points) {
+        return None;
+    }
+    let vertices = points
+        .into_iter()
+        .map(|[x, y]| {
+            Some(NativeVulkanSceneLiteQuadVertex {
+                position: native_vulkan_scene_lite_transform_point(x, y, quad.transform)?,
+                rgba: quad.rgba,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let mut indices = Vec::with_capacity((vertices.len().saturating_sub(2)) * 3);
+    for index in 1..vertices.len().saturating_sub(1) {
+        indices.extend_from_slice(&[0, index as u32, index as u32 + 1]);
+    }
+    Some((vertices, indices))
 }
 
 fn native_vulkan_scene_lite_sampled_image_vertices(
@@ -518,28 +606,50 @@ fn native_vulkan_scene_lite_quad_positions(
     let points = [(left, top), (right, top), (left, bottom), (right, bottom)];
     let mut positions = [[0.0, 0.0]; 4];
     for (position, (x, y)) in positions.iter_mut().zip(points) {
-        let scaled_x = x * transform.scale_x;
-        let scaled_y = y * transform.scale_y;
-        let scene_x = scaled_x.mul_add(cos, -scaled_y * sin) + transform.x;
-        let scene_y = scaled_x.mul_add(sin, scaled_y * cos) + transform.y;
-        if !scene_x.is_finite() || !scene_y.is_finite() {
-            return None;
-        }
-        *position = [scene_x as f32, scene_y as f32];
+        *position =
+            native_vulkan_scene_lite_transform_point_with_rotation(x, y, transform, cos, sin)?;
     }
     Some(positions)
 }
 
-fn native_vulkan_scene_lite_quad_vertex_buffer_bytes(quad_count: usize) -> u64 {
-    (quad_count as u64)
-        .saturating_mul(u64::from(SCENE_LITE_SOLID_QUAD_VERTEX_COUNT))
-        .saturating_mul(SCENE_LITE_SOLID_QUAD_VERTEX_BYTES)
+fn native_vulkan_scene_lite_transform_point(
+    x: f64,
+    y: f64,
+    transform: SceneLiteTransform,
+) -> Option<[f32; 2]> {
+    let rotation = transform.rotation_deg.to_radians();
+    native_vulkan_scene_lite_transform_point_with_rotation(
+        x,
+        y,
+        transform,
+        rotation.cos(),
+        rotation.sin(),
+    )
 }
 
-fn native_vulkan_scene_lite_quad_index_buffer_bytes(quad_count: usize) -> u64 {
-    (quad_count as u64)
-        .saturating_mul(u64::from(SCENE_LITE_SOLID_QUAD_INDEX_COUNT))
-        .saturating_mul(SCENE_LITE_SOLID_QUAD_INDEX_BYTES)
+fn native_vulkan_scene_lite_transform_point_with_rotation(
+    x: f64,
+    y: f64,
+    transform: SceneLiteTransform,
+    cos: f64,
+    sin: f64,
+) -> Option<[f32; 2]> {
+    let scaled_x = x * transform.scale_x;
+    let scaled_y = y * transform.scale_y;
+    let scene_x = scaled_x.mul_add(cos, -scaled_y * sin) + transform.x;
+    let scene_y = scaled_x.mul_add(sin, scaled_y * cos) + transform.y;
+    if !scene_x.is_finite() || !scene_y.is_finite() {
+        return None;
+    }
+    Some([scene_x as f32, scene_y as f32])
+}
+
+fn native_vulkan_scene_lite_solid_vertex_buffer_bytes(vertex_count: usize) -> u64 {
+    (vertex_count as u64).saturating_mul(SCENE_LITE_SOLID_QUAD_VERTEX_BYTES)
+}
+
+fn native_vulkan_scene_lite_solid_index_buffer_bytes(index_count: usize) -> u64 {
+    (index_count as u64).saturating_mul(SCENE_LITE_SOLID_QUAD_INDEX_BYTES)
 }
 
 fn native_vulkan_scene_lite_sampled_image_vertex_buffer_bytes(quad_count: usize) -> u64 {
@@ -565,6 +675,14 @@ fn native_vulkan_scene_lite_recordable_quad(
             if !native_vulkan_scene_lite_rectangle_needs_shape_pipeline(op) =>
         {
             native_vulkan_scene_lite_recordable_quad_from_op(op, "rectangle")
+        }
+        NativeVulkanSceneLiteDrawOpKind::Ellipse => {
+            native_vulkan_scene_lite_recordable_quad_from_op(op, "ellipse")
+        }
+        NativeVulkanSceneLiteDrawOpKind::Path
+            if op.stroke_color.as_deref().is_none_or(str::is_empty) =>
+        {
+            native_vulkan_scene_lite_recordable_quad_from_op(op, "path")
         }
         _ => None,
     }
@@ -626,8 +744,216 @@ fn native_vulkan_scene_lite_recordable_quad_from_op(
         rgba,
         width: op.width,
         height: op.height,
+        path_data: op.path_data.clone(),
         transform: op.transform,
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum NativeVulkanSceneLitePathToken {
+    Command(char),
+    Number(f64),
+}
+
+fn native_vulkan_scene_lite_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
+    let tokens = native_vulkan_scene_lite_path_tokens(path)?;
+    let mut index = 0usize;
+    let mut command = None::<char>;
+    let mut points = Vec::new();
+    let mut current = [0.0, 0.0];
+    let mut start = [0.0, 0.0];
+    let mut started = false;
+
+    while index < tokens.len() {
+        if let NativeVulkanSceneLitePathToken::Command(value) = tokens[index] {
+            command = Some(value);
+            index += 1;
+        }
+        let command = command?;
+        match command {
+            'M' | 'm' => {
+                let relative = command == 'm';
+                let mut first = true;
+                while let Some((x, y, next_index)) =
+                    native_vulkan_scene_lite_take_path_pair(&tokens, index)
+                {
+                    index = next_index;
+                    let point = if relative {
+                        [current[0] + x, current[1] + y]
+                    } else {
+                        [x, y]
+                    };
+                    current = point;
+                    if first {
+                        if started && points.len() >= 3 {
+                            return None;
+                        }
+                        start = point;
+                        started = true;
+                        first = false;
+                    }
+                    points.push(point);
+                    if index < tokens.len()
+                        && matches!(tokens[index], NativeVulkanSceneLitePathToken::Command(_))
+                    {
+                        break;
+                    }
+                }
+            }
+            'L' | 'l' => {
+                let relative = command == 'l';
+                while let Some((x, y, next_index)) =
+                    native_vulkan_scene_lite_take_path_pair(&tokens, index)
+                {
+                    index = next_index;
+                    current = if relative {
+                        [current[0] + x, current[1] + y]
+                    } else {
+                        [x, y]
+                    };
+                    points.push(current);
+                    if index < tokens.len()
+                        && matches!(tokens[index], NativeVulkanSceneLitePathToken::Command(_))
+                    {
+                        break;
+                    }
+                }
+            }
+            'H' | 'h' => {
+                let relative = command == 'h';
+                while let Some((x, next_index)) =
+                    native_vulkan_scene_lite_take_path_number(&tokens, index)
+                {
+                    index = next_index;
+                    current[0] = if relative { current[0] + x } else { x };
+                    points.push(current);
+                    if index < tokens.len()
+                        && matches!(tokens[index], NativeVulkanSceneLitePathToken::Command(_))
+                    {
+                        break;
+                    }
+                }
+            }
+            'V' | 'v' => {
+                let relative = command == 'v';
+                while let Some((y, next_index)) =
+                    native_vulkan_scene_lite_take_path_number(&tokens, index)
+                {
+                    index = next_index;
+                    current[1] = if relative { current[1] + y } else { y };
+                    points.push(current);
+                    if index < tokens.len()
+                        && matches!(tokens[index], NativeVulkanSceneLitePathToken::Command(_))
+                    {
+                        break;
+                    }
+                }
+            }
+            'Z' | 'z' => {
+                current = start;
+                if points.last().copied() == Some(start) {
+                    let _ = points.pop();
+                }
+            }
+            _ => return None,
+        }
+    }
+
+    points.dedup_by(|left, right| {
+        (left[0] - right[0]).abs() < f64::EPSILON && (left[1] - right[1]).abs() < f64::EPSILON
+    });
+    Some(points)
+}
+
+fn native_vulkan_scene_lite_path_tokens(path: &str) -> Option<Vec<NativeVulkanSceneLitePathToken>> {
+    let mut tokens = Vec::new();
+    let chars = path.as_bytes();
+    let mut index = 0usize;
+    while index < chars.len() {
+        let byte = chars[index];
+        if byte.is_ascii_whitespace() || byte == b',' {
+            index += 1;
+            continue;
+        }
+        let ch = byte as char;
+        if matches!(
+            ch,
+            'M' | 'm' | 'L' | 'l' | 'H' | 'h' | 'V' | 'v' | 'Z' | 'z'
+        ) {
+            tokens.push(NativeVulkanSceneLitePathToken::Command(ch));
+            index += 1;
+            continue;
+        }
+        if byte == b'+' || byte == b'-' || byte == b'.' || byte.is_ascii_digit() {
+            let start = index;
+            index += 1;
+            while index < chars.len() {
+                let next = chars[index];
+                if next.is_ascii_digit()
+                    || next == b'.'
+                    || next == b'e'
+                    || next == b'E'
+                    || ((next == b'+' || next == b'-')
+                        && matches!(chars.get(index.wrapping_sub(1)), Some(b'e' | b'E')))
+                {
+                    index += 1;
+                } else {
+                    break;
+                }
+            }
+            let value = path[start..index].parse::<f64>().ok()?;
+            if !value.is_finite() {
+                return None;
+            }
+            tokens.push(NativeVulkanSceneLitePathToken::Number(value));
+            continue;
+        }
+        return None;
+    }
+    Some(tokens)
+}
+
+fn native_vulkan_scene_lite_take_path_number(
+    tokens: &[NativeVulkanSceneLitePathToken],
+    index: usize,
+) -> Option<(f64, usize)> {
+    match tokens.get(index)? {
+        NativeVulkanSceneLitePathToken::Number(value) => Some((*value, index + 1)),
+        NativeVulkanSceneLitePathToken::Command(_) => None,
+    }
+}
+
+fn native_vulkan_scene_lite_take_path_pair(
+    tokens: &[NativeVulkanSceneLitePathToken],
+    index: usize,
+) -> Option<(f64, f64, usize)> {
+    let (x, index) = native_vulkan_scene_lite_take_path_number(tokens, index)?;
+    let (y, index) = native_vulkan_scene_lite_take_path_number(tokens, index)?;
+    Some((x, y, index))
+}
+
+fn native_vulkan_scene_lite_polygon_is_convex(points: &[[f64; 2]]) -> bool {
+    if points.len() < 3 {
+        return false;
+    }
+    let mut sign = 0.0f64;
+    for index in 0..points.len() {
+        let a = points[index];
+        let b = points[(index + 1) % points.len()];
+        let c = points[(index + 2) % points.len()];
+        let ab = [b[0] - a[0], b[1] - a[1]];
+        let bc = [c[0] - b[0], c[1] - b[1]];
+        let cross = ab[0].mul_add(bc[1], -ab[1] * bc[0]);
+        if cross.abs() <= f64::EPSILON {
+            continue;
+        }
+        if sign == 0.0 {
+            sign = cross.signum();
+        } else if sign != cross.signum() {
+            return false;
+        }
+    }
+    sign != 0.0
 }
 
 fn native_vulkan_scene_lite_rectangle_needs_shape_pipeline(
@@ -984,6 +1310,97 @@ mod tests {
         assert_eq!(quad.width, Some(640.0));
         assert_eq!(quad.height, Some(360.0));
         assert_eq!(quad.transform.x, 24.0);
+    }
+
+    #[test]
+    fn draw_pass_plan_records_ellipse_as_solid_geometry() {
+        let mut ellipse = draw_op(0, NativeVulkanSceneLiteDrawOpKind::Ellipse);
+        ellipse.color = Some("#336699".to_owned());
+        ellipse.opacity = 0.5;
+        ellipse.width = Some(120.0);
+        ellipse.height = Some(60.0);
+        ellipse.transform.x = 10.0;
+        let draw_plan = NativeVulkanSceneLiteDrawPlan {
+            snapshot_time_ms: 0,
+            draw_ops: vec![ellipse],
+            unsupported_layers: Vec::new(),
+            fallback_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.backend_status, "solid-quad-recording-ready");
+        assert_eq!(pass_plan.blocking_reason, None);
+        assert!(pass_plan.quad_recording_ready);
+        assert_eq!(pass_plan.quad_recording_steps.len(), 1);
+        assert_eq!(pass_plan.quad_recording_steps[0].kind, "ellipse");
+        assert_eq!(pass_plan.quad_recording_steps[0].vertex_count, 49);
+        assert_eq!(pass_plan.quad_recording_steps[0].index_count, 144);
+        assert_eq!(pass_plan.quad_vertices.len(), 49);
+        assert_eq!(pass_plan.quad_indices.len(), 144);
+        assert_eq!(pass_plan.quad_vertex_buffer_bytes, 49 * 24);
+        assert_eq!(pass_plan.quad_index_buffer_bytes, 144 * 4);
+        assert_eq!(pass_plan.vector_shape_op_count, 1);
+    }
+
+    #[test]
+    fn draw_pass_plan_records_simple_filled_path_as_solid_geometry() {
+        let mut path = draw_op(0, NativeVulkanSceneLiteDrawOpKind::Path);
+        path.color = Some("#cc3300".to_owned());
+        path.path_data = Some("M0 0 L100 0 L100 50 L0 50 Z".to_owned());
+        path.transform.x = 4.0;
+        let draw_plan = NativeVulkanSceneLiteDrawPlan {
+            snapshot_time_ms: 0,
+            draw_ops: vec![path],
+            unsupported_layers: Vec::new(),
+            fallback_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.backend_status, "solid-quad-recording-ready");
+        assert_eq!(pass_plan.blocking_reason, None);
+        assert!(pass_plan.quad_recording_ready);
+        assert_eq!(pass_plan.quad_recording_steps.len(), 1);
+        assert_eq!(pass_plan.quad_recording_steps[0].kind, "path");
+        assert_eq!(pass_plan.quad_recording_steps[0].vertex_count, 4);
+        assert_eq!(pass_plan.quad_recording_steps[0].index_count, 6);
+        assert_eq!(pass_plan.quad_vertices.len(), 4);
+        assert_eq!(pass_plan.quad_indices, vec![0, 1, 2, 0, 2, 3]);
+        assert_eq!(pass_plan.quad_vertices[0].position, [4.0, 0.0]);
+        assert_eq!(pass_plan.quad_vertices[2].position, [104.0, 50.0]);
+        assert_eq!(pass_plan.path_op_count, 1);
+        assert!(!pass_plan.requires_path_tessellation);
+    }
+
+    #[test]
+    fn draw_pass_plan_keeps_stroked_path_pending_until_stroke_geometry_exists() {
+        let mut path = draw_op(0, NativeVulkanSceneLiteDrawOpKind::Path);
+        path.color = Some("#cc3300".to_owned());
+        path.stroke_color = Some("#ffffff".to_owned());
+        path.path_data = Some("M0 0 L100 0 L100 50 L0 50 Z".to_owned());
+        let draw_plan = NativeVulkanSceneLiteDrawPlan {
+            snapshot_time_ms: 0,
+            draw_ops: vec![path],
+            unsupported_layers: Vec::new(),
+            fallback_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(!pass_plan.backend_ready);
+        assert_eq!(
+            pass_plan.backend_status,
+            "draw-pass-plan-ready-recording-pending"
+        );
+        assert_eq!(pass_plan.recordable_op_count, 0);
+        assert_eq!(pass_plan.path_op_count, 1);
+        assert!(pass_plan.requires_path_tessellation);
     }
 
     #[test]

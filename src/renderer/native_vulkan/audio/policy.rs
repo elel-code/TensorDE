@@ -31,13 +31,9 @@ impl NativeVulkanAudioOutputPolicy {
 
     pub fn parse_cli(value: &str) -> Result<Self, String> {
         match value {
-            "plan" | "muted-plan" | "follow-plan" | "manifest" => Ok(Self::Plan),
-            "clock-only" | "clock" | "probe" | "silent" => {
-                Ok(Self::Explicit(NativeVulkanAudioOutputMode::ClockOnly))
-            }
-            "auto" | "autoaudiosink" | "audible" => {
-                Ok(Self::Explicit(NativeVulkanAudioOutputMode::Auto))
-            }
+            "plan" => Ok(Self::Plan),
+            "clock-only" => Ok(Self::Explicit(NativeVulkanAudioOutputMode::ClockOnly)),
+            "auto" => Ok(Self::Explicit(NativeVulkanAudioOutputMode::Auto)),
             _ => Err(format!("unsupported --audio-output: {value}")),
         }
     }

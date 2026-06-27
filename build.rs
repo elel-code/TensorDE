@@ -22,12 +22,14 @@ fn main() {
             "libavformat",
             "libavcodec",
             "libavutil",
+            "libswresample",
+            "libpipewire-0.3",
         ])
         .output()
         .expect("run pkg-config for FFmpeg");
     if !pkg_config.status.success() {
         panic!(
-            "pkg-config libavformat/libavcodec/libavutil failed: {}",
+            "pkg-config libavformat/libavcodec/libavutil/libswresample/libpipewire-0.3 failed: {}",
             String::from_utf8_lossy(&pkg_config.stderr)
         );
     }
@@ -36,7 +38,11 @@ fn main() {
 
     let mut cc = Command::new("cc");
     cc.args(["-std=c11", "-fPIC", "-O2", "-c"]);
-    cc.args(flags.iter().copied().filter(|flag| flag.starts_with("-I")));
+    cc.args(
+        flags.iter().copied().filter(|flag| {
+            flag.starts_with("-I") || flag.starts_with("-D") || flag.starts_with("-f")
+        }),
+    );
     cc.arg(&source);
     cc.arg("-o");
     cc.arg(&object);
