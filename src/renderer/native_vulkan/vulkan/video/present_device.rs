@@ -66,6 +66,27 @@ pub struct NativeVulkanVulkanaliaVideoPresentSessionProbeOptions {
     pub width: u32,
     pub height: u32,
     pub target_max_fps: Option<u32>,
+    pub audio_master_clock: NativeVulkanVulkanaliaVideoPresentAudioMasterClock,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeVulkanVulkanaliaVideoPresentAudioMasterClock {
+    pub enabled: bool,
+    pub start_clock_ns: Option<u64>,
+}
+
+impl NativeVulkanVulkanaliaVideoPresentAudioMasterClock {
+    pub const DISABLED: Self = Self {
+        enabled: false,
+        start_clock_ns: None,
+    };
+
+    pub fn clock_only(start_clock_ns: Option<u64>) -> Self {
+        Self {
+            enabled: true,
+            start_clock_ns,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -107,6 +128,8 @@ pub struct NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot {
     pub requested_extent: (u32, u32),
     pub device: NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot,
     pub video_session_created: bool,
+    pub video_session_create_inline_session_parameters: bool,
+    pub video_session_create_flags_bits: u32,
     pub memory_binding: NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot,
     pub resource_image: NativeVulkanVulkanaliaVideoSessionResourceImageSmokeSnapshot,
     pub picture_format: String,
@@ -142,6 +165,7 @@ pub struct NativeVulkanVulkanaliaVideoPresentFeatureSnapshot {
     pub present_id2_enabled: bool,
     pub present_wait2_enabled: bool,
     pub swapchain_maintenance1_enabled: bool,
+    pub present_mode_fifo_latest_ready_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -349,6 +373,9 @@ fn with_video_present_device(
             swapchain_maintenance1_enabled: context
                 .present_feature_selection
                 .swapchain_maintenance1_enabled,
+            present_mode_fifo_latest_ready_enabled: context
+                .present_feature_selection
+                .present_mode_fifo_latest_ready_enabled,
         },
         video_queue: queue_snapshot(
             selection.video_queue_family_index,
@@ -660,12 +687,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_video_present_device(
     let mut video_maintenance2_features = vk::PhysicalDeviceVideoMaintenance2FeaturesKHR::builder()
         .video_maintenance2(true)
         .build();
-    let mut present_id_features = vk::PhysicalDevicePresentIdFeaturesKHR::builder()
-        .present_id(true)
-        .build();
-    let mut present_wait_features = vk::PhysicalDevicePresentWaitFeaturesKHR::builder()
-        .present_wait(true)
-        .build();
     let mut present_id2_features = vk::PhysicalDevicePresentId2FeaturesKHR::builder()
         .present_id2(true)
         .build();
@@ -675,6 +696,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_video_present_device(
     let mut swapchain_maintenance1_features =
         vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR::builder()
             .swapchain_maintenance1(true)
+            .build();
+    let mut present_mode_fifo_latest_ready_features =
+        vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR::builder()
+            .present_mode_fifo_latest_ready(true)
             .build();
 
     let mut device_create_info = vk::DeviceCreateInfo::builder()
@@ -710,12 +735,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_video_present_device(
     if video_feature_selection.video_maintenance2_enabled {
         device_create_info = device_create_info.push_next(&mut video_maintenance2_features);
     }
-    if present_feature_selection.present_id_enabled {
-        device_create_info = device_create_info.push_next(&mut present_id_features);
-    }
-    if present_feature_selection.present_wait_enabled {
-        device_create_info = device_create_info.push_next(&mut present_wait_features);
-    }
     if present_feature_selection.present_id2_enabled {
         device_create_info = device_create_info.push_next(&mut present_id2_features);
     }
@@ -724,6 +743,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_video_present_device(
     }
     if present_feature_selection.swapchain_maintenance1_enabled {
         device_create_info = device_create_info.push_next(&mut swapchain_maintenance1_features);
+    }
+    if present_feature_selection.present_mode_fifo_latest_ready_enabled {
+        device_create_info =
+            device_create_info.push_next(&mut present_mode_fifo_latest_ready_features);
     }
 
     let device =
@@ -844,6 +867,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn feature_snapshot_from_context(
         swapchain_maintenance1_enabled: context
             .present_feature_selection
             .swapchain_maintenance1_enabled,
+        present_mode_fifo_latest_ready_enabled: context
+            .present_feature_selection
+            .present_mode_fifo_latest_ready_enabled,
     }
 }
 
@@ -968,7 +994,7 @@ mod tests {
             "VK_KHR_video_queue",
             "VK_KHR_swapchain",
             "VK_KHR_video_queue",
-            "VK_KHR_present_wait",
+            "VK_KHR_present_wait2",
         ]);
 
         assert_eq!(
@@ -976,7 +1002,7 @@ mod tests {
             vec![
                 "VK_KHR_video_queue",
                 "VK_KHR_swapchain",
-                "VK_KHR_present_wait"
+                "VK_KHR_present_wait2"
             ]
         );
     }

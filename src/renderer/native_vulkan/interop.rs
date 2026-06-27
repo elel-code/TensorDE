@@ -28,7 +28,7 @@ pub fn video_interop_contract() -> NativeVulkanVideoInteropContract {
         current_baseline: "native Vulkan Video direct decode/render/present with FFmpeg packet frontend",
         vulkan_binding_policy: "vulkanalia is the native Vulkan binding; the ash dependency and runtime baseline are removed, and zero-copy evidence comes from device extension/capability/import telemetry rather than the binding choice alone",
         vulkanalia_primary_policy: "vulkanalia owns the native-vulkan-renderer surface for instance/device ownership, Vulkan Video submit helpers, image/import resources and present telemetry",
-        vulkan_1_4_value: "Vulkan 1.4 is valuable for dynamic-rendering-local-read, push descriptors, maintenance5/6, scalar block layout, synchronization2 and stronger portable limits; it does not by itself prove Vulkan Video or zero-copy support",
+        vulkan_1_4_value: "Vulkan 1.4 is valuable for dynamic-rendering-local-read, host image copy, push descriptors, maintenance5/6, scalar block layout, synchronization2 and stronger portable limits; it does not by itself prove Vulkan Video or zero-copy support",
         removed_ash_baseline: "ash is removed; Vulkanalia owns Vulkan 1.4, Vulkan Video and external-memory parity work",
         target_sampling: "NV12/P010/YUV planes sampled directly in Vulkan before RGB composition",
         avoids_default_rgba_upload: true,

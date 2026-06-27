@@ -32,6 +32,10 @@ use super::instance::{
     native_vulkan_vulkanalia_create_instance_with_required_extensions,
     native_vulkan_vulkanalia_destroy_instance,
 };
+use super::memory::{
+    native_vulkan_vulkanalia_bind_buffer_memory2, native_vulkan_vulkanalia_map_memory2,
+    native_vulkan_vulkanalia_unmap_memory2,
+};
 use super::present_timing::VulkanaliaPresentTimingConfig;
 use super::scene_lite_draw_pass::{
     NativeVulkanVulkanaliaSceneLiteSampledImageCommandSnapshot,
@@ -630,9 +634,7 @@ fn with_vulkanalia_scene_lite_solid_quad_present(
         }
     };
     let present_timing = VulkanaliaPresentTimingConfig::new(
-        present_device.feature_selection.present_id_enabled,
         swapchain_plan.present_id2_enabled,
-        present_device.feature_selection.present_wait_enabled,
         swapchain_plan.present_wait2_enabled,
     );
 
@@ -1067,9 +1069,7 @@ fn with_vulkanalia_scene_lite_sampled_image_present(
         None
     };
     let present_timing = VulkanaliaPresentTimingConfig::new(
-        present_device.feature_selection.present_id_enabled,
         swapchain_plan.present_id2_enabled,
-        present_device.feature_selection.present_wait_enabled,
         swapchain_plan.present_wait2_enabled,
     );
 
@@ -1221,11 +1221,6 @@ fn run_scene_lite_solid_quad_present_loop(
                 .present_ids(&present_id_values)
                 .build()
         });
-        let mut present_id_info = present_id.map(|_| {
-            vk::PresentIdKHR::builder()
-                .present_ids(&present_id_values)
-                .build()
-        });
         let mut present_info = vk::PresentInfoKHR::builder()
             .wait_semaphores(&wait_semaphores)
             .swapchains(&swapchains)
@@ -1233,10 +1228,6 @@ fn run_scene_lite_solid_quad_present_loop(
         if present_timing.present_id2_enabled {
             if let Some(present_id2_info) = present_id2_info.as_mut() {
                 present_info = present_info.push_next(present_id2_info);
-            }
-        } else if present_timing.present_id_enabled {
-            if let Some(present_id_info) = present_id_info.as_mut() {
-                present_info = present_info.push_next(present_id_info);
             }
         }
         unsafe {
@@ -1319,9 +1310,9 @@ fn run_scene_lite_solid_quad_present_loop(
         present_sync_model: "frame-slot semaphore/fence reuse; no per-present queue_wait_idle",
         wait_idle_after_present: false,
         present_ids,
-        uses_present_id: present_timing.present_id_enabled,
+        uses_present_id: false,
         uses_present_id2: present_timing.present_id2_enabled,
-        present_wait_available: present_timing.present_wait_enabled,
+        present_wait_available: false,
         present_wait2_available: present_timing.present_wait2_enabled,
         present_wait_after_present,
         uses_pipeline_rendering_create_info: true,
@@ -1474,11 +1465,6 @@ fn run_scene_lite_sampled_image_present_loop(
                 .present_ids(&present_id_values)
                 .build()
         });
-        let mut present_id_info = present_id.map(|_| {
-            vk::PresentIdKHR::builder()
-                .present_ids(&present_id_values)
-                .build()
-        });
         let mut present_info = vk::PresentInfoKHR::builder()
             .wait_semaphores(&wait_semaphores)
             .swapchains(&swapchains)
@@ -1486,10 +1472,6 @@ fn run_scene_lite_sampled_image_present_loop(
         if present_timing.present_id2_enabled {
             if let Some(present_id2_info) = present_id2_info.as_mut() {
                 present_info = present_info.push_next(present_id2_info);
-            }
-        } else if present_timing.present_id_enabled {
-            if let Some(present_id_info) = present_id_info.as_mut() {
-                present_info = present_info.push_next(present_id_info);
             }
         }
         unsafe {
@@ -1585,9 +1567,9 @@ fn run_scene_lite_sampled_image_present_loop(
         present_sync_model: "frame-slot semaphore/fence reuse; no per-present queue_wait_idle",
         wait_idle_after_present: false,
         present_ids,
-        uses_present_id: present_timing.present_id_enabled,
+        uses_present_id: false,
         uses_present_id2: present_timing.present_id2_enabled,
-        present_wait_available: present_timing.present_wait_enabled,
+        present_wait_available: false,
         present_wait2_available: present_timing.present_wait2_enabled,
         present_wait_after_present,
         uses_pipeline_rendering_create_info: true,
@@ -1978,26 +1960,29 @@ fn create_scene_lite_uploaded_buffer(
         let memory = unsafe { device.allocate_memory(&allocation_info, None) }
             .map_err(|err| format!("vkAllocateMemory(vulkanalia scene-lite {label}): {err:?}"))?;
 
-        if let Err(err) = unsafe { device.bind_buffer_memory(buffer, memory, 0) } {
+        if let Err(err) =
+            native_vulkan_vulkanalia_bind_buffer_memory2(device, buffer, memory, 0, label)
+        {
             unsafe {
                 device.free_memory(memory, None);
             }
-            return Err(format!(
-                "vkBindBufferMemory(vulkanalia scene-lite {label}): {err:?}"
-            ));
+            return Err(err);
         }
 
-        let map = match unsafe {
-            device.map_memory(memory, 0, payload.len() as u64, vk::MemoryMapFlags::empty())
-        } {
+        let map = match native_vulkan_vulkanalia_map_memory2(
+            device,
+            memory,
+            0,
+            payload.len() as u64,
+            vk::MemoryMapFlags::empty(),
+            label,
+        ) {
             Ok(map) => map,
             Err(err) => {
                 unsafe {
                     device.free_memory(memory, None);
                 }
-                return Err(format!(
-                    "vkMapMemory(vulkanalia scene-lite {label}): {err:?}"
-                ));
+                return Err(err);
             }
         };
         unsafe {
@@ -2013,18 +1998,14 @@ fn create_scene_lite_uploaded_buffer(
                 .size(vk::WHOLE_SIZE)
                 .build();
             if let Err(err) = unsafe { device.flush_mapped_memory_ranges(&[range]) } {
-                unsafe {
-                    device.unmap_memory(memory);
-                    device.free_memory(memory, None);
-                }
+                let _ = native_vulkan_vulkanalia_unmap_memory2(device, memory, label);
+                unsafe { device.free_memory(memory, None) };
                 return Err(format!(
                     "vkFlushMappedMemoryRanges(vulkanalia scene-lite {label}): {err:?}"
                 ));
             }
         }
-        unsafe {
-            device.unmap_memory(memory);
-        }
+        native_vulkan_vulkanalia_unmap_memory2(device, memory, label)?;
 
         Ok(VulkanaliaSceneLiteUploadedBuffer {
             buffer,

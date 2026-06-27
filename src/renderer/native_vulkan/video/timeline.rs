@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct NativeVulkanTimelinePtsDeltaSummary {
     pub actual_min_ms: Option<u64>,

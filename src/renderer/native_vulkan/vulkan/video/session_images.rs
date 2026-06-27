@@ -2,6 +2,7 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};
 
+use super::memory::native_vulkan_vulkanalia_bind_image_memory2;
 use super::video_format_probe::native_vulkan_vulkanalia_video_format_properties_for_profile;
 use super::video_session::{
     NativeVulkanVulkanaliaMemoryTypeCandidate, native_vulkan_vulkanalia_memory_type_candidates,
@@ -183,13 +184,17 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
             format!("vkAllocateMemory(vulkanalia video session resource image): {err:?}")
         })?;
 
-        if let Err(err) = unsafe { device.bind_image_memory(image, memory, 0) } {
+        if let Err(err) = native_vulkan_vulkanalia_bind_image_memory2(
+            device,
+            image,
+            memory,
+            0,
+            "video session resource image",
+        ) {
             unsafe {
                 device.free_memory(memory, None);
             }
-            return Err(format!(
-                "vkBindImageMemory(vulkanalia video session resource): {err:?}"
-            ));
+            return Err(err);
         }
 
         let view = match native_vulkan_vulkanalia_create_video_session_resource_image_view(

@@ -21,6 +21,7 @@ use super::super::vulkan::{
     NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot,
     NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaSurfaceSwapchainProbeSnapshot,
+    NativeVulkanVulkanaliaVideoPresentAudioMasterClock,
     NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot,
     NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
     NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot,
@@ -49,6 +50,8 @@ pub struct NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
     pub audio_clock_probe_requested: bool,
     pub audio_output_mode: &'static str,
     pub audio_clock: Option<NativeVulkanAudioClockRuntimeSnapshot>,
+    pub audio_master_clock_enabled: bool,
+    pub audio_master_clock_start_ns: Option<u64>,
     pub decode_submit_backend: &'static str,
     pub command_submit_model: &'static str,
     pub present_backend: &'static str,
@@ -129,6 +132,29 @@ pub fn run_vulkanalia_ready_prefix_video(
         NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10
     );
     let streaming_queue_capacity = native_vulkan_vulkanalia_streaming_packet_queue_capacity();
+    let audio_clock = if audio_clock_probe_requested {
+        let mut probe_options = NativeVulkanAudioClockProbeOptions::clock_only(source.clone());
+        probe_options.output_mode = audio_output_mode;
+        probe_options.packets_to_probe = playback_frame_count.max(1).min(64);
+        Some(native_vulkan_probe_ffmpeg_audio_clock(probe_options)?)
+    } else if audio_output_mode == NativeVulkanAudioOutputMode::ClockOnly {
+        Some(native_vulkan_unattached_audio_clock_snapshot(
+            audio_output_mode,
+        ))
+    } else {
+        None
+    };
+    let audio_master_clock_enabled = audio_clock
+        .as_ref()
+        .is_some_and(|clock| clock.video_master_clock_ready);
+    let audio_master_clock_start_ns = audio_clock
+        .as_ref()
+        .and_then(|clock| clock.video_master_start_clock_ns);
+    let audio_master_clock = if audio_master_clock_enabled {
+        NativeVulkanVulkanaliaVideoPresentAudioMasterClock::clock_only(audio_master_clock_start_ns)
+    } else {
+        NativeVulkanVulkanaliaVideoPresentAudioMasterClock::DISABLED
+    };
     let session = None;
     let video_present_session_options = NativeVulkanVulkanaliaVideoPresentSessionProbeOptions {
         host: options.host.clone(),
@@ -137,6 +163,7 @@ pub fn run_vulkanalia_ready_prefix_video(
         width,
         height,
         target_max_fps: options.target_max_fps,
+        audio_master_clock,
     };
     let h264_retained_video_present_decode = h264_streaming_decode_requested.then(|| {
         run_native_vulkan_vulkanalia_h264_streaming_video_present_decode(
@@ -265,84 +292,27 @@ pub fn run_vulkanalia_ready_prefix_video(
             None,
         )
     };
-    let video_present_device_probe = video_present_session_probe
-        .as_ref()
-        .map(|probe| probe.device.clone());
+    let retained_decode_snapshot_present = h264_retained_video_present_decode.is_some()
+        || h265_retained_video_present_decode.is_some()
+        || av1_retained_video_present_decode.is_some();
+    let video_present_device_probe = if retained_decode_snapshot_present {
+        None
+    } else {
+        video_present_session_probe
+            .as_ref()
+            .map(|probe| probe.device.clone())
+    };
     let video_present_device_probe_error = if video_present_device_probe.is_none() {
         video_present_session_probe_error.clone()
     } else {
         None
     };
-    let decoded_image_present_draw_requested = h264_retained_video_present_decode
-        .as_ref()
-        .is_some_and(|snapshot| snapshot.decoded_image_present_draw_requested)
-        || h265_retained_video_present_decode
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.decoded_image_present_draw_requested)
-        || av1_retained_video_present_decode
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.decoded_image_present_draw_requested);
-    let decoded_image_present_draw = h264_retained_video_present_decode
-        .as_ref()
-        .and_then(|snapshot| snapshot.decoded_image_present_draw.clone())
-        .or_else(|| {
-            h265_retained_video_present_decode
-                .as_ref()
-                .and_then(|snapshot| snapshot.decoded_image_present_draw.clone())
-        })
-        .or_else(|| {
-            av1_retained_video_present_decode
-                .as_ref()
-                .and_then(|snapshot| snapshot.decoded_image_present_draw.clone())
-        });
-    let decoded_image_present_draw_error = h264_retained_video_present_decode
-        .as_ref()
-        .and_then(|snapshot| snapshot.decoded_image_present_draw_error.clone())
-        .or_else(|| {
-            h265_retained_video_present_decode
-                .as_ref()
-                .and_then(|snapshot| snapshot.decoded_image_present_draw_error.clone())
-        })
-        .or_else(|| {
-            av1_retained_video_present_decode
-                .as_ref()
-                .and_then(|snapshot| snapshot.decoded_image_present_draw_error.clone())
-        });
-    let decoded_image_present_sequence_requested = h264_retained_video_present_decode
-        .as_ref()
-        .is_some_and(|snapshot| snapshot.decoded_image_present_sequence_requested)
-        || h265_retained_video_present_decode
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.decoded_image_present_sequence_requested)
-        || av1_retained_video_present_decode
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.decoded_image_present_sequence_requested);
-    let decoded_image_present_sequence = h264_retained_video_present_decode
-        .as_ref()
-        .and_then(|snapshot| snapshot.decoded_image_present_sequence.clone())
-        .or_else(|| {
-            h265_retained_video_present_decode
-                .as_ref()
-                .and_then(|snapshot| snapshot.decoded_image_present_sequence.clone())
-        })
-        .or_else(|| {
-            av1_retained_video_present_decode
-                .as_ref()
-                .and_then(|snapshot| snapshot.decoded_image_present_sequence.clone())
-        });
-    let decoded_image_present_sequence_error = h264_retained_video_present_decode
-        .as_ref()
-        .and_then(|snapshot| snapshot.decoded_image_present_sequence_error.clone())
-        .or_else(|| {
-            h265_retained_video_present_decode
-                .as_ref()
-                .and_then(|snapshot| snapshot.decoded_image_present_sequence_error.clone())
-        })
-        .or_else(|| {
-            av1_retained_video_present_decode
-                .as_ref()
-                .and_then(|snapshot| snapshot.decoded_image_present_sequence_error.clone())
-        });
+    let decoded_image_present_draw_requested = false;
+    let decoded_image_present_draw = None;
+    let decoded_image_present_draw_error = None;
+    let decoded_image_present_sequence_requested = false;
+    let decoded_image_present_sequence = None;
+    let decoded_image_present_sequence_error = None;
     let decoded_image_zero_copy_presented = h264_retained_video_present_decode
         .as_ref()
         .is_some_and(|snapshot| snapshot.decoded_image_zero_copy_presented)
@@ -377,19 +347,6 @@ pub fn run_vulkanalia_ready_prefix_video(
     } else {
         "vulkanalia-clear-present-runtime-visible-placeholder"
     };
-    let audio_clock = if audio_clock_probe_requested {
-        let mut probe_options = NativeVulkanAudioClockProbeOptions::clock_only(source.clone());
-        probe_options.output_mode = audio_output_mode;
-        probe_options.packets_to_probe = playback_frame_count.max(1).min(64);
-        Some(native_vulkan_probe_ffmpeg_audio_clock(probe_options)?)
-    } else if audio_output_mode == NativeVulkanAudioOutputMode::ClockOnly {
-        Some(native_vulkan_unattached_audio_clock_snapshot(
-            audio_output_mode,
-        ))
-    } else {
-        None
-    };
-
     Ok(NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
         route: "direct-video-ready-prefix",
         binding: "vulkanalia",
@@ -403,6 +360,8 @@ pub fn run_vulkanalia_ready_prefix_video(
         audio_clock_probe_requested,
         audio_output_mode: audio_output_mode.as_str(),
         audio_clock,
+        audio_master_clock_enabled,
+        audio_master_clock_start_ns,
         decode_submit_backend: "vulkanalia-video-session-bind",
         command_submit_model: "CmdPipelineBarrier2 -> CmdBeginVideoCodingKHR -> CmdDecodeVideoKHR -> CmdEndVideoCodingKHR -> QueueSubmit2",
         present_backend,

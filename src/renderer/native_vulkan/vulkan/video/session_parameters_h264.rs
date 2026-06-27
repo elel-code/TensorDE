@@ -16,6 +16,32 @@ use super::video_session_parameters::{
 
 const H264_SESSION_PARAMETERS_SOURCE: &str = "native-rust-h264-sps-pps-to-vulkanalia-std";
 
+pub(in crate::renderer::native_vulkan::vulkan) struct NativeVulkanVulkanaliaH264InlineSessionParameters
+{
+    _offset_for_ref_frame: Vec<i32>,
+    sps: [vk::video::StdVideoH264SequenceParameterSet; 1],
+    pps: [vk::video::StdVideoH264PictureParameterSet; 1],
+}
+
+impl NativeVulkanVulkanaliaH264InlineSessionParameters {
+    pub(in crate::renderer::native_vulkan::vulkan) fn inline_info(
+        &self,
+    ) -> vk::VideoDecodeH264InlineSessionParametersInfoKHR {
+        vk::VideoDecodeH264InlineSessionParametersInfoKHR::builder()
+            .std_sps(&self.sps[0])
+            .std_pps(&self.pps[0])
+            .build()
+    }
+}
+
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_h264_inline_session_parameters(
+    codec: NativeVulkanVideoSessionCodec,
+    parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
+) -> Result<NativeVulkanVulkanaliaH264InlineSessionParameters, String> {
+    native_vulkan_vulkanalia_validate_h264_session_parameter_inputs(codec, parameter_sets)?;
+    native_vulkan_vulkanalia_h264_inline_session_parameters_inner(parameter_sets)
+}
+
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_smoke_create_h264_video_session_parameters(
     device: &Device,
     session: vk::VideoSessionKHR,
@@ -50,6 +76,19 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     codec: NativeVulkanVideoSessionCodec,
     parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
 ) -> Result<VulkanaliaVideoSessionParameters, String> {
+    native_vulkan_vulkanalia_validate_h264_session_parameter_inputs(codec, parameter_sets)?;
+
+    native_vulkan_vulkanalia_smoke_create_h264_video_session_parameters_inner(
+        device,
+        session,
+        parameter_sets,
+    )
+}
+
+fn native_vulkan_vulkanalia_validate_h264_session_parameter_inputs(
+    codec: NativeVulkanVideoSessionCodec,
+    parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
+) -> Result<(), String> {
     if codec != NativeVulkanVideoSessionCodec::H264High8 {
         return Err(
             "Vulkanalia H.264 session parameters require the h264-high-8 session codec".to_owned(),
@@ -61,11 +100,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         );
     }
 
-    native_vulkan_vulkanalia_smoke_create_h264_video_session_parameters_inner(
-        device,
-        session,
-        parameter_sets,
-    )
+    Ok(())
 }
 
 fn native_vulkan_vulkanalia_smoke_create_h264_video_session_parameters_inner(
@@ -73,6 +108,47 @@ fn native_vulkan_vulkanalia_smoke_create_h264_video_session_parameters_inner(
     session: vk::VideoSessionKHR,
     parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
 ) -> Result<VulkanaliaVideoSessionParameters, String> {
+    let inline_parameters =
+        native_vulkan_vulkanalia_h264_inline_session_parameters_inner(parameter_sets)?;
+    let sps = &inline_parameters.sps;
+    let pps = &inline_parameters.pps;
+    let add_info = vk::VideoDecodeH264SessionParametersAddInfoKHR::builder()
+        .std_sp_ss(sps)
+        .std_pp_ss(pps)
+        .build();
+    let max_std_sps_count = 32;
+    let max_std_pps_count = 32;
+    let mut h264_create_info = vk::VideoDecodeH264SessionParametersCreateInfoKHR::builder()
+        .max_std_sps_count(max_std_sps_count)
+        .max_std_pps_count(max_std_pps_count)
+        .parameters_add_info(&add_info)
+        .build();
+    let create_info = vk::VideoSessionParametersCreateInfoKHR::builder()
+        .video_session(session)
+        .push_next(&mut h264_create_info)
+        .build();
+
+    native_vulkan_vulkanalia_create_video_session_parameters(
+        device,
+        &create_info,
+        NativeVulkanVulkanaliaVideoSessionParametersSnapshot {
+            codec: native_vulkan_vulkanalia_h264_parameter_sets_codec_label(parameter_sets)?,
+            source: H264_SESSION_PARAMETERS_SOURCE,
+            max_std_vps_count: 0,
+            max_std_sps_count,
+            max_std_pps_count,
+            std_vps_count: 0,
+            std_sps_count: sps.len() as u32,
+            std_pps_count: pps.len() as u32,
+        },
+        "vulkanalia real h264 session parameters",
+    )
+    .map_err(|err| err.error)
+}
+
+fn native_vulkan_vulkanalia_h264_inline_session_parameters_inner(
+    parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
+) -> Result<NativeVulkanVulkanaliaH264InlineSessionParameters, String> {
     let offset_for_ref_frame = parameter_sets.sps.offset_for_ref_frame.clone();
     let offset_for_ref_frame_ptr = if offset_for_ref_frame.is_empty() {
         ptr::null()
@@ -199,38 +275,11 @@ fn native_vulkan_vulkanalia_smoke_create_h264_video_session_parameters_inner(
         pScalingLists: ptr::null(),
     }];
 
-    let add_info = vk::VideoDecodeH264SessionParametersAddInfoKHR::builder()
-        .std_sp_ss(&sps)
-        .std_pp_ss(&pps)
-        .build();
-    let max_std_sps_count = 32;
-    let max_std_pps_count = 32;
-    let mut h264_create_info = vk::VideoDecodeH264SessionParametersCreateInfoKHR::builder()
-        .max_std_sps_count(max_std_sps_count)
-        .max_std_pps_count(max_std_pps_count)
-        .parameters_add_info(&add_info)
-        .build();
-    let create_info = vk::VideoSessionParametersCreateInfoKHR::builder()
-        .video_session(session)
-        .push_next(&mut h264_create_info)
-        .build();
-
-    native_vulkan_vulkanalia_create_video_session_parameters(
-        device,
-        &create_info,
-        NativeVulkanVulkanaliaVideoSessionParametersSnapshot {
-            codec: native_vulkan_vulkanalia_h264_parameter_sets_codec_label(parameter_sets)?,
-            source: H264_SESSION_PARAMETERS_SOURCE,
-            max_std_vps_count: 0,
-            max_std_sps_count,
-            max_std_pps_count,
-            std_vps_count: 0,
-            std_sps_count: sps.len() as u32,
-            std_pps_count: pps.len() as u32,
-        },
-        "vulkanalia real h264 session parameters",
-    )
-    .map_err(|err| err.error)
+    Ok(NativeVulkanVulkanaliaH264InlineSessionParameters {
+        _offset_for_ref_frame: offset_for_ref_frame,
+        sps,
+        pps,
+    })
 }
 
 fn native_vulkan_vulkanalia_h264_parameter_sets_codec_label(

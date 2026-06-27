@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::path::PathBuf;
 
 use crate::core::{FitMode, SceneLiteLayerKind, SceneLiteTextAlign, SceneLiteTransform};
@@ -262,7 +264,9 @@ fn native_vulkan_scene_lite_draw_op_kind(
     }
 }
 
-fn native_vulkan_clear_color_from_hex(value: &str) -> Option<NativeVulkanClearColor> {
+pub(in crate::renderer::native_vulkan) fn native_vulkan_clear_color_from_hex(
+    value: &str,
+) -> Option<NativeVulkanClearColor> {
     let hex = value.trim().strip_prefix('#')?;
     if hex.len() != 6 {
         return None;

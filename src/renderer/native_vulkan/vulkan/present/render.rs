@@ -813,11 +813,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
             .present_ids(&present_ids)
             .build()
     });
-    let mut present_id_info = present_id.map(|_| {
-        vk::PresentIdKHR::builder()
-            .present_ids(&present_ids)
-            .build()
-    });
     let mut present_info = vk::PresentInfoKHR::builder()
         .wait_semaphores(&wait_semaphores)
         .swapchains(&swapchains)
@@ -825,10 +820,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
     if present_timing.present_id2_enabled {
         if let Some(present_id2_info) = present_id2_info.as_mut() {
             present_info = present_info.push_next(present_id2_info);
-        }
-    } else if present_timing.present_id_enabled {
-        if let Some(present_id_info) = present_id_info.as_mut() {
-            present_info = present_info.push_next(present_id_info);
         }
     }
     let stage_started_at = Instant::now();
@@ -880,9 +871,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
         wait_idle_after_present: false,
         present_id,
         present_id_mode: present_timing.present_id_mode(),
-        uses_present_id: present_timing.present_id_enabled,
+        uses_present_id: false,
         uses_present_id2: present_timing.present_id2_enabled,
-        present_wait_available: present_timing.present_wait_enabled,
+        present_wait_available: false,
         present_wait2_available: present_timing.present_wait2_enabled,
         present_wait_after_present,
         swapchain_image_index: image_index,
@@ -1306,12 +1297,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_decod
     };
     match present_id_mode {
         "present-id2-khr" => order.insert(order.len().saturating_sub(2), "present_id2_khr"),
-        "present-id-khr" => order.insert(order.len().saturating_sub(2), "present_id_khr"),
         _ => {}
     }
     match present_wait_mode {
         "present-wait2-khr" => order.insert(order.len().saturating_sub(1), "wait_for_present2_khr"),
-        "present-wait-khr" => order.insert(order.len().saturating_sub(1), "wait_for_present_khr"),
         _ => {}
     }
     order

@@ -3,6 +3,10 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, ExtDescriptorHeapExtensionDeviceCommands, HasBuilder};
 
 use super::features::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
+use super::memory::{
+    native_vulkan_vulkanalia_bind_buffer_memory2, native_vulkan_vulkanalia_map_memory2,
+    native_vulkan_vulkanalia_unmap_memory2,
+};
 use super::video_session::{
     NativeVulkanVulkanaliaMemoryTypeCandidate, native_vulkan_vulkanalia_memory_type_candidates,
 };
@@ -492,31 +496,30 @@ fn create_descriptor_heap_buffer(
             format!("vkAllocateMemory(vulkanalia {role} descriptor heap): {err:?}")
         })?;
 
-        if let Err(err) = unsafe { device.bind_buffer_memory(buffer, memory, 0) } {
+        let label = format!("{role} descriptor heap");
+        if let Err(err) =
+            native_vulkan_vulkanalia_bind_buffer_memory2(device, buffer, memory, 0, &label)
+        {
             unsafe {
                 device.free_memory(memory, None);
             }
-            return Err(format!(
-                "vkBindBufferMemory(vulkanalia {role} descriptor heap): {err:?}"
-            ));
+            return Err(err);
         }
 
-        let mapped_ptr = match unsafe {
-            device.map_memory(
-                memory,
-                0,
-                memory_requirements.size,
-                vk::MemoryMapFlags::empty(),
-            )
-        } {
+        let mapped_ptr = match native_vulkan_vulkanalia_map_memory2(
+            device,
+            memory,
+            0,
+            memory_requirements.size,
+            vk::MemoryMapFlags::empty(),
+            &label,
+        ) {
             Ok(mapped_ptr) => mapped_ptr,
             Err(err) => {
                 unsafe {
                     device.free_memory(memory, None);
                 }
-                return Err(format!(
-                    "vkMapMemory(vulkanalia {role} descriptor heap): {err:?}"
-                ));
+                return Err(err);
             }
         };
         let address_info = vk::BufferDeviceAddressInfo::builder()
@@ -566,8 +569,8 @@ fn native_vulkan_vulkanalia_destroy_descriptor_heap_buffer(
     device: &Device,
     buffer: VulkanaliaDescriptorHeapBuffer,
 ) {
+    let _ = native_vulkan_vulkanalia_unmap_memory2(device, buffer.memory, buffer.snapshot.role);
     unsafe {
-        device.unmap_memory(buffer.memory);
         device.destroy_buffer(buffer.buffer, None);
         device.free_memory(buffer.memory, None);
     }

@@ -1,5 +1,7 @@
 //! Vulkan Video session and decode smoke-test snapshot data.
 
+#![allow(dead_code)]
+
 use serde::Serialize;
 
 use super::codec::NativeVulkanVideoSessionCodec;

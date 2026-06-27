@@ -77,6 +77,7 @@ pub(in crate::renderer::native_vulkan::vulkan) struct NativeVulkanVulkanaliaH265
 pub(in crate::renderer::native_vulkan::vulkan) struct NativeVulkanVulkanaliaH265VkSubmitInfo<'a> {
     pub begin_info: &'a vk::VideoBeginCodingInfoKHR,
     pub decode_info: &'a vk::VideoDecodeInfoKHR,
+    pub inline_session_parameters_info: &'a vk::VideoDecodeH265InlineSessionParametersInfoKHR,
     pub h265_picture_info: &'a vk::VideoDecodeH265PictureInfoKHR,
     pub std_picture_info: &'a vk::video::StdVideoDecodeH265PictureInfo,
     pub setup_reference_slot: &'a vk::VideoReferenceSlotInfoKHR,
@@ -124,6 +125,9 @@ pub struct NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot {
     pub submitted: bool,
     pub uses_synchronization2: bool,
     pub uses_submit2: bool,
+    pub uses_inline_session_parameters: bool,
+    pub video_session_parameters_handle_used: bool,
+    pub session_parameter_strategy: &'static str,
     pub wait_idle_after_submit: bool,
     pub wait_fence_after_submit: bool,
     pub batch_wait_fence_after_submit: bool,
@@ -288,7 +292,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_h265_
 >(
     plan: &NativeVulkanVulkanaliaH265DecodeSubmitPlan<'_>,
     video_session: vk::VideoSessionKHR,
-    session_parameters: vk::VideoSessionParametersKHR,
+    mut inline_session_parameters_info: vk::VideoDecodeH265InlineSessionParametersInfoKHR,
     src_buffer: vk::Buffer,
     image_views: &NativeVulkanVulkanaliaDecodeImageViewBindings,
     use_submit_info: impl FnOnce(NativeVulkanVulkanaliaH265VkSubmitInfo<'_>) -> R,
@@ -464,7 +468,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_h265_
         .build();
     let begin_info = vk::VideoBeginCodingInfoKHR::builder()
         .video_session(video_session)
-        .video_session_parameters(session_parameters)
+        .video_session_parameters(vk::VideoSessionParametersKHR::default())
         .reference_slots(&begin_reference_slots)
         .build();
     let decode_info = vk::VideoDecodeInfoKHR::builder()
@@ -475,11 +479,13 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_h265_
         .setup_reference_slot(&setup_reference_slot)
         .reference_slots(&decode_reference_slots)
         .push_next(&mut h265_picture_info)
+        .push_next(&mut inline_session_parameters_info)
         .build();
 
     Ok(use_submit_info(NativeVulkanVulkanaliaH265VkSubmitInfo {
         begin_info: &begin_info,
         decode_info: &decode_info,
+        inline_session_parameters_info: &inline_session_parameters_info,
         h265_picture_info: &h265_picture_info,
         std_picture_info: &std_picture_info,
         setup_reference_slot: &setup_reference_slot,
@@ -696,15 +702,20 @@ mod tests {
         native_vulkan_vulkanalia_h265_with_vk_submit_info(
             &plan,
             vk::VideoSessionKHR::default(),
-            vk::VideoSessionParametersKHR::default(),
+            vk::VideoDecodeH265InlineSessionParametersInfoKHR::builder().build(),
             vk::Buffer::default(),
             &image_views,
             |vk_info| {
+                assert_eq!(
+                    vk_info.begin_info.video_session_parameters,
+                    vk::VideoSessionParametersKHR::default()
+                );
                 assert_eq!(vk_info.begin_info.reference_slot_count, 3);
                 assert_eq!(vk_info.decode_info.src_buffer_offset, 2048);
                 assert_eq!(vk_info.decode_info.src_buffer_range, 4096);
                 assert_eq!(vk_info.decode_info.reference_slot_count, 2);
                 assert!(!vk_info.decode_info.next.is_null());
+                assert!(vk_info.inline_session_parameters_info.std_sps.is_null());
                 assert_eq!(vk_info.h265_picture_info.slice_segment_count, 1);
                 assert_eq!(vk_info.std_picture_info.PicOrderCntVal, 20);
                 assert_eq!(vk_info.std_picture_info.pps_seq_parameter_set_id, 1);

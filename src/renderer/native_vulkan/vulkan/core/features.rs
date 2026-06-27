@@ -83,6 +83,7 @@ pub fn native_vulkan_vulkanalia_feature_chain_template()
         .maintenance5(true)
         .maintenance6(true)
         .push_descriptor(true)
+        .host_image_copy(true)
         .build();
     let mut descriptor_heap_features = vk::PhysicalDeviceDescriptorHeapFeaturesEXT::builder()
         .descriptor_heap(true)
@@ -114,6 +115,7 @@ pub fn native_vulkan_vulkanalia_feature_chain_template()
             "maintenance5",
             "maintenance6",
             "push_descriptor",
+            "host_image_copy",
             "descriptor_heap",
         ],
     }
@@ -232,6 +234,7 @@ impl NativeVulkanVulkanaliaCoreFeatureSnapshot {
             || self.maintenance5
             || self.maintenance6
             || self.push_descriptor
+            || self.host_image_copy
     }
 
     pub(in crate::renderer::native_vulkan::vulkan) fn enables_descriptor_heap_features(
@@ -271,6 +274,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_vulka
         .maintenance5(core_features.maintenance5)
         .maintenance6(core_features.maintenance6)
         .push_descriptor(core_features.push_descriptor)
+        .host_image_copy(core_features.host_image_copy)
         .build()
 }
 
@@ -335,6 +339,11 @@ mod tests {
         assert!(
             template
                 .requested_feature_fields
+                .contains(&"host_image_copy")
+        );
+        assert!(
+            template
+                .requested_feature_fields
                 .contains(&"descriptor_heap")
         );
     }
@@ -356,7 +365,7 @@ mod tests {
             push_descriptor: true,
             descriptor_heap: true,
             descriptor_heap_capture_replay: false,
-            host_image_copy: false,
+            host_image_copy: true,
             index_type_uint8: true,
             shader_subgroup_rotate: true,
         };
@@ -407,6 +416,7 @@ mod tests {
             dynamic_rendering: true,
             maintenance5: true,
             push_descriptor: true,
+            host_image_copy: true,
             descriptor_heap: true,
             ..NativeVulkanVulkanaliaCoreFeatureSnapshot::default()
         };
@@ -423,6 +433,7 @@ mod tests {
         assert_ne!(vulkan13.dynamic_rendering, 0);
         assert_ne!(vulkan14.maintenance5, 0);
         assert_ne!(vulkan14.push_descriptor, 0);
+        assert_ne!(vulkan14.host_image_copy, 0);
         assert_ne!(descriptor_heap.descriptor_heap, 0);
     }
 }

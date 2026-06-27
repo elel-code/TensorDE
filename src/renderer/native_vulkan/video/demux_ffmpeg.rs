@@ -5,9 +5,11 @@
 //! bounded PacketQueue. The FFmpeg read worker hands packets directly to the
 //! renderer-owned packet queue instead of adding a second compressed-payload
 //! FIFO; the renderer's main packet/frame windows stay capped at
-//! `VIDEO_PICTURE_QUEUE_SIZE=3`. `references/ffmpeg/fftools/ffplay.c:3132-3141` blocks
-//! the read thread when queues are full, `references/ffmpeg/fftools/ffplay.c:3154-3215`
-//! filters the target stream in the read loop, and
+//! `VIDEO_PICTURE_QUEUE_SIZE=3`. The read worker is request-driven with a
+//! zero-capacity request/response handoff, so it never keeps a hidden
+//! next-packet payload while the renderer is waiting on present pacing. This preserves
+//! `references/ffmpeg/fftools/ffplay.c:3132-3141` read-thread backpressure,
+//! `references/ffmpeg/fftools/ffplay.c:3154-3215` target-stream filtering, and
 //! `references/ffmpeg/fftools/ffplay.c:534-642` has the decoder move one packet
 //! out of PacketQueue before send/unref.
 //!
@@ -151,8 +153,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_start_ffmpeg_streaming_p
     native_vulkan_start_streaming_packet_queue_from_frontend(Box::new(frontend), capacity)
 }
 
+// The FFmpeg PacketQueue depth remains three, but free converted Annex-B scratch
+// follows av_packet_unref lifetime: keep one reusable buffer and release extras.
 const NATIVE_VULKAN_FFMPEG_POOLED_PAYLOAD_BUFFERS: usize = 1;
-const NATIVE_VULKAN_FFMPEG_MAX_RETAINED_PAYLOAD_CAPACITY: usize = 128 * 1024;
+const NATIVE_VULKAN_FFMPEG_MAX_RETAINED_PAYLOAD_CAPACITY: usize = 224 * 1024;
 const NATIVE_VULKAN_ANNEXB_START_CODE: [u8; 4] = [0, 0, 0, 1];
 
 pub struct NativeVulkanFfmpegPacketPayload {
@@ -932,6 +936,7 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit> NativeVulkanFfmpegStreamingPacket
 }
 
 struct NativeVulkanFfmpegStreamingPacketFrontend<A: NativeVulkanFfmpegStreamingAccessUnit> {
+    request_sender: Option<SyncSender<()>>,
     receiver: Option<Receiver<NativeVulkanFfmpegStreamingPacketFrontendMessage<A>>>,
     loop_on_eos: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
@@ -950,6 +955,7 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit + Send + 'static>
     NativeVulkanFfmpegStreamingPacketFrontend<A>
 {
     fn new(source: &Path, _capacity: usize) -> Result<Self, NativeVulkanError> {
+        let (request_sender, request_receiver) = sync_channel(0);
         let (sender, receiver) = sync_channel(A::FFMPEG_READ_THREAD_HANDOFF_PACKETS);
         let loop_on_eos = Arc::new(AtomicBool::new(false));
         let worker_loop_on_eos = Arc::clone(&loop_on_eos);
@@ -960,6 +966,7 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit + Send + 'static>
                 native_vulkan_ffmpeg_streaming_packet_worker::<A>(
                     source.as_path(),
                     worker_loop_on_eos,
+                    request_receiver,
                     sender,
                 );
             })
@@ -971,6 +978,7 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit + Send + 'static>
             })?;
 
         Ok(Self {
+            request_sender: Some(request_sender),
             receiver: Some(receiver),
             loop_on_eos,
             worker: Some(worker),
@@ -985,6 +993,7 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit> Drop
     for NativeVulkanFfmpegStreamingPacketFrontend<A>
 {
     fn drop(&mut self) {
+        let _ = self.request_sender.take();
         let _ = self.receiver.take();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
@@ -999,6 +1008,18 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit + Send + 'static>
         if loop_on_eos {
             self.loop_on_eos.store(true, Ordering::Release);
         }
+        let request_sender = self.request_sender.as_ref().ok_or_else(|| {
+            NativeVulkanError::Video(format!(
+                "{} FFmpeg packet read thread request channel is closed",
+                A::CODEC_LABEL
+            ))
+        })?;
+        request_sender.send(()).map_err(|err| {
+            NativeVulkanError::Video(format!(
+                "{} FFmpeg packet read thread stopped before accepting a pull request: {err}",
+                A::CODEC_LABEL
+            ))
+        })?;
         let receiver = self.receiver.as_ref().ok_or_else(|| {
             NativeVulkanError::Video(format!(
                 "{} FFmpeg packet read thread is closed",
@@ -1028,21 +1049,27 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit + Send + 'static>
 fn native_vulkan_ffmpeg_streaming_packet_worker<A: NativeVulkanFfmpegStreamingAccessUnit>(
     source: &Path,
     loop_on_eos: Arc<AtomicBool>,
+    request_receiver: Receiver<()>,
     sender: SyncSender<NativeVulkanFfmpegStreamingPacketFrontendMessage<A>>,
 ) {
     let mut worker = match NativeVulkanFfmpegStreamingPacketWorker::<A>::new(source) {
         Ok(worker) => worker,
         Err(err) => {
-            let _ = sender.send(NativeVulkanFfmpegStreamingPacketFrontendMessage {
-                result: Err(err),
-                eos_count: 0,
-                loop_count: 0,
-            });
+            if request_receiver.recv().is_ok() {
+                let _ = sender.send(NativeVulkanFfmpegStreamingPacketFrontendMessage {
+                    result: Err(err),
+                    eos_count: 0,
+                    loop_count: 0,
+                });
+            }
             return;
         }
     };
 
     loop {
+        if request_receiver.recv().is_err() {
+            break;
+        }
         let result = worker.pull_next(loop_on_eos.load(Ordering::Acquire));
         let stop_after_send = result.as_ref().map_or(true, Option::is_none);
         let message = NativeVulkanFfmpegStreamingPacketFrontendMessage {

@@ -42,6 +42,7 @@ use self::profile_gate as video_profile_gate;
 use self::profile_info as video_profile_info;
 use self::profile_labels as video_profile_labels;
 use self::session as video_session;
+#[cfg(feature = "native-vulkan-video")]
 use self::session_bind as video_session_bind;
 use self::session_capabilities as video_session_capabilities;
 use self::session_images as video_session_images;
@@ -49,5 +50,5 @@ use self::session_parameters as video_session_parameters;
 use self::session_parameters_av1 as video_session_parameters_av1;
 use self::session_parameters_h264 as video_session_parameters_h264;
 use self::session_parameters_h265 as video_session_parameters_h265;
-use super::core::{features, instance, queue_probe};
+use super::core::{features, instance, memory, queue_probe};
 use super::present::{render as render_present, swapchain};

@@ -32,6 +32,103 @@ gilder_is_uint() {
   [[ "$value" =~ ^[0-9]+$ ]]
 }
 
+gilder_summary_value() {
+  local summary="${1:?summary is required}"
+  local key="${2:?key is required}"
+
+  awk -F': ' -v key="$key" '
+    $1 == key {
+      print $2
+      found = 1
+      exit
+    }
+    END {
+      if (!found) {
+        exit 1
+      }
+    }
+  ' "$summary"
+}
+
+gilder_summary_uint_or_zero() {
+  local summary="${1:?summary is required}"
+  local key="${2:?key is required}"
+  local value
+
+  value="$(gilder_summary_value "$summary" "$key" 2>/dev/null || true)"
+  if gilder_is_uint "$value"; then
+    printf '%s\n' "$value"
+  else
+    printf '0\n'
+  fi
+}
+
+gilder_sync_rebuilt_executable() {
+  local binary_path="${1:?binary path is required}"
+  local binary_dir
+
+  [[ -e "$binary_path" ]] || return 1
+  binary_dir="$(dirname "$binary_path")"
+
+  sync -d "$binary_path"
+  sync "$binary_path"
+  sync "$binary_dir" 2>/dev/null || true
+}
+
+gilder_rebuild_mapping_dirty_contaminated() {
+  local summary="${1:?summary is required}"
+  local limit="${2:?limit is required}"
+  local min_mapping_dirty="${3:-1024}"
+  local max_private_dirty
+  local file_mapping_dirty
+  local gilder_binary_dirty
+  local suspect_mapping_dirty
+
+  [[ -r "$summary" ]] || return 1
+  gilder_is_uint "$limit" || return 1
+  gilder_is_uint "$min_mapping_dirty" || return 1
+
+  max_private_dirty="$(gilder_summary_uint_or_zero "$summary" max_private_dirty_kib)"
+  file_mapping_dirty="$(gilder_summary_uint_or_zero "$summary" memory_category_file_mapping_private_dirty_kib)"
+  gilder_binary_dirty="$(gilder_summary_uint_or_zero "$summary" memory_category_gilder_binary_private_dirty_kib)"
+
+  suspect_mapping_dirty="$file_mapping_dirty"
+  if [[ "$gilder_binary_dirty" -gt "$suspect_mapping_dirty" ]]; then
+    suspect_mapping_dirty="$gilder_binary_dirty"
+  fi
+
+  [[ "$max_private_dirty" -gt "$limit" && "$suspect_mapping_dirty" -ge "$min_mapping_dirty" ]]
+}
+
+gilder_rebuild_heap_dirty_contaminated() {
+  local summary="${1:?summary is required}"
+  local limit="${2:?limit is required}"
+  local min_heap_dirty="${3:-8192}"
+  local max_private_dirty
+  local heap_dirty
+  local file_mapping_dirty
+  local gilder_binary_dirty
+
+  [[ -r "$summary" ]] || return 1
+  gilder_is_uint "$limit" || return 1
+  gilder_is_uint "$min_heap_dirty" || return 1
+
+  max_private_dirty="$(gilder_summary_uint_or_zero "$summary" max_private_dirty_kib)"
+  heap_dirty="$(gilder_summary_uint_or_zero "$summary" memory_category_heap_private_dirty_kib)"
+  file_mapping_dirty="$(gilder_summary_uint_or_zero "$summary" memory_category_file_mapping_private_dirty_kib)"
+  gilder_binary_dirty="$(gilder_summary_uint_or_zero "$summary" memory_category_gilder_binary_private_dirty_kib)"
+
+  [[ "$max_private_dirty" -gt "$limit" && "$heap_dirty" -ge "$min_heap_dirty" && "$file_mapping_dirty" -lt 1024 && "$gilder_binary_dirty" -lt 1024 ]]
+}
+
+gilder_rebuild_dirty_contaminated() {
+  local summary="${1:?summary is required}"
+  local limit="${2:?limit is required}"
+
+  gilder_rebuild_mapping_dirty_contaminated "$summary" "$limit" \
+    || gilder_rebuild_heap_dirty_contaminated "$summary" "$limit"
+}
+
 gilder_append_ready_prefix_runtime_env() {
   local env_array_name="${1:?runtime env array name is required}"
   local -n runtime_env_ref="$env_array_name"
@@ -95,7 +192,7 @@ gilder_expected_pacing_strategy_with_master() {
 
   case "$base" in
     ffmpeg-frame-timer-pts-delta-sleep)
-      printf 'audio-clock-master-with-target-fps-fallback\n'
+      printf 'audio-clock-master-pts-sync-sleep\n'
       ;;
     fifo-present-blocking-no-cpu-sleep)
       printf 'audio-clock-master-with-fifo-present\n'

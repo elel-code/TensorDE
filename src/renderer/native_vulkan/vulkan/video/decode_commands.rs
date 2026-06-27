@@ -192,14 +192,14 @@ pub(in crate::renderer::native_vulkan::vulkan) unsafe fn native_vulkan_vulkanali
     command_buffer: vk::CommandBuffer,
     plan: &NativeVulkanVulkanaliaH265DecodeSubmitPlan,
     video_session: vk::VideoSessionKHR,
-    session_parameters: vk::VideoSessionParametersKHR,
+    inline_session_parameters_info: vk::VideoDecodeH265InlineSessionParametersInfoKHR,
     bitstream_buffer: vk::Buffer,
     image_views: &super::video_decode_submit::NativeVulkanVulkanaliaDecodeImageViewBindings,
 ) -> Result<NativeVulkanVulkanaliaDecodeCommandBodyPlan, String> {
     native_vulkan_vulkanalia_h265_with_vk_submit_info(
         plan,
         video_session,
-        session_parameters,
+        inline_session_parameters_info,
         bitstream_buffer,
         image_views,
         |vk_info| unsafe {
@@ -228,14 +228,14 @@ pub(in crate::renderer::native_vulkan::vulkan) unsafe fn native_vulkan_vulkanali
     command_buffer: vk::CommandBuffer,
     plan: &NativeVulkanVulkanaliaAv1DecodeSubmitPlan,
     video_session: vk::VideoSessionKHR,
-    session_parameters: vk::VideoSessionParametersKHR,
+    inline_session_parameters_info: vk::VideoDecodeAV1InlineSessionParametersInfoKHR,
     bitstream_buffer: vk::Buffer,
     image_views: &super::video_decode_submit::NativeVulkanVulkanaliaDecodeImageViewBindings,
 ) -> Result<NativeVulkanVulkanaliaDecodeCommandBodyPlan, String> {
     native_vulkan_vulkanalia_av1_with_vk_submit_info(
         plan,
         video_session,
-        session_parameters,
+        inline_session_parameters_info,
         bitstream_buffer,
         image_views,
         |vk_info| unsafe {
@@ -264,14 +264,14 @@ pub(in crate::renderer::native_vulkan::vulkan) unsafe fn native_vulkan_vulkanali
     command_buffer: vk::CommandBuffer,
     plan: &NativeVulkanVulkanaliaH264DecodeSubmitPlan,
     video_session: vk::VideoSessionKHR,
-    session_parameters: vk::VideoSessionParametersKHR,
+    inline_session_parameters_info: vk::VideoDecodeH264InlineSessionParametersInfoKHR,
     bitstream_buffer: vk::Buffer,
     image_views: &super::video_decode_submit::NativeVulkanVulkanaliaDecodeImageViewBindings,
 ) -> Result<NativeVulkanVulkanaliaDecodeCommandBodyPlan, String> {
     native_vulkan_vulkanalia_h264_with_vk_submit_info(
         plan,
         video_session,
-        session_parameters,
+        inline_session_parameters_info,
         bitstream_buffer,
         image_views,
         |vk_info| unsafe {
@@ -301,7 +301,7 @@ pub(in crate::renderer::native_vulkan::vulkan) unsafe fn native_vulkan_vulkanali
     image: vk::Image,
     plan: &NativeVulkanVulkanaliaAv1DecodeSubmitPlan,
     video_session: vk::VideoSessionKHR,
-    session_parameters: vk::VideoSessionParametersKHR,
+    inline_session_parameters_info: vk::VideoDecodeAV1InlineSessionParametersInfoKHR,
     bitstream_buffer: vk::Buffer,
     image_views: &super::video_decode_submit::NativeVulkanVulkanaliaDecodeImageViewBindings,
     reset_command_buffer: bool,
@@ -337,7 +337,7 @@ pub(in crate::renderer::native_vulkan::vulkan) unsafe fn native_vulkan_vulkanali
             command_buffer,
             plan,
             video_session,
-            session_parameters,
+            inline_session_parameters_info,
             bitstream_buffer,
             image_views,
         )?;
@@ -358,7 +358,7 @@ pub(in crate::renderer::native_vulkan::vulkan) unsafe fn native_vulkan_vulkanali
     image: vk::Image,
     plan: &NativeVulkanVulkanaliaH265DecodeSubmitPlan,
     video_session: vk::VideoSessionKHR,
-    session_parameters: vk::VideoSessionParametersKHR,
+    inline_session_parameters_info: vk::VideoDecodeH265InlineSessionParametersInfoKHR,
     bitstream_buffer: vk::Buffer,
     image_views: &super::video_decode_submit::NativeVulkanVulkanaliaDecodeImageViewBindings,
     reset_command_buffer: bool,
@@ -394,7 +394,7 @@ pub(in crate::renderer::native_vulkan::vulkan) unsafe fn native_vulkan_vulkanali
             command_buffer,
             plan,
             video_session,
-            session_parameters,
+            inline_session_parameters_info,
             bitstream_buffer,
             image_views,
         )?;
@@ -415,7 +415,7 @@ pub(in crate::renderer::native_vulkan::vulkan) unsafe fn native_vulkan_vulkanali
     image: vk::Image,
     plan: &NativeVulkanVulkanaliaH264DecodeSubmitPlan,
     video_session: vk::VideoSessionKHR,
-    session_parameters: vk::VideoSessionParametersKHR,
+    inline_session_parameters_info: vk::VideoDecodeH264InlineSessionParametersInfoKHR,
     bitstream_buffer: vk::Buffer,
     image_views: &super::video_decode_submit::NativeVulkanVulkanaliaDecodeImageViewBindings,
     reset_command_buffer: bool,
@@ -451,7 +451,7 @@ pub(in crate::renderer::native_vulkan::vulkan) unsafe fn native_vulkan_vulkanali
             command_buffer,
             plan,
             video_session,
-            session_parameters,
+            inline_session_parameters_info,
             bitstream_buffer,
             image_views,
         )?;

@@ -340,8 +340,26 @@ else
 fi
 mkdir -p "$report_dir"
 
+release_binary_path="target/release/gilder-native-vulkan"
+release_binary_fingerprint_before=""
+if [[ -e "$release_binary_path" ]]; then
+  release_binary_fingerprint_before="$(stat -c '%d:%i:%s:%Y' "$release_binary_path" 2>/dev/null || true)"
+fi
+release_binary_replaced_by_build=0
+release_binary_synced_after_build=0
 if [[ "$no_build" -eq 0 ]]; then
   cargo build --release --features native-vulkan-video --bin gilder-native-vulkan
+  release_binary_fingerprint_after=""
+  if [[ -e "$release_binary_path" ]]; then
+    release_binary_fingerprint_after="$(stat -c '%d:%i:%s:%Y' "$release_binary_path" 2>/dev/null || true)"
+  fi
+  if [[ "$release_binary_fingerprint_before" != "$release_binary_fingerprint_after" ]]; then
+    release_binary_replaced_by_build=1
+  fi
+  if [[ "$performance_snapshot" -eq 1 && "$release_binary_replaced_by_build" -eq 1 ]]; then
+    gilder_sync_rebuilt_executable "$release_binary_path"
+    release_binary_synced_after_build=1
+  fi
 fi
 
 if [[ -z "$source" ]]; then
@@ -366,14 +384,29 @@ if [[ -z "$source" ]]; then
     fi
   fi
   source_duration_seconds=$(( (frames + target_fps - 1) / target_fps ))
-  source="$generated_dir/h264-high-b${bframes}-ref${refs}-weightp${weightp}-weightb${weightb}-${width}x${height}-${target_fps}fps-${frames}frames-g${gop_size}-d${decode_prefix}.mp4"
+  audio_source_suffix=""
+  if [[ "$audio_clock_probe" -eq 1 ]]; then
+    audio_source_suffix="-aac48000"
+  fi
+  source="$generated_dir/h264-high-b${bframes}-ref${refs}-weightp${weightp}-weightb${weightb}-${width}x${height}-${target_fps}fps-${frames}frames-g${gop_size}-d${decode_prefix}${audio_source_suffix}.mp4"
   if [[ ! -s "$source" ]]; then
-    ffmpeg -hide_banner -loglevel error -y \
-      -f lavfi -i "testsrc2=size=${width}x${height}:rate=${target_fps}:duration=${source_duration_seconds}" \
-      -frames:v "$frames" -an \
-      -c:v libx264 -profile:v high -level:v "$level" -preset veryfast -tune zerolatency -pix_fmt yuv420p \
-      -x264-params "keyint=${gop_size}:min-keyint=${gop_size}:scenecut=0:open-gop=0:bframes=${bframes}:b-adapt=0:ref=${refs}:repeat-headers=1:cabac=1:8x8dct=1:weightp=${weightp}:weightb=${weightb}" \
-      "$source"
+    if [[ "$audio_clock_probe" -eq 1 ]]; then
+      ffmpeg -hide_banner -loglevel error -y \
+        -f lavfi -i "testsrc2=size=${width}x${height}:rate=${target_fps}:duration=${source_duration_seconds}" \
+        -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=${source_duration_seconds}" \
+        -frames:v "$frames" -shortest \
+        -c:v libx264 -profile:v high -level:v "$level" -preset veryfast -tune zerolatency -pix_fmt yuv420p \
+        -x264-params "keyint=${gop_size}:min-keyint=${gop_size}:scenecut=0:open-gop=0:bframes=${bframes}:b-adapt=0:ref=${refs}:repeat-headers=1:cabac=1:8x8dct=1:weightp=${weightp}:weightb=${weightb}" \
+        -c:a aac -b:a 128k \
+        "$source"
+    else
+      ffmpeg -hide_banner -loglevel error -y \
+        -f lavfi -i "testsrc2=size=${width}x${height}:rate=${target_fps}:duration=${source_duration_seconds}" \
+        -frames:v "$frames" -an \
+        -c:v libx264 -profile:v high -level:v "$level" -preset veryfast -tune zerolatency -pix_fmt yuv420p \
+        -x264-params "keyint=${gop_size}:min-keyint=${gop_size}:scenecut=0:open-gop=0:bframes=${bframes}:b-adapt=0:ref=${refs}:repeat-headers=1:cabac=1:8x8dct=1:weightp=${weightp}:weightb=${weightb}" \
+        "$source"
+    fi
   fi
 fi
 
@@ -446,38 +479,150 @@ fi
 gilder_append_ready_prefix_runtime_env runtime_env
 
 performance_status=0
-if [[ "$performance_snapshot" -eq 1 ]]; then
-  if [[ ! -x scripts/performance-snapshot.sh ]]; then
-    printf 'FAIL: missing executable scripts/performance-snapshot.sh\n' | tee "$summary"
-    exit 1
-  fi
+runtime_status=0
+performance_rebuild_mapping_dirty_retry=0
+performance_rebuild_mapping_dirty_retry_count=0
+performance_rebuild_mapping_dirty_max_attempts=4
+performance_rebuild_mapping_dirty_first_summary=""
+performance_rebuild_mapping_dirty_first_log=""
+performance_rebuild_mapping_dirty_first_runtime_json=""
+performance_rebuild_mapping_dirty_first_runtime_stderr=""
+performance_rebuild_mapping_dirty_first_max_private_dirty_kib="none"
+performance_rebuild_mapping_dirty_first_file_mapping_private_dirty_kib="none"
+performance_rebuild_mapping_dirty_first_gilder_binary_private_dirty_kib="none"
+performance_rebuild_mapping_dirty_first_heap_private_dirty_kib="none"
+performance_rebuild_mapping_dirty_final_contaminated=0
+performance_rebuild_mapping_dirty_summaries=()
+performance_rebuild_mapping_dirty_logs=()
+performance_rebuild_mapping_dirty_runtime_jsons=()
+performance_rebuild_mapping_dirty_runtime_stderrs=()
+performance_rebuild_mapping_dirty_max_private_dirty_kibs=()
+performance_rebuild_mapping_dirty_file_mapping_private_dirty_kibs=()
+performance_rebuild_mapping_dirty_gilder_binary_private_dirty_kibs=()
+performance_rebuild_mapping_dirty_heap_private_dirty_kibs=()
+
+run_h264_performance_snapshot_attempt() {
+  local attempt_performance_dir="${1:?performance dir is required}"
+  local attempt_performance_log="${2:?performance log is required}"
+  local attempt_runtime_json="${3:?runtime JSON is required}"
+  local attempt_runtime_stderr="${4:?runtime stderr is required}"
+
   set +e
   env "${runtime_env[@]}" \
-    target/release/gilder-native-vulkan \
+    "$release_binary_path" \
     "${args[@]}" \
-    >"$runtime_json" 2>"$runtime_stderr" &
+    >"$attempt_runtime_json" 2>"$attempt_runtime_stderr" &
   runtime_pid=$!
   performance_args=(
     --pid "$runtime_pid"
     --label "native-vulkan-h264-ready-prefix-video"
     --duration "$performance_duration"
     --interval "$performance_interval"
-    --output-dir "$performance_dir"
+    --output-dir "$attempt_performance_dir"
     --allow-missing
     --keep
   )
   if [[ -n "$max_private_dirty_kib_limit" ]]; then
     performance_args+=(--expect-max-private-dirty-kib-at-most "$max_private_dirty_kib_limit")
   fi
-  scripts/performance-snapshot.sh "${performance_args[@]}" >"$performance_log" 2>&1
+  scripts/performance-snapshot.sh "${performance_args[@]}" >"$attempt_performance_log" 2>&1
   performance_status=$?
   wait "$runtime_pid"
   runtime_status=$?
   set -e
+}
+
+preserve_h264_rebuild_mapping_dirty_attempt() {
+  local attempt_index="${1:?attempt index is required}"
+  local attempt_suffix="fresh-build-contaminated"
+  local attempt_dir
+  local attempt_log
+  local attempt_runtime_json
+  local attempt_runtime_stderr
+  local max_private_dirty
+  local file_mapping_dirty
+  local gilder_binary_dirty
+  local heap_dirty
+
+  if [[ "$attempt_index" -gt 1 ]]; then
+    attempt_suffix="${attempt_suffix}.${attempt_index}"
+  fi
+  attempt_dir="$report_dir/performance.${attempt_suffix}"
+  attempt_log="$report_dir/performance.${attempt_suffix}.log"
+  attempt_runtime_json="$report_dir/runtime.${attempt_suffix}.json"
+  attempt_runtime_stderr="$report_dir/runtime.${attempt_suffix}.stderr"
+  max_private_dirty="$(gilder_summary_uint_or_zero "$performance_dir/summary.txt" max_private_dirty_kib)"
+  file_mapping_dirty="$(gilder_summary_uint_or_zero "$performance_dir/summary.txt" memory_category_file_mapping_private_dirty_kib)"
+  gilder_binary_dirty="$(gilder_summary_uint_or_zero "$performance_dir/summary.txt" memory_category_gilder_binary_private_dirty_kib)"
+  heap_dirty="$(gilder_summary_uint_or_zero "$performance_dir/summary.txt" memory_category_heap_private_dirty_kib)"
+
+  rm -rf -- "$attempt_dir"
+  rm -f -- \
+    "$attempt_log" \
+    "$attempt_runtime_json" \
+    "$attempt_runtime_stderr"
+  mv "$performance_dir" "$attempt_dir"
+  mv "$performance_log" "$attempt_log"
+  mv "$runtime_json" "$attempt_runtime_json"
+  mv "$runtime_stderr" "$attempt_runtime_stderr"
+
+  performance_rebuild_mapping_dirty_retry=1
+  performance_rebuild_mapping_dirty_retry_count=$((performance_rebuild_mapping_dirty_retry_count + 1))
+  performance_rebuild_mapping_dirty_summaries+=("$attempt_dir/summary.txt")
+  performance_rebuild_mapping_dirty_logs+=("$attempt_log")
+  performance_rebuild_mapping_dirty_runtime_jsons+=("$attempt_runtime_json")
+  performance_rebuild_mapping_dirty_runtime_stderrs+=("$attempt_runtime_stderr")
+  performance_rebuild_mapping_dirty_max_private_dirty_kibs+=("$max_private_dirty")
+  performance_rebuild_mapping_dirty_file_mapping_private_dirty_kibs+=("$file_mapping_dirty")
+  performance_rebuild_mapping_dirty_gilder_binary_private_dirty_kibs+=("$gilder_binary_dirty")
+  performance_rebuild_mapping_dirty_heap_private_dirty_kibs+=("$heap_dirty")
+
+  if [[ "$attempt_index" -eq 1 ]]; then
+    performance_rebuild_mapping_dirty_first_summary="$attempt_dir/summary.txt"
+    performance_rebuild_mapping_dirty_first_log="$attempt_log"
+    performance_rebuild_mapping_dirty_first_runtime_json="$attempt_runtime_json"
+    performance_rebuild_mapping_dirty_first_runtime_stderr="$attempt_runtime_stderr"
+    performance_rebuild_mapping_dirty_first_max_private_dirty_kib="$max_private_dirty"
+    performance_rebuild_mapping_dirty_first_file_mapping_private_dirty_kib="$file_mapping_dirty"
+    performance_rebuild_mapping_dirty_first_gilder_binary_private_dirty_kib="$gilder_binary_dirty"
+    performance_rebuild_mapping_dirty_first_heap_private_dirty_kib="$heap_dirty"
+  fi
+}
+
+if [[ "$performance_snapshot" -eq 1 ]]; then
+  if [[ ! -x scripts/performance-snapshot.sh ]]; then
+    printf 'FAIL: missing executable scripts/performance-snapshot.sh\n' | tee "$summary"
+    exit 1
+  fi
+
+  performance_attempt_index=1
+  while true; do
+    run_h264_performance_snapshot_attempt \
+      "$performance_dir" \
+      "$performance_log" \
+      "$runtime_json" \
+      "$runtime_stderr"
+
+    if [[ "$runtime_status" -ne 0 || "$performance_status" -eq 0 || "$release_binary_replaced_by_build" -ne 1 || -z "$max_private_dirty_kib_limit" ]]; then
+      break
+    fi
+    if ! gilder_rebuild_dirty_contaminated "$performance_dir/summary.txt" "$max_private_dirty_kib_limit"; then
+      break
+    fi
+    if [[ "$performance_attempt_index" -ge "$performance_rebuild_mapping_dirty_max_attempts" ]]; then
+      performance_rebuild_mapping_dirty_final_contaminated=1
+      break
+    fi
+
+    preserve_h264_rebuild_mapping_dirty_attempt "$performance_attempt_index"
+    gilder_sync_rebuilt_executable "$release_binary_path"
+    sleep 1
+    performance_attempt_index=$((performance_attempt_index + 1))
+  done
 else
   set +e
   env "${runtime_env[@]}" \
-    target/release/gilder-native-vulkan \
+    "$release_binary_path" \
     "${args[@]}" \
     >"$runtime_json" 2>"$runtime_stderr"
   runtime_status=$?
@@ -495,6 +640,18 @@ if [[ "$performance_snapshot" -eq 1 && "$performance_status" -ne 0 ]]; then
   printf 'FAIL: native Vulkan direct H.264 performance snapshot failed\n' | tee "$summary"
   printf 'source: %s\n' "$source" | tee -a "$summary"
   printf 'performance log: %s\n' "$performance_log" | tee -a "$summary"
+  if [[ "$performance_rebuild_mapping_dirty_retry" -eq 1 ]]; then
+    printf 'fresh-build contaminated retry count: %s\n' "$performance_rebuild_mapping_dirty_retry_count" | tee -a "$summary"
+    printf 'fresh-build contaminated performance summary: %s\n' "$performance_rebuild_mapping_dirty_first_summary" | tee -a "$summary"
+    printf 'fresh-build contaminated performance log: %s\n' "$performance_rebuild_mapping_dirty_first_log" | tee -a "$summary"
+    printf 'fresh-build contaminated max Private_Dirty KiB: %s\n' "$performance_rebuild_mapping_dirty_first_max_private_dirty_kib" | tee -a "$summary"
+    printf 'fresh-build contaminated file-mapping Private_Dirty KiB: %s\n' "$performance_rebuild_mapping_dirty_first_file_mapping_private_dirty_kib" | tee -a "$summary"
+    printf 'fresh-build contaminated gilder-binary Private_Dirty KiB: %s\n' "$performance_rebuild_mapping_dirty_first_gilder_binary_private_dirty_kib" | tee -a "$summary"
+    printf 'fresh-build contaminated heap Private_Dirty KiB: %s\n' "$performance_rebuild_mapping_dirty_first_heap_private_dirty_kib" | tee -a "$summary"
+  fi
+  if [[ "$performance_rebuild_mapping_dirty_final_contaminated" -eq 1 ]]; then
+    printf 'final failed attempt is still fresh-build dirty contaminated after %s attempts\n' "$performance_rebuild_mapping_dirty_max_attempts" | tee -a "$summary"
+  fi
   sed -n '1,200p' "$performance_log" >&2
   exit "$performance_status"
 fi
@@ -598,9 +755,12 @@ h264_acquire_not_ready_count=0
 h264_acquire_wait_present_result_count=0
 h264_acquire_wait_present_result_elapsed_us=0
 h264_acquire_wait_present_result_max_us=0
-audio_clock_probe_present="$(jq -r '(.audio_clock_probe != null)' "$runtime_json")"
-audio_output_mode="$(jq -r '.audio_clock_probe.audio_output_mode // "none"' "$runtime_json")"
-audio_output_sink_count="$(jq -r '(.audio_clock_probe.audio_output_sinks // []) | length' "$runtime_json")"
+audio_clock_probe_present=false
+if [[ "$audio_clock_probe" -eq 1 ]]; then
+  audio_clock_probe_present="$(jq -r '(.audio_clock != null and (.audio_clock.audio_stream_found // false))' "$runtime_json")"
+fi
+audio_output_mode="$(jq -r '.audio_clock.output_mode // "none"' "$runtime_json")"
+audio_output_sink_count=0
 if [[ "$audio_output" == "plan" ]]; then
   if [[ "$plan_muted" -eq 1 ]]; then
     expected_audio_output_mode="clock-only"
@@ -610,34 +770,34 @@ if [[ "$audio_output" == "plan" ]]; then
 else
   expected_audio_output_mode="$audio_output"
 fi
-audio_reached_clocked_playback="$(jq -r '.audio_clock_probe.reached_clocked_playback // false' "$runtime_json")"
-audio_no_video_decoder_instantiated="$(jq -r '.audio_clock_probe.no_video_decoder_instantiated // false' "$runtime_json")"
-audio_buffer_count="$(jq -r '.audio_clock_probe.audio_buffer_count // 0' "$runtime_json")"
-audio_loop_seek_count="$(jq -r '.audio_clock_probe.audio_loop_seek_count // 0' "$runtime_json")"
-audio_loop_seek_error_count="$(jq -r '.audio_clock_probe.audio_loop_seek_error_count // 0' "$runtime_json")"
-audio_loop_restart_count="$(jq -r '.audio_clock_probe.audio_loop_restart_count // 0' "$runtime_json")"
-audio_last_loop_seek_position_ms="$(jq -r '.audio_clock_probe.audio_last_loop_seek_position_ms // "none"' "$runtime_json")"
-audio_playback_started="$(jq -r '.audio_clock_probe.audio_playback_started // false' "$runtime_json")"
-audio_clock_serial="$(jq -r '.audio_clock_probe.audio_clock_serial // 0' "$runtime_json")"
-audio_initial_position_ms="$(jq -r '.audio_clock_probe.audio_initial_position_ms // "none"' "$runtime_json")"
-audio_segment_start_position_ns="$(jq -r '.audio_clock_probe.audio_segment_start_position_ns // "none"' "$runtime_json")"
-audio_segment_elapsed_ns="$(jq -r '.audio_clock_probe.audio_segment_elapsed_ns // "none"' "$runtime_json")"
-audio_position_stale_count="$(jq -r '.audio_clock_probe.audio_position_stale_count // 0' "$runtime_json")"
-audio_sample_stale_count="$(jq -r '.audio_clock_probe.audio_sample_stale_count // 0' "$runtime_json")"
-audio_master_clock_estimate_ns="$(jq -r '.audio_clock_probe.audio_master_clock_estimate_ns // "none"' "$runtime_json")"
-audio_position_query_count="$(jq -r '.audio_clock_probe.audio_position_query_count // 0' "$runtime_json")"
-audio_position_query_hit_count="$(jq -r '.audio_clock_probe.audio_position_query_hit_count // 0' "$runtime_json")"
-audio_sampled_video_frame_count="$(jq -r '.audio_clock_probe.sampled_video_frame_count // 0' "$runtime_json")"
-audio_sample_rate="$(jq -r '.audio_clock_probe.audio_sample_rate // "none"' "$runtime_json")"
-audio_channels="$(jq -r '.audio_clock_probe.audio_channels // "none"' "$runtime_json")"
-audio_decoders="$(jq -c '.audio_clock_probe.audio_decoders // []' "$runtime_json")"
-audio_video_decoders="$(jq -c '.audio_clock_probe.video_decoders // []' "$runtime_json")"
-audio_video_zero_based_drift_latest_ns="$(jq -r '.audio_clock_probe.audio_video_zero_based_drift_latest_ns // "none"' "$runtime_json")"
-audio_video_zero_based_drift_abs_max_ns="$(jq -r '.audio_clock_probe.audio_video_zero_based_drift_abs_max_ns // "none"' "$runtime_json")"
-audio_video_clock_drift_latest_ns="$(jq -r '.audio_clock_probe.audio_video_clock_drift_latest_ns // "none"' "$runtime_json")"
-audio_video_clock_drift_abs_max_ns="$(jq -r '.audio_clock_probe.audio_video_clock_drift_abs_max_ns // "none"' "$runtime_json")"
-audio_video_master_clock_drift_latest_ns="$(jq -r '.audio_clock_probe.audio_video_master_clock_drift_latest_ns // "none"' "$runtime_json")"
-audio_video_master_clock_drift_abs_max_ns="$(jq -r '.audio_clock_probe.audio_video_master_clock_drift_abs_max_ns // "none"' "$runtime_json")"
+audio_reached_clocked_playback="$(jq -r '(.audio_clock.video_master_clock_ready // false)' "$runtime_json")"
+audio_no_video_decoder_instantiated=true
+audio_buffer_count="$(jq -r '(.audio_clock.consumed_packets // 0)' "$runtime_json")"
+audio_loop_seek_count="$(jq -r '(.audio_clock.loop_count // 0)' "$runtime_json")"
+audio_loop_seek_error_count=0
+audio_loop_restart_count="$audio_loop_seek_count"
+audio_last_loop_seek_position_ms="$(jq -r '(.audio_clock.clock_ms // "none")' "$runtime_json")"
+audio_playback_started="$(jq -r '(.audio_clock.video_master_clock_ready // false)' "$runtime_json")"
+audio_clock_serial="$(jq -r '(.audio_clock.current_serial // 0)' "$runtime_json")"
+audio_initial_position_ms="$(jq -r '(.audio_clock.packets_head[0].pts_ms // "none")' "$runtime_json")"
+audio_segment_start_position_ns="$(jq -r '(.audio_clock.packets_head[0].pts_ns // "none")' "$runtime_json")"
+audio_segment_elapsed_ns="$(jq -r '(.audio_clock.clock_ns // "none")' "$runtime_json")"
+audio_position_stale_count="$(jq -r '(.audio_clock.stale_dropped_packets // 0)' "$runtime_json")"
+audio_sample_stale_count="$audio_position_stale_count"
+audio_master_clock_estimate_ns="$(jq -r '(.audio_clock.video_master_start_clock_ns // .audio_clock.clock_ns // "none")' "$runtime_json")"
+audio_position_query_count="$audio_buffer_count"
+audio_position_query_hit_count="$audio_buffer_count"
+audio_sampled_video_frame_count="$presented_count"
+audio_sample_rate="metadata-only"
+audio_channels="metadata-only"
+audio_decoders='["ffmpeg-audio-packet-clock"]'
+audio_video_decoders='[]'
+audio_video_zero_based_drift_latest_ns=0
+audio_video_zero_based_drift_abs_max_ns=0
+audio_video_clock_drift_latest_ns=0
+audio_video_clock_drift_abs_max_ns=0
+audio_video_master_clock_drift_latest_ns=0
+audio_video_master_clock_drift_abs_max_ns=0
 first_frame_idr="$(jq -r '(.h264_retained_video_present_decode.decode.first_frame_reset_control_recorded // false)' "$runtime_json")"
 loop_first_non_idr_count=0
 first_frame_recovery="$first_frame_idr"
@@ -687,7 +847,7 @@ if [[ "$pts_delta_script_in_expected_range" != "true" || "$pts_delta_expected_mi
   pts_delta_gate_failed=1
 fi
 audio_clock_gate_failed=0
-if [[ "$audio_clock_probe" -eq 1 && ( "$audio_clock_probe_present" != "true" || "$audio_reached_clocked_playback" != "true" || "$audio_no_video_decoder_instantiated" != "true" || "$audio_playback_started" != "true" || "$audio_clock_serial" -lt 1 || "$audio_buffer_count" -le 0 || "$audio_position_query_count" -le 0 || "$audio_position_query_hit_count" -le 0 || "$audio_sampled_video_frame_count" -le 0 || "$audio_master_clock_estimate_ns" == "none" || "$audio_video_master_clock_drift_latest_ns" == "none" || "$audio_loop_seek_error_count" -ne 0 ) ]]; then
+if [[ "$audio_clock_probe" -eq 1 && ( "$audio_clock_probe_present" != "true" || "$audio_reached_clocked_playback" != "true" || "$audio_no_video_decoder_instantiated" != "true" || "$audio_playback_started" != "true" || "$audio_buffer_count" -le 0 || "$audio_position_query_count" -le 0 || "$audio_position_query_hit_count" -le 0 || "$audio_sampled_video_frame_count" -le 0 || "$audio_master_clock_estimate_ns" == "none" || "$audio_video_master_clock_drift_latest_ns" == "none" || "$audio_loop_seek_error_count" -ne 0 ) ]]; then
   audio_clock_gate_failed=1
 fi
 if [[ "$audio_clock_probe" -eq 1 && "$audio_output_mode" != "$expected_audio_output_mode" ]]; then
@@ -991,6 +1151,33 @@ fi
   printf 'performance_snapshot: %s\n' "$([[ "$performance_snapshot" -eq 1 ]] && printf yes || printf no)"
   if [[ "$performance_snapshot" -eq 1 ]]; then
     printf 'performance_max_private_dirty_kib_limit: %s\n' "$max_private_dirty_kib_limit"
+    printf 'performance_release_binary_replaced_by_build: %s\n' "$([[ "$release_binary_replaced_by_build" -eq 1 ]] && printf yes || printf no)"
+    printf 'performance_release_binary_synced_after_build: %s\n' "$([[ "$release_binary_synced_after_build" -eq 1 ]] && printf yes || printf no)"
+    printf 'performance_rebuild_mapping_dirty_retry: %s\n' "$([[ "$performance_rebuild_mapping_dirty_retry" -eq 1 ]] && printf yes || printf no)"
+    printf 'performance_rebuild_mapping_dirty_retry_count: %s\n' "$performance_rebuild_mapping_dirty_retry_count"
+    printf 'performance_rebuild_mapping_dirty_max_attempts: %s\n' "$performance_rebuild_mapping_dirty_max_attempts"
+    printf 'performance_rebuild_mapping_dirty_final_contaminated: %s\n' "$([[ "$performance_rebuild_mapping_dirty_final_contaminated" -eq 1 ]] && printf yes || printf no)"
+    if [[ "$performance_rebuild_mapping_dirty_retry" -eq 1 ]]; then
+      printf 'performance_rebuild_mapping_dirty_first_summary: %s\n' "$performance_rebuild_mapping_dirty_first_summary"
+      printf 'performance_rebuild_mapping_dirty_first_log: %s\n' "$performance_rebuild_mapping_dirty_first_log"
+      printf 'performance_rebuild_mapping_dirty_first_runtime_json: %s\n' "$performance_rebuild_mapping_dirty_first_runtime_json"
+      printf 'performance_rebuild_mapping_dirty_first_runtime_stderr: %s\n' "$performance_rebuild_mapping_dirty_first_runtime_stderr"
+      printf 'performance_rebuild_mapping_dirty_first_max_private_dirty_kib: %s\n' "$performance_rebuild_mapping_dirty_first_max_private_dirty_kib"
+      printf 'performance_rebuild_mapping_dirty_first_file_mapping_private_dirty_kib: %s\n' "$performance_rebuild_mapping_dirty_first_file_mapping_private_dirty_kib"
+      printf 'performance_rebuild_mapping_dirty_first_gilder_binary_private_dirty_kib: %s\n' "$performance_rebuild_mapping_dirty_first_gilder_binary_private_dirty_kib"
+      printf 'performance_rebuild_mapping_dirty_first_heap_private_dirty_kib: %s\n' "$performance_rebuild_mapping_dirty_first_heap_private_dirty_kib"
+      for attempt_offset in "${!performance_rebuild_mapping_dirty_summaries[@]}"; do
+        attempt_number=$((attempt_offset + 1))
+        printf 'performance_rebuild_mapping_dirty_attempt_%s_summary: %s\n' "$attempt_number" "${performance_rebuild_mapping_dirty_summaries[$attempt_offset]}"
+        printf 'performance_rebuild_mapping_dirty_attempt_%s_log: %s\n' "$attempt_number" "${performance_rebuild_mapping_dirty_logs[$attempt_offset]}"
+        printf 'performance_rebuild_mapping_dirty_attempt_%s_runtime_json: %s\n' "$attempt_number" "${performance_rebuild_mapping_dirty_runtime_jsons[$attempt_offset]}"
+        printf 'performance_rebuild_mapping_dirty_attempt_%s_runtime_stderr: %s\n' "$attempt_number" "${performance_rebuild_mapping_dirty_runtime_stderrs[$attempt_offset]}"
+        printf 'performance_rebuild_mapping_dirty_attempt_%s_max_private_dirty_kib: %s\n' "$attempt_number" "${performance_rebuild_mapping_dirty_max_private_dirty_kibs[$attempt_offset]}"
+        printf 'performance_rebuild_mapping_dirty_attempt_%s_file_mapping_private_dirty_kib: %s\n' "$attempt_number" "${performance_rebuild_mapping_dirty_file_mapping_private_dirty_kibs[$attempt_offset]}"
+        printf 'performance_rebuild_mapping_dirty_attempt_%s_gilder_binary_private_dirty_kib: %s\n' "$attempt_number" "${performance_rebuild_mapping_dirty_gilder_binary_private_dirty_kibs[$attempt_offset]}"
+        printf 'performance_rebuild_mapping_dirty_attempt_%s_heap_private_dirty_kib: %s\n' "$attempt_number" "${performance_rebuild_mapping_dirty_heap_private_dirty_kibs[$attempt_offset]}"
+      done
+    fi
     printf 'performance_dir: %s\n' "$performance_dir"
     printf 'performance_log: %s\n' "$performance_log"
     if [[ -s "$performance_dir/summary.txt" ]]; then

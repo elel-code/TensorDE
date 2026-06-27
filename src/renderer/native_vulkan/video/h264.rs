@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use vulkanalia::vk;
 
 #[cfg(any(feature = "native-vulkan-video", test))]

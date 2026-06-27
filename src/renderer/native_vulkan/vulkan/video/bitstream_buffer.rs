@@ -4,6 +4,10 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};
 
+use super::memory::{
+    native_vulkan_vulkanalia_bind_buffer_memory2, native_vulkan_vulkanalia_map_memory2,
+    native_vulkan_vulkanalia_unmap_memory2,
+};
 use super::video_session::{
     NativeVulkanVulkanaliaMemoryTypeCandidate, native_vulkan_vulkanalia_memory_type_candidates,
 };
@@ -124,15 +128,19 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         let memory = unsafe { device.allocate_memory(&allocation_info, None) }
             .map_err(|err| format!("vkAllocateMemory(vulkanalia video bitstream): {err:?}"))?;
 
-        if let Err(err) = unsafe { device.bind_buffer_memory(buffer, memory, 0) } {
+        if let Err(err) = native_vulkan_vulkanalia_bind_buffer_memory2(
+            device,
+            buffer,
+            memory,
+            0,
+            "video bitstream",
+        ) {
             unsafe {
                 device.destroy_buffer(buffer, None);
                 buffer_destroyed = true;
                 device.free_memory(memory, None);
             }
-            return Err(format!(
-                "vkBindBufferMemory(vulkanalia video bitstream): {err:?}"
-            ));
+            return Err(err);
         }
 
         let mapped_size = if keep_mapped {
@@ -151,19 +159,24 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         } else {
             1
         };
-        let map =
-            match unsafe { device.map_memory(memory, 0, mapped_size, vk::MemoryMapFlags::empty()) }
-            {
-                Ok(map) => map,
-                Err(err) => {
-                    unsafe {
-                        device.destroy_buffer(buffer, None);
-                        buffer_destroyed = true;
-                        device.free_memory(memory, None);
-                    }
-                    return Err(format!("vkMapMemory(vulkanalia video bitstream): {err:?}"));
+        let map = match native_vulkan_vulkanalia_map_memory2(
+            device,
+            memory,
+            0,
+            mapped_size,
+            vk::MemoryMapFlags::empty(),
+            "video bitstream",
+        ) {
+            Ok(map) => map,
+            Err(err) => {
+                unsafe {
+                    device.destroy_buffer(buffer, None);
+                    buffer_destroyed = true;
+                    device.free_memory(memory, None);
                 }
-            };
+                return Err(err);
+            }
+        };
         let mut mapped_write_bytes = 0u64;
         if let Some(payload) = write_payload {
             unsafe {
@@ -187,12 +200,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 .size(flush_size)
                 .build();
             if let Err(err) = unsafe { device.flush_mapped_memory_ranges(&[range]) } {
+                let _ = native_vulkan_vulkanalia_unmap_memory2(device, memory, "video bitstream");
                 unsafe {
-                    device.unmap_memory(memory);
                     device.destroy_buffer(buffer, None);
                     buffer_destroyed = true;
                     device.free_memory(memory, None);
-                }
+                };
                 return Err(format!(
                     "vkFlushMappedMemoryRanges(vulkanalia video bitstream): {err:?}"
                 ));
@@ -204,9 +217,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         let mapped_ptr = if keep_mapped {
             Some(map)
         } else {
-            unsafe {
-                device.unmap_memory(memory);
-            }
+            native_vulkan_vulkanalia_unmap_memory2(device, memory, "video bitstream")?;
             None
         };
 
@@ -257,10 +268,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destr
     device: &Device,
     buffer: VulkanaliaVideoSessionBitstreamBuffer,
 ) {
+    if buffer.mapped_ptr.is_some() {
+        let _ = native_vulkan_vulkanalia_unmap_memory2(device, buffer.memory, "video bitstream");
+    }
     unsafe {
-        if buffer.mapped_ptr.is_some() {
-            device.unmap_memory(buffer.memory);
-        }
         device.destroy_buffer(buffer.buffer, None);
         device.free_memory(buffer.memory, None);
     }

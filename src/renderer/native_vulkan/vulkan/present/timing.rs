@@ -1,30 +1,22 @@
 use std::env;
 
 use vulkanalia::prelude::v1_4::*;
-use vulkanalia::vk::{
-    self, HasBuilder, KhrPresentWait2ExtensionDeviceCommands, KhrPresentWaitExtensionDeviceCommands,
-};
+use vulkanalia::vk::{self, HasBuilder, KhrPresentWait2ExtensionDeviceCommands};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaPresentTimingConfig {
-    pub(in crate::renderer::native_vulkan::vulkan) present_id_enabled: bool,
     pub(in crate::renderer::native_vulkan::vulkan) present_id2_enabled: bool,
-    pub(in crate::renderer::native_vulkan::vulkan) present_wait_enabled: bool,
     pub(in crate::renderer::native_vulkan::vulkan) present_wait2_enabled: bool,
     pub(in crate::renderer::native_vulkan::vulkan) wait_after_present_enabled: bool,
 }
 
 impl VulkanaliaPresentTimingConfig {
     pub(in crate::renderer::native_vulkan::vulkan) fn new(
-        present_id_enabled: bool,
         present_id2_enabled: bool,
-        present_wait_enabled: bool,
         present_wait2_enabled: bool,
     ) -> Self {
         Self {
-            present_id_enabled,
             present_id2_enabled,
-            present_wait_enabled,
             present_wait2_enabled,
             wait_after_present_enabled: env_present_wait_after_present_enabled(),
         }
@@ -43,7 +35,7 @@ impl VulkanaliaPresentTimingConfig {
         self,
         present_frame_index: u32,
     ) -> Option<u64> {
-        if self.present_id2_enabled || self.present_id_enabled {
+        if self.present_id2_enabled {
             Some(u64::from(present_frame_index).saturating_add(1))
         } else {
             None
@@ -53,8 +45,6 @@ impl VulkanaliaPresentTimingConfig {
     pub(in crate::renderer::native_vulkan::vulkan) fn present_id_mode(self) -> &'static str {
         if self.present_id2_enabled {
             "present-id2-khr"
-        } else if self.present_id_enabled {
-            "present-id-khr"
         } else {
             "disabled"
         }
@@ -63,13 +53,8 @@ impl VulkanaliaPresentTimingConfig {
     pub(in crate::renderer::native_vulkan::vulkan) fn present_wait_mode(self) -> &'static str {
         if !self.wait_after_present_enabled {
             "disabled"
-        } else if self.present_wait2_enabled
-            && (self.present_id2_enabled || self.present_id_enabled)
-        {
+        } else if self.present_wait2_enabled && self.present_id2_enabled {
             "present-wait2-khr"
-        } else if self.present_wait_enabled && (self.present_id2_enabled || self.present_id_enabled)
-        {
-            "present-wait-khr"
         } else {
             "disabled"
         }
@@ -101,13 +86,6 @@ impl VulkanaliaPresentTimingConfig {
                     .map_err(|err| format!("vkWaitForPresent2KHR(vulkanalia {label}): {err:?}"))?;
             }
             Ok(true)
-        } else if self.present_wait_enabled {
-            unsafe {
-                device
-                    .wait_for_present_khr(swapchain, present_id, u64::MAX)
-                    .map_err(|err| format!("vkWaitForPresentKHR(vulkanalia {label}): {err:?}"))?;
-            }
-            Ok(true)
         } else {
             Ok(false)
         }
@@ -135,8 +113,8 @@ mod tests {
 
     #[test]
     fn present_timing_prefers_present_id2() {
-        let timing = VulkanaliaPresentTimingConfig::new(true, true, true, true)
-            .with_wait_after_present_enabled(true);
+        let timing =
+            VulkanaliaPresentTimingConfig::new(true, true).with_wait_after_present_enabled(true);
 
         assert_eq!(timing.present_id(0), Some(1));
         assert_eq!(timing.present_id(41), Some(42));
@@ -145,18 +123,18 @@ mod tests {
     }
 
     #[test]
-    fn present_timing_can_fall_back_to_present_id() {
-        let timing = VulkanaliaPresentTimingConfig::new(true, false, true, false)
-            .with_wait_after_present_enabled(true);
+    fn present_timing_does_not_fall_back_to_legacy_present_id() {
+        let timing =
+            VulkanaliaPresentTimingConfig::new(false, true).with_wait_after_present_enabled(true);
 
-        assert_eq!(timing.present_id(0), Some(1));
-        assert_eq!(timing.present_id_mode(), "present-id-khr");
-        assert_eq!(timing.present_wait_mode(), "present-wait-khr");
+        assert_eq!(timing.present_id(0), None);
+        assert_eq!(timing.present_id_mode(), "disabled");
+        assert_eq!(timing.present_wait_mode(), "disabled");
     }
 
     #[test]
     fn present_timing_can_be_disabled() {
-        let timing = VulkanaliaPresentTimingConfig::new(false, false, false, false);
+        let timing = VulkanaliaPresentTimingConfig::new(false, false);
 
         assert_eq!(timing.present_id(0), None);
         assert_eq!(timing.present_id_mode(), "disabled");
@@ -165,16 +143,16 @@ mod tests {
 
     #[test]
     fn present_wait_requires_a_present_id_source() {
-        let timing = VulkanaliaPresentTimingConfig::new(false, false, true, true)
-            .with_wait_after_present_enabled(true);
+        let timing =
+            VulkanaliaPresentTimingConfig::new(false, true).with_wait_after_present_enabled(true);
 
         assert_eq!(timing.present_wait_mode(), "disabled");
     }
 
     #[test]
     fn present_wait_is_diagnostic_only_by_default() {
-        let timing = VulkanaliaPresentTimingConfig::new(true, true, true, true)
-            .with_wait_after_present_enabled(false);
+        let timing =
+            VulkanaliaPresentTimingConfig::new(true, true).with_wait_after_present_enabled(false);
 
         assert_eq!(timing.present_wait_mode(), "disabled");
     }

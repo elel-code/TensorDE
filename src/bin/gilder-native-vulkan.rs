@@ -1,5 +1,11 @@
 #[cfg(feature = "native-vulkan-renderer")]
+use gilder::core::{FitMode, SceneLiteLayerKind, SceneLiteTransform};
+#[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::native_vulkan::NativeVulkanClearColor;
+#[cfg(feature = "native-vulkan-renderer")]
+use gilder::renderer::{SceneLiteDisplayPlan, SceneLiteRenderLayer, SceneLiteWallpaperPlan};
+#[cfg(feature = "native-vulkan-renderer")]
+use std::path::PathBuf;
 
 #[cfg(feature = "native-vulkan-renderer")]
 fn main() {
@@ -32,12 +38,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         NativeVulkanOptions, NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionSmokeOptions,
         backend_contract, capabilities, native_vulkan_video_duration_playback_frames,
         native_vulkan_video_run_route, probe_vulkan_video_decode, probe_wayland_surface, run_clear,
-        run_static_image, wallpaper_type_support_matrix,
+        run_scene_lite, run_static_image, wallpaper_type_support_matrix,
     };
     use gilder::renderer::native_vulkan::{
-        NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions,
-        NativeVulkanVulkanaliaSceneLiteSolidQuadPresentOptions,
         NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions,
+        NativeVulkanVulkanaliaVideoPresentAudioMasterClock,
         NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions,
         NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
         NativeVulkanVulkanaliaVideoSessionBindSmokeOptions, probe_native_vulkan_vulkanalia_devices,
@@ -45,12 +50,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         probe_native_vulkan_vulkanalia_video_present_device,
         probe_native_vulkan_vulkanalia_video_present_session,
         probe_native_vulkan_vulkanalia_video_session_bind,
-        run_native_vulkan_vulkanalia_scene_lite_sampled_image_present,
-        run_native_vulkan_vulkanalia_scene_lite_solid_quad_present,
     };
     use gilder::renderer::native_wayland::NativeWaylandLayer;
     use serde_json::json;
-    use std::path::PathBuf;
     use std::time::Duration;
 
     let mut mode = NativeVulkanCliMode::All;
@@ -58,8 +60,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut duration = Duration::from_secs(5);
     let mut duration_set = false;
     let mut source = None::<PathBuf>;
-    let mut fit = gilder::core::FitMode::Cover;
+    let mut fit = FitMode::Cover;
     let mut background = None::<String>;
+    let mut scene_color = None::<String>;
     let mut _muted = true;
     #[cfg(feature = "native-vulkan-video")]
     let mut audio_clock_probe_requested = false;
@@ -79,9 +82,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--probe-surface" => mode = NativeVulkanCliMode::ProbeSurface,
             "--probe-video" => mode = NativeVulkanCliMode::ProbeVideo,
             "--probe-vulkanalia" => mode = NativeVulkanCliMode::ProbeVulkanalia,
-            "--probe-vulkanalia-swapchain" | "--probe-vulkanalia-surface" => {
-                mode = NativeVulkanCliMode::ProbeVulkanaliaSwapchain
-            }
+            "--probe-vulkanalia-swapchain" => mode = NativeVulkanCliMode::ProbeVulkanaliaSwapchain,
             "--probe-vulkanalia-video-session" => {
                 mode = NativeVulkanCliMode::ProbeVulkanaliaVideoSession
             }
@@ -136,14 +137,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 video_session_options.allocate_bitstream_buffer = true;
                 video_session_options.allocate_video_images = true;
             }
-            "--run-clear" | "--run-vulkanalia-clear" => mode = NativeVulkanCliMode::RunClear,
-            "--run-vulkanalia-scene-lite-solid-quad" => {
-                mode = NativeVulkanCliMode::RunVulkanaliaSceneLiteSolidQuad
-            }
-            "--run-vulkanalia-scene-lite-sampled-image" => {
-                mode = NativeVulkanCliMode::RunVulkanaliaSceneLiteSampledImage
-            }
-            "--run-vulkanalia-static" => mode = NativeVulkanCliMode::RunStatic,
+            "--run-clear" => mode = NativeVulkanCliMode::RunClear,
+            "--run-scene-lite" => mode = NativeVulkanCliMode::RunSceneLite,
             "--run-static" => mode = NativeVulkanCliMode::RunStatic,
             "--run-video" => mode = NativeVulkanCliMode::RunVideo,
             "--json" => mode = NativeVulkanCliMode::All,
@@ -180,6 +175,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--color" => {
                 let value = args.next().ok_or("--color requires #rrggbb or r,g,b")?;
                 options.clear_color = parse_color(&value)?;
+                if value.starts_with('#') {
+                    scene_color = Some(value);
+                }
             }
             "--source" => {
                 source = Some(args.next().ok_or("--source requires a path")?.into());
@@ -349,6 +347,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     width: video_session_options.width,
                     height: video_session_options.height,
                     target_max_fps: options.target_max_fps,
+                    audio_master_clock:
+                        NativeVulkanVulkanaliaVideoPresentAudioMasterClock::DISABLED,
                 }
             )?)
         }
@@ -434,41 +434,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )?)
         }
         NativeVulkanCliMode::RunClear => json!(run_clear(options, duration)?),
-        NativeVulkanCliMode::RunVulkanaliaSceneLiteSolidQuad => {
-            json!(run_native_vulkan_vulkanalia_scene_lite_solid_quad_present(
-                NativeVulkanVulkanaliaSceneLiteSolidQuadPresentOptions {
-                    host: options.host,
-                    wait_configure_roundtrips: options.wait_configure_roundtrips,
-                    duration,
-                    target_max_fps: options.target_max_fps,
-                    quad_color: options.clear_color,
-                    geometry: None,
+        NativeVulkanCliMode::RunSceneLite => {
+            if let Some(source) = source.as_ref() {
+                if !source.is_file() {
+                    return Err(
+                        format!("scene-lite source does not exist: {}", source.display()).into(),
+                    );
                 }
-            )?)
-        }
-        NativeVulkanCliMode::RunVulkanaliaSceneLiteSampledImage => {
-            let source =
-                source.ok_or("--run-vulkanalia-scene-lite-sampled-image requires --source")?;
-            if !source.is_file() {
-                return Err(
-                    format!("sampled-image source does not exist: {}", source.display()).into(),
-                );
             }
-            json!(
-                run_native_vulkan_vulkanalia_scene_lite_sampled_image_present(
-                    NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions {
-                        host: options.host,
-                        wait_configure_roundtrips: options.wait_configure_roundtrips,
-                        duration,
-                        target_max_fps: options.target_max_fps,
-                        source,
-                        clear_color: options.clear_color,
-                        fit: None,
-                        solid_geometry: None,
-                        geometry: None,
-                    }
-                )?
-            )
+            let output_name = options
+                .host
+                .output_name
+                .clone()
+                .unwrap_or_else(|| "native-vulkan".to_owned());
+            let target_max_fps = options.target_max_fps;
+            let plan = scene_lite_cli_plan(
+                output_name,
+                source,
+                fit,
+                background,
+                scene_color,
+                target_max_fps,
+            )?;
+            json!(run_scene_lite(options, duration, plan)?)
         }
         NativeVulkanCliMode::RunStatic => {
             let source = source.ok_or("--run-static requires --source")?;
@@ -568,7 +556,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     ready_prefix_playback_frames,
                     duration_playback_frames,
                 );
-                json!(run_vulkanalia_ready_prefix_video(
+                let report = run_vulkanalia_ready_prefix_video(
                     options,
                     video_session_options.codec,
                     source,
@@ -580,7 +568,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     playback_frames,
                     audio_clock_probe_requested,
                     audio_output_policy.resolve(_muted),
-                )?)
+                )?;
+                write_json_report(&report)?;
+                return Ok(());
             }
             #[cfg(not(feature = "native-vulkan-video"))]
             {
@@ -601,7 +591,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     };
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    write_json_report(&report)?;
+    Ok(())
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+fn write_json_report<T: serde::Serialize>(report: &T) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write as _;
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+    serde_json::to_writer_pretty(&mut stdout, report)?;
+    stdout.write_all(b"\n")?;
     Ok(())
 }
 
@@ -639,13 +639,81 @@ fn parse_color(value: &str) -> Result<NativeVulkanClearColor, Box<dyn std::error
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
-fn parse_fit_mode(value: &str) -> Result<gilder::core::FitMode, String> {
+fn scene_lite_cli_plan(
+    output_name: String,
+    source: Option<PathBuf>,
+    fit: FitMode,
+    background: Option<String>,
+    color: Option<String>,
+    target_max_fps: Option<u32>,
+) -> Result<SceneLiteWallpaperPlan, Box<dyn std::error::Error>> {
+    if let Some(source) = source {
+        let mut layer = scene_lite_cli_layer("cli-image", SceneLiteLayerKind::Image);
+        layer.source = Some(source.clone());
+        layer.fit = fit;
+        return Ok(SceneLiteWallpaperPlan {
+            output_name,
+            source: None,
+            fallback: Some(source.clone()),
+            manifest_max_fps: None,
+            target_max_fps,
+            bound_properties: Vec::new(),
+            display: Some(SceneLiteDisplayPlan::Image {
+                source,
+                fit,
+                background,
+            }),
+            layers: vec![layer],
+        });
+    }
+
+    let color = color.ok_or("--run-scene-lite requires --source or hex --color #rrggbb")?;
+    let mut layer = scene_lite_cli_layer("cli-color", SceneLiteLayerKind::Color);
+    layer.color = Some(color.clone());
+    Ok(SceneLiteWallpaperPlan {
+        output_name,
+        source: None,
+        fallback: None,
+        manifest_max_fps: None,
+        target_max_fps,
+        bound_properties: Vec::new(),
+        display: Some(SceneLiteDisplayPlan::Color { color }),
+        layers: vec![layer],
+    })
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+fn scene_lite_cli_layer(id: &str, kind: SceneLiteLayerKind) -> SceneLiteRenderLayer {
+    SceneLiteRenderLayer {
+        id: id.to_owned(),
+        kind,
+        source: None,
+        color: None,
+        stroke_color: None,
+        stroke_width: None,
+        corner_radius: None,
+        width: None,
+        height: None,
+        text: None,
+        font_size: None,
+        font_family: None,
+        font_weight: None,
+        text_align: None,
+        path_data: None,
+        fit: FitMode::Cover,
+        opacity: 1.0,
+        transform: SceneLiteTransform::default(),
+    }
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+fn parse_fit_mode(value: &str) -> Result<FitMode, String> {
     match value {
-        "cover" => Ok(gilder::core::FitMode::Cover),
-        "contain" => Ok(gilder::core::FitMode::Contain),
-        "stretch" => Ok(gilder::core::FitMode::Stretch),
-        "tile" => Ok(gilder::core::FitMode::Tile),
-        "center" => Ok(gilder::core::FitMode::Center),
+        "cover" => Ok(FitMode::Cover),
+        "contain" => Ok(FitMode::Contain),
+        "stretch" => Ok(FitMode::Stretch),
+        "tile" => Ok(FitMode::Tile),
+        "center" => Ok(FitMode::Center),
         other => Err(format!("unsupported fit mode: {other}")),
     }
 }
@@ -667,6 +735,65 @@ fn parse_decoder_policy(
     }
 }
 
+#[cfg(all(test, feature = "native-vulkan-renderer"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scene_lite_cli_plan_builds_full_extent_image_layer() {
+        let plan = scene_lite_cli_plan(
+            "HDMI-A-1".to_owned(),
+            Some(PathBuf::from("/tmp/wall.png")),
+            FitMode::Contain,
+            Some("#010203".to_owned()),
+            None,
+            Some(30),
+        )
+        .expect("image scene plan");
+
+        assert_eq!(plan.source, None);
+        assert_eq!(plan.fallback, Some(PathBuf::from("/tmp/wall.png")));
+        assert_eq!(plan.target_max_fps, Some(30));
+        assert_eq!(
+            plan.display,
+            Some(SceneLiteDisplayPlan::Image {
+                source: PathBuf::from("/tmp/wall.png"),
+                fit: FitMode::Contain,
+                background: Some("#010203".to_owned()),
+            })
+        );
+        assert_eq!(plan.layers.len(), 1);
+        assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Image);
+        assert_eq!(plan.layers[0].source, Some(PathBuf::from("/tmp/wall.png")));
+        assert_eq!(plan.layers[0].fit, FitMode::Contain);
+        assert_eq!(plan.layers[0].width, None);
+        assert_eq!(plan.layers[0].height, None);
+    }
+
+    #[test]
+    fn scene_lite_cli_plan_builds_color_layer() {
+        let plan = scene_lite_cli_plan(
+            "HDMI-A-1".to_owned(),
+            None,
+            FitMode::Cover,
+            None,
+            Some("#102030".to_owned()),
+            None,
+        )
+        .expect("color scene plan");
+
+        assert_eq!(
+            plan.display,
+            Some(SceneLiteDisplayPlan::Color {
+                color: "#102030".to_owned(),
+            })
+        );
+        assert_eq!(plan.layers.len(), 1);
+        assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Color);
+        assert_eq!(plan.layers[0].color, Some("#102030".to_owned()));
+    }
+}
+
 #[cfg(feature = "native-vulkan-renderer")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeVulkanCliMode {
@@ -682,8 +809,7 @@ enum NativeVulkanCliMode {
     ProbeVulkanaliaVideoPresentSession,
     ProbeVulkanaliaVideoSession,
     RunClear,
-    RunVulkanaliaSceneLiteSolidQuad,
-    RunVulkanaliaSceneLiteSampledImage,
+    RunSceneLite,
     RunStatic,
     RunVideo,
     RunVulkanaliaReadyPrefixVideo,
@@ -692,7 +818,7 @@ enum NativeVulkanCliMode {
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--run-clear|--run-vulkanalia-clear|--run-vulkanalia-scene-lite-solid-quad|--run-vulkanalia-scene-lite-sampled-image|--run-static|--run-vulkanalia-static|--run-video|--run-vulkanalia-ready-prefix-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--run-clear|--run-scene-lite|--run-static|--run-video|--run-vulkanalia-ready-prefix-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
@@ -711,10 +837,8 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --decode-av1-ready-prefix N extends --run-video with N visible AV1 temporal units through Vulkan Video decode/present.\n\
 --playback-frames N repeats the ready-prefix AU window for N direct Vulkan Video decode/present frames.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
---run-vulkanalia-clear is an explicit alias for --run-clear.\n\
---run-vulkanalia-scene-lite-solid-quad uses Vulkanalia dynamic rendering to draw a retained scene-lite solid quad to the Wayland swapchain.\n\
---run-vulkanalia-scene-lite-sampled-image uses Vulkanalia dynamic rendering to upload --source once into a retained sampled image and draw it to the Wayland swapchain.\n\
---run-static and --run-vulkanalia-static use Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
+--run-scene-lite builds a scene-lite plan from --source or hex --color and runs the unified native scene presenter.\n\
+--run-static uses Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
 --run-video uses Vulkanalia ready-prefix video. Without explicit --decode-*-ready-prefix, it uses the codec default ready-prefix window.\n\
 --run-vulkanalia-ready-prefix-video decodes a streaming H.264/H.265 source through Vulkanalia CmdPipelineBarrier2/QueueSubmit2 and prints runtime JSON.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-roundtrips N]\n\

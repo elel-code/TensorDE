@@ -4,6 +4,8 @@
 //! the FFmpeg-style split between parsed access units, decoder state, and frame
 //! presentation.
 
+#![allow(dead_code)]
+
 use super::super::*;
 use vulkanalia::vk;
 

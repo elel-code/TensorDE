@@ -5,6 +5,7 @@
 //! surface/swapchain ownership, and direct video texture interop.
 
 #![allow(unsafe_code)]
+#![allow(dead_code)]
 
 use serde::Serialize;
 #[cfg(any(feature = "native-vulkan-video", test))]
@@ -132,14 +133,11 @@ use scene::lite_runtime as scene_lite_runtime;
 use video::codec as video_codec;
 use video::codec_snapshots;
 use video::flow as video_flow;
-#[cfg(any(
-    feature = "native-vulkan-renderer",
-    feature = "native-vulkan-video",
-    test
-))]
+#[cfg(any(feature = "native-vulkan-video", test))]
 use video::h264;
 use video::probe_snapshots as video_probe_snapshots;
 use video::route as video_route;
+#[cfg(feature = "native-vulkan-video")]
 use video::session_snapshots as video_session_snapshots;
 
 pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy};
@@ -150,7 +148,7 @@ pub use codec_snapshots::*;
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
-pub use scene_lite_present_runtime::{run_scene_lite, run_scene_lite_sampled_image};
+pub use scene_lite_present_runtime::{NativeVulkanSceneLitePresentSnapshot, run_scene_lite};
 pub use scene_lite_runtime::{
     NativeVulkanSceneLiteDrawOpSnapshot, NativeVulkanSceneLiteQuadRecordingStepSnapshot,
     NativeVulkanSceneLiteQuadVertexSnapshot, NativeVulkanSceneLiteRuntimeSnapshot,

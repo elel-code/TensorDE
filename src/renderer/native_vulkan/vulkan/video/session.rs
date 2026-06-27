@@ -10,6 +10,20 @@ use super::video_format_probe::{
 };
 
 const DEVICE_LOCAL_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::DEVICE_LOCAL.bits();
+pub(in crate::renderer::native_vulkan::vulkan) const NATIVE_VULKAN_VULKANALIA_VIDEO_SESSION_CREATE_INLINE_SESSION_PARAMETERS_BIT_KHR: u32 =
+    0x0000_0020;
+
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_video_session_create_flags(
+    inline_session_parameters: bool,
+) -> vk::VideoSessionCreateFlagsKHR {
+    if inline_session_parameters {
+        vk::VideoSessionCreateFlagsKHR::from_bits_truncate(
+            NATIVE_VULKAN_VULKANALIA_VIDEO_SESSION_CREATE_INLINE_SESSION_PARAMETERS_BIT_KHR,
+        )
+    } else {
+        vk::VideoSessionCreateFlagsKHR::empty()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -766,6 +780,18 @@ mod tests {
             candidates[1].property_flags_bits,
             vk::MemoryPropertyFlags::DEVICE_LOCAL.bits()
         );
+    }
+
+    #[test]
+    fn video_session_create_flags_enable_inline_session_parameters_bit() {
+        let flags = native_vulkan_vulkanalia_video_session_create_flags(true);
+
+        assert_ne!(
+            flags.bits()
+                & NATIVE_VULKAN_VULKANALIA_VIDEO_SESSION_CREATE_INLINE_SESSION_PARAMETERS_BIT_KHR,
+            0
+        );
+        assert!(native_vulkan_vulkanalia_video_session_create_flags(false).is_empty());
     }
 
     fn format_query(

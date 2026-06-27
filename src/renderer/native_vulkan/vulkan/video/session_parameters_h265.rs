@@ -18,6 +18,40 @@ use super::video_session_parameters::{
 
 const H265_SESSION_PARAMETERS_SOURCE: &str = "native-rust-h265-vps-sps-pps-to-vulkanalia-std";
 
+pub(in crate::renderer::native_vulkan::vulkan) struct NativeVulkanVulkanaliaH265InlineSessionParameters
+{
+    _vps_profile_tier_level: Box<vk::video::StdVideoH265ProfileTierLevel>,
+    _sps_profile_tier_level: Box<vk::video::StdVideoH265ProfileTierLevel>,
+    _vps_dec_pic_buf_mgr: Box<vk::video::StdVideoH265DecPicBufMgr>,
+    _sps_dec_pic_buf_mgr: Box<vk::video::StdVideoH265DecPicBufMgr>,
+    _sps_vui: Option<Box<vk::video::StdVideoH265SequenceParameterSetVui>>,
+    _sps_short_term_ref_pic_sets: Vec<vk::video::StdVideoH265ShortTermRefPicSet>,
+    _sps_long_term_ref_pics: Option<Box<vk::video::StdVideoH265LongTermRefPicsSps>>,
+    vps: [vk::video::StdVideoH265VideoParameterSet; 1],
+    sps: [vk::video::StdVideoH265SequenceParameterSet; 1],
+    pps: [vk::video::StdVideoH265PictureParameterSet; 1],
+}
+
+impl NativeVulkanVulkanaliaH265InlineSessionParameters {
+    pub(in crate::renderer::native_vulkan::vulkan) fn inline_info(
+        &self,
+    ) -> vk::VideoDecodeH265InlineSessionParametersInfoKHR {
+        vk::VideoDecodeH265InlineSessionParametersInfoKHR::builder()
+            .std_vps(&self.vps[0])
+            .std_sps(&self.sps[0])
+            .std_pps(&self.pps[0])
+            .build()
+    }
+}
+
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_h265_inline_session_parameters(
+    codec: NativeVulkanVideoSessionCodec,
+    parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
+) -> Result<NativeVulkanVulkanaliaH265InlineSessionParameters, String> {
+    native_vulkan_vulkanalia_validate_h265_session_parameter_inputs(codec, parameter_sets)?;
+    native_vulkan_vulkanalia_h265_inline_session_parameters_inner(parameter_sets)
+}
+
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_smoke_create_h265_video_session_parameters(
     device: &Device,
     session: vk::VideoSessionKHR,
@@ -52,6 +86,20 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     codec: NativeVulkanVideoSessionCodec,
     parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
 ) -> Result<VulkanaliaVideoSessionParameters, String> {
+    native_vulkan_vulkanalia_validate_h265_session_parameter_inputs(codec, parameter_sets)?;
+
+    native_vulkan_vulkanalia_smoke_create_h265_video_session_parameters_inner(
+        device,
+        session,
+        codec,
+        parameter_sets,
+    )
+}
+
+fn native_vulkan_vulkanalia_validate_h265_session_parameter_inputs(
+    codec: NativeVulkanVideoSessionCodec,
+    parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
+) -> Result<(), String> {
     if !matches!(
         codec,
         NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10
@@ -64,12 +112,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         );
     }
 
-    native_vulkan_vulkanalia_smoke_create_h265_video_session_parameters_inner(
-        device,
-        session,
-        codec,
-        parameter_sets,
-    )
+    Ok(())
 }
 
 fn native_vulkan_vulkanalia_smoke_create_h265_video_session_parameters_inner(
@@ -78,7 +121,52 @@ fn native_vulkan_vulkanalia_smoke_create_h265_video_session_parameters_inner(
     codec: NativeVulkanVideoSessionCodec,
     parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
 ) -> Result<VulkanaliaVideoSessionParameters, String> {
-    let vps_profile_tier_level = native_vulkan_vulkanalia_h265_std_profile_tier_level(
+    let inline_parameters =
+        native_vulkan_vulkanalia_h265_inline_session_parameters_inner(parameter_sets)?;
+    let vps = &inline_parameters.vps;
+    let sps = &inline_parameters.sps;
+    let pps = &inline_parameters.pps;
+    let add_info = vk::VideoDecodeH265SessionParametersAddInfoKHR::builder()
+        .std_vp_ss(vps)
+        .std_sp_ss(sps)
+        .std_pp_ss(pps)
+        .build();
+    let max_std_vps_count = 32;
+    let max_std_sps_count = 32;
+    let max_std_pps_count = 64;
+    let mut h265_create_info = vk::VideoDecodeH265SessionParametersCreateInfoKHR::builder()
+        .max_std_vps_count(max_std_vps_count)
+        .max_std_sps_count(max_std_sps_count)
+        .max_std_pps_count(max_std_pps_count)
+        .parameters_add_info(&add_info)
+        .build();
+    let create_info = vk::VideoSessionParametersCreateInfoKHR::builder()
+        .video_session(session)
+        .push_next(&mut h265_create_info)
+        .build();
+
+    native_vulkan_vulkanalia_create_video_session_parameters(
+        device,
+        &create_info,
+        NativeVulkanVulkanaliaVideoSessionParametersSnapshot {
+            codec: vulkanalia_session_parameters_codec_label(codec),
+            source: H265_SESSION_PARAMETERS_SOURCE,
+            max_std_vps_count,
+            max_std_sps_count,
+            max_std_pps_count,
+            std_vps_count: vps.len() as u32,
+            std_sps_count: sps.len() as u32,
+            std_pps_count: pps.len() as u32,
+        },
+        "vulkanalia real h265 session parameters",
+    )
+    .map_err(|err| err.error)
+}
+
+fn native_vulkan_vulkanalia_h265_inline_session_parameters_inner(
+    parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
+) -> Result<NativeVulkanVulkanaliaH265InlineSessionParameters, String> {
+    let vps_profile_tier_level = Box::new(native_vulkan_vulkanalia_h265_std_profile_tier_level(
         parameter_sets.vps.profile_idc,
         parameter_sets.vps.level_idc,
         parameter_sets.vps.tier_flag,
@@ -86,8 +174,8 @@ fn native_vulkan_vulkanalia_smoke_create_h265_video_session_parameters_inner(
         parameter_sets.vps.interlaced_source_flag,
         parameter_sets.vps.non_packed_constraint_flag,
         parameter_sets.vps.frame_only_constraint_flag,
-    )?;
-    let sps_profile_tier_level = native_vulkan_vulkanalia_h265_std_profile_tier_level(
+    )?);
+    let sps_profile_tier_level = Box::new(native_vulkan_vulkanalia_h265_std_profile_tier_level(
         parameter_sets.sps.profile_idc,
         parameter_sets.sps.level_idc,
         parameter_sets.sps.tier_flag,
@@ -95,19 +183,22 @@ fn native_vulkan_vulkanalia_smoke_create_h265_video_session_parameters_inner(
         parameter_sets.sps.interlaced_source_flag,
         parameter_sets.sps.non_packed_constraint_flag,
         parameter_sets.sps.frame_only_constraint_flag,
-    )?;
-    let vps_dec_pic_buf_mgr =
-        native_vulkan_vulkanalia_h265_std_dec_pic_buf_mgr(&parameter_sets.vps.dec_pic_buf_mgr);
-    let sps_dec_pic_buf_mgr =
-        native_vulkan_vulkanalia_h265_std_dec_pic_buf_mgr(&parameter_sets.sps.dec_pic_buf_mgr);
+    )?);
+    let vps_dec_pic_buf_mgr = Box::new(native_vulkan_vulkanalia_h265_std_dec_pic_buf_mgr(
+        &parameter_sets.vps.dec_pic_buf_mgr,
+    ));
+    let sps_dec_pic_buf_mgr = Box::new(native_vulkan_vulkanalia_h265_std_dec_pic_buf_mgr(
+        &parameter_sets.sps.dec_pic_buf_mgr,
+    ));
     let sps_vui = parameter_sets
         .sps
         .vui
         .as_ref()
         .map(native_vulkan_vulkanalia_h265_std_vui)
-        .transpose()?;
+        .transpose()?
+        .map(Box::new);
     let sps_vui_ptr = sps_vui
-        .as_ref()
+        .as_deref()
         .map(|vui| vui as *const vk::video::StdVideoH265SequenceParameterSetVui)
         .unwrap_or_else(ptr::null);
     let sps_short_term_ref_pic_sets = native_vulkan_vulkanalia_h265_std_short_term_ref_pic_sets(
@@ -120,9 +211,10 @@ fn native_vulkan_vulkanalia_smoke_create_h265_video_session_parameters_inner(
     };
     let sps_long_term_ref_pics = native_vulkan_vulkanalia_h265_std_long_term_ref_pics_sps(
         &parameter_sets.sps.long_term_ref_pics_sps,
-    )?;
+    )?
+    .map(Box::new);
     let sps_long_term_ref_pics_ptr = sps_long_term_ref_pics
-        .as_ref()
+        .as_deref()
         .map(|ref_pics| ref_pics as *const vk::video::StdVideoH265LongTermRefPicsSps)
         .unwrap_or_else(ptr::null);
 
@@ -148,9 +240,9 @@ fn native_vulkan_vulkanalia_smoke_create_h265_video_session_parameters_inner(
             .num_ticks_poc_diff_one_minus1
             .unwrap_or(0),
         reserved3: 0,
-        pDecPicBufMgr: &vps_dec_pic_buf_mgr,
+        pDecPicBufMgr: &*vps_dec_pic_buf_mgr,
         pHrdParameters: ptr::null(),
-        pProfileTierLevel: &vps_profile_tier_level,
+        pProfileTierLevel: &*vps_profile_tier_level,
     }];
 
     let sps = [vk::video::StdVideoH265SequenceParameterSet {
@@ -257,8 +349,8 @@ fn native_vulkan_vulkanalia_smoke_create_h265_video_session_parameters_inner(
         conf_win_right_offset: parameter_sets.sps.conf_win_right_offset,
         conf_win_top_offset: parameter_sets.sps.conf_win_top_offset,
         conf_win_bottom_offset: parameter_sets.sps.conf_win_bottom_offset,
-        pProfileTierLevel: &sps_profile_tier_level,
-        pDecPicBufMgr: &sps_dec_pic_buf_mgr,
+        pProfileTierLevel: &*sps_profile_tier_level,
+        pDecPicBufMgr: &*sps_dec_pic_buf_mgr,
         pScalingLists: ptr::null(),
         pShortTermRefPicSet: sps_short_term_ref_pic_sets_ptr,
         pLongTermRefPicsSps: sps_long_term_ref_pics_ptr,
@@ -380,41 +472,18 @@ fn native_vulkan_vulkanalia_smoke_create_h265_video_session_parameters_inner(
         pPredictorPaletteEntries: ptr::null(),
     }];
 
-    let add_info = vk::VideoDecodeH265SessionParametersAddInfoKHR::builder()
-        .std_vp_ss(&vps)
-        .std_sp_ss(&sps)
-        .std_pp_ss(&pps)
-        .build();
-    let max_std_vps_count = 32;
-    let max_std_sps_count = 32;
-    let max_std_pps_count = 64;
-    let mut h265_create_info = vk::VideoDecodeH265SessionParametersCreateInfoKHR::builder()
-        .max_std_vps_count(max_std_vps_count)
-        .max_std_sps_count(max_std_sps_count)
-        .max_std_pps_count(max_std_pps_count)
-        .parameters_add_info(&add_info)
-        .build();
-    let create_info = vk::VideoSessionParametersCreateInfoKHR::builder()
-        .video_session(session)
-        .push_next(&mut h265_create_info)
-        .build();
-
-    native_vulkan_vulkanalia_create_video_session_parameters(
-        device,
-        &create_info,
-        NativeVulkanVulkanaliaVideoSessionParametersSnapshot {
-            codec: vulkanalia_session_parameters_codec_label(codec),
-            source: H265_SESSION_PARAMETERS_SOURCE,
-            max_std_vps_count,
-            max_std_sps_count,
-            max_std_pps_count,
-            std_vps_count: vps.len() as u32,
-            std_sps_count: sps.len() as u32,
-            std_pps_count: pps.len() as u32,
-        },
-        "vulkanalia real h265 session parameters",
-    )
-    .map_err(|err| err.error)
+    Ok(NativeVulkanVulkanaliaH265InlineSessionParameters {
+        _vps_profile_tier_level: vps_profile_tier_level,
+        _sps_profile_tier_level: sps_profile_tier_level,
+        _vps_dec_pic_buf_mgr: vps_dec_pic_buf_mgr,
+        _sps_dec_pic_buf_mgr: sps_dec_pic_buf_mgr,
+        _sps_vui: sps_vui,
+        _sps_short_term_ref_pic_sets: sps_short_term_ref_pic_sets,
+        _sps_long_term_ref_pics: sps_long_term_ref_pics,
+        vps,
+        sps,
+        pps,
+    })
 }
 
 fn native_vulkan_vulkanalia_h265_session_parameters_error(

@@ -161,6 +161,7 @@ pub use video_format_probe::{
     NativeVulkanVulkanaliaVideoFormatQuerySnapshot,
 };
 pub use video_present_device::{
+    NativeVulkanVulkanaliaVideoPresentAudioMasterClock,
     NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions,
     NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot,
     NativeVulkanVulkanaliaVideoPresentFeatureSnapshot,

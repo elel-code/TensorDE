@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::VecDeque;
 #[cfg(feature = "native-vulkan-video")]
 use std::ffi::{CStr, CString};
@@ -79,6 +81,8 @@ pub struct NativeVulkanAudioClockRuntimeSnapshot {
     pub serial_resets: u32,
     pub eos_count: u32,
     pub loop_count: u32,
+    pub video_master_clock_ready: bool,
+    pub video_master_start_clock_ns: Option<u64>,
     pub clock_ns: Option<u64>,
     pub clock_ms: Option<u64>,
     pub last_packet_pts_ns: Option<u64>,
@@ -346,6 +350,12 @@ impl NativeVulkanAudioClockRuntime {
             serial_resets: self.clock.serial_resets,
             eos_count: self.eos_count,
             loop_count: self.loop_count,
+            video_master_clock_ready: self.audio_stream_found && self.clock.clock_ns.is_some(),
+            video_master_start_clock_ns: if self.audio_stream_found {
+                self.clock.clock_ns
+            } else {
+                None
+            },
             clock_ns: self.clock.clock_ns,
             clock_ms: self.clock.clock_ns.map(|clock| clock / 1_000_000),
             last_packet_pts_ns: self.clock.last_packet_pts_ns,
@@ -755,6 +765,18 @@ mod tests {
         assert!(!snapshot.audible_output_started);
         assert_eq!(snapshot.retained_payload_bytes, 0);
         assert_eq!(snapshot.clock_ns, Some(21_000_000));
+        assert!(snapshot.video_master_clock_ready);
+        assert_eq!(snapshot.video_master_start_clock_ns, Some(21_000_000));
         assert_eq!(snapshot.packets_head.len(), 1);
+    }
+
+    #[test]
+    fn unattached_audio_clock_is_not_a_video_master() {
+        let snapshot =
+            native_vulkan_unattached_audio_clock_snapshot(NativeVulkanAudioOutputMode::ClockOnly);
+
+        assert!(!snapshot.audio_stream_found);
+        assert!(!snapshot.video_master_clock_ready);
+        assert_eq!(snapshot.video_master_start_clock_ns, None);
     }
 }

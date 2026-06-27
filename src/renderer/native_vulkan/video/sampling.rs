@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::core::FitMode;
 
 pub(super) fn native_vulkan_video_fit_push_constants(

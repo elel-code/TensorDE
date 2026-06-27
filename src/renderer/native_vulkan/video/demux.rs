@@ -8,6 +8,8 @@
 //! unrefs that packet after send/decode. `references/ffmpeg/fftools/ffplay.c:691-804`
 //! keeps the decoded FrameQueue separate.
 
+#![allow(dead_code)]
+
 use std::collections::VecDeque;
 
 use serde::Serialize;

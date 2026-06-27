@@ -71,15 +71,14 @@ use super::swapchain::{
 };
 use super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE;
 use super::video_decode_submit_av1::NativeVulkanVulkanaliaAv1CommandSmokeSnapshot;
-use super::video_decode_submit_h264::{
-    NativeVulkanVulkanaliaH264ReadyPrefixCommandSmokeSnapshot,
-    NativeVulkanVulkanaliaH264ReadyPrefixFrameInput,
-};
-use super::video_decode_submit_h265::{
-    NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot,
-    NativeVulkanVulkanaliaH265ReadyPrefixFrameInput,
-};
+use super::video_decode_submit_h264::NativeVulkanVulkanaliaH264ReadyPrefixCommandSmokeSnapshot;
+#[cfg(feature = "native-vulkan-video")]
+use super::video_decode_submit_h264::NativeVulkanVulkanaliaH264ReadyPrefixFrameInput;
+use super::video_decode_submit_h265::NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot;
+#[cfg(feature = "native-vulkan-video")]
+use super::video_decode_submit_h265::NativeVulkanVulkanaliaH265ReadyPrefixFrameInput;
 use super::video_present_device::{
+    NativeVulkanVulkanaliaVideoPresentAudioMasterClock,
     NativeVulkanVulkanaliaVideoPresentDeviceContext,
     NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
     NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot, create_video_present_device,
@@ -87,9 +86,10 @@ use super::video_present_device::{
     select_video_present_physical_device, swapchain_plan_snapshot,
     video_present_queue_family_indices,
 };
+#[cfg(feature = "native-vulkan-video")]
+use super::video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffFrame;
 use super::video_present_handoff::{
-    NativeVulkanVulkanaliaDecodedPresentHandoff, NativeVulkanVulkanaliaDecodedPresentHandoffFrame,
-    NativeVulkanVulkanaliaDecodedPresentHandoffRecv,
+    NativeVulkanVulkanaliaDecodedPresentHandoff, NativeVulkanVulkanaliaDecodedPresentHandoffRecv,
     NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot,
 };
 use super::video_profile_labels::video_decode_capability_flag_labels;
@@ -98,7 +98,9 @@ use super::video_session::{
     native_vulkan_vulkanalia_bind_video_session_memory_resources,
     native_vulkan_vulkanalia_create_video_session, native_vulkan_vulkanalia_destroy_video_session,
     native_vulkan_vulkanalia_destroy_video_session_memory_binding_resources,
+    native_vulkan_vulkanalia_video_session_create_flags,
 };
+#[cfg(feature = "native-vulkan-video")]
 use super::video_session_bind::{
     NativeVulkanVulkanaliaAv1StreamingDecodeInput, NativeVulkanVulkanaliaAv1StreamingFrameInput,
     NativeVulkanVulkanaliaH264StreamingDecodeInput, NativeVulkanVulkanaliaH265StreamingDecodeInput,
@@ -1195,11 +1197,14 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_ready_pref
         }
     };
 
-    // FFmpeg/ffplay drives video cadence from the frame queue and PTS-derived
-    // refresh timer, not from WSI present-id/wait feedback
-    // (references/ffmpeg/fftools/ffplay.c:1609-1743,1796-1823).
-    let decoded_image_present_timing =
-        VulkanaliaDecodedImagePresentTimingConfig::new(false, false, false, false);
+    // FFmpeg/ffplay drives cadence from the frame queue and PTS-derived refresh
+    // timer (references/ffmpeg/fftools/ffplay.c:1609-1743,1796-1823). WSI
+    // present-id2/wait2 still remain enabled for modern present telemetry and
+    // optional diagnostic waits when the swapchain was created with them.
+    let decoded_image_present_timing = VulkanaliaDecodedImagePresentTimingConfig::new(
+        swapchain_plan.present_id2_enabled,
+        swapchain_plan.present_wait2_enabled,
+    );
 
     let pieces = match create_video_present_session_pieces(
         instance,
@@ -1214,6 +1219,7 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_ready_pref
         swapchain_plan.extent,
         swapchain_plan.format.format,
         options.target_max_fps,
+        options.audio_master_clock,
         decoded_image_present_timing,
         swapchain_plan_snapshot(&swapchain_plan, swapchain_images.len()),
         streaming_decode,
@@ -1289,6 +1295,7 @@ fn create_video_present_session_pieces(
     swapchain_extent: vk::Extent2D,
     swapchain_format: vk::Format,
     target_max_fps: Option<u32>,
+    audio_master_clock: NativeVulkanVulkanaliaVideoPresentAudioMasterClock,
     decoded_image_present_timing: VulkanaliaDecodedImagePresentTimingConfig,
     swapchain: super::swapchain::NativeVulkanVulkanaliaSwapchainSnapshot,
     streaming_decode: NativeVulkanVulkanaliaStreamingDecodeRequests,
@@ -1359,7 +1366,13 @@ fn create_video_present_session_pieces(
                 codec,
                 av1_sequence_header,
             );
+            let video_session_create_flags = native_vulkan_vulkanalia_video_session_create_flags(
+                context
+                    .video_feature_selection
+                    .inline_session_parameters_enabled,
+            );
             let create_info = vk::VideoSessionCreateInfoKHR::builder()
+                .flags(video_session_create_flags)
                 .queue_family_index(selection.video_queue_family_index)
                 .video_profile(profile_info)
                 .picture_format(picture_format)
@@ -1536,6 +1549,7 @@ fn create_video_present_session_pieces(
                         FFMPEG_VIDEO_PICTURE_QUEUE_SIZE,
                         resource_image_array_layers as usize,
                     );
+                    #[cfg(feature = "native-vulkan-video")]
                     let ffmpeg_decode_async_exec_depth =
                         native_vulkan_vulkanalia_ffmpeg_decode_async_exec_depth(
                             selection.video_queue_count,
@@ -1550,6 +1564,7 @@ fn create_video_present_session_pieces(
                         .as_ref()
                         .map(|frame_resources| frame_resources.decode_complete_semaphore())
                         .unwrap_or_else(vk::Semaphore::null);
+                    #[cfg(feature = "native-vulkan-video")]
                     let decode_complete_value = std::cell::Cell::new(
                         if decode_complete_semaphore != vk::Semaphore::null() {
                             unsafe {
@@ -1601,6 +1616,7 @@ fn create_video_present_session_pieces(
                                     let mut present_frame_timer =
                                         NativeVulkanVulkanaliaPresentFrameTimer::new(
                                             target_max_fps,
+                                            audio_master_clock,
                                         );
                                     let mut pending_present_frame_slots = VecDeque::<u32>::new();
                                     let mut first_frame_preroll_pending = true;
@@ -1806,11 +1822,13 @@ fn create_video_present_session_pieces(
                             None
                         };
 
+                        #[cfg(feature = "native-vulkan-video")]
                         let mut wait_for_output_slot_present_release =
                             |sampled_array_layer: u32| -> Result<(), String> {
                                 present_handoff
                                     .wait_layer_present_release_completed(sampled_array_layer)
                             };
+                        #[cfg(feature = "native-vulkan-video")]
                         let mut enqueue_decoded_frame =
                             |decode_frame_index: u32,
                              sampled_array_layer: u32,
@@ -2095,6 +2113,10 @@ fn create_video_present_session_pieces(
                             vulkan, selection, context, codec, swapchain,
                         ),
                         video_session_created: true,
+                        video_session_create_inline_session_parameters: context
+                            .video_feature_selection
+                            .inline_session_parameters_enabled,
+                        video_session_create_flags_bits: video_session_create_flags.bits(),
                         memory_binding,
                         resource_image: resource_image_snapshot,
                         picture_format: format!("{picture_format:?}"),
@@ -2606,15 +2628,22 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
 struct NativeVulkanVulkanaliaPresentFrameTimer {
     frame_timer: Option<Instant>,
     target_max_fps: Option<u32>,
+    audio_master_clock: NativeVulkanVulkanaliaVideoPresentAudioMasterClock,
+    audio_master_started_at: Option<Instant>,
     last_pts_ns: Option<u64>,
     last_duration_ns: Option<u64>,
 }
 
 impl NativeVulkanVulkanaliaPresentFrameTimer {
-    fn new(target_max_fps: Option<u32>) -> Self {
+    fn new(
+        target_max_fps: Option<u32>,
+        audio_master_clock: NativeVulkanVulkanaliaVideoPresentAudioMasterClock,
+    ) -> Self {
         Self {
             frame_timer: None,
             target_max_fps: target_max_fps.filter(|fps| *fps > 0),
+            audio_master_clock,
+            audio_master_started_at: None,
             last_pts_ns: None,
             last_duration_ns: None,
         }
@@ -2622,6 +2651,7 @@ impl NativeVulkanVulkanaliaPresentFrameTimer {
 
     fn reset(&mut self, now: Instant) {
         self.frame_timer = Some(now);
+        self.audio_master_started_at = self.audio_master_clock.enabled.then_some(now);
         self.last_pts_ns = None;
         self.last_duration_ns = None;
     }
@@ -2642,9 +2672,36 @@ impl NativeVulkanVulkanaliaPresentFrameTimer {
         let now = Instant::now();
         if self.frame_timer.is_none() || present_frame_index == 0 {
             self.frame_timer = Some(now);
+            self.audio_master_started_at = self.audio_master_clock.enabled.then_some(now);
             self.last_pts_ns = pts_ns;
             self.last_duration_ns = duration_ns;
-            return (0, "ffmpeg-frame-timer-first-frame");
+            return (
+                0,
+                if self.audio_master_clock.enabled {
+                    "audio-clock-master-first-frame"
+                } else {
+                    "ffmpeg-frame-timer-first-frame"
+                },
+            );
+        }
+
+        if let Some((delay, clock_model)) =
+            self.audio_master_delay_for_frame(now, present_frame_index, pts_ns, duration_ns)
+        {
+            if delay.is_zero() {
+                self.last_pts_ns = pts_ns;
+                self.last_duration_ns = duration_ns;
+                return (0, clock_model);
+            }
+            let deadline = now + delay;
+            let slept = native_vulkan_vulkanalia_wait_until_video_present_deadline(deadline);
+            self.frame_timer = Some(deadline);
+            self.last_pts_ns = pts_ns;
+            self.last_duration_ns = duration_ns;
+            return (
+                u64::try_from(slept.as_micros()).unwrap_or(u64::MAX),
+                clock_model,
+            );
         }
 
         let (delay, clock_model) = self.next_delay(pts_ns, duration_ns);
@@ -2711,6 +2768,63 @@ impl NativeVulkanVulkanaliaPresentFrameTimer {
             );
         }
         (Duration::ZERO, "unpaced-no-video-clock")
+    }
+
+    fn audio_master_delay_for_frame(
+        &self,
+        now: Instant,
+        present_frame_index: u32,
+        pts_ns: Option<u64>,
+        duration_ns: Option<u64>,
+    ) -> Option<(Duration, &'static str)> {
+        if !self.audio_master_clock.enabled || present_frame_index == 0 {
+            return None;
+        }
+        let master_clock_ns = self.audio_master_clock_ns(now)?;
+        let video_clock_ns =
+            self.current_video_clock_ns(present_frame_index, pts_ns, duration_ns)?;
+        if video_clock_ns <= master_clock_ns {
+            return Some((Duration::ZERO, "audio-clock-master-video-late-no-sleep"));
+        }
+        let delay_ns = video_clock_ns.saturating_sub(master_clock_ns);
+        Some((
+            Duration::from_nanos(delay_ns),
+            "audio-clock-master-pts-sync-sleep",
+        ))
+    }
+
+    fn audio_master_clock_ns(&self, now: Instant) -> Option<u64> {
+        let started_at = self.audio_master_started_at?;
+        Some(
+            self.audio_master_clock
+                .start_clock_ns
+                .unwrap_or(0)
+                .saturating_add(
+                    u64::try_from(now.duration_since(started_at).as_nanos()).unwrap_or(u64::MAX),
+                ),
+        )
+    }
+
+    fn current_video_clock_ns(
+        &self,
+        present_frame_index: u32,
+        pts_ns: Option<u64>,
+        duration_ns: Option<u64>,
+    ) -> Option<u64> {
+        if let Some(pts_ns) = pts_ns {
+            return Some(pts_ns);
+        }
+        if let (Some(last_pts_ns), Some(duration_ns)) =
+            (self.last_pts_ns, self.last_duration_ns.or(duration_ns))
+        {
+            if duration_ns > 0 {
+                return Some(last_pts_ns.saturating_add(duration_ns));
+            }
+        }
+        self.target_max_fps.filter(|fps| *fps > 0).map(|fps| {
+            let clock_ns = (u128::from(present_frame_index) * 1_000_000_000u128) / u128::from(fps);
+            u64::try_from(clock_ns).unwrap_or(u64::MAX)
+        })
     }
 }
 
@@ -2873,7 +2987,10 @@ mod tests {
 
     #[test]
     fn present_frame_timer_uses_ffmpeg_pts_delta_before_duration_fallback() {
-        let mut timer = NativeVulkanVulkanaliaPresentFrameTimer::new(Some(240));
+        let mut timer = NativeVulkanVulkanaliaPresentFrameTimer::new(
+            Some(240),
+            NativeVulkanVulkanaliaVideoPresentAudioMasterClock::DISABLED,
+        );
         timer.last_pts_ns = Some(1_000_000_000);
         timer.last_duration_ns = Some(4_166_667);
 
@@ -2895,7 +3012,10 @@ mod tests {
 
     #[test]
     fn present_frame_timer_falls_back_to_target_fps_without_pts_or_duration() {
-        let timer = NativeVulkanVulkanaliaPresentFrameTimer::new(Some(240));
+        let timer = NativeVulkanVulkanaliaPresentFrameTimer::new(
+            Some(240),
+            NativeVulkanVulkanaliaVideoPresentAudioMasterClock::DISABLED,
+        );
 
         assert_eq!(
             timer.next_delay(None, None),
@@ -2903,6 +3023,61 @@ mod tests {
                 Duration::from_nanos(4_166_666),
                 "ffmpeg-frame-timer-target-fps-sleep"
             )
+        );
+    }
+
+    #[test]
+    fn present_frame_timer_audio_master_uses_rebased_video_pts() {
+        let mut timer = NativeVulkanVulkanaliaPresentFrameTimer::new(
+            Some(240),
+            NativeVulkanVulkanaliaVideoPresentAudioMasterClock::clock_only(None),
+        );
+        let started_at = Instant::now();
+        timer.reset(started_at);
+
+        assert_eq!(
+            timer.audio_master_delay_for_frame(
+                started_at + Duration::from_micros(1_000),
+                1,
+                Some(4_166_666),
+                None,
+            ),
+            Some((
+                Duration::from_nanos(3_166_666),
+                "audio-clock-master-pts-sync-sleep"
+            ))
+        );
+        assert_eq!(
+            timer.audio_master_delay_for_frame(
+                started_at + Duration::from_micros(5_000),
+                1,
+                Some(4_166_666),
+                None,
+            ),
+            Some((Duration::ZERO, "audio-clock-master-video-late-no-sleep"))
+        );
+    }
+
+    #[test]
+    fn present_frame_timer_audio_master_starts_from_audio_clock_sample() {
+        let mut timer = NativeVulkanVulkanaliaPresentFrameTimer::new(
+            Some(240),
+            NativeVulkanVulkanaliaVideoPresentAudioMasterClock::clock_only(Some(2_000_000)),
+        );
+        let started_at = Instant::now();
+        timer.reset(started_at);
+
+        assert_eq!(
+            timer.audio_master_delay_for_frame(
+                started_at + Duration::from_micros(1_000),
+                1,
+                Some(5_000_000),
+                None,
+            ),
+            Some((
+                Duration::from_nanos(2_000_000),
+                "audio-clock-master-pts-sync-sleep"
+            ))
         );
     }
 

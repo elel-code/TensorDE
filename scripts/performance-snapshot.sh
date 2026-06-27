@@ -891,7 +891,9 @@ write_smaps_mapping_summary() {
         return "nvidia-library"
       }
       if (mapping ~ /\/libgtk/ || mapping ~ /\/libgdk/) { return "gtk-library" }
-      if (mapping ~ /\/target\/(debug|release)\/gilderd$/) { return "gilder-binary" }
+      if (mapping ~ /\/target\/(debug|release)\/(gilderd|gilder-native-vulkan)( \(deleted\))?$/) {
+        return "gilder-binary"
+      }
       if (mapping ~ /^\/usr\/lib/) { return "system-library" }
       if (mapping ~ /^\//) { return "file-mapping" }
       return "other"

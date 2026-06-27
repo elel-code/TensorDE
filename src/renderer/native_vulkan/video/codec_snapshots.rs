@@ -5,7 +5,7 @@ use std::ops::Deref;
 use serde::ser::SerializeSeq;
 use serde::{Serialize, Serializer};
 
-const NATIVE_VULKAN_H264_INLINE_SLICE_OFFSETS: usize = 4;
+const NATIVE_VULKAN_H264_INLINE_SLICE_OFFSETS: usize = 32;
 const NATIVE_VULKAN_H265_INLINE_REFERENCE_DELTAS: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

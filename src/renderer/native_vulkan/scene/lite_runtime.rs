@@ -40,6 +40,7 @@ pub struct NativeVulkanSceneLiteRuntimeSnapshot {
     pub draw_pass_quad_index_buffer_bytes: u64,
     pub draw_pass_sampled_image_quads: Vec<NativeVulkanSceneLiteSampledImageQuadSnapshot>,
     pub draw_pass_sampled_image_recording_ready: bool,
+    pub draw_pass_sampled_image_full_extent_fallback_ready: bool,
     pub draw_pass_sampled_image_recording_step_count: usize,
     pub draw_pass_sampled_image_recording_steps:
         Vec<NativeVulkanSceneLiteSampledImageRecordingStepSnapshot>,
@@ -155,12 +156,30 @@ impl NativeVulkanSceneLiteRuntimeSnapshot {
         ))
     }
 
+    pub fn vulkanalia_sampled_image_full_extent_fallback_input(
+        &self,
+    ) -> Option<(PathBuf, FitMode)> {
+        if !self.draw_pass_sampled_image_full_extent_fallback_ready
+            || !matches!(
+                self.draw_pass_backend_status,
+                "sampled-image-full-extent-fallback-ready"
+                    | "mixed-quad-sampled-image-full-extent-fallback-ready"
+            )
+        {
+            return None;
+        }
+        let op = self.draw_ops.iter().find(|op| op.kind == "image")?;
+        Some((op.source.clone()?, op.fit))
+    }
+
     pub fn vulkanalia_mixed_solid_quad_geometry_input(
         &self,
     ) -> Option<NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput> {
-        if self.vulkanalia_draw_pass.backend_status
-            != "mixed-quad-sampled-image-dynamic-rendering-recording-ready"
-            || self.draw_pass_quad_vertices.is_empty()
+        if !matches!(
+            self.vulkanalia_draw_pass.backend_status,
+            "mixed-quad-sampled-image-dynamic-rendering-recording-ready"
+                | "mixed-quad-sampled-image-full-extent-fallback-present-ready"
+        ) || self.draw_pass_quad_vertices.is_empty()
             || self.draw_pass_quad_indices.is_empty()
         {
             return None;
@@ -314,6 +333,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snaps
             quad_vertex_buffer_bytes: pass_plan.quad_vertex_buffer_bytes,
             quad_index_buffer_bytes: pass_plan.quad_index_buffer_bytes,
             sampled_image_recording_ready: pass_plan.sampled_image_recording_ready,
+            sampled_image_full_extent_fallback_ready: pass_plan
+                .sampled_image_full_extent_fallback_ready,
             sampled_image_op_count: pass_plan.sampled_image_op_count,
             sampled_image_recording_step_count: pass_plan.sampled_image_recording_steps.len(),
             sampled_image_vertex_buffer_bytes: pass_plan.sampled_image_vertex_buffer_bytes,
@@ -407,6 +428,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snaps
             })
             .collect(),
         draw_pass_sampled_image_recording_ready: pass_plan.sampled_image_recording_ready,
+        draw_pass_sampled_image_full_extent_fallback_ready: pass_plan
+            .sampled_image_full_extent_fallback_ready,
         draw_pass_sampled_image_recording_step_count: pass_plan.sampled_image_recording_steps.len(),
         draw_pass_sampled_image_recording_steps: pass_plan
             .sampled_image_recording_steps
@@ -903,7 +926,7 @@ mod tests {
             snapshot
                 .vulkanalia_sampled_image
                 .command_order
-                .contains(&"cmd_copy_buffer_to_image")
+                .contains(&"vk_copy_memory_to_image")
         );
         assert!(
             snapshot

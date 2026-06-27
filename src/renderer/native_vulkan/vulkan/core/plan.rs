@@ -45,7 +45,7 @@ pub fn native_vulkan_backend_plan() -> NativeVulkanBackendPlan {
             std::any::type_name::<vulkanalia::vk::PhysicalDeviceVulkan14Properties>(),
             std::any::type_name::<vulkanalia::vk::SurfaceKHR>(),
             std::any::type_name::<vulkanalia::vk::SwapchainCreateInfoKHR>(),
-            std::any::type_name::<vulkanalia::vk::PresentIdKHR>(),
+            std::any::type_name::<vulkanalia::vk::PresentId2KHR>(),
             std::any::type_name::<vulkanalia::vk::PresentWait2InfoKHR>(),
             std::any::type_name::<vulkanalia::vk::RenderingInfo>(),
             std::any::type_name::<vulkanalia::vk::PhysicalDeviceDescriptorHeapFeaturesEXT>(),
@@ -78,8 +78,6 @@ pub fn native_vulkan_backend_plan() -> NativeVulkanBackendPlan {
             "VK_KHR_video_maintenance1",
             "VK_KHR_video_maintenance2",
             "VK_EXT_descriptor_heap",
-            "VK_KHR_present_id",
-            "VK_KHR_present_wait",
             "VK_KHR_present_id2",
             "VK_KHR_present_wait2",
             "VK_KHR_swapchain_maintenance1",
@@ -88,6 +86,7 @@ pub fn native_vulkan_backend_plan() -> NativeVulkanBackendPlan {
             "dynamic-rendering",
             "dynamic-rendering-local-read",
             "descriptor-heap",
+            "host-image-copy",
             "push-descriptor",
             "maintenance5",
             "maintenance6",
@@ -130,6 +129,10 @@ mod tests {
         assert!(
             plan.prioritized_vulkan_1_4_features
                 .contains(&"dynamic-rendering-local-read")
+        );
+        assert!(
+            plan.prioritized_vulkan_1_4_features
+                .contains(&"host-image-copy")
         );
         assert!(
             plan.preferred_optional_device_extensions

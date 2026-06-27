@@ -73,6 +73,7 @@ use super::video_session::{
     native_vulkan_vulkanalia_bind_video_session_memory_resources,
     native_vulkan_vulkanalia_create_video_session, native_vulkan_vulkanalia_destroy_video_session,
     native_vulkan_vulkanalia_destroy_video_session_memory_binding_resources,
+    native_vulkan_vulkanalia_video_session_create_flags,
     native_vulkan_vulkanalia_video_session_resource_plans_from_format_probe,
 };
 use super::video_session_capabilities::{
@@ -92,17 +93,18 @@ use super::video_session_images::{
 };
 use super::video_session_parameters::{
     NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot,
-    native_vulkan_vulkanalia_destroy_video_session_parameters,
     native_vulkan_vulkanalia_smoke_create_empty_video_session_parameters,
 };
-use super::video_session_parameters_av1::native_vulkan_vulkanalia_create_av1_video_session_parameters;
-use super::video_session_parameters_av1::native_vulkan_vulkanalia_smoke_create_av1_video_session_parameters;
+use super::video_session_parameters_av1::{
+    native_vulkan_vulkanalia_av1_inline_session_parameters,
+    native_vulkan_vulkanalia_smoke_create_av1_video_session_parameters,
+};
 use super::video_session_parameters_h264::{
-    native_vulkan_vulkanalia_create_h264_video_session_parameters,
+    native_vulkan_vulkanalia_h264_inline_session_parameters,
     native_vulkan_vulkanalia_smoke_create_h264_video_session_parameters,
 };
 use super::video_session_parameters_h265::{
-    native_vulkan_vulkanalia_create_h265_video_session_parameters,
+    native_vulkan_vulkanalia_h265_inline_session_parameters,
     native_vulkan_vulkanalia_smoke_create_h265_video_session_parameters,
 };
 
@@ -122,6 +124,7 @@ type NativeVulkanVulkanaliaBeforeOutputSlotReuse<'a> = &'a mut dyn FnMut(u32) ->
 const NATIVE_VULKAN_VULKANALIA_STREAMING_DECODE_SUBMIT_FENCE_SYNC_MODEL: &str = "FFmpeg-style queue_submit2 async exec ring: each exec slot owns its mapped picture slices buffer until that slot fence completes; decode timeline signals at video-decode stage and present waits on the per-frame value before touching the decoded image; DPB output layer reuse stays independent; no per-frame submit wait and no queue_wait_idle";
 const NATIVE_VULKAN_VULKANALIA_DECODE_FRAME_TELEMETRY_RETAINED_FRAMES: usize = 0;
 const NATIVE_VULKAN_VULKANALIA_DECODE_FRAME_TELEMETRY_RETENTION_MODEL: &str = "FFmpeg-style scalar decode telemetry only; mirrors references/ffmpeg/libavcodec/vulkan_decode.h:73-106 and references/ffmpeg/libavcodec/vulkan_decode.c:488-536; no retained per-frame command snapshots";
+const NATIVE_VULKAN_VULKANALIA_INLINE_SESSION_PARAMETER_STRATEGY: &str = "VK_KHR_video_maintenance2 inline codec parameters on VideoDecodeInfoKHR pNext; BeginCoding uses a null VideoSessionParametersKHR handle";
 
 #[derive(Clone, Copy)]
 struct NativeVulkanVulkanaliaDecodeFrameLastFields {
@@ -677,6 +680,8 @@ pub struct NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot {
     pub video_maintenance1_enabled: bool,
     pub video_maintenance2_enabled: bool,
     pub inline_session_parameters_enabled: bool,
+    pub video_session_create_inline_session_parameters: bool,
+    pub video_session_create_flags_bits: u32,
     pub inline_session_parameter_codecs: Vec<&'static str>,
     pub ffmpeg_submit_model: &'static str,
     pub video_codec_operation: Vec<&'static str>,
@@ -886,7 +891,11 @@ fn smoke_bind_vulkanalia_video_session_profile(
             capabilities.max_active_reference_pictures,
             session_max_dpb_slots,
         );
+    let video_session_create_flags = native_vulkan_vulkanalia_video_session_create_flags(
+        feature_selection.inline_session_parameters_enabled,
+    );
     let create_info = vk::VideoSessionCreateInfoKHR::builder()
+        .flags(video_session_create_flags)
         .queue_family_index(selection.queue_family_index)
         .video_profile(profile_info)
         .picture_format(picture_format)
@@ -1021,6 +1030,9 @@ fn smoke_bind_vulkanalia_video_session_profile(
             video_maintenance1_enabled: feature_selection.video_maintenance1_enabled,
             video_maintenance2_enabled: feature_selection.video_maintenance2_enabled,
             inline_session_parameters_enabled: feature_selection.inline_session_parameters_enabled,
+            video_session_create_inline_session_parameters: feature_selection
+                .inline_session_parameters_enabled,
+            video_session_create_flags_bits: video_session_create_flags.bits(),
             inline_session_parameter_codecs: feature_selection.inline_session_parameter_codecs(),
             ffmpeg_submit_model: "references/ffmpeg/libavutil/vulkan.c: VkSubmitInfo2 + QueueSubmit2",
             video_codec_operation: video_codec_operation_labels(
@@ -1124,13 +1136,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     let array_layers = array_layers.max(1);
     let exec_ring_depth = exec_ring_depth.max(1);
     let sequence_header = input.sequence_header;
-    let session_parameters = native_vulkan_vulkanalia_create_av1_video_session_parameters(
-        device,
-        session,
-        codec,
-        &sequence_header,
-    )?;
-    let mut session_parameters = Some(session_parameters);
+    let inline_session_parameters =
+        native_vulkan_vulkanalia_av1_inline_session_parameters(codec, &sequence_header)?;
     let command_buffer = native_vulkan_vulkanalia_create_decode_command_buffers(
         device,
         queue_family_index,
@@ -1143,9 +1150,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         NativeVulkanVulkanaliaFfmpegSlicesBufferPool::new(exec_ring_depth as usize);
 
     let result = (|| -> Result<NativeVulkanVulkanaliaAv1CommandSmokeSnapshot, String> {
-        let session_parameters_ref = session_parameters
-            .as_ref()
-            .expect("Vulkanalia AV1 session parameters are alive during streaming decode");
         let command_buffer_ref = command_buffer
             .as_ref()
             .expect("Vulkanalia streaming command buffer is alive during AV1 decode");
@@ -1321,7 +1325,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                     image.image,
                     &plan,
                     session,
-                    session_parameters_ref.parameters,
+                    inline_session_parameters.inline_info(),
                     bitstream_buffer_ref.buffer,
                     &image_views,
                     submit_ring.reset_command_buffer_before_record(submit_slot)?,
@@ -1427,6 +1431,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             submitted,
             uses_synchronization2,
             uses_submit2,
+            uses_inline_session_parameters: true,
+            video_session_parameters_handle_used: false,
+            session_parameter_strategy: NATIVE_VULKAN_VULKANALIA_INLINE_SESSION_PARAMETER_STRATEGY,
             wait_idle_after_submit: false,
             wait_fence_after_submit: false,
             batch_wait_fence_after_submit: true,
@@ -1481,9 +1488,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     if let Some(command_buffer) = command_buffer.take() {
         native_vulkan_vulkanalia_destroy_decode_command_buffer(device, command_buffer);
     }
-    if let Some(session_parameters) = session_parameters.take() {
-        native_vulkan_vulkanalia_destroy_video_session_parameters(device, session_parameters);
-    }
     result
 }
 
@@ -1522,13 +1526,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     let array_layers = array_layers.max(1);
     let exec_ring_depth = exec_ring_depth.max(1);
     let parameter_sets = input.parameter_sets;
-    let session_parameters = native_vulkan_vulkanalia_create_h265_video_session_parameters(
-        device,
-        session,
-        codec,
-        &parameter_sets,
-    )?;
-    let mut session_parameters = Some(session_parameters);
+    let inline_session_parameters =
+        native_vulkan_vulkanalia_h265_inline_session_parameters(codec, &parameter_sets)?;
     let command_buffer = native_vulkan_vulkanalia_create_decode_command_buffers(
         device,
         queue_family_index,
@@ -1544,9 +1543,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         (|| -> Result<NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot, String> {
             let parameter_ids =
                 NativeVulkanVulkanaliaH265ParameterIds::from_parameter_sets(&parameter_sets)?;
-            let session_parameters_ref = session_parameters
-                .as_ref()
-                .expect("Vulkanalia H.265 session parameters are alive during streaming decode");
             let command_buffer_ref = command_buffer
                 .as_ref()
                 .expect("Vulkanalia streaming command buffer is alive during decode");
@@ -1568,13 +1564,13 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
 
             for frame_index in 0..requested_frame_count {
                 let mut frame_timing = NativeVulkanVulkanaliaStreamingDecodeFrameTiming::default();
-                let submit_slot = submit_ring.exec_slot_for_frame(frame_index);
-                frame_timing.exec_slot_reuse_wait_micros =
-                    submit_ring.wait_for_slot_reuse(device, command_buffer_ref, submit_slot)?;
                 let stage_started_at = Instant::now();
                 let mut frame = (input.next_frame)()?;
                 frame_timing.next_frame_micros =
                     native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
+                let submit_slot = submit_ring.exec_slot_for_frame(frame_index);
+                frame_timing.exec_slot_reuse_wait_micros =
+                    submit_ring.wait_for_slot_reuse(device, command_buffer_ref, submit_slot)?;
                 if frame.entry.planned_output_slot >= array_layers {
                     return Err(format!(
                         "Vulkanalia H.265 streaming planned output slot {} exceeds image layers {array_layers}",
@@ -1656,7 +1652,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         image.image,
                         &plan,
                         session,
-                        session_parameters_ref.parameters,
+                        inline_session_parameters.inline_info(),
                         bitstream_buffer_ref.buffer,
                         &image_views,
                         submit_ring.reset_command_buffer_before_record(submit_slot)?,
@@ -1755,6 +1751,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                 submitted,
                 uses_synchronization2,
                 uses_submit2,
+                uses_inline_session_parameters: true,
+                video_session_parameters_handle_used: false,
+                session_parameter_strategy:
+                    NATIVE_VULKAN_VULKANALIA_INLINE_SESSION_PARAMETER_STRATEGY,
                 wait_idle_after_submit: false,
                 wait_fence_after_submit: false,
                 batch_wait_fence_after_submit: true,
@@ -1811,9 +1811,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     if let Some(command_buffer) = command_buffer.take() {
         native_vulkan_vulkanalia_destroy_decode_command_buffer(device, command_buffer);
     }
-    if let Some(session_parameters) = session_parameters.take() {
-        native_vulkan_vulkanalia_destroy_video_session_parameters(device, session_parameters);
-    }
     result
 }
 
@@ -1849,13 +1846,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     let array_layers = array_layers.max(1);
     let exec_ring_depth = exec_ring_depth.max(1);
     let parameter_sets = input.parameter_sets;
-    let session_parameters = native_vulkan_vulkanalia_create_h264_video_session_parameters(
-        device,
-        session,
-        codec,
-        &parameter_sets,
-    )?;
-    let mut session_parameters = Some(session_parameters);
+    let inline_session_parameters =
+        native_vulkan_vulkanalia_h264_inline_session_parameters(codec, &parameter_sets)?;
     let command_buffer = native_vulkan_vulkanalia_create_decode_command_buffers(
         device,
         queue_family_index,
@@ -1871,9 +1863,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         (|| -> Result<NativeVulkanVulkanaliaH264ReadyPrefixCommandSmokeSnapshot, String> {
             let parameter_ids =
                 NativeVulkanVulkanaliaH264ParameterIds::from_parameter_sets(&parameter_sets)?;
-            let session_parameters_ref = session_parameters
-                .as_ref()
-                .expect("Vulkanalia H.264 session parameters are alive during streaming decode");
             let command_buffer_ref = command_buffer
                 .as_ref()
                 .expect("Vulkanalia streaming command buffer is alive during decode");
@@ -1895,13 +1884,13 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
 
             for frame_index in 0..requested_frame_count {
                 let mut frame_timing = NativeVulkanVulkanaliaStreamingDecodeFrameTiming::default();
-                let submit_slot = submit_ring.exec_slot_for_frame(frame_index);
-                frame_timing.exec_slot_reuse_wait_micros =
-                    submit_ring.wait_for_slot_reuse(device, command_buffer_ref, submit_slot)?;
                 let stage_started_at = Instant::now();
                 let mut frame = (input.next_frame)()?;
                 frame_timing.next_frame_micros =
                     native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
+                let submit_slot = submit_ring.exec_slot_for_frame(frame_index);
+                frame_timing.exec_slot_reuse_wait_micros =
+                    submit_ring.wait_for_slot_reuse(device, command_buffer_ref, submit_slot)?;
                 if frame.entry.planned_output_slot >= array_layers {
                     return Err(format!(
                         "Vulkanalia H.264 streaming planned output slot {} exceeds image layers {array_layers}",
@@ -1988,7 +1977,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         image.image,
                         &plan,
                         session,
-                        session_parameters_ref.parameters,
+                        inline_session_parameters.inline_info(),
                         bitstream_buffer_ref.buffer,
                         &image_views,
                         submit_ring.reset_command_buffer_before_record(submit_slot)?,
@@ -2087,6 +2076,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                 submitted,
                 uses_synchronization2,
                 uses_submit2,
+                uses_inline_session_parameters: true,
+                video_session_parameters_handle_used: false,
+                session_parameter_strategy:
+                    NATIVE_VULKAN_VULKANALIA_INLINE_SESSION_PARAMETER_STRATEGY,
                 wait_idle_after_submit: false,
                 wait_fence_after_submit: false,
                 batch_wait_fence_after_submit: true,
@@ -2142,9 +2135,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     bitstream_buffers.destroy_all(device);
     if let Some(command_buffer) = command_buffer.take() {
         native_vulkan_vulkanalia_destroy_decode_command_buffer(device, command_buffer);
-    }
-    if let Some(session_parameters) = session_parameters.take() {
-        native_vulkan_vulkanalia_destroy_video_session_parameters(device, session_parameters);
     }
     result
 }

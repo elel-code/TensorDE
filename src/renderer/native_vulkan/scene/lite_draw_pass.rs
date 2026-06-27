@@ -102,6 +102,7 @@ pub(super) struct NativeVulkanSceneLiteDrawPassPlan {
     pub(super) quad_index_buffer_bytes: u64,
     pub(super) sampled_image_quads: Vec<NativeVulkanSceneLiteSampledImageQuad>,
     pub(super) sampled_image_recording_ready: bool,
+    pub(super) sampled_image_full_extent_fallback_ready: bool,
     pub(super) sampled_image_recording_steps: Vec<NativeVulkanSceneLiteSampledImageRecordingStep>,
     pub(super) sampled_image_vertices: Vec<NativeVulkanSceneLiteSampledImageVertex>,
     pub(super) sampled_image_indices: Vec<u32>,
@@ -171,6 +172,12 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         native_vulkan_scene_lite_sampled_image_recording_payload(&sampled_image_quads);
     let sampled_image_recording_ready = sampled_image_op_count > 0
         && sampled_image_recording_payload.steps.len() == sampled_image_op_count;
+    let full_extent_sampled_image_op_count =
+        native_vulkan_scene_lite_full_extent_sampled_image_op_count(&draw_plan.draw_ops);
+    let sampled_image_full_extent_fallback_ready =
+        full_extent_sampled_image_op_count == 1 && sampled_image_op_count == 1;
+    let sampled_image_full_extent_fallback_backend_ready =
+        draw_plan.draw_ops.len() == 1 && sampled_image_full_extent_fallback_ready;
     let mixed_quad_sampled_image_recording_ready = !quad_recording_payload.steps.is_empty()
         && sampled_image_recording_ready
         && quad_recording_payload
@@ -178,6 +185,16 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
             .len()
             .saturating_add(sampled_image_recording_payload.steps.len())
             == draw_plan.draw_ops.len();
+    let mixed_quad_sampled_image_full_extent_fallback_ready =
+        !quad_recording_payload.steps.is_empty()
+            && full_extent_sampled_image_op_count > 0
+            && full_extent_sampled_image_op_count == 1
+            && full_extent_sampled_image_op_count == sampled_image_op_count
+            && quad_recording_payload
+                .steps
+                .len()
+                .saturating_add(sampled_image_op_count)
+                == draw_plan.draw_ops.len();
     let quad_vertex_buffer_bytes =
         native_vulkan_scene_lite_quad_vertex_buffer_bytes(quad_recording_payload.steps.len());
     let quad_index_buffer_bytes =
@@ -197,6 +214,8 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         && (fast_clear_color.is_some()
             || quad_recording_ready
             || sampled_image_recording_complete
+            || sampled_image_full_extent_fallback_backend_ready
+            || mixed_quad_sampled_image_full_extent_fallback_ready
             || mixed_quad_sampled_image_recording_ready);
     let (backend_status, blocking_reason) = if !plan_ready {
         (
@@ -215,6 +234,10 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
             ("solid-quad-recording-ready", None)
         } else if mixed_quad_sampled_image_recording_ready {
             ("mixed-quad-sampled-image-recording-ready", None)
+        } else if mixed_quad_sampled_image_full_extent_fallback_ready {
+            ("mixed-quad-sampled-image-full-extent-fallback-ready", None)
+        } else if sampled_image_full_extent_fallback_backend_ready {
+            ("sampled-image-full-extent-fallback-ready", None)
         } else {
             ("sampled-image-recording-ready", None)
         }
@@ -255,6 +278,7 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         quad_index_buffer_bytes,
         sampled_image_quads,
         sampled_image_recording_ready,
+        sampled_image_full_extent_fallback_ready,
         sampled_image_recording_steps: sampled_image_recording_payload.steps,
         sampled_image_vertices: sampled_image_recording_payload.vertices,
         sampled_image_indices: sampled_image_recording_payload.indices,
@@ -545,6 +569,26 @@ fn native_vulkan_scene_lite_sampled_image_quad(
     })
 }
 
+fn native_vulkan_scene_lite_full_extent_sampled_image_op_count(
+    draw_ops: &[NativeVulkanSceneLiteDrawOp],
+) -> usize {
+    draw_ops
+        .iter()
+        .filter(|op| native_vulkan_scene_lite_full_extent_sampled_image_op_ready(op))
+        .count()
+}
+
+fn native_vulkan_scene_lite_full_extent_sampled_image_op_ready(
+    op: &NativeVulkanSceneLiteDrawOp,
+) -> bool {
+    op.kind == NativeVulkanSceneLiteDrawOpKind::Image
+        && op.source.is_some()
+        && op.opacity == 1.0
+        && op.width.is_none()
+        && op.height.is_none()
+        && op.transform == SceneLiteTransform::default()
+}
+
 fn native_vulkan_scene_lite_recordable_quad_from_op(
     op: &NativeVulkanSceneLiteDrawOp,
     kind: &'static str,
@@ -730,6 +774,75 @@ mod tests {
         assert_eq!(pass_plan.sampled_image_vertices[0].uv, [0.0, 0.0]);
         assert_eq!(pass_plan.sampled_image_vertices[3].uv, [1.0, 1.0]);
         assert_eq!(pass_plan.sampled_image_vertices[0].opacity, 0.75);
+    }
+
+    #[test]
+    fn draw_pass_plan_reports_full_extent_sampled_image_fallback() {
+        let mut image = draw_op(0, NativeVulkanSceneLiteDrawOpKind::Image);
+        image.source = Some(PathBuf::from("/tmp/fullscreen.png"));
+        image.fit = FitMode::Cover;
+        let draw_plan = NativeVulkanSceneLiteDrawPlan {
+            snapshot_time_ms: 0,
+            draw_ops: vec![image],
+            unsupported_layers: Vec::new(),
+            fallback_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(pass_plan.backend_ready);
+        assert_eq!(
+            pass_plan.backend_status,
+            "sampled-image-full-extent-fallback-ready"
+        );
+        assert_eq!(pass_plan.blocking_reason, None);
+        assert_eq!(pass_plan.sampled_image_op_count, 1);
+        assert_eq!(pass_plan.sampled_image_quads.len(), 0);
+        assert!(pass_plan.sampled_image_full_extent_fallback_ready);
+        assert!(!pass_plan.sampled_image_recording_ready);
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 0);
+        assert_eq!(
+            pass_plan.required_image_resources,
+            vec![PathBuf::from("/tmp/fullscreen.png")]
+        );
+    }
+
+    #[test]
+    fn draw_pass_plan_reports_mixed_quad_and_full_extent_sampled_image_fallback() {
+        let mut image = draw_op(0, NativeVulkanSceneLiteDrawOpKind::Image);
+        image.source = Some(PathBuf::from("/tmp/fullscreen.png"));
+        image.fit = FitMode::Cover;
+        let mut rectangle = draw_op(1, NativeVulkanSceneLiteDrawOpKind::Rectangle);
+        rectangle.color = Some("#102030".to_owned());
+        rectangle.width = Some(320.0);
+        rectangle.height = Some(180.0);
+        let draw_plan = NativeVulkanSceneLiteDrawPlan {
+            snapshot_time_ms: 0,
+            draw_ops: vec![image, rectangle],
+            unsupported_layers: Vec::new(),
+            fallback_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(pass_plan.backend_ready);
+        assert_eq!(
+            pass_plan.backend_status,
+            "mixed-quad-sampled-image-full-extent-fallback-ready"
+        );
+        assert_eq!(pass_plan.blocking_reason, None);
+        assert_eq!(pass_plan.sampled_image_op_count, 1);
+        assert_eq!(pass_plan.sampled_image_quads.len(), 0);
+        assert!(pass_plan.sampled_image_full_extent_fallback_ready);
+        assert!(!pass_plan.sampled_image_recording_ready);
+        assert!(!pass_plan.quad_recording_ready);
+        assert_eq!(pass_plan.quad_recording_steps.len(), 1);
+        assert_eq!(
+            pass_plan.required_image_resources,
+            vec![PathBuf::from("/tmp/fullscreen.png")]
+        );
     }
 
     #[test]
