@@ -9,7 +9,6 @@ use super::video_session::{
 };
 
 const HOST_VISIBLE_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::HOST_VISIBLE.bits();
-const FFMPEG_DECODE_MIN_BITSTREAM_BUFFER_SIZE: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaVideoSessionBitstreamBufferSmokeSnapshot {
@@ -270,11 +269,7 @@ pub(crate) fn native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size(
     payload_len: u64,
     min_size_alignment: u64,
 ) -> u64 {
-    let aligned_payload =
-        native_vulkan_vulkanalia_align_up(payload_len.max(1), min_size_alignment.max(1));
-    let requested = aligned_payload.max(FFMPEG_DECODE_MIN_BITSTREAM_BUFFER_SIZE);
-    let floor_log2 = u64::BITS - 1 - requested.leading_zeros();
-    1u64.checked_shl(floor_log2 + 1).unwrap_or(u64::MAX)
+    native_vulkan_vulkanalia_align_up(payload_len.max(1), min_size_alignment.max(1))
 }
 
 pub(super) fn native_vulkan_vulkanalia_write_ffmpeg_picture_slices_buffer(
@@ -466,18 +461,18 @@ mod tests {
     }
 
     #[test]
-    fn ffmpeg_decode_bitstream_buffer_size_is_single_picture_bounded() {
+    fn ffmpeg_decode_bitstream_buffer_size_tracks_aligned_picture_size() {
         assert_eq!(
             native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size(100 * 1024, 4096),
-            2 * 1024 * 1024
+            100 * 1024
         );
         assert_eq!(
             native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size(1024 * 1024, 4096),
-            2 * 1024 * 1024
+            1024 * 1024
         );
         assert_eq!(
             native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size(2 * 1024 * 1024 + 1, 4096),
-            4 * 1024 * 1024
+            2 * 1024 * 1024 + 4096
         );
     }
 

@@ -6,8 +6,7 @@ use serde::Serialize;
 use vulkanalia::vk::{self, HasBuilder};
 
 use crate::renderer::native_vulkan::{
-    NativeVulkanAv1DecodeReferencePlanEntrySnapshot, NativeVulkanAv1SequenceHeaderSnapshot,
-    NativeVulkanVideoSessionCodec,
+    NativeVulkanAv1DecodeReferencePlanEntrySnapshot, NativeVulkanVideoSessionCodec,
 };
 
 use super::video_decode_submit::{
@@ -20,23 +19,6 @@ use super::video_decode_submit::{
 
 const FFMPEG_AV1_PICTURE_REFERENCE: &str = "references/ffmpeg/libavcodec/vulkan_av1.c";
 const AV1_REFERENCE_NAME_COUNT: usize = vk::MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NativeVulkanVulkanaliaAv1DecodeFrameBatchInput {
-    pub codec: NativeVulkanVideoSessionCodec,
-    pub sequence_header: NativeVulkanAv1SequenceHeaderSnapshot,
-    pub requested_frame_count: u32,
-    pub frames: Vec<NativeVulkanVulkanaliaAv1DecodeFrameInput>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NativeVulkanVulkanaliaAv1DecodeFrameInput {
-    pub entry: NativeVulkanAv1DecodeReferencePlanEntrySnapshot,
-    pub frame: NativeVulkanVulkanaliaAv1FrameSubmitInput,
-    pub pts_ms: Option<u64>,
-    pub duration_ms: Option<u64>,
-    pub access_unit_payload: Vec<u8>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaAv1CommandFrameSnapshot {

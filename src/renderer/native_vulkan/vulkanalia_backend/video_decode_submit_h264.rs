@@ -3,6 +3,8 @@
 use serde::Serialize;
 use vulkanalia::vk::{self, HasBuilder};
 
+#[cfg(test)]
+use crate::renderer::native_vulkan::NativeVulkanH264SliceOffsets;
 use crate::renderer::native_vulkan::{
     NativeVulkanEncodedAccessUnitPayload, NativeVulkanH264AccessUnitSliceSnapshot,
     NativeVulkanH264DecodeReferencePlanEntrySnapshot, NativeVulkanH264ParameterSetSnapshot,
@@ -79,13 +81,6 @@ pub(super) struct NativeVulkanVulkanaliaH264VkSubmitInfo<'a> {
     pub setup_reference_slot: &'a vk::VideoReferenceSlotInfoKHR,
     pub begin_reference_slots: &'a [vk::VideoReferenceSlotInfoKHR],
     pub decode_reference_slots: &'a [vk::VideoReferenceSlotInfoKHR],
-}
-
-#[derive(Debug)]
-pub struct NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput {
-    pub parameter_sets: NativeVulkanH264ParameterSetSnapshot,
-    pub requested_frame_count: u32,
-    pub frames: Vec<NativeVulkanVulkanaliaH264ReadyPrefixFrameInput>,
 }
 
 #[derive(Debug)]
@@ -808,7 +803,7 @@ mod tests {
             is_b: false,
             long_term_reference_flag: false,
             pic_order_cnt: [8, 8],
-            slice_offsets: vec![0],
+            slice_offsets: NativeVulkanH264SliceOffsets::single(0),
             idr,
             irap: idr,
         }

@@ -83,13 +83,6 @@ pub(super) struct NativeVulkanVulkanaliaH265VkSubmitInfo<'a> {
 }
 
 #[derive(Debug)]
-pub struct NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput {
-    pub parameter_sets: NativeVulkanH265ParameterSetSnapshot,
-    pub requested_frame_count: u32,
-    pub frames: Vec<NativeVulkanVulkanaliaH265ReadyPrefixFrameInput>,
-}
-
-#[derive(Debug)]
 pub struct NativeVulkanVulkanaliaH265ReadyPrefixFrameInput {
     pub entry: NativeVulkanH265DecodeReferencePlanEntrySnapshot,
     pub first_slice: NativeVulkanH265AccessUnitSliceSnapshot,
@@ -784,7 +777,7 @@ mod tests {
             short_term_ref_pic_set_idx: None,
             num_delta_pocs_of_ref_rps_idx: 0,
             num_bits_for_st_ref_pic_set_in_slice: 0,
-            short_term_ref_pic_set: None,
+            short_term_reference_delta_pocs: Default::default(),
             long_term_references: Vec::new(),
             idr,
             irap,

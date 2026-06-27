@@ -17,7 +17,7 @@ use vulkanalia::vk::{
 use crate::renderer::native_vulkan::NativeVulkanVideoSessionCodec;
 #[cfg(feature = "native-vulkan-video")]
 use crate::renderer::native_vulkan::video_extract::{
-    native_vulkan_h265_slice_segment_offset, native_vulkan_start_av1_streaming_packet_queue,
+    native_vulkan_start_av1_streaming_packet_queue,
     native_vulkan_start_h264_streaming_packet_queue,
     native_vulkan_start_h265_streaming_packet_queue,
 };
@@ -670,9 +670,7 @@ fn native_vulkan_vulkanalia_next_h265_streaming_frame(
             snapshot.index
         )
     })?;
-    let slice_segment_offset =
-        native_vulkan_h265_slice_segment_offset(packet.access_unit.payload.bytes())
-            .map_err(|err| err.to_string())?;
+    let slice_segment_offset = first_slice.slice_segment_offset;
     Ok(NativeVulkanVulkanaliaH265ReadyPrefixFrameInput {
         entry,
         first_slice,
@@ -1313,8 +1311,6 @@ fn create_video_present_session_pieces(
                     codec,
                     driver_session_max_dpb_slots,
                 )?;
-            #[cfg(feature = "native-vulkan-video")]
-            crate::renderer::native_vulkan::native_vulkan_trim_process_heap();
             #[cfg(not(feature = "native-vulkan-video"))]
             let prepared_streaming_decode =
                 native_vulkan_vulkanalia_prepare_streaming_decode_requests(
@@ -2766,11 +2762,13 @@ fn native_vulkan_vulkanalia_select_stream_session_dpb_slots(
             "streaming decode requires {required_dpb_slots} DPB slot(s), but the selected Vulkan video session exposes only {driver_session_max_dpb_slots}"
         ));
     }
-    if driver_session_max_dpb_slots == 0 {
-        Ok(required_dpb_slots)
-    } else {
-        Ok(driver_session_max_dpb_slots)
-    }
+    // Keep the session sized to the stream, not the driver's advertised ceiling.
+    // FFmpeg adds a small fixed output-frame reserve after
+    // avcodec_get_hw_frames_parameters()
+    // (references/ffmpeg/libavcodec/decode.c:1088-1095). This runtime owns one
+    // coincident decoded-image array for DPB/output/sampling, so retaining the
+    // driver's full maxDpbSlots here only pins unused image/session memory.
+    Ok(required_dpb_slots)
 }
 
 fn native_vulkan_vulkanalia_select_stream_resource_image_array_layers(
@@ -2783,19 +2781,11 @@ fn native_vulkan_vulkanalia_select_stream_resource_image_array_layers(
             "streaming decode requires {required_dpb_slots} resource image layer(s), but the selected Vulkan video session exposes only {session_max_dpb_slots}"
         ));
     }
-    // FFmpeg Vulkan lets the output AVHWFramesContext grow independently from
-    // the codec DPB, and AV1 additionally owns a separate DPB pool even when
-    // the hardware supports DPB/output coincidence
-    // (references/ffmpeg/libavcodec/decode.c:1063-1105,
-    // references/ffmpeg/libavcodec/vulkan_decode.c:1388-1431).
-    // This runtime uses one coincident sampled image array for both roles, so
-    // use the session DPB ceiling when the driver reports one; otherwise fall
-    // back to the stream minimum.
-    if session_max_dpb_slots == 0 {
-        Ok(required_dpb_slots)
-    } else {
-        Ok(session_max_dpb_slots)
-    }
+    // FFmpeg's separate layered DPB path may allocate caps.maxDpbSlots
+    // (references/ffmpeg/libavcodec/vulkan_decode.c:1388-1431). This runtime
+    // deliberately uses one coincident sampled image array, so layer count must
+    // track the stream-required DPB/output ring instead of the driver ceiling.
+    Ok(required_dpb_slots)
 }
 
 fn native_vulkan_vulkanalia_select_stream_session_active_reference_pictures(
@@ -2824,25 +2814,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stream_session_sizing_uses_driver_max_and_stream_dpb_resource_layers() {
+    fn stream_session_sizing_uses_stream_required_dpb_and_driver_as_ceiling() {
         assert_eq!(
             native_vulkan_vulkanalia_select_stream_session_dpb_slots(3, 16).unwrap(),
-            16
+            3
         );
         assert_eq!(
             native_vulkan_vulkanalia_select_stream_session_dpb_slots(3, 5).unwrap(),
-            5
+            3
         );
         assert_eq!(
             native_vulkan_vulkanalia_select_stream_resource_image_array_layers(3, 16).unwrap(),
-            16
+            3
         );
         assert_eq!(
             native_vulkan_vulkanalia_select_stream_resource_image_array_layers(3, 5).unwrap(),
-            5
+            3
         );
         assert_eq!(
-            native_vulkan_vulkanalia_select_stream_session_active_reference_pictures(3, 16, 16)
+            native_vulkan_vulkanalia_select_stream_session_active_reference_pictures(3, 16, 3)
                 .unwrap(),
             3
         );
@@ -2852,11 +2842,11 @@ mod tests {
     fn av1_stream_resource_layers_follow_stream_dpb_slots() {
         assert_eq!(
             native_vulkan_vulkanalia_select_stream_session_dpb_slots(9, 16).unwrap(),
-            16
+            9
         );
         assert_eq!(
-            native_vulkan_vulkanalia_select_stream_resource_image_array_layers(9, 16).unwrap(),
-            16
+            native_vulkan_vulkanalia_select_stream_resource_image_array_layers(9, 9).unwrap(),
+            9
         );
     }
 

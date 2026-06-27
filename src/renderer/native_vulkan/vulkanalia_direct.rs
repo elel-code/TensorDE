@@ -98,8 +98,6 @@ pub fn run_vulkanalia_ready_prefix_video(
     audio_clock_probe_requested: bool,
     audio_output_mode: NativeVulkanAudioOutputMode,
 ) -> Result<NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot, NativeVulkanError> {
-    super::native_vulkan_configure_process_allocator_for_streaming_video();
-
     if width == 0 || height == 0 {
         return Err(NativeVulkanError::Video(
             "Vulkanalia ready-prefix run requires a non-zero source extent".to_owned(),

@@ -191,8 +191,7 @@ pub use video_bitstream_buffer::{
 pub use video_decode_submit::NativeVulkanVulkanaliaStreamingDecodeTimingSnapshot;
 pub use video_decode_submit_av1::{
     NativeVulkanVulkanaliaAv1CdefPlan, NativeVulkanVulkanaliaAv1CommandFrameSnapshot,
-    NativeVulkanVulkanaliaAv1CommandSmokeSnapshot, NativeVulkanVulkanaliaAv1DecodeFrameBatchInput,
-    NativeVulkanVulkanaliaAv1DecodeFrameInput, NativeVulkanVulkanaliaAv1FrameSubmitInput,
+    NativeVulkanVulkanaliaAv1CommandSmokeSnapshot, NativeVulkanVulkanaliaAv1FrameSubmitInput,
     NativeVulkanVulkanaliaAv1GlobalMotionPlan, NativeVulkanVulkanaliaAv1LoopFilterPlan,
     NativeVulkanVulkanaliaAv1LoopRestorationPlan, NativeVulkanVulkanaliaAv1QuantizationPlan,
     NativeVulkanVulkanaliaAv1ReferenceInfoPlan, NativeVulkanVulkanaliaAv1SegmentationPlan,
@@ -201,12 +200,10 @@ pub use video_decode_submit_av1::{
 pub use video_decode_submit_h264::{
     NativeVulkanVulkanaliaH264ReadyPrefixCommandFrameSnapshot,
     NativeVulkanVulkanaliaH264ReadyPrefixCommandSmokeSnapshot,
-    NativeVulkanVulkanaliaH264ReadyPrefixDecodeInput,
     NativeVulkanVulkanaliaH264ReadyPrefixFrameInput,
 };
 pub use video_decode_submit_h265::{
     NativeVulkanVulkanaliaH265ReadyPrefixCommandSmokeSnapshot,
-    NativeVulkanVulkanaliaH265ReadyPrefixDecodeInput,
     NativeVulkanVulkanaliaH265ReadyPrefixFrameInput,
 };
 pub use video_direct_runtime::{

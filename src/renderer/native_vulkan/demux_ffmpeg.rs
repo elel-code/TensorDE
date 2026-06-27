@@ -2,14 +2,27 @@
 //!
 //! This follows the local FFmpeg ownership shape:
 //! `references/ffmpeg/fftools/ffplay.c:420-456` moves AVPacket ownership into a
-//! bounded PacketQueue. The FFmpeg read worker uses a codec-limited handoff
-//! here: it can overlap demux/BSF work with decode like ffplay's read thread,
-//! but it cannot retain a second unbounded payload queue outside the renderer's
-//! bounded packet queue. `references/ffmpeg/fftools/ffplay.c:3132-3141` blocks
+//! bounded PacketQueue. The FFmpeg read worker hands packets directly to the
+//! renderer-owned packet queue instead of adding a second compressed-payload
+//! FIFO; the renderer's main packet/frame windows stay capped at
+//! `VIDEO_PICTURE_QUEUE_SIZE=3`. `references/ffmpeg/fftools/ffplay.c:3132-3141` blocks
 //! the read thread when queues are full, `references/ffmpeg/fftools/ffplay.c:3154-3215`
 //! filters the target stream in the read loop, and
-//! `references/ffmpeg/libavcodec/bsf.h:162-222` defines the
-//! send-packet/drain-packet BSF contract used for H.264/H.265. AV1 follows
+//! `references/ffmpeg/fftools/ffplay.c:534-642` has the decoder move one packet
+//! out of PacketQueue before send/unref.
+//!
+//! The frontend also skips `avformat_find_stream_info()`: `ffplay` exposes that
+//! probe behind the `find_stream_info` option (`references/ffmpeg/fftools/ffplay.c:2938-2954`)
+//! and then selects streams from `codecpar` (`references/ffmpeg/fftools/ffplay.c:3001-3044`).
+//! Our MP4/native-video path needs codecpar/extradata for packet normalization
+//! and then reads packets directly, so retaining probe/decoder scratch is not
+//! part of the hot renderer boundary.
+//!
+//! H.264 and H.265 MP4 packets are normalized locally from length-prefixed
+//! AVCC/HVCC into Annex-B using the same source rules as FFmpeg's
+//! `references/ffmpeg/libavcodec/bsf/h264_mp4toannexb.c` and
+//! `references/ffmpeg/libavcodec/bsf/hevc_mp4toannexb.c`, but without keeping
+//! FFmpeg BSF output AVPackets alive. AV1 follows
 //! `references/ffmpeg/libavcodec/av1dec.c:1456-1474`: container packets are read
 //! directly as OBU packets instead of being forced through the raw AV1 demuxer's
 //! `av1_frame_merge` Temporal Delimiter contract.
@@ -19,14 +32,15 @@ use std::ffi::{CStr, CString};
 use std::fmt;
 use std::marker::PhantomData;
 use std::num::NonZeroI32;
+use std::ops::Range;
 use std::os::raw::{c_char, c_int, c_uchar};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr::{self, NonNull};
 use std::slice;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use super::NativeVulkanError;
@@ -38,12 +52,6 @@ use super::demux::{
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct AVFormatContext {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-struct AVBSFContext {
     _private: [u8; 0],
 }
 
@@ -61,7 +69,6 @@ struct AVRational {
 }
 
 unsafe extern "C" {
-    fn gilder_av_error_eagain() -> c_int;
     fn gilder_av_error_eof() -> c_int;
     fn gilder_av_nopts_value() -> i64;
     fn gilder_av_codec_id_h264() -> c_int;
@@ -69,35 +76,21 @@ unsafe extern "C" {
     fn gilder_av_codec_id_av1() -> c_int;
     fn gilder_av_strerror(errnum: c_int, errbuf: *mut c_char, errbuf_size: usize) -> c_int;
     fn gilder_avformat_open_input(ctx: *mut *mut AVFormatContext, url: *const c_char) -> c_int;
-    fn gilder_avformat_find_stream_info(ctx: *mut AVFormatContext) -> c_int;
     fn gilder_avformat_close_input(ctx: *mut *mut AVFormatContext);
     fn gilder_av_find_video_stream_for_codec(ctx: *mut AVFormatContext, codec_id: c_int) -> c_int;
-    fn gilder_av_stream_width(ctx: *mut AVFormatContext, stream_index: c_int) -> c_int;
-    fn gilder_av_stream_height(ctx: *mut AVFormatContext, stream_index: c_int) -> c_int;
-    fn gilder_av_stream_avg_frame_rate(
-        ctx: *mut AVFormatContext,
-        stream_index: c_int,
-    ) -> AVRational;
     fn gilder_av_packet_alloc() -> *mut AVPacket;
     fn gilder_av_packet_free(packet: *mut *mut AVPacket);
+    fn gilder_av_packet_unref(packet: *mut AVPacket);
     fn gilder_av_read_frame(ctx: *mut AVFormatContext, packet: *mut AVPacket) -> c_int;
     fn gilder_av_packet_stream_index(packet: *const AVPacket) -> c_int;
     fn gilder_av_packet_data(packet: *const AVPacket) -> *const c_uchar;
     fn gilder_av_packet_size(packet: *const AVPacket) -> c_int;
     fn gilder_av_packet_pts(packet: *const AVPacket) -> i64;
     fn gilder_av_packet_duration(packet: *const AVPacket) -> i64;
-    fn gilder_av_bsf_alloc_name(name: *const c_char, ctx: *mut *mut AVBSFContext) -> c_int;
-    fn gilder_av_bsf_copy_stream_params(
-        bsf: *mut AVBSFContext,
-        fmt: *mut AVFormatContext,
-        stream_index: c_int,
-    ) -> c_int;
-    fn gilder_av_bsf_init(ctx: *mut AVBSFContext) -> c_int;
-    fn gilder_av_bsf_free(ctx: *mut *mut AVBSFContext);
-    fn gilder_av_bsf_flush(ctx: *mut AVBSFContext);
-    fn gilder_av_bsf_send_packet(ctx: *mut AVBSFContext, packet: *mut AVPacket) -> c_int;
-    fn gilder_av_bsf_receive_packet(ctx: *mut AVBSFContext, packet: *mut AVPacket) -> c_int;
-    fn gilder_av_bsf_time_base_out(ctx: *mut AVBSFContext) -> AVRational;
+    fn gilder_av_stream_extradata(ctx: *mut AVFormatContext, stream_index: c_int)
+    -> *const c_uchar;
+    fn gilder_av_stream_extradata_size(ctx: *mut AVFormatContext, stream_index: c_int) -> c_int;
+    fn gilder_av_stream_time_base(ctx: *mut AVFormatContext, stream_index: c_int) -> AVRational;
     fn gilder_av_seek_stream_start(ctx: *mut AVFormatContext, stream_index: c_int) -> c_int;
 }
 
@@ -118,28 +111,6 @@ impl NativeVulkanFfmpegCodec {
             }
         }
     }
-
-    fn bsf_name(self) -> &'static CStr {
-        match self {
-            Self::H264 => c"h264_mp4toannexb",
-            Self::H265 => c"hevc_mp4toannexb",
-            Self::Av1 => c"",
-        }
-    }
-
-    fn stream_format(self) -> &'static str {
-        match self {
-            Self::H264 | Self::H265 => "byte-stream",
-            Self::Av1 => "obu-stream",
-        }
-    }
-
-    fn alignment(self) -> &'static str {
-        match self {
-            Self::H264 | Self::H265 => "au",
-            Self::Av1 => "frame",
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -148,19 +119,14 @@ pub(super) struct NativeVulkanFfmpegPacketMetadata {
     pub(super) duration_ns: Option<u64>,
     pub(super) pts_ms: Option<u64>,
     pub(super) duration_ms: Option<u64>,
-    pub(super) caps: Option<String>,
-    pub(super) stream_format: Option<String>,
-    pub(super) alignment: Option<String>,
-    pub(super) width: Option<u32>,
-    pub(super) height: Option<u32>,
-    pub(super) framerate: Option<String>,
 }
 
 pub(super) trait NativeVulkanFfmpegStreamingAccessUnit:
     NativeVulkanStreamingAccessUnit
 {
     const FFMPEG_CODEC: NativeVulkanFfmpegCodec;
-    const FFMPEG_READ_THREAD_HANDOFF_PACKETS: usize = 1;
+    const FFMPEG_READ_THREAD_HANDOFF_PACKETS: usize = 0;
+    const FFMPEG_PACKET_SPLITS_ACCESS_UNITS: bool = false;
 
     fn from_ffmpeg_packet(
         payload: NativeVulkanFfmpegPacketPayload,
@@ -181,13 +147,68 @@ pub(super) fn native_vulkan_start_ffmpeg_streaming_packet_queue<
     source: &Path,
     capacity: usize,
 ) -> Result<NativeVulkanStreamingPacketQueue<A>, NativeVulkanError> {
-    super::native_vulkan_configure_process_allocator_for_streaming_video();
     let frontend = NativeVulkanFfmpegStreamingPacketFrontend::<A>::new(source, capacity)?;
     native_vulkan_start_streaming_packet_queue_from_frontend(Box::new(frontend), capacity)
 }
 
+const NATIVE_VULKAN_FFMPEG_POOLED_PAYLOAD_BUFFERS: usize = 1;
+const NATIVE_VULKAN_FFMPEG_MAX_RETAINED_PAYLOAD_CAPACITY: usize = 128 * 1024;
+const NATIVE_VULKAN_ANNEXB_START_CODE: [u8; 4] = [0, 0, 0, 1];
+
 pub struct NativeVulkanFfmpegPacketPayload {
-    packet: NonNull<AVPacket>,
+    storage: NativeVulkanFfmpegPacketPayloadStorage,
+}
+
+enum NativeVulkanFfmpegPacketPayloadStorage {
+    AvPacket(NonNull<AVPacket>),
+    Pooled(NativeVulkanFfmpegPooledPacketPayload),
+    SharedSlice(NativeVulkanFfmpegSharedPacketPayload),
+}
+
+struct NativeVulkanFfmpegPooledPacketPayload {
+    bytes: Vec<u8>,
+    pool: Arc<NativeVulkanFfmpegPacketPayloadPool>,
+}
+
+struct NativeVulkanFfmpegSharedPacketPayload {
+    backing: Arc<NativeVulkanFfmpegPacketPayload>,
+    range: Range<usize>,
+}
+
+#[derive(Default)]
+struct NativeVulkanFfmpegPacketPayloadPool {
+    buffers: Mutex<Vec<Vec<u8>>>,
+}
+
+impl NativeVulkanFfmpegPacketPayloadPool {
+    fn take(&self, capacity: usize) -> Vec<u8> {
+        let mut buffers = self.buffers.lock().unwrap_or_else(|err| err.into_inner());
+        let buffer = buffers
+            .iter()
+            .position(|buffer| buffer.capacity() >= capacity)
+            .map(|index| buffers.swap_remove(index));
+        let mut buffer = buffer.unwrap_or_else(|| Vec::with_capacity(capacity));
+        buffer.clear();
+        buffer
+    }
+
+    fn recycle(&self, mut bytes: Vec<u8>) {
+        if bytes.capacity() > NATIVE_VULKAN_FFMPEG_MAX_RETAINED_PAYLOAD_CAPACITY {
+            return;
+        }
+        bytes.clear();
+        let mut buffers = self.buffers.lock().unwrap_or_else(|err| err.into_inner());
+        if buffers.len() < NATIVE_VULKAN_FFMPEG_POOLED_PAYLOAD_BUFFERS {
+            buffers.push(bytes);
+        }
+    }
+}
+
+impl Drop for NativeVulkanFfmpegPooledPacketPayload {
+    fn drop(&mut self) {
+        let bytes = std::mem::take(&mut self.bytes);
+        self.pool.recycle(bytes);
+    }
 }
 
 unsafe impl Send for NativeVulkanFfmpegPacketPayload {}
@@ -197,10 +218,130 @@ impl NativeVulkanFfmpegPacketPayload {
         let packet = NonNull::new(packet).ok_or_else(|| {
             NativeVulkanError::Video("FFmpeg produced a null AVPacket".to_owned())
         })?;
-        Ok(Self { packet })
+        Ok(Self {
+            storage: NativeVulkanFfmpegPacketPayloadStorage::AvPacket(packet),
+        })
+    }
+
+    fn from_pooled(bytes: Vec<u8>, pool: Arc<NativeVulkanFfmpegPacketPayloadPool>) -> Self {
+        Self {
+            storage: NativeVulkanFfmpegPacketPayloadStorage::Pooled(
+                NativeVulkanFfmpegPooledPacketPayload { bytes, pool },
+            ),
+        }
     }
 
     pub(super) fn bytes(&self) -> &[u8] {
+        match &self.storage {
+            NativeVulkanFfmpegPacketPayloadStorage::AvPacket(packet) => {
+                let size = unsafe { gilder_av_packet_size(packet.as_ptr()) };
+                if size <= 0 {
+                    return &[];
+                }
+                let data = unsafe { gilder_av_packet_data(packet.as_ptr()) };
+                if data.is_null() {
+                    return &[];
+                }
+                unsafe { slice::from_raw_parts(data.cast::<u8>(), size as usize) }
+            }
+            NativeVulkanFfmpegPacketPayloadStorage::Pooled(payload) => &payload.bytes,
+            NativeVulkanFfmpegPacketPayloadStorage::SharedSlice(payload) => payload
+                .backing
+                .bytes()
+                .get(payload.range.clone())
+                .unwrap_or(&[]),
+        }
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.bytes().len()
+    }
+
+    pub(super) fn split_into_ranges(
+        self,
+        ranges: Vec<Range<usize>>,
+        label: &str,
+    ) -> Result<Vec<Self>, NativeVulkanError> {
+        if ranges.is_empty() {
+            return Ok(Vec::new());
+        }
+        let len = self.len();
+        for range in &ranges {
+            if range.start > range.end || range.end > len {
+                return Err(NativeVulkanError::Video(format!(
+                    "{label} FFmpeg packet split range {}..{} exceeds packet length {len}",
+                    range.start, range.end
+                )));
+            }
+        }
+        if ranges.len() == 1 && ranges[0].start == 0 && ranges[0].end == len {
+            return Ok(vec![self]);
+        }
+
+        let backing = Arc::new(self);
+        Ok(ranges
+            .into_iter()
+            .map(|range| Self {
+                storage: NativeVulkanFfmpegPacketPayloadStorage::SharedSlice(
+                    NativeVulkanFfmpegSharedPacketPayload {
+                        backing: Arc::clone(&backing),
+                        range,
+                    },
+                ),
+            })
+            .collect())
+    }
+}
+
+impl Drop for NativeVulkanFfmpegPacketPayload {
+    fn drop(&mut self) {
+        if let NativeVulkanFfmpegPacketPayloadStorage::AvPacket(packet) = &mut self.storage {
+            let mut packet = packet.as_ptr();
+            unsafe {
+                gilder_av_packet_free(&mut packet);
+            }
+        }
+    }
+}
+
+impl fmt::Debug for NativeVulkanFfmpegPacketPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NativeVulkanFfmpegPacketPayload")
+            .field(
+                "model",
+                &match &self.storage {
+                    NativeVulkanFfmpegPacketPayloadStorage::AvPacket(_) => "avpacket-owned",
+                    NativeVulkanFfmpegPacketPayloadStorage::Pooled(_) => {
+                        "ffmpeg-source-pooled-annexb"
+                    }
+                    NativeVulkanFfmpegPacketPayloadStorage::SharedSlice(_) => {
+                        "ffmpeg-shared-packet-slice"
+                    }
+                },
+            )
+            .field("bytes", &self.len())
+            .finish()
+    }
+}
+
+struct NativeVulkanFfmpegReusablePacket {
+    packet: NonNull<AVPacket>,
+}
+
+impl NativeVulkanFfmpegReusablePacket {
+    fn new() -> Result<Self, NativeVulkanError> {
+        let packet = native_vulkan_ffmpeg_alloc_packet()?;
+        let packet = NonNull::new(packet).ok_or_else(|| {
+            NativeVulkanError::Video("FFmpeg av_packet_alloc returned null".to_owned())
+        })?;
+        Ok(Self { packet })
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut AVPacket {
+        self.packet.as_ptr()
+    }
+
+    fn bytes(&self) -> &[u8] {
         let size = unsafe { gilder_av_packet_size(self.packet.as_ptr()) };
         if size <= 0 {
             return &[];
@@ -212,26 +353,28 @@ impl NativeVulkanFfmpegPacketPayload {
         unsafe { slice::from_raw_parts(data.cast::<u8>(), size as usize) }
     }
 
-    pub(super) fn len(&self) -> usize {
-        self.bytes().len()
+    fn unref(&mut self) {
+        unsafe {
+            gilder_av_packet_unref(self.packet.as_ptr());
+        }
+    }
+
+    fn replace_with_empty_and_take(&mut self) -> Result<*mut AVPacket, NativeVulkanError> {
+        let replacement = native_vulkan_ffmpeg_alloc_packet()?;
+        let replacement = NonNull::new(replacement).ok_or_else(|| {
+            NativeVulkanError::Video("FFmpeg av_packet_alloc returned null".to_owned())
+        })?;
+        let packet = std::mem::replace(&mut self.packet, replacement);
+        Ok(packet.as_ptr())
     }
 }
 
-impl Drop for NativeVulkanFfmpegPacketPayload {
+impl Drop for NativeVulkanFfmpegReusablePacket {
     fn drop(&mut self) {
         let mut packet = self.packet.as_ptr();
         unsafe {
             gilder_av_packet_free(&mut packet);
         }
-    }
-}
-
-impl fmt::Debug for NativeVulkanFfmpegPacketPayload {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NativeVulkanFfmpegPacketPayload")
-            .field("model", &"avpacket-owned")
-            .field("bytes", &self.len())
-            .finish()
     }
 }
 
@@ -256,8 +399,6 @@ impl NativeVulkanFfmpegFormatContext {
             NativeVulkanError::Video("FFmpeg avformat_open_input returned null".to_owned())
         })?;
         let format = Self { ptr };
-        let ret = unsafe { gilder_avformat_find_stream_info(format.ptr.as_ptr()) };
-        native_vulkan_ffmpeg_ok(ret, "avformat_find_stream_info")?;
         let stream_index =
             unsafe { gilder_av_find_video_stream_for_codec(format.ptr.as_ptr(), codec.codec_id()) };
         native_vulkan_ffmpeg_ok(
@@ -265,6 +406,22 @@ impl NativeVulkanFfmpegFormatContext {
             &format!("av_find_best_stream/select {:?} video stream", codec),
         )?;
         Ok((format, stream_index))
+    }
+
+    fn stream_extradata(&self, stream_index: c_int) -> &[u8] {
+        let size = unsafe { gilder_av_stream_extradata_size(self.ptr.as_ptr(), stream_index) };
+        if size <= 0 {
+            return &[];
+        }
+        let data = unsafe { gilder_av_stream_extradata(self.ptr.as_ptr(), stream_index) };
+        if data.is_null() {
+            return &[];
+        }
+        unsafe { slice::from_raw_parts(data.cast::<u8>(), size as usize) }
+    }
+
+    fn stream_time_base(&self, stream_index: c_int) -> AVRational {
+        unsafe { gilder_av_stream_time_base(self.ptr.as_ptr(), stream_index) }
     }
 }
 
@@ -277,64 +434,383 @@ impl Drop for NativeVulkanFfmpegFormatContext {
     }
 }
 
-struct NativeVulkanFfmpegBsfContext {
-    ptr: NonNull<AVBSFContext>,
+enum NativeVulkanFfmpegPacketNormalizer {
+    H264(NativeVulkanFfmpegH264AnnexB),
+    H265(NativeVulkanFfmpegH265AnnexB),
+    Av1,
 }
 
-unsafe impl Send for NativeVulkanFfmpegBsfContext {}
-
-impl NativeVulkanFfmpegBsfContext {
-    fn new(
-        codec: NativeVulkanFfmpegCodec,
-        format: &NativeVulkanFfmpegFormatContext,
-        stream_index: c_int,
-    ) -> Result<Self, NativeVulkanError> {
-        let mut ctx = ptr::null_mut();
-        let ret = unsafe { gilder_av_bsf_alloc_name(codec.bsf_name().as_ptr(), &mut ctx) };
-        native_vulkan_ffmpeg_ok(ret, codec.bsf_name().to_string_lossy().as_ref())?;
-        let ptr = NonNull::new(ctx).ok_or_else(|| {
-            NativeVulkanError::Video(format!(
-                "FFmpeg {} BSF allocation returned null",
-                codec.bsf_name().to_string_lossy()
-            ))
-        })?;
-        let bsf = Self { ptr };
-        let ret = unsafe {
-            gilder_av_bsf_copy_stream_params(bsf.ptr.as_ptr(), format.ptr.as_ptr(), stream_index)
-        };
-        native_vulkan_ffmpeg_ok(ret, "avcodec_parameters_copy to AVBSFContext")?;
-        let ret = unsafe { gilder_av_bsf_init(bsf.ptr.as_ptr()) };
-        native_vulkan_ffmpeg_ok(ret, "av_bsf_init")?;
-        Ok(bsf)
+impl NativeVulkanFfmpegPacketNormalizer {
+    fn new(codec: NativeVulkanFfmpegCodec, extradata: &[u8]) -> Result<Self, NativeVulkanError> {
+        match codec {
+            NativeVulkanFfmpegCodec::H264 => Ok(Self::H264(
+                NativeVulkanFfmpegH264AnnexB::from_extradata(extradata)
+                    .map_err(NativeVulkanError::Video)?,
+            )),
+            NativeVulkanFfmpegCodec::H265 => Ok(Self::H265(
+                NativeVulkanFfmpegH265AnnexB::from_extradata(extradata)
+                    .map_err(NativeVulkanError::Video)?,
+            )),
+            NativeVulkanFfmpegCodec::Av1 => Ok(Self::Av1),
+        }
     }
-}
 
-impl Drop for NativeVulkanFfmpegBsfContext {
-    fn drop(&mut self) {
-        let mut ptr = self.ptr.as_ptr();
-        unsafe {
-            gilder_av_bsf_free(&mut ptr);
+    fn normalize(
+        &mut self,
+        packet: &mut NativeVulkanFfmpegReusablePacket,
+        pool: &Arc<NativeVulkanFfmpegPacketPayloadPool>,
+    ) -> Result<NativeVulkanFfmpegPacketPayload, NativeVulkanError> {
+        match self {
+            Self::H264(converter) => {
+                let result = converter.convert_packet(packet.bytes(), pool);
+                packet.unref();
+                result.map_err(NativeVulkanError::Video)
+            }
+            Self::H265(converter) => {
+                let result = converter.convert_packet(packet.bytes(), pool);
+                packet.unref();
+                result.map_err(NativeVulkanError::Video)
+            }
+            Self::Av1 => {
+                let packet = packet.replace_with_empty_and_take()?;
+                NativeVulkanFfmpegPacketPayload::from_raw(packet)
+            }
         }
     }
 }
 
-#[derive(Clone, Debug)]
-struct NativeVulkanFfmpegStaticMetadata {
-    width: Option<u32>,
-    height: Option<u32>,
-    framerate: Option<String>,
-    stream_format: Option<String>,
-    alignment: Option<String>,
+struct NativeVulkanFfmpegH264AnnexB {
+    length_size: usize,
+    sps: Vec<u8>,
+    pps: Vec<u8>,
+    passthrough_annexb: bool,
+}
+
+impl NativeVulkanFfmpegH264AnnexB {
+    fn from_extradata(extradata: &[u8]) -> Result<Self, String> {
+        if native_vulkan_ffmpeg_starts_with_annexb_start_code(extradata) {
+            return Ok(Self {
+                length_size: 0,
+                sps: Vec::new(),
+                pps: Vec::new(),
+                passthrough_annexb: true,
+            });
+        }
+        if extradata.len() < 7 || extradata[0] != 1 {
+            return Err(format!(
+                "H.264 AVCC extradata is invalid or missing ({} bytes)",
+                extradata.len()
+            ));
+        }
+
+        let length_size = usize::from(extradata[4] & 0x03) + 1;
+        let mut offset = 5usize;
+        let sps_count = *extradata
+            .get(offset)
+            .ok_or_else(|| "H.264 AVCC extradata is truncated before SPS count".to_owned())?
+            & 0x1f;
+        offset += 1;
+
+        let mut sps = Vec::new();
+        for _ in 0..sps_count {
+            let nal = native_vulkan_ffmpeg_take_be16_unit(extradata, &mut offset, "H.264 SPS")?;
+            native_vulkan_ffmpeg_append_annexb_unit(&mut sps, nal);
+        }
+
+        let pps_count = *extradata
+            .get(offset)
+            .ok_or_else(|| "H.264 AVCC extradata is truncated before PPS count".to_owned())?;
+        offset += 1;
+
+        let mut pps = Vec::new();
+        for _ in 0..pps_count {
+            let nal = native_vulkan_ffmpeg_take_be16_unit(extradata, &mut offset, "H.264 PPS")?;
+            native_vulkan_ffmpeg_append_annexb_unit(&mut pps, nal);
+        }
+
+        Ok(Self {
+            length_size,
+            sps,
+            pps,
+            passthrough_annexb: false,
+        })
+    }
+
+    fn convert_packet(
+        &self,
+        bytes: &[u8],
+        pool: &Arc<NativeVulkanFfmpegPacketPayloadPool>,
+    ) -> Result<NativeVulkanFfmpegPacketPayload, String> {
+        if self.passthrough_annexb {
+            return Ok(native_vulkan_ffmpeg_pooled_payload_copy(bytes, pool));
+        }
+
+        let mut output_size = 0usize;
+        let mut has_idr = false;
+        let mut offset = 0usize;
+        while offset < bytes.len() {
+            let nal_size = native_vulkan_ffmpeg_take_length_prefixed_size(
+                bytes,
+                &mut offset,
+                self.length_size,
+                "H.264 packet",
+            )?;
+            if nal_size == 0 {
+                continue;
+            }
+            let nal = native_vulkan_ffmpeg_take_payload(bytes, &mut offset, nal_size, "H.264 NAL")?;
+            has_idr |= (nal[0] & 0x1f) == 5;
+            output_size = output_size.saturating_add(NATIVE_VULKAN_ANNEXB_START_CODE.len());
+            output_size = output_size.saturating_add(nal.len());
+        }
+        if has_idr {
+            output_size = output_size
+                .saturating_add(self.sps.len())
+                .saturating_add(self.pps.len());
+        }
+
+        let mut output = pool.take(output_size);
+        let mut offset = 0usize;
+        let mut sps_seen_before_idr = false;
+        let mut pps_seen_before_idr = false;
+        let mut parameter_sets_inserted = false;
+        while offset < bytes.len() {
+            let nal_size = native_vulkan_ffmpeg_take_length_prefixed_size(
+                bytes,
+                &mut offset,
+                self.length_size,
+                "H.264 packet",
+            )?;
+            if nal_size == 0 {
+                continue;
+            }
+            let nal = native_vulkan_ffmpeg_take_payload(bytes, &mut offset, nal_size, "H.264 NAL")?;
+            let nal_type = nal[0] & 0x1f;
+            if nal_type == 7 {
+                sps_seen_before_idr = true;
+            } else if nal_type == 8 {
+                pps_seen_before_idr = true;
+            } else if nal_type == 5 && !parameter_sets_inserted {
+                if !sps_seen_before_idr && !pps_seen_before_idr {
+                    output.extend_from_slice(&self.sps);
+                    output.extend_from_slice(&self.pps);
+                } else if sps_seen_before_idr && !pps_seen_before_idr {
+                    output.extend_from_slice(&self.pps);
+                }
+                parameter_sets_inserted = true;
+            }
+            native_vulkan_ffmpeg_append_annexb_unit(&mut output, nal);
+        }
+
+        Ok(NativeVulkanFfmpegPacketPayload::from_pooled(
+            output,
+            Arc::clone(pool),
+        ))
+    }
+}
+
+struct NativeVulkanFfmpegH265AnnexB {
+    length_size: usize,
+    parameter_sets: Vec<u8>,
+    passthrough_annexb: bool,
+}
+
+impl NativeVulkanFfmpegH265AnnexB {
+    fn from_extradata(extradata: &[u8]) -> Result<Self, String> {
+        if extradata.len() < 23 || native_vulkan_ffmpeg_starts_with_annexb_start_code(extradata) {
+            return Ok(Self {
+                length_size: 0,
+                parameter_sets: Vec::new(),
+                passthrough_annexb: true,
+            });
+        }
+
+        let length_size = usize::from(extradata[21] & 0x03) + 1;
+        let array_count = extradata[22] as usize;
+        let mut offset = 23usize;
+        let mut parameter_sets = Vec::new();
+        for _ in 0..array_count {
+            let nal_type = *extradata
+                .get(offset)
+                .ok_or_else(|| "H.265 HVCC extradata is truncated before array type".to_owned())?
+                & 0x3f;
+            offset += 1;
+            if !matches!(nal_type, 32 | 33 | 34 | 39 | 40) {
+                return Err(format!(
+                    "H.265 HVCC extradata has invalid NAL type {nal_type}"
+                ));
+            }
+            let unit_count =
+                native_vulkan_ffmpeg_take_be16(extradata, &mut offset, "H.265 array count")?;
+            for _ in 0..unit_count {
+                let nal = native_vulkan_ffmpeg_take_be16_unit(
+                    extradata,
+                    &mut offset,
+                    "H.265 parameter set",
+                )?;
+                native_vulkan_ffmpeg_append_annexb_unit(&mut parameter_sets, nal);
+            }
+        }
+
+        Ok(Self {
+            length_size,
+            parameter_sets,
+            passthrough_annexb: false,
+        })
+    }
+
+    fn convert_packet(
+        &self,
+        bytes: &[u8],
+        pool: &Arc<NativeVulkanFfmpegPacketPayloadPool>,
+    ) -> Result<NativeVulkanFfmpegPacketPayload, String> {
+        if self.passthrough_annexb {
+            return Ok(native_vulkan_ffmpeg_pooled_payload_copy(bytes, pool));
+        }
+
+        let mut output_size = 0usize;
+        let mut got_irap = false;
+        let mut got_ps = false;
+        let mut offset = 0usize;
+        while offset < bytes.len() {
+            let nal_size = native_vulkan_ffmpeg_take_length_prefixed_size(
+                bytes,
+                &mut offset,
+                self.length_size,
+                "H.265 packet",
+            )?;
+            if nal_size < 2 {
+                return Err("H.265 packet contains a NAL shorter than two bytes".to_owned());
+            }
+            let nal = native_vulkan_ffmpeg_take_payload(bytes, &mut offset, nal_size, "H.265 NAL")?;
+            let nal_type = (nal[0] >> 1) & 0x3f;
+            got_irap |= (16..=23).contains(&nal_type);
+            got_ps |= (32..=34).contains(&nal_type);
+            output_size = output_size.saturating_add(NATIVE_VULKAN_ANNEXB_START_CODE.len());
+            output_size = output_size.saturating_add(nal.len());
+        }
+        if got_irap || got_ps {
+            output_size = output_size.saturating_add(self.parameter_sets.len());
+        }
+
+        let seen_irap_ps = got_irap && got_ps;
+        let mut output = pool.take(output_size);
+        let mut got_irap = false;
+        let mut got_ps = false;
+        let mut offset = 0usize;
+        while offset < bytes.len() {
+            let nal_size = native_vulkan_ffmpeg_take_length_prefixed_size(
+                bytes,
+                &mut offset,
+                self.length_size,
+                "H.265 packet",
+            )?;
+            if nal_size < 2 {
+                return Err("H.265 packet contains a NAL shorter than two bytes".to_owned());
+            }
+            let nal = native_vulkan_ffmpeg_take_payload(bytes, &mut offset, nal_size, "H.265 NAL")?;
+            let nal_type = (nal[0] >> 1) & 0x3f;
+            let is_irap = (16..=23).contains(&nal_type);
+            let is_ps = (32..=34).contains(&nal_type) && seen_irap_ps;
+            if (is_ps || is_irap) && !got_ps && !got_irap {
+                output.extend_from_slice(&self.parameter_sets);
+            }
+            got_irap |= is_irap;
+            got_ps |= is_ps;
+            native_vulkan_ffmpeg_append_annexb_unit(&mut output, nal);
+        }
+
+        Ok(NativeVulkanFfmpegPacketPayload::from_pooled(
+            output,
+            Arc::clone(pool),
+        ))
+    }
+}
+
+fn native_vulkan_ffmpeg_pooled_payload_copy(
+    bytes: &[u8],
+    pool: &Arc<NativeVulkanFfmpegPacketPayloadPool>,
+) -> NativeVulkanFfmpegPacketPayload {
+    let mut output = pool.take(bytes.len());
+    output.extend_from_slice(bytes);
+    NativeVulkanFfmpegPacketPayload::from_pooled(output, Arc::clone(pool))
+}
+
+fn native_vulkan_ffmpeg_append_annexb_unit(output: &mut Vec<u8>, nal: &[u8]) {
+    output.extend_from_slice(&NATIVE_VULKAN_ANNEXB_START_CODE);
+    output.extend_from_slice(nal);
+}
+
+fn native_vulkan_ffmpeg_starts_with_annexb_start_code(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0, 0, 1]) || bytes.starts_with(&NATIVE_VULKAN_ANNEXB_START_CODE)
+}
+
+fn native_vulkan_ffmpeg_take_be16(
+    bytes: &[u8],
+    offset: &mut usize,
+    label: &str,
+) -> Result<usize, String> {
+    let end = offset.saturating_add(2);
+    let value = bytes
+        .get(*offset..end)
+        .ok_or_else(|| format!("{label} is truncated before a 16-bit length"))?;
+    *offset = end;
+    Ok((usize::from(value[0]) << 8) | usize::from(value[1]))
+}
+
+fn native_vulkan_ffmpeg_take_be16_unit<'a>(
+    bytes: &'a [u8],
+    offset: &mut usize,
+    label: &str,
+) -> Result<&'a [u8], String> {
+    let size = native_vulkan_ffmpeg_take_be16(bytes, offset, label)?;
+    native_vulkan_ffmpeg_take_payload(bytes, offset, size, label)
+}
+
+fn native_vulkan_ffmpeg_take_length_prefixed_size(
+    bytes: &[u8],
+    offset: &mut usize,
+    length_size: usize,
+    label: &str,
+) -> Result<usize, String> {
+    if !(1..=4).contains(&length_size) {
+        return Err(format!("{label} has invalid NAL length size {length_size}"));
+    }
+    let end = offset.saturating_add(length_size);
+    let prefix = bytes
+        .get(*offset..end)
+        .ok_or_else(|| format!("{label} is truncated before a NAL length"))?;
+    *offset = end;
+    let mut size = 0usize;
+    for byte in prefix {
+        size = (size << 8) | usize::from(*byte);
+    }
+    Ok(size)
+}
+
+fn native_vulkan_ffmpeg_take_payload<'a>(
+    bytes: &'a [u8],
+    offset: &mut usize,
+    size: usize,
+    label: &str,
+) -> Result<&'a [u8], String> {
+    let end = offset.saturating_add(size);
+    let payload = bytes
+        .get(*offset..end)
+        .ok_or_else(|| format!("{label} payload is truncated"))?;
+    *offset = end;
+    Ok(payload)
 }
 
 struct NativeVulkanFfmpegStreamingPacketWorker<A: NativeVulkanFfmpegStreamingAccessUnit> {
     format: NativeVulkanFfmpegFormatContext,
-    bsf: NativeVulkanFfmpegBsfContext,
+    normalizer: NativeVulkanFfmpegPacketNormalizer,
+    payload_pool: Arc<NativeVulkanFfmpegPacketPayloadPool>,
+    input_packet: NativeVulkanFfmpegReusablePacket,
     stream_index: c_int,
-    static_metadata: NativeVulkanFfmpegStaticMetadata,
+    stream_time_base: AVRational,
     eos_count: u32,
     loop_count: u32,
-    eof_sent_to_bsf: bool,
     pending_access_units: VecDeque<A>,
     _access_unit: PhantomData<A>,
 }
@@ -343,29 +819,22 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit> NativeVulkanFfmpegStreamingPacket
     fn new(source: &Path) -> Result<Self, NativeVulkanError> {
         let (format, stream_index) =
             NativeVulkanFfmpegFormatContext::open(source, A::FFMPEG_CODEC)?;
-        let bsf = NativeVulkanFfmpegBsfContext::new(A::FFMPEG_CODEC, &format, stream_index)?;
-        let width = unsafe { gilder_av_stream_width(format.ptr.as_ptr(), stream_index) };
-        let height = unsafe { gilder_av_stream_height(format.ptr.as_ptr(), stream_index) };
-        let framerate = unsafe {
-            native_vulkan_ffmpeg_rational_string(gilder_av_stream_avg_frame_rate(
-                format.ptr.as_ptr(),
-                stream_index,
-            ))
-        };
+        let normalizer = NativeVulkanFfmpegPacketNormalizer::new(
+            A::FFMPEG_CODEC,
+            format.stream_extradata(stream_index),
+        )?;
+        let stream_time_base = format.stream_time_base(stream_index);
+        let payload_pool = Arc::new(NativeVulkanFfmpegPacketPayloadPool::default());
+        let input_packet = NativeVulkanFfmpegReusablePacket::new()?;
         Ok(Self {
             format,
-            bsf,
+            normalizer,
+            payload_pool,
+            input_packet,
             stream_index,
-            static_metadata: NativeVulkanFfmpegStaticMetadata {
-                width: u32::try_from(width).ok().filter(|value| *value > 0),
-                height: u32::try_from(height).ok().filter(|value| *value > 0),
-                framerate,
-                stream_format: Some(A::FFMPEG_CODEC.stream_format().to_owned()),
-                alignment: Some(A::FFMPEG_CODEC.alignment().to_owned()),
-            },
+            stream_time_base,
             eos_count: 0,
             loop_count: 0,
-            eof_sent_to_bsf: false,
             pending_access_units: VecDeque::new(),
             _access_unit: PhantomData,
         })
@@ -376,70 +845,57 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit> NativeVulkanFfmpegStreamingPacket
             return Ok(Some(access_unit));
         }
         loop {
-            let output = native_vulkan_ffmpeg_alloc_packet()?;
-            let receive_ret =
-                unsafe { gilder_av_bsf_receive_packet(self.bsf.ptr.as_ptr(), output) };
-            if receive_ret == 0 {
-                let time_base = unsafe { gilder_av_bsf_time_base_out(self.bsf.ptr.as_ptr()) };
-                let metadata = self.metadata_for_packet(output, time_base);
-                let payload = NativeVulkanFfmpegPacketPayload::from_raw(output)?;
-                let mut access_units = A::from_ffmpeg_packet_many(payload, metadata)?;
-                if access_units.is_empty() {
-                    continue;
-                }
-                let first = access_units.remove(0);
-                self.pending_access_units.extend(access_units);
-                return Ok(Some(first));
+            let Some((payload, metadata)) = self.read_next_packet(loop_on_eos)? else {
+                return Ok(None);
+            };
+            if !A::FFMPEG_PACKET_SPLITS_ACCESS_UNITS {
+                return A::from_ffmpeg_packet(payload, metadata).map(Some);
             }
-            native_vulkan_ffmpeg_free_packet(output);
-
-            if receive_ret == native_vulkan_ffmpeg_eagain() {
-                if self.eof_sent_to_bsf {
-                    return Ok(None);
-                }
-                self.read_and_send_next_input_packet()?;
+            let access_units = A::from_ffmpeg_packet_many(payload, metadata)?;
+            if access_units.is_empty() {
                 continue;
             }
+            let mut access_units = access_units.into_iter();
+            let first = access_units.next().expect("access_units is not empty");
+            self.pending_access_units.extend(access_units);
+            return Ok(Some(first));
+        }
+    }
 
-            if receive_ret == native_vulkan_ffmpeg_eof() {
+    fn read_next_packet(
+        &mut self,
+        loop_on_eos: bool,
+    ) -> Result<
+        Option<(
+            NativeVulkanFfmpegPacketPayload,
+            NativeVulkanFfmpegPacketMetadata,
+        )>,
+        NativeVulkanError,
+    > {
+        loop {
+            let input = self.input_packet.as_mut_ptr();
+            let read_ret = unsafe { gilder_av_read_frame(self.format.ptr.as_ptr(), input) };
+            if read_ret == 0 {
+                let packet_stream_index = unsafe { gilder_av_packet_stream_index(input) };
+                if packet_stream_index != self.stream_index {
+                    self.input_packet.unref();
+                    continue;
+                }
+                let metadata = self.metadata_for_packet(input, self.stream_time_base);
+                let payload = self
+                    .normalizer
+                    .normalize(&mut self.input_packet, &self.payload_pool)?;
+                return Ok(Some((payload, metadata)));
+            }
+            self.input_packet.unref();
+
+            if read_ret == native_vulkan_ffmpeg_eof() {
+                self.eos_count = self.eos_count.saturating_add(1);
                 if !loop_on_eos {
                     return Ok(None);
                 }
                 self.seek_to_start()?;
                 continue;
-            }
-
-            return Err(native_vulkan_ffmpeg_error(
-                receive_ret,
-                "av_bsf_receive_packet",
-            ));
-        }
-    }
-
-    fn read_and_send_next_input_packet(&mut self) -> Result<(), NativeVulkanError> {
-        loop {
-            let input = native_vulkan_ffmpeg_alloc_packet()?;
-            let read_ret = unsafe { gilder_av_read_frame(self.format.ptr.as_ptr(), input) };
-            if read_ret == 0 {
-                let packet_stream_index = unsafe { gilder_av_packet_stream_index(input) };
-                if packet_stream_index != self.stream_index {
-                    native_vulkan_ffmpeg_free_packet(input);
-                    continue;
-                }
-                let send_ret = unsafe { gilder_av_bsf_send_packet(self.bsf.ptr.as_ptr(), input) };
-                native_vulkan_ffmpeg_free_packet(input);
-                native_vulkan_ffmpeg_ok(send_ret, "av_bsf_send_packet")?;
-                return Ok(());
-            }
-            native_vulkan_ffmpeg_free_packet(input);
-
-            if read_ret == native_vulkan_ffmpeg_eof() {
-                self.eos_count = self.eos_count.saturating_add(1);
-                let send_ret =
-                    unsafe { gilder_av_bsf_send_packet(self.bsf.ptr.as_ptr(), ptr::null_mut()) };
-                native_vulkan_ffmpeg_ok(send_ret, "av_bsf_send_packet(NULL)")?;
-                self.eof_sent_to_bsf = true;
-                return Ok(());
             }
 
             return Err(native_vulkan_ffmpeg_error(read_ret, "av_read_frame"));
@@ -450,10 +906,6 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit> NativeVulkanFfmpegStreamingPacket
         let ret =
             unsafe { gilder_av_seek_stream_start(self.format.ptr.as_ptr(), self.stream_index) };
         native_vulkan_ffmpeg_ok(ret, "av_seek_frame stream start")?;
-        unsafe {
-            gilder_av_bsf_flush(self.bsf.ptr.as_ptr());
-        }
-        self.eof_sent_to_bsf = false;
         self.pending_access_units.clear();
         self.loop_count = self.loop_count.saturating_add(1);
         Ok(())
@@ -475,12 +927,6 @@ impl<A: NativeVulkanFfmpegStreamingAccessUnit> NativeVulkanFfmpegStreamingPacket
             duration_ns,
             pts_ms: pts_ns.map(|value| value / 1_000_000),
             duration_ms: duration_ns.map(|value| value / 1_000_000),
-            caps: None,
-            stream_format: self.static_metadata.stream_format.clone(),
-            alignment: self.static_metadata.alignment.clone(),
-            width: self.static_metadata.width,
-            height: self.static_metadata.height,
-            framerate: self.static_metadata.framerate.clone(),
         }
     }
 }
@@ -620,14 +1066,6 @@ fn native_vulkan_ffmpeg_alloc_packet() -> Result<*mut AVPacket, NativeVulkanErro
     Ok(packet)
 }
 
-fn native_vulkan_ffmpeg_free_packet(mut packet: *mut AVPacket) {
-    if !packet.is_null() {
-        unsafe {
-            gilder_av_packet_free(&mut packet);
-        }
-    }
-}
-
 fn native_vulkan_ffmpeg_timestamp_ns(value: i64, time_base: AVRational) -> Option<u64> {
     if value == unsafe { gilder_av_nopts_value() } || value < 0 {
         return None;
@@ -650,17 +1088,6 @@ fn native_vulkan_ffmpeg_rescale_to_ns(value: i64, time_base: AVRational) -> Opti
         return None;
     }
     Some(scaled.min(i128::from(u64::MAX)) as u64)
-}
-
-fn native_vulkan_ffmpeg_rational_string(value: AVRational) -> Option<String> {
-    if value.num <= 0 || value.den <= 0 {
-        return None;
-    }
-    Some(format!("{}/{}", value.num, value.den))
-}
-
-fn native_vulkan_ffmpeg_eagain() -> c_int {
-    unsafe { gilder_av_error_eagain() }
 }
 
 fn native_vulkan_ffmpeg_eof() -> c_int {

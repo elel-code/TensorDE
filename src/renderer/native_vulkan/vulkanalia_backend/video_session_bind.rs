@@ -483,10 +483,8 @@ impl NativeVulkanVulkanaliaFfmpegSlicesBufferPool {
         let slot_buffer = self.slots.get_mut(slot).ok_or_else(|| {
             format!("Vulkanalia FFmpeg slices buffer slot {slot} exceeds pool size {slot_count}")
         })?;
-        let ffmpeg_new_size = native_vulkan_vulkanalia_align_up_u64(
-            payload_len.max(1).saturating_add(min_size_alignment.max(1)),
-            min_size_alignment.max(1),
-        );
+        let ffmpeg_new_size =
+            native_vulkan_vulkanalia_align_up_u64(payload_len.max(1), min_size_alignment.max(1));
         let target_size = native_vulkan_vulkanalia_ffmpeg_decode_bitstream_buffer_size(
             ffmpeg_new_size,
             min_size_alignment,
@@ -549,17 +547,6 @@ impl NativeVulkanVulkanaliaFfmpegSlicesBufferPool {
                 native_vulkan_vulkanalia_destroy_video_session_bitstream_buffer(device, buffer);
             }
         }
-    }
-}
-
-fn native_vulkan_vulkanalia_trim_heap_after_decode_teardown() {
-    #[cfg(all(
-        feature = "native-vulkan-video",
-        target_os = "linux",
-        target_env = "gnu"
-    ))]
-    {
-        crate::renderer::native_vulkan::native_vulkan_trim_process_heap();
     }
 }
 
@@ -1485,8 +1472,6 @@ pub(super) fn native_vulkan_vulkanalia_record_av1_streaming_decode_into_image(
     if let Some(session_parameters) = session_parameters.take() {
         native_vulkan_vulkanalia_destroy_video_session_parameters(device, session_parameters);
     }
-    native_vulkan_vulkanalia_trim_heap_after_decode_teardown();
-
     result
 }
 
@@ -1817,8 +1802,6 @@ pub(super) fn native_vulkan_vulkanalia_record_h265_streaming_decode_into_image(
     if let Some(session_parameters) = session_parameters.take() {
         native_vulkan_vulkanalia_destroy_video_session_parameters(device, session_parameters);
     }
-    native_vulkan_vulkanalia_trim_heap_after_decode_teardown();
-
     result
 }
 
@@ -2151,8 +2134,6 @@ pub(super) fn native_vulkan_vulkanalia_record_h264_streaming_decode_into_image(
     if let Some(session_parameters) = session_parameters.take() {
         native_vulkan_vulkanalia_destroy_video_session_parameters(device, session_parameters);
     }
-    native_vulkan_vulkanalia_trim_heap_after_decode_teardown();
-
     result
 }
 

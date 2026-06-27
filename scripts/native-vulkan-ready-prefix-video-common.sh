@@ -32,46 +32,16 @@ gilder_is_uint() {
   [[ "$value" =~ ^[0-9]+$ ]]
 }
 
-gilder_is_allocator_profile() {
-  local value="${1:?allocator profile is required}"
-  [[ "$value" == "system" || "$value" == "glibc-low-dirty" ]]
-}
-
 gilder_append_ready_prefix_runtime_env() {
   local env_array_name="${1:?runtime env array name is required}"
-  local allocator_profile="${2:-system}"
   local -n runtime_env_ref="$env_array_name"
-  local glibc_tunables="${GLIBC_TUNABLES:-}"
-
-  case "$allocator_profile" in
-    system)
-      runtime_env_ref=(
-        -u MALLOC_ARENA_MAX
-        -u MALLOC_MMAP_THRESHOLD_
-        -u MALLOC_TRIM_THRESHOLD_
-        -u GLIBC_TUNABLES
-        "${runtime_env_ref[@]}"
-      )
-      ;;
-    glibc-low-dirty)
-      runtime_env_ref+=("MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-1}")
-      runtime_env_ref+=("MALLOC_MMAP_THRESHOLD_=${MALLOC_MMAP_THRESHOLD_:-131072}")
-      runtime_env_ref+=("MALLOC_TRIM_THRESHOLD_=${MALLOC_TRIM_THRESHOLD_:-0}")
-
-      if [[ "$glibc_tunables" != *glibc.malloc.tcache_count=* ]]; then
-        if [[ -n "$glibc_tunables" ]]; then
-          glibc_tunables="${glibc_tunables}:glibc.malloc.tcache_count=0"
-        else
-          glibc_tunables="glibc.malloc.tcache_count=0"
-        fi
-      fi
-      runtime_env_ref+=("GLIBC_TUNABLES=$glibc_tunables")
-      ;;
-    *)
-      printf 'FAIL: unsupported allocator profile: %s\n' "$allocator_profile" >&2
-      return 1
-      ;;
-  esac
+  runtime_env_ref=(
+    -u MALLOC_ARENA_MAX
+    -u MALLOC_MMAP_THRESHOLD_
+    -u MALLOC_TRIM_THRESHOLD_
+    -u GLIBC_TUNABLES
+    "${runtime_env_ref[@]}"
+  )
 
   for passthrough_env in \
     VK_LOADER_LAYERS_ENABLE \

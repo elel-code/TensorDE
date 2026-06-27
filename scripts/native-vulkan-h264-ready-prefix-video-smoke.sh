@@ -46,8 +46,6 @@ Options:
                         (muted -> clock-only, unmuted -> auto).
   --pacing-master <target|audio>
                         Select pacing master. audio requires --audio-clock-probe.
-  --allocator-profile <system|glibc-low-dirty>
-                        Runtime allocator env profile. Default: system.
   --muted|--unmuted    Select the effective video plan audio policy for plan output.
   --performance-snapshot
                         Capture process CPU/RSS/PSS/USS/Private_Dirty/smaps while the
@@ -92,7 +90,6 @@ audio_clock_probe=0
 audio_output="plan"
 plan_muted=1
 pacing_master="target"
-allocator_profile="system"
 layer="background"
 fit="cover"
 no_build=0
@@ -204,10 +201,6 @@ while [[ $# -gt 0 ]]; do
       pacing_master="${2:-}"
       shift 2
       ;;
-    --allocator-profile)
-      allocator_profile="${2:-}"
-      shift 2
-      ;;
     --performance-snapshot)
       performance_snapshot=1
       shift
@@ -262,10 +255,6 @@ if [[ -z "$display" ]]; then
 fi
 if [[ "$pacing_master" != "target" && "$pacing_master" != "audio" ]]; then
   printf 'FAIL: --pacing-master must be target or audio\n' >&2
-  exit 1
-fi
-if ! gilder_is_allocator_profile "$allocator_profile"; then
-  printf 'FAIL: --allocator-profile must be system or glibc-low-dirty\n' >&2
   exit 1
 fi
 if [[ "$pacing_master" == "audio" && "$audio_clock_probe" -ne 1 ]]; then
@@ -454,7 +443,7 @@ if [[ "$pacing_master" == "audio" ]]; then
 else
   runtime_env+=(GILDER_VIDEO_PACING_MASTER=target)
 fi
-gilder_append_ready_prefix_runtime_env runtime_env "$allocator_profile"
+gilder_append_ready_prefix_runtime_env runtime_env
 
 performance_status=0
 if [[ "$performance_snapshot" -eq 1 ]]; then
@@ -884,7 +873,7 @@ fi
   printf 'max_requested_reference_count: %s\n' "$max_requested_reference_count"
   printf 'max_reference_count: %s\n' "$max_reference_count"
   printf 'pacing_master: %s\n' "$pacing_master"
-  printf 'allocator_profile: %s\n' "$allocator_profile"
+  printf 'allocator_tuning: none\n'
   printf 'pacing_strategy: %s\n' "$pacing_strategy"
   printf 'expected_pacing_strategy: %s\n' "$expected_pacing_strategy"
   printf 'frame_sleep_count: %s\n' "$frame_sleep_count_value"

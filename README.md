@@ -87,9 +87,9 @@ packages can use `manifest.gilder.json` or authoring-friendly
 
 Performance evidence must be long enough for sampling and must pass
 `--performance-snapshot`. Functional-only smoke output is not enough for CPU,
-GPU, or memory claims. Codec smoke scripts default to
-`--allocator-profile system`, which matches distribution behavior and clears
-known glibc/malloc tuning variables before launching the video process.
+GPU, or memory claims. Codec smoke scripts do not provide allocator tuning
+profiles; they clear known glibc/malloc tuning variables before launching the
+video process so evidence matches untuned distribution behavior.
 Current 4K240 video performance gates are `average_present_fps >= 239.999` and
 `performance_max_private_dirty_kib < 25000`.
 
@@ -105,7 +105,6 @@ scripts/native-vulkan-h264-ready-prefix-video-smoke.sh \
   --decode-prefix 600 \
   --playback-frames 600 \
   --arbitrary-entry-offset 2.3 \
-  --allocator-profile system \
   --performance-snapshot \
   --performance-duration 6 \
   --performance-interval 1 \

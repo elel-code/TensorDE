@@ -2269,6 +2269,20 @@ pub(super) struct NativeVulkanH265ReferenceRequest {
 }
 
 #[cfg(feature = "native-vulkan-video")]
+impl NativeVulkanH265ReferenceRequest {
+    const fn empty() -> Self {
+        Self {
+            delta_poc: 0,
+            poc: 0,
+            used_for_long_term_reference: false,
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-video")]
+const NATIVE_VULKAN_H265_MAX_REFERENCE_REQUESTS: usize = 64;
+
+#[cfg(feature = "native-vulkan-video")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct NativeVulkanH265ActiveDpbReference {
     pub(super) poc: i32,
@@ -2535,52 +2549,41 @@ impl NativeVulkanH265DecodeReferencePlanner {
             self.reset_for_idr();
         }
         let current_poc = first_slice.and_then(|slice| self.derive_current_poc(slice));
-        let reference_delta_pocs = first_slice
-            .and_then(|slice| slice.short_term_ref_pic_set.as_ref())
-            .map(|rps| {
-                rps.used_negative_delta_pocs
-                    .iter()
-                    .chain(rps.used_positive_delta_pocs.iter())
-                    .copied()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let reference_requests =
-            if let (Some(slice), Some(current_poc)) = (first_slice, current_poc) {
-                let mut requests = reference_delta_pocs
-                    .iter()
-                    .copied()
-                    .map(|delta_poc| NativeVulkanH265ReferenceRequest {
+        let mut reference_requests =
+            [NativeVulkanH265ReferenceRequest::empty(); NATIVE_VULKAN_H265_MAX_REFERENCE_REQUESTS];
+        let mut reference_request_count = 0usize;
+        if let (Some(slice), Some(current_poc)) = (first_slice, current_poc) {
+            for delta_poc in slice.short_term_reference_delta_pocs.iter().copied() {
+                if let Some(request) = reference_requests.get_mut(reference_request_count) {
+                    *request = NativeVulkanH265ReferenceRequest {
                         delta_poc,
                         poc: current_poc.saturating_add(delta_poc),
                         used_for_long_term_reference: false,
-                    })
-                    .collect::<Vec<_>>();
-                for long_term_reference in &slice.long_term_references {
-                    if let Some(poc) =
-                        self.derive_long_term_reference_poc(slice, current_poc, long_term_reference)
-                    {
-                        requests.push(NativeVulkanH265ReferenceRequest {
-                            delta_poc: poc.saturating_sub(current_poc),
-                            poc,
-                            used_for_long_term_reference: true,
-                        });
-                    }
+                    };
+                    reference_request_count += 1;
                 }
-                requests
-            } else {
-                Vec::new()
-            };
-        let protected_pocs = current_poc
-            .map(|_| {
-                reference_requests
-                    .iter()
-                    .map(|request| request.poc)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+            }
+            for long_term_reference in &slice.long_term_references {
+                if let Some(poc) =
+                    self.derive_long_term_reference_poc(slice, current_poc, long_term_reference)
+                    && let Some(request) = reference_requests.get_mut(reference_request_count)
+                {
+                    *request = NativeVulkanH265ReferenceRequest {
+                        delta_poc: poc.saturating_sub(current_poc),
+                        poc,
+                        used_for_long_term_reference: true,
+                    };
+                    reference_request_count += 1;
+                }
+            }
+        }
+        let reference_requests = &reference_requests[..reference_request_count];
+        let mut protected_pocs = [0i32; NATIVE_VULKAN_H265_MAX_REFERENCE_REQUESTS];
+        for (index, request) in reference_requests.iter().enumerate() {
+            protected_pocs[index] = request.poc;
+        }
         let planned_output_slot = if current_poc.is_some() {
-            self.choose_output_slot(&protected_pocs)
+            self.choose_output_slot(&protected_pocs[..reference_requests.len()])
         } else {
             self.next_output_slot % self.dpb_slots
         };
@@ -2589,27 +2592,23 @@ impl NativeVulkanH265DecodeReferencePlanner {
             .get(planned_output_slot as usize)
             .copied()
             .flatten();
-        let references = reference_requests
-            .iter()
-            .copied()
-            .map(|request| {
-                let source = self.poc_to_decoded_slot.get(&request.poc).copied();
-                let available = source.is_some_and(|(_, slot)| slot != planned_output_slot);
-                NativeVulkanH265DecodeReferenceSnapshot {
-                    delta_poc: request.delta_poc,
-                    poc: request.poc,
-                    used_for_long_term_reference: request.used_for_long_term_reference,
-                    available,
-                    source_access_unit_index: source.map(|(index, _)| index),
-                    dpb_slot: source.map(|(_, slot)| slot),
-                }
-            })
-            .collect::<Vec<_>>();
-        let missing_reference_pocs = references
-            .iter()
-            .filter(|reference| !reference.available)
-            .map(|reference| reference.poc)
-            .collect::<Vec<_>>();
+        let mut references = Vec::with_capacity(reference_requests.len());
+        for request in reference_requests.iter().copied() {
+            let source = self.poc_to_decoded_slot.get(&request.poc).copied();
+            let available = source.is_some_and(|(_, slot)| slot != planned_output_slot);
+            references.push(NativeVulkanH265DecodeReferenceSnapshot {
+                delta_poc: request.delta_poc,
+                poc: request.poc,
+                used_for_long_term_reference: request.used_for_long_term_reference,
+                available,
+                source_access_unit_index: source.map(|(index, _)| index),
+                dpb_slot: source.map(|(_, slot)| slot),
+            });
+        }
+        let mut missing_reference_pocs = Vec::with_capacity(reference_requests.len());
+        for reference in references.iter().filter(|reference| !reference.available) {
+            missing_reference_pocs.push(reference.poc);
+        }
         let available_reference_count = references
             .iter()
             .filter(|reference| reference.available)
@@ -2811,10 +2810,9 @@ pub(super) fn native_vulkan_h265_access_units_max_active_references(
         .filter_map(|access_unit| access_unit.first_slice.as_ref())
         .map(|slice| {
             let short_term_count = slice
-                .short_term_ref_pic_set
-                .as_ref()
-                .map(|rps| rps.used_by_current_count)
-                .unwrap_or(0);
+                .short_term_reference_delta_pocs
+                .len()
+                .min(u32::MAX as usize) as u32;
             let long_term_count = slice
                 .long_term_references
                 .iter()

@@ -70,8 +70,8 @@ cargo run --bin gilder-convert -- pack ./examples/wallpapers/static-demo.gwpdir 
 ## 视频证据要求
 
 性能证据必须播放足够长，且必须开启 `--performance-snapshot`。只跑功能 smoke 不能用于说明
-CPU、GPU 或内存占用。codec smoke 默认使用 `--allocator-profile system`，也就是发行环境口径，
-启动视频进程前会清掉已知 glibc/malloc 调参变量。
+CPU、GPU 或内存占用。codec smoke 不再提供 allocator 调参 profile；启动视频进程前只会清掉
+已知 glibc/malloc 调参变量，让证据保持未调参的发行环境口径。
 当前 4K240 video 性能门槛是 `average_present_fps >= 239.999` 和
 `performance_max_private_dirty_kib < 25000`。
 
@@ -87,7 +87,6 @@ scripts/native-vulkan-h264-ready-prefix-video-smoke.sh \
   --decode-prefix 600 \
   --playback-frames 600 \
   --arbitrary-entry-offset 2.3 \
-  --allocator-profile system \
   --performance-snapshot \
   --performance-duration 6 \
   --performance-interval 1 \

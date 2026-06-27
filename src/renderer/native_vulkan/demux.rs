@@ -1,10 +1,12 @@
 //! Demux-to-decode packet queue boundary for the native Vulkan video path.
 //!
 //! This module follows the same broad split as FFmpeg: demux/parser output is
-//! retained as codec access units, while decode/render code consumes packets
-//! with explicit timestamps, loop serials, and parameter-set snapshots. The
-//! packet queue is frontend-agnostic inside the renderer; the current provider
-//! is the FFmpeg reader.
+//! moved into a packet queue, decode consumes one packet and then releases the
+//! compressed payload, while the decoded-frame keep-last ring is downstream.
+//! `references/ffmpeg/fftools/ffplay.c:534-642` moves packets out of
+//! PacketQueue into the decoder packet and `references/ffmpeg/fftools/ffplay.c:650-692`
+//! unrefs that packet after send/decode. `references/ffmpeg/fftools/ffplay.c:691-804`
+//! keeps the decoded FrameQueue separate.
 
 use std::collections::VecDeque;
 
@@ -115,7 +117,7 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
             boundary: "replaceable-demux-parser-to-native-decode",
             first_reference: "FFmpeg ffplay PacketQueue serial and bounded packet ownership (references/ffmpeg/fftools/ffplay.c:114-123,420-456)",
             frontend_contract: "frontend supplies encoded access units/temporal units through a codec-limited FFmpeg read-thread handoff; native Vulkan owns codec state, decode, render and present",
-            queue_policy: "single bounded FIFO packet handoff with FFmpeg av_packet_move_ref-style ownership (references/ffmpeg/fftools/ffplay.c:420-456) and read-thread backpressure when full (references/ffmpeg/fftools/ffplay.c:3132-3141); queued packets do not retain parsed snapshots; payload is released immediately after bitstream upload and decoded-frame keep_last=1 is downstream",
+            queue_policy: "single bootstrap FIFO packet handoff with FFmpeg av_packet_move_ref-style ownership (references/ffmpeg/fftools/ffplay.c:420-456), packet_queue_get consumption/release semantics (references/ffmpeg/fftools/ffplay.c:534-642,650-692), and read-thread backpressure when full (references/ffmpeg/fftools/ffplay.c:3132-3141); after bootstrap the encoded FIFO drains to demand-pull instead of being topped back to capacity; payload is released immediately after bitstream upload and decoded-frame keep_last=1 is downstream",
             frame_keep_last_policy: "decoded-frame keep-last/direct-DPB ownership is downstream of this packet queue",
             serial_model: "source loop count is the packet serial; stale packets/frames are rejected across loop or seek boundaries",
             capacity: self.capacity.min(u32::MAX as usize) as u32,
@@ -176,9 +178,6 @@ impl<A: NativeVulkanStreamingAccessUnit> NativeVulkanStreamingPacketQueue<A> {
             &packet.access_unit,
             &self.parameter_sets,
         );
-        if self.queued.len() < self.capacity {
-            let _ = self.try_fill_one(loop_on_eos)?;
-        }
         Ok(NativeVulkanStreamingPacket {
             access_unit: packet.access_unit,
             snapshot,
@@ -584,7 +583,7 @@ mod tests {
         );
         assert!(snapshot.first_reference.contains("FFmpeg"));
         assert!(snapshot.first_reference.contains("PacketQueue"));
-        assert!(snapshot.queue_policy.contains("bounded FIFO"));
+        assert!(snapshot.queue_policy.contains("bootstrap FIFO"));
         assert!(
             snapshot
                 .frontend_contract
@@ -677,19 +676,21 @@ mod tests {
         assert_eq!(recovered.access_unit.pts_ms(), Some(8));
         assert_eq!(recovered.source_loop_index, 1);
         assert_eq!(queue.loop_skip_access_units, 2);
-        assert_eq!(queue.loop_skipped_access_units, 4);
+        assert_eq!(queue.loop_skipped_access_units, 2);
 
         let snapshot = queue.runtime_snapshot();
         assert_eq!(snapshot.loop_skip_packets, 2);
-        assert_eq!(snapshot.loop_skipped_packets, 4);
-        assert_eq!(snapshot.current_serial, 2);
-        assert_eq!(snapshot.front_serial, Some(1));
-        assert_eq!(snapshot.back_serial, Some(2));
-        assert_eq!(snapshot.front_pts_ms, Some(12));
+        assert_eq!(snapshot.loop_skipped_packets, 2);
+        assert_eq!(snapshot.current_serial, 1);
+        assert_eq!(snapshot.queued_packets, 0);
+        assert_eq!(snapshot.retained_payload_bytes, 0);
+        assert_eq!(snapshot.front_serial, None);
+        assert_eq!(snapshot.back_serial, None);
+        assert_eq!(snapshot.front_pts_ms, None);
     }
 
     #[test]
-    fn packet_queue_refill_honors_loop_before_queue_is_empty() {
+    fn packet_queue_drains_bootstrap_before_demand_pull_loop() {
         let bootstrap = vec![
             TestAccessUnit {
                 bytes: vec![1, 2, 3],
@@ -734,14 +735,17 @@ mod tests {
             queue.next_packet(true).expect("packet 0").source_loop_index,
             0
         );
+        assert_eq!(queue.runtime_snapshot().queued_packets, 2);
         assert_eq!(
             queue.next_packet(true).expect("packet 1").source_loop_index,
             0
         );
+        assert_eq!(queue.runtime_snapshot().queued_packets, 1);
         assert_eq!(
             queue.next_packet(true).expect("packet 2").source_loop_index,
             0
         );
+        assert_eq!(queue.runtime_snapshot().queued_packets, 0);
         assert_eq!(
             queue
                 .next_packet(true)
@@ -749,6 +753,7 @@ mod tests {
                 .source_loop_index,
             1
         );
+        assert_eq!(queue.runtime_snapshot().queued_packets, 0);
         assert_eq!(
             queue
                 .next_packet(true)

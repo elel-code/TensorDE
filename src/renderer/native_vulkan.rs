@@ -7,6 +7,8 @@
 #![allow(unsafe_code)]
 
 use serde::Serialize;
+#[cfg(any(feature = "native-vulkan-video", test))]
+use std::borrow::Cow;
 #[cfg(feature = "native-vulkan-video")]
 use std::collections::BTreeMap;
 use std::fmt;
@@ -19,14 +21,14 @@ use crate::renderer::native_wayland::{NativeWaylandError, NativeWaylandHostOptio
 use crate::renderer::{StaticWallpaperPlan, VideoWallpaperPlan};
 use vulkanalia::vk;
 
-#[cfg(all(
-    feature = "native-vulkan-video",
-    target_os = "linux",
-    target_env = "gnu"
-))]
+#[cfg(all(any(feature = "native-vulkan-video", test), target_family = "unix"))]
 unsafe extern "C" {
-    fn mallopt(param: i32, value: i32) -> i32;
-    fn malloc_trim(pad: usize) -> i32;
+    #[link_name = "memchr"]
+    fn native_vulkan_c_memchr(
+        s: *const std::ffi::c_void,
+        c: std::os::raw::c_int,
+        n: usize,
+    ) -> *mut std::ffi::c_void;
 }
 
 pub enum NativeVulkanEncodedAccessUnitPayload {
@@ -107,10 +109,6 @@ impl fmt::Debug for NativeVulkanEncodedAccessUnitPayload {
 ))]
 #[path = "native_vulkan/h264.rs"]
 mod h264;
-
-#[cfg(any(feature = "native-vulkan-video", test))]
-#[path = "native_vulkan/byte_summary.rs"]
-mod byte_summary;
 
 #[cfg(feature = "native-vulkan-video")]
 #[path = "native_vulkan/sampling.rs"]
@@ -203,8 +201,6 @@ mod codec_reference;
 mod video_session_snapshots;
 
 pub use audio_policy::{NativeVulkanAudioOutputMode, NativeVulkanAudioOutputPolicy};
-#[cfg(feature = "native-vulkan-video")]
-use byte_summary::native_vulkan_stable_byte_hash;
 pub use clear_present_runtime::run_clear;
 #[cfg(feature = "native-vulkan-video")]
 use codec_reference::*;
@@ -235,12 +231,9 @@ pub use vulkanalia_direct::{
 };
 #[cfg(feature = "native-vulkan-video")]
 pub use vulkanalia_extract::{
-    native_vulkan_extract_av1_decode_frames_for_vulkanalia,
     native_vulkan_extract_av1_sequence_header_for_vulkanalia,
     native_vulkan_extract_h264_parameter_sets_for_vulkanalia,
-    native_vulkan_extract_h264_ready_prefix_for_vulkanalia,
     native_vulkan_extract_h265_parameter_sets_for_vulkanalia,
-    native_vulkan_extract_h265_ready_prefix_for_vulkanalia,
 };
 
 #[cfg(feature = "native-vulkan-video")]
@@ -496,30 +489,6 @@ pub struct NativeVulkanDrmDeviceSnapshot {
 }
 
 #[cfg(feature = "native-vulkan-video")]
-fn native_vulkan_configure_process_allocator_for_streaming_video() {
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    unsafe {
-        const M_TRIM_THRESHOLD: i32 = -1;
-        const M_TOP_PAD: i32 = -2;
-        const M_MMAP_THRESHOLD: i32 = -3;
-        const M_ARENA_MAX: i32 = -8;
-
-        let _ = mallopt(M_ARENA_MAX, 1);
-        let _ = mallopt(M_TRIM_THRESHOLD, 128 * 1024);
-        let _ = mallopt(M_TOP_PAD, 0);
-        let _ = mallopt(M_MMAP_THRESHOLD, 128 * 1024);
-    }
-}
-
-#[cfg(feature = "native-vulkan-video")]
-fn native_vulkan_trim_process_heap() {
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    unsafe {
-        let _ = malloc_trim(0);
-    }
-}
-
-#[cfg(feature = "native-vulkan-video")]
 struct NativeVulkanAv1FirstFrameDecodeInfo {
     frame_header_obu_offset: u64,
     frame_header_payload_offset: u64,
@@ -535,12 +504,6 @@ struct NativeVulkanH265AccessUnitExtract {
     duration_ns: Option<u64>,
     pts_ms: Option<u64>,
     duration_ms: Option<u64>,
-    caps: Option<String>,
-    stream_format: Option<String>,
-    alignment: Option<String>,
-    width: Option<u32>,
-    height: Option<u32>,
-    framerate: Option<String>,
     stats: NativeVulkanH265NalStats,
 }
 
@@ -551,12 +514,6 @@ struct NativeVulkanH264AccessUnitExtract {
     duration_ns: Option<u64>,
     pts_ms: Option<u64>,
     duration_ms: Option<u64>,
-    caps: Option<String>,
-    stream_format: Option<String>,
-    alignment: Option<String>,
-    width: Option<u32>,
-    height: Option<u32>,
-    framerate: Option<String>,
     stats: NativeVulkanH264NalStats,
 }
 
@@ -1449,12 +1406,6 @@ struct NativeVulkanAv1TemporalUnitExtract {
     duration_ns: Option<u64>,
     pts_ms: Option<u64>,
     duration_ms: Option<u64>,
-    caps: Option<String>,
-    stream_format: Option<String>,
-    alignment: Option<String>,
-    width: Option<u32>,
-    height: Option<u32>,
-    framerate: Option<String>,
     stats: NativeVulkanAv1ObuStats,
 }
 
@@ -1474,7 +1425,6 @@ type NativeVulkanAv1StreamingPacketQueue =
 #[cfg(feature = "native-vulkan-video")]
 impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanH264AccessUnitExtract {
     const FFMPEG_CODEC: NativeVulkanFfmpegCodec = NativeVulkanFfmpegCodec::H264;
-    const FFMPEG_READ_THREAD_HANDOFF_PACKETS: usize = 0;
 
     fn from_ffmpeg_packet(
         payload: NativeVulkanFfmpegPacketPayload,
@@ -1493,12 +1443,6 @@ impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanH264AccessUnitExtract
             duration_ns: metadata.duration_ns,
             pts_ms: metadata.pts_ms,
             duration_ms: metadata.duration_ms,
-            caps: metadata.caps,
-            stream_format: metadata.stream_format,
-            alignment: metadata.alignment,
-            width: metadata.width,
-            height: metadata.height,
-            framerate: metadata.framerate,
             stats,
         })
     }
@@ -1548,7 +1492,6 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
 #[cfg(feature = "native-vulkan-video")]
 impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
     const FFMPEG_CODEC: NativeVulkanFfmpegCodec = NativeVulkanFfmpegCodec::H265;
-    const FFMPEG_READ_THREAD_HANDOFF_PACKETS: usize = 2;
 
     fn from_ffmpeg_packet(
         payload: NativeVulkanFfmpegPacketPayload,
@@ -1567,12 +1510,6 @@ impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanH265AccessUnitExtract
             duration_ns: metadata.duration_ns,
             pts_ms: metadata.pts_ms,
             duration_ms: metadata.duration_ms,
-            caps: metadata.caps,
-            stream_format: metadata.stream_format,
-            alignment: metadata.alignment,
-            width: metadata.width,
-            height: metadata.height,
-            framerate: metadata.framerate,
             stats,
         })
     }
@@ -1645,6 +1582,7 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
 #[cfg(feature = "native-vulkan-video")]
 impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
     const FFMPEG_CODEC: NativeVulkanFfmpegCodec = NativeVulkanFfmpegCodec::Av1;
+    const FFMPEG_PACKET_SPLITS_ACCESS_UNITS: bool = true;
 
     fn from_ffmpeg_packet(
         payload: NativeVulkanFfmpegPacketPayload,
@@ -1664,12 +1602,6 @@ impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtrac
             duration_ns: metadata.duration_ns,
             pts_ms: metadata.pts_ms,
             duration_ms: metadata.duration_ms,
-            caps: metadata.caps,
-            stream_format: metadata.stream_format,
-            alignment: metadata.alignment,
-            width: metadata.width,
-            height: metadata.height,
-            framerate: metadata.framerate,
             stats,
         })
     }
@@ -1678,12 +1610,13 @@ impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtrac
         payload: NativeVulkanFfmpegPacketPayload,
         metadata: NativeVulkanFfmpegPacketMetadata,
     ) -> Result<Vec<Self>, NativeVulkanError> {
-        let units = native_vulkan_av1_split_ffmpeg_packet_frames(payload.bytes())
+        let ranges = native_vulkan_av1_split_ffmpeg_packet_frame_ranges(payload.bytes())
             .map_err(NativeVulkanError::Video)?;
-        units
+        payload
+            .split_into_ranges(ranges, "AV1")?
             .into_iter()
             .map(|unit| {
-                let payload = NativeVulkanEncodedAccessUnitPayload::owned(unit);
+                let payload = NativeVulkanEncodedAccessUnitPayload::from_ffmpeg_packet(unit);
                 if payload.is_empty() {
                     return Err(NativeVulkanError::Video(
                         "AV1 FFmpeg packet frame unit is empty".to_owned(),
@@ -1697,12 +1630,6 @@ impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtrac
                     duration_ns: metadata.duration_ns,
                     pts_ms: metadata.pts_ms,
                     duration_ms: metadata.duration_ms,
-                    caps: metadata.caps.clone(),
-                    stream_format: metadata.stream_format.clone(),
-                    alignment: metadata.alignment.clone(),
-                    width: metadata.width,
-                    height: metadata.height,
-                    framerate: metadata.framerate.clone(),
                     stats,
                 })
             })
@@ -1732,7 +1659,7 @@ fn native_vulkan_av1_temporal_unit_snapshot(
     NativeVulkanAv1TemporalUnitSnapshot {
         index,
         bytes: temporal_unit.stats.bytes,
-        byte_hash: native_vulkan_stable_byte_hash(temporal_unit.payload.bytes()),
+        byte_hash: 0,
         pts_ns: temporal_unit.pts_ns,
         duration_ns: temporal_unit.duration_ns,
         pts_ms: temporal_unit.pts_ms,
@@ -1761,10 +1688,10 @@ fn native_vulkan_h264_access_unit_snapshot(
     access_unit: &NativeVulkanH264AccessUnitExtract,
     parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
 ) -> NativeVulkanH264AccessUnitSnapshot {
-    let first_frame = native_vulkan_h264_picture_decode_info(
+    let first_frame = native_vulkan_h264_picture_decode_info_from_stats(
         access_unit.payload.bytes(),
+        &access_unit.stats,
         parameter_sets,
-        access_unit.stats.slice_count as usize,
     );
     let (first_slice, first_slice_parse_error) = match first_frame {
         Ok(first_frame) => (
@@ -1829,7 +1756,7 @@ fn native_vulkan_h264_access_unit_snapshot(
     NativeVulkanH264AccessUnitSnapshot {
         index,
         bytes: access_unit.stats.bytes,
-        byte_hash: native_vulkan_stable_byte_hash(access_unit.payload.bytes()),
+        byte_hash: 0,
         pts_ns: access_unit.pts_ns,
         duration_ns: access_unit.duration_ns,
         pts_ms: access_unit.pts_ms,
@@ -1853,8 +1780,11 @@ fn native_vulkan_h265_access_unit_snapshot(
     access_unit: &NativeVulkanH265AccessUnitExtract,
     parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
 ) -> NativeVulkanH265AccessUnitSnapshot {
-    let first_slice_result =
-        native_vulkan_h265_first_slice_probe_snapshot(access_unit.payload.bytes(), parameter_sets);
+    let first_slice_result = native_vulkan_h265_first_slice_probe_snapshot_from_stats(
+        access_unit.payload.bytes(),
+        &access_unit.stats,
+        parameter_sets,
+    );
     let (first_slice, first_slice_parse_error) = match first_slice_result {
         Ok(snapshot) => (Some(snapshot), None),
         Err(err) => (None, Some(err)),
@@ -1862,7 +1792,7 @@ fn native_vulkan_h265_access_unit_snapshot(
     NativeVulkanH265AccessUnitSnapshot {
         index,
         bytes: access_unit.stats.bytes,
-        byte_hash: native_vulkan_stable_byte_hash(access_unit.payload.bytes()),
+        byte_hash: 0,
         pts_ns: access_unit.pts_ns,
         duration_ns: access_unit.duration_ns,
         pts_ms: access_unit.pts_ms,
@@ -1921,18 +1851,35 @@ fn native_vulkan_h265_sps_max_pic_order_cnt_lsb(sps: &NativeVulkanH265SpsSnapsho
 }
 
 #[cfg(any(feature = "native-vulkan-video", test))]
-fn native_vulkan_h265_first_slice_probe_snapshot(
+fn native_vulkan_h265_first_slice_probe_snapshot_from_stats(
     access_unit: &[u8],
+    stats: &NativeVulkanH265NalStats,
     parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
 ) -> Result<NativeVulkanH265AccessUnitSliceSnapshot, String> {
-    let nal_units = native_vulkan_h265_nal_payloads(access_unit);
-    let slice = nal_units
-        .iter()
-        .find(|unit| unit.nal_type <= 31)
+    let first_slice = stats
+        .first_slice
         .ok_or_else(|| "H.265 access unit has no slice NAL".to_owned())?;
+    if first_slice.payload_start >= first_slice.payload_end
+        || first_slice.payload_end > access_unit.len()
+    {
+        return Err("H.265 first slice payload range exceeds access-unit bounds".to_owned());
+    }
+    native_vulkan_h265_slice_probe_snapshot_from_summary(
+        first_slice,
+        &access_unit[first_slice.payload_start..first_slice.payload_end],
+        parameter_sets,
+    )
+}
+
+#[cfg(any(feature = "native-vulkan-video", test))]
+fn native_vulkan_h265_slice_probe_snapshot_from_summary(
+    slice: NativeVulkanH265SlicePayloadSummary,
+    payload: &[u8],
+    parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
+) -> Result<NativeVulkanH265AccessUnitSliceSnapshot, String> {
     let idr = matches!(slice.nal_type, 19 | 20);
     let irap = (16..=23).contains(&slice.nal_type);
-    let rbsp = native_vulkan_h265_rbsp(slice.payload)?;
+    let rbsp = native_vulkan_h265_slice_header_rbsp(payload)?;
     if rbsp.len() < 3 {
         return Err("H.265 slice NAL is too short".to_owned());
     }
@@ -1968,15 +1915,16 @@ fn native_vulkan_h265_first_slice_probe_snapshot(
     let mut short_term_ref_pic_set_idx = None::<u32>;
     let mut num_delta_pocs_of_ref_rps_idx = 0u8;
     let mut num_bits_for_st_ref_pic_set_in_slice = 0u16;
-    let (pic_order_cnt_lsb, short_term_ref_pic_set, long_term_references) = if idr {
-        (None, None, Vec::new())
+    let (pic_order_cnt_lsb, short_term_reference_delta_pocs, long_term_references) = if idr {
+        (None, NativeVulkanH265ReferenceDeltas::new(), Vec::new())
     } else {
         let pic_order_cnt_lsb = bits.read_bits(
             parameter_sets.sps.log2_max_pic_order_cnt_lsb_minus4 + 4,
             "slice_pic_order_cnt_lsb",
         )?;
         short_term_ref_pic_set_sps_flag = bits.read_bool("short_term_ref_pic_set_sps_flag")?;
-        let short_term_ref_pic_set = if short_term_ref_pic_set_sps_flag {
+        let mut short_term_reference_delta_pocs = NativeVulkanH265ReferenceDeltas::new();
+        if short_term_ref_pic_set_sps_flag {
             if parameter_sets.sps.num_short_term_ref_pic_sets == 0 {
                 return Err("H.265 slice references SPS short-term RPS but SPS has none".to_owned());
             }
@@ -1997,9 +1945,8 @@ fn native_vulkan_h265_first_slice_probe_snapshot(
                         "H.265 slice short_term_ref_pic_set_idx {selected_ref_pic_set_idx} exceeds SPS RPS count {}",
                         parameter_sets.sps.short_term_ref_pic_sets.len()
                     )
-                })?
-                .clone();
-            Some(short_term_ref_pic_set)
+                })?;
+            short_term_reference_delta_pocs.extend_used_ref_pic_set(short_term_ref_pic_set);
         } else {
             let rps_bit_start = bits.bit_offset();
             let short_term_ref_pic_set = native_vulkan_h265_read_short_term_ref_pic_set(
@@ -2020,13 +1967,13 @@ fn native_vulkan_h265_first_slice_probe_snapshot(
                     "NumDeltaPocsOfRefRpsIdx",
                 )?;
             }
-            Some(short_term_ref_pic_set)
-        };
+            short_term_reference_delta_pocs.extend_used_ref_pic_set(&short_term_ref_pic_set);
+        }
         let long_term_references =
             native_vulkan_h265_read_long_term_references(&mut bits, &parameter_sets.sps)?;
         (
             Some(pic_order_cnt_lsb),
-            short_term_ref_pic_set,
+            short_term_reference_delta_pocs,
             long_term_references,
         )
     };
@@ -2034,8 +1981,7 @@ fn native_vulkan_h265_first_slice_probe_snapshot(
     Ok(NativeVulkanH265AccessUnitSliceSnapshot {
         nal_type: slice.nal_type,
         nal_type_label: native_vulkan_h265_nal_type_label(slice.nal_type),
-        slice_segment_offset: u32::try_from(slice.slice_segment_offset)
-            .map_err(|_| "H.265 slice offset exceeds u32 range".to_owned())?,
+        slice_segment_offset: slice.slice_segment_offset,
         first_slice_segment_in_pic_flag,
         slice_type,
         pps_id,
@@ -2044,7 +1990,7 @@ fn native_vulkan_h265_first_slice_probe_snapshot(
         short_term_ref_pic_set_idx,
         num_delta_pocs_of_ref_rps_idx,
         num_bits_for_st_ref_pic_set_in_slice,
-        short_term_ref_pic_set,
+        short_term_reference_delta_pocs,
         long_term_references,
         idr,
         irap,
@@ -2803,13 +2749,37 @@ pub(super) fn native_vulkan_h264_i8(value: i32, label: &'static str) -> Result<i
 }
 
 #[cfg(any(feature = "native-vulkan-video", test))]
-fn native_vulkan_h264_rbsp(payload: &[u8]) -> Result<Vec<u8>, String> {
+fn native_vulkan_h264_rbsp(payload: &[u8]) -> Result<Cow<'_, [u8]>, String> {
     if payload.is_empty() {
         return Err("H.264 NAL payload is empty".to_owned());
     }
-    let mut rbsp = Vec::with_capacity(payload.len());
+    Ok(native_vulkan_rbsp_unescape(payload))
+}
+
+#[cfg(any(feature = "native-vulkan-video", test))]
+fn native_vulkan_rbsp_unescape(payload: &[u8]) -> Cow<'_, [u8]> {
     let mut zero_count = 0u8;
-    for byte in payload.iter().copied() {
+    let mut first_escape = None;
+    for (index, byte) in payload.iter().copied().enumerate() {
+        if zero_count == 2 && byte == 0x03 {
+            first_escape = Some(index);
+            break;
+        }
+        if byte == 0 {
+            zero_count = zero_count.saturating_add(1).min(2);
+        } else {
+            zero_count = 0;
+        }
+    }
+
+    let Some(first_escape) = first_escape else {
+        return Cow::Borrowed(payload);
+    };
+
+    let mut rbsp = Vec::with_capacity(payload.len());
+    rbsp.extend_from_slice(&payload[..first_escape]);
+    zero_count = 2;
+    for byte in payload[first_escape..].iter().copied() {
         if zero_count == 2 && byte == 0x03 {
             zero_count = 0;
             continue;
@@ -2821,7 +2791,7 @@ fn native_vulkan_h264_rbsp(payload: &[u8]) -> Result<Vec<u8>, String> {
             zero_count = 0;
         }
     }
-    Ok(rbsp)
+    Cow::Owned(rbsp)
 }
 
 #[cfg(any(feature = "native-vulkan-video", test))]
@@ -2846,7 +2816,6 @@ fn native_vulkan_rbsp_more_data(bytes: &[u8], bit_offset: usize) -> bool {
 struct NativeVulkanH264NalPayload<'a> {
     nal_type: u8,
     nal_ref_idc: u8,
-    slice_offset: usize,
     payload: &'a [u8],
 }
 
@@ -2854,9 +2823,7 @@ struct NativeVulkanH264NalPayload<'a> {
 fn native_vulkan_h264_nal_payloads(bytes: &[u8]) -> Vec<NativeVulkanH264NalPayload<'_>> {
     let mut payloads = Vec::new();
     let mut offset = 0usize;
-    while let Some((start_code_offset, payload_offset)) =
-        native_vulkan_next_annex_b_start_code(bytes, offset)
-    {
+    while let Some((_, payload_offset)) = native_vulkan_next_annex_b_start_code(bytes, offset) {
         let next_start = native_vulkan_next_annex_b_start_code(bytes, payload_offset)
             .map(|(next_start, _)| next_start)
             .unwrap_or(bytes.len());
@@ -2866,10 +2833,6 @@ fn native_vulkan_h264_nal_payloads(bytes: &[u8]) -> Vec<NativeVulkanH264NalPaylo
             payloads.push(NativeVulkanH264NalPayload {
                 nal_type: header & 0x1f,
                 nal_ref_idc: (header >> 5) & 0x03,
-                slice_offset: native_vulkan_h264_annex_b_slice_offset(
-                    start_code_offset,
-                    payload_offset,
-                ),
                 payload: &bytes[payload_offset..next_start],
             });
         }
@@ -2887,6 +2850,52 @@ fn native_vulkan_h264_annex_b_slice_offset(
         .checked_sub(3)
         .filter(|offset| *offset >= start_code_offset)
         .unwrap_or(start_code_offset)
+}
+
+#[cfg(any(feature = "native-vulkan-video", test))]
+fn native_vulkan_read_bits_be(
+    bytes: &[u8],
+    bit_offset: &mut usize,
+    count: u32,
+    label: &'static str,
+    bounds_label: &'static str,
+) -> Result<u32, String> {
+    if count > 32 {
+        return Err(format!("{label} requested too many bits: {count}"));
+    }
+    if count == 0 {
+        return Ok(0);
+    }
+    let start = *bit_offset;
+    let end = start
+        .checked_add(count as usize)
+        .ok_or_else(|| format!("{label} bit offset overflow"))?;
+    if end > bytes.len() * 8 {
+        return Err(format!("{label} exceeds {bounds_label}"));
+    }
+
+    // FFmpeg's get_bits() reads a cached word and advances the bit index
+    // (references/ffmpeg/libavcodec/get_bits.h:337-350). Keep the same shape
+    // instead of looping one bit at a time in H.264/H.265 slice parsing.
+    let byte_start = start / 8;
+    let bit_in_byte = start % 8;
+    let byte_count = bit_in_byte
+        .checked_add(count as usize)
+        .ok_or_else(|| format!("{label} bit window overflow"))?
+        .div_ceil(8);
+    let mut window = 0u64;
+    for byte in &bytes[byte_start..byte_start + byte_count] {
+        window = (window << 8) | u64::from(*byte);
+    }
+    let total_bits = byte_count * 8;
+    let shift = total_bits - bit_in_byte - count as usize;
+    let mask = if count == 32 {
+        u64::from(u32::MAX)
+    } else {
+        (1u64 << count) - 1
+    };
+    *bit_offset = end;
+    Ok(((window >> shift) & mask) as u32)
 }
 
 struct NativeVulkanH264BitReader<'a> {
@@ -2912,24 +2921,13 @@ impl<'a> NativeVulkanH264BitReader<'a> {
     }
 
     fn read_bits(&mut self, count: u32, label: &'static str) -> Result<u32, String> {
-        if count > 32 {
-            return Err(format!("{label} requested too many bits: {count}"));
-        }
-        let end = self
-            .bit_offset
-            .checked_add(count as usize)
-            .ok_or_else(|| format!("{label} bit offset overflow"))?;
-        if end > self.bytes.len() * 8 {
-            return Err(format!("{label} exceeds H.264 RBSP length"));
-        }
-        let mut value = 0u32;
-        for _ in 0..count {
-            let byte = self.bytes[self.bit_offset / 8];
-            let shift = 7 - (self.bit_offset % 8);
-            value = (value << 1) | u32::from((byte >> shift) & 1);
-            self.bit_offset += 1;
-        }
-        Ok(value)
+        native_vulkan_read_bits_be(
+            self.bytes,
+            &mut self.bit_offset,
+            count,
+            label,
+            "H.264 RBSP length",
+        )
     }
 
     fn read_ue(&mut self, label: &'static str) -> Result<u32, String> {
@@ -3072,6 +3070,7 @@ struct NativeVulkanH265NalPayload<'a> {
     #[cfg_attr(not(test), allow(dead_code))]
     start_code_offset: usize,
     slice_segment_offset: usize,
+    #[cfg_attr(not(test), allow(dead_code))]
     payload_offset: usize,
     #[cfg_attr(not(feature = "native-vulkan-video"), allow(dead_code))]
     payload: &'a [u8],
@@ -3117,20 +3116,6 @@ fn native_vulkan_h265_annex_b_slice_segment_offset(
 
 #[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct NativeVulkanH265FirstSliceDecodeInfo {
-    nal_type: u8,
-    nal_type_label: &'static str,
-    slice_segment_offset: u32,
-    first_slice_segment_in_pic_flag: bool,
-    slice_type: u32,
-    pps_id: u32,
-    pic_order_cnt_val: i32,
-    idr: bool,
-    irap: bool,
-}
-
-#[cfg(any(feature = "native-vulkan-video", test))]
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeVulkanH264FirstFrameDecodeInfo {
     nal_type: u8,
     nal_type_label: &'static str,
@@ -3159,12 +3144,12 @@ struct NativeVulkanH264FirstFrameDecodeInfo {
     is_b: bool,
     long_term_reference_flag: bool,
     pic_order_cnt: [i32; 2],
-    slice_offsets: Vec<u32>,
+    slice_offsets: NativeVulkanH264SliceOffsets,
     idr: bool,
     irap: bool,
 }
 
-#[cfg(any(feature = "native-vulkan-video", test))]
+#[cfg(test)]
 fn native_vulkan_h264_first_frame_decode_info(
     access_unit: &[u8],
     parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
@@ -3186,13 +3171,41 @@ fn native_vulkan_h264_first_frame_decode_info(
 }
 
 #[cfg(any(feature = "native-vulkan-video", test))]
+fn native_vulkan_h264_picture_decode_info_from_stats(
+    access_unit: &[u8],
+    stats: &NativeVulkanH264NalStats,
+    parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
+) -> Result<NativeVulkanH264FirstFrameDecodeInfo, String> {
+    let first_slice = stats
+        .first_slice
+        .ok_or_else(|| "H.264 access unit has no slice NAL".to_owned())?;
+    if stats.slice_offsets.is_empty() {
+        return Err("H.264 access unit has no slice offsets".to_owned());
+    }
+    if first_slice.payload_start >= first_slice.payload_end
+        || first_slice.payload_end > access_unit.len()
+    {
+        return Err("H.264 first slice payload range exceeds access-unit bounds".to_owned());
+    }
+
+    let slice = NativeVulkanH264NalPayload {
+        nal_type: first_slice.nal_type,
+        nal_ref_idc: first_slice.nal_ref_idc,
+        payload: &access_unit[first_slice.payload_start..first_slice.payload_end],
+    };
+    let mut first_slice = native_vulkan_h264_slice_decode_info(&slice, parameter_sets)?;
+    first_slice.slice_offsets = stats.slice_offsets.clone();
+    Ok(first_slice)
+}
+
+#[cfg(test)]
 fn native_vulkan_h264_picture_decode_info(
     access_unit: &[u8],
     parameter_sets: &NativeVulkanH264ParameterSetSnapshot,
-    slice_count_hint: usize,
+    _slice_count_hint: usize,
 ) -> Result<NativeVulkanH264FirstFrameDecodeInfo, String> {
     let mut first_slice = None;
-    let mut slice_offsets = Vec::with_capacity(slice_count_hint);
+    let mut slice_offsets = NativeVulkanH264SliceOffsets::new();
     let mut offset = 0usize;
     while let Some((start_code_offset, payload_offset)) =
         native_vulkan_next_annex_b_start_code(access_unit, offset)
@@ -3208,12 +3221,10 @@ fn native_vulkan_h264_picture_decode_info(
                 let slice = NativeVulkanH264NalPayload {
                     nal_type,
                     nal_ref_idc: (header >> 5) & 0x03,
-                    slice_offset: native_vulkan_h264_annex_b_slice_offset(
-                        start_code_offset,
-                        payload_offset,
-                    ),
                     payload: &access_unit[payload_offset..next_start],
                 };
+                let slice_offset =
+                    native_vulkan_h264_annex_b_slice_offset(start_code_offset, payload_offset);
                 if first_slice.is_none() {
                     first_slice = Some(native_vulkan_h264_slice_decode_info(
                         &slice,
@@ -3221,7 +3232,7 @@ fn native_vulkan_h264_picture_decode_info(
                     )?);
                 }
                 slice_offsets.push(
-                    u32::try_from(slice.slice_offset)
+                    u32::try_from(slice_offset)
                         .map_err(|_| "H.264 slice offset exceeds u32 range".to_owned())?,
                 );
             }
@@ -3471,73 +3482,9 @@ fn native_vulkan_h264_slice_decode_info(
         is_b,
         long_term_reference_flag,
         pic_order_cnt,
-        slice_offsets: Vec::new(),
+        slice_offsets: NativeVulkanH264SliceOffsets::new(),
         idr,
         irap: idr,
-    })
-}
-
-#[cfg(any(feature = "native-vulkan-video", test))]
-fn native_vulkan_h265_first_slice_decode_info(
-    access_unit: &[u8],
-    parameter_sets: &NativeVulkanH265ParameterSetSnapshot,
-) -> Result<NativeVulkanH265FirstSliceDecodeInfo, String> {
-    let nal_units = native_vulkan_h265_nal_payloads(access_unit);
-    let slice = nal_units
-        .iter()
-        .find(|unit| unit.nal_type <= 31)
-        .ok_or_else(|| "H.265 access unit has no slice NAL".to_owned())?;
-    let idr = matches!(slice.nal_type, 19 | 20);
-    let irap = (16..=23).contains(&slice.nal_type);
-    let rbsp = native_vulkan_h265_rbsp(slice.payload)?;
-    if rbsp.len() < 3 {
-        return Err("H.265 slice NAL is too short".to_owned());
-    }
-    let mut bits = NativeVulkanH265BitReader::new(&rbsp);
-    bits.skip_bits(16, "h265_nal_unit_header")?;
-    let first_slice_segment_in_pic_flag = bits.read_bool("first_slice_segment_in_pic_flag")?;
-    if irap {
-        bits.read_bool("no_output_of_prior_pics_flag")?;
-    }
-    let pps_id = bits.read_ue("slice_pic_parameter_set_id")?;
-    if pps_id != parameter_sets.pps.id {
-        return Err(format!(
-            "H.265 first slice PPS id {pps_id} does not match session PPS id {}",
-            parameter_sets.pps.id
-        ));
-    }
-    if !first_slice_segment_in_pic_flag {
-        return Err(
-            "H.265 first-frame decode currently expects first_slice_segment_in_pic_flag".to_owned(),
-        );
-    }
-    for _ in 0..parameter_sets.pps.num_extra_slice_header_bits {
-        bits.skip_bits(1, "slice_reserved_flag")?;
-    }
-    let slice_type = bits.read_ue("slice_type")?;
-    if !idr {
-        return Err(format!(
-            "H.265 first-frame decode currently supports IDR only, got {}",
-            native_vulkan_h265_nal_type_label(slice.nal_type)
-        ));
-    }
-    if slice_type != vk::video::STD_VIDEO_H265_SLICE_TYPE_I.0 as u32 {
-        return Err(format!(
-            "H.265 IDR first slice must be I-slice for the first decode subset, got {slice_type}"
-        ));
-    }
-
-    Ok(NativeVulkanH265FirstSliceDecodeInfo {
-        nal_type: slice.nal_type,
-        nal_type_label: native_vulkan_h265_nal_type_label(slice.nal_type),
-        slice_segment_offset: u32::try_from(slice.slice_segment_offset)
-            .map_err(|_| "H.265 slice offset exceeds u32 range".to_owned())?,
-        first_slice_segment_in_pic_flag,
-        slice_type,
-        pps_id,
-        pic_order_cnt_val: 0,
-        idr,
-        irap,
     })
 }
 
@@ -4748,25 +4695,21 @@ pub(super) fn native_vulkan_h265_u16(value: u32, label: &'static str) -> Result<
 }
 
 #[cfg(any(feature = "native-vulkan-video", test))]
-fn native_vulkan_h265_rbsp(payload: &[u8]) -> Result<Vec<u8>, String> {
+fn native_vulkan_h265_rbsp(payload: &[u8]) -> Result<Cow<'_, [u8]>, String> {
     if payload.len() < 2 {
         return Err("H.265 NAL payload is too short".to_owned());
     }
-    let mut rbsp = Vec::with_capacity(payload.len());
-    let mut zero_count = 0u8;
-    for byte in payload.iter().copied() {
-        if zero_count == 2 && byte == 0x03 {
-            zero_count = 0;
-            continue;
-        }
-        rbsp.push(byte);
-        if byte == 0 {
-            zero_count = zero_count.saturating_add(1).min(2);
-        } else {
-            zero_count = 0;
-        }
+    Ok(native_vulkan_rbsp_unescape(payload))
+}
+
+#[cfg(any(feature = "native-vulkan-video", test))]
+fn native_vulkan_h265_slice_header_rbsp(payload: &[u8]) -> Result<Cow<'_, [u8]>, String> {
+    const H265_SLICE_HEADER_PROBE_BYTES: usize = 4096;
+    if payload.len() < 2 {
+        return Err("H.265 NAL payload is too short".to_owned());
     }
-    Ok(rbsp)
+    let probe_len = payload.len().min(H265_SLICE_HEADER_PROBE_BYTES);
+    Ok(native_vulkan_rbsp_unescape(&payload[..probe_len]))
 }
 
 #[cfg(any(feature = "native-vulkan-video", test))]
@@ -4803,24 +4746,13 @@ impl<'a> NativeVulkanH265BitReader<'a> {
     }
 
     fn read_bits(&mut self, count: u32, label: &'static str) -> Result<u32, String> {
-        if count > 32 {
-            return Err(format!("{label} requested too many bits: {count}"));
-        }
-        let end = self
-            .bit_offset
-            .checked_add(count as usize)
-            .ok_or_else(|| format!("{label} bit offset overflow"))?;
-        if end > self.bytes.len() * 8 {
-            return Err(format!("{label} exceeds H.265 RBSP length"));
-        }
-        let mut value = 0u32;
-        for _ in 0..count {
-            let byte = self.bytes[self.bit_offset / 8];
-            let shift = 7 - (self.bit_offset % 8);
-            value = (value << 1) | u32::from((byte >> shift) & 1);
-            self.bit_offset += 1;
-        }
-        Ok(value)
+        native_vulkan_read_bits_be(
+            self.bytes,
+            &mut self.bit_offset,
+            count,
+            label,
+            "H.265 RBSP length",
+        )
     }
 
     fn read_ue(&mut self, label: &'static str) -> Result<u32, String> {
@@ -4908,7 +4840,7 @@ struct NativeVulkanH265NalStats {
     pps_count: u32,
     idr_count: u32,
     slice_count: u32,
-    nal_units: Vec<NativeVulkanH265NalUnitSnapshot>,
+    first_slice: Option<NativeVulkanH265SlicePayloadSummary>,
 }
 
 #[cfg(any(feature = "native-vulkan-video", test))]
@@ -4916,6 +4848,15 @@ impl NativeVulkanH265NalStats {
     fn parameter_sets_present(&self) -> bool {
         self.vps_count > 0 && self.sps_count > 0 && self.pps_count > 0
     }
+}
+
+#[cfg(any(feature = "native-vulkan-video", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeVulkanH265SlicePayloadSummary {
+    nal_type: u8,
+    slice_segment_offset: u32,
+    payload_start: usize,
+    payload_end: usize,
 }
 
 #[cfg(any(feature = "native-vulkan-video", test))]
@@ -4927,6 +4868,8 @@ struct NativeVulkanH264NalStats {
     pps_count: u32,
     idr_count: u32,
     slice_count: u32,
+    first_slice: Option<NativeVulkanH264SlicePayloadSummary>,
+    slice_offsets: NativeVulkanH264SliceOffsets,
 }
 
 #[cfg(any(feature = "native-vulkan-video", test))]
@@ -4934,6 +4877,15 @@ impl NativeVulkanH264NalStats {
     fn parameter_sets_present(&self) -> bool {
         self.sps_count > 0 && self.pps_count > 0
     }
+}
+
+#[cfg(any(feature = "native-vulkan-video", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeVulkanH264SlicePayloadSummary {
+    nal_type: u8,
+    nal_ref_idc: u8,
+    payload_start: usize,
+    payload_end: usize,
 }
 
 #[cfg(any(feature = "native-vulkan-video", test))]
@@ -5137,53 +5089,58 @@ fn native_vulkan_av1_obu_ranges(bytes: &[u8]) -> Result<Vec<NativeVulkanAv1ObuRa
 }
 
 #[cfg(any(feature = "native-vulkan-video", test))]
-fn native_vulkan_av1_split_ffmpeg_packet_frames(bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+fn native_vulkan_av1_split_ffmpeg_packet_frame_ranges(
+    bytes: &[u8],
+) -> Result<Vec<std::ops::Range<usize>>, String> {
     let ranges = native_vulkan_av1_obu_ranges(bytes)?;
-    let mut units = Vec::<Vec<u8>>::new();
-    let mut pending_prefix = Vec::<u8>::new();
-    let mut current_frame = None::<Vec<u8>>;
+    let mut units = Vec::<std::ops::Range<usize>>::new();
+    let mut pending_prefix = None::<std::ops::Range<usize>>;
+    let mut current_frame = None::<std::ops::Range<usize>>;
 
     for range in ranges {
-        let obu = bytes
-            .get(range.offset..range.end)
-            .ok_or_else(|| "AV1 OBU range exceeds packet bytes".to_owned())?;
         match range.obu_type {
             1 | 2 => {
                 if let Some(unit) = current_frame.take() {
                     units.push(unit);
                 }
-                pending_prefix.extend_from_slice(obu);
+                native_vulkan_av1_extend_range(&mut pending_prefix, range.offset, range.end);
             }
             3 => {
                 if let Some(unit) = current_frame.take() {
                     units.push(unit);
                 }
-                let mut unit = std::mem::take(&mut pending_prefix);
-                unit.extend_from_slice(obu);
-                current_frame = Some(unit);
+                current_frame = Some(native_vulkan_av1_take_prefixed_range(
+                    &mut pending_prefix,
+                    range.offset,
+                    range.end,
+                ));
             }
             4 => {
                 if let Some(unit) = current_frame.as_mut() {
-                    unit.extend_from_slice(obu);
+                    unit.end = range.end;
                 } else {
-                    let mut unit = std::mem::take(&mut pending_prefix);
-                    unit.extend_from_slice(obu);
-                    current_frame = Some(unit);
+                    current_frame = Some(native_vulkan_av1_take_prefixed_range(
+                        &mut pending_prefix,
+                        range.offset,
+                        range.end,
+                    ));
                 }
             }
             6 => {
                 if let Some(unit) = current_frame.take() {
                     units.push(unit);
                 }
-                let mut unit = std::mem::take(&mut pending_prefix);
-                unit.extend_from_slice(obu);
-                units.push(unit);
+                units.push(native_vulkan_av1_take_prefixed_range(
+                    &mut pending_prefix,
+                    range.offset,
+                    range.end,
+                ));
             }
             _ => {
                 if let Some(unit) = current_frame.as_mut() {
-                    unit.extend_from_slice(obu);
+                    unit.end = range.end;
                 } else {
-                    pending_prefix.extend_from_slice(obu);
+                    native_vulkan_av1_extend_range(&mut pending_prefix, range.offset, range.end);
                 }
             }
         }
@@ -5192,10 +5149,34 @@ fn native_vulkan_av1_split_ffmpeg_packet_frames(bytes: &[u8]) -> Result<Vec<Vec<
     if let Some(unit) = current_frame.take() {
         units.push(unit);
     }
-    if units.is_empty() && !pending_prefix.is_empty() {
-        units.push(pending_prefix);
+    if units.is_empty() {
+        if let Some(prefix) = pending_prefix.take() {
+            units.push(prefix);
+        }
     }
     Ok(units)
+}
+
+#[cfg(any(feature = "native-vulkan-video", test))]
+fn native_vulkan_av1_extend_range(
+    range: &mut Option<std::ops::Range<usize>>,
+    offset: usize,
+    end: usize,
+) {
+    match range {
+        Some(existing) => existing.end = end,
+        None => *range = Some(offset..end),
+    }
+}
+
+#[cfg(any(feature = "native-vulkan-video", test))]
+fn native_vulkan_av1_take_prefixed_range(
+    prefix: &mut Option<std::ops::Range<usize>>,
+    offset: usize,
+    end: usize,
+) -> std::ops::Range<usize> {
+    let start = prefix.take().map(|prefix| prefix.start).unwrap_or(offset);
+    start..end
 }
 
 #[cfg(any(feature = "native-vulkan-video", test))]
@@ -8152,7 +8133,6 @@ fn native_vulkan_h265_nal_stats(bytes: &[u8]) -> NativeVulkanH265NalStats {
             .map(|(next_start, _)| next_start)
             .unwrap_or(bytes.len());
         if payload_offset < next_start {
-            let nal_size = next_start - payload_offset;
             if let Some(nal_type) = bytes.get(payload_offset).map(|header| (header >> 1) & 0x3f) {
                 match nal_type {
                     32 => stats.vps_count = stats.vps_count.saturating_add(1),
@@ -8165,13 +8145,19 @@ fn native_vulkan_h265_nal_stats(bytes: &[u8]) -> NativeVulkanH265NalStats {
                     0..=31 => stats.slice_count = stats.slice_count.saturating_add(1),
                     _ => {}
                 }
-                if stats.nal_units.len() < 32 {
-                    stats.nal_units.push(NativeVulkanH265NalUnitSnapshot {
-                        offset: start_code_offset as u64,
-                        size: nal_size as u64,
-                        nal_type,
-                        nal_type_label: native_vulkan_h265_nal_type_label(nal_type),
-                    });
+                if nal_type <= 31 && stats.first_slice.is_none() {
+                    let slice_segment_offset = native_vulkan_h265_annex_b_slice_segment_offset(
+                        start_code_offset,
+                        payload_offset,
+                    );
+                    if let Ok(slice_segment_offset) = u32::try_from(slice_segment_offset) {
+                        stats.first_slice = Some(NativeVulkanH265SlicePayloadSummary {
+                            nal_type,
+                            slice_segment_offset,
+                            payload_start: payload_offset,
+                            payload_end: next_start,
+                        });
+                    }
                 }
             }
         }
@@ -8187,19 +8173,35 @@ fn native_vulkan_h264_nal_stats(bytes: &[u8]) -> NativeVulkanH264NalStats {
         ..Default::default()
     };
     let mut offset = 0usize;
-    while let Some((_, payload_offset)) = native_vulkan_next_annex_b_start_code(bytes, offset) {
+    while let Some((start_code_offset, payload_offset)) =
+        native_vulkan_next_annex_b_start_code(bytes, offset)
+    {
         stats.has_annex_b_start_codes = true;
         let next_start = native_vulkan_next_annex_b_start_code(bytes, payload_offset)
             .map(|(next_start, _)| next_start)
             .unwrap_or(bytes.len());
         if payload_offset < next_start
-            && let Some(nal_type) = bytes.get(payload_offset).map(|header| header & 0x1f)
+            && let Some(header) = bytes.get(payload_offset).copied()
         {
+            let nal_type = header & 0x1f;
             match nal_type {
                 1..=5 => {
                     stats.slice_count = stats.slice_count.saturating_add(1);
                     if nal_type == 5 {
                         stats.idr_count = stats.idr_count.saturating_add(1);
+                    }
+                    let slice_offset =
+                        native_vulkan_h264_annex_b_slice_offset(start_code_offset, payload_offset);
+                    if let Ok(slice_offset_u32) = u32::try_from(slice_offset) {
+                        stats.slice_offsets.push(slice_offset_u32);
+                        if stats.first_slice.is_none() {
+                            stats.first_slice = Some(NativeVulkanH264SlicePayloadSummary {
+                                nal_type,
+                                nal_ref_idc: (header >> 5) & 0x03,
+                                payload_start: payload_offset,
+                                payload_end: next_start,
+                            });
+                        }
                     }
                 }
                 7 => stats.sps_count = stats.sps_count.saturating_add(1),
@@ -8213,8 +8215,16 @@ fn native_vulkan_h264_nal_stats(bytes: &[u8]) -> NativeVulkanH264NalStats {
 }
 
 fn native_vulkan_next_annex_b_start_code(bytes: &[u8], from: usize) -> Option<(usize, usize)> {
-    let mut index = from;
+    let mut index = from.min(bytes.len());
     while index + 3 <= bytes.len() {
+        // Match FFmpeg's H.264/H.265 parser shape: first jump to a zero byte,
+        // then check whether it starts a three- or four-byte Annex-B prefix.
+        // See references/ffmpeg/libavcodec/h2645_parse.c:37-180.
+        let zero_offset = native_vulkan_memchr_zero(&bytes[index..])?;
+        index = index.saturating_add(zero_offset);
+        if index + 3 > bytes.len() {
+            return None;
+        }
         if bytes[index] == 0 && bytes[index + 1] == 0 {
             if bytes[index + 2] == 1 {
                 return Some((index, index + 3));
@@ -8226,6 +8236,26 @@ fn native_vulkan_next_annex_b_start_code(bytes: &[u8], from: usize) -> Option<(u
         index += 1;
     }
     None
+}
+
+#[cfg(any(feature = "native-vulkan-video", test))]
+fn native_vulkan_memchr_zero(bytes: &[u8]) -> Option<usize> {
+    #[cfg(target_family = "unix")]
+    {
+        let ptr = unsafe {
+            native_vulkan_c_memchr(bytes.as_ptr().cast::<std::ffi::c_void>(), 0, bytes.len())
+        };
+        if ptr.is_null() {
+            None
+        } else {
+            let offset = unsafe { ptr.cast::<u8>().offset_from(bytes.as_ptr()) };
+            usize::try_from(offset).ok()
+        }
+    }
+    #[cfg(not(target_family = "unix"))]
+    {
+        bytes.iter().position(|byte| *byte == 0)
+    }
 }
 
 #[cfg(any(feature = "native-vulkan-video", test))]
@@ -9374,13 +9404,13 @@ mod tests {
         push_obu(&mut packet, 3, &[0x40]); // split frame header
         push_obu(&mut packet, 4, &[0x11, 0x22]); // tile group for split header
 
-        let units = native_vulkan_av1_split_ffmpeg_packet_frames(&packet).unwrap();
-        assert_eq!(units.len(), 3);
+        let ranges = native_vulkan_av1_split_ffmpeg_packet_frame_ranges(&packet).unwrap();
+        assert_eq!(ranges.len(), 3);
 
-        let unit_obu_types = units
+        let unit_obu_types = ranges
             .iter()
-            .map(|unit| {
-                native_vulkan_av1_obu_ranges(unit)
+            .map(|range| {
+                native_vulkan_av1_obu_ranges(&packet[range.clone()])
                     .unwrap()
                     .into_iter()
                     .map(|range| range.obu_type)
@@ -10217,12 +10247,6 @@ mod tests {
             duration_ns: Some(4_000_000),
             pts_ms: Some(4),
             duration_ms: Some(4),
-            caps: None,
-            stream_format: Some("obu-stream".to_owned()),
-            alignment: Some("tu".to_owned()),
-            width: Some(640),
-            height: Some(368),
-            framerate: Some("60/1".to_owned()),
             stats: frame_only_stats,
         };
 
@@ -10485,7 +10509,7 @@ mod tests {
                 is_b: false,
                 long_term_reference_flag: false,
                 pic_order_cnt: [i32::from(frame_num); 2],
-                slice_offsets: vec![0],
+                slice_offsets: NativeVulkanH264SliceOffsets::single(0),
                 idr,
                 irap: idr,
             }),
@@ -11646,14 +11670,14 @@ mod tests {
         assert_eq!(stats.pps_count, 1);
         assert_eq!(stats.idr_count, 1);
         assert_eq!(stats.slice_count, 1);
+        let first_slice = stats.first_slice.expect("first slice summary");
         assert_eq!(
-            stats
-                .nal_units
-                .iter()
-                .map(|unit| unit.nal_type_label)
-                .collect::<Vec<_>>(),
-            vec!["vps", "sps", "pps", "idr-w-radl"]
+            native_vulkan_h265_nal_type_label(first_slice.nal_type),
+            "idr-w-radl"
         );
+        assert_eq!(first_slice.slice_segment_offset, 21);
+        assert_eq!(first_slice.payload_start, 24);
+        assert_eq!(first_slice.payload_end, bytes.len());
         let payloads = native_vulkan_h265_nal_payloads(&bytes);
         assert_eq!(payloads[3].nal_type, 19);
         assert_eq!(payloads[3].start_code_offset, 21);
@@ -11685,34 +11709,12 @@ mod tests {
         idr: bool,
         used_delta_pocs: &[i32],
     ) -> NativeVulkanH265AccessUnitSnapshot {
-        let negative_delta_pocs = used_delta_pocs
-            .iter()
-            .copied()
-            .filter(|delta| *delta < 0)
-            .collect::<Vec<_>>();
-        let positive_delta_pocs = used_delta_pocs
-            .iter()
-            .copied()
-            .filter(|delta| *delta > 0)
-            .collect::<Vec<_>>();
-        let short_term_ref_pic_set = (!idr).then(|| NativeVulkanH265ShortTermRefPicSetSnapshot {
-            inter_ref_pic_set_prediction_flag: false,
-            delta_idx_minus1: None,
-            delta_rps_sign: None,
-            abs_delta_rps_minus1: None,
-            num_delta_pocs_of_ref_rps_idx: 0,
-            use_delta_flags: Vec::new(),
-            used_by_current_flags: Vec::new(),
-            num_negative_pics: negative_delta_pocs.len() as u32,
-            num_positive_pics: positive_delta_pocs.len() as u32,
-            negative_delta_pocs: negative_delta_pocs.clone(),
-            negative_used_by_curr_pic: vec![true; negative_delta_pocs.len()],
-            used_negative_delta_pocs: negative_delta_pocs,
-            positive_delta_pocs: positive_delta_pocs.clone(),
-            positive_used_by_curr_pic: vec![true; positive_delta_pocs.len()],
-            used_positive_delta_pocs: positive_delta_pocs,
-            used_by_current_count: used_delta_pocs.len() as u32,
-        });
+        let mut short_term_reference_delta_pocs = NativeVulkanH265ReferenceDeltas::new();
+        if !idr {
+            for delta_poc in used_delta_pocs {
+                short_term_reference_delta_pocs.push(*delta_poc);
+            }
+        }
 
         NativeVulkanH265AccessUnitSnapshot {
             index,
@@ -11741,7 +11743,7 @@ mod tests {
                 short_term_ref_pic_set_idx: None,
                 num_delta_pocs_of_ref_rps_idx: 0,
                 num_bits_for_st_ref_pic_set_in_slice: 0,
-                short_term_ref_pic_set,
+                short_term_reference_delta_pocs,
                 long_term_references: Vec::new(),
                 idr,
                 irap: idr,

@@ -1,6 +1,207 @@
 //! Snapshot data types extracted from the native Vulkan renderer.
 
-use serde::Serialize;
+use std::ops::Deref;
+
+use serde::ser::SerializeSeq;
+use serde::{Serialize, Serializer};
+
+const NATIVE_VULKAN_H264_INLINE_SLICE_OFFSETS: usize = 4;
+const NATIVE_VULKAN_H265_INLINE_REFERENCE_DELTAS: usize = 4;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeVulkanH264SliceOffsets {
+    inline: [u32; NATIVE_VULKAN_H264_INLINE_SLICE_OFFSETS],
+    len: u8,
+    overflow: Vec<u32>,
+}
+
+impl NativeVulkanH264SliceOffsets {
+    pub fn new() -> Self {
+        Self {
+            inline: [0; NATIVE_VULKAN_H264_INLINE_SLICE_OFFSETS],
+            len: 0,
+            overflow: Vec::new(),
+        }
+    }
+
+    pub fn single(value: u32) -> Self {
+        let mut offsets = Self::new();
+        offsets.push(value);
+        offsets
+    }
+
+    pub fn from_vec(values: Vec<u32>) -> Self {
+        if values.len() > NATIVE_VULKAN_H264_INLINE_SLICE_OFFSETS {
+            return Self {
+                inline: [0; NATIVE_VULKAN_H264_INLINE_SLICE_OFFSETS],
+                len: 0,
+                overflow: values,
+            };
+        }
+
+        let mut offsets = Self::new();
+        for value in values {
+            offsets.push(value);
+        }
+        offsets
+    }
+
+    pub fn push(&mut self, value: u32) {
+        if !self.overflow.is_empty() {
+            self.overflow.push(value);
+            return;
+        }
+
+        let len = usize::from(self.len);
+        if len < NATIVE_VULKAN_H264_INLINE_SLICE_OFFSETS {
+            self.inline[len] = value;
+            self.len += 1;
+            return;
+        }
+
+        self.overflow =
+            Vec::with_capacity(NATIVE_VULKAN_H264_INLINE_SLICE_OFFSETS.saturating_mul(2));
+        self.overflow
+            .extend_from_slice(&self.inline[..NATIVE_VULKAN_H264_INLINE_SLICE_OFFSETS]);
+        self.overflow.push(value);
+        self.len = 0;
+    }
+
+    pub fn as_slice(&self) -> &[u32] {
+        if self.overflow.is_empty() {
+            &self.inline[..usize::from(self.len)]
+        } else {
+            &self.overflow
+        }
+    }
+}
+
+impl Default for NativeVulkanH264SliceOffsets {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl From<Vec<u32>> for NativeVulkanH264SliceOffsets {
+    fn from(values: Vec<u32>) -> Self {
+        Self::from_vec(values)
+    }
+}
+
+impl Deref for NativeVulkanH264SliceOffsets {
+    type Target = [u32];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl PartialEq<Vec<u32>> for NativeVulkanH264SliceOffsets {
+    fn eq(&self, other: &Vec<u32>) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl Serialize for NativeVulkanH264SliceOffsets {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let values = self.as_slice();
+        let mut seq = serializer.serialize_seq(Some(values.len()))?;
+        for value in values {
+            seq.serialize_element(value)?;
+        }
+        seq.end()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeVulkanH265ReferenceDeltas {
+    inline: [i32; NATIVE_VULKAN_H265_INLINE_REFERENCE_DELTAS],
+    len: u8,
+    overflow: Vec<i32>,
+}
+
+impl NativeVulkanH265ReferenceDeltas {
+    pub fn new() -> Self {
+        Self {
+            inline: [0; NATIVE_VULKAN_H265_INLINE_REFERENCE_DELTAS],
+            len: 0,
+            overflow: Vec::new(),
+        }
+    }
+
+    pub fn push(&mut self, value: i32) {
+        if !self.overflow.is_empty() {
+            self.overflow.push(value);
+            return;
+        }
+
+        let len = usize::from(self.len);
+        if len < NATIVE_VULKAN_H265_INLINE_REFERENCE_DELTAS {
+            self.inline[len] = value;
+            self.len += 1;
+            return;
+        }
+
+        self.overflow =
+            Vec::with_capacity(NATIVE_VULKAN_H265_INLINE_REFERENCE_DELTAS.saturating_mul(2));
+        self.overflow
+            .extend_from_slice(&self.inline[..NATIVE_VULKAN_H265_INLINE_REFERENCE_DELTAS]);
+        self.overflow.push(value);
+        self.len = 0;
+    }
+
+    pub fn extend_used_ref_pic_set(
+        &mut self,
+        ref_pic_set: &NativeVulkanH265ShortTermRefPicSetSnapshot,
+    ) {
+        for delta_poc in ref_pic_set
+            .used_negative_delta_pocs
+            .iter()
+            .chain(ref_pic_set.used_positive_delta_pocs.iter())
+        {
+            self.push(*delta_poc);
+        }
+    }
+
+    pub fn as_slice(&self) -> &[i32] {
+        if self.overflow.is_empty() {
+            &self.inline[..usize::from(self.len)]
+        } else {
+            &self.overflow
+        }
+    }
+}
+
+impl Default for NativeVulkanH265ReferenceDeltas {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Deref for NativeVulkanH265ReferenceDeltas {
+    type Target = [i32];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl Serialize for NativeVulkanH265ReferenceDeltas {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let values = self.as_slice();
+        let mut seq = serializer.serialize_seq(Some(values.len()))?;
+        for value in values {
+            seq.serialize_element(value)?;
+        }
+        seq.end()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVideoBitstreamExtractSnapshot {
@@ -154,7 +355,7 @@ pub struct NativeVulkanH264AccessUnitSliceSnapshot {
     pub is_b: bool,
     pub long_term_reference_flag: bool,
     pub pic_order_cnt: [i32; 2],
-    pub slice_offsets: Vec<u32>,
+    pub slice_offsets: NativeVulkanH264SliceOffsets,
     pub idr: bool,
     pub irap: bool,
 }
@@ -459,7 +660,7 @@ pub struct NativeVulkanH265AccessUnitSliceSnapshot {
     pub short_term_ref_pic_set_idx: Option<u32>,
     pub num_delta_pocs_of_ref_rps_idx: u8,
     pub num_bits_for_st_ref_pic_set_in_slice: u16,
-    pub short_term_ref_pic_set: Option<NativeVulkanH265ShortTermRefPicSetSnapshot>,
+    pub short_term_reference_delta_pocs: NativeVulkanH265ReferenceDeltas,
     pub long_term_references: Vec<NativeVulkanH265LongTermReferenceSnapshot>,
     pub idr: bool,
     pub irap: bool,
