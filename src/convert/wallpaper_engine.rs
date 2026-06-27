@@ -857,6 +857,7 @@ fn write_scene_document_to(
             )
         })
         .unwrap_or_default();
+    nodes = scene_rebuild_parent_graph(nodes);
     if let Some(source) = fallback
         && nodes.is_empty()
     {
@@ -882,10 +883,14 @@ fn write_scene_document_to(
             "metadata": source_metadata,
             "entry": source_entry
         },
+        "size": scene_document_size(source_scene),
+        "render": scene_render_settings(source_scene),
+        "camera": scene_camera_settings(source_scene),
+        "import": scene_import_metadata(source_scene),
         "resources": resources,
         "nodes": nodes,
         "timelines": [],
-        "property_bindings": [],
+        "property_bindings": context.property_bindings,
         "systems": scene_system_statuses(report),
         "native_lowering": scene_native_lowering(fallback),
         "unsupported_features": scene_unsupported_features(report, context.unsupported_features)
@@ -900,12 +905,216 @@ fn write_scene_document_to(
     Ok(package_path)
 }
 
+fn scene_document_size(source_scene: Option<&Value>) -> Value {
+    let Some(general) = source_scene
+        .and_then(|scene| scene.get("general"))
+        .and_then(Value::as_object)
+    else {
+        return Value::Null;
+    };
+    let Some(projection) = general
+        .get("orthogonalprojection")
+        .and_then(Value::as_object)
+    else {
+        return Value::Null;
+    };
+    let width = projection.get("width").and_then(value_to_u32);
+    let height = projection.get("height").and_then(value_to_u32);
+    match (width, height) {
+        (Some(width), Some(height)) if width > 0 && height > 0 => {
+            json!({ "width": width, "height": height })
+        }
+        _ => Value::Null,
+    }
+}
+
+fn scene_render_settings(source_scene: Option<&Value>) -> Value {
+    let Some(general) = source_scene
+        .and_then(|scene| scene.get("general"))
+        .and_then(Value::as_object)
+    else {
+        return json!({});
+    };
+    let mut render = Map::new();
+    if let Some(clear_color) = general.get("clearcolor").and_then(scene_color_from_value) {
+        render.insert("clear_color".to_owned(), Value::String(clear_color));
+    }
+    if let Some(clear_enabled) = general.get("clearenabled").and_then(value_to_bool) {
+        render.insert("clear_enabled".to_owned(), Value::Bool(clear_enabled));
+    }
+    if let Some(ambient_color) = general.get("ambientcolor").and_then(scene_color_from_value) {
+        render.insert("ambient_color".to_owned(), Value::String(ambient_color));
+    }
+    if let Some(hdr) = general.get("hdr").and_then(value_to_bool) {
+        render.insert("hdr".to_owned(), Value::Bool(hdr));
+    }
+    let bloom = scene_bloom_settings(general);
+    if !bloom.is_null() {
+        render.insert("bloom".to_owned(), bloom);
+    }
+    let parallax = scene_parallax_settings(general);
+    if !parallax.is_null() {
+        render.insert("parallax".to_owned(), parallax);
+    }
+    let environment = scene_environment_settings(general);
+    if !environment.is_empty() {
+        render.insert("environment".to_owned(), Value::Object(environment));
+    }
+    Value::Object(render)
+}
+
+fn scene_bloom_settings(general: &Map<String, Value>) -> Value {
+    let mut bloom = Map::new();
+    for (source, target) in [
+        ("bloomstrength", "strength"),
+        ("bloomthreshold", "threshold"),
+        ("bloomhdrstrength", "hdr_strength"),
+        ("bloomhdrthreshold", "hdr_threshold"),
+    ] {
+        if let Some(value) = general.get(source).and_then(value_to_f64) {
+            bloom.insert(target.to_owned(), json!(value));
+        }
+    }
+    if let Some(tint) = general.get("bloomtint").and_then(scene_color_from_value) {
+        bloom.insert("tint".to_owned(), Value::String(tint));
+    }
+    if bloom.is_empty() {
+        Value::Null
+    } else {
+        Value::Object(bloom)
+    }
+}
+
+fn scene_parallax_settings(general: &Map<String, Value>) -> Value {
+    let mut parallax = Map::new();
+    if let Some(value) = general.get("cameraparallaxamount").and_then(value_to_f64) {
+        parallax.insert("amount".to_owned(), json!(value));
+    }
+    if let Some(value) = general.get("cameraparallaxdelay").and_then(value_to_f64) {
+        parallax.insert("delay".to_owned(), json!(value));
+    }
+    if let Some(value) = general.get("cameraparallaxmouseinfluence") {
+        parallax.insert("mouse_influence".to_owned(), value.clone());
+    }
+    if parallax.is_empty() {
+        Value::Null
+    } else {
+        Value::Object(parallax)
+    }
+}
+
+fn scene_environment_settings(general: &Map<String, Value>) -> Map<String, Value> {
+    let mut environment = Map::new();
+    for key in [
+        "skylightcolor",
+        "gravitydirection",
+        "gravitystrength",
+        "winddirection",
+        "windenabled",
+        "windstrength",
+        "lightconfig",
+    ] {
+        if let Some(value) = general.get(key) {
+            environment.insert(key.to_owned(), value.clone());
+        }
+    }
+    environment
+}
+
+fn scene_camera_settings(source_scene: Option<&Value>) -> Value {
+    let camera = source_scene
+        .and_then(|scene| scene.get("camera"))
+        .and_then(Value::as_object);
+    let general = source_scene
+        .and_then(|scene| scene.get("general"))
+        .and_then(Value::as_object);
+    let mut result = Map::new();
+    if let Some(camera) = camera {
+        for key in ["center", "eye", "up"] {
+            if let Some(vector) = camera.get(key).and_then(scene_vector3_from_value) {
+                result.insert(key.to_owned(), vector);
+            }
+        }
+    }
+    if let Some(general) = general {
+        for (source, target) in [
+            ("nearz", "near_z"),
+            ("farz", "far_z"),
+            ("fov", "fov"),
+            ("zoom", "zoom"),
+        ] {
+            if let Some(value) = general.get(source).and_then(value_to_f64) {
+                result.insert(target.to_owned(), json!(value));
+            }
+        }
+    }
+    Value::Object(result)
+}
+
+fn scene_import_metadata(source_scene: Option<&Value>) -> Value {
+    let object_count = source_scene
+        .and_then(|scene| scene.get("objects"))
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let mut model_object_count = 0usize;
+    let mut audio_object_count = 0usize;
+    let mut particle_object_count = 0usize;
+    let mut effect_count = 0usize;
+    if let Some(objects) = source_scene
+        .and_then(|scene| scene.get("objects"))
+        .and_then(Value::as_array)
+    {
+        for object in objects.iter().filter_map(Value::as_object) {
+            if object.get("image").is_some() {
+                model_object_count += 1;
+            }
+            if !scene_sound_sources_from_object(object).is_empty() {
+                audio_object_count += 1;
+            }
+            if object.get("particle").is_some() {
+                particle_object_count += 1;
+            }
+            effect_count += object
+                .get("effects")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or_default();
+        }
+    }
+    let mut feature_counts = Map::new();
+    feature_counts.insert("model".to_owned(), json!(model_object_count));
+    feature_counts.insert("audio".to_owned(), json!(audio_object_count));
+    feature_counts.insert("particle".to_owned(), json!(particle_object_count));
+    feature_counts.insert("effect".to_owned(), json!(effect_count));
+    json!({
+        "source_format": "wallpaper-engine-scene",
+        "source_version": source_scene.and_then(|scene| scene.get("version")).and_then(Value::as_i64),
+        "object_count": object_count,
+        "feature_counts": feature_counts
+    })
+}
+
 #[derive(Debug, Default)]
 struct SceneDocumentBuildContext {
     next_node: usize,
     next_resource: usize,
     resource_scope: String,
+    property_bindings: Vec<Value>,
     unsupported_features: Vec<Value>,
+}
+
+#[derive(Debug, Clone)]
+struct SceneSourceModelConversion {
+    value: Value,
+    render_resource: Option<String>,
+    original_path: String,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SceneVisibleConversion {
+    static_visible: Option<bool>,
+    initial_opacity: Option<f64>,
 }
 
 fn collect_scene_nodes_from_value(
@@ -943,6 +1152,119 @@ fn collect_scene_nodes_from_value(
     }
 }
 
+fn scene_rebuild_parent_graph(nodes: Vec<Value>) -> Vec<Value> {
+    if nodes.len() < 2 {
+        return nodes;
+    }
+    let source_ids = nodes
+        .iter()
+        .filter_map(scene_node_source_id)
+        .collect::<BTreeSet<_>>();
+    if source_ids.is_empty()
+        || nodes.iter().all(|node| {
+            scene_node_parent_id(node).is_some_and(|parent| source_ids.contains(&parent))
+        })
+    {
+        return nodes;
+    }
+
+    let mut roots = Vec::new();
+    let mut children_by_parent = BTreeMap::<String, Vec<Value>>::new();
+    for node in nodes {
+        if let Some(parent_id) = scene_node_parent_id(&node)
+            && source_ids.contains(&parent_id)
+        {
+            children_by_parent.entry(parent_id).or_default().push(node);
+        } else {
+            roots.push(node);
+        }
+    }
+
+    let mut rebuilt = roots
+        .into_iter()
+        .map(|node| scene_attach_parented_children(node, &mut children_by_parent))
+        .collect::<Vec<_>>();
+    for (_, children) in children_by_parent {
+        rebuilt.extend(children);
+    }
+    rebuilt
+}
+
+fn scene_attach_parented_children(
+    mut node: Value,
+    children_by_parent: &mut BTreeMap<String, Vec<Value>>,
+) -> Value {
+    let Some(source_id) = scene_node_source_id(&node) else {
+        return node;
+    };
+    let Some(children) = children_by_parent.remove(&source_id) else {
+        return node;
+    };
+    let children = children
+        .into_iter()
+        .map(|child| scene_attach_parented_children(child, children_by_parent))
+        .collect::<Vec<_>>();
+    if let Some(object) = node.as_object_mut() {
+        match object.get_mut("children").and_then(Value::as_array_mut) {
+            Some(existing) => existing.extend(children),
+            None => {
+                object.insert("children".to_owned(), Value::Array(children));
+            }
+        }
+    }
+    node
+}
+
+fn scene_node_source_id(node: &Value) -> Option<String> {
+    node.pointer("/provenance/source_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+fn scene_node_parent_id(node: &Value) -> Option<String> {
+    node.pointer("/provenance/parent_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+fn scene_visible_from_object(
+    object: &Map<String, Value>,
+    node_id: &str,
+    context: &mut SceneDocumentBuildContext,
+) -> SceneVisibleConversion {
+    let Some(value) = object.get("visible") else {
+        return SceneVisibleConversion::default();
+    };
+    if let Some(visible) = value_to_bool(value) {
+        return SceneVisibleConversion {
+            static_visible: Some(visible),
+            initial_opacity: None,
+        };
+    }
+    let Some(binding) = value.as_object() else {
+        return SceneVisibleConversion::default();
+    };
+    let initial_visible = binding.get("value").and_then(value_to_bool).unwrap_or(true);
+    if let Some(property) = string_field(binding, &["user", "property"]) {
+        context.property_bindings.push(json!({
+            "property": property,
+            "target_node": node_id,
+            "target": "opacity",
+            "scale": 1.0,
+            "offset": 0.0
+        }));
+        SceneVisibleConversion {
+            static_visible: Some(true),
+            initial_opacity: Some(if initial_visible { 1.0 } else { 0.0 }),
+        }
+    } else {
+        SceneVisibleConversion {
+            static_visible: Some(initial_visible),
+            initial_opacity: None,
+        }
+    }
+}
+
 fn scene_node_from_object(
     project: &WallpaperEngineProject,
     output_dir: &Path,
@@ -953,20 +1275,44 @@ fn scene_node_from_object(
 ) -> Value {
     let original_type = string_field(object, &["type", "class", "kind"]);
     let source_path = scene_resource_path_from_object(object);
-    let kind =
-        scene_node_kind_from_object(object, source_path.as_deref(), original_type.as_deref());
+    let source_model =
+        scene_source_model_from_object(project, output_dir, object, report, context, resources);
+    let kind = scene_node_kind_from_object(
+        object,
+        source_path.as_deref(),
+        source_model.as_ref(),
+        original_type.as_deref(),
+    );
     let node_id = scene_next_node_id(
         context,
         kind,
-        original_type.as_deref().or(source_path.as_deref()),
+        original_type
+            .as_deref()
+            .or(source_path.as_deref())
+            .or_else(|| {
+                source_model
+                    .as_ref()
+                    .map(|model| model.original_path.as_str())
+            }),
     );
     let mut node = Map::new();
-    node.insert("id".to_owned(), Value::String(node_id));
+    node.insert("id".to_owned(), Value::String(node_id.clone()));
     node.insert("type".to_owned(), Value::String(kind.to_owned()));
     if let Some(name) = string_field(object, &["name", "id", "label"]) {
         node.insert("name".to_owned(), Value::String(name));
     }
+    let visible = scene_visible_from_object(object, &node_id, context);
+    if let Some(visible) = visible.static_visible {
+        node.insert("visible".to_owned(), Value::Bool(visible));
+    }
     if let Some(opacity) = number_field(object, &["opacity", "alpha"]) {
+        let opacity = if let Some(visible_opacity) = visible.initial_opacity {
+            opacity * visible_opacity
+        } else {
+            opacity
+        };
+        node.insert("opacity".to_owned(), json!(opacity.clamp(0.0, 1.0)));
+    } else if let Some(opacity) = visible.initial_opacity {
         node.insert("opacity".to_owned(), json!(opacity.clamp(0.0, 1.0)));
     }
     if let Some(transform) = scene_transform_from_object(object) {
@@ -989,13 +1335,13 @@ fn scene_node_from_object(
     if let Some(height) = number_field(object, &["height", "h"]) {
         node.insert("height".to_owned(), json!(height.max(0.0)));
     }
-    if let Some(text) = string_field(object, &["text", "value", "caption"]) {
+    if let Some(text) = scene_text_from_object(object) {
         node.insert("text".to_owned(), Value::String(text));
     }
-    if let Some(font_size) = number_field(object, &["font_size", "fontSize", "fontsize", "size"]) {
+    if let Some(font_size) = scene_font_size_from_object(object) {
         node.insert("font_size".to_owned(), json!(font_size.max(1.0)));
     }
-    if let Some(font_family) = string_field(object, &["font_family", "fontFamily", "font"]) {
+    if let Some(font_family) = scene_font_family_from_object(object) {
         node.insert("font_family".to_owned(), Value::String(font_family));
     }
     if let Some(font_weight) = string_field(object, &["font_weight", "fontWeight", "weight"]) {
@@ -1012,15 +1358,30 @@ fn scene_node_from_object(
     if let Some(fit) = scene_fit_from_object(object) {
         node.insert("fit".to_owned(), Value::String(fit.to_owned()));
     }
-    if let Some(original_type) = original_type {
-        node.insert("original_type".to_owned(), Value::String(original_type));
+    if let Some(width) = scene_size_component_from_object(object, 0) {
+        node.entry("width".to_owned())
+            .or_insert_with(|| json!(width));
     }
-    if let Some(source_path) = source_path {
-        node.insert("source_path".to_owned(), Value::String(source_path.clone()));
+    if let Some(height) = scene_size_component_from_object(object, 1) {
+        node.entry("height".to_owned())
+            .or_insert_with(|| json!(height));
+    }
+    if kind == "rectangle"
+        && let Some(radius) = scene_corner_radius_from_object(object)
+    {
+        node.insert("corner_radius".to_owned(), json!(radius));
+    }
+
+    if let Some(source_model) = &source_model
+        && let Some(resource) = &source_model.render_resource
+    {
+        node.insert("resource".to_owned(), Value::String(resource.clone()));
+    }
+    if let Some(source_path) = &source_path {
         if let Some(resource_id) = scene_copy_resource(
             project,
             output_dir,
-            &source_path,
+            source_path,
             kind,
             report,
             context,
@@ -1028,6 +1389,24 @@ fn scene_node_from_object(
         ) {
             node.insert("resource".to_owned(), Value::String(resource_id));
         }
+    }
+    let effects =
+        scene_effects_from_object(project, output_dir, object, report, context, resources);
+    if !effects.is_empty() {
+        node.insert("effects".to_owned(), Value::Array(effects));
+    }
+    let audio =
+        scene_audio_cues_from_object(project, output_dir, object, report, context, resources);
+    if !audio.is_empty() {
+        node.insert("audio".to_owned(), Value::Array(audio));
+    }
+    if let Some(provenance) = scene_node_provenance_from_object(
+        object,
+        original_type.as_deref(),
+        source_path.as_deref(),
+        source_model.as_ref(),
+    ) {
+        node.insert("provenance".to_owned(), provenance);
     }
 
     let children =
@@ -1043,7 +1422,11 @@ fn scene_node_from_object(
             context,
             kind,
             "Wallpaper Engine runtime system is represented in gscene but not executed by the native scene runtime yet.",
-            node.get("source_path").and_then(Value::as_str),
+            source_path.as_deref().or_else(|| {
+                source_model
+                    .as_ref()
+                    .map(|model| model.original_path.as_str())
+            }),
         );
     }
     Value::Object(node)
@@ -1069,9 +1452,17 @@ fn scene_child_nodes_from_object(
 fn scene_object_has_node_signal(object: &Map<String, Value>) -> bool {
     string_field(object, &["type", "class", "kind"]).is_some()
         || scene_resource_path_from_object(object).is_some()
+        || scene_model_path_from_object(object).is_some()
         || scene_color_from_object(object).is_some()
-        || string_field(object, &["text", "caption"]).is_some()
+        || scene_shape_kind_from_object(object).is_some()
+        || scene_text_from_object(object).is_some()
         || scene_vector_path_from_object(object).is_some()
+        || object
+            .get("effects")
+            .and_then(Value::as_array)
+            .is_some_and(|effects| !effects.is_empty())
+        || !scene_sound_sources_from_object(object).is_empty()
+        || object.get("particle").is_some()
 }
 
 fn scene_container_key(key: &str) -> bool {
@@ -1084,6 +1475,7 @@ fn scene_container_key(key: &str) -> bool {
 fn scene_node_kind_from_object(
     object: &Map<String, Value>,
     source_path: Option<&str>,
+    source_model: Option<&SceneSourceModelConversion>,
     original_type: Option<&str>,
 ) -> &'static str {
     let type_hint = original_type
@@ -1092,6 +1484,18 @@ fn scene_node_kind_from_object(
         .replace(['_', '-'], "");
     if source_path.is_some_and(is_video_path) || type_hint.contains("video") {
         return "video";
+    }
+    if source_model.is_some() {
+        if scene_model_solid_layer(source_model) && scene_color_from_object(object).is_some() {
+            return "rectangle";
+        }
+        return "image";
+    }
+    if object.get("particle").is_some()
+        || type_hint.contains("particle")
+        || type_hint.contains("emitter")
+    {
+        return "particle-emitter";
     }
     if source_path.is_some_and(is_image_path)
         || type_hint.contains("image")
@@ -1103,10 +1507,7 @@ fn scene_node_kind_from_object(
     if type_hint.contains("shader") || type_hint.contains("material") {
         return "shader";
     }
-    if type_hint.contains("particle") || type_hint.contains("emitter") {
-        return "particle-emitter";
-    }
-    if type_hint.contains("audio") || type_hint.contains("sound") {
+    if object.get("sound").is_some() || type_hint.contains("audio") || type_hint.contains("sound") {
         return "audio-response";
     }
     if type_hint.contains("script") {
@@ -1118,7 +1519,10 @@ fn scene_node_kind_from_object(
     if type_hint.contains("ellipse") || type_hint.contains("circle") {
         return "ellipse";
     }
-    if type_hint.contains("text") || string_field(object, &["text", "caption"]).is_some() {
+    if let Some(shape_kind) = scene_shape_kind_from_object(object) {
+        return shape_kind;
+    }
+    if type_hint.contains("text") || scene_text_from_object(object).is_some() {
         return "text";
     }
     if type_hint.contains("path") || scene_vector_path_from_object(object).is_some() {
@@ -1133,8 +1537,552 @@ fn scene_node_kind_from_object(
     "unknown"
 }
 
+fn scene_shape_kind_from_object(object: &Map<String, Value>) -> Option<&'static str> {
+    if scene_bool_value_field(object, &["solid", "issolid", "isSolid"]).unwrap_or(false) {
+        return Some("rectangle");
+    }
+
+    let shape = value_field(object, &["shape", "primitive", "geometry"])?;
+    let normalized = shape.to_ascii_lowercase().replace(['_', '-', ' '], "");
+    if normalized.contains("ellipse") || normalized.contains("circle") {
+        return Some("ellipse");
+    }
+    if normalized.contains("rect")
+        || normalized.contains("box")
+        || normalized.contains("quad")
+        || normalized.contains("rounded")
+        || normalized.contains("solid")
+    {
+        return Some("rectangle");
+    }
+    None
+}
+
 fn scene_child_nodes_from_keys(object: &Map<String, Value>) -> bool {
     object.keys().any(|key| scene_container_key(key))
+}
+
+fn scene_source_model_from_object(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    object: &Map<String, Value>,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) -> Option<SceneSourceModelConversion> {
+    let model_path = scene_model_path_from_object(object)?;
+    let mut model = Map::new();
+    model.insert("source".to_owned(), Value::String(model_path.clone()));
+    if let Some(resource) = scene_copy_resource_as(
+        project,
+        output_dir,
+        &model_path,
+        "model",
+        Some("we-model"),
+        report,
+        context,
+        resources,
+    ) {
+        model.insert("model_resource".to_owned(), Value::String(resource));
+    }
+
+    let Some(model_json) =
+        read_scene_project_json(project, &model_path, "we-model-json", report, context)
+    else {
+        scene_push_unsupported(
+            context,
+            "we-model-json",
+            "Wallpaper Engine object image points to a model file that could not be parsed.",
+            Some(&model_path),
+        );
+        return Some(SceneSourceModelConversion {
+            value: Value::Object(model),
+            render_resource: None,
+            original_path: model_path,
+        });
+    };
+
+    if let Some(model_object) = model_json.as_object() {
+        if let Some(material) = string_field(model_object, &["material"]) {
+            let material_path = scene_material_path(&material);
+            model.insert("material".to_owned(), Value::String(material_path.clone()));
+            if let Some(resource) = scene_copy_resource_as(
+                project,
+                output_dir,
+                &material_path,
+                "material",
+                Some("we-material"),
+                report,
+                context,
+                resources,
+            ) {
+                model.insert("material_resource".to_owned(), Value::String(resource));
+            }
+            if let Some(material_json) = read_scene_project_json(
+                project,
+                &material_path,
+                "we-material-json",
+                report,
+                context,
+            ) {
+                let (textures, texture_resources, render_resource) = scene_material_textures(
+                    project,
+                    output_dir,
+                    &material_json,
+                    report,
+                    context,
+                    resources,
+                );
+                if !textures.is_empty() {
+                    model.insert(
+                        "textures".to_owned(),
+                        Value::Array(textures.into_iter().map(Value::String).collect()),
+                    );
+                }
+                if !texture_resources.is_empty() {
+                    model.insert(
+                        "texture_resources".to_owned(),
+                        Value::Array(texture_resources.into_iter().map(Value::String).collect()),
+                    );
+                }
+                if render_resource.is_none() {
+                    scene_push_unsupported(
+                        context,
+                        "we-model-material-texture-runtime",
+                        "Wallpaper Engine model resolved to material textures that are preserved as resources but are not directly renderable by the native scene image path yet.",
+                        Some(&material_path),
+                    );
+                }
+                if let Some(puppet) = string_field(model_object, &["puppet"]) {
+                    model.insert("puppet".to_owned(), Value::String(puppet));
+                }
+                insert_optional_bool(model_object, "solidlayer", "solid_layer", &mut model);
+                insert_optional_bool(model_object, "passthrough", "passthrough", &mut model);
+                return Some(SceneSourceModelConversion {
+                    value: Value::Object(model),
+                    render_resource,
+                    original_path: model_path,
+                });
+            }
+        }
+        if let Some(puppet) = string_field(model_object, &["puppet"]) {
+            model.insert("puppet".to_owned(), Value::String(puppet));
+        }
+        insert_optional_bool(model_object, "solidlayer", "solid_layer", &mut model);
+        insert_optional_bool(model_object, "passthrough", "passthrough", &mut model);
+    }
+
+    scene_push_unsupported(
+        context,
+        "we-model-material-resolution",
+        "Wallpaper Engine model was preserved, but no material texture graph was resolved for native scene rendering.",
+        Some(&model_path),
+    );
+    Some(SceneSourceModelConversion {
+        value: Value::Object(model),
+        render_resource: None,
+        original_path: model_path,
+    })
+}
+
+fn scene_model_solid_layer(source_model: Option<&SceneSourceModelConversion>) -> bool {
+    source_model
+        .and_then(|model| model.value.get("solid_layer"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn scene_node_provenance_from_object(
+    object: &Map<String, Value>,
+    original_type: Option<&str>,
+    source_path: Option<&str>,
+    source_model: Option<&SceneSourceModelConversion>,
+) -> Option<Value> {
+    let mut provenance = Map::new();
+    provenance.insert(
+        "source_format".to_owned(),
+        Value::String("wallpaper-engine-scene".to_owned()),
+    );
+    if let Some(source_id) = object.get("id").and_then(value_to_string) {
+        provenance.insert("source_id".to_owned(), Value::String(source_id));
+    }
+    if let Some(parent_id) = object.get("parent").and_then(value_to_string) {
+        provenance.insert("parent_id".to_owned(), Value::String(parent_id));
+    }
+    if let Some(dependencies) = scene_dependencies_from_object(object) {
+        provenance.insert("dependencies".to_owned(), dependencies);
+    }
+    if let Some(original_type) = original_type {
+        provenance.insert(
+            "original_type".to_owned(),
+            Value::String(original_type.to_owned()),
+        );
+    }
+    if let Some(path) =
+        source_path.or_else(|| source_model.map(|model| model.original_path.as_str()))
+    {
+        provenance.insert("original_path".to_owned(), Value::String(path.to_owned()));
+    }
+    if let Some(transform) = scene_source_transform_from_object(object) {
+        provenance.insert("transform".to_owned(), transform);
+    }
+    if let Some(source_model) = source_model {
+        provenance.insert("model".to_owned(), source_model.value.clone());
+    }
+    for (source, target) in [
+        ("particle", "particle"),
+        ("animationlayers", "animation_layers"),
+        ("instance", "instance"),
+        ("instanceoverride", "instance_override"),
+    ] {
+        if let Some(value) = object.get(source) {
+            provenance.insert(target.to_owned(), value.clone());
+        }
+    }
+    if provenance.len() <= 1 {
+        None
+    } else {
+        Some(Value::Object(provenance))
+    }
+}
+
+fn scene_dependencies_from_object(object: &Map<String, Value>) -> Option<Value> {
+    let dependencies = object.get("dependencies")?.as_array()?;
+    let dependencies = dependencies
+        .iter()
+        .filter_map(value_to_string)
+        .map(Value::String)
+        .collect::<Vec<_>>();
+    if dependencies.is_empty() {
+        None
+    } else {
+        Some(Value::Array(dependencies))
+    }
+}
+
+fn scene_source_transform_from_object(object: &Map<String, Value>) -> Option<Value> {
+    let mut transform = Map::new();
+    for (source, target) in [
+        ("origin", "origin"),
+        ("angles", "angles"),
+        ("scale", "scale"),
+        ("pivot", "pivot"),
+        ("size", "size"),
+    ] {
+        if let Some(value) = object.get(source).and_then(scene_vector3_from_value) {
+            transform.insert(target.to_owned(), value);
+        }
+    }
+    if let Some(alignment) = string_field(object, &["alignment"]) {
+        transform.insert("alignment".to_owned(), Value::String(alignment));
+    }
+    if transform.is_empty() {
+        None
+    } else {
+        Some(Value::Object(transform))
+    }
+}
+
+fn scene_effects_from_object(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    object: &Map<String, Value>,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) -> Vec<Value> {
+    let Some(effects) = object.get("effects").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    effects
+        .iter()
+        .filter_map(Value::as_object)
+        .filter_map(|effect| {
+            let file = string_field(effect, &["file"])?;
+            let mut output = Map::new();
+            output.insert("file".to_owned(), Value::String(file.clone()));
+            if let Some(resource) = scene_copy_resource_as(
+                project,
+                output_dir,
+                &file,
+                "effect",
+                Some("we-effect"),
+                report,
+                context,
+                resources,
+            ) {
+                output.insert("resource".to_owned(), Value::String(resource));
+            }
+            if let Some(id) = effect.get("id").and_then(value_to_i64) {
+                output.insert("id".to_owned(), json!(id));
+            }
+            if let Some(name) = string_field(effect, &["name"]) {
+                output.insert("name".to_owned(), Value::String(name));
+            }
+            if let Some(visible) = effect.get("visible") {
+                output.insert("visible".to_owned(), visible.clone());
+            }
+            let passes = scene_effect_passes_from_object(effect);
+            if !passes.is_empty() {
+                output.insert("passes".to_owned(), Value::Array(passes));
+            }
+            scene_push_unsupported(
+                context,
+                "we-effect-runtime",
+                "Wallpaper Engine effect graph is preserved in gscene but not executed by the native scene runtime yet.",
+                Some(&file),
+            );
+            Some(Value::Object(output))
+        })
+        .collect()
+}
+
+fn scene_effect_passes_from_object(effect: &Map<String, Value>) -> Vec<Value> {
+    let Some(passes) = effect.get("passes").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    passes
+        .iter()
+        .filter_map(Value::as_object)
+        .map(|pass| {
+            let mut output = Map::new();
+            if let Some(id) = pass.get("id").and_then(value_to_i64) {
+                output.insert("id".to_owned(), json!(id));
+            }
+            if let Some(textures) = scene_effect_pass_textures(pass) {
+                output.insert("textures".to_owned(), textures);
+            }
+            if let Some(combos) = pass.get("combos").and_then(scene_i64_map_from_value) {
+                output.insert("combos".to_owned(), combos);
+            }
+            if let Some(values) = pass.get("constantshadervalues").and_then(Value::as_object) {
+                output.insert(
+                    "constant_shader_values".to_owned(),
+                    Value::Object(values.clone()),
+                );
+            }
+            if let Some(user_textures) = pass.get("usertextures") {
+                output.insert("user_textures".to_owned(), user_textures.clone());
+            }
+            Value::Object(output)
+        })
+        .collect()
+}
+
+fn scene_effect_pass_textures(pass: &Map<String, Value>) -> Option<Value> {
+    let textures = pass.get("textures")?.as_array()?;
+    Some(Value::Array(
+        textures
+            .iter()
+            .map(|texture| {
+                value_to_string(texture)
+                    .map(Value::String)
+                    .unwrap_or(Value::Null)
+            })
+            .collect(),
+    ))
+}
+
+fn scene_audio_cues_from_object(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    object: &Map<String, Value>,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) -> Vec<Value> {
+    scene_sound_sources_from_object(object)
+        .into_iter()
+        .map(|source| {
+            let mut cue = Map::new();
+            cue.insert("source".to_owned(), Value::String(source.clone()));
+            if let Some(resource) = scene_copy_resource_as(
+                project,
+                output_dir,
+                &source,
+                "audio",
+                Some("scene-audio"),
+                report,
+                context,
+                resources,
+            ) {
+                cue.insert("resource".to_owned(), Value::String(resource));
+            }
+            if let Some(playback_mode) = string_field(object, &["playbackmode"]) {
+                cue.insert("playback_mode".to_owned(), Value::String(playback_mode));
+            }
+            if let Some(volume) = object.get("volume") {
+                cue.insert("volume".to_owned(), volume.clone());
+            }
+            if let Some(start_silent) = object.get("startsilent").and_then(value_to_bool) {
+                cue.insert("start_silent".to_owned(), Value::Bool(start_silent));
+            }
+            cue
+        })
+        .map(Value::Object)
+        .collect()
+}
+
+fn scene_sound_sources_from_object(object: &Map<String, Value>) -> Vec<String> {
+    match object.get("sound") {
+        Some(Value::String(source)) => vec![source.clone()],
+        Some(Value::Array(sources)) => sources.iter().filter_map(value_to_string).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn scene_material_textures(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    material_json: &Value,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) -> (Vec<String>, Vec<String>, Option<String>) {
+    let texture_paths = scene_material_texture_paths(material_json);
+    let mut texture_resources = Vec::new();
+    let mut render_resource = None;
+    for texture in &texture_paths {
+        if texture.starts_with("_rt_") {
+            scene_push_unsupported(
+                context,
+                "we-runtime-texture",
+                "Wallpaper Engine runtime texture was preserved as a texture reference; it is not a standalone project asset.",
+                Some(texture),
+            );
+            continue;
+        }
+        let resource_kind = if is_image_path(texture) {
+            "image"
+        } else {
+            "texture"
+        };
+        if let Some(resource) = scene_copy_resource_as(
+            project,
+            output_dir,
+            texture,
+            resource_kind,
+            Some("we-material-texture"),
+            report,
+            context,
+            resources,
+        ) {
+            if render_resource.is_none() && is_image_path(texture) {
+                render_resource = Some(resource.clone());
+            }
+            texture_resources.push(resource);
+        } else if texture.ends_with(".tex") {
+            scene_push_unsupported(
+                context,
+                "we-tex-decode",
+                "Wallpaper Engine .tex texture is preserved but not decoded into a native sampled image yet.",
+                Some(texture),
+            );
+        }
+    }
+    (texture_paths, texture_resources, render_resource)
+}
+
+fn scene_material_texture_paths(material_json: &Value) -> Vec<String> {
+    let Some(passes) = material_json.get("passes").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut textures = Vec::new();
+    for pass in passes.iter().filter_map(Value::as_object) {
+        if let Some(values) = pass.get("textures") {
+            collect_scene_texture_references(values, &mut textures);
+        }
+    }
+    textures
+        .into_iter()
+        .map(|texture| scene_material_texture_path(&texture))
+        .collect()
+}
+
+fn collect_scene_texture_references(value: &Value, output: &mut Vec<String>) {
+    match value {
+        Value::String(value) => output.push(value.clone()),
+        Value::Array(values) => {
+            for value in values {
+                collect_scene_texture_references(value, output);
+            }
+        }
+        Value::Object(object) => {
+            if let Some(path) = string_field(object, &["path", "file", "source", "texture"]) {
+                output.push(path);
+            }
+            for value in object.values() {
+                if value.is_array() {
+                    collect_scene_texture_references(value, output);
+                }
+            }
+        }
+        Value::Number(_) | Value::Bool(_) | Value::Null => {}
+    }
+}
+
+fn scene_material_path(material: &str) -> String {
+    if Path::new(material).extension().is_some() || material.contains('/') {
+        material.to_owned()
+    } else {
+        format!("materials/{material}.json")
+    }
+}
+
+fn scene_material_texture_path(texture: &str) -> String {
+    if Path::new(texture).extension().is_some()
+        || texture.contains('/')
+        || texture.starts_with("_rt_")
+    {
+        texture.to_owned()
+    } else {
+        format!("materials/{texture}.tex")
+    }
+}
+
+fn read_scene_project_json(
+    project: &WallpaperEngineProject,
+    source_path: &str,
+    feature: &str,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+) -> Option<Value> {
+    let relative = match normalize_relative_path(source_path) {
+        Ok(relative) => relative,
+        Err(err) => {
+            scene_push_unsupported(context, feature, &err.to_string(), Some(source_path));
+            return None;
+        }
+    };
+    let path = project.root.join(relative);
+    let contents = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(err) => {
+            scene_push_unsupported(
+                context,
+                feature,
+                &format!("Referenced Wallpaper Engine JSON resource could not be read: {err}."),
+                Some(source_path),
+            );
+            report.warnings.push(format!(
+                "Scene JSON resource {source_path:?} was referenced but not read at {}: {err}.",
+                path.display()
+            ));
+            return None;
+        }
+    };
+    match serde_json::from_str(&contents) {
+        Ok(value) => Some(value),
+        Err(err) => {
+            scene_push_unsupported(
+                context,
+                feature,
+                &format!("Referenced Wallpaper Engine JSON resource could not be parsed: {err}."),
+                Some(source_path),
+            );
+            None
+        }
+    }
 }
 
 fn scene_resource_path_from_object(object: &Map<String, Value>) -> Option<String> {
@@ -1145,7 +2093,6 @@ fn scene_resource_path_from_object(object: &Map<String, Value>) -> Option<String
             "source",
             "file",
             "filename",
-            "image",
             "texture",
             "video",
             "src",
@@ -1153,6 +2100,17 @@ fn scene_resource_path_from_object(object: &Map<String, Value>) -> Option<String
         ],
     )
     .filter(|path| is_scene_resource_path(path))
+}
+
+fn scene_model_path_from_object(object: &Map<String, Value>) -> Option<String> {
+    string_field(object, &["image"]).filter(|path| {
+        Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                matches!(extension.to_ascii_lowercase().as_str(), "json" | "model")
+            })
+    })
 }
 
 fn is_scene_resource_path(path: &str) -> bool {
@@ -1205,6 +2163,28 @@ fn scene_copy_resource(
     context: &mut SceneDocumentBuildContext,
     resources: &mut Vec<Value>,
 ) -> Option<String> {
+    scene_copy_resource_as(
+        project,
+        output_dir,
+        source_path,
+        scene_resource_kind(kind, source_path),
+        None,
+        report,
+        context,
+        resources,
+    )
+}
+
+fn scene_copy_resource_as(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    source_path: &str,
+    resource_kind: &str,
+    role: Option<&str>,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) -> Option<String> {
     let relative = match normalize_relative_path(source_path) {
         Ok(relative) => relative,
         Err(err) => {
@@ -1240,7 +2220,7 @@ fn scene_copy_resource(
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or("resource");
-    let resource_id = scene_next_resource_id(context, kind, stem);
+    let resource_id = scene_next_resource_id(context, resource_kind, stem);
     let dest_dir = output_dir
         .join("assets/scene-resources")
         .join(&context.resource_scope);
@@ -1261,12 +2241,18 @@ fn scene_copy_resource(
     }
     let package_path = path_to_package_string(dest.strip_prefix(output_dir).unwrap_or(&dest));
     report.copied_assets.push(package_path.clone());
-    resources.push(json!({
+    let mut resource = json!({
         "id": resource_id,
-        "type": scene_resource_kind(kind, source_path),
+        "type": resource_kind,
         "source": package_path,
         "original_source": source_path
-    }));
+    });
+    if let Some(role) = role
+        && let Some(object) = resource.as_object_mut()
+    {
+        object.insert("role".to_owned(), Value::String(role.to_owned()));
+    }
+    resources.push(resource);
     Some(resource_id)
 }
 
@@ -1312,11 +2298,19 @@ fn scene_next_resource_id(
 
 fn scene_transform_from_object(object: &Map<String, Value>) -> Option<Value> {
     let mut transform = Map::new();
+    if let Some(origin) = object.get("origin").and_then(vector3_components_from_value) {
+        transform.insert("x".to_owned(), json!(origin.0));
+        transform.insert("y".to_owned(), json!(origin.1));
+    }
     if let Some(x) = number_field(object, &["x", "left"]) {
         transform.insert("x".to_owned(), json!(x));
     }
     if let Some(y) = number_field(object, &["y", "top"]) {
         transform.insert("y".to_owned(), json!(y));
+    }
+    if let Some(scale) = object.get("scale").and_then(vector3_components_from_value) {
+        transform.insert("scale_x".to_owned(), json!(scale.0.abs().max(f64::EPSILON)));
+        transform.insert("scale_y".to_owned(), json!(scale.1.abs().max(f64::EPSILON)));
     }
     if let Some(scale_x) = number_field(object, &["scale_x", "scaleX", "scalex"]) {
         transform.insert("scale_x".to_owned(), json!(scale_x.max(f64::EPSILON)));
@@ -1324,11 +2318,18 @@ fn scene_transform_from_object(object: &Map<String, Value>) -> Option<Value> {
     if let Some(scale_y) = number_field(object, &["scale_y", "scaleY", "scaley"]) {
         transform.insert("scale_y".to_owned(), json!(scale_y.max(f64::EPSILON)));
     }
+    if let Some(angles) = object.get("angles").and_then(vector3_components_from_value) {
+        transform.insert("rotation_deg".to_owned(), json!(angles.2.to_degrees()));
+    }
     if let Some(rotation) = number_field(
         object,
         &["rotation_deg", "rotationDeg", "rotation", "angle"],
     ) {
         transform.insert("rotation_deg".to_owned(), json!(rotation));
+    }
+    if let Some((anchor_x, anchor_y)) = scene_anchor_from_object(object) {
+        transform.insert("anchor_x".to_owned(), json!(anchor_x));
+        transform.insert("anchor_y".to_owned(), json!(anchor_y));
     }
     if transform.is_empty() {
         None
@@ -1337,18 +2338,100 @@ fn scene_transform_from_object(object: &Map<String, Value>) -> Option<Value> {
     }
 }
 
-fn scene_color_from_object(object: &Map<String, Value>) -> Option<String> {
-    string_field(
+fn scene_anchor_from_object(object: &Map<String, Value>) -> Option<(f64, f64)> {
+    let size = object.get("size").and_then(vector3_components_from_value)?;
+    if size.0 <= 0.0 || size.1 <= 0.0 {
+        return None;
+    }
+    let pivot = object
+        .get("pivot")
+        .and_then(vector3_components_from_value)
+        .unwrap_or((0.0, 0.0, 0.0));
+    let alignment = string_field(object, &["alignment"]).unwrap_or_else(|| "center".to_owned());
+    let offset = scene_alignment_offset(&alignment, size.0, size.1);
+    Some((
+        ((pivot.0 + offset.0) / size.0 + 0.5).clamp(0.0, 1.0),
+        ((pivot.1 + offset.1) / size.1 + 0.5).clamp(0.0, 1.0),
+    ))
+}
+
+fn scene_alignment_offset(alignment: &str, width: f64, height: f64) -> (f64, f64) {
+    let hx = width * 0.5;
+    let hy = height * 0.5;
+    match alignment
+        .to_ascii_lowercase()
+        .replace(['-', '_'], "")
+        .as_str()
+    {
+        "left" => (-hx, 0.0),
+        "right" => (hx, 0.0),
+        "top" => (0.0, hy),
+        "bottom" => (0.0, -hy),
+        "topleft" => (-hx, hy),
+        "topright" => (hx, hy),
+        "bottomleft" => (-hx, -hy),
+        "bottomright" => (hx, -hy),
+        _ => (0.0, 0.0),
+    }
+}
+
+fn scene_size_component_from_object(object: &Map<String, Value>, index: usize) -> Option<f64> {
+    let size = object.get("size").and_then(vector3_components_from_value)?;
+    match index {
+        0 if size.0.is_finite() && size.0 >= 0.0 => Some(size.0),
+        1 if size.1.is_finite() && size.1 >= 0.0 => Some(size.1),
+        _ => None,
+    }
+}
+
+fn scene_corner_radius_from_object(object: &Map<String, Value>) -> Option<f64> {
+    let radius = number_value_field(
         object,
-        &["color", "fill", "background", "backgroundColor", "tint"],
-    )
-    .filter(|color| !is_scene_resource_path(color))
-    .map(|color| normalize_color(&color))
+        &[
+            "radius",
+            "corner_radius",
+            "cornerRadius",
+            "cornerradius",
+            "border_radius",
+            "borderRadius",
+        ],
+    )?;
+    if radius.is_finite() {
+        Some(radius.max(0.0))
+    } else {
+        None
+    }
+}
+
+fn scene_color_from_object(object: &Map<String, Value>) -> Option<String> {
+    for key in [
+        "color",
+        "fill",
+        "background",
+        "backgroundColor",
+        "backgroundcolor",
+        "tint",
+    ] {
+        let Some(value) = object.get(key) else {
+            continue;
+        };
+        if let Some(raw) = value_to_string(value)
+            && is_scene_resource_path(&raw)
+        {
+            continue;
+        }
+        if let Some(color) = scene_color_from_value(value) {
+            return Some(color);
+        }
+    }
+    None
 }
 
 fn scene_stroke_color_from_object(object: &Map<String, Value>) -> Option<String> {
-    string_field(object, &["stroke_color", "strokeColor", "stroke"])
-        .map(|color| normalize_color(&color))
+    ["stroke_color", "strokeColor", "stroke"]
+        .iter()
+        .filter_map(|key| object.get(*key))
+        .find_map(scene_color_from_value)
 }
 
 fn scene_vector_path_from_object(object: &Map<String, Value>) -> Option<String> {
@@ -1363,8 +2446,39 @@ fn scene_vector_path_from_object(object: &Map<String, Value>) -> Option<String> 
     })
 }
 
+fn scene_text_from_object(object: &Map<String, Value>) -> Option<String> {
+    value_field(object, &["text", "caption", "value"])
+}
+
+fn scene_font_size_from_object(object: &Map<String, Value>) -> Option<f64> {
+    number_value_field(
+        object,
+        &[
+            "pointsize",
+            "pointSize",
+            "font_size",
+            "fontSize",
+            "fontsize",
+            "size",
+        ],
+    )
+}
+
+fn scene_font_family_from_object(object: &Map<String, Value>) -> Option<String> {
+    value_field(object, &["font_family", "fontFamily", "font"])
+}
+
 fn scene_text_align_from_object(object: &Map<String, Value>) -> Option<&'static str> {
-    let align = string_field(object, &["text_align", "textAlign", "align"])?;
+    let align = value_field(
+        object,
+        &[
+            "text_align",
+            "textAlign",
+            "align",
+            "horizontalalign",
+            "horizontalAlign",
+        ],
+    )?;
     match align.to_ascii_lowercase().as_str() {
         "center" | "middle" => Some("middle"),
         "right" | "end" => Some("end"),
@@ -2549,10 +3663,55 @@ fn string_field(map: &Map<String, Value>, keys: &[&str]) -> Option<String> {
         .find_map(value_to_string)
 }
 
+fn value_field(map: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .filter_map(|key| map.get(*key))
+        .find_map(value_to_string_unwrapped)
+}
+
 fn number_field(map: &Map<String, Value>, keys: &[&str]) -> Option<f64> {
     keys.iter()
         .filter_map(|key| map.get(*key))
         .find_map(|value| value.as_f64().or_else(|| value.as_str()?.parse().ok()))
+}
+
+fn number_value_field(map: &Map<String, Value>, keys: &[&str]) -> Option<f64> {
+    keys.iter()
+        .filter_map(|key| map.get(*key))
+        .find_map(value_to_f64_unwrapped)
+}
+
+fn value_to_f64(value: &Value) -> Option<f64> {
+    value.as_f64().or_else(|| value.as_str()?.parse().ok())
+}
+
+fn value_to_f64_unwrapped(value: &Value) -> Option<f64> {
+    value_to_f64(value).or_else(|| value.as_object()?.get("value").and_then(value_to_f64))
+}
+
+fn value_to_i64(value: &Value) -> Option<i64> {
+    value.as_i64().or_else(|| value.as_str()?.parse().ok())
+}
+
+fn value_to_u32(value: &Value) -> Option<u32> {
+    if let Some(value) = value.as_u64() {
+        return u32::try_from(value).ok();
+    }
+    let parsed = value.as_str()?.parse::<u32>().ok()?;
+    Some(parsed)
+}
+
+fn value_to_bool(value: &Value) -> Option<bool> {
+    match value {
+        Value::Bool(value) => Some(*value),
+        Value::Number(value) => value.as_i64().map(|value| value != 0),
+        Value::String(value) => match value.to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Some(true),
+            "false" | "0" | "no" | "off" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn value_to_string(value: &Value) -> Option<String> {
@@ -2561,6 +3720,97 @@ fn value_to_string(value: &Value) -> Option<String> {
         Value::Number(value) => Some(value.to_string()),
         Value::Bool(value) => Some(value.to_string()),
         _ => None,
+    }
+}
+
+fn value_to_string_unwrapped(value: &Value) -> Option<String> {
+    value_to_string(value).or_else(|| value.as_object()?.get("value").and_then(value_to_string))
+}
+
+fn scene_color_from_value(value: &Value) -> Option<String> {
+    if let Some(value) = value_to_string(value) {
+        return Some(normalize_color(&value));
+    }
+    let (r, g, b) = vector3_components_from_value(value)?;
+    Some(format!(
+        "#{:02x}{:02x}{:02x}",
+        color_component_to_u8(r as f32),
+        color_component_to_u8(g as f32),
+        color_component_to_u8(b as f32)
+    ))
+}
+
+fn scene_vector3_from_value(value: &Value) -> Option<Value> {
+    let (x, y, z) = vector3_components_from_value(value)?;
+    Some(json!({
+        "x": x,
+        "y": y,
+        "z": z
+    }))
+}
+
+fn vector3_components_from_value(value: &Value) -> Option<(f64, f64, f64)> {
+    match value {
+        Value::Array(values) => {
+            let x = values.first().and_then(value_to_f64)?;
+            let y = values.get(1).and_then(value_to_f64)?;
+            let z = values.get(2).and_then(value_to_f64).unwrap_or(0.0);
+            Some((x, y, z))
+        }
+        Value::Object(object) => {
+            let x = object
+                .get("x")
+                .or_else(|| object.get("r"))
+                .and_then(value_to_f64)?;
+            let y = object
+                .get("y")
+                .or_else(|| object.get("g"))
+                .and_then(value_to_f64)?;
+            let z = object
+                .get("z")
+                .or_else(|| object.get("b"))
+                .and_then(value_to_f64)
+                .unwrap_or(0.0);
+            Some((x, y, z))
+        }
+        Value::String(value) => {
+            let components = value
+                .split_whitespace()
+                .filter_map(|part| part.parse::<f64>().ok())
+                .collect::<Vec<_>>();
+            if components.len() >= 2 {
+                Some((
+                    components[0],
+                    components[1],
+                    *components.get(2).unwrap_or(&0.0),
+                ))
+            } else {
+                None
+            }
+        }
+        Value::Number(_) | Value::Bool(_) | Value::Null => None,
+    }
+}
+
+fn scene_i64_map_from_value(value: &Value) -> Option<Value> {
+    let object = value.as_object()?;
+    let mut output = Map::new();
+    for (key, value) in object {
+        if let Some(value) = value_to_i64(value) {
+            output.insert(key.clone(), json!(value));
+        }
+    }
+    Some(Value::Object(output))
+}
+
+fn insert_optional_bool(
+    source: &Map<String, Value>,
+    source_key: &str,
+    target_key: &str,
+    target: &mut Map<String, Value>,
+) {
+    if let Some(value) = source.get(source_key).and_then(value_to_bool) {
+        target.insert(target_key.to_owned(), Value::Bool(value));
     }
 }
 
@@ -3144,13 +4394,16 @@ impl FullSceneConversionStatus {
             target_runtime: "native-vulkan-full-scene".to_owned(),
             current_runtime: "native-vulkan-scene-runtime".to_owned(),
             progress_estimate_percent: 80,
-            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, retained sampled-image resources, clear-background composition, rounded-rectangle/simple/concave-path tessellation, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, and explicit unsupported Wallpaper Engine systems without legacy fallback".to_owned(),
+            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE parent ids into gscene children, WE text/value wrappers and visible property bindings into gscene text/property bindings, render clear color into snapshot layers, retained sampled-image resources, clear-background composition, rounded-rectangle/simple/concave-path tessellation, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, and explicit unsupported Wallpaper Engine systems without legacy fallback".to_owned(),
             source_scene_metadata: Vec::new(),
             completed_boundaries: vec![
                 "package-scene-detection".to_owned(),
                 "source-scene-metadata-preservation".to_owned(),
                 "first-class-gscene-document".to_owned(),
                 "scene-resource-copy-graph".to_owned(),
+                "wallpaper-engine-parent-graph-lowering".to_owned(),
+                "render-clear-color-snapshot-layer".to_owned(),
+                "wallpaper-engine-text-and-visible-property-lowering".to_owned(),
                 "native-vulkan-sampled-image-scene-path".to_owned(),
                 "descriptor-heap-sampled-image-resources".to_owned(),
                 "native-vulkan-full-scene-runtime-status".to_owned(),
@@ -3918,6 +5171,21 @@ void main() {}
         assert!(
             full_scene
                 .completed_boundaries
+                .contains(&"wallpaper-engine-parent-graph-lowering".to_owned())
+        );
+        assert!(
+            full_scene
+                .completed_boundaries
+                .contains(&"render-clear-color-snapshot-layer".to_owned())
+        );
+        assert!(
+            full_scene
+                .completed_boundaries
+                .contains(&"wallpaper-engine-text-and-visible-property-lowering".to_owned())
+        );
+        assert!(
+            full_scene
+                .completed_boundaries
                 .contains(&"native-vulkan-full-scene-runtime-status".to_owned())
         );
         assert!(
@@ -4053,6 +5321,344 @@ void main() {}
                 report.unsupported_features
             );
         }
+    }
+
+    #[test]
+    fn converts_wallpaper_engine_scene_to_clean_gscene_provenance() {
+        let source = TestDir::new("we-scene-provenance-source");
+        let output = TestDir::new("we-scene-provenance-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "version": 42,
+              "general": {
+                "orthogonalprojection": { "width": 3840, "height": 2160 },
+                "clearcolor": [0.1, 0.2, 0.3],
+                "clearenabled": true,
+                "hdr": true,
+                "bloomstrength": 1.5,
+                "cameraparallaxamount": 0.25
+              },
+              "camera": {
+                "center": [0, 0, 0],
+                "eye": { "x": 0, "y": 0, "z": 1 }
+              },
+              "objects": [
+                {
+                  "id": 7,
+                  "parent": 3,
+                  "dependencies": [1, 2],
+                  "name": "Hero",
+                  "image": "models/hero.json",
+                  "origin": [10, 20, 0],
+                  "angles": [0, 0, 1.5707963267948966],
+                  "scale": [2, 3, 1],
+                  "pivot": [0, 0, 0],
+                  "alignment": "left",
+                  "size": [100, 50, 0],
+                  "effects": [
+                    {
+                      "file": "effects/glow.json",
+                      "id": 9,
+                      "name": "Glow",
+                      "visible": true,
+                      "passes": [
+                        {
+                          "id": 1,
+                          "textures": [null, "mask"],
+                          "combos": { "MODE": 2 },
+                          "constantshadervalues": { "g_Time": 1.0 },
+                          "usertextures": ["custom"]
+                        }
+                      ]
+                    }
+                  ],
+                  "sound": ["sounds/theme.ogg"],
+                  "playbackmode": "loop",
+                  "volume": 0.75,
+                  "startsilent": false,
+                  "particle": "particles/spark.json"
+                }
+              ]
+            }"#,
+        );
+        source.write_file(
+            "models/hero.json",
+            r#"{ "material": "hero", "solidlayer": false, "passthrough": false }"#,
+        );
+        source.write_file(
+            "materials/hero.json",
+            r#"{ "passes": [{ "textures": ["hero_albedo"] }] }"#,
+        );
+        source.write_file("materials/hero_albedo.tex", "not real tex");
+        source.write_file("effects/glow.json", r#"{ "passes": [] }"#);
+        source.write_file("sounds/theme.ogg", "not real ogg");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Scene Provenance",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(scene.get("wallpaper_engine").is_none());
+        assert_eq!(scene["source"]["format"], "wallpaper-engine-scene");
+        assert_eq!(scene["import"]["source_format"], "wallpaper-engine-scene");
+        assert_eq!(scene["import"]["source_version"], 42);
+        assert_eq!(scene["import"]["object_count"], 1);
+        assert_eq!(scene["import"]["feature_counts"]["model"], 1);
+        assert_eq!(scene["import"]["feature_counts"]["audio"], 1);
+        assert_eq!(scene["import"]["feature_counts"]["particle"], 1);
+        assert_eq!(scene["import"]["feature_counts"]["effect"], 1);
+        assert_eq!(scene["size"]["width"], 3840);
+        assert_eq!(scene["size"]["height"], 2160);
+        assert_eq!(scene["render"]["clear_color"], "#1a334d");
+        assert_eq!(scene["render"]["hdr"], true);
+        assert_eq!(scene["render"]["bloom"]["strength"], 1.5);
+        assert_eq!(scene["render"]["parallax"]["amount"], 0.25);
+        assert_eq!(scene["camera"]["eye"]["z"], 1.0);
+
+        let node = &scene["nodes"][0];
+        assert_eq!(node["type"], "image");
+        assert!(node.get("resource").is_none());
+        assert_eq!(node["width"], 100.0);
+        assert_eq!(node["height"], 50.0);
+        assert_eq!(node["transform"]["x"], 10.0);
+        assert_eq!(node["transform"]["y"], 20.0);
+        assert_eq!(node["transform"]["scale_x"], 2.0);
+        assert_eq!(node["transform"]["scale_y"], 3.0);
+        assert_eq!(node["transform"]["rotation_deg"], 90.0);
+        assert_eq!(node["transform"]["anchor_x"], 0.0);
+        assert_eq!(node["transform"]["anchor_y"], 0.5);
+        assert_eq!(
+            node["provenance"]["source_format"],
+            "wallpaper-engine-scene"
+        );
+        assert_eq!(node["provenance"]["source_id"], "7");
+        assert_eq!(node["provenance"]["parent_id"], "3");
+        assert_eq!(node["provenance"]["dependencies"][0], "1");
+        assert_eq!(node["provenance"]["original_path"], "models/hero.json");
+        assert_eq!(node["provenance"]["model"]["source"], "models/hero.json");
+        assert_eq!(
+            node["provenance"]["model"]["material"],
+            "materials/hero.json"
+        );
+        assert_eq!(
+            node["provenance"]["model"]["textures"][0],
+            "materials/hero_albedo.tex"
+        );
+        assert_eq!(node["effects"][0]["file"], "effects/glow.json");
+        assert_eq!(node["effects"][0]["resource"], "resource-4-glow");
+        assert_eq!(node["effects"][0]["passes"][0]["combos"]["MODE"], 2);
+        assert_eq!(node["audio"][0]["source"], "sounds/theme.ogg");
+        assert_eq!(node["audio"][0]["resource"], "resource-5-theme");
+        assert_eq!(node["audio"][0]["playback_mode"], "loop");
+        assert_eq!(node["audio"][0]["volume"], 0.75);
+        assert_eq!(node["audio"][0]["start_silent"], false);
+        assert_eq!(node["provenance"]["particle"], "particles/spark.json");
+        assert_eq!(scene["resources"][0]["type"], "model");
+        assert_eq!(scene["resources"][1]["type"], "material");
+        assert_eq!(scene["resources"][2]["type"], "texture");
+        assert_eq!(scene["resources"][3]["type"], "effect");
+        assert_eq!(scene["resources"][4]["type"], "audio");
+        assert!(
+            scene["unsupported_features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| feature["feature"] == "we-model-material-texture-runtime")
+        );
+    }
+
+    #[test]
+    fn resolves_scene_model_material_image_texture_to_renderable_resource() {
+        let source = TestDir::new("we-scene-renderable-model-source");
+        let output = TestDir::new("we-scene-renderable-model-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                {
+                  "id": 1,
+                  "name": "Renderable",
+                  "image": "models/renderable.json"
+                }
+              ]
+            }"#,
+        );
+        source.write_file(
+            "models/renderable.json",
+            r#"{ "material": "materials/renderable.json" }"#,
+        );
+        source.write_file(
+            "materials/renderable.json",
+            r#"{ "passes": [{ "textures": ["textures/albedo.png"] }] }"#,
+        );
+        source.write_file("textures/albedo.png", "not real png");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Renderable Scene Model",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene["nodes"][0]["type"], "image");
+        assert_eq!(scene["nodes"][0]["resource"], "resource-3-albedo");
+        assert_eq!(scene["resources"][2]["type"], "image");
+        assert_eq!(
+            scene["resources"][2]["source"],
+            "assets/scene-resources/scene/resource-3-albedo.png"
+        );
+        assert_eq!(
+            scene["nodes"][0]["provenance"]["model"]["texture_resources"][0],
+            "resource-3-albedo"
+        );
+    }
+
+    #[test]
+    fn lowers_wallpaper_engine_parent_ids_to_gscene_children() {
+        let source = TestDir::new("we-scene-parent-graph-source");
+        let output = TestDir::new("we-scene-parent-graph-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                {
+                  "id": 10,
+                  "name": "Parent",
+                  "type": "image",
+                  "path": "parent.png",
+                  "origin": [10, 20, 0],
+                  "alpha": 0.5
+                },
+                {
+                  "id": 20,
+                  "parent": 10,
+                  "name": "Child",
+                  "type": "image",
+                  "path": "child.png",
+                  "origin": [3, 4, 0],
+                  "alpha": 0.5
+                }
+              ]
+            }"#,
+        );
+        source.write_file("parent.png", "not real png");
+        source.write_file("child.png", "not real png");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Parented Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene["nodes"].as_array().unwrap().len(), 1);
+        let parent = &scene["nodes"][0];
+        assert_eq!(parent["provenance"]["source_id"], "10");
+        assert_eq!(parent["children"].as_array().unwrap().len(), 1);
+        assert_eq!(parent["children"][0]["provenance"]["source_id"], "20");
+        assert_eq!(parent["children"][0]["provenance"]["parent_id"], "10");
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+        assert_eq!(snapshot.layers.len(), 2);
+        assert_eq!(snapshot.layers[0].id, "node-1-image");
+        assert_eq!(snapshot.layers[0].transform.x, 10.0);
+        assert_eq!(snapshot.layers[0].transform.y, 20.0);
+        assert_eq!(snapshot.layers[0].opacity, 0.5);
+        assert_eq!(snapshot.layers[1].id, "node-2-image");
+        assert_eq!(snapshot.layers[1].transform.x, 13.0);
+        assert_eq!(snapshot.layers[1].transform.y, 24.0);
+        assert_eq!(snapshot.layers[1].opacity, 0.25);
+    }
+
+    #[test]
+    fn converts_wallpaper_engine_scene_text_and_visible_property_binding() {
+        let source = TestDir::new("we-scene-text-binding-source");
+        let output = TestDir::new("we-scene-text-binding-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                {
+                  "id": 30,
+                  "name": "Title",
+                  "type": "text",
+                  "text": { "value": "Hello Scene" },
+                  "pointsize": { "value": 48 },
+                  "font": { "value": "fonts/Inter.ttf" },
+                  "horizontalalign": "center",
+                  "color": [1, 1, 1],
+                  "visible": { "value": false, "user": "show_title" }
+                }
+              ]
+            }"#,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Text Binding Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let node = &scene["nodes"][0];
+        assert_eq!(node["type"], "text");
+        assert_eq!(node["text"], "Hello Scene");
+        assert_eq!(node["font_size"], 48.0);
+        assert_eq!(node["font_family"], "fonts/Inter.ttf");
+        assert_eq!(node["text_align"], "middle");
+        assert_eq!(node["visible"], true);
+        assert_eq!(node["opacity"], 0.0);
+        assert_eq!(scene["property_bindings"][0]["property"], "show_title");
+        assert_eq!(scene["property_bindings"][0]["target_node"], node["id"]);
+        assert_eq!(scene["property_bindings"][0]["target"], "opacity");
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let hidden = document.snapshot_at_with_property_resolver(0, |_| None);
+        assert_eq!(hidden.layers[0].opacity, 0.0);
+        let visible = document.snapshot_at_with_property_resolver(0, |property| {
+            if property == "show_title" {
+                Some(1.0)
+            } else {
+                None
+            }
+        });
+        assert_eq!(visible.layers[0].kind, crate::core::SceneNodeKind::Text);
+        assert_eq!(visible.layers[0].text.as_deref(), Some("Hello Scene"));
+        assert_eq!(visible.layers[0].opacity, 1.0);
     }
 
     #[test]

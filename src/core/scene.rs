@@ -18,6 +18,12 @@ pub struct SceneDocument {
     #[serde(default)]
     pub size: Option<SceneSize>,
     #[serde(default)]
+    pub render: SceneRenderSettings,
+    #[serde(default)]
+    pub camera: SceneCamera,
+    #[serde(default)]
+    pub import: SceneImportMetadata,
+    #[serde(default)]
     pub resources: Vec<SceneResource>,
     #[serde(default)]
     pub nodes: Vec<SceneNode>,
@@ -44,6 +50,8 @@ impl SceneDocument {
         if let Some(size) = self.size {
             size.validate()?;
         }
+        self.render.validate()?;
+        self.camera.validate()?;
 
         let mut resource_ids = BTreeSet::new();
         for resource in &self.resources {
@@ -94,6 +102,9 @@ impl SceneDocument {
             .map(|resource| (resource.id.as_str(), resource))
             .collect::<BTreeMap<_, _>>();
         let mut layers = Vec::new();
+        if let Some(clear_layer) = self.render_clear_layer() {
+            layers.push(clear_layer);
+        }
         for node in &self.nodes {
             node.push_snapshot_layers(
                 time_ms,
@@ -107,6 +118,36 @@ impl SceneDocument {
             );
         }
         SceneSnapshot { time_ms, layers }
+    }
+
+    fn render_clear_layer(&self) -> Option<SceneSnapshotLayer> {
+        if self.render.clear_enabled == Some(false) {
+            return None;
+        }
+        let color = self.render.clear_color.as_ref()?.trim();
+        if color.is_empty() {
+            return None;
+        }
+        Some(SceneSnapshotLayer {
+            id: "scene-render-clear-color".to_owned(),
+            kind: SceneNodeKind::Color,
+            source: None,
+            color: Some(color.to_owned()),
+            stroke_color: None,
+            stroke_width: None,
+            corner_radius: None,
+            width: self.size.map(|size| f64::from(size.width)),
+            height: self.size.map(|size| f64::from(size.height)),
+            text: None,
+            font_size: None,
+            font_family: None,
+            font_weight: None,
+            text_align: None,
+            path_data: None,
+            fit: FitMode::Cover,
+            opacity: 1.0,
+            transform: SceneTransform::default(),
+        })
     }
 }
 
@@ -141,6 +182,146 @@ impl SceneSize {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneRenderSettings {
+    #[serde(default)]
+    pub clear_color: Option<String>,
+    #[serde(default)]
+    pub clear_enabled: Option<bool>,
+    #[serde(default)]
+    pub ambient_color: Option<String>,
+    #[serde(default)]
+    pub hdr: Option<bool>,
+    #[serde(default)]
+    pub bloom: Option<SceneBloomSettings>,
+    #[serde(default)]
+    pub parallax: Option<SceneParallaxSettings>,
+    #[serde(default)]
+    pub environment: BTreeMap<String, Value>,
+}
+
+impl SceneRenderSettings {
+    fn validate(&self) -> Result<(), SceneError> {
+        if let Some(bloom) = &self.bloom {
+            bloom.validate()?;
+        }
+        if let Some(parallax) = &self.parallax {
+            parallax.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneBloomSettings {
+    #[serde(default)]
+    pub strength: Option<f64>,
+    #[serde(default)]
+    pub threshold: Option<f64>,
+    #[serde(default)]
+    pub hdr_strength: Option<f64>,
+    #[serde(default)]
+    pub hdr_threshold: Option<f64>,
+    #[serde(default)]
+    pub tint: Option<String>,
+}
+
+impl SceneBloomSettings {
+    fn validate(&self) -> Result<(), SceneError> {
+        validate_optional_finite("scene bloom strength", self.strength)?;
+        validate_optional_finite("scene bloom threshold", self.threshold)?;
+        validate_optional_finite("scene bloom hdr_strength", self.hdr_strength)?;
+        validate_optional_finite("scene bloom hdr_threshold", self.hdr_threshold)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneParallaxSettings {
+    #[serde(default)]
+    pub amount: Option<f64>,
+    #[serde(default)]
+    pub delay: Option<f64>,
+    #[serde(default)]
+    pub mouse_influence: Option<Value>,
+}
+
+impl SceneParallaxSettings {
+    fn validate(&self) -> Result<(), SceneError> {
+        validate_optional_finite("scene parallax amount", self.amount)?;
+        validate_optional_finite("scene parallax delay", self.delay)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneCamera {
+    #[serde(default)]
+    pub center: Option<SceneVector3>,
+    #[serde(default)]
+    pub eye: Option<SceneVector3>,
+    #[serde(default)]
+    pub up: Option<SceneVector3>,
+    #[serde(default)]
+    pub near_z: Option<f64>,
+    #[serde(default)]
+    pub far_z: Option<f64>,
+    #[serde(default)]
+    pub fov: Option<f64>,
+    #[serde(default)]
+    pub zoom: Option<f64>,
+}
+
+impl SceneCamera {
+    fn validate(&self) -> Result<(), SceneError> {
+        for (field, value) in [
+            ("near_z", self.near_z),
+            ("far_z", self.far_z),
+            ("fov", self.fov),
+            ("zoom", self.zoom),
+        ] {
+            validate_optional_finite(&format!("scene camera {field}"), value)?;
+        }
+        for (field, value) in [("center", self.center), ("eye", self.eye), ("up", self.up)] {
+            if let Some(value) = value {
+                value.validate(&format!("scene camera {field}"))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SceneVector3 {
+    pub x: f64,
+    pub y: f64,
+    #[serde(default)]
+    pub z: f64,
+}
+
+impl SceneVector3 {
+    fn validate(self, owner: &str) -> Result<(), SceneError> {
+        for (field, value) in [("x", self.x), ("y", self.y), ("z", self.z)] {
+            if !value.is_finite() {
+                return Err(SceneError::invalid(format!(
+                    "{owner} {field} must be finite"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneImportMetadata {
+    #[serde(default)]
+    pub source_format: Option<String>,
+    #[serde(default)]
+    pub source_version: Option<i64>,
+    #[serde(default)]
+    pub object_count: usize,
+    #[serde(default)]
+    pub feature_counts: BTreeMap<String, usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneResource {
     pub id: String,
@@ -172,6 +353,12 @@ pub enum SceneResourceKind {
     Image,
     Video,
     Audio,
+    Texture,
+    Model,
+    Material,
+    Effect,
+    Particle,
+    Font,
     Shader,
     Script,
     Json,
@@ -192,6 +379,11 @@ pub struct SceneNode {
     #[serde(default)]
     pub transform: SceneTransform,
     #[serde(default)]
+    pub provenance: Option<SceneNodeProvenance>,
+    #[serde(default)]
+    pub effects: Vec<SceneEffect>,
+    #[serde(default)]
+    pub audio: Vec<SceneAudioCue>,
     pub resource: Option<String>,
     #[serde(default)]
     pub color: Option<String>,
@@ -221,10 +413,6 @@ pub struct SceneNode {
     #[serde(default)]
     pub fit: FitMode,
     #[serde(default)]
-    pub original_type: Option<String>,
-    #[serde(default)]
-    pub source_path: Option<String>,
-    #[serde(default)]
     pub properties: BTreeMap<String, Value>,
     #[serde(default)]
     pub children: Vec<SceneNode>,
@@ -252,6 +440,15 @@ impl SceneNode {
                 "scene node {:?} references unknown resource {:?}",
                 self.id, resource
             )));
+        }
+        if let Some(provenance) = &self.provenance {
+            provenance.validate(&self.id)?;
+        }
+        for effect in &self.effects {
+            effect.validate(&self.id)?;
+        }
+        for audio in &self.audio {
+            audio.validate(&self.id)?;
         }
         for child in &self.children {
             child.validate(resource_ids, node_ids)?;
@@ -340,6 +537,241 @@ impl SceneNode {
                 output,
             );
         }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneNodeProvenance {
+    #[serde(default)]
+    pub source_format: Option<String>,
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub original_type: Option<String>,
+    #[serde(default)]
+    pub original_path: Option<String>,
+    #[serde(default)]
+    pub transform: Option<SceneSourceTransform>,
+    #[serde(default)]
+    pub model: Option<SceneSourceModel>,
+    #[serde(default)]
+    pub particle: Option<Value>,
+    #[serde(default)]
+    pub animation_layers: Vec<Value>,
+    #[serde(default)]
+    pub instance: Option<Value>,
+    #[serde(default)]
+    pub instance_override: Option<Value>,
+}
+
+impl SceneNodeProvenance {
+    fn validate(&self, node_id: &str) -> Result<(), SceneError> {
+        for (field, value) in [
+            ("source_format", self.source_format.as_deref()),
+            ("source_id", self.source_id.as_deref()),
+            ("parent_id", self.parent_id.as_deref()),
+            ("original_type", self.original_type.as_deref()),
+            ("original_path", self.original_path.as_deref()),
+        ] {
+            if let Some(value) = value
+                && value.trim().is_empty()
+            {
+                return Err(SceneError::invalid(format!(
+                    "scene node {node_id:?} provenance {field} must not be empty"
+                )));
+            }
+        }
+        for dependency in &self.dependencies {
+            validate_required_text(
+                &format!("scene node {node_id:?} provenance dependency"),
+                dependency,
+            )?;
+        }
+        if let Some(transform) = &self.transform {
+            transform.validate(node_id)?;
+        }
+        if let Some(model) = &self.model {
+            model.validate(node_id)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneSourceTransform {
+    #[serde(default)]
+    pub origin: Option<SceneVector3>,
+    #[serde(default)]
+    pub angles: Option<SceneVector3>,
+    #[serde(default)]
+    pub scale: Option<SceneVector3>,
+    #[serde(default)]
+    pub pivot: Option<SceneVector3>,
+    #[serde(default)]
+    pub size: Option<SceneVector3>,
+    #[serde(default)]
+    pub alignment: Option<String>,
+}
+
+impl SceneSourceTransform {
+    fn validate(&self, node_id: &str) -> Result<(), SceneError> {
+        for (field, value) in [
+            ("origin", self.origin),
+            ("angles", self.angles),
+            ("scale", self.scale),
+            ("pivot", self.pivot),
+            ("size", self.size),
+        ] {
+            if let Some(value) = value {
+                value.validate(&format!("scene node {node_id:?} source transform {field}"))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneSourceModel {
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub model_resource: Option<String>,
+    #[serde(default)]
+    pub material: Option<String>,
+    #[serde(default)]
+    pub material_resource: Option<String>,
+    #[serde(default)]
+    pub puppet: Option<String>,
+    #[serde(default)]
+    pub solid_layer: Option<bool>,
+    #[serde(default)]
+    pub passthrough: Option<bool>,
+    #[serde(default)]
+    pub textures: Vec<String>,
+    #[serde(default)]
+    pub texture_resources: Vec<String>,
+}
+
+impl SceneSourceModel {
+    fn validate(&self, node_id: &str) -> Result<(), SceneError> {
+        for (field, value) in [
+            ("source", self.source.as_deref()),
+            ("model_resource", self.model_resource.as_deref()),
+            ("material", self.material.as_deref()),
+            ("material_resource", self.material_resource.as_deref()),
+            ("puppet", self.puppet.as_deref()),
+        ] {
+            if let Some(value) = value
+                && value.trim().is_empty()
+            {
+                return Err(SceneError::invalid(format!(
+                    "scene node {node_id:?} source model {field} must not be empty"
+                )));
+            }
+        }
+        for texture in &self.textures {
+            validate_required_text(
+                &format!("scene node {node_id:?} source model texture"),
+                texture,
+            )?;
+        }
+        for texture_resource in &self.texture_resources {
+            validate_required_text(
+                &format!("scene node {node_id:?} source model texture resource"),
+                texture_resource,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneEffect {
+    pub file: String,
+    #[serde(default)]
+    pub resource: Option<String>,
+    #[serde(default)]
+    pub id: Option<i64>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub visible: Option<Value>,
+    #[serde(default)]
+    pub passes: Vec<SceneEffectPass>,
+}
+
+impl SceneEffect {
+    fn validate(&self, node_id: &str) -> Result<(), SceneError> {
+        validate_required_text(&format!("scene node {node_id:?} effect file"), &self.file)?;
+        if let Some(resource) = &self.resource {
+            validate_required_text(&format!("scene node {node_id:?} effect resource"), resource)?;
+        }
+        for pass in &self.passes {
+            pass.validate(node_id, &self.file)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneEffectPass {
+    #[serde(default)]
+    pub id: Option<i64>,
+    #[serde(default)]
+    pub textures: Vec<Option<String>>,
+    #[serde(default)]
+    pub combos: BTreeMap<String, i64>,
+    #[serde(default)]
+    pub constant_shader_values: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub user_textures: Option<Value>,
+}
+
+impl SceneEffectPass {
+    fn validate(&self, node_id: &str, effect_file: &str) -> Result<(), SceneError> {
+        for texture in self.textures.iter().flatten() {
+            if texture.trim().is_empty() {
+                return Err(SceneError::invalid(format!(
+                    "scene node {node_id:?} effect {effect_file:?} texture reference must not be empty"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneAudioCue {
+    #[serde(default)]
+    pub resource: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub playback_mode: Option<String>,
+    #[serde(default)]
+    pub volume: Option<Value>,
+    #[serde(default)]
+    pub start_silent: Option<bool>,
+}
+
+impl SceneAudioCue {
+    fn validate(&self, node_id: &str) -> Result<(), SceneError> {
+        if let Some(resource) = &self.resource {
+            validate_required_text(&format!("scene node {node_id:?} audio resource"), resource)?;
+        }
+        if let Some(source) = &self.source {
+            validate_required_text(&format!("scene node {node_id:?} audio source"), source)?;
+        }
+        if self.resource.is_none() && self.source.is_none() {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} audio cue must define resource or source"
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -776,6 +1208,15 @@ fn validate_opacity(opacity: f64, owner: &str) -> Result<(), SceneError> {
     }
 }
 
+fn validate_optional_finite(field: &str, value: Option<f64>) -> Result<(), SceneError> {
+    if let Some(value) = value
+        && !value.is_finite()
+    {
+        return Err(SceneError::invalid(format!("{field} must be finite")));
+    }
+    Ok(())
+}
+
 const fn default_scene_version() -> u32 {
     SCENE_VERSION
 }
@@ -858,5 +1299,59 @@ mod tests {
         .unwrap();
 
         assert!(document.validate().is_err());
+    }
+
+    #[test]
+    fn render_clear_color_becomes_first_snapshot_layer() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "size": { "width": 320, "height": 180 },
+            "render": {
+                "clear_color": "#102030",
+                "clear_enabled": true
+            },
+            "nodes": [
+                {
+                    "id": "node-panel",
+                    "type": "rectangle",
+                    "color": "#ffffff",
+                    "width": 50,
+                    "height": 25
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+        assert_eq!(snapshot.layers.len(), 2);
+        assert_eq!(snapshot.layers[0].id, "scene-render-clear-color");
+        assert_eq!(snapshot.layers[0].kind, SceneNodeKind::Color);
+        assert_eq!(snapshot.layers[0].color.as_deref(), Some("#102030"));
+        assert_eq!(snapshot.layers[0].width, Some(320.0));
+        assert_eq!(snapshot.layers[0].height, Some(180.0));
+        assert_eq!(snapshot.layers[1].id, "node-panel");
+    }
+
+    #[test]
+    fn disabled_render_clear_color_does_not_emit_snapshot_layer() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "render": {
+                "clear_color": "#102030",
+                "clear_enabled": false
+            },
+            "nodes": [
+                {
+                    "id": "node-panel",
+                    "type": "rectangle",
+                    "color": "#ffffff"
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+        assert_eq!(snapshot.layers.len(), 1);
+        assert_eq!(snapshot.layers[0].id, "node-panel");
     }
 }
