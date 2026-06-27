@@ -76,10 +76,10 @@ use super::video_session::{
     NativeVulkanVulkanaliaMemoryTypeCandidate, native_vulkan_vulkanalia_memory_type_candidates,
 };
 
-const SCENE_LITE_SOLID_QUAD_INDEX_COUNT: u32 = 6;
-const SCENE_LITE_SOLID_QUAD_VERTEX_STRIDE_BYTES: u32 = 24;
-const SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT: u32 = 6;
-const SCENE_LITE_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 20;
+const SCENE_FULL_SOLID_QUAD_INDEX_COUNT: u32 = 6;
+const SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES: u32 = 24;
+const SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT: u32 = 6;
+const SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 20;
 const HOST_VISIBLE_COHERENT_MEMORY_FLAG_BITS: u32 =
     vk::MemoryPropertyFlags::HOST_VISIBLE.bits() | vk::MemoryPropertyFlags::HOST_COHERENT.bits();
 const HOST_VISIBLE_COHERENT_DEVICE_LOCAL_MEMORY_FLAG_BITS: u32 =
@@ -1808,7 +1808,7 @@ fn create_scene_solid_quad_geometry_resources(
             index_count: payload.index_count,
             quad_count: payload.quad_count,
             draw_step_count: payload.draw_steps.len().min(u32::MAX as usize) as u32,
-            vertex_stride_bytes: SCENE_LITE_SOLID_QUAD_VERTEX_STRIDE_BYTES,
+            vertex_stride_bytes: SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES,
             selected_vertex_memory_type_index: vertex.memory_type.index,
             selected_index_memory_type_index: index.memory_type.index,
             vertex_memory_property_flags: memory_property_flag_labels(
@@ -1876,7 +1876,7 @@ fn create_scene_sampled_image_geometry_resources(
             quad_count: payload.quad_count,
             source_count: payload.source_count,
             draw_step_count: payload.draw_steps.len().min(u32::MAX as usize) as u32,
-            vertex_stride_bytes: SCENE_LITE_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES,
+            vertex_stride_bytes: SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES,
             selected_vertex_memory_type_index: vertex.memory_type.index,
             selected_index_memory_type_index: index.memory_type.index,
             vertex_memory_property_flags: memory_property_flag_labels(
@@ -2125,7 +2125,7 @@ fn scene_solid_quad_geometry_payload_from_input(
         index_bytes,
         vertex_count: input.vertices.len() as u32,
         index_count: input.indices.len() as u32,
-        quad_count: (input.indices.len() / SCENE_LITE_SOLID_QUAD_INDEX_COUNT as usize) as u32,
+        quad_count: (input.indices.len() / SCENE_FULL_SOLID_QUAD_INDEX_COUNT as usize) as u32,
         draw_steps: input.draw_steps.clone(),
         source_label: input.source_label.clone(),
     })
@@ -2431,7 +2431,7 @@ fn scene_sampled_image_geometry_payload_from_input(
         index_bytes,
         vertex_count: input.vertices.len() as u32,
         index_count: input.indices.len() as u32,
-        quad_count: (input.indices.len() / SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT as usize) as u32,
+        quad_count: (input.indices.len() / SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT as usize) as u32,
         source_count: source_count.min(u32::MAX as usize) as u32,
         draw_steps: input.draw_steps.clone(),
         source_label: input.source_label.clone(),
@@ -2442,7 +2442,7 @@ fn scene_solid_quad_vertex_bytes(
     vertices: &[NativeVulkanVulkanaliaSceneSolidQuadVertex],
 ) -> Result<Vec<u8>, String> {
     let mut bytes =
-        Vec::with_capacity(vertices.len() * SCENE_LITE_SOLID_QUAD_VERTEX_STRIDE_BYTES as usize);
+        Vec::with_capacity(vertices.len() * SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES as usize);
     for (index, vertex) in vertices.iter().enumerate() {
         if !vertex
             .position
@@ -2465,7 +2465,7 @@ fn scene_sampled_image_vertex_bytes(
     vertices: &[NativeVulkanVulkanaliaSceneSampledImageVertex],
 ) -> Result<Vec<u8>, String> {
     let mut bytes =
-        Vec::with_capacity(vertices.len() * SCENE_LITE_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize);
+        Vec::with_capacity(vertices.len() * SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize);
     for (index, vertex) in vertices.iter().enumerate() {
         if !vertex
             .position

@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::path::PathBuf;
 
-use crate::core::{FitMode, SceneTextAlign, SceneTextureRegion, SceneTransform};
+use crate::core::{FitMode, SceneSystemStatus, SceneTextAlign, SceneTextureRegion, SceneTransform};
 
 use super::super::present::render_item::NativeVulkanRenderItem;
 use super::super::present::render_plan::NativeVulkanSceneDrawPlan;
@@ -118,6 +118,9 @@ pub struct NativeVulkanFullSceneRuntimeSnapshot {
     pub pause_resume_policy_ready: bool,
     pub package_state_persistence_ready: bool,
     pub scene_state_persistence_model: &'static str,
+    pub scene_audio_cue_count: usize,
+    pub scene_audio_cue_resource_model_ready: bool,
+    pub scene_audio_response_detected: bool,
     pub scene_audio_response_ready: bool,
     pub scene_video_composition_required: bool,
     pub scene_video_composition_ready: bool,
@@ -653,21 +656,31 @@ fn native_vulkan_full_scene_runtime_snapshot(
         timeline_animation_count,
         timeline_animated_layer_count,
         property_binding_count,
+        scene_audio_response_detected,
+        scene_audio_cue_count,
     ) = match render_item {
         NativeVulkanRenderItem::Scene {
             layer_count,
             timeline_animation_count,
             timeline_animated_layer_count,
             property_binding_count,
+            scene_systems,
+            audio_cue_count,
             ..
         } => (
             *layer_count,
             *timeline_animation_count,
             *timeline_animated_layer_count,
             *property_binding_count,
+            matches!(
+                scene_systems.audio_response,
+                SceneSystemStatus::Detected | SceneSystemStatus::Ready
+            ),
+            *audio_cue_count,
         ),
-        _ => (0, 0, 0, 0),
+        _ => (0, 0, 0, 0, false, 0),
     };
+    let scene_audio_cue_resource_model_ready = scene_audio_cue_count > 0;
     let retained_resource_model_ready = matches!(
         scene_resource_model,
         "fast-clear-only-no-scene-resources"
@@ -802,6 +815,9 @@ fn native_vulkan_full_scene_runtime_snapshot(
     if stroke_geometry_layer_count > 0 {
         completed_boundaries.push("stroke-geometry-runtime");
     }
+    if scene_audio_cue_resource_model_ready {
+        completed_boundaries.push("scene-audio-cue-renderer-boundary");
+    }
 
     let mut pending_boundaries = Vec::new();
     if native_runtime_pending_layer_count > 0 {
@@ -828,9 +844,9 @@ fn native_vulkan_full_scene_runtime_snapshot(
     NativeVulkanFullSceneRuntimeSnapshot {
         target_runtime: "native-vulkan-full-scene",
         current_runtime: "native-vulkan-scene-runtime",
-        progress_estimate_percent: 92,
+        progress_estimate_percent: 93,
         full_scene_complete: false,
-        execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries with scene timeline animation, geometry field animation, deterministic SceneScript expression lowering, parallax property camera input, property update, pause/resume policy, state persistence, converted keyframe timeline input, converted WE .tex image resources, and spritesheet atlas UV-frame animation; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
+        execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries with scene timeline animation, geometry field animation, deterministic SceneScript expression lowering, parallax property camera input, property update, pause/resume policy, state persistence, converted keyframe timeline input, converted WE .tex image resources, spritesheet atlas UV-frame animation, and scene audio cues carried through the renderer/runtime boundary; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
         native_scene_graph_lowering_ready: plan.native_draw_ready(),
         native_present_route_ready: pass_plan.backend_ready,
         retained_resource_model_ready,
@@ -865,6 +881,9 @@ fn native_vulkan_full_scene_runtime_snapshot(
         pause_resume_policy_ready,
         package_state_persistence_ready,
         scene_state_persistence_model: "app-state-wallpaper-and-output-property-store",
+        scene_audio_cue_count,
+        scene_audio_cue_resource_model_ready,
+        scene_audio_response_detected,
         scene_audio_response_ready: false,
         scene_video_composition_required,
         scene_video_composition_ready,
@@ -908,7 +927,9 @@ fn native_vulkan_scene_resource_model(backend_status: &str, video_op_count: usiz
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{FitMode, SceneNodeKind, SceneTextAlign, SceneTransform};
+    use crate::core::{
+        FitMode, SceneAudioCue, SceneNodeKind, SceneSystems, SceneTextAlign, SceneTransform,
+    };
     use crate::renderer::native_vulkan::NativeVulkanRenderItem;
     use crate::renderer::{SceneDisplayPlan, SceneRenderLayer};
     use std::path::{Path, PathBuf};
@@ -919,6 +940,7 @@ mod tests {
             kind,
             source: None,
             texture_region: None,
+            audio: Vec::new(),
             color: None,
             stroke_color: None,
             stroke_width: None,
@@ -954,6 +976,7 @@ mod tests {
         timeline_animated_layer_count: usize,
         property_binding_count: usize,
     ) -> NativeVulkanRenderItem {
+        let audio_cue_count = layers.iter().map(|layer| layer.audio.len()).sum();
         NativeVulkanRenderItem::Scene {
             output_name: "HDMI-A-1".to_owned(),
             scene_source: Some(PathBuf::from("/tmp/scene.json")),
@@ -964,6 +987,8 @@ mod tests {
             manifest_max_fps: Some(60),
             layer_count: layers.len(),
             layers,
+            scene_systems: SceneSystems::default(),
+            audio_cue_count,
             bound_properties,
             timeline_animation_count,
             timeline_animated_layer_count,
@@ -1237,7 +1262,7 @@ mod tests {
             snapshot.full_scene.current_runtime,
             "native-vulkan-scene-runtime"
         );
-        assert_eq!(snapshot.full_scene.progress_estimate_percent, 92);
+        assert_eq!(snapshot.full_scene.progress_estimate_percent, 93);
         assert!(!snapshot.full_scene.full_scene_complete);
         assert!(snapshot.full_scene.timeline_snapshot_runtime_ready);
         assert_eq!(snapshot.full_scene.timeline_snapshot_time_ms, 1234);
@@ -1264,6 +1289,9 @@ mod tests {
             "app-state-wallpaper-and-output-property-store"
         );
         assert!(!snapshot.full_scene.scene_audio_response_ready);
+        assert_eq!(snapshot.full_scene.scene_audio_cue_count, 0);
+        assert!(!snapshot.full_scene.scene_audio_cue_resource_model_ready);
+        assert!(!snapshot.full_scene.scene_audio_response_detected);
         assert!(snapshot.full_scene.scene_video_composition_required);
         assert!(!snapshot.full_scene.scene_video_composition_ready);
         assert!(snapshot.full_scene.scene_text_geometry_required);
@@ -1352,6 +1380,31 @@ mod tests {
                 .full_scene
                 .pending_boundaries
                 .contains(&"package-state-persistence")
+        );
+    }
+
+    #[test]
+    fn full_scene_runtime_snapshot_tracks_scene_audio_cue_boundary() {
+        let mut image = scene_test_layer("speaker", SceneNodeKind::Image);
+        image.source = Some(PathBuf::from("/tmp/cover.png"));
+        image.audio.push(SceneAudioCue {
+            resource: Some("resource-audio".to_owned()),
+            source: Some("sounds/theme.ogg".to_owned()),
+            playback_mode: Some("loop".to_owned()),
+            volume: None,
+            start_silent: Some(false),
+        });
+        let item = scene_test_item(vec![image], None, None);
+
+        let snapshot = native_vulkan_scene_runtime_snapshot(&item).unwrap();
+
+        assert_eq!(snapshot.full_scene.scene_audio_cue_count, 1);
+        assert!(snapshot.full_scene.scene_audio_cue_resource_model_ready);
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"scene-audio-cue-renderer-boundary")
         );
     }
 

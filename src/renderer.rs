@@ -14,8 +14,8 @@ use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPo
 use crate::core::manifest::{Manifest, PropertySpec, Variant};
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
-    SceneDocument, SceneNodeKind, SceneTextAlign, SceneTextureRegion, SceneTransform, Transition,
-    WallpaperEntry, WallpaperPackage,
+    SceneAudioCue, SceneDocument, SceneNodeKind, SceneSystems, SceneTextAlign, SceneTextureRegion,
+    SceneTransform, Transition, WallpaperEntry, WallpaperPackage,
 };
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot, PowerState};
 use crate::policy::{PerformanceDecision, RenderMode};
@@ -73,6 +73,10 @@ pub struct SceneWallpaperPlan {
     pub target_max_fps: Option<u32>,
     pub snapshot_time_ms: u64,
     #[serde(default)]
+    pub scene_systems: SceneSystems,
+    #[serde(default)]
+    pub audio_cue_count: usize,
+    #[serde(default)]
     pub bound_properties: Vec<String>,
     #[serde(default)]
     pub timeline_animation_count: usize,
@@ -103,6 +107,8 @@ pub struct SceneRenderLayer {
     pub kind: SceneNodeKind,
     pub source: Option<PathBuf>,
     pub texture_region: Option<SceneTextureRegion>,
+    #[serde(default)]
+    pub audio: Vec<SceneAudioCue>,
     pub color: Option<String>,
     pub stroke_color: Option<String>,
     pub stroke_width: Option<f64>,
@@ -1494,6 +1500,7 @@ fn scene_wallpaper_plan(
             kind: layer.kind,
             source: layer.source.map(|source| source.join_to(&package.root)),
             texture_region: layer.texture_region,
+            audio: layer.audio,
             color: layer.color,
             stroke_color: layer.stroke_color,
             stroke_width: layer.stroke_width,
@@ -1534,6 +1541,8 @@ fn scene_wallpaper_plan(
         manifest_max_fps,
         target_max_fps: effective_max_fps(manifest_max_fps, performance.max_fps),
         snapshot_time_ms: snapshot.time_ms,
+        scene_systems: document.systems.clone(),
+        audio_cue_count: layers.iter().map(|layer| layer.audio.len()).sum(),
         bound_properties: scene_bound_properties(&document),
         timeline_animation_count: scene_timeline_animation_count(&document),
         timeline_animated_layer_count: scene_timeline_animated_layer_count(&document),

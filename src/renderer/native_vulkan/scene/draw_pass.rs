@@ -6,19 +6,19 @@ use super::super::present::render_plan::{
     NativeVulkanSceneDrawOp, NativeVulkanSceneDrawOpKind, NativeVulkanSceneDrawPlan,
 };
 
-const SCENE_LITE_SOLID_QUAD_VERTEX_BYTES: u64 = 24;
-const SCENE_LITE_SOLID_QUAD_INDEX_BYTES: u64 = 4;
-const SCENE_LITE_ELLIPSE_SEGMENTS: usize = 48;
-const SCENE_LITE_ROUNDED_RECT_CORNER_SEGMENTS: usize = 8;
-const SCENE_LITE_TEXT_DEFAULT_FONT_SIZE: f64 = 24.0;
-const SCENE_LITE_TEXT_GLYPH_COLUMNS: usize = 5;
-const SCENE_LITE_TEXT_GLYPH_ROWS: usize = 7;
-const SCENE_LITE_TEXT_GLYPH_ADVANCE_COLUMNS: f64 = 6.0;
-const SCENE_LITE_TEXT_LINE_ADVANCE_ROWS: f64 = 8.0;
-const SCENE_LITE_SAMPLED_IMAGE_VERTEX_COUNT: u32 = 4;
-const SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT: u32 = 6;
-const SCENE_LITE_SAMPLED_IMAGE_VERTEX_BYTES: u64 = 20;
-const SCENE_LITE_SAMPLED_IMAGE_INDEX_BYTES: u64 = 4;
+const SCENE_FULL_SOLID_QUAD_VERTEX_BYTES: u64 = 24;
+const SCENE_FULL_SOLID_QUAD_INDEX_BYTES: u64 = 4;
+const SCENE_FULL_ELLIPSE_SEGMENTS: usize = 48;
+const SCENE_FULL_ROUNDED_RECT_CORNER_SEGMENTS: usize = 8;
+const SCENE_FULL_TEXT_DEFAULT_FONT_SIZE: f64 = 24.0;
+const SCENE_FULL_TEXT_GLYPH_COLUMNS: usize = 5;
+const SCENE_FULL_TEXT_GLYPH_ROWS: usize = 7;
+const SCENE_FULL_TEXT_GLYPH_ADVANCE_COLUMNS: f64 = 6.0;
+const SCENE_FULL_TEXT_LINE_ADVANCE_ROWS: f64 = 8.0;
+const SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT: u32 = 4;
+const SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT: u32 = 6;
+const SCENE_FULL_SAMPLED_IMAGE_VERTEX_BYTES: u64 = 20;
+const SCENE_FULL_SAMPLED_IMAGE_INDEX_BYTES: u64 = 4;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct NativeVulkanSceneRecordableQuad {
@@ -465,13 +465,13 @@ fn native_vulkan_scene_quad_recording_payload(
                 first_index,
                 index_count,
                 vertex_buffer_offset_bytes: u64::from(first_vertex)
-                    .saturating_mul(SCENE_LITE_SOLID_QUAD_VERTEX_BYTES),
+                    .saturating_mul(SCENE_FULL_SOLID_QUAD_VERTEX_BYTES),
                 vertex_buffer_size_bytes: u64::from(vertex_count)
-                    .saturating_mul(SCENE_LITE_SOLID_QUAD_VERTEX_BYTES),
+                    .saturating_mul(SCENE_FULL_SOLID_QUAD_VERTEX_BYTES),
                 index_buffer_offset_bytes: u64::from(first_index)
-                    .saturating_mul(SCENE_LITE_SOLID_QUAD_INDEX_BYTES),
+                    .saturating_mul(SCENE_FULL_SOLID_QUAD_INDEX_BYTES),
                 index_buffer_size_bytes: u64::from(index_count)
-                    .saturating_mul(SCENE_LITE_SOLID_QUAD_INDEX_BYTES),
+                    .saturating_mul(SCENE_FULL_SOLID_QUAD_INDEX_BYTES),
                 fill_geometry: quad.fill_rgba.is_some(),
                 stroke_geometry: native_vulkan_scene_recordable_has_stroke_geometry(quad),
             });
@@ -503,8 +503,8 @@ fn native_vulkan_scene_sampled_image_recording_payload(
         let index = steps.len();
         if let Some(quad_vertices) = native_vulkan_scene_sampled_image_vertices(quad) {
             let resource_index = index as u32;
-            let first_vertex = (index as u32).saturating_mul(SCENE_LITE_SAMPLED_IMAGE_VERTEX_COUNT);
-            let first_index = (index as u32).saturating_mul(SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT);
+            let first_vertex = (index as u32).saturating_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT);
+            let first_index = (index as u32).saturating_mul(SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT);
             steps.push(NativeVulkanSceneSampledImageRecordingStep {
                 layer_index: quad.layer_index,
                 layer_id: quad.layer_id.clone(),
@@ -514,17 +514,17 @@ fn native_vulkan_scene_sampled_image_recording_payload(
                 pipeline: "sampled-image-alpha-blend",
                 resource_index,
                 first_vertex,
-                vertex_count: SCENE_LITE_SAMPLED_IMAGE_VERTEX_COUNT,
+                vertex_count: SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT,
                 first_index,
-                index_count: SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT,
+                index_count: SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT,
                 vertex_buffer_offset_bytes: u64::from(first_vertex)
-                    .saturating_mul(SCENE_LITE_SAMPLED_IMAGE_VERTEX_BYTES),
-                vertex_buffer_size_bytes: u64::from(SCENE_LITE_SAMPLED_IMAGE_VERTEX_COUNT)
-                    .saturating_mul(SCENE_LITE_SAMPLED_IMAGE_VERTEX_BYTES),
+                    .saturating_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_BYTES),
+                vertex_buffer_size_bytes: u64::from(SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT)
+                    .saturating_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_BYTES),
                 index_buffer_offset_bytes: u64::from(first_index)
-                    .saturating_mul(SCENE_LITE_SAMPLED_IMAGE_INDEX_BYTES),
-                index_buffer_size_bytes: u64::from(SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT)
-                    .saturating_mul(SCENE_LITE_SAMPLED_IMAGE_INDEX_BYTES),
+                    .saturating_mul(SCENE_FULL_SAMPLED_IMAGE_INDEX_BYTES),
+                index_buffer_size_bytes: u64::from(SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT)
+                    .saturating_mul(SCENE_FULL_SAMPLED_IMAGE_INDEX_BYTES),
             });
             vertices.extend(quad_vertices);
             indices.extend_from_slice(&[
@@ -815,9 +815,9 @@ fn native_vulkan_scene_ellipse_outline(
     radius_x: f64,
     radius_y: f64,
 ) -> Vec<[f64; 2]> {
-    let mut outline = Vec::with_capacity(SCENE_LITE_ELLIPSE_SEGMENTS);
-    for segment in 0..SCENE_LITE_ELLIPSE_SEGMENTS {
-        let theta = (segment as f64) * std::f64::consts::TAU / (SCENE_LITE_ELLIPSE_SEGMENTS as f64);
+    let mut outline = Vec::with_capacity(SCENE_FULL_ELLIPSE_SEGMENTS);
+    for segment in 0..SCENE_FULL_ELLIPSE_SEGMENTS {
+        let theta = (segment as f64) * std::f64::consts::TAU / (SCENE_FULL_ELLIPSE_SEGMENTS as f64);
         outline.push([
             center_x + theta.cos() * radius_x,
             center_y + theta.sin() * radius_y,
@@ -1010,10 +1010,10 @@ fn native_vulkan_scene_rounded_rectangle_outline(
             std::f64::consts::PI * 1.5,
         ),
     ];
-    let mut outline = Vec::with_capacity((SCENE_LITE_ROUNDED_RECT_CORNER_SEGMENTS + 1) * 4);
+    let mut outline = Vec::with_capacity((SCENE_FULL_ROUNDED_RECT_CORNER_SEGMENTS + 1) * 4);
     for (center_x, center_y, start_angle, end_angle) in corners {
-        for segment in 0..=SCENE_LITE_ROUNDED_RECT_CORNER_SEGMENTS {
-            let t = segment as f64 / SCENE_LITE_ROUNDED_RECT_CORNER_SEGMENTS as f64;
+        for segment in 0..=SCENE_FULL_ROUNDED_RECT_CORNER_SEGMENTS {
+            let t = segment as f64 / SCENE_FULL_ROUNDED_RECT_CORNER_SEGMENTS as f64;
             let angle = start_angle + (end_angle - start_angle) * t;
             outline.push([
                 center_x + angle.cos() * radius,
@@ -1176,8 +1176,8 @@ fn native_vulkan_scene_text_geometry(
         return None;
     }
     let font_size = native_vulkan_scene_text_font_size(quad)?;
-    let cell = font_size / SCENE_LITE_TEXT_GLYPH_ROWS as f64;
-    let line_advance = cell * SCENE_LITE_TEXT_LINE_ADVANCE_ROWS;
+    let cell = font_size / SCENE_FULL_TEXT_GLYPH_ROWS as f64;
+    let line_advance = cell * SCENE_FULL_TEXT_LINE_ADVANCE_ROWS;
     let lines = text.lines().collect::<Vec<_>>();
     if lines.is_empty() {
         return None;
@@ -1215,8 +1215,8 @@ fn native_vulkan_scene_text_geometry(
         for ch in line.chars() {
             let pattern = native_vulkan_scene_text_glyph_pattern(ch);
             for (row, bits) in pattern.iter().enumerate() {
-                for column in 0..SCENE_LITE_TEXT_GLYPH_COLUMNS {
-                    let mask = 1u8 << (SCENE_LITE_TEXT_GLYPH_COLUMNS - 1 - column);
+                for column in 0..SCENE_FULL_TEXT_GLYPH_COLUMNS {
+                    let mask = 1u8 << (SCENE_FULL_TEXT_GLYPH_COLUMNS - 1 - column);
                     if bits & mask == 0 {
                         continue;
                     }
@@ -1232,7 +1232,7 @@ fn native_vulkan_scene_text_geometry(
                     )?;
                 }
             }
-            cursor_x += cell * SCENE_LITE_TEXT_GLYPH_ADVANCE_COLUMNS;
+            cursor_x += cell * SCENE_FULL_TEXT_GLYPH_ADVANCE_COLUMNS;
         }
     }
 
@@ -1244,7 +1244,7 @@ fn native_vulkan_scene_text_geometry(
 }
 
 fn native_vulkan_scene_text_font_size(quad: &NativeVulkanSceneRecordableQuad) -> Option<f64> {
-    let font_size = quad.font_size.unwrap_or(SCENE_LITE_TEXT_DEFAULT_FONT_SIZE);
+    let font_size = quad.font_size.unwrap_or(SCENE_FULL_TEXT_DEFAULT_FONT_SIZE);
     if font_size.is_finite() && font_size > 0.0 {
         Some(font_size)
     } else {
@@ -1257,8 +1257,8 @@ fn native_vulkan_scene_text_line_width(line: &str, cell: f64) -> f64 {
     if char_count == 0 {
         0.0
     } else {
-        let columns = SCENE_LITE_TEXT_GLYPH_COLUMNS as f64
-            + SCENE_LITE_TEXT_GLYPH_ADVANCE_COLUMNS * char_count.saturating_sub(1) as f64;
+        let columns = SCENE_FULL_TEXT_GLYPH_COLUMNS as f64
+            + SCENE_FULL_TEXT_GLYPH_ADVANCE_COLUMNS * char_count.saturating_sub(1) as f64;
         columns * cell
     }
 }
@@ -1315,7 +1315,7 @@ fn native_vulkan_scene_push_solid_quad_points(
     Some(())
 }
 
-fn native_vulkan_scene_text_glyph_pattern(ch: char) -> [u8; SCENE_LITE_TEXT_GLYPH_ROWS] {
+fn native_vulkan_scene_text_glyph_pattern(ch: char) -> [u8; SCENE_FULL_TEXT_GLYPH_ROWS] {
     match ch.to_ascii_uppercase() {
         'A' => [
             0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
@@ -1529,23 +1529,23 @@ fn native_vulkan_scene_transform_point_with_rotation(
 }
 
 fn native_vulkan_scene_solid_vertex_buffer_bytes(vertex_count: usize) -> u64 {
-    (vertex_count as u64).saturating_mul(SCENE_LITE_SOLID_QUAD_VERTEX_BYTES)
+    (vertex_count as u64).saturating_mul(SCENE_FULL_SOLID_QUAD_VERTEX_BYTES)
 }
 
 fn native_vulkan_scene_solid_index_buffer_bytes(index_count: usize) -> u64 {
-    (index_count as u64).saturating_mul(SCENE_LITE_SOLID_QUAD_INDEX_BYTES)
+    (index_count as u64).saturating_mul(SCENE_FULL_SOLID_QUAD_INDEX_BYTES)
 }
 
 fn native_vulkan_scene_sampled_image_vertex_buffer_bytes(quad_count: usize) -> u64 {
     (quad_count as u64)
-        .saturating_mul(u64::from(SCENE_LITE_SAMPLED_IMAGE_VERTEX_COUNT))
-        .saturating_mul(SCENE_LITE_SAMPLED_IMAGE_VERTEX_BYTES)
+        .saturating_mul(u64::from(SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT))
+        .saturating_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_BYTES)
 }
 
 fn native_vulkan_scene_sampled_image_index_buffer_bytes(quad_count: usize) -> u64 {
     (quad_count as u64)
-        .saturating_mul(u64::from(SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT))
-        .saturating_mul(SCENE_LITE_SAMPLED_IMAGE_INDEX_BYTES)
+        .saturating_mul(u64::from(SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT))
+        .saturating_mul(SCENE_FULL_SAMPLED_IMAGE_INDEX_BYTES)
 }
 
 fn native_vulkan_scene_recordable_quad(

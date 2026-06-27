@@ -310,7 +310,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_clear_color_from_hex(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::FitMode;
+    use crate::core::{FitMode, SceneSystems};
     use crate::renderer::SceneDisplayPlan;
     use crate::renderer::native_vulkan::{NativeVulkanClearColor, NativeVulkanRenderItem};
     use std::path::PathBuf;
@@ -331,6 +331,8 @@ mod tests {
             manifest_max_fps: Some(60),
             layer_count: 0,
             layers: Vec::new(),
+            scene_systems: SceneSystems::default(),
+            audio_cue_count: 0,
             bound_properties: Vec::new(),
             timeline_animation_count: 0,
             timeline_animated_layer_count: 0,
@@ -367,6 +369,8 @@ mod tests {
             manifest_max_fps: Some(60),
             layer_count: 0,
             layers: Vec::new(),
+            scene_systems: SceneSystems::default(),
+            audio_cue_count: 0,
             bound_properties: Vec::new(),
             timeline_animation_count: 0,
             timeline_animated_layer_count: 0,

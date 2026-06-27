@@ -6,10 +6,10 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};
 
-const SCENE_LITE_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 20;
-const SCENE_LITE_SAMPLED_IMAGE_VERTEX_COUNT: usize = 4;
-const SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT: usize = 6;
-const SCENE_LITE_RGBA_BYTES_PER_PIXEL: u64 = 4;
+const SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 20;
+const SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT: usize = 4;
+const SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT: usize = 6;
+const SCENE_FULL_RGBA_BYTES_PER_PIXEL: u64 = 4;
 const DEVICE_LOCAL_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::DEVICE_LOCAL.bits();
 
 use super::features::{
@@ -174,9 +174,9 @@ pub(crate) fn native_vulkan_vulkanalia_scene_sampled_image_plan(
 ) -> NativeVulkanVulkanaliaSceneSampledImagePlanSnapshot {
     let sampled_image_count = input.sampled_image_sources.len();
     let expected_vertex_count =
-        sampled_image_count.saturating_mul(SCENE_LITE_SAMPLED_IMAGE_VERTEX_COUNT);
+        sampled_image_count.saturating_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT);
     let expected_index_count =
-        sampled_image_count.saturating_mul(SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT);
+        sampled_image_count.saturating_mul(SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT);
     let backend_ready = sampled_image_count > 0
         && input.recording_step_count == sampled_image_count
         && input.vertex_count == expected_vertex_count
@@ -209,7 +209,7 @@ pub(crate) fn native_vulkan_vulkanalia_scene_sampled_image_plan(
         index_count: input.index_count,
         vertex_buffer_bytes: input.vertex_buffer_bytes,
         index_buffer_bytes: input.index_buffer_bytes,
-        vertex_stride_bytes: SCENE_LITE_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES,
+        vertex_stride_bytes: SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES,
         descriptor_set_count: 0,
         descriptor_type: "combined-image-sampler",
         descriptor_pool_combined_image_sampler_budget: 0,
@@ -591,7 +591,7 @@ fn validate_scene_rgba_upload(extent: vk::Extent2D, rgba_bytes: &[u8]) -> Result
 fn scene_rgba_byte_len(extent: vk::Extent2D) -> Result<u64, String> {
     u64::from(extent.width)
         .checked_mul(u64::from(extent.height))
-        .and_then(|pixels| pixels.checked_mul(SCENE_LITE_RGBA_BYTES_PER_PIXEL))
+        .and_then(|pixels| pixels.checked_mul(SCENE_FULL_RGBA_BYTES_PER_PIXEL))
         .ok_or_else(|| {
             format!(
                 "scene sampled image extent {}x{} overflows RGBA byte size",

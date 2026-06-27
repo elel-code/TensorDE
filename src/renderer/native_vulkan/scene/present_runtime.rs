@@ -255,7 +255,7 @@ fn native_vulkan_scene_video_extent(option_extent: u32, layer_extent: Option<f64
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{FitMode, SceneNodeKind, SceneTransform};
+    use crate::core::{FitMode, SceneNodeKind, SceneSystems, SceneTransform};
     use crate::renderer::{SceneDisplayPlan, SceneRenderLayer};
     use std::path::PathBuf;
 
@@ -265,6 +265,7 @@ mod tests {
             kind,
             source: None,
             texture_region: None,
+            audio: Vec::new(),
             color: None,
             stroke_color: None,
             stroke_width: None,
@@ -291,6 +292,8 @@ mod tests {
             manifest_max_fps: None,
             target_max_fps: Some(60),
             snapshot_time_ms: 0,
+            scene_systems: SceneSystems::default(),
+            audio_cue_count: 0,
             bound_properties: Vec::new(),
             timeline_animation_count: 0,
             timeline_animated_layer_count: 0,

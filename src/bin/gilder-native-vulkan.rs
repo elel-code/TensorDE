@@ -1,5 +1,5 @@
 #[cfg(feature = "native-vulkan-renderer")]
-use gilder::core::{FitMode, SceneNodeKind, SceneTransform};
+use gilder::core::{FitMode, SceneNodeKind, SceneSystems, SceneTransform};
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::native_vulkan::NativeVulkanClearColor;
 #[cfg(feature = "native-vulkan-renderer")]
@@ -847,6 +847,8 @@ fn scene_cli_plan(
                 manifest_max_fps: None,
                 target_max_fps,
                 snapshot_time_ms,
+                scene_systems: SceneSystems::default(),
+                audio_cue_count: 0,
                 bound_properties: Vec::new(),
                 timeline_animation_count: 0,
                 timeline_animated_layer_count: 0,
@@ -865,6 +867,8 @@ fn scene_cli_plan(
             manifest_max_fps: None,
             target_max_fps,
             snapshot_time_ms,
+            scene_systems: SceneSystems::default(),
+            audio_cue_count: 0,
             bound_properties: Vec::new(),
             timeline_animation_count: 0,
             timeline_animated_layer_count: 0,
@@ -897,6 +901,8 @@ fn scene_cli_plan(
             manifest_max_fps: None,
             target_max_fps,
             snapshot_time_ms,
+            scene_systems: SceneSystems::default(),
+            audio_cue_count: 0,
             bound_properties: Vec::new(),
             timeline_animation_count: 0,
             timeline_animated_layer_count: 0,
@@ -926,6 +932,8 @@ fn scene_cli_plan(
             manifest_max_fps: None,
             target_max_fps,
             snapshot_time_ms,
+            scene_systems: SceneSystems::default(),
+            audio_cue_count: 0,
             bound_properties: Vec::new(),
             timeline_animation_count: 0,
             timeline_animated_layer_count: 0,
@@ -945,6 +953,8 @@ fn scene_cli_plan(
         manifest_max_fps: None,
         target_max_fps,
         snapshot_time_ms,
+        scene_systems: SceneSystems::default(),
+        audio_cue_count: 0,
         bound_properties: Vec::new(),
         timeline_animation_count: 0,
         timeline_animated_layer_count: 0,
@@ -961,6 +971,7 @@ fn scene_cli_layer(id: &str, kind: SceneNodeKind) -> SceneRenderLayer {
         kind,
         source: None,
         texture_region: None,
+        audio: Vec::new(),
         color: None,
         stroke_color: None,
         stroke_width: None,

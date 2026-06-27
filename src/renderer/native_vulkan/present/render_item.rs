@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::config::VideoDecoderPolicy;
-use crate::core::{FitMode, SceneNodeKind, SceneTransform, Transition};
+use crate::core::{FitMode, SceneNodeKind, SceneSystems, SceneTransform, Transition};
 use crate::renderer::{
     SceneDisplayPlan, SceneRenderLayer, SceneWallpaperPlan, SlideshowWallpaperPlan,
     StaticRenderSyncPlan, StaticWallpaperPlan, VideoWallpaperPlan,
@@ -60,6 +60,8 @@ pub enum NativeVulkanRenderItem {
         manifest_max_fps: Option<u32>,
         layer_count: usize,
         layers: Vec<SceneRenderLayer>,
+        scene_systems: SceneSystems,
+        audio_cue_count: usize,
         bound_properties: Vec<String>,
         timeline_animation_count: usize,
         timeline_animated_layer_count: usize,
@@ -129,6 +131,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
             kind: SceneNodeKind::Image,
             source: Some(plan.source.clone()),
             texture_region: None,
+            audio: Vec::new(),
             color: None,
             stroke_color: None,
             stroke_width: None,
@@ -145,6 +148,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
             opacity: 1.0,
             transform: SceneTransform::default(),
         }],
+        scene_systems: SceneSystems::default(),
+        audio_cue_count: 0,
         bound_properties: Vec::new(),
         timeline_animation_count: 0,
         timeline_animated_layer_count: 0,
@@ -256,6 +261,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_item(
         manifest_max_fps: plan.manifest_max_fps,
         layer_count: plan.layers.len(),
         layers: plan.layers.clone(),
+        scene_systems: plan.scene_systems.clone(),
+        audio_cue_count: plan.audio_cue_count,
         bound_properties: plan.bound_properties.clone(),
         timeline_animation_count: plan.timeline_animation_count,
         timeline_animated_layer_count: plan.timeline_animated_layer_count,

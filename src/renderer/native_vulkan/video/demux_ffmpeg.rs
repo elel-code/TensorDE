@@ -177,10 +177,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_start_ffmpeg_streaming_p
     native_vulkan_start_streaming_packet_queue_from_frontend(Box::new(frontend), capacity)
 }
 
-// The FFmpeg PacketQueue depth remains three, but free converted Annex-B scratch
-// follows av_packet_unref lifetime: keep one reusable buffer and release extras.
+// The FFmpeg PacketQueue depth remains three, while converted Annex-B scratch
+// follows av_packet_unref lifetime closely: keep one small reusable buffer and
+// release 4K-scale packet payload storage instead of retaining it between frames.
 const NATIVE_VULKAN_FFMPEG_POOLED_PAYLOAD_BUFFERS: usize = 1;
-const NATIVE_VULKAN_FFMPEG_MAX_RETAINED_PAYLOAD_CAPACITY: usize = 160 * 1024;
+const NATIVE_VULKAN_FFMPEG_MAX_RETAINED_PAYLOAD_CAPACITY: usize = 128 * 1024;
 const NATIVE_VULKAN_ANNEXB_START_CODE: [u8; 4] = [0, 0, 0, 1];
 
 pub struct NativeVulkanFfmpegPacketPayload {

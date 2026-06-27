@@ -164,6 +164,7 @@ impl SceneDocument {
             kind: SceneNodeKind::Color,
             source: None,
             texture_region: None,
+            audio: Vec::new(),
             color: Some(color.to_owned()),
             stroke_color: None,
             stroke_width: None,
@@ -572,6 +573,7 @@ impl SceneNode {
                     .and_then(|resource| resources.get(resource))
                     .map(|resource| resource.source.clone()),
                 texture_region,
+                audio: self.audio.clone(),
                 color: self.color.clone(),
                 stroke_color: self.stroke_color.clone(),
                 stroke_width: self.stroke_width,
@@ -1221,6 +1223,7 @@ pub struct SceneSnapshotLayer {
     pub kind: SceneNodeKind,
     pub source: Option<PackagePath>,
     pub texture_region: Option<SceneTextureRegion>,
+    pub audio: Vec<SceneAudioCue>,
     pub color: Option<String>,
     pub stroke_color: Option<String>,
     pub stroke_width: Option<f64>,

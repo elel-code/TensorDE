@@ -38,7 +38,7 @@ use super::super::{NativeVulkanError, NativeVulkanOptions};
 use super::codec::NativeVulkanVideoSessionCodec;
 use super::demux::NATIVE_VULKAN_PACKET_HANDOFF_FRAMES;
 
-const NATIVE_VULKAN_AUDIO_OUTPUT_WORKER_STACK_BYTES: usize = 512 * 1024;
+const NATIVE_VULKAN_AUDIO_OUTPUT_WORKER_STACK_BYTES: usize = 128 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
