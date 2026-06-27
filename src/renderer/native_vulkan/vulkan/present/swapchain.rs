@@ -893,9 +893,6 @@ fn choose_present_mode(
     present_modes: &[vk::PresentModeKHR],
     present_mode_fifo_latest_ready_enabled: bool,
 ) -> vk::PresentModeKHR {
-    if present_modes.contains(&vk::PresentModeKHR::MAILBOX) {
-        return vk::PresentModeKHR::MAILBOX;
-    }
     if present_mode_fifo_latest_ready_enabled
         && present_modes.contains(&vk::PresentModeKHR::FIFO_LATEST_READY)
     {
@@ -904,10 +901,7 @@ fn choose_present_mode(
     if present_modes.contains(&vk::PresentModeKHR::FIFO_RELAXED) {
         return vk::PresentModeKHR::FIFO_RELAXED;
     }
-    present_modes
-        .first()
-        .copied()
-        .unwrap_or(vk::PresentModeKHR::FIFO)
+    vk::PresentModeKHR::FIFO
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1237,10 +1231,29 @@ mod tests {
     fn present_mode_prefers_low_blocking_video_swapchain_modes() {
         assert_eq!(
             choose_present_mode(
-                &[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::MAILBOX],
+                &[
+                    vk::PresentModeKHR::FIFO,
+                    vk::PresentModeKHR::MAILBOX,
+                    vk::PresentModeKHR::FIFO_LATEST_READY,
+                ],
                 true,
             ),
-            vk::PresentModeKHR::MAILBOX
+            vk::PresentModeKHR::FIFO_LATEST_READY
+        );
+        assert_eq!(
+            choose_present_mode(
+                &[
+                    vk::PresentModeKHR::FIFO,
+                    vk::PresentModeKHR::MAILBOX,
+                    vk::PresentModeKHR::FIFO_LATEST_READY,
+                ],
+                false,
+            ),
+            vk::PresentModeKHR::FIFO
+        );
+        assert_eq!(
+            choose_present_mode(&[vk::PresentModeKHR::MAILBOX], true),
+            vk::PresentModeKHR::FIFO
         );
         assert_eq!(
             choose_present_mode(

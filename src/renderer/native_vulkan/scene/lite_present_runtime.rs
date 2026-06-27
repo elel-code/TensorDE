@@ -190,6 +190,7 @@ mod tests {
             fallback: None,
             manifest_max_fps: None,
             target_max_fps: Some(60),
+            snapshot_time_ms: 0,
             bound_properties: Vec::new(),
             display: Some(SceneLiteDisplayPlan::Color {
                 color: "#000000".to_owned(),

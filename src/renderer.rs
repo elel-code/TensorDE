@@ -71,6 +71,7 @@ pub struct SceneLiteWallpaperPlan {
     pub fallback: Option<PathBuf>,
     pub manifest_max_fps: Option<u32>,
     pub target_max_fps: Option<u32>,
+    pub snapshot_time_ms: u64,
     #[serde(default)]
     pub bound_properties: Vec<String>,
     pub display: Option<SceneLiteDisplayPlan>,
@@ -121,6 +122,7 @@ impl SceneLiteWallpaperPlan {
         for source in self
             .layers
             .iter()
+            .filter(|layer| layer.kind == SceneLiteLayerKind::Image)
             .filter_map(|layer| layer.source.as_deref())
         {
             if !sources.contains(&source) {
@@ -1526,6 +1528,7 @@ fn scene_lite_wallpaper_plan(
         fallback,
         manifest_max_fps,
         target_max_fps: effective_max_fps(manifest_max_fps, performance.max_fps),
+        snapshot_time_ms: snapshot.time_ms,
         bound_properties: scene_lite_bound_properties(&document),
         display,
         layers,
@@ -1899,7 +1902,7 @@ fn scene_lite_snapshot_svg(layers: &[SceneLiteRenderLayer], size: RenderTargetSi
                     stroke = scene_lite_svg_stroke(layer),
                 ));
             }
-            SceneLiteLayerKind::Group => {}
+            SceneLiteLayerKind::Video | SceneLiteLayerKind::Group => {}
         }
     }
     svg.push_str("</svg>");

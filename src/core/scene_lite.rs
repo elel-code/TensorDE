@@ -153,11 +153,11 @@ impl SceneLiteLayer {
         validate_opacity(self.opacity, &self.id)?;
         self.transform.validate(&self.id)?;
         match self.kind {
-            SceneLiteLayerKind::Image => {
+            SceneLiteLayerKind::Image | SceneLiteLayerKind::Video => {
                 if self.source.is_none() {
                     return Err(SceneLiteError::invalid(format!(
-                        "image layer {:?} must define source",
-                        self.id
+                        "{:?} layer {:?} must define source",
+                        self.kind, self.id
                     )));
                 }
             }
@@ -225,8 +225,10 @@ impl SceneLiteLayer {
     }
 
     fn push_referenced_paths(&self, paths: &mut Vec<PackagePath>) {
-        if self.kind == SceneLiteLayerKind::Image
-            && let Some(source) = &self.source
+        if matches!(
+            self.kind,
+            SceneLiteLayerKind::Image | SceneLiteLayerKind::Video
+        ) && let Some(source) = &self.source
         {
             paths.push(source.clone());
         }
@@ -378,6 +380,7 @@ impl SceneLiteLayer {
 #[serde(rename_all = "kebab-case")]
 pub enum SceneLiteLayerKind {
     Image,
+    Video,
     Color,
     Rectangle,
     Ellipse,
@@ -832,6 +835,46 @@ mod tests {
         assert_eq!(snapshot.layers[0].fit, FitMode::Cover);
         assert_eq!(snapshot.layers[0].transform.x, 10.0);
         assert!((snapshot.layers[0].opacity - 0.625).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parses_video_layer_as_scene_lite_snapshot_resource() {
+        let document: SceneLiteDocument = serde_json::from_str(
+            r##"
+            {
+              "version": 1,
+              "layers": [
+                {
+                  "id": "intro",
+                  "type": "video",
+                  "source": "media/intro.mp4",
+                  "fit": "cover",
+                  "width": 1280,
+                  "height": 720
+                }
+              ]
+            }
+            "##,
+        )
+        .unwrap();
+
+        document.validate().unwrap();
+        assert_eq!(
+            document.referenced_paths(),
+            vec![PackagePath::new("media/intro.mp4").unwrap()]
+        );
+        let snapshot = document.snapshot_at(1234);
+
+        assert_eq!(snapshot.layers.len(), 1);
+        assert_eq!(snapshot.layers[0].id, "intro");
+        assert_eq!(snapshot.layers[0].kind, SceneLiteLayerKind::Video);
+        assert_eq!(
+            snapshot.layers[0].source,
+            Some(PackagePath::new("media/intro.mp4").unwrap())
+        );
+        assert_eq!(snapshot.layers[0].fit, FitMode::Cover);
+        assert_eq!(snapshot.layers[0].width, Some(1280.0));
+        assert_eq!(snapshot.layers[0].height, Some(720.0));
     }
 
     #[test]

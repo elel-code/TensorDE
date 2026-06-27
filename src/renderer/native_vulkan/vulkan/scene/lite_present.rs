@@ -282,6 +282,11 @@ pub struct NativeVulkanVulkanaliaSceneLiteSolidQuadPresentSnapshot {
 pub struct NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot {
     pub binding: &'static str,
     pub route: &'static str,
+    pub scene_input_model: &'static str,
+    pub scene_resource_model: &'static str,
+    pub scene_solid_quad_draw_count: u32,
+    pub scene_sampled_image_resource_count: u32,
+    pub scene_sampled_image_descriptor_heap_required: bool,
     pub loader: String,
     pub requested_api_version: String,
     pub runtime_elapsed_ms: u64,
@@ -1509,6 +1514,17 @@ fn run_scene_lite_sampled_image_present_loop(
     Ok(NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot {
         binding: "vulkanalia",
         route: "scene-lite-sampled-image-visible-present",
+        scene_input_model: "core scene-lite snapshot layers; groups must be flattened before native Vulkan planning",
+        scene_resource_model: if solid_quad_draw.is_some() {
+            "retained-solid-quad-geometry-and-sampled-images-descriptor-heap"
+        } else {
+            "retained-sampled-images-descriptor-heap"
+        },
+        scene_solid_quad_draw_count: solid_geometry
+            .map(|geometry| geometry.snapshot.draw_step_count)
+            .unwrap_or(0),
+        scene_sampled_image_resource_count: sampled_images.len().min(u32::MAX as usize) as u32,
+        scene_sampled_image_descriptor_heap_required: true,
         loader: vulkan.loader_name.to_owned(),
         requested_api_version: Version::V1_4_0.to_string(),
         runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,

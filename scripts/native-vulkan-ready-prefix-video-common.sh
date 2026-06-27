@@ -178,6 +178,19 @@ gilder_expected_pacing_strategy() {
   fi
 }
 
+gilder_native_video_present_mode_allowed() {
+  local present_mode="${1:?present mode is required}"
+
+  case "$present_mode" in
+    fifo-latest-ready|fifo-relaxed|fifo)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 gilder_expected_pacing_strategy_with_master() {
   local present_mode="${1:?present mode is required}"
   local fps="${2:?target fps is required}"

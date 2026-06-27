@@ -46,6 +46,27 @@ const REQUIRED_EXTERNAL_MEMORY_DEVICE_EXTENSIONS: &[&str] = &[
 ];
 const PREFERRED_VIDEO_MAINTENANCE_DEVICE_EXTENSIONS: &[&str] =
     &["VK_KHR_video_maintenance1", "VK_KHR_video_maintenance2"];
+const ROADMAP_2026_TRACKED_DEVICE_EXTENSIONS: &[&str] = &[
+    "VK_KHR_present_mode_fifo_latest_ready",
+    "VK_KHR_present_id2",
+    "VK_KHR_present_wait2",
+    "VK_KHR_pipeline_binary",
+    "VK_KHR_robustness2",
+    "VK_KHR_fragment_shading_rate",
+    "VK_KHR_shader_clock",
+    "VK_KHR_cooperative_matrix",
+    "VK_KHR_compute_shader_derivatives",
+    "VK_KHR_depth_clamp_zero_one",
+    "VK_KHR_copy_memory_indirect",
+    "VK_KHR_maintenance7",
+    "VK_KHR_maintenance8",
+    "VK_KHR_maintenance9",
+    "VK_KHR_maintenance10",
+    "VK_KHR_shader_untyped_pointers",
+    "VK_KHR_swapchain_maintenance1",
+];
+const ROADMAP_2026_REFERENCE: &str =
+    "Khronos Vulkan Roadmap 2026 tracked probe; runtime adoption remains path-specific";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaDeviceProbeTemplate {
@@ -94,6 +115,7 @@ pub struct NativeVulkanVulkanaliaPhysicalDeviceSnapshot {
     pub vulkan_1_4_properties: NativeVulkanVulkanaliaVulkan14PropertySnapshot,
     pub descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     pub video_maintenance_features: NativeVulkanVulkanaliaVideoMaintenanceFeatureSnapshot,
+    pub roadmap_2026: NativeVulkanVulkanaliaRoadmap2026ProbeSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -104,6 +126,64 @@ pub struct NativeVulkanVulkanaliaVideoMaintenanceFeatureSnapshot {
     pub video_maintenance2_feature: bool,
     pub inline_session_parameters_supported: bool,
     pub inline_session_parameter_codecs: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaRoadmap2026ProbeSnapshot {
+    pub probe_scope: &'static str,
+    pub source_reference: &'static str,
+    pub api_version_1_4_or_newer: bool,
+    pub core_vulkan_1_4_features_ready: bool,
+    pub tracked_device_extensions: &'static [&'static str],
+    pub tracked_device_extensions_available: Vec<&'static str>,
+    pub tracked_device_extensions_missing: Vec<&'static str>,
+    pub features: NativeVulkanVulkanaliaRoadmap2026FeatureProbeSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaRoadmap2026FeatureProbeSnapshot {
+    pub host_image_copy: bool,
+    pub present_id2_extension_available: bool,
+    pub present_wait2_extension_available: bool,
+    pub present_mode_fifo_latest_ready_extension_available: bool,
+    pub pipeline_binary_extension_available: bool,
+    pub pipeline_binaries: bool,
+    pub robustness2_extension_available: bool,
+    pub robust_buffer_access2: bool,
+    pub robust_image_access2: bool,
+    pub null_descriptor: bool,
+    pub fragment_shading_rate_extension_available: bool,
+    pub pipeline_fragment_shading_rate: bool,
+    pub primitive_fragment_shading_rate: bool,
+    pub attachment_fragment_shading_rate: bool,
+    pub shader_clock_extension_available: bool,
+    pub shader_subgroup_clock: bool,
+    pub shader_device_clock: bool,
+    pub cooperative_matrix_extension_available: bool,
+    pub cooperative_matrix: bool,
+    pub cooperative_matrix_robust_buffer_access: bool,
+    pub compute_shader_derivatives_extension_available: bool,
+    pub compute_derivative_group_quads: bool,
+    pub compute_derivative_group_linear: bool,
+    pub depth_clamp_zero_one_extension_available: bool,
+    pub depth_clamp_zero_one: bool,
+    pub copy_memory_indirect_extension_available: bool,
+    pub indirect_memory_copy: bool,
+    pub indirect_memory_to_image_copy: bool,
+    pub maintenance7_extension_available: bool,
+    pub maintenance7: bool,
+    pub maintenance8_extension_available: bool,
+    pub maintenance8: bool,
+    pub maintenance9_extension_available: bool,
+    pub maintenance9: bool,
+    pub maintenance10_extension_available: bool,
+    pub maintenance10: bool,
+    pub maintenance10_rgba4_opaque_black_swizzled: bool,
+    pub maintenance10_resolve_srgb_format_applies_transfer_function: bool,
+    pub maintenance10_resolve_srgb_format_supports_transfer_function_control: bool,
+    pub shader_untyped_pointers_extension_available: bool,
+    pub shader_untyped_pointers: bool,
+    pub swapchain_maintenance1_extension_available: bool,
 }
 
 pub fn native_vulkan_vulkanalia_device_probe_template() -> NativeVulkanVulkanaliaDeviceProbeTemplate
@@ -170,6 +250,7 @@ fn probe_vulkanalia_instance_devices(
         .enumerate()
         .map(|(physical_device_index, physical_device)| {
             let properties = unsafe { instance.get_physical_device_properties(physical_device) };
+            let api_version_raw = properties.api_version;
             let (core_features, vulkan_1_4_properties, descriptor_heap_properties) =
                 native_vulkan_vulkanalia_core_feature_snapshot(instance, physical_device);
             let device_extensions =
@@ -191,6 +272,13 @@ fn probe_vulkanalia_instance_devices(
                 instance,
                 physical_device,
                 &device_extensions,
+            );
+            let roadmap_2026 = query_vulkanalia_roadmap_2026_probe(
+                instance,
+                physical_device,
+                api_version_raw,
+                &device_extensions,
+                core_features,
             );
             let video_decode_queue_family_indices =
                 native_vulkan_vulkanalia_video_decode_queue_family_indices(
@@ -238,9 +326,249 @@ fn probe_vulkanalia_instance_devices(
                 vulkan_1_4_properties,
                 descriptor_heap_properties,
                 video_maintenance_features,
+                roadmap_2026,
             })
         })
         .collect()
+}
+
+fn query_vulkanalia_roadmap_2026_probe(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+    api_version_raw: u32,
+    device_extensions: &[String],
+    core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
+) -> NativeVulkanVulkanaliaRoadmap2026ProbeSnapshot {
+    let tracked_device_extensions_available =
+        available_extensions(device_extensions, ROADMAP_2026_TRACKED_DEVICE_EXTENSIONS);
+    let tracked_device_extensions_missing =
+        missing_extensions(device_extensions, ROADMAP_2026_TRACKED_DEVICE_EXTENSIONS);
+    let features = query_vulkanalia_roadmap_2026_feature_probe(
+        instance,
+        physical_device,
+        device_extensions,
+        core_features,
+    );
+
+    NativeVulkanVulkanaliaRoadmap2026ProbeSnapshot {
+        probe_scope: "physical-device feature/extension enumeration only; no logical device enablement and no runtime adoption claim",
+        source_reference: ROADMAP_2026_REFERENCE,
+        api_version_1_4_or_newer: api_version_raw >= u32::from(Version::V1_4_0),
+        core_vulkan_1_4_features_ready: core_features.synchronization2
+            && core_features.dynamic_rendering
+            && core_features.dynamic_rendering_local_read
+            && core_features.maintenance5
+            && core_features.maintenance6
+            && core_features.host_image_copy,
+        tracked_device_extensions: ROADMAP_2026_TRACKED_DEVICE_EXTENSIONS,
+        tracked_device_extensions_available,
+        tracked_device_extensions_missing,
+        features,
+    }
+}
+
+fn query_vulkanalia_roadmap_2026_feature_probe(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+    device_extensions: &[String],
+    core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
+) -> NativeVulkanVulkanaliaRoadmap2026FeatureProbeSnapshot {
+    let mut features = NativeVulkanVulkanaliaRoadmap2026FeatureProbeSnapshot {
+        host_image_copy: core_features.host_image_copy,
+        present_id2_extension_available: extension_available(
+            device_extensions,
+            "VK_KHR_present_id2",
+        ),
+        present_wait2_extension_available: extension_available(
+            device_extensions,
+            "VK_KHR_present_wait2",
+        ),
+        present_mode_fifo_latest_ready_extension_available: extension_available(
+            device_extensions,
+            "VK_KHR_present_mode_fifo_latest_ready",
+        ),
+        pipeline_binary_extension_available: extension_available(
+            device_extensions,
+            "VK_KHR_pipeline_binary",
+        ),
+        robustness2_extension_available: extension_available(
+            device_extensions,
+            "VK_KHR_robustness2",
+        ),
+        fragment_shading_rate_extension_available: extension_available(
+            device_extensions,
+            "VK_KHR_fragment_shading_rate",
+        ),
+        shader_clock_extension_available: extension_available(
+            device_extensions,
+            "VK_KHR_shader_clock",
+        ),
+        cooperative_matrix_extension_available: extension_available(
+            device_extensions,
+            "VK_KHR_cooperative_matrix",
+        ),
+        compute_shader_derivatives_extension_available: extension_available(
+            device_extensions,
+            "VK_KHR_compute_shader_derivatives",
+        ),
+        depth_clamp_zero_one_extension_available: extension_available(
+            device_extensions,
+            "VK_KHR_depth_clamp_zero_one",
+        ),
+        copy_memory_indirect_extension_available: extension_available(
+            device_extensions,
+            "VK_KHR_copy_memory_indirect",
+        ),
+        maintenance7_extension_available: extension_available(
+            device_extensions,
+            "VK_KHR_maintenance7",
+        ),
+        maintenance8_extension_available: extension_available(
+            device_extensions,
+            "VK_KHR_maintenance8",
+        ),
+        maintenance9_extension_available: extension_available(
+            device_extensions,
+            "VK_KHR_maintenance9",
+        ),
+        maintenance10_extension_available: extension_available(
+            device_extensions,
+            "VK_KHR_maintenance10",
+        ),
+        shader_untyped_pointers_extension_available: extension_available(
+            device_extensions,
+            "VK_KHR_shader_untyped_pointers",
+        ),
+        swapchain_maintenance1_extension_available: extension_available(
+            device_extensions,
+            "VK_KHR_swapchain_maintenance1",
+        ),
+        ..NativeVulkanVulkanaliaRoadmap2026FeatureProbeSnapshot::default()
+    };
+
+    if features.pipeline_binary_extension_available {
+        let mut pipeline_binary = vk::PhysicalDevicePipelineBinaryFeaturesKHR::default();
+        query_feature_struct(instance, physical_device, &mut pipeline_binary);
+        features.pipeline_binaries = pipeline_binary.pipeline_binaries != 0;
+    }
+    if features.robustness2_extension_available {
+        let mut robustness2 = vk::PhysicalDeviceRobustness2FeaturesKHR::default();
+        query_feature_struct(instance, physical_device, &mut robustness2);
+        features.robust_buffer_access2 = robustness2.robust_buffer_access2 != 0;
+        features.robust_image_access2 = robustness2.robust_image_access2 != 0;
+        features.null_descriptor = robustness2.null_descriptor != 0;
+    }
+    if features.fragment_shading_rate_extension_available {
+        let mut fragment_shading_rate = vk::PhysicalDeviceFragmentShadingRateFeaturesKHR::default();
+        query_feature_struct(instance, physical_device, &mut fragment_shading_rate);
+        features.pipeline_fragment_shading_rate =
+            fragment_shading_rate.pipeline_fragment_shading_rate != 0;
+        features.primitive_fragment_shading_rate =
+            fragment_shading_rate.primitive_fragment_shading_rate != 0;
+        features.attachment_fragment_shading_rate =
+            fragment_shading_rate.attachment_fragment_shading_rate != 0;
+    }
+    if features.shader_clock_extension_available {
+        let mut shader_clock = vk::PhysicalDeviceShaderClockFeaturesKHR::default();
+        query_feature_struct(instance, physical_device, &mut shader_clock);
+        features.shader_subgroup_clock = shader_clock.shader_subgroup_clock != 0;
+        features.shader_device_clock = shader_clock.shader_device_clock != 0;
+    }
+    if features.cooperative_matrix_extension_available {
+        let mut cooperative_matrix = vk::PhysicalDeviceCooperativeMatrixFeaturesKHR::default();
+        query_feature_struct(instance, physical_device, &mut cooperative_matrix);
+        features.cooperative_matrix = cooperative_matrix.cooperative_matrix != 0;
+        features.cooperative_matrix_robust_buffer_access =
+            cooperative_matrix.cooperative_matrix_robust_buffer_access != 0;
+    }
+    if features.compute_shader_derivatives_extension_available {
+        let mut compute_derivatives =
+            vk::PhysicalDeviceComputeShaderDerivativesFeaturesKHR::default();
+        query_feature_struct(instance, physical_device, &mut compute_derivatives);
+        features.compute_derivative_group_quads =
+            compute_derivatives.compute_derivative_group_quads != 0;
+        features.compute_derivative_group_linear =
+            compute_derivatives.compute_derivative_group_linear != 0;
+    }
+    if features.depth_clamp_zero_one_extension_available {
+        let mut depth_clamp_zero_one = vk::PhysicalDeviceDepthClampZeroOneFeaturesKHR::default();
+        query_feature_struct(instance, physical_device, &mut depth_clamp_zero_one);
+        features.depth_clamp_zero_one = depth_clamp_zero_one.depth_clamp_zero_one != 0;
+    }
+    if features.copy_memory_indirect_extension_available {
+        let mut copy_memory_indirect = vk::PhysicalDeviceCopyMemoryIndirectFeaturesKHR::default();
+        query_feature_struct(instance, physical_device, &mut copy_memory_indirect);
+        features.indirect_memory_copy = copy_memory_indirect.indirect_memory_copy != 0;
+        features.indirect_memory_to_image_copy =
+            copy_memory_indirect.indirect_memory_to_image_copy != 0;
+    }
+    if features.maintenance7_extension_available {
+        let mut maintenance7 = vk::PhysicalDeviceMaintenance7FeaturesKHR::default();
+        query_feature_struct(instance, physical_device, &mut maintenance7);
+        features.maintenance7 = maintenance7.maintenance7 != 0;
+    }
+    if features.maintenance8_extension_available {
+        let mut maintenance8 = vk::PhysicalDeviceMaintenance8FeaturesKHR::default();
+        query_feature_struct(instance, physical_device, &mut maintenance8);
+        features.maintenance8 = maintenance8.maintenance8 != 0;
+    }
+    if features.maintenance9_extension_available {
+        let mut maintenance9 = vk::PhysicalDeviceMaintenance9FeaturesKHR::default();
+        query_feature_struct(instance, physical_device, &mut maintenance9);
+        features.maintenance9 = maintenance9.maintenance9 != 0;
+    }
+    if features.maintenance10_extension_available {
+        let mut maintenance10 = vk::PhysicalDeviceMaintenance10FeaturesKHR::default();
+        query_feature_struct(instance, physical_device, &mut maintenance10);
+        features.maintenance10 = maintenance10.maintenance10 != 0;
+
+        let mut maintenance10_properties = vk::PhysicalDeviceMaintenance10PropertiesKHR::default();
+        query_property_struct(instance, physical_device, &mut maintenance10_properties);
+        features.maintenance10_rgba4_opaque_black_swizzled =
+            maintenance10_properties.rgba4_opaque_black_swizzled != 0;
+        features.maintenance10_resolve_srgb_format_applies_transfer_function =
+            maintenance10_properties.resolve_srgb_format_applies_transfer_function != 0;
+        features.maintenance10_resolve_srgb_format_supports_transfer_function_control =
+            maintenance10_properties.resolve_srgb_format_supports_transfer_function_control != 0;
+    }
+    if features.shader_untyped_pointers_extension_available {
+        let mut shader_untyped_pointers =
+            vk::PhysicalDeviceShaderUntypedPointersFeaturesKHR::default();
+        query_feature_struct(instance, physical_device, &mut shader_untyped_pointers);
+        features.shader_untyped_pointers = shader_untyped_pointers.shader_untyped_pointers != 0;
+    }
+
+    features
+}
+
+fn query_feature_struct<T>(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+    feature: &mut T,
+) where
+    T: vk::Cast<Target = T> + vk::ExtendsPhysicalDeviceFeatures2,
+{
+    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
+        .push_next(feature)
+        .build();
+    unsafe {
+        instance.get_physical_device_features2(physical_device, &mut features2);
+    }
+}
+
+fn query_property_struct<T>(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+    property: &mut T,
+) where
+    T: vk::Cast<Target = T> + vk::ExtendsPhysicalDeviceProperties2,
+{
+    let mut properties2 = vk::PhysicalDeviceProperties2::builder()
+        .push_next(property)
+        .build();
+    unsafe {
+        instance.get_physical_device_properties2(physical_device, &mut properties2);
+    }
 }
 
 fn query_vulkanalia_video_maintenance_features(
@@ -277,7 +605,30 @@ fn query_vulkanalia_video_maintenance_features(
 fn has_all_extensions(available: &[String], required: &[&str]) -> bool {
     required
         .iter()
-        .all(|required| available.iter().any(|available| available == required))
+        .all(|required| extension_available(available, required))
+}
+
+fn extension_available(available: &[String], required: &str) -> bool {
+    available.iter().any(|available| available == required)
+}
+
+fn available_extensions(
+    available: &[String],
+    tracked: &'static [&'static str],
+) -> Vec<&'static str> {
+    tracked
+        .iter()
+        .copied()
+        .filter(|extension| extension_available(available, extension))
+        .collect()
+}
+
+fn missing_extensions(available: &[String], tracked: &'static [&'static str]) -> Vec<&'static str> {
+    tracked
+        .iter()
+        .copied()
+        .filter(|extension| !extension_available(available, extension))
+        .collect()
 }
 
 fn sorted_strings(mut values: Vec<String>) -> Vec<String> {
@@ -331,6 +682,60 @@ mod tests {
             &available,
             &["VK_KHR_video_queue", "VK_KHR_video_decode_h265"]
         ));
+    }
+
+    #[test]
+    fn roadmap_2026_extension_tracking_splits_available_and_missing() {
+        let available = vec![
+            "VK_KHR_present_id2".to_owned(),
+            "VK_KHR_pipeline_binary".to_owned(),
+            "VK_KHR_maintenance9".to_owned(),
+            "VK_KHR_maintenance10".to_owned(),
+        ];
+
+        let available_tracked =
+            available_extensions(&available, ROADMAP_2026_TRACKED_DEVICE_EXTENSIONS);
+        let missing_tracked =
+            missing_extensions(&available, ROADMAP_2026_TRACKED_DEVICE_EXTENSIONS);
+
+        assert!(available_tracked.contains(&"VK_KHR_present_id2"));
+        assert!(available_tracked.contains(&"VK_KHR_pipeline_binary"));
+        assert!(available_tracked.contains(&"VK_KHR_maintenance9"));
+        assert!(available_tracked.contains(&"VK_KHR_maintenance10"));
+        assert!(!available_tracked.contains(&"VK_KHR_present_wait2"));
+        assert!(missing_tracked.contains(&"VK_KHR_present_wait2"));
+        assert!(missing_tracked.contains(&"VK_KHR_robustness2"));
+    }
+
+    #[test]
+    fn roadmap_2026_probe_snapshot_keeps_extension_and_feature_bits_separate() {
+        let snapshot = NativeVulkanVulkanaliaRoadmap2026ProbeSnapshot {
+            probe_scope: "unit-test",
+            source_reference: ROADMAP_2026_REFERENCE,
+            api_version_1_4_or_newer: true,
+            core_vulkan_1_4_features_ready: true,
+            tracked_device_extensions: ROADMAP_2026_TRACKED_DEVICE_EXTENSIONS,
+            tracked_device_extensions_available: vec!["VK_KHR_pipeline_binary"],
+            tracked_device_extensions_missing: vec!["VK_KHR_robustness2"],
+            features: NativeVulkanVulkanaliaRoadmap2026FeatureProbeSnapshot {
+                host_image_copy: true,
+                pipeline_binary_extension_available: true,
+                pipeline_binaries: false,
+                robustness2_extension_available: false,
+                robust_buffer_access2: false,
+                robust_image_access2: false,
+                null_descriptor: false,
+                ..NativeVulkanVulkanaliaRoadmap2026FeatureProbeSnapshot::default()
+            },
+        };
+
+        assert!(snapshot.api_version_1_4_or_newer);
+        assert!(snapshot.core_vulkan_1_4_features_ready);
+        assert!(snapshot.features.host_image_copy);
+        assert!(snapshot.features.pipeline_binary_extension_available);
+        assert!(!snapshot.features.pipeline_binaries);
+        assert!(!snapshot.features.robustness2_extension_available);
+        assert!(!snapshot.features.robust_buffer_access2);
     }
 
     #[test]

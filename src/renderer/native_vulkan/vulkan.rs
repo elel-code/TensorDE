@@ -58,6 +58,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_h265_std_shor
 pub use descriptor_heap::NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot;
 pub use device_probe::{
     NativeVulkanVulkanaliaDeviceProbeSnapshot, NativeVulkanVulkanaliaDeviceProbeTemplate,
+    NativeVulkanVulkanaliaRoadmap2026FeatureProbeSnapshot,
+    NativeVulkanVulkanaliaRoadmap2026ProbeSnapshot,
     NativeVulkanVulkanaliaVideoMaintenanceFeatureSnapshot,
     native_vulkan_vulkanalia_device_probe_template, probe_native_vulkan_vulkanalia_devices,
 };

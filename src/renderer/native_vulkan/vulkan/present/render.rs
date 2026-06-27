@@ -192,6 +192,8 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
     pub display_order_key_sources_tail: Vec<&'static str>,
     pub present_ids_head: Vec<Option<u64>>,
     pub present_ids_tail: Vec<Option<u64>>,
+    pub frame_sleep_count: u32,
+    pub missed_frame_pacing_count: u32,
     pub total_pacing_sleep_micros: u64,
     pub total_present_call_micros: u64,
     pub max_present_call_micros: u64,

@@ -254,7 +254,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_item(
         layer_count: plan.layers.len(),
         layers: plan.layers.clone(),
         bound_properties: plan.bound_properties.clone(),
-        snapshot_time_ms: 0,
+        snapshot_time_ms: plan.snapshot_time_ms,
         target_max_fps: plan.target_max_fps,
         renderer_status: "deterministic-scene-lite-snapshot-ready-for-vulkan-passes",
     }

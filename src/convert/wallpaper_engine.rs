@@ -322,6 +322,7 @@ fn convert_scene_lite(
 
     report.converted_features.push("scene-lite".to_owned());
     record_scene_lite_runtime_gaps(report);
+    record_full_scene_runtime_boundary(report, Some(&original_scene.package_path));
     report.warnings.push(format!(
         "Converted Scene project to a scene-lite fallback graph; original scene metadata was preserved at {}. Native SceneScript, shaders, particles, parallax, audio response, and complex effects were not executed or translated.",
         original_scene.package_path
@@ -632,6 +633,7 @@ fn convert_playlist_scene_item(
         "Converted playlist Scene item {index} to a scene-lite fallback graph; original scene metadata was preserved at {}.",
         original_scene.package_path
     ));
+    record_full_scene_runtime_boundary(report, Some(&original_scene.package_path));
     Ok(scene_lite_source)
 }
 
@@ -886,6 +888,18 @@ fn record_scene_lite_runtime_gaps(report: &mut ConversionReport) {
         {
             push_unique(&mut report.unsupported_features, unsupported);
         }
+    }
+}
+
+fn record_full_scene_runtime_boundary(
+    report: &mut ConversionReport,
+    source_scene_metadata: Option<&str>,
+) {
+    let full_scene = report
+        .full_scene
+        .get_or_insert_with(FullSceneConversionStatus::native_vulkan_scene_lite_boundary);
+    if let Some(source_scene_metadata) = source_scene_metadata {
+        push_unique(&mut full_scene.source_scene_metadata, source_scene_metadata);
     }
 }
 
@@ -2440,10 +2454,55 @@ pub struct ConversionReport {
     pub detected_features: Vec<String>,
     pub converted_features: Vec<String>,
     pub unsupported_features: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_scene: Option<FullSceneConversionStatus>,
     pub copied_assets: Vec<String>,
     pub generated_assets: Vec<String>,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FullSceneConversionStatus {
+    pub target_runtime: String,
+    pub current_runtime: String,
+    pub progress_estimate_percent: u8,
+    pub execution_model: String,
+    pub source_scene_metadata: Vec<String>,
+    pub completed_boundaries: Vec<String>,
+    pub pending_boundaries: Vec<String>,
+}
+
+impl FullSceneConversionStatus {
+    fn native_vulkan_scene_lite_boundary() -> Self {
+        Self {
+            target_runtime: "native-vulkan-full-scene".to_owned(),
+            current_runtime: "scene-lite-subset".to_owned(),
+            progress_estimate_percent: 22,
+            execution_model: "original scene metadata preserved; full scene runtime not executed"
+                .to_owned(),
+            source_scene_metadata: Vec::new(),
+            completed_boundaries: vec![
+                "package-scene-detection".to_owned(),
+                "source-scene-metadata-preservation".to_owned(),
+                "scene-lite-fallback-graph".to_owned(),
+                "native-vulkan-sampled-image-scene-path".to_owned(),
+                "descriptor-heap-sampled-image-resources".to_owned(),
+                "scene-video-layer-bridge-detection".to_owned(),
+            ],
+            pending_boundaries: vec![
+                "full-wallpaper-engine-scene-graph".to_owned(),
+                "timeline-animation-runtime".to_owned(),
+                "scenescript-runtime".to_owned(),
+                "shader-material-graph".to_owned(),
+                "particle-systems".to_owned(),
+                "parallax-camera-model".to_owned(),
+                "audio-response-runtime".to_owned(),
+                "text-path-gpu-rasterization".to_owned(),
+                "video-as-scene-composition".to_owned(),
+            ],
+        }
+    }
 }
 
 impl ConversionReport {
@@ -2453,6 +2512,7 @@ impl ConversionReport {
             detected_features: Vec::new(),
             converted_features: Vec::new(),
             unsupported_features: Vec::new(),
+            full_scene: None,
             copied_assets: Vec::new(),
             generated_assets: Vec::new(),
             warnings: Vec::new(),
@@ -3155,6 +3215,25 @@ void main() {}
         )
         .unwrap();
         assert!(report.converted_features.contains(&"scene-lite".to_owned()));
+        let full_scene = report.full_scene.as_ref().expect("full scene status");
+        assert_eq!(full_scene.target_runtime, "native-vulkan-full-scene");
+        assert_eq!(full_scene.current_runtime, "scene-lite-subset");
+        assert_eq!(full_scene.progress_estimate_percent, 22);
+        assert!(
+            full_scene
+                .source_scene_metadata
+                .contains(&"metadata/source-scene.json".to_owned())
+        );
+        assert!(
+            full_scene
+                .completed_boundaries
+                .contains(&"descriptor-heap-sampled-image-resources".to_owned())
+        );
+        assert!(
+            full_scene
+                .pending_boundaries
+                .contains(&"video-as-scene-composition".to_owned())
+        );
         assert!(
             report
                 .unsupported_features

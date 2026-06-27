@@ -23,6 +23,8 @@ use super::lite_draw_pass::native_vulkan_scene_lite_draw_pass_plan;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneLiteRuntimeSnapshot {
     pub snapshot_time_ms: u64,
+    pub scene_input_model: &'static str,
+    pub scene_resource_model: &'static str,
     pub native_draw_ready: bool,
     pub fallback_display_available: bool,
     pub draw_pass_plan_ready: bool,
@@ -50,12 +52,19 @@ pub struct NativeVulkanSceneLiteRuntimeSnapshot {
     pub draw_pass_sampled_image_index_buffer_bytes: u64,
     pub draw_pass_color_op_count: usize,
     pub draw_pass_sampled_image_op_count: usize,
+    pub scene_solid_quad_draw_count: usize,
+    pub scene_sampled_image_resource_count: usize,
+    pub scene_sampled_image_descriptor_heap_required: bool,
+    pub draw_pass_video_op_count: usize,
+    pub scene_video_layer_resource_count: usize,
     pub draw_pass_vector_shape_op_count: usize,
     pub draw_pass_text_op_count: usize,
     pub draw_pass_path_op_count: usize,
     pub draw_pass_required_image_resources: Vec<PathBuf>,
+    pub draw_pass_required_video_resources: Vec<PathBuf>,
     pub draw_pass_requires_text_atlas: bool,
     pub draw_pass_requires_path_tessellation: bool,
+    pub draw_pass_requires_video_decode: bool,
     pub draw_pass_fast_clear_color: Option<String>,
     pub vulkanalia_draw_pass: NativeVulkanVulkanaliaSceneLiteDrawPassSnapshot,
     pub vulkanalia_sampled_image: NativeVulkanVulkanaliaSceneLiteSampledImagePlanSnapshot,
@@ -359,8 +368,16 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snaps
             index_buffer_bytes: pass_plan.sampled_image_index_buffer_bytes,
         },
     );
+    let scene_resource_model =
+        native_vulkan_scene_lite_resource_model(pass_plan.backend_status, pass_plan.video_op_count);
+    let scene_solid_quad_draw_count = pass_plan.quad_recording_steps.len();
+    let scene_sampled_image_resource_count = vulkanalia_sampled_image.resource_count;
+    let scene_sampled_image_descriptor_heap_required = scene_sampled_image_resource_count > 0;
+    let scene_video_layer_resource_count = pass_plan.required_video_resources.len();
     Some(NativeVulkanSceneLiteRuntimeSnapshot {
         snapshot_time_ms: plan.snapshot_time_ms,
+        scene_input_model: "core scene-lite snapshot layers; groups must be flattened before native Vulkan planning",
+        scene_resource_model,
         native_draw_ready: plan.native_draw_ready(),
         fallback_display_available: plan.fallback_display_available,
         draw_pass_plan_ready: pass_plan.plan_ready,
@@ -467,12 +484,19 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snaps
         draw_pass_sampled_image_index_buffer_bytes: pass_plan.sampled_image_index_buffer_bytes,
         draw_pass_color_op_count: pass_plan.color_op_count,
         draw_pass_sampled_image_op_count: pass_plan.sampled_image_op_count,
+        scene_solid_quad_draw_count,
+        scene_sampled_image_resource_count,
+        scene_sampled_image_descriptor_heap_required,
+        draw_pass_video_op_count: pass_plan.video_op_count,
+        scene_video_layer_resource_count,
         draw_pass_vector_shape_op_count: pass_plan.vector_shape_op_count,
         draw_pass_text_op_count: pass_plan.text_op_count,
         draw_pass_path_op_count: pass_plan.path_op_count,
         draw_pass_required_image_resources: pass_plan.required_image_resources,
+        draw_pass_required_video_resources: pass_plan.required_video_resources,
         draw_pass_requires_text_atlas: pass_plan.requires_text_atlas,
         draw_pass_requires_path_tessellation: pass_plan.requires_path_tessellation,
+        draw_pass_requires_video_decode: pass_plan.requires_video_decode,
         draw_pass_fast_clear_color: pass_plan.fast_clear_color,
         vulkanalia_draw_pass,
         vulkanalia_sampled_image,
@@ -513,6 +537,27 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snaps
             })
             .collect(),
     })
+}
+
+fn native_vulkan_scene_lite_resource_model(
+    backend_status: &str,
+    video_op_count: usize,
+) -> &'static str {
+    if video_op_count > 0 {
+        return "retained-video-layer-vulkan-video-bridge-pending";
+    }
+    match backend_status {
+        "fast-clear-color-ready" => "fast-clear-only-no-scene-resources",
+        "solid-quad-recording-ready" => "retained-solid-quad-geometry",
+        "sampled-image-recording-ready" | "sampled-image-full-extent-fallback-ready" => {
+            "retained-sampled-images-descriptor-heap"
+        }
+        "mixed-quad-sampled-image-recording-ready"
+        | "mixed-quad-sampled-image-full-extent-fallback-ready" => {
+            "retained-solid-quad-geometry-and-sampled-images-descriptor-heap"
+        }
+        _ => "not-native-vulkan-presentable-yet",
+    }
 }
 
 #[cfg(test)]
@@ -601,10 +646,18 @@ mod tests {
             native_vulkan_scene_lite_runtime_snapshot(&item).expect("scene-lite snapshot");
 
         assert_eq!(snapshot.snapshot_time_ms, 1234);
+        assert_eq!(
+            snapshot.scene_input_model,
+            "core scene-lite snapshot layers; groups must be flattened before native Vulkan planning"
+        );
         assert!(snapshot.native_draw_ready);
         assert!(snapshot.fallback_display_available);
         assert!(snapshot.draw_pass_plan_ready);
         assert!(!snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.scene_resource_model,
+            "not-native-vulkan-presentable-yet"
+        );
         assert_eq!(
             snapshot.draw_pass_backend_status,
             "draw-pass-plan-ready-recording-pending"
@@ -616,6 +669,7 @@ mod tests {
         assert_eq!(snapshot.draw_pass_recordable_op_count, 0);
         assert_eq!(snapshot.draw_pass_color_op_count, 0);
         assert_eq!(snapshot.draw_pass_sampled_image_op_count, 1);
+        assert_eq!(snapshot.draw_pass_video_op_count, 0);
         assert_eq!(snapshot.draw_pass_vector_shape_op_count, 1);
         assert_eq!(snapshot.draw_pass_text_op_count, 1);
         assert_eq!(snapshot.draw_pass_path_op_count, 0);
@@ -623,8 +677,10 @@ mod tests {
             snapshot.draw_pass_required_image_resources,
             vec![PathBuf::from("/tmp/scene-hero.png")]
         );
+        assert!(snapshot.draw_pass_required_video_resources.is_empty());
         assert!(snapshot.draw_pass_requires_text_atlas);
         assert!(!snapshot.draw_pass_requires_path_tessellation);
+        assert!(!snapshot.draw_pass_requires_video_decode);
         assert_eq!(snapshot.draw_pass_fast_clear_color, None);
         assert_eq!(snapshot.draw_op_count, 3);
         assert_eq!(snapshot.unsupported_layer_count, 0);
@@ -658,6 +714,48 @@ mod tests {
         assert_eq!(
             snapshot.draw_ops[2].text_align,
             Some(SceneLiteTextAlign::Middle)
+        );
+    }
+
+    #[test]
+    fn scene_lite_runtime_snapshot_reports_video_layer_bridge_boundary() {
+        let mut video = scene_lite_test_layer("cinematic", SceneLiteLayerKind::Video);
+        video.source = Some(PathBuf::from("/tmp/scene-video.mp4"));
+        video.fit = FitMode::Cover;
+        video.width = Some(1280.0);
+        video.height = Some(720.0);
+        let item = scene_lite_test_item(vec![video], None, None);
+
+        let snapshot =
+            native_vulkan_scene_lite_runtime_snapshot(&item).expect("scene-lite snapshot");
+
+        assert!(snapshot.native_draw_ready);
+        assert!(snapshot.draw_pass_plan_ready);
+        assert!(!snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.draw_pass_backend_status,
+            "video-layer-vulkan-video-scene-bridge-pending"
+        );
+        assert_eq!(
+            snapshot.draw_pass_blocking_reason,
+            Some("video-layer-needs-vulkan-video-scene-bridge")
+        );
+        assert_eq!(
+            snapshot.scene_resource_model,
+            "retained-video-layer-vulkan-video-bridge-pending"
+        );
+        assert_eq!(snapshot.draw_pass_video_op_count, 1);
+        assert_eq!(snapshot.scene_video_layer_resource_count, 1);
+        assert_eq!(
+            snapshot.draw_pass_required_video_resources,
+            vec![PathBuf::from("/tmp/scene-video.mp4")]
+        );
+        assert!(snapshot.draw_pass_requires_video_decode);
+        assert_eq!(snapshot.draw_ops.len(), 1);
+        assert_eq!(snapshot.draw_ops[0].kind, "video");
+        assert_eq!(
+            snapshot.draw_ops[0].source.as_deref(),
+            Some(Path::new("/tmp/scene-video.mp4"))
         );
     }
 
@@ -723,6 +821,13 @@ mod tests {
         assert!(snapshot.native_draw_ready);
         assert!(snapshot.draw_pass_plan_ready);
         assert!(snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.scene_resource_model,
+            "fast-clear-only-no-scene-resources"
+        );
+        assert_eq!(snapshot.scene_solid_quad_draw_count, 0);
+        assert_eq!(snapshot.scene_sampled_image_resource_count, 0);
+        assert!(!snapshot.scene_sampled_image_descriptor_heap_required);
         assert_eq!(snapshot.draw_pass_backend_status, "fast-clear-color-ready");
         assert_eq!(snapshot.draw_pass_blocking_reason, None);
         assert_eq!(snapshot.draw_pass_recordable_op_count, 1);
@@ -765,6 +870,13 @@ mod tests {
         assert!(snapshot.native_draw_ready);
         assert!(snapshot.draw_pass_plan_ready);
         assert!(snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.scene_resource_model,
+            "retained-solid-quad-geometry"
+        );
+        assert_eq!(snapshot.scene_solid_quad_draw_count, 1);
+        assert_eq!(snapshot.scene_sampled_image_resource_count, 0);
+        assert!(!snapshot.scene_sampled_image_descriptor_heap_required);
         assert_eq!(
             snapshot.draw_pass_backend_status,
             "solid-quad-recording-ready"
@@ -845,6 +957,13 @@ mod tests {
         assert!(snapshot.native_draw_ready);
         assert!(snapshot.draw_pass_plan_ready);
         assert!(snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.scene_resource_model,
+            "retained-sampled-images-descriptor-heap"
+        );
+        assert_eq!(snapshot.scene_solid_quad_draw_count, 0);
+        assert_eq!(snapshot.scene_sampled_image_resource_count, 1);
+        assert!(snapshot.scene_sampled_image_descriptor_heap_required);
         assert_eq!(
             snapshot.draw_pass_backend_status,
             "sampled-image-recording-ready"
@@ -965,6 +1084,13 @@ mod tests {
             snapshot.draw_pass_backend_status,
             "mixed-quad-sampled-image-recording-ready"
         );
+        assert_eq!(
+            snapshot.scene_resource_model,
+            "retained-solid-quad-geometry-and-sampled-images-descriptor-heap"
+        );
+        assert_eq!(snapshot.scene_solid_quad_draw_count, 1);
+        assert_eq!(snapshot.scene_sampled_image_resource_count, 1);
+        assert!(snapshot.scene_sampled_image_descriptor_heap_required);
         assert!(snapshot.vulkanalia_draw_pass.backend_ready);
         assert_eq!(
             snapshot.vulkanalia_draw_pass.backend_status,
@@ -1057,6 +1183,13 @@ mod tests {
         );
         assert_eq!(snapshot.vulkanalia_draw_pass.sampled_image_quad_count, 2);
         assert_eq!(snapshot.vulkanalia_draw_pass.draw_indexed_count, 2);
+        assert_eq!(
+            snapshot.scene_resource_model,
+            "retained-sampled-images-descriptor-heap"
+        );
+        assert_eq!(snapshot.scene_solid_quad_draw_count, 0);
+        assert_eq!(snapshot.scene_sampled_image_resource_count, 2);
+        assert!(snapshot.scene_sampled_image_descriptor_heap_required);
         assert_eq!(snapshot.vulkanalia_sampled_image.sampled_image_count, 2);
         assert_eq!(snapshot.vulkanalia_sampled_image.draw_indexed_count, 2);
     }

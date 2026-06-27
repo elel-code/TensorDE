@@ -31,6 +31,8 @@ pub struct NativeVulkanBackendPlan {
     pub required_device_extensions: &'static [&'static str],
     pub preferred_optional_device_extensions: &'static [&'static str],
     pub prioritized_vulkan_1_4_features: &'static [&'static str],
+    pub tracked_roadmap_2026_device_extensions: &'static [&'static str],
+    pub tracked_roadmap_2026_feature_structs: &'static [&'static str],
     pub runtime_gates: &'static [&'static str],
 }
 
@@ -49,6 +51,13 @@ pub fn native_vulkan_backend_plan() -> NativeVulkanBackendPlan {
             std::any::type_name::<vulkanalia::vk::PresentWait2InfoKHR>(),
             std::any::type_name::<vulkanalia::vk::RenderingInfo>(),
             std::any::type_name::<vulkanalia::vk::PhysicalDeviceDescriptorHeapFeaturesEXT>(),
+            std::any::type_name::<vulkanalia::vk::PhysicalDevicePipelineBinaryFeaturesKHR>(),
+            std::any::type_name::<vulkanalia::vk::PhysicalDeviceRobustness2FeaturesKHR>(),
+            std::any::type_name::<vulkanalia::vk::PhysicalDeviceMaintenance7FeaturesKHR>(),
+            std::any::type_name::<vulkanalia::vk::PhysicalDeviceMaintenance8FeaturesKHR>(),
+            std::any::type_name::<vulkanalia::vk::PhysicalDeviceMaintenance9FeaturesKHR>(),
+            std::any::type_name::<vulkanalia::vk::PhysicalDeviceMaintenance10FeaturesKHR>(),
+            std::any::type_name::<vulkanalia::vk::PhysicalDeviceMaintenance10PropertiesKHR>(),
             std::any::type_name::<vulkanalia::vk::BindHeapInfoEXT>(),
             std::any::type_name::<vulkanalia::vk::VideoBeginCodingInfoKHR>(),
             std::any::type_name::<vulkanalia::vk::VideoDecodeH264PictureInfoKHR>(),
@@ -96,6 +105,40 @@ pub fn native_vulkan_backend_plan() -> NativeVulkanBackendPlan {
             "scalar-block-layout",
             "synchronization2",
             "larger-portable-limits",
+        ],
+        tracked_roadmap_2026_device_extensions: &[
+            "VK_KHR_present_mode_fifo_latest_ready",
+            "VK_KHR_present_id2",
+            "VK_KHR_present_wait2",
+            "VK_KHR_pipeline_binary",
+            "VK_KHR_robustness2",
+            "VK_KHR_fragment_shading_rate",
+            "VK_KHR_shader_clock",
+            "VK_KHR_cooperative_matrix",
+            "VK_KHR_compute_shader_derivatives",
+            "VK_KHR_depth_clamp_zero_one",
+            "VK_KHR_copy_memory_indirect",
+            "VK_KHR_maintenance7",
+            "VK_KHR_maintenance8",
+            "VK_KHR_maintenance9",
+            "VK_KHR_maintenance10",
+            "VK_KHR_shader_untyped_pointers",
+            "VK_KHR_swapchain_maintenance1",
+        ],
+        tracked_roadmap_2026_feature_structs: &[
+            "PhysicalDevicePipelineBinaryFeaturesKHR",
+            "PhysicalDeviceRobustness2FeaturesKHR",
+            "PhysicalDeviceFragmentShadingRateFeaturesKHR",
+            "PhysicalDeviceShaderClockFeaturesKHR",
+            "PhysicalDeviceCooperativeMatrixFeaturesKHR",
+            "PhysicalDeviceComputeShaderDerivativesFeaturesKHR",
+            "PhysicalDeviceDepthClampZeroOneFeaturesKHR",
+            "PhysicalDeviceCopyMemoryIndirectFeaturesKHR",
+            "PhysicalDeviceMaintenance7FeaturesKHR",
+            "PhysicalDeviceMaintenance8FeaturesKHR",
+            "PhysicalDeviceMaintenance9FeaturesKHR",
+            "PhysicalDeviceMaintenance10FeaturesKHR",
+            "PhysicalDeviceShaderUntypedPointersFeaturesKHR",
         ],
         runtime_gates: &[
             "create Vulkan 1.4 instance/device and report PhysicalDeviceVulkan14Features",
@@ -147,6 +190,22 @@ mod tests {
                 .contains(&"VK_EXT_descriptor_heap")
         );
         assert!(
+            plan.tracked_roadmap_2026_device_extensions
+                .contains(&"VK_KHR_pipeline_binary")
+        );
+        assert!(
+            plan.tracked_roadmap_2026_device_extensions
+                .contains(&"VK_KHR_maintenance9")
+        );
+        assert!(
+            plan.tracked_roadmap_2026_device_extensions
+                .contains(&"VK_KHR_maintenance10")
+        );
+        assert!(
+            plan.tracked_roadmap_2026_feature_structs
+                .contains(&"PhysicalDeviceRobustness2FeaturesKHR")
+        );
+        assert!(
             plan.api_type_evidence
                 .iter()
                 .any(|name| { name.ends_with("PhysicalDeviceVulkan14Features") })
@@ -165,6 +224,36 @@ mod tests {
             plan.api_type_evidence
                 .iter()
                 .any(|name| { name.ends_with("PhysicalDeviceDescriptorHeapFeaturesEXT") })
+        );
+        assert!(
+            plan.api_type_evidence
+                .iter()
+                .any(|name| { name.ends_with("PhysicalDevicePipelineBinaryFeaturesKHR") })
+        );
+        assert!(
+            plan.api_type_evidence
+                .iter()
+                .any(|name| { name.ends_with("PhysicalDeviceMaintenance7FeaturesKHR") })
+        );
+        assert!(
+            plan.api_type_evidence
+                .iter()
+                .any(|name| { name.ends_with("PhysicalDeviceMaintenance8FeaturesKHR") })
+        );
+        assert!(
+            plan.api_type_evidence
+                .iter()
+                .any(|name| { name.ends_with("PhysicalDeviceMaintenance9FeaturesKHR") })
+        );
+        assert!(
+            plan.api_type_evidence
+                .iter()
+                .any(|name| { name.ends_with("PhysicalDeviceMaintenance10FeaturesKHR") })
+        );
+        assert!(
+            plan.api_type_evidence
+                .iter()
+                .any(|name| { name.ends_with("PhysicalDeviceMaintenance10PropertiesKHR") })
         );
         assert!(
             plan.api_type_evidence

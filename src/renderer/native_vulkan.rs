@@ -12115,6 +12115,7 @@ mod tests {
                 fallback: Some(PathBuf::from("/tmp/scene-fallback.svg")),
                 manifest_max_fps: Some(60),
                 target_max_fps: Some(30),
+                snapshot_time_ms: 1234,
                 bound_properties: vec!["scene_opacity".to_owned()],
                 display: Some(SceneLiteDisplayPlan::Color {
                     color: "#102030".to_owned(),
@@ -12217,7 +12218,7 @@ mod tests {
         assert_eq!(layers[0].transform.x, 12.0);
         assert_eq!(layers[0].transform.y, 24.0);
         assert_eq!(bound_properties, &vec!["scene_opacity".to_owned()]);
-        assert_eq!(*snapshot_time_ms, 0);
+        assert_eq!(*snapshot_time_ms, 1234);
         assert_eq!(
             *renderer_status,
             "deterministic-scene-lite-snapshot-ready-for-vulkan-passes"

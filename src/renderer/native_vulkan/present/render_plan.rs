@@ -71,6 +71,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_render_item_clear_color(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneLiteDrawOpKind {
     Image,
+    Video,
     ColorQuad,
     Rectangle,
     Ellipse,
@@ -82,6 +83,7 @@ impl NativeVulkanSceneLiteDrawOpKind {
     pub(in crate::renderer::native_vulkan) fn as_str(self) -> &'static str {
         match self {
             Self::Image => "image",
+            Self::Video => "video",
             Self::ColorQuad => "color-quad",
             Self::Rectangle => "rectangle",
             Self::Ellipse => "ellipse",
@@ -212,6 +214,11 @@ fn native_vulkan_scene_lite_draw_op_kind(
             .as_ref()
             .map(|_| NativeVulkanSceneLiteDrawOpKind::Image)
             .ok_or("image-layer-missing-source"),
+        SceneLiteLayerKind::Video => layer
+            .source
+            .as_ref()
+            .map(|_| NativeVulkanSceneLiteDrawOpKind::Video)
+            .ok_or("video-layer-missing-source"),
         SceneLiteLayerKind::Color => layer
             .color
             .as_ref()

@@ -2193,6 +2193,8 @@ struct NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
     slow_frames: Vec<NativeVulkanVulkanaliaDecodedImagePresentSlowFrameSnapshot>,
     submitted_present_frame_count: u32,
     presented_frame_count: u32,
+    frame_sleep_count: u32,
+    missed_frame_pacing_count: u32,
     total_pacing_sleep_micros: u64,
     total_present_call_micros: u64,
     max_present_call_micros: u64,
@@ -2243,6 +2245,8 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
             slow_frames: Vec::with_capacity(DECODED_IMAGE_PRESENT_SLOW_FRAME_TELEMETRY_LIMIT),
             submitted_present_frame_count: 0,
             presented_frame_count: 0,
+            frame_sleep_count: 0,
+            missed_frame_pacing_count: 0,
             total_pacing_sleep_micros: 0,
             total_present_call_micros: 0,
             max_present_call_micros: 0,
@@ -2337,6 +2341,12 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
         self.total_pacing_sleep_micros = self
             .total_pacing_sleep_micros
             .saturating_add(draw.pacing_sleep_micros);
+        if draw.pacing_sleep_micros > 0 {
+            self.frame_sleep_count = self.frame_sleep_count.saturating_add(1);
+        }
+        if draw.pacing_clock_model == "audio-clock-master-video-late-no-sleep" {
+            self.missed_frame_pacing_count = self.missed_frame_pacing_count.saturating_add(1);
+        }
         self.total_present_call_micros = self
             .total_present_call_micros
             .saturating_add(draw.present_call_total_micros);
@@ -2582,6 +2592,8 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
                 .collect(),
             present_ids_head: self.draws_head.iter().map(|draw| draw.present_id).collect(),
             present_ids_tail: self.draws_tail.iter().map(|draw| draw.present_id).collect(),
+            frame_sleep_count: self.frame_sleep_count,
+            missed_frame_pacing_count: self.missed_frame_pacing_count,
             total_pacing_sleep_micros: self.total_pacing_sleep_micros,
             total_present_call_micros: self.total_present_call_micros,
             max_present_call_micros: self.max_present_call_micros,

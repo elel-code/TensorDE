@@ -110,12 +110,15 @@ pub(super) struct NativeVulkanSceneLiteDrawPassPlan {
     pub(super) sampled_image_index_buffer_bytes: u64,
     pub(super) color_op_count: usize,
     pub(super) sampled_image_op_count: usize,
+    pub(super) video_op_count: usize,
     pub(super) vector_shape_op_count: usize,
     pub(super) text_op_count: usize,
     pub(super) path_op_count: usize,
     pub(super) required_image_resources: Vec<PathBuf>,
+    pub(super) required_video_resources: Vec<PathBuf>,
     pub(super) requires_text_atlas: bool,
     pub(super) requires_path_tessellation: bool,
+    pub(super) requires_video_decode: bool,
     pub(super) fast_clear_color: Option<String>,
 }
 
@@ -124,10 +127,12 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
 ) -> NativeVulkanSceneLiteDrawPassPlan {
     let mut color_op_count = 0usize;
     let mut sampled_image_op_count = 0usize;
+    let mut video_op_count = 0usize;
     let mut vector_shape_op_count = 0usize;
     let mut text_op_count = 0usize;
     let mut path_op_count = 0usize;
     let mut required_image_resources = Vec::new();
+    let mut required_video_resources = Vec::new();
 
     for op in &draw_plan.draw_ops {
         match op.kind {
@@ -135,6 +140,12 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
                 sampled_image_op_count = sampled_image_op_count.saturating_add(1);
                 if let Some(source) = &op.source {
                     required_image_resources.push(source.clone());
+                }
+            }
+            NativeVulkanSceneLiteDrawOpKind::Video => {
+                video_op_count = video_op_count.saturating_add(1);
+                if let Some(source) = &op.source {
+                    required_video_resources.push(source.clone());
                 }
             }
             NativeVulkanSceneLiteDrawOpKind::ColorQuad => {
@@ -241,6 +252,11 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         } else {
             ("sampled-image-recording-ready", None)
         }
+    } else if video_op_count > 0 {
+        (
+            "video-layer-vulkan-video-scene-bridge-pending",
+            Some("video-layer-needs-vulkan-video-scene-bridge"),
+        )
     } else if !quad_recording_payload.steps.is_empty() {
         (
             "partial-solid-quad-recording-ready",
@@ -286,12 +302,15 @@ pub(super) fn native_vulkan_scene_lite_draw_pass_plan(
         sampled_image_index_buffer_bytes,
         color_op_count,
         sampled_image_op_count,
+        video_op_count,
         vector_shape_op_count,
         text_op_count,
         path_op_count,
         required_image_resources,
+        required_video_resources,
         requires_text_atlas: text_op_count > 0,
         requires_path_tessellation: path_op_count > 0,
+        requires_video_decode: video_op_count > 0,
         fast_clear_color,
     }
 }
@@ -718,6 +737,7 @@ mod tests {
             Some("vulkan-draw-recording-not-implemented")
         );
         assert_eq!(pass_plan.sampled_image_op_count, 1);
+        assert_eq!(pass_plan.video_op_count, 0);
         assert_eq!(pass_plan.text_op_count, 1);
         assert_eq!(pass_plan.path_op_count, 1);
         assert_eq!(
@@ -726,6 +746,39 @@ mod tests {
         );
         assert!(pass_plan.requires_text_atlas);
         assert!(pass_plan.requires_path_tessellation);
+        assert!(!pass_plan.requires_video_decode);
+    }
+
+    #[test]
+    fn draw_pass_plan_reports_video_layer_bridge_pending() {
+        let mut video = draw_op(0, NativeVulkanSceneLiteDrawOpKind::Video);
+        video.source = Some(PathBuf::from("/tmp/scene-video.mp4"));
+        video.fit = FitMode::Cover;
+        let draw_plan = NativeVulkanSceneLiteDrawPlan {
+            snapshot_time_ms: 0,
+            draw_ops: vec![video],
+            unsupported_layers: Vec::new(),
+            fallback_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(!pass_plan.backend_ready);
+        assert_eq!(
+            pass_plan.backend_status,
+            "video-layer-vulkan-video-scene-bridge-pending"
+        );
+        assert_eq!(
+            pass_plan.blocking_reason,
+            Some("video-layer-needs-vulkan-video-scene-bridge")
+        );
+        assert_eq!(pass_plan.video_op_count, 1);
+        assert_eq!(
+            pass_plan.required_video_resources,
+            vec![PathBuf::from("/tmp/scene-video.mp4")]
+        );
+        assert!(pass_plan.requires_video_decode);
     }
 
     #[test]

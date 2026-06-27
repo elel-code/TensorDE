@@ -135,7 +135,12 @@ pub fn run_vulkanalia_ready_prefix_video(
     let audio_clock = if audio_clock_probe_requested {
         let mut probe_options = NativeVulkanAudioClockProbeOptions::clock_only(source.clone());
         probe_options.output_mode = audio_output_mode;
-        probe_options.packets_to_probe = playback_frame_count.max(1).min(64);
+        probe_options.loop_on_eos = playback_frame_count > ready_prefix_frame_count;
+        probe_options.packets_to_probe = if probe_options.loop_on_eos {
+            playback_frame_count.max(512).min(1024)
+        } else {
+            playback_frame_count.max(1).min(64)
+        };
         Some(native_vulkan_probe_ffmpeg_audio_clock(probe_options)?)
     } else if audio_output_mode == NativeVulkanAudioOutputMode::ClockOnly {
         Some(native_vulkan_unattached_audio_clock_snapshot(

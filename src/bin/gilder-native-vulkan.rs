@@ -63,6 +63,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut fit = FitMode::Cover;
     let mut background = None::<String>;
     let mut scene_color = None::<String>;
+    let mut scene_snapshot_time_ms = 0u64;
     let mut _muted = true;
     #[cfg(feature = "native-vulkan-video")]
     let mut audio_clock_probe_requested = false;
@@ -191,6 +192,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--background" => {
                 background = Some(args.next().ok_or("--background requires #rrggbb")?);
+            }
+            "--scene-time-ms" | "--snapshot-time-ms" => {
+                scene_snapshot_time_ms = args
+                    .next()
+                    .map(|value| value.parse::<u64>())
+                    .transpose()?
+                    .ok_or("--scene-time-ms requires milliseconds")?;
             }
             "--loop" => {}
             "--no-loop" => {}
@@ -454,6 +462,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 fit,
                 background,
                 scene_color,
+                scene_snapshot_time_ms,
                 target_max_fps,
             )?;
             json!(run_scene_lite(options, duration, plan)?)
@@ -645,6 +654,7 @@ fn scene_lite_cli_plan(
     fit: FitMode,
     background: Option<String>,
     color: Option<String>,
+    snapshot_time_ms: u64,
     target_max_fps: Option<u32>,
 ) -> Result<SceneLiteWallpaperPlan, Box<dyn std::error::Error>> {
     if let Some(source) = source {
@@ -657,6 +667,7 @@ fn scene_lite_cli_plan(
             fallback: Some(source.clone()),
             manifest_max_fps: None,
             target_max_fps,
+            snapshot_time_ms,
             bound_properties: Vec::new(),
             display: Some(SceneLiteDisplayPlan::Image {
                 source,
@@ -676,6 +687,7 @@ fn scene_lite_cli_plan(
         fallback: None,
         manifest_max_fps: None,
         target_max_fps,
+        snapshot_time_ms,
         bound_properties: Vec::new(),
         display: Some(SceneLiteDisplayPlan::Color { color }),
         layers: vec![layer],
@@ -747,6 +759,7 @@ mod tests {
             FitMode::Contain,
             Some("#010203".to_owned()),
             None,
+            2468,
             Some(30),
         )
         .expect("image scene plan");
@@ -754,6 +767,7 @@ mod tests {
         assert_eq!(plan.source, None);
         assert_eq!(plan.fallback, Some(PathBuf::from("/tmp/wall.png")));
         assert_eq!(plan.target_max_fps, Some(30));
+        assert_eq!(plan.snapshot_time_ms, 2468);
         assert_eq!(
             plan.display,
             Some(SceneLiteDisplayPlan::Image {
@@ -778,10 +792,12 @@ mod tests {
             FitMode::Cover,
             None,
             Some("#102030".to_owned()),
+            1357,
             None,
         )
         .expect("color scene plan");
 
+        assert_eq!(plan.snapshot_time_ms, 1357);
         assert_eq!(
             plan.display,
             Some(SceneLiteDisplayPlan::Color {
@@ -844,6 +860,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
+         [--scene-time-ms MS]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\
          [--decoder auto|hardware-preferred|hardware-required|software]\n\
          [--video-codec h264|h265|h265-main-10|av1|av1-main-10] [--width PX] [--height PX]\n\

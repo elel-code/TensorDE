@@ -83,6 +83,11 @@ pub struct NativeVulkanAudioClockRuntimeSnapshot {
     pub loop_count: u32,
     pub video_master_clock_ready: bool,
     pub video_master_start_clock_ns: Option<u64>,
+    pub video_master_start_serial: Option<u32>,
+    pub video_master_start_packet_index: Option<u32>,
+    pub current_serial_start_clock_ns: Option<u64>,
+    pub current_serial_start_serial: Option<u32>,
+    pub current_serial_start_packet_index: Option<u32>,
     pub clock_ns: Option<u64>,
     pub clock_ms: Option<u64>,
     pub last_packet_pts_ns: Option<u64>,
@@ -250,6 +255,12 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanAudioClockRuntime {
     clock: NativeVulkanAudioClock,
     eos_count: u32,
     loop_count: u32,
+    video_master_start_clock_ns: Option<u64>,
+    video_master_start_serial: Option<u32>,
+    video_master_start_packet_index: Option<u32>,
+    current_serial_start_clock_ns: Option<u64>,
+    current_serial_start_serial: Option<u32>,
+    current_serial_start_packet_index: Option<u32>,
     packets_head: Vec<NativeVulkanAudioClockPacketSnapshot>,
 }
 
@@ -269,6 +280,12 @@ impl NativeVulkanAudioClockRuntime {
             clock: NativeVulkanAudioClock::new(),
             eos_count: 0,
             loop_count: 0,
+            video_master_start_clock_ns: None,
+            video_master_start_serial: None,
+            video_master_start_packet_index: None,
+            current_serial_start_clock_ns: None,
+            current_serial_start_serial: None,
+            current_serial_start_packet_index: None,
             packets_head: Vec::new(),
         }
     }
@@ -304,9 +321,25 @@ impl NativeVulkanAudioClockRuntime {
         packet_index: u32,
         packet: NativeVulkanAudioClockPacket,
     ) {
+        if packet.serial > self.clock.current_serial {
+            self.current_serial_start_clock_ns = None;
+            self.current_serial_start_serial = None;
+            self.current_serial_start_packet_index = None;
+        }
         self.queue.push(packet);
         while let Some(packet) = self.queue.pop() {
-            self.clock.advance(packet);
+            if let Some(clock_ns) = self.clock.advance(packet) {
+                if self.video_master_start_clock_ns.is_none() {
+                    self.video_master_start_clock_ns = Some(clock_ns);
+                    self.video_master_start_serial = Some(packet.serial);
+                    self.video_master_start_packet_index = Some(packet_index);
+                }
+                if self.current_serial_start_clock_ns.is_none() {
+                    self.current_serial_start_clock_ns = Some(clock_ns);
+                    self.current_serial_start_serial = Some(packet.serial);
+                    self.current_serial_start_packet_index = Some(packet_index);
+                }
+            }
             if self.packets_head.len() < NATIVE_VULKAN_AUDIO_CLOCK_QUEUE_PACKETS {
                 self.packets_head
                     .push(NativeVulkanAudioClockPacketSnapshot {
@@ -352,7 +385,32 @@ impl NativeVulkanAudioClockRuntime {
             loop_count: self.loop_count,
             video_master_clock_ready: self.audio_stream_found && self.clock.clock_ns.is_some(),
             video_master_start_clock_ns: if self.audio_stream_found {
-                self.clock.clock_ns
+                self.video_master_start_clock_ns
+            } else {
+                None
+            },
+            video_master_start_serial: if self.audio_stream_found {
+                self.video_master_start_serial
+            } else {
+                None
+            },
+            video_master_start_packet_index: if self.audio_stream_found {
+                self.video_master_start_packet_index
+            } else {
+                None
+            },
+            current_serial_start_clock_ns: if self.audio_stream_found {
+                self.current_serial_start_clock_ns
+            } else {
+                None
+            },
+            current_serial_start_serial: if self.audio_stream_found {
+                self.current_serial_start_serial
+            } else {
+                None
+            },
+            current_serial_start_packet_index: if self.audio_stream_found {
+                self.current_serial_start_packet_index
             } else {
                 None
             },
@@ -767,7 +825,95 @@ mod tests {
         assert_eq!(snapshot.clock_ns, Some(21_000_000));
         assert!(snapshot.video_master_clock_ready);
         assert_eq!(snapshot.video_master_start_clock_ns, Some(21_000_000));
+        assert_eq!(snapshot.video_master_start_serial, Some(0));
+        assert_eq!(snapshot.video_master_start_packet_index, Some(0));
+        assert_eq!(snapshot.current_serial_start_clock_ns, Some(21_000_000));
+        assert_eq!(snapshot.current_serial_start_serial, Some(0));
+        assert_eq!(snapshot.current_serial_start_packet_index, Some(0));
         assert_eq!(snapshot.packets_head.len(), 1);
+    }
+
+    #[test]
+    fn audio_runtime_video_master_start_uses_first_ready_clock_sample() {
+        let mut runtime = NativeVulkanAudioClockRuntime::new(
+            NativeVulkanAudioOutputMode::ClockOnly,
+            NATIVE_VULKAN_AUDIO_CLOCK_QUEUE_PACKETS,
+        );
+        runtime.set_audio_stream(2);
+        runtime.push_and_advance(
+            0,
+            NativeVulkanAudioClockPacket {
+                serial: 0,
+                pts_ns: None,
+                duration_ns: Some(21_000_000),
+                payload_bytes: 512,
+            },
+        );
+        runtime.push_and_advance(
+            1,
+            NativeVulkanAudioClockPacket {
+                serial: 0,
+                pts_ns: Some(0),
+                duration_ns: Some(21_000_000),
+                payload_bytes: 512,
+            },
+        );
+        runtime.push_and_advance(
+            2,
+            NativeVulkanAudioClockPacket {
+                serial: 0,
+                pts_ns: Some(21_000_000),
+                duration_ns: Some(21_000_000),
+                payload_bytes: 512,
+            },
+        );
+
+        let snapshot = runtime.snapshot();
+
+        assert_eq!(snapshot.clock_ns, Some(42_000_000));
+        assert_eq!(snapshot.video_master_start_clock_ns, Some(21_000_000));
+        assert_eq!(snapshot.video_master_start_serial, Some(0));
+        assert_eq!(snapshot.video_master_start_packet_index, Some(1));
+        assert_eq!(snapshot.current_serial_start_clock_ns, Some(21_000_000));
+        assert_eq!(snapshot.current_serial_start_serial, Some(0));
+        assert_eq!(snapshot.current_serial_start_packet_index, Some(1));
+    }
+
+    #[test]
+    fn audio_runtime_current_serial_start_resets_on_new_serial() {
+        let mut runtime = NativeVulkanAudioClockRuntime::new(
+            NativeVulkanAudioOutputMode::ClockOnly,
+            NATIVE_VULKAN_AUDIO_CLOCK_QUEUE_PACKETS,
+        );
+        runtime.set_audio_stream(2);
+        runtime.push_and_advance(
+            0,
+            NativeVulkanAudioClockPacket {
+                serial: 0,
+                pts_ns: Some(0),
+                duration_ns: Some(21_000_000),
+                payload_bytes: 512,
+            },
+        );
+        runtime.push_and_advance(
+            3,
+            NativeVulkanAudioClockPacket {
+                serial: 1,
+                pts_ns: Some(0),
+                duration_ns: Some(21_000_000),
+                payload_bytes: 512,
+            },
+        );
+
+        let snapshot = runtime.snapshot();
+
+        assert_eq!(snapshot.clock_ns, Some(42_000_000));
+        assert_eq!(snapshot.video_master_start_clock_ns, Some(21_000_000));
+        assert_eq!(snapshot.video_master_start_serial, Some(0));
+        assert_eq!(snapshot.video_master_start_packet_index, Some(0));
+        assert_eq!(snapshot.current_serial_start_clock_ns, Some(42_000_000));
+        assert_eq!(snapshot.current_serial_start_serial, Some(1));
+        assert_eq!(snapshot.current_serial_start_packet_index, Some(3));
     }
 
     #[test]
@@ -778,5 +924,10 @@ mod tests {
         assert!(!snapshot.audio_stream_found);
         assert!(!snapshot.video_master_clock_ready);
         assert_eq!(snapshot.video_master_start_clock_ns, None);
+        assert_eq!(snapshot.video_master_start_serial, None);
+        assert_eq!(snapshot.video_master_start_packet_index, None);
+        assert_eq!(snapshot.current_serial_start_clock_ns, None);
+        assert_eq!(snapshot.current_serial_start_serial, None);
+        assert_eq!(snapshot.current_serial_start_packet_index, None);
     }
 }

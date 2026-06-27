@@ -535,6 +535,9 @@ present_delta_min_us="$(jq -r '.av1_retained_video_present_decode.decoded_image_
 present_delta_max_us="$(jq -r '.av1_retained_video_present_decode.decoded_image_present_sequence.present_delta_max_micros // "none"' "$runtime_json")"
 present_delta_over_6250us_count="$(jq -r '.av1_retained_video_present_decode.decoded_image_present_sequence.present_delta_over_6250us_count // 0' "$runtime_json")"
 present_delta_over_8334us_count="$(jq -r '.av1_retained_video_present_decode.decoded_image_present_sequence.present_delta_over_8334us_count // 0' "$runtime_json")"
+frame_sleep_count_value="$(jq -r '(.av1_retained_video_present_decode.decoded_image_present_sequence.frame_sleep_count // 0)' "$runtime_json")"
+missed_frame_pacing_count_value="$(jq -r '(.av1_retained_video_present_decode.decoded_image_present_sequence.missed_frame_pacing_count // 0)' "$runtime_json")"
+total_frame_sleep_us_value="$(jq -r '(.av1_retained_video_present_decode.decoded_image_present_sequence.total_pacing_sleep_micros // 0)' "$runtime_json")"
 zero_copy="$(jq -r '.av1_retained_video_present_decode.decoded_image_present_sequence.all_zero_copy_presented // false' "$runtime_json")"
 descriptor_model="$(jq -r '.av1_retained_video_present_decode.session.decoded_image_present_pipeline.descriptor_model // "none"' "$runtime_json")"
 descriptor_sets="$(jq -r '.av1_retained_video_present_decode.session.decoded_image_present_pipeline.descriptor_sets // -1' "$runtime_json")"
@@ -547,6 +550,11 @@ ffmpeg_slices_buffer_max_src_range="$(jq -r '(.av1_retained_video_present_decode
 bitstream_total_payload_bytes="$(jq -r '(.av1_retained_video_present_decode.decode.src_buffer_total_bytes // 0)' "$runtime_json")"
 session_dpb_slots="$(jq -r '.av1_retained_video_present_decode.session.session_max_dpb_slots // 0' "$runtime_json")"
 picture_format="$(jq -r '.av1_retained_video_present_decode.session.picture_format // "none"' "$runtime_json")"
+present_mode="$(jq -r '(.av1_retained_video_present_decode.session.device.swapchain.present_mode // "none")' "$runtime_json")"
+present_mode_gate_failed=0
+if ! gilder_native_video_present_mode_allowed "$present_mode"; then
+  present_mode_gate_failed=1
+fi
 max_private_dirty_kib="none"
 avg_cpu_percent="none"
 if [[ -s "$performance_dir/summary.txt" ]]; then
@@ -583,6 +591,18 @@ audio_segment_elapsed_ns="$(jq -r '(.audio_clock.clock_ns // "none")' "$runtime_
 audio_position_stale_count="$(jq -r '(.audio_clock.stale_dropped_packets // 0)' "$runtime_json")"
 audio_sample_stale_count="$audio_position_stale_count"
 audio_master_clock_estimate_ns="$(jq -r '(.audio_clock.video_master_start_clock_ns // .audio_clock.clock_ns // "none")' "$runtime_json")"
+audio_master_start_serial="$(jq -r '(.audio_clock.video_master_start_serial // "none")' "$runtime_json")"
+audio_master_start_packet_index="$(jq -r '(.audio_clock.video_master_start_packet_index // "none")' "$runtime_json")"
+audio_current_serial_start_serial="$(jq -r '(.audio_clock.current_serial_start_serial // "none")' "$runtime_json")"
+audio_current_serial_start_packet_index="$(jq -r '(.audio_clock.current_serial_start_packet_index // "none")' "$runtime_json")"
+audio_clock_serial_uint=0
+audio_current_serial_start_serial_uint=0
+if gilder_is_uint "$audio_clock_serial"; then
+  audio_clock_serial_uint="$audio_clock_serial"
+fi
+if gilder_is_uint "$audio_current_serial_start_serial"; then
+  audio_current_serial_start_serial_uint="$audio_current_serial_start_serial"
+fi
 audio_position_query_count="$audio_buffer_count"
 audio_position_query_hit_count="$audio_buffer_count"
 audio_sampled_video_frame_count="$presented"
@@ -597,6 +617,11 @@ audio_video_clock_drift_abs_max_ns=0
 audio_video_master_clock_drift_latest_ns=0
 audio_video_master_clock_drift_abs_max_ns=0
 audio_clock_gate_failed=0
+audio_loop_probe_expected=0
+audio_loop_serial_gate_failed=0
+if [[ "$audio_clock_probe" -eq 1 && "$playback_frames" -gt "$decode_prefix" ]]; then
+  audio_loop_probe_expected=1
+fi
 if [[ "$audio_clock_probe" -eq 1 && ( "$audio_clock_probe_present" != "true" || "$audio_reached_clocked_playback" != "true" || "$audio_no_video_decoder_instantiated" != "true" || "$audio_playback_started" != "true" || "$audio_buffer_count" -le 0 || "$audio_position_query_count" -le 0 || "$audio_position_query_hit_count" -le 0 || "$audio_sampled_video_frame_count" -le 0 || "$audio_master_clock_estimate_ns" == "none" || "$audio_video_master_clock_drift_latest_ns" == "none" || "$audio_loop_seek_error_count" -ne 0 ) ]]; then
   audio_clock_gate_failed=1
 fi
@@ -606,6 +631,10 @@ fi
 if [[ "$expected_audio_output_mode" == "auto" && "$audio_output_sink_count" -le 0 ]]; then
   audio_clock_gate_failed=1
 fi
+if [[ "$audio_loop_probe_expected" -eq 1 ]] && { [[ "$audio_loop_seek_count" -lt 1 || "$audio_clock_serial_uint" -lt 1 || "$audio_current_serial_start_serial_uint" -lt 1 ]] || ! gilder_is_uint "$audio_current_serial_start_packet_index"; }; then
+  audio_clock_gate_failed=1
+  audio_loop_serial_gate_failed=1
+fi
 
 if [[ -n "$av1_error" ]]; then
   printf 'FAIL: AV1 retained decode reported error: %s\n' "$av1_error" | tee "$summary"
@@ -613,6 +642,14 @@ if [[ -n "$av1_error" ]]; then
 fi
 if [[ "$requested" -ne "$playback_frames" || "$presented" -ne "$playback_frames" || "$displayed" -ne "$playback_frames" ]]; then
   printf 'FAIL: AV1 presented/displayed count mismatch\n' | tee "$summary"
+  exit 1
+fi
+if [[ "$present_mode_gate_failed" -ne 0 ]]; then
+  {
+    printf 'FAIL: AV1 present mode is not allowed for native Vulkan video\n'
+    printf 'present_mode: %s\n' "$present_mode"
+    printf 'present_mode_gate_failed: %s\n' "$present_mode_gate_failed"
+  } | tee "$summary"
   exit 1
 fi
 if ! awk -v fps="$average_fps" -v target="$target_fps" 'BEGIN { exit (fps + 0.001 >= target) ? 0 : 1 }'; then
@@ -646,6 +683,8 @@ if [[ "$audio_clock_gate_failed" -ne 0 ]]; then
     printf 'audio_plan_muted: %s\n' "$([[ "$plan_muted" -eq 1 ]] && printf true || printf false)"
     printf 'audio_output_mode: %s\n' "$audio_output_mode"
     printf 'audio_output_sink_count: %s\n' "$audio_output_sink_count"
+    printf 'audio_loop_probe_expected: %s\n' "$audio_loop_probe_expected"
+    printf 'audio_loop_serial_gate_failed: %s\n' "$audio_loop_serial_gate_failed"
     printf 'audio_reached_clocked_playback: %s\n' "$audio_reached_clocked_playback"
     printf 'audio_no_video_decoder_instantiated: %s\n' "$audio_no_video_decoder_instantiated"
     printf 'audio_buffer_count: %s\n' "$audio_buffer_count"
@@ -661,6 +700,10 @@ if [[ "$audio_clock_gate_failed" -ne 0 ]]; then
     printf 'audio_position_stale_count: %s\n' "$audio_position_stale_count"
     printf 'audio_sample_stale_count: %s\n' "$audio_sample_stale_count"
     printf 'audio_master_clock_estimate_ns: %s\n' "$audio_master_clock_estimate_ns"
+    printf 'audio_master_start_serial: %s\n' "$audio_master_start_serial"
+    printf 'audio_master_start_packet_index: %s\n' "$audio_master_start_packet_index"
+    printf 'audio_current_serial_start_serial: %s\n' "$audio_current_serial_start_serial"
+    printf 'audio_current_serial_start_packet_index: %s\n' "$audio_current_serial_start_packet_index"
     printf 'audio_position_query_count: %s\n' "$audio_position_query_count"
     printf 'audio_position_query_hit_count: %s\n' "$audio_position_query_hit_count"
     printf 'audio_sampled_video_frame_count: %s\n' "$audio_sampled_video_frame_count"
@@ -706,6 +749,9 @@ fi
   printf 'present_delta_max_us: %s\n' "$present_delta_max_us"
   printf 'present_delta_over_6250us_count: %s\n' "$present_delta_over_6250us_count"
   printf 'present_delta_over_8334us_count: %s\n' "$present_delta_over_8334us_count"
+  printf 'frame_sleep_count: %s\n' "$frame_sleep_count_value"
+  printf 'missed_frame_pacing_count: %s\n' "$missed_frame_pacing_count_value"
+  printf 'total_frame_sleep_us: %s\n' "$total_frame_sleep_us_value"
   printf 'descriptor_model: %s\n' "$descriptor_model"
   printf 'descriptor_sets: %s\n' "$descriptor_sets"
   printf 'ffmpeg_slices_buffer_model: %s\n' "$ffmpeg_slices_buffer_model"
@@ -718,6 +764,8 @@ fi
   printf 'all_zero_copy_presented: %s\n' "$zero_copy"
   printf 'session_max_dpb_slots: %s\n' "$session_dpb_slots"
   printf 'picture_format: %s\n' "$picture_format"
+  printf 'present_mode: %s\n' "$present_mode"
+  printf 'present_mode_gate_failed: %s\n' "$present_mode_gate_failed"
   printf 'audio_clock_probe_requested: %s\n' "$([[ "$audio_clock_probe" -eq 1 ]] && printf yes || printf no)"
   printf 'audio_clock_probe_present: %s\n' "$audio_clock_probe_present"
   printf 'audio_output: %s\n' "$audio_output"
@@ -725,6 +773,8 @@ fi
   printf 'audio_plan_muted: %s\n' "$([[ "$plan_muted" -eq 1 ]] && printf true || printf false)"
   printf 'audio_output_mode: %s\n' "$audio_output_mode"
   printf 'audio_output_sink_count: %s\n' "$audio_output_sink_count"
+  printf 'audio_loop_probe_expected: %s\n' "$audio_loop_probe_expected"
+  printf 'audio_loop_serial_gate_failed: %s\n' "$audio_loop_serial_gate_failed"
   printf 'audio_reached_clocked_playback: %s\n' "$audio_reached_clocked_playback"
   printf 'audio_no_video_decoder_instantiated: %s\n' "$audio_no_video_decoder_instantiated"
   printf 'audio_buffer_count: %s\n' "$audio_buffer_count"
@@ -740,6 +790,10 @@ fi
   printf 'audio_position_stale_count: %s\n' "$audio_position_stale_count"
   printf 'audio_sample_stale_count: %s\n' "$audio_sample_stale_count"
   printf 'audio_master_clock_estimate_ns: %s\n' "$audio_master_clock_estimate_ns"
+  printf 'audio_master_start_serial: %s\n' "$audio_master_start_serial"
+  printf 'audio_master_start_packet_index: %s\n' "$audio_master_start_packet_index"
+  printf 'audio_current_serial_start_serial: %s\n' "$audio_current_serial_start_serial"
+  printf 'audio_current_serial_start_packet_index: %s\n' "$audio_current_serial_start_packet_index"
   printf 'audio_position_query_count: %s\n' "$audio_position_query_count"
   printf 'audio_position_query_hit_count: %s\n' "$audio_position_query_hit_count"
   printf 'audio_sampled_video_frame_count: %s\n' "$audio_sampled_video_frame_count"
