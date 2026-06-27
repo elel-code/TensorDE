@@ -10,7 +10,7 @@ use vulkanalia::vk::{
     KhrWaylandSurfaceExtensionInstanceCommands,
 };
 
-use crate::renderer::native_vulkan::NativeVulkanVideoSessionCodec;
+use crate::renderer::native_vulkan::{NativeVulkanClearColor, NativeVulkanVideoSessionCodec};
 use crate::renderer::native_wayland::{
     NativeWaylandHost, NativeWaylandHostOptions, NativeWaylandSurfaceHandles,
 };
@@ -58,7 +58,7 @@ pub struct NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions {
     pub codec: NativeVulkanVideoSessionCodec,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NativeVulkanVulkanaliaVideoPresentSessionProbeOptions {
     pub host: NativeWaylandHostOptions,
     pub wait_configure_roundtrips: usize,
@@ -67,6 +67,7 @@ pub struct NativeVulkanVulkanaliaVideoPresentSessionProbeOptions {
     pub height: u32,
     pub target_max_fps: Option<u32>,
     pub audio_master_clock: NativeVulkanVulkanaliaVideoPresentAudioMasterClock,
+    pub clear_color: NativeVulkanClearColor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

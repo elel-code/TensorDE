@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 
-use crate::core::{FitMode, SceneLiteLayerKind, SceneLiteTextAlign, SceneLiteTransform};
-use crate::renderer::{SceneLiteDisplayPlan, SceneLiteRenderLayer};
+use crate::core::{FitMode, SceneNodeKind, SceneTextAlign, SceneTransform};
+use crate::renderer::{SceneDisplayPlan, SceneRenderLayer};
 
 use super::super::NativeVulkanClearColor;
 use super::render_item::NativeVulkanRenderItem;
@@ -38,9 +38,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_upload_plan(
             fit: *fit,
             background: None,
         }),
-        NativeVulkanRenderItem::SceneLite {
+        NativeVulkanRenderItem::Scene {
             display:
-                Some(SceneLiteDisplayPlan::Image {
+                Some(SceneDisplayPlan::Image {
                     source,
                     fit,
                     background,
@@ -60,8 +60,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_render_item_clear_color(
     fallback: NativeVulkanClearColor,
 ) -> NativeVulkanClearColor {
     match render_item {
-        NativeVulkanRenderItem::SceneLite {
-            display: Some(SceneLiteDisplayPlan::Color { color }),
+        NativeVulkanRenderItem::Scene {
+            display: Some(SceneDisplayPlan::Color { color }),
             ..
         } => native_vulkan_clear_color_from_hex(color).unwrap_or(fallback),
         _ => fallback,
@@ -69,7 +69,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_render_item_clear_color(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneLiteDrawOpKind {
+pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneDrawOpKind {
     Image,
     Video,
     ColorQuad,
@@ -79,7 +79,7 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneLiteDrawOpKind {
     Path,
 }
 
-impl NativeVulkanSceneLiteDrawOpKind {
+impl NativeVulkanSceneDrawOpKind {
     pub(in crate::renderer::native_vulkan) fn as_str(self) -> &'static str {
         match self {
             Self::Image => "image",
@@ -94,10 +94,10 @@ impl NativeVulkanSceneLiteDrawOpKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLiteDrawOp {
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneDrawOp {
     pub(in crate::renderer::native_vulkan) layer_index: usize,
     pub(in crate::renderer::native_vulkan) layer_id: String,
-    pub(in crate::renderer::native_vulkan) kind: NativeVulkanSceneLiteDrawOpKind,
+    pub(in crate::renderer::native_vulkan) kind: NativeVulkanSceneDrawOpKind,
     pub(in crate::renderer::native_vulkan) opacity: f64,
     pub(in crate::renderer::native_vulkan) source: Option<PathBuf>,
     pub(in crate::renderer::native_vulkan) color: Option<String>,
@@ -110,38 +110,38 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLiteDrawOp {
     pub(in crate::renderer::native_vulkan) font_size: Option<f64>,
     pub(in crate::renderer::native_vulkan) font_family: Option<String>,
     pub(in crate::renderer::native_vulkan) font_weight: Option<String>,
-    pub(in crate::renderer::native_vulkan) text_align: Option<SceneLiteTextAlign>,
+    pub(in crate::renderer::native_vulkan) text_align: Option<SceneTextAlign>,
     pub(in crate::renderer::native_vulkan) path_data: Option<String>,
     pub(in crate::renderer::native_vulkan) fit: FitMode,
-    pub(in crate::renderer::native_vulkan) transform: SceneLiteTransform,
+    pub(in crate::renderer::native_vulkan) transform: SceneTransform,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLiteUnsupportedLayer {
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneUnsupportedLayer {
     pub(in crate::renderer::native_vulkan) layer_index: usize,
     pub(in crate::renderer::native_vulkan) layer_id: String,
     pub(in crate::renderer::native_vulkan) reason: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLiteDrawPlan {
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneDrawPlan {
     pub(in crate::renderer::native_vulkan) snapshot_time_ms: u64,
-    pub(in crate::renderer::native_vulkan) draw_ops: Vec<NativeVulkanSceneLiteDrawOp>,
+    pub(in crate::renderer::native_vulkan) draw_ops: Vec<NativeVulkanSceneDrawOp>,
     pub(in crate::renderer::native_vulkan) unsupported_layers:
-        Vec<NativeVulkanSceneLiteUnsupportedLayer>,
+        Vec<NativeVulkanSceneUnsupportedLayer>,
     pub(in crate::renderer::native_vulkan) manifest_preview_available: bool,
 }
 
-impl NativeVulkanSceneLiteDrawPlan {
+impl NativeVulkanSceneDrawPlan {
     pub(in crate::renderer::native_vulkan) fn native_draw_ready(&self) -> bool {
         !self.draw_ops.is_empty() && self.unsupported_layers.is_empty()
     }
 }
 
-pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_draw_plan(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_draw_plan(
     render_item: &NativeVulkanRenderItem,
-) -> Option<NativeVulkanSceneLiteDrawPlan> {
-    let NativeVulkanRenderItem::SceneLite {
+) -> Option<NativeVulkanSceneDrawPlan> {
+    let NativeVulkanRenderItem::Scene {
         layers,
         display,
         fallback,
@@ -151,9 +151,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_draw_plan(
     else {
         return None;
     };
-    let (draw_ops, unsupported_layers) = native_vulkan_scene_lite_draw_layers(layers);
+    let (draw_ops, unsupported_layers) = native_vulkan_scene_draw_layers(layers);
 
-    Some(NativeVulkanSceneLiteDrawPlan {
+    Some(NativeVulkanSceneDrawPlan {
         snapshot_time_ms: *snapshot_time_ms,
         draw_ops,
         unsupported_layers,
@@ -161,11 +161,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_draw_plan(
     })
 }
 
-fn native_vulkan_scene_lite_draw_layers(
-    layers: &[SceneLiteRenderLayer],
+fn native_vulkan_scene_draw_layers(
+    layers: &[SceneRenderLayer],
 ) -> (
-    Vec<NativeVulkanSceneLiteDrawOp>,
-    Vec<NativeVulkanSceneLiteUnsupportedLayer>,
+    Vec<NativeVulkanSceneDrawOp>,
+    Vec<NativeVulkanSceneUnsupportedLayer>,
 ) {
     let mut draw_ops = Vec::new();
     let mut unsupported_layers = Vec::new();
@@ -173,8 +173,8 @@ fn native_vulkan_scene_lite_draw_layers(
         if layer.opacity <= 0.0 {
             continue;
         }
-        match native_vulkan_scene_lite_draw_op_kind(layer) {
-            Ok(kind) => draw_ops.push(NativeVulkanSceneLiteDrawOp {
+        match native_vulkan_scene_draw_op_kind(layer) {
+            Ok(kind) => draw_ops.push(NativeVulkanSceneDrawOp {
                 layer_index: index,
                 layer_id: layer.id.clone(),
                 kind,
@@ -195,7 +195,7 @@ fn native_vulkan_scene_lite_draw_layers(
                 fit: layer.fit,
                 transform: layer.transform,
             }),
-            Err(reason) => unsupported_layers.push(NativeVulkanSceneLiteUnsupportedLayer {
+            Err(reason) => unsupported_layers.push(NativeVulkanSceneUnsupportedLayer {
                 layer_index: index,
                 layer_id: layer.id.clone(),
                 reason,
@@ -205,40 +205,40 @@ fn native_vulkan_scene_lite_draw_layers(
     (draw_ops, unsupported_layers)
 }
 
-fn native_vulkan_scene_lite_draw_op_kind(
-    layer: &SceneLiteRenderLayer,
-) -> Result<NativeVulkanSceneLiteDrawOpKind, &'static str> {
+fn native_vulkan_scene_draw_op_kind(
+    layer: &SceneRenderLayer,
+) -> Result<NativeVulkanSceneDrawOpKind, &'static str> {
     match layer.kind {
-        SceneLiteLayerKind::Image => layer
+        SceneNodeKind::Image => layer
             .source
             .as_ref()
-            .map(|_| NativeVulkanSceneLiteDrawOpKind::Image)
+            .map(|_| NativeVulkanSceneDrawOpKind::Image)
             .ok_or("image-layer-missing-source"),
-        SceneLiteLayerKind::Video => layer
+        SceneNodeKind::Video => layer
             .source
             .as_ref()
-            .map(|_| NativeVulkanSceneLiteDrawOpKind::Video)
+            .map(|_| NativeVulkanSceneDrawOpKind::Video)
             .ok_or("video-layer-missing-source"),
-        SceneLiteLayerKind::Color => layer
+        SceneNodeKind::Color => layer
             .color
             .as_ref()
-            .map(|_| NativeVulkanSceneLiteDrawOpKind::ColorQuad)
+            .map(|_| NativeVulkanSceneDrawOpKind::ColorQuad)
             .ok_or("color-layer-missing-color"),
-        SceneLiteLayerKind::Rectangle => {
-            if native_vulkan_scene_lite_layer_has_shape_paint(layer) {
-                Ok(NativeVulkanSceneLiteDrawOpKind::Rectangle)
+        SceneNodeKind::Rectangle => {
+            if native_vulkan_scene_layer_has_shape_paint(layer) {
+                Ok(NativeVulkanSceneDrawOpKind::Rectangle)
             } else {
                 Err("rectangle-layer-missing-paint")
             }
         }
-        SceneLiteLayerKind::Ellipse => {
-            if native_vulkan_scene_lite_layer_has_shape_paint(layer) {
-                Ok(NativeVulkanSceneLiteDrawOpKind::Ellipse)
+        SceneNodeKind::Ellipse => {
+            if native_vulkan_scene_layer_has_shape_paint(layer) {
+                Ok(NativeVulkanSceneDrawOpKind::Ellipse)
             } else {
                 Err("ellipse-layer-missing-paint")
             }
         }
-        SceneLiteLayerKind::Text => layer
+        SceneNodeKind::Text => layer
             .text
             .as_ref()
             .filter(|text| !text.is_empty())
@@ -248,10 +248,10 @@ fn native_vulkan_scene_lite_draw_op_kind(
                     .color
                     .as_ref()
                     .filter(|color| !color.is_empty())
-                    .map(|_| NativeVulkanSceneLiteDrawOpKind::Text)
+                    .map(|_| NativeVulkanSceneDrawOpKind::Text)
                     .ok_or("text-layer-missing-color")
             }),
-        SceneLiteLayerKind::Path => layer
+        SceneNodeKind::Path => layer
             .path_data
             .as_ref()
             .filter(|path| !path.is_empty())
@@ -266,16 +266,21 @@ fn native_vulkan_scene_lite_draw_op_kind(
                         .as_deref()
                         .is_some_and(|color| !color.is_empty())
                 {
-                    Ok(NativeVulkanSceneLiteDrawOpKind::Path)
+                    Ok(NativeVulkanSceneDrawOpKind::Path)
                 } else {
                     Err("path-layer-missing-paint")
                 }
             }),
-        SceneLiteLayerKind::Group => Err("group-layer-needs-flattened-children"),
+        SceneNodeKind::Group => Err("group-layer-needs-flattened-children"),
+        SceneNodeKind::Shader => Err("shader-layer-needs-scene-shader-runtime"),
+        SceneNodeKind::ParticleEmitter => Err("particle-layer-needs-scene-particle-runtime"),
+        SceneNodeKind::AudioResponse => Err("audio-response-layer-needs-scene-audio-runtime"),
+        SceneNodeKind::Script => Err("script-layer-needs-scene-script-runtime"),
+        SceneNodeKind::Unknown => Err("unknown-layer-kind"),
     }
 }
 
-fn native_vulkan_scene_lite_layer_has_shape_paint(layer: &SceneLiteRenderLayer) -> bool {
+fn native_vulkan_scene_layer_has_shape_paint(layer: &SceneRenderLayer) -> bool {
     layer
         .color
         .as_deref()
@@ -304,17 +309,17 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_clear_color_from_hex(
 mod tests {
     use super::*;
     use crate::core::FitMode;
-    use crate::renderer::SceneLiteDisplayPlan;
+    use crate::renderer::SceneDisplayPlan;
     use crate::renderer::native_vulkan::{NativeVulkanClearColor, NativeVulkanRenderItem};
     use std::path::PathBuf;
 
     #[test]
-    fn scene_lite_image_display_uses_static_upload_plan() {
-        let item = NativeVulkanRenderItem::SceneLite {
+    fn scene_image_display_uses_static_upload_plan() {
+        let item = NativeVulkanRenderItem::Scene {
             output_name: "HDMI-A-1".to_owned(),
-            scene_source: Some(PathBuf::from("/tmp/scene-lite.json")),
+            scene_source: Some(PathBuf::from("/tmp/scene.json")),
             fallback: Some(PathBuf::from("/tmp/scene-fallback.svg")),
-            display: Some(SceneLiteDisplayPlan::Image {
+            display: Some(SceneDisplayPlan::Image {
                 source: PathBuf::from("/tmp/scene-snapshot.png"),
                 fit: FitMode::Contain,
                 background: Some("#010203".to_owned()),
@@ -325,12 +330,15 @@ mod tests {
             layer_count: 0,
             layers: Vec::new(),
             bound_properties: Vec::new(),
+            timeline_animation_count: 0,
+            timeline_animated_layer_count: 0,
+            property_binding_count: 0,
             snapshot_time_ms: 0,
             target_max_fps: Some(60),
-            renderer_status: "deterministic-scene-lite-snapshot-ready-for-vulkan-passes",
+            renderer_status: "deterministic-scene-snapshot-ready-for-vulkan-passes",
         };
 
-        let plan = native_vulkan_static_upload_plan(&item).expect("scene-lite image display plan");
+        let plan = native_vulkan_static_upload_plan(&item).expect("scene image display plan");
 
         assert_eq!(plan.source, PathBuf::from("/tmp/scene-snapshot.png"));
         assert_eq!(plan.fit, FitMode::Contain);
@@ -338,18 +346,18 @@ mod tests {
     }
 
     #[test]
-    fn scene_lite_color_display_overrides_default_clear_color() {
+    fn scene_color_display_overrides_default_clear_color() {
         let fallback = NativeVulkanClearColor {
             r: 0.0,
             g: 0.0,
             b: 0.0,
             a: 1.0,
         };
-        let item = NativeVulkanRenderItem::SceneLite {
+        let item = NativeVulkanRenderItem::Scene {
             output_name: "HDMI-A-1".to_owned(),
-            scene_source: Some(PathBuf::from("/tmp/scene-lite.json")),
+            scene_source: Some(PathBuf::from("/tmp/scene.json")),
             fallback: None,
-            display: Some(SceneLiteDisplayPlan::Color {
+            display: Some(SceneDisplayPlan::Color {
                 color: "#102030".to_owned(),
             }),
             display_image: None,
@@ -358,9 +366,12 @@ mod tests {
             layer_count: 0,
             layers: Vec::new(),
             bound_properties: Vec::new(),
+            timeline_animation_count: 0,
+            timeline_animated_layer_count: 0,
+            property_binding_count: 0,
             snapshot_time_ms: 0,
             target_max_fps: Some(60),
-            renderer_status: "deterministic-scene-lite-snapshot-ready-for-vulkan-passes",
+            renderer_status: "deterministic-scene-snapshot-ready-for-vulkan-passes",
         };
 
         let color = native_vulkan_render_item_clear_color(&item, fallback);

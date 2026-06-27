@@ -383,6 +383,9 @@ run_av1_performance_snapshot_attempt() {
   set +e
   env "${runtime_env[@]}" "$release_binary_path" "${args[@]}" >"$attempt_runtime_json" 2>"$attempt_runtime_stderr" &
   runtime_pid=$!
+  # Let the AV1 path finish its Wayland/Vulkan surface connection before the
+  # sampler starts walking /proc and invoking driver tooling.
+  sleep 0.2
   performance_args=(
     --pid "$runtime_pid"
     --label "native-vulkan-av1-ready-prefix-video"

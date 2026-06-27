@@ -1212,40 +1212,40 @@ fn render_sync_telemetry_report(
         render_sync_cache.static_image_cache_eviction_errors
     );
     insert!(
-        "scene_lite_snapshot_cache_entries",
-        render_sync_cache.scene_lite_snapshot_cache_entries
+        "scene_snapshot_cache_entries",
+        render_sync_cache.scene_snapshot_cache_entries
     );
     insert!(
-        "scene_lite_snapshot_cache_max_entries",
-        render_sync_cache.scene_lite_snapshot_cache_max_entries
+        "scene_snapshot_cache_max_entries",
+        render_sync_cache.scene_snapshot_cache_max_entries
     );
     insert!(
-        "scene_lite_snapshot_cache_bytes",
-        render_sync_cache.scene_lite_snapshot_cache_bytes
+        "scene_snapshot_cache_bytes",
+        render_sync_cache.scene_snapshot_cache_bytes
     );
     insert!(
-        "scene_lite_snapshot_cache_max_bytes",
-        render_sync_cache.scene_lite_snapshot_cache_max_bytes
+        "scene_snapshot_cache_max_bytes",
+        render_sync_cache.scene_snapshot_cache_max_bytes
     );
     insert!(
-        "scene_lite_snapshot_cache_generations",
-        render_sync_cache.scene_lite_snapshot_cache_generations
+        "scene_snapshot_cache_generations",
+        render_sync_cache.scene_snapshot_cache_generations
     );
     insert!(
-        "scene_lite_snapshot_cache_reuses",
-        render_sync_cache.scene_lite_snapshot_cache_reuses
+        "scene_snapshot_cache_reuses",
+        render_sync_cache.scene_snapshot_cache_reuses
     );
     insert!(
-        "scene_lite_snapshot_cache_generation_errors",
-        render_sync_cache.scene_lite_snapshot_cache_generation_errors
+        "scene_snapshot_cache_generation_errors",
+        render_sync_cache.scene_snapshot_cache_generation_errors
     );
     insert!(
-        "scene_lite_snapshot_cache_evictions",
-        render_sync_cache.scene_lite_snapshot_cache_evictions
+        "scene_snapshot_cache_evictions",
+        render_sync_cache.scene_snapshot_cache_evictions
     );
     insert!(
-        "scene_lite_snapshot_cache_eviction_errors",
-        render_sync_cache.scene_lite_snapshot_cache_eviction_errors
+        "scene_snapshot_cache_eviction_errors",
+        render_sync_cache.scene_snapshot_cache_eviction_errors
     );
     insert!(
         "planned_video_source_references",
@@ -1284,8 +1284,8 @@ fn render_sync_telemetry_report(
         render_sync_cache.planned_slideshow_image_resources
     );
     insert!(
-        "planned_scene_lite_image_resources",
-        render_sync_cache.planned_scene_lite_image_resources
+        "planned_scene_image_resources",
+        render_sync_cache.planned_scene_image_resources
     );
     insert!(
         "planned_image_resource_references",
@@ -1308,8 +1308,8 @@ fn render_sync_telemetry_report(
         render_sync_cache.planned_slideshow_image_resource_bytes
     );
     insert!(
-        "planned_scene_lite_image_resource_bytes",
-        render_sync_cache.planned_scene_lite_image_resource_bytes
+        "planned_scene_image_resource_bytes",
+        render_sync_cache.planned_scene_image_resource_bytes
     );
     insert!(
         "planned_image_resource_reference_bytes",
@@ -1547,7 +1547,7 @@ fn render_sync_bound_property_key(
         return Vec::new();
     };
     let mut properties = render_sync
-        .scene_lite_plans
+        .scene_plans
         .iter()
         .flat_map(|plan| {
             plan.bound_properties
@@ -1943,39 +1943,39 @@ mod tests {
             json!(536_870_912)
         );
         assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_entries"],
+            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_entries"],
             json!(0)
         );
         assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_max_entries"],
+            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_max_entries"],
             json!(32)
         );
         assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_bytes"],
+            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_bytes"],
             json!(0)
         );
         assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_max_bytes"],
+            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_max_bytes"],
             json!(536_870_912)
         );
         assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_generations"],
+            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_generations"],
             json!(0)
         );
         assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_reuses"],
+            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_reuses"],
             json!(0)
         );
         assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_generation_errors"],
+            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_generation_errors"],
             json!(0)
         );
         assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_evictions"],
+            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_evictions"],
             json!(0)
         );
         assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_lite_snapshot_cache_eviction_errors"],
+            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_eviction_errors"],
             json!(0)
         );
         assert_eq!(
@@ -1991,7 +1991,7 @@ mod tests {
             json!(0)
         );
         assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["planned_scene_lite_image_resources"],
+            response["result"]["telemetry"]["render_sync"]["planned_scene_image_resources"],
             json!(0)
         );
         assert_eq!(
@@ -2185,7 +2185,7 @@ mod tests {
             json!(2)
         );
         assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["planned_scene_lite_image_resources"],
+            response["result"]["telemetry"]["render_sync"]["planned_scene_image_resources"],
             json!(0)
         );
         assert_eq!(
@@ -2271,7 +2271,7 @@ mod tests {
             json!(planned_bytes)
         );
         assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["planned_scene_lite_image_resource_bytes"],
+            response["result"]["telemetry"]["render_sync"]["planned_scene_image_resource_bytes"],
             json!(0)
         );
         assert_eq!(
@@ -2466,9 +2466,9 @@ mod tests {
     }
 
     #[test]
-    fn current_render_sync_cache_invalidates_scene_lite_bound_properties() {
+    fn current_render_sync_cache_invalidates_scene_bound_properties() {
         let package_dir = TestDir::new("gilder-render-sync-scene-property-cache");
-        write_scene_lite_property_package(package_dir.path());
+        write_scene_property_package(package_dir.path());
 
         let mut context = test_context();
         context.paths.cache_dir = package_dir.path().join("cache");
@@ -2478,19 +2478,16 @@ mod tests {
             .set_wallpaper(Some("eDP-1"), package_dir.path().to_string_lossy());
 
         let first = current_render_sync(&mut context);
-        assert_eq!(first.scene_lite_plans.len(), 1);
-        assert_eq!(
-            first.scene_lite_plans[0].bound_properties,
-            vec!["scene_opacity"]
-        );
-        assert!((first.scene_lite_plans[0].layers[0].opacity - 1.0).abs() < f64::EPSILON);
+        assert_eq!(first.scene_plans.len(), 1);
+        assert_eq!(first.scene_plans[0].bound_properties, vec!["scene_opacity"]);
+        assert!((first.scene_plans[0].layers[0].opacity - 1.0).abs() < f64::EPSILON);
 
         context
             .state
             .set_property(Some("eDP-1"), "scene_opacity", json!(0.25));
         let second = current_render_sync(&mut context);
-        assert_eq!(second.scene_lite_plans.len(), 1);
-        assert!((second.scene_lite_plans[0].layers[0].opacity - 0.25).abs() < f64::EPSILON);
+        assert_eq!(second.scene_plans.len(), 1);
+        assert!((second.scene_plans[0].layers[0].opacity - 0.25).abs() < f64::EPSILON);
         assert_ne!(second, first);
 
         let third = current_render_sync(&mut context);
@@ -2653,13 +2650,13 @@ mod tests {
         .expect("failed to write package manifest");
     }
 
-    fn write_scene_lite_property_package(root: &Path) {
+    fn write_scene_property_package(root: &Path) {
         let assets = root.join("assets");
         std::fs::create_dir_all(&assets).expect("failed to create scene package assets");
         std::fs::write(
-            assets.join("scene-lite.json"),
+            assets.join("scene.gscene.json"),
             r##"{
-  "layers": [
+  "nodes": [
     {
       "id": "background",
       "type": "color",
@@ -2670,13 +2667,13 @@ mod tests {
     {
       "property": "scene_opacity",
       "target": "opacity",
-      "layer": "background"
+      "target_node": "background"
     }
   ]
 }
 "##,
         )
-        .expect("failed to write scene-lite document");
+        .expect("failed to write scene document");
         std::fs::write(
             root.join(gilder::core::MANIFEST_FILE),
             r#"{
@@ -2685,10 +2682,10 @@ mod tests {
   "id": "io.github.elelcode.gilder.scene-property-cache-test",
   "version": "0.1.0",
   "title": "Scene Property Cache Test",
-  "kind": "scene-lite",
+  "kind": "scene",
   "entry": {
-    "type": "scene-lite",
-    "source": "assets/scene-lite.json",
+    "type": "scene",
+    "source": "assets/scene.gscene.json",
     "max_fps": 60
   }
 }
@@ -2702,7 +2699,7 @@ mod tests {
             plans: Vec::new(),
             video_plans: Vec::new(),
             slideshow_plans: Vec::new(),
-            scene_lite_plans: Vec::new(),
+            scene_plans: Vec::new(),
             removals: Vec::new(),
             errors: Vec::new(),
             decisions: Vec::new(),

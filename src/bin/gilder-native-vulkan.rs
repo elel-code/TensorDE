@@ -1,9 +1,9 @@
 #[cfg(feature = "native-vulkan-renderer")]
-use gilder::core::{FitMode, SceneLiteLayerKind, SceneLiteTransform};
+use gilder::core::{FitMode, SceneNodeKind, SceneTransform};
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::native_vulkan::NativeVulkanClearColor;
 #[cfg(feature = "native-vulkan-renderer")]
-use gilder::renderer::{SceneLiteDisplayPlan, SceneLiteRenderLayer, SceneLiteWallpaperPlan};
+use gilder::renderer::{SceneDisplayPlan, SceneRenderLayer, SceneWallpaperPlan};
 #[cfg(feature = "native-vulkan-renderer")]
 use std::path::PathBuf;
 
@@ -28,8 +28,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::native_vulkan::native_vulkan_video_playback_frame_count;
     #[cfg(feature = "native-vulkan-video")]
     use gilder::renderer::native_vulkan::{
-        NativeVulkanAudioOutputPolicy, NativeVulkanVideoSessionCodec,
-        native_vulkan_extract_av1_sequence_header_for_vulkanalia,
+        NativeVulkanAudioOutputPolicy, NativeVulkanSceneVideoBridgeOptions,
+        NativeVulkanVideoSessionCodec, native_vulkan_extract_av1_sequence_header_for_vulkanalia,
         native_vulkan_extract_h264_parameter_sets_for_vulkanalia,
         native_vulkan_extract_h265_parameter_sets_for_vulkanalia,
         run_vulkanalia_ready_prefix_video,
@@ -38,7 +38,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         NativeVulkanOptions, NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionSmokeOptions,
         backend_contract, capabilities, native_vulkan_video_duration_playback_frames,
         native_vulkan_video_run_route, probe_vulkan_video_decode, probe_wayland_surface, run_clear,
-        run_scene_lite, run_static_image, wallpaper_type_support_matrix,
+        run_scene, run_static_image, wallpaper_type_support_matrix,
     };
     use gilder::renderer::native_vulkan::{
         NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions,
@@ -69,6 +69,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut scene_path_data = None::<String>;
     let mut scene_stroke_color = None::<String>;
     let mut scene_stroke_width = None::<f64>;
+    let mut scene_video_layer = false;
     let mut scene_snapshot_time_ms = 0u64;
     let mut _muted = true;
     #[cfg(feature = "native-vulkan-video")]
@@ -145,7 +146,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 video_session_options.allocate_video_images = true;
             }
             "--run-clear" => mode = NativeVulkanCliMode::RunClear,
-            "--run-scene-lite" => mode = NativeVulkanCliMode::RunSceneLite,
+            "--run-scene" => mode = NativeVulkanCliMode::RunScene,
             "--run-static" => mode = NativeVulkanCliMode::RunStatic,
             "--run-video" => mode = NativeVulkanCliMode::RunVideo,
             "--json" => mode = NativeVulkanCliMode::All,
@@ -188,6 +189,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--source" => {
                 source = Some(args.next().ok_or("--source requires a path")?.into());
+            }
+            "--scene-video" => {
+                scene_video_layer = true;
             }
             "--poster" => {
                 let _ = args.next().ok_or("--poster requires a path")?;
@@ -397,6 +401,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     target_max_fps: options.target_max_fps,
                     audio_master_clock:
                         NativeVulkanVulkanaliaVideoPresentAudioMasterClock::DISABLED,
+                    clear_color: options.clear_color,
                 }
             )?)
         }
@@ -482,12 +487,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )?)
         }
         NativeVulkanCliMode::RunClear => json!(run_clear(options, duration)?),
-        NativeVulkanCliMode::RunSceneLite => {
+        NativeVulkanCliMode::RunScene => {
             if let Some(source) = source.as_ref() {
                 if !source.is_file() {
-                    return Err(
-                        format!("scene-lite source does not exist: {}", source.display()).into(),
-                    );
+                    return Err(format!("scene source does not exist: {}", source.display()).into());
                 }
             }
             let output_name = options
@@ -496,9 +499,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .clone()
                 .unwrap_or_else(|| "native-vulkan".to_owned());
             let target_max_fps = options.target_max_fps;
-            let plan = scene_lite_cli_plan(
+            let plan = scene_cli_plan(
                 output_name,
                 source,
+                scene_video_layer,
                 fit,
                 background,
                 scene_color,
@@ -511,7 +515,43 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 scene_snapshot_time_ms,
                 target_max_fps,
             )?;
-            json!(run_scene_lite(options, duration, plan)?)
+            let video_bridge = if scene_video_layer {
+                #[cfg(feature = "native-vulkan-video")]
+                {
+                    let route = native_vulkan_video_run_route(
+                        &video_session_options,
+                        ready_prefix_playback_frames,
+                        duration_playback_frames,
+                    );
+                    if !route.is_vulkanalia_ready_prefix() {
+                        return Err(format!(
+                            "--run-scene --scene-video cannot use Vulkanalia ready-prefix route: {}",
+                            route.status
+                        )
+                        .into());
+                    }
+                    Some(NativeVulkanSceneVideoBridgeOptions {
+                        codec: route.codec,
+                        width: route.width,
+                        height: route.height,
+                        bitstream_extract_max_samples: video_session_options
+                            .bitstream_extract_max_samples,
+                        ready_prefix_frames: route.ready_prefix_frames,
+                        playback_frames: route.playback_frames,
+                        audio_clock_probe_requested,
+                        audio_output_mode: audio_output_policy.resolve(_muted),
+                    })
+                }
+                #[cfg(not(feature = "native-vulkan-video"))]
+                {
+                    return Err(
+                        "--run-scene --scene-video requires native-vulkan-video feature".into(),
+                    );
+                }
+            } else {
+                None
+            };
+            json!(run_scene(options, duration, plan, video_bridge)?)
         }
         NativeVulkanCliMode::RunStatic => {
             let source = source.ok_or("--run-static requires --source")?;
@@ -694,9 +734,10 @@ fn parse_color(value: &str) -> Result<NativeVulkanClearColor, Box<dyn std::error
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
-fn scene_lite_cli_plan(
+fn scene_cli_plan(
     output_name: String,
     source: Option<PathBuf>,
+    source_is_video: bool,
     fit: FitMode,
     background: Option<String>,
     color: Option<String>,
@@ -708,12 +749,43 @@ fn scene_lite_cli_plan(
     text_font_size: Option<f64>,
     snapshot_time_ms: u64,
     target_max_fps: Option<u32>,
-) -> Result<SceneLiteWallpaperPlan, Box<dyn std::error::Error>> {
+) -> Result<SceneWallpaperPlan, Box<dyn std::error::Error>> {
     if let Some(source) = source {
-        let mut layer = scene_lite_cli_layer("cli-image", SceneLiteLayerKind::Image);
+        if source_is_video {
+            let mut layers = Vec::new();
+            let display = if let Some(background) = background {
+                let mut background_layer = scene_cli_layer("cli-background", SceneNodeKind::Color);
+                background_layer.color = Some(background);
+                layers.push(background_layer);
+                None
+            } else {
+                Some(SceneDisplayPlan::Color {
+                    color: "#000000".to_owned(),
+                })
+            };
+            let mut layer = scene_cli_layer("cli-video", SceneNodeKind::Video);
+            layer.source = Some(source);
+            layer.fit = fit;
+            layers.push(layer);
+            return Ok(SceneWallpaperPlan {
+                output_name,
+                source: None,
+                fallback: None,
+                manifest_max_fps: None,
+                target_max_fps,
+                snapshot_time_ms,
+                bound_properties: Vec::new(),
+                timeline_animation_count: 0,
+                timeline_animated_layer_count: 0,
+                property_binding_count: 0,
+                display,
+                layers,
+            });
+        }
+        let mut layer = scene_cli_layer("cli-image", SceneNodeKind::Image);
         layer.source = Some(source.clone());
         layer.fit = fit;
-        return Ok(SceneLiteWallpaperPlan {
+        return Ok(SceneWallpaperPlan {
             output_name,
             source: None,
             fallback: Some(source.clone()),
@@ -721,7 +793,10 @@ fn scene_lite_cli_plan(
             target_max_fps,
             snapshot_time_ms,
             bound_properties: Vec::new(),
-            display: Some(SceneLiteDisplayPlan::Image {
+            timeline_animation_count: 0,
+            timeline_animated_layer_count: 0,
+            property_binding_count: 0,
+            display: Some(SceneDisplayPlan::Image {
                 source,
                 fit,
                 background,
@@ -736,13 +811,13 @@ fn scene_lite_cli_plan(
         {
             return Err("--path-data requires --color or --stroke-color".into());
         }
-        let mut layer = scene_lite_cli_layer("cli-path", SceneLiteLayerKind::Path);
+        let mut layer = scene_cli_layer("cli-path", SceneNodeKind::Path);
         layer.path_data = Some(path_data);
         layer.color = color;
         layer.stroke_color = stroke_color;
         layer.stroke_width = stroke_width.or(Some(1.0));
         let background = background.unwrap_or_else(|| "#000000".to_owned());
-        return Ok(SceneLiteWallpaperPlan {
+        return Ok(SceneWallpaperPlan {
             output_name,
             source: None,
             fallback: None,
@@ -750,14 +825,17 @@ fn scene_lite_cli_plan(
             target_max_fps,
             snapshot_time_ms,
             bound_properties: Vec::new(),
-            display: Some(SceneLiteDisplayPlan::Color { color: background }),
+            timeline_animation_count: 0,
+            timeline_animated_layer_count: 0,
+            property_binding_count: 0,
+            display: Some(SceneDisplayPlan::Color { color: background }),
             layers: vec![layer],
         });
     }
 
     if let Some(text) = text {
         let color = text_color.unwrap_or_else(|| "#ffffff".to_owned());
-        let mut layer = scene_lite_cli_layer("cli-text", SceneLiteLayerKind::Text);
+        let mut layer = scene_cli_layer("cli-text", SceneNodeKind::Text);
         layer.text = Some(text);
         layer.color = Some(color);
         layer.font_size = Some(text_font_size.unwrap_or(48.0));
@@ -768,7 +846,7 @@ fn scene_lite_cli_plan(
         layer.transform.anchor_x = 0.0;
         layer.transform.anchor_y = 0.0;
         let background = background.unwrap_or_else(|| "#000000".to_owned());
-        return Ok(SceneLiteWallpaperPlan {
+        return Ok(SceneWallpaperPlan {
             output_name,
             source: None,
             fallback: None,
@@ -776,16 +854,18 @@ fn scene_lite_cli_plan(
             target_max_fps,
             snapshot_time_ms,
             bound_properties: Vec::new(),
-            display: Some(SceneLiteDisplayPlan::Color { color: background }),
+            timeline_animation_count: 0,
+            timeline_animated_layer_count: 0,
+            property_binding_count: 0,
+            display: Some(SceneDisplayPlan::Color { color: background }),
             layers: vec![layer],
         });
     }
 
-    let color =
-        color.ok_or("--run-scene-lite requires --source, --text, or hex --color #rrggbb")?;
-    let mut layer = scene_lite_cli_layer("cli-color", SceneLiteLayerKind::Color);
+    let color = color.ok_or("--run-scene requires --source, --text, or hex --color #rrggbb")?;
+    let mut layer = scene_cli_layer("cli-color", SceneNodeKind::Color);
     layer.color = Some(color.clone());
-    Ok(SceneLiteWallpaperPlan {
+    Ok(SceneWallpaperPlan {
         output_name,
         source: None,
         fallback: None,
@@ -793,14 +873,17 @@ fn scene_lite_cli_plan(
         target_max_fps,
         snapshot_time_ms,
         bound_properties: Vec::new(),
-        display: Some(SceneLiteDisplayPlan::Color { color }),
+        timeline_animation_count: 0,
+        timeline_animated_layer_count: 0,
+        property_binding_count: 0,
+        display: Some(SceneDisplayPlan::Color { color }),
         layers: vec![layer],
     })
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
-fn scene_lite_cli_layer(id: &str, kind: SceneLiteLayerKind) -> SceneLiteRenderLayer {
-    SceneLiteRenderLayer {
+fn scene_cli_layer(id: &str, kind: SceneNodeKind) -> SceneRenderLayer {
+    SceneRenderLayer {
         id: id.to_owned(),
         kind,
         source: None,
@@ -818,7 +901,7 @@ fn scene_lite_cli_layer(id: &str, kind: SceneLiteLayerKind) -> SceneLiteRenderLa
         path_data: None,
         fit: FitMode::Cover,
         opacity: 1.0,
-        transform: SceneLiteTransform::default(),
+        transform: SceneTransform::default(),
     }
 }
 
@@ -856,10 +939,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scene_lite_cli_plan_builds_full_extent_image_layer() {
-        let plan = scene_lite_cli_plan(
+    fn scene_cli_plan_builds_full_extent_image_layer() {
+        let plan = scene_cli_plan(
             "HDMI-A-1".to_owned(),
             Some(PathBuf::from("/tmp/wall.png")),
+            false,
             FitMode::Contain,
             Some("#010203".to_owned()),
             None,
@@ -880,14 +964,14 @@ mod tests {
         assert_eq!(plan.snapshot_time_ms, 2468);
         assert_eq!(
             plan.display,
-            Some(SceneLiteDisplayPlan::Image {
+            Some(SceneDisplayPlan::Image {
                 source: PathBuf::from("/tmp/wall.png"),
                 fit: FitMode::Contain,
                 background: Some("#010203".to_owned()),
             })
         );
         assert_eq!(plan.layers.len(), 1);
-        assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Image);
+        assert_eq!(plan.layers[0].kind, SceneNodeKind::Image);
         assert_eq!(plan.layers[0].source, Some(PathBuf::from("/tmp/wall.png")));
         assert_eq!(plan.layers[0].fit, FitMode::Contain);
         assert_eq!(plan.layers[0].width, None);
@@ -895,10 +979,11 @@ mod tests {
     }
 
     #[test]
-    fn scene_lite_cli_plan_builds_color_layer() {
-        let plan = scene_lite_cli_plan(
+    fn scene_cli_plan_builds_color_layer() {
+        let plan = scene_cli_plan(
             "HDMI-A-1".to_owned(),
             None,
+            false,
             FitMode::Cover,
             None,
             Some("#102030".to_owned()),
@@ -916,20 +1001,21 @@ mod tests {
         assert_eq!(plan.snapshot_time_ms, 1357);
         assert_eq!(
             plan.display,
-            Some(SceneLiteDisplayPlan::Color {
+            Some(SceneDisplayPlan::Color {
                 color: "#102030".to_owned(),
             })
         );
         assert_eq!(plan.layers.len(), 1);
-        assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Color);
+        assert_eq!(plan.layers[0].kind, SceneNodeKind::Color);
         assert_eq!(plan.layers[0].color, Some("#102030".to_owned()));
     }
 
     #[test]
-    fn scene_lite_cli_plan_builds_text_layer() {
-        let plan = scene_lite_cli_plan(
+    fn scene_cli_plan_builds_text_layer() {
+        let plan = scene_cli_plan(
             "HDMI-A-1".to_owned(),
             None,
+            false,
             FitMode::Cover,
             Some("#101010".to_owned()),
             None,
@@ -948,12 +1034,12 @@ mod tests {
         assert_eq!(plan.target_max_fps, Some(30));
         assert_eq!(
             plan.display,
-            Some(SceneLiteDisplayPlan::Color {
+            Some(SceneDisplayPlan::Color {
                 color: "#101010".to_owned(),
             })
         );
         assert_eq!(plan.layers.len(), 1);
-        assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Text);
+        assert_eq!(plan.layers[0].kind, SceneNodeKind::Text);
         assert_eq!(plan.layers[0].text.as_deref(), Some("Native Text"));
         assert_eq!(plan.layers[0].color.as_deref(), Some("#f8fafc"));
         assert_eq!(plan.layers[0].font_size, Some(36.0));
@@ -963,10 +1049,11 @@ mod tests {
     }
 
     #[test]
-    fn scene_lite_cli_plan_builds_stroked_path_layer() {
-        let plan = scene_lite_cli_plan(
+    fn scene_cli_plan_builds_stroked_path_layer() {
+        let plan = scene_cli_plan(
             "HDMI-A-1".to_owned(),
             None,
+            false,
             FitMode::Cover,
             Some("#101010".to_owned()),
             None,
@@ -985,12 +1072,12 @@ mod tests {
         assert_eq!(plan.target_max_fps, Some(30));
         assert_eq!(
             plan.display,
-            Some(SceneLiteDisplayPlan::Color {
+            Some(SceneDisplayPlan::Color {
                 color: "#101010".to_owned(),
             })
         );
         assert_eq!(plan.layers.len(), 1);
-        assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Path);
+        assert_eq!(plan.layers[0].kind, SceneNodeKind::Path);
         assert_eq!(
             plan.layers[0].path_data.as_deref(),
             Some("M0 0 L96 0 L48 64 Z")
@@ -998,6 +1085,38 @@ mod tests {
         assert_eq!(plan.layers[0].color, None);
         assert_eq!(plan.layers[0].stroke_color.as_deref(), Some("#f8fafc"));
         assert_eq!(plan.layers[0].stroke_width, Some(5.0));
+    }
+
+    #[test]
+    fn scene_cli_plan_builds_video_layer() {
+        let plan = scene_cli_plan(
+            "HDMI-A-1".to_owned(),
+            Some(PathBuf::from("/tmp/clip.hevc")),
+            true,
+            FitMode::Contain,
+            Some("#101010".to_owned()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            4321,
+            Some(240),
+        )
+        .expect("video scene plan");
+
+        assert_eq!(plan.snapshot_time_ms, 4321);
+        assert_eq!(plan.target_max_fps, Some(240));
+        assert_eq!(plan.display, None);
+        assert_eq!(plan.layers.len(), 2);
+        assert_eq!(plan.layers[0].kind, SceneNodeKind::Color);
+        assert_eq!(plan.layers[0].color.as_deref(), Some("#101010"));
+        assert_eq!(plan.layers[1].kind, SceneNodeKind::Video);
+        assert_eq!(plan.layers[1].source, Some(PathBuf::from("/tmp/clip.hevc")));
+        assert_eq!(plan.layers[1].fit, FitMode::Contain);
+        assert_eq!(plan.fallback, None);
     }
 }
 
@@ -1016,7 +1135,7 @@ enum NativeVulkanCliMode {
     ProbeVulkanaliaVideoPresentSession,
     ProbeVulkanaliaVideoSession,
     RunClear,
-    RunSceneLite,
+    RunScene,
     RunStatic,
     RunVideo,
     RunVulkanaliaReadyPrefixVideo,
@@ -1025,7 +1144,7 @@ enum NativeVulkanCliMode {
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--run-clear|--run-scene-lite|--run-static|--run-video|--run-vulkanalia-ready-prefix-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--run-clear|--run-scene|--run-static|--run-video|--run-vulkanalia-ready-prefix-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
@@ -1044,13 +1163,13 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --decode-av1-ready-prefix N extends --run-video with N visible AV1 temporal units through Vulkan Video decode/present.\n\
 --playback-frames N repeats the ready-prefix AU window for N direct Vulkan Video decode/present frames.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
---run-scene-lite builds a scene-lite plan from --source, --path-data, --text, or hex --color and runs the unified native scene presenter.\n\
+--run-scene builds a scene plan from --source, --scene-video, --path-data, --text, or hex --color and runs the unified native scene presenter.\n\
 --run-static uses Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
 --run-video uses Vulkanalia ready-prefix video. Without explicit --decode-*-ready-prefix, it uses the codec default ready-prefix window.\n\
 --run-vulkanalia-ready-prefix-video decodes a streaming H.264/H.265 source through Vulkanalia CmdPipelineBarrier2/QueueSubmit2 and prints runtime JSON.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
-         [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb] [--text TEXT] [--text-color #rrggbb] [--font-size PX]\n\
+         [--source PATH] [--scene-video] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb] [--text TEXT] [--text-color #rrggbb] [--font-size PX]\n\
          [--path-data SVG_PATH] [--stroke-color #rrggbb] [--stroke-width PX]\n\
          [--scene-time-ms MS]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\

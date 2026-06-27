@@ -36,7 +36,7 @@ use super::super::{NativeVulkanError, NativeVulkanOptions};
 use super::codec::NativeVulkanVideoSessionCodec;
 use super::demux::NATIVE_VULKAN_PACKET_HANDOFF_FRAMES;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
     pub route: &'static str,
     pub binding: &'static str,
@@ -93,7 +93,7 @@ pub struct NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot {
     pub session: Option<NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanReadyPrefixAudioVideoSyncSnapshot {
     pub route: &'static str,
     pub model: &'static str,
@@ -204,6 +204,7 @@ pub fn run_vulkanalia_ready_prefix_video(
         height,
         target_max_fps: options.target_max_fps,
         audio_master_clock,
+        clear_color: options.clear_color,
     };
     let h264_retained_video_present_decode = h264_streaming_decode_requested.then(|| {
         run_native_vulkan_vulkanalia_h264_streaming_video_present_decode(

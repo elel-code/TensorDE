@@ -1,7 +1,7 @@
 use super::format::{FORMAT_VERSION, MANIFEST_FILE, MANIFEST_TOML_FILE};
 use super::manifest::{Manifest, ManifestError, WallpaperEntry};
 use super::path::PackagePath;
-use super::scene_lite::{SceneLiteDocument, SceneLiteError};
+use super::scene::{SceneDocument, SceneError};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -47,7 +47,7 @@ pub fn load_gwpdir(root: impl AsRef<Path>) -> Result<WallpaperPackage, PackageLo
         .validate()
         .map_err(PackageLoadError::InvalidManifest)?;
     validate_referenced_resources(root, &manifest)?;
-    validate_scene_lite_resources(root, &manifest)?;
+    validate_scene_resources(root, &manifest)?;
 
     Ok(WallpaperPackage {
         root: root.to_path_buf(),
@@ -317,34 +317,30 @@ fn validate_referenced_resources(root: &Path, manifest: &Manifest) -> Result<(),
     Ok(())
 }
 
-fn validate_scene_lite_resources(root: &Path, manifest: &Manifest) -> Result<(), PackageLoadError> {
-    let WallpaperEntry::SceneLite {
-        source: Some(source),
-        ..
-    } = &manifest.entry
-    else {
+fn validate_scene_resources(root: &Path, manifest: &Manifest) -> Result<(), PackageLoadError> {
+    let WallpaperEntry::Scene { source, .. } = &manifest.entry else {
         return Ok(());
     };
     let path = source.join_to(root);
-    let contents = fs::read_to_string(&path).map_err(|source| PackageLoadError::ReadSceneLite {
+    let contents = fs::read_to_string(&path).map_err(|source| PackageLoadError::ReadScene {
         path: path.clone(),
         source,
     })?;
-    let document: SceneLiteDocument =
-        serde_json::from_str(&contents).map_err(|source| PackageLoadError::ParseSceneLite {
+    let document: SceneDocument =
+        serde_json::from_str(&contents).map_err(|source| PackageLoadError::ParseScene {
             path: path.clone(),
             source,
         })?;
     document
         .validate()
-        .map_err(|source| PackageLoadError::InvalidSceneLite {
+        .map_err(|source| PackageLoadError::InvalidScene {
             path: path.clone(),
             source,
         })?;
     for package_path in document.referenced_paths() {
         let path = package_path.join_to(root);
         if !path.exists() {
-            return Err(PackageLoadError::MissingSceneLiteResource { package_path, path });
+            return Err(PackageLoadError::MissingSceneResource { package_path, path });
         }
     }
     Ok(())
@@ -394,23 +390,23 @@ pub enum PackageLoadError {
         source: ManifestParseError,
     },
     InvalidManifest(ManifestError),
-    ReadSceneLite {
+    ReadScene {
         path: PathBuf,
         source: io::Error,
     },
-    ParseSceneLite {
+    ParseScene {
         path: PathBuf,
         source: serde_json::Error,
     },
-    InvalidSceneLite {
+    InvalidScene {
         path: PathBuf,
-        source: SceneLiteError,
+        source: SceneError,
     },
     MissingResource {
         package_path: PackagePath,
         path: PathBuf,
     },
-    MissingSceneLiteResource {
+    MissingSceneResource {
         package_path: PackagePath,
         path: PathBuf,
     },
@@ -466,26 +462,22 @@ impl fmt::Display for PackageLoadError {
                 write!(f, "failed to parse manifest {}: {source}", path.display())
             }
             Self::InvalidManifest(source) => write!(f, "invalid manifest: {source}"),
-            Self::ReadSceneLite { path, source } => {
+            Self::ReadScene { path, source } => {
                 write!(
                     f,
-                    "failed to read scene-lite document {}: {source}",
+                    "failed to read scene document {}: {source}",
                     path.display()
                 )
             }
-            Self::ParseSceneLite { path, source } => {
+            Self::ParseScene { path, source } => {
                 write!(
                     f,
-                    "failed to parse scene-lite document {}: {source}",
+                    "failed to parse scene document {}: {source}",
                     path.display()
                 )
             }
-            Self::InvalidSceneLite { path, source } => {
-                write!(
-                    f,
-                    "invalid scene-lite document {}: {source}",
-                    path.display()
-                )
+            Self::InvalidScene { path, source } => {
+                write!(f, "invalid scene document {}: {source}", path.display())
             }
             Self::MissingResource { package_path, path } => write!(
                 f,
@@ -493,9 +485,9 @@ impl fmt::Display for PackageLoadError {
                 package_path,
                 path.display()
             ),
-            Self::MissingSceneLiteResource { package_path, path } => write!(
+            Self::MissingSceneResource { package_path, path } => write!(
                 f,
-                "scene-lite document references missing resource {} at {}",
+                "scene document references missing resource {} at {}",
                 package_path,
                 path.display()
             ),
@@ -511,13 +503,13 @@ impl std::error::Error for PackageLoadError {
             }
             Self::ParseManifest { source, .. } => Some(source),
             Self::InvalidManifest(source) => Some(source),
-            Self::ReadSceneLite { source, .. } => Some(source),
-            Self::ParseSceneLite { source, .. } => Some(source),
-            Self::InvalidSceneLite { source, .. } => Some(source),
+            Self::ReadScene { source, .. } => Some(source),
+            Self::ParseScene { source, .. } => Some(source),
+            Self::InvalidScene { source, .. } => Some(source),
             Self::NotDirectory(_)
             | Self::MissingManifest { .. }
             | Self::MissingResource { .. }
-            | Self::MissingSceneLiteResource { .. } => None,
+            | Self::MissingSceneResource { .. } => None,
         }
     }
 }
@@ -692,71 +684,100 @@ mod tests {
     }
 
     #[test]
-    fn loads_scene_lite_gwpdir_and_validates_scene_resources() {
-        let package_dir = TestPackageDir::new("scene-lite");
+    fn loads_scene_gwpdir_and_validates_scene_document_resources() {
+        let package_dir = TestPackageDir::new("scene");
         package_dir.write_file(
             MANIFEST_FILE,
             r#"
             {
               "format": "gilder.wallpaper",
               "format_version": 1,
-              "id": "org.example.scene-lite",
+              "id": "org.example.scene",
               "version": "1.0.0",
-              "title": "Scene Lite",
-              "kind": "scene-lite",
+              "title": "Scene",
+              "kind": "scene",
               "entry": {
-                "type": "scene-lite",
-                "source": "assets/scene-lite.json",
+                "type": "scene",
+                "source": "assets/scene.gscene.json",
                 "fallback": "previews/poster.svg"
               }
             }
             "#,
         );
         package_dir.write_file(
-            "assets/scene-lite.json",
+            "assets/scene.gscene.json",
             r##"
             {
               "version": 1,
-              "layers": [
-                { "id": "background", "type": "image", "source": "assets/background.svg" }
-              ]
+              "source": {
+                "metadata": "metadata/source-scene.json"
+              },
+              "resources": [
+                {
+                  "id": "resource-background",
+                  "type": "image",
+                  "source": "assets/background.svg"
+                }
+              ],
+              "nodes": [
+                {
+                  "id": "node-background",
+                  "type": "image",
+                  "resource": "resource-background"
+                }
+              ],
+              "native_lowering": {
+                "fallback": "previews/poster.svg"
+              }
             }
             "##,
         );
         package_dir.write_file("assets/background.svg", "<svg></svg>");
+        package_dir.write_file("metadata/source-scene.json", "{}");
         package_dir.write_file("previews/poster.svg", "<svg></svg>");
 
         let package = load_gwpdir(package_dir.path()).unwrap();
 
-        assert_eq!(package.manifest.id, "org.example.scene-lite");
+        assert_eq!(package.manifest.id, "org.example.scene");
     }
 
     #[test]
-    fn rejects_scene_lite_gwpdir_with_missing_scene_resource() {
-        let package_dir = TestPackageDir::new("scene-lite-missing-resource");
+    fn rejects_scene_gwpdir_with_missing_scene_resource() {
+        let package_dir = TestPackageDir::new("scene-missing-resource");
         package_dir.write_file(
             MANIFEST_FILE,
             r#"
             {
               "format": "gilder.wallpaper",
               "format_version": 1,
-              "id": "org.example.scene-lite-missing",
+              "id": "org.example.scene-missing",
               "version": "1.0.0",
-              "title": "Scene Lite Missing",
-              "kind": "scene-lite",
+              "title": "Scene Missing",
+              "kind": "scene",
               "entry": {
-                "type": "scene-lite",
-                "source": "assets/scene-lite.json"
+                "type": "scene",
+                "source": "assets/scene.gscene.json"
               }
             }
             "#,
         );
         package_dir.write_file(
-            "assets/scene-lite.json",
+            "assets/scene.gscene.json",
             r##"
             {
-              "layers": [
-                { "id": "background", "type": "image", "source": "assets/missing.svg" }
+              "resources": [
+                {
+                  "id": "resource-background",
+                  "type": "image",
+                  "source": "assets/missing.svg"
+                }
+              ],
+              "nodes": [
+                {
+                  "id": "node-background",
+                  "type": "image",
+                  "resource": "resource-background"
+                }
               ]
             }
             "##,
@@ -764,7 +785,7 @@ mod tests {
 
         assert!(matches!(
             load_gwpdir(package_dir.path()),
-            Err(PackageLoadError::MissingSceneLiteResource { .. })
+            Err(PackageLoadError::MissingSceneResource { .. })
         ));
     }
 

@@ -8,6 +8,8 @@ use vulkanalia::vk::{
     self, ExtDescriptorHeapExtensionDeviceCommands, HasBuilder, KhrSwapchainExtensionDeviceCommands,
 };
 
+use crate::renderer::native_vulkan::NativeVulkanClearColor;
+
 use super::descriptor_heap::{
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     VulkanaliaDescriptorHeapImageSamplerResources,
@@ -86,7 +88,7 @@ impl VulkanaliaDecodedImagePresentFrameResources {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
     pub binding: &'static str,
     pub route: &'static str,
@@ -120,6 +122,7 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
     pub swapchain_image_view_count: usize,
     pub target_format: String,
     pub extent: (u32, u32),
+    pub clear_color: [f32; 4],
     pub command_buffer_recorded: bool,
     pub submitted: bool,
     pub presented: bool,
@@ -552,6 +555,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
     sampler: &VulkanaliaDecodedImagePresentSamplerResources,
     pipeline: &VulkanaliaDecodedImagePresentPipelineResources,
     present_timing: VulkanaliaDecodedImagePresentTimingConfig,
+    clear_color: NativeVulkanClearColor,
 ) -> Result<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot, String> {
     let frame_resources = native_vulkan_vulkanalia_create_decoded_image_present_frame_resources(
         device,
@@ -586,6 +590,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
         0,
         None,
         None,
+        clear_color,
     );
     native_vulkan_vulkanalia_destroy_decoded_image_present_frame_resources(device, frame_resources);
     result
@@ -619,6 +624,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
     decode_complete_value: u64,
     queue_host_access_lock: Option<&Mutex<()>>,
     mut after_render_submit_before_present: Option<&mut dyn FnMut(u32) -> Result<(), String>>,
+    clear_color: NativeVulkanClearColor,
 ) -> Result<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot, String> {
     if swapchain_images.is_empty() {
         return Err("decoded image present requires at least one swapchain image".to_owned());
@@ -751,6 +757,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
         &sampler.descriptor_heap,
         pipeline.pipeline_layout,
         pipeline.pipeline,
+        clear_color,
     )?;
     let present_record_command_buffer_micros =
         native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
@@ -876,6 +883,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
         swapchain_image_view_count: frame_resources.swapchain_image_views.len(),
         target_format: format!("{swapchain_format:?}"),
         extent: (swapchain_extent.width, swapchain_extent.height),
+        clear_color: [clear_color.r, clear_color.g, clear_color.b, clear_color.a],
         command_buffer_recorded: true,
         submitted: true,
         presented: true,
@@ -1070,6 +1078,7 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
     descriptor_heap: &VulkanaliaDescriptorHeapImageSamplerResources,
     _pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    clear_color: NativeVulkanClearColor,
 ) -> Result<(), String> {
     unsafe {
         device
@@ -1120,7 +1129,7 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
 
         let clear_value = vk::ClearValue {
             color: vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 1.0],
+                float32: [clear_color.r, clear_color.g, clear_color.b, clear_color.a],
             },
         };
         let color_attachment = vk::RenderingAttachmentInfo::builder()

@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::config::VideoDecoderPolicy;
-use crate::core::{FitMode, SceneLiteLayerKind, SceneLiteTransform, Transition};
+use crate::core::{FitMode, SceneNodeKind, SceneTransform, Transition};
 use crate::renderer::{
-    SceneLiteDisplayPlan, SceneLiteRenderLayer, SceneLiteWallpaperPlan, SlideshowWallpaperPlan,
+    SceneDisplayPlan, SceneRenderLayer, SceneWallpaperPlan, SlideshowWallpaperPlan,
     StaticRenderSyncPlan, StaticWallpaperPlan, VideoWallpaperPlan,
 };
 
@@ -13,7 +13,7 @@ use super::super::NativeVulkanWallpaperType;
 
 const NATIVE_VULKAN_STATIC_RENDERER_STATUS: &str = "vulkanalia-static-sampled-image";
 const NATIVE_VULKAN_STATIC_SCENE_RENDERER_STATUS: &str =
-    "static-image-lowered-to-scene-lite-sampled-image-layer";
+    "static-image-lowered-to-scene-sampled-image-layer";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -50,17 +50,20 @@ pub enum NativeVulkanRenderItem {
         target_max_fps: Option<u32>,
         renderer_status: &'static str,
     },
-    SceneLite {
+    Scene {
         output_name: String,
         scene_source: Option<PathBuf>,
         fallback: Option<PathBuf>,
-        display: Option<SceneLiteDisplayPlan>,
+        display: Option<SceneDisplayPlan>,
         display_image: Option<PathBuf>,
         display_color: Option<String>,
         manifest_max_fps: Option<u32>,
         layer_count: usize,
-        layers: Vec<SceneLiteRenderLayer>,
+        layers: Vec<SceneRenderLayer>,
         bound_properties: Vec<String>,
+        timeline_animation_count: usize,
+        timeline_animated_layer_count: usize,
+        property_binding_count: usize,
         snapshot_time_ms: u64,
         target_max_fps: Option<u32>,
         renderer_status: &'static str,
@@ -74,7 +77,7 @@ impl NativeVulkanRenderItem {
             Self::StaticImage { .. } => NativeVulkanWallpaperType::StaticImage,
             Self::Video { .. } => NativeVulkanWallpaperType::Video,
             Self::Slideshow { .. } => NativeVulkanWallpaperType::Playlist,
-            Self::SceneLite { .. } => NativeVulkanWallpaperType::SceneLite,
+            Self::Scene { .. } => NativeVulkanWallpaperType::Scene,
         }
     }
 }
@@ -89,11 +92,7 @@ pub fn render_items_from_sync_plan(plan: &StaticRenderSyncPlan) -> Vec<NativeVul
                 .iter()
                 .map(native_vulkan_slideshow_item),
         )
-        .chain(
-            plan.scene_lite_plans
-                .iter()
-                .map(native_vulkan_scene_lite_item),
-        )
+        .chain(plan.scene_plans.iter().map(native_vulkan_scene_item))
         .collect()
 }
 
@@ -109,14 +108,14 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_item(
     }
 }
 
-pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_lite_item(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
     plan: &StaticWallpaperPlan,
 ) -> NativeVulkanRenderItem {
-    NativeVulkanRenderItem::SceneLite {
+    NativeVulkanRenderItem::Scene {
         output_name: plan.output_name.clone(),
         scene_source: None,
         fallback: Some(plan.source.clone()),
-        display: Some(SceneLiteDisplayPlan::Image {
+        display: Some(SceneDisplayPlan::Image {
             source: plan.source.clone(),
             fit: plan.fit,
             background: plan.background.clone(),
@@ -125,9 +124,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_lite_item(
         display_color: None,
         manifest_max_fps: None,
         layer_count: 1,
-        layers: vec![SceneLiteRenderLayer {
+        layers: vec![SceneRenderLayer {
             id: "static-image".to_owned(),
-            kind: SceneLiteLayerKind::Image,
+            kind: SceneNodeKind::Image,
             source: Some(plan.source.clone()),
             color: None,
             stroke_color: None,
@@ -143,9 +142,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_lite_item(
             path_data: None,
             fit: plan.fit,
             opacity: 1.0,
-            transform: SceneLiteTransform::default(),
+            transform: SceneTransform::default(),
         }],
         bound_properties: Vec::new(),
+        timeline_animation_count: 0,
+        timeline_animated_layer_count: 0,
+        property_binding_count: 0,
         snapshot_time_ms: 0,
         target_max_fps: None,
         renderer_status: NATIVE_VULKAN_STATIC_SCENE_RENDERER_STATUS,
@@ -195,9 +197,9 @@ mod tests {
             background: Some("#010203".to_owned()),
         };
 
-        let item = native_vulkan_static_scene_lite_item(&plan);
+        let item = native_vulkan_static_scene_item(&plan);
 
-        let NativeVulkanRenderItem::SceneLite {
+        let NativeVulkanRenderItem::Scene {
             output_name,
             scene_source,
             fallback,
@@ -210,7 +212,7 @@ mod tests {
             ..
         } = item
         else {
-            panic!("static image should lower to a scene-lite render item");
+            panic!("static image should lower to a scene render item");
         };
         assert_eq!(output_name, "HDMI-A-1");
         assert_eq!(scene_source, None);
@@ -218,7 +220,7 @@ mod tests {
         assert_eq!(display_image, Some(PathBuf::from("/tmp/static.png")));
         assert_eq!(
             display,
-            Some(SceneLiteDisplayPlan::Image {
+            Some(SceneDisplayPlan::Image {
                 source: PathBuf::from("/tmp/static.png"),
                 fit: FitMode::Contain,
                 background: Some("#010203".to_owned()),
@@ -226,7 +228,7 @@ mod tests {
         );
         assert_eq!(layer_count, 1);
         assert_eq!(layers.len(), 1);
-        assert_eq!(layers[0].kind, SceneLiteLayerKind::Image);
+        assert_eq!(layers[0].kind, SceneNodeKind::Image);
         assert_eq!(layers[0].source, Some(PathBuf::from("/tmp/static.png")));
         assert_eq!(layers[0].fit, FitMode::Contain);
         assert!(bound_properties.is_empty());
@@ -234,28 +236,31 @@ mod tests {
     }
 }
 
-pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_item(
-    plan: &SceneLiteWallpaperPlan,
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_item(
+    plan: &SceneWallpaperPlan,
 ) -> NativeVulkanRenderItem {
-    NativeVulkanRenderItem::SceneLite {
+    NativeVulkanRenderItem::Scene {
         output_name: plan.output_name.clone(),
         scene_source: plan.source.clone(),
         fallback: plan.fallback.clone(),
         display: plan.display.clone(),
         display_image: match &plan.display {
-            Some(SceneLiteDisplayPlan::Image { source, .. }) => Some(source.clone()),
-            Some(SceneLiteDisplayPlan::Color { .. }) | None => None,
+            Some(SceneDisplayPlan::Image { source, .. }) => Some(source.clone()),
+            Some(SceneDisplayPlan::Color { .. }) | None => None,
         },
         display_color: match &plan.display {
-            Some(SceneLiteDisplayPlan::Color { color }) => Some(color.clone()),
-            Some(SceneLiteDisplayPlan::Image { .. }) | None => None,
+            Some(SceneDisplayPlan::Color { color }) => Some(color.clone()),
+            Some(SceneDisplayPlan::Image { .. }) | None => None,
         },
         manifest_max_fps: plan.manifest_max_fps,
         layer_count: plan.layers.len(),
         layers: plan.layers.clone(),
         bound_properties: plan.bound_properties.clone(),
+        timeline_animation_count: plan.timeline_animation_count,
+        timeline_animated_layer_count: plan.timeline_animated_layer_count,
+        property_binding_count: plan.property_binding_count,
         snapshot_time_ms: plan.snapshot_time_ms,
         target_max_fps: plan.target_max_fps,
-        renderer_status: "deterministic-scene-lite-snapshot-ready-for-vulkan-passes",
+        renderer_status: "deterministic-scene-snapshot-ready-for-vulkan-passes",
     }
 }

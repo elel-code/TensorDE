@@ -2,27 +2,27 @@ use std::time::Duration;
 
 use crate::renderer::StaticWallpaperPlan;
 
-use super::super::scene::lite_runtime::native_vulkan_scene_lite_runtime_snapshot;
+use super::super::scene::runtime::native_vulkan_scene_runtime_snapshot;
 use super::super::{
     NativeVulkanClearColor, NativeVulkanError, NativeVulkanOptions,
-    NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions,
-    NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot,
-    run_native_vulkan_vulkanalia_scene_lite_sampled_image_present,
+    NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
+    NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot,
+    run_native_vulkan_vulkanalia_scene_sampled_image_present,
 };
-use super::render_item::native_vulkan_static_scene_lite_item;
+use super::render_item::native_vulkan_static_scene_item;
 
 pub fn run_static_image(
     mut options: NativeVulkanOptions,
     duration: Duration,
     plan: StaticWallpaperPlan,
-) -> Result<NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot, NativeVulkanError> {
+) -> Result<NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot, NativeVulkanError> {
     if options.host.output_name.is_none() {
         options.host.output_name = Some(plan.output_name.clone());
     }
     let clear_color = native_vulkan_static_background_clear_color(plan.background.as_deref());
-    let scene_render_item = native_vulkan_static_scene_lite_item(&plan);
+    let scene_render_item = native_vulkan_static_scene_item(&plan);
     let scene_geometry =
-        native_vulkan_scene_lite_runtime_snapshot(&scene_render_item).and_then(|runtime| {
+        native_vulkan_scene_runtime_snapshot(&scene_render_item).and_then(|runtime| {
             let solid_geometry = runtime.vulkanalia_mixed_solid_quad_geometry_input();
             runtime
                 .vulkanalia_sampled_image_geometry_input()
@@ -35,8 +35,8 @@ pub fn run_static_image(
         None => (source, Some(fit), None, None),
     };
 
-    run_native_vulkan_vulkanalia_scene_lite_sampled_image_present(
-        NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions {
+    run_native_vulkan_vulkanalia_scene_sampled_image_present(
+        NativeVulkanVulkanaliaSceneSampledImagePresentOptions {
             host: options.host,
             wait_configure_roundtrips: options.wait_configure_roundtrips,
             duration,
@@ -55,7 +55,7 @@ pub fn run_static_image_vulkanalia(
     options: NativeVulkanOptions,
     duration: Duration,
     plan: StaticWallpaperPlan,
-) -> Result<NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot, NativeVulkanError> {
+) -> Result<NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot, NativeVulkanError> {
     run_static_image(options, duration, plan)
 }
 

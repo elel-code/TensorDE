@@ -13,6 +13,7 @@ use vulkanalia::vk::{
     self, HasBuilder, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands,
 };
 
+use crate::renderer::native_vulkan::NativeVulkanClearColor;
 use crate::renderer::native_vulkan::NativeVulkanVideoSessionCodec;
 #[cfg(feature = "native-vulkan-video")]
 use crate::renderer::native_vulkan::video::codec_reference::{
@@ -158,6 +159,7 @@ struct NativeVulkanVulkanaliaVideoPresentSessionRuntimeResources {
     swapchain_format: vk::Format,
     swapchain_extent: vk::Extent2D,
     decoded_image_present_timing: VulkanaliaDecodedImagePresentTimingConfig,
+    clear_color: NativeVulkanClearColor,
     present_queue_family_index: u32,
     picture_format: vk::Format,
     session: vk::VideoSessionKHR,
@@ -213,6 +215,7 @@ impl NativeVulkanVulkanaliaVideoPresentSessionRuntimeResources {
             sampler,
             pipeline,
             self.decoded_image_present_timing,
+            self.clear_color,
         )
     }
 
@@ -336,7 +339,7 @@ pub struct NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot {
 }
 
 #[cfg(feature = "native-vulkan-video")]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions {
     pub session: NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
     pub source: PathBuf,
@@ -345,7 +348,7 @@ pub struct NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions {
 }
 
 #[cfg(feature = "native-vulkan-video")]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions {
     pub session: NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
     pub source: PathBuf,
@@ -354,7 +357,7 @@ pub struct NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions {
 }
 
 #[cfg(feature = "native-vulkan-video")]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NativeVulkanVulkanaliaAv1StreamingVideoPresentDecodeOptions {
     pub session: NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
     pub source: PathBuf,
@@ -1221,6 +1224,7 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_ready_pref
         options.target_max_fps,
         options.audio_master_clock,
         decoded_image_present_timing,
+        options.clear_color,
         swapchain_plan_snapshot(&swapchain_plan, swapchain_images.len()),
         streaming_decode,
         requested_present_frame_count,
@@ -1261,6 +1265,7 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_ready_pref
             swapchain_format: swapchain_plan.format.format,
             swapchain_extent: swapchain_plan.extent,
             decoded_image_present_timing,
+            clear_color: options.clear_color,
             present_queue_family_index: selection.present_queue_family_index,
             picture_format: native_vulkan_vulkanalia_video_session_effective_picture_format(
                 options.codec,
@@ -1297,6 +1302,7 @@ fn create_video_present_session_pieces(
     target_max_fps: Option<u32>,
     audio_master_clock: NativeVulkanVulkanaliaVideoPresentAudioMasterClock,
     decoded_image_present_timing: VulkanaliaDecodedImagePresentTimingConfig,
+    clear_color: NativeVulkanClearColor,
     swapchain: super::swapchain::NativeVulkanVulkanaliaSwapchainSnapshot,
     streaming_decode: NativeVulkanVulkanaliaStreamingDecodeRequests,
     requested_present_frame_count: u32,
@@ -1753,6 +1759,7 @@ fn create_video_present_session_pieces(
                                                 frame.decode_complete_value,
                                                 queue_host_access_lock,
                                                 Some(&mut record_layer_present_release),
+                                                clear_color,
                                             )?;
                                         pending_present_frame_slots.push_back(draw.present_frame_slot);
                                         // FFmpeg FrameQueue releases the displayed AVFrame as
@@ -2240,7 +2247,7 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
             present_delta_max_micros: None,
             present_delta_over_6250us_count: 0,
             present_delta_over_8334us_count: 0,
-            slow_frames: Vec::with_capacity(DECODED_IMAGE_PRESENT_SLOW_FRAME_TELEMETRY_LIMIT),
+            slow_frames: Vec::new(),
             submitted_present_frame_count: 0,
             presented_frame_count: 0,
             frame_sleep_count: 0,

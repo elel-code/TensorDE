@@ -8,7 +8,7 @@ use super::features::{
     NativeVulkanVulkanaliaVulkan14PropertySnapshot, native_vulkan_vulkanalia_core_feature_snapshot,
 };
 use super::instance::{
-    NATIVE_VULKAN_VULKANALIA_LOADER_CANDIDATES,
+    NATIVE_VULKAN_VULKANALIA_REQUIRED_LOADER,
     native_vulkan_vulkanalia_create_instance_with_required_extensions,
     native_vulkan_vulkanalia_destroy_instance,
 };
@@ -71,7 +71,7 @@ const ROADMAP_2026_REFERENCE: &str =
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaDeviceProbeTemplate {
     pub binding: &'static str,
-    pub loader_candidates: &'static [&'static str],
+    pub required_loader: &'static str,
     pub requested_api_version: String,
     pub required_instance_extensions: &'static [&'static str],
     pub required_video_device_extensions: &'static [&'static str],
@@ -190,7 +190,7 @@ pub fn native_vulkan_vulkanalia_device_probe_template() -> NativeVulkanVulkanali
 {
     NativeVulkanVulkanaliaDeviceProbeTemplate {
         binding: "vulkanalia",
-        loader_candidates: NATIVE_VULKAN_VULKANALIA_LOADER_CANDIDATES,
+        required_loader: NATIVE_VULKAN_VULKANALIA_REQUIRED_LOADER,
         requested_api_version: Version::V1_4_0.to_string(),
         required_instance_extensions: REQUIRED_INSTANCE_EXTENSIONS,
         required_video_device_extensions: REQUIRED_VIDEO_DEVICE_EXTENSIONS,

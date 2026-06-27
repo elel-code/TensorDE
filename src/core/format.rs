@@ -14,7 +14,7 @@ pub enum WallpaperKind {
     Video,
     Slideshow,
     Web,
-    SceneLite,
+    Scene,
     Shader,
     Playlist,
 }
@@ -26,7 +26,7 @@ impl WallpaperKind {
             Self::Video => "video",
             Self::Slideshow => "slideshow",
             Self::Web => "web",
-            Self::SceneLite => "scene-lite",
+            Self::Scene => "scene",
             Self::Shader => "shader",
             Self::Playlist => "playlist",
         }
@@ -43,7 +43,7 @@ mod tests {
         assert_eq!(WallpaperKind::Video.as_str(), "video");
         assert_eq!(WallpaperKind::Slideshow.as_str(), "slideshow");
         assert_eq!(WallpaperKind::Web.as_str(), "web");
-        assert_eq!(WallpaperKind::SceneLite.as_str(), "scene-lite");
+        assert_eq!(WallpaperKind::Scene.as_str(), "scene");
         assert_eq!(WallpaperKind::Shader.as_str(), "shader");
         assert_eq!(WallpaperKind::Playlist.as_str(), "playlist");
     }

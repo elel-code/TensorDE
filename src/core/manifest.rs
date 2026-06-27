@@ -136,9 +136,8 @@ pub enum WallpaperEntry {
         #[serde(default)]
         max_fps: Option<u32>,
     },
-    SceneLite {
-        #[serde(default)]
-        source: Option<PackagePath>,
+    Scene {
+        source: PackagePath,
         #[serde(default)]
         fallback: Option<PackagePath>,
         #[serde(default)]
@@ -169,7 +168,7 @@ impl WallpaperEntry {
             Self::Video { .. } => WallpaperKind::Video,
             Self::Slideshow { .. } => WallpaperKind::Slideshow,
             Self::Web { .. } => WallpaperKind::Web,
-            Self::SceneLite { .. } => WallpaperKind::SceneLite,
+            Self::Scene { .. } => WallpaperKind::Scene,
             Self::Shader { .. } => WallpaperKind::Shader,
             Self::Playlist { .. } => WallpaperKind::Playlist,
         }
@@ -199,7 +198,7 @@ impl WallpaperEntry {
                 }
                 Ok(())
             }
-            Self::SceneLite { max_fps, .. } => {
+            Self::Scene { max_fps, .. } => {
                 validate_fps(*max_fps)?;
                 Ok(())
             }
@@ -264,12 +263,10 @@ impl WallpaperEntry {
                     paths.push(path.clone());
                 }
             }
-            Self::SceneLite {
+            Self::Scene {
                 source, fallback, ..
             } => {
-                if let Some(path) = source {
-                    paths.push(path.clone());
-                }
+                paths.push(source.clone());
                 if let Some(path) = fallback {
                     paths.push(path.clone());
                 }

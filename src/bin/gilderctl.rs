@@ -555,11 +555,11 @@ fn render_plan_details(sync: &RenderSync) -> BTreeMap<&str, PlanCsvDetails<'_>> 
             },
         );
     }
-    for plan in &sync.scene_lite_plans {
+    for plan in &sync.scene_plans {
         details.insert(
             plan.output_name.as_str(),
             PlanCsvDetails {
-                kind: "scene-lite",
+                kind: "scene",
                 source: plan.csv_source(),
                 fit: plan.csv_fit(),
                 target_max_fps: plan.target_max_fps,
@@ -619,7 +619,7 @@ struct RenderSync {
     #[serde(default)]
     slideshow_plans: Vec<SlideshowPlan>,
     #[serde(default)]
-    scene_lite_plans: Vec<SceneLitePlan>,
+    scene_plans: Vec<ScenePlan>,
     #[serde(default)]
     decisions: Vec<RenderDecision>,
 }
@@ -651,36 +651,36 @@ struct SlideshowPlan {
 }
 
 #[derive(Debug, Deserialize)]
-struct SceneLitePlan {
+struct ScenePlan {
     output_name: String,
     #[serde(default)]
     source: Option<String>,
     #[serde(default)]
     target_max_fps: Option<u32>,
     #[serde(default)]
-    display: Option<SceneLiteDisplay>,
+    display: Option<SceneDisplay>,
 }
 
-impl SceneLitePlan {
+impl ScenePlan {
     fn csv_source(&self) -> &str {
         match &self.display {
-            Some(SceneLiteDisplay::Image { source, .. }) => source.as_str(),
-            Some(SceneLiteDisplay::Color { color }) => color.as_str(),
+            Some(SceneDisplay::Image { source, .. }) => source.as_str(),
+            Some(SceneDisplay::Color { color }) => color.as_str(),
             None => self.source.as_deref().unwrap_or_default(),
         }
     }
 
     fn csv_fit(&self) -> &str {
         match &self.display {
-            Some(SceneLiteDisplay::Image { fit, .. }) => fit.as_str(),
-            Some(SceneLiteDisplay::Color { .. }) | None => "",
+            Some(SceneDisplay::Image { fit, .. }) => fit.as_str(),
+            Some(SceneDisplay::Color { .. }) | None => "",
         }
     }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
-enum SceneLiteDisplay {
+enum SceneDisplay {
     Image { source: String, fit: String },
     Color { color: String },
 }
@@ -949,7 +949,7 @@ mod tests {
 
     #[test]
     fn formats_render_decisions_as_csv() {
-        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[{"output_name":"HDMI-A-1","source":"/tmp/poster.jpg","fit":"contain","background":"#000000"}],"video_plans":[{"output_name":"eDP-1","source":"/tmp/loop.webm","poster":"/tmp/poster.jpg","fit":"cover","loop_playback":true,"muted":true,"manifest_max_fps":60,"target_max_fps":24,"start_offset_ms":0}],"slideshow_plans":[{"output_name":"DP-1","sources":["/tmp/a.jpg","/tmp/b.jpg"],"interval_ms":300000,"transition":"none","fit":"cover","target_max_fps":12}],"scene_lite_plans":[{"output_name":"DP-2","source":"/tmp/scene-lite.json","target_max_fps":30,"display":{"type":"image","source":"/tmp/scene-poster.jpg","fit":"cover","background":"#000000"}}],"decisions":[{"output_name":"eDP-1","action":"render","performance":{"mode":"throttled","max_fps":24,"reason":"battery"},"wallpaper":"/tmp/wall.gwpdir"},{"output_name":"HDMI-A-1","action":"remove","performance":{"mode":"paused","max_fps":null,"reason":"fullscreen"},"wallpaper":null},{"output_name":"DP-1","action":"render","performance":{"mode":"throttled","max_fps":12,"reason":"unfocused"},"wallpaper":"/tmp/slides.gwpdir"},{"output_name":"DP-2","action":"render","performance":{"mode":"throttled","max_fps":30,"reason":"adaptive"},"wallpaper":"/tmp/scene.gwpdir"}]}}}"##;
+        let response = r##"{"jsonrpc":"2.0","id":1,"result":{"render_sync":{"plans":[{"output_name":"HDMI-A-1","source":"/tmp/poster.jpg","fit":"contain","background":"#000000"}],"video_plans":[{"output_name":"eDP-1","source":"/tmp/loop.webm","poster":"/tmp/poster.jpg","fit":"cover","loop_playback":true,"muted":true,"manifest_max_fps":60,"target_max_fps":24,"start_offset_ms":0}],"slideshow_plans":[{"output_name":"DP-1","sources":["/tmp/a.jpg","/tmp/b.jpg"],"interval_ms":300000,"transition":"none","fit":"cover","target_max_fps":12}],"scene_plans":[{"output_name":"DP-2","source":"/tmp/scene.gscene.json","target_max_fps":30,"display":{"type":"image","source":"/tmp/scene-poster.jpg","fit":"cover","background":"#000000"}}],"decisions":[{"output_name":"eDP-1","action":"render","performance":{"mode":"throttled","max_fps":24,"reason":"battery"},"wallpaper":"/tmp/wall.gwpdir"},{"output_name":"HDMI-A-1","action":"remove","performance":{"mode":"paused","max_fps":null,"reason":"fullscreen"},"wallpaper":null},{"output_name":"DP-1","action":"render","performance":{"mode":"throttled","max_fps":12,"reason":"unfocused"},"wallpaper":"/tmp/slides.gwpdir"},{"output_name":"DP-2","action":"render","performance":{"mode":"throttled","max_fps":30,"reason":"adaptive"},"wallpaper":"/tmp/scene.gwpdir"}]}}}"##;
 
         let csv = render_decisions_csv(response).unwrap();
 
@@ -959,7 +959,7 @@ mod tests {
              eDP-1,render,throttled,battery,24,/tmp/wall.gwpdir,video,/tmp/loop.webm,cover,24,true\n\
              HDMI-A-1,remove,paused,fullscreen,,,static-image,/tmp/poster.jpg,contain,,\n\
              DP-1,render,throttled,unfocused,12,/tmp/slides.gwpdir,slideshow,/tmp/a.jpg,cover,12,\n\
-             DP-2,render,throttled,adaptive,30,/tmp/scene.gwpdir,scene-lite,/tmp/scene-poster.jpg,cover,30,\n"
+             DP-2,render,throttled,adaptive,30,/tmp/scene.gwpdir,scene,/tmp/scene-poster.jpg,cover,30,\n"
         );
     }
 

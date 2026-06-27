@@ -4,18 +4,18 @@
 pub mod native_vulkan;
 #[cfg(feature = "native-wayland-renderer")]
 pub mod native_wayland;
-mod scene_lite_display;
+mod scene_display;
 
-use self::scene_lite_display::{
-    scene_lite_background_color, scene_lite_direct_display_color, scene_lite_direct_display_image,
-    scene_lite_layer_is_snapshot_renderable,
+use self::scene_display::{
+    scene_background_color, scene_direct_display_color, scene_direct_display_image,
+    scene_layer_is_snapshot_renderable,
 };
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, PropertySpec, Variant};
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
-    SceneLiteDocument, SceneLiteLayer, SceneLiteLayerKind, SceneLiteTextAlign, SceneLiteTransform,
-    Transition, WallpaperEntry, WallpaperPackage,
+    SceneDocument, SceneNodeKind, SceneTextAlign, SceneTransform, Transition, WallpaperEntry,
+    WallpaperPackage,
 };
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot, PowerState};
 use crate::policy::{PerformanceDecision, RenderMode};
@@ -65,7 +65,7 @@ pub struct SlideshowWallpaperPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SceneLiteWallpaperPlan {
+pub struct SceneWallpaperPlan {
     pub output_name: String,
     pub source: Option<PathBuf>,
     pub fallback: Option<PathBuf>,
@@ -74,13 +74,19 @@ pub struct SceneLiteWallpaperPlan {
     pub snapshot_time_ms: u64,
     #[serde(default)]
     pub bound_properties: Vec<String>,
-    pub display: Option<SceneLiteDisplayPlan>,
-    pub layers: Vec<SceneLiteRenderLayer>,
+    #[serde(default)]
+    pub timeline_animation_count: usize,
+    #[serde(default)]
+    pub timeline_animated_layer_count: usize,
+    #[serde(default)]
+    pub property_binding_count: usize,
+    pub display: Option<SceneDisplayPlan>,
+    pub layers: Vec<SceneRenderLayer>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
-pub enum SceneLiteDisplayPlan {
+pub enum SceneDisplayPlan {
     Image {
         source: PathBuf,
         fit: FitMode,
@@ -92,9 +98,9 @@ pub enum SceneLiteDisplayPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SceneLiteRenderLayer {
+pub struct SceneRenderLayer {
     pub id: String,
-    pub kind: SceneLiteLayerKind,
+    pub kind: SceneNodeKind,
     pub source: Option<PathBuf>,
     pub color: Option<String>,
     pub stroke_color: Option<String>,
@@ -106,23 +112,23 @@ pub struct SceneLiteRenderLayer {
     pub font_size: Option<f64>,
     pub font_family: Option<String>,
     pub font_weight: Option<String>,
-    pub text_align: Option<SceneLiteTextAlign>,
+    pub text_align: Option<SceneTextAlign>,
     pub path_data: Option<String>,
     pub fit: FitMode,
     pub opacity: f64,
-    pub transform: SceneLiteTransform,
+    pub transform: SceneTransform,
 }
 
-impl SceneLiteWallpaperPlan {
+impl SceneWallpaperPlan {
     fn image_sources(&self) -> Vec<&Path> {
         let mut sources = Vec::new();
-        if let Some(SceneLiteDisplayPlan::Image { source, .. }) = &self.display {
+        if let Some(SceneDisplayPlan::Image { source, .. }) = &self.display {
             sources.push(source.as_path());
         }
         for source in self
             .layers
             .iter()
-            .filter(|layer| layer.kind == SceneLiteLayerKind::Image)
+            .filter(|layer| layer.kind == SceneNodeKind::Image)
             .filter_map(|layer| layer.source.as_deref())
         {
             if !sources.contains(&source) {
@@ -139,7 +145,7 @@ pub enum WallpaperRenderPlan {
     StaticImage(StaticWallpaperPlan),
     Video(VideoWallpaperPlan),
     Slideshow(SlideshowWallpaperPlan),
-    SceneLite(SceneLiteWallpaperPlan),
+    Scene(SceneWallpaperPlan),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -150,7 +156,7 @@ pub struct StaticRenderSyncPlan {
     #[serde(default)]
     pub slideshow_plans: Vec<SlideshowWallpaperPlan>,
     #[serde(default)]
-    pub scene_lite_plans: Vec<SceneLiteWallpaperPlan>,
+    pub scene_plans: Vec<SceneWallpaperPlan>,
     pub removals: Vec<String>,
     pub errors: Vec<StaticRenderPlanFailure>,
     #[serde(default)]
@@ -254,23 +260,23 @@ pub struct RenderSyncCacheReport {
     #[serde(default)]
     pub static_image_cache_eviction_errors: u64,
     #[serde(default)]
-    pub scene_lite_snapshot_cache_entries: usize,
+    pub scene_snapshot_cache_entries: usize,
     #[serde(default)]
-    pub scene_lite_snapshot_cache_max_entries: usize,
+    pub scene_snapshot_cache_max_entries: usize,
     #[serde(default)]
-    pub scene_lite_snapshot_cache_bytes: u64,
+    pub scene_snapshot_cache_bytes: u64,
     #[serde(default)]
-    pub scene_lite_snapshot_cache_max_bytes: u64,
+    pub scene_snapshot_cache_max_bytes: u64,
     #[serde(default)]
-    pub scene_lite_snapshot_cache_generations: u64,
+    pub scene_snapshot_cache_generations: u64,
     #[serde(default)]
-    pub scene_lite_snapshot_cache_reuses: u64,
+    pub scene_snapshot_cache_reuses: u64,
     #[serde(default)]
-    pub scene_lite_snapshot_cache_generation_errors: u64,
+    pub scene_snapshot_cache_generation_errors: u64,
     #[serde(default)]
-    pub scene_lite_snapshot_cache_evictions: u64,
+    pub scene_snapshot_cache_evictions: u64,
     #[serde(default)]
-    pub scene_lite_snapshot_cache_eviction_errors: u64,
+    pub scene_snapshot_cache_eviction_errors: u64,
     #[serde(default)]
     pub planned_video_source_references: usize,
     #[serde(default)]
@@ -290,7 +296,7 @@ pub struct RenderSyncCacheReport {
     #[serde(default)]
     pub planned_slideshow_image_resources: usize,
     #[serde(default)]
-    pub planned_scene_lite_image_resources: usize,
+    pub planned_scene_image_resources: usize,
     #[serde(default)]
     pub planned_image_resource_references: usize,
     #[serde(default)]
@@ -302,7 +308,7 @@ pub struct RenderSyncCacheReport {
     #[serde(default)]
     pub planned_slideshow_image_resource_bytes: u64,
     #[serde(default)]
-    pub planned_scene_lite_image_resource_bytes: u64,
+    pub planned_scene_image_resource_bytes: u64,
     #[serde(default)]
     pub planned_image_resource_reference_bytes: u64,
     #[serde(default)]
@@ -423,7 +429,7 @@ fn static_render_sync_plan_inner(
     let mut plans = Vec::new();
     let mut video_plans = Vec::new();
     let mut slideshow_plans = Vec::new();
-    let mut scene_lite_plans = Vec::new();
+    let mut scene_plans = Vec::new();
     let mut removals = Vec::new();
     let mut errors = Vec::new();
     let mut decisions = Vec::new();
@@ -574,13 +580,13 @@ fn static_render_sync_plan_inner(
                     None,
                 )
             }
-            WallpaperEntry::SceneLite { .. } => {
+            WallpaperEntry::Scene { .. } => {
                 let render_properties = effective_output_render_properties(state, &output_state);
-                let mut scene_lite_snapshot_cache = SceneLiteSnapshotCacheContext {
+                let mut scene_snapshot_cache = SceneSnapshotCacheContext {
                     cache_dir,
                     max_entries: cache_config.static_image_cache_max_entries,
                     stats: &mut package_cache.stats,
-                    protected_files: &mut package_cache.protected_scene_lite_snapshot_files,
+                    protected_files: &mut package_cache.protected_scene_snapshot_files,
                 };
                 wallpaper_plan_with_target(
                     &output_name,
@@ -593,7 +599,7 @@ fn static_render_sync_plan_inner(
                     Some(&playlist_context),
                     Some(&render_properties),
                     None,
-                    Some(&mut scene_lite_snapshot_cache),
+                    Some(&mut scene_snapshot_cache),
                 )
             }
             _ => wallpaper_plan_with_target(
@@ -639,14 +645,14 @@ fn static_render_sync_plan_inner(
                 });
                 slideshow_plans.push(plan);
             }
-            Ok(WallpaperRenderPlan::SceneLite(plan)) => {
+            Ok(WallpaperRenderPlan::Scene(plan)) => {
                 decisions.push(StaticRenderOutputDecision {
                     output_name,
                     action: StaticRenderAction::Render,
                     performance,
                     wallpaper: Some(assignment.path.clone()),
                 });
-                scene_lite_plans.push(plan);
+                scene_plans.push(plan);
             }
             Err(err) => {
                 decisions.push(StaticRenderOutputDecision {
@@ -670,13 +676,13 @@ fn static_render_sync_plan_inner(
         &plans,
         &video_plans,
         &slideshow_plans,
-        &scene_lite_plans,
+        &scene_plans,
     );
     StaticRenderSyncPlan {
         plans,
         video_plans,
         slideshow_plans,
-        scene_lite_plans,
+        scene_plans,
         removals,
         errors,
         decisions,
@@ -690,7 +696,7 @@ fn update_render_sync_resource_footprint(
     plans: &[StaticWallpaperPlan],
     video_plans: &[VideoWallpaperPlan],
     slideshow_plans: &[SlideshowWallpaperPlan],
-    scene_lite_plans: &[SceneLiteWallpaperPlan],
+    scene_plans: &[SceneWallpaperPlan],
 ) {
     let video_poster_resources = video_plans
         .iter()
@@ -715,13 +721,13 @@ fn update_render_sync_resource_footprint(
         .flat_map(|plan| plan.sources.iter())
         .map(|source| file_size(source))
         .sum::<u64>();
-    let scene_lite_image_resources = scene_lite_plans
+    let scene_image_resources = scene_plans
         .iter()
         .map(|plan| plan.image_sources().len())
         .sum::<usize>();
-    let scene_lite_image_resource_bytes = scene_lite_plans
+    let scene_image_resource_bytes = scene_plans
         .iter()
-        .flat_map(SceneLiteWallpaperPlan::image_sources)
+        .flat_map(SceneWallpaperPlan::image_sources)
         .map(file_size)
         .sum::<u64>();
     let mut unique_image_resources = BTreeSet::new();
@@ -732,9 +738,9 @@ fn update_render_sync_resource_footprint(
             .flat_map(|plan| plan.sources.iter().cloned()),
     );
     unique_image_resources.extend(
-        scene_lite_plans
+        scene_plans
             .iter()
-            .flat_map(SceneLiteWallpaperPlan::image_sources)
+            .flat_map(SceneWallpaperPlan::image_sources)
             .map(Path::to_path_buf),
     );
     let mut video_source_counts = BTreeMap::new();
@@ -755,20 +761,20 @@ fn update_render_sync_resource_footprint(
     report.planned_static_image_resources = static_image_resources;
     report.planned_video_poster_resources = video_poster_resources;
     report.planned_slideshow_image_resources = slideshow_image_resources;
-    report.planned_scene_lite_image_resources = scene_lite_image_resources;
+    report.planned_scene_image_resources = scene_image_resources;
     report.planned_image_resource_references =
-        plans.len() + slideshow_image_resources + scene_lite_image_resources;
+        plans.len() + slideshow_image_resources + scene_image_resources;
     report.planned_unique_image_resources = unique_image_resources.len();
     report.planned_static_image_resource_bytes = static_image_resource_bytes;
     report.planned_video_poster_resource_bytes = video_poster_resource_bytes;
     report.planned_slideshow_image_resource_bytes = slideshow_image_resource_bytes;
-    report.planned_scene_lite_image_resource_bytes = scene_lite_image_resource_bytes;
+    report.planned_scene_image_resource_bytes = scene_image_resource_bytes;
     report.planned_image_resource_reference_bytes = plans
         .iter()
         .map(|plan| file_size(&plan.source))
         .sum::<u64>()
         + slideshow_image_resource_bytes
-        + scene_lite_image_resource_bytes;
+        + scene_image_resource_bytes;
     report.planned_unique_image_resource_bytes = unique_image_resources
         .iter()
         .map(|source| file_size(source))
@@ -1197,7 +1203,7 @@ fn dynamic_wallpaper_entry(entry: &WallpaperEntry) -> bool {
         | WallpaperEntry::Slideshow { .. }
         | WallpaperEntry::Web { .. }
         | WallpaperEntry::Shader { .. }
-        | WallpaperEntry::SceneLite { .. } => true,
+        | WallpaperEntry::Scene { .. } => true,
         WallpaperEntry::StaticImage { .. } => false,
         WallpaperEntry::Playlist { items, .. } => items
             .iter()
@@ -1295,7 +1301,7 @@ fn wallpaper_plan_with_target(
     playlist_context: Option<&PlaylistRenderContext<'_>>,
     render_properties: Option<&BTreeMap<String, Value>>,
     static_image_cache: Option<&mut StaticImageCacheContext<'_>>,
-    scene_lite_snapshot_cache: Option<&mut SceneLiteSnapshotCacheContext<'_>>,
+    scene_snapshot_cache: Option<&mut SceneSnapshotCacheContext<'_>>,
 ) -> Result<WallpaperRenderPlan, RendererPlanError> {
     let output_name = output_name.into();
     let explicit_variant_source = explicit_variant_source(package, variant_id)?;
@@ -1312,7 +1318,7 @@ fn wallpaper_plan_with_target(
         playlist_context,
         render_properties,
         static_image_cache,
-        scene_lite_snapshot_cache,
+        scene_snapshot_cache,
     )
 }
 
@@ -1329,7 +1335,7 @@ fn wallpaper_entry_plan_with_target(
     playlist_context: Option<&PlaylistRenderContext<'_>>,
     render_properties: Option<&BTreeMap<String, Value>>,
     static_image_cache: Option<&mut StaticImageCacheContext<'_>>,
-    scene_lite_snapshot_cache: Option<&mut SceneLiteSnapshotCacheContext<'_>>,
+    scene_snapshot_cache: Option<&mut SceneSnapshotCacheContext<'_>>,
 ) -> Result<WallpaperRenderPlan, RendererPlanError> {
     let variant_render_target = allow_automatic_variants.then_some(render_target).flatten();
     match entry {
@@ -1424,21 +1430,21 @@ fn wallpaper_entry_plan_with_target(
                 background: Some("#000000".to_owned()),
             }))
         }
-        WallpaperEntry::SceneLite {
+        WallpaperEntry::Scene {
             source,
             fallback,
             max_fps,
-        } => Ok(WallpaperRenderPlan::SceneLite(scene_lite_wallpaper_plan(
+        } => Ok(WallpaperRenderPlan::Scene(scene_wallpaper_plan(
             output_name.to_owned(),
             package,
-            source.as_ref(),
+            source,
             fallback.as_ref(),
             *max_fps,
             performance,
             fit_override,
             render_target,
             render_properties,
-            scene_lite_snapshot_cache,
+            scene_snapshot_cache,
         )?)),
         WallpaperEntry::Playlist { items, selection } => {
             let item = select_playlist_item(items, *selection, playlist_context)
@@ -1456,41 +1462,33 @@ fn wallpaper_entry_plan_with_target(
                 playlist_context,
                 render_properties,
                 static_image_cache,
-                scene_lite_snapshot_cache,
+                scene_snapshot_cache,
             )
         }
     }
 }
 
-fn scene_lite_wallpaper_plan(
+fn scene_wallpaper_plan(
     output_name: String,
     package: &WallpaperPackage,
-    source: Option<&PackagePath>,
+    source: &PackagePath,
     fallback: Option<&PackagePath>,
     manifest_max_fps: Option<u32>,
     performance: &PerformanceDecision,
     fit_override: Option<FitMode>,
     render_target: Option<RenderTargetSize>,
     render_properties: Option<&BTreeMap<String, Value>>,
-    scene_lite_snapshot_cache: Option<&mut SceneLiteSnapshotCacheContext<'_>>,
-) -> Result<SceneLiteWallpaperPlan, RendererPlanError> {
-    let source_path = source.map(|source| source.join_to(&package.root));
-    let document = match source_path.as_ref() {
-        Some(path) => load_scene_lite_document(path)?,
-        None => SceneLiteDocument {
-            version: 1,
-            size: None,
-            layers: Vec::new(),
-            property_bindings: Vec::new(),
-        },
-    };
+    scene_snapshot_cache: Option<&mut SceneSnapshotCacheContext<'_>>,
+) -> Result<SceneWallpaperPlan, RendererPlanError> {
+    let source_path = source.join_to(&package.root);
+    let document = load_scene_document(&source_path)?;
     let snapshot = document.snapshot_at_with_property_resolver(0, |property| {
-        scene_lite_property_value(property, render_properties, &package.manifest.properties)
+        scene_property_value(property, render_properties, &package.manifest.properties)
     });
     let layers = snapshot
         .layers
         .into_iter()
-        .map(|layer| SceneLiteRenderLayer {
+        .map(|layer| SceneRenderLayer {
             id: layer.id,
             kind: layer.kind,
             source: layer.source.map(|source| source.join_to(&package.root)),
@@ -1511,31 +1509,39 @@ fn scene_lite_wallpaper_plan(
             transform: layer.transform,
         })
         .collect::<Vec<_>>();
-    let fallback = fallback.map(|fallback| fallback.join_to(&package.root));
-    let display = scene_lite_display_plan(
-        source_path.as_deref(),
+    let fallback = document
+        .native_lowering
+        .fallback
+        .as_ref()
+        .or(fallback)
+        .map(|fallback| fallback.join_to(&package.root));
+    let display = scene_display_plan(
+        Some(source_path.as_path()),
         &document,
         fallback.as_ref(),
         &layers,
         fit_override,
         render_target,
-        scene_lite_snapshot_cache,
+        scene_snapshot_cache,
     );
 
-    Ok(SceneLiteWallpaperPlan {
+    Ok(SceneWallpaperPlan {
         output_name,
-        source: source_path,
+        source: Some(source_path),
         fallback,
         manifest_max_fps,
         target_max_fps: effective_max_fps(manifest_max_fps, performance.max_fps),
         snapshot_time_ms: snapshot.time_ms,
-        bound_properties: scene_lite_bound_properties(&document),
+        bound_properties: scene_bound_properties(&document),
+        timeline_animation_count: scene_timeline_animation_count(&document),
+        timeline_animated_layer_count: scene_timeline_animated_layer_count(&document),
+        property_binding_count: document.property_bindings.len(),
         display,
         layers,
     })
 }
 
-fn scene_lite_bound_properties(document: &SceneLiteDocument) -> Vec<String> {
+fn scene_bound_properties(document: &SceneDocument) -> Vec<String> {
     let mut properties = BTreeSet::new();
     properties.extend(
         document
@@ -1543,40 +1549,42 @@ fn scene_lite_bound_properties(document: &SceneLiteDocument) -> Vec<String> {
             .iter()
             .map(|binding| binding.property.clone()),
     );
-    for layer in &document.layers {
-        collect_scene_lite_bound_properties(layer, &mut properties);
-    }
     properties.into_iter().collect()
 }
 
-fn collect_scene_lite_bound_properties(layer: &SceneLiteLayer, properties: &mut BTreeSet<String>) {
-    properties.extend(
-        layer
-            .property_bindings
-            .iter()
-            .map(|binding| binding.property.clone()),
-    );
-    for child in &layer.layers {
-        collect_scene_lite_bound_properties(child, properties);
-    }
+fn scene_timeline_animation_count(document: &SceneDocument) -> usize {
+    document
+        .timelines
+        .iter()
+        .map(|timeline| timeline.channels.len())
+        .sum()
 }
 
-fn scene_lite_property_value(
+fn scene_timeline_animated_layer_count(document: &SceneDocument) -> usize {
+    document
+        .timelines
+        .iter()
+        .filter_map(|timeline| timeline.target_node.as_deref())
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn scene_property_value(
     property: &str,
     render_properties: Option<&BTreeMap<String, Value>>,
     manifest_properties: &BTreeMap<String, PropertySpec>,
 ) -> Option<f64> {
     render_properties
         .and_then(|properties| properties.get(property))
-        .and_then(scene_lite_json_property_number)
+        .and_then(scene_json_property_number)
         .or_else(|| {
             manifest_properties
                 .get(property)
-                .and_then(scene_lite_manifest_property_default_number)
+                .and_then(scene_manifest_property_default_number)
         })
 }
 
-fn scene_lite_json_property_number(value: &Value) -> Option<f64> {
+fn scene_json_property_number(value: &Value) -> Option<f64> {
     let number = match value {
         Value::Bool(value) => {
             if *value {
@@ -1592,7 +1600,7 @@ fn scene_lite_json_property_number(value: &Value) -> Option<f64> {
     number.is_finite().then_some(number)
 }
 
-fn scene_lite_manifest_property_default_number(property: &PropertySpec) -> Option<f64> {
+fn scene_manifest_property_default_number(property: &PropertySpec) -> Option<f64> {
     let number = match property {
         PropertySpec::Bool { default } => {
             if (*default)? {
@@ -1610,93 +1618,90 @@ fn scene_lite_manifest_property_default_number(property: &PropertySpec) -> Optio
     number.is_finite().then_some(number)
 }
 
-fn load_scene_lite_document(path: &Path) -> Result<SceneLiteDocument, RendererPlanError> {
+fn load_scene_document(path: &Path) -> Result<SceneDocument, RendererPlanError> {
     let contents = fs::read_to_string(path).map_err(|err| {
         RendererPlanError::PackageLoad(format!(
-            "failed to read scene-lite document {}: {err}",
+            "failed to read scene document {}: {err}",
             path.display()
         ))
     })?;
-    let document: SceneLiteDocument = serde_json::from_str(&contents).map_err(|err| {
+    let document: SceneDocument = serde_json::from_str(&contents).map_err(|err| {
         RendererPlanError::PackageLoad(format!(
-            "failed to parse scene-lite document {}: {err}",
+            "failed to parse scene document {}: {err}",
             path.display()
         ))
     })?;
     document.validate().map_err(|err| {
-        RendererPlanError::PackageLoad(format!(
-            "invalid scene-lite document {}: {err}",
-            path.display()
-        ))
+        RendererPlanError::PackageLoad(format!("invalid scene document {}: {err}", path.display()))
     })?;
     Ok(document)
 }
 
-fn scene_lite_display_plan(
+fn scene_display_plan(
     source_path: Option<&Path>,
-    document: &SceneLiteDocument,
+    document: &SceneDocument,
     fallback: Option<&PathBuf>,
-    layers: &[SceneLiteRenderLayer],
+    layers: &[SceneRenderLayer],
     fit_override: Option<FitMode>,
     render_target: Option<RenderTargetSize>,
-    scene_lite_snapshot_cache: Option<&mut SceneLiteSnapshotCacheContext<'_>>,
-) -> Option<SceneLiteDisplayPlan> {
+    scene_snapshot_cache: Option<&mut SceneSnapshotCacheContext<'_>>,
+) -> Option<SceneDisplayPlan> {
     if let Some(color) =
-        scene_lite_direct_display_color(layers, scene_lite_snapshot_size(document, render_target))
+        scene_direct_display_color(layers, scene_snapshot_size(document, render_target))
     {
-        return Some(SceneLiteDisplayPlan::Color { color });
+        return Some(SceneDisplayPlan::Color { color });
     }
-    if let Some(image) = scene_lite_direct_display_image(layers, fit_override) {
+    if let Some(image) = scene_direct_display_image(layers, fit_override) {
         return Some(image);
     }
-    if let Some(snapshot) = scene_lite_snapshot_display(
+    if let Some(snapshot) = scene_snapshot_display(
         source_path,
         document,
         layers,
         render_target,
-        scene_lite_snapshot_cache,
+        scene_snapshot_cache,
     ) {
         return Some(snapshot);
     }
     if let Some(fallback) = fallback {
-        return Some(SceneLiteDisplayPlan::Image {
+        return Some(SceneDisplayPlan::Image {
             source: fallback.clone(),
             fit: effective_fit(FitMode::Cover, fit_override),
-            background: scene_lite_background_color(layers).or_else(|| Some("#000000".to_owned())),
+            background: scene_background_color(layers).or_else(|| Some("#000000".to_owned())),
         });
     }
     if let Some(layer) = layers.iter().find(|layer| layer.source.is_some()) {
-        return Some(SceneLiteDisplayPlan::Image {
+        return Some(SceneDisplayPlan::Image {
             source: layer.source.clone()?,
             fit: effective_fit(layer.fit, fit_override),
-            background: scene_lite_background_color(layers).or_else(|| Some("#000000".to_owned())),
+            background: scene_background_color(layers).or_else(|| Some("#000000".to_owned())),
         });
     }
-    scene_lite_background_color(layers).map(|color| SceneLiteDisplayPlan::Color { color })
+    scene_background_color(layers).map(|color| SceneDisplayPlan::Color { color })
 }
 
-fn scene_lite_snapshot_display(
+fn scene_snapshot_display(
     source_path: Option<&Path>,
-    document: &SceneLiteDocument,
-    layers: &[SceneLiteRenderLayer],
+    document: &SceneDocument,
+    layers: &[SceneRenderLayer],
     render_target: Option<RenderTargetSize>,
-    scene_lite_snapshot_cache: Option<&mut SceneLiteSnapshotCacheContext<'_>>,
-) -> Option<SceneLiteDisplayPlan> {
-    if !layers.iter().any(scene_lite_layer_is_snapshot_renderable) {
+    scene_snapshot_cache: Option<&mut SceneSnapshotCacheContext<'_>>,
+) -> Option<SceneDisplayPlan> {
+    if !layers.iter().any(scene_layer_is_snapshot_renderable) {
         return None;
     }
-    let context = scene_lite_snapshot_cache?;
-    let size = scene_lite_snapshot_size(document, render_target);
-    let source = cached_scene_lite_snapshot(source_path, document, layers, size, context)?;
-    Some(SceneLiteDisplayPlan::Image {
+    let context = scene_snapshot_cache?;
+    let size = scene_snapshot_size(document, render_target);
+    let source = cached_scene_snapshot(source_path, document, layers, size, context)?;
+    Some(SceneDisplayPlan::Image {
         source,
         fit: FitMode::Cover,
-        background: scene_lite_background_color(layers).or_else(|| Some("#000000".to_owned())),
+        background: scene_background_color(layers).or_else(|| Some("#000000".to_owned())),
     })
 }
 
-fn scene_lite_snapshot_size(
-    document: &SceneLiteDocument,
+fn scene_snapshot_size(
+    document: &SceneDocument,
     render_target: Option<RenderTargetSize>,
 ) -> RenderTargetSize {
     render_target
@@ -1712,44 +1717,44 @@ fn scene_lite_snapshot_size(
         })
 }
 
-fn cached_scene_lite_snapshot(
+fn cached_scene_snapshot(
     source_path: Option<&Path>,
-    document: &SceneLiteDocument,
-    layers: &[SceneLiteRenderLayer],
+    document: &SceneDocument,
+    layers: &[SceneRenderLayer],
     size: RenderTargetSize,
-    context: &mut SceneLiteSnapshotCacheContext<'_>,
+    context: &mut SceneSnapshotCacheContext<'_>,
 ) -> Option<PathBuf> {
     if context.max_entries == 0 {
         return None;
     }
     let cache_path =
-        scene_lite_snapshot_cache_path(context.cache_dir, source_path, document, layers, size);
+        scene_snapshot_cache_path(context.cache_dir, source_path, document, layers, size);
     if is_nonempty_file(&cache_path) {
-        context.stats.scene_lite_snapshot_cache_reuses += 1;
+        context.stats.scene_snapshot_cache_reuses += 1;
         context.protected_files.insert(cache_path.clone());
-        mark_scene_lite_snapshot_cache_used(&cache_path);
+        mark_scene_snapshot_cache_used(&cache_path);
         return Some(cache_path);
     }
 
-    let svg = scene_lite_snapshot_svg(layers, size);
-    if write_scene_lite_snapshot_svg(&cache_path, &svg).is_ok() {
-        context.stats.scene_lite_snapshot_cache_generations += 1;
+    let svg = scene_snapshot_svg(layers, size);
+    if write_scene_snapshot_svg(&cache_path, &svg).is_ok() {
+        context.stats.scene_snapshot_cache_generations += 1;
         context.protected_files.insert(cache_path.clone());
-        mark_scene_lite_snapshot_cache_used(&cache_path);
+        mark_scene_snapshot_cache_used(&cache_path);
         Some(cache_path)
     } else {
-        context.stats.scene_lite_snapshot_cache_generation_errors += 1;
+        context.stats.scene_snapshot_cache_generation_errors += 1;
         let _ = fs::remove_file(&cache_path);
-        let _ = fs::remove_file(scene_lite_snapshot_cache_used_marker(&cache_path));
+        let _ = fs::remove_file(scene_snapshot_cache_used_marker(&cache_path));
         None
     }
 }
 
-fn scene_lite_snapshot_cache_path(
+fn scene_snapshot_cache_path(
     cache_dir: &Path,
     source_path: Option<&Path>,
-    document: &SceneLiteDocument,
-    layers: &[SceneLiteRenderLayer],
+    document: &SceneDocument,
+    layers: &[SceneRenderLayer],
     size: RenderTargetSize,
 ) -> PathBuf {
     let mut hasher = DefaultHasher::new();
@@ -1773,7 +1778,7 @@ fn scene_lite_snapshot_cache_path(
         }
     }
 
-    cache_dir.join("scene-lite-cache").join(format!(
+    cache_dir.join("scene-cache").join(format!(
         "{}x{}-{:016x}.svg",
         size.width,
         size.height,
@@ -1781,22 +1786,21 @@ fn scene_lite_snapshot_cache_path(
     ))
 }
 
-fn write_scene_lite_snapshot_svg(path: &Path, svg: &str) -> Result<(), String> {
+fn write_scene_snapshot_svg(path: &Path, svg: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| {
-            format!("failed to create scene-lite snapshot cache directory: {err}")
-        })?;
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create scene snapshot cache directory: {err}"))?;
     }
     let temporary_path = path.with_extension("svg.tmp");
     let _ = fs::remove_file(&temporary_path);
     fs::write(&temporary_path, svg)
-        .map_err(|err| format!("failed to write scene-lite snapshot: {err}"))?;
+        .map_err(|err| format!("failed to write scene snapshot: {err}"))?;
     fs::rename(&temporary_path, path)
-        .map_err(|err| format!("failed to move scene-lite snapshot into place: {err}"))?;
+        .map_err(|err| format!("failed to move scene snapshot into place: {err}"))?;
     Ok(())
 }
 
-fn scene_lite_snapshot_svg(layers: &[SceneLiteRenderLayer], size: RenderTargetSize) -> String {
+fn scene_snapshot_svg(layers: &[SceneRenderLayer], size: RenderTargetSize) -> String {
     let mut svg = format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{width}" height="{height}" viewBox="0 0 {width} {height}">"#,
         width = size.width,
@@ -1804,87 +1808,87 @@ fn scene_lite_snapshot_svg(layers: &[SceneLiteRenderLayer], size: RenderTargetSi
     );
     for layer in layers.iter().filter(|layer| layer.opacity > 0.0) {
         match layer.kind {
-            SceneLiteLayerKind::Image => {
+            SceneNodeKind::Image => {
                 let Some(source) = &layer.source else {
                     continue;
                 };
                 svg.push_str(&format!(
                     r#"<g opacity="{opacity}" transform="{transform}"><image href="{href}" xlink:href="{href}" x="0" y="0" width="{width}" height="{height}" preserveAspectRatio="{aspect}"/></g>"#,
                     opacity = svg_number(layer.opacity),
-                    transform = xml_attr(&scene_lite_svg_transform(layer.transform, size)),
+                    transform = xml_attr(&scene_svg_transform(layer.transform, size)),
                     href = xml_attr(&file_uri_for_path(source)),
                     width = size.width,
                     height = size.height,
-                    aspect = scene_lite_svg_aspect(layer.fit),
+                    aspect = scene_svg_aspect(layer.fit),
                 ));
             }
-            SceneLiteLayerKind::Color => {
+            SceneNodeKind::Color => {
                 let Some(color) = &layer.color else {
                     continue;
                 };
                 svg.push_str(&format!(
                     r#"<g opacity="{opacity}" transform="{transform}"><rect x="0" y="0" width="{width}" height="{height}" fill="{color}"/></g>"#,
                     opacity = svg_number(layer.opacity),
-                    transform = xml_attr(&scene_lite_svg_transform(layer.transform, size)),
+                    transform = xml_attr(&scene_svg_transform(layer.transform, size)),
                     width = size.width,
                     height = size.height,
                     color = xml_attr(color),
                 ));
             }
-            SceneLiteLayerKind::Rectangle => {
+            SceneNodeKind::Rectangle => {
                 let fill = layer.color.as_deref().unwrap_or("none");
                 let width = layer.width.unwrap_or(f64::from(size.width));
                 let height = layer.height.unwrap_or(f64::from(size.height));
                 svg.push_str(&format!(
                     r#"<g opacity="{opacity}" transform="{transform}"><rect x="0" y="0" width="{width}" height="{height}" rx="{radius}" ry="{radius}" fill="{color}"{stroke}/></g>"#,
                     opacity = svg_number(layer.opacity),
-                    transform = xml_attr(&scene_lite_svg_transform(layer.transform, size)),
+                    transform = xml_attr(&scene_svg_transform(layer.transform, size)),
                     width = svg_number(width),
                     height = svg_number(height),
                     radius = svg_number(layer.corner_radius.unwrap_or(0.0)),
                     color = xml_attr(fill),
-                    stroke = scene_lite_svg_stroke(layer),
+                    stroke = scene_svg_stroke(layer),
                 ));
             }
-            SceneLiteLayerKind::Ellipse => {
+            SceneNodeKind::Ellipse => {
                 let fill = layer.color.as_deref().unwrap_or("none");
                 let width = layer.width.unwrap_or(f64::from(size.width));
                 let height = layer.height.unwrap_or(f64::from(size.height));
                 svg.push_str(&format!(
                     r#"<g opacity="{opacity}" transform="{transform}"><ellipse cx="{cx}" cy="{cy}" rx="{rx}" ry="{ry}" fill="{color}"{stroke}/></g>"#,
                     opacity = svg_number(layer.opacity),
-                    transform = xml_attr(&scene_lite_svg_transform(layer.transform, size)),
+                    transform = xml_attr(&scene_svg_transform(layer.transform, size)),
                     cx = svg_number(width / 2.0),
                     cy = svg_number(height / 2.0),
                     rx = svg_number(width / 2.0),
                     ry = svg_number(height / 2.0),
                     color = xml_attr(fill),
-                    stroke = scene_lite_svg_stroke(layer),
+                    stroke = scene_svg_stroke(layer),
                 ));
             }
-            SceneLiteLayerKind::Text => {
+            SceneNodeKind::Text => {
                 let (Some(text), Some(color)) = (&layer.text, &layer.color) else {
                     continue;
                 };
                 let font_size = layer.font_size.unwrap_or(32.0);
                 let width = layer.width.unwrap_or(f64::from(size.width));
                 let align = layer.text_align.unwrap_or_default();
-                let (x, anchor) = scene_lite_text_anchor(align, width);
+                let (x, anchor) = scene_text_anchor(align, width);
                 svg.push_str(&format!(
                     r#"<g opacity="{opacity}" transform="{transform}"><text x="{x}" y="{y}" fill="{color}" font-size="{font_size}" text-anchor="{anchor}"{font_family}{font_weight}>{text}</text></g>"#,
                     opacity = svg_number(layer.opacity),
-                    transform = xml_attr(&scene_lite_svg_transform(layer.transform, size)),
+                    transform = xml_attr(&scene_svg_transform(layer.transform, size)),
                     x = svg_number(x),
                     y = svg_number(font_size),
                     color = xml_attr(color),
                     font_size = svg_number(font_size),
                     anchor = anchor,
-                    font_family = scene_lite_svg_optional_attr("font-family", layer.font_family.as_deref()),
-                    font_weight = scene_lite_svg_optional_attr("font-weight", layer.font_weight.as_deref()),
+                    font_family = scene_svg_optional_attr("font-family", layer.font_family.as_deref()),
+                    font_weight = scene_svg_optional_attr("font-weight", layer.font_weight.as_deref()),
                     text = xml_text(text),
                 ));
             }
-            SceneLiteLayerKind::Path => {
+            SceneNodeKind::Path => {
                 let Some(path_data) = &layer.path_data else {
                     continue;
                 };
@@ -1892,28 +1896,34 @@ fn scene_lite_snapshot_svg(layers: &[SceneLiteRenderLayer], size: RenderTargetSi
                 svg.push_str(&format!(
                     r#"<g opacity="{opacity}" transform="{transform}"><path d="{path}" fill="{fill}"{stroke}/></g>"#,
                     opacity = svg_number(layer.opacity),
-                    transform = xml_attr(&scene_lite_svg_transform(layer.transform, size)),
+                    transform = xml_attr(&scene_svg_transform(layer.transform, size)),
                     path = xml_attr(path_data),
                     fill = xml_attr(fill),
-                    stroke = scene_lite_svg_stroke(layer),
+                    stroke = scene_svg_stroke(layer),
                 ));
             }
-            SceneLiteLayerKind::Video | SceneLiteLayerKind::Group => {}
+            SceneNodeKind::Video
+            | SceneNodeKind::Group
+            | SceneNodeKind::Shader
+            | SceneNodeKind::ParticleEmitter
+            | SceneNodeKind::AudioResponse
+            | SceneNodeKind::Script
+            | SceneNodeKind::Unknown => {}
         }
     }
     svg.push_str("</svg>");
     svg
 }
 
-fn scene_lite_text_anchor(align: SceneLiteTextAlign, width: f64) -> (f64, &'static str) {
+fn scene_text_anchor(align: SceneTextAlign, width: f64) -> (f64, &'static str) {
     match align {
-        SceneLiteTextAlign::Start => (0.0, "start"),
-        SceneLiteTextAlign::Middle => (width / 2.0, "middle"),
-        SceneLiteTextAlign::End => (width, "end"),
+        SceneTextAlign::Start => (0.0, "start"),
+        SceneTextAlign::Middle => (width / 2.0, "middle"),
+        SceneTextAlign::End => (width, "end"),
     }
 }
 
-fn scene_lite_svg_optional_attr(name: &str, value: Option<&str>) -> String {
+fn scene_svg_optional_attr(name: &str, value: Option<&str>) -> String {
     let Some(value) = value else {
         return String::new();
     };
@@ -1923,7 +1933,7 @@ fn scene_lite_svg_optional_attr(name: &str, value: Option<&str>) -> String {
     format!(r#" {name}="{}""#, xml_attr(value))
 }
 
-fn scene_lite_svg_stroke(layer: &SceneLiteRenderLayer) -> String {
+fn scene_svg_stroke(layer: &SceneRenderLayer) -> String {
     let Some(color) = layer.stroke_color.as_deref() else {
         return String::new();
     };
@@ -1938,7 +1948,7 @@ fn scene_lite_svg_stroke(layer: &SceneLiteRenderLayer) -> String {
     )
 }
 
-fn scene_lite_svg_transform(transform: SceneLiteTransform, size: RenderTargetSize) -> String {
+fn scene_svg_transform(transform: SceneTransform, size: RenderTargetSize) -> String {
     let anchor_x = transform.anchor_x * f64::from(size.width);
     let anchor_y = transform.anchor_y * f64::from(size.height);
     format!(
@@ -1955,7 +1965,7 @@ fn scene_lite_svg_transform(transform: SceneLiteTransform, size: RenderTargetSiz
     )
 }
 
-fn scene_lite_svg_aspect(fit: FitMode) -> &'static str {
+fn scene_svg_aspect(fit: FitMode) -> &'static str {
     match fit {
         FitMode::Cover => "xMidYMid slice",
         FitMode::Contain | FitMode::Center | FitMode::Tile => "xMidYMid meet",
@@ -2052,7 +2062,7 @@ struct StaticImageCacheContext<'a> {
     ffmpeg: Option<&'a Path>,
 }
 
-struct SceneLiteSnapshotCacheContext<'a> {
+struct SceneSnapshotCacheContext<'a> {
     cache_dir: &'a Path,
     max_entries: usize,
     stats: &'a mut RenderSyncCacheReport,
@@ -2533,7 +2543,7 @@ struct RenderPackageCache<'a> {
     package_order: VecDeque<String>,
     protected_archive_dirs: BTreeSet<PathBuf>,
     protected_static_cache_files: BTreeSet<PathBuf>,
-    protected_scene_lite_snapshot_files: BTreeSet<PathBuf>,
+    protected_scene_snapshot_files: BTreeSet<PathBuf>,
     stats: RenderSyncCacheReport,
 }
 
@@ -2551,7 +2561,7 @@ impl<'a> RenderPackageCache<'a> {
             package_order: VecDeque::new(),
             protected_archive_dirs: BTreeSet::new(),
             protected_static_cache_files: BTreeSet::new(),
-            protected_scene_lite_snapshot_files: BTreeSet::new(),
+            protected_scene_snapshot_files: BTreeSet::new(),
             stats: RenderSyncCacheReport::default(),
         }
     }
@@ -2626,11 +2636,11 @@ impl<'a> RenderPackageCache<'a> {
             cache_config.static_image_cache_max_bytes,
             &self.protected_static_cache_files,
         );
-        let scene_lite_snapshot_prune = prune_scene_lite_snapshot_cache(
+        let scene_snapshot_prune = prune_scene_snapshot_cache(
             self.cache_dir,
             cache_config.static_image_cache_max_entries,
             cache_config.static_image_cache_max_bytes,
-            &self.protected_scene_lite_snapshot_files,
+            &self.protected_scene_snapshot_files,
         );
         self.stats.package_cache_entries = self.packages.len();
         self.stats.package_cache_max_entries = cache_config.package_cache_max_entries;
@@ -2646,13 +2656,12 @@ impl<'a> RenderPackageCache<'a> {
         self.stats.static_image_cache_max_bytes = cache_config.static_image_cache_max_bytes;
         self.stats.static_image_cache_evictions = static_image_prune.evictions;
         self.stats.static_image_cache_eviction_errors = static_image_prune.errors;
-        self.stats.scene_lite_snapshot_cache_entries = scene_lite_snapshot_prune.entries_after;
-        self.stats.scene_lite_snapshot_cache_max_entries =
-            cache_config.static_image_cache_max_entries;
-        self.stats.scene_lite_snapshot_cache_bytes = scene_lite_snapshot_prune.bytes_after;
-        self.stats.scene_lite_snapshot_cache_max_bytes = cache_config.static_image_cache_max_bytes;
-        self.stats.scene_lite_snapshot_cache_evictions = scene_lite_snapshot_prune.evictions;
-        self.stats.scene_lite_snapshot_cache_eviction_errors = scene_lite_snapshot_prune.errors;
+        self.stats.scene_snapshot_cache_entries = scene_snapshot_prune.entries_after;
+        self.stats.scene_snapshot_cache_max_entries = cache_config.static_image_cache_max_entries;
+        self.stats.scene_snapshot_cache_bytes = scene_snapshot_prune.bytes_after;
+        self.stats.scene_snapshot_cache_max_bytes = cache_config.static_image_cache_max_bytes;
+        self.stats.scene_snapshot_cache_evictions = scene_snapshot_prune.evictions;
+        self.stats.scene_snapshot_cache_eviction_errors = scene_snapshot_prune.errors;
         self.stats
     }
 
@@ -2717,14 +2726,10 @@ fn package_resource_paths(package: &WallpaperPackage) -> Vec<PackagePath> {
     let Ok(mut paths) = package.manifest.referenced_paths() else {
         return Vec::new();
     };
-    if let WallpaperEntry::SceneLite {
-        source: Some(source),
-        ..
-    } = &package.manifest.entry
-    {
+    if let WallpaperEntry::Scene { source, .. } = &package.manifest.entry {
         let path = source.join_to(&package.root);
         if let Ok(contents) = fs::read_to_string(&path)
-            && let Ok(document) = serde_json::from_str::<SceneLiteDocument>(&contents)
+            && let Ok(document) = serde_json::from_str::<SceneDocument>(&contents)
             && document.validate().is_ok()
         {
             paths.extend(document.referenced_paths());
@@ -2952,14 +2957,14 @@ fn mark_static_image_cache_used(path: &Path) {
     let _ = fs::write(static_image_cache_used_marker(path), b"");
 }
 
-fn prune_scene_lite_snapshot_cache(
+fn prune_scene_snapshot_cache(
     cache_dir: &Path,
     max_entries: usize,
     max_bytes: u64,
     protected_files: &BTreeSet<PathBuf>,
 ) -> RenderCachePruneReport {
-    let snapshot_cache_dir = cache_dir.join("scene-lite-cache");
-    let Ok(mut entries) = scene_lite_snapshot_cache_entries(&snapshot_cache_dir) else {
+    let snapshot_cache_dir = cache_dir.join("scene-cache");
+    let Ok(mut entries) = scene_snapshot_cache_entries(&snapshot_cache_dir) else {
         return RenderCachePruneReport::default();
     };
     entries.sort_by_key(|entry| (entry.last_used, entry.path.clone()));
@@ -2981,7 +2986,7 @@ fn prune_scene_lite_snapshot_cache(
             .position(|candidate| candidate.path == entry.path)
             .map(|index| index + 1)
             .unwrap_or(entries.len());
-        let marker = scene_lite_snapshot_cache_used_marker(&entry.path);
+        let marker = scene_snapshot_cache_used_marker(&entry.path);
         match fs::remove_file(&entry.path) {
             Ok(()) => {
                 evictions += 1;
@@ -2993,7 +2998,7 @@ fn prune_scene_lite_snapshot_cache(
         }
     }
 
-    let (entries_after, bytes_after) = scene_lite_snapshot_cache_entries(&snapshot_cache_dir)
+    let (entries_after, bytes_after) = scene_snapshot_cache_entries(&snapshot_cache_dir)
         .map(|entries| {
             (
                 entries.len(),
@@ -3009,7 +3014,7 @@ fn prune_scene_lite_snapshot_cache(
     }
 }
 
-fn scene_lite_snapshot_cache_entries(
+fn scene_snapshot_cache_entries(
     snapshot_cache_dir: &Path,
 ) -> Result<Vec<RenderCacheEntry>, std::io::Error> {
     let mut entries = Vec::new();
@@ -3021,11 +3026,11 @@ fn scene_lite_snapshot_cache_entries(
     for entry in read_dir {
         let entry = entry?;
         let path = entry.path();
-        if !is_scene_lite_snapshot_cache_file(&path, &entry.file_type()?) {
+        if !is_scene_snapshot_cache_file(&path, &entry.file_type()?) {
             continue;
         }
         entries.push(RenderCacheEntry {
-            last_used: scene_lite_snapshot_cache_last_used(&path),
+            last_used: scene_snapshot_cache_last_used(&path),
             size_bytes: entry.metadata().map(|metadata| metadata.len()).unwrap_or(0),
             path,
         });
@@ -3033,23 +3038,23 @@ fn scene_lite_snapshot_cache_entries(
     Ok(entries)
 }
 
-fn is_scene_lite_snapshot_cache_file(path: &Path, file_type: &fs::FileType) -> bool {
+fn is_scene_snapshot_cache_file(path: &Path, file_type: &fs::FileType) -> bool {
     file_type.is_file() && path.extension().and_then(|extension| extension.to_str()) == Some("svg")
 }
 
-fn scene_lite_snapshot_cache_used_marker(path: &Path) -> PathBuf {
+fn scene_snapshot_cache_used_marker(path: &Path) -> PathBuf {
     path.with_extension("svg.used")
 }
 
-fn scene_lite_snapshot_cache_last_used(path: &Path) -> SystemTime {
-    fs::metadata(scene_lite_snapshot_cache_used_marker(path))
+fn scene_snapshot_cache_last_used(path: &Path) -> SystemTime {
+    fs::metadata(scene_snapshot_cache_used_marker(path))
         .or_else(|_| fs::metadata(path))
         .and_then(|metadata| metadata.modified())
         .unwrap_or(UNIX_EPOCH)
 }
 
-fn mark_scene_lite_snapshot_cache_used(path: &Path) {
-    let _ = fs::write(scene_lite_snapshot_cache_used_marker(path), b"");
+fn mark_scene_snapshot_cache_used(path: &Path) {
+    let _ = fs::write(scene_snapshot_cache_used_marker(path), b"");
 }
 
 #[cfg(test)]
@@ -4675,10 +4680,10 @@ exit 0
     }
 
     #[test]
-    fn scene_lite_fallback_builds_scene_plan() {
-        let test_dir = TestDir::new("gilder-scene-lite-plan");
+    fn scene_fallback_builds_scene_plan() {
+        let test_dir = TestDir::new("gilder-scene-plan");
         let package_dir = test_dir.path.join("scene-demo.gwpdir");
-        write_minimal_scene_lite_gwpdir(&package_dir);
+        write_minimal_scene_gwpdir(&package_dir);
         let mut state = AppState::default();
         state.default_wallpaper = Some(WallpaperAssignment {
             path: package_dir.display().to_string(),
@@ -4694,14 +4699,14 @@ exit 0
         assert!(sync.plans.is_empty());
         assert!(sync.video_plans.is_empty());
         assert!(sync.slideshow_plans.is_empty());
-        assert_eq!(sync.scene_lite_plans.len(), 1);
+        assert_eq!(sync.scene_plans.len(), 1);
         assert!(sync.errors.is_empty());
-        let plan = &sync.scene_lite_plans[0];
+        let plan = &sync.scene_plans[0];
         assert!(
             plan.source
                 .as_ref()
                 .unwrap()
-                .ends_with("assets/scene-lite.json")
+                .ends_with("assets/scene.gscene.json")
         );
         assert!(
             plan.fallback
@@ -4719,29 +4724,29 @@ exit 0
         );
         assert!(matches!(
             &plan.display,
-            Some(SceneLiteDisplayPlan::Image { source, fit, background })
+            Some(SceneDisplayPlan::Image { source, fit, background })
                 if source.ends_with("assets/background.svg")
                     && *fit == FitMode::Cover
                     && background.as_deref() == Some("#000000")
         ));
-        assert_eq!(sync.cache.scene_lite_snapshot_cache_entries, 0);
-        assert_eq!(sync.cache.scene_lite_snapshot_cache_generations, 0);
-        assert_eq!(sync.cache.scene_lite_snapshot_cache_reuses, 0);
-        assert_eq!(sync.cache.scene_lite_snapshot_cache_bytes, 0);
-        assert_eq!(sync.cache.planned_scene_lite_image_resources, 1);
+        assert_eq!(sync.cache.scene_snapshot_cache_entries, 0);
+        assert_eq!(sync.cache.scene_snapshot_cache_generations, 0);
+        assert_eq!(sync.cache.scene_snapshot_cache_reuses, 0);
+        assert_eq!(sync.cache.scene_snapshot_cache_bytes, 0);
+        assert_eq!(sync.cache.planned_scene_image_resources, 1);
         assert_eq!(sync.cache.planned_image_resource_references, 1);
 
         let sync_again = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
 
-        assert_eq!(sync_again.cache.scene_lite_snapshot_cache_generations, 0);
-        assert_eq!(sync_again.cache.scene_lite_snapshot_cache_reuses, 0);
+        assert_eq!(sync_again.cache.scene_snapshot_cache_generations, 0);
+        assert_eq!(sync_again.cache.scene_snapshot_cache_reuses, 0);
     }
 
     #[test]
-    fn scene_lite_color_layer_uses_direct_display_without_snapshot() {
-        let test_dir = TestDir::new("gilder-scene-lite-color-plan");
+    fn scene_color_layer_uses_direct_display_without_snapshot() {
+        let test_dir = TestDir::new("gilder-scene-color-plan");
         let package_dir = test_dir.path.join("scene-color.gwpdir");
-        write_minimal_scene_lite_color_gwpdir(&package_dir);
+        write_minimal_scene_color_gwpdir(&package_dir);
         let mut state = AppState::default();
         state.default_wallpaper = Some(WallpaperAssignment {
             path: package_dir.display().to_string(),
@@ -4755,26 +4760,26 @@ exit 0
         let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
 
         assert!(sync.errors.is_empty());
-        assert_eq!(sync.scene_lite_plans.len(), 1);
-        let plan = &sync.scene_lite_plans[0];
+        assert_eq!(sync.scene_plans.len(), 1);
+        let plan = &sync.scene_plans[0];
         assert!(plan.fallback.is_none());
         assert!(matches!(
             &plan.display,
-            Some(SceneLiteDisplayPlan::Color { color }) if color == "#203040"
+            Some(SceneDisplayPlan::Color { color }) if color == "#203040"
         ));
-        assert_eq!(sync.cache.scene_lite_snapshot_cache_generations, 0);
-        assert_eq!(sync.cache.scene_lite_snapshot_cache_reuses, 0);
-        assert_eq!(sync.cache.scene_lite_snapshot_cache_entries, 0);
-        assert_eq!(sync.cache.scene_lite_snapshot_cache_bytes, 0);
-        assert_eq!(sync.cache.planned_scene_lite_image_resources, 0);
+        assert_eq!(sync.cache.scene_snapshot_cache_generations, 0);
+        assert_eq!(sync.cache.scene_snapshot_cache_reuses, 0);
+        assert_eq!(sync.cache.scene_snapshot_cache_entries, 0);
+        assert_eq!(sync.cache.scene_snapshot_cache_bytes, 0);
+        assert_eq!(sync.cache.planned_scene_image_resources, 0);
         assert_eq!(sync.cache.planned_image_resource_references, 0);
     }
 
     #[test]
-    fn scene_lite_full_rectangle_layer_uses_direct_display_without_snapshot() {
-        let test_dir = TestDir::new("gilder-scene-lite-full-rect-plan");
+    fn scene_full_rectangle_layer_uses_direct_display_without_snapshot() {
+        let test_dir = TestDir::new("gilder-scene-full-rect-plan");
         let package_dir = test_dir.path.join("scene-full-rect.gwpdir");
-        write_minimal_scene_lite_full_rect_gwpdir(&package_dir);
+        write_minimal_scene_full_rect_gwpdir(&package_dir);
         let mut state = AppState::default();
         state.default_wallpaper = Some(WallpaperAssignment {
             path: package_dir.display().to_string(),
@@ -4788,25 +4793,25 @@ exit 0
         let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
 
         assert!(sync.errors.is_empty());
-        assert_eq!(sync.scene_lite_plans.len(), 1);
-        let plan = &sync.scene_lite_plans[0];
+        assert_eq!(sync.scene_plans.len(), 1);
+        let plan = &sync.scene_plans[0];
         assert_eq!(plan.layers.len(), 1);
-        assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Rectangle);
+        assert_eq!(plan.layers[0].kind, SceneNodeKind::Rectangle);
         assert!(matches!(
             &plan.display,
-            Some(SceneLiteDisplayPlan::Color { color }) if color == "#304050"
+            Some(SceneDisplayPlan::Color { color }) if color == "#304050"
         ));
-        assert_eq!(sync.cache.scene_lite_snapshot_cache_generations, 0);
-        assert_eq!(sync.cache.scene_lite_snapshot_cache_entries, 0);
-        assert_eq!(sync.cache.planned_scene_lite_image_resources, 0);
+        assert_eq!(sync.cache.scene_snapshot_cache_generations, 0);
+        assert_eq!(sync.cache.scene_snapshot_cache_entries, 0);
+        assert_eq!(sync.cache.planned_scene_image_resources, 0);
         assert_eq!(sync.cache.planned_image_resource_references, 0);
     }
 
     #[test]
-    fn scene_lite_single_image_layer_uses_direct_display_without_snapshot() {
-        let test_dir = TestDir::new("gilder-scene-lite-image-plan");
+    fn scene_single_image_layer_uses_direct_display_without_snapshot() {
+        let test_dir = TestDir::new("gilder-scene-image-plan");
         let package_dir = test_dir.path.join("scene-image.gwpdir");
-        write_minimal_scene_lite_image_gwpdir(&package_dir);
+        write_minimal_scene_image_gwpdir(&package_dir);
         let mut state = AppState::default();
         state.default_wallpaper = Some(WallpaperAssignment {
             path: package_dir.display().to_string(),
@@ -4820,28 +4825,28 @@ exit 0
         let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
 
         assert!(sync.errors.is_empty());
-        assert_eq!(sync.scene_lite_plans.len(), 1);
-        let plan = &sync.scene_lite_plans[0];
+        assert_eq!(sync.scene_plans.len(), 1);
+        let plan = &sync.scene_plans[0];
         assert_eq!(plan.layers.len(), 1);
-        assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Image);
+        assert_eq!(plan.layers[0].kind, SceneNodeKind::Image);
         assert!(matches!(
             &plan.display,
-            Some(SceneLiteDisplayPlan::Image { source, fit, background })
+            Some(SceneDisplayPlan::Image { source, fit, background })
                 if source.ends_with("assets/image.png")
                     && *fit == FitMode::Contain
                     && background.as_deref() == Some("#000000")
         ));
-        assert_eq!(sync.cache.scene_lite_snapshot_cache_generations, 0);
-        assert_eq!(sync.cache.scene_lite_snapshot_cache_entries, 0);
-        assert_eq!(sync.cache.planned_scene_lite_image_resources, 1);
+        assert_eq!(sync.cache.scene_snapshot_cache_generations, 0);
+        assert_eq!(sync.cache.scene_snapshot_cache_entries, 0);
+        assert_eq!(sync.cache.planned_scene_image_resources, 1);
         assert_eq!(sync.cache.planned_image_resource_references, 1);
     }
 
     #[test]
-    fn scene_lite_shape_layers_build_snapshot() {
-        let test_dir = TestDir::new("gilder-scene-lite-shape-plan");
+    fn scene_shape_layers_build_snapshot() {
+        let test_dir = TestDir::new("gilder-scene-shape-plan");
         let package_dir = test_dir.path.join("scene-shapes.gwpdir");
-        write_minimal_scene_lite_shape_gwpdir(&package_dir);
+        write_minimal_scene_shape_gwpdir(&package_dir);
         let mut state = AppState::default();
         state.default_wallpaper = Some(WallpaperAssignment {
             path: package_dir.display().to_string(),
@@ -4855,16 +4860,16 @@ exit 0
         let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
 
         assert!(sync.errors.is_empty());
-        assert_eq!(sync.scene_lite_plans.len(), 1);
-        let plan = &sync.scene_lite_plans[0];
+        assert_eq!(sync.scene_plans.len(), 1);
+        let plan = &sync.scene_plans[0];
         assert_eq!(plan.layers.len(), 3);
-        assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Rectangle);
+        assert_eq!(plan.layers[0].kind, SceneNodeKind::Rectangle);
         assert_eq!(plan.layers[0].stroke_color.as_deref(), Some("#ffffff"));
-        assert_eq!(plan.layers[1].kind, SceneLiteLayerKind::Ellipse);
-        assert_eq!(plan.layers[2].kind, SceneLiteLayerKind::Rectangle);
+        assert_eq!(plan.layers[1].kind, SceneNodeKind::Ellipse);
+        assert_eq!(plan.layers[2].kind, SceneNodeKind::Rectangle);
         assert_eq!(plan.layers[2].color, None);
         assert_eq!(plan.layers[2].stroke_color.as_deref(), Some("#ffcc00"));
-        let display_source = scene_lite_display_source(plan);
+        let display_source = scene_display_source(plan);
         let snapshot = fs::read_to_string(display_source).unwrap();
         assert!(snapshot.contains("<rect"));
         assert!(snapshot.contains(r##"rx="16""##));
@@ -4873,14 +4878,14 @@ exit 0
         assert!(snapshot.contains(r##"fill="#80ffaa""##));
         assert!(snapshot.contains(r##"stroke="#ffcc00""##));
         assert!(snapshot.contains(r##"fill="none""##));
-        assert_eq!(sync.cache.scene_lite_snapshot_cache_generations, 1);
+        assert_eq!(sync.cache.scene_snapshot_cache_generations, 1);
     }
 
     #[test]
-    fn scene_lite_text_layer_builds_snapshot() {
-        let test_dir = TestDir::new("gilder-scene-lite-text-plan");
+    fn scene_text_layer_builds_snapshot() {
+        let test_dir = TestDir::new("gilder-scene-text-plan");
         let package_dir = test_dir.path.join("scene-text.gwpdir");
-        write_minimal_scene_lite_text_gwpdir(&package_dir);
+        write_minimal_scene_text_gwpdir(&package_dir);
         let mut state = AppState::default();
         state.default_wallpaper = Some(WallpaperAssignment {
             path: package_dir.display().to_string(),
@@ -4894,12 +4899,12 @@ exit 0
         let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
 
         assert!(sync.errors.is_empty());
-        assert_eq!(sync.scene_lite_plans.len(), 1);
-        let plan = &sync.scene_lite_plans[0];
+        assert_eq!(sync.scene_plans.len(), 1);
+        let plan = &sync.scene_plans[0];
         assert_eq!(plan.layers.len(), 1);
-        assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Text);
-        assert_eq!(plan.layers[0].text_align, Some(SceneLiteTextAlign::Middle));
-        let display_source = scene_lite_display_source(plan);
+        assert_eq!(plan.layers[0].kind, SceneNodeKind::Text);
+        assert_eq!(plan.layers[0].text_align, Some(SceneTextAlign::Middle));
+        let display_source = scene_display_source(plan);
         let snapshot = fs::read_to_string(display_source).unwrap();
         assert!(snapshot.contains("<text"));
         assert!(snapshot.contains(r##"font-family="Inter""##));
@@ -4909,10 +4914,10 @@ exit 0
     }
 
     #[test]
-    fn scene_lite_path_layer_builds_snapshot() {
-        let test_dir = TestDir::new("gilder-scene-lite-path-plan");
+    fn scene_path_layer_builds_snapshot() {
+        let test_dir = TestDir::new("gilder-scene-path-plan");
         let package_dir = test_dir.path.join("scene-path.gwpdir");
-        write_minimal_scene_lite_path_gwpdir(&package_dir);
+        write_minimal_scene_path_gwpdir(&package_dir);
         let mut state = AppState::default();
         state.default_wallpaper = Some(WallpaperAssignment {
             path: package_dir.display().to_string(),
@@ -4926,12 +4931,12 @@ exit 0
         let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
 
         assert!(sync.errors.is_empty());
-        assert_eq!(sync.scene_lite_plans.len(), 1);
-        let plan = &sync.scene_lite_plans[0];
+        assert_eq!(sync.scene_plans.len(), 1);
+        let plan = &sync.scene_plans[0];
         assert_eq!(plan.layers.len(), 1);
-        assert_eq!(plan.layers[0].kind, SceneLiteLayerKind::Path);
+        assert_eq!(plan.layers[0].kind, SceneNodeKind::Path);
         assert_eq!(plan.layers[0].stroke_color.as_deref(), Some("#80ffaa"));
-        let display_source = scene_lite_display_source(plan);
+        let display_source = scene_display_source(plan);
         let snapshot = fs::read_to_string(display_source).unwrap();
         assert!(snapshot.contains("<path"));
         assert!(snapshot.contains(r##"fill="none""##));
@@ -4940,11 +4945,11 @@ exit 0
     }
 
     #[test]
-    fn scene_lite_property_binding_applies_effective_output_property() {
-        let test_dir = TestDir::new("gilder-scene-lite-property-binding");
+    fn scene_property_binding_applies_effective_output_property() {
+        let test_dir = TestDir::new("gilder-scene-property-binding");
         let package_dir = test_dir.path.join("scene-property.gwpdir");
         let cache_dir = test_dir.path.join("cache");
-        write_scene_lite_property_binding_gwpdir(&package_dir);
+        write_scene_property_binding_gwpdir(&package_dir);
         let mut state = AppState::default();
         state.default_wallpaper = Some(WallpaperAssignment {
             path: package_dir.display().to_string(),
@@ -4958,11 +4963,14 @@ exit 0
         let default_sync = static_render_sync_plan(&desktop, &state, &cache_dir);
 
         assert!(default_sync.errors.is_empty());
-        assert_eq!(default_sync.scene_lite_plans.len(), 1);
-        let default_plan = &default_sync.scene_lite_plans[0];
+        assert_eq!(default_sync.scene_plans.len(), 1);
+        let default_plan = &default_sync.scene_plans[0];
         assert_eq!(default_plan.bound_properties, vec!["scene_opacity"]);
+        assert_eq!(default_plan.property_binding_count, 1);
+        assert_eq!(default_plan.timeline_animation_count, 0);
+        assert_eq!(default_plan.timeline_animated_layer_count, 0);
         assert!((default_plan.layers[0].opacity - 0.6).abs() < f64::EPSILON);
-        let default_snapshot = scene_lite_display_source(default_plan);
+        let default_snapshot = scene_display_source(default_plan);
         assert!(
             fs::read_to_string(default_snapshot)
                 .unwrap()
@@ -4974,16 +4982,47 @@ exit 0
         let override_sync = static_render_sync_plan(&desktop, &state, &cache_dir);
 
         assert!(override_sync.errors.is_empty());
-        assert_eq!(override_sync.scene_lite_plans.len(), 1);
-        let override_plan = &override_sync.scene_lite_plans[0];
+        assert_eq!(override_sync.scene_plans.len(), 1);
+        let override_plan = &override_sync.scene_plans[0];
+        assert_eq!(override_plan.bound_properties, vec!["scene_opacity"]);
+        assert_eq!(override_plan.property_binding_count, 1);
         assert!((override_plan.layers[0].opacity - 0.25).abs() < f64::EPSILON);
-        let override_snapshot = scene_lite_display_source(override_plan);
+        let override_snapshot = scene_display_source(override_plan);
         assert_ne!(override_snapshot, default_snapshot);
         assert!(
             fs::read_to_string(override_snapshot)
                 .unwrap()
                 .contains(r#"opacity="0.25""#)
         );
+    }
+
+    #[test]
+    fn scene_timeline_animation_metadata_reaches_plan() {
+        let test_dir = TestDir::new("gilder-scene-animation-plan");
+        let package_dir = test_dir.path.join("scene-animation.gwpdir");
+        write_scene_animation_gwpdir(&package_dir);
+        let mut state = AppState::default();
+        state.default_wallpaper = Some(WallpaperAssignment {
+            path: package_dir.display().to_string(),
+            variant: None,
+        });
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput::virtual_output("eDP-1")],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan(&desktop, &state, test_dir.path.join("cache"));
+
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.scene_plans.len(), 1);
+        let plan = &sync.scene_plans[0];
+        assert_eq!(plan.timeline_animation_count, 2);
+        assert_eq!(plan.timeline_animated_layer_count, 1);
+        assert_eq!(plan.property_binding_count, 0);
+        assert_eq!(plan.layers.len(), 1);
+        assert_eq!(plan.layers[0].kind, SceneNodeKind::Rectangle);
+        assert!((plan.layers[0].transform.x - 10.0).abs() < f64::EPSILON);
+        assert!((plan.layers[0].opacity - 0.4).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -5058,7 +5097,7 @@ exit 0
         assert_eq!(sync.plans.len(), 1);
         assert!(sync.video_plans.is_empty());
         assert!(sync.slideshow_plans.is_empty());
-        assert!(sync.scene_lite_plans.is_empty());
+        assert!(sync.scene_plans.is_empty());
         assert!(sync.errors.is_empty());
         assert!(sync.plans[0].source.ends_with("previews/poster.svg"));
         assert_eq!(sync.plans[0].fit, FitMode::Cover);
@@ -5120,7 +5159,7 @@ exit 0
         assert!(sync.plans.is_empty());
         assert!(sync.video_plans.is_empty());
         assert!(sync.slideshow_plans.is_empty());
-        assert!(sync.scene_lite_plans.is_empty());
+        assert!(sync.scene_plans.is_empty());
         assert!(sync.errors.is_empty());
         assert_eq!(sync.removals, vec!["eDP-1"]);
         assert_eq!(sync.decisions[0].action, StaticRenderAction::Remove);
@@ -5168,10 +5207,10 @@ exit 0
     }
 
     #[test]
-    fn pause_dynamic_releases_scene_lite_wallpaper_after_manifest_load() {
-        let test_dir = TestDir::new("gilder-scene-lite-pause-dynamic");
+    fn pause_dynamic_releases_scene_wallpaper_after_manifest_load() {
+        let test_dir = TestDir::new("gilder-scene-pause-dynamic");
         let package_dir = test_dir.path.join("scene-demo.gwpdir");
-        write_minimal_scene_lite_gwpdir(&package_dir);
+        write_minimal_scene_gwpdir(&package_dir);
         let mut config = GilderConfig::default();
         config.performance.hidden = DynamicPausePolicy::PauseDynamic;
         config.default_wallpaper = Some(package_dir.display().to_string());
@@ -5193,7 +5232,7 @@ exit 0
         assert!(sync.plans.is_empty());
         assert!(sync.video_plans.is_empty());
         assert!(sync.slideshow_plans.is_empty());
-        assert!(sync.scene_lite_plans.is_empty());
+        assert!(sync.scene_plans.is_empty());
         assert!(sync.errors.is_empty());
         assert_eq!(sync.removals, vec!["eDP-1"]);
         assert_eq!(sync.decisions[0].action, StaticRenderAction::Remove);
@@ -5258,7 +5297,7 @@ exit 0
         write_minimal_static_variant_gwpdir(&static_package);
         write_minimal_video_gwpdir(&video_package);
         write_minimal_slideshow_gwpdir(&slideshow_package);
-        write_minimal_scene_lite_gwpdir(&scene_package);
+        write_minimal_scene_gwpdir(&scene_package);
         let mut config = GilderConfig::default();
         config.outputs.insert(
             "eDP-1".to_owned(),
@@ -5309,11 +5348,11 @@ exit 0
         assert_eq!(sync.plans.len(), 1);
         assert_eq!(sync.video_plans.len(), 1);
         assert_eq!(sync.slideshow_plans.len(), 1);
-        assert_eq!(sync.scene_lite_plans.len(), 1);
+        assert_eq!(sync.scene_plans.len(), 1);
         assert_eq!(sync.cache.planned_static_image_resources, 1);
         assert_eq!(sync.cache.planned_video_poster_resources, 1);
         assert_eq!(sync.cache.planned_slideshow_image_resources, 2);
-        assert_eq!(sync.cache.planned_scene_lite_image_resources, 1);
+        assert_eq!(sync.cache.planned_scene_image_resources, 1);
         let expected_image_resource_count = 4;
         assert_eq!(
             sync.cache.planned_image_resource_references,
@@ -5336,8 +5375,8 @@ exit 0
                 .unwrap()
                 .len();
         assert!(matches!(
-            &sync.scene_lite_plans[0].display,
-            Some(SceneLiteDisplayPlan::Image { source, .. })
+            &sync.scene_plans[0].display,
+            Some(SceneDisplayPlan::Image { source, .. })
                 if source.ends_with("assets/background.svg")
         ));
         let scene_bytes = fs::metadata(scene_package.join("assets/background.svg"))
@@ -5349,10 +5388,7 @@ exit 0
             sync.cache.planned_slideshow_image_resource_bytes,
             slideshow_bytes
         );
-        assert_eq!(
-            sync.cache.planned_scene_lite_image_resource_bytes,
-            scene_bytes
-        );
+        assert_eq!(sync.cache.planned_scene_image_resource_bytes, scene_bytes);
         let expected_image_resource_bytes = static_bytes + slideshow_bytes + scene_bytes;
         assert_eq!(
             sync.cache.planned_image_resource_reference_bytes,
@@ -6207,17 +6243,24 @@ void main() {}
         .unwrap();
     }
 
-    fn write_minimal_scene_lite_gwpdir(path: &Path) {
+    fn write_minimal_scene_gwpdir(path: &Path) {
         fs::create_dir_all(path.join("assets")).unwrap();
         fs::create_dir_all(path.join("previews")).unwrap();
         fs::write(
-            path.join("assets/scene-lite.json"),
+            path.join("assets/scene.gscene.json"),
             br##"{
-              "layers": [
+              "resources": [
+                {
+                  "id": "background-resource",
+                  "type": "image",
+                  "source": "assets/background.svg"
+                }
+              ],
+              "nodes": [
                 {
                   "id": "background",
                   "type": "image",
-                  "source": "assets/background.svg",
+                  "resource": "background-resource",
                   "fit": "cover"
                 }
               ]
@@ -6232,13 +6275,13 @@ void main() {}
             "id": "org.example.scene-demo",
             "version": "1.0.0",
             "title": "Scene Demo",
-            "kind": "scene-lite",
+            "kind": "scene",
             "preview": {
                 "poster": "previews/poster.svg"
             },
             "entry": {
-                "type": "scene-lite",
-                "source": "assets/scene-lite.json",
+                "type": "scene",
+                "source": "assets/scene.gscene.json",
                 "fallback": "previews/poster.svg",
                 "max_fps": 60
             }
@@ -6250,12 +6293,12 @@ void main() {}
         .unwrap();
     }
 
-    fn write_minimal_scene_lite_color_gwpdir(path: &Path) {
+    fn write_minimal_scene_color_gwpdir(path: &Path) {
         fs::create_dir_all(path.join("assets")).unwrap();
         fs::write(
-            path.join("assets/scene-lite.json"),
+            path.join("assets/scene.gscene.json"),
             br##"{
-              "layers": [
+              "nodes": [
                 {
                   "id": "background",
                   "type": "color",
@@ -6271,10 +6314,10 @@ void main() {}
             "id": "org.example.scene-color",
             "version": "1.0.0",
             "title": "Scene Color",
-            "kind": "scene-lite",
+            "kind": "scene",
             "entry": {
-                "type": "scene-lite",
-                "source": "assets/scene-lite.json",
+                "type": "scene",
+                "source": "assets/scene.gscene.json",
                 "max_fps": 60
             }
         });
@@ -6285,13 +6328,13 @@ void main() {}
         .unwrap();
     }
 
-    fn write_minimal_scene_lite_full_rect_gwpdir(path: &Path) {
+    fn write_minimal_scene_full_rect_gwpdir(path: &Path) {
         fs::create_dir_all(path.join("assets")).unwrap();
         fs::write(
-            path.join("assets/scene-lite.json"),
+            path.join("assets/scene.gscene.json"),
             br##"{
               "size": { "width": 1280, "height": 720 },
-              "layers": [
+              "nodes": [
                 {
                   "id": "background",
                   "type": "rectangle",
@@ -6309,10 +6352,10 @@ void main() {}
             "id": "org.example.scene-full-rect",
             "version": "1.0.0",
             "title": "Scene Full Rect",
-            "kind": "scene-lite",
+            "kind": "scene",
             "entry": {
-                "type": "scene-lite",
-                "source": "assets/scene-lite.json",
+                "type": "scene",
+                "source": "assets/scene.gscene.json",
                 "max_fps": 60
             }
         });
@@ -6323,18 +6366,25 @@ void main() {}
         .unwrap();
     }
 
-    fn write_minimal_scene_lite_image_gwpdir(path: &Path) {
+    fn write_minimal_scene_image_gwpdir(path: &Path) {
         fs::create_dir_all(path.join("assets")).unwrap();
         fs::write(path.join("assets/image.png"), b"image-bytes").unwrap();
         fs::write(
-            path.join("assets/scene-lite.json"),
+            path.join("assets/scene.gscene.json"),
             br##"{
               "size": { "width": 1280, "height": 720 },
-              "layers": [
+              "resources": [
+                {
+                  "id": "image-resource",
+                  "type": "image",
+                  "source": "assets/image.png"
+                }
+              ],
+              "nodes": [
                 {
                   "id": "image",
                   "type": "image",
-                  "source": "assets/image.png",
+                  "resource": "image-resource",
                   "fit": "contain"
                 }
               ]
@@ -6347,10 +6397,10 @@ void main() {}
             "id": "org.example.scene-image",
             "version": "1.0.0",
             "title": "Scene Image",
-            "kind": "scene-lite",
+            "kind": "scene",
             "entry": {
-                "type": "scene-lite",
-                "source": "assets/scene-lite.json",
+                "type": "scene",
+                "source": "assets/scene.gscene.json",
                 "max_fps": 60
             }
         });
@@ -6361,13 +6411,13 @@ void main() {}
         .unwrap();
     }
 
-    fn write_minimal_scene_lite_shape_gwpdir(path: &Path) {
+    fn write_minimal_scene_shape_gwpdir(path: &Path) {
         fs::create_dir_all(path.join("assets")).unwrap();
         fs::write(
-            path.join("assets/scene-lite.json"),
+            path.join("assets/scene.gscene.json"),
             br##"{
               "size": { "width": 1280, "height": 720 },
-              "layers": [
+              "nodes": [
                 {
                   "id": "panel",
                   "type": "rectangle",
@@ -6407,10 +6457,10 @@ void main() {}
             "id": "org.example.scene-shapes",
             "version": "1.0.0",
             "title": "Scene Shapes",
-            "kind": "scene-lite",
+            "kind": "scene",
             "entry": {
-                "type": "scene-lite",
-                "source": "assets/scene-lite.json",
+                "type": "scene",
+                "source": "assets/scene.gscene.json",
                 "max_fps": 60
             }
         });
@@ -6421,13 +6471,13 @@ void main() {}
         .unwrap();
     }
 
-    fn write_minimal_scene_lite_text_gwpdir(path: &Path) {
+    fn write_minimal_scene_text_gwpdir(path: &Path) {
         fs::create_dir_all(path.join("assets")).unwrap();
         fs::write(
-            path.join("assets/scene-lite.json"),
+            path.join("assets/scene.gscene.json"),
             br##"{
               "size": { "width": 1280, "height": 720 },
-              "layers": [
+              "nodes": [
                 {
                   "id": "title",
                   "type": "text",
@@ -6450,10 +6500,10 @@ void main() {}
             "id": "org.example.scene-text",
             "version": "1.0.0",
             "title": "Scene Text",
-            "kind": "scene-lite",
+            "kind": "scene",
             "entry": {
-                "type": "scene-lite",
-                "source": "assets/scene-lite.json",
+                "type": "scene",
+                "source": "assets/scene.gscene.json",
                 "max_fps": 60
             }
         });
@@ -6464,13 +6514,13 @@ void main() {}
         .unwrap();
     }
 
-    fn write_minimal_scene_lite_path_gwpdir(path: &Path) {
+    fn write_minimal_scene_path_gwpdir(path: &Path) {
         fs::create_dir_all(path.join("assets")).unwrap();
         fs::write(
-            path.join("assets/scene-lite.json"),
+            path.join("assets/scene.gscene.json"),
             br##"{
               "size": { "width": 1280, "height": 720 },
-              "layers": [
+              "nodes": [
                 {
                   "id": "wave",
                   "type": "path",
@@ -6489,10 +6539,10 @@ void main() {}
             "id": "org.example.scene-path",
             "version": "1.0.0",
             "title": "Scene Path",
-            "kind": "scene-lite",
+            "kind": "scene",
             "entry": {
-                "type": "scene-lite",
-                "source": "assets/scene-lite.json",
+                "type": "scene",
+                "source": "assets/scene.gscene.json",
                 "max_fps": 60
             }
         });
@@ -6503,12 +6553,12 @@ void main() {}
         .unwrap();
     }
 
-    fn write_scene_lite_property_binding_gwpdir(path: &Path) {
+    fn write_scene_property_binding_gwpdir(path: &Path) {
         fs::create_dir_all(path.join("assets")).unwrap();
         fs::write(
-            path.join("assets/scene-lite.json"),
+            path.join("assets/scene.gscene.json"),
             br##"{
-              "layers": [
+              "nodes": [
                 {
                   "id": "background",
                   "type": "color",
@@ -6519,7 +6569,7 @@ void main() {}
                 {
                   "property": "scene_opacity",
                   "target": "opacity",
-                  "layer": "background"
+                  "target_node": "background"
                 }
               ]
             }"##,
@@ -6531,7 +6581,7 @@ void main() {}
             "id": "org.example.scene-property",
             "version": "1.0.0",
             "title": "Scene Property",
-            "kind": "scene-lite",
+            "kind": "scene",
             "properties": {
                 "scene_opacity": {
                     "type": "range",
@@ -6541,8 +6591,8 @@ void main() {}
                 }
             },
             "entry": {
-                "type": "scene-lite",
-                "source": "assets/scene-lite.json",
+                "type": "scene",
+                "source": "assets/scene.gscene.json",
                 "max_fps": 60
             }
         });
@@ -6553,10 +6603,69 @@ void main() {}
         .unwrap();
     }
 
-    fn scene_lite_display_source(plan: &SceneLiteWallpaperPlan) -> &Path {
+    fn write_scene_animation_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(
+            path.join("assets/scene.gscene.json"),
+            br##"{
+              "nodes": [
+                {
+                  "id": "moving-panel",
+                  "type": "rectangle",
+                  "color": "#203040",
+                  "width": 320,
+                  "height": 180
+                }
+              ],
+              "timelines": [
+                {
+                  "id": "moving-panel-timeline",
+                  "target_node": "moving-panel",
+                  "channels": [
+                    {
+                      "property": "x",
+                      "keyframes": [
+                        { "time_ms": 0, "value": 10 },
+                        { "time_ms": 1000, "value": 110 }
+                      ]
+                    },
+                    {
+                      "property": "opacity",
+                      "keyframes": [
+                        { "time_ms": 0, "value": 0.4 },
+                        { "time_ms": 1000, "value": 0.9 }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }"##,
+        )
+        .unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.scene-animation",
+            "version": "1.0.0",
+            "title": "Scene Animation",
+            "kind": "scene",
+            "entry": {
+                "type": "scene",
+                "source": "assets/scene.gscene.json",
+                "max_fps": 60
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn scene_display_source(plan: &SceneWallpaperPlan) -> &Path {
         match &plan.display {
-            Some(SceneLiteDisplayPlan::Image { source, .. }) => source,
-            _ => panic!("expected scene-lite image display"),
+            Some(SceneDisplayPlan::Image { source, .. }) => source,
+            _ => panic!("expected scene image display"),
         }
     }
 

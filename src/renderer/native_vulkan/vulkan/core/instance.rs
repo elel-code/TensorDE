@@ -5,8 +5,8 @@ use vulkanalia::loader::LibloadingLoader;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};
 
-pub(in crate::renderer::native_vulkan::vulkan) const NATIVE_VULKAN_VULKANALIA_LOADER_CANDIDATES:
-    &[&str] = &["libvulkan.so.1", "libvulkan.so"];
+pub(in crate::renderer::native_vulkan::vulkan) const NATIVE_VULKAN_VULKANALIA_REQUIRED_LOADER:
+    &str = "libvulkan.so.1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::vulkan) struct NativeVulkanVulkanaliaInstanceExtensionSelection
@@ -89,17 +89,14 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destr
 }
 
 fn native_vulkan_vulkanalia_load_loader() -> Result<(LibloadingLoader, &'static str), String> {
-    let mut errors = Vec::new();
-    for candidate in NATIVE_VULKAN_VULKANALIA_LOADER_CANDIDATES {
-        match unsafe { LibloadingLoader::new(candidate) } {
-            Ok(loader) => return Ok((loader, candidate)),
-            Err(err) => errors.push(format!("{candidate}: {err}")),
-        }
-    }
-    Err(format!(
-        "failed to load Vulkan loader via vulkanalia: {}",
-        errors.join("; ")
-    ))
+    unsafe { LibloadingLoader::new(NATIVE_VULKAN_VULKANALIA_REQUIRED_LOADER) }
+        .map(|loader| (loader, NATIVE_VULKAN_VULKANALIA_REQUIRED_LOADER))
+        .map_err(|err| {
+            format!(
+                "failed to load required Vulkan loader {} via vulkanalia: {err}",
+                NATIVE_VULKAN_VULKANALIA_REQUIRED_LOADER
+            )
+        })
 }
 
 fn native_vulkan_vulkanalia_select_instance_extensions(

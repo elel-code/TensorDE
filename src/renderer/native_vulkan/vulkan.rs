@@ -18,9 +18,9 @@ use self::present::clear as present_clear;
 use self::present::render as render_present;
 use self::present::render_descriptors as render_present_descriptors;
 use self::present::swapchain;
-use self::scene::lite_draw_pass as scene_lite_draw_pass;
-use self::scene::lite_present as scene_lite_present;
-use self::scene::lite_sampled_image as scene_lite_sampled_image;
+use self::scene::draw_pass as scene_draw_pass;
+use self::scene::present as scene_present;
+use self::scene::sampled_image as scene_sampled_image;
 use self::video::bitstream_buffer as video_bitstream_buffer;
 use self::video::decode_submit as video_decode_submit;
 use self::video::decode_submit_av1 as video_decode_submit_av1;
@@ -84,40 +84,38 @@ pub use render_present::{
     NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot,
 };
 pub use render_present_descriptors::NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot;
-pub(crate) use scene_lite_draw_pass::{
-    NativeVulkanVulkanaliaSceneLiteDrawPassInput,
-    native_vulkan_vulkanalia_scene_lite_draw_pass_snapshot,
+pub(crate) use scene_draw_pass::{
+    NativeVulkanVulkanaliaSceneDrawPassInput, native_vulkan_vulkanalia_scene_draw_pass_snapshot,
 };
-pub use scene_lite_draw_pass::{
-    NativeVulkanVulkanaliaSceneLiteDrawPassSnapshot,
-    NativeVulkanVulkanaliaSceneLiteSampledImageCommandSnapshot,
-    NativeVulkanVulkanaliaSceneLiteSampledImagePipelineSnapshot,
-    NativeVulkanVulkanaliaSceneLiteSolidQuadCommandSnapshot,
-    NativeVulkanVulkanaliaSceneLiteSolidQuadPipelineSnapshot,
+pub use scene_draw_pass::{
+    NativeVulkanVulkanaliaSceneDrawPassSnapshot,
+    NativeVulkanVulkanaliaSceneSampledImageCommandSnapshot,
+    NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot,
+    NativeVulkanVulkanaliaSceneSolidQuadCommandSnapshot,
+    NativeVulkanVulkanaliaSceneSolidQuadPipelineSnapshot,
 };
-pub use scene_lite_present::{
-    NativeVulkanVulkanaliaSceneLiteSampledImageDrawStep,
-    NativeVulkanVulkanaliaSceneLiteSampledImageGeometryInput,
-    NativeVulkanVulkanaliaSceneLiteSampledImageGeometrySnapshot,
-    NativeVulkanVulkanaliaSceneLiteSampledImagePresentOptions,
-    NativeVulkanVulkanaliaSceneLiteSampledImagePresentSnapshot,
-    NativeVulkanVulkanaliaSceneLiteSampledImageVertex,
-    NativeVulkanVulkanaliaSceneLiteSolidQuadDrawStep,
-    NativeVulkanVulkanaliaSceneLiteSolidQuadGeometryInput,
-    NativeVulkanVulkanaliaSceneLiteSolidQuadGeometrySnapshot,
-    NativeVulkanVulkanaliaSceneLiteSolidQuadPresentOptions,
-    NativeVulkanVulkanaliaSceneLiteSolidQuadPresentSnapshot,
-    NativeVulkanVulkanaliaSceneLiteSolidQuadVertex,
-    run_native_vulkan_vulkanalia_scene_lite_sampled_image_present,
-    run_native_vulkan_vulkanalia_scene_lite_solid_quad_present,
+pub use scene_present::{
+    NativeVulkanVulkanaliaSceneSampledImageDrawStep,
+    NativeVulkanVulkanaliaSceneSampledImageGeometryInput,
+    NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot,
+    NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
+    NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot,
+    NativeVulkanVulkanaliaSceneSampledImageVertex, NativeVulkanVulkanaliaSceneSolidQuadDrawStep,
+    NativeVulkanVulkanaliaSceneSolidQuadGeometryInput,
+    NativeVulkanVulkanaliaSceneSolidQuadGeometrySnapshot,
+    NativeVulkanVulkanaliaSceneSolidQuadPresentOptions,
+    NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot,
+    NativeVulkanVulkanaliaSceneSolidQuadVertex,
+    run_native_vulkan_vulkanalia_scene_sampled_image_present,
+    run_native_vulkan_vulkanalia_scene_solid_quad_present,
 };
-pub use scene_lite_sampled_image::{
-    NativeVulkanVulkanaliaSceneLiteSampledImageDescriptorStrategySnapshot,
-    NativeVulkanVulkanaliaSceneLiteSampledImagePlanSnapshot,
+pub use scene_sampled_image::{
+    NativeVulkanVulkanaliaSceneSampledImageDescriptorStrategySnapshot,
+    NativeVulkanVulkanaliaSceneSampledImagePlanSnapshot,
 };
-pub(crate) use scene_lite_sampled_image::{
-    NativeVulkanVulkanaliaSceneLiteSampledImagePlanInput,
-    native_vulkan_vulkanalia_scene_lite_sampled_image_plan,
+pub(crate) use scene_sampled_image::{
+    NativeVulkanVulkanaliaSceneSampledImagePlanInput,
+    native_vulkan_vulkanalia_scene_sampled_image_plan,
 };
 #[allow(unused_imports)]
 pub use swapchain::{
