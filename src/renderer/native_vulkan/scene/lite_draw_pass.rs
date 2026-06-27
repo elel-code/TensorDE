@@ -9,6 +9,7 @@ use super::super::present::render_plan::{
 const SCENE_LITE_SOLID_QUAD_VERTEX_BYTES: u64 = 24;
 const SCENE_LITE_SOLID_QUAD_INDEX_BYTES: u64 = 4;
 const SCENE_LITE_ELLIPSE_SEGMENTS: usize = 48;
+const SCENE_LITE_ROUNDED_RECT_CORNER_SEGMENTS: usize = 8;
 const SCENE_LITE_SAMPLED_IMAGE_VERTEX_COUNT: u32 = 4;
 const SCENE_LITE_SAMPLED_IMAGE_INDEX_COUNT: u32 = 6;
 const SCENE_LITE_SAMPLED_IMAGE_VERTEX_BYTES: u64 = 20;
@@ -23,6 +24,7 @@ pub(super) struct NativeVulkanSceneLiteRecordableQuad {
     pub(super) rgba: [f32; 4],
     pub(super) width: Option<f64>,
     pub(super) height: Option<f64>,
+    pub(super) corner_radius: Option<f64>,
     pub(super) path_data: Option<String>,
     pub(super) transform: SceneLiteTransform,
 }
@@ -514,7 +516,7 @@ fn native_vulkan_scene_lite_solid_has_recordable_geometry(
     quad: &NativeVulkanSceneLiteRecordableQuad,
 ) -> bool {
     match quad.kind {
-        "rectangle" | "ellipse" => {
+        "rectangle" | "rounded-rectangle" | "ellipse" => {
             quad.width
                 .is_some_and(|width| width.is_finite() && width > 0.0)
                 && quad
@@ -545,6 +547,7 @@ fn native_vulkan_scene_lite_solid_geometry(
 ) -> Option<(Vec<NativeVulkanSceneLiteQuadVertex>, Vec<u32>)> {
     match quad.kind {
         "rectangle" => native_vulkan_scene_lite_rectangle_geometry(quad),
+        "rounded-rectangle" => native_vulkan_scene_lite_rounded_rectangle_geometry(quad),
         "ellipse" => native_vulkan_scene_lite_ellipse_geometry(quad),
         "path" => native_vulkan_scene_lite_path_geometry(quad),
         _ => None,
@@ -564,6 +567,97 @@ fn native_vulkan_scene_lite_rectangle_geometry(
         })
         .collect();
     Some((vertices, vec![0, 1, 2, 2, 1, 3]))
+}
+
+fn native_vulkan_scene_lite_rounded_rectangle_geometry(
+    quad: &NativeVulkanSceneLiteRecordableQuad,
+) -> Option<(Vec<NativeVulkanSceneLiteQuadVertex>, Vec<u32>)> {
+    let width = quad.width?;
+    let height = quad.height?;
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let radius = quad.corner_radius?.clamp(0.0, width.min(height) * 0.5);
+    if !radius.is_finite() || radius <= 0.0 {
+        return native_vulkan_scene_lite_rectangle_geometry(quad);
+    }
+
+    let left = -quad.transform.anchor_x * width;
+    let top = -quad.transform.anchor_y * height;
+    let right = left + width;
+    let bottom = top + height;
+    let corners = [
+        (
+            right - radius,
+            top + radius,
+            -std::f64::consts::FRAC_PI_2,
+            0.0,
+        ),
+        (
+            right - radius,
+            bottom - radius,
+            0.0,
+            std::f64::consts::FRAC_PI_2,
+        ),
+        (
+            left + radius,
+            bottom - radius,
+            std::f64::consts::FRAC_PI_2,
+            std::f64::consts::PI,
+        ),
+        (
+            left + radius,
+            top + radius,
+            std::f64::consts::PI,
+            std::f64::consts::PI * 1.5,
+        ),
+    ];
+
+    let mut outline = Vec::with_capacity((SCENE_LITE_ROUNDED_RECT_CORNER_SEGMENTS + 1) * 4);
+    for (center_x, center_y, start_angle, end_angle) in corners {
+        for segment in 0..=SCENE_LITE_ROUNDED_RECT_CORNER_SEGMENTS {
+            let t = segment as f64 / SCENE_LITE_ROUNDED_RECT_CORNER_SEGMENTS as f64;
+            let angle = start_angle + (end_angle - start_angle) * t;
+            outline.push([
+                center_x + angle.cos() * radius,
+                center_y + angle.sin() * radius,
+            ]);
+        }
+    }
+
+    let mut vertices = Vec::with_capacity(outline.len() + 1);
+    vertices.push(NativeVulkanSceneLiteQuadVertex {
+        position: native_vulkan_scene_lite_transform_point(
+            (left + right) * 0.5,
+            (top + bottom) * 0.5,
+            quad.transform,
+        )?,
+        rgba: quad.rgba,
+    });
+    vertices.extend(
+        outline
+            .into_iter()
+            .map(|[x, y]| {
+                Some(NativeVulkanSceneLiteQuadVertex {
+                    position: native_vulkan_scene_lite_transform_point(x, y, quad.transform)?,
+                    rgba: quad.rgba,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?,
+    );
+
+    let outline_count = vertices.len().saturating_sub(1);
+    let mut indices = Vec::with_capacity(outline_count * 3);
+    for index in 0..outline_count {
+        let current = index as u32 + 1;
+        let next = if index + 1 == outline_count {
+            1
+        } else {
+            current + 1
+        };
+        indices.extend_from_slice(&[0, current, next]);
+    }
+    Some((vertices, indices))
 }
 
 fn native_vulkan_scene_lite_ellipse_geometry(
@@ -613,9 +707,18 @@ fn native_vulkan_scene_lite_path_geometry(
     quad: &NativeVulkanSceneLiteRecordableQuad,
 ) -> Option<(Vec<NativeVulkanSceneLiteQuadVertex>, Vec<u32>)> {
     let points = native_vulkan_scene_lite_simple_path_points(quad.path_data.as_deref()?)?;
-    if points.len() < 3 || !native_vulkan_scene_lite_polygon_is_convex(&points) {
+    if points.len() < 3 {
         return None;
     }
+    let indices = if native_vulkan_scene_lite_polygon_is_convex(&points) {
+        let mut indices = Vec::with_capacity((points.len().saturating_sub(2)) * 3);
+        for index in 1..points.len().saturating_sub(1) {
+            indices.extend_from_slice(&[0, index as u32, index as u32 + 1]);
+        }
+        indices
+    } else {
+        native_vulkan_scene_lite_triangulate_simple_polygon(&points)?
+    };
     let vertices = points
         .into_iter()
         .map(|[x, y]| {
@@ -625,10 +728,6 @@ fn native_vulkan_scene_lite_path_geometry(
             })
         })
         .collect::<Option<Vec<_>>>()?;
-    let mut indices = Vec::with_capacity((vertices.len().saturating_sub(2)) * 3);
-    for index in 1..vertices.len().saturating_sub(1) {
-        indices.extend_from_slice(&[0, index as u32, index as u32 + 1]);
-    }
     Some((vertices, indices))
 }
 
@@ -730,9 +829,12 @@ fn native_vulkan_scene_lite_recordable_quad(
             native_vulkan_scene_lite_recordable_quad_from_op(op, "color-quad")
         }
         NativeVulkanSceneLiteDrawOpKind::Rectangle
-            if !native_vulkan_scene_lite_rectangle_needs_shape_pipeline(op) =>
+            if !native_vulkan_scene_lite_rectangle_needs_stroke_geometry(op) =>
         {
-            native_vulkan_scene_lite_recordable_quad_from_op(op, "rectangle")
+            native_vulkan_scene_lite_recordable_quad_from_op(
+                op,
+                native_vulkan_scene_lite_rectangle_recordable_kind(op),
+            )
         }
         NativeVulkanSceneLiteDrawOpKind::Ellipse => {
             native_vulkan_scene_lite_recordable_quad_from_op(op, "ellipse")
@@ -802,6 +904,7 @@ fn native_vulkan_scene_lite_recordable_quad_from_op(
         rgba,
         width: op.width,
         height: op.height,
+        corner_radius: op.corner_radius,
         path_data: op.path_data.clone(),
         transform: op.transform,
     })
@@ -1014,14 +1117,121 @@ fn native_vulkan_scene_lite_polygon_is_convex(points: &[[f64; 2]]) -> bool {
     sign != 0.0
 }
 
-fn native_vulkan_scene_lite_rectangle_needs_shape_pipeline(
+fn native_vulkan_scene_lite_triangulate_simple_polygon(points: &[[f64; 2]]) -> Option<Vec<u32>> {
+    if points.len() < 3 || points.len() > u32::MAX as usize {
+        return None;
+    }
+    let area = native_vulkan_scene_lite_polygon_signed_area(points);
+    if area.abs() <= f64::EPSILON {
+        return None;
+    }
+    let mut remaining = (0..points.len()).collect::<Vec<_>>();
+    if area < 0.0 {
+        remaining.reverse();
+    }
+    let mut triangles = Vec::with_capacity((points.len().saturating_sub(2)) * 3);
+
+    while remaining.len() > 3 {
+        let mut ear_index = None;
+        for index in 0..remaining.len() {
+            let prev_index = remaining[(index + remaining.len() - 1) % remaining.len()];
+            let curr_index = remaining[index];
+            let next_index = remaining[(index + 1) % remaining.len()];
+            if !native_vulkan_scene_lite_triangle_is_counter_clockwise(
+                points[prev_index],
+                points[curr_index],
+                points[next_index],
+            ) {
+                continue;
+            }
+            let contains_point = remaining.iter().copied().any(|candidate_index| {
+                candidate_index != prev_index
+                    && candidate_index != curr_index
+                    && candidate_index != next_index
+                    && native_vulkan_scene_lite_point_in_triangle(
+                        points[candidate_index],
+                        points[prev_index],
+                        points[curr_index],
+                        points[next_index],
+                    )
+            });
+            if !contains_point {
+                ear_index = Some(index);
+                triangles.extend_from_slice(&[
+                    prev_index as u32,
+                    curr_index as u32,
+                    next_index as u32,
+                ]);
+                break;
+            }
+        }
+        let ear_index = ear_index?;
+        remaining.remove(ear_index);
+    }
+
+    triangles.extend_from_slice(&[
+        remaining[0] as u32,
+        remaining[1] as u32,
+        remaining[2] as u32,
+    ]);
+    Some(triangles)
+}
+
+fn native_vulkan_scene_lite_polygon_signed_area(points: &[[f64; 2]]) -> f64 {
+    let mut area = 0.0;
+    for index in 0..points.len() {
+        let a = points[index];
+        let b = points[(index + 1) % points.len()];
+        area += a[0].mul_add(b[1], -b[0] * a[1]);
+    }
+    area * 0.5
+}
+
+fn native_vulkan_scene_lite_triangle_is_counter_clockwise(
+    a: [f64; 2],
+    b: [f64; 2],
+    c: [f64; 2],
+) -> bool {
+    let ab = [b[0] - a[0], b[1] - a[1]];
+    let ac = [c[0] - a[0], c[1] - a[1]];
+    ab[0].mul_add(ac[1], -ab[1] * ac[0]) > f64::EPSILON
+}
+
+fn native_vulkan_scene_lite_point_in_triangle(
+    point: [f64; 2],
+    a: [f64; 2],
+    b: [f64; 2],
+    c: [f64; 2],
+) -> bool {
+    let area = |p0: [f64; 2], p1: [f64; 2], p2: [f64; 2]| {
+        (p1[0] - p0[0]).mul_add(p2[1] - p0[1], -(p1[1] - p0[1]) * (p2[0] - p0[0]))
+    };
+    let ab = area(a, b, point);
+    let bc = area(b, c, point);
+    let ca = area(c, a, point);
+    ab >= -f64::EPSILON && bc >= -f64::EPSILON && ca >= -f64::EPSILON
+}
+
+fn native_vulkan_scene_lite_rectangle_recordable_kind(
+    op: &NativeVulkanSceneLiteDrawOp,
+) -> &'static str {
+    if op
+        .corner_radius
+        .is_some_and(|radius| radius.is_finite() && radius > 0.0)
+    {
+        "rounded-rectangle"
+    } else {
+        "rectangle"
+    }
+}
+
+fn native_vulkan_scene_lite_rectangle_needs_stroke_geometry(
     op: &NativeVulkanSceneLiteDrawOp,
 ) -> bool {
     op.stroke_color
         .as_deref()
         .is_some_and(|color| !color.is_empty())
         && op.stroke_width.unwrap_or(1.0) > 0.0
-        || op.corner_radius.unwrap_or(0.0) > 0.0
 }
 
 fn native_vulkan_scene_lite_rgba_from_hex(color: &str, opacity: f64) -> Option<[f32; 4]> {
@@ -1319,7 +1529,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_pass_plan_reports_recordable_rectangle_quad_payload() {
+    fn draw_pass_plan_reports_recordable_rectangle_and_rounded_rectangle_payload() {
         let mut rectangle = draw_op(0, NativeVulkanSceneLiteDrawOpKind::Rectangle);
         rectangle.color = Some("#336699".to_owned());
         rectangle.opacity = 0.5;
@@ -1328,6 +1538,8 @@ mod tests {
         rectangle.transform.x = 24.0;
         let mut rounded = draw_op(1, NativeVulkanSceneLiteDrawOpKind::Rectangle);
         rounded.color = Some("#ffffff".to_owned());
+        rounded.width = Some(120.0);
+        rounded.height = Some(60.0);
         rounded.corner_radius = Some(8.0);
         let draw_plan = NativeVulkanSceneLiteDrawPlan {
             snapshot_time_ms: 0,
@@ -1339,28 +1551,29 @@ mod tests {
         let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
 
         assert!(pass_plan.plan_ready);
-        assert!(!pass_plan.backend_ready);
-        assert_eq!(
-            pass_plan.backend_status,
-            "partial-solid-quad-recording-ready"
-        );
-        assert_eq!(
-            pass_plan.blocking_reason,
-            Some("non-quad-draw-ops-need-recording-backend")
-        );
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.backend_status, "solid-quad-recording-ready");
+        assert_eq!(pass_plan.blocking_reason, None);
         assert_eq!(pass_plan.vector_shape_op_count, 2);
-        assert_eq!(pass_plan.recordable_op_count, 1);
-        assert_eq!(pass_plan.recordable_quads.len(), 1);
-        assert!(!pass_plan.quad_recording_ready);
-        assert_eq!(pass_plan.quad_recording_steps.len(), 1);
-        assert_eq!(pass_plan.quad_vertex_buffer_bytes, 96);
-        assert_eq!(pass_plan.quad_index_buffer_bytes, 24);
+        assert_eq!(pass_plan.recordable_op_count, 2);
+        assert_eq!(pass_plan.recordable_quads.len(), 2);
+        assert!(pass_plan.quad_recording_ready);
+        assert_eq!(pass_plan.quad_recording_steps.len(), 2);
+        assert_eq!(pass_plan.quad_vertex_buffer_bytes, 41 * 24);
+        assert_eq!(pass_plan.quad_index_buffer_bytes, 114 * 4);
         assert_eq!(
             pass_plan.quad_recording_steps[0].pipeline,
             "solid-quad-alpha-blend"
         );
-        assert_eq!(pass_plan.quad_vertices.len(), 4);
-        assert_eq!(pass_plan.quad_indices, vec![0, 1, 2, 2, 1, 3]);
+        assert_eq!(pass_plan.quad_recording_steps[0].kind, "rectangle");
+        assert_eq!(pass_plan.quad_recording_steps[1].kind, "rounded-rectangle");
+        assert_eq!(pass_plan.quad_recording_steps[1].first_vertex, 4);
+        assert_eq!(pass_plan.quad_recording_steps[1].vertex_count, 37);
+        assert_eq!(pass_plan.quad_recording_steps[1].first_index, 6);
+        assert_eq!(pass_plan.quad_recording_steps[1].index_count, 108);
+        assert_eq!(pass_plan.quad_vertices.len(), 41);
+        assert_eq!(pass_plan.quad_indices.len(), 114);
+        assert_eq!(&pass_plan.quad_indices[0..6], &[0, 1, 2, 2, 1, 3]);
         let quad = &pass_plan.recordable_quads[0];
         assert_eq!(quad.kind, "rectangle");
         assert_eq!(quad.color, "#336699");
@@ -1368,6 +1581,9 @@ mod tests {
         assert_eq!(quad.width, Some(640.0));
         assert_eq!(quad.height, Some(360.0));
         assert_eq!(quad.transform.x, 24.0);
+        let rounded = &pass_plan.recordable_quads[1];
+        assert_eq!(rounded.kind, "rounded-rectangle");
+        assert_eq!(rounded.corner_radius, Some(8.0));
     }
 
     #[test]
@@ -1431,6 +1647,35 @@ mod tests {
         assert_eq!(pass_plan.quad_indices, vec![0, 1, 2, 0, 2, 3]);
         assert_eq!(pass_plan.quad_vertices[0].position, [4.0, 0.0]);
         assert_eq!(pass_plan.quad_vertices[2].position, [104.0, 50.0]);
+        assert_eq!(pass_plan.path_op_count, 1);
+        assert!(!pass_plan.requires_path_tessellation);
+    }
+
+    #[test]
+    fn draw_pass_plan_records_concave_filled_path_as_solid_geometry() {
+        let mut path = draw_op(0, NativeVulkanSceneLiteDrawOpKind::Path);
+        path.color = Some("#cc3300".to_owned());
+        path.path_data = Some("M0 0 L100 0 L100 100 L50 50 L0 100 Z".to_owned());
+        let draw_plan = NativeVulkanSceneLiteDrawPlan {
+            snapshot_time_ms: 0,
+            draw_ops: vec![path],
+            unsupported_layers: Vec::new(),
+            fallback_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_lite_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.backend_status, "solid-quad-recording-ready");
+        assert_eq!(pass_plan.blocking_reason, None);
+        assert!(pass_plan.quad_recording_ready);
+        assert_eq!(pass_plan.quad_recording_steps.len(), 1);
+        assert_eq!(pass_plan.quad_recording_steps[0].kind, "path");
+        assert_eq!(pass_plan.quad_recording_steps[0].vertex_count, 5);
+        assert_eq!(pass_plan.quad_recording_steps[0].index_count, 9);
+        assert_eq!(pass_plan.quad_vertices.len(), 5);
+        assert_eq!(pass_plan.quad_indices.len(), 9);
         assert_eq!(pass_plan.path_op_count, 1);
         assert!(!pass_plan.requires_path_tessellation);
     }

@@ -2478,8 +2478,8 @@ impl FullSceneConversionStatus {
         Self {
             target_runtime: "native-vulkan-full-scene".to_owned(),
             current_runtime: "scene-lite-subset".to_owned(),
-            progress_estimate_percent: 44,
-            execution_model: "original scene metadata preserved; native Vulkan full-scene boundaries now lower layer order, retained sampled-image resources, clear-background composition, simple path tessellation, time-sampled scene state, and explicit unsupported Wallpaper Engine systems without legacy fallback".to_owned(),
+            progress_estimate_percent: 48,
+            execution_model: "original scene metadata preserved; native Vulkan full-scene boundaries now lower layer order, retained sampled-image resources, clear-background composition, rounded-rectangle/simple/concave-path tessellation, time-sampled scene state, and explicit unsupported Wallpaper Engine systems without legacy fallback".to_owned(),
             source_scene_metadata: Vec::new(),
             completed_boundaries: vec![
                 "package-scene-detection".to_owned(),
@@ -2492,6 +2492,7 @@ impl FullSceneConversionStatus {
                 "time-sampled-scene-state".to_owned(),
                 "clear-background-layer-composition".to_owned(),
                 "solid-vector-shape-quad-geometry".to_owned(),
+                "rounded-rectangle-tessellation-runtime".to_owned(),
                 "simple-path-tessellation-runtime".to_owned(),
                 "scene-video-layer-bridge-detection".to_owned(),
             ],
@@ -3223,7 +3224,7 @@ void main() {}
         let full_scene = report.full_scene.as_ref().expect("full scene status");
         assert_eq!(full_scene.target_runtime, "native-vulkan-full-scene");
         assert_eq!(full_scene.current_runtime, "scene-lite-subset");
-        assert_eq!(full_scene.progress_estimate_percent, 44);
+        assert_eq!(full_scene.progress_estimate_percent, 48);
         assert!(
             full_scene
                 .source_scene_metadata

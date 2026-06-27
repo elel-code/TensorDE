@@ -770,6 +770,18 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_swapchain_pl
     let present_wait2_enabled = feature_selection.present_wait2_enabled
         && present_id2_enabled
         && present_timing_capabilities.present_wait2_supported;
+    if !present_id2_enabled {
+        return Err(
+            "Vulkanalia swapchain requires VK_KHR_present_id2 feature and surface support"
+                .to_owned(),
+        );
+    }
+    if !present_wait2_enabled {
+        return Err(
+            "Vulkanalia swapchain requires VK_KHR_present_wait2 feature and surface support"
+                .to_owned(),
+        );
+    }
     let create_flags = swapchain_create_flags(present_id2_enabled, present_wait2_enabled);
     let create_info = vk::SwapchainCreateInfoKHR::builder()
         .flags(create_flags)

@@ -99,6 +99,7 @@ pub struct NativeVulkanFullSceneRuntimeSnapshot {
     pub native_runtime_coverage_percent: u8,
     pub clear_background_layer_count: usize,
     pub solid_geometry_layer_count: usize,
+    pub rounded_rectangle_layer_count: usize,
     pub sampled_image_native_layer_count: usize,
     pub tessellated_path_layer_count: usize,
     pub color_layer_count: usize,
@@ -304,6 +305,7 @@ pub struct NativeVulkanSceneLiteRecordableQuadSnapshot {
     pub rgba: [f32; 4],
     pub width: Option<f64>,
     pub height: Option<f64>,
+    pub corner_radius: Option<f64>,
     pub transform: SceneLiteTransform,
 }
 
@@ -454,6 +456,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_lite_runtime_snaps
                 rgba: quad.rgba,
                 width: quad.width,
                 height: quad.height,
+                corner_radius: quad.corner_radius,
                 transform: quad.transform,
             })
             .collect(),
@@ -634,6 +637,11 @@ fn native_vulkan_full_scene_runtime_snapshot(
         .iter()
         .filter(|step| step.kind == "path")
         .count();
+    let rounded_rectangle_layer_count = pass_plan
+        .quad_recording_steps
+        .iter()
+        .filter(|step| step.kind == "rounded-rectangle")
+        .count();
     let solid_geometry_layer_count = pass_plan.quad_recording_steps.len();
     let sampled_image_native_layer_count = if pass_plan.sampled_image_recording_ready {
         pass_plan.sampled_image_recording_steps.len()
@@ -685,6 +693,9 @@ fn native_vulkan_full_scene_runtime_snapshot(
     if pass_plan.vector_shape_op_count > 0 && !pass_plan.requires_path_tessellation {
         completed_boundaries.push("solid-vector-shape-quad-geometry");
     }
+    if rounded_rectangle_layer_count > 0 {
+        completed_boundaries.push("rounded-rectangle-tessellation-runtime");
+    }
     if pass_plan.sampled_image_op_count > 0 && sampled_image_native_layer_count > 0 {
         completed_boundaries.push("sampled-image-scene-composition");
     }
@@ -718,7 +729,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
     NativeVulkanFullSceneRuntimeSnapshot {
         target_runtime: "native-vulkan-full-scene",
         current_runtime: "native-vulkan-scene-runtime-subset",
-        progress_estimate_percent: 44,
+        progress_estimate_percent: 48,
         full_scene_complete: false,
         execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
         native_scene_graph_lowering_ready: plan.native_draw_ready(),
@@ -735,6 +746,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
         native_runtime_coverage_percent,
         clear_background_layer_count,
         solid_geometry_layer_count,
+        rounded_rectangle_layer_count,
         sampled_image_native_layer_count,
         tessellated_path_layer_count,
         color_layer_count: pass_plan.color_op_count,
@@ -885,13 +897,13 @@ mod tests {
         );
         assert_eq!(
             snapshot.draw_pass_backend_status,
-            "draw-pass-plan-ready-recording-pending"
+            "partial-solid-quad-recording-ready"
         );
         assert_eq!(
             snapshot.draw_pass_blocking_reason,
-            Some("vulkan-draw-recording-not-implemented")
+            Some("non-quad-draw-ops-need-recording-backend")
         );
-        assert_eq!(snapshot.draw_pass_recordable_op_count, 0);
+        assert_eq!(snapshot.draw_pass_recordable_op_count, 1);
         assert_eq!(snapshot.draw_pass_color_op_count, 0);
         assert_eq!(snapshot.draw_pass_sampled_image_op_count, 1);
         assert_eq!(snapshot.draw_pass_video_op_count, 0);
@@ -940,6 +952,19 @@ mod tests {
             snapshot.draw_ops[2].text_align,
             Some(SceneLiteTextAlign::Middle)
         );
+        assert_eq!(
+            snapshot.draw_pass_recordable_quads[0].kind,
+            "rounded-rectangle"
+        );
+        assert_eq!(
+            snapshot.draw_pass_recordable_quads[0].corner_radius,
+            Some(12.0)
+        );
+        assert_eq!(snapshot.full_scene.solid_geometry_layer_count, 1);
+        assert_eq!(snapshot.full_scene.rounded_rectangle_layer_count, 1);
+        assert_eq!(snapshot.full_scene.native_runtime_layer_count, 2);
+        assert_eq!(snapshot.full_scene.native_runtime_pending_layer_count, 1);
+        assert_eq!(snapshot.full_scene.native_runtime_coverage_percent, 66);
     }
 
     #[test]
@@ -1009,7 +1034,7 @@ mod tests {
             snapshot.full_scene.current_runtime,
             "native-vulkan-scene-runtime-subset"
         );
-        assert_eq!(snapshot.full_scene.progress_estimate_percent, 44);
+        assert_eq!(snapshot.full_scene.progress_estimate_percent, 48);
         assert!(!snapshot.full_scene.full_scene_complete);
         assert!(snapshot.full_scene.timeline_snapshot_runtime_ready);
         assert_eq!(snapshot.full_scene.timeline_snapshot_time_ms, 1234);
