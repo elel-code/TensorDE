@@ -4,7 +4,7 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=src/renderer/native_vulkan/demux_ffmpeg_shim.c");
+    println!("cargo:rerun-if-changed=src/renderer/native_vulkan/video/demux_ffmpeg_shim.c");
 
     if env::var_os("CARGO_FEATURE_NATIVE_VULKAN_VIDEO").is_none() {
         return;
@@ -13,7 +13,7 @@ fn main() {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
     let object = out_dir.join("demux_ffmpeg_shim.o");
     let archive = out_dir.join("libgilder_demux_ffmpeg_shim.a");
-    let source = PathBuf::from("src/renderer/native_vulkan/demux_ffmpeg_shim.c");
+    let source = PathBuf::from("src/renderer/native_vulkan/video/demux_ffmpeg_shim.c");
 
     let pkg_config = Command::new("pkg-config")
         .args([

@@ -36,8 +36,8 @@ as a performance result.
    H.264, H.265, and AV1 profiles, bit depths, reference patterns, arbitrary
    entry points, loop boundaries, and long-run resource stability.
 4. Script hygiene: keep only current CI, codec smoke, real-source matrix,
-   performance, packaging, and workshop helpers. Remove one-off migration or
-   spike scripts instead of carrying compatibility wrappers.
+   performance, packaging, and workshop helpers. Remove one-off spike scripts
+   instead of carrying compatibility wrappers.
 
 ## Repository Layout
 
@@ -48,8 +48,18 @@ as a performance result.
   runner.
 - `src/core/`: package and manifest primitives.
 - `src/ipc/`: command, protocol, and socket helpers.
-- `src/renderer/native_vulkan/`: native Vulkan render, FFmpeg demux, video, and
-  present code.
+- `src/renderer/native_vulkan/`: native Vulkan facade and shared parser/snapshot
+  code.
+- `src/renderer/native_vulkan/video/`: FFmpeg demux, codec parsing, pacing,
+  timeline, route, and video evidence helpers.
+- `src/renderer/native_vulkan/vulkan/`: the single Vulkanalia backend, split
+  into `core/`, `present/`, `scene/`, and `video/`.
+- `src/renderer/native_vulkan/present/`: clear/static image present and render
+  item planning.
+- `src/renderer/native_vulkan/scene/`: scene-lite runtime planning and native
+  Vulkan present entry points.
+- `src/renderer/native_vulkan/audio/`: audio policy surface for the next FFmpeg
+  clock/output integration step.
 - `docs/native-vulkan-video.md`: current FFmpeg/Vulkan Video gates, evidence,
   and next validation rules.
 - `docs/packaging.md`: install and distribution notes.

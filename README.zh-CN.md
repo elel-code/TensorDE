@@ -28,7 +28,7 @@ zero-copy 状态。
 3. 更多码流覆盖：扩展 H.264、H.265、AV1 的真实源和生成源矩阵，覆盖 profile、bit depth、
    reference pattern、任意入口、loop boundary 和长跑资源稳定性。
 4. 脚本清理：只保留当前 CI、codec smoke、real-source matrix、performance、packaging 和
-   workshop helper。迁移期/试验性脚本直接删除，不做兼容 wrapper。
+   workshop helper。一次性试验脚本直接删除，不做兼容 wrapper。
 
 ## 仓库结构
 
@@ -38,7 +38,15 @@ zero-copy 状态。
 - `src/bin/gilder-native-vulkan.rs`：原生 Vulkan 诊断和视频 smoke runner。
 - `src/core/`：包格式和 manifest 基础类型。
 - `src/ipc/`：命令、协议和 socket helper。
-- `src/renderer/native_vulkan/`：原生 Vulkan 渲染、FFmpeg demux、video 和 present 代码。
+- `src/renderer/native_vulkan/`：原生 Vulkan facade 和共享 parser/snapshot 代码。
+- `src/renderer/native_vulkan/video/`：FFmpeg demux、codec parsing、pacing、timeline、route
+  和视频证据 helper。
+- `src/renderer/native_vulkan/vulkan/`：唯一 Vulkanalia 后端，按 `core/`、`present/`、
+  `scene/`、`video/` 拆分。
+- `src/renderer/native_vulkan/present/`：clear/static image present 和 render item 规划。
+- `src/renderer/native_vulkan/scene/`：scene-lite runtime 规划和原生 Vulkan present 入口。
+- `src/renderer/native_vulkan/audio/`：下一步 FFmpeg clock/output 集成使用的 audio policy
+  边界。
 - `docs/native-vulkan-video.md`：当前 FFmpeg/Vulkan Video 门槛、证据和验证规则。
 - `docs/packaging.md`：安装和发行说明。
 - `docs/man/`：man pages。
