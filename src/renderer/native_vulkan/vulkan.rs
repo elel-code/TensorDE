@@ -118,7 +118,9 @@ pub use scene_sampled_image::{
 };
 pub(crate) use scene_sampled_image::{
     NativeVulkanVulkanaliaSceneSampledImagePlanInput,
+    native_vulkan_vulkanalia_configure_scene_sampled_image_allocator,
     native_vulkan_vulkanalia_scene_sampled_image_plan,
+    native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap,
 };
 #[allow(unused_imports)]
 pub use swapchain::{

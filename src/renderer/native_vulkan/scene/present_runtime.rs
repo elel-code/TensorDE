@@ -28,7 +28,9 @@ use super::super::{
     NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot,
     NativeVulkanVulkanaliaSceneSolidQuadDynamicGeometry,
     NativeVulkanVulkanaliaSceneSolidQuadPresentOptions,
-    NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot, run_clear,
+    NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot,
+    native_vulkan_vulkanalia_configure_scene_sampled_image_allocator,
+    native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap, run_clear,
     run_native_vulkan_vulkanalia_scene_sampled_image_present,
     run_native_vulkan_vulkanalia_scene_solid_quad_present,
 };
@@ -150,16 +152,20 @@ fn native_vulkan_scene_dynamic_solid_geometry_from_sampler(
             .sample_plan(base_time_ms.saturating_add(elapsed_ms))
             .map_err(|err| format!("sample dynamic solid scene: {err}"))?;
         let render_item = native_vulkan_scene_item(&sampled_plan);
-        let runtime = native_vulkan_scene_runtime_snapshot(&render_item)
+        let mut runtime = native_vulkan_scene_runtime_snapshot(&render_item)
             .ok_or_else(|| "dynamic solid scene runtime snapshot is unavailable".to_owned())?;
-        runtime
-            .vulkanalia_solid_quad_geometry_input()
+        let geometry = runtime
+            .take_vulkanalia_solid_quad_geometry_input()
             .ok_or_else(|| {
                 format!(
                     "dynamic scene is not solid-quad recordable: {}",
                     runtime.draw_pass_backend_status
                 )
-            })
+            })?;
+        runtime.release_cpu_draw_payloads_for_present();
+        drop(runtime);
+        native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
+        Ok(geometry)
     })
 }
 
@@ -172,18 +178,22 @@ fn native_vulkan_scene_dynamic_sampled_geometry_from_sampler(
             .sample_plan(base_time_ms.saturating_add(elapsed_ms))
             .map_err(|err| format!("sample dynamic sampled-image scene: {err}"))?;
         let render_item = native_vulkan_scene_item(&sampled_plan);
-        let runtime = native_vulkan_scene_runtime_snapshot(&render_item).ok_or_else(|| {
+        let mut runtime = native_vulkan_scene_runtime_snapshot(&render_item).ok_or_else(|| {
             "dynamic sampled-image scene runtime snapshot is unavailable".to_owned()
         })?;
-        runtime
-            .vulkanalia_sampled_image_geometry_input()
+        let geometry = runtime
+            .take_vulkanalia_sampled_image_geometry_input()
             .map(|(_, geometry)| geometry)
             .ok_or_else(|| {
                 format!(
                     "dynamic scene is not sampled-image recordable: {}",
                     runtime.draw_pass_backend_status
                 )
-            })
+            })?;
+        runtime.release_cpu_draw_payloads_for_present();
+        drop(runtime);
+        native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
+        Ok(geometry)
     })
 }
 
@@ -196,10 +206,14 @@ fn native_vulkan_scene_dynamic_mixed_solid_geometry_from_sampler(
             .sample_plan(base_time_ms.saturating_add(elapsed_ms))
             .map_err(|err| format!("sample dynamic mixed solid scene: {err}"))?;
         let render_item = native_vulkan_scene_item(&sampled_plan);
-        let runtime = native_vulkan_scene_runtime_snapshot(&render_item).ok_or_else(|| {
+        let mut runtime = native_vulkan_scene_runtime_snapshot(&render_item).ok_or_else(|| {
             "dynamic mixed solid scene runtime snapshot is unavailable".to_owned()
         })?;
-        Ok(runtime.vulkanalia_mixed_solid_quad_geometry_input())
+        let geometry = runtime.take_vulkanalia_mixed_solid_quad_geometry_input();
+        runtime.release_cpu_draw_payloads_for_present();
+        drop(runtime);
+        native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
+        Ok(geometry)
     })
 }
 
@@ -240,6 +254,8 @@ pub fn run_scene(
     #[cfg(not(feature = "native-vulkan-video"))]
     let _ = video_bridge;
 
+    native_vulkan_vulkanalia_configure_scene_sampled_image_allocator();
+
     if options.host.output_name.is_none() {
         options.host.output_name = Some(plan.output_name.clone());
     }
@@ -247,7 +263,7 @@ pub fn run_scene(
     options.target_max_fps = target_max_fps;
     let render_item = native_vulkan_scene_item(&plan);
     options.clear_color = native_vulkan_render_item_clear_color(&render_item, options.clear_color);
-    let runtime = native_vulkan_scene_runtime_snapshot(&render_item).ok_or_else(|| {
+    let mut runtime = native_vulkan_scene_runtime_snapshot(&render_item).ok_or_else(|| {
         NativeVulkanError::Scene("scene runtime snapshot is unavailable".to_owned())
     })?;
     if let Some(color) = runtime
@@ -269,6 +285,8 @@ pub fn run_scene(
                     )
                 })?;
             options.clear_color = color;
+            runtime.release_cpu_draw_payloads_for_present();
+            native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
             let (present, scene_audio) = native_vulkan_scene_present_with_audio(
                 &plan,
                 duration,
@@ -283,7 +301,7 @@ pub fn run_scene(
         }
         NativeVulkanScenePresentRouteKind::SolidQuad => {
             let geometry = runtime
-                .vulkanalia_solid_quad_geometry_input()
+                .take_vulkanalia_solid_quad_geometry_input()
                 .ok_or_else(|| {
                     NativeVulkanError::Scene(format!(
                         "scene draw plan is not solid-quad recordable: {}",
@@ -291,6 +309,10 @@ pub fn run_scene(
                     ))
                 })?;
             let dynamic_geometry = native_vulkan_scene_dynamic_solid_geometry(&plan)?;
+            let scene_size = runtime.scene_size;
+            let scene_fit = runtime.scene_fit;
+            runtime.release_cpu_draw_payloads_for_present();
+            native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
 
             let (present, scene_audio) = native_vulkan_scene_present_with_audio(
                 &plan,
@@ -306,8 +328,8 @@ pub fn run_scene(
                             quad_color: options.clear_color,
                             geometry: Some(geometry),
                             dynamic_geometry,
-                            scene_size: runtime.scene_size,
-                            scene_fit: runtime.scene_fit,
+                            scene_size,
+                            scene_fit,
                         },
                     )
                     .map_err(NativeVulkanError::Scene)
@@ -321,11 +343,11 @@ pub fn run_scene(
         }
         NativeVulkanScenePresentRouteKind::SampledImage => {
             let (source, fit, geometry) = if let Some((source, geometry)) =
-                runtime.vulkanalia_sampled_image_geometry_input()
+                runtime.take_vulkanalia_sampled_image_geometry_input()
             {
                 (source, None, Some(geometry))
             } else if let Some((source, fit)) =
-                runtime.vulkanalia_sampled_image_implicit_full_extent_input()
+                runtime.take_vulkanalia_sampled_image_implicit_full_extent_input()
             {
                 (source, Some(fit), None)
             } else {
@@ -334,9 +356,13 @@ pub fn run_scene(
                     runtime.draw_pass_backend_status
                 )));
             };
-            let solid_geometry = runtime.vulkanalia_mixed_solid_quad_geometry_input();
+            let solid_geometry = runtime.take_vulkanalia_mixed_solid_quad_geometry_input();
             let (dynamic_solid_geometry, dynamic_geometry) =
                 native_vulkan_scene_dynamic_sampled_geometry_pair(&plan)?;
+            let scene_size = runtime.scene_size;
+            let scene_fit = runtime.scene_fit;
+            runtime.release_cpu_draw_payloads_for_present();
+            native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
 
             let (present, scene_audio) = native_vulkan_scene_present_with_audio(
                 &plan,
@@ -356,8 +382,8 @@ pub fn run_scene(
                             geometry,
                             dynamic_solid_geometry,
                             dynamic_geometry,
-                            scene_size: runtime.scene_size,
-                            scene_fit: runtime.scene_fit,
+                            scene_size,
+                            scene_fit,
                         },
                     )
                     .map_err(NativeVulkanError::Scene)
@@ -388,6 +414,9 @@ pub fn run_scene(
             })?;
             let width = native_vulkan_scene_video_extent(video_bridge.width, video.width);
             let height = native_vulkan_scene_video_extent(video_bridge.height, video.height);
+            let fit = video.fit;
+            runtime.release_cpu_draw_payloads_for_present();
+            native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
 
             let (present, scene_audio) = native_vulkan_scene_present_with_audio(
                 &plan,
@@ -400,7 +429,7 @@ pub fn run_scene(
                         source,
                         width,
                         height,
-                        video.fit,
+                        fit,
                         video_bridge.bitstream_extract_max_samples,
                         video_bridge.ready_prefix_frames,
                         video_bridge.playback_frames,

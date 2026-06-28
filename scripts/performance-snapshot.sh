@@ -31,6 +31,8 @@ Options:
                      Require sampled max RSS to be at most this KiB value
   --expect-max-pss-kib-at-most <kib>
                      Require sampled max PSS to be at most this KiB value
+  --expect-max-pss-dirty-kib-at-most <kib>
+                     Require sampled max Pss_Dirty to be at most this KiB value
   --expect-max-private-kib-at-most <kib>
                      Require sampled max private memory to be at most this KiB value
   --expect-max-private-dirty-kib-at-most <kib>
@@ -204,6 +206,7 @@ expect_max_fps=""
 expect_plan_kind=""
 expect_max_rss_kib_at_most=""
 expect_max_pss_kib_at_most=""
+expect_max_pss_dirty_kib_at_most=""
 expect_max_private_kib_at_most=""
 expect_max_private_dirty_kib_at_most=""
 expect_max_uss_kib_at_most=""
@@ -354,6 +357,11 @@ while [[ $# -gt 0 ]]; do
     --expect-max-pss-kib-at-most)
       [[ $# -ge 2 ]] || { echo "--expect-max-pss-kib-at-most requires a value" >&2; exit 2; }
       expect_max_pss_kib_at_most="$2"
+      shift 2
+      ;;
+    --expect-max-pss-dirty-kib-at-most)
+      [[ $# -ge 2 ]] || { echo "--expect-max-pss-dirty-kib-at-most requires a value" >&2; exit 2; }
+      expect_max_pss_dirty_kib_at_most="$2"
       shift 2
       ;;
     --expect-max-private-kib-at-most)
@@ -829,12 +837,13 @@ sample_smaps_rollup() {
   local target_pid="$1"
   local rollup="/proc/${target_pid}/smaps_rollup"
   if [[ ! -r "$rollup" ]]; then
-    printf '0 0 0 0 0 0 0 0\n'
+    printf '0 0 0 0 0 0 0 0 0\n'
     return 0
   fi
 
   awk '
     /^Pss:/ { pss = $2 + 0 }
+    /^Pss_Dirty:/ { pss_dirty = $2 + 0 }
     /^Private_Clean:/ { private_clean = $2 + 0 }
     /^Private_Dirty:/ { private_dirty = $2 + 0 }
     /^Shared_Clean:/ { shared_clean = $2 + 0 }
@@ -843,7 +852,7 @@ sample_smaps_rollup() {
       private_total = private_clean + private_dirty
       uss = private_total
       shared_total = shared_clean + shared_dirty
-      printf "%d %d %d %d %d %d %d %d\n", pss, private_clean, private_dirty, private_total, uss, shared_clean, shared_dirty, shared_total
+      printf "%d %d %d %d %d %d %d %d %d\n", pss, pss_dirty, private_clean, private_dirty, private_total, uss, shared_clean, shared_dirty, shared_total
     }
   ' "$rollup"
 }
@@ -1115,18 +1124,20 @@ write_summary() {
       rss = $5 + 0
       vsz = $6 + 0
       pss = $7 + 0
-      private_clean = $8 + 0
-      private_dirty = $9 + 0
-      private = $10 + 0
-      uss = $11 + 0
-      shared = $14 + 0
-      gpu_avg = $19
-      gpu_max_sample = $20
-      nvidia_memory = $22
+      pss_dirty = $8 + 0
+      private_clean = $9 + 0
+      private_dirty = $10 + 0
+      private = $11 + 0
+      uss = $12 + 0
+      shared = $15 + 0
+      gpu_avg = $20
+      gpu_max_sample = $21
+      nvidia_memory = $23
       if (samples == 1) {
         first_rss = rss
         first_vsz = vsz
         first_pss = pss
+        first_pss_dirty = pss_dirty
         first_private_clean = private_clean
         first_private_dirty = private_dirty
         first_private = private
@@ -1136,6 +1147,7 @@ write_summary() {
       last_rss = rss
       last_vsz = vsz
       last_pss = pss
+      last_pss_dirty = pss_dirty
       last_private_clean = private_clean
       last_private_dirty = private_dirty
       last_private = private
@@ -1147,6 +1159,7 @@ write_summary() {
       rss_sum += rss
       vsz_sum += vsz
       pss_sum += pss
+      pss_dirty_sum += pss_dirty
       private_clean_sum += private_clean
       private_dirty_sum += private_dirty
       private_sum += private
@@ -1169,6 +1182,7 @@ write_summary() {
       if (samples == 1 || rss < min_rss) { min_rss = rss }
       if (samples == 1 || vsz < min_vsz) { min_vsz = vsz }
       if (samples == 1 || pss < min_pss) { min_pss = pss }
+      if (samples == 1 || pss_dirty < min_pss_dirty) { min_pss_dirty = pss_dirty }
       if (samples == 1 || private_clean < min_private_clean) { min_private_clean = private_clean }
       if (samples == 1 || private_dirty < min_private_dirty) { min_private_dirty = private_dirty }
       if (samples == 1 || private < min_private) { min_private = private }
@@ -1177,6 +1191,7 @@ write_summary() {
       if ($5 + 0 > max_rss) { max_rss = $5 + 0 }
       if ($6 + 0 > max_vsz) { max_vsz = $6 + 0 }
       if (pss > max_pss) { max_pss = pss }
+      if (pss_dirty > max_pss_dirty) { max_pss_dirty = pss_dirty }
       if (private_clean > max_private_clean) { max_private_clean = private_clean }
       if (private_dirty > max_private_dirty) { max_private_dirty = private_dirty }
       if (private > max_private) { max_private = private }
@@ -1209,6 +1224,13 @@ write_summary() {
         printf "max_pss_kib: %d\n", max_pss
         printf "retained_pss_delta_kib: %d\n", last_pss - first_pss
         printf "peak_over_first_pss_kib: %d\n", max_pss - first_pss
+        printf "min_pss_dirty_kib: %d\n", min_pss_dirty
+        printf "first_pss_dirty_kib: %d\n", first_pss_dirty
+        printf "avg_pss_dirty_kib: %.0f\n", pss_dirty_sum / samples
+        printf "last_pss_dirty_kib: %d\n", last_pss_dirty
+        printf "max_pss_dirty_kib: %d\n", max_pss_dirty
+        printf "retained_pss_dirty_delta_kib: %d\n", last_pss_dirty - first_pss_dirty
+        printf "peak_over_first_pss_dirty_kib: %d\n", max_pss_dirty - first_pss_dirty
         printf "min_private_clean_kib: %d\n", min_private_clean
         printf "first_private_clean_kib: %d\n", first_private_clean
         printf "avg_private_clean_kib: %.0f\n", private_clean_sum / samples
@@ -1831,6 +1853,7 @@ write_video_hardware_report() {
     printf 'process.max_nvidia_process_gpu_memory_mib: %s\n' "$(summary_value_or_none "$process_summary" max_nvidia_process_gpu_memory_mib)"
     printf 'process.max_rss_kib: %s\n' "$(summary_value_or_none "$process_summary" max_rss_kib)"
     printf 'process.max_pss_kib: %s\n' "$(summary_value_or_none "$process_summary" max_pss_kib)"
+    printf 'process.max_pss_dirty_kib: %s\n' "$(summary_value_or_none "$process_summary" max_pss_dirty_kib)"
     printf 'process.max_private_clean_kib: %s\n' "$(summary_value_or_none "$process_summary" max_private_clean_kib)"
     printf 'process.max_private_dirty_kib: %s\n' "$(summary_value_or_none "$process_summary" max_private_dirty_kib)"
     printf 'process.max_private_kib: %s\n' "$(summary_value_or_none "$process_summary" max_private_kib)"
@@ -1904,6 +1927,7 @@ validate_decision_expectations() {
 has_process_memory_expectations() {
   [[ -n "$expect_max_rss_kib_at_most" ||
     -n "$expect_max_pss_kib_at_most" ||
+    -n "$expect_max_pss_dirty_kib_at_most" ||
     -n "$expect_max_private_kib_at_most" ||
     -n "$expect_max_private_dirty_kib_at_most" ||
     -n "$expect_max_uss_kib_at_most" ||
@@ -1986,6 +2010,9 @@ validate_process_memory_expectations() {
   fi
   if [[ -n "$expect_max_pss_kib_at_most" ]]; then
     expect_process_summary_maximum "max_pss_kib" "$expect_max_pss_kib_at_most" "max PSS" 1
+  fi
+  if [[ -n "$expect_max_pss_dirty_kib_at_most" ]]; then
+    expect_process_summary_maximum "max_pss_dirty_kib" "$expect_max_pss_dirty_kib_at_most" "max Pss_Dirty" 1
   fi
   if [[ -n "$expect_max_private_kib_at_most" ]]; then
     expect_process_summary_maximum "max_private_kib" "$expect_max_private_kib_at_most" "max private memory" 1
@@ -2333,6 +2360,7 @@ fi
 for memory_expectation in \
   "$expect_max_rss_kib_at_most" \
   "$expect_max_pss_kib_at_most" \
+  "$expect_max_pss_dirty_kib_at_most" \
   "$expect_max_private_kib_at_most" \
   "$expect_max_private_dirty_kib_at_most" \
   "$expect_max_uss_kib_at_most" \
@@ -2506,6 +2534,7 @@ expect_max_fps: ${expect_max_fps:-none}
 expect_plan_kind: ${expect_plan_kind:-none}
 expect_max_rss_kib_at_most: ${expect_max_rss_kib_at_most:-none}
 expect_max_pss_kib_at_most: ${expect_max_pss_kib_at_most:-none}
+expect_max_pss_dirty_kib_at_most: ${expect_max_pss_dirty_kib_at_most:-none}
 expect_max_private_kib_at_most: ${expect_max_private_kib_at_most:-none}
 expect_max_private_dirty_kib_at_most: ${expect_max_private_dirty_kib_at_most:-none}
 expect_max_uss_kib_at_most: ${expect_max_uss_kib_at_most:-none}
@@ -2578,7 +2607,7 @@ expect_adaptive_action: ${expect_adaptive_action:-none}
 gpu_busy_sources: drm gpu_busy_percent sysfs when readable; nvidia-smi utilization.gpu when available
 EOF
 
-printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,nvidia_process_gpu_memory_mib\n' > "$csv_path"
+printf 'sample,elapsed_seconds,pid,cpu_percent,rss_kib,vsz_kib,pss_kib,pss_dirty_kib,private_clean_kib,private_dirty_kib,private_kib,uss_kib,shared_clean_kib,shared_dirty_kib,shared_kib,stat,comm,status_file,status_error_file,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,nvidia_process_gpu_memory_mib\n' > "$csv_path"
 printf 'sample,elapsed_seconds,output_name,action,mode,reason,max_fps,wallpaper,plan_kind,source,fit,target_max_fps,muted\n' > "$decisions_path"
 printf 'sample,elapsed_seconds,desktop_refreshes,desktop_refresh_skips,desktop_changes,last_desktop_refresh_age_ms,render_sync_cache_hits,render_sync_cache_misses,render_sync_updates_queued,render_sync_updates_skipped,render_sync_package_cache_entries,render_sync_package_cache_max_entries,render_sync_package_cache_hits,render_sync_package_cache_misses,render_sync_package_cache_evictions,render_sync_archive_cache_entries,render_sync_archive_cache_max_entries,render_sync_archive_cache_reuses,render_sync_archive_cache_extractions,render_sync_archive_cache_evictions,render_sync_archive_cache_evictions_latest,render_sync_archive_cache_eviction_errors,render_sync_archive_cache_eviction_errors_latest,render_sync_planned_static_image_resources,render_sync_planned_video_poster_resources,render_sync_planned_slideshow_image_resources,render_sync_planned_image_resource_references,render_sync_planned_unique_image_resources,adaptive_refreshes,adaptive_refresh_skips,adaptive_active_triggers,cpu_pressure_some_avg10_x100,memory_pressure_some_avg10_x100,temperature_max_millicelsius,power_external_online,power_system_battery_present,power_battery_discharging,power_battery_capacity_percent,power_battery_power_microwatts,gpu_busy_percent_avg,gpu_busy_percent_max,gpu_busy_sources,adaptive_action_types,adaptive_action_scopes,adaptive_action_configured_actions,adaptive_action_max_fps,renderer_output_windows,renderer_static_surfaces,renderer_static_picture_surfaces,renderer_static_css_surfaces,renderer_static_color_surfaces,renderer_slideshow_surfaces,renderer_video_surfaces,renderer_video_shared_runtimes,renderer_video_pipelines,renderer_video_qos_messages,renderer_video_qos_dropped_max,render_sync_planned_static_image_resource_bytes,render_sync_planned_video_poster_resource_bytes,render_sync_planned_slideshow_image_resource_bytes,render_sync_planned_image_resource_reference_bytes,render_sync_planned_unique_image_resource_bytes,render_sync_package_cache_retained_resource_references,render_sync_package_cache_retained_unique_resources,render_sync_package_cache_retained_resource_bytes,render_sync_package_cache_retained_unique_resource_bytes,renderer_static_surface_resource_references,renderer_static_surface_resource_bytes,renderer_slideshow_resource_references,renderer_slideshow_resource_bytes,renderer_static_surface_unique_resources,renderer_static_surface_unique_resource_bytes,renderer_static_surface_estimated_decoded_bytes,renderer_slideshow_unique_resources,renderer_slideshow_unique_resource_bytes,render_sync_static_image_cache_entries,render_sync_static_image_cache_max_entries,render_sync_static_image_cache_generations,render_sync_static_image_cache_reuses,render_sync_static_image_cache_generation_errors,render_sync_static_image_cache_evictions,render_sync_static_image_cache_eviction_errors,render_sync_planned_video_source_references,render_sync_planned_unique_video_sources,render_sync_planned_duplicate_video_source_references,render_sync_planned_max_video_source_outputs,render_sync_planned_video_source_reference_bytes,render_sync_planned_unique_video_source_bytes,renderer_video_pipeline_source_references,renderer_video_pipeline_source_reference_bytes,renderer_video_pipeline_unique_sources,renderer_video_pipeline_unique_source_bytes,render_sync_package_cache_max_retained_unique_resource_bytes,render_sync_static_image_cache_bytes,render_sync_static_image_cache_max_bytes,render_sync_package_cache_retained_preview_resource_references,render_sync_package_cache_retained_unique_preview_resources,render_sync_package_cache_retained_preview_resource_bytes,render_sync_package_cache_retained_unique_preview_resource_bytes\n' > "$telemetry_path"
 
@@ -2598,7 +2627,7 @@ for sample in $(seq 1 "$samples"); do
     break
   fi
   read -r sample_pid cpu_percent rss_kib vsz_kib stat comm <<< "$ps_line"
-  read -r pss_kib private_clean_kib private_dirty_kib private_kib uss_kib shared_clean_kib shared_dirty_kib shared_kib < <(sample_smaps_rollup "$pid")
+  read -r pss_kib pss_dirty_kib private_clean_kib private_dirty_kib private_kib uss_kib shared_clean_kib shared_dirty_kib shared_kib < <(sample_smaps_rollup "$pid")
   IFS='|' read -r gpu_busy_percent_avg gpu_busy_percent_max gpu_busy_sources < <(sample_gpu_busy)
   nvidia_process_gpu_memory_mib="$(sample_nvidia_process_gpu_memory_mib "$pid")"
 
@@ -2646,7 +2675,7 @@ for sample in $(seq 1 "$samples"); do
     break
   fi
 
-  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "$sample" \
     "$elapsed" \
     "$sample_pid" \
@@ -2654,6 +2683,7 @@ for sample in $(seq 1 "$samples"); do
     "$rss_kib" \
     "$vsz_kib" \
     "$pss_kib" \
+    "$pss_dirty_kib" \
     "$private_clean_kib" \
     "$private_dirty_kib" \
     "$private_kib" \

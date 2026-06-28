@@ -3,20 +3,21 @@ use std::time::Duration;
 use crate::core::FitMode;
 use crate::renderer::StaticWallpaperPlan;
 
-use super::super::scene::runtime::native_vulkan_scene_runtime_snapshot;
 use super::super::{
     NativeVulkanClearColor, NativeVulkanError, NativeVulkanOptions,
     NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
     NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot,
+    native_vulkan_vulkanalia_configure_scene_sampled_image_allocator,
     run_native_vulkan_vulkanalia_scene_sampled_image_present,
 };
-use super::render_item::native_vulkan_static_scene_item;
 
 pub fn run_static_image(
     mut options: NativeVulkanOptions,
     duration: Duration,
     plan: StaticWallpaperPlan,
 ) -> Result<NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot, NativeVulkanError> {
+    native_vulkan_vulkanalia_configure_scene_sampled_image_allocator();
+
     if !native_vulkan_static_source_is_gtex(&plan.source) {
         return Err(NativeVulkanError::StaticImage(format!(
             "native static image runtime requires a .gtex BC7 source {}; runtime PNG/JPG decoding is disabled",
@@ -27,20 +28,8 @@ pub fn run_static_image(
         options.host.output_name = Some(plan.output_name.clone());
     }
     let clear_color = native_vulkan_static_background_clear_color(plan.background.as_deref());
-    let scene_render_item = native_vulkan_static_scene_item(&plan);
-    let scene_geometry =
-        native_vulkan_scene_runtime_snapshot(&scene_render_item).and_then(|runtime| {
-            let solid_geometry = runtime.vulkanalia_mixed_solid_quad_geometry_input();
-            runtime
-                .vulkanalia_sampled_image_geometry_input()
-                .map(|(source, geometry)| (source, geometry, solid_geometry))
-        });
     let source = plan.source.clone();
     let fit = plan.fit;
-    let (source, fit, geometry, solid_geometry) = match scene_geometry {
-        Some((source, geometry, solid_geometry)) => (source, None, Some(geometry), solid_geometry),
-        None => (source, Some(fit), None, None),
-    };
 
     run_native_vulkan_vulkanalia_scene_sampled_image_present(
         NativeVulkanVulkanaliaSceneSampledImagePresentOptions {
@@ -50,11 +39,11 @@ pub fn run_static_image(
             target_max_fps: options.target_max_fps,
             source,
             clear_color,
-            fit,
+            fit: Some(fit),
             scene_size: None,
             scene_fit: FitMode::Cover,
-            solid_geometry,
-            geometry,
+            solid_geometry: None,
+            geometry: None,
             dynamic_solid_geometry: None,
             dynamic_geometry: None,
         },

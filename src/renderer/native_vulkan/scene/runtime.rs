@@ -155,8 +155,26 @@ pub struct NativeVulkanFullSceneRuntimeSnapshot {
 }
 
 impl NativeVulkanSceneRuntimeSnapshot {
-    pub fn vulkanalia_solid_quad_geometry_input(
-        &self,
+    pub(in crate::renderer::native_vulkan) fn release_cpu_draw_payloads_for_present(&mut self) {
+        self.draw_pass_recordable_quads = Vec::new();
+        self.draw_pass_quad_recording_steps = Vec::new();
+        self.draw_pass_quad_vertices = Vec::new();
+        self.draw_pass_quad_indices = Vec::new();
+        self.draw_pass_sampled_image_quads = Vec::new();
+        self.draw_pass_sampled_image_recording_steps = Vec::new();
+        self.draw_pass_sampled_image_vertices = Vec::new();
+        self.draw_pass_sampled_image_indices = Vec::new();
+        self.draw_pass_required_image_resources = Vec::new();
+        self.draw_pass_required_video_resources = Vec::new();
+        self.draw_ops = Vec::new();
+        self.unsupported_layers = Vec::new();
+        self.full_scene.completed_boundaries = Vec::new();
+        self.full_scene.pending_boundaries = Vec::new();
+        self.full_scene.unsupported_scene_features = Vec::new();
+    }
+
+    pub fn take_vulkanalia_solid_quad_geometry_input(
+        &mut self,
     ) -> Option<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput> {
         if self.draw_pass_quad_recording_step_count == 0
             || self.draw_pass_quad_vertices.is_empty()
@@ -165,9 +183,8 @@ impl NativeVulkanSceneRuntimeSnapshot {
             return None;
         }
 
-        let draw_steps = self
-            .draw_pass_quad_recording_steps
-            .iter()
+        let draw_steps = std::mem::take(&mut self.draw_pass_quad_recording_steps)
+            .into_iter()
             .map(|step| NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
                 layer_index: step.layer_index,
                 first_index: step.first_index,
@@ -177,8 +194,8 @@ impl NativeVulkanSceneRuntimeSnapshot {
 
         Some(
             NativeVulkanVulkanaliaSceneSolidQuadGeometryInput::new_batched(
-                self.draw_pass_quad_vertices
-                    .iter()
+                std::mem::take(&mut self.draw_pass_quad_vertices)
+                    .into_iter()
                     .map(|vertex| {
                         NativeVulkanVulkanaliaSceneSolidQuadVertex::new(
                             vertex.position,
@@ -186,15 +203,15 @@ impl NativeVulkanSceneRuntimeSnapshot {
                         )
                     })
                     .collect(),
-                self.draw_pass_quad_indices.clone(),
+                std::mem::take(&mut self.draw_pass_quad_indices),
                 draw_steps,
                 "scene-runtime-draw-plan",
             ),
         )
     }
 
-    pub fn vulkanalia_sampled_image_geometry_input(
-        &self,
+    pub fn take_vulkanalia_sampled_image_geometry_input(
+        &mut self,
     ) -> Option<(
         PathBuf,
         NativeVulkanVulkanaliaSceneSampledImageGeometryInput,
@@ -207,14 +224,13 @@ impl NativeVulkanSceneRuntimeSnapshot {
             return None;
         }
 
-        let sources = self
-            .draw_pass_sampled_image_quads
-            .iter()
-            .map(|quad| quad.source.clone())
+        let sources = std::mem::take(&mut self.draw_pass_sampled_image_quads)
+            .into_iter()
+            .map(|quad| quad.source)
             .collect::<Vec<_>>();
-        let draw_steps = self
-            .draw_pass_sampled_image_recording_steps
-            .iter()
+        let source = sources.first().cloned()?;
+        let draw_steps = std::mem::take(&mut self.draw_pass_sampled_image_recording_steps)
+            .into_iter()
             .map(|step| NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index: step.layer_index,
                 resource_index: step.resource_index,
@@ -226,10 +242,10 @@ impl NativeVulkanSceneRuntimeSnapshot {
             .collect::<Vec<_>>();
 
         Some((
-            self.draw_pass_sampled_image_quads[0].source.clone(),
+            source,
             NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched(
-                self.draw_pass_sampled_image_vertices
-                    .iter()
+                std::mem::take(&mut self.draw_pass_sampled_image_vertices)
+                    .into_iter()
                     .map(|vertex| {
                         NativeVulkanVulkanaliaSceneSampledImageVertex::new(
                             vertex.position,
@@ -238,7 +254,7 @@ impl NativeVulkanSceneRuntimeSnapshot {
                         )
                     })
                     .collect(),
-                self.draw_pass_sampled_image_indices.clone(),
+                std::mem::take(&mut self.draw_pass_sampled_image_indices),
                 sources,
                 draw_steps,
                 "scene-runtime-sampled-image-draw-plan",
@@ -246,8 +262,8 @@ impl NativeVulkanSceneRuntimeSnapshot {
         ))
     }
 
-    pub fn vulkanalia_sampled_image_implicit_full_extent_input(
-        &self,
+    pub fn take_vulkanalia_sampled_image_implicit_full_extent_input(
+        &mut self,
     ) -> Option<(PathBuf, FitMode)> {
         if !self.draw_pass_sampled_image_implicit_full_extent_ready
             || !matches!(
@@ -260,12 +276,12 @@ impl NativeVulkanSceneRuntimeSnapshot {
         {
             return None;
         }
-        let op = self.draw_ops.iter().find(|op| op.kind == "image")?;
-        Some((op.source.clone()?, op.fit))
+        let op = self.draw_ops.iter_mut().find(|op| op.kind == "image")?;
+        Some((op.source.take()?, op.fit))
     }
 
-    pub fn vulkanalia_mixed_solid_quad_geometry_input(
-        &self,
+    pub fn take_vulkanalia_mixed_solid_quad_geometry_input(
+        &mut self,
     ) -> Option<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput> {
         if !matches!(
             self.vulkanalia_draw_pass.backend_status,
@@ -279,9 +295,8 @@ impl NativeVulkanSceneRuntimeSnapshot {
             return None;
         }
 
-        let draw_steps = self
-            .draw_pass_quad_recording_steps
-            .iter()
+        let draw_steps = std::mem::take(&mut self.draw_pass_quad_recording_steps)
+            .into_iter()
             .map(|step| NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
                 layer_index: step.layer_index,
                 first_index: step.first_index,
@@ -291,8 +306,8 @@ impl NativeVulkanSceneRuntimeSnapshot {
 
         Some(
             NativeVulkanVulkanaliaSceneSolidQuadGeometryInput::new_batched(
-                self.draw_pass_quad_vertices
-                    .iter()
+                std::mem::take(&mut self.draw_pass_quad_vertices)
+                    .into_iter()
                     .map(|vertex| {
                         NativeVulkanVulkanaliaSceneSolidQuadVertex::new(
                             vertex.position,
@@ -300,7 +315,7 @@ impl NativeVulkanSceneRuntimeSnapshot {
                         )
                     })
                     .collect(),
-                self.draw_pass_quad_indices.clone(),
+                std::mem::take(&mut self.draw_pass_quad_indices),
                 draw_steps,
                 "scene-runtime-mixed-solid-quad-draw-plan",
             ),
@@ -1898,7 +1913,7 @@ mod tests {
         rectangle.transform.y = 12.0;
         let item = scene_test_item(vec![rectangle], None);
 
-        let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+        let mut snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
 
         assert!(snapshot.native_draw_ready);
         assert!(snapshot.draw_pass_plan_ready);
@@ -1935,7 +1950,7 @@ mod tests {
         );
         assert_eq!(snapshot.draw_pass_quad_vertices[3].position, [160.0, 102.0]);
         let vulkanalia_geometry = snapshot
-            .vulkanalia_solid_quad_geometry_input()
+            .take_vulkanalia_solid_quad_geometry_input()
             .expect("recordable solid quad geometry");
         assert_eq!(vulkanalia_geometry.source_label, "scene-runtime-draw-plan");
         assert_eq!(vulkanalia_geometry.vertices.len(), 4);
@@ -2018,7 +2033,7 @@ mod tests {
         image.transform.x = 10.0;
         let item = scene_test_item(vec![image], None);
 
-        let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+        let mut snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
 
         assert!(snapshot.native_draw_ready);
         assert!(snapshot.draw_pass_plan_ready);
@@ -2069,7 +2084,7 @@ mod tests {
         assert_eq!(snapshot.draw_pass_sampled_image_vertices[0].uv, [0.0, 0.0]);
         assert_eq!(snapshot.draw_pass_sampled_image_vertices[3].uv, [1.0, 1.0]);
         let (source, sampled_geometry) = snapshot
-            .vulkanalia_sampled_image_geometry_input()
+            .take_vulkanalia_sampled_image_geometry_input()
             .expect("recordable sampled image geometry");
         assert_eq!(source, PathBuf::from("/tmp/scene-hero.png"));
         assert_eq!(
@@ -2136,12 +2151,12 @@ mod tests {
         image.height = Some(180.0);
         let item = scene_test_item(vec![background, image], None);
 
-        let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+        let mut snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
         let solid_geometry = snapshot
-            .vulkanalia_mixed_solid_quad_geometry_input()
+            .take_vulkanalia_mixed_solid_quad_geometry_input()
             .expect("mixed solid quad geometry");
         let (source, sampled_geometry) = snapshot
-            .vulkanalia_sampled_image_geometry_input()
+            .take_vulkanalia_sampled_image_geometry_input()
             .expect("mixed sampled image geometry");
 
         assert!(snapshot.draw_pass_backend_ready);
@@ -2214,9 +2229,9 @@ mod tests {
         image.height = Some(180.0);
         let item = scene_test_item(vec![background, image], None);
 
-        let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+        let mut snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
         let (source, sampled_geometry) = snapshot
-            .vulkanalia_sampled_image_geometry_input()
+            .take_vulkanalia_sampled_image_geometry_input()
             .expect("clear-background sampled image geometry");
 
         assert!(snapshot.draw_pass_backend_ready);
@@ -2249,9 +2264,9 @@ mod tests {
         path.color = Some("#cc8844".to_owned());
         let item = scene_test_item(vec![path], None);
 
-        let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+        let mut snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
         let solid_geometry = snapshot
-            .vulkanalia_solid_quad_geometry_input()
+            .take_vulkanalia_solid_quad_geometry_input()
             .expect("path solid geometry");
 
         assert!(snapshot.draw_pass_backend_ready);
@@ -2285,9 +2300,9 @@ mod tests {
         path.color = Some("#cc8844".to_owned());
         let item = scene_test_item(vec![path], None);
 
-        let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+        let mut snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
         let solid_geometry = snapshot
-            .vulkanalia_solid_quad_geometry_input()
+            .take_vulkanalia_solid_quad_geometry_input()
             .expect("curve path solid geometry");
 
         assert!(snapshot.draw_pass_backend_ready);
@@ -2327,9 +2342,9 @@ mod tests {
         path.color = Some("#22aa88".to_owned());
         let item = scene_test_item(vec![path], None);
 
-        let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+        let mut snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
         let solid_geometry = snapshot
-            .vulkanalia_solid_quad_geometry_input()
+            .take_vulkanalia_solid_quad_geometry_input()
             .expect("arc path solid geometry");
 
         assert!(snapshot.draw_pass_backend_ready);
@@ -2364,9 +2379,9 @@ mod tests {
         path.color = Some("#22aa88".to_owned());
         let item = scene_test_item(vec![path], None);
 
-        let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+        let mut snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
         let solid_geometry = snapshot
-            .vulkanalia_solid_quad_geometry_input()
+            .take_vulkanalia_solid_quad_geometry_input()
             .expect("compound path solid geometry");
 
         assert!(snapshot.draw_pass_backend_ready);
@@ -2402,10 +2417,7 @@ mod tests {
         path.stroke_width = Some(4.0);
         let item = scene_test_item(vec![path], None);
 
-        let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
-        let solid_geometry = snapshot
-            .vulkanalia_solid_quad_geometry_input()
-            .expect("stroke path solid geometry");
+        let mut snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
 
         assert!(snapshot.draw_pass_backend_ready);
         assert_eq!(
@@ -2435,6 +2447,9 @@ mod tests {
                 .completed_boundaries
                 .contains(&"stroke-geometry-runtime")
         );
+        let solid_geometry = snapshot
+            .take_vulkanalia_solid_quad_geometry_input()
+            .expect("stroke path solid geometry");
         assert_eq!(solid_geometry.draw_steps.len(), 1);
         assert_eq!(solid_geometry.indices.len(), 18);
     }
@@ -2455,9 +2470,9 @@ mod tests {
         overlay.transform.x = 64.0;
         let item = scene_test_item(vec![background, overlay], None);
 
-        let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+        let mut snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
         let (source, sampled_geometry) = snapshot
-            .vulkanalia_sampled_image_geometry_input()
+            .take_vulkanalia_sampled_image_geometry_input()
             .expect("batched sampled image geometry");
 
         assert_eq!(source, PathBuf::from("/tmp/scene-background.png"));
