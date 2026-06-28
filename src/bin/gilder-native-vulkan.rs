@@ -4,6 +4,12 @@ use gilder::core::{FitMode, SceneNodeKind, ScenePathFillRule, SceneSystems, Scen
 use gilder::desktop::DesktopCursorParallax;
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::native_vulkan::NativeVulkanClearColor;
+#[cfg(all(feature = "native-vulkan-renderer", feature = "native-vulkan-video"))]
+use gilder::renderer::native_vulkan::{
+    NativeVulkanAudioOutputMode, NativeVulkanSceneVideoBridgeOptions,
+    NativeVulkanVideoSessionSmokeOptions, native_vulkan_resolve_ffmpeg_video_session_codec,
+    native_vulkan_video_run_route,
+};
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::{
     SceneDisplayPlan, SceneRenderLayer, SceneWallpaperPlan,
@@ -123,6 +129,73 @@ fn native_vulkan_static_source_is_gtex(source: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("gtex"))
 }
 
+#[cfg(all(feature = "native-vulkan-renderer", feature = "native-vulkan-video"))]
+fn native_vulkan_scene_video_bridge_options_from_plan(
+    plan: &SceneWallpaperPlan,
+    base_options: &NativeVulkanVideoSessionSmokeOptions,
+    video_width_set: bool,
+    video_height_set: bool,
+    ready_prefix_playback_frames: u32,
+    duration_playback_frames: Option<u32>,
+    audio_clock_probe_requested: bool,
+    audio_output_mode: NativeVulkanAudioOutputMode,
+) -> Result<Option<NativeVulkanSceneVideoBridgeOptions>, Box<dyn std::error::Error>> {
+    let mut visible_video_layers = plan.layers.iter().filter(|layer| {
+        layer.kind == SceneNodeKind::Video && layer.opacity > 0.0 && layer.source.is_some()
+    });
+    let Some(video_layer) = visible_video_layers.next() else {
+        return Ok(None);
+    };
+    if visible_video_layers.next().is_some() {
+        return Ok(None);
+    }
+    let source = video_layer
+        .source
+        .as_ref()
+        .expect("visible video layer source is present");
+    let mut options = base_options.clone();
+    options.codec = native_vulkan_resolve_ffmpeg_video_session_codec(source)?;
+    if !video_width_set {
+        options.width = native_vulkan_scene_video_bridge_extent(video_layer.width, options.width);
+    }
+    if !video_height_set {
+        options.height =
+            native_vulkan_scene_video_bridge_extent(video_layer.height, options.height);
+    }
+
+    let route = native_vulkan_video_run_route(
+        &options,
+        ready_prefix_playback_frames,
+        duration_playback_frames,
+    );
+    if !route.is_vulkanalia_ready_prefix() {
+        return Err(format!(
+            "scene video layer cannot use Vulkanalia ready-prefix route for {}: {}",
+            source.display(),
+            route.status
+        )
+        .into());
+    }
+    Ok(Some(NativeVulkanSceneVideoBridgeOptions {
+        codec: route.codec,
+        width: route.width,
+        height: route.height,
+        bitstream_extract_max_samples: options.bitstream_extract_max_samples,
+        ready_prefix_frames: route.ready_prefix_frames,
+        playback_frames: route.playback_frames,
+        audio_clock_probe_requested,
+        audio_output_mode,
+    }))
+}
+
+#[cfg(all(feature = "native-vulkan-renderer", feature = "native-vulkan-video"))]
+fn native_vulkan_scene_video_bridge_extent(layer_extent: Option<f64>, fallback: u32) -> u32 {
+    layer_extent
+        .filter(|extent| extent.is_finite() && *extent > 0.0)
+        .map(|extent| extent.round().clamp(1.0, f64::from(u32::MAX)) as u32)
+        .unwrap_or(fallback)
+}
+
 #[cfg(feature = "native-vulkan-renderer")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::StaticWallpaperPlan;
@@ -185,6 +258,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut vulkanalia_create_empty_session_parameters = false;
     let mut vulkanalia_create_session_parameters = false;
     let mut ready_prefix_playback_frames = 0u32;
+    let mut video_width_set = false;
+    let mut video_height_set = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -400,6 +475,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|value| value.parse::<u32>())
                     .transpose()?
                     .ok_or("--width requires pixels")?;
+                video_width_set = true;
             }
             "--height" => {
                 video_session_options.height = args
@@ -407,6 +483,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|value| value.parse::<u32>())
                     .transpose()?
                     .ok_or("--height requires pixels")?;
+                video_height_set = true;
             }
             "--bitstream-samples" => {
                 video_session_options.bitstream_extract_max_samples = args
@@ -633,7 +710,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 scene_snapshot_time_ms,
                 target_max_fps,
             )?;
-            let video_bridge = if scene_video_layer {
+            let explicit_video_bridge = if scene_video_layer {
                 #[cfg(feature = "native-vulkan-video")]
                 {
                     let route = native_vulkan_video_run_route(
@@ -669,6 +746,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 None
             };
+            #[cfg(feature = "native-vulkan-video")]
+            let video_bridge = if explicit_video_bridge.is_some() {
+                explicit_video_bridge
+            } else {
+                native_vulkan_scene_video_bridge_options_from_plan(
+                    &plan,
+                    &video_session_options,
+                    video_width_set,
+                    video_height_set,
+                    ready_prefix_playback_frames,
+                    duration_playback_frames,
+                    audio_clock_probe_requested,
+                    audio_output_policy.resolve(_muted),
+                )?
+            };
+            #[cfg(not(feature = "native-vulkan-video"))]
+            let video_bridge = explicit_video_bridge;
             json!(run_scene(
                 options,
                 duration,

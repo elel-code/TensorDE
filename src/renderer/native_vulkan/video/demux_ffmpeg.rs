@@ -46,6 +46,7 @@ use std::sync::{Arc, Mutex, Once};
 use std::thread::{self, JoinHandle};
 
 use super::super::NativeVulkanError;
+use super::codec::NativeVulkanVideoSessionCodec;
 use super::demux::{
     NativeVulkanStreamingAccessUnit, NativeVulkanStreamingPacketFrontend,
     NativeVulkanStreamingPacketQueue, native_vulkan_start_streaming_packet_queue_from_frontend,
@@ -175,6 +176,38 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_start_ffmpeg_streaming_p
 ) -> Result<NativeVulkanStreamingPacketQueue<A>, NativeVulkanError> {
     let frontend = NativeVulkanFfmpegStreamingPacketFrontend::<A>::new(source, capacity)?;
     native_vulkan_start_streaming_packet_queue_from_frontend(Box::new(frontend), capacity)
+}
+
+pub fn native_vulkan_resolve_ffmpeg_video_session_codec(
+    source: &Path,
+) -> Result<NativeVulkanVideoSessionCodec, NativeVulkanError> {
+    const CODECS: &[(NativeVulkanFfmpegCodec, NativeVulkanVideoSessionCodec)] = &[
+        (
+            NativeVulkanFfmpegCodec::H264,
+            NativeVulkanVideoSessionCodec::H264High8,
+        ),
+        (
+            NativeVulkanFfmpegCodec::H265,
+            NativeVulkanVideoSessionCodec::H265Main8,
+        ),
+        (
+            NativeVulkanFfmpegCodec::Av1,
+            NativeVulkanVideoSessionCodec::Av1Main8,
+        ),
+    ];
+
+    let mut errors = Vec::new();
+    for (ffmpeg_codec, session_codec) in CODECS {
+        match NativeVulkanFfmpegFormatContext::open(source, *ffmpeg_codec) {
+            Ok((_format, _stream_index)) => return Ok(*session_codec),
+            Err(err) => errors.push(format!("{ffmpeg_codec:?}: {err}")),
+        }
+    }
+    Err(NativeVulkanError::Video(format!(
+        "scene video source {} did not expose an H.264/H.265/AV1 video stream: {}",
+        source.display(),
+        errors.join("; ")
+    )))
 }
 
 // The FFmpeg PacketQueue depth remains three, while converted Annex-B scratch

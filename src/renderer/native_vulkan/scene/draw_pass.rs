@@ -278,6 +278,14 @@ pub(super) fn native_vulkan_scene_draw_pass_plan(
     let sampled_image_implicit_full_extent_backend_ready = sampled_image_implicit_full_extent_ready
         && sampled_image_op_count.saturating_add(clear_background_op_count)
             == draw_plan.draw_ops.len();
+    let initial_visible_video_scene_bridge_ready = video_op_count == 1
+        && required_video_resources.len() == 1
+        && draw_plan.draw_ops.len() > 1
+        && video_op_count
+            .saturating_add(clear_background_op_count)
+            .saturating_add(quad_recording_payload.steps.len())
+            .saturating_add(sampled_image_recording_payload.steps.len())
+            == draw_plan.draw_ops.len();
     let backend_ready = plan_ready
         && (fast_clear_color.is_some()
             || quad_recording_ready
@@ -286,7 +294,8 @@ pub(super) fn native_vulkan_scene_draw_pass_plan(
             || mixed_quad_sampled_image_implicit_full_extent_ready
             || mixed_quad_sampled_image_recording_ready
             || single_video_scene_bridge_ready
-            || clear_background_video_scene_bridge_ready);
+            || clear_background_video_scene_bridge_ready
+            || initial_visible_video_scene_bridge_ready);
     let (backend_status, blocking_reason) = if !plan_ready {
         (
             "blocked-by-unsupported-scene-layers",
@@ -334,6 +343,11 @@ pub(super) fn native_vulkan_scene_draw_pass_plan(
             )
         } else if single_video_scene_bridge_ready {
             ("video-layer-vulkan-video-scene-bridge-ready", None)
+        } else if initial_visible_video_scene_bridge_ready {
+            (
+                "initial-visible-video-layer-vulkan-video-scene-bridge-ready",
+                None,
+            )
         } else {
             ("sampled-image-recording-ready", None)
         }
@@ -2917,6 +2931,46 @@ mod tests {
         );
         assert_eq!(pass_plan.blocking_reason, None);
         assert_eq!(pass_plan.video_op_count, 1);
+        assert_eq!(
+            pass_plan.required_video_resources,
+            vec![PathBuf::from("/tmp/scene-video.mp4")]
+        );
+        assert!(pass_plan.requires_video_decode);
+    }
+
+    #[test]
+    fn draw_pass_plan_reports_initial_visible_video_scene_bridge_ready() {
+        let mut video = draw_op(0, NativeVulkanSceneDrawOpKind::Video);
+        video.source = Some(PathBuf::from("/tmp/scene-video.mp4"));
+        let mut image = draw_op(1, NativeVulkanSceneDrawOpKind::Image);
+        image.source = Some(PathBuf::from("/tmp/overlay.gtex"));
+        image.width = Some(320.0);
+        image.height = Some(180.0);
+        let mut panel = draw_op(2, NativeVulkanSceneDrawOpKind::Rectangle);
+        panel.color = Some("#102030".to_owned());
+        panel.width = Some(64.0);
+        panel.height = Some(64.0);
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            draw_ops: vec![video, image, panel],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(pass_plan.backend_ready);
+        assert_eq!(
+            pass_plan.backend_status,
+            "initial-visible-video-layer-vulkan-video-scene-bridge-ready"
+        );
+        assert_eq!(pass_plan.blocking_reason, None);
+        assert_eq!(pass_plan.video_op_count, 1);
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 1);
+        assert_eq!(pass_plan.quad_recording_steps.len(), 1);
         assert_eq!(
             pass_plan.required_video_resources,
             vec![PathBuf::from("/tmp/scene-video.mp4")]

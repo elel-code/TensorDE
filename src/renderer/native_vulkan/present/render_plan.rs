@@ -152,10 +152,7 @@ fn native_vulkan_scene_draw_layers(
     let mut draw_ops = Vec::new();
     let mut unsupported_layers = Vec::new();
     for (index, layer) in layers.iter().enumerate() {
-        if layer.opacity <= 0.0 {
-            continue;
-        }
-        if layer.kind == SceneNodeKind::Audio {
+        if native_vulkan_scene_layer_has_no_visual_draw(layer) {
             continue;
         }
         match native_vulkan_scene_draw_op_kind(layer) {
@@ -279,6 +276,20 @@ fn native_vulkan_scene_draw_op_kind(
         SceneNodeKind::Audio => Err("audio-layer-has-no-visual-draw-op"),
         SceneNodeKind::Script => Err("script-layer-needs-scene-script-runtime"),
         SceneNodeKind::Unknown => Err("unknown-layer-kind"),
+    }
+}
+
+fn native_vulkan_scene_layer_has_no_visual_draw(layer: &SceneRenderLayer) -> bool {
+    if layer.opacity <= 0.0 {
+        return true;
+    }
+    match layer.kind {
+        SceneNodeKind::Audio | SceneNodeKind::Script => true,
+        SceneNodeKind::Color => layer.color.as_deref().is_none_or(|color| color.is_empty()),
+        SceneNodeKind::Rectangle | SceneNodeKind::Ellipse => {
+            !native_vulkan_scene_layer_has_shape_paint(layer)
+        }
+        _ => false,
     }
 }
 

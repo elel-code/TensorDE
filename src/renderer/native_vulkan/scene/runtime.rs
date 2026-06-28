@@ -2,8 +2,8 @@ use serde::Serialize;
 use std::path::PathBuf;
 
 use crate::core::{
-    FitMode, ScenePathFillRule, SceneSize, SceneSystemStatus, SceneTextAlign, SceneTextureRegion,
-    SceneTransform,
+    FitMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneSystemStatus, SceneTextAlign,
+    SceneTextureRegion, SceneTransform,
 };
 use crate::renderer::SceneRenderLayer;
 
@@ -184,10 +184,6 @@ impl NativeVulkanSceneRuntimeSnapshot {
         self.draw_pass_required_video_resources = Vec::new();
         self.draw_ops = Vec::new();
         self.unsupported_layers = Vec::new();
-        self.full_scene.completed_boundaries = Vec::new();
-        self.full_scene.pending_boundaries = Vec::new();
-        self.full_scene.unsupported_boundaries = Vec::new();
-        self.full_scene.unsupported_scene_features = Vec::new();
     }
 
     pub fn take_vulkanalia_solid_quad_geometry_input(
@@ -351,7 +347,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_solid_quad_geometr
     let mut recordable_layer_count = 0usize;
 
     for (layer_index, layer) in layers.iter().enumerate() {
-        if layer.opacity <= 0.0 || native_vulkan_scene_render_layer_is_clear(layer) {
+        if native_vulkan_scene_render_layer_has_no_visual_geometry(layer) {
             continue;
         }
         recordable_layer_count = recordable_layer_count.saturating_add(1);
@@ -415,7 +411,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
     let mut sampled_draw_steps = Vec::new();
 
     for (layer_index, layer) in layers.iter().enumerate() {
-        if layer.opacity <= 0.0 || native_vulkan_scene_render_layer_is_clear(layer) {
+        if native_vulkan_scene_render_layer_has_no_visual_geometry(layer) {
             continue;
         }
         if layer.kind == crate::core::SceneNodeKind::Image {
@@ -520,6 +516,25 @@ fn native_vulkan_scene_sampled_source_index(sources: &mut Vec<PathBuf>, source: 
     let index = sources.len().min(u32::MAX as usize) as u32;
     sources.push(source);
     index
+}
+
+fn native_vulkan_scene_render_layer_has_no_visual_geometry(layer: &SceneRenderLayer) -> bool {
+    if layer.opacity <= 0.0 || native_vulkan_scene_render_layer_is_clear(layer) {
+        return true;
+    }
+    match layer.kind {
+        SceneNodeKind::Audio | SceneNodeKind::Script => true,
+        SceneNodeKind::Color => layer.color.as_deref().is_none_or(|color| color.is_empty()),
+        SceneNodeKind::Rectangle | SceneNodeKind::Ellipse => {
+            layer.color.as_deref().is_none_or(|color| color.is_empty())
+                && (layer
+                    .stroke_color
+                    .as_deref()
+                    .is_none_or(|color| color.is_empty())
+                    || layer.stroke_width.unwrap_or(1.0) <= 0.0)
+        }
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1029,6 +1044,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
             | "retained-sampled-images-descriptor-heap"
             | "retained-vulkan-video-scene-resource"
             | "clear-background-and-retained-vulkan-video-scene-resource"
+            | "initial-visible-vulkan-video-and-retained-scene-resources"
             | "retained-solid-quad-geometry-and-sampled-images-descriptor-heap"
     ) || scene_sampled_image_descriptor_heap_required;
     let timeline_snapshot_runtime_ready = plan.snapshot_time_ms > 0;
@@ -1126,8 +1142,16 @@ fn native_vulkan_full_scene_runtime_snapshot(
         .count();
     let scene_particle_system_ready =
         scene_particle_system_ready_from_metadata || particle_runtime_layer_count > 0;
-    let solid_geometry_layer_count = pass_plan.quad_recording_steps.len();
-    let sampled_image_native_layer_count = if pass_plan.sampled_image_recording_ready {
+    let initial_visible_video_scene_route =
+        pass_plan.backend_status == "initial-visible-video-layer-vulkan-video-scene-bridge-ready";
+    let solid_geometry_layer_count = if initial_visible_video_scene_route {
+        0
+    } else {
+        pass_plan.quad_recording_steps.len()
+    };
+    let sampled_image_native_layer_count = if initial_visible_video_scene_route {
+        0
+    } else if pass_plan.sampled_image_recording_ready {
         pass_plan.sampled_image_recording_steps.len()
     } else if pass_plan.sampled_image_implicit_full_extent_ready {
         pass_plan.sampled_image_op_count
@@ -1138,6 +1162,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
         pass_plan.backend_status,
         "video-layer-vulkan-video-scene-bridge-ready"
             | "clear-background-video-layer-vulkan-video-scene-bridge-ready"
+            | "initial-visible-video-layer-vulkan-video-scene-bridge-ready"
     );
     let video_native_layer_count = if scene_video_composition_ready {
         pass_plan.video_op_count
@@ -1260,6 +1285,12 @@ fn native_vulkan_full_scene_runtime_snapshot(
         pending_boundaries.push("remaining-scene-layer-runtime-coverage");
     }
     if pass_plan.video_op_count > 0 && video_native_layer_count < pass_plan.video_op_count {
+        pending_boundaries.push("mixed-video-scene-composition");
+    }
+    if initial_visible_video_scene_route
+        && active_scene_layer_count
+            > clear_background_layer_count.saturating_add(pass_plan.video_op_count)
+    {
         pending_boundaries.push("mixed-video-scene-composition");
     }
     if pass_plan.requires_text_geometry {
@@ -1401,6 +1432,9 @@ fn native_vulkan_scene_resource_model(backend_status: &str, video_op_count: usiz
         "video-layer-vulkan-video-scene-bridge-ready" => "retained-vulkan-video-scene-resource",
         "clear-background-video-layer-vulkan-video-scene-bridge-ready" => {
             "clear-background-and-retained-vulkan-video-scene-resource"
+        }
+        "initial-visible-video-layer-vulkan-video-scene-bridge-ready" => {
+            "initial-visible-vulkan-video-and-retained-scene-resources"
         }
         "sampled-image-recording-ready"
         | "sampled-image-implicit-full-extent-ready"
@@ -1755,16 +1789,66 @@ mod tests {
     }
 
     #[test]
+    fn scene_runtime_snapshot_reports_initial_visible_video_scene_bridge_boundary() {
+        let mut video = scene_test_layer("cinematic", SceneNodeKind::Video);
+        video.source = Some(PathBuf::from("/tmp/scene-video.mp4"));
+        video.width = Some(3840.0);
+        video.height = Some(2160.0);
+        let mut overlay = scene_test_layer("overlay", SceneNodeKind::Image);
+        overlay.source = Some(PathBuf::from("/tmp/overlay.gtex"));
+        overlay.width = Some(256.0);
+        overlay.height = Some(256.0);
+        let mut panel = scene_test_layer("panel", SceneNodeKind::Rectangle);
+        panel.color = Some("#102030".to_owned());
+        panel.width = Some(320.0);
+        panel.height = Some(180.0);
+        let item = scene_test_item(vec![video, overlay, panel], None);
+
+        let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+
+        assert!(snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.draw_pass_backend_status,
+            "initial-visible-video-layer-vulkan-video-scene-bridge-ready"
+        );
+        assert_eq!(
+            snapshot.scene_resource_model,
+            "initial-visible-vulkan-video-and-retained-scene-resources"
+        );
+        assert_eq!(snapshot.draw_pass_video_op_count, 1);
+        assert_eq!(snapshot.full_scene.video_native_layer_count, 1);
+        assert_eq!(snapshot.full_scene.sampled_image_native_layer_count, 0);
+        assert_eq!(snapshot.full_scene.solid_geometry_layer_count, 0);
+        assert_eq!(snapshot.full_scene.native_runtime_pending_layer_count, 2);
+        assert!(snapshot.full_scene.scene_video_composition_required);
+        assert!(snapshot.full_scene.scene_video_composition_ready);
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"vulkan-video-scene-layer-composition")
+        );
+        assert!(
+            snapshot
+                .full_scene
+                .pending_boundaries
+                .contains(&"mixed-video-scene-composition")
+        );
+    }
+
+    #[test]
     fn full_scene_runtime_snapshot_tracks_scene_scope_and_remaining_boundaries() {
         let mut background = scene_test_layer("background", SceneNodeKind::Image);
         background.source = Some(PathBuf::from("/tmp/background.png"));
         let mut clip = scene_test_layer("clip", SceneNodeKind::Video);
         clip.source = Some(PathBuf::from("/tmp/clip.mp4"));
+        let mut clip_alt = scene_test_layer("clip-alt", SceneNodeKind::Video);
+        clip_alt.source = Some(PathBuf::from("/tmp/clip-alt.mp4"));
         let mut label = scene_test_layer("label", SceneNodeKind::Text);
         label.text = Some("Now Playing".to_owned());
         label.color = Some("#ffffff".to_owned());
         let item = scene_test_item_with_scene_metadata(
-            vec![background, clip, label],
+            vec![background, clip, clip_alt, label],
             None,
             vec!["scene_opacity".to_owned()],
             2,
@@ -1789,15 +1873,15 @@ mod tests {
         assert!(snapshot.full_scene.timeline_animation_runtime_ready);
         assert_eq!(snapshot.full_scene.timeline_animation_count, 2);
         assert_eq!(snapshot.full_scene.timeline_animated_layer_count, 1);
-        assert_eq!(snapshot.full_scene.source_layer_count, 3);
-        assert_eq!(snapshot.full_scene.active_scene_layer_count, 3);
-        assert_eq!(snapshot.full_scene.flattened_draw_layer_count, 3);
+        assert_eq!(snapshot.full_scene.source_layer_count, 4);
+        assert_eq!(snapshot.full_scene.active_scene_layer_count, 4);
+        assert_eq!(snapshot.full_scene.flattened_draw_layer_count, 4);
         assert_eq!(snapshot.full_scene.native_runtime_layer_count, 2);
-        assert_eq!(snapshot.full_scene.native_runtime_pending_layer_count, 1);
-        assert_eq!(snapshot.full_scene.native_runtime_coverage_percent, 66);
+        assert_eq!(snapshot.full_scene.native_runtime_pending_layer_count, 2);
+        assert_eq!(snapshot.full_scene.native_runtime_coverage_percent, 50);
         assert_eq!(snapshot.full_scene.sampled_image_native_layer_count, 1);
         assert_eq!(snapshot.full_scene.sampled_image_layer_count, 1);
-        assert_eq!(snapshot.full_scene.video_layer_count, 1);
+        assert_eq!(snapshot.full_scene.video_layer_count, 2);
         assert_eq!(snapshot.full_scene.text_layer_count, 1);
         assert_eq!(snapshot.full_scene.stroke_geometry_layer_count, 0);
         assert!(snapshot.full_scene.property_update_runtime_ready);
@@ -2955,5 +3039,71 @@ mod tests {
         );
         assert_eq!(geometry.sampled_geometry.vertices.len(), 4);
         assert_eq!(geometry.sampled_geometry.indices, vec![0, 1, 2, 2, 1, 3]);
+    }
+
+    #[test]
+    fn dynamic_scene_geometry_skips_audio_cue_layers() {
+        let mut panel = scene_test_layer("panel", SceneNodeKind::Rectangle);
+        panel.color = Some("#102030".to_owned());
+        panel.width = Some(320.0);
+        panel.height = Some(180.0);
+        let audio = scene_test_layer("music", SceneNodeKind::Audio);
+
+        let solid_geometry = native_vulkan_scene_solid_quad_geometry_input_from_layers(
+            0,
+            None,
+            FitMode::Cover,
+            &[panel.clone(), audio.clone()],
+        )
+        .expect("audio cue layers do not block direct solid geometry");
+
+        assert_eq!(solid_geometry.draw_steps.len(), 1);
+        assert_eq!(solid_geometry.draw_steps[0].layer_index, 0);
+
+        let mut image = scene_test_layer("sprite", SceneNodeKind::Image);
+        image.source = Some(PathBuf::from("/tmp/sprite.gtex"));
+        image.width = Some(128.0);
+        image.height = Some(64.0);
+        let sampled_geometry = native_vulkan_scene_sampled_geometry_inputs_from_layers(
+            0,
+            None,
+            FitMode::Cover,
+            &[audio, panel, image],
+        )
+        .expect("audio cue layers do not block direct sampled geometry");
+
+        assert_eq!(
+            sampled_geometry
+                .solid_geometry
+                .expect("solid overlay")
+                .draw_steps[0]
+                .layer_index,
+            1
+        );
+        assert_eq!(sampled_geometry.sampled_geometry.draw_steps.len(), 1);
+        assert_eq!(
+            sampled_geometry.sampled_geometry.draw_steps[0].layer_index,
+            2
+        );
+    }
+
+    #[test]
+    fn scene_runtime_snapshot_skips_non_visual_metadata_layers() {
+        let empty_parent = scene_test_layer("empty-parent", SceneNodeKind::Rectangle);
+        let controller = scene_test_layer("native-controller", SceneNodeKind::Script);
+        let audio = scene_test_layer("audio-cues", SceneNodeKind::Audio);
+        let mut panel = scene_test_layer("panel", SceneNodeKind::Rectangle);
+        panel.color = Some("#102030".to_owned());
+        panel.width = Some(320.0);
+        panel.height = Some(180.0);
+        let item = scene_test_item(vec![empty_parent, controller, audio, panel], None);
+
+        let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+
+        assert!(snapshot.native_draw_ready);
+        assert_eq!(snapshot.unsupported_layer_count, 0);
+        assert_eq!(snapshot.draw_op_count, 1);
+        assert_eq!(snapshot.draw_ops[0].layer_id, "panel");
+        assert_eq!(snapshot.draw_pass_quad_recording_step_count, 1);
     }
 }

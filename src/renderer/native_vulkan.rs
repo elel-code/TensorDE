@@ -145,6 +145,8 @@ pub use clear_present_runtime::run_clear;
 #[cfg(feature = "native-vulkan-video")]
 use codec_reference::*;
 pub use codec_snapshots::*;
+#[cfg(feature = "native-vulkan-video")]
+pub use demux_ffmpeg::native_vulkan_resolve_ffmpeg_video_session_codec;
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};

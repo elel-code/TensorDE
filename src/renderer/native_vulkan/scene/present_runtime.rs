@@ -755,11 +755,18 @@ fn native_vulkan_scene_present_route(
     runtime: &NativeVulkanSceneRuntimeSnapshot,
 ) -> Result<NativeVulkanScenePresentRouteKind, NativeVulkanError> {
     if !runtime.draw_pass_backend_ready {
+        let unsupported_layers = runtime
+            .unsupported_layers
+            .iter()
+            .map(|layer| format!("{}:{}", layer.layer_id, layer.reason))
+            .collect::<Vec<_>>()
+            .join(",");
         return Err(NativeVulkanError::Scene(format!(
-            "scene draw plan is not presentable by the native Vulkan scene backend: {}; draw_ops={}, unsupported_layers={}, clear_background_ops={}, sampled_image_ops={}, sampled_image_steps={}, sampled_image_recording_ready={}, sampled_image_implicit_full_extent_ready={}, quad_steps={}",
+            "scene draw plan is not presentable by the native Vulkan scene backend: {}; draw_ops={}, unsupported_layers={}, unsupported_layer_details=[{}], clear_background_ops={}, sampled_image_ops={}, sampled_image_steps={}, sampled_image_recording_ready={}, sampled_image_implicit_full_extent_ready={}, quad_steps={}",
             runtime.draw_pass_backend_status,
             runtime.draw_op_count,
             runtime.unsupported_layer_count,
+            unsupported_layers,
             runtime.draw_pass_clear_background_op_count,
             runtime.draw_pass_sampled_image_op_count,
             runtime.draw_pass_sampled_image_recording_step_count,
@@ -786,7 +793,8 @@ fn native_vulkan_scene_present_route(
         }
         #[cfg(feature = "native-vulkan-video")]
         "video-layer-vulkan-video-scene-bridge-ready"
-        | "clear-background-video-layer-vulkan-video-scene-bridge-ready" => {
+        | "clear-background-video-layer-vulkan-video-scene-bridge-ready"
+        | "initial-visible-video-layer-vulkan-video-scene-bridge-ready" => {
             Ok(NativeVulkanScenePresentRouteKind::Video)
         }
         status => Err(NativeVulkanError::Scene(format!(
@@ -940,6 +948,26 @@ mod tests {
         assert_eq!(
             route_for_layers(vec![background, overlay]).unwrap(),
             NativeVulkanScenePresentRouteKind::SampledImage
+        );
+    }
+
+    #[cfg(feature = "native-vulkan-video")]
+    #[test]
+    fn scene_main_present_route_selects_video_for_initial_visible_video_scene() {
+        let mut video = layer("cinematic", SceneNodeKind::Video);
+        video.source = Some(PathBuf::from("/tmp/scene-video.mp4"));
+        let mut overlay = layer("overlay", SceneNodeKind::Image);
+        overlay.source = Some(PathBuf::from("/tmp/overlay.gtex"));
+        overlay.width = Some(256.0);
+        overlay.height = Some(256.0);
+        let mut panel = layer("panel", SceneNodeKind::Rectangle);
+        panel.color = Some("#102030".to_owned());
+        panel.width = Some(320.0);
+        panel.height = Some(180.0);
+
+        assert_eq!(
+            route_for_layers(vec![video, overlay, panel]).unwrap(),
+            NativeVulkanScenePresentRouteKind::Video
         );
     }
 
