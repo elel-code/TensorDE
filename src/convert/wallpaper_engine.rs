@@ -1721,6 +1721,7 @@ fn scene_collect_animation_layer_timelines(
 ) {
     let animation_layer = SceneAnimationLayerIr::from_wallpaper_engine_value(value, node_id);
     let unlowered_layer_count = animation_layer.unlowered_layer_count();
+    let rate_scaled_layer_count = animation_layer.rate_scaled_layer_count();
     let mut timeline_count = 0usize;
     for timeline in animation_layer.into_timelines() {
         let timeline_id = scene_next_timeline_id(context, timeline.hint().or(Some(node_id)));
@@ -1733,11 +1734,17 @@ fn scene_collect_animation_layer_timelines(
             "scene-we-animation-layer-timeline",
         );
     }
+    if rate_scaled_layer_count > 0 {
+        push_unique(
+            &mut context.converted_features,
+            "scene-we-animation-layer-rate-time-scale",
+        );
+    }
     if unlowered_layer_count > 0 {
         scene_push_unsupported(
             context,
             "we-animation-layer-blending",
-            "Wallpaper Engine animation layer blend/rate references that cannot be represented as direct gscene keyframe channels remain preserved in provenance.",
+            "Wallpaper Engine animation layer blend/weight references that cannot be represented as direct gscene keyframe channels remain preserved in provenance.",
             None,
         );
     }
@@ -4511,6 +4518,16 @@ fn scene_full_scene_status(
         push_unique(
             &mut status.completed_boundaries,
             "scene-controller-fade-ramp-runtime",
+        );
+    }
+    if report
+        .converted_features
+        .iter()
+        .any(|feature| feature == "scene-we-animation-layer-rate-time-scale")
+    {
+        push_unique(
+            &mut status.completed_boundaries,
+            "wallpaper-engine-animation-layer-rate-time-scale",
         );
     }
     if report
@@ -11199,6 +11216,7 @@ void main() {}
                   "animationlayers": [
                     {
                       "name": "slide",
+                      "rate": 2.0,
                       "property": "origin",
                       "keyframes": [
                         { "time_ms": 0, "value": [0, 0, 0] },
@@ -11227,6 +11245,10 @@ void main() {}
         assert_eq!(scene["timelines"].as_array().unwrap().len(), 1);
         assert_eq!(scene["timelines"][0]["id"], "timeline-1-slide");
         assert_eq!(scene["timelines"][0]["channels"][0]["property"], "x");
+        assert_eq!(
+            scene["timelines"][0]["channels"][0]["keyframes"][1]["time_ms"],
+            500
+        );
         assert_eq!(scene["timelines"][0]["channels"][1]["property"], "y");
         assert!(
             !scene["unsupported_features"]
@@ -11238,7 +11260,7 @@ void main() {}
 
         let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
         document.validate().unwrap();
-        let snapshot = document.snapshot_at_with_property_resolver(500, |_| None);
+        let snapshot = document.snapshot_at_with_property_resolver(250, |_| None);
         assert_eq!(snapshot.layers[0].transform.x, 60.0);
         assert_eq!(snapshot.layers[0].transform.y, 20.0);
 
@@ -11250,6 +11272,19 @@ void main() {}
             report
                 .converted_features
                 .contains(&"scene-we-animation-layer-timeline".to_owned())
+        );
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-animation-layer-rate-time-scale".to_owned())
+        );
+        assert!(
+            report
+                .full_scene
+                .as_ref()
+                .unwrap()
+                .completed_boundaries
+                .contains(&"wallpaper-engine-animation-layer-rate-time-scale".to_owned())
         );
         assert!(
             !report

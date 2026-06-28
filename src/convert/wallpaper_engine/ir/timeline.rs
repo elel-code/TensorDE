@@ -98,6 +98,18 @@ impl SceneTimelineIr {
     ) -> bool {
         !scene_timeline_property_mappings(property).is_empty()
     }
+
+    pub(in crate::convert::wallpaper_engine) fn with_time_scale(mut self, time_scale: f64) -> Self {
+        if scene_timeline_time_scale_is_identity(time_scale) {
+            return self;
+        }
+        for channel in &mut self.channels {
+            for keyframe in &mut channel.keyframes {
+                keyframe.time_ms = scene_timeline_scaled_time_ms(keyframe.time_ms, time_scale);
+            }
+        }
+        self
+    }
 }
 
 impl SceneTimelineChannelIr {
@@ -336,6 +348,14 @@ fn scene_time_ms_from_f64(value: f64) -> Option<u64> {
     } else {
         None
     }
+}
+
+fn scene_timeline_time_scale_is_identity(time_scale: f64) -> bool {
+    !time_scale.is_finite() || time_scale <= 0.0 || (time_scale - 1.0).abs() <= f64::EPSILON
+}
+
+fn scene_timeline_scaled_time_ms(time_ms: u64, time_scale: f64) -> u64 {
+    scene_time_ms_from_f64(time_ms as f64 / time_scale).unwrap_or(time_ms)
 }
 
 fn scene_timeline_keyframe_value(
@@ -689,6 +709,39 @@ mod tests {
                         { "time_ms": 500, "value": 1.0 },
                         { "time_ms": 1250, "value": 0.0 },
                         { "time_ms": 2000, "value": 0.4 }
+                    ]
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn timeline_ir_scales_keyframe_times_for_animation_layer_rate() {
+        let timeline = json!({
+            "property": "alpha",
+            "keyframes": [
+                { "time_ms": 0, "value": 0.0 },
+                { "time_ms": 1000, "value": 1.0 },
+                { "time_ms": 2500, "value": 0.5 }
+            ]
+        });
+        let ir = SceneTimelineIr::from_wallpaper_engine_object(
+            timeline.as_object().unwrap(),
+            "node-panel".to_owned(),
+        )
+        .unwrap()
+        .with_time_scale(2.0);
+
+        assert_eq!(
+            ir.timeline_value("timeline-alpha".to_owned())["channels"],
+            json!([
+                {
+                    "property": "opacity",
+                    "loop": false,
+                    "keyframes": [
+                        { "time_ms": 0, "value": 0.0 },
+                        { "time_ms": 500, "value": 1.0 },
+                        { "time_ms": 1250, "value": 0.5 }
                     ]
                 }
             ])
