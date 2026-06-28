@@ -835,28 +835,40 @@ fn native_vulkan_scene_ellipse_outline(
 fn native_vulkan_scene_path_geometry(
     quad: &NativeVulkanSceneRecordableQuad,
 ) -> Option<(Vec<NativeVulkanSceneQuadVertex>, Vec<u32>)> {
-    let points = native_vulkan_scene_simple_path_points(quad.path_data.as_deref()?)?;
+    let subpaths = native_vulkan_scene_path_subpaths(quad.path_data.as_deref()?)?;
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
     if let Some(fill_rgba) = quad.fill_rgba {
-        if points.len() >= 3 {
+        let fill_subpaths = subpaths
+            .iter()
+            .filter(|subpath| subpath.points.len() >= 3)
+            .collect::<Vec<_>>();
+        if fill_subpaths.len() == 1 {
             native_vulkan_scene_push_path_fill(
                 &mut vertices,
                 &mut indices,
-                &points,
+                &fill_subpaths[0].points,
+                fill_rgba,
+                quad.transform,
+            )?;
+        } else if fill_subpaths.len() > 1 {
+            native_vulkan_scene_push_compound_path_fill(
+                &mut vertices,
+                &mut indices,
+                &fill_subpaths,
                 fill_rgba,
                 quad.transform,
             )?;
         }
     }
     if let (Some(stroke_rgba), Some(stroke_width)) = (quad.stroke_rgba, quad.stroke_width) {
-        if points.len() >= 2 {
+        for subpath in subpaths.iter().filter(|subpath| subpath.points.len() >= 2) {
             native_vulkan_scene_push_polyline_stroke(
                 &mut vertices,
                 &mut indices,
-                &points,
-                native_vulkan_scene_simple_path_is_closed(quad.path_data.as_deref()?),
+                &subpath.points,
+                subpath.closed,
                 stroke_width,
                 stroke_rgba,
                 quad.transform,
@@ -910,6 +922,104 @@ fn native_vulkan_scene_push_path_fill(
             .into_iter()
             .map(|index| first_vertex.saturating_add(index)),
     );
+    Some(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeVulkanScenePathFillEdge {
+    start: [f64; 2],
+    end: [f64; 2],
+}
+
+impl NativeVulkanScenePathFillEdge {
+    fn contains_y(self, y: f64) -> bool {
+        let min_y = self.start[1].min(self.end[1]);
+        let max_y = self.start[1].max(self.end[1]);
+        y > min_y && y < max_y
+    }
+
+    fn x_at_y(self, y: f64) -> Option<f64> {
+        let dy = self.end[1] - self.start[1];
+        if dy.abs() <= f64::EPSILON || !dy.is_finite() {
+            return None;
+        }
+        let t = (y - self.start[1]) / dy;
+        let x = self.start[0] + (self.end[0] - self.start[0]) * t;
+        x.is_finite().then_some(x)
+    }
+}
+
+fn native_vulkan_scene_push_compound_path_fill(
+    vertices: &mut Vec<NativeVulkanSceneQuadVertex>,
+    indices: &mut Vec<u32>,
+    subpaths: &[&NativeVulkanScenePathSubpath],
+    rgba: [f32; 4],
+    transform: SceneTransform,
+) -> Option<()> {
+    let mut edges = Vec::new();
+    let mut y_values = Vec::new();
+    for subpath in subpaths {
+        y_values.extend(subpath.points.iter().map(|point| point[1]));
+        for index in 0..subpath.points.len() {
+            let start = subpath.points[index];
+            let end = subpath.points[(index + 1) % subpath.points.len()];
+            if !native_vulkan_scene_path_points_close(start, end)
+                && (start[1] - end[1]).abs() > SCENE_FULL_PATH_POINT_EPSILON
+            {
+                edges.push(NativeVulkanScenePathFillEdge { start, end });
+            }
+        }
+    }
+    if edges.is_empty() {
+        return Some(());
+    }
+    y_values.retain(|value| value.is_finite());
+    y_values.sort_by(|left, right| left.total_cmp(right));
+    y_values.dedup_by(|left, right| (*left - *right).abs() <= SCENE_FULL_PATH_POINT_EPSILON);
+
+    for band in y_values.windows(2) {
+        let top = band[0];
+        let bottom = band[1];
+        if bottom - top <= SCENE_FULL_PATH_POINT_EPSILON {
+            continue;
+        }
+        let mid_y = (top + bottom) * 0.5;
+        let mut intersections = edges
+            .iter()
+            .filter(|edge| edge.contains_y(mid_y))
+            .filter_map(|edge| Some((*edge, edge.x_at_y(mid_y)?)))
+            .collect::<Vec<_>>();
+        if intersections.is_empty() {
+            continue;
+        }
+        intersections.sort_by(|left, right| left.1.total_cmp(&right.1));
+        if intersections.len() % 2 != 0 {
+            return None;
+        }
+        for pair in intersections.chunks_exact(2) {
+            let left = pair[0].0;
+            let right = pair[1].0;
+            let left_top = left.x_at_y(top)?;
+            let right_top = right.x_at_y(top)?;
+            let left_bottom = left.x_at_y(bottom)?;
+            let right_bottom = right.x_at_y(bottom)?;
+            if (pair[1].1 - pair[0].1).abs() <= SCENE_FULL_PATH_POINT_EPSILON {
+                continue;
+            }
+            native_vulkan_scene_push_solid_quad_points(
+                vertices,
+                indices,
+                [
+                    [left_top, top],
+                    [right_top, top],
+                    [left_bottom, bottom],
+                    [right_bottom, bottom],
+                ],
+                rgba,
+                transform,
+            )?;
+        }
+    }
     Some(())
 }
 
@@ -1674,16 +1784,31 @@ enum NativeVulkanScenePathToken {
     Number(f64),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct NativeVulkanScenePathSubpath {
+    points: Vec<[f64; 2]>,
+    closed: bool,
+}
+
 fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
+    let subpaths = native_vulkan_scene_path_subpaths(path)?;
+    if subpaths.len() == 1 {
+        subpaths.into_iter().next().map(|subpath| subpath.points)
+    } else {
+        None
+    }
+}
+
+fn native_vulkan_scene_path_subpaths(path: &str) -> Option<Vec<NativeVulkanScenePathSubpath>> {
     let tokens = native_vulkan_scene_path_tokens(path)?;
     let mut index = 0usize;
     let mut command = None::<char>;
-    let mut points = Vec::new();
+    let mut subpaths = Vec::new();
+    let mut current_points = Vec::new();
     let mut current = [0.0, 0.0];
     let mut start = [0.0, 0.0];
     let mut previous_cubic_control = None::<[f64; 2]>;
     let mut previous_quadratic_control = None::<[f64; 2]>;
-    let mut started = false;
 
     while index < tokens.len() {
         if let NativeVulkanScenePathToken::Command(value) = tokens[index] {
@@ -1706,14 +1831,15 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
                     };
                     current = point;
                     if first {
-                        if started && points.len() >= 3 {
-                            return None;
-                        }
+                        native_vulkan_scene_finish_path_subpath(
+                            &mut subpaths,
+                            &mut current_points,
+                            false,
+                        );
                         start = point;
-                        started = true;
                         first = false;
                     }
-                    points.push(point);
+                    current_points.push(point);
                     previous_cubic_control = None;
                     previous_quadratic_control = None;
                     if index < tokens.len()
@@ -1734,7 +1860,7 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
                     } else {
                         [x, y]
                     };
-                    points.push(current);
+                    current_points.push(current);
                     previous_cubic_control = None;
                     previous_quadratic_control = None;
                     if index < tokens.len()
@@ -1751,7 +1877,7 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
                 {
                     index = next_index;
                     current[0] = if relative { current[0] + x } else { x };
-                    points.push(current);
+                    current_points.push(current);
                     previous_cubic_control = None;
                     previous_quadratic_control = None;
                     if index < tokens.len()
@@ -1768,7 +1894,7 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
                 {
                     index = next_index;
                     current[1] = if relative { current[1] + y } else { y };
-                    points.push(current);
+                    current_points.push(current);
                     previous_cubic_control = None;
                     previous_quadratic_control = None;
                     if index < tokens.len()
@@ -1792,7 +1918,7 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
                     let control_2 = native_vulkan_scene_path_point(current, x2, y2, relative);
                     let end = native_vulkan_scene_path_point(current, x, y, relative);
                     native_vulkan_scene_push_cubic_curve_points(
-                        &mut points,
+                        &mut current_points,
                         current,
                         control_1,
                         control_2,
@@ -1823,7 +1949,7 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
                     let control_2 = native_vulkan_scene_path_point(current, x2, y2, relative);
                     let end = native_vulkan_scene_path_point(current, x, y, relative);
                     native_vulkan_scene_push_cubic_curve_points(
-                        &mut points,
+                        &mut current_points,
                         current,
                         control_1,
                         control_2,
@@ -1850,7 +1976,7 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
                     let control = native_vulkan_scene_path_point(current, x1, y1, relative);
                     let end = native_vulkan_scene_path_point(current, x, y, relative);
                     native_vulkan_scene_push_quadratic_curve_points(
-                        &mut points,
+                        &mut current_points,
                         current,
                         control,
                         end,
@@ -1877,7 +2003,7 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
                     );
                     let end = native_vulkan_scene_path_point(current, x, y, relative);
                     native_vulkan_scene_push_quadratic_curve_points(
-                        &mut points,
+                        &mut current_points,
                         current,
                         control,
                         end,
@@ -1908,7 +2034,7 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
                     index = next_index;
                     let end = native_vulkan_scene_path_point(current, x, y, relative);
                     native_vulkan_scene_push_arc_points(
-                        &mut points,
+                        &mut current_points,
                         current,
                         rx,
                         ry,
@@ -1929,12 +2055,13 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
             }
             'Z' | 'z' => {
                 current = start;
-                if points
+                if current_points
                     .last()
                     .is_some_and(|point| native_vulkan_scene_path_points_close(*point, start))
                 {
-                    let _ = points.pop();
+                    let _ = current_points.pop();
                 }
+                native_vulkan_scene_finish_path_subpath(&mut subpaths, &mut current_points, true);
                 previous_cubic_control = None;
                 previous_quadratic_control = None;
             }
@@ -1942,8 +2069,24 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
         }
     }
 
+    native_vulkan_scene_finish_path_subpath(&mut subpaths, &mut current_points, false);
+    Some(subpaths)
+}
+
+fn native_vulkan_scene_finish_path_subpath(
+    subpaths: &mut Vec<NativeVulkanScenePathSubpath>,
+    points: &mut Vec<[f64; 2]>,
+    closed: bool,
+) {
     points.dedup_by(|left, right| native_vulkan_scene_path_points_close(*left, *right));
-    Some(points)
+    if points.len() >= 2 {
+        subpaths.push(NativeVulkanScenePathSubpath {
+            points: std::mem::take(points),
+            closed,
+        });
+    } else {
+        points.clear();
+    }
 }
 
 fn native_vulkan_scene_path_points_close(left: [f64; 2], right: [f64; 2]) -> bool {
@@ -2015,14 +2158,6 @@ fn native_vulkan_scene_path_tokens(path: &str) -> Option<Vec<NativeVulkanScenePa
         return None;
     }
     Some(tokens)
-}
-
-fn native_vulkan_scene_simple_path_is_closed(path: &str) -> bool {
-    native_vulkan_scene_path_tokens(path).is_some_and(|tokens| {
-        tokens
-            .iter()
-            .any(|token| matches!(token, NativeVulkanScenePathToken::Command('Z' | 'z')))
-    })
 }
 
 fn native_vulkan_scene_take_path_number(
@@ -2903,6 +3038,38 @@ mod tests {
         assert_eq!(pass_plan.quad_recording_steps[0].index_count, 9);
         assert_eq!(pass_plan.quad_vertices.len(), 5);
         assert_eq!(pass_plan.quad_indices.len(), 9);
+        assert_eq!(pass_plan.path_op_count, 1);
+        assert!(!pass_plan.requires_path_tessellation);
+    }
+
+    #[test]
+    fn draw_pass_plan_records_compound_evenodd_path_as_solid_geometry() {
+        let mut path = draw_op(0, NativeVulkanSceneDrawOpKind::Path);
+        path.color = Some("#22aa88".to_owned());
+        path.path_data =
+            Some("M0 0 L100 0 L100 100 L0 100 Z M25 25 L75 25 L75 75 L25 75 Z".to_owned());
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            draw_ops: vec![path],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.backend_status, "solid-quad-recording-ready");
+        assert_eq!(pass_plan.blocking_reason, None);
+        assert!(pass_plan.quad_recording_ready);
+        assert_eq!(pass_plan.quad_recording_steps.len(), 1);
+        assert_eq!(pass_plan.quad_recording_steps[0].kind, "path");
+        assert_eq!(pass_plan.quad_recording_steps[0].vertex_count, 16);
+        assert_eq!(pass_plan.quad_recording_steps[0].index_count, 24);
+        assert_eq!(pass_plan.quad_vertices.len(), 16);
+        assert_eq!(pass_plan.quad_indices.len(), 24);
         assert_eq!(pass_plan.path_op_count, 1);
         assert!(!pass_plan.requires_path_tessellation);
     }
