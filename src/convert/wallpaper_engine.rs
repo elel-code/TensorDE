@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::thread;
@@ -79,6 +79,38 @@ pub struct ConversionSummary {
     pub output_dir: PathBuf,
     pub manifest_file: PathBuf,
     pub report_file: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeGtexConversionSummary {
+    pub source: PathBuf,
+    pub output: PathBuf,
+    pub width: u32,
+    pub height: u32,
+    pub format: &'static str,
+    pub payload_bytes: u64,
+}
+
+pub fn convert_png_to_native_gtex(
+    source: &Path,
+    output: &Path,
+) -> Result<NativeGtexConversionSummary, String> {
+    let mut image = read_png_as_rgba(source)?;
+    flip_rgba_rows_vertically(&mut image.rgba, image.width, image.height)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+    }
+    let payload_bytes = bc7_payload_len(image.width, image.height)?;
+    scene_write_bc7_gtex(output, &image)?;
+    Ok(NativeGtexConversionSummary {
+        source: source.to_path_buf(),
+        output: output.to_path_buf(),
+        width: image.width,
+        height: image.height,
+        format: "BC7_UNORM_BLOCK",
+        payload_bytes,
+    })
 }
 
 pub fn convert_project(
@@ -872,6 +904,21 @@ fn write_scene_document_to(
             Some(source_entry),
         );
     }
+    let mut full_scene_status = scene_full_scene_status(report, &context);
+    if let Some(previous) = &report.full_scene {
+        for source_scene_metadata in &previous.source_scene_metadata {
+            push_unique(
+                &mut full_scene_status.source_scene_metadata,
+                source_scene_metadata,
+            );
+        }
+    }
+    push_unique(
+        &mut full_scene_status.source_scene_metadata,
+        source_metadata,
+    );
+    let native_lowering = scene_native_lowering_from_status(&full_scene_status);
+    report.full_scene = Some(full_scene_status);
 
     let document = json!({
         "version": 1,
@@ -890,7 +937,7 @@ fn write_scene_document_to(
         "timelines": context.timelines,
         "property_bindings": context.property_bindings,
         "systems": scene_system_statuses(report),
-        "native_lowering": scene_native_lowering(report),
+        "native_lowering": native_lowering,
         "unsupported_features": scene_unsupported_features(report, context.unsupported_features)
     });
     fs::write(
@@ -3364,6 +3411,12 @@ fn scene_material_textures(
             }
         }
     }
+    if render_resource.is_some() {
+        push_unique(
+            &mut context.converted_features,
+            "scene-we-material-graph-runtime",
+        );
+    }
     (
         texture_paths,
         texture_resources,
@@ -3901,15 +3954,163 @@ fn scene_write_bc7_gtex(path: &Path, image: &SceneWeTexImage) -> Result<(), Stri
         ));
     }
     let payload = scene_encode_bc7(&image.rgba, image.width, image.height)?;
-    let mut bytes = Vec::with_capacity(32 + payload.len());
-    bytes.extend_from_slice(GILDER_SCENE_TEXTURE_MAGIC);
-    bytes.extend_from_slice(&image.width.to_le_bytes());
-    bytes.extend_from_slice(&image.height.to_le_bytes());
-    bytes.extend_from_slice(&GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK.to_le_bytes());
-    bytes.extend_from_slice(&GILDER_SCENE_TEXTURE_MIP_COUNT.to_le_bytes());
-    bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-    bytes.extend_from_slice(&payload);
-    fs::write(path, bytes).map_err(|err| err.to_string())
+    let mut file = fs::File::create(path).map_err(|err| err.to_string())?;
+    file.write_all(GILDER_SCENE_TEXTURE_MAGIC)
+        .map_err(|err| err.to_string())?;
+    file.write_all(&image.width.to_le_bytes())
+        .map_err(|err| err.to_string())?;
+    file.write_all(&image.height.to_le_bytes())
+        .map_err(|err| err.to_string())?;
+    file.write_all(&GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK.to_le_bytes())
+        .map_err(|err| err.to_string())?;
+    file.write_all(&GILDER_SCENE_TEXTURE_MIP_COUNT.to_le_bytes())
+        .map_err(|err| err.to_string())?;
+    file.write_all(&(payload.len() as u64).to_le_bytes())
+        .map_err(|err| err.to_string())?;
+    file.write_all(&payload).map_err(|err| err.to_string())
+}
+
+fn read_png_as_rgba(path: &Path) -> Result<SceneWeTexImage, String> {
+    let file = fs::File::open(path).map_err(|err| format!("failed to open PNG: {err}"))?;
+    let mut decoder = png::Decoder::new(BufReader::new(file));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder
+        .read_info()
+        .map_err(|err| format!("failed to read PNG metadata: {err}"))?;
+    let output_size = reader
+        .output_buffer_size()
+        .ok_or_else(|| "PNG output buffer size overflowed".to_owned())?;
+    let mut bytes = vec![0u8; output_size];
+    let info = reader
+        .next_frame(&mut bytes)
+        .map_err(|err| format!("failed to decode PNG frame: {err}"))?;
+    let frame = &bytes[..info.buffer_size()];
+    let rgba = png_frame_to_rgba(frame, info.color_type, info.width, info.height)?;
+    Ok(SceneWeTexImage {
+        width: info.width,
+        height: info.height,
+        rgba,
+    })
+}
+
+fn flip_rgba_rows_vertically(rgba: &mut [u8], width: u32, height: u32) -> Result<(), String> {
+    let row_bytes = usize::try_from(width)
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .ok_or_else(|| "RGBA row byte count overflowed".to_owned())?;
+    let expected_len = row_bytes
+        .checked_mul(usize::try_from(height).map_err(|_| "RGBA height exceeds usize")?)
+        .ok_or_else(|| "RGBA byte count overflowed".to_owned())?;
+    if rgba.len() != expected_len {
+        return Err(format!(
+            "RGBA payload has {} bytes, expected {expected_len}",
+            rgba.len()
+        ));
+    }
+    if height <= 1 {
+        return Ok(());
+    }
+    let mut scratch = vec![0u8; row_bytes];
+    for top_row in 0..height / 2 {
+        let bottom_row = height - 1 - top_row;
+        let top = usize::try_from(top_row)
+            .ok()
+            .and_then(|row| row.checked_mul(row_bytes))
+            .ok_or_else(|| "RGBA top row offset overflowed".to_owned())?;
+        let bottom = usize::try_from(bottom_row)
+            .ok()
+            .and_then(|row| row.checked_mul(row_bytes))
+            .ok_or_else(|| "RGBA bottom row offset overflowed".to_owned())?;
+        scratch.copy_from_slice(&rgba[top..top + row_bytes]);
+        rgba.copy_within(bottom..bottom + row_bytes, top);
+        rgba[bottom..bottom + row_bytes].copy_from_slice(&scratch);
+    }
+    Ok(())
+}
+
+fn png_frame_to_rgba(
+    frame: &[u8],
+    color_type: png::ColorType,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, String> {
+    let pixel_count = usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .ok_or_else(|| "PNG pixel count overflowed".to_owned())?;
+    let expected_rgba = pixel_count
+        .checked_mul(4)
+        .ok_or_else(|| "PNG RGBA byte count overflowed".to_owned())?;
+    match color_type {
+        png::ColorType::Rgba => {
+            if frame.len() != expected_rgba {
+                return Err(format!(
+                    "PNG RGBA payload has {} bytes, expected {expected_rgba}",
+                    frame.len()
+                ));
+            }
+            Ok(frame.to_vec())
+        }
+        png::ColorType::Rgb => {
+            let expected_rgb = pixel_count
+                .checked_mul(3)
+                .ok_or_else(|| "PNG RGB byte count overflowed".to_owned())?;
+            if frame.len() != expected_rgb {
+                return Err(format!(
+                    "PNG RGB payload has {} bytes, expected {expected_rgb}",
+                    frame.len()
+                ));
+            }
+            let mut rgba = Vec::with_capacity(expected_rgba);
+            for rgb in frame.chunks_exact(3) {
+                rgba.extend_from_slice(rgb);
+                rgba.push(255);
+            }
+            Ok(rgba)
+        }
+        png::ColorType::Grayscale => {
+            if frame.len() != pixel_count {
+                return Err(format!(
+                    "PNG grayscale payload has {} bytes, expected {pixel_count}",
+                    frame.len()
+                ));
+            }
+            let mut rgba = Vec::with_capacity(expected_rgba);
+            for value in frame {
+                rgba.extend_from_slice(&[*value, *value, *value, 255]);
+            }
+            Ok(rgba)
+        }
+        png::ColorType::GrayscaleAlpha => {
+            let expected_gray_alpha = pixel_count
+                .checked_mul(2)
+                .ok_or_else(|| "PNG grayscale-alpha byte count overflowed".to_owned())?;
+            if frame.len() != expected_gray_alpha {
+                return Err(format!(
+                    "PNG grayscale-alpha payload has {} bytes, expected {expected_gray_alpha}",
+                    frame.len()
+                ));
+            }
+            let mut rgba = Vec::with_capacity(expected_rgba);
+            for gray_alpha in frame.chunks_exact(2) {
+                rgba.extend_from_slice(&[
+                    gray_alpha[0],
+                    gray_alpha[0],
+                    gray_alpha[0],
+                    gray_alpha[1],
+                ]);
+            }
+            Ok(rgba)
+        }
+        png::ColorType::Indexed => Err(
+            "indexed PNG was not expanded by the PNG decoder; native gtex conversion requires RGB/RGBA output"
+                .to_owned(),
+        ),
+    }
 }
 
 fn scene_encode_bc7(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
@@ -3944,6 +4145,18 @@ fn scene_encode_bc7(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Str
         }
     }
     Ok(out)
+}
+
+fn bc7_payload_len(width: u32, height: u32) -> Result<u64, String> {
+    if width == 0 || height == 0 {
+        return Err("BC7 texture dimensions must be non-zero".to_owned());
+    }
+    let blocks_w = u64::from(width.div_ceil(BC_BLOCK_TEXELS));
+    let blocks_h = u64::from(height.div_ceil(BC_BLOCK_TEXELS));
+    blocks_w
+        .checked_mul(blocks_h)
+        .and_then(|blocks| blocks.checked_mul(BC7_BLOCK_BYTES as u64))
+        .ok_or_else(|| "BC7 payload size overflowed".to_owned())
 }
 
 fn scene_encode_bc7_block(
@@ -4519,6 +4732,14 @@ fn scene_system_statuses(report: &ConversionReport) -> Value {
 }
 
 fn scene_system_status(report: &ConversionReport, feature: &str) -> &'static str {
+    if feature == "shader"
+        && report
+            .converted_features
+            .iter()
+            .any(|converted| converted == "scene-we-material-graph-runtime")
+    {
+        return "ready";
+    }
     if feature == "particles"
         && report
             .converted_features
@@ -4538,7 +4759,10 @@ fn scene_system_status(report: &ConversionReport, feature: &str) -> &'static str
     }
 }
 
-fn scene_native_lowering(report: &ConversionReport) -> Value {
+fn scene_full_scene_status(
+    report: &ConversionReport,
+    context: &SceneDocumentBuildContext,
+) -> FullSceneConversionStatus {
     let mut status = FullSceneConversionStatus::native_vulkan_scene_boundary();
     if report
         .converted_features
@@ -4553,12 +4777,50 @@ fn scene_native_lowering(report: &ConversionReport) -> Value {
             .pending_boundaries
             .retain(|boundary| boundary != "particle-systems");
     }
+    if scene_material_graph_runtime_ready(report, context) {
+        push_unique(
+            &mut status.completed_boundaries,
+            "wallpaper-engine-material-graph-texture-runtime",
+        );
+        push_unique(&mut status.completed_boundaries, "shader-material-graph");
+        status
+            .pending_boundaries
+            .retain(|boundary| boundary != "shader-material-graph");
+    }
+    status
+}
+
+fn scene_native_lowering_from_status(status: &FullSceneConversionStatus) -> Value {
     json!({
         "target_runtime": status.target_runtime,
         "current_runtime": status.current_runtime,
         "completed_boundaries": status.completed_boundaries,
         "pending_boundaries": status.pending_boundaries
     })
+}
+
+fn scene_material_graph_runtime_ready(
+    report: &ConversionReport,
+    context: &SceneDocumentBuildContext,
+) -> bool {
+    report
+        .converted_features
+        .iter()
+        .any(|feature| feature == "scene-we-material-graph-runtime")
+        && !context.unsupported_features.iter().any(|feature| {
+            feature
+                .get("feature")
+                .and_then(Value::as_str)
+                .is_some_and(scene_feature_blocks_material_graph_runtime)
+        })
+}
+
+fn scene_feature_blocks_material_graph_runtime(feature: &str) -> bool {
+    feature.contains("shader")
+        || feature.contains("effect")
+        || feature.contains("material")
+        || feature.contains("tex")
+        || feature.contains("runtime-texture")
 }
 
 fn scene_unsupported_features(
@@ -4699,6 +4961,14 @@ fn record_scene_runtime_gaps(report: &mut ConversionReport) {
                     .converted_features
                     .iter()
                     .any(|converted| converted == "native-particle-runtime")
+            {
+                continue;
+            }
+            if detected == "shader"
+                && report
+                    .converted_features
+                    .iter()
+                    .any(|converted| converted == "scene-we-material-graph-runtime")
             {
                 continue;
             }
@@ -8107,6 +8377,30 @@ void main() {}
             scene["nodes"][0]["provenance"]["model"]["texture_resources"][0],
             "resource-3-albedo"
         );
+        assert_eq!(scene["systems"]["shader_material_graph"], "ready");
+        assert!(
+            scene["native_lowering"]["completed_boundaries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|boundary| boundary == "shader-material-graph")
+        );
+        assert!(
+            !scene["native_lowering"]["pending_boundaries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|boundary| boundary == "shader-material-graph")
+        );
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-material-graph-runtime".to_owned())
+        );
     }
 
     #[test]
@@ -9033,6 +9327,57 @@ void main() {}
         assert_eq!(u64::from_le_bytes(bytes[24..32].try_into().unwrap()), 16);
         assert_eq!(bytes.len(), 48);
         assert_eq!(bytes[32], 0x40);
+    }
+
+    #[test]
+    fn converts_png_to_native_bc7_gtex_offline() {
+        let output = TestDir::new("png-bc7-gtex-output");
+        let png_path = output.path().join("source.png");
+        let gtex_path = output.path().join("source.gtex");
+        let rgba = [
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ];
+        {
+            let file = fs::File::create(&png_path).unwrap();
+            let writer = std::io::BufWriter::new(file);
+            let mut encoder = png::Encoder::new(writer, 2, 2);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&rgba).unwrap();
+        }
+
+        let summary = convert_png_to_native_gtex(&png_path, &gtex_path).unwrap();
+        let bytes = fs::read(&gtex_path).unwrap();
+
+        assert_eq!(summary.width, 2);
+        assert_eq!(summary.height, 2);
+        assert_eq!(summary.format, "BC7_UNORM_BLOCK");
+        assert_eq!(summary.payload_bytes, 16);
+        assert_eq!(&bytes[0..8], GILDER_SCENE_TEXTURE_MAGIC);
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()), 2);
+        assert_eq!(
+            u64::from_le_bytes(bytes[24..32].try_into().unwrap()),
+            summary.payload_bytes
+        );
+        assert_eq!(bytes.len(), 48);
+    }
+
+    #[test]
+    fn png_to_native_gtex_uses_bottom_first_texture_rows() {
+        let top_left = [255, 0, 0, 255];
+        let top_right = [0, 255, 0, 255];
+        let bottom_left = [0, 0, 255, 255];
+        let bottom_right = [255, 255, 255, 255];
+        let mut rgba = [top_left, top_right, bottom_left, bottom_right].concat();
+
+        flip_rgba_rows_vertically(&mut rgba, 2, 2).unwrap();
+
+        assert_eq!(&rgba[0..4], &bottom_left);
+        assert_eq!(&rgba[4..8], &bottom_right);
+        assert_eq!(&rgba[8..12], &top_left);
+        assert_eq!(&rgba[12..16], &top_right);
     }
 
     struct TestDir {

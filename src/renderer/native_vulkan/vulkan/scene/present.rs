@@ -929,12 +929,7 @@ fn with_vulkanalia_scene_sampled_image_present(
                 options.fit,
             ),
             texture.source.display().to_string(),
-            vk::Extent2D {
-                width: texture.width,
-                height: texture.height,
-            },
-            texture.format,
-            &texture.bytes,
+            &texture,
         ) {
             Ok(resources) => resources,
             Err(err) => {

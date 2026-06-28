@@ -729,6 +729,12 @@ mod tests {
             timeline_animated_layer_count: 0,
             property_binding_count: 0,
             cursor_parallax_input_ready: false,
+            scene_scenescript_binding_count: 0,
+            scene_material_graph_count: 0,
+            scene_material_graph_resource_count: 0,
+            scene_effect_graph_count: 0,
+            scene_audio_response_binding_count: 0,
+            unsupported_scene_features: Vec::new(),
             display: Some(SceneDisplayPlan::Color {
                 color: "#000000".to_owned(),
             }),

@@ -91,6 +91,18 @@ pub struct SceneWallpaperPlan {
     pub property_binding_count: usize,
     #[serde(default)]
     pub cursor_parallax_input_ready: bool,
+    #[serde(default)]
+    pub scene_scenescript_binding_count: usize,
+    #[serde(default)]
+    pub scene_material_graph_count: usize,
+    #[serde(default)]
+    pub scene_material_graph_resource_count: usize,
+    #[serde(default)]
+    pub scene_effect_graph_count: usize,
+    #[serde(default)]
+    pub scene_audio_response_binding_count: usize,
+    #[serde(default)]
+    pub unsupported_scene_features: Vec<String>,
     pub display: Option<SceneDisplayPlan>,
     pub layers: Vec<SceneRenderLayer>,
 }
@@ -146,6 +158,16 @@ pub struct SceneRenderAudioCue {
     pub volume: Option<Value>,
     #[serde(default)]
     pub start_silent: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ScenePlanSystemMetrics {
+    scenescript_binding_count: usize,
+    material_graph_count: usize,
+    material_graph_resource_count: usize,
+    effect_graph_count: usize,
+    audio_response_binding_count: usize,
+    unsupported_features: Vec<String>,
 }
 
 impl SceneWallpaperPlan {
@@ -214,6 +236,7 @@ pub fn scene_wallpaper_plan_from_gscene_path_with_properties(
             .and_then(scene_json_property_number)
     });
     let layers = scene_render_layers_from_snapshot(package_root, &document, snapshot.layers)?;
+    let system_metrics = scene_plan_system_metrics(&document);
     let display = scene_display_plan(
         Some(source_path.as_path()),
         &document,
@@ -238,6 +261,12 @@ pub fn scene_wallpaper_plan_from_gscene_path_with_properties(
         timeline_animated_layer_count: scene_timeline_animated_layer_count(&document),
         property_binding_count: document.property_bindings.len(),
         cursor_parallax_input_ready,
+        scene_scenescript_binding_count: system_metrics.scenescript_binding_count,
+        scene_material_graph_count: system_metrics.material_graph_count,
+        scene_material_graph_resource_count: system_metrics.material_graph_resource_count,
+        scene_effect_graph_count: system_metrics.effect_graph_count,
+        scene_audio_response_binding_count: system_metrics.audio_response_binding_count,
+        unsupported_scene_features: system_metrics.unsupported_features,
         display,
         layers,
     })
@@ -277,6 +306,7 @@ impl SceneWallpaperRuntimeSampler {
             .snapshot_at_with_property_resolver(time_ms, |_| None);
         let layers =
             scene_render_layers_from_snapshot(&self.package_root, &self.document, snapshot.layers)?;
+        let system_metrics = scene_plan_system_metrics(&self.document);
         let display = scene_display_plan(
             Some(self.source_path.as_path()),
             &self.document,
@@ -300,6 +330,12 @@ impl SceneWallpaperRuntimeSampler {
             timeline_animated_layer_count: scene_timeline_animated_layer_count(&self.document),
             property_binding_count: self.document.property_bindings.len(),
             cursor_parallax_input_ready: self.cursor_parallax_input_ready,
+            scene_scenescript_binding_count: system_metrics.scenescript_binding_count,
+            scene_material_graph_count: system_metrics.material_graph_count,
+            scene_material_graph_resource_count: system_metrics.material_graph_resource_count,
+            scene_effect_graph_count: system_metrics.effect_graph_count,
+            scene_audio_response_binding_count: system_metrics.audio_response_binding_count,
+            unsupported_scene_features: system_metrics.unsupported_features,
             display,
             layers,
         })
@@ -1670,6 +1706,7 @@ fn scene_wallpaper_plan(
         scene_property_value(property, render_properties, &package.manifest.properties)
     });
     let layers = scene_render_layers_from_snapshot(&package.root, &document, snapshot.layers)?;
+    let system_metrics = scene_plan_system_metrics(&document);
     let display = scene_display_plan(
         Some(source_path.as_path()),
         &document,
@@ -1694,9 +1731,112 @@ fn scene_wallpaper_plan(
         timeline_animated_layer_count: scene_timeline_animated_layer_count(&document),
         property_binding_count: document.property_bindings.len(),
         cursor_parallax_input_ready,
+        scene_scenescript_binding_count: system_metrics.scenescript_binding_count,
+        scene_material_graph_count: system_metrics.material_graph_count,
+        scene_material_graph_resource_count: system_metrics.material_graph_resource_count,
+        scene_effect_graph_count: system_metrics.effect_graph_count,
+        scene_audio_response_binding_count: system_metrics.audio_response_binding_count,
+        unsupported_scene_features: system_metrics.unsupported_features,
         display,
         layers,
     })
+}
+
+fn scene_plan_system_metrics(document: &SceneDocument) -> ScenePlanSystemMetrics {
+    let mut metrics = ScenePlanSystemMetrics {
+        unsupported_features: document
+            .unsupported_features
+            .iter()
+            .map(|feature| feature.feature.clone())
+            .collect(),
+        ..ScenePlanSystemMetrics::default()
+    };
+    metrics.scenescript_binding_count =
+        scene_scenescript_runtime_binding_count(document, &metrics.unsupported_features);
+    metrics.material_graph_count = scene_material_graph_node_count(&document.nodes);
+    metrics.material_graph_resource_count = scene_material_graph_resource_count(document);
+    metrics.effect_graph_count = scene_effect_graph_node_count(&document.nodes);
+    metrics.audio_response_binding_count =
+        scene_audio_response_binding_count(document, &metrics.unsupported_features);
+    metrics
+}
+
+fn scene_scenescript_runtime_binding_count(
+    document: &SceneDocument,
+    unsupported_features: &[String],
+) -> usize {
+    if unsupported_features
+        .iter()
+        .any(|feature| feature.contains("scenescript"))
+    {
+        return 0;
+    }
+    document.property_bindings.len()
+}
+
+fn scene_material_graph_node_count(nodes: &[crate::core::SceneNode]) -> usize {
+    nodes
+        .iter()
+        .map(|node| {
+            let node_count = usize::from(
+                node.resource.is_some()
+                    && node.provenance.as_ref().is_some_and(|provenance| {
+                        provenance.model.as_ref().is_some_and(|model| {
+                            model.material_resource.is_some() && !model.texture_resources.is_empty()
+                        })
+                    }),
+            );
+            node_count + scene_material_graph_node_count(&node.children)
+        })
+        .sum()
+}
+
+fn scene_material_graph_resource_count(document: &SceneDocument) -> usize {
+    document
+        .resources
+        .iter()
+        .filter(|resource| {
+            resource.role.as_deref().is_some_and(|role| {
+                role == "we-material"
+                    || role == "we-material-texture"
+                    || role == "we-material-texture-decoded-frame"
+                    || role == "we-material-texture-decoded-atlas"
+            })
+        })
+        .count()
+}
+
+fn scene_effect_graph_node_count(nodes: &[crate::core::SceneNode]) -> usize {
+    nodes
+        .iter()
+        .map(|node| {
+            usize::from(!node.effects.is_empty()) + scene_effect_graph_node_count(&node.children)
+        })
+        .sum()
+}
+
+fn scene_audio_response_binding_count(
+    document: &SceneDocument,
+    unsupported_features: &[String],
+) -> usize {
+    if unsupported_features
+        .iter()
+        .any(|feature| feature.contains("audio"))
+    {
+        return 0;
+    }
+    document
+        .property_bindings
+        .iter()
+        .filter(|binding| {
+            let property = binding.property.to_ascii_lowercase();
+            property.contains("audio")
+                || property.contains("spectrum")
+                || property.contains("bass")
+                || property.contains("mid")
+                || property.contains("treble")
+        })
+        .count()
 }
 
 fn scene_render_layers_from_snapshot(

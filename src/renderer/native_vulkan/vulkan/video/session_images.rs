@@ -9,6 +9,7 @@ use super::video_session::{
 };
 
 const DEVICE_LOCAL_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::DEVICE_LOCAL.bits();
+const HOST_VISIBLE_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::HOST_VISIBLE.bits();
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaVideoSessionResourceImageSmokeSnapshot {
@@ -159,21 +160,15 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         let memory_requirements = unsafe { device.get_image_memory_requirements(image) };
         let memory_type_candidates =
             native_vulkan_vulkanalia_memory_type_candidates(memory_properties);
-        let memory_type = native_vulkan_vulkanalia_image_memory_type_index(
+        let memory_type = native_vulkan_vulkanalia_image_memory_type_index_excluding(
             &memory_type_candidates,
             memory_requirements.memory_type_bits,
             DEVICE_LOCAL_MEMORY_FLAG_BITS,
+            HOST_VISIBLE_MEMORY_FLAG_BITS,
         )
-        .or_else(|| {
-            native_vulkan_vulkanalia_image_memory_type_index(
-                &memory_type_candidates,
-                memory_requirements.memory_type_bits,
-                0,
-            )
-        })
         .ok_or_else(|| {
             format!(
-                "video session resource image has no compatible memory type for bits 0x{:08x}",
+                "video session resource image requires device-local non-host-visible memory for bits 0x{:08x}",
                 memory_requirements.memory_type_bits
             )
         })?;
@@ -359,17 +354,19 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destr
     }
 }
 
-fn native_vulkan_vulkanalia_image_memory_type_index(
+fn native_vulkan_vulkanalia_image_memory_type_index_excluding(
     memory_types: &[NativeVulkanVulkanaliaMemoryTypeCandidate],
     allowed_memory_type_bits: u32,
     required_property_flags_bits: u32,
+    excluded_property_flags_bits: u32,
 ) -> Option<NativeVulkanVulkanaliaMemoryTypeCandidate> {
     memory_types.iter().copied().find(|candidate| {
         let allowed = candidate.index < u32::BITS
             && allowed_memory_type_bits & (1u32 << candidate.index) != 0;
         let properties_match = candidate.property_flags_bits & required_property_flags_bits
             == required_property_flags_bits;
-        allowed && properties_match
+        let excluded_absent = candidate.property_flags_bits & excluded_property_flags_bits == 0;
+        allowed && properties_match && excluded_absent
     })
 }
 
@@ -463,13 +460,49 @@ mod tests {
             },
         ];
 
-        let selected = native_vulkan_vulkanalia_image_memory_type_index(
+        let selected = native_vulkan_vulkanalia_image_memory_type_index_excluding(
             &memory_types,
             0b11,
             DEVICE_LOCAL_MEMORY_FLAG_BITS,
+            HOST_VISIBLE_MEMORY_FLAG_BITS,
         )
         .expect("device local memory type");
 
         assert_eq!(selected.index, 1);
+    }
+
+    #[test]
+    fn image_memory_type_selection_rejects_host_visible_device_local() {
+        let memory_types = vec![
+            NativeVulkanVulkanaliaMemoryTypeCandidate {
+                index: 0,
+                property_flags_bits: (vk::MemoryPropertyFlags::DEVICE_LOCAL
+                    | vk::MemoryPropertyFlags::HOST_VISIBLE)
+                    .bits(),
+            },
+            NativeVulkanVulkanaliaMemoryTypeCandidate {
+                index: 1,
+                property_flags_bits: vk::MemoryPropertyFlags::DEVICE_LOCAL.bits(),
+            },
+        ];
+
+        let selected = native_vulkan_vulkanalia_image_memory_type_index_excluding(
+            &memory_types,
+            0b11,
+            DEVICE_LOCAL_MEMORY_FLAG_BITS,
+            HOST_VISIBLE_MEMORY_FLAG_BITS,
+        )
+        .expect("non-host-visible device local memory type");
+
+        assert_eq!(selected.index, 1);
+        assert!(
+            native_vulkan_vulkanalia_image_memory_type_index_excluding(
+                &memory_types,
+                0b01,
+                DEVICE_LOCAL_MEMORY_FLAG_BITS,
+                HOST_VISIBLE_MEMORY_FLAG_BITS,
+            )
+            .is_none()
+        );
     }
 }

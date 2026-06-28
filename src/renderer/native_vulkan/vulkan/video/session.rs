@@ -10,6 +10,7 @@ use super::video_format_probe::{
 };
 
 const DEVICE_LOCAL_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::DEVICE_LOCAL.bits();
+const HOST_VISIBLE_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::HOST_VISIBLE.bits();
 pub(in crate::renderer::native_vulkan::vulkan) const NATIVE_VULKAN_VULKANALIA_VIDEO_SESSION_CREATE_INLINE_SESSION_PARAMETERS_BIT_KHR: u32 =
     0x0000_0020;
 
@@ -435,21 +436,15 @@ fn native_vulkan_vulkanalia_video_session_memory_bind_plan(
         ));
     }
 
-    let selected_memory_type = native_vulkan_vulkanalia_memory_type_index(
+    let selected_memory_type = native_vulkan_vulkanalia_memory_type_index_excluding(
         memory_types,
         memory_requirements.memory_type_bits,
         DEVICE_LOCAL_MEMORY_FLAG_BITS,
+        HOST_VISIBLE_MEMORY_FLAG_BITS,
     )
-    .or_else(|| {
-        native_vulkan_vulkanalia_memory_type_index(
-            memory_types,
-            memory_requirements.memory_type_bits,
-            0,
-        )
-    })
     .ok_or_else(|| {
         format!(
-            "video session memory bind {} has no compatible memory type for bits 0x{:08x}",
+            "video session memory bind {} requires device-local non-host-visible memory for bits 0x{:08x}",
             requirement.memory_bind_index, memory_requirements.memory_type_bits
         )
     })?;
@@ -471,17 +466,19 @@ fn native_vulkan_vulkanalia_video_session_memory_bind_plan(
     })
 }
 
-fn native_vulkan_vulkanalia_memory_type_index(
+fn native_vulkan_vulkanalia_memory_type_index_excluding(
     memory_types: &[NativeVulkanVulkanaliaMemoryTypeCandidate],
     allowed_memory_type_bits: u32,
     required_property_flags_bits: u32,
+    excluded_property_flags_bits: u32,
 ) -> Option<NativeVulkanVulkanaliaMemoryTypeCandidate> {
     memory_types.iter().copied().find(|candidate| {
         let allowed = candidate.index < u32::BITS
             && allowed_memory_type_bits & (1u32 << candidate.index) != 0;
         let properties_match = candidate.property_flags_bits & required_property_flags_bits
             == required_property_flags_bits;
-        allowed && properties_match
+        let excluded_absent = candidate.property_flags_bits & excluded_property_flags_bits == 0;
+        allowed && properties_match && excluded_absent
     })
 }
 
@@ -692,11 +689,11 @@ mod tests {
         let requirements = vec![memory_requirement(0, 8192, 512, 0b111)];
         let memory_types = vec![
             memory_type_candidate(0, vk::MemoryPropertyFlags::HOST_VISIBLE),
-            memory_type_candidate(1, vk::MemoryPropertyFlags::DEVICE_LOCAL),
             memory_type_candidate(
-                2,
+                1,
                 vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE,
             ),
+            memory_type_candidate(2, vk::MemoryPropertyFlags::DEVICE_LOCAL),
         ];
 
         let plans =
@@ -704,7 +701,7 @@ mod tests {
                 .expect("bind plans");
 
         assert_eq!(plans.len(), 1);
-        assert_eq!(plans[0].selected_memory_type_index, 1);
+        assert_eq!(plans[0].selected_memory_type_index, 2);
         assert!(plans[0].preferred_device_local);
         assert!(plans[0].dedicated_allocation);
         assert!(
@@ -715,24 +712,18 @@ mod tests {
     }
 
     #[test]
-    fn memory_bind_plans_fall_back_to_any_compatible_type() {
+    fn memory_bind_plans_reject_host_visible_compatible_type() {
         let requirements = vec![memory_requirement(1, 4096, 128, 0b010)];
         let memory_types = vec![
             memory_type_candidate(0, vk::MemoryPropertyFlags::DEVICE_LOCAL),
             memory_type_candidate(1, vk::MemoryPropertyFlags::HOST_VISIBLE),
         ];
 
-        let plans =
+        let err =
             native_vulkan_vulkanalia_video_session_memory_bind_plans(&requirements, &memory_types)
-                .expect("bind plans");
+                .expect_err("host-visible session memory must fail");
 
-        assert_eq!(plans[0].selected_memory_type_index, 1);
-        assert!(!plans[0].preferred_device_local);
-        assert!(
-            plans[0]
-                .selected_memory_property_flags
-                .contains(&"host-visible")
-        );
+        assert!(err.contains("requires device-local non-host-visible memory"));
     }
 
     #[test]
@@ -754,7 +745,7 @@ mod tests {
             &memory_types,
         )
         .expect_err("missing type must fail");
-        assert!(missing_type.contains("no compatible memory type"));
+        assert!(missing_type.contains("requires device-local non-host-visible memory"));
     }
 
     #[test]

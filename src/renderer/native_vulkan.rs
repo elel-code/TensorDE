@@ -12300,6 +12300,12 @@ mod tests {
                 timeline_animated_layer_count: 1,
                 property_binding_count: 1,
                 cursor_parallax_input_ready: true,
+                scene_scenescript_binding_count: 0,
+                scene_material_graph_count: 0,
+                scene_material_graph_resource_count: 0,
+                scene_effect_graph_count: 0,
+                scene_audio_response_binding_count: 0,
+                unsupported_scene_features: Vec::new(),
                 display: Some(SceneDisplayPlan::Color {
                     color: "#102030".to_owned(),
                 }),
@@ -12340,10 +12346,26 @@ mod tests {
         let items = render_items_from_sync_plan(&sync_plan);
 
         assert_eq!(items.len(), 3);
-        assert!(matches!(
-            items[0],
-            NativeVulkanRenderItem::StaticImage { .. }
-        ));
+        assert_eq!(items[0].wallpaper_type(), NativeVulkanWallpaperType::Scene);
+        let NativeVulkanRenderItem::Scene {
+            display_image: static_display_image,
+            layers: static_layers,
+            renderer_status: static_renderer_status,
+            ..
+        } = &items[0]
+        else {
+            unreachable!("static wallpaper should lower to a scene image layer");
+        };
+        assert_eq!(
+            static_display_image,
+            &Some(PathBuf::from("/tmp/static.png"))
+        );
+        assert_eq!(static_layers.len(), 1);
+        assert_eq!(static_layers[0].kind, crate::core::SceneNodeKind::Image);
+        assert_eq!(
+            *static_renderer_status,
+            "static-image-lowered-to-scene-sampled-image-layer"
+        );
         assert!(matches!(items[1], NativeVulkanRenderItem::Video { .. }));
         assert_eq!(items[1].wallpaper_type(), NativeVulkanWallpaperType::Video);
         let NativeVulkanRenderItem::Video {

@@ -17,6 +17,12 @@ pub fn run_static_image(
     duration: Duration,
     plan: StaticWallpaperPlan,
 ) -> Result<NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot, NativeVulkanError> {
+    if !native_vulkan_static_source_is_gtex(&plan.source) {
+        return Err(NativeVulkanError::StaticImage(format!(
+            "native static image runtime requires a .gtex BC7 source {}; runtime PNG/JPG decoding is disabled",
+            plan.source.display()
+        )));
+    }
     if options.host.output_name.is_none() {
         options.host.output_name = Some(plan.output_name.clone());
     }
@@ -87,6 +93,13 @@ fn native_vulkan_static_background_clear_color(background: Option<&str>) -> Nati
     }
 }
 
+fn native_vulkan_static_source_is_gtex(source: &std::path::Path) -> bool {
+    source
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("gtex"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +124,30 @@ mod tests {
         .unwrap_err();
 
         assert!(!err.to_string().contains("does not yet support tile"));
+    }
+
+    #[test]
+    fn vulkanalia_static_rejects_runtime_png_decode() {
+        let err = run_static_image(
+            NativeVulkanOptions {
+                host: NativeWaylandHostOptions::default(),
+                ..Default::default()
+            },
+            Duration::ZERO,
+            StaticWallpaperPlan {
+                output_name: "HDMI-A-1".to_owned(),
+                source: "wallpaper.png".into(),
+                fit: FitMode::Cover,
+                background: None,
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("requires a .gtex BC7 source"));
+        assert!(
+            err.to_string()
+                .contains("runtime PNG/JPG decoding is disabled")
+        );
     }
 
     #[test]

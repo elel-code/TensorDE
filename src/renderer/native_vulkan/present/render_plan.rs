@@ -10,53 +10,6 @@ use crate::renderer::{SceneDisplayPlan, SceneRenderLayer};
 use super::super::NativeVulkanClearColor;
 use super::render_item::NativeVulkanRenderItem;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::renderer::native_vulkan) struct NativeVulkanStaticUploadPlan {
-    pub(in crate::renderer::native_vulkan) source: PathBuf,
-    pub(in crate::renderer::native_vulkan) fit: FitMode,
-    pub(in crate::renderer::native_vulkan) background: Option<String>,
-}
-
-pub(in crate::renderer::native_vulkan) fn native_vulkan_static_upload_plan(
-    render_item: &NativeVulkanRenderItem,
-) -> Option<NativeVulkanStaticUploadPlan> {
-    match render_item {
-        NativeVulkanRenderItem::StaticImage {
-            source,
-            fit,
-            background,
-            ..
-        } => Some(NativeVulkanStaticUploadPlan {
-            source: source.clone(),
-            fit: *fit,
-            background: background.clone(),
-        }),
-        NativeVulkanRenderItem::Video {
-            poster: Some(poster),
-            fit,
-            ..
-        } => Some(NativeVulkanStaticUploadPlan {
-            source: poster.clone(),
-            fit: *fit,
-            background: None,
-        }),
-        NativeVulkanRenderItem::Scene {
-            display:
-                Some(SceneDisplayPlan::Image {
-                    source,
-                    fit,
-                    background,
-                }),
-            ..
-        } => Some(NativeVulkanStaticUploadPlan {
-            source: source.clone(),
-            fit: *fit,
-            background: background.clone(),
-        }),
-        _ => None,
-    }
-}
-
 pub(in crate::renderer::native_vulkan) fn native_vulkan_render_item_clear_color(
     render_item: &NativeVulkanRenderItem,
     fallback: NativeVulkanClearColor,
@@ -323,42 +276,6 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn scene_image_display_uses_static_upload_plan() {
-        let item = NativeVulkanRenderItem::Scene {
-            output_name: "HDMI-A-1".to_owned(),
-            scene_source: Some(PathBuf::from("/tmp/scene.json")),
-            display: Some(SceneDisplayPlan::Image {
-                source: PathBuf::from("/tmp/scene-snapshot.png"),
-                fit: FitMode::Contain,
-                background: Some("#010203".to_owned()),
-            }),
-            display_image: Some(PathBuf::from("/tmp/scene-snapshot.png")),
-            display_color: None,
-            manifest_max_fps: Some(60),
-            layer_count: 0,
-            layers: Vec::new(),
-            scene_systems: SceneSystems::default(),
-            audio_cue_count: 0,
-            bound_properties: Vec::new(),
-            timeline_animation_count: 0,
-            timeline_animated_layer_count: 0,
-            property_binding_count: 0,
-            cursor_parallax_input_ready: false,
-            snapshot_time_ms: 0,
-            scene_size: None,
-            scene_fit: FitMode::Cover,
-            target_max_fps: Some(60),
-            renderer_status: "deterministic-scene-snapshot-ready-for-vulkan-passes",
-        };
-
-        let plan = native_vulkan_static_upload_plan(&item).expect("scene image display plan");
-
-        assert_eq!(plan.source, PathBuf::from("/tmp/scene-snapshot.png"));
-        assert_eq!(plan.fit, FitMode::Contain);
-        assert_eq!(plan.background.as_deref(), Some("#010203"));
-    }
-
-    #[test]
     fn scene_color_display_overrides_default_clear_color() {
         let fallback = NativeVulkanClearColor {
             r: 0.0,
@@ -384,6 +301,12 @@ mod tests {
             timeline_animated_layer_count: 0,
             property_binding_count: 0,
             cursor_parallax_input_ready: false,
+            scene_scenescript_binding_count: 0,
+            scene_material_graph_count: 0,
+            scene_material_graph_resource_count: 0,
+            scene_effect_graph_count: 0,
+            scene_audio_response_binding_count: 0,
+            unsupported_scene_features: Vec::new(),
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,

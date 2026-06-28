@@ -29,6 +29,17 @@ fn run() -> Result<(), String> {
             println!("unpacked {}", dest.display());
             Ok(())
         }
+        [cmd, source, dest] if cmd == "image-gtex" => {
+            let source = PathBuf::from(source);
+            let dest = PathBuf::from(dest);
+            if dest.exists() {
+                return Err(format!("output texture already exists: {}", dest.display()));
+            }
+            let summary =
+                gilder::convert::wallpaper_engine::convert_png_to_native_gtex(&source, &dest)?;
+            print_native_gtex_summary(&summary);
+            Ok(())
+        }
         [kind, flag, source, dest] if kind == "wallpaper-engine" && flag == "--pack" => {
             let source = PathBuf::from(source);
             let dest = PathBuf::from(dest);
@@ -73,6 +84,7 @@ fn help_text() -> String {
         "usage:",
         "  gilder-convert pack <source.gwpdir> <dest.gwp>",
         "  gilder-convert unpack <source.gwp> <dest.gwpdir>",
+        "  gilder-convert image-gtex <source.png> <dest.gtex>",
         "  gilder-convert wallpaper-engine <source-project-dir> <dest.gwpdir>",
         "  gilder-convert wallpaper-engine --pack <source-project-dir> <dest.gwp>",
         "",
@@ -81,6 +93,17 @@ fn help_text() -> String {
         "Pack accepts .gwpdir manifests in JSON or TOML and writes canonical JSON into .gwp archives.",
     ]
     .join("\n")
+}
+
+fn print_native_gtex_summary(
+    summary: &gilder::convert::wallpaper_engine::NativeGtexConversionSummary,
+) {
+    println!("converted image to native gtex");
+    println!("source: {}", summary.source.display());
+    println!("output: {}", summary.output.display());
+    println!("size: {}x{}", summary.width, summary.height);
+    println!("format: {}", summary.format);
+    println!("payload_bytes: {}", summary.payload_bytes);
 }
 
 struct TempDir {

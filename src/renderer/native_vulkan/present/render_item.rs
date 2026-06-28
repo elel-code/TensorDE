@@ -11,7 +11,6 @@ use crate::renderer::{
 
 use super::super::NativeVulkanWallpaperType;
 
-const NATIVE_VULKAN_STATIC_RENDERER_STATUS: &str = "vulkanalia-static-sampled-image";
 const NATIVE_VULKAN_STATIC_SCENE_RENDERER_STATUS: &str =
     "static-image-lowered-to-scene-sampled-image-layer";
 
@@ -20,13 +19,6 @@ const NATIVE_VULKAN_STATIC_SCENE_RENDERER_STATUS: &str =
 pub enum NativeVulkanRenderItem {
     Clear {
         output_name: String,
-    },
-    StaticImage {
-        output_name: String,
-        source: PathBuf,
-        fit: FitMode,
-        background: Option<String>,
-        renderer_status: &'static str,
     },
     Video {
         output_name: String,
@@ -66,6 +58,12 @@ pub enum NativeVulkanRenderItem {
         timeline_animated_layer_count: usize,
         property_binding_count: usize,
         cursor_parallax_input_ready: bool,
+        scene_scenescript_binding_count: usize,
+        scene_material_graph_count: usize,
+        scene_material_graph_resource_count: usize,
+        scene_effect_graph_count: usize,
+        scene_audio_response_binding_count: usize,
+        unsupported_scene_features: Vec<String>,
         snapshot_time_ms: u64,
         scene_size: Option<SceneSize>,
         scene_fit: FitMode,
@@ -78,7 +76,6 @@ impl NativeVulkanRenderItem {
     pub fn wallpaper_type(&self) -> NativeVulkanWallpaperType {
         match self {
             Self::Clear { .. } => NativeVulkanWallpaperType::StaticImage,
-            Self::StaticImage { .. } => NativeVulkanWallpaperType::StaticImage,
             Self::Video { .. } => NativeVulkanWallpaperType::Video,
             Self::Slideshow { .. } => NativeVulkanWallpaperType::Playlist,
             Self::Scene { .. } => NativeVulkanWallpaperType::Scene,
@@ -89,7 +86,7 @@ impl NativeVulkanRenderItem {
 pub fn render_items_from_sync_plan(plan: &StaticRenderSyncPlan) -> Vec<NativeVulkanRenderItem> {
     plan.plans
         .iter()
-        .map(native_vulkan_static_item)
+        .map(native_vulkan_static_scene_item)
         .chain(plan.video_plans.iter().map(native_vulkan_video_item))
         .chain(
             plan.slideshow_plans
@@ -98,18 +95,6 @@ pub fn render_items_from_sync_plan(plan: &StaticRenderSyncPlan) -> Vec<NativeVul
         )
         .chain(plan.scene_plans.iter().map(native_vulkan_scene_item))
         .collect()
-}
-
-pub(in crate::renderer::native_vulkan) fn native_vulkan_static_item(
-    plan: &StaticWallpaperPlan,
-) -> NativeVulkanRenderItem {
-    NativeVulkanRenderItem::StaticImage {
-        output_name: plan.output_name.clone(),
-        source: plan.source.clone(),
-        fit: plan.fit,
-        background: plan.background.clone(),
-        renderer_status: NATIVE_VULKAN_STATIC_RENDERER_STATUS,
-    }
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
@@ -156,6 +141,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
         timeline_animated_layer_count: 0,
         property_binding_count: 0,
         cursor_parallax_input_ready: false,
+        scene_scenescript_binding_count: 0,
+        scene_material_graph_count: 0,
+        scene_material_graph_resource_count: 0,
+        scene_effect_graph_count: 0,
+        scene_audio_response_binding_count: 0,
+        unsupported_scene_features: Vec::new(),
         snapshot_time_ms: 0,
         scene_size: None,
         scene_fit: plan.fit,
@@ -269,6 +260,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_item(
         timeline_animated_layer_count: plan.timeline_animated_layer_count,
         property_binding_count: plan.property_binding_count,
         cursor_parallax_input_ready: plan.cursor_parallax_input_ready,
+        scene_scenescript_binding_count: plan.scene_scenescript_binding_count,
+        scene_material_graph_count: plan.scene_material_graph_count,
+        scene_material_graph_resource_count: plan.scene_material_graph_resource_count,
+        scene_effect_graph_count: plan.scene_effect_graph_count,
+        scene_audio_response_binding_count: plan.scene_audio_response_binding_count,
+        unsupported_scene_features: plan.unsupported_scene_features.clone(),
         snapshot_time_ms: plan.snapshot_time_ms,
         scene_size: plan.scene_size,
         scene_fit: plan.scene_fit,

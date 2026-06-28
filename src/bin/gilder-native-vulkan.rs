@@ -100,6 +100,14 @@ fn native_vulkan_video_glibc_tunables_with_tcache_disabled() -> String {
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
+fn native_vulkan_static_source_is_gtex(source: &Path) -> bool {
+    source
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("gtex"))
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::StaticWallpaperPlan;
     #[cfg(feature = "native-vulkan-video")]
@@ -649,6 +657,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if !source.is_file() {
                 return Err(format!("static source does not exist: {}", source.display()).into());
             }
+            if !native_vulkan_static_source_is_gtex(&source) {
+                return Err(format!(
+                    "--run-static requires a native .gtex BC7 source {}; convert PNG/JPG offline with gilder-convert image-gtex",
+                    source.display()
+                )
+                .into());
+            }
             let output_name = options
                 .host
                 .output_name
@@ -888,6 +903,12 @@ fn scene_cli_plan(
                 timeline_animated_layer_count: 0,
                 property_binding_count: 0,
                 cursor_parallax_input_ready: false,
+                scene_scenescript_binding_count: 0,
+                scene_material_graph_count: 0,
+                scene_material_graph_resource_count: 0,
+                scene_effect_graph_count: 0,
+                scene_audio_response_binding_count: 0,
+                unsupported_scene_features: Vec::new(),
                 scene_size: None,
                 scene_fit: fit,
                 display,
@@ -910,6 +931,12 @@ fn scene_cli_plan(
             timeline_animated_layer_count: 0,
             property_binding_count: 0,
             cursor_parallax_input_ready: false,
+            scene_scenescript_binding_count: 0,
+            scene_material_graph_count: 0,
+            scene_material_graph_resource_count: 0,
+            scene_effect_graph_count: 0,
+            scene_audio_response_binding_count: 0,
+            unsupported_scene_features: Vec::new(),
             scene_size: None,
             scene_fit: fit,
             display: Some(SceneDisplayPlan::Image {
@@ -946,6 +973,12 @@ fn scene_cli_plan(
             timeline_animated_layer_count: 0,
             property_binding_count: 0,
             cursor_parallax_input_ready: false,
+            scene_scenescript_binding_count: 0,
+            scene_material_graph_count: 0,
+            scene_material_graph_resource_count: 0,
+            scene_effect_graph_count: 0,
+            scene_audio_response_binding_count: 0,
+            unsupported_scene_features: Vec::new(),
             scene_size: None,
             scene_fit: fit,
             display: Some(SceneDisplayPlan::Color { color: background }),
@@ -979,6 +1012,12 @@ fn scene_cli_plan(
             timeline_animated_layer_count: 0,
             property_binding_count: 0,
             cursor_parallax_input_ready: false,
+            scene_scenescript_binding_count: 0,
+            scene_material_graph_count: 0,
+            scene_material_graph_resource_count: 0,
+            scene_effect_graph_count: 0,
+            scene_audio_response_binding_count: 0,
+            unsupported_scene_features: Vec::new(),
             scene_size: None,
             scene_fit: fit,
             display: Some(SceneDisplayPlan::Color { color: background }),
@@ -1002,6 +1041,12 @@ fn scene_cli_plan(
         timeline_animated_layer_count: 0,
         property_binding_count: 0,
         cursor_parallax_input_ready: false,
+        scene_scenescript_binding_count: 0,
+        scene_material_graph_count: 0,
+        scene_material_graph_resource_count: 0,
+        scene_effect_graph_count: 0,
+        scene_audio_response_binding_count: 0,
+        unsupported_scene_features: Vec::new(),
         scene_size: None,
         scene_fit: fit,
         display: Some(SceneDisplayPlan::Color { color }),

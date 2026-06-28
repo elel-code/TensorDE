@@ -127,8 +127,17 @@ pub struct NativeVulkanFullSceneRuntimeSnapshot {
     pub scene_state_persistence_model: &'static str,
     pub scene_audio_cue_count: usize,
     pub scene_audio_cue_resource_model_ready: bool,
+    pub scene_scenescript_detected: bool,
+    pub scene_scenescript_ready: bool,
+    pub scene_scenescript_binding_count: usize,
+    pub scene_shader_material_graph_detected: bool,
+    pub scene_shader_material_graph_ready: bool,
+    pub scene_material_graph_count: usize,
+    pub scene_material_graph_resource_count: usize,
+    pub scene_effect_graph_count: usize,
     pub scene_audio_response_detected: bool,
     pub scene_audio_response_ready: bool,
+    pub scene_audio_response_binding_count: usize,
     pub scene_particle_system_detected: bool,
     pub scene_particle_system_ready: bool,
     pub particle_runtime_layer_count: usize,
@@ -139,6 +148,8 @@ pub struct NativeVulkanFullSceneRuntimeSnapshot {
     pub scene_text_geometry_ready: bool,
     pub scene_path_tessellation_required: bool,
     pub scene_path_tessellation_ready: bool,
+    pub unsupported_scene_feature_count: usize,
+    pub unsupported_scene_features: Vec<String>,
     pub completed_boundaries: Vec<&'static str>,
     pub pending_boundaries: Vec<&'static str>,
 }
@@ -671,10 +682,16 @@ fn native_vulkan_full_scene_runtime_snapshot(
         timeline_animated_layer_count,
         property_binding_count,
         cursor_parallax_input_ready,
+        scene_scenescript_binding_count,
+        scene_material_graph_count,
+        scene_material_graph_resource_count,
+        scene_effect_graph_count,
         scene_audio_response_detected,
+        scene_audio_response_binding_count,
         scene_particle_system_detected,
         scene_particle_system_ready_from_metadata,
         scene_audio_cue_count,
+        unsupported_scene_features,
     ) = match render_item {
         NativeVulkanRenderItem::Scene {
             layer_count,
@@ -682,6 +699,12 @@ fn native_vulkan_full_scene_runtime_snapshot(
             timeline_animated_layer_count,
             property_binding_count,
             cursor_parallax_input_ready,
+            scene_scenescript_binding_count,
+            scene_material_graph_count,
+            scene_material_graph_resource_count,
+            scene_effect_graph_count,
+            scene_audio_response_binding_count,
+            unsupported_scene_features,
             scene_systems,
             audio_cue_count,
             ..
@@ -691,18 +714,91 @@ fn native_vulkan_full_scene_runtime_snapshot(
             *timeline_animated_layer_count,
             *property_binding_count,
             *cursor_parallax_input_ready,
+            *scene_scenescript_binding_count,
+            *scene_material_graph_count,
+            *scene_material_graph_resource_count,
+            *scene_effect_graph_count,
             matches!(
                 scene_systems.audio_response,
                 SceneSystemStatus::Detected | SceneSystemStatus::Ready
             ),
+            *scene_audio_response_binding_count,
             matches!(
                 scene_systems.particles,
                 SceneSystemStatus::Detected | SceneSystemStatus::Ready
             ),
             matches!(scene_systems.particles, SceneSystemStatus::Ready),
             *audio_cue_count,
+            unsupported_scene_features.clone(),
         ),
-        _ => (0, 0, 0, 0, false, false, false, false, 0),
+        _ => (
+            0,
+            0,
+            0,
+            0,
+            false,
+            0,
+            0,
+            0,
+            0,
+            false,
+            0,
+            false,
+            false,
+            0,
+            Vec::new(),
+        ),
+    };
+    let scene_scenescript_detected = match render_item {
+        NativeVulkanRenderItem::Scene { scene_systems, .. } => matches!(
+            scene_systems.scenescript,
+            SceneSystemStatus::Detected | SceneSystemStatus::Ready
+        ),
+        _ => false,
+    };
+    let scene_scenescript_ready = match render_item {
+        NativeVulkanRenderItem::Scene { scene_systems, .. } => {
+            matches!(scene_systems.scenescript, SceneSystemStatus::Ready)
+                && scene_scenescript_binding_count > 0
+                && !unsupported_scene_features
+                    .iter()
+                    .any(|feature| feature.contains("scenescript"))
+        }
+        _ => false,
+    };
+    let scene_shader_material_graph_detected = match render_item {
+        NativeVulkanRenderItem::Scene { scene_systems, .. } => {
+            matches!(
+                scene_systems.shader_material_graph,
+                SceneSystemStatus::Detected | SceneSystemStatus::Ready
+            ) || scene_material_graph_count > 0
+                || scene_effect_graph_count > 0
+        }
+        _ => false,
+    };
+    let scene_shader_material_graph_ready = match render_item {
+        NativeVulkanRenderItem::Scene { scene_systems, .. } => {
+            matches!(
+                scene_systems.shader_material_graph,
+                SceneSystemStatus::Ready
+            ) && scene_material_graph_count > 0
+                && scene_material_graph_resource_count > 0
+                && scene_effect_graph_count == 0
+                && !unsupported_scene_features
+                    .iter()
+                    .any(|feature| scene_feature_blocks_shader_material_graph(feature))
+        }
+        _ => false,
+    };
+    let scene_audio_response_ready = match render_item {
+        NativeVulkanRenderItem::Scene { scene_systems, .. } => {
+            matches!(scene_systems.audio_response, SceneSystemStatus::Ready)
+                && scene_audio_response_binding_count > 0
+                && !unsupported_scene_features
+                    .iter()
+                    .any(|feature| feature.contains("audio"))
+        }
+        _ => false,
     };
     let scene_audio_cue_resource_model_ready = scene_audio_cue_count > 0;
     let retained_resource_model_ready = matches!(
@@ -897,6 +993,16 @@ fn native_vulkan_full_scene_runtime_snapshot(
         completed_boundaries.push("scene-audio-cue-renderer-boundary");
         completed_boundaries.push("scene-audio-cue-pipewire-present-runtime");
     }
+    if scene_scenescript_ready {
+        completed_boundaries.push("native-scenescript-expression-runtime");
+    }
+    if scene_shader_material_graph_ready {
+        completed_boundaries.push("shader-material-graph");
+        completed_boundaries.push("wallpaper-engine-material-graph-texture-runtime");
+    }
+    if scene_audio_response_ready {
+        completed_boundaries.push("pipewire-audio-response-runtime");
+    }
     if cursor_parallax_input_ready {
         completed_boundaries.push("cursor-parallax-input-source");
     }
@@ -914,11 +1020,15 @@ fn native_vulkan_full_scene_runtime_snapshot(
     if pass_plan.path_op_count > 0 && pass_plan.requires_path_tessellation {
         pending_boundaries.push("path-tessellation-runtime");
     }
-    pending_boundaries.extend([
-        "arbitrary-scenescript-runtime",
-        "shader-material-graph",
-        "pipewire-audio-response-runtime",
-    ]);
+    if !scene_scenescript_ready {
+        pending_boundaries.push("arbitrary-scenescript-runtime");
+    }
+    if !scene_shader_material_graph_ready {
+        pending_boundaries.push("shader-material-graph");
+    }
+    if !scene_audio_response_ready {
+        pending_boundaries.push("pipewire-audio-response-runtime");
+    }
     if scene_particle_system_detected && !scene_particle_system_ready {
         pending_boundaries.push("particle-systems");
     }
@@ -971,8 +1081,17 @@ fn native_vulkan_full_scene_runtime_snapshot(
         scene_state_persistence_model: "app-state-wallpaper-and-output-property-store",
         scene_audio_cue_count,
         scene_audio_cue_resource_model_ready,
+        scene_scenescript_detected,
+        scene_scenescript_ready,
+        scene_scenescript_binding_count,
+        scene_shader_material_graph_detected,
+        scene_shader_material_graph_ready,
+        scene_material_graph_count,
+        scene_material_graph_resource_count,
+        scene_effect_graph_count,
         scene_audio_response_detected,
-        scene_audio_response_ready: false,
+        scene_audio_response_ready,
+        scene_audio_response_binding_count,
         scene_particle_system_detected,
         scene_particle_system_ready,
         particle_runtime_layer_count,
@@ -983,9 +1102,19 @@ fn native_vulkan_full_scene_runtime_snapshot(
         scene_text_geometry_ready,
         scene_path_tessellation_required,
         scene_path_tessellation_ready,
+        unsupported_scene_feature_count: unsupported_scene_features.len(),
+        unsupported_scene_features,
         completed_boundaries,
         pending_boundaries,
     }
+}
+
+fn scene_feature_blocks_shader_material_graph(feature: &str) -> bool {
+    feature.contains("shader")
+        || feature.contains("effect")
+        || feature.contains("material")
+        || feature.contains("tex")
+        || feature.contains("runtime-texture")
 }
 
 fn native_vulkan_scene_path_uses_curves(path: &str) -> bool {
@@ -1116,6 +1245,12 @@ mod tests {
             timeline_animated_layer_count,
             property_binding_count,
             cursor_parallax_input_ready: false,
+            scene_scenescript_binding_count: 0,
+            scene_material_graph_count: 0,
+            scene_material_graph_resource_count: 0,
+            scene_effect_graph_count: 0,
+            scene_audio_response_binding_count: 0,
+            unsupported_scene_features: Vec::new(),
             snapshot_time_ms: 1234,
             scene_size: None,
             scene_fit: FitMode::Cover,
@@ -1587,6 +1722,79 @@ mod tests {
     }
 
     #[test]
+    fn full_scene_runtime_snapshot_tracks_shader_material_graph_boundary() {
+        let mut image = scene_test_layer("hero", SceneNodeKind::Image);
+        image.source = Some(PathBuf::from("/tmp/hero.gtex"));
+        let mut item = scene_test_item(vec![image], None);
+        let NativeVulkanRenderItem::Scene {
+            scene_systems,
+            scene_material_graph_count,
+            scene_material_graph_resource_count,
+            ..
+        } = &mut item
+        else {
+            unreachable!("scene_test_item always returns a scene item");
+        };
+        scene_systems.shader_material_graph = SceneSystemStatus::Ready;
+        *scene_material_graph_count = 1;
+        *scene_material_graph_resource_count = 2;
+
+        let snapshot = native_vulkan_scene_runtime_snapshot(&item).unwrap();
+
+        assert!(snapshot.full_scene.scene_shader_material_graph_detected);
+        assert!(snapshot.full_scene.scene_shader_material_graph_ready);
+        assert_eq!(snapshot.full_scene.scene_material_graph_count, 1);
+        assert_eq!(snapshot.full_scene.scene_material_graph_resource_count, 2);
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"shader-material-graph")
+        );
+        assert!(
+            !snapshot
+                .full_scene
+                .pending_boundaries
+                .contains(&"shader-material-graph")
+        );
+    }
+
+    #[test]
+    fn full_scene_runtime_keeps_shader_material_graph_pending_for_effect_graphs() {
+        let mut image = scene_test_layer("hero", SceneNodeKind::Image);
+        image.source = Some(PathBuf::from("/tmp/hero.gtex"));
+        let mut item = scene_test_item(vec![image], None);
+        let NativeVulkanRenderItem::Scene {
+            scene_systems,
+            scene_material_graph_count,
+            scene_material_graph_resource_count,
+            scene_effect_graph_count,
+            unsupported_scene_features,
+            ..
+        } = &mut item
+        else {
+            unreachable!("scene_test_item always returns a scene item");
+        };
+        scene_systems.shader_material_graph = SceneSystemStatus::Ready;
+        *scene_material_graph_count = 1;
+        *scene_material_graph_resource_count = 2;
+        *scene_effect_graph_count = 1;
+        unsupported_scene_features.push("we-effect-runtime".to_owned());
+
+        let snapshot = native_vulkan_scene_runtime_snapshot(&item).unwrap();
+
+        assert!(snapshot.full_scene.scene_shader_material_graph_detected);
+        assert!(!snapshot.full_scene.scene_shader_material_graph_ready);
+        assert_eq!(snapshot.full_scene.scene_effect_graph_count, 1);
+        assert!(
+            snapshot
+                .full_scene
+                .pending_boundaries
+                .contains(&"shader-material-graph")
+        );
+    }
+
+    #[test]
     fn scene_runtime_snapshot_reports_unsupported_layers() {
         let mut color = scene_test_layer("background", SceneNodeKind::Color);
         color.color = Some("#010203".to_owned());
@@ -1903,7 +2111,7 @@ mod tests {
             snapshot
                 .vulkanalia_sampled_image
                 .command_order
-                .contains(&"vk_copy_memory_to_image")
+                .contains(&"cmd_copy_buffer_to_image2_chunks")
         );
         assert!(
             snapshot
