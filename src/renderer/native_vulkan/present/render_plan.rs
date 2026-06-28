@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use crate::core::{
-    FitMode, SceneNodeKind, SceneSize, SceneTextAlign, SceneTextureRegion, SceneTransform,
+    FitMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneTextAlign, SceneTextureRegion,
+    SceneTransform,
 };
 use crate::renderer::{SceneDisplayPlan, SceneRenderLayer};
 
@@ -68,6 +69,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneDrawOp {
     pub(in crate::renderer::native_vulkan) font_weight: Option<String>,
     pub(in crate::renderer::native_vulkan) text_align: Option<SceneTextAlign>,
     pub(in crate::renderer::native_vulkan) path_data: Option<String>,
+    pub(in crate::renderer::native_vulkan) path_fill_rule: ScenePathFillRule,
     pub(in crate::renderer::native_vulkan) fit: FitMode,
     pub(in crate::renderer::native_vulkan) transform: SceneTransform,
 }
@@ -110,16 +112,32 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_draw_plan(
     else {
         return None;
     };
+    Some(native_vulkan_scene_draw_plan_from_layers(
+        *snapshot_time_ms,
+        *scene_size,
+        *scene_fit,
+        display.is_some(),
+        layers,
+    ))
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_draw_plan_from_layers(
+    snapshot_time_ms: u64,
+    scene_size: Option<SceneSize>,
+    scene_fit: FitMode,
+    runtime_display_available: bool,
+    layers: &[SceneRenderLayer],
+) -> NativeVulkanSceneDrawPlan {
     let (draw_ops, unsupported_layers) = native_vulkan_scene_draw_layers(layers);
 
-    Some(NativeVulkanSceneDrawPlan {
-        snapshot_time_ms: *snapshot_time_ms,
-        scene_size: *scene_size,
-        scene_fit: *scene_fit,
+    NativeVulkanSceneDrawPlan {
+        snapshot_time_ms,
+        scene_size,
+        scene_fit,
         draw_ops,
         unsupported_layers,
-        runtime_display_available: display.is_some(),
-    })
+        runtime_display_available,
+    }
 }
 
 fn native_vulkan_scene_draw_layers(
@@ -154,6 +172,7 @@ fn native_vulkan_scene_draw_layers(
                 font_weight: layer.font_weight.clone(),
                 text_align: layer.text_align,
                 path_data: layer.path_data.clone(),
+                path_fill_rule: layer.path_fill_rule,
                 fit: layer.fit,
                 transform: layer.transform,
             }),

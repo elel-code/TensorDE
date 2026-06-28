@@ -2624,6 +2624,12 @@ fn scene_node_from_object(
         && let Some(path_data) = scene_vector_path_from_object(object)
     {
         node.insert("path".to_owned(), Value::String(path_data));
+        if let Some(fill_rule) = scene_path_fill_rule_from_object(object) {
+            node.insert(
+                "path_fill_rule".to_owned(),
+                Value::String(fill_rule.to_owned()),
+            );
+        }
     }
     if let Some(fit) = scene_fit_from_object(object) {
         node.insert("fit".to_owned(), Value::String(fit.to_owned()));
@@ -3231,15 +3237,109 @@ fn scene_effects_from_object(
             if !passes.is_empty() {
                 output.insert("passes".to_owned(), Value::Array(passes));
             }
-            scene_push_unsupported(
-                context,
-                "we-effect-runtime",
-                "Wallpaper Engine effect graph is preserved in gscene but not executed by the native scene runtime yet.",
-                Some(&file),
-            );
+            if scene_effect_requires_runtime(project, &file, effect) {
+                scene_push_unsupported(
+                    context,
+                    "we-effect-runtime",
+                    "Wallpaper Engine effect graph is preserved in gscene but not executed by the native scene runtime yet.",
+                    Some(&file),
+                );
+            } else {
+                push_unique(
+                    &mut context.converted_features,
+                    "scene-we-noop-effect-preserved",
+                );
+            }
             Some(Value::Object(output))
         })
         .collect()
+}
+
+fn scene_effect_requires_runtime(
+    project: &WallpaperEngineProject,
+    file: &str,
+    effect: &Map<String, Value>,
+) -> bool {
+    if effect
+        .get("visible")
+        .and_then(value_to_bool_unwrapped)
+        .is_some_and(|visible| !visible)
+    {
+        return false;
+    }
+    if scene_effect_passes_require_runtime(effect.get("passes").and_then(Value::as_array)) {
+        return true;
+    }
+    scene_effect_file_requires_runtime(project, file).unwrap_or(true)
+}
+
+fn scene_effect_file_requires_runtime(
+    project: &WallpaperEngineProject,
+    file: &str,
+) -> Option<bool> {
+    let source = project.root.join(file);
+    let text = fs::read_to_string(source).ok()?;
+    let value = serde_json::from_str::<Value>(&text).ok()?;
+    let object = value.as_object()?;
+    if object
+        .get("visible")
+        .and_then(value_to_bool_unwrapped)
+        .is_some_and(|visible| !visible)
+    {
+        return Some(false);
+    }
+    if object.contains_key("passes") {
+        return Some(scene_effect_passes_require_runtime(
+            object.get("passes").and_then(Value::as_array),
+        ));
+    }
+    Some(scene_effect_object_has_runtime_fields(object))
+}
+
+fn scene_effect_passes_require_runtime(passes: Option<&Vec<Value>>) -> bool {
+    passes
+        .into_iter()
+        .flat_map(|passes| passes.iter())
+        .filter_map(Value::as_object)
+        .any(scene_effect_pass_requires_runtime)
+}
+
+fn scene_effect_pass_requires_runtime(pass: &Map<String, Value>) -> bool {
+    if pass
+        .get("visible")
+        .or_else(|| pass.get("enabled"))
+        .and_then(value_to_bool_unwrapped)
+        .is_some_and(|enabled| !enabled)
+    {
+        return false;
+    }
+    pass.iter().any(|(key, value)| {
+        !scene_effect_metadata_key(key) && scene_effect_value_requires_runtime(value)
+    })
+}
+
+fn scene_effect_object_has_runtime_fields(object: &Map<String, Value>) -> bool {
+    object.iter().any(|(key, value)| {
+        !scene_effect_metadata_key(key) && scene_effect_value_requires_runtime(value)
+    })
+}
+
+fn scene_effect_metadata_key(key: &str) -> bool {
+    matches!(
+        key,
+        "id" | "name" | "visible" | "enabled" | "description" | "comment" | "passes"
+    )
+}
+
+fn scene_effect_value_requires_runtime(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(_) => true,
+        Value::String(value) => !value.is_empty(),
+        Value::Array(values) => values.iter().any(scene_effect_value_requires_runtime),
+        Value::Object(values) => !values.is_empty(),
+    }
 }
 
 fn scene_effect_passes_from_object(effect: &Map<String, Value>) -> Vec<Value> {
@@ -4666,6 +4766,30 @@ fn scene_vector_path_from_object(object: &Map<String, Value>) -> Option<String> 
             }
         })
     })
+}
+
+fn scene_path_fill_rule_from_object(object: &Map<String, Value>) -> Option<&'static str> {
+    let value = value_field(
+        object,
+        &[
+            "path_fill_rule",
+            "pathFillRule",
+            "fill_rule",
+            "fillRule",
+            "fillrule",
+            "winding",
+        ],
+    )?;
+    let normalized = value
+        .chars()
+        .filter(|character| !matches!(character, '-' | '_' | ' '))
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    match normalized.as_str() {
+        "evenodd" | "alternate" => Some("evenodd"),
+        "nonzero" | "winding" | "nonzerowinding" => Some("nonzero"),
+        _ => None,
+    }
 }
 
 fn scene_text_from_object(object: &Map<String, Value>) -> Option<String> {
@@ -8404,6 +8528,154 @@ void main() {}
     }
 
     #[test]
+    fn preserves_noop_scene_effect_without_blocking_material_graph_runtime() {
+        let source = TestDir::new("we-scene-noop-effect-source");
+        let output = TestDir::new("we-scene-noop-effect-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                {
+                  "id": 1,
+                  "name": "Renderable With Noop Effect",
+                  "image": "models/renderable.json",
+                  "effects": [
+                    { "file": "effects/noop.json", "visible": true, "passes": [] }
+                  ]
+                }
+              ]
+            }"#,
+        );
+        source.write_file(
+            "models/renderable.json",
+            r#"{ "material": "materials/renderable.json" }"#,
+        );
+        source.write_file(
+            "materials/renderable.json",
+            r#"{ "passes": [{ "textures": ["textures/albedo.png"] }] }"#,
+        );
+        source.write_file("textures/albedo.png", "not real png");
+        source.write_file("effects/noop.json", r#"{ "passes": [] }"#);
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Noop Effect Scene Model",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene["nodes"][0]["type"], "image");
+        assert_eq!(scene["nodes"][0]["effects"][0]["file"], "effects/noop.json");
+        assert!(
+            !scene["unsupported_features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| feature["feature"] == "we-effect-runtime")
+        );
+        assert!(
+            scene["native_lowering"]["completed_boundaries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|boundary| boundary == "shader-material-graph")
+        );
+        assert!(
+            !scene["native_lowering"]["pending_boundaries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|boundary| boundary == "shader-material-graph")
+        );
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-noop-effect-preserved".to_owned())
+        );
+    }
+
+    #[test]
+    fn keeps_runtime_scene_effect_as_material_graph_boundary() {
+        let source = TestDir::new("we-scene-runtime-effect-source");
+        let output = TestDir::new("we-scene-runtime-effect-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                {
+                  "id": 1,
+                  "name": "Renderable With Runtime Effect",
+                  "image": "models/renderable.json",
+                  "effects": [
+                    { "file": "effects/glow.json", "visible": true }
+                  ]
+                }
+              ]
+            }"#,
+        );
+        source.write_file(
+            "models/renderable.json",
+            r#"{ "material": "materials/renderable.json" }"#,
+        );
+        source.write_file(
+            "materials/renderable.json",
+            r#"{ "passes": [{ "textures": ["textures/albedo.png"] }] }"#,
+        );
+        source.write_file("textures/albedo.png", "not real png");
+        source.write_file(
+            "effects/glow.json",
+            r#"{ "passes": [{ "textures": ["_rt_FullFrameBuffer"], "combos": { "MODE": 1 } }] }"#,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Runtime Effect Scene Model",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            scene["unsupported_features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| feature["feature"] == "we-effect-runtime")
+        );
+        assert!(
+            scene["native_lowering"]["pending_boundaries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|boundary| boundary == "shader-material-graph")
+        );
+        assert!(
+            !scene["native_lowering"]["completed_boundaries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|boundary| boundary == "shader-material-graph")
+        );
+    }
+
+    #[test]
     fn decodes_wallpaper_engine_scene_tex_material_to_renderable_frame_resource() {
         let rgba = vec![
             255, 0, 0, 255, 0, 255, 0, 255, 1, 1, 1, 255, 2, 2, 2, 255, 0, 0, 255, 255, 255, 255,
@@ -8678,6 +8950,12 @@ void main() {}
                   "shape": { "value": "ellipse" },
                   "color": [1, 0, 0],
                   "size": [50, 60, 0]
+                },
+                {
+                  "id": 42,
+                  "d": "M0 0 L100 0 L100 100 L0 100 Z M25 25 L75 25 L75 75 L25 75 Z",
+                  "fillRule": "evenodd",
+                  "color": "#22aa88"
                 }
               ]
             }"##,
@@ -8706,11 +8984,18 @@ void main() {}
         assert_eq!(nodes[1]["color"], "#ff0000");
         assert_eq!(nodes[1]["width"], 50.0);
         assert_eq!(nodes[1]["height"], 60.0);
+        assert_eq!(nodes[2]["type"], "path");
+        assert_eq!(
+            nodes[2]["path"],
+            "M0 0 L100 0 L100 100 L0 100 Z M25 25 L75 25 L75 75 L25 75 Z"
+        );
+        assert_eq!(nodes[2]["path_fill_rule"], "evenodd");
+        assert_eq!(nodes[2]["color"], "#22aa88");
 
         let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
         document.validate().unwrap();
         let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
-        assert_eq!(snapshot.layers.len(), 2);
+        assert_eq!(snapshot.layers.len(), 3);
         assert_eq!(
             snapshot.layers[0].kind,
             crate::core::SceneNodeKind::Rectangle
@@ -8719,6 +9004,11 @@ void main() {}
         assert_eq!(snapshot.layers[0].corner_radius, Some(12.0));
         assert_eq!(snapshot.layers[1].kind, crate::core::SceneNodeKind::Ellipse);
         assert_eq!(snapshot.layers[1].color.as_deref(), Some("#ff0000"));
+        assert_eq!(snapshot.layers[2].kind, crate::core::SceneNodeKind::Path);
+        assert_eq!(
+            snapshot.layers[2].path_fill_rule,
+            crate::core::ScenePathFillRule::Evenodd
+        );
     }
 
     #[test]

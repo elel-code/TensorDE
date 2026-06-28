@@ -1,3 +1,4 @@
+use std::sync::{Arc, Mutex};
 #[cfg(feature = "native-vulkan-video")]
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -5,7 +6,10 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::core::{SceneSystemStatus, SceneTextureRegion};
-use crate::renderer::{SceneRenderAudioCue, SceneWallpaperPlan, SceneWallpaperRuntimeSampler};
+use crate::renderer::{
+    SceneRenderAudioCue, SceneWallpaperPlan, SceneWallpaperRuntimeFrame,
+    SceneWallpaperRuntimeSampler,
+};
 
 use super::super::audio::clock::{
     NativeVulkanAudioClockProbeOptions, NativeVulkanAudioClockRuntimeSnapshot,
@@ -24,9 +28,11 @@ use super::super::{
     NativeVulkanVideoSessionCodec, NativeVulkanVulkanaliaClearPresentSnapshot,
     NativeVulkanVulkanaliaSceneMixedSolidQuadDynamicGeometry,
     NativeVulkanVulkanaliaSceneSampledImageDynamicGeometry,
+    NativeVulkanVulkanaliaSceneSampledImageGeometryInput,
     NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
     NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot,
     NativeVulkanVulkanaliaSceneSolidQuadDynamicGeometry,
+    NativeVulkanVulkanaliaSceneSolidQuadGeometryInput,
     NativeVulkanVulkanaliaSceneSolidQuadPresentOptions,
     NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot,
     native_vulkan_vulkanalia_configure_scene_sampled_image_allocator,
@@ -38,7 +44,11 @@ use super::super::{
 use super::super::{
     NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot, run_vulkanalia_ready_prefix_video,
 };
-use super::runtime::{NativeVulkanSceneRuntimeSnapshot, native_vulkan_scene_runtime_snapshot};
+use super::runtime::{
+    NativeVulkanSceneRuntimeSnapshot, NativeVulkanSceneSampledGeometryInputs,
+    native_vulkan_scene_runtime_snapshot, native_vulkan_scene_sampled_geometry_inputs_from_layers,
+    native_vulkan_scene_solid_quad_geometry_input_from_layers,
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneAudioCueRuntimeSnapshot {
@@ -89,6 +99,115 @@ enum NativeVulkanScenePresentRouteKind {
     SampledImage,
     #[cfg(feature = "native-vulkan-video")]
     Video,
+}
+
+struct NativeVulkanSceneDynamicGeometryFrame {
+    elapsed_ms: u64,
+    solid_geometry: Option<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput>,
+    sampled_geometry: Option<NativeVulkanVulkanaliaSceneSampledImageGeometryInput>,
+}
+
+struct NativeVulkanSceneDynamicGeometryCache {
+    sampler: SceneWallpaperRuntimeSampler,
+    base_time_ms: u64,
+    cached: Option<NativeVulkanSceneDynamicGeometryFrame>,
+}
+
+impl NativeVulkanSceneDynamicGeometryCache {
+    fn new(sampler: SceneWallpaperRuntimeSampler, base_time_ms: u64) -> Self {
+        Self {
+            sampler,
+            base_time_ms,
+            cached: None,
+        }
+    }
+
+    fn sampled_geometry(
+        &mut self,
+        elapsed_ms: u64,
+    ) -> Result<NativeVulkanVulkanaliaSceneSampledImageGeometryInput, String> {
+        self.ensure_frame(elapsed_ms)?;
+        if self
+            .cached
+            .as_ref()
+            .is_none_or(|frame| frame.sampled_geometry.is_none())
+        {
+            self.refresh_frame(elapsed_ms)?;
+        }
+        let geometry = self
+            .cached
+            .as_mut()
+            .and_then(|frame| frame.sampled_geometry.take())
+            .ok_or_else(|| {
+                "dynamic scene geometry cache did not retain sampled geometry".to_owned()
+            })?;
+        self.drop_consumed_frame();
+        Ok(geometry)
+    }
+
+    fn solid_geometry(
+        &mut self,
+        elapsed_ms: u64,
+    ) -> Result<Option<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput>, String> {
+        self.ensure_frame(elapsed_ms)?;
+        let geometry = self
+            .cached
+            .as_mut()
+            .and_then(|frame| frame.solid_geometry.take());
+        self.drop_consumed_frame();
+        Ok(geometry)
+    }
+
+    fn ensure_frame(&mut self, elapsed_ms: u64) -> Result<(), String> {
+        if self
+            .cached
+            .as_ref()
+            .is_none_or(|frame| frame.elapsed_ms != elapsed_ms)
+        {
+            self.refresh_frame(elapsed_ms)?;
+        }
+        Ok(())
+    }
+
+    fn refresh_frame(&mut self, elapsed_ms: u64) -> Result<(), String> {
+        let sample_time_ms = self.base_time_ms.saturating_add(elapsed_ms);
+        let frame = self
+            .sampler
+            .sample_frame_reusing(sample_time_ms)
+            .map_err(|err| format!("sample dynamic scene frame: {err}"))?;
+        let geometry = native_vulkan_scene_sampled_geometry_inputs_from_runtime_frame(&frame);
+        self.sampler.recycle_frame(frame);
+        let geometry = geometry?;
+        self.cached = Some(NativeVulkanSceneDynamicGeometryFrame {
+            elapsed_ms,
+            solid_geometry: geometry.solid_geometry,
+            sampled_geometry: Some(geometry.sampled_geometry),
+        });
+        native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
+        Ok(())
+    }
+
+    fn drop_consumed_frame(&mut self) {
+        if self
+            .cached
+            .as_ref()
+            .is_some_and(|frame| frame.sampled_geometry.is_none() && frame.solid_geometry.is_none())
+        {
+            self.cached = None;
+            native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
+        }
+    }
+}
+
+fn native_vulkan_scene_sampled_geometry_inputs_from_runtime_frame(
+    frame: &SceneWallpaperRuntimeFrame,
+) -> Result<NativeVulkanSceneSampledGeometryInputs, String> {
+    native_vulkan_scene_sampled_geometry_inputs_from_layers(
+        frame.snapshot_time_ms,
+        frame.scene_size,
+        frame.scene_fit,
+        &frame.layers,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,78 +266,54 @@ fn native_vulkan_scene_dynamic_solid_geometry_from_sampler(
     sampler: SceneWallpaperRuntimeSampler,
     base_time_ms: u64,
 ) -> NativeVulkanVulkanaliaSceneSolidQuadDynamicGeometry {
+    let sampler = Arc::new(Mutex::new(sampler));
     Box::new(move |elapsed_ms| {
-        let sampled_plan = sampler
-            .sample_plan(base_time_ms.saturating_add(elapsed_ms))
-            .map_err(|err| format!("sample dynamic solid scene: {err}"))?;
-        let render_item = native_vulkan_scene_item(&sampled_plan);
-        let mut runtime = native_vulkan_scene_runtime_snapshot(&render_item)
-            .ok_or_else(|| "dynamic solid scene runtime snapshot is unavailable".to_owned())?;
-        let geometry = runtime
-            .take_vulkanalia_solid_quad_geometry_input()
-            .ok_or_else(|| {
-                format!(
-                    "dynamic scene is not solid-quad recordable: {}",
-                    runtime.draw_pass_backend_status
-                )
-            })?;
-        runtime.release_cpu_draw_payloads_for_present();
-        drop(runtime);
+        let result = (|| {
+            let mut sampler = sampler
+                .lock()
+                .map_err(|_| "dynamic solid scene sampler is poisoned".to_owned())?;
+            let frame = sampler
+                .sample_frame_reusing(base_time_ms.saturating_add(elapsed_ms))
+                .map_err(|err| format!("sample dynamic solid scene: {err}"))?;
+            let geometry = native_vulkan_scene_solid_quad_geometry_input_from_layers(
+                frame.snapshot_time_ms,
+                frame.scene_size,
+                frame.scene_fit,
+                &frame.layers,
+            );
+            sampler.recycle_frame(frame);
+            geometry
+        })();
         native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
-        Ok(geometry)
-    })
-}
-
-fn native_vulkan_scene_dynamic_sampled_geometry_from_sampler(
-    sampler: SceneWallpaperRuntimeSampler,
-    base_time_ms: u64,
-) -> NativeVulkanVulkanaliaSceneSampledImageDynamicGeometry {
-    Box::new(move |elapsed_ms| {
-        let sampled_plan = sampler
-            .sample_plan(base_time_ms.saturating_add(elapsed_ms))
-            .map_err(|err| format!("sample dynamic sampled-image scene: {err}"))?;
-        let render_item = native_vulkan_scene_item(&sampled_plan);
-        let mut runtime = native_vulkan_scene_runtime_snapshot(&render_item).ok_or_else(|| {
-            "dynamic sampled-image scene runtime snapshot is unavailable".to_owned()
-        })?;
-        let geometry = runtime
-            .take_vulkanalia_sampled_image_geometry_input()
-            .map(|(_, geometry)| geometry)
-            .ok_or_else(|| {
-                format!(
-                    "dynamic scene is not sampled-image recordable: {}",
-                    runtime.draw_pass_backend_status
-                )
-            })?;
-        runtime.release_cpu_draw_payloads_for_present();
-        drop(runtime);
-        native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
-        Ok(geometry)
+        result
     })
 }
 
 fn native_vulkan_scene_dynamic_mixed_solid_geometry_from_sampler(
-    sampler: SceneWallpaperRuntimeSampler,
-    base_time_ms: u64,
+    cache: Arc<Mutex<NativeVulkanSceneDynamicGeometryCache>>,
 ) -> NativeVulkanVulkanaliaSceneMixedSolidQuadDynamicGeometry {
     Box::new(move |elapsed_ms| {
-        let sampled_plan = sampler
-            .sample_plan(base_time_ms.saturating_add(elapsed_ms))
-            .map_err(|err| format!("sample dynamic mixed solid scene: {err}"))?;
-        let render_item = native_vulkan_scene_item(&sampled_plan);
-        let mut runtime = native_vulkan_scene_runtime_snapshot(&render_item).ok_or_else(|| {
-            "dynamic mixed solid scene runtime snapshot is unavailable".to_owned()
-        })?;
-        let geometry = runtime.take_vulkanalia_mixed_solid_quad_geometry_input();
-        runtime.release_cpu_draw_payloads_for_present();
-        drop(runtime);
-        native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
-        Ok(geometry)
+        cache
+            .lock()
+            .map_err(|_| "dynamic mixed scene geometry cache is poisoned".to_owned())?
+            .solid_geometry(elapsed_ms)
+    })
+}
+
+fn native_vulkan_scene_dynamic_sampled_geometry_from_cache(
+    cache: Arc<Mutex<NativeVulkanSceneDynamicGeometryCache>>,
+) -> NativeVulkanVulkanaliaSceneSampledImageDynamicGeometry {
+    Box::new(move |elapsed_ms| {
+        cache
+            .lock()
+            .map_err(|_| "dynamic sampled scene geometry cache is poisoned".to_owned())?
+            .sampled_geometry(elapsed_ms)
     })
 }
 
 fn native_vulkan_scene_dynamic_sampled_geometry_pair(
     plan: &SceneWallpaperPlan,
+    include_solid_geometry: bool,
 ) -> Result<
     (
         Option<NativeVulkanVulkanaliaSceneMixedSolidQuadDynamicGeometry>,
@@ -230,16 +325,16 @@ fn native_vulkan_scene_dynamic_sampled_geometry_pair(
         return Ok((None, None));
     };
     let base_time_ms = plan.snapshot_time_ms;
+    let cache = Arc::new(Mutex::new(NativeVulkanSceneDynamicGeometryCache::new(
+        sampler,
+        base_time_ms,
+    )));
     Ok((
-        Some(
-            native_vulkan_scene_dynamic_mixed_solid_geometry_from_sampler(
-                sampler.clone(),
-                base_time_ms,
-            ),
-        ),
-        Some(native_vulkan_scene_dynamic_sampled_geometry_from_sampler(
-            sampler,
-            base_time_ms,
+        include_solid_geometry.then(|| {
+            native_vulkan_scene_dynamic_mixed_solid_geometry_from_sampler(Arc::clone(&cache))
+        }),
+        Some(native_vulkan_scene_dynamic_sampled_geometry_from_cache(
+            cache,
         )),
     ))
 }
@@ -358,7 +453,7 @@ pub fn run_scene(
             };
             let solid_geometry = runtime.take_vulkanalia_mixed_solid_quad_geometry_input();
             let (dynamic_solid_geometry, dynamic_geometry) =
-                native_vulkan_scene_dynamic_sampled_geometry_pair(&plan)?;
+                native_vulkan_scene_dynamic_sampled_geometry_pair(&plan, solid_geometry.is_some())?;
             let scene_size = runtime.scene_size;
             let scene_fit = runtime.scene_fit;
             runtime.release_cpu_draw_payloads_for_present();
@@ -713,7 +808,9 @@ fn native_vulkan_scene_video_extent(option_extent: u32, layer_extent: Option<f64
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{FitMode, SceneNodeKind, SceneSystems, SceneTextureRegion, SceneTransform};
+    use crate::core::{
+        FitMode, SceneNodeKind, ScenePathFillRule, SceneSystems, SceneTextureRegion, SceneTransform,
+    };
     use crate::renderer::{SceneDisplayPlan, SceneRenderAudioCue, SceneRenderLayer};
     use std::path::PathBuf;
 
@@ -736,6 +833,7 @@ mod tests {
             font_weight: None,
             text_align: None,
             path_data: None,
+            path_fill_rule: ScenePathFillRule::default(),
             fit: FitMode::Cover,
             opacity: 1.0,
             transform: SceneTransform::default(),

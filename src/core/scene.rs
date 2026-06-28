@@ -98,12 +98,25 @@ impl SceneDocument {
     where
         F: Fn(&str) -> Option<f64>,
     {
+        let mut layers = Vec::new();
+        self.snapshot_layers_at_with_property_resolver(time_ms, resolve_property, &mut layers);
+        SceneSnapshot { time_ms, layers }
+    }
+
+    pub fn snapshot_layers_at_with_property_resolver<F>(
+        &self,
+        time_ms: u64,
+        resolve_property: F,
+        layers: &mut Vec<SceneSnapshotLayer>,
+    ) where
+        F: Fn(&str) -> Option<f64>,
+    {
+        layers.clear();
         let resources = self
             .resources
             .iter()
             .map(|resource| (resource.id.as_str(), resource))
             .collect::<BTreeMap<_, _>>();
-        let mut layers = Vec::new();
         if let Some(clear_layer) = self.render_clear_layer() {
             layers.push(clear_layer);
         }
@@ -118,10 +131,9 @@ impl SceneDocument {
                 &self.timelines,
                 &self.property_bindings,
                 &resolve_property,
-                &mut layers,
+                layers,
             );
         }
-        SceneSnapshot { time_ms, layers }
     }
 
     fn parallax_offset(
@@ -180,6 +192,7 @@ impl SceneDocument {
             font_weight: None,
             text_align: None,
             path_data: None,
+            path_fill_rule: ScenePathFillRule::default(),
             fit: FitMode::Cover,
             opacity: 1.0,
             transform: SceneTransform::default(),
@@ -449,6 +462,8 @@ pub struct SceneNode {
     #[serde(rename = "path")]
     pub path_data: Option<String>,
     #[serde(default)]
+    pub path_fill_rule: ScenePathFillRule,
+    #[serde(default)]
     pub fit: FitMode,
     #[serde(default)]
     pub properties: BTreeMap<String, Value>,
@@ -608,6 +623,7 @@ impl SceneNode {
                 font_weight: self.font_weight.clone(),
                 text_align: self.text_align,
                 path_data: self.path_data.clone(),
+                path_fill_rule: self.path_fill_rule,
                 fit: self.fit,
                 opacity,
                 transform,
@@ -671,6 +687,7 @@ impl SceneNode {
                 font_weight: None,
                 text_align: None,
                 path_data: None,
+                path_fill_rule: ScenePathFillRule::default(),
                 fit: self.fit,
                 opacity: layer_opacity.clamp(0.0, 1.0),
                 transform: transform.compose(SceneTransform {
@@ -1463,9 +1480,18 @@ pub struct SceneSnapshotLayer {
     pub font_weight: Option<String>,
     pub text_align: Option<SceneTextAlign>,
     pub path_data: Option<String>,
+    pub path_fill_rule: ScenePathFillRule,
     pub fit: FitMode,
     pub opacity: f64,
     pub transform: SceneTransform,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScenePathFillRule {
+    #[default]
+    Nonzero,
+    Evenodd,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

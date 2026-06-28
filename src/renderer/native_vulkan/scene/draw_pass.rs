@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use crate::core::{FitMode, SceneTextAlign, SceneTextureRegion, SceneTransform};
+use crate::core::{
+    FitMode, SceneNodeKind, ScenePathFillRule, SceneTextAlign, SceneTextureRegion, SceneTransform,
+};
+use crate::renderer::SceneRenderLayer;
 
 use super::super::present::render_plan::{
     NativeVulkanSceneDrawOp, NativeVulkanSceneDrawOpKind, NativeVulkanSceneDrawPlan,
@@ -44,6 +47,7 @@ pub(super) struct NativeVulkanSceneRecordableQuad {
     pub(super) font_weight: Option<String>,
     pub(super) text_align: Option<SceneTextAlign>,
     pub(super) path_data: Option<String>,
+    pub(super) path_fill_rule: ScenePathFillRule,
     pub(super) transform: SceneTransform,
 }
 
@@ -432,6 +436,211 @@ fn native_vulkan_scene_background_clear_color(
 
 fn native_vulkan_scene_render_clear_op(op: &NativeVulkanSceneDrawOp) -> bool {
     op.layer_id == "scene-render-clear-color"
+}
+
+pub(super) fn native_vulkan_scene_render_layer_is_clear(layer: &SceneRenderLayer) -> bool {
+    layer.id == "scene-render-clear-color"
+        && layer.kind == SceneNodeKind::Color
+        && layer.opacity >= 1.0
+        && layer.transform == SceneTransform::default()
+}
+
+pub(super) fn native_vulkan_scene_solid_geometry_from_render_layer(
+    layer_index: usize,
+    layer: &SceneRenderLayer,
+) -> Result<Option<(Vec<NativeVulkanSceneQuadVertex>, Vec<u32>)>, &'static str> {
+    if layer.opacity <= 0.0 {
+        return Ok(None);
+    }
+    if native_vulkan_scene_render_layer_is_clear(layer) {
+        return Ok(None);
+    }
+    let kind = match layer.kind {
+        SceneNodeKind::Rectangle => {
+            if native_vulkan_scene_render_layer_has_shape_paint(layer) {
+                native_vulkan_scene_render_layer_rectangle_kind(layer)
+            } else {
+                return Err("rectangle-layer-missing-paint");
+            }
+        }
+        SceneNodeKind::Ellipse => {
+            if native_vulkan_scene_render_layer_has_shape_paint(layer) {
+                "ellipse"
+            } else {
+                return Err("ellipse-layer-missing-paint");
+            }
+        }
+        SceneNodeKind::Text => {
+            if layer
+                .text
+                .as_ref()
+                .is_some_and(|text| !text.trim().is_empty())
+                && layer.color.as_ref().is_some_and(|color| !color.is_empty())
+            {
+                "text"
+            } else {
+                return Err("text-layer-missing-text-or-color");
+            }
+        }
+        SceneNodeKind::Path => {
+            if layer
+                .path_data
+                .as_ref()
+                .is_some_and(|path| !path.is_empty())
+                && native_vulkan_scene_render_layer_has_shape_paint(layer)
+            {
+                "path"
+            } else {
+                return Err("path-layer-missing-data-or-paint");
+            }
+        }
+        SceneNodeKind::Color => return Err("color-layer-needs-clear-or-rectangle-shape"),
+        SceneNodeKind::Image => return Err("image-layer-needs-sampled-image-runtime"),
+        SceneNodeKind::Video => return Err("video-layer-needs-vulkan-video-scene-bridge"),
+        SceneNodeKind::Group => return Err("group-layer-needs-flattened-children"),
+        SceneNodeKind::Shader => return Err("shader-layer-needs-scene-shader-runtime"),
+        SceneNodeKind::ParticleEmitter => {
+            return Err("particle-layer-needs-scene-particle-runtime");
+        }
+        SceneNodeKind::AudioResponse => {
+            return Err("audio-response-layer-needs-scene-audio-runtime");
+        }
+        SceneNodeKind::Script => return Err("script-layer-needs-scene-script-runtime"),
+        SceneNodeKind::Unknown => return Err("unknown-layer-kind"),
+    };
+    let Some(quad) =
+        native_vulkan_scene_recordable_quad_from_render_layer(layer_index, layer, kind)
+    else {
+        return Err("solid-layer-missing-paint");
+    };
+    if !native_vulkan_scene_solid_has_recordable_geometry(&quad) {
+        return Err("solid-layer-missing-recordable-geometry");
+    }
+    Ok(native_vulkan_scene_solid_geometry(&quad))
+}
+
+pub(super) fn native_vulkan_scene_sampled_image_geometry_from_render_layer(
+    layer_index: usize,
+    layer: &SceneRenderLayer,
+) -> Result<
+    Option<(
+        PathBuf,
+        FitMode,
+        Option<SceneTextureRegion>,
+        [NativeVulkanSceneSampledImageVertex; 4],
+    )>,
+    &'static str,
+> {
+    if layer.opacity <= 0.0 {
+        return Ok(None);
+    }
+    if native_vulkan_scene_render_layer_is_clear(layer) {
+        return Ok(None);
+    }
+    if layer.kind != SceneNodeKind::Image {
+        return Err("non-image-layer-needs-non-sampled-runtime");
+    }
+    let Some(source) = layer.source.clone() else {
+        return Err("image-layer-missing-source");
+    };
+    let Some(width) = layer.width else {
+        return Err("image-layer-missing-width");
+    };
+    let Some(height) = layer.height else {
+        return Err("image-layer-missing-height");
+    };
+    let quad = NativeVulkanSceneSampledImageQuad {
+        layer_index,
+        layer_id: layer.id.clone(),
+        source: source.clone(),
+        fit: layer.fit,
+        opacity: layer.opacity,
+        width,
+        height,
+        texture_region: layer.texture_region,
+        transform: layer.transform,
+    };
+    if !native_vulkan_scene_sampled_image_quad_has_recordable_geometry(&quad) {
+        return Err("image-layer-missing-recordable-geometry");
+    }
+    let vertices = native_vulkan_scene_sampled_image_vertices(&quad)
+        .ok_or("image-layer-missing-recordable-geometry")?;
+    Ok(Some((source, layer.fit, layer.texture_region, vertices)))
+}
+
+fn native_vulkan_scene_render_layer_has_shape_paint(layer: &SceneRenderLayer) -> bool {
+    layer
+        .color
+        .as_deref()
+        .is_some_and(|color| !color.is_empty())
+        || (layer
+            .stroke_color
+            .as_deref()
+            .is_some_and(|color| !color.is_empty())
+            && layer.stroke_width.unwrap_or(1.0) > 0.0)
+}
+
+fn native_vulkan_scene_render_layer_rectangle_kind(layer: &SceneRenderLayer) -> &'static str {
+    if layer
+        .corner_radius
+        .is_some_and(|radius| radius.is_finite() && radius > 0.0)
+    {
+        "rounded-rectangle"
+    } else {
+        "rectangle"
+    }
+}
+
+fn native_vulkan_scene_recordable_quad_from_render_layer(
+    layer_index: usize,
+    layer: &SceneRenderLayer,
+    kind: &'static str,
+) -> Option<NativeVulkanSceneRecordableQuad> {
+    let opacity = layer.opacity.clamp(0.0, 1.0);
+    let fill_color = layer
+        .color
+        .as_deref()
+        .filter(|color| !color.is_empty())
+        .map(str::to_owned);
+    let fill_rgba = fill_color
+        .as_deref()
+        .and_then(|color| native_vulkan_scene_rgba_from_hex(color, opacity));
+    let stroke_color = layer
+        .stroke_color
+        .as_deref()
+        .filter(|color| !color.is_empty())
+        .map(str::to_owned);
+    let stroke_rgba = stroke_color
+        .as_deref()
+        .and_then(|color| native_vulkan_scene_rgba_from_hex(color, opacity));
+    let stroke_width = stroke_rgba.map(|_| layer.stroke_width.unwrap_or(1.0));
+    let (color, rgba) = fill_color
+        .clone()
+        .zip(fill_rgba)
+        .or_else(|| stroke_color.clone().zip(stroke_rgba))?;
+    Some(NativeVulkanSceneRecordableQuad {
+        layer_index,
+        layer_id: layer.id.clone(),
+        kind,
+        color,
+        rgba,
+        fill_color,
+        fill_rgba,
+        stroke_color,
+        stroke_rgba,
+        stroke_width,
+        width: layer.width,
+        height: layer.height,
+        corner_radius: layer.corner_radius,
+        text: layer.text.clone(),
+        font_size: layer.font_size,
+        font_family: layer.font_family.clone(),
+        font_weight: layer.font_weight.clone(),
+        text_align: layer.text_align,
+        path_data: layer.path_data.clone(),
+        path_fill_rule: layer.path_fill_rule,
+        transform: layer.transform,
+    })
 }
 
 struct NativeVulkanSceneQuadRecordingPayload {
@@ -857,6 +1066,7 @@ fn native_vulkan_scene_path_geometry(
                 &mut vertices,
                 &mut indices,
                 &fill_subpaths,
+                quad.path_fill_rule,
                 fill_rgba,
                 quad.transform,
             )?;
@@ -929,6 +1139,7 @@ fn native_vulkan_scene_push_path_fill(
 struct NativeVulkanScenePathFillEdge {
     start: [f64; 2],
     end: [f64; 2],
+    winding: i32,
 }
 
 impl NativeVulkanScenePathFillEdge {
@@ -953,6 +1164,7 @@ fn native_vulkan_scene_push_compound_path_fill(
     vertices: &mut Vec<NativeVulkanSceneQuadVertex>,
     indices: &mut Vec<u32>,
     subpaths: &[&NativeVulkanScenePathSubpath],
+    fill_rule: ScenePathFillRule,
     rgba: [f32; 4],
     transform: SceneTransform,
 ) -> Option<()> {
@@ -966,7 +1178,11 @@ fn native_vulkan_scene_push_compound_path_fill(
             if !native_vulkan_scene_path_points_close(start, end)
                 && (start[1] - end[1]).abs() > SCENE_FULL_PATH_POINT_EPSILON
             {
-                edges.push(NativeVulkanScenePathFillEdge { start, end });
+                edges.push(NativeVulkanScenePathFillEdge {
+                    start,
+                    end,
+                    winding: if end[1] > start[1] { 1 } else { -1 },
+                });
             }
         }
     }
@@ -993,34 +1209,77 @@ fn native_vulkan_scene_push_compound_path_fill(
             continue;
         }
         intersections.sort_by(|left, right| left.1.total_cmp(&right.1));
-        if intersections.len() % 2 != 0 {
-            return None;
-        }
-        for pair in intersections.chunks_exact(2) {
-            let left = pair[0].0;
-            let right = pair[1].0;
-            let left_top = left.x_at_y(top)?;
-            let right_top = right.x_at_y(top)?;
-            let left_bottom = left.x_at_y(bottom)?;
-            let right_bottom = right.x_at_y(bottom)?;
-            if (pair[1].1 - pair[0].1).abs() <= SCENE_FULL_PATH_POINT_EPSILON {
-                continue;
+        match fill_rule {
+            ScenePathFillRule::Evenodd => {
+                if intersections.len() % 2 != 0 {
+                    return None;
+                }
+                for pair in intersections.chunks_exact(2) {
+                    native_vulkan_scene_push_path_fill_span(
+                        vertices, indices, pair[0], pair[1], top, bottom, rgba, transform,
+                    )?;
+                }
             }
-            native_vulkan_scene_push_solid_quad_points(
-                vertices,
-                indices,
-                [
-                    [left_top, top],
-                    [right_top, top],
-                    [left_bottom, bottom],
-                    [right_bottom, bottom],
-                ],
-                rgba,
-                transform,
-            )?;
+            ScenePathFillRule::Nonzero => {
+                let mut winding = 0i32;
+                let mut span_start: Option<(NativeVulkanScenePathFillEdge, f64)> = None;
+                for intersection in intersections {
+                    let previous = winding;
+                    winding += intersection.0.winding;
+                    if previous == 0 && winding != 0 {
+                        span_start = Some(intersection);
+                    } else if previous != 0 && winding == 0 {
+                        let start = span_start.take()?;
+                        native_vulkan_scene_push_path_fill_span(
+                            vertices,
+                            indices,
+                            start,
+                            intersection,
+                            top,
+                            bottom,
+                            rgba,
+                            transform,
+                        )?;
+                    }
+                }
+                if span_start.is_some() || winding != 0 {
+                    return None;
+                }
+            }
         }
     }
     Some(())
+}
+
+fn native_vulkan_scene_push_path_fill_span(
+    vertices: &mut Vec<NativeVulkanSceneQuadVertex>,
+    indices: &mut Vec<u32>,
+    left: (NativeVulkanScenePathFillEdge, f64),
+    right: (NativeVulkanScenePathFillEdge, f64),
+    top: f64,
+    bottom: f64,
+    rgba: [f32; 4],
+    transform: SceneTransform,
+) -> Option<()> {
+    if (right.1 - left.1).abs() <= SCENE_FULL_PATH_POINT_EPSILON {
+        return Some(());
+    }
+    let left_top = left.0.x_at_y(top)?;
+    let right_top = right.0.x_at_y(top)?;
+    let left_bottom = left.0.x_at_y(bottom)?;
+    let right_bottom = right.0.x_at_y(bottom)?;
+    native_vulkan_scene_push_solid_quad_points(
+        vertices,
+        indices,
+        [
+            [left_top, top],
+            [right_top, top],
+            [left_bottom, bottom],
+            [right_bottom, bottom],
+        ],
+        rgba,
+        transform,
+    )
 }
 
 fn native_vulkan_scene_push_rect_stroke(
@@ -1774,6 +2033,7 @@ fn native_vulkan_scene_recordable_quad_from_op(
         font_weight: op.font_weight.clone(),
         text_align: op.text_align,
         path_data: op.path_data.clone(),
+        path_fill_rule: op.path_fill_rule,
         transform: op.transform,
     })
 }
@@ -2495,7 +2755,7 @@ fn native_vulkan_scene_rgba_from_hex(color: &str, opacity: f64) -> Option<[f32; 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{FitMode, SceneTextureRegion};
+    use crate::core::{FitMode, ScenePathFillRule, SceneTextureRegion};
 
     fn draw_op(layer_index: usize, kind: NativeVulkanSceneDrawOpKind) -> NativeVulkanSceneDrawOp {
         NativeVulkanSceneDrawOp {
@@ -2517,6 +2777,7 @@ mod tests {
             font_weight: None,
             text_align: None,
             path_data: None,
+            path_fill_rule: ScenePathFillRule::default(),
             fit: FitMode::Cover,
             transform: SceneTransform::default(),
         }
@@ -3046,6 +3307,7 @@ mod tests {
     fn draw_pass_plan_records_compound_evenodd_path_as_solid_geometry() {
         let mut path = draw_op(0, NativeVulkanSceneDrawOpKind::Path);
         path.color = Some("#22aa88".to_owned());
+        path.path_fill_rule = ScenePathFillRule::Evenodd;
         path.path_data =
             Some("M0 0 L100 0 L100 100 L0 100 Z M25 25 L75 25 L75 75 L25 75 Z".to_owned());
         let draw_plan = NativeVulkanSceneDrawPlan {
@@ -3070,6 +3332,39 @@ mod tests {
         assert_eq!(pass_plan.quad_recording_steps[0].index_count, 24);
         assert_eq!(pass_plan.quad_vertices.len(), 16);
         assert_eq!(pass_plan.quad_indices.len(), 24);
+        assert_eq!(pass_plan.path_op_count, 1);
+        assert!(!pass_plan.requires_path_tessellation);
+    }
+
+    #[test]
+    fn draw_pass_plan_records_compound_nonzero_path_as_solid_geometry() {
+        let mut path = draw_op(0, NativeVulkanSceneDrawOpKind::Path);
+        path.color = Some("#22aa88".to_owned());
+        path.path_fill_rule = ScenePathFillRule::Nonzero;
+        path.path_data =
+            Some("M0 0 L100 0 L100 100 L0 100 Z M25 25 L75 25 L75 75 L25 75 Z".to_owned());
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            draw_ops: vec![path],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.backend_status, "solid-quad-recording-ready");
+        assert_eq!(pass_plan.blocking_reason, None);
+        assert!(pass_plan.quad_recording_ready);
+        assert_eq!(pass_plan.quad_recording_steps.len(), 1);
+        assert_eq!(pass_plan.quad_recording_steps[0].kind, "path");
+        assert_eq!(pass_plan.quad_recording_steps[0].vertex_count, 12);
+        assert_eq!(pass_plan.quad_recording_steps[0].index_count, 18);
+        assert_eq!(pass_plan.quad_vertices.len(), 12);
+        assert_eq!(pass_plan.quad_indices.len(), 18);
         assert_eq!(pass_plan.path_op_count, 1);
         assert!(!pass_plan.requires_path_tessellation);
     }

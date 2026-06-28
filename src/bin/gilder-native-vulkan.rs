@@ -1,5 +1,5 @@
 #[cfg(feature = "native-vulkan-renderer")]
-use gilder::core::{FitMode, SceneNodeKind, SceneSystems, SceneTransform};
+use gilder::core::{FitMode, SceneNodeKind, ScenePathFillRule, SceneSystems, SceneTransform};
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::desktop::DesktopCursorParallax;
 #[cfg(feature = "native-vulkan-renderer")]
@@ -30,8 +30,17 @@ fn main() {
 }
 
 #[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
+fn native_vulkan_video_sync_executable_after_rebuild(executable: &std::path::Path) {
+    let Ok(file) = std::fs::File::open(executable) else {
+        return;
+    };
+    let _ = file.sync_all();
+}
+
+#[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
 fn native_vulkan_video_allocator_env_bootstrap() {
     const BOOTSTRAPPED: &str = "GILDER_NATIVE_VULKAN_ALLOCATOR_BOOTSTRAPPED";
+    const EXE_SYNCED: &str = "GILDER_NATIVE_VULKAN_EXE_SYNCED";
     const REQUIRED_ENV: &[(&str, &str)] = &[
         ("MALLOC_ARENA_MAX", "1"),
         ("MALLOC_MMAP_THRESHOLD_", "131072"),
@@ -45,6 +54,11 @@ fn native_vulkan_video_allocator_env_bootstrap() {
     needs_reexec |= !native_vulkan_video_glibc_tcache_disabled();
 
     if !needs_reexec {
+        if std::env::var_os(EXE_SYNCED).as_deref() != Some(std::ffi::OsStr::new("1"))
+            && let Ok(executable) = std::env::current_exe()
+        {
+            native_vulkan_video_sync_executable_after_rebuild(&executable);
+        }
         return;
     }
     if std::env::var_os(BOOTSTRAPPED).as_deref() == Some(std::ffi::OsStr::new("1")) {
@@ -61,9 +75,11 @@ fn native_vulkan_video_allocator_env_bootstrap() {
             std::process::exit(127);
         }
     };
+    native_vulkan_video_sync_executable_after_rebuild(&executable);
     let mut command = std::process::Command::new(executable);
     command.args(std::env::args_os().skip(1));
     command.env(BOOTSTRAPPED, "1");
+    command.env(EXE_SYNCED, "1");
     for (name, value) in REQUIRED_ENV {
         command.env(name, value);
     }
@@ -153,6 +169,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut scene_text_color = None::<String>;
     let mut scene_text_font_size = None::<f64>;
     let mut scene_path_data = None::<String>;
+    let mut scene_path_fill_rule = ScenePathFillRule::default();
     let mut scene_stroke_color = None::<String>;
     let mut scene_stroke_width = None::<f64>;
     let mut scene_video_layer = false;
@@ -309,6 +326,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--path-data" => {
                 scene_path_data = Some(args.next().ok_or("--path-data requires SVG path data")?);
+            }
+            "--path-fill-rule" => {
+                scene_path_fill_rule = parse_scene_path_fill_rule(
+                    &args
+                        .next()
+                        .ok_or("--path-fill-rule requires nonzero or evenodd")?,
+                )?;
             }
             "--stroke-color" => {
                 scene_stroke_color = Some(args.next().ok_or("--stroke-color requires #rrggbb")?);
@@ -600,6 +624,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 background,
                 scene_color,
                 scene_path_data,
+                scene_path_fill_rule,
                 scene_stroke_color,
                 scene_stroke_width,
                 scene_text,
@@ -849,6 +874,7 @@ fn scene_cli_plan(
     background: Option<String>,
     color: Option<String>,
     path_data: Option<String>,
+    path_fill_rule: ScenePathFillRule,
     stroke_color: Option<String>,
     stroke_width: Option<f64>,
     text: Option<String>,
@@ -956,6 +982,7 @@ fn scene_cli_plan(
         }
         let mut layer = scene_cli_layer("cli-path", SceneNodeKind::Path);
         layer.path_data = Some(path_data);
+        layer.path_fill_rule = path_fill_rule;
         layer.color = color;
         layer.stroke_color = stroke_color;
         layer.stroke_width = stroke_width.or(Some(1.0));
@@ -1134,6 +1161,7 @@ fn scene_cli_layer(id: &str, kind: SceneNodeKind) -> SceneRenderLayer {
         font_weight: None,
         text_align: None,
         path_data: None,
+        path_fill_rule: gilder::core::ScenePathFillRule::default(),
         fit: FitMode::Cover,
         opacity: 1.0,
         transform: SceneTransform::default(),
@@ -1149,6 +1177,15 @@ fn parse_fit_mode(value: &str) -> Result<FitMode, String> {
         "tile" => Ok(FitMode::Tile),
         "center" => Ok(FitMode::Center),
         other => Err(format!("unsupported fit mode: {other}")),
+    }
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+fn parse_scene_path_fill_rule(value: &str) -> Result<ScenePathFillRule, String> {
+    match value {
+        "nonzero" | "non-zero" | "winding" => Ok(ScenePathFillRule::Nonzero),
+        "evenodd" | "even-odd" => Ok(ScenePathFillRule::Evenodd),
+        other => Err(format!("unsupported path fill rule: {other}")),
     }
 }
 
@@ -1184,6 +1221,7 @@ mod tests {
             Some("#010203".to_owned()),
             None,
             None,
+            ScenePathFillRule::default(),
             None,
             None,
             None,
@@ -1304,6 +1342,7 @@ mod tests {
             None,
             None,
             None,
+            ScenePathFillRule::default(),
             None,
             None,
             None,
@@ -1347,6 +1386,7 @@ mod tests {
             None,
             Some("#102030".to_owned()),
             None,
+            ScenePathFillRule::default(),
             None,
             None,
             None,
@@ -1380,6 +1420,7 @@ mod tests {
             Some("#101010".to_owned()),
             None,
             None,
+            ScenePathFillRule::default(),
             None,
             None,
             Some("Native Text".to_owned()),
@@ -1419,6 +1460,7 @@ mod tests {
             Some("#101010".to_owned()),
             None,
             Some("M0 0 L96 0 L48 64 Z".to_owned()),
+            ScenePathFillRule::Evenodd,
             Some("#f8fafc".to_owned()),
             Some(5.0),
             None,
@@ -1444,6 +1486,7 @@ mod tests {
             Some("M0 0 L96 0 L48 64 Z")
         );
         assert_eq!(plan.layers[0].color, None);
+        assert_eq!(plan.layers[0].path_fill_rule, ScenePathFillRule::Evenodd);
         assert_eq!(plan.layers[0].stroke_color.as_deref(), Some("#f8fafc"));
         assert_eq!(plan.layers[0].stroke_width, Some(5.0));
     }
@@ -1459,6 +1502,7 @@ mod tests {
             Some("#101010".to_owned()),
             None,
             None,
+            ScenePathFillRule::default(),
             None,
             None,
             None,
@@ -1531,7 +1575,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--scene-root PATH] [--scene-video] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb] [--text TEXT] [--text-color #rrggbb] [--font-size PX]\n\
-         [--path-data SVG_PATH] [--stroke-color #rrggbb] [--stroke-width PX]\n\
+         [--path-data SVG_PATH] [--path-fill-rule nonzero|evenodd] [--stroke-color #rrggbb] [--stroke-width PX]\n\
          [--scene-time-ms MS]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\
          [--decoder auto|hardware-preferred|hardware-required|software]\n\

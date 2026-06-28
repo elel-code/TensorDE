@@ -59,9 +59,12 @@ use super::scene_sampled_image::{
     NativeVulkanVulkanaliaSceneSampledImageDescriptorStrategySnapshot,
     NativeVulkanVulkanaliaSceneSampledImageResourceSnapshot,
     NativeVulkanVulkanaliaSceneSampledImageSamplerMode, VulkanaliaSceneSampledImageResources,
+    VulkanaliaSceneTransferImageResources,
     native_vulkan_vulkanalia_configure_scene_sampled_image_allocator,
     native_vulkan_vulkanalia_create_scene_sampled_image_resources,
+    native_vulkan_vulkanalia_create_scene_transfer_image_resources,
     native_vulkan_vulkanalia_destroy_scene_sampled_image_resources,
+    native_vulkan_vulkanalia_destroy_scene_transfer_image_resources,
     native_vulkan_vulkanalia_load_scene_native_texture,
     native_vulkan_vulkanalia_scene_sampled_image_descriptor_strategy,
     native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap,
@@ -83,6 +86,8 @@ const SCENE_FULL_SOLID_QUAD_INDEX_COUNT: u32 = 6;
 const SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES: u32 = 24;
 const SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT: u32 = 6;
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 20;
+const SCENE_FULL_SAMPLED_IMAGE_VERTEX_UV_OFFSET_BYTES: usize = 8;
+const SCENE_FULL_SAMPLED_IMAGE_VERTEX_UV_BYTES: usize = 8;
 const HOST_VISIBLE_COHERENT_MEMORY_FLAG_BITS: u32 =
     vk::MemoryPropertyFlags::HOST_VISIBLE.bits() | vk::MemoryPropertyFlags::HOST_COHERENT.bits();
 const HOST_VISIBLE_COHERENT_DEVICE_LOCAL_MEMORY_FLAG_BITS: u32 =
@@ -90,6 +95,7 @@ const HOST_VISIBLE_COHERENT_DEVICE_LOCAL_MEMORY_FLAG_BITS: u32 =
 const HOST_VISIBLE_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::HOST_VISIBLE.bits();
 const SCENE_GEOMETRY_POOLED_BYTE_BUFFERS: usize = 2;
 const SCENE_GEOMETRY_MAX_RETAINED_BYTE_CAPACITY: usize = 128 * 1024;
+const SCENE_PRESENT_ID_TELEMETRY_RETAINED_FRAMES: usize = 0;
 
 thread_local! {
     static SCENE_GEOMETRY_BYTE_POOL: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
@@ -293,7 +299,9 @@ pub struct NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot {
     pub command_submit_model: &'static str,
     pub present_sync_model: &'static str,
     pub wait_idle_after_present: bool,
-    pub present_ids: Vec<Option<u64>>,
+    pub retained_frame_telemetry_limit: usize,
+    pub present_ids_head: Vec<Option<u64>>,
+    pub present_ids_tail: Vec<Option<u64>>,
     pub uses_present_id2: bool,
     pub present_wait2_available: bool,
     pub present_wait_after_present: bool,
@@ -338,7 +346,9 @@ pub struct NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot {
     pub command_submit_model: &'static str,
     pub present_sync_model: &'static str,
     pub wait_idle_after_present: bool,
-    pub present_ids: Vec<Option<u64>>,
+    pub retained_frame_telemetry_limit: usize,
+    pub present_ids_head: Vec<Option<u64>>,
+    pub present_ids_tail: Vec<Option<u64>>,
     pub uses_present_id2: bool,
     pub present_wait2_available: bool,
     pub present_wait_after_present: bool,
@@ -403,7 +413,6 @@ struct VulkanaliaSceneSampledImageGeometryResources {
     index_memory: vk::DeviceMemory,
     draw_steps: Vec<NativeVulkanVulkanaliaSceneSampledImageDrawStep>,
     animated_uv_steps: Vec<SceneSampledImageAnimatedUvStep>,
-    base_vertices: Vec<NativeVulkanVulkanaliaSceneSampledImageVertex>,
     indices: Vec<u32>,
     sources: Vec<PathBuf>,
     snapshot: NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot,
@@ -418,16 +427,66 @@ struct VulkanaliaSceneSolidQuadFrameResources {
     in_flight: Vec<vk::Fence>,
 }
 
+struct VulkanaliaSceneTransferFrameResources {
+    command_pool: vk::CommandPool,
+    command_buffers: Vec<vk::CommandBuffer>,
+    image_available: Vec<vk::Semaphore>,
+    render_finished: Vec<vk::Semaphore>,
+    in_flight: Vec<vk::Fence>,
+}
+
 struct VulkanaliaSceneUploadedBuffer {
     buffer: vk::Buffer,
     memory: vk::DeviceMemory,
     memory_type: NativeVulkanVulkanaliaMemoryTypeCandidate,
+    memory_size: u64,
+    mapped_ptr: Option<*mut std::ffi::c_void>,
+    mapped_size: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct SceneSampledImageAnimatedUvStep {
     vertex_indices: [u32; 4],
+    base_uvs: [[f32; 2]; 4],
     texture_region: SceneTextureRegion,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SceneStaticTransferBlitRegion {
+    src_offsets: [vk::Offset3D; 2],
+    dst_offsets: [vk::Offset3D; 2],
+    clear_before_blit: bool,
+}
+
+struct ScenePresentIdTelemetry {
+    head: Vec<Option<u64>>,
+    tail: Vec<Option<u64>>,
+}
+
+impl ScenePresentIdTelemetry {
+    fn new() -> Self {
+        Self {
+            head: Vec::with_capacity(SCENE_PRESENT_ID_TELEMETRY_RETAINED_FRAMES),
+            tail: Vec::with_capacity(SCENE_PRESENT_ID_TELEMETRY_RETAINED_FRAMES),
+        }
+    }
+
+    fn push(&mut self, present_id: Option<u64>) {
+        if SCENE_PRESENT_ID_TELEMETRY_RETAINED_FRAMES == 0 {
+            return;
+        }
+        if self.head.len() < SCENE_PRESENT_ID_TELEMETRY_RETAINED_FRAMES {
+            self.head.push(present_id);
+        }
+        if self.tail.len() == SCENE_PRESENT_ID_TELEMETRY_RETAINED_FRAMES {
+            self.tail.remove(0);
+        }
+        self.tail.push(present_id);
+    }
+
+    fn into_parts(self) -> (Vec<Option<u64>>, Vec<Option<u64>>) {
+        (self.head, self.tail)
+    }
 }
 
 #[derive(Debug)]
@@ -808,12 +867,6 @@ fn with_vulkanalia_scene_sampled_image_present(
                 .to_owned(),
         );
     }
-    if !present_device.feature_selection.dynamic_rendering_enabled {
-        unsafe {
-            present_device.device.destroy_device(None);
-        }
-        return Err("Vulkanalia scene sampled image present requires dynamicRendering for CmdBeginRendering".to_owned());
-    }
 
     let swapchain_plan = match create_vulkanalia_swapchain_plan(
         instance,
@@ -856,6 +909,69 @@ fn with_vulkanalia_scene_sampled_image_present(
             ));
         }
     };
+
+    if scene_sampled_image_can_use_static_transfer_present(&options) {
+        let present_timing = VulkanaliaPresentTimingConfig::new(
+            swapchain_plan.present_id2_enabled,
+            swapchain_plan.present_wait2_enabled,
+        );
+        let result = run_scene_sampled_image_static_transfer_present(
+            vulkan,
+            instance,
+            device,
+            selection.physical_device,
+            present_device.queue,
+            swapchain,
+            &swapchain_images,
+            selection.queue_family_index,
+            &selection,
+            &present_device.extension_snapshot,
+            &swapchain_plan,
+            present_timing,
+            options,
+            present_device
+                .feature_selection
+                .core_features
+                .texture_compression_bc,
+            present_device
+                .feature_selection
+                .core_features
+                .descriptor_heap,
+            present_device
+                .feature_selection
+                .descriptor_heap_properties
+                .max_resource_heap_size,
+            present_device
+                .feature_selection
+                .descriptor_heap_properties
+                .image_descriptor_size,
+            present_device
+                .feature_selection
+                .descriptor_heap_properties
+                .sampler_descriptor_size,
+            present_device
+                .feature_selection
+                .core_features
+                .push_descriptor,
+            present_device
+                .feature_selection
+                .vulkan_1_4_properties
+                .max_push_descriptors,
+        );
+        unsafe {
+            device.destroy_swapchain_khr(swapchain, None);
+            present_device.device.destroy_device(None);
+        }
+        return result;
+    }
+
+    if !present_device.feature_selection.dynamic_rendering_enabled {
+        unsafe {
+            device.destroy_swapchain_khr(swapchain, None);
+            present_device.device.destroy_device(None);
+        }
+        return Err("Vulkanalia scene sampled image present requires dynamicRendering for CmdBeginRendering".to_owned());
+    }
 
     let frame_resources = match create_scene_solid_quad_frame_resources(
         device,
@@ -977,15 +1093,12 @@ fn with_vulkanalia_scene_sampled_image_present(
             return Err(err);
         }
     };
-    let retain_sampled_image_base_vertices = options.dynamic_geometry.is_none()
-        && scene_sampled_image_draw_steps_are_animated(&geometry_payload.draw_steps);
     let retain_sampled_image_dynamic_topology = options.dynamic_geometry.is_some();
     let geometry = match create_scene_sampled_image_geometry_resources(
         device,
         &memory_properties,
         geometry_payload,
         frame_resources.in_flight.len(),
-        retain_sampled_image_base_vertices,
         retain_sampled_image_dynamic_topology,
     ) {
         Ok(geometry) => geometry,
@@ -1347,7 +1460,7 @@ fn run_scene_solid_quad_present_loop(
         .map(|fps| Duration::from_secs_f64(1.0 / fps as f64));
     let mut next_frame = Instant::now();
     let mut frames_presented = 0u64;
-    let mut present_ids = Vec::new();
+    let mut present_ids = ScenePresentIdTelemetry::new();
     let mut present_wait_after_present = false;
     let mut last_command = None;
 
@@ -1386,26 +1499,19 @@ fn run_scene_solid_quad_present_loop(
             .ok_or_else(|| format!("swapchain view index {image_index_usize} is unavailable"))?;
 
         let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        let dynamic_payload = options
-            .dynamic_geometry
-            .as_ref()
-            .map(|dynamic_geometry| {
-                let input = dynamic_geometry(elapsed_ms)?;
-                scene_solid_quad_geometry_payload(
-                    Some(input),
-                    extent,
-                    options.quad_color,
-                    options.scene_size,
-                    options.scene_fit,
-                )
-            })
-            .transpose()?;
-        let vertex_buffer = update_scene_solid_quad_geometry_for_time(
-            device,
-            geometry,
-            present_frame_slot,
-            dynamic_payload.as_ref(),
-        )?;
+        let vertex_buffer = if let Some(dynamic_geometry) = options.dynamic_geometry.as_ref() {
+            update_scene_solid_quad_geometry_input_for_time(
+                device,
+                geometry,
+                present_frame_slot,
+                dynamic_geometry(elapsed_ms)?,
+                extent,
+                options.scene_size,
+                options.scene_fit,
+            )?
+        } else {
+            update_scene_solid_quad_geometry_for_time(device, geometry, present_frame_slot, None)?
+        };
 
         let command = native_vulkan_vulkanalia_record_scene_solid_quad_command_buffer(
             device,
@@ -1480,6 +1586,7 @@ fn run_scene_solid_quad_present_loop(
     }
 
     let elapsed = started_at.elapsed();
+    let (present_ids_head, present_ids_tail) = present_ids.into_parts();
     Ok(NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot {
         binding: "vulkanalia",
         route: "scene-solid-quad-visible-present",
@@ -1529,7 +1636,9 @@ fn run_scene_solid_quad_present_loop(
         },
         present_sync_model: "frame-slot semaphore/fence reuse; no per-present queue_wait_idle",
         wait_idle_after_present: false,
-        present_ids,
+        retained_frame_telemetry_limit: SCENE_PRESENT_ID_TELEMETRY_RETAINED_FRAMES,
+        present_ids_head,
+        present_ids_tail,
         uses_present_id2: present_timing.present_id2_enabled,
         present_wait2_available: present_timing.present_wait2_enabled,
         present_wait_after_present,
@@ -1573,7 +1682,7 @@ fn run_scene_sampled_image_present_loop(
         .map(|fps| Duration::from_secs_f64(1.0 / fps as f64));
     let mut next_frame = Instant::now();
     let mut frames_presented = 0u64;
-    let mut present_ids = Vec::new();
+    let mut present_ids = ScenePresentIdTelemetry::new();
     let mut present_wait_after_present = false;
     let mut last_command = None;
     let sampled_image = sampled_images.first().ok_or_else(|| {
@@ -1650,57 +1759,51 @@ fn run_scene_sampled_image_present_loop(
             .ok_or_else(|| format!("swapchain view index {image_index_usize} is unavailable"))?;
 
         let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        let dynamic_payload = options
-            .dynamic_geometry
-            .as_ref()
-            .map(|dynamic_geometry| {
-                let input = dynamic_geometry(elapsed_ms)?;
-                scene_sampled_image_geometry_payload(
-                    Some(input),
-                    extent,
-                    options.fit,
-                    vk::Extent2D {
-                        width: 0,
-                        height: 0,
-                    },
-                    options.scene_size,
-                    options.scene_fit,
-                )
-            })
-            .transpose()?;
-        let vertex_buffer = update_scene_sampled_image_geometry_for_time(
-            device,
-            geometry,
-            present_frame_slot,
-            elapsed_ms,
-            dynamic_payload.as_ref(),
-        )?;
-        let dynamic_solid_payload = options
+        let vertex_buffer = if let Some(dynamic_geometry) = options.dynamic_geometry.as_ref() {
+            update_scene_sampled_image_geometry_input_for_time(
+                device,
+                geometry,
+                present_frame_slot,
+                dynamic_geometry(elapsed_ms)?,
+                extent,
+                options.scene_size,
+                options.scene_fit,
+            )?
+        } else {
+            update_scene_sampled_image_geometry_for_time(
+                device,
+                geometry,
+                present_frame_slot,
+                elapsed_ms,
+                None,
+            )?
+        };
+        let dynamic_solid_input = options
             .dynamic_solid_geometry
             .as_ref()
-            .map(|dynamic_geometry| {
-                dynamic_geometry(elapsed_ms)?
-                    .map(|input| {
-                        scene_solid_quad_geometry_payload(
-                            Some(input),
-                            extent,
-                            options.clear_color,
-                            options.scene_size,
-                            options.scene_fit,
-                        )
-                    })
-                    .transpose()
-            })
+            .map(|dynamic_geometry| dynamic_geometry(elapsed_ms))
             .transpose()?
             .flatten();
         let solid_quad_draw = match (solid_quad_draw.as_ref(), solid_geometry) {
             (Some(draw), Some(geometry)) => {
-                let solid_vertex_buffer = update_scene_solid_quad_geometry_for_time(
-                    device,
-                    geometry,
-                    present_frame_slot,
-                    dynamic_solid_payload.as_ref(),
-                )?;
+                let solid_vertex_buffer = if let Some(input) = dynamic_solid_input {
+                    update_scene_solid_quad_geometry_input_for_time(
+                        device,
+                        geometry,
+                        present_frame_slot,
+                        input,
+                        extent,
+                        options.scene_size,
+                        options.scene_fit,
+                    )?
+                } else {
+                    update_scene_solid_quad_geometry_for_time(
+                        device,
+                        geometry,
+                        present_frame_slot,
+                        None,
+                    )?
+                };
                 Some(VulkanaliaSceneSolidQuadDrawResources {
                     pipeline_resources: draw.pipeline_resources,
                     vertex_buffer: solid_vertex_buffer,
@@ -1788,6 +1891,7 @@ fn run_scene_sampled_image_present_loop(
     }
 
     let elapsed = started_at.elapsed();
+    let (present_ids_head, present_ids_tail) = present_ids.into_parts();
     Ok(NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot {
         binding: "vulkanalia",
         route: "scene-sampled-image-visible-present",
@@ -1859,7 +1963,9 @@ fn run_scene_sampled_image_present_loop(
         ),
         present_sync_model: "frame-slot semaphore/fence reuse; no per-present queue_wait_idle",
         wait_idle_after_present: false,
-        present_ids,
+        retained_frame_telemetry_limit: SCENE_PRESENT_ID_TELEMETRY_RETAINED_FRAMES,
+        present_ids_head,
+        present_ids_tail,
         uses_present_id2: present_timing.present_id2_enabled,
         present_wait2_available: present_timing.present_wait2_enabled,
         present_wait_after_present,
@@ -1883,6 +1989,751 @@ fn scene_sampled_image_can_release_sources_after_first_present(
     options.dynamic_geometry.is_none()
         && options.dynamic_solid_geometry.is_none()
         && !scene_sampled_image_draw_steps_are_animated(&geometry.draw_steps)
+}
+
+fn scene_sampled_image_can_use_static_transfer_present(
+    options: &NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
+) -> bool {
+    options.solid_geometry.is_none()
+        && options.geometry.is_none()
+        && options.dynamic_solid_geometry.is_none()
+        && options.dynamic_geometry.is_none()
+        && matches!(
+            options.fit.unwrap_or(FitMode::Stretch),
+            FitMode::Cover | FitMode::Contain | FitMode::Stretch | FitMode::Center
+        )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_scene_sampled_image_static_transfer_present(
+    vulkan: &NativeVulkanVulkanaliaInstance,
+    instance: &Instance,
+    device: &Device,
+    physical_device: vk::PhysicalDevice,
+    queue: vk::Queue,
+    swapchain: vk::SwapchainKHR,
+    swapchain_images: &[vk::Image],
+    queue_family_index: u32,
+    selection: &super::swapchain::NativeVulkanVulkanaliaPresentQueueSelection,
+    extension_snapshot: &NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
+    swapchain_plan: &super::swapchain::NativeVulkanVulkanaliaSwapchainPlan,
+    present_timing: VulkanaliaPresentTimingConfig,
+    options: NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
+    texture_compression_bc_enabled: bool,
+    descriptor_heap_available: bool,
+    max_resource_heap_size: u64,
+    image_descriptor_size: u64,
+    sampler_descriptor_size: u64,
+    push_descriptor_available: bool,
+    max_push_descriptors: u32,
+) -> Result<NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot, String> {
+    if !texture_compression_bc_enabled {
+        return Err(
+            "scene static transfer present requires textureCompressionBC for native BC7 .gtex resources"
+                .to_owned(),
+        );
+    }
+
+    let hold_started_at = Instant::now();
+    let target_duration = options.duration;
+    let texture = native_vulkan_vulkanalia_load_scene_native_texture(&options.source)?;
+    let filter = scene_static_transfer_blit_filter(
+        instance,
+        physical_device,
+        swapchain_plan.format.format,
+        options.fit.unwrap_or(FitMode::Stretch),
+    )?;
+    let frame_resources =
+        create_scene_transfer_frame_resources(device, swapchain_images, queue_family_index)?;
+    let memory_properties =
+        unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    let transfer_image = match native_vulkan_vulkanalia_create_scene_transfer_image_resources(
+        device,
+        &memory_properties,
+        frame_resources.command_pool,
+        queue,
+        texture.source.display().to_string(),
+        &texture,
+    ) {
+        Ok(transfer_image) => transfer_image,
+        Err(err) => {
+            destroy_scene_transfer_frame_resources(device, frame_resources);
+            return Err(err);
+        }
+    };
+
+    let mut result = run_scene_sampled_image_static_transfer_present_loop(
+        vulkan,
+        device,
+        queue,
+        swapchain,
+        swapchain_images,
+        swapchain_plan.extent,
+        &frame_resources,
+        &transfer_image,
+        &texture,
+        filter,
+        selection,
+        extension_snapshot,
+        swapchain_plan,
+        present_timing,
+        options,
+        descriptor_heap_available,
+        max_resource_heap_size,
+        image_descriptor_size,
+        sampler_descriptor_size,
+        push_descriptor_available,
+        max_push_descriptors,
+    );
+
+    let _ = unsafe { device.device_wait_idle() };
+    native_vulkan_vulkanalia_destroy_scene_transfer_image_resources(device, transfer_image);
+    destroy_scene_transfer_frame_resources(device, frame_resources);
+    native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
+    if let Ok(snapshot) = result.as_mut() {
+        let now = Instant::now();
+        let deadline = hold_started_at + target_duration;
+        if deadline > now {
+            thread::sleep(deadline - now);
+        }
+        let elapsed = hold_started_at.elapsed();
+        snapshot.runtime_elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
+        snapshot.average_present_fps = if elapsed.is_zero() {
+            0.0
+        } else {
+            snapshot.frames_presented as f64 / elapsed.as_secs_f64()
+        };
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_scene_sampled_image_static_transfer_present_loop(
+    vulkan: &NativeVulkanVulkanaliaInstance,
+    device: &Device,
+    queue: vk::Queue,
+    swapchain: vk::SwapchainKHR,
+    swapchain_images: &[vk::Image],
+    extent: vk::Extent2D,
+    frame_resources: &VulkanaliaSceneTransferFrameResources,
+    transfer_image: &VulkanaliaSceneTransferImageResources,
+    texture: &NativeVulkanVulkanaliaSceneNativeTexture,
+    filter: vk::Filter,
+    selection: &super::swapchain::NativeVulkanVulkanaliaPresentQueueSelection,
+    extension_snapshot: &NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
+    swapchain_plan: &super::swapchain::NativeVulkanVulkanaliaSwapchainPlan,
+    present_timing: VulkanaliaPresentTimingConfig,
+    options: NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
+    descriptor_heap_available: bool,
+    max_resource_heap_size: u64,
+    image_descriptor_size: u64,
+    sampler_descriptor_size: u64,
+    push_descriptor_available: bool,
+    max_push_descriptors: u32,
+) -> Result<NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot, String> {
+    let started_at = Instant::now();
+    let source_extent = vk::Extent2D {
+        width: texture.width,
+        height: texture.height,
+    };
+    let region = scene_static_transfer_blit_region(
+        options.fit.unwrap_or(FitMode::Stretch),
+        source_extent,
+        extent,
+    )?;
+    let mut present_ids = ScenePresentIdTelemetry::new();
+    let mut present_wait_after_present = false;
+    let mut last_command = None;
+
+    let present_result = (|| -> Result<u64, String> {
+        let present_frame_slot = 0usize;
+        let image_available = frame_resources.image_available[present_frame_slot];
+        let render_finished = frame_resources.render_finished[present_frame_slot];
+        let in_flight = frame_resources.in_flight[present_frame_slot];
+        unsafe {
+            device
+                .wait_for_fences(&[in_flight], true, u64::MAX)
+                .map_err(|err| {
+                    format!("vkWaitForFences(vulkanalia scene static transfer present): {err:?}")
+                })?;
+            device.reset_fences(&[in_flight]).map_err(|err| {
+                format!("vkResetFences(vulkanalia scene static transfer present): {err:?}")
+            })?;
+        }
+
+        let (image_index, _) = unsafe {
+            device.acquire_next_image_khr(swapchain, u64::MAX, image_available, vk::Fence::null())
+        }
+        .map_err(|err| {
+            format!("vkAcquireNextImageKHR(vulkanalia scene static transfer present): {err:?}")
+        })?;
+        let image_index_usize = image_index as usize;
+        let command_buffer = frame_resources
+            .command_buffers
+            .get(image_index_usize)
+            .copied()
+            .ok_or_else(|| {
+                format!("swapchain image index {image_index_usize} has no command buffer")
+            })?;
+        let swapchain_image = *swapchain_images
+            .get(image_index_usize)
+            .ok_or_else(|| format!("swapchain image index {image_index_usize} is unavailable"))?;
+
+        let command = record_scene_sampled_image_static_transfer_command_buffer(
+            device,
+            command_buffer,
+            swapchain_image,
+            extent,
+            transfer_image.image,
+            region,
+            filter,
+            [
+                options.clear_color.r,
+                options.clear_color.g,
+                options.clear_color.b,
+                options.clear_color.a,
+            ],
+        )?;
+        submit_scene_transfer_command_buffer2(
+            device,
+            queue,
+            command_buffer,
+            image_available,
+            render_finished,
+            in_flight,
+        )?;
+
+        let swapchains = [swapchain];
+        let image_indices = [image_index];
+        let wait_semaphores = [render_finished];
+        let present_id = present_timing.present_id(0);
+        let present_id_values = [present_id.unwrap_or(0)];
+        let mut present_id2_info = present_id.map(|_| {
+            vk::PresentId2KHR::builder()
+                .present_ids(&present_id_values)
+                .build()
+        });
+        let mut present_info = vk::PresentInfoKHR::builder()
+            .wait_semaphores(&wait_semaphores)
+            .swapchains(&swapchains)
+            .image_indices(&image_indices);
+        if present_timing.present_id2_enabled {
+            if let Some(present_id2_info) = present_id2_info.as_mut() {
+                present_info = present_info.push_next(present_id2_info);
+            }
+        }
+        unsafe {
+            device
+                .queue_present_khr(queue, &present_info)
+                .map_err(|err| {
+                    format!("vkQueuePresentKHR(vulkanalia scene static transfer present): {err:?}")
+                })?;
+            device
+                .wait_for_fences(&[in_flight], true, u64::MAX)
+                .map_err(|err| {
+                    format!(
+                        "vkWaitForFences(vulkanalia scene static transfer source release): {err:?}"
+                    )
+                })?;
+        }
+        present_wait_after_present |= present_timing.wait_after_queue_present(
+            device,
+            swapchain,
+            present_id,
+            "scene static transfer present",
+        )?;
+
+        present_ids.push(present_id);
+        last_command = Some(command);
+        Ok(1)
+    })();
+
+    let frames_presented = present_result?;
+    let elapsed = started_at.elapsed();
+    let (present_ids_head, present_ids_tail) = present_ids.into_parts();
+    let sampled_image_snapshot = transfer_image.snapshot.clone();
+    Ok(NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot {
+        binding: "vulkanalia",
+        route: "scene-static-transfer-visible-present",
+        scene_input_model: "static native .gtex BC7 source; no retained scene snapshot or CPU decoded image",
+        scene_resource_model: "static-transfer-first-present-source-release",
+        scene_solid_quad_draw_count: 0,
+        scene_sampled_image_resource_count: 1,
+        scene_sampled_image_descriptor_heap_required: false,
+        loader: vulkan.loader_name.to_owned(),
+        requested_api_version: Version::V1_4_0.to_string(),
+        runtime_elapsed_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
+        frames_presented,
+        average_present_fps: if elapsed.is_zero() {
+            0.0
+        } else {
+            frames_presented as f64 / elapsed.as_secs_f64()
+        },
+        source: options.source,
+        clear_color: options.clear_color,
+        fit: options.fit,
+        mixed_scene_draw_enabled: false,
+        selected_queue: NativeVulkanVulkanaliaPresentQueueSnapshot {
+            physical_device_index: selection.physical_device_index,
+            physical_device_name: selection.physical_device_name.clone(),
+            physical_device_type: selection.physical_device_type.clone(),
+            queue_family_index: selection.queue_family_index,
+            queue_count: selection.queue_count,
+            queue_flags: queue_flag_labels(selection.queue_flags),
+            supports_graphics: selection.queue_flags.contains(vk::QueueFlags::GRAPHICS),
+            supports_present: true,
+            supports_wayland_presentation: selection.supports_wayland_presentation,
+        },
+        device_extensions: extension_snapshot.clone(),
+        swapchain: NativeVulkanVulkanaliaSwapchainSnapshot {
+            created: true,
+            format: format!("{:?}", swapchain_plan.format.format),
+            color_space: format!("{:?}", swapchain_plan.format.color_space),
+            present_mode: present_mode_label(swapchain_plan.present_mode),
+            extent: (swapchain_plan.extent.width, swapchain_plan.extent.height),
+            image_count: swapchain_images.len(),
+            min_image_count: swapchain_plan.image_count,
+            composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),
+            image_usage: vec!["transfer-dst", "color-attachment"],
+            create_flags: swapchain_create_flag_labels(swapchain_plan.create_flags),
+            present_id2_enabled: swapchain_plan.present_id2_enabled,
+            present_wait2_enabled: swapchain_plan.present_wait2_enabled,
+        },
+        solid_geometry: None,
+        solid_pipeline: None,
+        geometry: scene_static_transfer_geometry_snapshot(),
+        sampled_image: sampled_image_snapshot.clone(),
+        sampled_images: vec![sampled_image_snapshot],
+        descriptor_strategy: scene_static_transfer_descriptor_strategy(
+            descriptor_heap_available,
+            max_resource_heap_size,
+            image_descriptor_size,
+            sampler_descriptor_size,
+            push_descriptor_available,
+            max_push_descriptors,
+        ),
+        descriptor_heap: None,
+        pipeline: scene_static_transfer_pipeline_snapshot(swapchain_plan.format.format, extent),
+        last_command,
+        command_submit_model: "acquire_next_image_khr -> cmd_blit_image2 static BC7 transfer image into swapchain -> queue_submit2 -> queue_present_khr -> wait render fence -> destroy source transfer image -> sleep until duration",
+        present_sync_model: "static first-present transfer source release; swapchain/display owns the visible result after submit fence",
+        wait_idle_after_present: false,
+        retained_frame_telemetry_limit: SCENE_PRESENT_ID_TELEMETRY_RETAINED_FRAMES,
+        present_ids_head,
+        present_ids_tail,
+        uses_present_id2: present_timing.present_id2_enabled,
+        present_wait2_available: present_timing.present_wait2_enabled,
+        present_wait_after_present,
+        uses_pipeline_rendering_create_info: false,
+        uses_dynamic_rendering: false,
+        uses_synchronization2: true,
+        uses_submit2: true,
+        zero_copy_scope: "static source image is uploaded as BC7 into a transfer-src image, blitted into the swapchain once, then source image memory is destroyed; no CPU image payload is retained",
+        primary_reference: "FFmpeg packet/bitstream lifetime discipline: source payload/resource is released after the submitted work no longer references it",
+    })
+}
+
+fn scene_static_transfer_blit_filter(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+    swapchain_format: vk::Format,
+    fit: FitMode,
+) -> Result<vk::Filter, String> {
+    let source = unsafe {
+        instance.get_physical_device_format_properties(physical_device, vk::Format::BC7_UNORM_BLOCK)
+    };
+    if !source
+        .optimal_tiling_features
+        .contains(vk::FormatFeatureFlags::BLIT_SRC)
+    {
+        return Err(
+            "scene static transfer present requires BC7_UNORM_BLOCK optimal tiling BLIT_SRC"
+                .to_owned(),
+        );
+    }
+    let target = unsafe {
+        instance.get_physical_device_format_properties(physical_device, swapchain_format)
+    };
+    if !target
+        .optimal_tiling_features
+        .contains(vk::FormatFeatureFlags::BLIT_DST)
+    {
+        return Err(format!(
+            "scene static transfer present requires swapchain format {swapchain_format:?} optimal tiling BLIT_DST"
+        ));
+    }
+    let needs_scaling = fit != FitMode::Center;
+    let linear_ok = source
+        .optimal_tiling_features
+        .contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR);
+    Ok(if needs_scaling && linear_ok {
+        vk::Filter::LINEAR
+    } else {
+        vk::Filter::NEAREST
+    })
+}
+
+fn scene_static_transfer_blit_region(
+    fit: FitMode,
+    source: vk::Extent2D,
+    target: vk::Extent2D,
+) -> Result<SceneStaticTransferBlitRegion, String> {
+    if source.width == 0 || source.height == 0 || target.width == 0 || target.height == 0 {
+        return Err(
+            "scene static transfer blit requires non-zero source and target extent".to_owned(),
+        );
+    }
+    let src_full = vk::Offset3D {
+        x: source.width as i32,
+        y: source.height as i32,
+        z: 1,
+    };
+    let dst_full = vk::Offset3D {
+        x: target.width as i32,
+        y: target.height as i32,
+        z: 1,
+    };
+    let region = match fit {
+        FitMode::Stretch => SceneStaticTransferBlitRegion {
+            src_offsets: [vk::Offset3D { x: 0, y: 0, z: 0 }, src_full],
+            dst_offsets: [vk::Offset3D { x: 0, y: 0, z: 0 }, dst_full],
+            clear_before_blit: false,
+        },
+        FitMode::Center => {
+            let copy_width = source.width.min(target.width);
+            let copy_height = source.height.min(target.height);
+            let src_x = ((source.width - copy_width) / 2) & !3;
+            let src_y = ((source.height - copy_height) / 2) & !3;
+            let dst_x = ((target.width - copy_width) / 2) as i32;
+            let dst_y = ((target.height - copy_height) / 2) as i32;
+            SceneStaticTransferBlitRegion {
+                src_offsets: [
+                    vk::Offset3D {
+                        x: src_x as i32,
+                        y: src_y as i32,
+                        z: 0,
+                    },
+                    vk::Offset3D {
+                        x: (src_x + copy_width) as i32,
+                        y: (src_y + copy_height) as i32,
+                        z: 1,
+                    },
+                ],
+                dst_offsets: [
+                    vk::Offset3D {
+                        x: dst_x,
+                        y: dst_y,
+                        z: 0,
+                    },
+                    vk::Offset3D {
+                        x: dst_x + copy_width as i32,
+                        y: dst_y + copy_height as i32,
+                        z: 1,
+                    },
+                ],
+                clear_before_blit: copy_width < target.width || copy_height < target.height,
+            }
+        }
+        FitMode::Contain => {
+            let scale = (target.width as f64 / source.width as f64)
+                .min(target.height as f64 / source.height as f64);
+            let dst_width = ((source.width as f64 * scale).round() as u32).clamp(1, target.width);
+            let dst_height =
+                ((source.height as f64 * scale).round() as u32).clamp(1, target.height);
+            let dst_x = ((target.width - dst_width) / 2) as i32;
+            let dst_y = ((target.height - dst_height) / 2) as i32;
+            SceneStaticTransferBlitRegion {
+                src_offsets: [vk::Offset3D { x: 0, y: 0, z: 0 }, src_full],
+                dst_offsets: [
+                    vk::Offset3D {
+                        x: dst_x,
+                        y: dst_y,
+                        z: 0,
+                    },
+                    vk::Offset3D {
+                        x: dst_x + dst_width as i32,
+                        y: dst_y + dst_height as i32,
+                        z: 1,
+                    },
+                ],
+                clear_before_blit: dst_width < target.width || dst_height < target.height,
+            }
+        }
+        FitMode::Cover => {
+            let source_aspect = source.width as f64 / source.height as f64;
+            let target_aspect = target.width as f64 / target.height as f64;
+            let (src_x, src_y, src_width, src_height) = if source_aspect > target_aspect {
+                let width =
+                    ((source.height as f64 * target_aspect).round() as u32).clamp(1, source.width);
+                (
+                    ((source.width - width) / 2) & !3,
+                    0,
+                    width & !3,
+                    source.height,
+                )
+            } else {
+                let height =
+                    ((source.width as f64 / target_aspect).round() as u32).clamp(1, source.height);
+                (
+                    0,
+                    ((source.height - height) / 2) & !3,
+                    source.width,
+                    height & !3,
+                )
+            };
+            SceneStaticTransferBlitRegion {
+                src_offsets: [
+                    vk::Offset3D {
+                        x: src_x as i32,
+                        y: src_y as i32,
+                        z: 0,
+                    },
+                    vk::Offset3D {
+                        x: (src_x + src_width.max(4).min(source.width - src_x)) as i32,
+                        y: (src_y + src_height.max(4).min(source.height - src_y)) as i32,
+                        z: 1,
+                    },
+                ],
+                dst_offsets: [vk::Offset3D { x: 0, y: 0, z: 0 }, dst_full],
+                clear_before_blit: false,
+            }
+        }
+        FitMode::Tile => {
+            return Err("scene static transfer present does not implement tile repeat; tile remains on the retained sampled-image render path".to_owned());
+        }
+    };
+    Ok(region)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_scene_sampled_image_static_transfer_command_buffer(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    swapchain_image: vk::Image,
+    extent: vk::Extent2D,
+    source_image: vk::Image,
+    region: SceneStaticTransferBlitRegion,
+    filter: vk::Filter,
+    clear_color: [f32; 4],
+) -> Result<NativeVulkanVulkanaliaSceneSampledImageCommandSnapshot, String> {
+    unsafe {
+        device
+            .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
+            .map_err(|err| {
+                format!("vkResetCommandBuffer(vulkanalia scene static transfer): {err:?}")
+            })?;
+        let begin_info = vk::CommandBufferBeginInfo::builder()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
+            .build();
+        device
+            .begin_command_buffer(command_buffer, &begin_info)
+            .map_err(|err| {
+                format!("vkBeginCommandBuffer(vulkanalia scene static transfer): {err:?}")
+            })?;
+
+        let swapchain_to_transfer = vk::ImageMemoryBarrier2::builder()
+            .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+            .src_access_mask(vk::AccessFlags2::empty())
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
+            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(swapchain_image)
+            .subresource_range(scene_color_subresource_range())
+            .build();
+        let barriers = [swapchain_to_transfer];
+        let dependency = vk::DependencyInfo::builder()
+            .image_memory_barriers(&barriers)
+            .build();
+        device.cmd_pipeline_barrier2(command_buffer, &dependency);
+
+        if region.clear_before_blit {
+            let clear = vk::ClearColorValue {
+                float32: clear_color,
+            };
+            let ranges = [scene_color_subresource_range()];
+            device.cmd_clear_color_image(
+                command_buffer,
+                swapchain_image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &clear,
+                &ranges,
+            );
+        }
+
+        let subresource = vk::ImageSubresourceLayers::builder()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .mip_level(0)
+            .base_array_layer(0)
+            .layer_count(1)
+            .build();
+        let blit = vk::ImageBlit2::builder()
+            .src_subresource(subresource)
+            .src_offsets(region.src_offsets)
+            .dst_subresource(subresource)
+            .dst_offsets(region.dst_offsets)
+            .build();
+        let blits = [blit];
+        let blit_info = vk::BlitImageInfo2::builder()
+            .src_image(source_image)
+            .src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .dst_image(swapchain_image)
+            .dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .regions(&blits)
+            .filter(filter)
+            .build();
+        device.cmd_blit_image2(command_buffer, &blit_info);
+
+        let swapchain_to_present = vk::ImageMemoryBarrier2::builder()
+            .src_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
+            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .dst_stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE)
+            .dst_access_mask(vk::AccessFlags2::empty())
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(swapchain_image)
+            .subresource_range(scene_color_subresource_range())
+            .build();
+        let present_barriers = [swapchain_to_present];
+        let present_dependency = vk::DependencyInfo::builder()
+            .image_memory_barriers(&present_barriers)
+            .build();
+        device.cmd_pipeline_barrier2(command_buffer, &present_dependency);
+
+        device.end_command_buffer(command_buffer).map_err(|err| {
+            format!("vkEndCommandBuffer(vulkanalia scene static transfer): {err:?}")
+        })?;
+    }
+
+    Ok(NativeVulkanVulkanaliaSceneSampledImageCommandSnapshot {
+        binding: "vulkanalia",
+        route: "scene-static-transfer-blit-command",
+        extent: (extent.width, extent.height),
+        index_count: 0,
+        command_buffer_recorded: true,
+        vertex_buffer_bound: false,
+        index_buffer_bound: false,
+        draw_call_count: 0,
+        solid_quad_draw_call_count: 0,
+        sampled_image_draw_call_count: 0,
+        pipeline_bind_count: 0,
+        descriptor_set_bound: false,
+        push_descriptor_set_recorded: false,
+        descriptor_heap_bound: false,
+        descriptor_set_bind_count: 0,
+        push_descriptor_set_recorded_count: 0,
+        descriptor_heap_draw_count: 0,
+        descriptor_model: "none-transfer-only",
+        push_constant_bytes: 0,
+        swapchain_layout_transition: "undefined -> transfer-dst-optimal -> present-src-khr",
+        sampled_image_layout: "transfer-src-optimal",
+        render_model: "retained BC7 transfer-src image -> cmd_blit_image2 -> Wayland swapchain; no graphics pipeline or CPU RGBA payload",
+        command_order: vec![
+            "cmd_pipeline_barrier2_swapchain_transfer_dst",
+            "cmd_clear_color_image_when_letterboxed",
+            "cmd_blit_image2_static_bc7_to_swapchain",
+            "cmd_pipeline_barrier2_present",
+            "queue_submit2_present",
+            "queue_present_khr",
+        ],
+        uses_dynamic_rendering: false,
+        uses_synchronization2: true,
+    })
+}
+
+fn scene_static_transfer_geometry_snapshot()
+-> NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot {
+    NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot {
+        source_label: "static-transfer-no-host-geometry".to_owned(),
+        vertex_count: 0,
+        vertex_buffer_bytes: 0,
+        vertex_buffer_count: 0,
+        index_buffer_bytes: 0,
+        index_count: 0,
+        quad_count: 0,
+        source_count: 1,
+        draw_step_count: 0,
+        vertex_stride_bytes: 0,
+        selected_vertex_memory_type_index: 0,
+        selected_index_memory_type_index: 0,
+        vertex_memory_property_flags: Vec::new(),
+        index_memory_property_flags: Vec::new(),
+        upload_model: "static transfer path records no host-visible scene geometry buffers",
+        retained_across_frames: false,
+    }
+}
+
+fn scene_static_transfer_descriptor_strategy(
+    descriptor_heap_available: bool,
+    max_resource_heap_size: u64,
+    image_descriptor_size: u64,
+    sampler_descriptor_size: u64,
+    push_descriptor_available: bool,
+    max_push_descriptors: u32,
+) -> NativeVulkanVulkanaliaSceneSampledImageDescriptorStrategySnapshot {
+    NativeVulkanVulkanaliaSceneSampledImageDescriptorStrategySnapshot {
+        binding: "vulkanalia",
+        route: "scene-static-transfer-descriptor-strategy",
+        sampled_image_count: 1,
+        descriptor_set_path_enabled: false,
+        active_descriptor_model: "none-transfer-only",
+        descriptor_heap_available,
+        descriptor_heap_fast_path_candidate: false,
+        uses_descriptor_heap_primary_path: false,
+        max_resource_heap_size,
+        image_descriptor_size,
+        sampler_descriptor_size,
+        push_descriptor_available,
+        max_push_descriptors,
+        push_descriptor_fast_path_candidate: false,
+        uses_push_descriptor_fast_path: false,
+        next_gate: "dynamic scene sampled-image layers continue to use descriptor heap render path",
+        primary_reference: "video-style resource lifetime: transfer source is destroyed after the submitted present no longer references it",
+    }
+}
+
+fn scene_static_transfer_pipeline_snapshot(
+    target_format: vk::Format,
+    extent: vk::Extent2D,
+) -> NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot {
+    NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot {
+        binding: "vulkanalia",
+        route: "scene-static-transfer-no-graphics-pipeline",
+        target_format: format!("{target_format:?}"),
+        extent: (extent.width, extent.height),
+        shader_modules_created: false,
+        descriptor_set_layout_created: false,
+        pipeline_layout_created: false,
+        pipeline_created: false,
+        render_pass_compatibility: "not-used-transfer-only",
+        primitive_topology: "none-transfer-only",
+        vertex_input_binding_count: 0,
+        vertex_input_attribute_count: 0,
+        vertex_stride_bytes: 0,
+        vertex_position_format: "none",
+        vertex_uv_format: "none",
+        vertex_opacity_format: "none",
+        descriptor_set_count: 0,
+        descriptor_model: "none-transfer-only",
+        descriptor_heap_mapping_enabled: false,
+        descriptor_heap_pipeline_flag_enabled: false,
+        descriptor_set_layout_create_flags: Vec::new(),
+        descriptor_type: "none",
+        descriptor_binding: 0,
+        push_constant_bytes: 0,
+        push_constant_model: "none-transfer-only",
+        blend_model: "none-transfer-only",
+        sampled_image_model: "BC7 transfer-src image copied to swapchain with cmd_blit_image2",
+        uses_pipeline_rendering_create_info: false,
+        uses_dynamic_rendering: false,
+        uses_synchronization2: true,
+        uses_submit2: true,
+        uses_push_descriptor_fast_path: false,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1957,7 +2808,7 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
         None => None,
     };
 
-    let mut present_ids = Vec::new();
+    let mut present_ids = ScenePresentIdTelemetry::new();
     let mut present_wait_after_present = false;
     let mut last_command = None;
     let present_result = (|| -> Result<u64, String> {
@@ -2134,6 +2985,7 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
     }
 
     let elapsed = started_at.elapsed();
+    let (present_ids_head, present_ids_tail) = present_ids.into_parts();
     Ok(NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot {
         binding: "vulkanalia",
         route: "scene-sampled-image-visible-present",
@@ -2197,7 +3049,9 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
         command_submit_model: "acquire_next_image_khr -> cmd_begin_rendering sampled image quad -> queue_submit2 -> queue_present_khr -> wait render fence -> destroy source sampled images/descriptors -> sleep until duration",
         present_sync_model: "static first-present source release; swapchain/display owns the visible result after render fence",
         wait_idle_after_present: false,
-        present_ids,
+        retained_frame_telemetry_limit: SCENE_PRESENT_ID_TELEMETRY_RETAINED_FRAMES,
+        present_ids_head,
+        present_ids_tail,
         uses_present_id2: present_timing.present_id2_enabled,
         present_wait2_available: present_timing.present_wait2_enabled,
         present_wait_after_present,
@@ -2315,6 +3169,83 @@ fn create_scene_solid_quad_frame_resources(
     result
 }
 
+fn create_scene_transfer_frame_resources(
+    device: &Device,
+    swapchain_images: &[vk::Image],
+    queue_family_index: u32,
+) -> Result<VulkanaliaSceneTransferFrameResources, String> {
+    if swapchain_images.is_empty() {
+        return Err("scene transfer present requires at least one swapchain image".to_owned());
+    }
+
+    let mut command_pool = vk::CommandPool::null();
+    let mut image_available = Vec::new();
+    let mut render_finished = Vec::new();
+    let mut in_flight = Vec::new();
+
+    let result = (|| -> Result<VulkanaliaSceneTransferFrameResources, String> {
+        let command_pool_info = vk::CommandPoolCreateInfo::builder()
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+            .queue_family_index(queue_family_index);
+        command_pool =
+            unsafe { device.create_command_pool(&command_pool_info, None) }.map_err(|err| {
+                format!("vkCreateCommandPool(vulkanalia scene transfer present): {err:?}")
+            })?;
+        let command_buffer_info = vk::CommandBufferAllocateInfo::builder()
+            .command_pool(command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(swapchain_images.len() as u32);
+        let command_buffers = unsafe { device.allocate_command_buffers(&command_buffer_info) }
+            .map_err(|err| {
+                format!("vkAllocateCommandBuffers(vulkanalia scene transfer present): {err:?}")
+            })?;
+
+        let semaphore_info = vk::SemaphoreCreateInfo::builder();
+        let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
+        for frame_slot in 0..swapchain_images.len() {
+            image_available.push(
+                unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(|err| {
+                    format!(
+                        "vkCreateSemaphore(image_available slot {frame_slot} vulkanalia scene transfer present): {err:?}"
+                    )
+                })?,
+            );
+            render_finished.push(
+                unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(|err| {
+                    format!(
+                        "vkCreateSemaphore(render_finished slot {frame_slot} vulkanalia scene transfer present): {err:?}"
+                    )
+                })?,
+            );
+            in_flight.push(
+                unsafe { device.create_fence(&fence_info, None) }.map_err(|err| {
+                    format!("vkCreateFence(slot {frame_slot} vulkanalia scene transfer present): {err:?}")
+                })?,
+            );
+        }
+
+        Ok(VulkanaliaSceneTransferFrameResources {
+            command_pool,
+            command_buffers,
+            image_available: std::mem::take(&mut image_available),
+            render_finished: std::mem::take(&mut render_finished),
+            in_flight: std::mem::take(&mut in_flight),
+        })
+    })();
+
+    if result.is_err() {
+        destroy_partial_scene_transfer_frame_resources(
+            device,
+            command_pool,
+            image_available,
+            render_finished,
+            in_flight,
+        );
+    }
+
+    result
+}
+
 fn create_scene_solid_quad_swapchain_image_views(
     device: &Device,
     images: &[vk::Image],
@@ -2356,6 +3287,48 @@ fn destroy_scene_solid_quad_frame_resources(
         resources.render_finished,
         resources.in_flight,
     );
+}
+
+fn destroy_scene_transfer_frame_resources(
+    device: &Device,
+    resources: VulkanaliaSceneTransferFrameResources,
+) {
+    destroy_partial_scene_transfer_frame_resources(
+        device,
+        resources.command_pool,
+        resources.image_available,
+        resources.render_finished,
+        resources.in_flight,
+    );
+}
+
+fn destroy_partial_scene_transfer_frame_resources(
+    device: &Device,
+    command_pool: vk::CommandPool,
+    image_available: Vec<vk::Semaphore>,
+    render_finished: Vec<vk::Semaphore>,
+    in_flight: Vec<vk::Fence>,
+) {
+    unsafe {
+        for fence in in_flight {
+            if fence != vk::Fence::null() {
+                device.destroy_fence(fence, None);
+            }
+        }
+        for semaphore in render_finished {
+            if semaphore != vk::Semaphore::null() {
+                device.destroy_semaphore(semaphore, None);
+            }
+        }
+        for semaphore in image_available {
+            if semaphore != vk::Semaphore::null() {
+                device.destroy_semaphore(semaphore, None);
+            }
+        }
+        if command_pool != vk::CommandPool::null() {
+            device.destroy_command_pool(command_pool, None);
+        }
+    }
 }
 
 fn destroy_partial_scene_solid_quad_frame_resources(
@@ -2406,6 +3379,7 @@ fn create_scene_solid_quad_geometry_resources(
             memory_properties,
             &payload.vertex_bytes,
             vk::BufferUsageFlags::VERTEX_BUFFER,
+            retain_cpu_topology,
             if vertex_buffer_count > 1 {
                 "solid-quad per-frame vertex"
             } else {
@@ -2428,6 +3402,7 @@ fn create_scene_solid_quad_geometry_resources(
         memory_properties,
         &payload.index_bytes,
         vk::BufferUsageFlags::INDEX_BUFFER,
+        false,
         "solid-quad index",
     ) {
         Ok(index) => index,
@@ -2476,7 +3451,7 @@ fn create_scene_solid_quad_geometry_resources(
                 index.memory_type.property_flags_bits,
             ),
             upload_model: if vertex_buffer_count > 1 {
-                "per-frame host-visible solid-quad geometry buffers retained across present frames"
+                "persistently mapped per-frame host-visible solid-quad vertex buffers reused by frame slot"
             } else {
                 "one-time host-visible geometry upload retained across present frames"
             },
@@ -2537,17 +3512,66 @@ fn update_scene_solid_quad_geometry_for_time(
     Ok(vertex.buffer)
 }
 
+fn update_scene_solid_quad_geometry_input_for_time(
+    device: &Device,
+    geometry: &VulkanaliaSceneSolidQuadGeometryResources,
+    frame_slot: usize,
+    mut input: NativeVulkanVulkanaliaSceneSolidQuadGeometryInput,
+    extent: vk::Extent2D,
+    scene_size: Option<SceneSize>,
+    scene_fit: FitMode,
+) -> Result<vk::Buffer, String> {
+    if geometry.vertex_buffers.is_empty() {
+        return Err("scene solid-quad geometry has no vertex buffers".to_owned());
+    }
+    if let Some(transform) = scene_viewport_transform(scene_size, scene_fit, extent) {
+        scene_solid_quad_apply_viewport(&mut input, transform);
+    }
+    if input.indices != geometry.indices {
+        return Err("scene dynamic solid-quad geometry changed index topology".to_owned());
+    }
+    if input.draw_steps != geometry.draw_steps {
+        return Err("scene dynamic solid-quad geometry changed draw step topology".to_owned());
+    }
+    let expected_bytes = geometry.snapshot.vertex_buffer_bytes as usize;
+    let vertex_bytes = input
+        .vertices
+        .len()
+        .checked_mul(SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES as usize)
+        .ok_or_else(|| "scene dynamic solid-quad vertex bytes overflow".to_owned())?;
+    if vertex_bytes != expected_bytes {
+        return Err(format!(
+            "scene dynamic solid-quad vertex bytes {} did not match retained buffer bytes {}",
+            vertex_bytes, expected_bytes
+        ));
+    }
+    let vertex = geometry
+        .vertex_buffers
+        .get(frame_slot % geometry.vertex_buffers.len())
+        .expect("scene solid-quad vertex buffer checked non-empty");
+    write_scene_solid_quad_vertices_to_uploaded_buffer(
+        device,
+        vertex,
+        &input.vertices,
+        "dynamic scene solid-quad vertex",
+    )?;
+    Ok(vertex.buffer)
+}
+
 fn create_scene_sampled_image_geometry_resources(
     device: &Device,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
     payload: VulkanaliaSceneSampledImageGeometryPayload,
     frame_resource_count: usize,
-    retain_base_vertices: bool,
     retain_dynamic_topology: bool,
 ) -> Result<VulkanaliaSceneSampledImageGeometryResources, String> {
     let animated_geometry = scene_sampled_image_draw_steps_are_animated(&payload.draw_steps);
-    let vertex_buffer_count =
-        scene_sampled_image_vertex_buffer_count(&payload.draw_steps, frame_resource_count);
+    let vertex_buffer_count = scene_sampled_image_vertex_buffer_count(
+        &payload.draw_steps,
+        frame_resource_count,
+        retain_dynamic_topology,
+    );
+    let keep_vertex_buffers_mapped = animated_geometry || retain_dynamic_topology;
     let mut vertex_buffers = Vec::with_capacity(vertex_buffer_count);
     for vertex_buffer_index in 0..vertex_buffer_count {
         match create_scene_uploaded_buffer(
@@ -2555,8 +3579,11 @@ fn create_scene_sampled_image_geometry_resources(
             memory_properties,
             &payload.vertex_bytes,
             vk::BufferUsageFlags::VERTEX_BUFFER,
+            keep_vertex_buffers_mapped,
             if animated_geometry {
                 "sampled-image per-frame vertex"
+            } else if retain_dynamic_topology {
+                "sampled-image dynamic per-frame vertex"
             } else {
                 "sampled-image vertex"
             },
@@ -2577,6 +3604,7 @@ fn create_scene_sampled_image_geometry_resources(
         memory_properties,
         &payload.index_bytes,
         vk::BufferUsageFlags::INDEX_BUFFER,
+        false,
         "sampled-image index",
     ) {
         Ok(index) => index,
@@ -2597,14 +3625,12 @@ fn create_scene_sampled_image_geometry_resources(
     let vertex_buffer_bytes = payload.vertex_bytes.len() as u64;
     let index_buffer_bytes = payload.index_bytes.len() as u64;
     let draw_step_count = payload.draw_steps.len().min(u32::MAX as usize) as u32;
-    let animated_uv_steps =
-        scene_sampled_image_animated_uv_steps(&payload.indices, &payload.draw_steps)?;
+    let animated_uv_steps = scene_sampled_image_animated_uv_steps(
+        &payload.vertices,
+        &payload.indices,
+        &payload.draw_steps,
+    )?;
     let draw_steps = payload.draw_steps;
-    let base_vertices = if retain_base_vertices {
-        payload.vertices
-    } else {
-        Vec::new()
-    };
     let indices = if retain_dynamic_topology {
         payload.indices
     } else {
@@ -2621,7 +3647,6 @@ fn create_scene_sampled_image_geometry_resources(
         index_memory: index.memory,
         draw_steps,
         animated_uv_steps,
-        base_vertices,
         indices,
         sources,
         snapshot: NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot {
@@ -2641,8 +3666,8 @@ fn create_scene_sampled_image_geometry_resources(
             index_memory_property_flags: memory_property_flag_labels(
                 index.memory_type.property_flags_bits,
             ),
-            upload_model: if animated_geometry {
-                "per-frame host-visible sampled-image geometry buffers retained across present frames"
+            upload_model: if animated_geometry || retain_dynamic_topology {
+                "persistently mapped per-frame host-visible sampled-image vertex buffers reused by frame slot"
             } else {
                 "one-time host-visible sampled-image geometry upload retained across present frames"
             },
@@ -2670,16 +3695,59 @@ fn write_scene_uploaded_buffer(
     bytes: &[u8],
     label: &'static str,
 ) -> Result<(), String> {
+    write_scene_uploaded_buffer_with(device, buffer, bytes.len(), label, |dst| {
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+        }
+        Ok(())
+    })
+}
+
+fn write_scene_uploaded_buffer_with(
+    device: &Device,
+    buffer: &VulkanaliaSceneUploadedBuffer,
+    byte_len: usize,
+    label: &'static str,
+    write: impl FnOnce(*mut u8) -> Result<(), String>,
+) -> Result<(), String> {
+    if byte_len as u64 > buffer.mapped_size.max(buffer.memory_size) {
+        return Err(format!(
+            "scene {label} write {} bytes exceeds buffer mapped size {}",
+            byte_len,
+            buffer.mapped_size.max(buffer.memory_size)
+        ));
+    }
+    if let Some(mapped_ptr) = buffer.mapped_ptr {
+        write(mapped_ptr.cast::<u8>())?;
+        let host_coherent = buffer.memory_type.property_flags_bits
+            & vk::MemoryPropertyFlags::HOST_COHERENT.bits()
+            == vk::MemoryPropertyFlags::HOST_COHERENT.bits();
+        if !host_coherent {
+            let range = vk::MappedMemoryRange::builder()
+                .memory(buffer.memory)
+                .offset(0)
+                .size(vk::WHOLE_SIZE)
+                .build();
+            unsafe {
+                device.flush_mapped_memory_ranges(&[range]).map_err(|err| {
+                    format!("vkFlushMappedMemoryRanges(vulkanalia {label}): {err:?}")
+                })?;
+            }
+        }
+        return Ok(());
+    }
+
     let map = native_vulkan_vulkanalia_map_memory2(
         device,
         buffer.memory,
         0,
-        bytes.len() as u64,
+        byte_len as u64,
         vk::MemoryMapFlags::empty(),
         label,
     )?;
-    unsafe {
-        ptr::copy_nonoverlapping(bytes.as_ptr(), map.cast::<u8>(), bytes.len());
+    if let Err(err) = write(map.cast::<u8>()) {
+        let _ = native_vulkan_vulkanalia_unmap_memory2(device, buffer.memory, label);
+        return Err(err);
     }
     let host_coherent = buffer.memory_type.property_flags_bits
         & vk::MemoryPropertyFlags::HOST_COHERENT.bits()
@@ -2700,6 +3768,166 @@ fn write_scene_uploaded_buffer(
     native_vulkan_vulkanalia_unmap_memory2(device, buffer.memory, label)
 }
 
+fn write_scene_solid_quad_vertices_to_uploaded_buffer(
+    device: &Device,
+    buffer: &VulkanaliaSceneUploadedBuffer,
+    vertices: &[NativeVulkanVulkanaliaSceneSolidQuadVertex],
+    label: &'static str,
+) -> Result<(), String> {
+    let byte_len = vertices
+        .len()
+        .checked_mul(SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES as usize)
+        .ok_or_else(|| format!("scene {label} vertex byte length overflows"))?;
+    write_scene_uploaded_buffer_with(device, buffer, byte_len, label, |dst| {
+        let mut offset = 0usize;
+        for (index, vertex) in vertices.iter().enumerate() {
+            if !vertex
+                .position
+                .into_iter()
+                .chain(vertex.rgba)
+                .all(f32::is_finite)
+            {
+                return Err(format!(
+                    "scene solid quad vertex {index} contains a non-finite value"
+                ));
+            }
+            for value in vertex.position.into_iter().chain(vertex.rgba) {
+                write_scene_f32_to_mapped(dst, &mut offset, value);
+            }
+        }
+        Ok(())
+    })
+}
+
+fn write_scene_sampled_image_vertices_to_uploaded_buffer(
+    device: &Device,
+    buffer: &VulkanaliaSceneUploadedBuffer,
+    vertices: &[NativeVulkanVulkanaliaSceneSampledImageVertex],
+    animated_uv_steps: &[SceneSampledImageAnimatedUvStep],
+    elapsed_ms: u64,
+    label: &'static str,
+) -> Result<(), String> {
+    scene_sampled_image_validate_animated_uv_steps(vertices.len(), animated_uv_steps)?;
+    let byte_len = vertices
+        .len()
+        .checked_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize)
+        .ok_or_else(|| format!("scene {label} vertex byte length overflows"))?;
+    write_scene_uploaded_buffer_with(device, buffer, byte_len, label, |dst| {
+        let mut offset = 0usize;
+        for (index, vertex) in vertices.iter().enumerate() {
+            let uv =
+                scene_sampled_image_uv_for_time(vertex.uv, index, animated_uv_steps, elapsed_ms);
+            if !vertex
+                .position
+                .into_iter()
+                .chain(uv)
+                .chain([vertex.opacity])
+                .all(f32::is_finite)
+            {
+                return Err(format!(
+                    "scene sampled-image vertex {index} contains a non-finite value"
+                ));
+            }
+            for value in vertex
+                .position
+                .into_iter()
+                .chain(uv)
+                .chain([vertex.opacity])
+            {
+                write_scene_f32_to_mapped(dst, &mut offset, value);
+            }
+        }
+        Ok(())
+    })
+}
+
+fn write_scene_sampled_image_animated_uvs_to_uploaded_buffer(
+    device: &Device,
+    buffer: &VulkanaliaSceneUploadedBuffer,
+    vertex_count: usize,
+    animated_uv_steps: &[SceneSampledImageAnimatedUvStep],
+    elapsed_ms: u64,
+    label: &'static str,
+) -> Result<(), String> {
+    let byte_len = vertex_count
+        .checked_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize)
+        .ok_or_else(|| format!("scene {label} vertex byte length overflows"))?;
+    write_scene_uploaded_buffer_with(device, buffer, byte_len, label, |dst| {
+        let bytes = unsafe { std::slice::from_raw_parts_mut(dst, byte_len) };
+        patch_scene_sampled_image_animated_uvs_in_bytes(
+            bytes,
+            vertex_count,
+            animated_uv_steps,
+            elapsed_ms,
+        )
+    })
+}
+
+fn patch_scene_sampled_image_animated_uvs_in_bytes(
+    bytes: &mut [u8],
+    vertex_count: usize,
+    animated_uv_steps: &[SceneSampledImageAnimatedUvStep],
+    elapsed_ms: u64,
+) -> Result<(), String> {
+    scene_sampled_image_validate_animated_uv_steps(vertex_count, animated_uv_steps)?;
+    let expected_bytes = vertex_count
+        .checked_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize)
+        .ok_or_else(|| "scene sampled-image animated vertex byte length overflows".to_owned())?;
+    if bytes.len() < expected_bytes {
+        return Err(format!(
+            "scene sampled-image animated UV patch buffer has {} bytes, expected at least {}",
+            bytes.len(),
+            expected_bytes
+        ));
+    }
+    for animated_step in animated_uv_steps {
+        for (uv_index, vertex_index) in animated_step.vertex_indices.iter().enumerate() {
+            let vertex_offset = (*vertex_index as usize)
+                .checked_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize)
+                .and_then(|offset| {
+                    offset.checked_add(SCENE_FULL_SAMPLED_IMAGE_VERTEX_UV_OFFSET_BYTES)
+                })
+                .ok_or_else(|| {
+                    "scene sampled-image animated UV patch offset overflows".to_owned()
+                })?;
+            let uv_end = vertex_offset
+                .checked_add(SCENE_FULL_SAMPLED_IMAGE_VERTEX_UV_BYTES)
+                .ok_or_else(|| {
+                    "scene sampled-image animated UV patch end offset overflows".to_owned()
+                })?;
+            if uv_end > bytes.len() {
+                return Err(format!(
+                    "scene sampled-image animated UV patch range {vertex_offset}..{uv_end} exceeds buffer bytes {}",
+                    bytes.len()
+                ));
+            }
+            let uv = scene_sampled_image_animated_uv_at_elapsed(
+                animated_step.base_uvs[uv_index],
+                *animated_step,
+                elapsed_ms,
+            );
+            if !uv.into_iter().all(f32::is_finite) {
+                return Err(format!(
+                    "scene sampled-image animated UV for vertex {vertex_index} contains a non-finite value"
+                ));
+            }
+            let mut offset = vertex_offset;
+            for value in uv {
+                write_scene_f32_to_mapped(bytes.as_mut_ptr(), &mut offset, value);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_scene_f32_to_mapped(dst: *mut u8, offset: &mut usize, value: f32) {
+    let bytes = value.to_ne_bytes();
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), dst.add(*offset), bytes.len());
+    }
+    *offset += bytes.len();
+}
+
 fn update_scene_sampled_image_geometry_for_time(
     device: &Device,
     geometry: &VulkanaliaSceneSampledImageGeometryResources,
@@ -2717,7 +3945,7 @@ fn update_scene_sampled_image_geometry_for_time(
     if dynamic_payload.is_none() && !scene_sampled_image_geometry_is_animated(geometry) {
         return Ok(vertex.buffer);
     }
-    let vertex_bytes = if let Some(payload) = dynamic_payload {
+    if let Some(payload) = dynamic_payload {
         if payload.indices != geometry.indices {
             return Err("scene dynamic sampled-image geometry changed index topology".to_owned());
         }
@@ -2748,25 +3976,83 @@ fn update_scene_sampled_image_geometry_for_time(
         )?;
         return Ok(vertex.buffer);
     } else {
-        scene_sampled_image_vertex_bytes_for_time(
-            &geometry.base_vertices,
+        let expected_bytes = geometry.snapshot.vertex_buffer_bytes as usize;
+        let vertex_count = geometry.snapshot.vertex_count as usize;
+        let vertex_bytes = vertex_count
+            .checked_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize)
+            .ok_or_else(|| "scene sampled-image animated vertex bytes overflow".to_owned())?;
+        if vertex_bytes != expected_bytes {
+            return Err(format!(
+                "scene sampled-image animated vertex bytes {} did not match retained buffer bytes {}",
+                vertex_bytes, expected_bytes
+            ));
+        }
+        write_scene_sampled_image_animated_uvs_to_uploaded_buffer(
+            device,
+            vertex,
+            vertex_count,
             &geometry.animated_uv_steps,
             elapsed_ms,
-        )?
-    };
-    let expected_bytes = geometry.snapshot.vertex_buffer_bytes as usize;
-    if vertex_bytes.len() != expected_bytes {
+            "animated scene sampled-image vertex",
+        )?;
+    }
+    Ok(vertex.buffer)
+}
+
+fn update_scene_sampled_image_geometry_input_for_time(
+    device: &Device,
+    geometry: &VulkanaliaSceneSampledImageGeometryResources,
+    frame_slot: usize,
+    mut input: NativeVulkanVulkanaliaSceneSampledImageGeometryInput,
+    extent: vk::Extent2D,
+    scene_size: Option<SceneSize>,
+    scene_fit: FitMode,
+) -> Result<vk::Buffer, String> {
+    if geometry.vertex_buffers.is_empty() {
+        return Err("scene sampled-image geometry has no vertex buffers".to_owned());
+    }
+    if let Some(transform) = scene_viewport_transform(scene_size, scene_fit, extent) {
+        scene_sampled_image_apply_viewport(&mut input, transform);
+    }
+    if !input.sources.is_empty() && input.sources.len() != input.draw_steps.len() {
         return Err(format!(
-            "scene sampled-image animated vertex bytes {} did not match retained buffer bytes {}",
-            vertex_bytes.len(),
-            expected_bytes
+            "scene dynamic sampled-image source count {} did not match draw step count {}",
+            input.sources.len(),
+            input.draw_steps.len()
         ));
     }
-    write_scene_uploaded_buffer(
+    if input.indices != geometry.indices {
+        return Err("scene dynamic sampled-image geometry changed index topology".to_owned());
+    }
+    if input.sources != geometry.sources {
+        return Err("scene dynamic sampled-image geometry changed sampled sources".to_owned());
+    }
+    if !scene_sampled_image_draw_step_topology_matches(&input.draw_steps, &geometry.draw_steps) {
+        return Err("scene dynamic sampled-image geometry changed draw step topology".to_owned());
+    }
+    let expected_bytes = geometry.snapshot.vertex_buffer_bytes as usize;
+    let vertex_bytes = input
+        .vertices
+        .len()
+        .checked_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize)
+        .ok_or_else(|| "scene sampled-image dynamic vertex bytes overflow".to_owned())?;
+    if vertex_bytes != expected_bytes {
+        return Err(format!(
+            "scene sampled-image dynamic vertex bytes {} did not match retained buffer bytes {}",
+            vertex_bytes, expected_bytes
+        ));
+    }
+    let vertex = geometry
+        .vertex_buffers
+        .get(frame_slot % geometry.vertex_buffers.len())
+        .expect("scene sampled-image vertex buffer checked non-empty");
+    write_scene_sampled_image_vertices_to_uploaded_buffer(
         device,
         vertex,
-        &vertex_bytes,
-        "animated scene sampled-image vertex",
+        &input.vertices,
+        &[],
+        0,
+        "dynamic scene sampled-image vertex",
     )?;
     Ok(vertex.buffer)
 }
@@ -2797,23 +4083,29 @@ fn native_vulkan_scene_apply_elapsed_texture_regions(
     draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
     elapsed_ms: u64,
 ) -> Result<(), String> {
-    for animated_step in scene_sampled_image_animated_uv_steps(geometry_indices, draw_steps)? {
+    for animated_step in
+        scene_sampled_image_animated_uv_steps(vertices, geometry_indices, draw_steps)?
+    {
         let vertex_count = vertices.len();
-        for vertex_index in animated_step.vertex_indices {
-            let vertex = vertices.get_mut(vertex_index as usize).ok_or_else(|| {
+        for (uv_index, vertex_index) in animated_step.vertex_indices.iter().enumerate() {
+            let vertex = vertices.get_mut(*vertex_index as usize).ok_or_else(|| {
                 format!(
                     "scene sampled-image animated vertex index {vertex_index} exceeds vertex count {}",
                     vertex_count
                 )
             })?;
-            vertex.uv =
-                scene_sampled_image_animated_uv_at_elapsed(vertex.uv, animated_step, elapsed_ms);
+            vertex.uv = scene_sampled_image_animated_uv_at_elapsed(
+                animated_step.base_uvs[uv_index],
+                animated_step,
+                elapsed_ms,
+            );
         }
     }
     Ok(())
 }
 
 fn scene_sampled_image_animated_uv_steps(
+    vertices: &[NativeVulkanVulkanaliaSceneSampledImageVertex],
     geometry_indices: &[u32],
     draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
 ) -> Result<Vec<SceneSampledImageAnimatedUvStep>, String> {
@@ -2826,8 +4118,19 @@ fn scene_sampled_image_animated_uv_steps(
             continue;
         }
         let vertex_indices = scene_sampled_image_draw_step_unique_vertices(geometry_indices, step)?;
+        let mut base_uvs = [[0.0f32; 2]; 4];
+        for (uv_index, vertex_index) in vertex_indices.iter().enumerate() {
+            let vertex = vertices.get(*vertex_index as usize).ok_or_else(|| {
+                format!(
+                    "scene sampled-image animated vertex index {vertex_index} exceeds vertex count {}",
+                    vertices.len()
+                )
+            })?;
+            base_uvs[uv_index] = vertex.uv;
+        }
         animated_steps.push(SceneSampledImageAnimatedUvStep {
             vertex_indices,
+            base_uvs,
             texture_region,
         });
     }
@@ -2882,8 +4185,9 @@ fn scene_sampled_image_draw_steps_are_animated(
 fn scene_sampled_image_vertex_buffer_count(
     draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
     frame_resource_count: usize,
+    dynamic_geometry: bool,
 ) -> usize {
-    if scene_sampled_image_draw_steps_are_animated(draw_steps) {
+    if dynamic_geometry || scene_sampled_image_draw_steps_are_animated(draw_steps) {
         frame_resource_count.max(1)
     } else {
         1
@@ -2933,6 +4237,7 @@ fn create_scene_uploaded_buffer(
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
     payload: &[u8],
     usage: vk::BufferUsageFlags,
+    keep_mapped: bool,
     label: &'static str,
 ) -> Result<VulkanaliaSceneUploadedBuffer, String> {
     if payload.is_empty() {
@@ -2990,11 +4295,16 @@ fn create_scene_uploaded_buffer(
             return Err(err);
         }
 
+        let mapped_size = if keep_mapped {
+            memory_requirements.size
+        } else {
+            payload.len() as u64
+        };
         let map = match native_vulkan_vulkanalia_map_memory2(
             device,
             memory,
             0,
-            payload.len() as u64,
+            mapped_size,
             vk::MemoryMapFlags::empty(),
             label,
         ) {
@@ -3026,12 +4336,20 @@ fn create_scene_uploaded_buffer(
                 ));
             }
         }
-        native_vulkan_vulkanalia_unmap_memory2(device, memory, label)?;
+        let mapped_ptr = if keep_mapped {
+            Some(map)
+        } else {
+            native_vulkan_vulkanalia_unmap_memory2(device, memory, label)?;
+            None
+        };
 
         Ok(VulkanaliaSceneUploadedBuffer {
             buffer,
             memory,
             memory_type,
+            memory_size: memory_requirements.size,
+            mapped_ptr,
+            mapped_size,
         })
     })();
 
@@ -3044,6 +4362,9 @@ fn create_scene_uploaded_buffer(
 }
 
 fn destroy_scene_uploaded_buffer(device: &Device, buffer: VulkanaliaSceneUploadedBuffer) {
+    if buffer.mapped_ptr.is_some() {
+        let _ = native_vulkan_vulkanalia_unmap_memory2(device, buffer.memory, "scene upload");
+    }
     unsafe {
         device.destroy_buffer(buffer.buffer, None);
         device.free_memory(buffer.memory, None);
@@ -3723,6 +5044,43 @@ fn scene_geometry_index_bytes(
     Ok(bytes)
 }
 
+fn submit_scene_transfer_command_buffer2(
+    device: &Device,
+    queue: vk::Queue,
+    command_buffer: vk::CommandBuffer,
+    image_available: vk::Semaphore,
+    render_finished: vk::Semaphore,
+    fence: vk::Fence,
+) -> Result<(), String> {
+    let wait = vk::SemaphoreSubmitInfo::builder()
+        .semaphore(image_available)
+        .stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
+        .build();
+    let waits = [wait];
+    let command_buffer_info = vk::CommandBufferSubmitInfo::builder()
+        .command_buffer(command_buffer)
+        .build();
+    let command_buffer_infos = [command_buffer_info];
+    let signal = vk::SemaphoreSubmitInfo::builder()
+        .semaphore(render_finished)
+        .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+        .build();
+    let signals = [signal];
+    let submit_info = vk::SubmitInfo2::builder()
+        .wait_semaphore_infos(&waits)
+        .command_buffer_infos(&command_buffer_infos)
+        .signal_semaphore_infos(&signals)
+        .build();
+
+    unsafe {
+        device
+            .queue_submit2(queue, &[submit_info], fence)
+            .map_err(|err| format!("vkQueueSubmit2(vulkanalia scene transfer present): {err:?}"))?;
+    }
+
+    Ok(())
+}
+
 fn submit_scene_solid_quad_command_buffer2(
     device: &Device,
     queue: vk::Queue,
@@ -3794,6 +5152,20 @@ fn memory_property_flag_labels(flags: u32) -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scene_present_id_telemetry_retains_no_frame_ids_by_default() {
+        let mut telemetry = ScenePresentIdTelemetry::new();
+        for present_id in 1..=128 {
+            telemetry.push(Some(present_id));
+        }
+
+        let (head, tail) = telemetry.into_parts();
+
+        assert_eq!(SCENE_PRESENT_ID_TELEMETRY_RETAINED_FRAMES, 0);
+        assert!(head.is_empty());
+        assert!(tail.is_empty());
+    }
 
     #[test]
     fn solid_quad_vertices_cover_full_pixel_extent() {
@@ -4012,6 +5384,91 @@ mod tests {
     }
 
     #[test]
+    fn static_transfer_present_only_accepts_plain_static_single_image() {
+        assert!(scene_sampled_image_can_use_static_transfer_present(
+            &static_transfer_test_options(Some(FitMode::Cover), None, None)
+        ));
+        assert!(!scene_sampled_image_can_use_static_transfer_present(
+            &static_transfer_test_options(Some(FitMode::Tile), None, None)
+        ));
+        assert!(!scene_sampled_image_can_use_static_transfer_present(
+            &static_transfer_test_options(
+                Some(FitMode::Cover),
+                Some(scene_sampled_image_full_extent_geometry_input(
+                    vk::Extent2D {
+                        width: 100,
+                        height: 100,
+                    },
+                )),
+                None,
+            )
+        ));
+        assert!(!scene_sampled_image_can_use_static_transfer_present(
+            &static_transfer_test_options(
+                Some(FitMode::Cover),
+                None,
+                Some(Box::new(|_| {
+                    Ok(scene_sampled_image_full_extent_geometry_input(
+                        vk::Extent2D {
+                            width: 100,
+                            height: 100,
+                        },
+                    ))
+                })),
+            )
+        ));
+    }
+
+    #[test]
+    fn static_transfer_blit_region_preserves_fit_without_cpu_pixels() {
+        let source = vk::Extent2D {
+            width: 3840,
+            height: 2160,
+        };
+        let target = vk::Extent2D {
+            width: 1000,
+            height: 500,
+        };
+
+        let contain = scene_static_transfer_blit_region(FitMode::Contain, source, target).unwrap();
+        assert_eq!(
+            contain.src_offsets,
+            [
+                vk::Offset3D { x: 0, y: 0, z: 0 },
+                vk::Offset3D {
+                    x: 3840,
+                    y: 2160,
+                    z: 1,
+                }
+            ]
+        );
+        assert!(contain.clear_before_blit);
+        assert_eq!(contain.dst_offsets[0], vk::Offset3D { x: 55, y: 0, z: 0 });
+        assert_eq!(
+            contain.dst_offsets[1],
+            vk::Offset3D {
+                x: 944,
+                y: 500,
+                z: 1,
+            }
+        );
+
+        let cover = scene_static_transfer_blit_region(FitMode::Cover, source, target).unwrap();
+        assert!(!cover.clear_before_blit);
+        assert_eq!(cover.dst_offsets[0], vk::Offset3D { x: 0, y: 0, z: 0 });
+        assert_eq!(
+            cover.dst_offsets[1],
+            vk::Offset3D {
+                x: 1000,
+                y: 500,
+                z: 1,
+            }
+        );
+        assert_eq!(cover.src_offsets[0].x % 4, 0);
+        assert_eq!(cover.src_offsets[0].y % 4, 0);
+    }
+
+    #[test]
     fn sampled_image_scene_viewport_cover_centers_scene_space_payload() {
         let input = NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new(
             vec![
@@ -4146,6 +5603,68 @@ mod tests {
     }
 
     #[test]
+    fn animated_atlas_updates_only_uv_bytes_without_retaining_base_vertices() {
+        let vertices = vec![
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new([40.0, 20.0], [0.0, 0.0], 0.5),
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+                [140.0, 20.0],
+                [1.0 / 3.0, 0.0],
+                0.5,
+            ),
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new([40.0, 120.0], [0.0, 0.25], 0.5),
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+                [140.0, 120.0],
+                [1.0 / 3.0, 0.25],
+                0.5,
+            ),
+        ];
+        let indices = vec![0, 1, 2, 2, 1, 3];
+        let draw_steps = vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+            layer_index: 7,
+            resource_index: 0,
+            first_index: 0,
+            index_count: 6,
+            fit: Some(FitMode::Cover),
+            texture_region: Some(SceneTextureRegion {
+                u_min: 0.0,
+                v_min: 0.0,
+                u_max: 1.0 / 3.0,
+                v_max: 0.25,
+                frame_index: 0,
+                frame_count: 12,
+                columns: 3,
+                rows: 4,
+                fps: Some(12.0),
+                loop_playback: true,
+            }),
+        }];
+        let animated_steps =
+            scene_sampled_image_animated_uv_steps(&vertices, &indices, &draw_steps).unwrap();
+        let vertex_bytes = scene_sampled_image_vertex_bytes(&vertices).unwrap();
+        let mut bytes = vertex_bytes.to_vec();
+
+        patch_scene_sampled_image_animated_uvs_in_bytes(
+            &mut bytes,
+            vertices.len(),
+            &animated_steps,
+            417,
+        )
+        .unwrap();
+
+        assert_close(read_f32(&bytes, 0), 40.0);
+        assert_close(read_f32(&bytes, 4), 20.0);
+        assert_close(read_f32(&bytes, 8), 2.0 / 3.0);
+        assert_close(read_f32(&bytes, 12), 0.25);
+        assert_close(read_f32(&bytes, 16), 0.5);
+        let fourth = 3 * SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize;
+        assert_close(read_f32(&bytes, fourth), 140.0);
+        assert_close(read_f32(&bytes, fourth + 4), 120.0);
+        assert_close(read_f32(&bytes, fourth + 8), 1.0);
+        assert_close(read_f32(&bytes, fourth + 12), 0.5);
+        assert_close(read_f32(&bytes, fourth + 16), 0.5);
+    }
+
+    #[test]
     fn sampled_image_vertex_buffer_count_uses_frame_slots_only_for_animated_atlas() {
         let static_steps = [NativeVulkanVulkanaliaSceneSampledImageDrawStep {
             layer_index: 0,
@@ -4171,13 +5690,20 @@ mod tests {
             ..static_steps[0]
         }];
 
-        assert_eq!(scene_sampled_image_vertex_buffer_count(&static_steps, 3), 1);
         assert_eq!(
-            scene_sampled_image_vertex_buffer_count(&animated_steps, 3),
+            scene_sampled_image_vertex_buffer_count(&static_steps, 3, false),
+            1
+        );
+        assert_eq!(
+            scene_sampled_image_vertex_buffer_count(&static_steps, 3, true),
             3
         );
         assert_eq!(
-            scene_sampled_image_vertex_buffer_count(&animated_steps, 0),
+            scene_sampled_image_vertex_buffer_count(&animated_steps, 3, false),
+            3
+        );
+        assert_eq!(
+            scene_sampled_image_vertex_buffer_count(&animated_steps, 0, false),
             1
         );
     }
@@ -4187,6 +5713,14 @@ mod tests {
             (actual - expected).abs() < 0.001,
             "expected {actual} to be within 0.001 of {expected}"
         );
+    }
+
+    fn read_f32(bytes: &[u8], offset: usize) -> f32 {
+        f32::from_ne_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("test f32 byte range"),
+        )
     }
 
     fn assert_close_f64(actual: f64, expected: f64) {
@@ -4352,5 +5886,32 @@ mod tests {
         .unwrap();
 
         assert_eq!(selected.index, 1);
+    }
+
+    fn static_transfer_test_options(
+        fit: Option<FitMode>,
+        geometry: Option<NativeVulkanVulkanaliaSceneSampledImageGeometryInput>,
+        dynamic_geometry: Option<NativeVulkanVulkanaliaSceneSampledImageDynamicGeometry>,
+    ) -> NativeVulkanVulkanaliaSceneSampledImagePresentOptions {
+        NativeVulkanVulkanaliaSceneSampledImagePresentOptions {
+            host: NativeWaylandHostOptions::default(),
+            wait_configure_roundtrips: 0,
+            duration: Duration::ZERO,
+            target_max_fps: None,
+            source: PathBuf::from("/tmp/static.gtex"),
+            clear_color: NativeVulkanClearColor {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            },
+            fit,
+            solid_geometry: None,
+            geometry,
+            dynamic_solid_geometry: None,
+            dynamic_geometry,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+        }
     }
 }

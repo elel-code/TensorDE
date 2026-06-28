@@ -12327,6 +12327,7 @@ mod tests {
                     font_weight: None,
                     text_align: None,
                     path_data: None,
+                    path_fill_rule: crate::core::ScenePathFillRule::default(),
                     fit: FitMode::Cover,
                     opacity: 0.75,
                     transform: crate::core::SceneTransform {

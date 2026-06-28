@@ -160,15 +160,13 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         let memory_requirements = unsafe { device.get_image_memory_requirements(image) };
         let memory_type_candidates =
             native_vulkan_vulkanalia_memory_type_candidates(memory_properties);
-        let memory_type = native_vulkan_vulkanalia_image_memory_type_index_excluding(
+        let memory_type = native_vulkan_vulkanalia_video_image_memory_type_index(
             &memory_type_candidates,
             memory_requirements.memory_type_bits,
-            DEVICE_LOCAL_MEMORY_FLAG_BITS,
-            HOST_VISIBLE_MEMORY_FLAG_BITS,
         )
         .ok_or_else(|| {
             format!(
-                "video session resource image requires device-local non-host-visible memory for bits 0x{:08x}",
+                "video session resource image has no driver-allowed memory type for bits 0x{:08x}",
                 memory_requirements.memory_type_bits
             )
         })?;
@@ -354,7 +352,35 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destr
     }
 }
 
-fn native_vulkan_vulkanalia_image_memory_type_index_excluding(
+fn native_vulkan_vulkanalia_video_image_memory_type_index(
+    memory_types: &[NativeVulkanVulkanaliaMemoryTypeCandidate],
+    allowed_memory_type_bits: u32,
+) -> Option<NativeVulkanVulkanaliaMemoryTypeCandidate> {
+    native_vulkan_vulkanalia_image_memory_type_index_matching(
+        memory_types,
+        allowed_memory_type_bits,
+        DEVICE_LOCAL_MEMORY_FLAG_BITS,
+        HOST_VISIBLE_MEMORY_FLAG_BITS,
+    )
+    .or_else(|| {
+        native_vulkan_vulkanalia_image_memory_type_index_matching(
+            memory_types,
+            allowed_memory_type_bits,
+            DEVICE_LOCAL_MEMORY_FLAG_BITS,
+            0,
+        )
+    })
+    .or_else(|| {
+        native_vulkan_vulkanalia_image_memory_type_index_matching(
+            memory_types,
+            allowed_memory_type_bits,
+            0,
+            0,
+        )
+    })
+}
+
+fn native_vulkan_vulkanalia_image_memory_type_index_matching(
     memory_types: &[NativeVulkanVulkanaliaMemoryTypeCandidate],
     allowed_memory_type_bits: u32,
     required_property_flags_bits: u32,
@@ -460,19 +486,14 @@ mod tests {
             },
         ];
 
-        let selected = native_vulkan_vulkanalia_image_memory_type_index_excluding(
-            &memory_types,
-            0b11,
-            DEVICE_LOCAL_MEMORY_FLAG_BITS,
-            HOST_VISIBLE_MEMORY_FLAG_BITS,
-        )
-        .expect("device local memory type");
+        let selected = native_vulkan_vulkanalia_video_image_memory_type_index(&memory_types, 0b11)
+            .expect("device local memory type");
 
         assert_eq!(selected.index, 1);
     }
 
     #[test]
-    fn image_memory_type_selection_rejects_host_visible_device_local() {
+    fn image_memory_type_selection_accepts_driver_allowed_host_visible_device_local() {
         let memory_types = vec![
             NativeVulkanVulkanaliaMemoryTypeCandidate {
                 index: 0,
@@ -486,23 +507,12 @@ mod tests {
             },
         ];
 
-        let selected = native_vulkan_vulkanalia_image_memory_type_index_excluding(
-            &memory_types,
-            0b11,
-            DEVICE_LOCAL_MEMORY_FLAG_BITS,
-            HOST_VISIBLE_MEMORY_FLAG_BITS,
-        )
-        .expect("non-host-visible device local memory type");
+        let selected = native_vulkan_vulkanalia_video_image_memory_type_index(&memory_types, 0b11)
+            .expect("non-host-visible device local memory type");
 
         assert_eq!(selected.index, 1);
-        assert!(
-            native_vulkan_vulkanalia_image_memory_type_index_excluding(
-                &memory_types,
-                0b01,
-                DEVICE_LOCAL_MEMORY_FLAG_BITS,
-                HOST_VISIBLE_MEMORY_FLAG_BITS,
-            )
-            .is_none()
-        );
+        let bar_only = native_vulkan_vulkanalia_video_image_memory_type_index(&memory_types, 0b01)
+            .expect("driver-allowed host-visible device-local image memory");
+        assert_eq!(bar_only.index, 0);
     }
 }

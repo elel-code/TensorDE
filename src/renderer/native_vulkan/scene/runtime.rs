@@ -2,12 +2,15 @@ use serde::Serialize;
 use std::path::PathBuf;
 
 use crate::core::{
-    FitMode, SceneSize, SceneSystemStatus, SceneTextAlign, SceneTextureRegion, SceneTransform,
+    FitMode, ScenePathFillRule, SceneSize, SceneSystemStatus, SceneTextAlign, SceneTextureRegion,
+    SceneTransform,
 };
+use crate::renderer::SceneRenderLayer;
 
 use super::super::present::render_item::NativeVulkanRenderItem;
-use super::super::present::render_plan::NativeVulkanSceneDrawPlan;
-use super::super::present::render_plan::native_vulkan_scene_draw_plan;
+use super::super::present::render_plan::{
+    NativeVulkanSceneDrawPlan, native_vulkan_scene_draw_plan,
+};
 use super::super::vulkan::{
     NativeVulkanVulkanaliaSceneDrawPassInput, NativeVulkanVulkanaliaSceneDrawPassSnapshot,
     NativeVulkanVulkanaliaSceneSampledImageDrawStep,
@@ -19,7 +22,11 @@ use super::super::vulkan::{
     native_vulkan_vulkanalia_scene_draw_pass_snapshot,
     native_vulkan_vulkanalia_scene_sampled_image_plan,
 };
-use super::draw_pass::native_vulkan_scene_draw_pass_plan;
+use super::draw_pass::{
+    native_vulkan_scene_draw_pass_plan, native_vulkan_scene_render_layer_is_clear,
+    native_vulkan_scene_sampled_image_geometry_from_render_layer,
+    native_vulkan_scene_solid_geometry_from_render_layer,
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneRuntimeSnapshot {
@@ -152,6 +159,12 @@ pub struct NativeVulkanFullSceneRuntimeSnapshot {
     pub unsupported_scene_features: Vec<String>,
     pub completed_boundaries: Vec<&'static str>,
     pub pending_boundaries: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneSampledGeometryInputs {
+    pub solid_geometry: Option<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput>,
+    pub sampled_geometry: NativeVulkanVulkanaliaSceneSampledImageGeometryInput,
 }
 
 impl NativeVulkanSceneRuntimeSnapshot {
@@ -323,6 +336,181 @@ impl NativeVulkanSceneRuntimeSnapshot {
     }
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_solid_quad_geometry_input_from_layers(
+    snapshot_time_ms: u64,
+    scene_size: Option<SceneSize>,
+    scene_fit: FitMode,
+    layers: &[SceneRenderLayer],
+) -> Result<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput, String> {
+    let _ = (snapshot_time_ms, scene_size, scene_fit);
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let mut draw_steps = Vec::new();
+    let mut recordable_layer_count = 0usize;
+
+    for (layer_index, layer) in layers.iter().enumerate() {
+        if layer.opacity <= 0.0 || native_vulkan_scene_render_layer_is_clear(layer) {
+            continue;
+        }
+        recordable_layer_count = recordable_layer_count.saturating_add(1);
+        let Some((solid_vertices, solid_indices)) =
+            native_vulkan_scene_solid_geometry_from_render_layer(layer_index, layer).map_err(
+                |reason| format!("dynamic scene is not solid-quad recordable: {reason}"),
+            )?
+        else {
+            continue;
+        };
+        let first_vertex = vertices.len().min(u32::MAX as usize) as u32;
+        let first_index = indices.len().min(u32::MAX as usize) as u32;
+        let index_count = solid_indices.len().min(u32::MAX as usize) as u32;
+        draw_steps.push(NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+            layer_index,
+            first_index,
+            index_count,
+        });
+        vertices.extend(solid_vertices.into_iter().map(|vertex| {
+            NativeVulkanVulkanaliaSceneSolidQuadVertex::new(vertex.position, vertex.rgba)
+        }));
+        indices.extend(
+            solid_indices
+                .into_iter()
+                .map(|index| first_vertex.saturating_add(index)),
+        );
+    }
+
+    if draw_steps.is_empty() || vertices.is_empty() || indices.is_empty() {
+        return Err("dynamic solid scene produced no quad geometry".to_owned());
+    }
+    if draw_steps.len() != recordable_layer_count {
+        return Err(
+            "dynamic scene is not solid-quad recordable: partial-solid-quad-recording-ready"
+                .to_owned(),
+        );
+    }
+    Ok(
+        NativeVulkanVulkanaliaSceneSolidQuadGeometryInput::new_batched(
+            vertices,
+            indices,
+            draw_steps,
+            "scene-runtime-direct-solid-draw-plan",
+        ),
+    )
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_inputs_from_layers(
+    snapshot_time_ms: u64,
+    scene_size: Option<SceneSize>,
+    scene_fit: FitMode,
+    layers: &[SceneRenderLayer],
+) -> Result<NativeVulkanSceneSampledGeometryInputs, String> {
+    let _ = (snapshot_time_ms, scene_size, scene_fit);
+    let mut solid_vertices = Vec::new();
+    let mut solid_indices = Vec::new();
+    let mut solid_draw_steps = Vec::new();
+    let mut sampled_vertices = Vec::new();
+    let mut sampled_indices = Vec::new();
+    let mut sampled_sources = Vec::new();
+    let mut sampled_draw_steps = Vec::new();
+
+    for (layer_index, layer) in layers.iter().enumerate() {
+        if layer.opacity <= 0.0 || native_vulkan_scene_render_layer_is_clear(layer) {
+            continue;
+        }
+        if layer.kind == crate::core::SceneNodeKind::Image {
+            let Some((source, fit, texture_region, vertices)) =
+                native_vulkan_scene_sampled_image_geometry_from_render_layer(layer_index, layer)
+                    .map_err(|reason| {
+                        format!("dynamic scene is not sampled-image recordable: {reason}")
+                    })?
+            else {
+                continue;
+            };
+            let resource_index = sampled_sources.len().min(u32::MAX as usize) as u32;
+            let first_vertex = sampled_vertices.len().min(u32::MAX as usize) as u32;
+            let first_index = sampled_indices.len().min(u32::MAX as usize) as u32;
+            sampled_draw_steps.push(NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                layer_index,
+                resource_index,
+                first_index,
+                index_count: 6,
+                fit: Some(fit),
+                texture_region,
+            });
+            sampled_sources.push(source);
+            sampled_vertices.extend(vertices.into_iter().map(|vertex| {
+                NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+                    vertex.position,
+                    vertex.uv,
+                    vertex.opacity,
+                )
+            }));
+            sampled_indices.extend_from_slice(&[
+                first_vertex,
+                first_vertex + 1,
+                first_vertex + 2,
+                first_vertex + 2,
+                first_vertex + 1,
+                first_vertex + 3,
+            ]);
+        } else {
+            let Some((vertices, indices)) = native_vulkan_scene_solid_geometry_from_render_layer(
+                layer_index,
+                layer,
+            )
+            .map_err(|reason| {
+                format!("dynamic mixed sampled scene is not solid-quad recordable: {reason}")
+            })?
+            else {
+                continue;
+            };
+            let first_vertex = solid_vertices.len().min(u32::MAX as usize) as u32;
+            let first_index = solid_indices.len().min(u32::MAX as usize) as u32;
+            let index_count = indices.len().min(u32::MAX as usize) as u32;
+            solid_draw_steps.push(NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                layer_index,
+                first_index,
+                index_count,
+            });
+            solid_vertices.extend(vertices.into_iter().map(|vertex| {
+                NativeVulkanVulkanaliaSceneSolidQuadVertex::new(vertex.position, vertex.rgba)
+            }));
+            solid_indices.extend(
+                indices
+                    .into_iter()
+                    .map(|index| first_vertex.saturating_add(index)),
+            );
+        }
+    }
+
+    if sampled_draw_steps.is_empty() || sampled_vertices.is_empty() || sampled_indices.is_empty() {
+        return Err("dynamic sampled-image scene produced no sampled geometry".to_owned());
+    }
+    let sampled_geometry = NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched(
+        sampled_vertices,
+        sampled_indices,
+        sampled_sources,
+        sampled_draw_steps,
+        "scene-runtime-direct-sampled-image-draw-plan",
+    );
+    let solid_geometry =
+        if solid_draw_steps.is_empty() || solid_vertices.is_empty() || solid_indices.is_empty() {
+            None
+        } else {
+            Some(
+                NativeVulkanVulkanaliaSceneSolidQuadGeometryInput::new_batched(
+                    solid_vertices,
+                    solid_indices,
+                    solid_draw_steps,
+                    "scene-runtime-direct-mixed-solid-quad-draw-plan",
+                ),
+            )
+        };
+    Ok(NativeVulkanSceneSampledGeometryInputs {
+        solid_geometry,
+        sampled_geometry,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneDrawOpSnapshot {
     pub layer_index: usize,
@@ -343,6 +531,7 @@ pub struct NativeVulkanSceneDrawOpSnapshot {
     pub font_weight: Option<String>,
     pub text_align: Option<SceneTextAlign>,
     pub path_data: Option<String>,
+    pub path_fill_rule: ScenePathFillRule,
     pub fit: FitMode,
     pub transform: SceneTransform,
 }
@@ -367,6 +556,8 @@ pub struct NativeVulkanSceneRecordableQuadSnapshot {
     pub font_family: Option<String>,
     pub font_weight: Option<String>,
     pub text_align: Option<SceneTextAlign>,
+    pub path_data: Option<String>,
+    pub path_fill_rule: ScenePathFillRule,
     pub transform: SceneTransform,
 }
 
@@ -535,6 +726,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 font_family: quad.font_family,
                 font_weight: quad.font_weight,
                 text_align: quad.text_align,
+                path_data: quad.path_data,
+                path_fill_rule: quad.path_fill_rule,
                 transform: quad.transform,
             })
             .collect(),
@@ -668,6 +861,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 font_weight: op.font_weight,
                 text_align: op.text_align,
                 path_data: op.path_data,
+                path_fill_rule: op.path_fill_rule,
                 fit: op.fit,
                 transform: op.transform,
             })
@@ -875,6 +1069,30 @@ fn native_vulkan_full_scene_runtime_snapshot(
                     .is_some_and(native_vulkan_scene_path_uses_compound_subpaths)
         })
         .count();
+    let compound_nonzero_path_layer_count = pass_plan
+        .recordable_quads
+        .iter()
+        .filter(|quad| {
+            quad.kind == "path"
+                && quad.path_fill_rule == ScenePathFillRule::Nonzero
+                && quad
+                    .path_data
+                    .as_deref()
+                    .is_some_and(native_vulkan_scene_path_uses_compound_subpaths)
+        })
+        .count();
+    let compound_evenodd_path_layer_count = pass_plan
+        .recordable_quads
+        .iter()
+        .filter(|quad| {
+            quad.kind == "path"
+                && quad.path_fill_rule == ScenePathFillRule::Evenodd
+                && quad
+                    .path_data
+                    .as_deref()
+                    .is_some_and(native_vulkan_scene_path_uses_compound_subpaths)
+        })
+        .count();
     let text_geometry_layer_count = pass_plan
         .quad_recording_steps
         .iter()
@@ -992,8 +1210,11 @@ fn native_vulkan_full_scene_runtime_snapshot(
     if arc_path_layer_count > 0 {
         completed_boundaries.push("arc-path-flattening-runtime");
     }
-    if compound_path_layer_count > 0 {
+    if compound_evenodd_path_layer_count > 0 {
         completed_boundaries.push("compound-path-evenodd-fill-runtime");
+    }
+    if compound_nonzero_path_layer_count > 0 {
+        completed_boundaries.push("compound-path-nonzero-fill-runtime");
     }
     if text_geometry_layer_count > 0 {
         completed_boundaries.push("deterministic-text-glyph-geometry-runtime");
@@ -1181,7 +1402,8 @@ fn native_vulkan_scene_resource_model(backend_status: &str, video_op_count: usiz
 mod tests {
     use super::*;
     use crate::core::{
-        FitMode, SceneNodeKind, SceneSystemStatus, SceneSystems, SceneTextAlign, SceneTransform,
+        FitMode, SceneNodeKind, ScenePathFillRule, SceneSystemStatus, SceneSystems, SceneTextAlign,
+        SceneTransform,
     };
     use crate::renderer::native_vulkan::NativeVulkanRenderItem;
     use crate::renderer::{SceneDisplayPlan, SceneRenderAudioCue, SceneRenderLayer};
@@ -1206,6 +1428,7 @@ mod tests {
             font_weight: None,
             text_align: None,
             path_data: None,
+            path_fill_rule: ScenePathFillRule::default(),
             fit: FitMode::Cover,
             opacity: 1.0,
             transform: SceneTransform::default(),
@@ -2376,6 +2599,7 @@ mod tests {
         let mut path = scene_test_layer("compound", SceneNodeKind::Path);
         path.path_data =
             Some("M0 0 L100 0 L100 100 L0 100 Z M25 25 L75 25 L75 75 L25 75 Z".to_owned());
+        path.path_fill_rule = ScenePathFillRule::Evenodd;
         path.color = Some("#22aa88".to_owned());
         let item = scene_test_item(vec![path], None);
 
@@ -2407,6 +2631,39 @@ mod tests {
         assert_eq!(solid_geometry.draw_steps.len(), 1);
         assert_eq!(solid_geometry.vertices.len(), 16);
         assert_eq!(solid_geometry.indices.len(), 24);
+    }
+
+    #[test]
+    fn scene_runtime_snapshot_counts_nonzero_path_fill_coverage() {
+        let mut path = scene_test_layer("compound-nonzero", SceneNodeKind::Path);
+        path.path_data =
+            Some("M0 0 L100 0 L100 100 L0 100 Z M25 25 L75 25 L75 75 L25 75 Z".to_owned());
+        path.path_fill_rule = ScenePathFillRule::Nonzero;
+        path.color = Some("#22aa88".to_owned());
+        let item = scene_test_item(vec![path], None);
+
+        let mut snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+        let solid_geometry = snapshot
+            .take_vulkanalia_solid_quad_geometry_input()
+            .expect("compound nonzero path solid geometry");
+
+        assert!(snapshot.draw_pass_backend_ready);
+        assert_eq!(snapshot.full_scene.compound_path_layer_count, 1);
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"compound-path-nonzero-fill-runtime")
+        );
+        assert!(
+            !snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"compound-path-evenodd-fill-runtime")
+        );
+        assert_eq!(solid_geometry.draw_steps.len(), 1);
+        assert_eq!(solid_geometry.vertices.len(), 12);
+        assert_eq!(solid_geometry.indices.len(), 18);
     }
 
     #[test]
@@ -2508,5 +2765,72 @@ mod tests {
         assert!(snapshot.scene_sampled_image_descriptor_heap_required);
         assert_eq!(snapshot.vulkanalia_sampled_image.sampled_image_count, 2);
         assert_eq!(snapshot.vulkanalia_sampled_image.draw_indexed_count, 2);
+    }
+
+    #[test]
+    fn dynamic_sampled_geometry_builds_directly_from_render_layers() {
+        let mut panel = scene_test_layer("panel", SceneNodeKind::Rectangle);
+        panel.color = Some("#102030".to_owned());
+        panel.width = Some(320.0);
+        panel.height = Some(180.0);
+        let mut atlas = scene_test_layer("atlas", SceneNodeKind::Image);
+        atlas.source = Some(PathBuf::from("/tmp/atlas.gtex"));
+        atlas.fit = FitMode::Tile;
+        atlas.width = Some(128.0);
+        atlas.height = Some(64.0);
+        atlas.texture_region = Some(SceneTextureRegion {
+            u_min: 0.0,
+            v_min: 0.0,
+            u_max: 0.25,
+            v_max: 0.5,
+            frame_index: 0,
+            frame_count: 8,
+            columns: 4,
+            rows: 2,
+            fps: Some(12.0),
+            loop_playback: true,
+        });
+
+        let geometry = native_vulkan_scene_sampled_geometry_inputs_from_layers(
+            120,
+            None,
+            FitMode::Cover,
+            &[panel, atlas],
+        )
+        .expect("direct dynamic sampled geometry");
+
+        let solid_geometry = geometry
+            .solid_geometry
+            .expect("mixed solid geometry is retained");
+        assert_eq!(
+            solid_geometry.source_label,
+            "scene-runtime-direct-mixed-solid-quad-draw-plan"
+        );
+        assert_eq!(solid_geometry.vertices.len(), 4);
+        assert_eq!(solid_geometry.indices, vec![0, 1, 2, 2, 1, 3]);
+        assert_eq!(
+            geometry.sampled_geometry.source_label,
+            "scene-runtime-direct-sampled-image-draw-plan"
+        );
+        assert_eq!(
+            geometry.sampled_geometry.sources,
+            vec![PathBuf::from("/tmp/atlas.gtex")]
+        );
+        assert_eq!(geometry.sampled_geometry.draw_steps.len(), 1);
+        assert_eq!(geometry.sampled_geometry.draw_steps[0].layer_index, 1);
+        assert_eq!(geometry.sampled_geometry.draw_steps[0].resource_index, 0);
+        assert_eq!(
+            geometry.sampled_geometry.draw_steps[0].fit,
+            Some(FitMode::Tile)
+        );
+        assert_eq!(
+            geometry.sampled_geometry.draw_steps[0]
+                .texture_region
+                .expect("texture region")
+                .frame_count,
+            8
+        );
+        assert_eq!(geometry.sampled_geometry.vertices.len(), 4);
+        assert_eq!(geometry.sampled_geometry.indices, vec![0, 1, 2, 2, 1, 3]);
     }
 }

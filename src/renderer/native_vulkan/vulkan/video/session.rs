@@ -436,15 +436,13 @@ fn native_vulkan_vulkanalia_video_session_memory_bind_plan(
         ));
     }
 
-    let selected_memory_type = native_vulkan_vulkanalia_memory_type_index_excluding(
+    let selected_memory_type = native_vulkan_vulkanalia_video_memory_type_index(
         memory_types,
         memory_requirements.memory_type_bits,
-        DEVICE_LOCAL_MEMORY_FLAG_BITS,
-        HOST_VISIBLE_MEMORY_FLAG_BITS,
     )
     .ok_or_else(|| {
         format!(
-            "video session memory bind {} requires device-local non-host-visible memory for bits 0x{:08x}",
+            "video session memory bind {} has no driver-allowed memory type for bits 0x{:08x}",
             requirement.memory_bind_index, memory_requirements.memory_type_bits
         )
     })?;
@@ -466,7 +464,35 @@ fn native_vulkan_vulkanalia_video_session_memory_bind_plan(
     })
 }
 
-fn native_vulkan_vulkanalia_memory_type_index_excluding(
+fn native_vulkan_vulkanalia_video_memory_type_index(
+    memory_types: &[NativeVulkanVulkanaliaMemoryTypeCandidate],
+    allowed_memory_type_bits: u32,
+) -> Option<NativeVulkanVulkanaliaMemoryTypeCandidate> {
+    native_vulkan_vulkanalia_memory_type_index_matching(
+        memory_types,
+        allowed_memory_type_bits,
+        DEVICE_LOCAL_MEMORY_FLAG_BITS,
+        HOST_VISIBLE_MEMORY_FLAG_BITS,
+    )
+    .or_else(|| {
+        native_vulkan_vulkanalia_memory_type_index_matching(
+            memory_types,
+            allowed_memory_type_bits,
+            DEVICE_LOCAL_MEMORY_FLAG_BITS,
+            0,
+        )
+    })
+    .or_else(|| {
+        native_vulkan_vulkanalia_memory_type_index_matching(
+            memory_types,
+            allowed_memory_type_bits,
+            0,
+            0,
+        )
+    })
+}
+
+fn native_vulkan_vulkanalia_memory_type_index_matching(
     memory_types: &[NativeVulkanVulkanaliaMemoryTypeCandidate],
     allowed_memory_type_bits: u32,
     required_property_flags_bits: u32,
@@ -712,18 +738,27 @@ mod tests {
     }
 
     #[test]
-    fn memory_bind_plans_reject_host_visible_compatible_type() {
+    fn memory_bind_plans_accept_driver_allowed_host_visible_device_local_type() {
         let requirements = vec![memory_requirement(1, 4096, 128, 0b010)];
         let memory_types = vec![
             memory_type_candidate(0, vk::MemoryPropertyFlags::DEVICE_LOCAL),
-            memory_type_candidate(1, vk::MemoryPropertyFlags::HOST_VISIBLE),
+            memory_type_candidate(
+                1,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE,
+            ),
         ];
 
-        let err =
+        let plans =
             native_vulkan_vulkanalia_video_session_memory_bind_plans(&requirements, &memory_types)
-                .expect_err("host-visible session memory must fail");
+                .expect("driver allowed BAR-style video session memory must be accepted");
 
-        assert!(err.contains("requires device-local non-host-visible memory"));
+        assert_eq!(plans[0].selected_memory_type_index, 1);
+        assert!(plans[0].preferred_device_local);
+        assert!(
+            plans[0]
+                .selected_memory_property_flags
+                .contains(&"host-visible")
+        );
     }
 
     #[test]
@@ -745,7 +780,7 @@ mod tests {
             &memory_types,
         )
         .expect_err("missing type must fail");
-        assert!(missing_type.contains("requires device-local non-host-visible memory"));
+        assert!(missing_type.contains("has no driver-allowed memory type"));
     }
 
     #[test]

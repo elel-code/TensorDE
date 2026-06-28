@@ -130,6 +130,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
             font_weight: None,
             text_align: None,
             path_data: None,
+            path_fill_rule: crate::core::ScenePathFillRule::default(),
             fit: plan.fit,
             opacity: 1.0,
             transform: SceneTransform::default(),
