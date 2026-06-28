@@ -4750,6 +4750,10 @@ fn scene_full_scene_status(
                         .converted_features
                         .iter()
                         .any(|feature| feature == "native-scene-controller-idle-input-source");
+                    let idle_fade_ramp_ready = report
+                        .converted_features
+                        .iter()
+                        .any(|feature| feature == "native-scene-controller-idle-fade-ramp");
                     let controller_input_pending =
                         report.converted_features.iter().any(|feature| {
                             feature == "native-scene-controller-external-input-source-required"
@@ -4762,6 +4766,12 @@ fn scene_full_scene_status(
                         push_unique(
                             &mut status.completed_boundaries,
                             "scene-idle-controller-input-source",
+                        );
+                    }
+                    if idle_fade_ramp_ready {
+                        push_unique(
+                            &mut status.completed_boundaries,
+                            "scene-controller-fade-ramp-runtime",
                         );
                     }
                     if controller_input_pending || !idle_controller_ready {
@@ -4843,6 +4853,12 @@ fn scene_lower_pending_controllers(nodes: &mut [Value], context: &mut SceneDocum
             push_unique(
                 &mut context.converted_features,
                 "native-scene-controller-idle-input-source",
+            );
+        }
+        if controller.uses_native_idle_fade_ramp() {
+            push_unique(
+                &mut context.converted_features,
+                "native-scene-controller-idle-fade-ramp",
             );
         }
         if controller.requires_external_input_source() {

@@ -5,19 +5,25 @@ pub mod native_vulkan;
 #[cfg(feature = "native-wayland-renderer")]
 pub mod native_wayland;
 mod scene_display;
+mod scene_runtime;
 
 use self::scene_display::{
     scene_background_color, scene_direct_display_color, scene_direct_display_image,
     scene_layer_is_snapshot_renderable,
 };
+#[cfg(test)]
+use self::scene_runtime::scene_audio_response_property_value;
+use self::scene_runtime::{
+    scene_property_value, scene_render_property_value, scene_runtime_property_value,
+};
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
-use crate::core::manifest::{Manifest, PropertySpec, Variant};
+use crate::core::manifest::{Manifest, Variant};
 use crate::core::scene::{SceneEffect, SceneSnapshotLayer};
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
-    SceneAudioCue, SceneDocument, SceneNode, SceneNodeKind, ScenePathFillRule, SceneResource,
-    SceneResourceKind, SceneSize, SceneSystemStatus, SceneSystems, SceneTextAlign,
-    SceneTextureRegion, SceneTransform, Transition, WallpaperEntry, WallpaperPackage,
+    SceneAudioCue, SceneDocument, SceneNodeKind, ScenePathFillRule, SceneResource,
+    SceneResourceKind, SceneSize, SceneSystems, SceneTextAlign, SceneTextureRegion, SceneTransform,
+    Transition, WallpaperEntry, WallpaperPackage,
 };
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot, PowerState};
 use crate::policy::{PerformanceDecision, RenderMode};
@@ -232,9 +238,7 @@ pub fn scene_wallpaper_plan_from_gscene_path_with_properties(
 ) -> Result<SceneWallpaperPlan, RendererPlanError> {
     let document = load_scene_document(&source_path)?;
     let snapshot = document.snapshot_at_with_property_resolver(snapshot_time_ms, |property| {
-        render_properties
-            .and_then(|properties| properties.get(property))
-            .and_then(scene_json_property_number)
+        scene_render_property_value(property, render_properties)
             .or_else(|| scene_runtime_property_value(&document, snapshot_time_ms, property))
     });
     let layers = scene_render_layers_from_snapshot(package_root, &document, snapshot.layers)?;
@@ -2045,178 +2049,6 @@ fn scene_timeline_animated_layer_count(document: &SceneDocument) -> usize {
         .filter_map(|timeline| timeline.target_node.as_deref())
         .collect::<BTreeSet<_>>()
         .len()
-}
-
-fn scene_property_value(
-    property: &str,
-    render_properties: Option<&BTreeMap<String, Value>>,
-    manifest_properties: &BTreeMap<String, PropertySpec>,
-) -> Option<f64> {
-    render_properties
-        .and_then(|properties| properties.get(property))
-        .and_then(scene_json_property_number)
-        .or_else(|| {
-            manifest_properties
-                .get(property)
-                .and_then(scene_manifest_property_default_number)
-        })
-}
-
-fn scene_runtime_property_value(
-    document: &SceneDocument,
-    time_ms: u64,
-    property: &str,
-) -> Option<f64> {
-    scene_controller_property_value(document, time_ms, property)
-        .or_else(|| scene_audio_response_property_value(document, time_ms, property))
-}
-
-fn scene_controller_property_value(
-    document: &SceneDocument,
-    time_ms: u64,
-    property: &str,
-) -> Option<f64> {
-    let property = property.trim();
-    if !property.starts_with("scene.controller.") {
-        return None;
-    }
-    document
-        .nodes
-        .iter()
-        .find_map(|node| scene_node_controller_property_value(node, time_ms, property))
-}
-
-fn scene_node_controller_property_value(
-    node: &SceneNode,
-    time_ms: u64,
-    property: &str,
-) -> Option<f64> {
-    if let Some(controller) = node.properties.get("controller").and_then(Value::as_object)
-        && controller
-            .get("runtime")
-            .and_then(Value::as_str)
-            .is_some_and(|runtime| runtime == "native")
-        && controller
-            .get("property")
-            .and_then(Value::as_str)
-            .is_some_and(|controller_property| controller_property.trim() == property)
-    {
-        match controller.get("kind").and_then(Value::as_str)? {
-            "idle-video-switch" => {
-                let inactive_sec = controller
-                    .get("mouse_inactive_sec")
-                    .and_then(scene_controller_config_number)?;
-                let inactive_ms = (inactive_sec.max(0.0) * 1000.0).round();
-                return Some(if time_ms as f64 >= inactive_ms {
-                    1.0
-                } else {
-                    0.0
-                });
-            }
-            "click-video-switch" => {
-                return Some(0.0);
-            }
-            _ => return None,
-        }
-    }
-    node.children
-        .iter()
-        .find_map(|child| scene_node_controller_property_value(child, time_ms, property))
-}
-
-fn scene_audio_response_property_value(
-    document: &SceneDocument,
-    time_ms: u64,
-    property: &str,
-) -> Option<f64> {
-    if document.systems.audio_response != SceneSystemStatus::Ready {
-        return None;
-    }
-    let property = property
-        .trim()
-        .replace(['-', ' ', '/'], "_")
-        .to_ascii_lowercase();
-    if property.is_empty() {
-        return None;
-    }
-    let band = if property == "audio"
-        || property == "audio_level"
-        || property == "audio_response"
-        || property.ends_with("_audio")
-    {
-        "full"
-    } else if property.contains("bass") || property.contains("low") {
-        "bass"
-    } else if property.contains("mid") || property.contains("vocal") {
-        "mid"
-    } else if property.contains("treble") || property.contains("high") {
-        "treble"
-    } else if property.contains("spectrum") || property.contains("frequency") {
-        "spectrum"
-    } else {
-        return None;
-    };
-    let seconds = time_ms as f64 / 1000.0;
-    let (frequency, phase, floor, gain) = match band {
-        "bass" => (1.25, 0.0, 0.12, 0.88),
-        "mid" => (2.5, 0.7, 0.08, 0.78),
-        "treble" => (5.0, 1.3, 0.04, 0.72),
-        "spectrum" => (
-            3.5,
-            scene_audio_response_spectrum_phase(&property),
-            0.05,
-            0.8,
-        ),
-        _ => (1.75, 0.35, 0.1, 0.82),
-    };
-    let wave = (seconds.mul_add(frequency * std::f64::consts::TAU, phase)).sin() * 0.5 + 0.5;
-    Some((floor + wave.powf(1.35) * gain).clamp(0.0, 1.0))
-}
-
-fn scene_audio_response_spectrum_phase(property: &str) -> f64 {
-    let bin = property
-        .rsplit('_')
-        .find_map(|part| part.parse::<u32>().ok())
-        .unwrap_or(0);
-    f64::from(bin % 32) * 0.196_349_540_849_362_07
-}
-
-fn scene_controller_config_number(value: &Value) -> Option<f64> {
-    scene_json_property_number(value.get("value").unwrap_or(value))
-}
-
-fn scene_json_property_number(value: &Value) -> Option<f64> {
-    let number = match value {
-        Value::Bool(value) => {
-            if *value {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        Value::Number(value) => value.as_f64()?,
-        Value::String(value) => value.parse::<f64>().ok()?,
-        _ => return None,
-    };
-    number.is_finite().then_some(number)
-}
-
-fn scene_manifest_property_default_number(property: &PropertySpec) -> Option<f64> {
-    let number = match property {
-        PropertySpec::Bool { default } => {
-            if (*default)? {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        PropertySpec::Number { default } | PropertySpec::Range { default, .. } => (*default)?,
-        PropertySpec::Choice { .. }
-        | PropertySpec::Color { .. }
-        | PropertySpec::Text { .. }
-        | PropertySpec::File { .. } => return None,
-    };
-    number.is_finite().then_some(number)
 }
 
 fn load_scene_document(path: &Path) -> Result<SceneDocument, RendererPlanError> {
@@ -5839,6 +5671,62 @@ exit 0
     }
 
     #[test]
+    fn scene_runtime_sampler_applies_native_idle_controller_fade_ramp() {
+        let test_dir = TestDir::new("gilder-scene-controller-fade-sampler");
+        let package_dir = test_dir.path.join("scene-controller-fade.gwpdir");
+        write_scene_controller_fade_gwpdir(&package_dir);
+        let plan = scene_wallpaper_plan_from_gscene_path(
+            "eDP-1".to_owned(),
+            &package_dir,
+            package_dir.join("assets/scene.gscene.json"),
+            Some(60),
+            0,
+            Some(FitMode::Cover),
+        )
+        .unwrap();
+        let sampler = SceneWallpaperRuntimeSampler::from_plan(&plan)
+            .unwrap()
+            .expect("runtime sampler");
+
+        let before = sampler.sample_plan(400).unwrap();
+        let during = sampler.sample_plan(750).unwrap();
+        let complete = sampler.sample_plan(1000).unwrap();
+
+        assert!(
+            before
+                .layers
+                .iter()
+                .find(|layer| layer.id == "idle-target")
+                .unwrap()
+                .opacity
+                .abs()
+                < f64::EPSILON
+        );
+        assert!(
+            (during
+                .layers
+                .iter()
+                .find(|layer| layer.id == "idle-target")
+                .unwrap()
+                .opacity
+                - 0.5)
+                .abs()
+                < 0.000_001
+        );
+        assert!(
+            (complete
+                .layers
+                .iter()
+                .find(|layer| layer.id == "idle-target")
+                .unwrap()
+                .opacity
+                - 1.0)
+                .abs()
+                < f64::EPSILON
+        );
+    }
+
+    #[test]
     fn scene_runtime_sampler_resamples_particle_layers_from_gscene_source() {
         let test_dir = TestDir::new("gilder-scene-particle-sampler");
         let package_dir = test_dir.path.join("scene-particles.gwpdir");
@@ -7683,6 +7571,67 @@ void main() {}
             "id": "org.example.scene-controller",
             "version": "1.0.0",
             "title": "Scene Controller",
+            "kind": "scene",
+            "entry": {
+                "type": "scene",
+                "source": "assets/scene.gscene.json",
+                "max_fps": 60
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_scene_controller_fade_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(
+            path.join("assets/scene.gscene.json"),
+            br##"{
+              "resources": [
+                { "id": "idle-video", "type": "video", "source": "assets/idle.mp4" }
+              ],
+              "nodes": [
+                {
+                  "id": "idle-controller",
+                  "type": "script",
+                  "properties": {
+                    "controller": {
+                      "runtime": "native",
+                      "kind": "idle-video-switch",
+                      "property": "scene.controller.idle-controller.active",
+                      "mouse_inactive_sec": { "value": 0.5 },
+                      "fade_in_duration": 0.5,
+                      "target_node": "idle-target",
+                      "target_type": "video"
+                    }
+                  }
+                },
+                {
+                  "id": "idle-target",
+                  "type": "video",
+                  "resource": "idle-video",
+                  "opacity": 0
+                }
+              ],
+              "property_bindings": [
+                {
+                  "property": "scene.controller.idle-controller.active",
+                  "target": "opacity",
+                  "target_node": "idle-target"
+                }
+              ]
+            }"##,
+        )
+        .unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.scene-controller-fade",
+            "version": "1.0.0",
+            "title": "Scene Controller Fade",
             "kind": "scene",
             "entry": {
                 "type": "scene",

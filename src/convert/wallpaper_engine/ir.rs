@@ -108,6 +108,15 @@ impl SceneControllerIr {
         self.kind == SceneControllerKind::IdleVideoSwitch
     }
 
+    pub(super) fn uses_native_idle_fade_ramp(&self) -> bool {
+        self.uses_native_idle_input_source()
+            && self
+                .settings
+                .get("fade_in_duration")
+                .and_then(scene_ir_setting_number)
+                .is_some_and(|value| value > 0.0)
+    }
+
     pub(super) fn requires_external_input_source(&self) -> bool {
         !self.uses_native_idle_input_source()
     }
@@ -165,6 +174,23 @@ fn scene_controller_property_name(key: &str) -> String {
     output
 }
 
+fn scene_ir_setting_number(value: &Value) -> Option<f64> {
+    let value = value.get("value").unwrap_or(value);
+    let number = match value {
+        Value::Bool(value) => {
+            if *value {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        Value::Number(value) => value.as_f64()?,
+        Value::String(value) => value.parse::<f64>().ok()?,
+        _ => return None,
+    };
+    number.is_finite().then_some(number)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +209,7 @@ mod tests {
         );
 
         assert!(controller.uses_native_idle_input_source());
+        assert!(controller.uses_native_idle_fade_ramp());
         assert!(!controller.requires_external_input_source());
         assert_eq!(
             controller.completed_feature_name(),
