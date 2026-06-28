@@ -22,6 +22,7 @@ use super::super::vulkan::{
     NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot,
     NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions,
+    NativeVulkanVulkanaliaSceneVideoOverlayInput,
     NativeVulkanVulkanaliaSurfaceSwapchainProbeSnapshot,
     NativeVulkanVulkanaliaVideoPresentAudioMasterClock,
     NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot,
@@ -29,10 +30,10 @@ use super::super::vulkan::{
     NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot,
     NativeVulkanVulkanaliaVideoSessionBindSmokeSnapshot,
     probe_native_vulkan_vulkanalia_video_present_session,
-    run_native_vulkan_vulkanalia_av1_streaming_video_present_decode,
+    run_native_vulkan_vulkanalia_av1_streaming_video_present_decode_with_scene_video_overlay,
     run_native_vulkan_vulkanalia_clear_present,
-    run_native_vulkan_vulkanalia_h264_streaming_video_present_decode,
-    run_native_vulkan_vulkanalia_h265_streaming_video_present_decode,
+    run_native_vulkan_vulkanalia_h264_streaming_video_present_decode_with_scene_video_overlay,
+    run_native_vulkan_vulkanalia_h265_streaming_video_present_decode_with_scene_video_overlay,
 };
 use super::super::{NativeVulkanError, NativeVulkanOptions};
 use super::codec::NativeVulkanVideoSessionCodec;
@@ -141,6 +142,37 @@ pub fn run_vulkanalia_ready_prefix_video(
     audio_clock_probe_requested: bool,
     audio_output_mode: NativeVulkanAudioOutputMode,
 ) -> Result<NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot, NativeVulkanError> {
+    run_vulkanalia_ready_prefix_video_with_scene_overlay(
+        options,
+        codec,
+        source,
+        width,
+        height,
+        fit,
+        bitstream_samples,
+        ready_prefix_frame_count,
+        playback_frame_count,
+        audio_clock_probe_requested,
+        audio_output_mode,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::renderer::native_vulkan) fn run_vulkanalia_ready_prefix_video_with_scene_overlay(
+    options: NativeVulkanOptions,
+    codec: NativeVulkanVideoSessionCodec,
+    source: PathBuf,
+    width: u32,
+    height: u32,
+    fit: FitMode,
+    bitstream_samples: u32,
+    ready_prefix_frame_count: u32,
+    playback_frame_count: u32,
+    audio_clock_probe_requested: bool,
+    audio_output_mode: NativeVulkanAudioOutputMode,
+    scene_video_overlay: Option<NativeVulkanVulkanaliaSceneVideoOverlayInput>,
+) -> Result<NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot, NativeVulkanError> {
     if width == 0 || height == 0 {
         return Err(NativeVulkanError::Video(
             "Vulkanalia ready-prefix run requires a non-zero source extent".to_owned(),
@@ -235,36 +267,61 @@ pub fn run_vulkanalia_ready_prefix_video(
         audio_master_clock,
         clear_color: options.clear_color,
     };
-    let h264_retained_video_present_decode = h264_streaming_decode_requested.then(|| {
-        run_native_vulkan_vulkanalia_h264_streaming_video_present_decode(
-            NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions {
-                session: video_present_session_options.clone(),
-                source: source.clone(),
-                queue_capacity: streaming_queue_capacity,
-                playback_frame_count,
-            },
+    let (
+        h264_retained_video_present_decode,
+        h265_retained_video_present_decode,
+        av1_retained_video_present_decode,
+    ) = if h264_streaming_decode_requested {
+        (
+            Some(
+                run_native_vulkan_vulkanalia_h264_streaming_video_present_decode_with_scene_video_overlay(
+                    NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions {
+                        session: video_present_session_options.clone(),
+                        source: source.clone(),
+                        queue_capacity: streaming_queue_capacity,
+                        playback_frame_count,
+                    },
+                    scene_video_overlay,
+                ),
+            ),
+            None,
+            None,
         )
-    });
-    let h265_retained_video_present_decode = h265_streaming_decode_requested.then(|| {
-        run_native_vulkan_vulkanalia_h265_streaming_video_present_decode(
-            NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions {
-                session: video_present_session_options.clone(),
-                source: source.clone(),
-                queue_capacity: streaming_queue_capacity,
-                playback_frame_count,
-            },
+    } else if h265_streaming_decode_requested {
+        (
+            None,
+            Some(
+                run_native_vulkan_vulkanalia_h265_streaming_video_present_decode_with_scene_video_overlay(
+                    NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions {
+                        session: video_present_session_options.clone(),
+                        source: source.clone(),
+                        queue_capacity: streaming_queue_capacity,
+                        playback_frame_count,
+                    },
+                    scene_video_overlay,
+                ),
+            ),
+            None,
         )
-    });
-    let av1_retained_video_present_decode = av1_streaming_decode_requested.then(|| {
-        run_native_vulkan_vulkanalia_av1_streaming_video_present_decode(
-            NativeVulkanVulkanaliaAv1StreamingVideoPresentDecodeOptions {
-                session: video_present_session_options.clone(),
-                source: source.clone(),
-                queue_capacity: streaming_queue_capacity,
-                playback_frame_count,
-            },
+    } else if av1_streaming_decode_requested {
+        (
+            None,
+            None,
+            Some(
+                run_native_vulkan_vulkanalia_av1_streaming_video_present_decode_with_scene_video_overlay(
+                    NativeVulkanVulkanaliaAv1StreamingVideoPresentDecodeOptions {
+                        session: video_present_session_options.clone(),
+                        source: source.clone(),
+                        queue_capacity: streaming_queue_capacity,
+                        playback_frame_count,
+                    },
+                    scene_video_overlay,
+                ),
+            ),
         )
-    });
+    } else {
+        (None, None, None)
+    };
     let (
         video_present_session_probe,
         video_present_session_probe_error,

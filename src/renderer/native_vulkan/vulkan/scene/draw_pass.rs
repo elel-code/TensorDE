@@ -1193,6 +1193,260 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_record_scene_solid_quad_draws_inside_rendering(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    extent: vk::Extent2D,
+    solid_quad_draw: VulkanaliaSceneSolidQuadDrawResources<'_>,
+) -> Result<u32, String> {
+    if extent.width == 0 || extent.height == 0 {
+        return Err("scene solid draw requires non-zero extent".to_owned());
+    }
+    if solid_quad_draw.draw_commands.is_empty() {
+        return Err("scene solid draw requires non-empty draw steps".to_owned());
+    }
+    for solid_draw in solid_quad_draw.draw_commands {
+        if solid_draw.index_count == 0 {
+            return Err("scene solid draw requires non-empty indices".to_owned());
+        }
+    }
+
+    unsafe {
+        let solid_push_constants = [extent.width as f32, extent.height as f32];
+        let solid_push_constant_bytes = std::slice::from_raw_parts(
+            solid_push_constants.as_ptr().cast::<u8>(),
+            SCENE_FULL_SOLID_QUAD_PUSH_CONSTANT_BYTES as usize,
+        );
+        device.cmd_bind_pipeline(
+            command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            solid_quad_draw.pipeline_resources.pipeline,
+        );
+        let vertex_buffers = [solid_quad_draw.vertex_buffer];
+        let vertex_offsets = [0u64];
+        device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &vertex_offsets);
+        device.cmd_bind_index_buffer(
+            command_buffer,
+            solid_quad_draw.index_buffer,
+            0,
+            vk::IndexType::UINT32,
+        );
+        device.cmd_push_constants(
+            command_buffer,
+            solid_quad_draw.pipeline_resources.pipeline_layout,
+            vk::ShaderStageFlags::VERTEX,
+            0,
+            solid_push_constant_bytes,
+        );
+        for solid_draw in solid_quad_draw.draw_commands {
+            device.cmd_draw_indexed(
+                command_buffer,
+                solid_draw.index_count,
+                1,
+                solid_draw.first_index,
+                0,
+                0,
+            );
+        }
+    }
+
+    Ok(solid_quad_draw
+        .draw_commands
+        .iter()
+        .fold(0u32, |sum, draw| sum.saturating_add(draw.index_count)))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_record_scene_sampled_image_draws_inside_rendering(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    extent: vk::Extent2D,
+    solid_quad_draw: Option<VulkanaliaSceneSolidQuadDrawResources<'_>>,
+    descriptor_heap_draw: Option<VulkanaliaSceneDescriptorHeapDrawResources<'_>>,
+    pipeline_resources: &VulkanaliaSceneSampledImagePipelineResources,
+    draw_commands: &[VulkanaliaSceneSampledImageDrawCommand],
+    vertex_buffer: vk::Buffer,
+    index_buffer: vk::Buffer,
+) -> Result<u32, String> {
+    if extent.width == 0 || extent.height == 0 {
+        return Err("scene sampled-image draw requires non-zero extent".to_owned());
+    }
+    if draw_commands.is_empty() {
+        return Err("scene sampled-image draw requires at least one draw".to_owned());
+    }
+    if let Some(draw) = solid_quad_draw {
+        if draw.draw_commands.is_empty() {
+            return Err("scene mixed draw requires non-empty solid draw steps".to_owned());
+        }
+        for solid_draw in draw.draw_commands {
+            if solid_draw.index_count == 0 {
+                return Err("scene mixed draw requires non-empty solid draw indices".to_owned());
+            }
+        }
+    }
+    for draw in draw_commands {
+        if draw.index_count == 0 {
+            return Err("scene sampled-image draw requires at least one index".to_owned());
+        }
+        match draw.descriptor_binding {
+            VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap { resource_index } => {
+                let Some(descriptor_heap_draw) = descriptor_heap_draw else {
+                    return Err(
+                        "scene sampled-image descriptor heap draw requires heap resources"
+                            .to_owned(),
+                    );
+                };
+                if resource_index as usize >= descriptor_heap_draw.resources.plan.image_count {
+                    return Err(format!(
+                        "scene sampled-image descriptor heap resource index {resource_index} exceeds heap image count {}",
+                        descriptor_heap_draw.resources.plan.image_count
+                    ));
+                }
+            }
+        }
+    }
+    if descriptor_heap_draw.is_none() {
+        return Err("scene sampled-image draw requires descriptor heap resources".to_owned());
+    }
+
+    let solid_draw_commands: &[VulkanaliaSceneSolidQuadDrawCommand] =
+        solid_quad_draw.map_or(&[], |draw| draw.draw_commands);
+    let ordered_draws =
+        native_vulkan_vulkanalia_scene_ordered_draw_steps(solid_draw_commands, draw_commands);
+
+    unsafe {
+        let solid_push_constants = [extent.width as f32, extent.height as f32];
+        let solid_push_constant_bytes = std::slice::from_raw_parts(
+            solid_push_constants.as_ptr().cast::<u8>(),
+            SCENE_FULL_SOLID_QUAD_PUSH_CONSTANT_BYTES as usize,
+        );
+        let sampled_push_constants = [extent.width as f32, extent.height as f32];
+        let sampled_push_constant_bytes = std::slice::from_raw_parts(
+            sampled_push_constants.as_ptr().cast::<u8>(),
+            SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES as usize,
+        );
+        let mut bound_pipeline: Option<u8> = None;
+        let mut descriptor_heap_bound = false;
+        for draw in &ordered_draws {
+            match draw.pipeline {
+                VulkanaliaSceneOrderedDrawPipeline::SolidQuad => {
+                    let solid_draw = &solid_draw_commands[draw.command_index];
+                    if bound_pipeline != Some(draw.pipeline.sort_rank()) {
+                        let solid_resources = solid_quad_draw
+                            .as_ref()
+                            .expect("solid draw resources present");
+                        device.cmd_bind_pipeline(
+                            command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            solid_resources.pipeline_resources.pipeline,
+                        );
+                        let vertex_buffers = [solid_resources.vertex_buffer];
+                        let vertex_offsets = [0u64];
+                        device.cmd_bind_vertex_buffers(
+                            command_buffer,
+                            0,
+                            &vertex_buffers,
+                            &vertex_offsets,
+                        );
+                        device.cmd_bind_index_buffer(
+                            command_buffer,
+                            solid_resources.index_buffer,
+                            0,
+                            vk::IndexType::UINT32,
+                        );
+                        device.cmd_push_constants(
+                            command_buffer,
+                            solid_resources.pipeline_resources.pipeline_layout,
+                            vk::ShaderStageFlags::VERTEX,
+                            0,
+                            solid_push_constant_bytes,
+                        );
+                        bound_pipeline = Some(draw.pipeline.sort_rank());
+                    }
+                    device.cmd_draw_indexed(
+                        command_buffer,
+                        solid_draw.index_count,
+                        1,
+                        solid_draw.first_index,
+                        0,
+                        0,
+                    );
+                }
+                VulkanaliaSceneOrderedDrawPipeline::SampledImage => {
+                    let sampled_draw = &draw_commands[draw.command_index];
+                    if bound_pipeline != Some(draw.pipeline.sort_rank()) {
+                        device.cmd_bind_pipeline(
+                            command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            pipeline_resources.pipeline,
+                        );
+                        let vertex_buffers = [vertex_buffer];
+                        let vertex_offsets = [0u64];
+                        device.cmd_bind_vertex_buffers(
+                            command_buffer,
+                            0,
+                            &vertex_buffers,
+                            &vertex_offsets,
+                        );
+                        device.cmd_bind_index_buffer(
+                            command_buffer,
+                            index_buffer,
+                            0,
+                            vk::IndexType::UINT32,
+                        );
+                        device.cmd_push_constants(
+                            command_buffer,
+                            pipeline_resources.pipeline_layout,
+                            vk::ShaderStageFlags::VERTEX,
+                            0,
+                            sampled_push_constant_bytes,
+                        );
+                        if let Some(descriptor_heap_draw) = descriptor_heap_draw {
+                            if !descriptor_heap_bound {
+                                let resource_bind =
+                                    native_vulkan_vulkanalia_descriptor_heap_resource_bind_info(
+                                        descriptor_heap_draw.resources,
+                                    );
+                                let sampler_bind =
+                                    native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info(
+                                        descriptor_heap_draw.resources,
+                                    );
+                                device.cmd_bind_resource_heap_ext(command_buffer, &resource_bind);
+                                device.cmd_bind_sampler_heap_ext(command_buffer, &sampler_bind);
+                                descriptor_heap_bound = true;
+                            }
+                        }
+                        bound_pipeline = Some(draw.pipeline.sort_rank());
+                    }
+                    let VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
+                        resource_index: _,
+                    } = sampled_draw.descriptor_binding;
+                    let _ = descriptor_heap_draw.expect("descriptor heap draw resources present");
+                    device.cmd_draw_indexed(
+                        command_buffer,
+                        sampled_draw.index_count,
+                        1,
+                        sampled_draw.first_index,
+                        0,
+                        0,
+                    );
+                }
+            }
+        }
+    }
+
+    let sampled_image_index_count = draw_commands
+        .iter()
+        .fold(0u32, |sum, draw| sum.saturating_add(draw.index_count));
+    let solid_quad_index_count = solid_quad_draw.map_or(0, |draw| {
+        draw.draw_commands
+            .iter()
+            .fold(0u32, |sum, draw| sum.saturating_add(draw.index_count))
+    });
+    Ok(solid_quad_index_count.saturating_add(sampled_image_index_count))
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_record_scene_sampled_image_command_buffer(
     device: &Device,
     command_buffer: vk::CommandBuffer,

@@ -278,7 +278,7 @@ pub(super) fn native_vulkan_scene_draw_pass_plan(
     let sampled_image_implicit_full_extent_backend_ready = sampled_image_implicit_full_extent_ready
         && sampled_image_op_count.saturating_add(clear_background_op_count)
             == draw_plan.draw_ops.len();
-    let initial_visible_video_scene_bridge_ready = video_op_count == 1
+    let mixed_video_scene_bridge_ready = video_op_count == 1
         && required_video_resources.len() == 1
         && draw_plan.draw_ops.len() > 1
         && video_op_count
@@ -295,7 +295,7 @@ pub(super) fn native_vulkan_scene_draw_pass_plan(
             || mixed_quad_sampled_image_recording_ready
             || single_video_scene_bridge_ready
             || clear_background_video_scene_bridge_ready
-            || initial_visible_video_scene_bridge_ready);
+            || mixed_video_scene_bridge_ready);
     let (backend_status, blocking_reason) = if !plan_ready {
         (
             "blocked-by-unsupported-scene-layers",
@@ -343,11 +343,8 @@ pub(super) fn native_vulkan_scene_draw_pass_plan(
             )
         } else if single_video_scene_bridge_ready {
             ("video-layer-vulkan-video-scene-bridge-ready", None)
-        } else if initial_visible_video_scene_bridge_ready {
-            (
-                "initial-visible-video-layer-vulkan-video-scene-bridge-ready",
-                None,
-            )
+        } else if mixed_video_scene_bridge_ready {
+            ("video-layer-vulkan-video-scene-bridge-ready", None)
         } else {
             ("sampled-image-recording-ready", None)
         }
@@ -2939,7 +2936,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_pass_plan_reports_initial_visible_video_scene_bridge_ready() {
+    fn draw_pass_plan_reports_mixed_video_scene_bridge_ready() {
         let mut video = draw_op(0, NativeVulkanSceneDrawOpKind::Video);
         video.source = Some(PathBuf::from("/tmp/scene-video.mp4"));
         let mut image = draw_op(1, NativeVulkanSceneDrawOpKind::Image);
@@ -2965,7 +2962,7 @@ mod tests {
         assert!(pass_plan.backend_ready);
         assert_eq!(
             pass_plan.backend_status,
-            "initial-visible-video-layer-vulkan-video-scene-bridge-ready"
+            "video-layer-vulkan-video-scene-bridge-ready"
         );
         assert_eq!(pass_plan.blocking_reason, None);
         assert_eq!(pass_plan.video_op_count, 1);

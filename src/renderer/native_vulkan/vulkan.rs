@@ -94,6 +94,7 @@ pub use scene_draw_pass::{
     NativeVulkanVulkanaliaSceneSolidQuadCommandSnapshot,
     NativeVulkanVulkanaliaSceneSolidQuadPipelineSnapshot,
 };
+pub(in crate::renderer::native_vulkan) use scene_present::NativeVulkanVulkanaliaSceneVideoOverlayInput;
 pub use scene_present::{
     NativeVulkanVulkanaliaSceneMixedSolidQuadDynamicGeometry,
     NativeVulkanVulkanaliaSceneSampledImageDrawStep,
@@ -190,6 +191,12 @@ pub use video_present_runtime::{
     run_native_vulkan_vulkanalia_av1_streaming_video_present_decode,
     run_native_vulkan_vulkanalia_h264_streaming_video_present_decode,
     run_native_vulkan_vulkanalia_h265_streaming_video_present_decode,
+};
+#[cfg(feature = "native-vulkan-video")]
+pub(in crate::renderer::native_vulkan) use video_present_runtime::{
+    run_native_vulkan_vulkanalia_av1_streaming_video_present_decode_with_scene_video_overlay,
+    run_native_vulkan_vulkanalia_h264_streaming_video_present_decode_with_scene_video_overlay,
+    run_native_vulkan_vulkanalia_h265_streaming_video_present_decode_with_scene_video_overlay,
 };
 #[allow(unused_imports)]
 pub use video_profile_probe::{

@@ -11,6 +11,8 @@ use crate::renderer::{
     SceneWallpaperRuntimeSampler,
 };
 
+#[cfg(feature = "native-vulkan-video")]
+use super::super::NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot;
 use super::super::audio::clock::{
     NativeVulkanAudioClockProbeOptions, NativeVulkanAudioClockRuntimeSnapshot,
     native_vulkan_probe_ffmpeg_audio_clock,
@@ -22,6 +24,7 @@ use super::super::present::render_plan::{
 #[cfg(feature = "native-vulkan-video")]
 use super::super::video::direct::{
     NATIVE_VULKAN_AUDIO_OUTPUT_WORKER_STACK_BYTES, native_vulkan_audio_runtime_packet_budget,
+    run_vulkanalia_ready_prefix_video_with_scene_overlay,
 };
 use super::super::{
     NativeVulkanAudioOutputMode, NativeVulkanError, NativeVulkanOptions,
@@ -35,14 +38,11 @@ use super::super::{
     NativeVulkanVulkanaliaSceneSolidQuadGeometryInput,
     NativeVulkanVulkanaliaSceneSolidQuadPresentOptions,
     NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot,
+    NativeVulkanVulkanaliaSceneVideoOverlayInput,
     native_vulkan_vulkanalia_configure_scene_sampled_image_allocator,
     native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap, run_clear,
     run_native_vulkan_vulkanalia_scene_sampled_image_present,
     run_native_vulkan_vulkanalia_scene_solid_quad_present,
-};
-#[cfg(feature = "native-vulkan-video")]
-use super::super::{
-    NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot, run_vulkanalia_ready_prefix_video,
 };
 use super::runtime::{
     NativeVulkanSceneRuntimeSnapshot, NativeVulkanSceneSampledGeometryInputs,
@@ -509,7 +509,49 @@ pub fn run_scene(
             })?;
             let width = native_vulkan_scene_video_extent(video_bridge.width, video.width);
             let height = native_vulkan_scene_video_extent(video_bridge.height, video.height);
-            let fit = video.fit;
+            let video_fit = video.fit;
+            let mut overlay_source = None;
+            let mut overlay_fit = None;
+            let mut overlay_geometry = None;
+            if let Some((source, geometry)) = runtime.take_vulkanalia_sampled_image_geometry_input()
+            {
+                overlay_source = Some(source);
+                overlay_geometry = Some(geometry);
+            } else if let Some((source, fit)) =
+                runtime.take_vulkanalia_sampled_image_implicit_full_extent_input()
+            {
+                overlay_source = Some(source);
+                overlay_fit = Some(fit);
+            }
+            let solid_geometry = runtime.take_vulkanalia_mixed_solid_quad_geometry_input();
+            let (dynamic_solid_geometry, dynamic_geometry) = if overlay_source.is_some()
+                || overlay_geometry.is_some()
+            {
+                native_vulkan_scene_dynamic_sampled_geometry_pair(&plan, solid_geometry.is_some())?
+            } else if solid_geometry.is_some() {
+                let dynamic_solid =
+                    native_vulkan_scene_dynamic_solid_geometry(&plan)?.map(|dynamic_geometry| {
+                        Box::new(move |elapsed_ms| dynamic_geometry(elapsed_ms).map(Some))
+                            as NativeVulkanVulkanaliaSceneMixedSolidQuadDynamicGeometry
+                    });
+                (dynamic_solid, None)
+            } else {
+                (None, None)
+            };
+            let scene_video_overlay = (overlay_source.is_some()
+                || overlay_geometry.is_some()
+                || solid_geometry.is_some())
+            .then_some(NativeVulkanVulkanaliaSceneVideoOverlayInput {
+                source: overlay_source,
+                clear_color: options.clear_color,
+                fit: overlay_fit,
+                solid_geometry,
+                geometry: overlay_geometry,
+                dynamic_solid_geometry,
+                dynamic_geometry,
+                scene_size: runtime.scene_size,
+                scene_fit: runtime.scene_fit,
+            });
             runtime.release_cpu_draw_payloads_for_present();
             native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
 
@@ -518,18 +560,19 @@ pub fn run_scene(
                 duration,
                 scene_audio_output_mode,
                 || {
-                    run_vulkanalia_ready_prefix_video(
+                    run_vulkanalia_ready_prefix_video_with_scene_overlay(
                         options,
                         video_bridge.codec,
                         source,
                         width,
                         height,
-                        fit,
+                        video_fit,
                         video_bridge.bitstream_extract_max_samples,
                         video_bridge.ready_prefix_frames,
                         video_bridge.playback_frames,
                         video_bridge.audio_clock_probe_requested,
                         video_bridge.audio_output_mode,
+                        scene_video_overlay,
                     )
                 },
             )?;
@@ -793,8 +836,7 @@ fn native_vulkan_scene_present_route(
         }
         #[cfg(feature = "native-vulkan-video")]
         "video-layer-vulkan-video-scene-bridge-ready"
-        | "clear-background-video-layer-vulkan-video-scene-bridge-ready"
-        | "initial-visible-video-layer-vulkan-video-scene-bridge-ready" => {
+        | "clear-background-video-layer-vulkan-video-scene-bridge-ready" => {
             Ok(NativeVulkanScenePresentRouteKind::Video)
         }
         status => Err(NativeVulkanError::Scene(format!(
@@ -953,7 +995,7 @@ mod tests {
 
     #[cfg(feature = "native-vulkan-video")]
     #[test]
-    fn scene_main_present_route_selects_video_for_initial_visible_video_scene() {
+    fn scene_main_present_route_selects_video_for_mixed_video_scene() {
         let mut video = layer("cinematic", SceneNodeKind::Video);
         video.source = Some(PathBuf::from("/tmp/scene-video.mp4"));
         let mut overlay = layer("overlay", SceneNodeKind::Image);

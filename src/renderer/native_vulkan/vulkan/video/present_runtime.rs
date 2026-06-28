@@ -39,6 +39,11 @@ use crate::renderer::native_vulkan::{
 };
 use crate::renderer::native_wayland::NativeWaylandHost;
 
+use super::super::scene::present::{
+    NativeVulkanVulkanaliaSceneVideoOverlayInput, VulkanaliaSceneVideoOverlayResources,
+    native_vulkan_vulkanalia_create_scene_video_overlay_resources,
+    native_vulkan_vulkanalia_destroy_scene_video_overlay_resources,
+};
 use super::instance::{
     NativeVulkanVulkanaliaInstance,
     native_vulkan_vulkanalia_create_instance_with_required_extensions,
@@ -54,6 +59,7 @@ use super::render_present::{
     native_vulkan_vulkanalia_create_decoded_image_present_frame_resources,
     native_vulkan_vulkanalia_create_decoded_image_present_pipeline_resources,
     native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources,
+    native_vulkan_vulkanalia_decoded_image_present_command_pool,
     native_vulkan_vulkanalia_decoded_image_present_frame_slot_count,
     native_vulkan_vulkanalia_destroy_decoded_image_present_frame_resources,
     native_vulkan_vulkanalia_destroy_decoded_image_present_pipeline_resources,
@@ -168,6 +174,7 @@ struct NativeVulkanVulkanaliaVideoPresentSessionRuntimeResources {
     resource_image: Option<VulkanaliaVideoSessionResourceImage>,
     decoded_image_present_pipeline: Option<VulkanaliaDecodedImagePresentPipelineResources>,
     decoded_image_present_sampler: Option<VulkanaliaDecodedImagePresentSamplerResources>,
+    scene_video_overlay: Option<VulkanaliaSceneVideoOverlayResources>,
     decoded_image_present_sequence:
         Option<NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot>,
     decoded_image_present_sequence_error: Option<String>,
@@ -281,6 +288,12 @@ impl Drop for NativeVulkanVulkanaliaVideoPresentSessionRuntimeResources {
                     device, sampler,
                 );
             }
+            if let Some(scene_video_overlay) = self.scene_video_overlay.take() {
+                native_vulkan_vulkanalia_destroy_scene_video_overlay_resources(
+                    device,
+                    scene_video_overlay,
+                );
+            }
             if let Some(resource_image) = self.resource_image.take() {
                 native_vulkan_vulkanalia_destroy_video_session_resource_image(
                     device,
@@ -315,6 +328,7 @@ struct NativeVulkanVulkanaliaVideoPresentSessionPieces {
     resource_image: VulkanaliaVideoSessionResourceImage,
     decoded_image_present_pipeline: Option<VulkanaliaDecodedImagePresentPipelineResources>,
     decoded_image_present_sampler: Option<VulkanaliaDecodedImagePresentSamplerResources>,
+    scene_video_overlay: Option<VulkanaliaSceneVideoOverlayResources>,
     snapshot: NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot,
     decoded_image_present_sequence:
         Option<NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot>,
@@ -939,6 +953,16 @@ pub(in crate::renderer::native_vulkan::vulkan) fn probe_native_vulkan_vulkanalia
 pub fn run_native_vulkan_vulkanalia_h264_streaming_video_present_decode(
     options: NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions,
 ) -> Result<NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot, String> {
+    run_native_vulkan_vulkanalia_h264_streaming_video_present_decode_with_scene_video_overlay(
+        options, None,
+    )
+}
+
+#[cfg(feature = "native-vulkan-video")]
+pub(in crate::renderer::native_vulkan) fn run_native_vulkan_vulkanalia_h264_streaming_video_present_decode_with_scene_video_overlay(
+    options: NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions,
+    scene_video_overlay: Option<NativeVulkanVulkanaliaSceneVideoOverlayInput>,
+) -> Result<NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot, String> {
     if options.session.codec != NativeVulkanVideoSessionCodec::H264High8 {
         return Err(
             "Vulkanalia streaming video-present decode currently supports H.264 high-8 only"
@@ -956,6 +980,7 @@ pub fn run_native_vulkan_vulkanalia_h264_streaming_video_present_decode(
                 av1: None,
             },
             playback_frame_count,
+            scene_video_overlay,
         )?;
     let decode = runtime
         .resources
@@ -989,6 +1014,16 @@ pub fn run_native_vulkan_vulkanalia_h264_streaming_video_present_decode(
 pub fn run_native_vulkan_vulkanalia_h265_streaming_video_present_decode(
     options: NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions,
 ) -> Result<NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot, String> {
+    run_native_vulkan_vulkanalia_h265_streaming_video_present_decode_with_scene_video_overlay(
+        options, None,
+    )
+}
+
+#[cfg(feature = "native-vulkan-video")]
+pub(in crate::renderer::native_vulkan) fn run_native_vulkan_vulkanalia_h265_streaming_video_present_decode_with_scene_video_overlay(
+    options: NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions,
+    scene_video_overlay: Option<NativeVulkanVulkanaliaSceneVideoOverlayInput>,
+) -> Result<NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot, String> {
     if !matches!(
         options.session.codec,
         NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10
@@ -1008,6 +1043,7 @@ pub fn run_native_vulkan_vulkanalia_h265_streaming_video_present_decode(
                 av1: None,
             },
             playback_frame_count,
+            scene_video_overlay,
         )?;
     let decode = runtime
         .resources
@@ -1041,6 +1077,16 @@ pub fn run_native_vulkan_vulkanalia_h265_streaming_video_present_decode(
 pub fn run_native_vulkan_vulkanalia_av1_streaming_video_present_decode(
     options: NativeVulkanVulkanaliaAv1StreamingVideoPresentDecodeOptions,
 ) -> Result<NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeSnapshot, String> {
+    run_native_vulkan_vulkanalia_av1_streaming_video_present_decode_with_scene_video_overlay(
+        options, None,
+    )
+}
+
+#[cfg(feature = "native-vulkan-video")]
+pub(in crate::renderer::native_vulkan) fn run_native_vulkan_vulkanalia_av1_streaming_video_present_decode_with_scene_video_overlay(
+    options: NativeVulkanVulkanaliaAv1StreamingVideoPresentDecodeOptions,
+    scene_video_overlay: Option<NativeVulkanVulkanaliaSceneVideoOverlayInput>,
+) -> Result<NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeSnapshot, String> {
     if !matches!(
         options.session.codec,
         NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10
@@ -1060,6 +1106,7 @@ pub fn run_native_vulkan_vulkanalia_av1_streaming_video_present_decode(
                 av1: Some(options),
             },
             playback_frame_count,
+            scene_video_overlay,
         )?;
     let decode = runtime
         .resources
@@ -1096,6 +1143,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_native_vulkan_vulkanali
         options,
         NativeVulkanVulkanaliaStreamingDecodeRequests::default(),
         0,
+        None,
     )
 }
 
@@ -1103,6 +1151,7 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_ready_pref
     options: NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
     streaming_decode: NativeVulkanVulkanaliaStreamingDecodeRequests,
     requested_present_frame_count: u32,
+    scene_video_overlay_input: Option<NativeVulkanVulkanaliaSceneVideoOverlayInput>,
 ) -> Result<NativeVulkanVulkanaliaVideoPresentSessionRuntime, String> {
     if options.width == 0 || options.height == 0 {
         return Err("Vulkanalia video present session runtime requires non-zero extent".to_owned());
@@ -1249,6 +1298,7 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_ready_pref
         swapchain_plan_snapshot(&swapchain_plan, swapchain_images.len()),
         streaming_decode,
         requested_present_frame_count,
+        scene_video_overlay_input,
     ) {
         Ok(pieces) => pieces,
         Err(err) => {
@@ -1268,6 +1318,7 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_ready_pref
         resource_image,
         decoded_image_present_pipeline,
         decoded_image_present_sampler,
+        scene_video_overlay,
         snapshot,
         decoded_image_present_sequence,
         decoded_image_present_sequence_error,
@@ -1297,6 +1348,7 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_ready_pref
             resource_image: Some(resource_image),
             decoded_image_present_pipeline,
             decoded_image_present_sampler,
+            scene_video_overlay,
             decoded_image_present_sequence,
             decoded_image_present_sequence_error,
             h264_ready_prefix_decode,
@@ -1327,6 +1379,7 @@ fn create_video_present_session_pieces(
     swapchain: super::swapchain::NativeVulkanVulkanaliaSwapchainSnapshot,
     streaming_decode: NativeVulkanVulkanaliaStreamingDecodeRequests,
     requested_present_frame_count: u32,
+    scene_video_overlay_input: Option<NativeVulkanVulkanaliaSceneVideoOverlayInput>,
 ) -> Result<NativeVulkanVulkanaliaVideoPresentSessionPieces, String> {
     with_native_vulkan_vulkanalia_video_session_capabilities(
         instance,
@@ -1417,6 +1470,7 @@ fn create_video_present_session_pieces(
             let mut decoded_image_present_pipeline = None;
             let mut decoded_image_present_sampler = None;
             let mut decoded_image_present_frame_resources = None;
+            let mut scene_video_overlay = None;
             let result = (|| -> Result<NativeVulkanVulkanaliaVideoPresentSessionPieces, String> {
                 let memory_properties = unsafe {
                     instance.get_physical_device_memory_properties(selection.physical_device)
@@ -1551,6 +1605,43 @@ fn create_video_present_session_pieces(
                         }
                     }
                 }
+                if let Some(scene_video_overlay_input) = scene_video_overlay_input {
+                    if decoded_image_present_sequence_error.is_none() {
+                        if let Some(frame_resources) =
+                            decoded_image_present_frame_resources.as_ref()
+                        {
+                            scene_video_overlay =
+                                native_vulkan_vulkanalia_create_scene_video_overlay_resources(
+                                    &context.device,
+                                    &memory_properties,
+                                    native_vulkan_vulkanalia_decoded_image_present_command_pool(
+                                        frame_resources,
+                                    ),
+                                    context.present_queue,
+                                    swapchain_format,
+                                    swapchain_extent,
+                                    native_vulkan_vulkanalia_decoded_image_present_frame_slot_count(
+                                        frame_resources,
+                                    ),
+                                    context
+                                        .video_feature_selection
+                                        .core_features
+                                        .texture_compression_bc,
+                                    context
+                                        .video_feature_selection
+                                        .core_features
+                                        .descriptor_heap,
+                                    context.video_feature_selection.descriptor_heap_properties,
+                                    scene_video_overlay_input,
+                                )?;
+                        } else {
+                            decoded_image_present_sequence_error = Some(
+                                "scene video overlay requires decoded-image present frame resources"
+                                    .to_owned(),
+                            );
+                        }
+                    }
+                }
                 let memory_binding = memory_resources
                     .as_ref()
                     .expect("Vulkanalia session memory resources are live")
@@ -1647,6 +1738,7 @@ fn create_video_present_session_pieces(
                                     "decoded image present sequence has no reusable frame resources"
                                         .to_owned()
                                 })?;
+                            let mut scene_video_overlay = scene_video_overlay.as_mut();
                             let device = &context.device;
                             let present_queue = context.present_queue;
                             Some(
@@ -1765,6 +1857,25 @@ fn create_video_present_session_pieces(
                                                     present_frame_slot,
                                                 )
                                             };
+                                        let overlay_elapsed_ms = worker_sequence_builder
+                                            .started_at
+                                            .elapsed()
+                                            .as_millis()
+                                            .min(u128::from(u64::MAX))
+                                            as u64;
+                                        let scene_overlay_draw =
+                                            if let Some(scene_video_overlay) =
+                                                scene_video_overlay.as_deref_mut()
+                                            {
+                                                scene_video_overlay.frame_draw(
+                                                    device,
+                                                    present_frame_slot,
+                                                    overlay_elapsed_ms,
+                                                    swapchain_extent,
+                                                )?
+                                            } else {
+                                                None
+                                            };
                                         let draw =
                                             native_vulkan_vulkanalia_present_decoded_image_frame(
                                                 device,
@@ -1794,6 +1905,7 @@ fn create_video_present_session_pieces(
                                                 queue_host_access_lock,
                                                 Some(&mut record_layer_present_release),
                                                 clear_color,
+                                                scene_overlay_draw,
                                             )?;
                                         pending_present_frame_slots.push_back(draw.present_frame_slot);
                                         // FFmpeg FrameQueue releases the displayed AVFrame as
@@ -2176,6 +2288,7 @@ fn create_video_present_session_pieces(
                         .expect("Vulkanalia resource image is live"),
                     decoded_image_present_pipeline: decoded_image_present_pipeline.take(),
                     decoded_image_present_sampler: decoded_image_present_sampler.take(),
+                    scene_video_overlay: scene_video_overlay.take(),
                     decoded_image_present_sequence,
                     decoded_image_present_sequence_error,
                     h264_ready_prefix_decode,
@@ -2217,6 +2330,12 @@ fn create_video_present_session_pieces(
                 })
             })();
 
+            if let Some(scene_video_overlay) = scene_video_overlay.take() {
+                native_vulkan_vulkanalia_destroy_scene_video_overlay_resources(
+                    &context.device,
+                    scene_video_overlay,
+                );
+            }
             if let Some(frame_resources) = decoded_image_present_frame_resources.take() {
                 native_vulkan_vulkanalia_destroy_decoded_image_present_frame_resources(
                     &context.device,

@@ -10,6 +10,10 @@ use vulkanalia::vk::{
 
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
 
+use super::super::scene::present::{
+    VulkanaliaSceneVideoOverlayFrameDraw,
+    native_vulkan_vulkanalia_record_scene_video_overlay_draws_inside_rendering,
+};
 use super::descriptor_heap::{
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     VulkanaliaDescriptorHeapImageSamplerResources,
@@ -598,6 +602,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
         None,
         None,
         clear_color,
+        None,
     );
     native_vulkan_vulkanalia_destroy_decoded_image_present_frame_resources(device, frame_resources);
     result
@@ -632,6 +637,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
     queue_host_access_lock: Option<&Mutex<()>>,
     mut after_render_submit_before_present: Option<&mut dyn FnMut(u32) -> Result<(), String>>,
     clear_color: NativeVulkanClearColor,
+    scene_overlay_draw: Option<VulkanaliaSceneVideoOverlayFrameDraw<'_>>,
 ) -> Result<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot, String> {
     if swapchain_images.is_empty() {
         return Err("decoded image present requires at least one swapchain image".to_owned());
@@ -765,6 +771,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
         pipeline.pipeline_layout,
         pipeline.pipeline,
         clear_color,
+        scene_overlay_draw,
     )?;
     let present_record_command_buffer_micros =
         native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
@@ -896,11 +903,16 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
         presented: true,
         decoded_image_layout_transition: "video-decode-dpb -> shader-read-only-optimal -> video-decode-dpb",
         swapchain_layout_transition: "undefined -> color-attachment-optimal -> present-src-khr",
-        render_model: "VK_EXT_descriptor_heap retained Y/UV plane-array sampler mapping -> Vulkan 1.3/1.4 dynamic rendering fullscreen triangle -> Wayland swapchain",
+        render_model: if scene_overlay_draw.is_some() {
+            "VK_EXT_descriptor_heap retained Y/UV plane-array sampler mapping plus native scene overlay draw -> Vulkan 1.4 dynamic rendering pass -> Wayland swapchain"
+        } else {
+            "VK_EXT_descriptor_heap retained Y/UV plane-array sampler mapping -> Vulkan 1.3/1.4 dynamic rendering fullscreen triangle -> Wayland swapchain"
+        },
         command_order: native_vulkan_vulkanalia_decoded_image_present_command_order(
             true,
             present_timing.present_id_mode(),
             present_timing.present_wait_mode(),
+            scene_overlay_draw.is_some(),
         ),
         uses_pipeline_rendering_create_info: true,
         uses_dynamic_rendering: true,
@@ -965,6 +977,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_decod
     resources: &VulkanaliaDecodedImagePresentFrameResources,
 ) -> usize {
     resources.in_flight.len()
+}
+
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_decoded_image_present_command_pool(
+    resources: &VulkanaliaDecodedImagePresentFrameResources,
+) -> vk::CommandPool {
+    resources.command_pool
 }
 
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prepare_decoded_image_present_frame_slot(
@@ -1086,6 +1104,7 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
     _pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
     clear_color: NativeVulkanClearColor,
+    scene_overlay_draw: Option<VulkanaliaSceneVideoOverlayFrameDraw<'_>>,
 ) -> Result<(), String> {
     unsafe {
         device
@@ -1165,6 +1184,14 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
         device.cmd_bind_resource_heap_ext(command_buffer, &resource_bind);
         device.cmd_bind_sampler_heap_ext(command_buffer, &sampler_bind);
         device.cmd_draw(command_buffer, 3, 1, 0, sampled_array_layer);
+        if let Some(scene_overlay_draw) = scene_overlay_draw {
+            native_vulkan_vulkanalia_record_scene_video_overlay_draws_inside_rendering(
+                device,
+                command_buffer,
+                extent,
+                scene_overlay_draw,
+            )?;
+        }
         device.cmd_end_rendering(command_buffer);
 
         let decoded_to_decode = vk::ImageMemoryBarrier2::builder()
@@ -1265,6 +1292,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_decod
     same_queue_family: bool,
     present_id_mode: &'static str,
     present_wait_mode: &'static str,
+    scene_overlay_draw_enabled: bool,
 ) -> Vec<&'static str> {
     let bind_steps = [
         "cmd_bind_resource_heap_ext",
@@ -1278,6 +1306,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_decod
             "cmd_begin_rendering",
         ];
         order.extend(bind_steps);
+        if scene_overlay_draw_enabled {
+            order.extend([
+                "cmd_bind_scene_overlay_pipeline",
+                "cmd_draw_scene_overlay_inside_video_rendering",
+            ]);
+        }
         order.extend([
             "cmd_end_rendering",
             "cmd_pipeline_barrier2_decoded_restore",
@@ -1296,6 +1330,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_decod
             "cmd_begin_rendering",
         ];
         order.extend(bind_steps);
+        if scene_overlay_draw_enabled {
+            order.extend([
+                "cmd_bind_scene_overlay_pipeline",
+                "cmd_draw_scene_overlay_inside_video_rendering",
+            ]);
+        }
         order.extend([
             "cmd_end_rendering",
             "cmd_pipeline_barrier2_decoded_restore",
@@ -1450,7 +1490,7 @@ mod tests {
     #[test]
     fn decoded_image_present_order_keeps_queue_ownership_explicit() {
         let split = native_vulkan_vulkanalia_decoded_image_present_command_order(
-            false, "disabled", "disabled",
+            false, "disabled", "disabled", false,
         );
         assert!(split.contains(&"cmd_pipeline_barrier2_video_release"));
         assert!(split.contains(&"cmd_pipeline_barrier2_graphics_acquire_shader_read"));
@@ -1464,7 +1504,7 @@ mod tests {
         assert!(split.contains(&"no_queue_wait_idle_after_present"));
 
         let same = native_vulkan_vulkanalia_decoded_image_present_command_order(
-            true, "disabled", "disabled",
+            true, "disabled", "disabled", false,
         );
         assert!(!same.contains(&"cmd_pipeline_barrier2_video_release"));
         assert!(same.contains(&"cmd_bind_resource_heap_ext"));
@@ -1476,6 +1516,7 @@ mod tests {
             true,
             "present-id2-khr",
             "present-wait2-khr",
+            false,
         );
         assert!(present_id2.contains(&"present_id2_khr"));
         assert!(present_id2.contains(&"wait_for_present2_khr"));

@@ -266,13 +266,8 @@ fn convert_static_image_audio_scene_with_variant_tools(
     let source = project.entry_file.as_ref().ok_or_else(|| {
         ConversionError::MissingEntry("image project does not define an entry file".to_owned())
     })?;
-    let copied = copy_project_file(
-        &project.root,
-        source,
-        output_dir.join("assets"),
-        "wallpaper",
-        report,
-    )?;
+    let image_package_path =
+        convert_static_image_audio_scene_texture(project, output_dir, source, report)?;
     let preview = copy_preview_or_generate(
         project,
         output_dir,
@@ -285,7 +280,7 @@ fn convert_static_image_audio_scene_with_variant_tools(
         project,
         output_dir,
         source,
-        &copied.package_path,
+        &image_package_path,
         dimensions,
         &audio_sources,
         report,
@@ -320,6 +315,35 @@ fn convert_static_image_audio_scene_with_variant_tools(
             "source": scene_source
         }),
     ))
+}
+
+fn convert_static_image_audio_scene_texture(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    source: &str,
+    report: &mut ConversionReport,
+) -> Result<String, ConversionError> {
+    let relative = normalize_relative_path(source)?;
+    let source_path = project.root.join(relative);
+    if !source_path.is_file() {
+        return Err(ConversionError::MissingFile(source_path));
+    }
+    let dest_dir = output_dir.join("assets");
+    fs::create_dir_all(&dest_dir).map_err(ConversionError::CreateDir)?;
+    let dest = dest_dir.join("wallpaper.gtex");
+    convert_png_to_native_gtex(&source_path, &dest).map_err(|err| {
+        ConversionError::InvalidProject(format!(
+            "static image audio scene requires an image that can be converted offline to native BC7 .gtex: {}: {err}",
+            source_path.display()
+        ))
+    })?;
+    let package_path = path_to_package_string(dest.strip_prefix(output_dir).unwrap_or(&dest));
+    push_unique(
+        &mut report.converted_features,
+        "static-image-bc7-gtex-conversion",
+    );
+    report.generated_assets.push(package_path.clone());
+    Ok(package_path)
 }
 
 fn write_static_image_audio_scene_document(
@@ -7209,22 +7233,22 @@ fn key_requests_audio(key: &str, value: &Value) -> bool {
     match value {
         Value::Bool(enabled) => *enabled,
         Value::Number(number) => number.as_f64().is_some_and(|value| value > 0.0),
-        Value::String(value) => string_requests_audio(value),
-        Value::Array(values) => values.iter().any(value_requests_audio),
-        Value::Object(object) => object.values().any(value_requests_audio),
+        Value::String(value) => audio_field_string_requests_audio(value),
+        Value::Array(values) => values.iter().any(audio_field_value_requests_audio),
+        Value::Object(object) => object.values().any(audio_field_value_requests_audio),
         Value::Null => false,
     }
 }
 
-fn value_requests_audio(value: &Value) -> bool {
+fn audio_field_value_requests_audio(value: &Value) -> bool {
     match value {
         Value::Bool(enabled) => *enabled,
         Value::Number(number) => number.as_f64().is_some_and(|value| value > 0.0),
-        Value::String(value) => string_requests_audio(value),
-        Value::Array(values) => values.iter().any(value_requests_audio),
-        Value::Object(object) => object
-            .iter()
-            .any(|(key, value)| key_requests_audio(key, value) || value_requests_audio(value)),
+        Value::String(value) => audio_field_string_requests_audio(value),
+        Value::Array(values) => values.iter().any(audio_field_value_requests_audio),
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            key_requests_audio(key, value) || audio_field_value_requests_audio(value)
+        }),
         Value::Null => false,
     }
 }
@@ -7266,7 +7290,7 @@ fn collect_static_image_audio_sources_from_value(
                 collect_static_image_audio_sources_from_value(value, in_audio_field, sources);
             }
         }
-        Value::String(source) if in_audio_field && is_audio_path(source) => {
+        Value::String(source) if in_audio_field && is_audio_field_media_path(source) => {
             sources.insert(source.clone());
         }
         _ => {}
@@ -7280,7 +7304,15 @@ fn is_audio_path(value: &str) -> bool {
         .is_some_and(is_audio_extension)
 }
 
-fn string_requests_audio(value: &str) -> bool {
+fn is_audio_field_media_path(value: &str) -> bool {
+    is_audio_path(value) || is_video_path(value)
+}
+
+fn audio_field_string_requests_audio(value: &str) -> bool {
+    string_requests_audio_with_path_match(value, is_audio_field_media_path)
+}
+
+fn string_requests_audio_with_path_match(value: &str, path_match: impl Fn(&str) -> bool) -> bool {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return false;
@@ -7292,11 +7324,11 @@ fn string_requests_audio(value: &str) -> bool {
     ) {
         return false;
     }
-    Path::new(trimmed)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(is_audio_extension)
-        .unwrap_or(true)
+    if Path::new(trimmed).extension().is_some() {
+        path_match(trimmed)
+    } else {
+        true
+    }
 }
 
 fn is_audio_extension(extension: &str) -> bool {
@@ -7623,6 +7655,22 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn write_test_png(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let rgba = [
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ];
+        let file = fs::File::create(path).unwrap();
+        let writer = std::io::BufWriter::new(file);
+        let mut encoder = png::Encoder::new(writer, 2, 2);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&rgba).unwrap();
+    }
+
     #[test]
     fn converts_static_image_project() {
         let source = TestDir::new("we-static-source");
@@ -7746,7 +7794,7 @@ mod tests {
         let source = TestDir::new("we-static-audio-source");
         let output = TestDir::new("we-static-audio-output");
         output.remove();
-        source.write_file("wallpaper.png", "not real png");
+        write_test_png(&source.path().join("wallpaper.png"));
         source.write_file("music.ogg", "not real ogg");
         source.write_file(
             PROJECT_FILE,
@@ -7767,7 +7815,7 @@ mod tests {
         assert_eq!(manifest["entry"]["source"], "assets/scene.gscene.json");
         assert!(manifest["entry"].get("max_fps").is_none());
         assert_eq!(manifest["runtime"]["allow_audio"], true);
-        assert!(output.path().join("assets/wallpaper.png").exists());
+        assert!(output.path().join("assets/wallpaper.gtex").exists());
         assert!(output.path().join("assets/audio-cue-0.ogg").exists());
 
         let scene: Value = serde_json::from_str(
@@ -7775,7 +7823,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(scene["resources"][0]["type"], "image");
-        assert_eq!(scene["resources"][0]["source"], "assets/wallpaper.png");
+        assert_eq!(scene["resources"][0]["source"], "assets/wallpaper.gtex");
         assert_eq!(scene["resources"][1]["type"], "audio");
         assert_eq!(scene["resources"][1]["source"], "assets/audio-cue-0.ogg");
         assert_eq!(scene["nodes"][0]["type"], "image");
@@ -7801,6 +7849,53 @@ mod tests {
             !report
                 .unsupported_features
                 .contains(&"audio-runtime".to_owned())
+        );
+    }
+
+    #[test]
+    fn converts_static_image_mp4_audio_field_to_scene_audio_cue() {
+        let source = TestDir::new("we-static-mp4-audio-source");
+        let output = TestDir::new("we-static-mp4-audio-output");
+        output.remove();
+        write_test_png(&source.path().join("wallpaper.png"));
+        source.write_file("music.mp4", "not real mp4");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "image",
+              "title": "Static With MP4 Audio",
+              "file": "wallpaper.png",
+              "audio": "music.mp4"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(output.path().join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(manifest["kind"], "scene");
+        assert_eq!(manifest["entry"]["type"], "scene");
+        assert_eq!(manifest["runtime"]["allow_audio"], true);
+        assert!(output.path().join("assets/wallpaper.gtex").exists());
+        assert!(output.path().join("assets/audio-cue-0.mp4").exists());
+
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene["resources"][0]["source"], "assets/wallpaper.gtex");
+        assert_eq!(scene["resources"][1]["type"], "audio");
+        assert_eq!(scene["resources"][1]["source"], "assets/audio-cue-0.mp4");
+        assert_eq!(scene["nodes"][0]["audio"][0]["resource"], "static-audio-0");
+
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"static-image-bc7-gtex-conversion".to_owned())
         );
     }
 
@@ -7914,6 +8009,8 @@ exit 0
                 .unwrap();
         assert_eq!(manifest["kind"], "video");
         assert_eq!(manifest["entry"]["source"], "assets/loop.mp4");
+        assert_eq!(manifest["entry"]["muted"], true);
+        assert_eq!(manifest["runtime"]["allow_audio"], false);
         assert_eq!(manifest["entry"]["poster"], "previews/poster.svg");
         assert_eq!(manifest["preview"]["poster"], "previews/poster.svg");
         assert_eq!(manifest["preview"]["thumbnail"], "previews/thumbnail.svg");
@@ -7934,6 +8031,7 @@ exit 0
                 .iter()
                 .any(|warning| warning.contains("metadata-based video poster"))
         );
+        assert!(!report.detected_features.contains(&"audio".to_owned()));
     }
 
     #[test]
