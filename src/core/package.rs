@@ -292,6 +292,7 @@ fn should_store(path: &Path) -> bool {
                     | "jpg"
                     | "jpeg"
                     | "png"
+                    | "gtex"
                     | "gif"
                     | "mp4"
                     | "m4v"

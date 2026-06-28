@@ -20,6 +20,7 @@ use super::features::{
     NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     NativeVulkanVulkanaliaVulkan14PropertySnapshot, native_vulkan_vulkanalia_core_feature_snapshot,
     native_vulkan_vulkanalia_descriptor_heap_device_features,
+    native_vulkan_vulkanalia_vulkan10_device_features,
     native_vulkan_vulkanalia_vulkan12_device_features,
     native_vulkan_vulkanalia_vulkan13_device_features,
     native_vulkan_vulkanalia_vulkan14_device_features,
@@ -597,6 +598,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_present_devi
         .map(|extension| extension.as_ptr())
         .collect::<Vec<_>>();
 
+    let core10_features =
+        native_vulkan_vulkanalia_vulkan10_device_features(feature_selection.core_features);
     let mut vulkan12_features =
         native_vulkan_vulkanalia_vulkan12_device_features(feature_selection.core_features);
     let mut vulkan13_features =
@@ -634,6 +637,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_present_devi
     let mut device_create_info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queue_create_infos)
         .enabled_extension_names(&extension_name_ptrs);
+    if feature_selection
+        .core_features
+        .enables_vulkan_1_0_features()
+    {
+        device_create_info = device_create_info.enabled_features(&core10_features);
+    }
     if feature_selection
         .core_features
         .enables_vulkan_1_2_features()

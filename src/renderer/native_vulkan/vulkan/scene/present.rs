@@ -54,14 +54,15 @@ use super::scene_draw_pass::{
     native_vulkan_vulkanalia_record_scene_solid_quad_command_buffer,
 };
 use super::scene_sampled_image::{
-    NativeVulkanVulkanaliaSceneDecodedRgbaImage,
+    NativeVulkanVulkanaliaSceneNativeTexture,
     NativeVulkanVulkanaliaSceneSampledImageDescriptorStrategySnapshot,
     NativeVulkanVulkanaliaSceneSampledImageResourceSnapshot,
     NativeVulkanVulkanaliaSceneSampledImageSamplerMode, VulkanaliaSceneSampledImageResources,
     native_vulkan_vulkanalia_create_scene_sampled_image_resources,
-    native_vulkan_vulkanalia_decode_scene_rgba_image,
     native_vulkan_vulkanalia_destroy_scene_sampled_image_resources,
+    native_vulkan_vulkanalia_load_scene_native_texture,
     native_vulkan_vulkanalia_scene_sampled_image_descriptor_strategy,
+    native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap,
 };
 use super::swapchain::{
     NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
@@ -793,6 +794,21 @@ fn with_vulkanalia_scene_sampled_image_present(
     };
     let sampled_image_sources =
         scene_sampled_image_sources(&options.source, options.geometry.as_ref());
+    if !present_device
+        .feature_selection
+        .core_features
+        .texture_compression_bc
+    {
+        destroy_scene_solid_quad_frame_resources(device, frame_resources);
+        unsafe {
+            device.destroy_swapchain_khr(swapchain, None);
+            present_device.device.destroy_device(None);
+        }
+        return Err(
+            "scene sampled-image runtime requires textureCompressionBC for native BC7 .gtex resources"
+                .to_owned(),
+        );
+    }
     let descriptor_strategy = native_vulkan_vulkanalia_scene_sampled_image_descriptor_strategy(
         present_device.feature_selection.core_features,
         present_device.feature_selection.vulkan_1_4_properties,
@@ -836,8 +852,8 @@ fn with_vulkanalia_scene_sampled_image_present(
     };
     let memory_properties =
         unsafe { instance.get_physical_device_memory_properties(selection.physical_device) };
-    let decoded_images = match scene_sampled_image_decode_sources(&sampled_image_sources) {
-        Ok(decoded_images) => decoded_images,
+    let native_textures = match scene_sampled_image_load_sources(&sampled_image_sources) {
+        Ok(native_textures) => native_textures,
         Err(err) => {
             native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources(
                 device, pipeline,
@@ -850,11 +866,11 @@ fn with_vulkanalia_scene_sampled_image_present(
             return Err(err);
         }
     };
-    let source_extent = decoded_images
+    let source_extent = native_textures
         .first()
-        .map(|decoded| vk::Extent2D {
-            width: decoded.width,
-            height: decoded.height,
+        .map(|texture| vk::Extent2D {
+            width: texture.width,
+            height: texture.height,
         })
         .unwrap_or(vk::Extent2D {
             width: 0,
@@ -901,7 +917,7 @@ fn with_vulkanalia_scene_sampled_image_present(
         }
     };
     let mut sampled_images = Vec::new();
-    for (resource_index, decoded) in decoded_images.iter().enumerate() {
+    for (resource_index, texture) in native_textures.into_iter().enumerate() {
         let resource = match native_vulkan_vulkanalia_create_scene_sampled_image_resources(
             device,
             &memory_properties,
@@ -912,12 +928,13 @@ fn with_vulkanalia_scene_sampled_image_present(
                 &geometry.draw_steps,
                 options.fit,
             ),
-            decoded.source.display().to_string(),
+            texture.source.display().to_string(),
             vk::Extent2D {
-                width: decoded.width,
-                height: decoded.height,
+                width: texture.width,
+                height: texture.height,
             },
-            &decoded.bytes,
+            texture.format,
+            &texture.bytes,
         ) {
             Ok(resources) => resources,
             Err(err) => {
@@ -940,6 +957,7 @@ fn with_vulkanalia_scene_sampled_image_present(
         };
         sampled_images.push(resource);
     }
+    native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
     let descriptor_heap = if use_descriptor_heap_primary_path {
         match create_scene_sampled_image_descriptor_heap_resources(
             device,
@@ -2750,12 +2768,12 @@ fn scene_sampled_image_sources(
         .unwrap_or_else(|| vec![source.clone()])
 }
 
-fn scene_sampled_image_decode_sources(
+fn scene_sampled_image_load_sources(
     sources: &[PathBuf],
-) -> Result<Vec<NativeVulkanVulkanaliaSceneDecodedRgbaImage>, String> {
+) -> Result<Vec<NativeVulkanVulkanaliaSceneNativeTexture>, String> {
     sources
         .iter()
-        .map(|source| native_vulkan_vulkanalia_decode_scene_rgba_image(source))
+        .map(|source| native_vulkan_vulkanalia_load_scene_native_texture(source))
         .collect()
 }
 

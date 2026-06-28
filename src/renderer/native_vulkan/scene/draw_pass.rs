@@ -2677,7 +2677,7 @@ mod tests {
     #[test]
     fn draw_pass_plan_uses_sampled_image_texture_region_uvs() {
         let mut image = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
-        image.source = Some(PathBuf::from("/tmp/atlas.png"));
+        image.source = Some(PathBuf::from("/tmp/atlas.gtex"));
         image.width = Some(2160.0);
         image.height = Some(1440.0);
         image.texture_region = Some(SceneTextureRegion {
@@ -2731,7 +2731,7 @@ mod tests {
         clear.width = Some(2160.0);
         clear.height = Some(1440.0);
         let mut image = draw_op(1, NativeVulkanSceneDrawOpKind::Image);
-        image.source = Some(PathBuf::from("/tmp/atlas.png"));
+        image.source = Some(PathBuf::from("/tmp/atlas.gtex"));
         image.width = Some(2160.0);
         image.height = Some(1440.0);
         image.texture_region = Some(SceneTextureRegion {

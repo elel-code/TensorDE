@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use crate::core::{SceneSystemStatus, SceneTextureRegion};
 use crate::renderer::{SceneRenderAudioCue, SceneWallpaperPlan, SceneWallpaperRuntimeSampler};
 
 use super::super::audio::clock::{
@@ -103,11 +104,30 @@ pub struct NativeVulkanSceneVideoBridgeOptions {
 fn native_vulkan_scene_dynamic_sampler(
     plan: &SceneWallpaperPlan,
 ) -> Result<Option<SceneWallpaperRuntimeSampler>, NativeVulkanError> {
-    if plan.timeline_animation_count == 0 && plan.timeline_animated_layer_count == 0 {
+    if !native_vulkan_scene_plan_needs_dynamic_sampler(plan) {
         return Ok(None);
     }
     SceneWallpaperRuntimeSampler::from_plan(plan)
         .map_err(|err| NativeVulkanError::Scene(format!("prepare dynamic scene sampler: {err}")))
+}
+
+fn native_vulkan_scene_plan_needs_dynamic_sampler(plan: &SceneWallpaperPlan) -> bool {
+    let particle_runtime_active = matches!(
+        plan.scene_systems.particles,
+        SceneSystemStatus::Detected | SceneSystemStatus::Ready
+    );
+    plan.timeline_animation_count > 0
+        || plan.timeline_animated_layer_count > 0
+        || particle_runtime_active
+        || plan.layers.iter().any(|layer| {
+            layer
+                .texture_region
+                .is_some_and(native_vulkan_scene_texture_region_is_animated)
+        })
+}
+
+fn native_vulkan_scene_texture_region_is_animated(region: SceneTextureRegion) -> bool {
+    region.frame_count > 1 && region.fps.is_some_and(|fps| fps.is_finite() && fps > 0.0)
 }
 
 fn native_vulkan_scene_dynamic_solid_geometry(
@@ -664,7 +684,7 @@ fn native_vulkan_scene_video_extent(option_extent: u32, layer_extent: Option<f64
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{FitMode, SceneNodeKind, SceneSystems, SceneTransform};
+    use crate::core::{FitMode, SceneNodeKind, SceneSystems, SceneTextureRegion, SceneTransform};
     use crate::renderer::{SceneDisplayPlan, SceneRenderAudioCue, SceneRenderLayer};
     use std::path::PathBuf;
 
@@ -786,6 +806,28 @@ mod tests {
             route_for_layers(vec![background, overlay]).unwrap(),
             NativeVulkanScenePresentRouteKind::SampledImage
         );
+    }
+
+    #[test]
+    fn animated_texture_regions_enable_dynamic_scene_sampling() {
+        let mut image = layer("atlas", SceneNodeKind::Image);
+        image.source = Some(PathBuf::from("/tmp/atlas.gtex"));
+        image.texture_region = Some(SceneTextureRegion {
+            u_min: 0.0,
+            v_min: 0.0,
+            u_max: 0.25,
+            v_max: 0.25,
+            frame_index: 0,
+            frame_count: 12,
+            columns: 4,
+            rows: 3,
+            fps: Some(12.0),
+            loop_playback: true,
+        });
+
+        let plan = plan(vec![image]);
+
+        assert!(native_vulkan_scene_plan_needs_dynamic_sampler(&plan));
     }
 
     #[test]

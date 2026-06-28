@@ -3313,7 +3313,7 @@ mod tests {
         DynamicPausePolicy, GilderConfig, OutputConfig, OutputPerformanceConfig, PerformanceConfig,
         PowerPolicy, VideoDecoderPolicy,
     };
-    use crate::core::pack_gwp;
+    use crate::core::{SceneSystemStatus, pack_gwp};
     use crate::desktop::{DesktopCursorParallax, DesktopOutput, PowerState};
     use crate::policy::{DecisionReason, PerformanceDecision, RenderMode};
     use crate::state::{OutputState, WallpaperAssignment};
@@ -5360,6 +5360,39 @@ exit 0
     }
 
     #[test]
+    fn scene_runtime_sampler_resamples_particle_layers_from_gscene_source() {
+        let test_dir = TestDir::new("gilder-scene-particle-sampler");
+        let package_dir = test_dir.path.join("scene-particles.gwpdir");
+        write_scene_particle_gwpdir(&package_dir);
+        let plan = scene_wallpaper_plan_from_gscene_path(
+            "eDP-1".to_owned(),
+            &package_dir,
+            package_dir.join("assets/scene.gscene.json"),
+            Some(60),
+            0,
+            Some(FitMode::Cover),
+        )
+        .unwrap();
+        let sampler = SceneWallpaperRuntimeSampler::from_plan(&plan)
+            .unwrap()
+            .expect("runtime sampler");
+
+        let first = sampler.sample_plan(0).unwrap();
+        let later = sampler.sample_plan(500).unwrap();
+
+        assert_eq!(first.scene_systems.particles, SceneSystemStatus::Ready);
+        assert_eq!(first.layers.len(), 4);
+        assert_eq!(later.layers.len(), 4);
+        assert!(
+            first
+                .layers
+                .iter()
+                .all(|layer| layer.kind == SceneNodeKind::Rectangle)
+        );
+        assert_ne!(first.layers[0].transform, later.layers[0].transform);
+    }
+
+    #[test]
     fn web_fallback_builds_static_plan() {
         let test_dir = TestDir::new("gilder-web-fallback-plan");
         let package_dir = test_dir.path.join("web-demo.gwpdir");
@@ -7086,6 +7119,55 @@ void main() {}
             "id": "org.example.scene-animation",
             "version": "1.0.0",
             "title": "Scene Animation",
+            "kind": "scene",
+            "entry": {
+                "type": "scene",
+                "source": "assets/scene.gscene.json",
+                "max_fps": 60
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_scene_particle_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(
+            path.join("assets/scene.gscene.json"),
+            br##"{
+              "size": { "width": 640, "height": 360 },
+              "systems": { "particles": "ready" },
+              "nodes": [
+                {
+                  "id": "sparks",
+                  "type": "particle-emitter",
+                  "transform": { "x": 320, "y": 180 },
+                  "properties": {
+                    "particle": {
+                      "count": 4,
+                      "seed": 7,
+                      "lifetime_ms": 1000,
+                      "size": 8,
+                      "speed": 20,
+                      "spread_deg": 45,
+                      "fade": false,
+                      "color": "#ffaa00"
+                    }
+                  }
+                }
+              ]
+            }"##,
+        )
+        .unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.scene-particles",
+            "version": "1.0.0",
+            "title": "Scene Particles",
             "kind": "scene",
             "entry": {
                 "type": "scene",

@@ -18,6 +18,13 @@ const FFPROBE_BINARY: &str = "ffprobe";
 const VIDEO_POSTER_WIDTH: u32 = 1920;
 const VIDEO_THUMBNAIL_WIDTH: u32 = 512;
 const FEATURE_SCAN_MAX_BYTES: u64 = 2 * 1024 * 1024;
+const GILDER_SCENE_TEXTURE_MAGIC: &[u8; 8] = b"GDTEX002";
+const GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK: u32 = 7;
+const GILDER_SCENE_TEXTURE_MIP_COUNT: u32 = 1;
+const BC_BLOCK_TEXELS: u32 = 4;
+const BC7_BLOCK_BYTES: usize = 16;
+const BC7_MODE6_INDEX_WEIGHTS: [u16; 16] =
+    [0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64];
 const STATIC_IMAGE_VARIANTS: &[StaticImageVariantSpec] = &[
     StaticImageVariantSpec {
         id: "landscape-1080p",
@@ -335,7 +342,7 @@ fn convert_scene(
     record_scene_runtime_gaps(report);
     record_full_scene_runtime_boundary(report, Some(&original_scene.package_path));
     report.warnings.push(format!(
-        "Converted Scene project to a first-class Gilder scene document; original scene metadata was preserved at {}. Native SceneScript, shaders, particles, parallax, audio response, and complex effects are represented as detected unsupported scene systems until their runtimes are implemented.",
+        "Converted Scene project to a first-class Gilder scene document; original scene metadata was preserved at {}. Native particle emitter parameters are lowered into the gscene particle runtime when present; SceneScript, shaders, audio response, and complex effect graphs remain explicit scene systems until their native runtimes are implemented.",
         original_scene.package_path
     ));
 
@@ -883,7 +890,7 @@ fn write_scene_document_to(
         "timelines": context.timelines,
         "property_bindings": context.property_bindings,
         "systems": scene_system_statuses(report),
-        "native_lowering": scene_native_lowering(),
+        "native_lowering": scene_native_lowering(report),
         "unsupported_features": scene_unsupported_features(report, context.unsupported_features)
     });
     fs::write(
@@ -1063,7 +1070,12 @@ fn scene_import_metadata(source_scene: Option<&Value>) -> Value {
             if !scene_sound_sources_from_object(object).is_empty() {
                 audio_object_count += 1;
             }
-            if object.get("particle").is_some() {
+            if object.get("particle").is_some()
+                || string_field(object, &["type", "class", "kind"]).is_some_and(|kind| {
+                    let kind = kind.to_ascii_lowercase();
+                    kind.contains("particle") || kind.contains("emitter")
+                })
+            {
                 particle_object_count += 1;
             }
             effect_count += object
@@ -2607,7 +2619,13 @@ fn scene_node_from_object(
     if let Some(source_model) = &source_model
         && let Some(properties) = &source_model.render_properties
     {
-        node.insert("properties".to_owned(), properties.clone());
+        scene_merge_node_properties(&mut node, properties.clone());
+    }
+    if kind == "particle-emitter"
+        && let Some(properties) = scene_particle_properties_from_object(object)
+    {
+        scene_merge_node_properties(&mut node, properties);
+        push_unique(&mut report.converted_features, "native-particle-runtime");
     }
     if let Some(source_path) = &source_path {
         if let Some(resource_id) = scene_copy_resource(
@@ -2647,10 +2665,15 @@ fn scene_node_from_object(
     if !children.is_empty() {
         node.insert("children".to_owned(), Value::Array(children));
     }
-    if matches!(
-        kind,
-        "shader" | "particle-emitter" | "audio-response" | "script" | "unknown"
-    ) {
+    let native_particle_ready = kind == "particle-emitter"
+        && node.get("properties").is_some_and(|properties| {
+            properties
+                .as_object()
+                .is_some_and(|properties| properties.contains_key("particle"))
+        });
+    if matches!(kind, "shader" | "audio-response" | "script" | "unknown")
+        || (kind == "particle-emitter" && !native_particle_ready)
+    {
         scene_push_unsupported(
             context,
             kind,
@@ -2663,6 +2686,93 @@ fn scene_node_from_object(
         );
     }
     Value::Object(node)
+}
+
+fn scene_merge_node_properties(node: &mut Map<String, Value>, properties: Value) {
+    let Some(new_properties) = properties.as_object() else {
+        return;
+    };
+    let entry = node
+        .entry("properties".to_owned())
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Some(existing) = entry.as_object_mut() else {
+        *entry = Value::Object(new_properties.clone());
+        return;
+    };
+    for (key, value) in new_properties {
+        existing.insert(key.clone(), value.clone());
+    }
+}
+
+fn scene_particle_properties_from_object(object: &Map<String, Value>) -> Option<Value> {
+    let type_hint = string_field(object, &["type", "class", "kind"])
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let source = string_field(object, &["particle", "emitter"]);
+    if source.is_none() && !type_hint.contains("particle") && !type_hint.contains("emitter") {
+        return None;
+    }
+
+    let mut particle = Map::new();
+    if let Some(source) = source {
+        particle.insert("source".to_owned(), Value::String(source));
+    }
+    if let Some(seed) = object
+        .get("id")
+        .and_then(value_to_i64)
+        .and_then(|value| u64::try_from(value).ok())
+    {
+        particle.insert("seed".to_owned(), json!(seed));
+    }
+    if let Some(size) = scene_size_component_from_object(object, 0)
+        && size.is_finite()
+        && size > 0.0
+    {
+        particle.insert("spawn_width".to_owned(), json!(size));
+    }
+    if let Some(size) = scene_size_component_from_object(object, 1)
+        && size.is_finite()
+        && size > 0.0
+    {
+        particle.insert("spawn_height".to_owned(), json!(size));
+    }
+    if let Some(shape) = string_field(object, &["shape"]) {
+        particle.insert("shape".to_owned(), Value::String(shape));
+    }
+    if let Some(instance_override) = object
+        .get("instanceoverride")
+        .or_else(|| object.get("instanceOverride"))
+        .and_then(Value::as_object)
+    {
+        scene_particle_insert_number(instance_override, &mut particle, "count", "count");
+        scene_particle_insert_number(instance_override, &mut particle, "rate", "rate");
+        scene_particle_insert_number(instance_override, &mut particle, "speed", "speed");
+        scene_particle_insert_number(instance_override, &mut particle, "size", "size");
+        scene_particle_insert_number(instance_override, &mut particle, "lifetime", "lifetime");
+    }
+    scene_particle_insert_number(object, &mut particle, "count", "count");
+    scene_particle_insert_number(object, &mut particle, "rate", "rate");
+    scene_particle_insert_number(object, &mut particle, "speed", "speed");
+    scene_particle_insert_number(object, &mut particle, "lifetime", "lifetime");
+
+    Some(json!({ "particle": particle }))
+}
+
+fn scene_particle_insert_number(
+    source: &Map<String, Value>,
+    particle: &mut Map<String, Value>,
+    source_key: &str,
+    target_key: &str,
+) {
+    if particle.contains_key(target_key) {
+        return;
+    }
+    let Some(value) = source.get(source_key).and_then(value_to_f64_unwrapped) else {
+        return;
+    };
+    if value.is_finite() {
+        particle.insert(target_key.to_owned(), json!(value));
+    }
 }
 
 fn scene_child_nodes_from_object(
@@ -3641,10 +3751,10 @@ fn scene_copy_decoded_tex_resource_as(
             .push(format!("Failed to create scene resource directory: {err}."));
         return None;
     }
-    let dest = dest_dir.join(format!("{resource_id}.png"));
-    if let Err(err) = scene_write_rgba_png(&dest, &decoded) {
+    let dest = dest_dir.join(format!("{resource_id}.gtex"));
+    if let Err(err) = scene_write_bc7_gtex(&dest, &decoded) {
         report.errors.push(format!(
-            "Failed to write decoded scene .tex resource {} to {}: {err}.",
+            "Failed to write native BC7 scene texture {} to {}: {err}.",
             source.display(),
             dest.display()
         ));
@@ -3661,7 +3771,7 @@ fn scene_copy_decoded_tex_resource_as(
     }));
     push_unique(
         &mut context.converted_features,
-        "scene-we-tex-rgba-frame-decode",
+        "scene-we-tex-bc7-gpu-texture",
     );
     Some(SceneDecodedTexResource {
         resource_id,
@@ -3782,7 +3892,7 @@ fn scene_decode_we_tex_image(bytes: &[u8]) -> Result<SceneWeTexImage, String> {
     })
 }
 
-fn scene_write_rgba_png(path: &Path, image: &SceneWeTexImage) -> Result<(), String> {
+fn scene_write_bc7_gtex(path: &Path, image: &SceneWeTexImage) -> Result<(), String> {
     let expected_len = scene_rgba_len(image.width, image.height)?;
     if image.rgba.len() != expected_len {
         return Err(format!(
@@ -3790,15 +3900,207 @@ fn scene_write_rgba_png(path: &Path, image: &SceneWeTexImage) -> Result<(), Stri
             image.rgba.len()
         ));
     }
-    let file = fs::File::create(path).map_err(|err| err.to_string())?;
-    let writer = io::BufWriter::new(file);
-    let mut encoder = png::Encoder::new(writer, image.width, image.height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().map_err(|err| err.to_string())?;
-    writer
-        .write_image_data(&image.rgba)
-        .map_err(|err| err.to_string())
+    let payload = scene_encode_bc7(&image.rgba, image.width, image.height)?;
+    let mut bytes = Vec::with_capacity(32 + payload.len());
+    bytes.extend_from_slice(GILDER_SCENE_TEXTURE_MAGIC);
+    bytes.extend_from_slice(&image.width.to_le_bytes());
+    bytes.extend_from_slice(&image.height.to_le_bytes());
+    bytes.extend_from_slice(&GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK.to_le_bytes());
+    bytes.extend_from_slice(&GILDER_SCENE_TEXTURE_MIP_COUNT.to_le_bytes());
+    bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&payload);
+    fs::write(path, bytes).map_err(|err| err.to_string())
+}
+
+fn scene_encode_bc7(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    if width == 0 || height == 0 {
+        return Err("BC7 texture dimensions must be non-zero".to_owned());
+    }
+    let expected_len = scene_rgba_len(width, height)?;
+    if rgba.len() != expected_len {
+        return Err(format!(
+            "RGBA payload has {} bytes, expected {expected_len}",
+            rgba.len()
+        ));
+    }
+    let blocks_w = width.div_ceil(BC_BLOCK_TEXELS);
+    let blocks_h = height.div_ceil(BC_BLOCK_TEXELS);
+    let block_count = usize::try_from(blocks_w)
+        .ok()
+        .and_then(|w| {
+            usize::try_from(blocks_h)
+                .ok()
+                .and_then(|h| w.checked_mul(h))
+        })
+        .ok_or_else(|| "BC7 block count overflowed".to_owned())?;
+    let mut out = Vec::with_capacity(
+        block_count
+            .checked_mul(BC7_BLOCK_BYTES)
+            .ok_or_else(|| "BC7 payload size overflowed".to_owned())?,
+    );
+    for block_y in 0..blocks_h {
+        for block_x in 0..blocks_w {
+            scene_encode_bc7_block(rgba, width, height, block_x, block_y, &mut out)?;
+        }
+    }
+    Ok(out)
+}
+
+fn scene_encode_bc7_block(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    block_x: u32,
+    block_y: u32,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    let mut pixels = [[0u8; 4]; 16];
+    for y in 0..BC_BLOCK_TEXELS {
+        for x in 0..BC_BLOCK_TEXELS {
+            let src_x = (block_x * BC_BLOCK_TEXELS + x).min(width - 1);
+            let src_y = (block_y * BC_BLOCK_TEXELS + y).min(height - 1);
+            let src = usize::try_from(src_y)
+                .ok()
+                .and_then(|row| {
+                    usize::try_from(width)
+                        .ok()
+                        .and_then(|stride| row.checked_mul(stride))
+                })
+                .and_then(|base| {
+                    usize::try_from(src_x)
+                        .ok()
+                        .and_then(|x| base.checked_add(x))
+                })
+                .and_then(|pixel| pixel.checked_mul(4))
+                .ok_or_else(|| "BC7 source pixel offset overflowed".to_owned())?;
+            let dst = usize::try_from(y * BC_BLOCK_TEXELS + x)
+                .map_err(|_| "BC7 block pixel index overflowed".to_owned())?;
+            pixels[dst].copy_from_slice(
+                rgba.get(src..src + 4)
+                    .ok_or_else(|| "BC7 source pixel range exceeded RGBA payload".to_owned())?,
+            );
+        }
+    }
+    let (mut endpoint_a, mut endpoint_b) = scene_bc7_mode6_endpoints(&pixels);
+    let palette = scene_bc7_mode6_palette(endpoint_a, endpoint_b);
+    let mut indices = scene_bc7_mode6_indices(&pixels, &palette);
+    if indices[0] >= 8 {
+        std::mem::swap(&mut endpoint_a, &mut endpoint_b);
+        for index in &mut indices {
+            *index = 15 - *index;
+        }
+    }
+    scene_pack_bc7_mode6_block(endpoint_a, endpoint_b, &indices, out);
+    Ok(())
+}
+
+fn scene_bc7_mode6_endpoints(pixels: &[[u8; 4]; 16]) -> ([u8; 4], [u8; 4]) {
+    let mut min_rgba = [255u8; 4];
+    let mut max_rgba = [0u8; 4];
+    for pixel in pixels {
+        for channel in 0..4 {
+            min_rgba[channel] = min_rgba[channel].min(pixel[channel]);
+            max_rgba[channel] = max_rgba[channel].max(pixel[channel]);
+        }
+    }
+    let endpoint_a = scene_bc7_endpoint_with_majority_pbit(min_rgba);
+    let endpoint_b = scene_bc7_endpoint_with_majority_pbit(max_rgba);
+    (endpoint_a, endpoint_b)
+}
+
+fn scene_bc7_endpoint_with_majority_pbit(endpoint: [u8; 4]) -> [u8; 4] {
+    let pbit = u8::from(
+        endpoint
+            .iter()
+            .filter(|component| **component & 1 != 0)
+            .count()
+            >= 2,
+    );
+    [
+        scene_bc7_quantize_7_with_pbit(endpoint[0], pbit),
+        scene_bc7_quantize_7_with_pbit(endpoint[1], pbit),
+        scene_bc7_quantize_7_with_pbit(endpoint[2], pbit),
+        scene_bc7_quantize_7_with_pbit(endpoint[3], pbit),
+    ]
+}
+
+fn scene_bc7_quantize_7_with_pbit(value: u8, pbit: u8) -> u8 {
+    let adjusted = value.saturating_add(1);
+    ((adjusted >> 1) << 1) | (pbit & 1)
+}
+
+fn scene_bc7_mode6_palette(endpoint_a: [u8; 4], endpoint_b: [u8; 4]) -> [[u8; 4]; 16] {
+    let mut palette = [[0u8; 4]; 16];
+    for (index, weight) in BC7_MODE6_INDEX_WEIGHTS.iter().copied().enumerate() {
+        for channel in 0..4 {
+            let a = u16::from(endpoint_a[channel]);
+            let b = u16::from(endpoint_b[channel]);
+            palette[index][channel] = (((64 - weight) * a + weight * b + 32) >> 6) as u8;
+        }
+    }
+    palette
+}
+
+fn scene_bc7_mode6_indices(pixels: &[[u8; 4]; 16], palette: &[[u8; 4]; 16]) -> [u8; 16] {
+    let mut indices = [0u8; 16];
+    for (pixel_index, pixel) in pixels.iter().enumerate() {
+        indices[pixel_index] = palette
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, candidate)| scene_rgba_distance_squared(pixel, candidate))
+            .map(|(index, _)| index as u8)
+            .unwrap_or(0);
+    }
+    indices
+}
+
+fn scene_rgba_distance_squared(lhs: &[u8; 4], rhs: &[u8; 4]) -> u32 {
+    (0..4)
+        .map(|channel| {
+            let delta = i32::from(lhs[channel]) - i32::from(rhs[channel]);
+            (delta * delta) as u32
+        })
+        .sum()
+}
+
+fn scene_pack_bc7_mode6_block(
+    endpoint_a: [u8; 4],
+    endpoint_b: [u8; 4],
+    indices: &[u8; 16],
+    out: &mut Vec<u8>,
+) {
+    let mut block = [0u8; 16];
+    let mut bit = 0usize;
+    scene_bc7_set_bits(&mut block, &mut bit, 6, 0);
+    scene_bc7_set_bits(&mut block, &mut bit, 1, 1);
+    for channel in 0..4 {
+        scene_bc7_set_bits(&mut block, &mut bit, 7, endpoint_a[channel] >> 1);
+        scene_bc7_set_bits(&mut block, &mut bit, 7, endpoint_b[channel] >> 1);
+    }
+    scene_bc7_set_bits(&mut block, &mut bit, 1, endpoint_a[0] & 1);
+    scene_bc7_set_bits(&mut block, &mut bit, 1, endpoint_b[0] & 1);
+    for (pixel_index, index) in indices.iter().copied().enumerate() {
+        let width = if pixel_index == 0 { 3 } else { 4 };
+        scene_bc7_set_bits(&mut block, &mut bit, width, index);
+    }
+    debug_assert_eq!(bit, 128);
+    out.extend_from_slice(&block);
+}
+
+fn scene_bc7_set_bits(block: &mut [u8; 16], bit: &mut usize, width: usize, value: u8) {
+    if width == 0 {
+        return;
+    }
+    debug_assert!(*bit + width <= 128);
+    debug_assert!(width <= 8);
+    debug_assert!(u16::from(value) < (1u16 << width));
+    for offset in 0..width {
+        if value & (1u8 << offset) != 0 {
+            let absolute = *bit + offset;
+            block[absolute >> 3] |= 1u8 << (absolute & 7);
+        }
+    }
+    *bit += width;
 }
 
 fn scene_material_spritesheet_enabled(material_json: &Value) -> bool {
@@ -4217,6 +4519,14 @@ fn scene_system_statuses(report: &ConversionReport) -> Value {
 }
 
 fn scene_system_status(report: &ConversionReport, feature: &str) -> &'static str {
+    if feature == "particles"
+        && report
+            .converted_features
+            .iter()
+            .any(|converted| converted == "native-particle-runtime")
+    {
+        return "ready";
+    }
     if report
         .detected_features
         .iter()
@@ -4228,8 +4538,21 @@ fn scene_system_status(report: &ConversionReport, feature: &str) -> &'static str
     }
 }
 
-fn scene_native_lowering() -> Value {
-    let status = FullSceneConversionStatus::native_vulkan_scene_boundary();
+fn scene_native_lowering(report: &ConversionReport) -> Value {
+    let mut status = FullSceneConversionStatus::native_vulkan_scene_boundary();
+    if report
+        .converted_features
+        .iter()
+        .any(|feature| feature == "native-particle-runtime")
+    {
+        push_unique(
+            &mut status.completed_boundaries,
+            "native-particle-system-runtime",
+        );
+        status
+            .pending_boundaries
+            .retain(|boundary| boundary != "particle-systems");
+    }
     json!({
         "target_runtime": status.target_runtime,
         "current_runtime": status.current_runtime,
@@ -4371,6 +4694,14 @@ fn record_scene_runtime_gaps(report: &mut ConversionReport) {
             .iter()
             .any(|feature| feature == detected)
         {
+            if detected == "particles"
+                && report
+                    .converted_features
+                    .iter()
+                    .any(|converted| converted == "native-particle-runtime")
+            {
+                continue;
+            }
             push_unique(&mut report.unsupported_features, unsupported);
         }
     }
@@ -5643,10 +5974,7 @@ impl WallpaperEngineProject {
             .unwrap_or_default();
         let mut project_root = root.to_path_buf();
         let mut scene_package = None;
-        if source_type == SourceType::Scene
-            && wallpaper_engine_scene_entry_missing(root, entry_file.as_deref())
-            && root.join(SCENE_PACKAGE_FILE).is_file()
-        {
+        if source_type == SourceType::Scene && root.join(SCENE_PACKAGE_FILE).is_file() {
             let imported = extract_wallpaper_engine_scene_package(
                 root,
                 &project_json,
@@ -5725,15 +6053,6 @@ impl Drop for WallpaperEngineProject {
             let _ = fs::remove_dir_all(&scene_package.staging_root);
         }
     }
-}
-
-fn wallpaper_engine_scene_entry_missing(root: &Path, entry_file: Option<&str>) -> bool {
-    let Some(entry_file) = entry_file else {
-        return false;
-    };
-    normalize_relative_path(entry_file)
-        .map(|relative| !root.join(relative).is_file())
-        .unwrap_or(false)
 }
 
 fn extract_wallpaper_engine_scene_package(
@@ -6368,7 +6687,7 @@ impl FullSceneConversionStatus {
             target_runtime: "native-vulkan-full-scene".to_owned(),
             current_runtime: "native-vulkan-scene-runtime".to_owned(),
             progress_estimate_percent: 99,
-            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, native scene graph transform/opacity execution, WE text/value wrappers, visible property bindings, shape/solid/radius objects, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, per-frame fixed-topology timeline geometry updates, geometry field animation, parallax depth, and WE TEXV0005/TEXB0004 RGBA textures including spritesheet atlases into gscene text/property/shape/timeline/camera/image fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime, and explicit unsupported Wallpaper Engine systems without legacy fallback or preview-image scene substitution".to_owned(),
+            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, native scene graph transform/opacity execution, WE text/value wrappers, visible property bindings, shape/solid/radius objects, native deterministic particle emitter expansion, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, per-frame fixed-topology timeline geometry updates, geometry field animation, parallax depth, and WE TEXV0005/TEXB0004 textures into native BC7 .gtex GPU textures including spritesheet atlases into gscene text/property/shape/timeline/camera/image fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime, and explicit unsupported Wallpaper Engine systems without legacy fallback or preview-image scene substitution".to_owned(),
             source_scene_metadata: Vec::new(),
             completed_boundaries: vec![
                 "package-scene-detection".to_owned(),
@@ -6385,10 +6704,11 @@ impl FullSceneConversionStatus {
                 "wallpaper-engine-deterministic-scenescript-expression-lowering".to_owned(),
                 "wallpaper-engine-geometry-user-property-binding-lowering".to_owned(),
                 "wallpaper-engine-explicit-keyframe-timeline-lowering".to_owned(),
-                "wallpaper-engine-tex-rgba-frame-decode".to_owned(),
+                "wallpaper-engine-tex-bc7-gtex-conversion".to_owned(),
                 "scene-we-spritesheet-atlas-runtime".to_owned(),
                 "scene-geometry-field-animation-runtime".to_owned(),
                 "per-frame-timeline-geometry-runtime".to_owned(),
+                "native-particle-system-runtime".to_owned(),
                 "parallax-property-camera-model".to_owned(),
                 "native-vulkan-sampled-image-scene-path".to_owned(),
                 "descriptor-heap-sampled-image-resources".to_owned(),
@@ -6416,7 +6736,6 @@ impl FullSceneConversionStatus {
             pending_boundaries: vec![
                 "arbitrary-scenescript-runtime".to_owned(),
                 "shader-material-graph".to_owned(),
-                "particle-systems".to_owned(),
                 "cursor-parallax-input-source".to_owned(),
                 "audio-response-runtime".to_owned(),
                 "mixed-video-scene-composition".to_owned(),
@@ -7232,7 +7551,12 @@ void main() {}
         assert!(
             full_scene
                 .completed_boundaries
-                .contains(&"wallpaper-engine-tex-rgba-frame-decode".to_owned())
+                .contains(&"native-particle-system-runtime".to_owned())
+        );
+        assert!(
+            full_scene
+                .completed_boundaries
+                .contains(&"wallpaper-engine-tex-bc7-gtex-conversion".to_owned())
         );
         assert!(
             full_scene
@@ -7273,6 +7597,11 @@ void main() {}
             !full_scene
                 .pending_boundaries
                 .contains(&"timeline-animation-runtime".to_owned())
+        );
+        assert!(
+            !full_scene
+                .pending_boundaries
+                .contains(&"particle-systems".to_owned())
         );
         assert!(
             !full_scene
@@ -7407,6 +7736,88 @@ void main() {}
     }
 
     #[test]
+    fn scene_pkg_takes_precedence_over_preextracted_scene_files() {
+        let source = TestDir::new("we-scene-pkg-precedence-source");
+        let output = TestDir::new("we-scene-pkg-precedence-output");
+        output.remove();
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Packaged Scene Precedence",
+              "file": "scene.json"
+            }"#,
+        );
+        source.write_file(
+            "scene.json",
+            r#"{"objects":[{"type":"image","path":"loose.png"}]}"#,
+        );
+        source.write_file("loose.png", "wrong loose png");
+
+        let rgba = vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ];
+        let tex = test_we_tex_rgba(2, 2, &rgba);
+        source.write_bytes(
+            SCENE_PACKAGE_FILE,
+            &test_scene_pkg(&[
+                (
+                    "scene.json",
+                    br#"{"objects":[{"id":1,"name":"Packed","image":"models/renderable.json"}]}"#,
+                ),
+                (
+                    "models/renderable.json",
+                    br#"{ "material": "materials/renderable.json", "width": 2, "height": 2 }"#,
+                ),
+                (
+                    "materials/renderable.json",
+                    br#"{ "passes": [{ "textures": ["atlas"] }] }"#,
+                ),
+                ("materials/atlas.tex", &tex),
+            ]),
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene["nodes"][0]["name"], "Packed");
+        assert_eq!(scene["nodes"][0]["resource"], "resource-4-atlas-frame-0");
+        assert!(
+            scene["resources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|resource| {
+                    resource["source"]
+                        .as_str()
+                        .is_none_or(|source| !source.ends_with("loose.png"))
+                })
+        );
+        assert!(
+            output
+                .path()
+                .join("assets/scene-resources/scene/resource-4-atlas-frame-0.gtex")
+                .exists()
+        );
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-package-import".to_owned())
+        );
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-tex-bc7-gpu-texture".to_owned())
+        );
+    }
+
+    #[test]
     fn reports_scene_runtime_feature_gaps() {
         let source = TestDir::new("we-scene-feature-source");
         let output = TestDir::new("we-scene-feature-output");
@@ -7458,7 +7869,6 @@ void main() {}
         }
         for feature in [
             "scene-runtime",
-            "complex-particles",
             "timeline-animation",
             "scenescript",
             "custom-shader",
@@ -7471,6 +7881,25 @@ void main() {}
                 report.unsupported_features
             );
         }
+        assert!(
+            report
+                .converted_features
+                .contains(&"native-particle-runtime".to_owned()),
+            "missing native particle conversion marker: {:?}",
+            report.converted_features
+        );
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let particle = scene["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["type"] == "particle-emitter")
+            .expect("particle node");
+        assert_eq!(particle["properties"]["particle"]["source"], "sparks");
+        assert_eq!(scene["systems"]["particles"], "ready");
     }
 
     #[test]
@@ -7769,7 +8198,7 @@ void main() {}
         assert_eq!(scene["resources"][3]["type"], "image");
         assert_eq!(
             scene["resources"][3]["source"],
-            "assets/scene-resources/scene/resource-4-atlas-atlas.png"
+            "assets/scene-resources/scene/resource-4-atlas-atlas.gtex"
         );
         assert_eq!(
             scene["resources"][3]["role"],
@@ -7782,7 +8211,7 @@ void main() {}
         assert!(
             output
                 .path()
-                .join("assets/scene-resources/scene/resource-4-atlas-atlas.png")
+                .join("assets/scene-resources/scene/resource-4-atlas-atlas.gtex")
                 .exists()
         );
         assert!(scene["unsupported_features"].as_array().unwrap().is_empty());
@@ -7793,7 +8222,7 @@ void main() {}
         assert!(
             report
                 .converted_features
-                .contains(&"scene-we-tex-rgba-frame-decode".to_owned())
+                .contains(&"scene-we-tex-bc7-gpu-texture".to_owned())
         );
         assert!(
             report
@@ -8579,6 +9008,31 @@ void main() {}
                 .unsupported_features
                 .contains(&"executable-application".to_owned())
         );
+    }
+
+    #[test]
+    fn scene_tex_encoder_writes_native_bc7_gtex_payload() {
+        let output = TestDir::new("scene-bc7-gtex-output");
+        let image = SceneWeTexImage {
+            width: 4,
+            height: 4,
+            rgba: vec![0; scene_rgba_len(4, 4).unwrap()],
+        };
+        let path = output.path().join("transparent.gtex");
+
+        scene_write_bc7_gtex(&path, &image).unwrap();
+        let bytes = fs::read(&path).unwrap();
+
+        assert_eq!(&bytes[0..8], GILDER_SCENE_TEXTURE_MAGIC);
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 4);
+        assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()), 4);
+        assert_eq!(
+            u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
+            GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK
+        );
+        assert_eq!(u64::from_le_bytes(bytes[24..32].try_into().unwrap()), 16);
+        assert_eq!(bytes.len(), 48);
+        assert_eq!(bytes[32], 0x40);
     }
 
     struct TestDir {

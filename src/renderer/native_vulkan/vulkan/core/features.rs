@@ -32,6 +32,7 @@ pub struct NativeVulkanVulkanaliaCoreFeatureSnapshot {
     pub host_image_copy: bool,
     pub index_type_uint8: bool,
     pub shader_subgroup_rotate: bool,
+    pub texture_compression_bc: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -67,6 +68,9 @@ pub struct NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
 
 pub fn native_vulkan_vulkanalia_feature_chain_template()
 -> NativeVulkanVulkanaliaFeatureChainTemplate {
+    let core10_features = vk::PhysicalDeviceFeatures::builder()
+        .texture_compression_bc(true)
+        .build();
     let mut vulkan12_features = vk::PhysicalDeviceVulkan12Features::builder()
         .timeline_semaphore(true)
         .scalar_block_layout(true)
@@ -89,6 +93,7 @@ pub fn native_vulkan_vulkanalia_feature_chain_template()
         .descriptor_heap(true)
         .build();
     let features2 = vk::PhysicalDeviceFeatures2::builder()
+        .features(core10_features)
         .push_next(&mut vulkan12_features)
         .push_next(&mut vulkan13_features)
         .push_next(&mut vulkan14_features)
@@ -117,6 +122,7 @@ pub fn native_vulkan_vulkanalia_feature_chain_template()
             "push_descriptor",
             "host_image_copy",
             "descriptor_heap",
+            "texture_compression_bc",
         ],
     }
 }
@@ -173,6 +179,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_core_
             host_image_copy: vulkan14_features.host_image_copy != 0,
             index_type_uint8: vulkan14_features.index_type_uint8 != 0,
             shader_subgroup_rotate: vulkan14_features.shader_subgroup_rotate != 0,
+            texture_compression_bc: features2.features.texture_compression_bc != 0,
         },
         NativeVulkanVulkanaliaVulkan14PropertySnapshot {
             max_push_descriptors: vulkan14_properties.max_push_descriptors,
@@ -217,6 +224,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_core_
 }
 
 impl NativeVulkanVulkanaliaCoreFeatureSnapshot {
+    pub(in crate::renderer::native_vulkan::vulkan) fn enables_vulkan_1_0_features(self) -> bool {
+        self.texture_compression_bc
+    }
+
     pub(in crate::renderer::native_vulkan::vulkan) fn enables_vulkan_1_2_features(self) -> bool {
         self.timeline_semaphore
             || self.scalar_block_layout
@@ -242,6 +253,14 @@ impl NativeVulkanVulkanaliaCoreFeatureSnapshot {
     ) -> bool {
         self.descriptor_heap || self.descriptor_heap_capture_replay
     }
+}
+
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_vulkan10_device_features(
+    core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
+) -> vk::PhysicalDeviceFeatures {
+    vk::PhysicalDeviceFeatures::builder()
+        .texture_compression_bc(core_features.texture_compression_bc)
+        .build()
 }
 
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_vulkan12_device_features(
@@ -346,6 +365,11 @@ mod tests {
                 .requested_feature_fields
                 .contains(&"descriptor_heap")
         );
+        assert!(
+            template
+                .requested_feature_fields
+                .contains(&"texture_compression_bc")
+        );
     }
 
     #[test]
@@ -368,6 +392,7 @@ mod tests {
             host_image_copy: true,
             index_type_uint8: true,
             shader_subgroup_rotate: true,
+            texture_compression_bc: true,
         };
         let properties = NativeVulkanVulkanaliaVulkan14PropertySnapshot {
             max_push_descriptors: 32,
@@ -418,17 +443,21 @@ mod tests {
             push_descriptor: true,
             host_image_copy: true,
             descriptor_heap: true,
+            texture_compression_bc: true,
             ..NativeVulkanVulkanaliaCoreFeatureSnapshot::default()
         };
 
+        let vulkan10 = native_vulkan_vulkanalia_vulkan10_device_features(features);
         let vulkan12 = native_vulkan_vulkanalia_vulkan12_device_features(features);
         let vulkan13 = native_vulkan_vulkanalia_vulkan13_device_features(features);
         let vulkan14 = native_vulkan_vulkanalia_vulkan14_device_features(features);
         let descriptor_heap = native_vulkan_vulkanalia_descriptor_heap_device_features(features);
 
+        assert!(features.enables_vulkan_1_0_features());
         assert!(features.enables_vulkan_1_2_features());
         assert!(features.enables_vulkan_1_3_features());
         assert!(features.enables_vulkan_1_4_features());
+        assert_ne!(vulkan10.texture_compression_bc, 0);
         assert_ne!(vulkan12.timeline_semaphore, 0);
         assert_ne!(vulkan13.dynamic_rendering, 0);
         assert_ne!(vulkan14.maintenance5, 0);

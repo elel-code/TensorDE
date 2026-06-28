@@ -129,6 +129,9 @@ pub struct NativeVulkanFullSceneRuntimeSnapshot {
     pub scene_audio_cue_resource_model_ready: bool,
     pub scene_audio_response_detected: bool,
     pub scene_audio_response_ready: bool,
+    pub scene_particle_system_detected: bool,
+    pub scene_particle_system_ready: bool,
+    pub particle_runtime_layer_count: usize,
     pub cursor_parallax_input_ready: bool,
     pub scene_video_composition_required: bool,
     pub scene_video_composition_ready: bool,
@@ -669,6 +672,8 @@ fn native_vulkan_full_scene_runtime_snapshot(
         property_binding_count,
         cursor_parallax_input_ready,
         scene_audio_response_detected,
+        scene_particle_system_detected,
+        scene_particle_system_ready_from_metadata,
         scene_audio_cue_count,
     ) = match render_item {
         NativeVulkanRenderItem::Scene {
@@ -690,9 +695,14 @@ fn native_vulkan_full_scene_runtime_snapshot(
                 scene_systems.audio_response,
                 SceneSystemStatus::Detected | SceneSystemStatus::Ready
             ),
+            matches!(
+                scene_systems.particles,
+                SceneSystemStatus::Detected | SceneSystemStatus::Ready
+            ),
+            matches!(scene_systems.particles, SceneSystemStatus::Ready),
             *audio_cue_count,
         ),
-        _ => (0, 0, 0, 0, false, false, 0),
+        _ => (0, 0, 0, 0, false, false, false, false, 0),
     };
     let scene_audio_cue_resource_model_ready = scene_audio_cue_count > 0;
     let retained_resource_model_ready = matches!(
@@ -769,6 +779,13 @@ fn native_vulkan_full_scene_runtime_snapshot(
         .iter()
         .filter(|step| step.kind == "rounded-rectangle")
         .count();
+    let particle_runtime_layer_count = pass_plan
+        .quad_recording_steps
+        .iter()
+        .filter(|step| step.layer_id.contains("::particle-"))
+        .count();
+    let scene_particle_system_ready =
+        scene_particle_system_ready_from_metadata || particle_runtime_layer_count > 0;
     let solid_geometry_layer_count = pass_plan.quad_recording_steps.len();
     let sampled_image_native_layer_count = if pass_plan.sampled_image_recording_ready {
         pass_plan.sampled_image_recording_steps.len()
@@ -873,6 +890,9 @@ fn native_vulkan_full_scene_runtime_snapshot(
     if stroke_geometry_layer_count > 0 {
         completed_boundaries.push("stroke-geometry-runtime");
     }
+    if scene_particle_system_ready {
+        completed_boundaries.push("native-particle-system-runtime");
+    }
     if scene_audio_cue_resource_model_ready {
         completed_boundaries.push("scene-audio-cue-renderer-boundary");
         completed_boundaries.push("scene-audio-cue-pipewire-present-runtime");
@@ -897,9 +917,11 @@ fn native_vulkan_full_scene_runtime_snapshot(
     pending_boundaries.extend([
         "arbitrary-scenescript-runtime",
         "shader-material-graph",
-        "particle-systems",
         "pipewire-audio-response-runtime",
     ]);
+    if scene_particle_system_detected && !scene_particle_system_ready {
+        pending_boundaries.push("particle-systems");
+    }
     if !cursor_parallax_input_ready {
         pending_boundaries.push("cursor-parallax-input-source");
     }
@@ -951,6 +973,9 @@ fn native_vulkan_full_scene_runtime_snapshot(
         scene_audio_cue_resource_model_ready,
         scene_audio_response_detected,
         scene_audio_response_ready: false,
+        scene_particle_system_detected,
+        scene_particle_system_ready,
+        particle_runtime_layer_count,
         cursor_parallax_input_ready,
         scene_video_composition_required,
         scene_video_composition_ready,
@@ -1011,7 +1036,9 @@ fn native_vulkan_scene_resource_model(backend_status: &str, video_op_count: usiz
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{FitMode, SceneNodeKind, SceneSystems, SceneTextAlign, SceneTransform};
+    use crate::core::{
+        FitMode, SceneNodeKind, SceneSystemStatus, SceneSystems, SceneTextAlign, SceneTransform,
+    };
     use crate::renderer::native_vulkan::NativeVulkanRenderItem;
     use crate::renderer::{SceneDisplayPlan, SceneRenderAudioCue, SceneRenderLayer};
     use std::path::{Path, PathBuf};
@@ -1733,6 +1760,43 @@ mod tests {
                 .command_order
                 .contains(&"cmd_begin_rendering")
         );
+    }
+
+    #[test]
+    fn scene_runtime_snapshot_tracks_native_particle_layers() {
+        let mut first = scene_test_layer("sparks::particle-0", SceneNodeKind::Rectangle);
+        first.color = Some("#ffaa00".to_owned());
+        first.width = Some(8.0);
+        first.height = Some(8.0);
+        let mut second = scene_test_layer("sparks::particle-1", SceneNodeKind::Rectangle);
+        second.color = Some("#ffaa00".to_owned());
+        second.width = Some(8.0);
+        second.height = Some(8.0);
+        second.transform.x = 12.0;
+        let mut item = scene_test_item(vec![first, second], None);
+        if let NativeVulkanRenderItem::Scene { scene_systems, .. } = &mut item {
+            scene_systems.particles = SceneSystemStatus::Ready;
+        }
+
+        let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+
+        assert!(snapshot.native_draw_ready);
+        assert_eq!(snapshot.full_scene.particle_runtime_layer_count, 2);
+        assert!(snapshot.full_scene.scene_particle_system_detected);
+        assert!(snapshot.full_scene.scene_particle_system_ready);
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"native-particle-system-runtime")
+        );
+        assert!(
+            !snapshot
+                .full_scene
+                .pending_boundaries
+                .contains(&"particle-systems")
+        );
+        assert_eq!(snapshot.draw_pass_quad_recording_step_count, 2);
     }
 
     #[test]

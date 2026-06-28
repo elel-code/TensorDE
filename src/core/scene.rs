@@ -6,6 +6,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 const SCENE_VERSION: u32 = 1;
+const SCENE_PARTICLE_DEFAULT_COUNT: u32 = 64;
+const SCENE_PARTICLE_MAX_COUNT: u32 = 4096;
+const SCENE_PARTICLE_DEFAULT_LIFETIME_MS: u64 = 2_000;
+const SCENE_PARTICLE_DEFAULT_SIZE: f64 = 6.0;
+const SCENE_PARTICLE_DEFAULT_SPEED: f64 = 24.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneDocument {
@@ -559,6 +564,25 @@ impl SceneNode {
         }
         let transform = parent_transform.compose(transform);
         let opacity = (parent_opacity * opacity).clamp(0.0, 1.0);
+        if self.kind == SceneNodeKind::ParticleEmitter
+            && self.push_particle_snapshot_layers(time_ms, transform, opacity, output)
+        {
+            for child in &self.children {
+                child.push_snapshot_layers(
+                    time_ms,
+                    transform,
+                    opacity,
+                    parallax,
+                    resources,
+                    timelines,
+                    property_bindings,
+                    resolve_property,
+                    output,
+                );
+            }
+            return;
+        }
+
         if self.kind != SceneNodeKind::Group {
             let texture_region = scene_texture_region_from_properties(&self.properties, time_ms);
             output.push(SceneSnapshotLayer {
@@ -602,6 +626,208 @@ impl SceneNode {
                 output,
             );
         }
+    }
+
+    fn push_particle_snapshot_layers(
+        &self,
+        time_ms: u64,
+        transform: SceneTransform,
+        opacity: f64,
+        output: &mut Vec<SceneSnapshotLayer>,
+    ) -> bool {
+        let Some(settings) = SceneParticleEmitterSettings::from_node(self) else {
+            return false;
+        };
+        let particle_count = settings.count.min(SCENE_PARTICLE_MAX_COUNT);
+        if particle_count == 0 || opacity <= 0.0 {
+            return true;
+        }
+        for index in 0..particle_count {
+            let layer_opacity = opacity * settings.opacity_at(time_ms, index);
+            if layer_opacity <= 0.0 {
+                continue;
+            }
+            let (x, y, rotation_deg) = settings.transform_at(time_ms, index);
+            output.push(SceneSnapshotLayer {
+                id: format!("{}::particle-{index}", self.id),
+                kind: settings.shape,
+                source: None,
+                texture_region: None,
+                audio: if index == 0 {
+                    self.audio.clone()
+                } else {
+                    Vec::new()
+                },
+                color: Some(settings.color.clone()),
+                stroke_color: None,
+                stroke_width: None,
+                corner_radius: None,
+                width: Some(settings.particle_width),
+                height: Some(settings.particle_height),
+                parallax_depth: self.parallax_depth,
+                text: None,
+                font_size: None,
+                font_family: None,
+                font_weight: None,
+                text_align: None,
+                path_data: None,
+                fit: self.fit,
+                opacity: layer_opacity.clamp(0.0, 1.0),
+                transform: transform.compose(SceneTransform {
+                    x,
+                    y,
+                    rotation_deg,
+                    ..SceneTransform::default()
+                }),
+            });
+        }
+        true
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SceneParticleEmitterSettings {
+    count: u32,
+    seed: u64,
+    lifetime_ms: u64,
+    loop_playback: bool,
+    spawn_width: f64,
+    spawn_height: f64,
+    particle_width: f64,
+    particle_height: f64,
+    speed_min: f64,
+    speed_max: f64,
+    direction_deg: f64,
+    spread_deg: f64,
+    gravity_x: f64,
+    gravity_y: f64,
+    fade: bool,
+    color: String,
+    shape: SceneNodeKind,
+}
+
+impl SceneParticleEmitterSettings {
+    fn from_node(node: &SceneNode) -> Option<Self> {
+        let particle = node.properties.get("particle").and_then(Value::as_object);
+        let count = scene_particle_u32(particle, "count")
+            .or_else(|| scene_particle_u32(particle, "max_count"))
+            .unwrap_or_else(|| {
+                let lifetime_seconds = scene_particle_f64(particle, "lifetime")
+                    .or_else(|| scene_particle_f64(particle, "lifetime_seconds"))
+                    .unwrap_or(SCENE_PARTICLE_DEFAULT_LIFETIME_MS as f64 / 1000.0);
+                scene_particle_f64(particle, "rate")
+                    .filter(|rate| rate.is_finite() && *rate > 0.0)
+                    .map(|rate| (rate * lifetime_seconds).round().max(1.0) as u32)
+                    .unwrap_or(SCENE_PARTICLE_DEFAULT_COUNT)
+            })
+            .clamp(0, SCENE_PARTICLE_MAX_COUNT);
+        let lifetime_ms = scene_particle_u64(particle, "lifetime_ms")
+            .or_else(|| {
+                scene_particle_f64(particle, "lifetime")
+                    .or_else(|| scene_particle_f64(particle, "lifetime_seconds"))
+                    .filter(|value| value.is_finite() && *value > 0.0)
+                    .map(|value| (value * 1000.0).round() as u64)
+            })
+            .unwrap_or(SCENE_PARTICLE_DEFAULT_LIFETIME_MS)
+            .max(1);
+        let particle_width = scene_particle_f64(particle, "width")
+            .or_else(|| scene_particle_f64(particle, "size"))
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(SCENE_PARTICLE_DEFAULT_SIZE);
+        let particle_height = scene_particle_f64(particle, "height")
+            .or_else(|| scene_particle_f64(particle, "size"))
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(particle_width);
+        let speed = scene_particle_f64(particle, "speed")
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .unwrap_or(SCENE_PARTICLE_DEFAULT_SPEED);
+        let speed_min = scene_particle_f64(particle, "speed_min")
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .unwrap_or(speed);
+        let speed_max = scene_particle_f64(particle, "speed_max")
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .unwrap_or(speed)
+            .max(speed_min);
+        let spawn_width = scene_particle_f64(particle, "spawn_width")
+            .or_else(|| scene_particle_f64(particle, "emitter_width"))
+            .or(node.width)
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .unwrap_or(0.0);
+        let spawn_height = scene_particle_f64(particle, "spawn_height")
+            .or_else(|| scene_particle_f64(particle, "emitter_height"))
+            .or(node.height)
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .unwrap_or(0.0);
+        let shape = match scene_particle_string(particle, "shape")
+            .unwrap_or_else(|| "rectangle".to_owned())
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "ellipse" | "circle" => SceneNodeKind::Ellipse,
+            _ => SceneNodeKind::Rectangle,
+        };
+        Some(Self {
+            count,
+            seed: scene_particle_u64(particle, "seed")
+                .unwrap_or_else(|| scene_particle_seed_from_id(&node.id)),
+            lifetime_ms,
+            loop_playback: scene_particle_bool(particle, "loop").unwrap_or(true),
+            spawn_width,
+            spawn_height,
+            particle_width,
+            particle_height,
+            speed_min,
+            speed_max,
+            direction_deg: scene_particle_f64(particle, "direction_deg").unwrap_or(-90.0),
+            spread_deg: scene_particle_f64(particle, "spread_deg").unwrap_or(360.0),
+            gravity_x: scene_particle_f64(particle, "gravity_x").unwrap_or(0.0),
+            gravity_y: scene_particle_f64(particle, "gravity_y").unwrap_or(0.0),
+            fade: scene_particle_bool(particle, "fade").unwrap_or(true),
+            color: scene_particle_string(particle, "color")
+                .or_else(|| node.color.clone())
+                .unwrap_or_else(|| "#ffffff".to_owned()),
+            shape,
+        })
+    }
+
+    fn age_seconds(&self, time_ms: u64, index: u32) -> Option<f64> {
+        let phase = scene_particle_unit(self.seed, index, 0);
+        let phase_ms = (phase * self.lifetime_ms as f64).round() as u64;
+        let local_ms = if self.loop_playback {
+            time_ms.wrapping_add(phase_ms) % self.lifetime_ms
+        } else {
+            let started_at = phase_ms.min(self.lifetime_ms);
+            if time_ms < started_at {
+                return None;
+            }
+            (time_ms - started_at).min(self.lifetime_ms)
+        };
+        Some(local_ms as f64 / 1000.0)
+    }
+
+    fn age_progress(&self, time_ms: u64, index: u32) -> Option<f64> {
+        Some((self.age_seconds(time_ms, index)? * 1000.0 / self.lifetime_ms as f64).clamp(0.0, 1.0))
+    }
+
+    fn opacity_at(&self, time_ms: u64, index: u32) -> f64 {
+        let Some(progress) = self.age_progress(time_ms, index) else {
+            return 0.0;
+        };
+        if self.fade { 1.0 - progress } else { 1.0 }
+    }
+
+    fn transform_at(&self, time_ms: u64, index: u32) -> (f64, f64, f64) {
+        let age = self.age_seconds(time_ms, index).unwrap_or(0.0);
+        let spawn_x = (scene_particle_unit(self.seed, index, 1) - 0.5) * self.spawn_width;
+        let spawn_y = (scene_particle_unit(self.seed, index, 2) - 0.5) * self.spawn_height;
+        let speed = self.speed_min
+            + (self.speed_max - self.speed_min) * scene_particle_unit(self.seed, index, 3);
+        let direction =
+            self.direction_deg + (scene_particle_unit(self.seed, index, 4) - 0.5) * self.spread_deg;
+        let radians = direction.to_radians();
+        let x = spawn_x + radians.cos() * speed * age + 0.5 * self.gravity_x * age * age;
+        let y = spawn_y + radians.sin() * speed * age + 0.5 * self.gravity_y * age * age;
+        (x, y, direction)
     }
 }
 
@@ -925,9 +1151,14 @@ impl SceneTransform {
     }
 
     fn compose(self, child: Self) -> Self {
+        let rotation = self.rotation_deg.to_radians();
+        let child_x = child.x * self.scale_x;
+        let child_y = child.y * self.scale_y;
+        let rotated_child_x = child_x.mul_add(rotation.cos(), -child_y * rotation.sin());
+        let rotated_child_y = child_x.mul_add(rotation.sin(), child_y * rotation.cos());
         Self {
-            x: self.x + child.x * self.scale_x,
-            y: self.y + child.y * self.scale_y,
+            x: self.x + rotated_child_x,
+            y: self.y + rotated_child_y,
             scale_x: self.scale_x * child.scale_x,
             scale_y: self.scale_y * child.scale_y,
             rotation_deg: self.rotation_deg + child.rotation_deg,
@@ -1385,6 +1616,82 @@ fn scene_property_bool(object: &serde_json::Map<String, Value>, key: &str) -> Op
     }
 }
 
+fn scene_particle_value<'a>(
+    object: Option<&'a serde_json::Map<String, Value>>,
+    key: &str,
+) -> Option<&'a Value> {
+    let value = object?.get(key)?;
+    Some(value.get("value").unwrap_or(value))
+}
+
+fn scene_particle_f64(object: Option<&serde_json::Map<String, Value>>, key: &str) -> Option<f64> {
+    match scene_particle_value(object, key)? {
+        Value::Number(value) => value.as_f64(),
+        Value::String(value) => value.parse().ok(),
+        _ => None,
+    }
+}
+
+fn scene_particle_u32(object: Option<&serde_json::Map<String, Value>>, key: &str) -> Option<u32> {
+    match scene_particle_value(object, key)? {
+        Value::Number(value) => value.as_u64().and_then(|value| u32::try_from(value).ok()),
+        Value::String(value) => value.parse().ok(),
+        _ => None,
+    }
+}
+
+fn scene_particle_u64(object: Option<&serde_json::Map<String, Value>>, key: &str) -> Option<u64> {
+    match scene_particle_value(object, key)? {
+        Value::Number(value) => value.as_u64(),
+        Value::String(value) => value.parse().ok(),
+        _ => None,
+    }
+}
+
+fn scene_particle_bool(object: Option<&serde_json::Map<String, Value>>, key: &str) -> Option<bool> {
+    match scene_particle_value(object, key)? {
+        Value::Bool(value) => Some(*value),
+        Value::Number(value) => value.as_i64().map(|value| value != 0),
+        Value::String(value) => match value.to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Some(true),
+            "false" | "0" | "no" | "off" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn scene_particle_string(
+    object: Option<&serde_json::Map<String, Value>>,
+    key: &str,
+) -> Option<String> {
+    match scene_particle_value(object, key)? {
+        Value::String(value) if !value.trim().is_empty() => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn scene_particle_seed_from_id(id: &str) -> u64 {
+    let mut seed = 0xcbf29ce484222325u64;
+    for byte in id.as_bytes() {
+        seed ^= u64::from(*byte);
+        seed = seed.wrapping_mul(0x100000001b3);
+    }
+    seed
+}
+
+fn scene_particle_unit(seed: u64, index: u32, salt: u64) -> f64 {
+    let mut value = seed
+        ^ (u64::from(index).wrapping_mul(0x9e3779b97f4a7c15))
+        ^ salt.wrapping_mul(0xbf58476d1ce4e5b9);
+    value = value.wrapping_add(0x9e3779b97f4a7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d049bb133111eb);
+    value ^= value >> 31;
+    ((value >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
+}
+
 fn apply_scene_animated_value(
     transform: &mut SceneTransform,
     opacity: &mut f64,
@@ -1668,7 +1975,7 @@ mod tests {
                 {
                     "id": "resource-atlas",
                     "type": "image",
-                    "source": "assets/atlas.png"
+                    "source": "assets/atlas.gtex"
                 }
             ],
             "nodes": [
@@ -1766,5 +2073,136 @@ mod tests {
         assert_eq!(snapshot.layers[0].parallax_depth, Some(0.5));
         assert_eq!(snapshot.layers[1].transform.x, 1.0);
         assert_eq!(snapshot.layers[1].transform.y, 2.0);
+    }
+
+    #[test]
+    fn parent_rotation_offsets_child_transform_coordinates() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "nodes": [
+                {
+                    "id": "rotating-parent",
+                    "type": "group",
+                    "transform": {
+                        "x": 10,
+                        "y": 20,
+                        "scale_x": 2,
+                        "scale_y": 3,
+                        "rotation_deg": 90
+                    },
+                    "children": [
+                        {
+                            "id": "child-panel",
+                            "type": "rectangle",
+                            "color": "#ffffff",
+                            "transform": {
+                                "x": 5,
+                                "y": 2,
+                                "rotation_deg": 15
+                            }
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+
+        assert_eq!(snapshot.layers.len(), 1);
+        assert_eq!(snapshot.layers[0].id, "child-panel");
+        assert!((snapshot.layers[0].transform.x - 4.0).abs() < 0.000001);
+        assert!((snapshot.layers[0].transform.y - 30.0).abs() < 0.000001);
+        assert!((snapshot.layers[0].transform.rotation_deg - 105.0).abs() < f64::EPSILON);
+        assert!((snapshot.layers[0].transform.scale_x - 2.0).abs() < f64::EPSILON);
+        assert!((snapshot.layers[0].transform.scale_y - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn particle_emitter_expands_to_native_rectangle_layers() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "nodes": [
+                {
+                    "id": "spark-emitter",
+                    "type": "particle-emitter",
+                    "opacity": 0.5,
+                    "transform": { "x": 50, "y": 25 },
+                    "properties": {
+                        "particle": {
+                            "count": 3,
+                            "seed": 11,
+                            "lifetime_ms": 1000,
+                            "size": 12,
+                            "speed": 0,
+                            "spawn_width": 0,
+                            "spawn_height": 0,
+                            "fade": false,
+                            "color": "#ffaa00"
+                        }
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(250, |_| None);
+
+        assert_eq!(snapshot.layers.len(), 3);
+        assert_eq!(snapshot.layers[0].id, "spark-emitter::particle-0");
+        assert_eq!(snapshot.layers[0].kind, SceneNodeKind::Rectangle);
+        assert_eq!(snapshot.layers[0].color.as_deref(), Some("#ffaa00"));
+        assert_eq!(snapshot.layers[0].width, Some(12.0));
+        assert_eq!(snapshot.layers[0].height, Some(12.0));
+        assert_eq!(snapshot.layers[0].opacity, 0.5);
+        assert_eq!(snapshot.layers[0].transform.x, 50.0);
+        assert_eq!(snapshot.layers[0].transform.y, 25.0);
+        assert!(
+            snapshot
+                .layers
+                .iter()
+                .all(|layer| layer.kind != SceneNodeKind::ParticleEmitter)
+        );
+    }
+
+    #[test]
+    fn particle_emitter_inherits_rotated_parent_transform() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "nodes": [
+                {
+                    "id": "rotating-parent",
+                    "type": "group",
+                    "transform": { "x": 10, "y": 20, "rotation_deg": 90 },
+                    "children": [
+                        {
+                            "id": "spark-emitter",
+                            "type": "particle-emitter",
+                            "transform": { "x": 5, "y": 0 },
+                            "properties": {
+                                "particle": {
+                                    "count": 1,
+                                    "seed": 11,
+                                    "lifetime_ms": 1000,
+                                    "size": 12,
+                                    "speed": 0,
+                                    "spawn_width": 0,
+                                    "spawn_height": 0,
+                                    "fade": false
+                                }
+                            }
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(250, |_| None);
+
+        assert_eq!(snapshot.layers.len(), 1);
+        assert_eq!(snapshot.layers[0].id, "spark-emitter::particle-0");
+        assert!((snapshot.layers[0].transform.x - 10.0).abs() < 0.000001);
+        assert!((snapshot.layers[0].transform.y - 25.0).abs() < 0.000001);
     }
 }

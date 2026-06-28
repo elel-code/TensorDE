@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -9,8 +10,12 @@ use vulkanalia::vk::{self, HasBuilder};
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 20;
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT: usize = 4;
 const SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT: usize = 6;
-const SCENE_FULL_RGBA_BYTES_PER_PIXEL: u64 = 4;
 const DEVICE_LOCAL_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::DEVICE_LOCAL.bits();
+const GILDER_SCENE_TEXTURE_MAGIC: &[u8; 8] = b"GDTEX002";
+const GILDER_SCENE_TEXTURE_HEADER_BYTES: usize = 32;
+const GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK: u32 = 7;
+const SCENE_BC_BLOCK_TEXELS: u32 = 4;
+const SCENE_BC7_BLOCK_BYTES: u64 = 16;
 
 use super::features::{
     NativeVulkanVulkanaliaCoreFeatureSnapshot,
@@ -56,6 +61,7 @@ pub struct NativeVulkanVulkanaliaSceneSampledImagePlanSnapshot {
     pub staging_buffer_usage: Vec<&'static str>,
     pub image_layout_flow: Vec<&'static str>,
     pub upload_model: &'static str,
+    pub retains_decoded_rgba_payload_after_upload: bool,
     pub descriptor_model: &'static str,
     pub pipeline_label: &'static str,
     pub draw_indexed_count: u32,
@@ -92,11 +98,38 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageDescriptorStrategySnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NativeVulkanVulkanaliaSceneDecodedRgbaImage {
+pub struct NativeVulkanVulkanaliaSceneNativeTexture {
     pub source: PathBuf,
     pub width: u32,
     pub height: u32,
+    pub format: NativeVulkanVulkanaliaSceneNativeTextureFormat,
     pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum NativeVulkanVulkanaliaSceneNativeTextureFormat {
+    Bc7UnormBlock,
+}
+
+impl NativeVulkanVulkanaliaSceneNativeTextureFormat {
+    fn from_gtex(value: u32) -> Option<Self> {
+        match value {
+            GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK => Some(Self::Bc7UnormBlock),
+            _ => None,
+        }
+    }
+
+    fn vk_format(self) -> vk::Format {
+        match self {
+            Self::Bc7UnormBlock => vk::Format::BC7_UNORM_BLOCK,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Bc7UnormBlock => "BC7_UNORM_BLOCK",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -105,7 +138,8 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageResourceSnapshot {
     pub route: &'static str,
     pub source_label: String,
     pub extent: (u32, u32),
-    pub rgba_bytes: u64,
+    pub texture_payload_bytes: u64,
+    pub decoded_rgba_payload_retained_after_upload: bool,
     pub image_format: &'static str,
     pub image_usage: Vec<&'static str>,
     pub image_created: bool,
@@ -213,7 +247,7 @@ pub(crate) fn native_vulkan_vulkanalia_scene_sampled_image_plan(
         descriptor_set_count: 0,
         descriptor_type: "combined-image-sampler",
         descriptor_pool_combined_image_sampler_budget: 0,
-        sampled_image_format: "R8G8B8A8_UNORM",
+        sampled_image_format: "BC7_UNORM_BLOCK",
         sampled_image_usage: vec!["host-transfer", "transfer-dst", "sampled"],
         staging_buffer_usage: Vec::new(),
         image_layout_flow: vec![
@@ -221,7 +255,8 @@ pub(crate) fn native_vulkan_vulkanalia_scene_sampled_image_plan(
             "transfer-dst-optimal",
             "shader-read-only-optimal",
         ],
-        upload_model: "decode source image to RGBA once, upload into retained sampled image with Vulkan 1.4 host image copy, reuse descriptor-heap records across present frames",
+        upload_model: "load native .gtex BC7 GPU block texture payload, upload into retained sampled image with Vulkan 1.4 host image copy, reuse descriptor-heap records across present frames",
+        retains_decoded_rgba_payload_after_upload: false,
         descriptor_model: "VK_EXT_descriptor_heap only; descriptor set and push descriptor paths are deleted",
         pipeline_label: "scene-sampled-image-alpha-blend",
         draw_indexed_count: if backend_ready { descriptor_budget } else { 0 },
@@ -279,26 +314,103 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
     }
 }
 
-pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_decode_scene_rgba_image(
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_load_scene_native_texture(
     source: &Path,
-) -> Result<NativeVulkanVulkanaliaSceneDecodedRgbaImage, String> {
-    let image = image::open(source)
-        .map_err(|err| format!("decode scene sampled image {}: {err}", source.display()))?
-        .to_rgba8();
-    let (width, height) = image.dimensions();
-    if width == 0 || height == 0 {
+) -> Result<NativeVulkanVulkanaliaSceneNativeTexture, String> {
+    let mut bytes = fs::read(source)
+        .map_err(|err| format!("load scene native texture {}: {err}", source.display()))?;
+    if bytes.len() < GILDER_SCENE_TEXTURE_HEADER_BYTES {
         return Err(format!(
-            "scene sampled image {} decoded to zero extent",
+            "scene sampled image runtime requires native .gtex texture {}; file is shorter than the header",
             source.display()
         ));
     }
+    if bytes.get(0..8) != Some(GILDER_SCENE_TEXTURE_MAGIC.as_slice()) {
+        return Err(format!(
+            "scene sampled image runtime requires native .gtex texture {}; runtime image decoding is disabled",
+            source.display()
+        ));
+    }
+    let width = read_scene_texture_u32(&bytes, 8).ok_or_else(|| {
+        format!(
+            "scene native texture {} has truncated width",
+            source.display()
+        )
+    })?;
+    let height = read_scene_texture_u32(&bytes, 12).ok_or_else(|| {
+        format!(
+            "scene native texture {} has truncated height",
+            source.display()
+        )
+    })?;
+    let format = read_scene_texture_u32(&bytes, 16).ok_or_else(|| {
+        format!(
+            "scene native texture {} has truncated format",
+            source.display()
+        )
+    })?;
+    let payload_len = read_scene_texture_u64(&bytes, 24).ok_or_else(|| {
+        format!(
+            "scene native texture {} has truncated payload length",
+            source.display()
+        )
+    })?;
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "scene native texture {} declares zero extent",
+            source.display()
+        ));
+    }
+    let format = NativeVulkanVulkanaliaSceneNativeTextureFormat::from_gtex(format).ok_or_else(
+        || {
+            format!(
+                "scene native texture {} uses unsupported GPU format {format}; expected BC7_UNORM_BLOCK",
+                source.display()
+            )
+        },
+    )?;
+    if format != NativeVulkanVulkanaliaSceneNativeTextureFormat::Bc7UnormBlock {
+        return Err(format!(
+            "scene native texture {} uses unsupported GPU format {}; expected BC7_UNORM_BLOCK",
+            source.display(),
+            format.label()
+        ));
+    }
+    let expected_len = scene_texture_payload_byte_len(format, width, height)?;
+    if payload_len != expected_len {
+        return Err(format!(
+            "scene native texture {} declares payload {payload_len} bytes, expected {expected_len}",
+            source.display()
+        ));
+    }
+    let payload = bytes.split_off(GILDER_SCENE_TEXTURE_HEADER_BYTES);
+    if payload.len() as u64 != expected_len {
+        return Err(format!(
+            "scene native texture {} contains {} payload bytes, expected {expected_len}",
+            source.display(),
+            payload.len()
+        ));
+    }
 
-    Ok(NativeVulkanVulkanaliaSceneDecodedRgbaImage {
+    Ok(NativeVulkanVulkanaliaSceneNativeTexture {
         source: source.to_path_buf(),
         width,
         height,
-        bytes: image.into_raw(),
+        format,
+        bytes: payload,
     })
+}
+
+fn read_scene_texture_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        bytes.get(offset..offset + 4)?.try_into().ok()?,
+    ))
+}
+
+fn read_scene_texture_u64(bytes: &[u8], offset: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(
+        bytes.get(offset..offset + 8)?.try_into().ok()?,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -310,9 +422,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     sampler_mode: NativeVulkanVulkanaliaSceneSampledImageSamplerMode,
     source_label: impl Into<String>,
     extent: vk::Extent2D,
-    rgba_bytes: &[u8],
+    texture_format: NativeVulkanVulkanaliaSceneNativeTextureFormat,
+    texture_bytes: &[u8],
 ) -> Result<VulkanaliaSceneSampledImageResources, String> {
-    validate_scene_rgba_upload(extent, rgba_bytes)?;
+    validate_scene_texture_upload(extent, texture_format, texture_bytes)?;
     let source_label = source_label.into();
 
     let image_usage = vk::ImageUsageFlags::HOST_TRANSFER
@@ -323,9 +436,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         height: extent.height,
         depth: 1,
     };
+    let image_format = texture_format.vk_format();
     let image_create_info = vk::ImageCreateInfo::builder()
         .image_type(vk::ImageType::_2D)
-        .format(vk::Format::R8G8B8A8_UNORM)
+        .format(image_format)
         .extent(image_extent)
         .mip_levels(1)
         .array_layers(1)
@@ -388,14 +502,14 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
             "scene sampled image",
         )?;
 
-        let image_view_info = scene_sampled_image_view_create_info(image);
+        let image_view_info = scene_sampled_image_view_create_info(image, image_format);
         image_view = create_scene_sampled_image_view(device, &image_view_info)?;
         image_view_live = true;
         let sampler_info = scene_sampled_image_sampler_create_info(sampler_mode);
         sampler = create_scene_sampled_image_sampler(device, &sampler_info)?;
         sampler_live = true;
 
-        upload_scene_sampled_image_host_copy(device, image, extent, rgba_bytes)?;
+        upload_scene_sampled_image_host_copy(device, image, extent, texture_bytes)?;
 
         image_live = false;
         memory_live = false;
@@ -414,8 +528,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 route: "scene-sampled-image-retained-resource",
                 source_label,
                 extent: (extent.width, extent.height),
-                rgba_bytes: rgba_bytes.len() as u64,
-                image_format: "R8G8B8A8_UNORM",
+                texture_payload_bytes: texture_bytes.len() as u64,
+                decoded_rgba_payload_retained_after_upload: false,
+                image_format: texture_format.label(),
                 image_usage: sampled_image_usage_labels(image_usage),
                 image_created: true,
                 image_memory_bound: true,
@@ -486,11 +601,24 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destr
     }
 }
 
+#[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
+unsafe extern "C" {
+    fn gilder_trim_process_heap();
+}
+
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap()
+ {
+    #[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
+    unsafe {
+        gilder_trim_process_heap();
+    }
+}
+
 fn upload_scene_sampled_image_host_copy(
     device: &Device,
     image: vk::Image,
     extent: vk::Extent2D,
-    rgba_bytes: &[u8],
+    texture_bytes: &[u8],
 ) -> Result<(), String> {
     let transfer_dst = vk::HostImageLayoutTransitionInfo::builder()
         .image(image)
@@ -511,7 +639,7 @@ fn upload_scene_sampled_image_host_copy(
         .layer_count(1)
         .build();
     let copy = vk::MemoryToImageCopy::builder()
-        .host_pointer(&rgba_bytes[0])
+        .host_pointer(&texture_bytes[0])
         .memory_row_length(0)
         .memory_image_height(0)
         .image_subresource(image_subresource)
@@ -548,7 +676,7 @@ fn upload_scene_sampled_image_host_copy(
 fn scene_sampled_image_command_order(backend_ready: bool) -> &'static [&'static str] {
     if backend_ready {
         &[
-            "decode_source_image_rgba",
+            "load_native_scene_texture_bc7",
             "create_sampled_image_host_transfer_sampled",
             "vk_transition_image_layout_transfer_dst",
             "vk_copy_memory_to_image",
@@ -572,35 +700,50 @@ fn saturating_nonzero_u32(value: usize) -> u32 {
     u32::try_from(value.max(1)).unwrap_or(u32::MAX)
 }
 
-fn validate_scene_rgba_upload(extent: vk::Extent2D, rgba_bytes: &[u8]) -> Result<(), String> {
+fn validate_scene_texture_upload(
+    extent: vk::Extent2D,
+    format: NativeVulkanVulkanaliaSceneNativeTextureFormat,
+    texture_bytes: &[u8],
+) -> Result<(), String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("scene sampled image upload requires non-zero extent".to_owned());
     }
-    let expected = scene_rgba_byte_len(extent)?;
-    if rgba_bytes.len() as u64 != expected {
+    let expected = scene_texture_payload_byte_len(format, extent.width, extent.height)?;
+    if texture_bytes.len() as u64 != expected {
         return Err(format!(
-            "scene sampled image upload expected {expected} RGBA bytes for {}x{}, got {}",
+            "scene sampled image upload expected {expected} {} bytes for {}x{}, got {}",
+            format.label(),
             extent.width,
             extent.height,
-            rgba_bytes.len()
+            texture_bytes.len()
         ));
     }
     Ok(())
 }
 
-fn scene_rgba_byte_len(extent: vk::Extent2D) -> Result<u64, String> {
-    u64::from(extent.width)
-        .checked_mul(u64::from(extent.height))
-        .and_then(|pixels| pixels.checked_mul(SCENE_FULL_RGBA_BYTES_PER_PIXEL))
-        .ok_or_else(|| {
-            format!(
-                "scene sampled image extent {}x{} overflows RGBA byte size",
-                extent.width, extent.height
-            )
-        })
+fn scene_texture_payload_byte_len(
+    format: NativeVulkanVulkanaliaSceneNativeTextureFormat,
+    width: u32,
+    height: u32,
+) -> Result<u64, String> {
+    match format {
+        NativeVulkanVulkanaliaSceneNativeTextureFormat::Bc7UnormBlock => {
+            let blocks_w = u64::from(width.div_ceil(SCENE_BC_BLOCK_TEXELS));
+            let blocks_h = u64::from(height.div_ceil(SCENE_BC_BLOCK_TEXELS));
+            blocks_w
+                .checked_mul(blocks_h)
+                .and_then(|blocks| blocks.checked_mul(SCENE_BC7_BLOCK_BYTES))
+                .ok_or_else(|| {
+                    format!("scene sampled image extent {width}x{height} overflows BC7 byte size")
+                })
+        }
+    }
 }
 
-fn scene_sampled_image_view_create_info(image: vk::Image) -> vk::ImageViewCreateInfo {
+fn scene_sampled_image_view_create_info(
+    image: vk::Image,
+    format: vk::Format,
+) -> vk::ImageViewCreateInfo {
     let subresource_range = vk::ImageSubresourceRange::builder()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
         .base_mip_level(0)
@@ -611,7 +754,7 @@ fn scene_sampled_image_view_create_info(image: vk::Image) -> vk::ImageViewCreate
     vk::ImageViewCreateInfo::builder()
         .image(image)
         .view_type(vk::ImageViewType::_2D)
-        .format(vk::Format::R8G8B8A8_UNORM)
+        .format(format)
         .subresource_range(subresource_range)
         .build()
 }
@@ -659,7 +802,7 @@ fn scene_sampled_image_subresource_range() -> vk::ImageSubresourceRange {
 
 fn sampled_image_resource_command_order() -> &'static [&'static str] {
     &[
-        "decode_source_image_rgba",
+        "load_native_scene_texture_bc7",
         "create_sampled_image_host_transfer_sampled",
         "vk_transition_image_layout_transfer_dst",
         "vk_copy_memory_to_image",
@@ -744,7 +887,7 @@ mod tests {
         assert_eq!(snapshot.blocking_reason, None);
         assert_eq!(snapshot.descriptor_set_count, 0);
         assert_eq!(snapshot.descriptor_type, "combined-image-sampler");
-        assert_eq!(snapshot.sampled_image_format, "R8G8B8A8_UNORM");
+        assert_eq!(snapshot.sampled_image_format, "BC7_UNORM_BLOCK");
         assert_eq!(
             snapshot.sampled_image_usage,
             vec!["host-transfer", "transfer-dst", "sampled"]
@@ -765,6 +908,7 @@ mod tests {
                 .contains(&"cmd_bind_scene_descriptor_heap")
         );
         assert_eq!(snapshot.draw_indexed_count, 1);
+        assert!(!snapshot.retains_decoded_rgba_payload_after_upload);
         assert!(snapshot.uses_dynamic_rendering);
         assert!(snapshot.uses_synchronization2);
         assert!(snapshot.uses_submit2);
@@ -880,22 +1024,44 @@ mod tests {
     }
 
     #[test]
-    fn rgba_upload_validation_matches_extent() {
+    fn native_texture_upload_validation_matches_bc7_extent() {
         let extent = vk::Extent2D {
-            width: 2,
-            height: 2,
+            width: 8,
+            height: 4,
         };
 
-        assert_eq!(scene_rgba_byte_len(extent), Ok(16));
-        assert!(validate_scene_rgba_upload(extent, &[0; 16]).is_ok());
-        assert!(validate_scene_rgba_upload(extent, &[0; 15]).is_err());
+        assert_eq!(
+            scene_texture_payload_byte_len(
+                NativeVulkanVulkanaliaSceneNativeTextureFormat::Bc7UnormBlock,
+                extent.width,
+                extent.height
+            ),
+            Ok(32)
+        );
         assert!(
-            validate_scene_rgba_upload(
+            validate_scene_texture_upload(
+                extent,
+                NativeVulkanVulkanaliaSceneNativeTextureFormat::Bc7UnormBlock,
+                &[0; 32],
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_scene_texture_upload(
+                extent,
+                NativeVulkanVulkanaliaSceneNativeTextureFormat::Bc7UnormBlock,
+                &[0; 31],
+            )
+            .is_err()
+        );
+        assert!(
+            validate_scene_texture_upload(
                 vk::Extent2D {
                     width: 0,
                     height: 2
                 },
-                &[]
+                NativeVulkanVulkanaliaSceneNativeTextureFormat::Bc7UnormBlock,
+                &[],
             )
             .is_err()
         );
@@ -956,7 +1122,7 @@ mod tests {
         assert_eq!(
             sampled_image_resource_command_order(),
             &[
-                "decode_source_image_rgba",
+                "load_native_scene_texture_bc7",
                 "create_sampled_image_host_transfer_sampled",
                 "vk_transition_image_layout_transfer_dst",
                 "vk_copy_memory_to_image",
@@ -970,21 +1136,32 @@ mod tests {
     }
 
     #[test]
-    fn decodes_scene_image_to_rgba_bytes() {
+    fn loads_native_scene_gtex_bc7_payload() {
         let mut path = std::env::temp_dir();
         path.push(format!(
-            "gilder-scene-rgba-decode-{}.png",
+            "gilder-scene-bc7-texture-{}.gtex",
             std::process::id()
         ));
-        let image = image::RgbaImage::from_raw(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 128])
-            .expect("test rgba image");
-        image.save(&path).expect("write test png");
+        let payload = [7u8; 16];
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(GILDER_SCENE_TEXTURE_MAGIC);
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+        std::fs::write(&path, bytes).expect("write test gtex");
 
-        let decoded = native_vulkan_vulkanalia_decode_scene_rgba_image(&path).expect("decode png");
+        let decoded = native_vulkan_vulkanalia_load_scene_native_texture(&path).expect("load gtex");
         let _ = std::fs::remove_file(&path);
 
-        assert_eq!(decoded.width, 2);
-        assert_eq!(decoded.height, 1);
-        assert_eq!(decoded.bytes, vec![255, 0, 0, 255, 0, 255, 0, 128]);
+        assert_eq!(decoded.width, 4);
+        assert_eq!(decoded.height, 4);
+        assert_eq!(
+            decoded.format,
+            NativeVulkanVulkanaliaSceneNativeTextureFormat::Bc7UnormBlock
+        );
+        assert_eq!(decoded.bytes, payload);
     }
 }
