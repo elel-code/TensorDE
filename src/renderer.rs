@@ -15,7 +15,7 @@ use crate::core::manifest::{Manifest, PropertySpec, Variant};
 use crate::core::scene::{SceneEffect, SceneSnapshotLayer};
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
-    SceneAudioCue, SceneDocument, SceneNodeKind, ScenePathFillRule, SceneResource,
+    SceneAudioCue, SceneDocument, SceneNode, SceneNodeKind, ScenePathFillRule, SceneResource,
     SceneResourceKind, SceneSize, SceneSystemStatus, SceneSystems, SceneTextAlign,
     SceneTextureRegion, SceneTransform, Transition, WallpaperEntry, WallpaperPackage,
 };
@@ -235,7 +235,7 @@ pub fn scene_wallpaper_plan_from_gscene_path_with_properties(
         render_properties
             .and_then(|properties| properties.get(property))
             .and_then(scene_json_property_number)
-            .or_else(|| scene_audio_response_property_value(&document, snapshot_time_ms, property))
+            .or_else(|| scene_runtime_property_value(&document, snapshot_time_ms, property))
     });
     let layers = scene_render_layers_from_snapshot(package_root, &document, snapshot.layers)?;
     let system_metrics = scene_plan_system_metrics(&document);
@@ -321,7 +321,7 @@ impl SceneWallpaperRuntimeSampler {
         let snapshot = self
             .document
             .snapshot_at_with_property_resolver(time_ms, |property| {
-                scene_audio_response_property_value(&self.document, time_ms, property)
+                scene_runtime_property_value(&self.document, time_ms, property)
             });
         let layers =
             scene_render_layers_from_snapshot(&self.package_root, &self.document, snapshot.layers)?;
@@ -339,7 +339,7 @@ impl SceneWallpaperRuntimeSampler {
     ) -> Result<SceneWallpaperRuntimeFrame, RendererPlanError> {
         self.document.snapshot_layers_at_with_property_resolver(
             time_ms,
-            |property| scene_audio_response_property_value(&self.document, time_ms, property),
+            |property| scene_runtime_property_value(&self.document, time_ms, property),
             &mut self.snapshot_layers_scratch,
         );
         scene_render_layers_from_snapshot_into(
@@ -1761,7 +1761,7 @@ fn scene_wallpaper_plan(
     let document = load_scene_document(&source_path)?;
     let snapshot = document.snapshot_at_with_property_resolver(0, |property| {
         scene_property_value(property, render_properties, &package.manifest.properties)
-            .or_else(|| scene_audio_response_property_value(&document, 0, property))
+            .or_else(|| scene_runtime_property_value(&document, 0, property))
     });
     let layers = scene_render_layers_from_snapshot(&package.root, &document, snapshot.layers)?;
     let system_metrics = scene_plan_system_metrics(&document);
@@ -2062,6 +2062,68 @@ fn scene_property_value(
         })
 }
 
+fn scene_runtime_property_value(
+    document: &SceneDocument,
+    time_ms: u64,
+    property: &str,
+) -> Option<f64> {
+    scene_controller_property_value(document, time_ms, property)
+        .or_else(|| scene_audio_response_property_value(document, time_ms, property))
+}
+
+fn scene_controller_property_value(
+    document: &SceneDocument,
+    time_ms: u64,
+    property: &str,
+) -> Option<f64> {
+    let property = property.trim();
+    if !property.starts_with("scene.controller.") {
+        return None;
+    }
+    document
+        .nodes
+        .iter()
+        .find_map(|node| scene_node_controller_property_value(node, time_ms, property))
+}
+
+fn scene_node_controller_property_value(
+    node: &SceneNode,
+    time_ms: u64,
+    property: &str,
+) -> Option<f64> {
+    if let Some(controller) = node.properties.get("controller").and_then(Value::as_object)
+        && controller
+            .get("runtime")
+            .and_then(Value::as_str)
+            .is_some_and(|runtime| runtime == "native")
+        && controller
+            .get("property")
+            .and_then(Value::as_str)
+            .is_some_and(|controller_property| controller_property.trim() == property)
+    {
+        match controller.get("kind").and_then(Value::as_str)? {
+            "idle-video-switch" => {
+                let inactive_sec = controller
+                    .get("mouse_inactive_sec")
+                    .and_then(scene_controller_config_number)?;
+                let inactive_ms = (inactive_sec.max(0.0) * 1000.0).round();
+                return Some(if time_ms as f64 >= inactive_ms {
+                    1.0
+                } else {
+                    0.0
+                });
+            }
+            "click-video-switch" => {
+                return Some(0.0);
+            }
+            _ => return None,
+        }
+    }
+    node.children
+        .iter()
+        .find_map(|child| scene_node_controller_property_value(child, time_ms, property))
+}
+
 fn scene_audio_response_property_value(
     document: &SceneDocument,
     time_ms: u64,
@@ -2117,6 +2179,10 @@ fn scene_audio_response_spectrum_phase(property: &str) -> f64 {
         .find_map(|part| part.parse::<u32>().ok())
         .unwrap_or(0);
     f64::from(bin % 32) * 0.196_349_540_849_362_07
+}
+
+fn scene_controller_config_number(value: &Value) -> Option<f64> {
+    scene_json_property_number(value.get("value").unwrap_or(value))
 }
 
 fn scene_json_property_number(value: &Value) -> Option<f64> {
@@ -5678,6 +5744,101 @@ exit 0
     }
 
     #[test]
+    fn scene_runtime_sampler_resamples_native_idle_controller_bindings() {
+        let test_dir = TestDir::new("gilder-scene-controller-sampler");
+        let package_dir = test_dir.path.join("scene-controller.gwpdir");
+        write_scene_controller_gwpdir(&package_dir);
+        let plan = scene_wallpaper_plan_from_gscene_path(
+            "eDP-1".to_owned(),
+            &package_dir,
+            package_dir.join("assets/scene.gscene.json"),
+            Some(60),
+            0,
+            Some(FitMode::Cover),
+        )
+        .unwrap();
+        let mut sampler = SceneWallpaperRuntimeSampler::from_plan(&plan)
+            .unwrap()
+            .expect("runtime sampler");
+
+        let first = sampler.sample_plan(0).unwrap();
+        let later = sampler.sample_plan(600).unwrap();
+        let reused = sampler.sample_frame_reusing(700).unwrap();
+        let nonzero_snapshot_plan = scene_wallpaper_plan_from_gscene_path(
+            "eDP-1".to_owned(),
+            &package_dir,
+            package_dir.join("assets/scene.gscene.json"),
+            Some(60),
+            600,
+            Some(FitMode::Cover),
+        )
+        .unwrap();
+
+        assert_eq!(
+            first
+                .layers
+                .iter()
+                .find(|layer| layer.id == "idle-target")
+                .unwrap()
+                .kind,
+            SceneNodeKind::Video
+        );
+        assert!(
+            first
+                .layers
+                .iter()
+                .find(|layer| layer.id == "idle-target")
+                .unwrap()
+                .opacity
+                .abs()
+                < f64::EPSILON
+        );
+        assert!(
+            (later
+                .layers
+                .iter()
+                .find(|layer| layer.id == "idle-target")
+                .unwrap()
+                .opacity
+                - 1.0)
+                .abs()
+                < f64::EPSILON
+        );
+        assert!(
+            (reused
+                .layers
+                .iter()
+                .find(|layer| layer.id == "idle-target")
+                .unwrap()
+                .opacity
+                - 1.0)
+                .abs()
+                < f64::EPSILON
+        );
+        assert!(
+            (nonzero_snapshot_plan
+                .layers
+                .iter()
+                .find(|layer| layer.id == "idle-target")
+                .unwrap()
+                .opacity
+                - 1.0)
+                .abs()
+                < f64::EPSILON
+        );
+        assert!(
+            later
+                .layers
+                .iter()
+                .find(|layer| layer.id == "click-target")
+                .unwrap()
+                .opacity
+                .abs()
+                < f64::EPSILON
+        );
+    }
+
+    #[test]
     fn scene_runtime_sampler_resamples_particle_layers_from_gscene_source() {
         let test_dir = TestDir::new("gilder-scene-particle-sampler");
         let package_dir = test_dir.path.join("scene-particles.gwpdir");
@@ -7437,6 +7598,91 @@ void main() {}
             "id": "org.example.scene-animation",
             "version": "1.0.0",
             "title": "Scene Animation",
+            "kind": "scene",
+            "entry": {
+                "type": "scene",
+                "source": "assets/scene.gscene.json",
+                "max_fps": 60
+            }
+        });
+        fs::write(
+            path.join(crate::core::MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_scene_controller_gwpdir(path: &Path) {
+        fs::create_dir_all(path.join("assets")).unwrap();
+        fs::write(
+            path.join("assets/scene.gscene.json"),
+            br##"{
+              "resources": [
+                { "id": "idle-video", "type": "video", "source": "assets/idle.mp4" },
+                { "id": "click-video", "type": "video", "source": "assets/click.mp4" }
+              ],
+              "nodes": [
+                {
+                  "id": "idle-controller",
+                  "type": "script",
+                  "properties": {
+                    "controller": {
+                      "runtime": "native",
+                      "kind": "idle-video-switch",
+                      "property": "scene.controller.idle-controller.active",
+                      "mouse_inactive_sec": { "value": 0.5 },
+                      "target_node": "idle-target",
+                      "target_type": "video"
+                    }
+                  }
+                },
+                {
+                  "id": "idle-target",
+                  "type": "video",
+                  "resource": "idle-video",
+                  "opacity": 0
+                },
+                {
+                  "id": "click-controller",
+                  "type": "script",
+                  "properties": {
+                    "controller": {
+                      "runtime": "native",
+                      "kind": "click-video-switch",
+                      "property": "scene.controller.click-controller.active",
+                      "target_node": "click-target",
+                      "target_type": "video"
+                    }
+                  }
+                },
+                {
+                  "id": "click-target",
+                  "type": "video",
+                  "resource": "click-video",
+                  "opacity": 0
+                }
+              ],
+              "property_bindings": [
+                {
+                  "property": "scene.controller.idle-controller.active",
+                  "target": "opacity",
+                  "target_node": "idle-target"
+                },
+                {
+                  "property": "scene.controller.click-controller.active",
+                  "target": "opacity",
+                  "target_node": "click-target"
+                }
+              ]
+            }"##,
+        )
+        .unwrap();
+        let manifest = json!({
+            "format": crate::core::FORMAT_NAME,
+            "format_version": crate::core::FORMAT_VERSION,
+            "id": "org.example.scene-controller",
+            "version": "1.0.0",
+            "title": "Scene Controller",
             "kind": "scene",
             "entry": {
                 "type": "scene",

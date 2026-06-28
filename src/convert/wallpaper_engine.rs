@@ -4818,14 +4818,34 @@ fn scene_full_scene_status(
                     .iter()
                     .any(|feature| feature == "native-scene-controller-video-switch-binding")
                 {
+                    let idle_controller_ready = report
+                        .converted_features
+                        .iter()
+                        .any(|feature| feature == "native-scene-controller-idle-video-switch");
+                    let controller_input_pending =
+                        report.converted_features.iter().any(|feature| {
+                            matches!(
+                                feature.as_str(),
+                                "native-scene-controller-click-video-switch"
+                                    | "native-scene-controller-property-video-switch"
+                            )
+                        });
                     push_unique(
                         &mut status.completed_boundaries,
                         "script-controlled-video-layer-switching",
                     );
-                    push_unique(
-                        &mut status.pending_boundaries,
-                        "scene-controller-input-source",
-                    );
+                    if idle_controller_ready {
+                        push_unique(
+                            &mut status.completed_boundaries,
+                            "scene-idle-controller-input-source",
+                        );
+                    }
+                    if controller_input_pending || !idle_controller_ready {
+                        push_unique(
+                            &mut status.pending_boundaries,
+                            "scene-controller-input-source",
+                        );
+                    }
                 } else {
                     push_unique(
                         &mut status.pending_boundaries,
