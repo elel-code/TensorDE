@@ -127,6 +127,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
             text: None,
             font_size: None,
             font_family: None,
+            font_source: None,
             font_weight: None,
             text_align: None,
             path_data: None,

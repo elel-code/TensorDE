@@ -1163,6 +1163,7 @@ fn scene_cli_layer(id: &str, kind: SceneNodeKind) -> SceneRenderLayer {
         text: None,
         font_size: None,
         font_family: None,
+        font_source: None,
         font_weight: None,
         text_align: None,
         path_data: None,

@@ -223,6 +223,7 @@ impl SceneDocument {
             text: None,
             font_size: None,
             font_family: None,
+            font_source: None,
             font_weight: None,
             text_align: None,
             path_data: None,
@@ -489,6 +490,8 @@ pub struct SceneNode {
     #[serde(default)]
     pub font_family: Option<String>,
     #[serde(default)]
+    pub font_resource: Option<String>,
+    #[serde(default)]
     pub font_weight: Option<String>,
     #[serde(default)]
     pub text_align: Option<SceneTextAlign>,
@@ -526,6 +529,14 @@ impl SceneNode {
             return Err(SceneError::invalid(format!(
                 "scene node {:?} references unknown resource {:?}",
                 self.id, resource
+            )));
+        }
+        if let Some(font_resource) = &self.font_resource
+            && !resource_ids.contains(font_resource)
+        {
+            return Err(SceneError::invalid(format!(
+                "scene node {:?} references unknown font resource {:?}",
+                self.id, font_resource
             )));
         }
         if let Some(provenance) = &self.provenance {
@@ -659,6 +670,11 @@ impl SceneNode {
                 text,
                 font_size: self.font_size,
                 font_family: self.font_family.clone(),
+                font_source: self
+                    .font_resource
+                    .as_deref()
+                    .and_then(|resource| resources.get(resource))
+                    .map(|resource| resource.source.clone()),
                 font_weight: self.font_weight.clone(),
                 text_align: self.text_align,
                 path_data: self.path_data.clone(),
@@ -738,6 +754,7 @@ impl SceneNode {
                 text: None,
                 font_size: None,
                 font_family: None,
+                font_source: None,
                 font_weight: None,
                 text_align: None,
                 path_data: None,
@@ -1643,6 +1660,7 @@ pub struct SceneSnapshotLayer {
     pub text: Option<String>,
     pub font_size: Option<f64>,
     pub font_family: Option<String>,
+    pub font_source: Option<PackagePath>,
     pub font_weight: Option<String>,
     pub text_align: Option<SceneTextAlign>,
     pub path_data: Option<String>,

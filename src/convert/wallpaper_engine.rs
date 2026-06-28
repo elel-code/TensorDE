@@ -2069,6 +2069,16 @@ fn scene_node_from_object(
         node.insert("font_size".to_owned(), json!(font_size.max(1.0)));
     }
     if let Some(font_family) = scene_font_family_from_object(object) {
+        if let Some(font_resource) = scene_copy_font_resource_if_path(
+            project,
+            output_dir,
+            &font_family,
+            report,
+            context,
+            resources,
+        ) {
+            node.insert("font_resource".to_owned(), Value::String(font_resource));
+        }
         node.insert("font_family".to_owned(), Value::String(font_family));
     }
     if let Some(font_weight) = string_field(object, &["font_weight", "fontWeight", "weight"]) {
@@ -4239,6 +4249,46 @@ fn scene_font_family_from_object(object: &Map<String, Value>) -> Option<String> 
     value_field(object, &["font_family", "fontFamily", "font"])
 }
 
+fn scene_copy_font_resource_if_path(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    font: &str,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) -> Option<String> {
+    if !is_font_path(font) {
+        return None;
+    }
+    let resource = scene_copy_resource_as(
+        project,
+        output_dir,
+        font,
+        "font",
+        Some("we-font"),
+        report,
+        context,
+        resources,
+    )?;
+    push_unique(
+        &mut context.converted_features,
+        "wallpaper-engine-font-resource-lowering",
+    );
+    Some(resource)
+}
+
+fn is_font_path(value: &str) -> bool {
+    Path::new(value)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "ttf" | "otf" | "ttc" | "woff" | "woff2"
+            )
+        })
+}
+
 fn scene_text_align_from_object(object: &Map<String, Value>) -> Option<&'static str> {
     let align = value_field(
         object,
@@ -4528,6 +4578,16 @@ fn scene_full_scene_status(
         push_unique(
             &mut status.completed_boundaries,
             "wallpaper-engine-animation-layer-rate-time-scale",
+        );
+    }
+    if report
+        .converted_features
+        .iter()
+        .any(|feature| feature == "wallpaper-engine-font-resource-lowering")
+    {
+        push_unique(
+            &mut status.completed_boundaries,
+            "wallpaper-engine-font-resource-lowering",
         );
     }
     if report
@@ -9129,6 +9189,7 @@ void main() {}
               ]
             }"#,
         );
+        source.write_file("fonts/Inter.ttf", "not real font");
         source.write_file(
             PROJECT_FILE,
             r#"{
@@ -10581,6 +10642,7 @@ void main() {}
               ]
             }"#,
         );
+        source.write_file("fonts/Inter.ttf", "not real font");
         source.write_file(
             PROJECT_FILE,
             r#"{
@@ -10600,6 +10662,13 @@ void main() {}
         assert_eq!(node["text"], "Hello Scene");
         assert_eq!(node["font_size"], 48.0);
         assert_eq!(node["font_family"], "fonts/Inter.ttf");
+        assert_eq!(node["font_resource"], "resource-1-inter");
+        assert_eq!(scene["resources"][0]["type"], "font");
+        assert_eq!(scene["resources"][0]["role"], "we-font");
+        assert_eq!(
+            scene["resources"][0]["source"],
+            "assets/scene-resources/scene/resource-1-inter.ttf"
+        );
         assert_eq!(node["text_align"], "middle");
         assert_eq!(node["visible"], true);
         assert_eq!(node["opacity"], 0.0);
@@ -10620,7 +10689,28 @@ void main() {}
         });
         assert_eq!(visible.layers[0].kind, crate::core::SceneNodeKind::Text);
         assert_eq!(visible.layers[0].text.as_deref(), Some("Hello Scene"));
+        assert_eq!(
+            visible.layers[0].font_source.as_ref().unwrap().as_str(),
+            "assets/scene-resources/scene/resource-1-inter.ttf"
+        );
         assert_eq!(visible.layers[0].opacity, 1.0);
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"wallpaper-engine-font-resource-lowering".to_owned())
+        );
+        assert!(
+            report
+                .full_scene
+                .as_ref()
+                .unwrap()
+                .completed_boundaries
+                .contains(&"wallpaper-engine-font-resource-lowering".to_owned())
+        );
     }
 
     #[test]

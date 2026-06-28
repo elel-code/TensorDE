@@ -12325,6 +12325,7 @@ mod tests {
                     text: None,
                     font_size: None,
                     font_family: None,
+                    font_source: None,
                     font_weight: None,
                     text_align: None,
                     path_data: None,
