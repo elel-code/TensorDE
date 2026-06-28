@@ -1542,9 +1542,122 @@ fn scene_collect_object_timelines(
             scene_collect_timeline_entries(value, Some(node_id), context);
         }
     }
+    scene_collect_embedded_property_timelines(object, node_id, context);
     if let Some(animation_layers) = object.get("animationlayers") {
         scene_collect_animation_layer_timelines(animation_layers, node_id, context);
     }
+}
+
+fn scene_collect_embedded_property_timelines(
+    object: &Map<String, Value>,
+    node_id: &str,
+    context: &mut SceneDocumentBuildContext,
+) {
+    for (property, value) in object {
+        if !SceneTimelineIr::supports_wallpaper_engine_property(property) {
+            continue;
+        }
+        let Some(timeline) = scene_embedded_property_timeline_value(property, value) else {
+            continue;
+        };
+        let before = context.timelines.len();
+        scene_collect_timeline_entries(&timeline, Some(node_id), context);
+        if context.timelines.len() > before {
+            push_unique(
+                &mut context.converted_features,
+                "scene-we-embedded-property-timeline",
+            );
+        }
+    }
+}
+
+fn scene_embedded_property_timeline_value(property: &str, value: &Value) -> Option<Value> {
+    match value {
+        Value::Object(object) => {
+            let source = scene_embedded_timeline_source(object)?;
+            Some(scene_embedded_property_timeline_object(
+                property,
+                source.clone(),
+                object,
+            ))
+        }
+        Value::Array(values) if values.iter().any(scene_timeline_entry_like_value) => Some(
+            scene_embedded_property_timeline_object(property, value.clone(), &Map::new()),
+        ),
+        Value::Array(_) | Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null => {
+            None
+        }
+    }
+}
+
+fn scene_embedded_timeline_source(object: &Map<String, Value>) -> Option<&Value> {
+    [
+        "keyframes",
+        "frames",
+        "values",
+        "points",
+        "timeline",
+        "timelines",
+        "animation",
+        "animations",
+    ]
+    .iter()
+    .filter_map(|key| object.get(*key))
+    .next()
+}
+
+fn scene_embedded_property_timeline_object(
+    property: &str,
+    keyframes: Value,
+    source: &Map<String, Value>,
+) -> Value {
+    let mut timeline = Map::new();
+    timeline.insert("property".to_owned(), Value::String(property.to_owned()));
+    timeline.insert("keyframes".to_owned(), keyframes);
+    for key in [
+        "loop",
+        "repeat",
+        "loop_playback",
+        "loopPlayback",
+        "curve",
+        "easing",
+        "interpolation",
+    ] {
+        if let Some(value) = source.get(key) {
+            timeline.insert(key.to_owned(), value.clone());
+        }
+    }
+    Value::Object(timeline)
+}
+
+fn scene_timeline_entry_like_value(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => [
+            "time_ms",
+            "timeMs",
+            "timestamp_ms",
+            "timestampMs",
+            "at_ms",
+            "atMs",
+            "milliseconds",
+            "millis",
+            "ms",
+            "time_seconds",
+            "timeSeconds",
+            "seconds",
+            "secs",
+            "sec",
+            "time",
+        ]
+        .iter()
+        .any(|key| object.contains_key(*key)),
+        Value::Array(values) => values.len() >= 2 && values.first().is_some_and(value_is_number),
+        Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null => false,
+    }
+}
+
+fn value_is_number(value: &Value) -> bool {
+    value_to_f64_unwrapped(value).is_some()
 }
 
 fn scene_collect_animation_layer_timelines(
@@ -6491,7 +6604,7 @@ impl FullSceneConversionStatus {
             target_runtime: "native-vulkan-full-scene".to_owned(),
             current_runtime: "native-vulkan-scene-runtime".to_owned(),
             progress_estimate_percent: 99,
-            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, native scene graph transform/opacity execution, WE text/value wrappers, visible property bindings, shape/solid/radius objects, native deterministic particle emitter expansion, WE particle runtime fields, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, deterministic animation-layer keyframes, per-frame fixed-topology timeline geometry updates, geometry field animation, parallax depth, WE TEXV0005/TEXB0004 RGBA textures into native BC7 .gtex GPU textures, and WE TEXB0004 video payloads into native gscene video resources including spritesheet atlases into gscene text/property/shape/timeline/camera/image/video fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime, and explicit unsupported Wallpaper Engine systems without legacy fallback or preview-image scene substitution".to_owned(),
+            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, native scene graph transform/opacity execution, WE text/value wrappers, visible property bindings, shape/solid/radius objects, native deterministic particle emitter expansion, WE particle runtime fields, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, embedded WE property keyframes, deterministic animation-layer keyframes, per-frame fixed-topology timeline geometry updates, geometry field animation, parallax depth, WE TEXV0005/TEXB0004 RGBA textures into native BC7 .gtex GPU textures, and WE TEXB0004 video payloads into native gscene video resources including spritesheet atlases into gscene text/property/shape/timeline/camera/image/video fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime, and explicit unsupported Wallpaper Engine systems without legacy fallback or preview-image scene substitution".to_owned(),
             source_scene_metadata: Vec::new(),
             completed_boundaries: vec![
                 "package-scene-detection".to_owned(),
@@ -6508,6 +6621,7 @@ impl FullSceneConversionStatus {
                 "wallpaper-engine-deterministic-scenescript-expression-lowering".to_owned(),
                 "wallpaper-engine-geometry-user-property-binding-lowering".to_owned(),
                 "wallpaper-engine-explicit-keyframe-timeline-lowering".to_owned(),
+                "wallpaper-engine-embedded-property-timeline-lowering".to_owned(),
                 "wallpaper-engine-animation-layer-keyframe-lowering".to_owned(),
                 "wallpaper-engine-tex-bc7-gtex-conversion".to_owned(),
                 "scene-we-spritesheet-atlas-runtime".to_owned(),
@@ -9648,6 +9762,87 @@ void main() {}
             report
                 .converted_features
                 .contains(&"scene-deterministic-scenescript-expression".to_owned())
+        );
+    }
+
+    #[test]
+    fn lowers_wallpaper_engine_embedded_property_keyframes_to_gscene_timelines() {
+        let source = TestDir::new("we-scene-embedded-property-timeline-source");
+        let output = TestDir::new("we-scene-embedded-property-timeline-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r##"{
+              "objects": [
+                {
+                  "id": 81,
+                  "shape": "rectangle",
+                  "backgroundcolor": "#203040",
+                  "size": "100 50",
+                  "origin": {
+                    "value": "0 0 0",
+                    "easing": "linear",
+                    "keyframes": [
+                      { "time": 0, "value": "0 0 0" },
+                      { "time": { "value": 1 }, "value": { "value": "100 40 0" } }
+                    ]
+                  },
+                  "alpha": {
+                    "value": 1,
+                    "frames": [
+                      [0, 1],
+                      [0.5, { "value": 0.25 }],
+                      { "time": 1, "value": { "value": false } }
+                    ]
+                  }
+                }
+              ]
+            }"##,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Embedded Property Timeline Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let timelines = scene["timelines"].as_array().unwrap();
+        assert_eq!(timelines.len(), 2);
+        assert!(timelines.iter().any(|timeline| {
+            let channels = timeline["channels"].as_array().unwrap();
+            channels.iter().any(|channel| channel["property"] == "x")
+                && channels.iter().any(|channel| channel["property"] == "y")
+        }));
+        assert!(timelines.iter().any(|timeline| {
+            timeline["channels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|channel| channel["property"] == "opacity")
+        }));
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(500, |_| None);
+        assert_eq!(snapshot.layers[0].transform.x, 50.0);
+        assert_eq!(snapshot.layers[0].transform.y, 20.0);
+        assert_eq!(snapshot.layers[0].opacity, 0.25);
+
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-embedded-property-timeline".to_owned())
         );
     }
 

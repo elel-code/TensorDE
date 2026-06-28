@@ -1,8 +1,8 @@
 use serde_json::{Map, Value, json};
 
 use super::super::{
-    normalize_project_key, scene_bool_value_field, value_field, value_to_bool, value_to_f64,
-    vector3_components_from_value,
+    normalize_project_key, scene_bool_value_field, value_field, value_to_bool_unwrapped,
+    value_to_f64_unwrapped, vector3_components_from_value,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -91,6 +91,12 @@ impl SceneTimelineIr {
             "target_node": self.target_node,
             "channels": self.channels.iter().map(SceneTimelineChannelIr::channel_value).collect::<Vec<_>>()
         })
+    }
+
+    pub(in crate::convert::wallpaper_engine) fn supports_wallpaper_engine_property(
+        property: &str,
+    ) -> bool {
+        !scene_timeline_property_mappings(property).is_empty()
     }
 }
 
@@ -225,18 +231,14 @@ fn scene_timeline_keyframes_from_value(
     let mut keyframes = entries
         .iter()
         .filter_map(|entry| {
-            let object = entry.as_object()?;
-            let time_ms = scene_timeline_keyframe_time_ms(object)?;
-            let value = scene_timeline_keyframe_value(object, source_property, mapping)?;
-            let curve = scene_timeline_curve_from_object(object).or(inherited_curve);
-            Some((
-                time_ms,
-                SceneTimelineKeyframeIr {
-                    time_ms,
-                    value,
-                    curve,
-                },
-            ))
+            let keyframe = scene_timeline_keyframe_from_value(
+                entry,
+                source_property,
+                mapping,
+                inherited_curve,
+            )?;
+            let time_ms = keyframe.time_ms;
+            Some((time_ms, keyframe))
         })
         .collect::<Vec<_>>();
     keyframes.sort_by_key(|(time_ms, _)| *time_ms);
@@ -244,6 +246,49 @@ fn scene_timeline_keyframes_from_value(
         .into_iter()
         .map(|(_, keyframe)| keyframe)
         .collect()
+}
+
+fn scene_timeline_keyframe_from_value(
+    value: &Value,
+    source_property: &str,
+    mapping: SceneTimelinePropertyMapping,
+    inherited_curve: Option<&'static str>,
+) -> Option<SceneTimelineKeyframeIr> {
+    match value {
+        Value::Object(object) => {
+            let time_ms = scene_timeline_keyframe_time_ms(object)?;
+            let value = scene_timeline_keyframe_value(object, source_property, mapping)?;
+            let curve = scene_timeline_curve_from_object(object).or(inherited_curve);
+            Some(SceneTimelineKeyframeIr {
+                time_ms,
+                value,
+                curve,
+            })
+        }
+        Value::Array(values) => {
+            scene_timeline_keyframe_from_pair(values, source_property, mapping, inherited_curve)
+        }
+        Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null => None,
+    }
+}
+
+fn scene_timeline_keyframe_from_pair(
+    values: &[Value],
+    source_property: &str,
+    mapping: SceneTimelinePropertyMapping,
+    inherited_curve: Option<&'static str>,
+) -> Option<SceneTimelineKeyframeIr> {
+    if values.len() < 2 {
+        return None;
+    }
+    let time_ms = scene_time_seconds_from_value(values.first()?)?;
+    let value = scene_timeline_keyframe_raw_value_from_value(values.get(1)?, mapping)
+        .or_else(|| scene_timeline_pair_object_value(values.get(1)?, source_property, mapping))?;
+    Some(SceneTimelineKeyframeIr {
+        time_ms,
+        value: scene_timeline_clamp_keyframe_value(value * mapping.value_scale, mapping)?,
+        curve: inherited_curve,
+    })
 }
 
 fn scene_timeline_keyframe_time_ms(object: &Map<String, Value>) -> Option<u64> {
@@ -258,17 +303,19 @@ fn scene_timeline_keyframe_time_ms(object: &Map<String, Value>) -> Option<u64> {
         "millis",
         "ms",
     ] {
-        if let Some(time_ms) = object.get(key).and_then(value_to_f64) {
+        if let Some(time_ms) = object.get(key).and_then(value_to_f64_unwrapped) {
             return scene_time_ms_from_f64(time_ms);
         }
     }
     for key in ["time_seconds", "timeSeconds", "seconds", "secs", "sec"] {
-        if let Some(seconds) = object.get(key).and_then(value_to_f64) {
+        if let Some(seconds) = object.get(key).and_then(value_to_f64_unwrapped) {
             return scene_time_ms_from_f64(seconds * 1000.0);
         }
     }
-    let time = object.get("time").and_then(value_to_f64)?;
-    let unit = value_field(object, &["unit", "time_unit", "timeUnit"])?;
+    let time = object.get("time").and_then(value_to_f64_unwrapped)?;
+    let Some(unit) = value_field(object, &["unit", "time_unit", "timeUnit"]) else {
+        return scene_time_ms_from_f64(time * 1000.0);
+    };
     let normalized = normalize_project_key(&unit);
     if matches!(normalized.as_str(), "ms" | "millis" | "milliseconds") {
         scene_time_ms_from_f64(time)
@@ -277,6 +324,10 @@ fn scene_timeline_keyframe_time_ms(object: &Map<String, Value>) -> Option<u64> {
     } else {
         None
     }
+}
+
+fn scene_time_seconds_from_value(value: &Value) -> Option<u64> {
+    scene_time_ms_from_f64(value_to_f64_unwrapped(value)? * 1000.0)
 }
 
 fn scene_time_ms_from_f64(value: f64) -> Option<u64> {
@@ -303,6 +354,19 @@ fn scene_timeline_keyframe_value(
     if value.is_finite() { Some(value) } else { None }
 }
 
+fn scene_timeline_clamp_keyframe_value(
+    mut value: f64,
+    mapping: SceneTimelinePropertyMapping,
+) -> Option<f64> {
+    if let Some(min_value) = mapping.min_value {
+        value = value.max(min_value);
+    }
+    if let Some(max_value) = mapping.max_value {
+        value = value.min(max_value);
+    }
+    value.is_finite().then_some(value)
+}
+
 fn scene_timeline_keyframe_raw_value(
     object: &Map<String, Value>,
     source_property: &str,
@@ -314,6 +378,13 @@ fn scene_timeline_keyframe_raw_value(
         .next()
         .or_else(|| object.get(source_property))
         .or_else(|| scene_timeline_property_value_from_object(object, source_property))?;
+    scene_timeline_keyframe_raw_value_from_value(value, mapping)
+}
+
+fn scene_timeline_keyframe_raw_value_from_value(
+    value: &Value,
+    mapping: SceneTimelinePropertyMapping,
+) -> Option<f64> {
     if let Some(component) = mapping.component {
         let components = vector3_components_from_value(value)?;
         return match component {
@@ -323,7 +394,20 @@ fn scene_timeline_keyframe_raw_value(
             _ => None,
         };
     }
-    value_to_f64(value).or_else(|| value_to_bool(value).map(|value| if value { 1.0 } else { 0.0 }))
+    value_to_f64_unwrapped(value)
+        .or_else(|| value_to_bool_unwrapped(value).map(|value| if value { 1.0 } else { 0.0 }))
+}
+
+fn scene_timeline_pair_object_value(
+    value: &Value,
+    source_property: &str,
+    mapping: SceneTimelinePropertyMapping,
+) -> Option<f64> {
+    let object = value.as_object()?;
+    let value = object
+        .get(source_property)
+        .or_else(|| scene_timeline_property_value_from_object(object, source_property))?;
+    scene_timeline_keyframe_raw_value_from_value(value, mapping)
 }
 
 fn scene_timeline_property_value_from_object<'a>(
@@ -572,6 +656,39 @@ mod tests {
                     "keyframes": [
                         { "time_ms": 0, "value": 0.0 },
                         { "time_ms": 1500, "value": 180.0 }
+                    ]
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn timeline_ir_lowers_wrapped_seconds_and_pair_keyframes() {
+        let timeline = json!({
+            "property": "alpha",
+            "keyframes": [
+                { "time": { "value": 0.5 }, "value": { "value": true } },
+                [1.25, { "value": false }],
+                { "time": 2.0, "value": { "value": 0.4 } }
+            ]
+        });
+        let ir = SceneTimelineIr::from_wallpaper_engine_object(
+            timeline.as_object().unwrap(),
+            "node-panel".to_owned(),
+        )
+        .unwrap();
+
+        assert!(SceneTimelineIr::supports_wallpaper_engine_property("alpha"));
+        assert_eq!(
+            ir.timeline_value("timeline-alpha".to_owned())["channels"],
+            json!([
+                {
+                    "property": "opacity",
+                    "loop": false,
+                    "keyframes": [
+                        { "time_ms": 500, "value": 1.0 },
+                        { "time_ms": 1250, "value": 0.0 },
+                        { "time_ms": 2000, "value": 0.4 }
                     ]
                 }
             ])
