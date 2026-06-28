@@ -15,7 +15,9 @@ const SCENE_FULL_TEXT_GLYPH_COLUMNS: usize = 5;
 const SCENE_FULL_TEXT_GLYPH_ROWS: usize = 7;
 const SCENE_FULL_TEXT_GLYPH_ADVANCE_COLUMNS: f64 = 6.0;
 const SCENE_FULL_TEXT_LINE_ADVANCE_ROWS: f64 = 8.0;
+const SCENE_FULL_PATH_POINT_EPSILON: f64 = 1.0e-9;
 const SCENE_FULL_PATH_CURVE_SEGMENTS: usize = 16;
+const SCENE_FULL_PATH_ARC_SEGMENTS_PER_QUARTER: usize = 8;
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT: u32 = 4;
 const SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT: u32 = 6;
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_BYTES: u64 = 20;
@@ -1890,9 +1892,47 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
                     }
                 }
             }
+            'A' | 'a' => {
+                let relative = command == 'a';
+                while let Some((rx, ry, next_index)) =
+                    native_vulkan_scene_take_path_pair(&tokens, index)
+                {
+                    let (x_axis_rotation, next_index) =
+                        native_vulkan_scene_take_path_number(&tokens, next_index)?;
+                    let (large_arc_flag, next_index) =
+                        native_vulkan_scene_take_path_number(&tokens, next_index)?;
+                    let (sweep_flag, next_index) =
+                        native_vulkan_scene_take_path_number(&tokens, next_index)?;
+                    let (x, y, next_index) =
+                        native_vulkan_scene_take_path_pair(&tokens, next_index)?;
+                    index = next_index;
+                    let end = native_vulkan_scene_path_point(current, x, y, relative);
+                    native_vulkan_scene_push_arc_points(
+                        &mut points,
+                        current,
+                        rx,
+                        ry,
+                        x_axis_rotation,
+                        native_vulkan_scene_path_arc_flag(large_arc_flag)?,
+                        native_vulkan_scene_path_arc_flag(sweep_flag)?,
+                        end,
+                    )?;
+                    current = end;
+                    previous_cubic_control = None;
+                    previous_quadratic_control = None;
+                    if index < tokens.len()
+                        && matches!(tokens[index], NativeVulkanScenePathToken::Command(_))
+                    {
+                        break;
+                    }
+                }
+            }
             'Z' | 'z' => {
                 current = start;
-                if points.last().copied() == Some(start) {
+                if points
+                    .last()
+                    .is_some_and(|point| native_vulkan_scene_path_points_close(*point, start))
+                {
                     let _ = points.pop();
                 }
                 previous_cubic_control = None;
@@ -1902,10 +1942,13 @@ fn native_vulkan_scene_simple_path_points(path: &str) -> Option<Vec<[f64; 2]>> {
         }
     }
 
-    points.dedup_by(|left, right| {
-        (left[0] - right[0]).abs() < f64::EPSILON && (left[1] - right[1]).abs() < f64::EPSILON
-    });
+    points.dedup_by(|left, right| native_vulkan_scene_path_points_close(*left, *right));
     Some(points)
+}
+
+fn native_vulkan_scene_path_points_close(left: [f64; 2], right: [f64; 2]) -> bool {
+    (left[0] - right[0]).abs() <= SCENE_FULL_PATH_POINT_EPSILON
+        && (left[1] - right[1]).abs() <= SCENE_FULL_PATH_POINT_EPSILON
 }
 
 fn native_vulkan_scene_path_tokens(path: &str) -> Option<Vec<NativeVulkanScenePathToken>> {
@@ -1936,6 +1979,8 @@ fn native_vulkan_scene_path_tokens(path: &str) -> Option<Vec<NativeVulkanScenePa
                 | 'q'
                 | 'T'
                 | 't'
+                | 'A'
+                | 'a'
                 | 'Z'
                 | 'z'
         ) {
@@ -2059,6 +2104,116 @@ fn native_vulkan_scene_push_quadratic_curve_points(
         points.push([x, y]);
     }
     Some(())
+}
+
+fn native_vulkan_scene_path_arc_flag(value: f64) -> Option<bool> {
+    if (value - 0.0).abs() < f64::EPSILON {
+        Some(false)
+    } else if (value - 1.0).abs() < f64::EPSILON {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+fn native_vulkan_scene_push_arc_points(
+    points: &mut Vec<[f64; 2]>,
+    start: [f64; 2],
+    rx: f64,
+    ry: f64,
+    x_axis_rotation_deg: f64,
+    large_arc: bool,
+    sweep: bool,
+    end: [f64; 2],
+) -> Option<()> {
+    if !rx.is_finite()
+        || !ry.is_finite()
+        || !x_axis_rotation_deg.is_finite()
+        || !start[0].is_finite()
+        || !start[1].is_finite()
+        || !end[0].is_finite()
+        || !end[1].is_finite()
+    {
+        return None;
+    }
+    if (start[0] - end[0]).abs() < f64::EPSILON && (start[1] - end[1]).abs() < f64::EPSILON {
+        return Some(());
+    }
+    let mut rx = rx.abs();
+    let mut ry = ry.abs();
+    if rx <= f64::EPSILON || ry <= f64::EPSILON {
+        points.push(end);
+        return Some(());
+    }
+
+    let phi = x_axis_rotation_deg.to_radians();
+    let cos_phi = phi.cos();
+    let sin_phi = phi.sin();
+    let dx = (start[0] - end[0]) * 0.5;
+    let dy = (start[1] - end[1]) * 0.5;
+    let x1_prime = cos_phi.mul_add(dx, sin_phi * dy);
+    let y1_prime = (-sin_phi).mul_add(dx, cos_phi * dy);
+
+    let radius_scale = x1_prime.powi(2) / rx.powi(2) + y1_prime.powi(2) / ry.powi(2);
+    if radius_scale > 1.0 {
+        let scale = radius_scale.sqrt();
+        rx *= scale;
+        ry *= scale;
+    }
+
+    let rx_sq = rx.powi(2);
+    let ry_sq = ry.powi(2);
+    let x1_prime_sq = x1_prime.powi(2);
+    let y1_prime_sq = y1_prime.powi(2);
+    let denominator = rx_sq * y1_prime_sq + ry_sq * x1_prime_sq;
+    if denominator <= f64::EPSILON || !denominator.is_finite() {
+        points.push(end);
+        return Some(());
+    }
+    let numerator = (rx_sq * ry_sq - rx_sq * y1_prime_sq - ry_sq * x1_prime_sq).max(0.0);
+    let center_scale =
+        if large_arc == sweep { -1.0 } else { 1.0 } * (numerator / denominator).sqrt();
+    let cx_prime = center_scale * rx * y1_prime / ry;
+    let cy_prime = center_scale * -ry * x1_prime / rx;
+    let cx = cos_phi.mul_add(cx_prime, -sin_phi * cy_prime) + (start[0] + end[0]) * 0.5;
+    let cy = sin_phi.mul_add(cx_prime, cos_phi * cy_prime) + (start[1] + end[1]) * 0.5;
+
+    let start_vector = [(x1_prime - cx_prime) / rx, (y1_prime - cy_prime) / ry];
+    let end_vector = [(-x1_prime - cx_prime) / rx, (-y1_prime - cy_prime) / ry];
+    let start_angle = native_vulkan_scene_vector_angle([1.0, 0.0], start_vector)?;
+    let mut sweep_angle = native_vulkan_scene_vector_angle(start_vector, end_vector)?;
+    if !sweep && sweep_angle > 0.0 {
+        sweep_angle -= std::f64::consts::TAU;
+    } else if sweep && sweep_angle < 0.0 {
+        sweep_angle += std::f64::consts::TAU;
+    }
+
+    let segment_count = ((sweep_angle.abs() / (std::f64::consts::FRAC_PI_2))
+        * SCENE_FULL_PATH_ARC_SEGMENTS_PER_QUARTER as f64)
+        .ceil()
+        .max(1.0) as usize;
+    for segment in 1..=segment_count {
+        let t = segment as f64 / segment_count as f64;
+        let theta = start_angle + sweep_angle * t;
+        let cos_theta = theta.cos();
+        let sin_theta = theta.sin();
+        let x = cx + rx * cos_phi * cos_theta - ry * sin_phi * sin_theta;
+        let y = cy + rx * sin_phi * cos_theta + ry * cos_phi * sin_theta;
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        points.push([x, y]);
+    }
+    Some(())
+}
+
+fn native_vulkan_scene_vector_angle(from: [f64; 2], to: [f64; 2]) -> Option<f64> {
+    let cross = from[0] * to[1] - from[1] * to[0];
+    let dot = from[0] * to[0] + from[1] * to[1];
+    if !cross.is_finite() || !dot.is_finite() {
+        return None;
+    }
+    Some(cross.atan2(dot))
 }
 
 fn native_vulkan_scene_polygon_is_convex(points: &[[f64; 2]]) -> bool {
@@ -2821,6 +2976,38 @@ mod tests {
             pass_plan.quad_recording_steps[0].index_count,
             (SCENE_FULL_PATH_CURVE_SEGMENTS * 2 * 6) as u32
         );
+        assert_eq!(pass_plan.path_op_count, 1);
+        assert!(!pass_plan.requires_path_tessellation);
+    }
+
+    #[test]
+    fn draw_pass_plan_records_arc_path_as_solid_geometry() {
+        let mut path = draw_op(0, NativeVulkanSceneDrawOpKind::Path);
+        path.color = Some("#22aa88".to_owned());
+        path.path_data = Some("M100 50 A50 50 0 1 1 0 50 A50 50 0 1 1 100 50 Z".to_owned());
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            draw_ops: vec![path],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.plan_ready);
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.backend_status, "solid-quad-recording-ready");
+        assert_eq!(pass_plan.blocking_reason, None);
+        assert!(pass_plan.quad_recording_ready);
+        assert_eq!(pass_plan.quad_recording_steps.len(), 1);
+        assert_eq!(pass_plan.quad_recording_steps[0].kind, "path");
+        assert_eq!(
+            pass_plan.quad_recording_steps[0].vertex_count,
+            (SCENE_FULL_PATH_ARC_SEGMENTS_PER_QUARTER * 4) as u32
+        );
+        assert!(pass_plan.quad_recording_steps[0].index_count > 6);
         assert_eq!(pass_plan.path_op_count, 1);
         assert!(!pass_plan.requires_path_tessellation);
     }

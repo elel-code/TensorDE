@@ -110,6 +110,7 @@ pub struct NativeVulkanFullSceneRuntimeSnapshot {
     pub video_native_layer_count: usize,
     pub tessellated_path_layer_count: usize,
     pub curve_path_layer_count: usize,
+    pub arc_path_layer_count: usize,
     pub text_geometry_layer_count: usize,
     pub stroke_geometry_layer_count: usize,
     pub color_layer_count: usize,
@@ -730,6 +731,17 @@ fn native_vulkan_full_scene_runtime_snapshot(
                     .is_some_and(native_vulkan_scene_path_uses_curves)
         })
         .count();
+    let arc_path_layer_count = pass_plan
+        .recordable_quads
+        .iter()
+        .filter(|quad| {
+            quad.kind == "path"
+                && quad
+                    .path_data
+                    .as_deref()
+                    .is_some_and(native_vulkan_scene_path_uses_arcs)
+        })
+        .count();
     let text_geometry_layer_count = pass_plan
         .quad_recording_steps
         .iter()
@@ -836,6 +848,9 @@ fn native_vulkan_full_scene_runtime_snapshot(
     if curve_path_layer_count > 0 {
         completed_boundaries.push("curve-path-flattening-runtime");
     }
+    if arc_path_layer_count > 0 {
+        completed_boundaries.push("arc-path-flattening-runtime");
+    }
     if text_geometry_layer_count > 0 {
         completed_boundaries.push("deterministic-text-glyph-geometry-runtime");
     }
@@ -876,9 +891,9 @@ fn native_vulkan_full_scene_runtime_snapshot(
     NativeVulkanFullSceneRuntimeSnapshot {
         target_runtime: "native-vulkan-full-scene",
         current_runtime: "native-vulkan-scene-runtime",
-        progress_estimate_percent: 96,
+        progress_estimate_percent: 97,
         full_scene_complete: false,
-        execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries with native scene graph transform/opacity execution, scene timeline animation, geometry field animation, deterministic SceneScript expression lowering, parallax property camera input, property update, pause/resume policy, state persistence, converted keyframe timeline input, converted WE .tex image resources, spritesheet atlas UV-frame animation, cubic/smooth-cubic/quadratic/smooth-quadratic path flattening, and scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
+        execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries with native scene graph transform/opacity execution, scene timeline animation, geometry field animation, deterministic SceneScript expression lowering, parallax property camera input, property update, pause/resume policy, state persistence, converted keyframe timeline input, converted WE .tex image resources, spritesheet atlas UV-frame animation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, and scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
         native_scene_graph_lowering_ready: plan.native_draw_ready(),
         native_present_route_ready: pass_plan.backend_ready,
         retained_resource_model_ready,
@@ -901,6 +916,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
         video_native_layer_count,
         tessellated_path_layer_count,
         curve_path_layer_count,
+        arc_path_layer_count,
         text_geometry_layer_count,
         stroke_geometry_layer_count,
         color_layer_count: pass_plan.color_op_count,
@@ -933,6 +949,10 @@ fn native_vulkan_full_scene_runtime_snapshot(
 fn native_vulkan_scene_path_uses_curves(path: &str) -> bool {
     path.chars()
         .any(|character| matches!(character, 'C' | 'c' | 'S' | 's' | 'Q' | 'q' | 'T' | 't'))
+}
+
+fn native_vulkan_scene_path_uses_arcs(path: &str) -> bool {
+    path.chars().any(|character| matches!(character, 'A' | 'a'))
 }
 
 fn native_vulkan_scene_resource_model(backend_status: &str, video_op_count: usize) -> &'static str {
@@ -1313,7 +1333,7 @@ mod tests {
             snapshot.full_scene.current_runtime,
             "native-vulkan-scene-runtime"
         );
-        assert_eq!(snapshot.full_scene.progress_estimate_percent, 96);
+        assert_eq!(snapshot.full_scene.progress_estimate_percent, 97);
         assert!(!snapshot.full_scene.full_scene_complete);
         assert!(snapshot.full_scene.timeline_snapshot_runtime_ready);
         assert_eq!(snapshot.full_scene.timeline_snapshot_time_ms, 1234);
@@ -1940,6 +1960,7 @@ mod tests {
         assert!(!snapshot.draw_pass_requires_path_tessellation);
         assert_eq!(snapshot.full_scene.tessellated_path_layer_count, 1);
         assert_eq!(snapshot.full_scene.curve_path_layer_count, 0);
+        assert_eq!(snapshot.full_scene.arc_path_layer_count, 0);
         assert_eq!(snapshot.full_scene.native_runtime_coverage_percent, 100);
         assert!(!snapshot.full_scene.scene_path_tessellation_required);
         assert!(snapshot.full_scene.scene_path_tessellation_ready);
@@ -1974,6 +1995,7 @@ mod tests {
         assert!(!snapshot.draw_pass_requires_path_tessellation);
         assert_eq!(snapshot.full_scene.tessellated_path_layer_count, 1);
         assert_eq!(snapshot.full_scene.curve_path_layer_count, 1);
+        assert_eq!(snapshot.full_scene.arc_path_layer_count, 0);
         assert_eq!(snapshot.full_scene.native_runtime_coverage_percent, 100);
         assert!(!snapshot.full_scene.scene_path_tessellation_required);
         assert!(snapshot.full_scene.scene_path_tessellation_ready);
@@ -1988,6 +2010,41 @@ mod tests {
                 .full_scene
                 .completed_boundaries
                 .contains(&"curve-path-flattening-runtime")
+        );
+        assert_eq!(solid_geometry.draw_steps.len(), 1);
+        assert!(solid_geometry.indices.len() > 6);
+    }
+
+    #[test]
+    fn scene_runtime_snapshot_counts_arc_path_tessellation_coverage() {
+        let mut path = scene_test_layer("orbit", SceneNodeKind::Path);
+        path.path_data = Some("M100 50 A50 50 0 1 1 0 50 A50 50 0 1 1 100 50 Z".to_owned());
+        path.color = Some("#22aa88".to_owned());
+        let item = scene_test_item(vec![path], None);
+
+        let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+        let solid_geometry = snapshot
+            .vulkanalia_solid_quad_geometry_input()
+            .expect("arc path solid geometry");
+
+        assert!(snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.draw_pass_backend_status,
+            "solid-quad-recording-ready"
+        );
+        assert_eq!(snapshot.draw_pass_path_op_count, 1);
+        assert!(!snapshot.draw_pass_requires_path_tessellation);
+        assert_eq!(snapshot.full_scene.tessellated_path_layer_count, 1);
+        assert_eq!(snapshot.full_scene.curve_path_layer_count, 0);
+        assert_eq!(snapshot.full_scene.arc_path_layer_count, 1);
+        assert_eq!(snapshot.full_scene.native_runtime_coverage_percent, 100);
+        assert!(!snapshot.full_scene.scene_path_tessellation_required);
+        assert!(snapshot.full_scene.scene_path_tessellation_ready);
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"arc-path-flattening-runtime")
         );
         assert_eq!(solid_geometry.draw_steps.len(), 1);
         assert!(solid_geometry.indices.len() > 6);
