@@ -1065,8 +1065,11 @@ fn write_scene_document_to(
         fs::create_dir_all(parent).map_err(ConversionError::CreateDir)?;
     }
 
+    let viewport_extent = scene_document_extent(source_scene);
     let mut context = SceneDocumentBuildContext {
         resource_scope: scene_resource_scope(package_path),
+        viewport_width: viewport_extent.map(|(width, _)| width),
+        viewport_height: viewport_extent.map(|(_, height)| height),
         ..SceneDocumentBuildContext::default()
     };
     let mut resources = Vec::new();
@@ -1093,6 +1096,9 @@ fn write_scene_document_to(
     }
     nodes = scene_rebuild_parent_graph(nodes);
     scene_lower_pending_controllers(&mut nodes, &mut context);
+    if !context.timelines.is_empty() {
+        push_unique(&mut report.converted_features, "scene-keyframe-timeline");
+    }
     for feature in &context.converted_features {
         push_unique(&mut report.converted_features, feature);
     }
@@ -1152,25 +1158,32 @@ fn write_scene_document_to(
 }
 
 fn scene_document_size(source_scene: Option<&Value>) -> Value {
+    let Some((width, height)) = scene_document_extent(source_scene) else {
+        return Value::Null;
+    };
+    json!({ "width": width as u32, "height": height as u32 })
+}
+
+fn scene_document_extent(source_scene: Option<&Value>) -> Option<(f64, f64)> {
     let Some(general) = source_scene
         .and_then(|scene| scene.get("general"))
         .and_then(Value::as_object)
     else {
-        return Value::Null;
+        return None;
     };
     let Some(projection) = general
         .get("orthogonalprojection")
         .and_then(Value::as_object)
     else {
-        return Value::Null;
+        return None;
     };
     let width = projection.get("width").and_then(value_to_u32);
     let height = projection.get("height").and_then(value_to_u32);
     match (width, height) {
         (Some(width), Some(height)) if width > 0 && height > 0 => {
-            json!({ "width": width, "height": height })
+            Some((f64::from(width), f64::from(height)))
         }
-        _ => Value::Null,
+        _ => None,
     }
 }
 
@@ -1352,6 +1365,8 @@ struct SceneDocumentBuildContext {
     next_resource: usize,
     next_timeline: usize,
     resource_scope: String,
+    viewport_width: Option<f64>,
+    viewport_height: Option<f64>,
     source_node_ids: BTreeMap<String, String>,
     pending_controllers: Vec<SceneControllerIr>,
     timelines: Vec<Value>,
@@ -2035,6 +2050,14 @@ fn scene_node_from_object(
         node.entry("height".to_owned())
             .or_insert_with(|| json!(f64::from(size.height)));
     }
+    if scene_builtin_util_uses_viewport(source_model.as_ref())
+        && let (Some(width), Some(height)) = (context.viewport_width, context.viewport_height)
+    {
+        node.entry("width".to_owned())
+            .or_insert_with(|| json!(width));
+        node.entry("height".to_owned())
+            .or_insert_with(|| json!(height));
+    }
     if kind == "rectangle"
         && let Some(radius) = scene_corner_radius_from_object(object)
     {
@@ -2487,6 +2510,9 @@ fn scene_node_kind_from_object(
         return "video";
     }
     if let Some(source_model) = source_model {
+        if let Some(kind) = scene_builtin_util_node_kind(object, source_model) {
+            return kind;
+        }
         if let Some(render_kind) = source_model.render_kind {
             return render_kind;
         }
@@ -2543,6 +2569,50 @@ fn scene_node_kind_from_object(
         return "group";
     }
     "unknown"
+}
+
+fn scene_builtin_util_node_kind(
+    object: &Map<String, Value>,
+    source_model: &SceneSourceModelConversion,
+) -> Option<&'static str> {
+    let utility = source_model.value.get("utility").and_then(Value::as_str)?;
+    if scene_controller_target_layer_from_script_properties(object).is_some() {
+        return Some("script");
+    }
+    if object
+        .get("visible")
+        .and_then(Value::as_object)
+        .and_then(|visible| visible.get("script"))
+        .is_some()
+    {
+        return source_model.render_kind;
+    }
+    if scene_child_nodes_from_keys(object) {
+        return Some("group");
+    }
+    if object
+        .get("effects")
+        .and_then(Value::as_array)
+        .is_some_and(|effects| !effects.is_empty())
+        || scene_color_from_object(object).is_some()
+        || scene_size_component_from_object(object, 0).is_some()
+        || scene_size_component_from_object(object, 1).is_some()
+        || number_value_field(object, &["width", "w"]).is_some()
+        || number_value_field(object, &["height", "h"]).is_some()
+    {
+        return Some("rectangle");
+    }
+    if matches!(utility, "fullscreenlayer" | "composelayer") {
+        return source_model.render_kind;
+    }
+    None
+}
+
+fn scene_builtin_util_uses_viewport(source_model: Option<&SceneSourceModelConversion>) -> bool {
+    source_model
+        .and_then(|model| model.value.get("utility"))
+        .and_then(Value::as_str)
+        .is_some_and(|utility| utility == "fullscreenlayer")
 }
 
 fn scene_object_is_audio_cue_only(
@@ -2770,13 +2840,17 @@ fn scene_controller_from_object(
     node_id: &str,
     source_model: Option<&SceneSourceModelConversion>,
 ) -> Option<(Value, SceneControllerIr)> {
-    let utility = source_model?.value.get("utility").and_then(Value::as_str)?;
     let script_properties = scene_script_properties_from_object(object)?;
-    let target_layer = string_field(
-        script_properties,
-        &["targetLayerId", "targetlayerid", "target_layer_id"],
-    )?;
+    let target_layer = scene_controller_target_layer(script_properties)?;
     if target_layer.trim().is_empty() {
+        return None;
+    }
+    let utility = source_model
+        .and_then(|model| model.value.get("utility").and_then(Value::as_str))
+        .unwrap_or("visibility-script");
+    if utility == "visibility-script"
+        && !scene_controller_script_properties_have_timed_visibility(script_properties)
+    {
         return None;
     }
     let default_hide_target = scene_script_property_bool(
@@ -2792,6 +2866,50 @@ fn scene_controller_from_object(
         script_properties,
     );
     Some((controller.metadata_value(), controller))
+}
+
+fn scene_controller_script_properties_have_timed_visibility(
+    script_properties: &Map<String, Value>,
+) -> bool {
+    [
+        "targetLayerName",
+        "targetlayername",
+        "target_layer_name",
+        "enableAutoControl",
+        "enableautocontrol",
+        "enable_auto_control",
+        "showDuration",
+        "showduration",
+        "show_duration",
+        "hideOnStart",
+        "hideonstart",
+        "hide_on_start",
+        "fadeDuration",
+        "fadeduration",
+        "fade_duration",
+    ]
+    .iter()
+    .any(|key| script_properties.contains_key(*key))
+}
+
+fn scene_controller_target_layer_from_script_properties(
+    object: &Map<String, Value>,
+) -> Option<String> {
+    scene_script_properties_from_object(object).and_then(scene_controller_target_layer)
+}
+
+fn scene_controller_target_layer(script_properties: &Map<String, Value>) -> Option<String> {
+    string_field(
+        script_properties,
+        &[
+            "targetLayerId",
+            "targetlayerid",
+            "target_layer_id",
+            "targetLayerName",
+            "targetlayername",
+            "target_layer_name",
+        ],
+    )
 }
 
 fn scene_script_properties_from_object(object: &Map<String, Value>) -> Option<&Map<String, Value>> {
@@ -4139,6 +4257,20 @@ fn scene_full_scene_status(
             .pending_boundaries
             .retain(|boundary| boundary != "mixed-video-scene-composition");
     }
+    if report
+        .converted_features
+        .iter()
+        .any(|feature| feature == "scene-we-timed-visibility-controller")
+    {
+        push_unique(
+            &mut status.completed_boundaries,
+            "wallpaper-engine-timed-visibility-controller-lowering",
+        );
+        push_unique(
+            &mut status.completed_boundaries,
+            "scene-controller-fade-ramp-runtime",
+        );
+    }
     status
 }
 
@@ -4171,8 +4303,8 @@ fn scene_lower_pending_controllers(nodes: &mut [Value], context: &mut SceneDocum
             .get(&format!("kind:{target_node_id}"))
             .cloned()
             .unwrap_or_else(|| "unknown".to_owned());
-        if controller.default_hide_target() {
-            scene_set_node_initial_opacity(nodes, &target_node_id, 0.0);
+        if let Some(opacity) = controller.initial_target_opacity() {
+            scene_set_node_initial_opacity(nodes, &target_node_id, opacity);
         }
         scene_set_controller_target_node(
             nodes,
@@ -4181,13 +4313,31 @@ fn scene_lower_pending_controllers(nodes: &mut [Value], context: &mut SceneDocum
             &target_kind,
             controller.input_aliases_value(Some(&target_node_id)),
         );
-        context
-            .property_bindings
-            .push(controller.property_binding_value(&target_node_id));
-        push_unique(
-            &mut context.converted_features,
-            "native-scene-controller-property-binding",
-        );
+        if let Some(timeline) = controller.timed_visibility_timeline_value(
+            scene_next_timeline_id(
+                context,
+                Some(&format!(
+                    "{}-{}",
+                    controller.controller_node_id(),
+                    target_node_id
+                )),
+            ),
+            &target_node_id,
+        ) {
+            context.timelines.push(timeline);
+            push_unique(
+                &mut context.converted_features,
+                "scene-we-timed-visibility-controller",
+            );
+        } else {
+            context
+                .property_bindings
+                .push(controller.property_binding_value(&target_node_id));
+            push_unique(
+                &mut context.converted_features,
+                "native-scene-controller-property-binding",
+            );
+        }
         if target_kind == "video" {
             push_unique(
                 &mut context.converted_features,
@@ -9370,6 +9520,156 @@ void main() {}
                 .opacity,
             1.0
         );
+    }
+
+    #[test]
+    fn lowers_wallpaper_engine_timed_visibility_script_to_target_timeline() {
+        let source = TestDir::new("we-scene-timed-visibility-controller-source");
+        let output = TestDir::new("we-scene-timed-visibility-controller-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r##"{
+              "general": {
+                "orthogonalprojection": { "width": 1920, "height": 1080 }
+              },
+              "objects": [
+                {
+                  "id": 48,
+                  "name": "Cloud",
+                  "image": "models/util/fullscreenlayer.json",
+                  "visible": false,
+                  "color": "#ffffff"
+                },
+                {
+                  "id": 63,
+                  "name": "Intro Cloud Controller",
+                  "solid": true,
+                  "visible": {
+                    "value": true,
+                    "scriptproperties": {
+                      "targetLayerName": "Cloud",
+                      "enableAutoControl": { "value": true },
+                      "startDelay": "0",
+                      "showDuration": "2",
+                      "fadeDuration": 0.5,
+                      "hideOnStart": true,
+                      "loopControl": false,
+                      "loopInterval": 1
+                    }
+                  }
+                }
+              ]
+            }"##,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Timed Visibility Controller Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let nodes = scene["nodes"].as_array().unwrap();
+        let target = nodes.iter().find(|node| node["name"] == "Cloud").unwrap();
+        let controller = nodes
+            .iter()
+            .find(|node| node["name"] == "Intro Cloud Controller")
+            .unwrap();
+        let target_node = target["id"].as_str().unwrap().to_owned();
+        assert_eq!(target["type"], "rectangle");
+        assert_eq!(target["visible"], true);
+        assert_eq!(target["opacity"], 0.0);
+        assert_eq!(target["width"], 1920.0);
+        assert_eq!(target["height"], 1080.0);
+        assert_eq!(
+            controller["properties"]["controller"]["kind"],
+            "timed-visibility"
+        );
+        assert_eq!(
+            controller["properties"]["controller"]["target_node"],
+            target_node
+        );
+        assert!(
+            !scene["property_bindings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|binding| binding["target_node"] == target_node)
+        );
+        let timeline = scene["timelines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|timeline| timeline["target_node"] == target_node)
+            .unwrap();
+        assert_eq!(timeline["channels"][0]["property"], "opacity");
+        assert_eq!(timeline["channels"][0]["loop"], false);
+        assert_eq!(
+            timeline["channels"][0]["keyframes"],
+            json!([
+                { "time_ms": 0, "value": 0.0 },
+                { "time_ms": 500, "value": 1.0 },
+                { "time_ms": 2500, "value": 1.0 },
+                { "time_ms": 3000, "value": 0.0 }
+            ])
+        );
+        assert!(
+            scene["native_lowering"]["completed_boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(
+                    "wallpaper-engine-timed-visibility-controller-lowering"
+                ))
+        );
+        assert!(
+            scene["native_lowering"]["completed_boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("scene-controller-fade-ramp-runtime"))
+        );
+        assert!(
+            scene["native_lowering"]["completed_boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("timeline-animation-runtime"))
+        );
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-timed-visibility-controller".to_owned())
+        );
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-keyframe-timeline".to_owned())
+        );
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        for (time_ms, expected_opacity) in [(0, 0.0), (250, 0.5), (500, 1.0), (3000, 0.0)] {
+            let snapshot = document.snapshot_at_with_property_resolver(time_ms, |_| None);
+            let layer = snapshot
+                .layers
+                .iter()
+                .find(|layer| layer.id == target_node)
+                .unwrap();
+            assert!(
+                (layer.opacity - expected_opacity).abs() < 0.001,
+                "opacity at {time_ms}ms was {}, expected {expected_opacity}",
+                layer.opacity
+            );
+        }
     }
 
     #[test]
