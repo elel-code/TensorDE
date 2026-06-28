@@ -17,8 +17,8 @@ mod ir;
 mod tex;
 
 use self::ir::{
-    SceneControllerIr, SceneNumericPropertyBindingIr, SceneNumericPropertyBindingIrResult,
-    SceneTimelineIr,
+    SceneAnimationLayerIr, SceneControllerIr, SceneNumericPropertyBindingIr,
+    SceneNumericPropertyBindingIrResult, SceneTimelineIr,
 };
 use self::tex::{SceneWeModelFrameSize, SceneWeTexImage, SceneWeTexPayload};
 
@@ -1534,15 +1534,35 @@ fn scene_collect_object_timelines(
             scene_collect_timeline_entries(value, Some(node_id), context);
         }
     }
-    if object
-        .get("animationlayers")
-        .and_then(Value::as_array)
-        .is_some_and(|layers| !layers.is_empty())
-    {
+    if let Some(animation_layers) = object.get("animationlayers") {
+        scene_collect_animation_layer_timelines(animation_layers, node_id, context);
+    }
+}
+
+fn scene_collect_animation_layer_timelines(
+    value: &Value,
+    node_id: &str,
+    context: &mut SceneDocumentBuildContext,
+) {
+    let animation_layer = SceneAnimationLayerIr::from_wallpaper_engine_value(value, node_id);
+    let unlowered_layer_count = animation_layer.unlowered_layer_count();
+    let mut timeline_count = 0usize;
+    for timeline in animation_layer.into_timelines() {
+        let timeline_id = scene_next_timeline_id(context, timeline.hint().or(Some(node_id)));
+        context.timelines.push(timeline.timeline_value(timeline_id));
+        timeline_count += 1;
+    }
+    if timeline_count > 0 {
+        push_unique(
+            &mut context.converted_features,
+            "scene-we-animation-layer-timeline",
+        );
+    }
+    if unlowered_layer_count > 0 {
         scene_push_unsupported(
             context,
             "we-animation-layer-blending",
-            "Wallpaper Engine animation layer blend/rate references are preserved in provenance, but are not equivalent to explicit gscene keyframe channels yet.",
+            "Wallpaper Engine animation layer blend/rate references that cannot be represented as direct gscene keyframe channels remain preserved in provenance.",
             None,
         );
     }
@@ -6316,7 +6336,7 @@ impl FullSceneConversionStatus {
             target_runtime: "native-vulkan-full-scene".to_owned(),
             current_runtime: "native-vulkan-scene-runtime".to_owned(),
             progress_estimate_percent: 99,
-            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, native scene graph transform/opacity execution, WE text/value wrappers, visible property bindings, shape/solid/radius objects, native deterministic particle emitter expansion, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, per-frame fixed-topology timeline geometry updates, geometry field animation, parallax depth, WE TEXV0005/TEXB0004 RGBA textures into native BC7 .gtex GPU textures, and WE TEXB0004 video payloads into native gscene video resources including spritesheet atlases into gscene text/property/shape/timeline/camera/image/video fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime, and explicit unsupported Wallpaper Engine systems without legacy fallback or preview-image scene substitution".to_owned(),
+            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, native scene graph transform/opacity execution, WE text/value wrappers, visible property bindings, shape/solid/radius objects, native deterministic particle emitter expansion, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, deterministic animation-layer keyframes, per-frame fixed-topology timeline geometry updates, geometry field animation, parallax depth, WE TEXV0005/TEXB0004 RGBA textures into native BC7 .gtex GPU textures, and WE TEXB0004 video payloads into native gscene video resources including spritesheet atlases into gscene text/property/shape/timeline/camera/image/video fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime, and explicit unsupported Wallpaper Engine systems without legacy fallback or preview-image scene substitution".to_owned(),
             source_scene_metadata: Vec::new(),
             completed_boundaries: vec![
                 "package-scene-detection".to_owned(),
@@ -6333,6 +6353,7 @@ impl FullSceneConversionStatus {
                 "wallpaper-engine-deterministic-scenescript-expression-lowering".to_owned(),
                 "wallpaper-engine-geometry-user-property-binding-lowering".to_owned(),
                 "wallpaper-engine-explicit-keyframe-timeline-lowering".to_owned(),
+                "wallpaper-engine-animation-layer-keyframe-lowering".to_owned(),
                 "wallpaper-engine-tex-bc7-gtex-conversion".to_owned(),
                 "scene-we-spritesheet-atlas-runtime".to_owned(),
                 "scene-geometry-field-animation-runtime".to_owned(),
@@ -7199,6 +7220,11 @@ void main() {}
         assert!(full_scene.completed_boundaries.contains(
             &"wallpaper-engine-deterministic-scenescript-expression-lowering".to_owned()
         ));
+        assert!(
+            full_scene
+                .completed_boundaries
+                .contains(&"wallpaper-engine-animation-layer-keyframe-lowering".to_owned())
+        );
         assert!(
             full_scene
                 .completed_boundaries
@@ -9371,6 +9397,84 @@ void main() {}
             report
                 .converted_features
                 .contains(&"scene-keyframe-timeline".to_owned())
+        );
+    }
+
+    #[test]
+    fn lowers_wallpaper_engine_animation_layer_keyframes_to_gscene_timelines() {
+        let source = TestDir::new("we-scene-animation-layer-source");
+        let output = TestDir::new("we-scene-animation-layer-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r##"{
+              "objects": [
+                {
+                  "id": 70,
+                  "type": "rectangle",
+                  "name": "Animated Panel",
+                  "width": 100,
+                  "height": 60,
+                  "color": "#203040",
+                  "animationlayers": [
+                    {
+                      "name": "slide",
+                      "property": "origin",
+                      "keyframes": [
+                        { "time_ms": 0, "value": [0, 0, 0] },
+                        { "time_ms": 1000, "value": [120, 40, 0] }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }"##,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Animation Layer Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene["timelines"].as_array().unwrap().len(), 1);
+        assert_eq!(scene["timelines"][0]["id"], "timeline-1-slide");
+        assert_eq!(scene["timelines"][0]["channels"][0]["property"], "x");
+        assert_eq!(scene["timelines"][0]["channels"][1]["property"], "y");
+        assert!(
+            !scene["unsupported_features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| feature["feature"] == "we-animation-layer-blending")
+        );
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(500, |_| None);
+        assert_eq!(snapshot.layers[0].transform.x, 60.0);
+        assert_eq!(snapshot.layers[0].transform.y, 20.0);
+
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-animation-layer-timeline".to_owned())
+        );
+        assert!(
+            !report
+                .unsupported_features
+                .contains(&"we-animation-layer-blending".to_owned())
         );
     }
 
