@@ -7491,6 +7491,13 @@ void main() {}
                       "runtime": "native",
                       "kind": "click-video-switch",
                       "property": "scene.controller.click-controller.active",
+                      "input_aliases": [
+                        "scene.controller.click-controller.active",
+                        "scene.input.click-controller.active",
+                        "scene.input.controller.click-controller.active",
+                        "scene.input.click-target.active",
+                        "scene.input.controller.click-target.active"
+                      ],
                       "target_node": "click-target",
                       "target_type": "video"
                     }

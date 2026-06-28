@@ -134,6 +134,7 @@ impl SceneControllerIr {
             Value::String(self.target_layer.clone()),
         );
         controller.insert("property".to_owned(), Value::String(self.property.clone()));
+        controller.insert("input_aliases".to_owned(), self.input_aliases_value(None));
         controller.insert(
             "default_hide_target".to_owned(),
             json!(self.default_hide_target),
@@ -142,6 +143,28 @@ impl SceneControllerIr {
             controller.insert(key.clone(), value.clone());
         }
         Value::Object(controller)
+    }
+
+    pub(super) fn input_aliases_value(&self, target_node_id: Option<&str>) -> Value {
+        Value::Array(
+            self.input_aliases(target_node_id)
+                .into_iter()
+                .map(Value::String)
+                .collect(),
+        )
+    }
+
+    fn input_aliases(&self, target_node_id: Option<&str>) -> Vec<String> {
+        let mut aliases = vec![
+            self.property.clone(),
+            format!("scene.input.{}.active", self.controller_node_id),
+            format!("scene.input.controller.{}.active", self.controller_node_id),
+        ];
+        if let Some(target_node_id) = target_node_id {
+            aliases.push(format!("scene.input.{target_node_id}.active"));
+            aliases.push(format!("scene.input.controller.{target_node_id}.active"));
+        }
+        aliases
     }
 
     pub(super) fn property_binding_value(&self, target_node_id: &str) -> Value {
@@ -791,6 +814,11 @@ mod tests {
                 "utility": "fullscreenlayer",
                 "target_layer": "Idle Layer",
                 "property": "scene.controller.node-idle.active",
+                "input_aliases": [
+                    "scene.controller.node-idle.active",
+                    "scene.input.node-idle.active",
+                    "scene.input.controller.node-idle.active"
+                ],
                 "default_hide_target": true,
                 "fade_in_duration": 0.5,
                 "mouse_inactive_sec": { "value": 70 }
@@ -827,6 +855,16 @@ mod tests {
         );
         assert_eq!(controller.metadata_value()["kind"], "click-video-switch");
         assert_eq!(controller.metadata_value()["toggle_play"], true);
+        assert_eq!(
+            controller.input_aliases_value(Some("target-node")),
+            json!([
+                "scene.controller.node-click.active",
+                "scene.input.node-click.active",
+                "scene.input.controller.node-click.active",
+                "scene.input.target-node.active",
+                "scene.input.controller.target-node.active"
+            ])
+        );
     }
 
     #[test]

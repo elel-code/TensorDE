@@ -4324,6 +4324,7 @@ fn scene_lower_pending_controllers(nodes: &mut [Value], context: &mut SceneDocum
             controller.controller_node_id(),
             &target_node_id,
             &target_kind,
+            controller.input_aliases_value(Some(&target_node_id)),
         );
         context
             .property_bindings
@@ -4423,6 +4424,7 @@ fn scene_set_controller_target_node(
     controller_node_id: &str,
     target_node_id: &str,
     target_kind: &str,
+    input_aliases: Value,
 ) -> bool {
     for node in nodes {
         let Some(object) = node.as_object_mut() else {
@@ -4449,6 +4451,7 @@ fn scene_set_controller_target_node(
                 "target_type".to_owned(),
                 Value::String(target_kind.to_owned()),
             );
+            controller.insert("input_aliases".to_owned(), input_aliases);
             return true;
         }
         if let Some(children) = object.get_mut("children").and_then(Value::as_array_mut)
@@ -4457,6 +4460,7 @@ fn scene_set_controller_target_node(
                 controller_node_id,
                 target_node_id,
                 target_kind,
+                input_aliases.clone(),
             )
         {
             return true;
@@ -9140,6 +9144,24 @@ void main() {}
         assert_eq!(
             scene["nodes"][2]["properties"]["controller"]["target_node"],
             scene["nodes"][1]["id"]
+        );
+        let controller_node = scene["nodes"][2]["id"].as_str().unwrap();
+        assert!(
+            scene["nodes"][2]["properties"]["controller"]["input_aliases"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(format!(
+                    "scene.input.controller.{controller_node}.active"
+                )))
+        );
+        assert!(
+            scene["nodes"][2]["properties"]["controller"]["input_aliases"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(format!(
+                    "scene.input.controller.{}.active",
+                    scene["nodes"][1]["id"].as_str().unwrap()
+                )))
         );
         assert!(
             scene["property_bindings"]

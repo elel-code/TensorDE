@@ -223,7 +223,7 @@ fn scene_collect_controller_input_properties(
         && let Some(property) = controller.get("property").and_then(Value::as_str)
     {
         let property = property.trim();
-        for alias in scene_controller_input_aliases(node, controller, property) {
+        for alias in scene_controller_input_aliases(controller) {
             if let Some(value) = render_properties.get(&alias)
                 && scene_runtime_number(value).is_some()
             {
@@ -237,21 +237,17 @@ fn scene_collect_controller_input_properties(
     }
 }
 
-fn scene_controller_input_aliases(
-    node: &SceneNode,
-    controller: &serde_json::Map<String, Value>,
-    property: &str,
-) -> Vec<String> {
-    let mut aliases = vec![
-        property.to_owned(),
-        format!("scene.input.{}.active", node.id),
-        format!("scene.input.controller.{}.active", node.id),
-    ];
-    if let Some(target_node) = controller.get("target_node").and_then(Value::as_str) {
-        aliases.push(format!("scene.input.{target_node}.active"));
-        aliases.push(format!("scene.input.controller.{target_node}.active"));
-    }
-    aliases
+fn scene_controller_input_aliases(controller: &serde_json::Map<String, Value>) -> Vec<String> {
+    controller
+        .get("input_aliases")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|alias| !alias.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 pub(super) fn scene_runtime_property_value(
