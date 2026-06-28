@@ -5,7 +5,8 @@ use std::path::Path;
 use super::{
     ConversionReport, SceneDocumentBuildContext, WallpaperEngineProject, ir::SceneOpacityEffectIr,
     push_unique, scene_copy_resource_as, scene_i64_map_from_value, scene_next_timeline_id,
-    scene_push_unsupported, string_field, value_to_bool_unwrapped, value_to_i64, value_to_string,
+    scene_push_unsupported, scene_record_native_script_lowering, string_field,
+    value_to_bool_unwrapped, value_to_i64, value_to_string,
 };
 
 pub(super) fn scene_effects_from_object(
@@ -124,11 +125,30 @@ fn scene_lower_opacity_effect_timeline(
     context
         .timelines
         .push(opacity_effect.timeline_value(timeline_id, node_id));
+    if scene_effect_has_alpha_script(effect) {
+        scene_record_native_script_lowering(context);
+    }
     push_unique(
         &mut report.converted_features,
         "scene-we-opacity-effect-timeline",
     );
     true
+}
+
+fn scene_effect_has_alpha_script(effect: &Map<String, Value>) -> bool {
+    effect
+        .get("passes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .filter_map(|pass| {
+            pass.get("constantshadervalues")
+                .or_else(|| pass.get("constant_shader_values"))
+                .and_then(Value::as_object)
+        })
+        .filter_map(|values| values.get("alpha").and_then(Value::as_object))
+        .any(|alpha| alpha.get("script").and_then(Value::as_str).is_some())
 }
 
 fn scene_effect_file_requires_runtime(

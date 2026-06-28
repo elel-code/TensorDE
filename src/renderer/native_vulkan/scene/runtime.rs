@@ -1921,6 +1921,7 @@ mod tests {
             playback_mode: Some("loop".to_owned()),
             volume: None,
             start_silent: false,
+            active_conditions: Vec::new(),
         });
         let item = scene_test_item(vec![image], None);
 

@@ -1,10 +1,12 @@
 mod animation;
+mod audio;
 mod controller;
 mod effect;
 mod particle;
 mod timeline;
 
 pub(super) use self::animation::SceneAnimationLayerIr;
+pub(super) use self::audio::{SceneAudioControllerIr, SceneAudioCueConditionIr};
 pub(super) use self::controller::SceneControllerIr;
 pub(super) use self::effect::SceneOpacityEffectIr;
 pub(super) use self::particle::{SceneParticleIr, scene_particle_seed_from_object};

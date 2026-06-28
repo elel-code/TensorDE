@@ -17,9 +17,9 @@ mod ir;
 mod tex;
 
 use self::ir::{
-    SceneAnimationLayerIr, SceneControllerIr, SceneNumericPropertyBindingIr,
-    SceneNumericPropertyBindingIrResult, SceneParticleIr, SceneTimelineIr,
-    scene_particle_seed_from_object,
+    SceneAnimationLayerIr, SceneAudioControllerIr, SceneAudioCueConditionIr, SceneControllerIr,
+    SceneNumericPropertyBindingIr, SceneNumericPropertyBindingIrResult, SceneParticleIr,
+    SceneTimelineIr, scene_particle_seed_from_object,
 };
 use self::tex::{SceneWeModelFrameSize, SceneWeTexImage, SceneWeTexPayload};
 
@@ -1070,6 +1070,9 @@ fn write_scene_document_to(
         resource_scope: scene_resource_scope(package_path),
         viewport_width: viewport_extent.map(|(width, _)| width),
         viewport_height: viewport_extent.map(|(_, height)| height),
+        source_script_count: source_scene
+            .map(scene_source_script_count)
+            .unwrap_or_default(),
         ..SceneDocumentBuildContext::default()
     };
     let mut resources = Vec::new();
@@ -1086,6 +1089,7 @@ fn write_scene_document_to(
         })
         .unwrap_or_default();
     if let Some(scene) = source_scene {
+        scene_collect_audio_controllers(scene, &mut context);
         scene_collect_root_timelines(scene, &mut context);
     }
     for feature in &context.converted_features {
@@ -1096,6 +1100,13 @@ fn write_scene_document_to(
     }
     nodes = scene_rebuild_parent_graph(nodes);
     scene_lower_pending_controllers(&mut nodes, &mut context);
+    scene_lower_pending_audio_controllers(&mut nodes, &mut context);
+    if context.all_detected_scripts_native_lowered() {
+        push_unique(
+            &mut context.converted_features,
+            "wallpaper-engine-all-detected-scenescript-native-lowering",
+        );
+    }
     if !context.timelines.is_empty() {
         push_unique(&mut report.converted_features, "scene-keyframe-timeline");
     }
@@ -1367,12 +1378,40 @@ struct SceneDocumentBuildContext {
     resource_scope: String,
     viewport_width: Option<f64>,
     viewport_height: Option<f64>,
+    source_script_count: usize,
+    native_script_lowering_count: usize,
     source_node_ids: BTreeMap<String, String>,
     pending_controllers: Vec<SceneControllerIr>,
+    pending_audio_controllers: Vec<SceneAudioControllerIr>,
     timelines: Vec<Value>,
     property_bindings: Vec<Value>,
     converted_features: Vec<String>,
     unsupported_features: Vec<Value>,
+}
+
+impl SceneDocumentBuildContext {
+    fn all_detected_scripts_native_lowered(&self) -> bool {
+        self.source_script_count > 0
+            && self.native_script_lowering_count >= self.source_script_count
+    }
+}
+
+fn scene_record_native_script_lowering(context: &mut SceneDocumentBuildContext) {
+    context.native_script_lowering_count = context.native_script_lowering_count.saturating_add(1);
+}
+
+fn scene_source_script_count(value: &Value) -> usize {
+    match value {
+        Value::Object(object) => {
+            usize::from(object.get("script").and_then(Value::as_str).is_some())
+                + object
+                    .values()
+                    .map(scene_source_script_count)
+                    .sum::<usize>()
+        }
+        Value::Array(values) => values.iter().map(scene_source_script_count).sum(),
+        Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null => 0,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1885,6 +1924,7 @@ fn scene_numeric_property_binding(
             used_script,
         } => {
             if used_script {
+                scene_record_native_script_lowering(context);
                 push_unique(
                     &mut context.converted_features,
                     "scene-deterministic-scenescript-expression",
@@ -2012,6 +2052,7 @@ fn scene_node_from_object(
     }
     if let Some(text_binding) = scene_text_binding_from_object(object) {
         scene_merge_node_properties(&mut node, json!({ "text_binding": text_binding }));
+        scene_record_native_script_lowering(context);
         push_unique(
             &mut context.converted_features,
             "scene-we-deterministic-clock-text",
@@ -2101,6 +2142,9 @@ fn scene_node_from_object(
         scene_controller_from_object(object, &node_id, source_model.as_ref())
     {
         scene_merge_node_properties(&mut node, json!({ "controller": controller }));
+        if scene_object_visible_script(object) {
+            scene_record_native_script_lowering(context);
+        }
         context.pending_controllers.push(pending_controller);
         push_unique(
             &mut context.converted_features,
@@ -2873,6 +2917,50 @@ fn scene_controller_from_object(
         script_properties,
     );
     Some((controller.metadata_value(), controller))
+}
+
+fn scene_audio_controller_from_object(
+    object: &Map<String, Value>,
+) -> Option<SceneAudioControllerIr> {
+    let visible = object.get("visible").and_then(Value::as_object)?;
+    SceneAudioControllerIr::from_wallpaper_engine_visible_script(visible)
+}
+
+fn scene_collect_audio_controllers(value: &Value, context: &mut SceneDocumentBuildContext) {
+    match value {
+        Value::Object(object) => {
+            if let Some(audio_controller) = scene_audio_controller_from_object(object) {
+                scene_record_native_script_lowering(context);
+                push_unique(
+                    &mut context.converted_features,
+                    "wallpaper-engine-audio-controller-lowering",
+                );
+                push_unique(
+                    &mut context.converted_features,
+                    audio_controller.completed_feature_name(),
+                );
+                context.pending_audio_controllers.push(audio_controller);
+            }
+            for value in object.values() {
+                scene_collect_audio_controllers(value, context);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                scene_collect_audio_controllers(value, context);
+            }
+        }
+        Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null => {}
+    }
+}
+
+fn scene_object_visible_script(object: &Map<String, Value>) -> bool {
+    object
+        .get("visible")
+        .and_then(Value::as_object)
+        .and_then(|visible| visible.get("script"))
+        .and_then(Value::as_str)
+        .is_some()
 }
 
 fn scene_controller_script_properties_have_timed_visibility(
@@ -4193,6 +4281,9 @@ fn scene_system_status(
     if feature == "shader" && scene_material_graph_runtime_ready(report, context) {
         return "ready";
     }
+    if feature == "scenescript" && scene_all_detected_scripts_native_lowered(report) {
+        return "ready";
+    }
     if feature == "shader"
         && (report
             .converted_features
@@ -4398,7 +4489,33 @@ fn scene_full_scene_status(
             "wallpaper-engine-deterministic-clock-text-lowering",
         );
     }
+    if report
+        .converted_features
+        .iter()
+        .any(|feature| feature == "native-scene-audio-active-condition")
+    {
+        push_unique(
+            &mut status.completed_boundaries,
+            "scene-audio-controller-runtime",
+        );
+    }
+    if scene_all_detected_scripts_native_lowered(report) {
+        push_unique(
+            &mut status.completed_boundaries,
+            "wallpaper-engine-detected-scenescript-native-lowering",
+        );
+        status
+            .pending_boundaries
+            .retain(|boundary| boundary != "arbitrary-scenescript-runtime");
+    }
     status
+}
+
+fn scene_all_detected_scripts_native_lowered(report: &ConversionReport) -> bool {
+    report
+        .converted_features
+        .iter()
+        .any(|feature| feature == "wallpaper-engine-all-detected-scenescript-native-lowering")
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -4492,6 +4609,118 @@ fn scene_lower_pending_controllers(nodes: &mut [Value], context: &mut SceneDocum
             );
         }
     }
+}
+
+fn scene_lower_pending_audio_controllers(
+    nodes: &mut [Value],
+    context: &mut SceneDocumentBuildContext,
+) {
+    if context.pending_audio_controllers.is_empty() {
+        return;
+    }
+    let index = scene_node_lookup_index(nodes);
+    for controller in context.pending_audio_controllers.clone() {
+        let source_layer_active_property = controller.source_layer().and_then(|source_layer| {
+            index
+                .get(source_layer)
+                .or_else(|| index.get(&normalize_project_key(source_layer)))
+                .and_then(|source_node_id| {
+                    scene_property_binding_for_target(context, source_node_id, "opacity")
+                })
+        });
+        let mut lowered = false;
+        for audio_layer in controller.target_audio_layers() {
+            let Some(audio_node_id) = index
+                .get(audio_layer)
+                .or_else(|| index.get(&normalize_project_key(audio_layer)))
+                .cloned()
+            else {
+                scene_push_unsupported(
+                    context,
+                    "scene-audio-controller-target-resolution",
+                    "Wallpaper Engine audio controller target layer could not be resolved to a gscene audio node.",
+                    Some(audio_layer),
+                );
+                continue;
+            };
+            let Some(conditions) = controller
+                .conditions_for_audio_layer(audio_layer, source_layer_active_property.as_deref())
+            else {
+                continue;
+            };
+            if scene_add_audio_conditions_to_node(nodes, &audio_node_id, conditions) {
+                lowered = true;
+            }
+        }
+        if lowered {
+            push_unique(
+                &mut context.converted_features,
+                "native-scene-audio-active-condition",
+            );
+        }
+    }
+}
+
+fn scene_property_binding_for_target(
+    context: &SceneDocumentBuildContext,
+    target_node_id: &str,
+    target_property: &str,
+) -> Option<String> {
+    context.property_bindings.iter().find_map(|binding| {
+        let object = binding.as_object()?;
+        let target_node = object.get("target_node").and_then(Value::as_str)?;
+        let target = object.get("target").and_then(Value::as_str)?;
+        if target_node == target_node_id && target == target_property {
+            object
+                .get("property")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        } else {
+            None
+        }
+    })
+}
+
+fn scene_add_audio_conditions_to_node(
+    nodes: &mut [Value],
+    node_id: &str,
+    conditions: Vec<SceneAudioCueConditionIr>,
+) -> bool {
+    for node in nodes {
+        let Some(object) = node.as_object_mut() else {
+            continue;
+        };
+        if object.get("id").and_then(Value::as_str) == Some(node_id) {
+            let condition_values = conditions
+                .iter()
+                .map(SceneAudioCueConditionIr::value)
+                .collect::<Vec<_>>();
+            let Some(audio) = object.get_mut("audio").and_then(Value::as_array_mut) else {
+                return false;
+            };
+            for cue in audio.iter_mut().filter_map(Value::as_object_mut) {
+                cue.insert("start_silent".to_owned(), Value::Bool(true));
+                let entry = cue
+                    .entry("active_conditions".to_owned())
+                    .or_insert_with(|| Value::Array(Vec::new()));
+                let Some(existing) = entry.as_array_mut() else {
+                    continue;
+                };
+                for condition in &condition_values {
+                    if !existing.contains(condition) {
+                        existing.push(condition.clone());
+                    }
+                }
+            }
+            return true;
+        }
+        if let Some(children) = object.get_mut("children").and_then(Value::as_array_mut)
+            && scene_add_audio_conditions_to_node(children, node_id, conditions.clone())
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn scene_node_lookup_index(nodes: &[Value]) -> BTreeMap<String, String> {
@@ -4811,6 +5040,17 @@ fn record_scene_runtime_gaps(report: &mut ConversionReport) {
                     .converted_features
                     .iter()
                     .any(|converted| converted == "native-particle-runtime")
+            {
+                continue;
+            }
+            if detected == "scenescript" && scene_all_detected_scripts_native_lowered(report) {
+                continue;
+            }
+            if detected == "timeline"
+                && report
+                    .converted_features
+                    .iter()
+                    .any(|converted| converted == "scene-keyframe-timeline")
             {
                 continue;
             }
@@ -8506,6 +8746,199 @@ void main() {}
         let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
         assert_eq!(snapshot.layers[0].kind, crate::core::SceneNodeKind::Audio);
         assert_eq!(snapshot.layers[0].audio.len(), 1);
+    }
+
+    #[test]
+    fn lowers_wallpaper_engine_audio_controller_scripts_to_native_conditions() {
+        let source = TestDir::new("we-scene-audio-controller-source");
+        let output = TestDir::new("we-scene-audio-controller-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r##"{
+              "objects": [
+                {
+                  "id": 1,
+                  "name": "Idle Video",
+                  "solid": true,
+                  "width": 100,
+                  "height": 100,
+                  "color": "#ffffff"
+                },
+                {
+                  "id": 2,
+                  "name": "Idle Controller",
+                  "image": "models/util/fullscreenlayer.json",
+                  "visible": {
+                    "script": "export function update(value) { return value; }",
+                    "scriptproperties": {
+                      "targetLayerId": "Idle Video",
+                      "defaultHideTarget": true,
+                      "mouseInactiveSec": { "value": 1 },
+                      "fadeInDuration": 0.25
+                    },
+                    "value": true
+                  }
+                },
+                {
+                  "id": 3,
+                  "name": "voice.mp3",
+                  "type": "sound",
+                  "sound": "sounds/voice.mp3",
+                  "startsilent": true
+                },
+                {
+                  "id": 4,
+                  "name": "Audio Follows Idle",
+                  "visible": {
+                    "script": "let t=thisScene.getLayer(scriptProperties.p2g5z?.trim()),e=thisScene.getLayer(scriptProperties.m8b4n?.trim());let i=t.visible&&t.alpha>0;i&&!q1w3e&&e.play(),!i&&q1w3e&&e.pause();",
+                    "scriptproperties": {
+                      "p2g5z": "Idle Video",
+                      "m8b4n": "voice.mp3",
+                      "x7s9k": { "user": "voice_enabled", "value": true }
+                    },
+                    "value": true
+                  }
+                },
+                {
+                  "id": 5,
+                  "name": "a.mp3",
+                  "type": "sound",
+                  "sound": "sounds/a.mp3",
+                  "playbackmode": "loop",
+                  "startsilent": true
+                },
+                {
+                  "id": 6,
+                  "name": "b.mp3",
+                  "type": "sound",
+                  "sound": "sounds/b.mp3",
+                  "playbackmode": "loop",
+                  "startsilent": true
+                },
+                {
+                  "id": 7,
+                  "name": "Music Choice",
+                  "visible": {
+                    "script": "let songNames = [\"a.mp3\", \"b.mp3\"]; export function applyUserProperties(changedUserProperties) { if (changedUserProperties.music === undefined) return; playTargetMusic(); } function playTargetMusic(){ targetSong.play(); }",
+                    "value": true
+                  }
+                }
+              ]
+            }"##,
+        );
+        source.write_file("sounds/voice.mp3", "not real mp3");
+        source.write_file("sounds/a.mp3", "not real mp3");
+        source.write_file("sounds/b.mp3", "not real mp3");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Scene Audio Controllers",
+              "file": "scene.json",
+              "properties": {
+                "voice_enabled": { "type": "bool", "default": true },
+                "music": { "type": "choice", "choices": ["0", "1", "2"], "default": "2" }
+              }
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let voice = scene["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["name"] == "voice.mp3")
+            .unwrap();
+        let voice_conditions = voice["audio"][0]["active_conditions"].as_array().unwrap();
+        assert!(voice_conditions.iter().any(|condition| {
+            condition["property"]
+                .as_str()
+                .is_some_and(|property| property.starts_with("scene.controller."))
+        }));
+        assert!(voice_conditions.iter().any(|condition| {
+            condition["property"] == "voice_enabled" && condition["equals"].is_null()
+        }));
+        let music_b = scene["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["name"] == "b.mp3")
+            .unwrap();
+        assert_eq!(
+            music_b["audio"][0]["active_conditions"][0]["property"],
+            "music"
+        );
+        assert_eq!(music_b["audio"][0]["active_conditions"][0]["equals"], 2.0);
+        assert!(
+            scene["native_lowering"]["completed_boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("scene-audio-controller-runtime"))
+        );
+        assert!(
+            scene["native_lowering"]["completed_boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(
+                    "wallpaper-engine-detected-scenescript-native-lowering"
+                ))
+        );
+        assert!(
+            !scene["native_lowering"]["pending_boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("arbitrary-scenescript-runtime"))
+        );
+
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !report
+                .unsupported_features
+                .contains(&"scenescript".to_owned())
+        );
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let inactive =
+            document.snapshot_at_with_property_resolver(1_000, |property| match property {
+                "voice_enabled" => Some(1.0),
+                "music" => Some(1.0),
+                _ if property.starts_with("scene.controller.") => Some(0.0),
+                _ => None,
+            });
+        assert_eq!(
+            inactive
+                .layers
+                .iter()
+                .filter(|layer| layer.kind == crate::core::SceneNodeKind::Audio)
+                .map(|layer| layer.audio.len())
+                .sum::<usize>(),
+            1
+        );
+        let active =
+            document.snapshot_at_with_property_resolver(1_000, |property| match property {
+                "voice_enabled" => Some(1.0),
+                "music" => Some(2.0),
+                _ if property.starts_with("scene.controller.") => Some(1.0),
+                _ => None,
+            });
+        assert_eq!(
+            active
+                .layers
+                .iter()
+                .filter(|layer| layer.kind == crate::core::SceneNodeKind::Audio)
+                .map(|layer| layer.audio.len())
+                .sum::<usize>(),
+            2
+        );
     }
 
     #[test]

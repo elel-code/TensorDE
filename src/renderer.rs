@@ -20,7 +20,7 @@ use self::scene_runtime::{
 };
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, Variant};
-use crate::core::scene::{SceneEffect, SceneSnapshotLayer};
+use crate::core::scene::{SceneAudioCueCondition, SceneEffect, SceneSnapshotLayer};
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
     SceneAudioCue, SceneDocument, SceneNodeKind, ScenePathFillRule, SceneResource,
@@ -169,6 +169,8 @@ pub struct SceneRenderAudioCue {
     pub volume: Option<Value>,
     #[serde(default)]
     pub start_silent: bool,
+    #[serde(default)]
+    pub active_conditions: Vec<SceneAudioCueCondition>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1886,6 +1888,7 @@ fn scene_render_audio_cues(
                 playback_mode: cue.playback_mode,
                 volume: cue.volume,
                 start_silent: cue.start_silent.unwrap_or(false),
+                active_conditions: cue.active_conditions,
             })
         })
         .collect()
@@ -5584,6 +5587,15 @@ exit 0
                 .abs()
                 < f64::EPSILON
         );
+        assert!(
+            later
+                .layers
+                .iter()
+                .find(|layer| layer.id == "click-audio")
+                .unwrap()
+                .audio
+                .is_empty()
+        );
 
         let mut input_properties = BTreeMap::new();
         input_properties.insert(
@@ -5620,6 +5632,16 @@ exit 0
                 - 1.0)
                 .abs()
                 < f64::EPSILON
+        );
+        assert_eq!(
+            active_click
+                .layers
+                .iter()
+                .find(|layer| layer.id == "click-audio")
+                .unwrap()
+                .audio
+                .len(),
+            1
         );
     }
 
@@ -7460,7 +7482,8 @@ void main() {}
             br##"{
               "resources": [
                 { "id": "idle-video", "type": "video", "source": "assets/idle.mp4" },
-                { "id": "click-video", "type": "video", "source": "assets/click.mp4" }
+                { "id": "click-video", "type": "video", "source": "assets/click.mp4" },
+                { "id": "click-audio", "type": "audio", "source": "assets/click.ogg" }
               ],
               "nodes": [
                 {
@@ -7508,6 +7531,17 @@ void main() {}
                   "type": "video",
                   "resource": "click-video",
                   "opacity": 0
+                },
+                {
+                  "id": "click-audio",
+                  "type": "audio",
+                  "audio": [{
+                    "resource": "click-audio",
+                    "start_silent": true,
+                    "active_conditions": [
+                      { "property": "scene.controller.click-controller.active" }
+                    ]
+                  }]
                 }
               ],
               "property_bindings": [

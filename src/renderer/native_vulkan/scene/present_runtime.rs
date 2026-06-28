@@ -972,12 +972,14 @@ mod tests {
             playback_mode: Some("loop".to_owned()),
             volume: None,
             start_silent: false,
+            active_conditions: Vec::new(),
         });
         image.audio.push(SceneRenderAudioCue {
             source: PathBuf::from("/tmp/response.ogg"),
             playback_mode: None,
             volume: None,
             start_silent: true,
+            active_conditions: Vec::new(),
         });
         let plan = plan(vec![image]);
 

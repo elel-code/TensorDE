@@ -638,6 +638,7 @@ impl SceneNode {
             let texture_region = scene_texture_region_from_properties(&self.properties, time_ms);
             let text = scene_text_from_properties(&self.properties, resolve_text_property)
                 .or_else(|| self.text.clone());
+            let audio = scene_audio_cues_for_snapshot(&self.audio, resolve_property);
             output.push(SceneSnapshotLayer {
                 id: self.id.clone(),
                 kind: self.kind,
@@ -647,7 +648,7 @@ impl SceneNode {
                     .and_then(|resource| resources.get(resource))
                     .map(|resource| resource.source.clone()),
                 texture_region,
-                audio: self.audio.clone(),
+                audio,
                 color: self.color.clone(),
                 stroke_color: self.stroke_color.clone(),
                 stroke_width: self.stroke_width,
@@ -1127,6 +1128,8 @@ pub struct SceneAudioCue {
     pub volume: Option<Value>,
     #[serde(default)]
     pub start_silent: Option<bool>,
+    #[serde(default)]
+    pub active_conditions: Vec<SceneAudioCueCondition>,
 }
 
 impl SceneAudioCue {
@@ -1142,7 +1145,30 @@ impl SceneAudioCue {
                 "scene node {node_id:?} audio cue must define resource or source"
             )));
         }
+        for condition in &self.active_conditions {
+            condition.validate(node_id)?;
+        }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneAudioCueCondition {
+    pub property: String,
+    #[serde(default)]
+    pub equals: Option<f64>,
+}
+
+impl SceneAudioCueCondition {
+    fn validate(&self, node_id: &str) -> Result<(), SceneError> {
+        validate_required_text(
+            &format!("scene node {node_id:?} audio active condition property"),
+            &self.property,
+        )?;
+        validate_optional_finite(
+            &format!("scene node {node_id:?} audio active condition equals"),
+            self.equals,
+        )
     }
 }
 
@@ -1689,6 +1715,41 @@ fn scene_text_from_properties(
     resolve_scene_text_property(resolve_text_property, property)
 }
 
+fn scene_audio_cues_for_snapshot(
+    cues: &[SceneAudioCue],
+    resolve_property: &impl Fn(&str) -> Option<f64>,
+) -> Vec<SceneAudioCue> {
+    cues.iter()
+        .filter_map(|cue| {
+            if cue.active_conditions.is_empty() {
+                return Some(cue.clone());
+            }
+            scene_audio_cue_conditions_active(&cue.active_conditions, resolve_property).then(|| {
+                let mut cue = cue.clone();
+                cue.start_silent = Some(false);
+                cue
+            })
+        })
+        .collect()
+}
+
+fn scene_audio_cue_conditions_active(
+    conditions: &[SceneAudioCueCondition],
+    resolve_property: &impl Fn(&str) -> Option<f64>,
+) -> bool {
+    conditions.iter().all(|condition| {
+        let Some(value) = resolve_scene_property(resolve_property, &[condition.property.as_str()])
+        else {
+            return false;
+        };
+        if let Some(expected) = condition.equals {
+            (value - expected).abs() <= f64::EPSILON
+        } else {
+            value > 0.0
+        }
+    })
+}
+
 fn scene_property_u32(object: &serde_json::Map<String, Value>, key: &str) -> Option<u32> {
     match object.get(key)? {
         Value::Number(value) => value.as_u64().and_then(|value| u32::try_from(value).ok()),
@@ -2029,6 +2090,45 @@ mod tests {
             |property| (property == "scene.clock.local.strftime:%H:%M").then(|| "23:45".to_owned()),
         );
         assert_eq!(dynamic_snapshot.layers[0].text.as_deref(), Some("23:45"));
+    }
+
+    #[test]
+    fn audio_cue_active_conditions_filter_snapshot_audio() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "nodes": [
+                {
+                    "id": "node-audio",
+                    "type": "audio",
+                    "audio": [
+                        {
+                            "source": "voice.mp3",
+                            "start_silent": true,
+                            "active_conditions": [
+                                { "property": "scene.controller.idle.active" },
+                                { "property": "voice_enabled", "equals": 1.0 }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let inactive = document.snapshot_at_with_property_resolver(0, |property| match property {
+            "scene.controller.idle.active" => Some(1.0),
+            "voice_enabled" => Some(0.0),
+            _ => None,
+        });
+        assert!(inactive.layers[0].audio.is_empty());
+
+        let active = document.snapshot_at_with_property_resolver(0, |property| match property {
+            "scene.controller.idle.active" => Some(1.0),
+            "voice_enabled" => Some(1.0),
+            _ => None,
+        });
+        assert_eq!(active.layers[0].audio.len(), 1);
+        assert_eq!(active.layers[0].audio[0].start_silent, Some(false));
     }
 
     #[test]

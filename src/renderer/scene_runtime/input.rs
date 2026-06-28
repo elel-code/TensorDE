@@ -45,6 +45,14 @@ pub(in crate::renderer) fn scene_input_properties_from_sources(
             properties.insert(binding.property.clone(), Value::from(default));
         }
     }
+    for node in &document.nodes {
+        scene_collect_audio_condition_properties(
+            node,
+            render_properties,
+            manifest_properties,
+            &mut properties,
+        );
+    }
 
     if let Some(render_properties) = render_properties {
         for property in ["scene.parallax.x", "scene.parallax.y"] {
@@ -60,6 +68,55 @@ pub(in crate::renderer) fn scene_input_properties_from_sources(
     }
 
     properties
+}
+
+fn scene_collect_audio_condition_properties(
+    node: &SceneNode,
+    render_properties: Option<&BTreeMap<String, Value>>,
+    manifest_properties: Option<&BTreeMap<String, PropertySpec>>,
+    output: &mut BTreeMap<String, Value>,
+) {
+    for cue in &node.audio {
+        for condition in &cue.active_conditions {
+            scene_collect_input_property(
+                condition.property.trim(),
+                render_properties,
+                manifest_properties,
+                output,
+            );
+        }
+    }
+    for child in &node.children {
+        scene_collect_audio_condition_properties(
+            child,
+            render_properties,
+            manifest_properties,
+            output,
+        );
+    }
+}
+
+fn scene_collect_input_property(
+    property: &str,
+    render_properties: Option<&BTreeMap<String, Value>>,
+    manifest_properties: Option<&BTreeMap<String, PropertySpec>>,
+    output: &mut BTreeMap<String, Value>,
+) {
+    if property.is_empty() || output.contains_key(property) {
+        return;
+    }
+    if let Some(value) = render_properties.and_then(|source| source.get(property))
+        && scene_runtime_number(value).is_some()
+    {
+        output.insert(property.to_owned(), value.clone());
+        return;
+    }
+    if let Some(default) = manifest_properties
+        .and_then(|source| source.get(property))
+        .and_then(scene_manifest_property_default_number)
+    {
+        output.insert(property.to_owned(), Value::from(default));
+    }
 }
 
 fn scene_collect_controller_input_properties(
@@ -319,10 +376,10 @@ fn scene_manifest_property_default_number(property: &PropertySpec) -> Option<f64
             }
         }
         PropertySpec::Number { default } | PropertySpec::Range { default, .. } => (*default)?,
-        PropertySpec::Choice { .. }
-        | PropertySpec::Color { .. }
-        | PropertySpec::Text { .. }
-        | PropertySpec::File { .. } => return None,
+        PropertySpec::Choice { default, .. } => default.as_deref()?.parse::<f64>().ok()?,
+        PropertySpec::Color { .. } | PropertySpec::Text { .. } | PropertySpec::File { .. } => {
+            return None;
+        }
     };
     number.is_finite().then_some(number)
 }
