@@ -1094,7 +1094,8 @@ fn write_scene_document_to(
             Some(source_entry),
         );
     }
-    let mut full_scene_status = scene_full_scene_status(report, &context);
+    let video_visibility = scene_video_visibility_counts(&nodes);
+    let mut full_scene_status = scene_full_scene_status(report, &context, video_visibility);
     if let Some(previous) = &report.full_scene {
         for source_scene_metadata in &previous.source_scene_metadata {
             push_unique(
@@ -4603,6 +4604,7 @@ fn scene_system_status(
 fn scene_full_scene_status(
     report: &ConversionReport,
     context: &SceneDocumentBuildContext,
+    video_visibility: SceneVideoVisibilityCounts,
 ) -> FullSceneConversionStatus {
     let mut status = FullSceneConversionStatus::native_vulkan_scene_boundary();
     if report
@@ -4660,8 +4662,76 @@ fn scene_full_scene_status(
             &mut status.completed_boundaries,
             "wallpaper-engine-tex-video-layer-runtime",
         );
+        if video_visibility.initial_visible <= 1 {
+            push_unique(
+                &mut status.completed_boundaries,
+                "initial-visible-video-scene-composition",
+            );
+            push_unique(
+                &mut status.completed_boundaries,
+                "vulkan-video-scene-layer-composition",
+            );
+            status
+                .pending_boundaries
+                .retain(|boundary| boundary != "mixed-video-scene-composition");
+            if video_visibility.total > 1
+                && report
+                    .detected_features
+                    .iter()
+                    .any(|feature| feature == "scenescript")
+            {
+                push_unique(
+                    &mut status.pending_boundaries,
+                    "script-controlled-video-layer-switching",
+                );
+            }
+        }
+    } else {
+        status
+            .pending_boundaries
+            .retain(|boundary| boundary != "mixed-video-scene-composition");
     }
     status
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SceneVideoVisibilityCounts {
+    total: usize,
+    initial_visible: usize,
+}
+
+fn scene_video_visibility_counts(nodes: &[Value]) -> SceneVideoVisibilityCounts {
+    let mut counts = SceneVideoVisibilityCounts::default();
+    for node in nodes {
+        scene_count_video_visibility(node, true, &mut counts);
+    }
+    counts
+}
+
+fn scene_count_video_visibility(
+    node: &Value,
+    parent_visible: bool,
+    counts: &mut SceneVideoVisibilityCounts,
+) {
+    let Some(object) = node.as_object() else {
+        return;
+    };
+    let visible = parent_visible
+        && object
+            .get("visible")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+    if object.get("type").and_then(Value::as_str) == Some("video") {
+        counts.total = counts.total.saturating_add(1);
+        if visible {
+            counts.initial_visible = counts.initial_visible.saturating_add(1);
+        }
+    }
+    if let Some(children) = object.get("children").and_then(Value::as_array) {
+        for child in children {
+            scene_count_video_visibility(child, visible, counts);
+        }
+    }
 }
 
 fn scene_native_lowering_from_status(status: &FullSceneConversionStatus) -> Value {
@@ -6927,7 +6997,6 @@ impl FullSceneConversionStatus {
                 "wallpaper-engine-geometry-user-property-binding-lowering".to_owned(),
                 "wallpaper-engine-explicit-keyframe-timeline-lowering".to_owned(),
                 "wallpaper-engine-tex-bc7-gtex-conversion".to_owned(),
-                "wallpaper-engine-tex-video-layer-runtime".to_owned(),
                 "scene-we-spritesheet-atlas-runtime".to_owned(),
                 "scene-geometry-field-animation-runtime".to_owned(),
                 "per-frame-timeline-geometry-runtime".to_owned(),
@@ -6948,7 +7017,6 @@ impl FullSceneConversionStatus {
                 "stroke-geometry-runtime".to_owned(),
                 "deterministic-text-glyph-geometry-runtime".to_owned(),
                 "scene-video-layer-bridge-detection".to_owned(),
-                "vulkan-video-scene-layer-composition".to_owned(),
                 "timeline-animation-runtime".to_owned(),
                 "property-update-runtime".to_owned(),
                 "pause-resume-policy-runtime".to_owned(),
@@ -7815,7 +7883,7 @@ void main() {}
                 .contains(&"stroke-geometry-runtime".to_owned())
         );
         assert!(
-            full_scene
+            !full_scene
                 .completed_boundaries
                 .contains(&"vulkan-video-scene-layer-composition".to_owned())
         );
@@ -7875,7 +7943,7 @@ void main() {}
                 .contains(&"package-state-persistence".to_owned())
         );
         assert!(
-            full_scene
+            !full_scene
                 .pending_boundaries
                 .contains(&"mixed-video-scene-composition".to_owned())
         );
@@ -9199,12 +9267,108 @@ void main() {}
                 .converted_features
                 .contains(&"scene-we-tex-video-layer-runtime".to_owned())
         );
+        let full_scene = report.full_scene.unwrap();
         assert!(
-            report
-                .full_scene
-                .unwrap()
+            full_scene
                 .completed_boundaries
                 .contains(&"wallpaper-engine-tex-video-layer-runtime".to_owned())
+        );
+        assert!(
+            full_scene
+                .completed_boundaries
+                .contains(&"initial-visible-video-scene-composition".to_owned())
+        );
+        assert!(
+            full_scene
+                .completed_boundaries
+                .contains(&"vulkan-video-scene-layer-composition".to_owned())
+        );
+        assert!(
+            !full_scene
+                .pending_boundaries
+                .contains(&"mixed-video-scene-composition".to_owned())
+        );
+    }
+
+    #[test]
+    fn keeps_script_controlled_hidden_video_switching_out_of_mixed_video_boundary() {
+        let video_payload = b"\0\0\0\x20ftypisom\0\0\x02\0isomiso2avc1mp41\0\0\0\x08free";
+        let active_tex = test_we_tex_video(1920, 1080, video_payload);
+        let hidden_tex = test_we_tex_video(1920, 1080, video_payload);
+        let source = TestDir::new("we-scene-script-video-switch-source");
+        let output = TestDir::new("we-scene-script-video-switch-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "script": "export function update(value) { return value; }",
+              "objects": [
+                {
+                  "id": 1,
+                  "name": "Loop",
+                  "image": "models/loop.json"
+                },
+                {
+                  "id": 2,
+                  "name": "Interaction",
+                  "visible": false,
+                  "image": "models/interaction.json"
+                }
+              ]
+            }"#,
+        );
+        source.write_file(
+            "models/loop.json",
+            r#"{ "material": "materials/loop.json", "width": 1920, "height": 1080 }"#,
+        );
+        source.write_file(
+            "models/interaction.json",
+            r#"{ "material": "materials/interaction.json", "width": 1920, "height": 1080 }"#,
+        );
+        source.write_file(
+            "materials/loop.json",
+            r#"{ "passes": [{ "textures": ["loop"] }] }"#,
+        );
+        source.write_file(
+            "materials/interaction.json",
+            r#"{ "passes": [{ "textures": ["interaction"] }] }"#,
+        );
+        source.write_bytes("materials/loop.tex", &active_tex);
+        source.write_bytes("materials/interaction.tex", &hidden_tex);
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Script Video Switch Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene["nodes"][0]["type"], "video");
+        assert_eq!(scene["nodes"][1]["type"], "video");
+        assert_eq!(scene["nodes"][1]["visible"], false);
+        assert!(
+            scene["native_lowering"]["completed_boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("initial-visible-video-scene-composition"))
+        );
+        assert!(
+            !scene["native_lowering"]["pending_boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("mixed-video-scene-composition"))
+        );
+        assert!(
+            scene["native_lowering"]["pending_boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("script-controlled-video-layer-switching"))
         );
     }
 
