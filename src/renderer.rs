@@ -243,6 +243,79 @@ pub fn scene_wallpaper_plan_from_gscene_path_with_properties(
     })
 }
 
+#[derive(Debug, Clone)]
+pub struct SceneWallpaperRuntimeSampler {
+    output_name: String,
+    package_root: PathBuf,
+    source_path: PathBuf,
+    target_max_fps: Option<u32>,
+    scene_fit: FitMode,
+    cursor_parallax_input_ready: bool,
+    document: SceneDocument,
+}
+
+impl SceneWallpaperRuntimeSampler {
+    pub fn from_plan(plan: &SceneWallpaperPlan) -> Result<Option<Self>, RendererPlanError> {
+        let Some(source_path) = plan.source.clone() else {
+            return Ok(None);
+        };
+        let document = load_scene_document(&source_path)?;
+        Ok(Some(Self {
+            output_name: plan.output_name.clone(),
+            package_root: scene_default_gscene_package_root(&source_path),
+            source_path,
+            target_max_fps: plan.target_max_fps,
+            scene_fit: plan.scene_fit,
+            cursor_parallax_input_ready: plan.cursor_parallax_input_ready,
+            document,
+        }))
+    }
+
+    pub fn sample_plan(&self, time_ms: u64) -> Result<SceneWallpaperPlan, RendererPlanError> {
+        let snapshot = self
+            .document
+            .snapshot_at_with_property_resolver(time_ms, |_| None);
+        let layers =
+            scene_render_layers_from_snapshot(&self.package_root, &self.document, snapshot.layers)?;
+        let display = scene_display_plan(
+            Some(self.source_path.as_path()),
+            &self.document,
+            &layers,
+            Some(self.scene_fit),
+            None,
+            None,
+        );
+        Ok(SceneWallpaperPlan {
+            output_name: self.output_name.clone(),
+            source: Some(self.source_path.clone()),
+            manifest_max_fps: None,
+            target_max_fps: self.target_max_fps,
+            snapshot_time_ms: snapshot.time_ms,
+            scene_size: self.document.size,
+            scene_fit: self.scene_fit,
+            scene_systems: self.document.systems.clone(),
+            audio_cue_count: layers.iter().map(|layer| layer.audio.len()).sum(),
+            bound_properties: scene_bound_properties(&self.document),
+            timeline_animation_count: scene_timeline_animation_count(&self.document),
+            timeline_animated_layer_count: scene_timeline_animated_layer_count(&self.document),
+            property_binding_count: self.document.property_bindings.len(),
+            cursor_parallax_input_ready: self.cursor_parallax_input_ready,
+            display,
+            layers,
+        })
+    }
+}
+
+fn scene_default_gscene_package_root(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    if parent.file_name().and_then(|name| name.to_str()) == Some("assets")
+        && let Some(root) = parent.parent()
+    {
+        return root.to_path_buf();
+    }
+    parent.to_path_buf()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StaticRenderSyncPlan {
     pub plans: Vec<StaticWallpaperPlan>,
@@ -5256,6 +5329,34 @@ exit 0
         assert_eq!(plan.layers[0].kind, SceneNodeKind::Rectangle);
         assert!((plan.layers[0].transform.x - 10.0).abs() < f64::EPSILON);
         assert!((plan.layers[0].opacity - 0.4).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn scene_runtime_sampler_resamples_timeline_layers_from_gscene_source() {
+        let test_dir = TestDir::new("gilder-scene-runtime-sampler");
+        let package_dir = test_dir.path.join("scene-animation.gwpdir");
+        write_scene_animation_gwpdir(&package_dir);
+        let plan = scene_wallpaper_plan_from_gscene_path(
+            "eDP-1".to_owned(),
+            &package_dir,
+            package_dir.join("assets/scene.gscene.json"),
+            Some(60),
+            0,
+            Some(FitMode::Cover),
+        )
+        .unwrap();
+        let sampler = SceneWallpaperRuntimeSampler::from_plan(&plan)
+            .unwrap()
+            .expect("runtime sampler");
+
+        let sampled = sampler.sample_plan(500).unwrap();
+
+        assert_eq!(sampled.timeline_animation_count, 2);
+        assert_eq!(sampled.timeline_animated_layer_count, 1);
+        assert_eq!(sampled.layers.len(), 1);
+        assert_eq!(sampled.layers[0].kind, SceneNodeKind::Rectangle);
+        assert!((sampled.layers[0].transform.x - 60.0).abs() < f64::EPSILON);
+        assert!((sampled.layers[0].opacity - 0.65).abs() < f64::EPSILON);
     }
 
     #[test]

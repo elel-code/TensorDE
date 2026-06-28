@@ -95,12 +95,15 @@ pub use scene_draw_pass::{
     NativeVulkanVulkanaliaSceneSolidQuadPipelineSnapshot,
 };
 pub use scene_present::{
+    NativeVulkanVulkanaliaSceneMixedSolidQuadDynamicGeometry,
     NativeVulkanVulkanaliaSceneSampledImageDrawStep,
+    NativeVulkanVulkanaliaSceneSampledImageDynamicGeometry,
     NativeVulkanVulkanaliaSceneSampledImageGeometryInput,
     NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot,
     NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
     NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot,
     NativeVulkanVulkanaliaSceneSampledImageVertex, NativeVulkanVulkanaliaSceneSolidQuadDrawStep,
+    NativeVulkanVulkanaliaSceneSolidQuadDynamicGeometry,
     NativeVulkanVulkanaliaSceneSolidQuadGeometryInput,
     NativeVulkanVulkanaliaSceneSolidQuadGeometrySnapshot,
     NativeVulkanVulkanaliaSceneSolidQuadPresentOptions,

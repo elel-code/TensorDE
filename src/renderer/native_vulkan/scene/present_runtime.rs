@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::renderer::{SceneRenderAudioCue, SceneWallpaperPlan};
+use crate::renderer::{SceneRenderAudioCue, SceneWallpaperPlan, SceneWallpaperRuntimeSampler};
 
 use super::super::audio::clock::{
     NativeVulkanAudioClockProbeOptions, NativeVulkanAudioClockRuntimeSnapshot,
@@ -21,8 +21,11 @@ use super::super::video::direct::{
 use super::super::{
     NativeVulkanAudioOutputMode, NativeVulkanError, NativeVulkanOptions,
     NativeVulkanVideoSessionCodec, NativeVulkanVulkanaliaClearPresentSnapshot,
+    NativeVulkanVulkanaliaSceneMixedSolidQuadDynamicGeometry,
+    NativeVulkanVulkanaliaSceneSampledImageDynamicGeometry,
     NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
     NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot,
+    NativeVulkanVulkanaliaSceneSolidQuadDynamicGeometry,
     NativeVulkanVulkanaliaSceneSolidQuadPresentOptions,
     NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot, run_clear,
     run_native_vulkan_vulkanalia_scene_sampled_image_present,
@@ -97,6 +100,116 @@ pub struct NativeVulkanSceneVideoBridgeOptions {
     pub audio_output_mode: NativeVulkanAudioOutputMode,
 }
 
+fn native_vulkan_scene_dynamic_sampler(
+    plan: &SceneWallpaperPlan,
+) -> Result<Option<SceneWallpaperRuntimeSampler>, NativeVulkanError> {
+    if plan.timeline_animation_count == 0 && plan.timeline_animated_layer_count == 0 {
+        return Ok(None);
+    }
+    SceneWallpaperRuntimeSampler::from_plan(plan)
+        .map_err(|err| NativeVulkanError::Scene(format!("prepare dynamic scene sampler: {err}")))
+}
+
+fn native_vulkan_scene_dynamic_solid_geometry(
+    plan: &SceneWallpaperPlan,
+) -> Result<Option<NativeVulkanVulkanaliaSceneSolidQuadDynamicGeometry>, NativeVulkanError> {
+    let Some(sampler) = native_vulkan_scene_dynamic_sampler(plan)? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        native_vulkan_scene_dynamic_solid_geometry_from_sampler(sampler, plan.snapshot_time_ms),
+    ))
+}
+
+fn native_vulkan_scene_dynamic_solid_geometry_from_sampler(
+    sampler: SceneWallpaperRuntimeSampler,
+    base_time_ms: u64,
+) -> NativeVulkanVulkanaliaSceneSolidQuadDynamicGeometry {
+    Box::new(move |elapsed_ms| {
+        let sampled_plan = sampler
+            .sample_plan(base_time_ms.saturating_add(elapsed_ms))
+            .map_err(|err| format!("sample dynamic solid scene: {err}"))?;
+        let render_item = native_vulkan_scene_item(&sampled_plan);
+        let runtime = native_vulkan_scene_runtime_snapshot(&render_item)
+            .ok_or_else(|| "dynamic solid scene runtime snapshot is unavailable".to_owned())?;
+        runtime
+            .vulkanalia_solid_quad_geometry_input()
+            .ok_or_else(|| {
+                format!(
+                    "dynamic scene is not solid-quad recordable: {}",
+                    runtime.draw_pass_backend_status
+                )
+            })
+    })
+}
+
+fn native_vulkan_scene_dynamic_sampled_geometry_from_sampler(
+    sampler: SceneWallpaperRuntimeSampler,
+    base_time_ms: u64,
+) -> NativeVulkanVulkanaliaSceneSampledImageDynamicGeometry {
+    Box::new(move |elapsed_ms| {
+        let sampled_plan = sampler
+            .sample_plan(base_time_ms.saturating_add(elapsed_ms))
+            .map_err(|err| format!("sample dynamic sampled-image scene: {err}"))?;
+        let render_item = native_vulkan_scene_item(&sampled_plan);
+        let runtime = native_vulkan_scene_runtime_snapshot(&render_item).ok_or_else(|| {
+            "dynamic sampled-image scene runtime snapshot is unavailable".to_owned()
+        })?;
+        runtime
+            .vulkanalia_sampled_image_geometry_input()
+            .map(|(_, geometry)| geometry)
+            .ok_or_else(|| {
+                format!(
+                    "dynamic scene is not sampled-image recordable: {}",
+                    runtime.draw_pass_backend_status
+                )
+            })
+    })
+}
+
+fn native_vulkan_scene_dynamic_mixed_solid_geometry_from_sampler(
+    sampler: SceneWallpaperRuntimeSampler,
+    base_time_ms: u64,
+) -> NativeVulkanVulkanaliaSceneMixedSolidQuadDynamicGeometry {
+    Box::new(move |elapsed_ms| {
+        let sampled_plan = sampler
+            .sample_plan(base_time_ms.saturating_add(elapsed_ms))
+            .map_err(|err| format!("sample dynamic mixed solid scene: {err}"))?;
+        let render_item = native_vulkan_scene_item(&sampled_plan);
+        let runtime = native_vulkan_scene_runtime_snapshot(&render_item).ok_or_else(|| {
+            "dynamic mixed solid scene runtime snapshot is unavailable".to_owned()
+        })?;
+        Ok(runtime.vulkanalia_mixed_solid_quad_geometry_input())
+    })
+}
+
+fn native_vulkan_scene_dynamic_sampled_geometry_pair(
+    plan: &SceneWallpaperPlan,
+) -> Result<
+    (
+        Option<NativeVulkanVulkanaliaSceneMixedSolidQuadDynamicGeometry>,
+        Option<NativeVulkanVulkanaliaSceneSampledImageDynamicGeometry>,
+    ),
+    NativeVulkanError,
+> {
+    let Some(sampler) = native_vulkan_scene_dynamic_sampler(plan)? else {
+        return Ok((None, None));
+    };
+    let base_time_ms = plan.snapshot_time_ms;
+    Ok((
+        Some(
+            native_vulkan_scene_dynamic_mixed_solid_geometry_from_sampler(
+                sampler.clone(),
+                base_time_ms,
+            ),
+        ),
+        Some(native_vulkan_scene_dynamic_sampled_geometry_from_sampler(
+            sampler,
+            base_time_ms,
+        )),
+    ))
+}
+
 pub fn run_scene(
     mut options: NativeVulkanOptions,
     duration: Duration,
@@ -157,6 +270,7 @@ pub fn run_scene(
                         runtime.draw_pass_backend_status
                     ))
                 })?;
+            let dynamic_geometry = native_vulkan_scene_dynamic_solid_geometry(&plan)?;
 
             let (present, scene_audio) = native_vulkan_scene_present_with_audio(
                 &plan,
@@ -171,6 +285,7 @@ pub fn run_scene(
                             target_max_fps,
                             quad_color: options.clear_color,
                             geometry: Some(geometry),
+                            dynamic_geometry,
                             scene_size: runtime.scene_size,
                             scene_fit: runtime.scene_fit,
                         },
@@ -200,6 +315,8 @@ pub fn run_scene(
                 )));
             };
             let solid_geometry = runtime.vulkanalia_mixed_solid_quad_geometry_input();
+            let (dynamic_solid_geometry, dynamic_geometry) =
+                native_vulkan_scene_dynamic_sampled_geometry_pair(&plan)?;
 
             let (present, scene_audio) = native_vulkan_scene_present_with_audio(
                 &plan,
@@ -217,6 +334,8 @@ pub fn run_scene(
                             fit,
                             solid_geometry,
                             geometry,
+                            dynamic_solid_geometry,
+                            dynamic_geometry,
                             scene_size: runtime.scene_size,
                             scene_fit: runtime.scene_fit,
                         },

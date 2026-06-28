@@ -49,6 +49,8 @@ pub fn run_static_image(
             scene_fit: FitMode::Cover,
             solid_geometry,
             geometry,
+            dynamic_solid_geometry: None,
+            dynamic_geometry: None,
         },
     )
     .map_err(NativeVulkanError::StaticImage)

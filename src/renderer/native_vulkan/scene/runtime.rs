@@ -817,6 +817,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
         "native-runtime-layer-coverage-metric",
         "timeline-animation-runtime",
         "scene-geometry-field-animation-runtime",
+        "per-frame-timeline-geometry-runtime",
         "native-scene-graph-transform-opacity-execution",
         "parallax-property-camera-model",
         "property-update-runtime",
@@ -906,9 +907,9 @@ fn native_vulkan_full_scene_runtime_snapshot(
     NativeVulkanFullSceneRuntimeSnapshot {
         target_runtime: "native-vulkan-full-scene",
         current_runtime: "native-vulkan-scene-runtime",
-        progress_estimate_percent: 98,
+        progress_estimate_percent: 99,
         full_scene_complete: false,
-        execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries with native scene graph transform/opacity execution, scene timeline animation, geometry field animation, deterministic SceneScript expression lowering, parallax property camera input, property update, pause/resume policy, state persistence, converted keyframe timeline input, converted WE .tex image resources, spritesheet atlas UV-frame animation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, and scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
+        execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries with native scene graph transform/opacity execution, scene timeline animation, per-frame fixed-topology timeline geometry updates, deterministic SceneScript expression lowering, parallax property camera input, property update, pause/resume policy, state persistence, converted keyframe timeline input, converted WE .tex image resources, spritesheet atlas UV-frame animation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, and scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
         native_scene_graph_lowering_ready: plan.native_draw_ready(),
         native_present_route_ready: pass_plan.backend_ready,
         retained_resource_model_ready,
@@ -1357,7 +1358,7 @@ mod tests {
             snapshot.full_scene.current_runtime,
             "native-vulkan-scene-runtime"
         );
-        assert_eq!(snapshot.full_scene.progress_estimate_percent, 98);
+        assert_eq!(snapshot.full_scene.progress_estimate_percent, 99);
         assert!(!snapshot.full_scene.full_scene_complete);
         assert!(snapshot.full_scene.timeline_snapshot_runtime_ready);
         assert_eq!(snapshot.full_scene.timeline_snapshot_time_ms, 1234);
@@ -1410,6 +1411,12 @@ mod tests {
                 .full_scene
                 .completed_boundaries
                 .contains(&"scene-geometry-field-animation-runtime")
+        );
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"per-frame-timeline-geometry-runtime")
         );
         assert!(
             snapshot
