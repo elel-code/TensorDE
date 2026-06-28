@@ -18,6 +18,7 @@ mod tex;
 
 use self::ir::{
     SceneControllerIr, SceneNumericPropertyBindingIr, SceneNumericPropertyBindingIrResult,
+    SceneTimelineIr,
 };
 use self::tex::{SceneWeModelFrameSize, SceneWeTexImage, SceneWeTexPayload};
 
@@ -1500,15 +1501,6 @@ fn scene_node_parent_id(node: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SceneTimelinePropertyMapping {
-    property: &'static str,
-    component: Option<usize>,
-    value_scale: f64,
-    min_value: Option<f64>,
-    max_value: Option<f64>,
-}
-
 fn scene_collect_root_timelines(source_scene: &Value, context: &mut SceneDocumentBuildContext) {
     let Some(object) = source_scene.as_object() else {
         return;
@@ -1583,439 +1575,14 @@ fn scene_timeline_from_object(
     context: &mut SceneDocumentBuildContext,
 ) -> Option<Value> {
     let target_node = scene_timeline_target_node(object, default_target_node, context)?;
-    let loop_playback = scene_bool_value_field(object, &["loop", "repeat", "loop_playback"])
-        .or_else(|| scene_bool_value_field(object, &["loopPlayback"]))
-        .unwrap_or(false);
-    let inherited_curve = scene_timeline_curve_from_object(object);
-    let mut channels = Vec::new();
-
-    for key in ["channels", "tracks"] {
-        if let Some(value) = object.get(key) {
-            channels.extend(scene_timeline_channels_from_value(
-                value,
-                loop_playback,
-                inherited_curve,
-            ));
-        }
-    }
-
-    if channels.is_empty()
-        && let Some(property) = value_field(object, &["property", "path", "target_property"])
-            .or_else(|| value_field(object, &["targetProperty"]))
-        && let Some(keyframes) = scene_timeline_keyframe_source(object)
-    {
-        channels.extend(scene_timeline_channels_from_property(
-            &property,
-            keyframes,
-            loop_playback,
-            inherited_curve,
-        ));
-    }
-
-    if channels.is_empty() {
-        channels.extend(scene_timeline_channels_from_property_map(
-            object,
-            loop_playback,
-            inherited_curve,
-        ));
-    }
-
-    if channels.is_empty() {
-        return None;
-    }
-
-    Some(json!({
-        "id": scene_next_timeline_id(
-            context,
-            string_field(object, &["timeline_id", "timelineId", "name"])
-                .as_deref()
-                .or(Some(target_node.as_str()))
-        ),
-        "target_node": target_node,
-        "channels": channels
-    }))
-}
-
-fn scene_timeline_channels_from_value(
-    value: &Value,
-    inherited_loop: bool,
-    inherited_curve: Option<&'static str>,
-) -> Vec<Value> {
-    match value {
-        Value::Array(entries) => entries
-            .iter()
-            .flat_map(|entry| {
-                scene_timeline_channels_from_value(entry, inherited_loop, inherited_curve)
-            })
-            .collect(),
-        Value::Object(object) => {
-            let loop_playback =
-                scene_bool_value_field(object, &["loop", "repeat", "loop_playback"])
-                    .or_else(|| scene_bool_value_field(object, &["loopPlayback"]))
-                    .unwrap_or(inherited_loop);
-            let curve = scene_timeline_curve_from_object(object).or(inherited_curve);
-            if let Some(property) = value_field(object, &["property", "path", "target_property"])
-                .or_else(|| value_field(object, &["targetProperty"]))
-                && let Some(keyframes) = scene_timeline_keyframe_source(object)
-            {
-                return scene_timeline_channels_from_property(
-                    &property,
-                    keyframes,
-                    loop_playback,
-                    curve,
-                );
-            }
-            scene_timeline_channels_from_property_map(object, loop_playback, curve)
-        }
-        Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null => Vec::new(),
-    }
-}
-
-fn scene_timeline_channels_from_property_map(
-    object: &Map<String, Value>,
-    loop_playback: bool,
-    inherited_curve: Option<&'static str>,
-) -> Vec<Value> {
-    object
-        .iter()
-        .filter(|(key, _)| !scene_timeline_metadata_key(key))
-        .flat_map(|(property, keyframes)| {
-            scene_timeline_channels_from_property(
-                property,
-                keyframes,
-                loop_playback,
-                inherited_curve,
-            )
-        })
-        .collect()
-}
-
-fn scene_timeline_channels_from_property(
-    property: &str,
-    keyframes: &Value,
-    loop_playback: bool,
-    inherited_curve: Option<&'static str>,
-) -> Vec<Value> {
-    let mappings = scene_timeline_property_mappings(property);
-    if mappings.is_empty() {
-        return Vec::new();
-    }
-    mappings
-        .into_iter()
-        .filter_map(|mapping| {
-            let keyframes =
-                scene_timeline_keyframes_from_value(keyframes, property, mapping, inherited_curve);
-            if keyframes.is_empty() {
-                None
-            } else {
-                Some(json!({
-                    "property": mapping.property,
-                    "loop": loop_playback,
-                    "keyframes": keyframes
-                }))
-            }
-        })
-        .collect()
-}
-
-fn scene_timeline_keyframe_source(object: &Map<String, Value>) -> Option<&Value> {
-    ["keyframes", "frames", "values", "points"]
-        .iter()
-        .filter_map(|key| object.get(*key))
-        .next()
-}
-
-fn scene_timeline_keyframes_from_value(
-    value: &Value,
-    source_property: &str,
-    mapping: SceneTimelinePropertyMapping,
-    inherited_curve: Option<&'static str>,
-) -> Vec<Value> {
-    let entries = match value {
-        Value::Array(entries) => entries.as_slice(),
-        Value::Object(object) => match scene_timeline_keyframe_source(object) {
-            Some(Value::Array(entries)) => entries.as_slice(),
-            _ => return Vec::new(),
-        },
-        Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null => return Vec::new(),
-    };
-    let mut keyframes = entries
-        .iter()
-        .filter_map(|entry| {
-            let object = entry.as_object()?;
-            let time_ms = scene_timeline_keyframe_time_ms(object)?;
-            let value = scene_timeline_keyframe_value(object, source_property, mapping)?;
-            let curve = scene_timeline_curve_from_object(object).or(inherited_curve);
-            let mut keyframe = json!({
-                "time_ms": time_ms,
-                "value": value
-            });
-            if let Some(curve) = curve
-                && let Some(keyframe_object) = keyframe.as_object_mut()
-            {
-                keyframe_object.insert("curve".to_owned(), Value::String(curve.to_owned()));
-            }
-            Some((time_ms, keyframe))
-        })
-        .collect::<Vec<_>>();
-    keyframes.sort_by_key(|(time_ms, _)| *time_ms);
-    keyframes
-        .into_iter()
-        .map(|(_, keyframe)| keyframe)
-        .collect()
-}
-
-fn scene_timeline_keyframe_time_ms(object: &Map<String, Value>) -> Option<u64> {
-    for key in [
-        "time_ms",
-        "timeMs",
-        "timestamp_ms",
-        "timestampMs",
-        "at_ms",
-        "atMs",
-        "milliseconds",
-        "millis",
-        "ms",
-    ] {
-        if let Some(time_ms) = object.get(key).and_then(value_to_f64) {
-            return scene_time_ms_from_f64(time_ms);
-        }
-    }
-    for key in ["time_seconds", "timeSeconds", "seconds", "secs", "sec"] {
-        if let Some(seconds) = object.get(key).and_then(value_to_f64) {
-            return scene_time_ms_from_f64(seconds * 1000.0);
-        }
-    }
-    let time = object.get("time").and_then(value_to_f64)?;
-    let unit = value_field(object, &["unit", "time_unit", "timeUnit"])?;
-    let normalized = normalize_project_key(&unit);
-    if matches!(normalized.as_str(), "ms" | "millis" | "milliseconds") {
-        scene_time_ms_from_f64(time)
-    } else if matches!(normalized.as_str(), "s" | "sec" | "secs" | "seconds") {
-        scene_time_ms_from_f64(time * 1000.0)
-    } else {
-        None
-    }
-}
-
-fn scene_time_ms_from_f64(value: f64) -> Option<u64> {
-    if value.is_finite() && value >= 0.0 && value <= u64::MAX as f64 {
-        Some(value.round() as u64)
-    } else {
-        None
-    }
-}
-
-fn scene_timeline_keyframe_value(
-    object: &Map<String, Value>,
-    source_property: &str,
-    mapping: SceneTimelinePropertyMapping,
-) -> Option<f64> {
-    let value = scene_timeline_keyframe_raw_value(object, source_property, mapping)?;
-    let mut value = value * mapping.value_scale;
-    if let Some(min_value) = mapping.min_value {
-        value = value.max(min_value);
-    }
-    if let Some(max_value) = mapping.max_value {
-        value = value.min(max_value);
-    }
-    if value.is_finite() { Some(value) } else { None }
-}
-
-fn scene_timeline_keyframe_raw_value(
-    object: &Map<String, Value>,
-    source_property: &str,
-    mapping: SceneTimelinePropertyMapping,
-) -> Option<f64> {
-    let value = ["value", "val", "v"]
-        .iter()
-        .filter_map(|key| object.get(*key))
-        .next()
-        .or_else(|| object.get(source_property))
-        .or_else(|| scene_timeline_property_value_from_object(object, source_property))?;
-    if let Some(component) = mapping.component {
-        let components = vector3_components_from_value(value)?;
-        return match component {
-            0 => Some(components.0),
-            1 => Some(components.1),
-            2 => Some(components.2),
-            _ => None,
-        };
-    }
-    value_to_f64(value).or_else(|| value_to_bool(value).map(|value| if value { 1.0 } else { 0.0 }))
-}
-
-fn scene_timeline_property_value_from_object<'a>(
-    object: &'a Map<String, Value>,
-    source_property: &str,
-) -> Option<&'a Value> {
-    let normalized_source = normalize_project_key(source_property);
-    object
-        .iter()
-        .find(|(key, _)| normalize_project_key(key) == normalized_source)
-        .map(|(_, value)| value)
-}
-
-fn scene_timeline_curve_from_object(object: &Map<String, Value>) -> Option<&'static str> {
-    let curve = value_field(object, &["curve", "easing", "interpolation"])?;
-    match normalize_project_key(&curve).as_str() {
-        "step" | "constant" | "hold" => Some("step"),
-        "easein" => Some("ease-in"),
-        "easeout" => Some("ease-out"),
-        "easeinout" | "smooth" | "smoothstep" => Some("ease-in-out"),
-        "linear" => Some("linear"),
-        _ => None,
-    }
-}
-
-fn scene_timeline_property_mappings(property: &str) -> Vec<SceneTimelinePropertyMapping> {
-    let normalized = normalize_project_key(property);
-    let to_degrees = 180.0 / std::f64::consts::PI;
-    let x = SceneTimelinePropertyMapping {
-        property: "x",
-        component: None,
-        value_scale: 1.0,
-        min_value: None,
-        max_value: None,
-    };
-    let y = SceneTimelinePropertyMapping {
-        property: "y",
-        component: None,
-        value_scale: 1.0,
-        min_value: None,
-        max_value: None,
-    };
-    let scale_x = SceneTimelinePropertyMapping {
-        property: "scale-x",
-        component: None,
-        value_scale: 1.0,
-        min_value: Some(f64::EPSILON),
-        max_value: None,
-    };
-    let scale_y = SceneTimelinePropertyMapping {
-        property: "scale-y",
-        component: None,
-        value_scale: 1.0,
-        min_value: Some(f64::EPSILON),
-        max_value: None,
-    };
-    let opacity = SceneTimelinePropertyMapping {
-        property: "opacity",
-        component: None,
-        value_scale: 1.0,
-        min_value: Some(0.0),
-        max_value: Some(1.0),
-    };
-    let rotation_deg = SceneTimelinePropertyMapping {
-        property: "rotation-deg",
-        component: None,
-        value_scale: 1.0,
-        min_value: None,
-        max_value: None,
-    };
-    let width = SceneTimelinePropertyMapping {
-        property: "width",
-        component: None,
-        value_scale: 1.0,
-        min_value: Some(0.0),
-        max_value: None,
-    };
-    let height = SceneTimelinePropertyMapping {
-        property: "height",
-        component: None,
-        value_scale: 1.0,
-        min_value: Some(0.0),
-        max_value: None,
-    };
-    let corner_radius = SceneTimelinePropertyMapping {
-        property: "corner-radius",
-        component: None,
-        value_scale: 1.0,
-        min_value: Some(0.0),
-        max_value: None,
-    };
-    match normalized.as_str() {
-        "x" | "left" | "originx" | "positionx" | "translationx" => vec![x],
-        "y" | "top" | "originy" | "positiony" | "translationy" => vec![y],
-        "origin" | "position" | "translation" => vec![
-            SceneTimelinePropertyMapping {
-                component: Some(0),
-                ..x
-            },
-            SceneTimelinePropertyMapping {
-                component: Some(1),
-                ..y
-            },
-        ],
-        "scalex" => vec![scale_x],
-        "scaley" => vec![scale_y],
-        "scale" => vec![
-            SceneTimelinePropertyMapping {
-                component: Some(0),
-                ..scale_x
-            },
-            SceneTimelinePropertyMapping {
-                component: Some(1),
-                ..scale_y
-            },
-        ],
-        "opacity" | "alpha" | "visible" | "visibility" => vec![opacity],
-        "rotation" | "rotationdeg" | "angle" | "rotationz" => vec![rotation_deg],
-        "anglesz" => vec![SceneTimelinePropertyMapping {
-            value_scale: to_degrees,
-            ..rotation_deg
-        }],
-        "angles" => vec![SceneTimelinePropertyMapping {
-            component: Some(2),
-            value_scale: to_degrees,
-            ..rotation_deg
-        }],
-        "width" | "w" | "sizex" => vec![width],
-        "height" | "h" | "sizey" => vec![height],
-        "size" | "dimensions" => vec![
-            SceneTimelinePropertyMapping {
-                component: Some(0),
-                ..width
-            },
-            SceneTimelinePropertyMapping {
-                component: Some(1),
-                ..height
-            },
-        ],
-        "radius" | "cornerradius" | "borderradius" => vec![corner_radius],
-        _ => Vec::new(),
-    }
-}
-
-fn scene_timeline_metadata_key(key: &str) -> bool {
-    matches!(
-        normalize_project_key(key).as_str(),
-        "id" | "name"
-            | "target"
-            | "targetnode"
-            | "targetid"
-            | "object"
-            | "objectid"
-            | "node"
-            | "nodeid"
-            | "property"
-            | "targetproperty"
-            | "path"
-            | "channels"
-            | "tracks"
-            | "keyframes"
-            | "frames"
-            | "values"
-            | "points"
-            | "loop"
-            | "repeat"
-            | "loopplayback"
-            | "curve"
-            | "easing"
-            | "interpolation"
-            | "unit"
-            | "timeunit"
-    )
+    let timeline_id = scene_next_timeline_id(
+        context,
+        string_field(object, &["timeline_id", "timelineId", "name"])
+            .as_deref()
+            .or(Some(target_node.as_str())),
+    );
+    let timeline = SceneTimelineIr::from_wallpaper_engine_object(object, target_node)?;
+    Some(timeline.timeline_value(timeline_id))
 }
 
 fn scene_timeline_target_node(
@@ -8744,6 +8311,79 @@ void main() {}
             report
                 .converted_features
                 .contains(&"scene-keyframe-timeline".to_owned())
+        );
+    }
+
+    #[test]
+    fn lowers_wallpaper_engine_opacity_effect_alias_script_to_native_timeline() {
+        let source = TestDir::new("we-scene-opacity-effect-alias-source");
+        let output = TestDir::new("we-scene-opacity-effect-alias-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r##"{
+              "objects": [
+                {
+                  "id": 1,
+                  "type": "rectangle",
+                  "name": "Alpha Range Layer",
+                  "width": 100,
+                  "height": 100,
+                  "color": "#ffffff",
+                  "effects": [
+                    {
+                      "file": "effects/opacity/effect.json",
+                      "passes": [
+                        {
+                          "constant_shader_values": {
+                            "alpha": {
+                              "script": "let startDelay = 1; let fadeDuration = 2; let fromAlpha = 0.25; let targetAlpha = 0.85;",
+                              "value": 0
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }"##,
+        );
+        source.write_file("effects/opacity/effect.json", r#"{ "passes": [] }"#);
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Opacity Effect Alias Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let node_id = scene["nodes"][0]["id"].as_str().unwrap();
+        assert_eq!(
+            scene["nodes"][0]["effects"][0]["runtime"],
+            "native-opacity-timeline"
+        );
+        assert_eq!(scene["timelines"][0]["target_node"], node_id);
+        assert_eq!(
+            scene["timelines"][0]["channels"][0]["keyframes"],
+            json!([
+                { "time_ms": 0, "value": 0.25, "curve": "linear" },
+                { "time_ms": 1000, "value": 0.25, "curve": "linear" },
+                { "time_ms": 3000, "value": 0.85, "curve": "linear" }
+            ])
+        );
+        assert!(
+            !scene["unsupported_features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| feature["feature"] == "we-effect-runtime")
         );
     }
 

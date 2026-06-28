@@ -1,6 +1,10 @@
 mod controller;
+mod effect;
+mod timeline;
 
 pub(super) use self::controller::SceneControllerIr;
+pub(super) use self::effect::SceneOpacityEffectIr;
+pub(super) use self::timeline::SceneTimelineIr;
 
 use serde_json::{Value, json};
 
