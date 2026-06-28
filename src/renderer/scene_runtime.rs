@@ -20,6 +20,7 @@ pub struct SceneWallpaperRuntimeSampler {
     target_max_fps: Option<u32>,
     scene_fit: FitMode,
     cursor_parallax_input_ready: bool,
+    input_properties: BTreeMap<String, Value>,
     document: SceneDocument,
     snapshot_layers_scratch: Vec<SceneSnapshotLayer>,
     render_layers_scratch: Vec<SceneRenderLayer>,
@@ -46,6 +47,7 @@ impl SceneWallpaperRuntimeSampler {
             target_max_fps: plan.target_max_fps,
             scene_fit: plan.scene_fit,
             cursor_parallax_input_ready: plan.cursor_parallax_input_ready,
+            input_properties: plan.scene_input_properties.clone(),
             document,
             snapshot_layers_scratch: Vec::new(),
             render_layers_scratch: Vec::new(),
@@ -59,7 +61,12 @@ impl SceneWallpaperRuntimeSampler {
         let snapshot = self
             .document
             .snapshot_at_with_property_resolver(time_ms, |property| {
-                scene_runtime_property_value(&self.document, time_ms, property)
+                scene_runtime_property_value_with_inputs(
+                    &self.document,
+                    time_ms,
+                    property,
+                    &self.input_properties,
+                )
             });
         let layers =
             scene_render_layers_from_snapshot(&self.package_root, &self.document, snapshot.layers)?;
@@ -77,7 +84,14 @@ impl SceneWallpaperRuntimeSampler {
     ) -> Result<SceneWallpaperRuntimeFrame, RendererPlanError> {
         self.document.snapshot_layers_at_with_property_resolver(
             time_ms,
-            |property| scene_runtime_property_value(&self.document, time_ms, property),
+            |property| {
+                scene_runtime_property_value_with_inputs(
+                    &self.document,
+                    time_ms,
+                    property,
+                    &self.input_properties,
+                )
+            },
             &mut self.snapshot_layers_scratch,
         );
         scene_render_layers_from_snapshot_into(
@@ -125,6 +139,7 @@ impl SceneWallpaperRuntimeSampler {
             timeline_animated_layer_count: scene_timeline_animated_layer_count(&self.document),
             property_binding_count: self.document.property_bindings.len(),
             cursor_parallax_input_ready: self.cursor_parallax_input_ready,
+            scene_input_properties: self.input_properties.clone(),
             scene_scenescript_binding_count: system_metrics.scenescript_binding_count,
             scene_material_graph_count: system_metrics.material_graph_count,
             scene_material_graph_resource_count: system_metrics.material_graph_resource_count,
@@ -158,6 +173,87 @@ pub(super) fn scene_property_value(
     })
 }
 
+pub(super) fn scene_input_properties_from_sources(
+    document: &SceneDocument,
+    render_properties: Option<&BTreeMap<String, Value>>,
+    manifest_properties: Option<&BTreeMap<String, PropertySpec>>,
+) -> BTreeMap<String, Value> {
+    let mut properties = BTreeMap::new();
+    for binding in &document.property_bindings {
+        if let Some(value) = render_properties.and_then(|source| source.get(&binding.property))
+            && scene_runtime_number(value).is_some()
+        {
+            properties.insert(binding.property.clone(), value.clone());
+            continue;
+        }
+        if let Some(default) = manifest_properties
+            .and_then(|source| source.get(&binding.property))
+            .and_then(scene_manifest_property_default_number)
+        {
+            properties.insert(binding.property.clone(), Value::from(default));
+        }
+    }
+
+    if let Some(render_properties) = render_properties {
+        for property in ["scene.parallax.x", "scene.parallax.y"] {
+            if let Some(value) = render_properties.get(property)
+                && scene_runtime_number(value).is_some()
+            {
+                properties.insert(property.to_owned(), value.clone());
+            }
+        }
+        for node in &document.nodes {
+            scene_collect_controller_input_properties(node, render_properties, &mut properties);
+        }
+    }
+
+    properties
+}
+
+fn scene_collect_controller_input_properties(
+    node: &SceneNode,
+    render_properties: &BTreeMap<String, Value>,
+    output: &mut BTreeMap<String, Value>,
+) {
+    if let Some(controller) = node.properties.get("controller").and_then(Value::as_object)
+        && controller
+            .get("runtime")
+            .and_then(Value::as_str)
+            .is_some_and(|runtime| runtime == "native")
+        && let Some(property) = controller.get("property").and_then(Value::as_str)
+    {
+        let property = property.trim();
+        for alias in scene_controller_input_aliases(node, controller, property) {
+            if let Some(value) = render_properties.get(&alias)
+                && scene_runtime_number(value).is_some()
+            {
+                output.insert(property.to_owned(), value.clone());
+                break;
+            }
+        }
+    }
+    for child in &node.children {
+        scene_collect_controller_input_properties(child, render_properties, output);
+    }
+}
+
+fn scene_controller_input_aliases(
+    node: &SceneNode,
+    controller: &serde_json::Map<String, Value>,
+    property: &str,
+) -> Vec<String> {
+    let mut aliases = vec![
+        property.to_owned(),
+        format!("scene.input.{}.active", node.id),
+        format!("scene.input.controller.{}.active", node.id),
+    ];
+    if let Some(target_node) = controller.get("target_node").and_then(Value::as_str) {
+        aliases.push(format!("scene.input.{target_node}.active"));
+        aliases.push(format!("scene.input.controller.{target_node}.active"));
+    }
+    aliases
+}
+
 pub(super) fn scene_runtime_property_value(
     document: &SceneDocument,
     time_ms: u64,
@@ -165,6 +261,25 @@ pub(super) fn scene_runtime_property_value(
 ) -> Option<f64> {
     scene_controller_property_value(document, time_ms, property)
         .or_else(|| scene_audio_response_property_value(document, time_ms, property))
+}
+
+pub(super) fn scene_runtime_property_value_with_inputs(
+    document: &SceneDocument,
+    time_ms: u64,
+    property: &str,
+    input_properties: &BTreeMap<String, Value>,
+) -> Option<f64> {
+    scene_runtime_input_property_value(input_properties, property)
+        .or_else(|| scene_runtime_property_value(document, time_ms, property))
+}
+
+fn scene_runtime_input_property_value(
+    input_properties: &BTreeMap<String, Value>,
+    property: &str,
+) -> Option<f64> {
+    input_properties
+        .get(property.trim())
+        .and_then(scene_runtime_number)
 }
 
 fn scene_controller_property_value(

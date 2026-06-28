@@ -12300,6 +12300,7 @@ mod tests {
                 timeline_animated_layer_count: 1,
                 property_binding_count: 1,
                 cursor_parallax_input_ready: true,
+                scene_input_properties: Default::default(),
                 scene_scenescript_binding_count: 0,
                 scene_material_graph_count: 0,
                 scene_material_graph_resource_count: 0,

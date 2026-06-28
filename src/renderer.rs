@@ -15,7 +15,8 @@ use self::scene_display::{
 use self::scene_runtime::scene_audio_response_property_value;
 pub use self::scene_runtime::{SceneWallpaperRuntimeFrame, SceneWallpaperRuntimeSampler};
 use self::scene_runtime::{
-    scene_property_value, scene_render_property_value, scene_runtime_property_value,
+    scene_input_properties_from_sources, scene_property_value, scene_render_property_value,
+    scene_runtime_property_value_with_inputs,
 };
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, Variant};
@@ -98,6 +99,8 @@ pub struct SceneWallpaperPlan {
     pub property_binding_count: usize,
     #[serde(default)]
     pub cursor_parallax_input_ready: bool,
+    #[serde(default)]
+    pub scene_input_properties: BTreeMap<String, Value>,
     #[serde(default)]
     pub scene_scenescript_binding_count: usize,
     #[serde(default)]
@@ -238,9 +241,17 @@ pub fn scene_wallpaper_plan_from_gscene_path_with_properties(
     cursor_parallax_input_ready: bool,
 ) -> Result<SceneWallpaperPlan, RendererPlanError> {
     let document = load_scene_document(&source_path)?;
+    let scene_input_properties =
+        scene_input_properties_from_sources(&document, render_properties, None);
     let snapshot = document.snapshot_at_with_property_resolver(snapshot_time_ms, |property| {
-        scene_render_property_value(property, render_properties)
-            .or_else(|| scene_runtime_property_value(&document, snapshot_time_ms, property))
+        scene_render_property_value(property, render_properties).or_else(|| {
+            scene_runtime_property_value_with_inputs(
+                &document,
+                snapshot_time_ms,
+                property,
+                &scene_input_properties,
+            )
+        })
     });
     let layers = scene_render_layers_from_snapshot(package_root, &document, snapshot.layers)?;
     let system_metrics = scene_plan_system_metrics(&document);
@@ -268,6 +279,7 @@ pub fn scene_wallpaper_plan_from_gscene_path_with_properties(
         timeline_animated_layer_count: scene_timeline_animated_layer_count(&document),
         property_binding_count: document.property_bindings.len(),
         cursor_parallax_input_ready,
+        scene_input_properties,
         scene_scenescript_binding_count: system_metrics.scenescript_binding_count,
         scene_material_graph_count: system_metrics.material_graph_count,
         scene_material_graph_resource_count: system_metrics.material_graph_resource_count,
@@ -1639,9 +1651,22 @@ fn scene_wallpaper_plan(
 ) -> Result<SceneWallpaperPlan, RendererPlanError> {
     let source_path = source.join_to(&package.root);
     let document = load_scene_document(&source_path)?;
+    let scene_input_properties = scene_input_properties_from_sources(
+        &document,
+        render_properties,
+        Some(&package.manifest.properties),
+    );
     let snapshot = document.snapshot_at_with_property_resolver(0, |property| {
-        scene_property_value(property, render_properties, &package.manifest.properties)
-            .or_else(|| scene_runtime_property_value(&document, 0, property))
+        scene_property_value(property, render_properties, &package.manifest.properties).or_else(
+            || {
+                scene_runtime_property_value_with_inputs(
+                    &document,
+                    0,
+                    property,
+                    &scene_input_properties,
+                )
+            },
+        )
     });
     let layers = scene_render_layers_from_snapshot(&package.root, &document, snapshot.layers)?;
     let system_metrics = scene_plan_system_metrics(&document);
@@ -1669,6 +1694,7 @@ fn scene_wallpaper_plan(
         timeline_animated_layer_count: scene_timeline_animated_layer_count(&document),
         property_binding_count: document.property_bindings.len(),
         cursor_parallax_input_ready,
+        scene_input_properties,
         scene_scenescript_binding_count: system_metrics.scenescript_binding_count,
         scene_material_graph_count: system_metrics.material_graph_count,
         scene_material_graph_resource_count: system_metrics.material_graph_resource_count,
@@ -5294,6 +5320,10 @@ exit 0
         assert_eq!(default_plan.property_binding_count, 1);
         assert_eq!(default_plan.timeline_animation_count, 0);
         assert_eq!(default_plan.timeline_animated_layer_count, 0);
+        assert_eq!(
+            default_plan.scene_input_properties["scene_opacity"],
+            json!(0.6)
+        );
         assert!((default_plan.layers[0].opacity - 0.6).abs() < f64::EPSILON);
         let default_snapshot = scene_display_source(default_plan);
         assert!(
@@ -5311,7 +5341,17 @@ exit 0
         let override_plan = &override_sync.scene_plans[0];
         assert_eq!(override_plan.bound_properties, vec!["scene_opacity"]);
         assert_eq!(override_plan.property_binding_count, 1);
+        assert_eq!(
+            override_plan.scene_input_properties["scene_opacity"],
+            json!(0.25)
+        );
         assert!((override_plan.layers[0].opacity - 0.25).abs() < f64::EPSILON);
+        let runtime_plan = SceneWallpaperRuntimeSampler::from_plan(override_plan)
+            .unwrap()
+            .expect("runtime sampler")
+            .sample_plan(0)
+            .unwrap();
+        assert!((runtime_plan.layers[0].opacity - 0.25).abs() < f64::EPSILON);
         let override_snapshot = scene_display_source(override_plan);
         assert_ne!(override_snapshot, default_snapshot);
         assert!(
@@ -5541,6 +5581,43 @@ exit 0
                 .find(|layer| layer.id == "click-target")
                 .unwrap()
                 .opacity
+                .abs()
+                < f64::EPSILON
+        );
+
+        let mut input_properties = BTreeMap::new();
+        input_properties.insert(
+            "scene.input.controller.click-controller.active".to_owned(),
+            json!(1.0),
+        );
+        let input_plan = scene_wallpaper_plan_from_gscene_path_with_properties(
+            "eDP-1".to_owned(),
+            &package_dir,
+            package_dir.join("assets/scene.gscene.json"),
+            Some(60),
+            0,
+            Some(FitMode::Cover),
+            Some(&input_properties),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            input_plan.scene_input_properties["scene.controller.click-controller.active"],
+            json!(1.0)
+        );
+        let active_click = SceneWallpaperRuntimeSampler::from_plan(&input_plan)
+            .unwrap()
+            .expect("runtime sampler")
+            .sample_plan(700)
+            .unwrap();
+        assert!(
+            (active_click
+                .layers
+                .iter()
+                .find(|layer| layer.id == "click-target")
+                .unwrap()
+                .opacity
+                - 1.0)
                 .abs()
                 < f64::EPSILON
         );
