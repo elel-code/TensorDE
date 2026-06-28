@@ -43,6 +43,15 @@ pub(super) fn scene_effects_from_object(
             }
             let opacity_timeline_lowered =
                 scene_lower_opacity_effect_timeline(effect, &file, node_id, report, context);
+            if let Some(properties) = scene_native_text_glow_effect_properties(&file, effect) {
+                output.insert("runtime".to_owned(), Value::String("native-text-glow".to_owned()));
+                output.insert("properties".to_owned(), properties);
+                push_unique(
+                    &mut context.converted_features,
+                    "native-text-glow-effect-runtime",
+                );
+                return Some(Value::Object(output));
+            }
             let requires_runtime =
                 scene_effect_requires_runtime(project, &file, effect, opacity_timeline_lowered);
             if requires_runtime {
@@ -86,6 +95,46 @@ pub(super) fn scene_effects_from_object(
             Some(Value::Object(output))
         })
         .collect()
+}
+
+fn scene_native_text_glow_effect_properties(
+    file: &str,
+    effect: &Map<String, Value>,
+) -> Option<Value> {
+    if !file.replace('\\', "/").ends_with("blurprecise/effect.json") {
+        return None;
+    }
+    if effect
+        .get("visible")
+        .and_then(value_to_bool_unwrapped)
+        .is_some_and(|visible| !visible)
+    {
+        return None;
+    }
+    let scale = scene_blurprecise_effect_scale(effect).unwrap_or(1.0);
+    Some(json!({
+        "kind": "blurprecise",
+        "radius": (scale * 2.0).clamp(0.5, 8.0),
+        "opacity": 0.12,
+        "samples": 8
+    }))
+}
+
+fn scene_blurprecise_effect_scale(effect: &Map<String, Value>) -> Option<f64> {
+    effect
+        .get("passes")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(Value::as_object)
+        .filter_map(|pass| pass.get("constantshadervalues").and_then(Value::as_object))
+        .filter_map(|values| values.get("scale"))
+        .filter_map(value_to_string)
+        .find_map(|scale| {
+            scale
+                .split_whitespace()
+                .filter_map(|part| part.parse::<f64>().ok())
+                .find(|value| value.is_finite() && *value > 0.0)
+        })
 }
 
 fn scene_effect_requires_runtime(

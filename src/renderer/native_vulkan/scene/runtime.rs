@@ -160,6 +160,7 @@ pub struct NativeVulkanFullSceneRuntimeSnapshot {
     pub unsupported_scene_features: Vec<String>,
     pub completed_boundaries: Vec<&'static str>,
     pub pending_boundaries: Vec<&'static str>,
+    pub unsupported_boundaries: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -185,6 +186,7 @@ impl NativeVulkanSceneRuntimeSnapshot {
         self.unsupported_layers = Vec::new();
         self.full_scene.completed_boundaries = Vec::new();
         self.full_scene.pending_boundaries = Vec::new();
+        self.full_scene.unsupported_boundaries = Vec::new();
         self.full_scene.unsupported_scene_features = Vec::new();
     }
 
@@ -996,8 +998,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
             matches!(
                 scene_systems.shader_material_graph,
                 SceneSystemStatus::Ready
-            ) && scene_material_graph_count > 0
-                && scene_material_graph_resource_count > 0
+            ) && (scene_material_graph_count == 0 || scene_material_graph_resource_count > 0)
                 && scene_effect_graph_count == 0
                 && !unsupported_scene_features
                     .iter()
@@ -1250,6 +1251,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
     }
 
     let mut pending_boundaries = Vec::new();
+    let mut unsupported_boundaries = Vec::new();
     if native_runtime_pending_layer_count > 0 {
         pending_boundaries.push("remaining-scene-layer-runtime-coverage");
     }
@@ -1262,29 +1264,31 @@ fn native_vulkan_full_scene_runtime_snapshot(
     if pass_plan.path_op_count > 0 && pass_plan.requires_path_tessellation {
         pending_boundaries.push("path-tessellation-runtime");
     }
-    if !scene_scenescript_ready {
+    if scene_scenescript_detected && !scene_scenescript_ready {
         pending_boundaries.push("arbitrary-scenescript-runtime");
     }
-    if !scene_shader_material_graph_ready {
+    if scene_shader_material_graph_detected && !scene_shader_material_graph_ready {
         pending_boundaries.push("shader-material-graph");
     }
-    if !scene_audio_response_ready {
+    if scene_audio_response_detected && !scene_audio_response_ready {
         pending_boundaries.push("pipewire-audio-response-runtime");
-    } else {
+    } else if scene_audio_response_ready {
         pending_boundaries.push("pipewire-audio-spectrum-input-source");
     }
     if scene_particle_system_detected && !scene_particle_system_ready {
         pending_boundaries.push("particle-systems");
     }
     if !cursor_parallax_input_ready {
-        pending_boundaries.push("cursor-parallax-input-source");
+        unsupported_boundaries.push("cursor-parallax-input-source");
     }
+    let full_scene_complete = pending_boundaries.is_empty();
+    let progress_estimate_percent = if full_scene_complete { 100 } else { 99 };
 
     NativeVulkanFullSceneRuntimeSnapshot {
         target_runtime: "native-vulkan-full-scene",
         current_runtime: "native-vulkan-scene-runtime",
-        progress_estimate_percent: 99,
-        full_scene_complete: false,
+        progress_estimate_percent,
+        full_scene_complete,
         execution_model: "full scene state is lowered into explicit native Vulkan scene runtime boundaries with native scene graph transform/opacity execution, scene timeline animation, per-frame fixed-topology timeline geometry updates, deterministic SceneScript expression lowering, parallax property camera input, property update, pause/resume policy, state persistence, converted keyframe timeline input, converted WE .tex image resources, spritesheet atlas UV-frame animation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, and scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime; unsupported Wallpaper Engine systems remain visible instead of falling back to legacy paths",
         native_scene_graph_lowering_ready: plan.native_draw_ready(),
         native_present_route_ready: pass_plan.backend_ready,
@@ -1350,15 +1354,20 @@ fn native_vulkan_full_scene_runtime_snapshot(
         unsupported_scene_features,
         completed_boundaries,
         pending_boundaries,
+        unsupported_boundaries,
     }
 }
 
 fn scene_feature_blocks_shader_material_graph(feature: &str) -> bool {
     feature.contains("shader")
         || feature.contains("effect")
-        || feature.contains("material")
-        || feature.contains("tex")
-        || feature.contains("runtime-texture")
+        || matches!(
+            feature,
+            "we-material-texture-runtime"
+                | "we-model-material-texture-runtime"
+                | "we-runtime-texture"
+                | "runtime-texture"
+        )
 }
 
 fn native_vulkan_scene_path_uses_curves(path: &str) -> bool {
@@ -1625,6 +1634,8 @@ mod tests {
         assert_eq!(snapshot.full_scene.native_runtime_layer_count, 3);
         assert_eq!(snapshot.full_scene.native_runtime_pending_layer_count, 0);
         assert_eq!(snapshot.full_scene.native_runtime_coverage_percent, 100);
+        assert_eq!(snapshot.full_scene.progress_estimate_percent, 100);
+        assert!(snapshot.full_scene.full_scene_complete);
     }
 
     #[test]
@@ -1881,13 +1892,19 @@ mod tests {
                 .contains(&"mixed-video-scene-composition")
         );
         assert!(
-            snapshot
+            !snapshot
                 .full_scene
                 .pending_boundaries
                 .contains(&"pipewire-audio-response-runtime")
         );
         assert!(
             snapshot
+                .full_scene
+                .unsupported_boundaries
+                .contains(&"cursor-parallax-input-source")
+        );
+        assert!(
+            !snapshot
                 .full_scene
                 .pending_boundaries
                 .contains(&"cursor-parallax-input-source")
@@ -2009,6 +2026,8 @@ mod tests {
         let snapshot = native_vulkan_scene_runtime_snapshot(&item).unwrap();
 
         assert!(snapshot.full_scene.cursor_parallax_input_ready);
+        assert_eq!(snapshot.full_scene.progress_estimate_percent, 100);
+        assert!(snapshot.full_scene.full_scene_complete);
         assert!(
             snapshot
                 .full_scene
@@ -2019,6 +2038,12 @@ mod tests {
             !snapshot
                 .full_scene
                 .pending_boundaries
+                .contains(&"cursor-parallax-input-source")
+        );
+        assert!(
+            !snapshot
+                .full_scene
+                .unsupported_boundaries
                 .contains(&"cursor-parallax-input-source")
         );
     }

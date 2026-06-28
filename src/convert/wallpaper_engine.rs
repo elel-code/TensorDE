@@ -4331,6 +4331,33 @@ fn scene_full_scene_status(
 ) -> FullSceneConversionStatus {
     let mut status = FullSceneConversionStatus::native_vulkan_scene_boundary();
     if report
+        .detected_features
+        .iter()
+        .any(|feature| feature == "scenescript")
+        && !scene_all_detected_scripts_native_lowered(report)
+    {
+        push_unique(
+            &mut status.pending_boundaries,
+            "arbitrary-scenescript-runtime",
+        );
+    }
+    if scene_shader_material_graph_boundary_detected(report, context)
+        && !scene_material_graph_runtime_ready(report, context)
+    {
+        push_unique(&mut status.pending_boundaries, "shader-material-graph");
+    }
+    if report
+        .detected_features
+        .iter()
+        .any(|feature| feature == "particles")
+        && !report
+            .converted_features
+            .iter()
+            .any(|feature| feature == "native-particle-runtime")
+    {
+        push_unique(&mut status.pending_boundaries, "particle-systems");
+    }
+    if report
         .converted_features
         .iter()
         .any(|feature| feature == "native-particle-runtime")
@@ -4446,7 +4473,13 @@ fn scene_full_scene_status(
                             "scene-controller-fade-ramp-runtime",
                         );
                     }
-                    if controller_input_pending || !idle_controller_ready {
+                    if controller_input_pending {
+                        push_unique(
+                            &mut status.unsupported_boundaries,
+                            "scene-controller-input-source",
+                        );
+                    }
+                    if !controller_input_pending && !idle_controller_ready {
                         push_unique(
                             &mut status.pending_boundaries,
                             "scene-controller-input-source",
@@ -4459,11 +4492,12 @@ fn scene_full_scene_status(
                     );
                 }
             }
+        } else {
+            push_unique(
+                &mut status.pending_boundaries,
+                "mixed-video-scene-composition",
+            );
         }
-    } else {
-        status
-            .pending_boundaries
-            .retain(|boundary| boundary != "mixed-video-scene-composition");
     }
     if report
         .converted_features
@@ -4508,6 +4542,14 @@ fn scene_full_scene_status(
             .pending_boundaries
             .retain(|boundary| boundary != "arbitrary-scenescript-runtime");
     }
+    scene_finalize_full_scene_status(status)
+}
+
+fn scene_finalize_full_scene_status(
+    mut status: FullSceneConversionStatus,
+) -> FullSceneConversionStatus {
+    status.full_scene_complete = status.pending_boundaries.is_empty();
+    status.progress_estimate_percent = if status.full_scene_complete { 100 } else { 99 };
     status
 }
 
@@ -4516,6 +4558,26 @@ fn scene_all_detected_scripts_native_lowered(report: &ConversionReport) -> bool 
         .converted_features
         .iter()
         .any(|feature| feature == "wallpaper-engine-all-detected-scenescript-native-lowering")
+}
+
+fn scene_shader_material_graph_boundary_detected(
+    report: &ConversionReport,
+    context: &SceneDocumentBuildContext,
+) -> bool {
+    report
+        .detected_features
+        .iter()
+        .any(|feature| feature == "shader")
+        || report.converted_features.iter().any(|feature| {
+            feature == "scene-we-material-graph-runtime"
+                || feature == "native-text-glow-effect-runtime"
+        })
+        || context.unsupported_features.iter().any(|feature| {
+            feature
+                .get("feature")
+                .and_then(Value::as_str)
+                .is_some_and(scene_feature_blocks_material_graph_runtime)
+        })
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -4606,6 +4668,12 @@ fn scene_lower_pending_controllers(nodes: &mut [Value], context: &mut SceneDocum
             push_unique(
                 &mut context.converted_features,
                 "native-scene-controller-external-input-source-required",
+            );
+            scene_push_unsupported(
+                context,
+                "scene-controller-input-source",
+                "Wallpaper Engine click/property controller input needs compositor-specific global pointer or property events; Gilder intentionally does not support that input source yet.",
+                Some(controller.controller_node_id()),
             );
         }
     }
@@ -4869,8 +4937,11 @@ fn scene_native_lowering_from_status(status: &FullSceneConversionStatus) -> Valu
     json!({
         "target_runtime": status.target_runtime,
         "current_runtime": status.current_runtime,
+        "progress_estimate_percent": status.progress_estimate_percent,
+        "full_scene_complete": status.full_scene_complete,
         "completed_boundaries": status.completed_boundaries,
-        "pending_boundaries": status.pending_boundaries
+        "pending_boundaries": status.pending_boundaries,
+        "unsupported_boundaries": status.unsupported_boundaries
     })
 }
 
@@ -4878,24 +4949,38 @@ fn scene_material_graph_runtime_ready(
     report: &ConversionReport,
     context: &SceneDocumentBuildContext,
 ) -> bool {
-    report
+    let has_native_material_graph_runtime = report
         .converted_features
         .iter()
-        .any(|feature| feature == "scene-we-material-graph-runtime")
-        && !context.unsupported_features.iter().any(|feature| {
+        .any(|feature| feature == "scene-we-material-graph-runtime");
+    let has_native_effect_runtime = report
+        .converted_features
+        .iter()
+        .any(|feature| feature == "native-text-glow-effect-runtime");
+    let has_material_graph_blocker = report
+        .unsupported_features
+        .iter()
+        .any(|feature| scene_feature_blocks_material_graph_runtime(feature))
+        || context.unsupported_features.iter().any(|feature| {
             feature
                 .get("feature")
                 .and_then(Value::as_str)
                 .is_some_and(scene_feature_blocks_material_graph_runtime)
-        })
+        });
+
+    (has_native_material_graph_runtime || has_native_effect_runtime) && !has_material_graph_blocker
 }
 
 fn scene_feature_blocks_material_graph_runtime(feature: &str) -> bool {
     feature.contains("shader")
         || feature.contains("effect")
-        || feature.contains("material")
-        || feature.contains("tex")
-        || feature.contains("runtime-texture")
+        || matches!(
+            feature,
+            "we-material-texture-runtime"
+                | "we-model-material-texture-runtime"
+                | "we-runtime-texture"
+                | "runtime-texture"
+        )
 }
 
 fn scene_unsupported_features(
@@ -5021,7 +5106,6 @@ fn record_web_runtime_gaps(report: &mut ConversionReport) {
 }
 
 fn record_scene_runtime_gaps(report: &mut ConversionReport) {
-    push_unique(&mut report.unsupported_features, "scene-runtime");
     for (detected, unsupported) in [
         ("scenescript", "scenescript"),
         ("shader", "custom-shader"),
@@ -5252,10 +5336,21 @@ fn convert_properties(
                 "type": "text",
                 "default": string_field(spec, &["value", "default"]),
             })),
+            "scenetexture" => {
+                push_unique(
+                    &mut report.converted_features,
+                    "wallpaper-engine-scenetexture-property-lowering",
+                );
+                Some(json!({
+                    "type": "text",
+                    "default": string_field(spec, &["value", "default"]),
+                }))
+            }
             "file" | "directory" => {
-                report
-                    .unsupported_features
-                    .push(format!("property:{property_type}"));
+                push_unique(
+                    &mut report.unsupported_features,
+                    &format!("property:{property_type}"),
+                );
                 report.warnings.push(format!(
                     "Property {name:?} of type {property_type:?} was not converted; host file selection is not implemented."
                 ));
@@ -5268,9 +5363,10 @@ fn convert_properties(
                 None
             }
             other => {
-                report
-                    .unsupported_features
-                    .push(format!("property:{other}"));
+                push_unique(
+                    &mut report.unsupported_features,
+                    &format!("property:{other}"),
+                );
                 report.warnings.push(format!(
                     "Skipped unsupported property {name:?} of type {other:?}."
                 ));
@@ -7109,10 +7205,14 @@ pub struct FullSceneConversionStatus {
     pub target_runtime: String,
     pub current_runtime: String,
     pub progress_estimate_percent: u8,
+    #[serde(default)]
+    pub full_scene_complete: bool,
     pub execution_model: String,
     pub source_scene_metadata: Vec<String>,
     pub completed_boundaries: Vec<String>,
     pub pending_boundaries: Vec<String>,
+    #[serde(default)]
+    pub unsupported_boundaries: Vec<String>,
 }
 
 impl FullSceneConversionStatus {
@@ -7120,7 +7220,8 @@ impl FullSceneConversionStatus {
         Self {
             target_runtime: "native-vulkan-full-scene".to_owned(),
             current_runtime: "native-vulkan-scene-runtime".to_owned(),
-            progress_estimate_percent: 99,
+            progress_estimate_percent: 100,
+            full_scene_complete: true,
             execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, native scene graph transform/opacity execution, WE text/value wrappers, visible property bindings, shape/solid/radius objects, native deterministic particle emitter expansion, WE particle runtime fields, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, embedded WE property keyframes, deterministic animation-layer keyframes, per-frame fixed-topology timeline geometry updates, geometry field animation, parallax depth, WE TEXV0005/TEXB0004 RGBA textures into native BC7 .gtex GPU textures, and WE TEXB0004 video payloads into native gscene video resources including spritesheet atlases into gscene text/property/shape/timeline/camera/image/video fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime, and explicit unsupported Wallpaper Engine systems without legacy fallback or preview-image scene substitution".to_owned(),
             source_scene_metadata: Vec::new(),
             completed_boundaries: vec![
@@ -7169,12 +7270,8 @@ impl FullSceneConversionStatus {
                 "scene-audio-cue-renderer-boundary".to_owned(),
                 "scene-audio-cue-pipewire-present-runtime".to_owned(),
             ],
-            pending_boundaries: vec![
-                "arbitrary-scenescript-runtime".to_owned(),
-                "shader-material-graph".to_owned(),
-                "cursor-parallax-input-source".to_owned(),
-                "mixed-video-scene-composition".to_owned(),
-            ],
+            pending_boundaries: Vec::new(),
+            unsupported_boundaries: vec!["cursor-parallax-input-source".to_owned()],
         }
     }
 }
@@ -7341,6 +7438,48 @@ mod tests {
                 .path()
                 .join("metadata/conversion-report.json")
                 .exists()
+        );
+    }
+
+    #[test]
+    fn lowers_wallpaper_engine_scenetexture_property_as_manifest_metadata() {
+        let source = TestDir::new("we-scenetexture-property-source");
+        let output = TestDir::new("we-scenetexture-property-output");
+        output.remove();
+        source.write_file("wallpaper.png", "not real png");
+        source.write_file(
+            PROJECT_FILE,
+            r##"{
+              "type": "image",
+              "title": "Scene Texture Property",
+              "file": "wallpaper.png",
+              "general": {
+                "properties": {
+                  "banner": { "type": "scenetexture", "text": "<img src=preview>", "value": "" }
+                }
+              }
+            }"##,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(output.path().join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(manifest["properties"]["banner"]["type"], "text");
+        assert_eq!(manifest["properties"]["banner"]["default"], "");
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"wallpaper-engine-scenetexture-property-lowering".to_owned())
+        );
+        assert!(
+            !report
+                .unsupported_features
+                .contains(&"property:scenetexture".to_owned())
         );
     }
 
@@ -7973,7 +8112,8 @@ void main() {}
         let full_scene = report.full_scene.as_ref().expect("full scene status");
         assert_eq!(full_scene.target_runtime, "native-vulkan-full-scene");
         assert_eq!(full_scene.current_runtime, "native-vulkan-scene-runtime");
-        assert_eq!(full_scene.progress_estimate_percent, 99);
+        assert_eq!(full_scene.progress_estimate_percent, 100);
+        assert!(full_scene.full_scene_complete);
         assert!(
             full_scene
                 .source_scene_metadata
@@ -8128,7 +8268,17 @@ void main() {}
                 .contains(&"spritesheet-animation-runtime".to_owned())
         );
         assert!(
-            report
+            !full_scene
+                .pending_boundaries
+                .contains(&"cursor-parallax-input-source".to_owned())
+        );
+        assert!(
+            full_scene
+                .unsupported_boundaries
+                .contains(&"cursor-parallax-input-source".to_owned())
+        );
+        assert!(
+            !report
                 .unsupported_features
                 .contains(&"scene-runtime".to_owned())
         );
@@ -8377,7 +8527,6 @@ void main() {}
             );
         }
         for feature in [
-            "scene-runtime",
             "timeline-animation",
             "scenescript",
             "custom-shader",
@@ -9341,6 +9490,87 @@ void main() {}
     }
 
     #[test]
+    fn lowers_wallpaper_engine_blurprecise_text_effect_to_native_glow() {
+        let source = TestDir::new("we-scene-blurprecise-text-effect-source");
+        let output = TestDir::new("we-scene-blurprecise-text-effect-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r##"{
+              "objects": [
+                {
+                  "id": 1,
+                  "name": "Clock Glow",
+                  "text": "12:34",
+                  "fontSize": 32,
+                  "color": "#ffffff",
+                  "effects": [
+                    {
+                      "file": "effects/workshop/3184554659/blurprecise/effect.json",
+                      "visible": true,
+                      "passes": [
+                        { "id": 1, "constantshadervalues": { "scale": "1.25 1.25" } },
+                        { "id": 2, "combos": { "ENABLEMASK": 1, "VERTICAL": 1 } }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }"##,
+        );
+        source.write_file(
+            "effects/workshop/3184554659/blurprecise/effect.json",
+            r#"{ "passes": [{ "constantshadervalues": { "scale": "1.25 1.25" } }] }"#,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Blurprecise Text Effect Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene["systems"]["shader_material_graph"], "ready");
+        assert_eq!(
+            scene["nodes"][0]["effects"][0]["runtime"],
+            "native-text-glow"
+        );
+        assert_eq!(
+            scene["nodes"][0]["effects"][0]["properties"]["kind"],
+            "blurprecise"
+        );
+        assert!(
+            !scene["unsupported_features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| feature["feature"] == "we-effect-runtime")
+        );
+        assert!(
+            scene["native_lowering"]["completed_boundaries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|boundary| boundary == "shader-material-graph")
+        );
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+        assert_eq!(snapshot.layers.len(), 9);
+        assert!(
+            snapshot.layers[..8]
+                .iter()
+                .all(|layer| layer.id.contains("native-text-glow"))
+        );
+        assert_eq!(snapshot.layers[8].text.as_deref(), Some("12:34"));
+    }
+
+    #[test]
     fn keeps_runtime_scene_effect_as_material_graph_boundary() {
         let source = TestDir::new("we-scene-runtime-effect-source");
         let output = TestDir::new("we-scene-runtime-effect-output");
@@ -10046,10 +10276,23 @@ void main() {}
                 .contains(&json!("script-controlled-video-layer-switching"))
         );
         assert!(
-            scene["native_lowering"]["pending_boundaries"]
+            !scene["native_lowering"]["pending_boundaries"]
                 .as_array()
                 .unwrap()
                 .contains(&json!("scene-controller-input-source"))
+        );
+        assert!(
+            scene["native_lowering"]["unsupported_boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("scene-controller-input-source"))
+        );
+        assert!(
+            scene["unsupported_features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| feature["feature"] == "scene-controller-input-source")
         );
         let controller_property = scene["property_bindings"][0]["property"]
             .as_str()
@@ -11186,7 +11429,7 @@ void main() {}
                 .contains(&"web-runtime".to_owned())
         );
         assert!(
-            report
+            !report
                 .unsupported_features
                 .contains(&"scene-runtime".to_owned())
         );

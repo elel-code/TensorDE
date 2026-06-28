@@ -639,7 +639,7 @@ impl SceneNode {
             let text = scene_text_from_properties(&self.properties, resolve_text_property)
                 .or_else(|| self.text.clone());
             let audio = scene_audio_cues_for_snapshot(&self.audio, resolve_property);
-            output.push(SceneSnapshotLayer {
+            let layer = SceneSnapshotLayer {
                 id: self.id.clone(),
                 kind: self.kind,
                 source: self
@@ -666,7 +666,9 @@ impl SceneNode {
                 fit: self.fit,
                 opacity,
                 transform,
-            });
+            };
+            push_native_effect_snapshot_layers(&self.effects, &layer, output);
+            output.push(layer);
         }
         for child in &self.children {
             child.push_snapshot_layers(
@@ -752,6 +754,74 @@ impl SceneNode {
         }
         true
     }
+}
+
+fn push_native_effect_snapshot_layers(
+    effects: &[SceneEffect],
+    base: &SceneSnapshotLayer,
+    output: &mut Vec<SceneSnapshotLayer>,
+) {
+    if base.kind != SceneNodeKind::Text || base.text.as_deref().is_none_or(str::is_empty) {
+        return;
+    }
+    for (effect_index, effect) in effects.iter().enumerate() {
+        if effect.runtime.as_deref() != Some("native-text-glow") {
+            continue;
+        }
+        push_native_text_glow_snapshot_layers(effect_index, effect, base, output);
+    }
+}
+
+fn push_native_text_glow_snapshot_layers(
+    effect_index: usize,
+    effect: &SceneEffect,
+    base: &SceneSnapshotLayer,
+    output: &mut Vec<SceneSnapshotLayer>,
+) {
+    let radius = scene_effect_property_f64(effect, "radius", 2.0).clamp(0.25, 16.0);
+    let opacity =
+        (base.opacity * scene_effect_property_f64(effect, "opacity", 0.12)).clamp(0.0, 1.0);
+    if opacity <= 0.0 {
+        return;
+    }
+    let samples = effect
+        .properties
+        .get("samples")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(8)
+        .clamp(4, NATIVE_TEXT_GLOW_OFFSETS.len());
+    for (sample_index, [x, y]) in NATIVE_TEXT_GLOW_OFFSETS.iter().take(samples).enumerate() {
+        let mut layer = base.clone();
+        layer.id = format!(
+            "{}::native-text-glow-{}-{}",
+            base.id, effect_index, sample_index
+        );
+        layer.opacity = opacity;
+        layer.transform.x += x * radius;
+        layer.transform.y += y * radius;
+        output.push(layer);
+    }
+}
+
+const NATIVE_TEXT_GLOW_OFFSETS: [[f64; 2]; 8] = [
+    [-1.0, 0.0],
+    [1.0, 0.0],
+    [0.0, -1.0],
+    [0.0, 1.0],
+    [-0.70710678118, -0.70710678118],
+    [0.70710678118, -0.70710678118],
+    [-0.70710678118, 0.70710678118],
+    [0.70710678118, 0.70710678118],
+];
+
+fn scene_effect_property_f64(effect: &SceneEffect, key: &str, default: f64) -> f64 {
+    effect
+        .properties
+        .get(key)
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .unwrap_or(default)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1518,9 +1588,15 @@ pub struct SceneNativeLowering {
     #[serde(default)]
     pub current_runtime: Option<String>,
     #[serde(default)]
+    pub progress_estimate_percent: Option<u8>,
+    #[serde(default)]
+    pub full_scene_complete: bool,
+    #[serde(default)]
     pub completed_boundaries: Vec<String>,
     #[serde(default)]
     pub pending_boundaries: Vec<String>,
+    #[serde(default)]
+    pub unsupported_boundaries: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2000,7 +2076,10 @@ mod tests {
             ],
             "native_lowering": {
                 "target_runtime": "native-vulkan-full-scene",
-                "current_runtime": "native-vulkan-scene-runtime"
+                "current_runtime": "native-vulkan-scene-runtime",
+                "progress_estimate_percent": 100,
+                "full_scene_complete": true,
+                "unsupported_boundaries": ["cursor-parallax-input-source"]
             }
         }))
         .unwrap();
@@ -2012,6 +2091,15 @@ mod tests {
                 PackagePath::new("metadata/source-scene.json").unwrap(),
                 PackagePath::new("assets/scene-resources/background.png").unwrap(),
             ]
+        );
+        assert_eq!(
+            document.native_lowering.progress_estimate_percent,
+            Some(100)
+        );
+        assert!(document.native_lowering.full_scene_complete);
+        assert_eq!(
+            document.native_lowering.unsupported_boundaries,
+            vec!["cursor-parallax-input-source".to_owned()]
         );
     }
 
