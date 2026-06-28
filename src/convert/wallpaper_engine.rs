@@ -13,8 +13,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod effect;
 mod gtex;
+mod ir;
 mod tex;
 
+use self::ir::SceneControllerIr;
 use self::tex::{SceneWeModelFrameSize, SceneWeTexImage, SceneWeTexPayload};
 
 const PROJECT_FILE: &str = "project.json";
@@ -1347,7 +1349,7 @@ struct SceneDocumentBuildContext {
     next_timeline: usize,
     resource_scope: String,
     source_node_ids: BTreeMap<String, String>,
-    pending_controllers: Vec<ScenePendingController>,
+    pending_controllers: Vec<SceneControllerIr>,
     timelines: Vec<Value>,
     property_bindings: Vec<Value>,
     converted_features: Vec<String>,
@@ -1369,15 +1371,6 @@ struct SceneDecodedTexResource {
     resource_id: String,
     render_kind: &'static str,
     spritesheet: Option<Value>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ScenePendingController {
-    controller_node_id: String,
-    controller_kind: &'static str,
-    target_layer: String,
-    default_hide_target: bool,
-    property: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3440,7 +3433,7 @@ fn scene_controller_from_object(
     object: &Map<String, Value>,
     node_id: &str,
     source_model: Option<&SceneSourceModelConversion>,
-) -> Option<(Value, ScenePendingController)> {
+) -> Option<(Value, SceneControllerIr)> {
     let utility = source_model?.value.get("utility").and_then(Value::as_str)?;
     let script_properties = scene_script_properties_from_object(object)?;
     let target_layer = string_field(
@@ -3455,51 +3448,14 @@ fn scene_controller_from_object(
         &["defaultHideTarget", "defaulthidetarget"],
     )
     .unwrap_or(false);
-    let controller_kind = scene_controller_kind(utility, script_properties);
-    let property = format!("scene.controller.{node_id}.active");
-    let mut controller = Map::new();
-    controller.insert("runtime".to_owned(), Value::String("native".to_owned()));
-    controller.insert("kind".to_owned(), Value::String(controller_kind.to_owned()));
-    controller.insert("utility".to_owned(), Value::String(utility.to_owned()));
-    controller.insert(
-        "target_layer".to_owned(),
-        Value::String(target_layer.clone()),
+    let controller = SceneControllerIr::from_wallpaper_engine_utility(
+        node_id,
+        utility,
+        &target_layer,
+        default_hide_target,
+        script_properties,
     );
-    controller.insert("property".to_owned(), Value::String(property.clone()));
-    controller.insert("default_hide_target".to_owned(), json!(default_hide_target));
-    for key in [
-        "allowAutoPlay",
-        "cooldownSec",
-        "endTimePercent",
-        "fadeInDuration",
-        "fadeOutDuration",
-        "hideWhenPaused",
-        "hideWhenStopped",
-        "isClickable",
-        "loopCount",
-        "loopPlay",
-        "mouseInactiveSec",
-        "playbackSpeed",
-        "resetOnClick",
-        "resetOnRestart",
-        "startDelay",
-        "startTimePercent",
-        "togglePlay",
-    ] {
-        if let Some(value) = script_properties.get(key) {
-            controller.insert(scene_controller_property_name(key), value.clone());
-        }
-    }
-    Some((
-        Value::Object(controller),
-        ScenePendingController {
-            controller_node_id: node_id.to_owned(),
-            controller_kind,
-            target_layer,
-            default_hide_target,
-            property,
-        },
-    ))
+    Some((controller.metadata_value(), controller))
 }
 
 fn scene_script_properties_from_object(object: &Map<String, Value>) -> Option<&Map<String, Value>> {
@@ -3515,34 +3471,6 @@ fn scene_script_property_bool(object: &Map<String, Value>, keys: &[&str]) -> Opt
     keys.iter()
         .filter_map(|key| object.get(*key))
         .find_map(value_to_bool)
-}
-
-fn scene_controller_kind(utility: &str, script_properties: &Map<String, Value>) -> &'static str {
-    if utility == "fullscreenlayer" || script_properties.contains_key("mouseInactiveSec") {
-        "idle-video-switch"
-    } else if utility == "composelayer"
-        || script_properties.contains_key("isClickable")
-        || script_properties.contains_key("togglePlay")
-    {
-        "click-video-switch"
-    } else {
-        "property-video-switch"
-    }
-}
-
-fn scene_controller_property_name(key: &str) -> String {
-    let mut output = String::new();
-    for (index, character) in key.chars().enumerate() {
-        if character.is_ascii_uppercase() {
-            if index > 0 {
-                output.push('_');
-            }
-            output.push(character.to_ascii_lowercase());
-        } else {
-            output.push(character);
-        }
-    }
-    output
 }
 
 fn scene_model_frame_size(model_object: &Map<String, Value>) -> Option<SceneWeModelFrameSize> {
@@ -4821,14 +4749,10 @@ fn scene_full_scene_status(
                     let idle_controller_ready = report
                         .converted_features
                         .iter()
-                        .any(|feature| feature == "native-scene-controller-idle-video-switch");
+                        .any(|feature| feature == "native-scene-controller-idle-input-source");
                     let controller_input_pending =
                         report.converted_features.iter().any(|feature| {
-                            matches!(
-                                feature.as_str(),
-                                "native-scene-controller-click-video-switch"
-                                    | "native-scene-controller-property-video-switch"
-                            )
+                            feature == "native-scene-controller-external-input-source-required"
                         });
                     push_unique(
                         &mut status.completed_boundaries,
@@ -4875,15 +4799,15 @@ fn scene_lower_pending_controllers(nodes: &mut [Value], context: &mut SceneDocum
     let index = scene_node_lookup_index(nodes);
     for controller in context.pending_controllers.clone() {
         let Some(target_node_id) = index
-            .get(&controller.target_layer)
-            .or_else(|| index.get(&normalize_project_key(&controller.target_layer)))
+            .get(controller.target_layer())
+            .or_else(|| index.get(&normalize_project_key(controller.target_layer())))
             .cloned()
         else {
             scene_push_unsupported(
                 context,
                 "scene-controller-target-resolution",
                 "Wallpaper Engine utility controller target layer could not be resolved to a gscene node.",
-                Some(&controller.target_layer),
+                Some(controller.target_layer()),
             );
             continue;
         };
@@ -4891,22 +4815,18 @@ fn scene_lower_pending_controllers(nodes: &mut [Value], context: &mut SceneDocum
             .get(&format!("kind:{target_node_id}"))
             .cloned()
             .unwrap_or_else(|| "unknown".to_owned());
-        if controller.default_hide_target {
+        if controller.default_hide_target() {
             scene_set_node_initial_opacity(nodes, &target_node_id, 0.0);
         }
         scene_set_controller_target_node(
             nodes,
-            &controller.controller_node_id,
+            controller.controller_node_id(),
             &target_node_id,
             &target_kind,
         );
-        context.property_bindings.push(json!({
-            "property": controller.property,
-            "target_node": target_node_id,
-            "target": "opacity",
-            "scale": 1.0,
-            "offset": 0.0
-        }));
+        context
+            .property_bindings
+            .push(controller.property_binding_value(&target_node_id));
         push_unique(
             &mut context.converted_features,
             "native-scene-controller-property-binding",
@@ -4917,10 +4837,20 @@ fn scene_lower_pending_controllers(nodes: &mut [Value], context: &mut SceneDocum
                 "native-scene-controller-video-switch-binding",
             );
         }
-        push_unique(
-            &mut context.converted_features,
-            &format!("native-scene-controller-{}", controller.controller_kind),
-        );
+        let controller_feature = controller.completed_feature_name();
+        push_unique(&mut context.converted_features, &controller_feature);
+        if controller.uses_native_idle_input_source() {
+            push_unique(
+                &mut context.converted_features,
+                "native-scene-controller-idle-input-source",
+            );
+        }
+        if controller.requires_external_input_source() {
+            push_unique(
+                &mut context.converted_features,
+                "native-scene-controller-external-input-source-required",
+            );
+        }
     }
 }
 
