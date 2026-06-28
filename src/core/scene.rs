@@ -103,6 +103,26 @@ impl SceneDocument {
         SceneSnapshot { time_ms, layers }
     }
 
+    pub fn snapshot_at_with_resolvers<N, T>(
+        &self,
+        time_ms: u64,
+        resolve_property: N,
+        resolve_text_property: T,
+    ) -> SceneSnapshot
+    where
+        N: Fn(&str) -> Option<f64>,
+        T: Fn(&str) -> Option<String>,
+    {
+        let mut layers = Vec::new();
+        self.snapshot_layers_at_with_resolvers(
+            time_ms,
+            resolve_property,
+            resolve_text_property,
+            &mut layers,
+        );
+        SceneSnapshot { time_ms, layers }
+    }
+
     pub fn snapshot_layers_at_with_property_resolver<F>(
         &self,
         time_ms: u64,
@@ -110,6 +130,19 @@ impl SceneDocument {
         layers: &mut Vec<SceneSnapshotLayer>,
     ) where
         F: Fn(&str) -> Option<f64>,
+    {
+        self.snapshot_layers_at_with_resolvers(time_ms, resolve_property, |_| None, layers);
+    }
+
+    pub fn snapshot_layers_at_with_resolvers<N, T>(
+        &self,
+        time_ms: u64,
+        resolve_property: N,
+        resolve_text_property: T,
+        layers: &mut Vec<SceneSnapshotLayer>,
+    ) where
+        N: Fn(&str) -> Option<f64>,
+        T: Fn(&str) -> Option<String>,
     {
         layers.clear();
         let resources = self
@@ -131,6 +164,7 @@ impl SceneDocument {
                 &self.timelines,
                 &self.property_bindings,
                 &resolve_property,
+                &resolve_text_property,
                 layers,
             );
         }
@@ -521,6 +555,7 @@ impl SceneNode {
         timelines: &[SceneTimeline],
         property_bindings: &[ScenePropertyBinding],
         resolve_property: &impl Fn(&str) -> Option<f64>,
+        resolve_text_property: &impl Fn(&str) -> Option<String>,
         output: &mut Vec<SceneSnapshotLayer>,
     ) {
         if !self.visible {
@@ -592,6 +627,7 @@ impl SceneNode {
                     timelines,
                     property_bindings,
                     resolve_property,
+                    resolve_text_property,
                     output,
                 );
             }
@@ -600,6 +636,8 @@ impl SceneNode {
 
         if self.kind != SceneNodeKind::Group {
             let texture_region = scene_texture_region_from_properties(&self.properties, time_ms);
+            let text = scene_text_from_properties(&self.properties, resolve_text_property)
+                .or_else(|| self.text.clone());
             output.push(SceneSnapshotLayer {
                 id: self.id.clone(),
                 kind: self.kind,
@@ -617,7 +655,7 @@ impl SceneNode {
                 width,
                 height,
                 parallax_depth: self.parallax_depth,
-                text: self.text.clone(),
+                text,
                 font_size: self.font_size,
                 font_family: self.font_family.clone(),
                 font_weight: self.font_weight.clone(),
@@ -639,6 +677,7 @@ impl SceneNode {
                 timelines,
                 property_bindings,
                 resolve_property,
+                resolve_text_property,
                 output,
             );
         }
@@ -1638,6 +1677,18 @@ fn scene_texture_region_from_properties(
     .validate()
 }
 
+fn scene_text_from_properties(
+    properties: &BTreeMap<String, Value>,
+    resolve_text_property: &impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let property = properties
+        .get("text_binding")
+        .and_then(Value::as_object)
+        .and_then(|binding| binding.get("property"))
+        .and_then(Value::as_str)?;
+    resolve_scene_text_property(resolve_text_property, property)
+}
+
 fn scene_property_u32(object: &serde_json::Map<String, Value>, key: &str) -> Option<u32> {
     match object.get(key)? {
         Value::Number(value) => value.as_u64().and_then(|value| u32::try_from(value).ok()),
@@ -1775,6 +1826,18 @@ fn resolve_scene_property(
         .iter()
         .filter_map(|name| resolve_property(name))
         .find(|value| value.is_finite())
+}
+
+fn resolve_scene_text_property(
+    resolve_text_property: &impl Fn(&str) -> Option<String>,
+    property: &str,
+) -> Option<String> {
+    let property = property.trim();
+    if property.is_empty() {
+        None
+    } else {
+        resolve_text_property(property).filter(|text| !text.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1936,6 +1999,36 @@ mod tests {
         assert_eq!(snapshot.layers[0].width, Some(320.0));
         assert_eq!(snapshot.layers[0].height, Some(180.0));
         assert_eq!(snapshot.layers[1].id, "node-panel");
+    }
+
+    #[test]
+    fn text_binding_resolver_overrides_static_snapshot_text() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "nodes": [
+                {
+                    "id": "node-clock",
+                    "type": "text",
+                    "text": "12:34",
+                    "properties": {
+                        "text_binding": {
+                            "property": "scene.clock.local.strftime:%H:%M"
+                        }
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let static_snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+        assert_eq!(static_snapshot.layers[0].text.as_deref(), Some("12:34"));
+
+        let dynamic_snapshot = document.snapshot_at_with_resolvers(
+            0,
+            |_| None,
+            |property| (property == "scene.clock.local.strftime:%H:%M").then(|| "23:45".to_owned()),
+        );
+        assert_eq!(dynamic_snapshot.layers[0].text.as_deref(), Some("23:45"));
     }
 
     #[test]

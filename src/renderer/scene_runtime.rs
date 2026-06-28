@@ -4,7 +4,7 @@ mod input;
 pub(super) use self::input::scene_audio_response_property_value;
 pub(super) use self::input::{
     scene_input_properties_from_sources, scene_property_value, scene_render_property_value,
-    scene_runtime_property_value_with_inputs,
+    scene_runtime_property_value_with_inputs, scene_runtime_text_property_value_with_inputs,
 };
 
 use crate::core::scene::SceneSnapshotLayer;
@@ -66,16 +66,20 @@ impl SceneWallpaperRuntimeSampler {
         &self,
         time_ms: u64,
     ) -> Result<SceneWallpaperRuntimeFrame, RendererPlanError> {
-        let snapshot = self
-            .document
-            .snapshot_at_with_property_resolver(time_ms, |property| {
+        let snapshot = self.document.snapshot_at_with_resolvers(
+            time_ms,
+            |property| {
                 scene_runtime_property_value_with_inputs(
                     &self.document,
                     time_ms,
                     property,
                     &self.input_properties,
                 )
-            });
+            },
+            |property| {
+                scene_runtime_text_property_value_with_inputs(property, &self.input_properties)
+            },
+        );
         let layers =
             scene_render_layers_from_snapshot(&self.package_root, &self.document, snapshot.layers)?;
         Ok(SceneWallpaperRuntimeFrame {
@@ -90,7 +94,7 @@ impl SceneWallpaperRuntimeSampler {
         &mut self,
         time_ms: u64,
     ) -> Result<SceneWallpaperRuntimeFrame, RendererPlanError> {
-        self.document.snapshot_layers_at_with_property_resolver(
+        self.document.snapshot_layers_at_with_resolvers(
             time_ms,
             |property| {
                 scene_runtime_property_value_with_inputs(
@@ -99,6 +103,9 @@ impl SceneWallpaperRuntimeSampler {
                     property,
                     &self.input_properties,
                 )
+            },
+            |property| {
+                scene_runtime_text_property_value_with_inputs(property, &self.input_properties)
             },
             &mut self.snapshot_layers_scratch,
         );

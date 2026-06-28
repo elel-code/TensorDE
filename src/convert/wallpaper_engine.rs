@@ -2010,6 +2010,13 @@ fn scene_node_from_object(
     if let Some(text) = scene_text_from_object(object) {
         node.insert("text".to_owned(), Value::String(text));
     }
+    if let Some(text_binding) = scene_text_binding_from_object(object) {
+        scene_merge_node_properties(&mut node, json!({ "text_binding": text_binding }));
+        push_unique(
+            &mut context.converted_features,
+            "scene-we-deterministic-clock-text",
+        );
+    }
     if let Some(font_size) = scene_font_size_from_object(object) {
         node.insert("font_size".to_owned(), json!(font_size.max(1.0)));
     }
@@ -4009,6 +4016,116 @@ fn scene_text_from_object(object: &Map<String, Value>) -> Option<String> {
     value_field(object, &["text", "caption", "value"])
 }
 
+fn scene_text_binding_from_object(object: &Map<String, Value>) -> Option<Value> {
+    let text = object.get("text")?.as_object()?;
+    let script = text.get("script").and_then(Value::as_str)?;
+    let script_properties = text.get("scriptproperties").and_then(Value::as_object);
+    if scene_script_is_clock_time_text(script) {
+        let use_24h = script_properties
+            .and_then(|properties| scene_script_property_value(properties, "use24hFormat"))
+            .and_then(value_to_bool)
+            .unwrap_or(true);
+        let show_seconds = script_properties
+            .and_then(|properties| scene_script_property_value(properties, "showSeconds"))
+            .and_then(value_to_bool)
+            .unwrap_or(false);
+        let delimiter = script_properties
+            .and_then(|properties| scene_script_property_value(properties, "delimiter"))
+            .and_then(value_to_string)
+            .unwrap_or_else(|| ":".to_owned());
+        if delimiter == ":" {
+            let property = match (use_24h, show_seconds) {
+                (true, false) => "scene.clock.local.time.hm24",
+                (true, true) => "scene.clock.local.time.hms24",
+                (false, false) => "scene.clock.local.time.hm12",
+                (false, true) => "scene.clock.local.time.hms12",
+            };
+            return Some(json!({
+                "runtime": "native",
+                "kind": "clock-time",
+                "property": property
+            }));
+        }
+    }
+    if scene_script_is_vertical_date_text(script, script_properties) {
+        return Some(json!({
+            "runtime": "native",
+            "kind": "clock-date",
+            "property": "scene.clock.local.we-date.vertical-month-abbrev"
+        }));
+    }
+    if scene_script_is_vertical_weekday_text(script, script_properties) {
+        return Some(json!({
+            "runtime": "native",
+            "kind": "clock-weekday",
+            "property": "scene.clock.local.we-day.vertical-weekday-abbrev-upper"
+        }));
+    }
+    None
+}
+
+fn scene_script_property_value<'a>(
+    script_properties: &'a Map<String, Value>,
+    key: &str,
+) -> Option<&'a Value> {
+    script_properties
+        .get(key)
+        .map(|value| value.get("value").unwrap_or(value))
+}
+
+fn scene_script_property_string(
+    script_properties: Option<&Map<String, Value>>,
+    key: &str,
+) -> Option<String> {
+    script_properties
+        .and_then(|properties| scene_script_property_value(properties, key))
+        .and_then(value_to_string)
+}
+
+fn scene_script_property_bool_default(
+    script_properties: Option<&Map<String, Value>>,
+    key: &str,
+    default: bool,
+) -> bool {
+    script_properties
+        .and_then(|properties| scene_script_property_value(properties, key))
+        .and_then(value_to_bool)
+        .unwrap_or(default)
+}
+
+fn scene_script_is_clock_time_text(script: &str) -> bool {
+    script.contains("new Date()")
+        && script.contains("getHours()")
+        && script.contains("getMinutes()")
+        && script.contains("use24hFormat")
+}
+
+fn scene_script_is_vertical_date_text(
+    script: &str,
+    script_properties: Option<&Map<String, Value>>,
+) -> bool {
+    script.contains("new Date()")
+        && script.contains("getFullYear()")
+        && script.contains("getMonth()")
+        && script.contains("dtt[date.getDate()]")
+        && scene_script_property_string(script_properties, "monthFormat").as_deref() == Some("2")
+        && scene_script_property_bool_default(script_properties, "alignVertical", false)
+        && !scene_script_property_bool_default(script_properties, "showDay", true)
+        && !scene_script_property_bool_default(script_properties, "useDelimiter", true)
+}
+
+fn scene_script_is_vertical_weekday_text(
+    script: &str,
+    script_properties: Option<&Map<String, Value>>,
+) -> bool {
+    script.contains("new Date()")
+        && script.contains("day[date.getDay()]")
+        && scene_script_property_string(script_properties, "dayFormat").as_deref() == Some("1")
+        && scene_script_property_bool_default(script_properties, "alignVertical", false)
+        && scene_script_property_bool_default(script_properties, "showDay", false)
+        && !scene_script_property_bool_default(script_properties, "useDelimiter", true)
+}
+
 fn scene_font_size_from_object(object: &Map<String, Value>) -> Option<f64> {
     number_value_field(
         object,
@@ -4269,6 +4386,16 @@ fn scene_full_scene_status(
         push_unique(
             &mut status.completed_boundaries,
             "scene-controller-fade-ramp-runtime",
+        );
+    }
+    if report
+        .converted_features
+        .iter()
+        .any(|feature| feature == "scene-we-deterministic-clock-text")
+    {
+        push_unique(
+            &mut status.completed_boundaries,
+            "wallpaper-engine-deterministic-clock-text-lowering",
         );
     }
     status
@@ -9801,6 +9928,133 @@ void main() {}
         assert_eq!(visible.layers[0].kind, crate::core::SceneNodeKind::Text);
         assert_eq!(visible.layers[0].text.as_deref(), Some("Hello Scene"));
         assert_eq!(visible.layers[0].opacity, 1.0);
+    }
+
+    #[test]
+    fn lowers_wallpaper_engine_clock_text_scripts_to_native_text_bindings() {
+        let source = TestDir::new("we-scene-clock-text-source");
+        let output = TestDir::new("we-scene-clock-text-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                {
+                  "id": 86,
+                  "name": "Clock",
+                  "type": "text",
+                  "text": {
+                    "script": "export function update(value) { let time = new Date(); var hours = time.getHours(); if (!scriptProperties.use24hFormat) { hours %= 12; } let minutes = time.getMinutes(); return hours + scriptProperties.delimiter + minutes; }",
+                    "scriptproperties": {
+                      "delimiter": ":",
+                      "showSeconds": false,
+                      "use24hFormat": true
+                    },
+                    "value": "12:34"
+                  }
+                },
+                {
+                  "id": 113,
+                  "name": "Date",
+                  "type": "text",
+                  "text": {
+                    "script": "export function update(value) { let date = new Date(); return dtt[date.getDate()] + delimiterValue + months[date.getMonth()] + delimiterValue + date.getFullYear(); }",
+                    "scriptproperties": {
+                      "alignVertical": true,
+                      "monthFormat": "2",
+                      "showDay": false,
+                      "useDelimiter": false
+                    },
+                    "value": "1\n5\n\nN\nO\nV\n\n2\n0\n2\n3"
+                  }
+                },
+                {
+                  "id": 105,
+                  "name": "D a y",
+                  "type": "text",
+                  "text": {
+                    "script": "export function update(value) { let date = new Date(); return day[date.getDay()]; }",
+                    "scriptproperties": {
+                      "alignVertical": true,
+                      "dayFormat": "1",
+                      "showDay": true,
+                      "useDelimiter": false
+                    },
+                    "value": "S\nU\nN"
+                  }
+                }
+              ]
+            }"#,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Clock Text Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let nodes = scene["nodes"].as_array().unwrap();
+        let clock = nodes.iter().find(|node| node["name"] == "Clock").unwrap();
+        let date = nodes.iter().find(|node| node["name"] == "Date").unwrap();
+        let day = nodes.iter().find(|node| node["name"] == "D a y").unwrap();
+        assert_eq!(
+            clock["properties"]["text_binding"]["property"],
+            "scene.clock.local.time.hm24"
+        );
+        assert_eq!(
+            date["properties"]["text_binding"]["property"],
+            "scene.clock.local.we-date.vertical-month-abbrev"
+        );
+        assert_eq!(
+            day["properties"]["text_binding"]["property"],
+            "scene.clock.local.we-day.vertical-weekday-abbrev-upper"
+        );
+        assert!(
+            scene["native_lowering"]["completed_boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("wallpaper-engine-deterministic-clock-text-lowering"))
+        );
+
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-deterministic-clock-text".to_owned())
+        );
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_resolvers(
+            0,
+            |_| None,
+            |property| match property {
+                "scene.clock.local.time.hm24" => Some("23:45".to_owned()),
+                "scene.clock.local.we-date.vertical-month-abbrev" => {
+                    Some("2\n8\n\nJ\nU\nN\n\n2\n0\n2\n6".to_owned())
+                }
+                "scene.clock.local.we-day.vertical-weekday-abbrev-upper" => {
+                    Some("S\nU\nN".to_owned())
+                }
+                _ => None,
+            },
+        );
+        assert_eq!(snapshot.layers[0].text.as_deref(), Some("23:45"));
+        assert_eq!(
+            snapshot.layers[1].text.as_deref(),
+            Some("2\n8\n\nJ\nU\nN\n\n2\n0\n2\n6")
+        );
+        assert_eq!(snapshot.layers[2].text.as_deref(), Some("S\nU\nN"));
     }
 
     #[test]

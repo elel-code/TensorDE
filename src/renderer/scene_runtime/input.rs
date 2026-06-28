@@ -1,5 +1,6 @@
 use crate::core::manifest::PropertySpec;
 use crate::core::{SceneDocument, SceneNode, SceneSystemStatus};
+use jiff::{Timestamp, Zoned, tz::TimeZone};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -118,6 +119,49 @@ pub(in crate::renderer) fn scene_runtime_property_value_with_inputs(
 ) -> Option<f64> {
     scene_runtime_input_property_value(input_properties, property)
         .or_else(|| scene_runtime_property_value(document, time_ms, property))
+}
+
+pub(in crate::renderer) fn scene_runtime_text_property_value_with_inputs(
+    property: &str,
+    input_properties: &BTreeMap<String, Value>,
+) -> Option<String> {
+    let property = property.trim();
+    let zoned = scene_runtime_clock_zoned(input_properties)?;
+    match property {
+        "scene.clock.local.time.hm24" => Some(zoned.strftime("%H:%M").to_string()),
+        "scene.clock.local.time.hms24" => Some(zoned.strftime("%H:%M:%S").to_string()),
+        "scene.clock.local.time.hm12" => Some(zoned.strftime("%I:%M").to_string()),
+        "scene.clock.local.time.hms12" => Some(zoned.strftime("%I:%M:%S").to_string()),
+        "scene.clock.local.we-date.vertical-month-abbrev" => {
+            let day = scene_runtime_vertical_text(&zoned.strftime("%d").to_string());
+            let month =
+                scene_runtime_vertical_text(&zoned.strftime("%b").to_string().to_uppercase());
+            let year = scene_runtime_vertical_text(&zoned.strftime("%Y").to_string());
+            Some(format!("{day}\n\n{month}\n\n{year}"))
+        }
+        "scene.clock.local.we-day.vertical-weekday-abbrev-upper" => Some(
+            scene_runtime_vertical_text(&zoned.strftime("%a").to_string().to_uppercase()),
+        ),
+        _ => None,
+    }
+}
+
+fn scene_runtime_clock_zoned(input_properties: &BTreeMap<String, Value>) -> Option<Zoned> {
+    let timestamp = input_properties
+        .get("scene.clock.local.unix_ms")
+        .or_else(|| input_properties.get("scene.clock.unix_ms"))
+        .and_then(scene_runtime_number)
+        .and_then(|value| Timestamp::from_millisecond(value.round() as i64).ok())
+        .unwrap_or_else(Timestamp::now);
+    Some(timestamp.to_zoned(TimeZone::system()))
+}
+
+fn scene_runtime_vertical_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| character.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn scene_runtime_input_property_value(
@@ -281,4 +325,42 @@ fn scene_manifest_property_default_number(property: &PropertySpec) -> Option<f64
         | PropertySpec::File { .. } => return None,
     };
     number.is_finite().then_some(number)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scene_clock_text_properties_format_fixed_local_time() {
+        let mut inputs = BTreeMap::new();
+        inputs.insert(
+            "scene.clock.local.unix_ms".to_owned(),
+            Value::from(1_720_646_365_000_i64),
+        );
+
+        let hm =
+            scene_runtime_text_property_value_with_inputs("scene.clock.local.time.hm24", &inputs)
+                .unwrap();
+        assert_eq!(hm.len(), 5);
+        assert_eq!(hm.as_bytes()[2], b':');
+
+        let date = scene_runtime_text_property_value_with_inputs(
+            "scene.clock.local.we-date.vertical-month-abbrev",
+            &inputs,
+        )
+        .unwrap();
+        assert!(date.contains("\n\n"));
+        assert!(date.lines().any(|line| line.len() == 1));
+
+        let day = scene_runtime_text_property_value_with_inputs(
+            "scene.clock.local.we-day.vertical-weekday-abbrev-upper",
+            &inputs,
+        )
+        .unwrap();
+        assert!(
+            day.chars()
+                .all(|character| { character == '\n' || character.is_ascii_uppercase() })
+        );
+    }
 }
