@@ -499,6 +499,7 @@ pub(super) fn native_vulkan_scene_solid_geometry_from_render_layer(
         SceneNodeKind::Color => return Err("color-layer-needs-clear-or-rectangle-shape"),
         SceneNodeKind::Image => return Err("image-layer-needs-sampled-image-runtime"),
         SceneNodeKind::Video => return Err("video-layer-needs-vulkan-video-scene-bridge"),
+        SceneNodeKind::Audio => return Err("audio-layer-has-no-visual-draw-op"),
         SceneNodeKind::Group => return Err("group-layer-needs-flattened-children"),
         SceneNodeKind::Shader => return Err("shader-layer-needs-scene-shader-runtime"),
         SceneNodeKind::ParticleEmitter => {

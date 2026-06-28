@@ -12,7 +12,7 @@ use self::scene_display::{
 };
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, PropertySpec, Variant};
-use crate::core::scene::SceneSnapshotLayer;
+use crate::core::scene::{SceneEffect, SceneSnapshotLayer};
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
     SceneAudioCue, SceneDocument, SceneNodeKind, ScenePathFillRule, SceneResource,
@@ -1868,9 +1868,24 @@ fn scene_effect_graph_node_count(nodes: &[crate::core::SceneNode]) -> usize {
     nodes
         .iter()
         .map(|node| {
-            usize::from(!node.effects.is_empty()) + scene_effect_graph_node_count(&node.children)
+            let node_count = usize::from(
+                node.effects
+                    .iter()
+                    .any(scene_effect_requires_shader_graph_runtime),
+            );
+            node_count + scene_effect_graph_node_count(&node.children)
         })
         .sum()
+}
+
+fn scene_effect_requires_shader_graph_runtime(effect: &SceneEffect) -> bool {
+    if effect.resource.is_some() {
+        return true;
+    }
+    matches!(
+        effect.runtime.as_deref(),
+        Some("wallpaper-engine-effect") | Some("we-effect-runtime")
+    )
 }
 
 fn scene_audio_response_binding_count(
@@ -2415,6 +2430,7 @@ fn scene_snapshot_svg(layers: &[SceneRenderLayer], size: RenderTargetSize) -> St
                 ));
             }
             SceneNodeKind::Video
+            | SceneNodeKind::Audio
             | SceneNodeKind::Group
             | SceneNodeKind::Shader
             | SceneNodeKind::ParticleEmitter

@@ -154,6 +154,9 @@ fn native_vulkan_scene_draw_layers(
         if layer.opacity <= 0.0 {
             continue;
         }
+        if layer.kind == SceneNodeKind::Audio {
+            continue;
+        }
         match native_vulkan_scene_draw_op_kind(layer) {
             Ok(kind) => draw_ops.push(NativeVulkanSceneDrawOp {
                 layer_index: index,
@@ -271,6 +274,7 @@ fn native_vulkan_scene_draw_op_kind(
                 Err("audio-response-layer-missing-native-visual-geometry")
             }
         }
+        SceneNodeKind::Audio => Err("audio-layer-has-no-visual-draw-op"),
         SceneNodeKind::Script => Err("script-layer-needs-scene-script-runtime"),
         SceneNodeKind::Unknown => Err("unknown-layer-kind"),
     }

@@ -947,6 +947,10 @@ pub struct SceneSourceModel {
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default)]
+    pub utility: Option<String>,
+    #[serde(default)]
+    pub builtin: Option<bool>,
+    #[serde(default)]
     pub model_resource: Option<String>,
     #[serde(default)]
     pub material: Option<String>,
@@ -968,6 +972,7 @@ impl SceneSourceModel {
     fn validate(&self, node_id: &str) -> Result<(), SceneError> {
         for (field, value) in [
             ("source", self.source.as_deref()),
+            ("utility", self.utility.as_deref()),
             ("model_resource", self.model_resource.as_deref()),
             ("material", self.material.as_deref()),
             ("material_resource", self.material_resource.as_deref()),
@@ -1003,6 +1008,10 @@ pub struct SceneEffect {
     #[serde(default)]
     pub resource: Option<String>,
     #[serde(default)]
+    pub runtime: Option<String>,
+    #[serde(default)]
+    pub properties: BTreeMap<String, Value>,
+    #[serde(default)]
     pub id: Option<i64>,
     #[serde(default)]
     pub name: Option<String>,
@@ -1017,6 +1026,9 @@ impl SceneEffect {
         validate_required_text(&format!("scene node {node_id:?} effect file"), &self.file)?;
         if let Some(resource) = &self.resource {
             validate_required_text(&format!("scene node {node_id:?} effect resource"), resource)?;
+        }
+        if let Some(runtime) = &self.runtime {
+            validate_required_text(&format!("scene node {node_id:?} effect runtime"), runtime)?;
         }
         for pass in &self.passes {
             pass.validate(node_id, &self.file)?;
@@ -1097,6 +1109,7 @@ pub enum SceneNodeKind {
     Shader,
     ParticleEmitter,
     AudioResponse,
+    Audio,
     Script,
     Unknown,
 }

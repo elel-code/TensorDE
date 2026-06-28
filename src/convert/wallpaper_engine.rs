@@ -5,11 +5,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt;
 use std::fs;
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+mod effect;
+mod gtex;
+mod tex;
+
+use self::tex::{SceneWeModelFrameSize, SceneWeTexImage, SceneWeTexPayload};
 
 const PROJECT_FILE: &str = "project.json";
 const SCENE_PACKAGE_FILE: &str = "scene.pkg";
@@ -18,13 +24,6 @@ const FFPROBE_BINARY: &str = "ffprobe";
 const VIDEO_POSTER_WIDTH: u32 = 1920;
 const VIDEO_THUMBNAIL_WIDTH: u32 = 512;
 const FEATURE_SCAN_MAX_BYTES: u64 = 2 * 1024 * 1024;
-const GILDER_SCENE_TEXTURE_MAGIC: &[u8; 8] = b"GDTEX002";
-const GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK: u32 = 7;
-const GILDER_SCENE_TEXTURE_MIP_COUNT: u32 = 1;
-const BC_BLOCK_TEXELS: u32 = 4;
-const BC7_BLOCK_BYTES: usize = 16;
-const BC7_MODE6_INDEX_WEIGHTS: [u16; 16] =
-    [0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64];
 const STATIC_IMAGE_VARIANTS: &[StaticImageVariantSpec] = &[
     StaticImageVariantSpec {
         id: "landscape-1080p",
@@ -95,14 +94,14 @@ pub fn convert_png_to_native_gtex(
     source: &Path,
     output: &Path,
 ) -> Result<NativeGtexConversionSummary, String> {
-    let mut image = read_png_as_rgba(source)?;
-    flip_rgba_rows_vertically(&mut image.rgba, image.width, image.height)?;
+    let mut image = gtex::read_png_as_rgba(source)?;
+    gtex::flip_rgba_rows_vertically(&mut image.rgba, image.width, image.height)?;
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)
             .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
     }
-    let payload_bytes = bc7_payload_len(image.width, image.height)?;
-    scene_write_bc7_gtex(output, &image)?;
+    let payload_bytes = gtex::bc7_payload_len(image.width, image.height)?;
+    gtex::write_bc7_gtex(output, &image)?;
     Ok(NativeGtexConversionSummary {
         source: source.to_path_buf(),
         output: output.to_path_buf(),
@@ -528,9 +527,10 @@ fn convert_scene(
     }
     record_scene_runtime_gaps(report);
     record_full_scene_runtime_boundary(report, Some(&original_scene.package_path));
+    let explicit_systems = scene_explicit_runtime_system_summary(report);
     report.warnings.push(format!(
-        "Converted Scene project to a first-class Gilder scene document; original scene metadata was preserved at {}. Native particle emitter parameters are lowered into the gscene particle runtime when present; SceneScript, shaders, audio response, and complex effect graphs remain explicit scene systems until their native runtimes are implemented.",
-        original_scene.package_path
+        "Converted Scene project to a first-class Gilder scene document; original scene metadata was preserved at {}. Native particle emitter parameters are lowered into the gscene particle runtime when present; {}",
+        original_scene.package_path, explicit_systems
     ));
 
     Ok(base_manifest(
@@ -543,6 +543,43 @@ fn convert_scene(
             "source": scene_source
         }),
     ))
+}
+
+fn scene_explicit_runtime_system_summary(report: &ConversionReport) -> String {
+    let mut systems = Vec::new();
+    if report
+        .detected_features
+        .iter()
+        .any(|feature| feature == "scenescript")
+    {
+        systems.push("SceneScript");
+    }
+    if report
+        .detected_features
+        .iter()
+        .any(|feature| feature == "shader")
+        || report
+            .unsupported_features
+            .iter()
+            .any(|feature| feature == "custom-shader")
+    {
+        systems.push("shader/effect graphs");
+    }
+    if report
+        .detected_features
+        .iter()
+        .any(|feature| feature == "audio-response")
+    {
+        systems.push("audio-response visuals");
+    }
+    if systems.is_empty() {
+        "No legacy runtime fallback was emitted.".to_owned()
+    } else {
+        format!(
+            "{} remain explicit native scene systems until their native runtimes are implemented.",
+            systems.join(", ")
+        )
+    }
 }
 
 fn convert_shader(
@@ -1089,7 +1126,7 @@ fn write_scene_document_to(
         "nodes": nodes,
         "timelines": context.timelines,
         "property_bindings": context.property_bindings,
-        "systems": scene_system_statuses(report),
+        "systems": scene_system_statuses(report, &context),
         "native_lowering": native_lowering,
         "unsupported_features": scene_unsupported_features(report, context.unsupported_features)
     });
@@ -1314,27 +1351,17 @@ struct SceneDocumentBuildContext {
 #[derive(Debug, Clone)]
 struct SceneSourceModelConversion {
     value: Value,
+    render_kind: Option<&'static str>,
     render_resource: Option<String>,
     render_properties: Option<Value>,
+    render_size: Option<SceneWeModelFrameSize>,
     original_path: String,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SceneWeModelFrameSize {
-    width: u32,
-    height: u32,
-}
-
-#[derive(Debug, Clone)]
-struct SceneWeTexImage {
-    width: u32,
-    height: u32,
-    rgba: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
 struct SceneDecodedTexResource {
     resource_id: String,
+    render_kind: &'static str,
     spritesheet: Option<Value>,
 }
 
@@ -2795,6 +2822,12 @@ fn scene_node_from_object(
         node.entry("height".to_owned())
             .or_insert_with(|| json!(height));
     }
+    if let Some(size) = source_model.as_ref().and_then(|model| model.render_size) {
+        node.entry("width".to_owned())
+            .or_insert_with(|| json!(f64::from(size.width)));
+        node.entry("height".to_owned())
+            .or_insert_with(|| json!(f64::from(size.height)));
+    }
     if kind == "rectangle"
         && let Some(radius) = scene_corner_radius_from_object(object)
     {
@@ -2846,8 +2879,9 @@ fn scene_node_from_object(
             node.insert("resource".to_owned(), Value::String(resource_id));
         }
     }
-    let effects =
-        scene_effects_from_object(project, output_dir, object, report, context, resources);
+    let effects = effect::scene_effects_from_object(
+        project, output_dir, object, &node_id, report, context, resources,
+    );
     if !effects.is_empty() {
         node.insert("effects".to_owned(), Value::Array(effects));
     }
@@ -3098,8 +3132,12 @@ fn scene_node_kind_from_object(
     if source_path.is_some_and(is_video_path) || type_hint.contains("video") {
         return "video";
     }
-    if source_model.is_some() {
-        if scene_model_solid_layer(source_model) && scene_color_from_object(object).is_some() {
+    if let Some(source_model) = source_model {
+        if let Some(render_kind) = source_model.render_kind {
+            return render_kind;
+        }
+        if scene_model_solid_layer(Some(source_model)) && scene_color_from_object(object).is_some()
+        {
             return "rectangle";
         }
         return "image";
@@ -3121,6 +3159,9 @@ fn scene_node_kind_from_object(
         return "shader";
     }
     if object.get("sound").is_some() || type_hint.contains("audio") || type_hint.contains("sound") {
+        if scene_object_is_audio_cue_only(object, source_path, source_model) {
+            return "audio";
+        }
         return "audio-response";
     }
     if type_hint.contains("script") {
@@ -3148,6 +3189,30 @@ fn scene_node_kind_from_object(
         return "group";
     }
     "unknown"
+}
+
+fn scene_object_is_audio_cue_only(
+    object: &Map<String, Value>,
+    source_path: Option<&str>,
+    source_model: Option<&SceneSourceModelConversion>,
+) -> bool {
+    !scene_sound_sources_from_object(object).is_empty()
+        && source_path.is_none()
+        && source_model.is_none()
+        && scene_color_from_object(object).is_none()
+        && scene_stroke_color_from_object(object).is_none()
+        && scene_text_from_object(object).is_none()
+        && scene_vector_path_from_object(object).is_none()
+        && number_value_field(object, &["width", "w"]).is_none()
+        && number_value_field(object, &["height", "h"]).is_none()
+        && scene_size_component_from_object(object, 0).is_none()
+        && scene_size_component_from_object(object, 1).is_none()
+        && !object
+            .get("effects")
+            .and_then(Value::as_array)
+            .is_some_and(|effects| !effects.is_empty())
+        && object.get("particle").is_none()
+        && !scene_child_nodes_from_keys(object)
 }
 
 fn scene_shape_kind_from_object(object: &Map<String, Value>) -> Option<&'static str> {
@@ -3184,6 +3249,13 @@ fn scene_source_model_from_object(
     resources: &mut Vec<Value>,
 ) -> Option<SceneSourceModelConversion> {
     let model_path = scene_model_path_from_object(object)?;
+    if let Some(model) = scene_builtin_util_model(&model_path) {
+        push_unique(
+            &mut context.converted_features,
+            "wallpaper-engine-util-model-lowering",
+        );
+        return Some(model);
+    }
     let mut model = Map::new();
     model.insert("source".to_owned(), Value::String(model_path.clone()));
     if let Some(resource) = scene_copy_resource_as(
@@ -3210,8 +3282,10 @@ fn scene_source_model_from_object(
         );
         return Some(SceneSourceModelConversion {
             value: Value::Object(model),
+            render_kind: None,
             render_resource: None,
             render_properties: None,
+            render_size: None,
             original_path: model_path,
         });
     };
@@ -3239,12 +3313,13 @@ fn scene_source_model_from_object(
                 report,
                 context,
             ) {
-                let (textures, texture_resources, render_resource, render_properties) =
+                let frame_size = scene_model_frame_size(model_object);
+                let (textures, texture_resources, render_resource, render_properties, render_kind) =
                     scene_material_textures(
                         project,
                         output_dir,
                         &material_json,
-                        scene_model_frame_size(model_object),
+                        frame_size,
                         report,
                         context,
                         resources,
@@ -3276,8 +3351,10 @@ fn scene_source_model_from_object(
                 insert_optional_bool(model_object, "passthrough", "passthrough", &mut model);
                 return Some(SceneSourceModelConversion {
                     value: Value::Object(model),
+                    render_kind,
                     render_resource,
                     render_properties,
+                    render_size: frame_size,
                     original_path: model_path,
                 });
             }
@@ -3297,8 +3374,10 @@ fn scene_source_model_from_object(
     );
     Some(SceneSourceModelConversion {
         value: Value::Object(model),
+        render_kind: None,
         render_resource: None,
         render_properties: None,
+        render_size: model_json.as_object().and_then(scene_model_frame_size),
         original_path: model_path,
     })
 }
@@ -3308,6 +3387,28 @@ fn scene_model_solid_layer(source_model: Option<&SceneSourceModelConversion>) ->
         .and_then(|model| model.value.get("solid_layer"))
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+fn scene_builtin_util_model(model_path: &str) -> Option<SceneSourceModelConversion> {
+    let normalized = model_path.replace('\\', "/").to_ascii_lowercase();
+    let utility = match normalized.as_str() {
+        "models/util/fullscreenlayer.json" => "fullscreenlayer",
+        "models/util/composelayer.json" => "composelayer",
+        _ => return None,
+    };
+    let mut model = Map::new();
+    model.insert("source".to_owned(), Value::String(model_path.to_owned()));
+    model.insert("builtin".to_owned(), Value::Bool(true));
+    model.insert("utility".to_owned(), Value::String(utility.to_owned()));
+    model.insert("passthrough".to_owned(), Value::Bool(true));
+    Some(SceneSourceModelConversion {
+        value: Value::Object(model),
+        render_kind: Some("script"),
+        render_resource: None,
+        render_properties: None,
+        render_size: None,
+        original_path: model_path.to_owned(),
+    })
 }
 
 fn scene_model_frame_size(model_object: &Map<String, Value>) -> Option<SceneWeModelFrameSize> {
@@ -3411,200 +3512,6 @@ fn scene_source_transform_from_object(object: &Map<String, Value>) -> Option<Val
     }
 }
 
-fn scene_effects_from_object(
-    project: &WallpaperEngineProject,
-    output_dir: &Path,
-    object: &Map<String, Value>,
-    report: &mut ConversionReport,
-    context: &mut SceneDocumentBuildContext,
-    resources: &mut Vec<Value>,
-) -> Vec<Value> {
-    let Some(effects) = object.get("effects").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    effects
-        .iter()
-        .filter_map(Value::as_object)
-        .filter_map(|effect| {
-            let file = string_field(effect, &["file"])?;
-            let mut output = Map::new();
-            output.insert("file".to_owned(), Value::String(file.clone()));
-            if let Some(resource) = scene_copy_resource_as(
-                project,
-                output_dir,
-                &file,
-                "effect",
-                Some("we-effect"),
-                report,
-                context,
-                resources,
-            ) {
-                output.insert("resource".to_owned(), Value::String(resource));
-            }
-            if let Some(id) = effect.get("id").and_then(value_to_i64) {
-                output.insert("id".to_owned(), json!(id));
-            }
-            if let Some(name) = string_field(effect, &["name"]) {
-                output.insert("name".to_owned(), Value::String(name));
-            }
-            if let Some(visible) = effect.get("visible") {
-                output.insert("visible".to_owned(), visible.clone());
-            }
-            let passes = scene_effect_passes_from_object(effect);
-            if !passes.is_empty() {
-                output.insert("passes".to_owned(), Value::Array(passes));
-            }
-            if scene_effect_requires_runtime(project, &file, effect) {
-                scene_push_unsupported(
-                    context,
-                    "we-effect-runtime",
-                    "Wallpaper Engine effect graph is preserved in gscene but not executed by the native scene runtime yet.",
-                    Some(&file),
-                );
-            } else {
-                push_unique(
-                    &mut context.converted_features,
-                    "scene-we-noop-effect-preserved",
-                );
-            }
-            Some(Value::Object(output))
-        })
-        .collect()
-}
-
-fn scene_effect_requires_runtime(
-    project: &WallpaperEngineProject,
-    file: &str,
-    effect: &Map<String, Value>,
-) -> bool {
-    if effect
-        .get("visible")
-        .and_then(value_to_bool_unwrapped)
-        .is_some_and(|visible| !visible)
-    {
-        return false;
-    }
-    if scene_effect_passes_require_runtime(effect.get("passes").and_then(Value::as_array)) {
-        return true;
-    }
-    scene_effect_file_requires_runtime(project, file).unwrap_or(true)
-}
-
-fn scene_effect_file_requires_runtime(
-    project: &WallpaperEngineProject,
-    file: &str,
-) -> Option<bool> {
-    let source = project.root.join(file);
-    let text = fs::read_to_string(source).ok()?;
-    let value = serde_json::from_str::<Value>(&text).ok()?;
-    let object = value.as_object()?;
-    if object
-        .get("visible")
-        .and_then(value_to_bool_unwrapped)
-        .is_some_and(|visible| !visible)
-    {
-        return Some(false);
-    }
-    if object.contains_key("passes") {
-        return Some(scene_effect_passes_require_runtime(
-            object.get("passes").and_then(Value::as_array),
-        ));
-    }
-    Some(scene_effect_object_has_runtime_fields(object))
-}
-
-fn scene_effect_passes_require_runtime(passes: Option<&Vec<Value>>) -> bool {
-    passes
-        .into_iter()
-        .flat_map(|passes| passes.iter())
-        .filter_map(Value::as_object)
-        .any(scene_effect_pass_requires_runtime)
-}
-
-fn scene_effect_pass_requires_runtime(pass: &Map<String, Value>) -> bool {
-    if pass
-        .get("visible")
-        .or_else(|| pass.get("enabled"))
-        .and_then(value_to_bool_unwrapped)
-        .is_some_and(|enabled| !enabled)
-    {
-        return false;
-    }
-    pass.iter().any(|(key, value)| {
-        !scene_effect_metadata_key(key) && scene_effect_value_requires_runtime(value)
-    })
-}
-
-fn scene_effect_object_has_runtime_fields(object: &Map<String, Value>) -> bool {
-    object.iter().any(|(key, value)| {
-        !scene_effect_metadata_key(key) && scene_effect_value_requires_runtime(value)
-    })
-}
-
-fn scene_effect_metadata_key(key: &str) -> bool {
-    matches!(
-        key,
-        "id" | "name" | "visible" | "enabled" | "description" | "comment" | "passes"
-    )
-}
-
-fn scene_effect_value_requires_runtime(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(_) => true,
-        Value::String(value) => !value.is_empty(),
-        Value::Array(values) => values.iter().any(scene_effect_value_requires_runtime),
-        Value::Object(values) => !values.is_empty(),
-    }
-}
-
-fn scene_effect_passes_from_object(effect: &Map<String, Value>) -> Vec<Value> {
-    let Some(passes) = effect.get("passes").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    passes
-        .iter()
-        .filter_map(Value::as_object)
-        .map(|pass| {
-            let mut output = Map::new();
-            if let Some(id) = pass.get("id").and_then(value_to_i64) {
-                output.insert("id".to_owned(), json!(id));
-            }
-            if let Some(textures) = scene_effect_pass_textures(pass) {
-                output.insert("textures".to_owned(), textures);
-            }
-            if let Some(combos) = pass.get("combos").and_then(scene_i64_map_from_value) {
-                output.insert("combos".to_owned(), combos);
-            }
-            if let Some(values) = pass.get("constantshadervalues").and_then(Value::as_object) {
-                output.insert(
-                    "constant_shader_values".to_owned(),
-                    Value::Object(values.clone()),
-                );
-            }
-            if let Some(user_textures) = pass.get("usertextures") {
-                output.insert("user_textures".to_owned(), user_textures.clone());
-            }
-            Value::Object(output)
-        })
-        .collect()
-}
-
-fn scene_effect_pass_textures(pass: &Map<String, Value>) -> Option<Value> {
-    let textures = pass.get("textures")?.as_array()?;
-    Some(Value::Array(
-        textures
-            .iter()
-            .map(|texture| {
-                value_to_string(texture)
-                    .map(Value::String)
-                    .unwrap_or(Value::Null)
-            })
-            .collect(),
-    ))
-}
-
 fn scene_audio_cues_from_object(
     project: &WallpaperEngineProject,
     output_dir: &Path,
@@ -3661,12 +3568,19 @@ fn scene_material_textures(
     report: &mut ConversionReport,
     context: &mut SceneDocumentBuildContext,
     resources: &mut Vec<Value>,
-) -> (Vec<String>, Vec<String>, Option<String>, Option<Value>) {
+) -> (
+    Vec<String>,
+    Vec<String>,
+    Option<String>,
+    Option<Value>,
+    Option<&'static str>,
+) {
     let texture_paths = scene_material_texture_paths(material_json);
     let spritesheet_enabled = scene_material_spritesheet_enabled(material_json);
     let mut texture_resources = Vec::new();
     let mut render_resource = None;
     let mut render_properties = None;
+    let mut render_kind = None;
     for texture in &texture_paths {
         if texture.starts_with("_rt_") {
             scene_push_unsupported(
@@ -3676,27 +3590,6 @@ fn scene_material_textures(
                 Some(texture),
             );
             continue;
-        }
-        let resource_kind = if is_image_path(texture) {
-            "image"
-        } else {
-            "texture"
-        };
-        let raw_resource = scene_copy_resource_as(
-            project,
-            output_dir,
-            texture,
-            resource_kind,
-            Some("we-material-texture"),
-            report,
-            context,
-            resources,
-        );
-        if let Some(resource) = raw_resource {
-            if render_resource.is_none() && is_image_path(texture) {
-                render_resource = Some(resource.clone());
-            }
-            texture_resources.push(resource);
         }
         if texture.ends_with(".tex") {
             if let Some(decoded) = scene_copy_decoded_tex_resource_as(
@@ -3711,6 +3604,7 @@ fn scene_material_textures(
             ) {
                 if render_resource.is_none() {
                     render_resource = Some(decoded.resource_id.clone());
+                    render_kind = Some(decoded.render_kind);
                 }
                 if render_properties.is_none()
                     && let Some(spritesheet) = decoded.spritesheet
@@ -3722,10 +3616,35 @@ fn scene_material_textures(
                 scene_push_unsupported(
                     context,
                     "we-tex-decode",
-                    "Wallpaper Engine .tex texture is preserved but not decoded into a native sampled image yet.",
+                    "Wallpaper Engine .tex texture is preserved as an original source reference but not emitted as a native scene runtime resource yet.",
                     Some(texture),
                 );
             }
+            continue;
+        }
+        let resource_kind = if is_image_path(texture) {
+            "image"
+        } else if is_video_path(texture) {
+            "video"
+        } else {
+            "texture"
+        };
+        let raw_resource = scene_copy_resource_as(
+            project,
+            output_dir,
+            texture,
+            resource_kind,
+            Some("we-material-texture"),
+            report,
+            context,
+            resources,
+        );
+        if let Some(resource) = raw_resource {
+            if render_resource.is_none() && (is_image_path(texture) || is_video_path(texture)) {
+                render_resource = Some(resource.clone());
+                render_kind = Some(resource_kind);
+            }
+            texture_resources.push(resource);
         }
     }
     if render_resource.is_some() {
@@ -3739,6 +3658,7 @@ fn scene_material_textures(
         texture_resources,
         render_resource,
         render_properties,
+        render_kind,
     )
 }
 
@@ -4048,13 +3968,27 @@ fn scene_copy_decoded_tex_resource_as(
             return None;
         }
     };
-    let decoded = match scene_decode_we_tex_image(&bytes) {
+    let decoded = match tex::decode_we_tex_payload(&bytes) {
         Ok(decoded) => decoded,
         Err(err) => {
             report.warnings.push(format!(
-                "Scene .tex resource {source_path:?} could not be decoded as a native RGBA texture: {err}."
+                "Scene .tex resource {source_path:?} could not be decoded as a native scene resource: {err}."
             ));
             return None;
+        }
+    };
+    let decoded = match decoded {
+        SceneWeTexPayload::Image(decoded) => decoded,
+        video @ SceneWeTexPayload::Video(_) => {
+            return scene_copy_decoded_tex_video_resource(
+                output_dir,
+                source_path,
+                &source,
+                video,
+                report,
+                context,
+                resources,
+            );
         }
     };
     let atlas_width = decoded.width;
@@ -4122,7 +4056,7 @@ fn scene_copy_decoded_tex_resource_as(
         return None;
     }
     let dest = dest_dir.join(format!("{resource_id}.gtex"));
-    if let Err(err) = scene_write_bc7_gtex(&dest, &decoded) {
+    if let Err(err) = gtex::write_bc7_gtex(&dest, &decoded) {
         report.errors.push(format!(
             "Failed to write native BC7 scene texture {} to {}: {err}.",
             source.display(),
@@ -4145,7 +4079,65 @@ fn scene_copy_decoded_tex_resource_as(
     );
     Some(SceneDecodedTexResource {
         resource_id,
+        render_kind: "image",
         spritesheet,
+    })
+}
+
+fn scene_copy_decoded_tex_video_resource(
+    output_dir: &Path,
+    source_path: &str,
+    source: &Path,
+    decoded: SceneWeTexPayload<'_>,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) -> Option<SceneDecodedTexResource> {
+    let SceneWeTexPayload::Video(video) = decoded else {
+        return None;
+    };
+    let stem = source
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("video");
+    let resource_id = scene_next_resource_id(context, "video", &format!("{stem}-video"));
+    let dest_dir = output_dir
+        .join("assets/scene-resources")
+        .join(&context.resource_scope);
+    if let Err(err) = fs::create_dir_all(&dest_dir) {
+        report
+            .errors
+            .push(format!("Failed to create scene resource directory: {err}."));
+        return None;
+    }
+    let dest = dest_dir.join(format!("{resource_id}.{}", video.extension));
+    if let Err(err) = fs::write(&dest, video.payload) {
+        report.errors.push(format!(
+            "Failed to extract native scene video texture {} to {}: {err}.",
+            source.display(),
+            dest.display()
+        ));
+        return None;
+    }
+    let package_path = path_to_package_string(dest.strip_prefix(output_dir).unwrap_or(&dest));
+    report.generated_assets.push(package_path.clone());
+    resources.push(json!({
+        "id": resource_id,
+        "type": "video",
+        "source": package_path,
+        "original_source": source_path,
+        "role": "we-material-video-texture",
+        "width": video.width,
+        "height": video.height
+    }));
+    push_unique(
+        &mut context.converted_features,
+        "scene-we-tex-video-layer-runtime",
+    );
+    Some(SceneDecodedTexResource {
+        resource_id,
+        render_kind: "video",
+        spritesheet: None,
     })
 }
 
@@ -4188,7 +4180,7 @@ fn scene_we_tex_crop_first_frame(
         .ok()
         .and_then(|width| width.checked_mul(4))
         .ok_or_else(|| "atlas row byte count overflowed".to_owned())?;
-    let frame_len = scene_rgba_len(layout.frame_width, layout.frame_height)?;
+    let frame_len = tex::rgba_len(layout.frame_width, layout.frame_height)?;
     let mut rgba = Vec::with_capacity(frame_len);
     for row in 0..usize::try_from(layout.frame_height)
         .map_err(|_| "frame height does not fit this platform".to_owned())?
@@ -4222,417 +4214,6 @@ fn scene_we_tex_first_frame(
     scene_we_tex_crop_first_frame(image, layout).map(|image| (image, frame_count))
 }
 
-fn scene_decode_we_tex_image(bytes: &[u8]) -> Result<SceneWeTexImage, String> {
-    if !bytes.starts_with(b"TEXV0005\0TEXI0001\0") {
-        return Err("unsupported .tex header; expected TEXV0005/TEXI0001".to_owned());
-    }
-    let block_marker = find_bytes(bytes, b"TEXB0004")
-        .ok_or_else(|| "unsupported .tex payload; missing TEXB0004 block".to_owned())?;
-    let width = read_u32_le_at(bytes, block_marker + 25)
-        .ok_or_else(|| "truncated TEXB0004 block width".to_owned())?;
-    let height = read_u32_le_at(bytes, block_marker + 29)
-        .ok_or_else(|| "truncated TEXB0004 block height".to_owned())?;
-    if width == 0 || height == 0 {
-        return Err("TEXB0004 block has zero dimensions".to_owned());
-    }
-    let declared_size = read_u32_le_at(bytes, block_marker + 37)
-        .ok_or_else(|| "truncated TEXB0004 decoded size".to_owned())?;
-    let encoded_size = read_u32_le_at(bytes, block_marker + 41)
-        .ok_or_else(|| "truncated TEXB0004 encoded size".to_owned())?;
-    let expected_len = scene_rgba_len(width, height)?;
-    if usize::try_from(declared_size).ok() != Some(expected_len) {
-        return Err(format!(
-            "TEXB0004 decoded size {declared_size} does not match {width}x{height} RGBA"
-        ));
-    }
-    let payload_offset = block_marker + 45;
-    let encoded_size = usize::try_from(encoded_size)
-        .map_err(|_| "TEXB0004 encoded size does not fit this platform".to_owned())?;
-    let payload_end = payload_offset
-        .checked_add(encoded_size)
-        .ok_or_else(|| "TEXB0004 encoded payload range overflowed".to_owned())?;
-    let payload = bytes
-        .get(payload_offset..payload_end)
-        .ok_or_else(|| "truncated TEXB0004 encoded payload".to_owned())?;
-    let rgba = lz4_block_decode(payload, expected_len)?;
-    Ok(SceneWeTexImage {
-        width,
-        height,
-        rgba,
-    })
-}
-
-fn scene_write_bc7_gtex(path: &Path, image: &SceneWeTexImage) -> Result<(), String> {
-    let expected_len = scene_rgba_len(image.width, image.height)?;
-    if image.rgba.len() != expected_len {
-        return Err(format!(
-            "RGBA payload has {} bytes, expected {expected_len}",
-            image.rgba.len()
-        ));
-    }
-    let payload = scene_encode_bc7(&image.rgba, image.width, image.height)?;
-    let mut file = fs::File::create(path).map_err(|err| err.to_string())?;
-    file.write_all(GILDER_SCENE_TEXTURE_MAGIC)
-        .map_err(|err| err.to_string())?;
-    file.write_all(&image.width.to_le_bytes())
-        .map_err(|err| err.to_string())?;
-    file.write_all(&image.height.to_le_bytes())
-        .map_err(|err| err.to_string())?;
-    file.write_all(&GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK.to_le_bytes())
-        .map_err(|err| err.to_string())?;
-    file.write_all(&GILDER_SCENE_TEXTURE_MIP_COUNT.to_le_bytes())
-        .map_err(|err| err.to_string())?;
-    file.write_all(&(payload.len() as u64).to_le_bytes())
-        .map_err(|err| err.to_string())?;
-    file.write_all(&payload).map_err(|err| err.to_string())
-}
-
-fn read_png_as_rgba(path: &Path) -> Result<SceneWeTexImage, String> {
-    let file = fs::File::open(path).map_err(|err| format!("failed to open PNG: {err}"))?;
-    let mut decoder = png::Decoder::new(BufReader::new(file));
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder
-        .read_info()
-        .map_err(|err| format!("failed to read PNG metadata: {err}"))?;
-    let output_size = reader
-        .output_buffer_size()
-        .ok_or_else(|| "PNG output buffer size overflowed".to_owned())?;
-    let mut bytes = vec![0u8; output_size];
-    let info = reader
-        .next_frame(&mut bytes)
-        .map_err(|err| format!("failed to decode PNG frame: {err}"))?;
-    let frame = &bytes[..info.buffer_size()];
-    let rgba = png_frame_to_rgba(frame, info.color_type, info.width, info.height)?;
-    Ok(SceneWeTexImage {
-        width: info.width,
-        height: info.height,
-        rgba,
-    })
-}
-
-fn flip_rgba_rows_vertically(rgba: &mut [u8], width: u32, height: u32) -> Result<(), String> {
-    let row_bytes = usize::try_from(width)
-        .ok()
-        .and_then(|width| width.checked_mul(4))
-        .ok_or_else(|| "RGBA row byte count overflowed".to_owned())?;
-    let expected_len = row_bytes
-        .checked_mul(usize::try_from(height).map_err(|_| "RGBA height exceeds usize")?)
-        .ok_or_else(|| "RGBA byte count overflowed".to_owned())?;
-    if rgba.len() != expected_len {
-        return Err(format!(
-            "RGBA payload has {} bytes, expected {expected_len}",
-            rgba.len()
-        ));
-    }
-    if height <= 1 {
-        return Ok(());
-    }
-    let mut scratch = vec![0u8; row_bytes];
-    for top_row in 0..height / 2 {
-        let bottom_row = height - 1 - top_row;
-        let top = usize::try_from(top_row)
-            .ok()
-            .and_then(|row| row.checked_mul(row_bytes))
-            .ok_or_else(|| "RGBA top row offset overflowed".to_owned())?;
-        let bottom = usize::try_from(bottom_row)
-            .ok()
-            .and_then(|row| row.checked_mul(row_bytes))
-            .ok_or_else(|| "RGBA bottom row offset overflowed".to_owned())?;
-        scratch.copy_from_slice(&rgba[top..top + row_bytes]);
-        rgba.copy_within(bottom..bottom + row_bytes, top);
-        rgba[bottom..bottom + row_bytes].copy_from_slice(&scratch);
-    }
-    Ok(())
-}
-
-fn png_frame_to_rgba(
-    frame: &[u8],
-    color_type: png::ColorType,
-    width: u32,
-    height: u32,
-) -> Result<Vec<u8>, String> {
-    let pixel_count = usize::try_from(width)
-        .ok()
-        .and_then(|width| {
-            usize::try_from(height)
-                .ok()
-                .and_then(|height| width.checked_mul(height))
-        })
-        .ok_or_else(|| "PNG pixel count overflowed".to_owned())?;
-    let expected_rgba = pixel_count
-        .checked_mul(4)
-        .ok_or_else(|| "PNG RGBA byte count overflowed".to_owned())?;
-    match color_type {
-        png::ColorType::Rgba => {
-            if frame.len() != expected_rgba {
-                return Err(format!(
-                    "PNG RGBA payload has {} bytes, expected {expected_rgba}",
-                    frame.len()
-                ));
-            }
-            Ok(frame.to_vec())
-        }
-        png::ColorType::Rgb => {
-            let expected_rgb = pixel_count
-                .checked_mul(3)
-                .ok_or_else(|| "PNG RGB byte count overflowed".to_owned())?;
-            if frame.len() != expected_rgb {
-                return Err(format!(
-                    "PNG RGB payload has {} bytes, expected {expected_rgb}",
-                    frame.len()
-                ));
-            }
-            let mut rgba = Vec::with_capacity(expected_rgba);
-            for rgb in frame.chunks_exact(3) {
-                rgba.extend_from_slice(rgb);
-                rgba.push(255);
-            }
-            Ok(rgba)
-        }
-        png::ColorType::Grayscale => {
-            if frame.len() != pixel_count {
-                return Err(format!(
-                    "PNG grayscale payload has {} bytes, expected {pixel_count}",
-                    frame.len()
-                ));
-            }
-            let mut rgba = Vec::with_capacity(expected_rgba);
-            for value in frame {
-                rgba.extend_from_slice(&[*value, *value, *value, 255]);
-            }
-            Ok(rgba)
-        }
-        png::ColorType::GrayscaleAlpha => {
-            let expected_gray_alpha = pixel_count
-                .checked_mul(2)
-                .ok_or_else(|| "PNG grayscale-alpha byte count overflowed".to_owned())?;
-            if frame.len() != expected_gray_alpha {
-                return Err(format!(
-                    "PNG grayscale-alpha payload has {} bytes, expected {expected_gray_alpha}",
-                    frame.len()
-                ));
-            }
-            let mut rgba = Vec::with_capacity(expected_rgba);
-            for gray_alpha in frame.chunks_exact(2) {
-                rgba.extend_from_slice(&[
-                    gray_alpha[0],
-                    gray_alpha[0],
-                    gray_alpha[0],
-                    gray_alpha[1],
-                ]);
-            }
-            Ok(rgba)
-        }
-        png::ColorType::Indexed => Err(
-            "indexed PNG was not expanded by the PNG decoder; native gtex conversion requires RGB/RGBA output"
-                .to_owned(),
-        ),
-    }
-}
-
-fn scene_encode_bc7(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
-    if width == 0 || height == 0 {
-        return Err("BC7 texture dimensions must be non-zero".to_owned());
-    }
-    let expected_len = scene_rgba_len(width, height)?;
-    if rgba.len() != expected_len {
-        return Err(format!(
-            "RGBA payload has {} bytes, expected {expected_len}",
-            rgba.len()
-        ));
-    }
-    let blocks_w = width.div_ceil(BC_BLOCK_TEXELS);
-    let blocks_h = height.div_ceil(BC_BLOCK_TEXELS);
-    let block_count = usize::try_from(blocks_w)
-        .ok()
-        .and_then(|w| {
-            usize::try_from(blocks_h)
-                .ok()
-                .and_then(|h| w.checked_mul(h))
-        })
-        .ok_or_else(|| "BC7 block count overflowed".to_owned())?;
-    let mut out = Vec::with_capacity(
-        block_count
-            .checked_mul(BC7_BLOCK_BYTES)
-            .ok_or_else(|| "BC7 payload size overflowed".to_owned())?,
-    );
-    for block_y in 0..blocks_h {
-        for block_x in 0..blocks_w {
-            scene_encode_bc7_block(rgba, width, height, block_x, block_y, &mut out)?;
-        }
-    }
-    Ok(out)
-}
-
-fn bc7_payload_len(width: u32, height: u32) -> Result<u64, String> {
-    if width == 0 || height == 0 {
-        return Err("BC7 texture dimensions must be non-zero".to_owned());
-    }
-    let blocks_w = u64::from(width.div_ceil(BC_BLOCK_TEXELS));
-    let blocks_h = u64::from(height.div_ceil(BC_BLOCK_TEXELS));
-    blocks_w
-        .checked_mul(blocks_h)
-        .and_then(|blocks| blocks.checked_mul(BC7_BLOCK_BYTES as u64))
-        .ok_or_else(|| "BC7 payload size overflowed".to_owned())
-}
-
-fn scene_encode_bc7_block(
-    rgba: &[u8],
-    width: u32,
-    height: u32,
-    block_x: u32,
-    block_y: u32,
-    out: &mut Vec<u8>,
-) -> Result<(), String> {
-    let mut pixels = [[0u8; 4]; 16];
-    for y in 0..BC_BLOCK_TEXELS {
-        for x in 0..BC_BLOCK_TEXELS {
-            let src_x = (block_x * BC_BLOCK_TEXELS + x).min(width - 1);
-            let src_y = (block_y * BC_BLOCK_TEXELS + y).min(height - 1);
-            let src = usize::try_from(src_y)
-                .ok()
-                .and_then(|row| {
-                    usize::try_from(width)
-                        .ok()
-                        .and_then(|stride| row.checked_mul(stride))
-                })
-                .and_then(|base| {
-                    usize::try_from(src_x)
-                        .ok()
-                        .and_then(|x| base.checked_add(x))
-                })
-                .and_then(|pixel| pixel.checked_mul(4))
-                .ok_or_else(|| "BC7 source pixel offset overflowed".to_owned())?;
-            let dst = usize::try_from(y * BC_BLOCK_TEXELS + x)
-                .map_err(|_| "BC7 block pixel index overflowed".to_owned())?;
-            pixels[dst].copy_from_slice(
-                rgba.get(src..src + 4)
-                    .ok_or_else(|| "BC7 source pixel range exceeded RGBA payload".to_owned())?,
-            );
-        }
-    }
-    let (mut endpoint_a, mut endpoint_b) = scene_bc7_mode6_endpoints(&pixels);
-    let palette = scene_bc7_mode6_palette(endpoint_a, endpoint_b);
-    let mut indices = scene_bc7_mode6_indices(&pixels, &palette);
-    if indices[0] >= 8 {
-        std::mem::swap(&mut endpoint_a, &mut endpoint_b);
-        for index in &mut indices {
-            *index = 15 - *index;
-        }
-    }
-    scene_pack_bc7_mode6_block(endpoint_a, endpoint_b, &indices, out);
-    Ok(())
-}
-
-fn scene_bc7_mode6_endpoints(pixels: &[[u8; 4]; 16]) -> ([u8; 4], [u8; 4]) {
-    let mut min_rgba = [255u8; 4];
-    let mut max_rgba = [0u8; 4];
-    for pixel in pixels {
-        for channel in 0..4 {
-            min_rgba[channel] = min_rgba[channel].min(pixel[channel]);
-            max_rgba[channel] = max_rgba[channel].max(pixel[channel]);
-        }
-    }
-    let endpoint_a = scene_bc7_endpoint_with_majority_pbit(min_rgba);
-    let endpoint_b = scene_bc7_endpoint_with_majority_pbit(max_rgba);
-    (endpoint_a, endpoint_b)
-}
-
-fn scene_bc7_endpoint_with_majority_pbit(endpoint: [u8; 4]) -> [u8; 4] {
-    let pbit = u8::from(
-        endpoint
-            .iter()
-            .filter(|component| **component & 1 != 0)
-            .count()
-            >= 2,
-    );
-    [
-        scene_bc7_quantize_7_with_pbit(endpoint[0], pbit),
-        scene_bc7_quantize_7_with_pbit(endpoint[1], pbit),
-        scene_bc7_quantize_7_with_pbit(endpoint[2], pbit),
-        scene_bc7_quantize_7_with_pbit(endpoint[3], pbit),
-    ]
-}
-
-fn scene_bc7_quantize_7_with_pbit(value: u8, pbit: u8) -> u8 {
-    let adjusted = value.saturating_add(1);
-    ((adjusted >> 1) << 1) | (pbit & 1)
-}
-
-fn scene_bc7_mode6_palette(endpoint_a: [u8; 4], endpoint_b: [u8; 4]) -> [[u8; 4]; 16] {
-    let mut palette = [[0u8; 4]; 16];
-    for (index, weight) in BC7_MODE6_INDEX_WEIGHTS.iter().copied().enumerate() {
-        for channel in 0..4 {
-            let a = u16::from(endpoint_a[channel]);
-            let b = u16::from(endpoint_b[channel]);
-            palette[index][channel] = (((64 - weight) * a + weight * b + 32) >> 6) as u8;
-        }
-    }
-    palette
-}
-
-fn scene_bc7_mode6_indices(pixels: &[[u8; 4]; 16], palette: &[[u8; 4]; 16]) -> [u8; 16] {
-    let mut indices = [0u8; 16];
-    for (pixel_index, pixel) in pixels.iter().enumerate() {
-        indices[pixel_index] = palette
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, candidate)| scene_rgba_distance_squared(pixel, candidate))
-            .map(|(index, _)| index as u8)
-            .unwrap_or(0);
-    }
-    indices
-}
-
-fn scene_rgba_distance_squared(lhs: &[u8; 4], rhs: &[u8; 4]) -> u32 {
-    (0..4)
-        .map(|channel| {
-            let delta = i32::from(lhs[channel]) - i32::from(rhs[channel]);
-            (delta * delta) as u32
-        })
-        .sum()
-}
-
-fn scene_pack_bc7_mode6_block(
-    endpoint_a: [u8; 4],
-    endpoint_b: [u8; 4],
-    indices: &[u8; 16],
-    out: &mut Vec<u8>,
-) {
-    let mut block = [0u8; 16];
-    let mut bit = 0usize;
-    scene_bc7_set_bits(&mut block, &mut bit, 6, 0);
-    scene_bc7_set_bits(&mut block, &mut bit, 1, 1);
-    for channel in 0..4 {
-        scene_bc7_set_bits(&mut block, &mut bit, 7, endpoint_a[channel] >> 1);
-        scene_bc7_set_bits(&mut block, &mut bit, 7, endpoint_b[channel] >> 1);
-    }
-    scene_bc7_set_bits(&mut block, &mut bit, 1, endpoint_a[0] & 1);
-    scene_bc7_set_bits(&mut block, &mut bit, 1, endpoint_b[0] & 1);
-    for (pixel_index, index) in indices.iter().copied().enumerate() {
-        let width = if pixel_index == 0 { 3 } else { 4 };
-        scene_bc7_set_bits(&mut block, &mut bit, width, index);
-    }
-    debug_assert_eq!(bit, 128);
-    out.extend_from_slice(&block);
-}
-
-fn scene_bc7_set_bits(block: &mut [u8; 16], bit: &mut usize, width: usize, value: u8) {
-    if width == 0 {
-        return;
-    }
-    debug_assert!(*bit + width <= 128);
-    debug_assert!(width <= 8);
-    debug_assert!(u16::from(value) < (1u16 << width));
-    for offset in 0..width {
-        if value & (1u8 << offset) != 0 {
-            let absolute = *bit + offset;
-            block[absolute >> 3] |= 1u8 << (absolute & 7);
-        }
-    }
-    *bit += width;
-}
-
 fn scene_material_spritesheet_enabled(material_json: &Value) -> bool {
     material_json
         .get("passes")
@@ -4650,107 +4231,6 @@ fn scene_material_spritesheet_enabled(material_json: &Value) -> bool {
 
 fn scene_combo_value_enabled(value: &Value) -> bool {
     value_to_i64(value).is_some_and(|value| value != 0) || value.as_bool().unwrap_or(false)
-}
-
-fn scene_rgba_len(width: u32, height: u32) -> Result<usize, String> {
-    let pixels = u64::from(width)
-        .checked_mul(u64::from(height))
-        .and_then(|pixels| pixels.checked_mul(4))
-        .ok_or_else(|| "RGBA dimension byte count overflowed".to_owned())?;
-    usize::try_from(pixels).map_err(|_| "RGBA payload does not fit this platform".to_owned())
-}
-
-fn read_u32_le_at(bytes: &[u8], offset: usize) -> Option<u32> {
-    let end = offset.checked_add(4)?;
-    let bytes = bytes.get(offset..end)?;
-    Some(u32::from_le_bytes(bytes.try_into().ok()?))
-}
-
-fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
-fn lz4_block_decode(input: &[u8], expected_len: usize) -> Result<Vec<u8>, String> {
-    let mut output = Vec::with_capacity(expected_len);
-    let mut cursor = 0;
-    while cursor < input.len() && output.len() < expected_len {
-        let token = input[cursor];
-        cursor += 1;
-
-        let literal_len = lz4_sequence_length((token >> 4) as usize, input, &mut cursor)?;
-        let literal_end = cursor
-            .checked_add(literal_len)
-            .ok_or_else(|| "LZ4 literal range overflowed".to_owned())?;
-        let literals = input
-            .get(cursor..literal_end)
-            .ok_or_else(|| "LZ4 literal run exceeds encoded payload".to_owned())?;
-        output.extend_from_slice(literals);
-        cursor = literal_end;
-        if output.len() == expected_len {
-            break;
-        }
-        if output.len() > expected_len {
-            return Err("LZ4 literal run exceeded decoded size".to_owned());
-        }
-
-        let offset_end = cursor
-            .checked_add(2)
-            .ok_or_else(|| "LZ4 match offset range overflowed".to_owned())?;
-        let offset_bytes = input
-            .get(cursor..offset_end)
-            .ok_or_else(|| "LZ4 sequence is missing match offset".to_owned())?;
-        let offset = u16::from_le_bytes([offset_bytes[0], offset_bytes[1]]) as usize;
-        cursor = offset_end;
-        if offset == 0 || offset > output.len() {
-            return Err("LZ4 sequence has invalid match offset".to_owned());
-        }
-        let match_len = lz4_sequence_length((token & 0x0f) as usize, input, &mut cursor)?
-            .checked_add(4)
-            .ok_or_else(|| "LZ4 match length overflowed".to_owned())?;
-        if output
-            .len()
-            .checked_add(match_len)
-            .is_none_or(|len| len > expected_len)
-        {
-            return Err("LZ4 match run exceeded decoded size".to_owned());
-        }
-        let start = output.len() - offset;
-        for index in 0..match_len {
-            let value = output[start + index];
-            output.push(value);
-        }
-    }
-    if output.len() != expected_len {
-        return Err(format!(
-            "LZ4 decoded {} bytes, expected {expected_len}",
-            output.len()
-        ));
-    }
-    Ok(output)
-}
-
-fn lz4_sequence_length(base: usize, input: &[u8], cursor: &mut usize) -> Result<usize, String> {
-    let mut length = base;
-    if base != 15 {
-        return Ok(length);
-    }
-    loop {
-        let value = *input
-            .get(*cursor)
-            .ok_or_else(|| "LZ4 extended length exceeds encoded payload".to_owned())?;
-        *cursor += 1;
-        length = length
-            .checked_add(usize::from(value))
-            .ok_or_else(|| "LZ4 extended length overflowed".to_owned())?;
-        if value != 255 {
-            return Ok(length);
-        }
-    }
 }
 
 fn scene_resource_scope(package_path: &str) -> String {
@@ -5062,24 +4542,36 @@ fn scene_fit_from_object(object: &Map<String, Value>) -> Option<&'static str> {
     }
 }
 
-fn scene_system_statuses(report: &ConversionReport) -> Value {
+fn scene_system_statuses(report: &ConversionReport, context: &SceneDocumentBuildContext) -> Value {
     json!({
-        "scenescript": scene_system_status(report, "scenescript"),
-        "shader_material_graph": scene_system_status(report, "shader"),
-        "particles": scene_system_status(report, "particles"),
-        "parallax": scene_system_status(report, "parallax"),
-        "audio_response": scene_system_status(report, "audio-response")
+        "scenescript": scene_system_status(report, context, "scenescript"),
+        "shader_material_graph": scene_system_status(report, context, "shader"),
+        "particles": scene_system_status(report, context, "particles"),
+        "parallax": scene_system_status(report, context, "parallax"),
+        "audio_response": scene_system_status(report, context, "audio-response")
     })
 }
 
-fn scene_system_status(report: &ConversionReport, feature: &str) -> &'static str {
+fn scene_system_status(
+    report: &ConversionReport,
+    context: &SceneDocumentBuildContext,
+    feature: &str,
+) -> &'static str {
+    if feature == "shader" && scene_material_graph_runtime_ready(report, context) {
+        return "ready";
+    }
     if feature == "shader"
-        && report
+        && (report
             .converted_features
             .iter()
             .any(|converted| converted == "scene-we-material-graph-runtime")
+            || context
+                .unsupported_features
+                .iter()
+                .filter_map(|feature| feature.get("feature").and_then(Value::as_str))
+                .any(scene_feature_blocks_material_graph_runtime))
     {
-        return "ready";
+        return "detected";
     }
     if feature == "particles"
         && report
@@ -5136,11 +4628,11 @@ fn scene_full_scene_status(
             .pending_boundaries
             .retain(|boundary| boundary != "shader-material-graph");
     }
-    if report
+    let audio_response_ready = report
         .converted_features
         .iter()
-        .any(|feature| feature == "native-audio-response-runtime")
-    {
+        .any(|feature| feature == "native-audio-response-runtime");
+    if audio_response_ready {
         push_unique(
             &mut status.completed_boundaries,
             "native-audio-response-visual-runtime",
@@ -5151,6 +4643,22 @@ fn scene_full_scene_status(
         push_unique(
             &mut status.pending_boundaries,
             "pipewire-audio-spectrum-input-source",
+        );
+    } else if report
+        .detected_features
+        .iter()
+        .any(|feature| feature == "audio-response")
+    {
+        push_unique(&mut status.pending_boundaries, "audio-response-runtime");
+    }
+    if report
+        .converted_features
+        .iter()
+        .any(|feature| feature == "scene-we-tex-video-layer-runtime")
+    {
+        push_unique(
+            &mut status.completed_boundaries,
+            "wallpaper-engine-tex-video-layer-runtime",
         );
     }
     status
@@ -7047,7 +6555,12 @@ fn collect_feature_hints_from_key(
         || normalized == "volume"
     {
         features.insert("audio".to_owned());
-        if source_type == SourceType::Scene {
+        if source_type == SourceType::Scene
+            && (normalized.contains("audioresponse")
+                || normalized.contains("audio_response")
+                || normalized.contains("spectrum")
+                || normalized.contains("fft"))
+        {
             features.insert("audio-response".to_owned());
         }
     }
@@ -7066,6 +6579,16 @@ fn collect_feature_hints_from_string(
         || lowered.contains("wallpaperaudiolistener")
     {
         features.insert("web-audio-listener".to_owned());
+        features.insert("audio-response".to_owned());
+    }
+    if source_type == SourceType::Scene
+        && (lowered.contains("audio-response")
+            || lowered.contains("audio_response")
+            || lowered.contains("audioresponse")
+            || lowered.contains("audiospectrum")
+            || lowered.contains("audio_spectrum")
+            || lowered.contains("fft"))
+    {
         features.insert("audio-response".to_owned());
     }
     if lowered.contains("scenescript")
@@ -7386,7 +6909,7 @@ impl FullSceneConversionStatus {
             target_runtime: "native-vulkan-full-scene".to_owned(),
             current_runtime: "native-vulkan-scene-runtime".to_owned(),
             progress_estimate_percent: 99,
-            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, native scene graph transform/opacity execution, WE text/value wrappers, visible property bindings, shape/solid/radius objects, native deterministic particle emitter expansion, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, per-frame fixed-topology timeline geometry updates, geometry field animation, parallax depth, and WE TEXV0005/TEXB0004 textures into native BC7 .gtex GPU textures including spritesheet atlases into gscene text/property/shape/timeline/camera/image fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime, and explicit unsupported Wallpaper Engine systems without legacy fallback or preview-image scene substitution".to_owned(),
+            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, native scene graph transform/opacity execution, WE text/value wrappers, visible property bindings, shape/solid/radius objects, native deterministic particle emitter expansion, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, per-frame fixed-topology timeline geometry updates, geometry field animation, parallax depth, WE TEXV0005/TEXB0004 RGBA textures into native BC7 .gtex GPU textures, and WE TEXB0004 video payloads into native gscene video resources including spritesheet atlases into gscene text/property/shape/timeline/camera/image/video fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime, and explicit unsupported Wallpaper Engine systems without legacy fallback or preview-image scene substitution".to_owned(),
             source_scene_metadata: Vec::new(),
             completed_boundaries: vec![
                 "package-scene-detection".to_owned(),
@@ -7404,6 +6927,7 @@ impl FullSceneConversionStatus {
                 "wallpaper-engine-geometry-user-property-binding-lowering".to_owned(),
                 "wallpaper-engine-explicit-keyframe-timeline-lowering".to_owned(),
                 "wallpaper-engine-tex-bc7-gtex-conversion".to_owned(),
+                "wallpaper-engine-tex-video-layer-runtime".to_owned(),
                 "scene-we-spritesheet-atlas-runtime".to_owned(),
                 "scene-geometry-field-animation-runtime".to_owned(),
                 "per-frame-timeline-geometry-runtime".to_owned(),
@@ -7436,7 +6960,6 @@ impl FullSceneConversionStatus {
                 "arbitrary-scenescript-runtime".to_owned(),
                 "shader-material-graph".to_owned(),
                 "cursor-parallax-input-source".to_owned(),
-                "audio-response-runtime".to_owned(),
                 "mixed-video-scene-composition".to_owned(),
             ],
         }
@@ -7616,11 +7139,11 @@ mod tests {
         source.write_file("wallpaper.png", "not real png");
         source.write_file(
             PROJECT_FILE,
-            r#"{
+            r##"{
               "type": "image",
               "title": "Static Without Preview",
               "file": "wallpaper.png"
-            }"#,
+            }"##,
         );
 
         convert_project(source.path(), output.path()).unwrap();
@@ -8546,7 +8069,7 @@ void main() {}
         )
         .unwrap();
         assert_eq!(scene["nodes"][0]["name"], "Packed");
-        assert_eq!(scene["nodes"][0]["resource"], "resource-4-atlas-frame-0");
+        assert_eq!(scene["nodes"][0]["resource"], "resource-3-atlas-frame-0");
         assert!(
             scene["resources"]
                 .as_array()
@@ -8561,7 +8084,7 @@ void main() {}
         assert!(
             output
                 .path()
-                .join("assets/scene-resources/scene/resource-4-atlas-frame-0.gtex")
+                .join("assets/scene-resources/scene/resource-3-atlas-frame-0.gtex")
                 .exists()
         );
         let report: ConversionReport = serde_json::from_str(
@@ -8596,7 +8119,7 @@ void main() {}
               "script": "SceneScript.Update = function() {}",
               "shader": "effects/rain.frag",
               "parallax": true,
-              "audio": { "response": true }
+              "audio_response": true
             }"#,
         );
         source.write_file("background.png", "not real png");
@@ -8746,6 +8269,144 @@ void main() {}
     }
 
     #[test]
+    fn converts_pure_scene_sound_object_to_audio_cue_node() {
+        let source = TestDir::new("we-scene-audio-cue-node-source");
+        let output = TestDir::new("we-scene-audio-cue-node-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                {
+                  "id": 7,
+                  "type": "sound",
+                  "name": "Music Cue",
+                  "sound": "sounds/music.ogg",
+                  "playbackmode": "loop",
+                  "startsilent": true
+                }
+              ]
+            }"#,
+        );
+        source.write_file("sounds/music.ogg", "not real ogg");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Scene Audio Cue",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene["systems"]["audio_response"], "absent");
+        let node = &scene["nodes"].as_array().unwrap()[0];
+        assert_eq!(node["type"], "audio");
+        assert_eq!(node["audio"][0]["resource"], "resource-1-music");
+        assert_eq!(node["audio"][0]["playback_mode"], "loop");
+        assert_eq!(node["audio"][0]["start_silent"], true);
+        assert!(
+            !scene["unsupported_features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| feature["feature"] == "audio-response")
+        );
+        assert!(
+            !scene["native_lowering"]["pending_boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("audio-response-runtime"))
+        );
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+        assert_eq!(snapshot.layers[0].kind, crate::core::SceneNodeKind::Audio);
+        assert_eq!(snapshot.layers[0].audio.len(), 1);
+    }
+
+    #[test]
+    fn lowers_wallpaper_engine_builtin_util_models_without_missing_resource_noise() {
+        let source = TestDir::new("we-scene-builtin-util-model-source");
+        let output = TestDir::new("we-scene-builtin-util-model-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                {
+                  "id": 9,
+                  "name": "Click Controller",
+                  "image": "models/util/composelayer.json",
+                  "visible": {
+                    "script": "export function update(value) { return value; }",
+                    "value": true
+                  },
+                  "size": "512 512"
+                }
+              ]
+            }"#,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Builtin Util Model Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let node = &scene["nodes"][0];
+        assert_eq!(node["type"], "script");
+        assert_eq!(
+            node["provenance"]["model"]["source"],
+            "models/util/composelayer.json"
+        );
+        assert_eq!(node["provenance"]["model"]["builtin"], true);
+        assert_eq!(node["provenance"]["model"]["utility"], "composelayer");
+        assert!(
+            !scene["unsupported_features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| {
+                    matches!(
+                        feature["feature"].as_str(),
+                        Some("missing-resource" | "we-model-json")
+                    )
+                })
+        );
+
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"wallpaper-engine-util-model-lowering".to_owned())
+        );
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("models/util/composelayer.json"))
+        );
+    }
+
+    #[test]
     fn converts_wallpaper_engine_scene_to_clean_gscene_provenance() {
         let source = TestDir::new("we-scene-provenance-source");
         let output = TestDir::new("we-scene-provenance-output");
@@ -8877,19 +8538,26 @@ void main() {}
             "materials/hero_albedo.tex"
         );
         assert_eq!(node["effects"][0]["file"], "effects/glow.json");
-        assert_eq!(node["effects"][0]["resource"], "resource-4-glow");
+        assert_eq!(node["effects"][0]["resource"], "resource-3-glow");
+        assert_eq!(node["effects"][0]["runtime"], "wallpaper-engine-effect");
         assert_eq!(node["effects"][0]["passes"][0]["combos"]["MODE"], 2);
         assert_eq!(node["audio"][0]["source"], "sounds/theme.ogg");
-        assert_eq!(node["audio"][0]["resource"], "resource-5-theme");
+        assert_eq!(node["audio"][0]["resource"], "resource-4-theme");
         assert_eq!(node["audio"][0]["playback_mode"], "loop");
         assert_eq!(node["audio"][0]["volume"], 0.75);
         assert_eq!(node["audio"][0]["start_silent"], false);
         assert_eq!(node["provenance"]["particle"], "particles/spark.json");
         assert_eq!(scene["resources"][0]["type"], "model");
         assert_eq!(scene["resources"][1]["type"], "material");
-        assert_eq!(scene["resources"][2]["type"], "texture");
-        assert_eq!(scene["resources"][3]["type"], "effect");
-        assert_eq!(scene["resources"][4]["type"], "audio");
+        assert_eq!(scene["resources"][2]["type"], "effect");
+        assert_eq!(scene["resources"][3]["type"], "audio");
+        assert!(
+            scene["resources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|resource| !resource["source"].as_str().unwrap_or("").ends_with(".tex"))
+        );
         assert!(
             scene["unsupported_features"]
                 .as_array()
@@ -8906,7 +8574,7 @@ void main() {}
         output.remove();
         source.write_file(
             "scene.json",
-            r#"{
+            r##"{
               "objects": [
                 {
                   "id": 1,
@@ -8914,7 +8582,7 @@ void main() {}
                   "image": "models/renderable.json"
                 }
               ]
-            }"#,
+            }"##,
         );
         source.write_file(
             "models/renderable.json",
@@ -9022,6 +8690,14 @@ void main() {}
         .unwrap();
         assert_eq!(scene["nodes"][0]["type"], "image");
         assert_eq!(scene["nodes"][0]["effects"][0]["file"], "effects/noop.json");
+        assert_eq!(scene["nodes"][0]["effects"][0]["runtime"], "metadata-only");
+        assert!(
+            !scene["resources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|resource| resource["role"] == "we-effect")
+        );
         assert!(
             !scene["unsupported_features"]
                 .as_array()
@@ -9108,6 +8784,11 @@ void main() {}
                 .iter()
                 .any(|feature| feature["feature"] == "we-effect-runtime")
         );
+        assert_eq!(scene["systems"]["shader_material_graph"], "detected");
+        assert_eq!(
+            scene["nodes"][0]["effects"][0]["runtime"],
+            "wallpaper-engine-effect"
+        );
         assert!(
             scene["native_lowering"]["pending_boundaries"]
                 .as_array()
@@ -9125,13 +8806,199 @@ void main() {}
     }
 
     #[test]
+    fn lowers_wallpaper_engine_opacity_effect_script_to_native_timeline() {
+        let source = TestDir::new("we-scene-opacity-effect-source");
+        let output = TestDir::new("we-scene-opacity-effect-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r##"{
+              "objects": [
+                {
+                  "id": 1,
+                  "type": "rectangle",
+                  "name": "Fading Layer",
+                  "width": 100,
+                  "height": 100,
+                  "color": "#ffffff",
+                  "effects": [
+                    {
+                      "file": "effects/opacity/effect.json",
+                      "passes": [
+                        {
+                          "constantshadervalues": {
+                            "alpha": {
+                              "script": "'use strict'; const delayTime = 3; const fadeTime = 2; export function update(value) { return value; }",
+                              "value": 1
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }"##,
+        );
+        source.write_file("effects/opacity/effect.json", r#"{ "passes": [] }"#);
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Opacity Effect Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let node_id = scene["nodes"][0]["id"].as_str().unwrap();
+        assert_eq!(scene["nodes"][0]["type"], "rectangle");
+        assert_eq!(
+            scene["nodes"][0]["effects"][0]["runtime"],
+            "native-opacity-timeline"
+        );
+        assert_eq!(scene["timelines"][0]["target_node"], node_id);
+        assert_eq!(scene["timelines"][0]["channels"][0]["property"], "opacity");
+        assert_eq!(
+            scene["timelines"][0]["channels"][0]["keyframes"][0]["time_ms"],
+            0
+        );
+        assert_eq!(
+            scene["timelines"][0]["channels"][0]["keyframes"][1]["time_ms"],
+            3000
+        );
+        assert_eq!(
+            scene["timelines"][0]["channels"][0]["keyframes"][2]["time_ms"],
+            5000
+        );
+        assert_eq!(
+            scene["timelines"][0]["channels"][0]["keyframes"][2]["value"],
+            0.0
+        );
+        assert!(
+            !scene["unsupported_features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| feature["feature"] == "we-effect-runtime")
+        );
+        assert!(
+            !scene["resources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|resource| resource["role"] == "we-effect")
+        );
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-opacity-effect-timeline".to_owned())
+        );
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-keyframe-timeline".to_owned())
+        );
+    }
+
+    #[test]
+    fn lowers_wallpaper_engine_constant_opacity_effect_to_native_timeline() {
+        let source = TestDir::new("we-scene-constant-opacity-effect-source");
+        let output = TestDir::new("we-scene-constant-opacity-effect-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r##"{
+              "objects": [
+                {
+                  "id": 1,
+                  "type": "rectangle",
+                  "name": "Tinted Layer",
+                  "width": 100,
+                  "height": 100,
+                  "color": "#ffffff",
+                  "effects": [
+                    {
+                      "file": "effects/opacity/effect.json",
+                      "visible": true,
+                      "passes": [
+                        {
+                          "constant_shader_values": {
+                            "alpha": 0.35
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }"##,
+        );
+        source.write_file(
+            "effects/opacity/effect.json",
+            r#"{ "passes": [{ "material": "materials/effects/opacity.json" }] }"#,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Constant Opacity Effect Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let node_id = scene["nodes"][0]["id"].as_str().unwrap();
+        assert_eq!(
+            scene["nodes"][0]["effects"][0]["runtime"],
+            "native-opacity-timeline"
+        );
+        assert_eq!(scene["timelines"][0]["target_node"], node_id);
+        assert_eq!(
+            scene["timelines"][0]["channels"][0]["keyframes"][0]["value"],
+            0.35
+        );
+        assert!(
+            !scene["unsupported_features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| feature["feature"] == "we-effect-runtime")
+        );
+        assert!(
+            !scene["resources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|resource| resource["role"] == "we-effect")
+        );
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+        assert_eq!(snapshot.layers[0].opacity, 0.35);
+    }
+
+    #[test]
     fn decodes_wallpaper_engine_scene_tex_material_to_renderable_frame_resource() {
         let rgba = vec![
             255, 0, 0, 255, 0, 255, 0, 255, 1, 1, 1, 255, 2, 2, 2, 255, 0, 0, 255, 255, 255, 255,
             0, 255, 3, 3, 3, 255, 4, 4, 4, 255,
         ];
         let tex = test_we_tex_rgba(4, 2, &rgba);
-        let decoded = scene_decode_we_tex_image(&tex).unwrap();
+        let decoded = tex::decode_we_tex_image(&tex).unwrap();
         assert_eq!(decoded.width, 4);
         assert_eq!(decoded.height, 2);
         assert_eq!(decoded.rgba, rgba);
@@ -9192,7 +9059,7 @@ void main() {}
         )
         .unwrap();
         assert_eq!(scene["nodes"][0]["type"], "image");
-        assert_eq!(scene["nodes"][0]["resource"], "resource-4-atlas-atlas");
+        assert_eq!(scene["nodes"][0]["resource"], "resource-3-atlas-atlas");
         assert_eq!(
             scene["nodes"][0]["properties"]["spritesheet"]["type"],
             "atlas-grid"
@@ -9209,24 +9076,23 @@ void main() {}
             scene["nodes"][0]["properties"]["spritesheet"]["frame_count"],
             2
         );
-        assert_eq!(scene["resources"][2]["type"], "texture");
-        assert_eq!(scene["resources"][3]["type"], "image");
+        assert_eq!(scene["resources"][2]["type"], "image");
         assert_eq!(
-            scene["resources"][3]["source"],
-            "assets/scene-resources/scene/resource-4-atlas-atlas.gtex"
+            scene["resources"][2]["source"],
+            "assets/scene-resources/scene/resource-3-atlas-atlas.gtex"
         );
         assert_eq!(
-            scene["resources"][3]["role"],
+            scene["resources"][2]["role"],
             "we-material-texture-decoded-atlas"
         );
         assert_eq!(
-            scene["nodes"][0]["provenance"]["model"]["texture_resources"][1],
-            "resource-4-atlas-atlas"
+            scene["nodes"][0]["provenance"]["model"]["texture_resources"][0],
+            "resource-3-atlas-atlas"
         );
         assert!(
             output
                 .path()
-                .join("assets/scene-resources/scene/resource-4-atlas-atlas.gtex")
+                .join("assets/scene-resources/scene/resource-3-atlas-atlas.gtex")
                 .exists()
         );
         assert!(scene["unsupported_features"].as_array().unwrap().is_empty());
@@ -9243,6 +9109,102 @@ void main() {}
             report
                 .converted_features
                 .contains(&"scene-we-spritesheet-atlas-runtime".to_owned())
+        );
+    }
+
+    #[test]
+    fn extracts_wallpaper_engine_scene_tex_video_material_to_native_video_layer() {
+        let video_payload = b"\0\0\0\x20ftypisom\0\0\x02\0isomiso2avc1mp41\0\0\0\x08free";
+        let tex = test_we_tex_video(3840, 2160, video_payload);
+        let source = TestDir::new("we-scene-tex-video-model-source");
+        let output = TestDir::new("we-scene-tex-video-model-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                {
+                  "id": 1,
+                  "name": "Video Tex",
+                  "image": "models/video.json"
+                }
+              ]
+            }"#,
+        );
+        source.write_file(
+            "models/video.json",
+            r#"{ "material": "materials/video.json", "width": 3840, "height": 2160 }"#,
+        );
+        source.write_file(
+            "materials/video.json",
+            r#"{ "passes": [{ "textures": ["clip"] }] }"#,
+        );
+        source.write_bytes("materials/clip.tex", &tex);
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Video Tex Scene Model",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene["nodes"][0]["type"], "video");
+        assert_eq!(scene["nodes"][0]["resource"], "resource-3-clip-video");
+        assert_eq!(scene["nodes"][0]["width"], 3840.0);
+        assert_eq!(scene["nodes"][0]["height"], 2160.0);
+        assert_eq!(scene["resources"].as_array().unwrap().len(), 3);
+        assert_eq!(scene["resources"][2]["type"], "video");
+        assert_eq!(
+            scene["resources"][2]["source"],
+            "assets/scene-resources/scene/resource-3-clip-video.mp4"
+        );
+        assert_eq!(scene["resources"][2]["role"], "we-material-video-texture");
+        assert_eq!(
+            scene["resources"][2]["original_source"],
+            "materials/clip.tex"
+        );
+        assert!(
+            scene["resources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|resource| !resource["source"].as_str().unwrap_or("").ends_with(".tex"))
+        );
+        assert_eq!(
+            scene["nodes"][0]["provenance"]["model"]["texture_resources"][0],
+            "resource-3-clip-video"
+        );
+        assert_eq!(
+            fs::read(
+                output
+                    .path()
+                    .join("assets/scene-resources/scene/resource-3-clip-video.mp4")
+            )
+            .unwrap(),
+            video_payload
+        );
+        assert!(scene["unsupported_features"].as_array().unwrap().is_empty());
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-tex-video-layer-runtime".to_owned())
+        );
+        assert!(
+            report
+                .full_scene
+                .unwrap()
+                .completed_boundaries
+                .contains(&"wallpaper-engine-tex-video-layer-runtime".to_owned())
         );
     }
 
@@ -10050,19 +10012,19 @@ void main() {}
         let image = SceneWeTexImage {
             width: 4,
             height: 4,
-            rgba: vec![0; scene_rgba_len(4, 4).unwrap()],
+            rgba: vec![0; tex::rgba_len(4, 4).unwrap()],
         };
         let path = output.path().join("transparent.gtex");
 
-        scene_write_bc7_gtex(&path, &image).unwrap();
+        gtex::write_bc7_gtex(&path, &image).unwrap();
         let bytes = fs::read(&path).unwrap();
 
-        assert_eq!(&bytes[0..8], GILDER_SCENE_TEXTURE_MAGIC);
+        assert_eq!(&bytes[0..8], gtex::GILDER_SCENE_TEXTURE_MAGIC);
         assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 4);
         assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()), 4);
         assert_eq!(
             u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
-            GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK
+            gtex::GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK
         );
         assert_eq!(u64::from_le_bytes(bytes[24..32].try_into().unwrap()), 16);
         assert_eq!(bytes.len(), 48);
@@ -10094,7 +10056,7 @@ void main() {}
         assert_eq!(summary.height, 2);
         assert_eq!(summary.format, "BC7_UNORM_BLOCK");
         assert_eq!(summary.payload_bytes, 16);
-        assert_eq!(&bytes[0..8], GILDER_SCENE_TEXTURE_MAGIC);
+        assert_eq!(&bytes[0..8], gtex::GILDER_SCENE_TEXTURE_MAGIC);
         assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 2);
         assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()), 2);
         assert_eq!(
@@ -10112,7 +10074,7 @@ void main() {}
         let bottom_right = [255, 255, 255, 255];
         let mut rgba = [top_left, top_right, bottom_left, bottom_right].concat();
 
-        flip_rgba_rows_vertically(&mut rgba, 2, 2).unwrap();
+        gtex::flip_rgba_rows_vertically(&mut rgba, 2, 2).unwrap();
 
         assert_eq!(&rgba[0..4], &bottom_left);
         assert_eq!(&rgba[4..8], &bottom_right);
@@ -10196,7 +10158,7 @@ void main() {}
     }
 
     fn test_we_tex_rgba(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
-        assert_eq!(rgba.len(), scene_rgba_len(width, height).unwrap());
+        assert_eq!(rgba.len(), tex::rgba_len(width, height).unwrap());
         let compressed = test_lz4_literal_block(rgba);
         let mut bytes = vec![0; 91];
         bytes[0..8].copy_from_slice(b"TEXV0005");
@@ -10215,6 +10177,27 @@ void main() {}
         test_write_u32_le(&mut bytes, 83, u32::try_from(rgba.len()).unwrap());
         test_write_u32_le(&mut bytes, 87, u32::try_from(compressed.len()).unwrap());
         bytes.extend_from_slice(&compressed);
+        bytes
+    }
+
+    fn test_we_tex_video(width: u32, height: u32, payload: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0; 91];
+        bytes[0..8].copy_from_slice(b"TEXV0005");
+        bytes[9..17].copy_from_slice(b"TEXI0001");
+        test_write_u32_le(&mut bytes, 22, 7);
+        test_write_u32_le(&mut bytes, 26, width);
+        test_write_u32_le(&mut bytes, 30, height);
+        test_write_u32_le(&mut bytes, 34, width);
+        test_write_u32_le(&mut bytes, 38, height);
+        bytes[46..54].copy_from_slice(b"TEXB0004");
+        test_write_u32_le(&mut bytes, 55, 1);
+        test_write_u32_le(&mut bytes, 67, 1);
+        test_write_u32_le(&mut bytes, 71, width);
+        test_write_u32_le(&mut bytes, 75, height);
+        test_write_u32_le(&mut bytes, 79, 1);
+        test_write_u32_le(&mut bytes, 83, 0);
+        test_write_u32_le(&mut bytes, 87, u32::try_from(payload.len()).unwrap());
+        bytes.extend_from_slice(payload);
         bytes
     }
 

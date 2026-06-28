@@ -60,7 +60,7 @@ pub(super) fn scene_direct_display_image(
 pub(super) fn scene_layer_is_snapshot_renderable(layer: &SceneRenderLayer) -> bool {
     match layer.kind {
         SceneNodeKind::Image => layer.source.is_some() && layer.opacity > 0.0,
-        SceneNodeKind::Video => false,
+        SceneNodeKind::Video | SceneNodeKind::Audio => false,
         SceneNodeKind::Color => {
             layer.opacity > 0.0
                 && layer
