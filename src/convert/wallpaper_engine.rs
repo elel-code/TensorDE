@@ -1086,6 +1086,10 @@ fn write_scene_document_to(
         push_unique(&mut report.converted_features, "scene-keyframe-timeline");
     }
     nodes = scene_rebuild_parent_graph(nodes);
+    scene_lower_pending_controllers(&mut nodes, &mut context);
+    for feature in &context.converted_features {
+        push_unique(&mut report.converted_features, feature);
+    }
     if nodes.is_empty() {
         scene_push_unsupported(
             &mut context,
@@ -1343,6 +1347,7 @@ struct SceneDocumentBuildContext {
     next_timeline: usize,
     resource_scope: String,
     source_node_ids: BTreeMap<String, String>,
+    pending_controllers: Vec<ScenePendingController>,
     timelines: Vec<Value>,
     property_bindings: Vec<Value>,
     converted_features: Vec<String>,
@@ -1364,6 +1369,15 @@ struct SceneDecodedTexResource {
     resource_id: String,
     render_kind: &'static str,
     spritesheet: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScenePendingController {
+    controller_node_id: String,
+    controller_kind: &'static str,
+    target_layer: String,
+    default_hide_target: bool,
+    property: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2861,6 +2875,16 @@ fn scene_node_from_object(
     {
         scene_merge_node_properties(&mut node, properties.clone());
     }
+    if let Some((controller, pending_controller)) =
+        scene_controller_from_object(object, &node_id, source_model.as_ref())
+    {
+        scene_merge_node_properties(&mut node, json!({ "controller": controller }));
+        context.pending_controllers.push(pending_controller);
+        push_unique(
+            &mut context.converted_features,
+            "wallpaper-engine-util-controller-lowering",
+        );
+    }
     if kind == "particle-emitter"
         && let Some(properties) = scene_particle_properties_from_object(object)
     {
@@ -3410,6 +3434,115 @@ fn scene_builtin_util_model(model_path: &str) -> Option<SceneSourceModelConversi
         render_size: None,
         original_path: model_path.to_owned(),
     })
+}
+
+fn scene_controller_from_object(
+    object: &Map<String, Value>,
+    node_id: &str,
+    source_model: Option<&SceneSourceModelConversion>,
+) -> Option<(Value, ScenePendingController)> {
+    let utility = source_model?.value.get("utility").and_then(Value::as_str)?;
+    let script_properties = scene_script_properties_from_object(object)?;
+    let target_layer = string_field(
+        script_properties,
+        &["targetLayerId", "targetlayerid", "target_layer_id"],
+    )?;
+    if target_layer.trim().is_empty() {
+        return None;
+    }
+    let default_hide_target = scene_script_property_bool(
+        script_properties,
+        &["defaultHideTarget", "defaulthidetarget"],
+    )
+    .unwrap_or(false);
+    let controller_kind = scene_controller_kind(utility, script_properties);
+    let property = format!("scene.controller.{node_id}.active");
+    let mut controller = Map::new();
+    controller.insert("runtime".to_owned(), Value::String("native".to_owned()));
+    controller.insert("kind".to_owned(), Value::String(controller_kind.to_owned()));
+    controller.insert("utility".to_owned(), Value::String(utility.to_owned()));
+    controller.insert(
+        "target_layer".to_owned(),
+        Value::String(target_layer.clone()),
+    );
+    controller.insert("property".to_owned(), Value::String(property.clone()));
+    controller.insert("default_hide_target".to_owned(), json!(default_hide_target));
+    for key in [
+        "allowAutoPlay",
+        "cooldownSec",
+        "endTimePercent",
+        "fadeInDuration",
+        "fadeOutDuration",
+        "hideWhenPaused",
+        "hideWhenStopped",
+        "isClickable",
+        "loopCount",
+        "loopPlay",
+        "mouseInactiveSec",
+        "playbackSpeed",
+        "resetOnClick",
+        "resetOnRestart",
+        "startDelay",
+        "startTimePercent",
+        "togglePlay",
+    ] {
+        if let Some(value) = script_properties.get(key) {
+            controller.insert(scene_controller_property_name(key), value.clone());
+        }
+    }
+    Some((
+        Value::Object(controller),
+        ScenePendingController {
+            controller_node_id: node_id.to_owned(),
+            controller_kind,
+            target_layer,
+            default_hide_target,
+            property,
+        },
+    ))
+}
+
+fn scene_script_properties_from_object(object: &Map<String, Value>) -> Option<&Map<String, Value>> {
+    object
+        .get("visible")
+        .and_then(Value::as_object)
+        .and_then(|visible| visible.get("scriptproperties"))
+        .or_else(|| object.get("scriptproperties"))
+        .and_then(Value::as_object)
+}
+
+fn scene_script_property_bool(object: &Map<String, Value>, keys: &[&str]) -> Option<bool> {
+    keys.iter()
+        .filter_map(|key| object.get(*key))
+        .find_map(value_to_bool)
+}
+
+fn scene_controller_kind(utility: &str, script_properties: &Map<String, Value>) -> &'static str {
+    if utility == "fullscreenlayer" || script_properties.contains_key("mouseInactiveSec") {
+        "idle-video-switch"
+    } else if utility == "composelayer"
+        || script_properties.contains_key("isClickable")
+        || script_properties.contains_key("togglePlay")
+    {
+        "click-video-switch"
+    } else {
+        "property-video-switch"
+    }
+}
+
+fn scene_controller_property_name(key: &str) -> String {
+    let mut output = String::new();
+    for (index, character) in key.chars().enumerate() {
+        if character.is_ascii_uppercase() {
+            if index > 0 {
+                output.push('_');
+            }
+            output.push(character.to_ascii_lowercase());
+        } else {
+            output.push(character);
+        }
+    }
+    output
 }
 
 fn scene_model_frame_size(model_object: &Map<String, Value>) -> Option<SceneWeModelFrameSize> {
@@ -4680,10 +4813,25 @@ fn scene_full_scene_status(
                     .iter()
                     .any(|feature| feature == "scenescript")
             {
-                push_unique(
-                    &mut status.pending_boundaries,
-                    "script-controlled-video-layer-switching",
-                );
+                if report
+                    .converted_features
+                    .iter()
+                    .any(|feature| feature == "native-scene-controller-video-switch-binding")
+                {
+                    push_unique(
+                        &mut status.completed_boundaries,
+                        "script-controlled-video-layer-switching",
+                    );
+                    push_unique(
+                        &mut status.pending_boundaries,
+                        "scene-controller-input-source",
+                    );
+                } else {
+                    push_unique(
+                        &mut status.pending_boundaries,
+                        "script-controlled-video-layer-switching",
+                    );
+                }
             }
         }
     } else {
@@ -4698,6 +4846,166 @@ fn scene_full_scene_status(
 struct SceneVideoVisibilityCounts {
     total: usize,
     initial_visible: usize,
+}
+
+fn scene_lower_pending_controllers(nodes: &mut [Value], context: &mut SceneDocumentBuildContext) {
+    if context.pending_controllers.is_empty() {
+        return;
+    }
+    let index = scene_node_lookup_index(nodes);
+    for controller in context.pending_controllers.clone() {
+        let Some(target_node_id) = index
+            .get(&controller.target_layer)
+            .or_else(|| index.get(&normalize_project_key(&controller.target_layer)))
+            .cloned()
+        else {
+            scene_push_unsupported(
+                context,
+                "scene-controller-target-resolution",
+                "Wallpaper Engine utility controller target layer could not be resolved to a gscene node.",
+                Some(&controller.target_layer),
+            );
+            continue;
+        };
+        let target_kind = index
+            .get(&format!("kind:{target_node_id}"))
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_owned());
+        if controller.default_hide_target {
+            scene_set_node_initial_opacity(nodes, &target_node_id, 0.0);
+        }
+        scene_set_controller_target_node(
+            nodes,
+            &controller.controller_node_id,
+            &target_node_id,
+            &target_kind,
+        );
+        context.property_bindings.push(json!({
+            "property": controller.property,
+            "target_node": target_node_id,
+            "target": "opacity",
+            "scale": 1.0,
+            "offset": 0.0
+        }));
+        push_unique(
+            &mut context.converted_features,
+            "native-scene-controller-property-binding",
+        );
+        if target_kind == "video" {
+            push_unique(
+                &mut context.converted_features,
+                "native-scene-controller-video-switch-binding",
+            );
+        }
+        push_unique(
+            &mut context.converted_features,
+            &format!("native-scene-controller-{}", controller.controller_kind),
+        );
+    }
+}
+
+fn scene_node_lookup_index(nodes: &[Value]) -> BTreeMap<String, String> {
+    let mut index = BTreeMap::new();
+    for node in nodes {
+        scene_collect_node_lookup_index(node, &mut index);
+    }
+    index
+}
+
+fn scene_collect_node_lookup_index(node: &Value, index: &mut BTreeMap<String, String>) {
+    let Some(object) = node.as_object() else {
+        return;
+    };
+    let Some(node_id) = object.get("id").and_then(Value::as_str) else {
+        return;
+    };
+    index.insert(node_id.to_owned(), node_id.to_owned());
+    if let Some(name) = object.get("name").and_then(Value::as_str) {
+        index.insert(name.to_owned(), node_id.to_owned());
+        index.insert(normalize_project_key(name), node_id.to_owned());
+    }
+    if let Some(source_id) = object
+        .get("provenance")
+        .and_then(Value::as_object)
+        .and_then(|provenance| provenance.get("source_id"))
+        .and_then(Value::as_str)
+    {
+        index.insert(source_id.to_owned(), node_id.to_owned());
+    }
+    if let Some(kind) = object.get("type").and_then(Value::as_str) {
+        index.insert(format!("kind:{node_id}"), kind.to_owned());
+    }
+    if let Some(children) = object.get("children").and_then(Value::as_array) {
+        for child in children {
+            scene_collect_node_lookup_index(child, index);
+        }
+    }
+}
+
+fn scene_set_node_initial_opacity(nodes: &mut [Value], node_id: &str, opacity: f64) -> bool {
+    for node in nodes {
+        let Some(object) = node.as_object_mut() else {
+            continue;
+        };
+        if object.get("id").and_then(Value::as_str) == Some(node_id) {
+            object.insert("visible".to_owned(), Value::Bool(true));
+            object.insert("opacity".to_owned(), json!(opacity.clamp(0.0, 1.0)));
+            return true;
+        }
+        if let Some(children) = object.get_mut("children").and_then(Value::as_array_mut)
+            && scene_set_node_initial_opacity(children, node_id, opacity)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn scene_set_controller_target_node(
+    nodes: &mut [Value],
+    controller_node_id: &str,
+    target_node_id: &str,
+    target_kind: &str,
+) -> bool {
+    for node in nodes {
+        let Some(object) = node.as_object_mut() else {
+            continue;
+        };
+        if object.get("id").and_then(Value::as_str) == Some(controller_node_id) {
+            let properties = object
+                .entry("properties".to_owned())
+                .or_insert_with(|| Value::Object(Map::new()));
+            let Some(properties) = properties.as_object_mut() else {
+                return false;
+            };
+            let controller = properties
+                .entry("controller".to_owned())
+                .or_insert_with(|| Value::Object(Map::new()));
+            let Some(controller) = controller.as_object_mut() else {
+                return false;
+            };
+            controller.insert(
+                "target_node".to_owned(),
+                Value::String(target_node_id.to_owned()),
+            );
+            controller.insert(
+                "target_type".to_owned(),
+                Value::String(target_kind.to_owned()),
+            );
+            return true;
+        }
+        if let Some(children) = object.get_mut("children").and_then(Value::as_array_mut)
+            && scene_set_controller_target_node(
+                children,
+                controller_node_id,
+                target_node_id,
+                target_kind,
+            )
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn scene_video_visibility_counts(nodes: &[Value]) -> SceneVideoVisibilityCounts {
@@ -4720,7 +5028,8 @@ fn scene_count_video_visibility(
         && object
             .get("visible")
             .and_then(Value::as_bool)
-            .unwrap_or(true);
+            .unwrap_or(true)
+        && object.get("opacity").and_then(value_to_f64).unwrap_or(1.0) > 0.0;
     if object.get("type").and_then(Value::as_str) == Some("video") {
         counts.total = counts.total.saturating_add(1);
         if visible {
@@ -9313,6 +9622,19 @@ void main() {}
                   "name": "Interaction",
                   "visible": false,
                   "image": "models/interaction.json"
+                },
+                {
+                  "id": 3,
+                  "name": "Interaction Controller",
+                  "image": "models/util/composelayer.json",
+                  "visible": {
+                    "value": true,
+                    "scriptproperties": {
+                      "targetLayerId": "Interaction",
+                      "defaultHideTarget": true,
+                      "togglePlay": true
+                    }
+                  }
                 }
               ]
             }"#,
@@ -9351,12 +9673,41 @@ void main() {}
         .unwrap();
         assert_eq!(scene["nodes"][0]["type"], "video");
         assert_eq!(scene["nodes"][1]["type"], "video");
-        assert_eq!(scene["nodes"][1]["visible"], false);
+        assert_eq!(scene["nodes"][1]["visible"], true);
+        assert_eq!(scene["nodes"][1]["opacity"], 0.0);
+        assert_eq!(scene["nodes"][2]["type"], "script");
+        assert_eq!(
+            scene["nodes"][2]["properties"]["controller"]["kind"],
+            "click-video-switch"
+        );
+        assert_eq!(
+            scene["nodes"][2]["properties"]["controller"]["target_node"],
+            scene["nodes"][1]["id"]
+        );
+        assert!(
+            scene["property_bindings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|binding| {
+                    binding["target_node"] == scene["nodes"][1]["id"]
+                        && binding["target"] == "opacity"
+                        && binding["property"]
+                            .as_str()
+                            .is_some_and(|property| property.starts_with("scene.controller."))
+                })
+        );
         assert!(
             scene["native_lowering"]["completed_boundaries"]
                 .as_array()
                 .unwrap()
                 .contains(&json!("initial-visible-video-scene-composition"))
+        );
+        assert!(
+            scene["native_lowering"]["completed_boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("script-controlled-video-layer-switching"))
         );
         assert!(
             !scene["native_lowering"]["pending_boundaries"]
@@ -9365,10 +9716,45 @@ void main() {}
                 .contains(&json!("mixed-video-scene-composition"))
         );
         assert!(
-            scene["native_lowering"]["pending_boundaries"]
+            !scene["native_lowering"]["pending_boundaries"]
                 .as_array()
                 .unwrap()
                 .contains(&json!("script-controlled-video-layer-switching"))
+        );
+        assert!(
+            scene["native_lowering"]["pending_boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("scene-controller-input-source"))
+        );
+        let controller_property = scene["property_bindings"][0]["property"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let target_node = scene["nodes"][1]["id"].as_str().unwrap().to_owned();
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let inactive = document.snapshot_at_with_property_resolver(0, |_| None);
+        assert_eq!(
+            inactive
+                .layers
+                .iter()
+                .find(|layer| layer.id == target_node)
+                .unwrap()
+                .opacity,
+            0.0
+        );
+        let active = document.snapshot_at_with_property_resolver(0, |property| {
+            (property == controller_property).then_some(1.0)
+        });
+        assert_eq!(
+            active
+                .layers
+                .iter()
+                .find(|layer| layer.id == target_node)
+                .unwrap()
+                .opacity,
+            1.0
         );
     }
 
