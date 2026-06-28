@@ -18,7 +18,8 @@ mod tex;
 
 use self::ir::{
     SceneAnimationLayerIr, SceneControllerIr, SceneNumericPropertyBindingIr,
-    SceneNumericPropertyBindingIrResult, SceneTimelineIr,
+    SceneNumericPropertyBindingIrResult, SceneParticleIr, SceneTimelineIr,
+    scene_particle_seed_from_object,
 };
 use self::tex::{SceneWeModelFrameSize, SceneWeTexImage, SceneWeTexPayload};
 
@@ -1957,7 +1958,8 @@ fn scene_node_from_object(
         );
     }
     if kind == "particle-emitter"
-        && let Some(properties) = scene_particle_properties_from_object(object)
+        && let Some(properties) =
+            scene_particle_properties_from_object(project, object, report, context)
     {
         scene_merge_node_properties(&mut node, properties);
         push_unique(&mut report.converted_features, "native-particle-runtime");
@@ -2104,75 +2106,70 @@ fn scene_property_is_audio_response(property: &str) -> bool {
         || property.contains("treble")
 }
 
-fn scene_particle_properties_from_object(object: &Map<String, Value>) -> Option<Value> {
-    let type_hint = string_field(object, &["type", "class", "kind"])
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let source = string_field(object, &["particle", "emitter"]);
-    if source.is_none() && !type_hint.contains("particle") && !type_hint.contains("emitter") {
-        return None;
-    }
-
-    let mut particle = Map::new();
-    if let Some(source) = source {
-        particle.insert("source".to_owned(), Value::String(source));
-    }
-    if let Some(seed) = object
-        .get("id")
-        .and_then(value_to_i64)
-        .and_then(|value| u64::try_from(value).ok())
-    {
-        particle.insert("seed".to_owned(), json!(seed));
-    }
-    if let Some(size) = scene_size_component_from_object(object, 0)
-        && size.is_finite()
-        && size > 0.0
-    {
-        particle.insert("spawn_width".to_owned(), json!(size));
-    }
-    if let Some(size) = scene_size_component_from_object(object, 1)
-        && size.is_finite()
-        && size > 0.0
-    {
-        particle.insert("spawn_height".to_owned(), json!(size));
-    }
-    if let Some(shape) = string_field(object, &["shape"]) {
-        particle.insert("shape".to_owned(), Value::String(shape));
-    }
-    if let Some(instance_override) = object
-        .get("instanceoverride")
-        .or_else(|| object.get("instanceOverride"))
-        .and_then(Value::as_object)
-    {
-        scene_particle_insert_number(instance_override, &mut particle, "count", "count");
-        scene_particle_insert_number(instance_override, &mut particle, "rate", "rate");
-        scene_particle_insert_number(instance_override, &mut particle, "speed", "speed");
-        scene_particle_insert_number(instance_override, &mut particle, "size", "size");
-        scene_particle_insert_number(instance_override, &mut particle, "lifetime", "lifetime");
-    }
-    scene_particle_insert_number(object, &mut particle, "count", "count");
-    scene_particle_insert_number(object, &mut particle, "rate", "rate");
-    scene_particle_insert_number(object, &mut particle, "speed", "speed");
-    scene_particle_insert_number(object, &mut particle, "lifetime", "lifetime");
-
-    Some(json!({ "particle": particle }))
+fn scene_particle_properties_from_object(
+    project: &WallpaperEngineProject,
+    object: &Map<String, Value>,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+) -> Option<Value> {
+    let spawn_width = scene_size_component_from_object(object, 0);
+    let spawn_height = scene_size_component_from_object(object, 1);
+    let spawn_size = match (spawn_width, spawn_height) {
+        (Some(width), Some(height)) => Some((width, height)),
+        _ => None,
+    };
+    let particle_definition =
+        scene_particle_definition_from_object(project, object, report, context);
+    SceneParticleIr::from_wallpaper_engine_object(
+        object,
+        scene_particle_seed_from_object(object),
+        spawn_size,
+        particle_definition.as_ref(),
+    )
+    .map(|particle| particle.properties_value())
 }
 
-fn scene_particle_insert_number(
-    source: &Map<String, Value>,
-    particle: &mut Map<String, Value>,
-    source_key: &str,
-    target_key: &str,
-) {
-    if particle.contains_key(target_key) {
-        return;
+fn scene_particle_definition_from_object(
+    project: &WallpaperEngineProject,
+    object: &Map<String, Value>,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+) -> Option<Value> {
+    let particle = object.get("particle")?;
+    if particle.is_object() {
+        push_unique(
+            &mut context.converted_features,
+            "wallpaper-engine-particle-definition-lowering",
+        );
+        push_unique(
+            &mut report.converted_features,
+            "wallpaper-engine-particle-definition-lowering",
+        );
+        return Some(particle.clone());
     }
-    let Some(value) = source.get(source_key).and_then(value_to_f64_unwrapped) else {
-        return;
-    };
-    if value.is_finite() {
-        particle.insert(target_key.to_owned(), json!(value));
+    let source = particle.as_str()?.trim();
+    if !scene_particle_definition_source_path(source) {
+        return None;
     }
+    let definition = read_scene_project_json(project, source, "we-particle-json", report, context)?;
+    push_unique(
+        &mut context.converted_features,
+        "wallpaper-engine-particle-definition-lowering",
+    );
+    push_unique(
+        &mut report.converted_features,
+        "wallpaper-engine-particle-definition-lowering",
+    );
+    Some(definition)
+}
+
+fn scene_particle_definition_source_path(source: &str) -> bool {
+    let source = source.replace('\\', "/");
+    source.eq_ignore_ascii_case("particle.json")
+        || source
+            .rsplit_once('.')
+            .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("json"))
+        || source.to_ascii_lowercase().starts_with("particles/")
 }
 
 fn scene_child_nodes_from_object(
@@ -6336,7 +6333,7 @@ impl FullSceneConversionStatus {
             target_runtime: "native-vulkan-full-scene".to_owned(),
             current_runtime: "native-vulkan-scene-runtime".to_owned(),
             progress_estimate_percent: 99,
-            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, native scene graph transform/opacity execution, WE text/value wrappers, visible property bindings, shape/solid/radius objects, native deterministic particle emitter expansion, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, deterministic animation-layer keyframes, per-frame fixed-topology timeline geometry updates, geometry field animation, parallax depth, WE TEXV0005/TEXB0004 RGBA textures into native BC7 .gtex GPU textures, and WE TEXB0004 video payloads into native gscene video resources including spritesheet atlases into gscene text/property/shape/timeline/camera/image/video fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime, and explicit unsupported Wallpaper Engine systems without legacy fallback or preview-image scene substitution".to_owned(),
+            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, native scene graph transform/opacity execution, WE text/value wrappers, visible property bindings, shape/solid/radius objects, native deterministic particle emitter expansion, WE particle runtime fields, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, deterministic animation-layer keyframes, per-frame fixed-topology timeline geometry updates, geometry field animation, parallax depth, WE TEXV0005/TEXB0004 RGBA textures into native BC7 .gtex GPU textures, and WE TEXB0004 video payloads into native gscene video resources including spritesheet atlases into gscene text/property/shape/timeline/camera/image/video fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime, and explicit unsupported Wallpaper Engine systems without legacy fallback or preview-image scene substitution".to_owned(),
             source_scene_metadata: Vec::new(),
             completed_boundaries: vec![
                 "package-scene-detection".to_owned(),
@@ -6358,6 +6355,7 @@ impl FullSceneConversionStatus {
                 "scene-we-spritesheet-atlas-runtime".to_owned(),
                 "scene-geometry-field-animation-runtime".to_owned(),
                 "per-frame-timeline-geometry-runtime".to_owned(),
+                "wallpaper-engine-particle-field-lowering".to_owned(),
                 "native-particle-system-runtime".to_owned(),
                 "parallax-property-camera-model".to_owned(),
                 "native-vulkan-sampled-image-scene-path".to_owned(),
@@ -7268,6 +7266,11 @@ void main() {}
         assert!(
             full_scene
                 .completed_boundaries
+                .contains(&"wallpaper-engine-particle-field-lowering".to_owned())
+        );
+        assert!(
+            full_scene
+                .completed_boundaries
                 .contains(&"native-particle-system-runtime".to_owned())
         );
         assert!(
@@ -7617,6 +7620,165 @@ void main() {}
             .expect("particle node");
         assert_eq!(particle["properties"]["particle"]["source"], "sparks");
         assert_eq!(scene["systems"]["particles"], "ready");
+    }
+
+    #[test]
+    fn lowers_wallpaper_engine_particle_runtime_fields_to_native_scene() {
+        let source = TestDir::new("we-scene-particle-fields-source");
+        let output = TestDir::new("we-scene-particle-fields-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r##"{
+              "objects": [
+                {
+                  "id": 42,
+                  "type": "particle",
+                  "particle": "particles/spark.json",
+                  "size": [320, 180, 0],
+                  "directionDeg": -45,
+                  "spreadDeg": 30,
+                  "gravityDirection": [0, 1, 0],
+                  "gravityStrength": 16,
+                  "instanceoverride": {
+                    "count": 12,
+                    "speedMin": 8,
+                    "speedMax": 24,
+                    "size": [6, 10, 0],
+                    "lifetime": 2,
+                    "fadeOut": false,
+                    "colorn": [1, 0.5, 0]
+                  }
+                }
+              ]
+            }"##,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Particle Field Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let particle = &scene["nodes"][0]["properties"]["particle"];
+        assert_eq!(particle["source"], "particles/spark.json");
+        assert_eq!(particle["seed"], 42);
+        assert_eq!(particle["spawn_width"], 320.0);
+        assert_eq!(particle["spawn_height"], 180.0);
+        assert_eq!(particle["count"], 12);
+        assert_eq!(particle["speed_min"], 8.0);
+        assert_eq!(particle["speed_max"], 24.0);
+        assert_eq!(particle["width"], 6.0);
+        assert_eq!(particle["height"], 10.0);
+        assert_eq!(particle["lifetime"], 2.0);
+        assert_eq!(particle["fade"], false);
+        assert_eq!(particle["color"], "#ff8000");
+        assert_eq!(particle["direction_deg"], -45.0);
+        assert_eq!(particle["spread_deg"], 30.0);
+        assert_eq!(particle["gravity_x"], 0.0);
+        assert_eq!(particle["gravity_y"], 16.0);
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(500, |_| None);
+        assert_eq!(snapshot.layers.len(), 12);
+        assert_eq!(snapshot.layers[0].width, Some(6.0));
+        assert_eq!(snapshot.layers[0].height, Some(10.0));
+        assert_eq!(snapshot.layers[0].color.as_deref(), Some("#ff8000"));
+    }
+
+    #[test]
+    fn lowers_wallpaper_engine_particle_definition_file_to_native_scene() {
+        let source = TestDir::new("we-scene-particle-definition-source");
+        let output = TestDir::new("we-scene-particle-definition-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r##"{
+              "objects": [
+                {
+                  "id": 77,
+                  "type": "particle",
+                  "particle": "particles/spark.json"
+                }
+              ]
+            }"##,
+        );
+        source.write_file(
+            "particles/spark.json",
+            r##"{
+              "maxcount": 32,
+              "material": "materials/spark.json",
+              "emitter": [
+                {
+                  "name": "boxrandom",
+                  "distancemax": [96, 48, 0],
+                  "directions": [1, 0.5, 0],
+                  "rate": 16,
+                  "speedmin": 4,
+                  "speedmax": 12
+                }
+              ],
+              "initializer": [
+                { "name": "sizerandom", "min": 10, "max": 18 },
+                { "name": "lifetimerandom", "min": 1, "max": 3 },
+                { "name": "colorrandom", "min": [0, 0.5, 1], "max": [1, 0.5, 0] }
+              ],
+              "operator": [
+                { "name": "movement", "gravity": [0, 18, 0] }
+              ],
+              "renderer": [
+                { "name": "sprite", "fadealpha": true }
+              ]
+            }"##,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Particle Definition Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let particle = &scene["nodes"][0]["properties"]["particle"];
+        assert_eq!(particle["source"], "particles/spark.json");
+        assert_eq!(particle["seed"], 77);
+        assert_eq!(particle["count"], 32);
+        assert_eq!(particle["material"], "materials/spark.json");
+        assert_eq!(particle["rate"], 16.0);
+        assert_eq!(particle["speed_min"], 4.0);
+        assert_eq!(particle["speed_max"], 12.0);
+        assert_eq!(particle["spawn_width"], 192.0);
+        assert_eq!(particle["spawn_height"], 48.0);
+        assert_eq!(particle["size"], 7.0);
+        assert_eq!(particle["lifetime"], 2.0);
+        assert_eq!(particle["color"], "#808080");
+        assert_eq!(particle["gravity_x"], 0.0);
+        assert_eq!(particle["gravity_y"], 18.0);
+        assert_eq!(particle["fade"], true);
+
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"wallpaper-engine-particle-definition-lowering".to_owned())
+        );
     }
 
     #[test]
