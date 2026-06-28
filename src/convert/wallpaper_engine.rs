@@ -2230,7 +2230,11 @@ fn scene_node_from_object(
                 .as_object()
                 .is_some_and(|properties| properties.contains_key("particle"))
         });
-    if matches!(kind, "shader" | "script" | "unknown")
+    let native_script_ready =
+        kind == "script" && scene_builtin_util_script_native_ready(source_model.as_ref(), &node);
+    if kind == "shader"
+        || (kind == "script" && !native_script_ready)
+        || kind == "unknown"
         || (kind == "audio-response" && !native_audio_response_ready)
         || (kind == "particle-emitter" && !native_particle_ready)
     {
@@ -2246,6 +2250,34 @@ fn scene_node_from_object(
         );
     }
     Value::Object(node)
+}
+
+fn scene_builtin_util_script_native_ready(
+    source_model: Option<&SceneSourceModelConversion>,
+    node: &Map<String, Value>,
+) -> bool {
+    let Some(model) = source_model else {
+        return false;
+    };
+    if !model
+        .value
+        .get("builtin")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let utility = model.value.get("utility").and_then(Value::as_str);
+    if !matches!(utility, Some("fullscreenlayer" | "composelayer")) {
+        return false;
+    }
+    node.get("properties")
+        .and_then(Value::as_object)
+        .and_then(|properties| properties.get("controller"))
+        .and_then(Value::as_object)
+        .and_then(|controller| controller.get("runtime"))
+        .and_then(Value::as_str)
+        .is_none_or(|runtime| runtime == "native")
 }
 
 fn scene_merge_node_properties(node: &mut Map<String, Value>, properties: Value) {
@@ -3250,6 +3282,16 @@ fn scene_material_textures(
             }
             continue;
         }
+        if let Some(resource) = scene_generate_builtin_particle_texture_resource(
+            output_dir, texture, report, context, resources,
+        ) {
+            if render_resource.is_none() {
+                render_resource = Some(resource.clone());
+                render_kind = Some("image");
+            }
+            texture_resources.push(resource);
+            continue;
+        }
         let resource_kind = if is_image_path(texture) {
             "image"
         } else if is_video_path(texture) {
@@ -3561,6 +3603,106 @@ fn scene_copy_resource_as(
     }
     resources.push(resource);
     Some(resource_id)
+}
+
+fn scene_generate_builtin_particle_texture_resource(
+    output_dir: &Path,
+    source_path: &str,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) -> Option<String> {
+    let stem = scene_builtin_particle_texture_stem(source_path)?;
+    let resource_id = scene_next_resource_id(context, "image", &stem);
+    let dest_dir = output_dir
+        .join("assets/scene-resources")
+        .join(&context.resource_scope);
+    if let Err(err) = fs::create_dir_all(&dest_dir) {
+        report.errors.push(format!(
+            "Failed to create built-in particle texture directory: {err}."
+        ));
+        return None;
+    }
+    let dest = dest_dir.join(format!("{resource_id}.gtex"));
+    let image = scene_builtin_particle_bubble_image();
+    if let Err(err) = gtex::write_bc7_gtex(&dest, &image) {
+        report.errors.push(format!(
+            "Failed to write built-in Wallpaper Engine particle texture {source_path:?} to {}: {err}.",
+            dest.display()
+        ));
+        return None;
+    }
+    let package_path = path_to_package_string(dest.strip_prefix(output_dir).unwrap_or(&dest));
+    report.generated_assets.push(package_path.clone());
+    resources.push(json!({
+        "id": resource_id,
+        "type": "image",
+        "source": package_path,
+        "original_source": source_path,
+        "role": "we-builtin-particle-texture"
+    }));
+    push_unique(
+        &mut context.converted_features,
+        "wallpaper-engine-builtin-particle-texture",
+    );
+    push_unique(
+        &mut report.converted_features,
+        "wallpaper-engine-builtin-particle-texture",
+    );
+    Some(resource_id)
+}
+
+fn scene_builtin_particle_texture_stem(source_path: &str) -> Option<String> {
+    let normalized = source_path.replace('\\', "/").to_ascii_lowercase();
+    let path = normalized
+        .rsplit_once('.')
+        .map(|(path, _)| path)
+        .unwrap_or(&normalized);
+    if !path.starts_with("particle/bubbles/bubble") {
+        return None;
+    }
+    let stem = path
+        .rsplit('/')
+        .next()
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("bubble");
+    Some(format!("we-builtin-{stem}"))
+}
+
+fn scene_builtin_particle_bubble_image() -> SceneWeTexImage {
+    const SIZE: u32 = 64;
+    let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
+    let center = (SIZE as f64 - 1.0) * 0.5;
+    let radius = center;
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = (x as f64 - center) / radius;
+            let dy = (y as f64 - center) / radius;
+            let distance = (dx * dx + dy * dy).sqrt();
+            let rim = (1.0 - ((distance - 0.58).abs() / 0.22)).clamp(0.0, 1.0);
+            let fill = (1.0 - distance).clamp(0.0, 1.0).powf(1.8) * 0.35;
+            let highlight_dx = dx + 0.32;
+            let highlight_dy = dy + 0.35;
+            let highlight_distance = (highlight_dx * highlight_dx + highlight_dy * highlight_dy)
+                .sqrt()
+                .min(1.0);
+            let highlight = (1.0 - highlight_distance / 0.32).clamp(0.0, 1.0).powf(2.2);
+            let alpha = ((rim * 0.65 + fill + highlight * 0.45)
+                * (1.0 - (distance - 0.98).max(0.0) / 0.02).clamp(0.0, 1.0))
+            .clamp(0.0, 1.0);
+            let color_boost = (fill + highlight * 0.5).clamp(0.0, 1.0);
+            let offset = ((y * SIZE + x) * 4) as usize;
+            rgba[offset] = (190.0 + 65.0 * color_boost) as u8;
+            rgba[offset + 1] = (225.0 + 30.0 * color_boost) as u8;
+            rgba[offset + 2] = 255;
+            rgba[offset + 3] = (alpha * 255.0).round() as u8;
+        }
+    }
+    SceneWeTexImage {
+        width: SIZE,
+        height: SIZE,
+        rgba,
+    }
 }
 
 fn scene_copy_decoded_tex_resource_as(
@@ -8832,6 +8974,105 @@ void main() {}
     }
 
     #[test]
+    fn lowers_wallpaper_engine_builtin_particle_bubble_texture_to_native_gtex() {
+        let source = TestDir::new("we-scene-builtin-particle-texture-source");
+        let output = TestDir::new("we-scene-builtin-particle-texture-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r##"{
+              "objects": [
+                {
+                  "id": 78,
+                  "type": "particle",
+                  "particle": "particles/bubbles.json"
+                }
+              ]
+            }"##,
+        );
+        source.write_file(
+            "particles/bubbles.json",
+            r##"{
+              "maxcount": 8,
+              "material": "materials/bubbles.json",
+              "renderer": [{ "name": "sprite", "fadealpha": true }]
+            }"##,
+        );
+        source.write_file(
+            "materials/bubbles.json",
+            r#"{ "passes": [{ "textures": ["particle/bubbles/bubble3"] }] }"#,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Builtin Particle Texture Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let particle = &scene["nodes"][0]["properties"]["particle"];
+        assert_eq!(particle["textures"][0], "particle/bubbles/bubble3");
+        assert_eq!(particle["render_resource"], "resource-2-we-builtin-bubble3");
+        assert_eq!(
+            scene["nodes"][0]["resource"],
+            "resource-2-we-builtin-bubble3"
+        );
+        assert_eq!(scene["resources"][1]["type"], "image");
+        assert_eq!(scene["resources"][1]["role"], "we-builtin-particle-texture");
+        assert_eq!(
+            scene["resources"][1]["source"],
+            "assets/scene-resources/scene/resource-2-we-builtin-bubble3.gtex"
+        );
+        assert!(
+            output
+                .path()
+                .join("assets/scene-resources/scene/resource-2-we-builtin-bubble3.gtex")
+                .is_file()
+        );
+        assert!(
+            !scene["unsupported_features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| matches!(
+                    feature["feature"].as_str(),
+                    Some("missing-resource" | "we-particle-material-texture-runtime")
+                ))
+        );
+
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"wallpaper-engine-builtin-particle-texture".to_owned())
+        );
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-particle-material-runtime".to_owned())
+        );
+        assert!(
+            !report
+                .unsupported_features
+                .contains(&"missing-resource".to_owned())
+        );
+        assert!(
+            !report
+                .unsupported_features
+                .contains(&"we-particle-material-texture-runtime".to_owned())
+        );
+    }
+
+    #[test]
     fn converts_recordable_audio_response_to_native_scene_runtime() {
         let source = TestDir::new("we-scene-audio-response-source");
         let output = TestDir::new("we-scene-audio-response-output");
@@ -9224,6 +9465,13 @@ void main() {}
                         Some("missing-resource" | "we-model-json")
                     )
                 })
+        );
+        assert!(
+            !scene["unsupported_features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| feature["feature"] == "script")
         );
 
         let report: ConversionReport = serde_json::from_str(
