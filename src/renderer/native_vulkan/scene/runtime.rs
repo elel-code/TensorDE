@@ -52,6 +52,7 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub draw_pass_quad_vertex_buffer_bytes: u64,
     pub draw_pass_quad_index_buffer_bytes: u64,
     pub draw_pass_sampled_image_quads: Vec<NativeVulkanSceneSampledImageQuadSnapshot>,
+    pub draw_pass_sampled_image_sources: Vec<PathBuf>,
     pub draw_pass_sampled_image_recording_ready: bool,
     pub draw_pass_sampled_image_implicit_full_extent_ready: bool,
     pub draw_pass_sampled_image_recording_step_count: usize,
@@ -174,6 +175,7 @@ impl NativeVulkanSceneRuntimeSnapshot {
         self.draw_pass_quad_vertices = Vec::new();
         self.draw_pass_quad_indices = Vec::new();
         self.draw_pass_sampled_image_quads = Vec::new();
+        self.draw_pass_sampled_image_sources = Vec::new();
         self.draw_pass_sampled_image_recording_steps = Vec::new();
         self.draw_pass_sampled_image_vertices = Vec::new();
         self.draw_pass_sampled_image_indices = Vec::new();
@@ -237,10 +239,8 @@ impl NativeVulkanSceneRuntimeSnapshot {
             return None;
         }
 
-        let sources = std::mem::take(&mut self.draw_pass_sampled_image_quads)
-            .into_iter()
-            .map(|quad| quad.source)
-            .collect::<Vec<_>>();
+        let sources = std::mem::take(&mut self.draw_pass_sampled_image_sources);
+        self.draw_pass_sampled_image_quads = Vec::new();
         let source = sources.first().cloned()?;
         let draw_steps = std::mem::take(&mut self.draw_pass_sampled_image_recording_steps)
             .into_iter()
@@ -425,7 +425,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
             else {
                 continue;
             };
-            let resource_index = sampled_sources.len().min(u32::MAX as usize) as u32;
+            let resource_index =
+                native_vulkan_scene_sampled_source_index(&mut sampled_sources, source);
             let first_vertex = sampled_vertices.len().min(u32::MAX as usize) as u32;
             let first_index = sampled_indices.len().min(u32::MAX as usize) as u32;
             sampled_draw_steps.push(NativeVulkanVulkanaliaSceneSampledImageDrawStep {
@@ -436,7 +437,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
                 fit: Some(fit),
                 texture_region,
             });
-            sampled_sources.push(source);
             sampled_vertices.extend(vertices.into_iter().map(|vertex| {
                 NativeVulkanVulkanaliaSceneSampledImageVertex::new(
                     vertex.position,
@@ -509,6 +509,15 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
         solid_geometry,
         sampled_geometry,
     })
+}
+
+fn native_vulkan_scene_sampled_source_index(sources: &mut Vec<PathBuf>, source: PathBuf) -> u32 {
+    if let Some(index) = sources.iter().position(|existing| existing == &source) {
+        return index.min(u32::MAX as usize) as u32;
+    }
+    let index = sources.len().min(u32::MAX as usize) as u32;
+    sources.push(source);
+    index
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -664,11 +673,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
     );
     let vulkanalia_sampled_image = native_vulkan_vulkanalia_scene_sampled_image_plan(
         NativeVulkanVulkanaliaSceneSampledImagePlanInput {
-            sampled_image_sources: pass_plan
-                .sampled_image_quads
-                .iter()
-                .map(|quad| quad.source.clone())
-                .collect(),
+            sampled_image_sources: pass_plan.sampled_image_sources.clone(),
             recording_step_count: pass_plan.sampled_image_recording_steps.len(),
             vertex_count: pass_plan.sampled_image_vertices.len(),
             index_count: pass_plan.sampled_image_indices.len(),
@@ -779,6 +784,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 transform: quad.transform,
             })
             .collect(),
+        draw_pass_sampled_image_sources: pass_plan.sampled_image_sources,
         draw_pass_sampled_image_recording_ready: pass_plan.sampled_image_recording_ready,
         draw_pass_sampled_image_implicit_full_extent_ready: pass_plan
             .sampled_image_implicit_full_extent_ready,
@@ -2822,6 +2828,35 @@ mod tests {
         assert!(snapshot.scene_sampled_image_descriptor_heap_required);
         assert_eq!(snapshot.vulkanalia_sampled_image.sampled_image_count, 2);
         assert_eq!(snapshot.vulkanalia_sampled_image.draw_indexed_count, 2);
+    }
+
+    #[test]
+    fn scene_runtime_snapshot_deduplicates_sampled_image_sources() {
+        let mut first = scene_test_layer("first", SceneNodeKind::Image);
+        first.source = Some(PathBuf::from("/tmp/particle-spark.gtex"));
+        first.width = Some(16.0);
+        first.height = Some(16.0);
+        let mut second = scene_test_layer("second", SceneNodeKind::Image);
+        second.source = Some(PathBuf::from("/tmp/particle-spark.gtex"));
+        second.width = Some(16.0);
+        second.height = Some(16.0);
+        second.transform.x = 24.0;
+        let item = scene_test_item(vec![first, second], None);
+
+        let mut snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+        let (_, sampled_geometry) = snapshot
+            .take_vulkanalia_sampled_image_geometry_input()
+            .expect("sampled image geometry");
+
+        assert_eq!(
+            sampled_geometry.sources,
+            vec![PathBuf::from("/tmp/particle-spark.gtex")]
+        );
+        assert_eq!(sampled_geometry.draw_steps.len(), 2);
+        assert_eq!(sampled_geometry.draw_steps[0].resource_index, 0);
+        assert_eq!(sampled_geometry.draw_steps[1].resource_index, 0);
+        assert_eq!(snapshot.scene_sampled_image_resource_count, 1);
+        assert_eq!(snapshot.vulkanalia_sampled_image.sampled_image_count, 1);
     }
 
     #[test]

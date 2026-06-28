@@ -1371,6 +1371,13 @@ struct SceneSourceModelConversion {
 }
 
 #[derive(Debug, Clone)]
+struct SceneParticleConversion {
+    properties: Value,
+    render_resource: Option<String>,
+    render_properties: Option<Value>,
+}
+
+#[derive(Debug, Clone)]
 struct SceneDecodedTexResource {
     resource_id: String,
     render_kind: &'static str,
@@ -1958,10 +1965,18 @@ fn scene_node_from_object(
         );
     }
     if kind == "particle-emitter"
-        && let Some(properties) =
-            scene_particle_properties_from_object(project, object, report, context)
+        && let Some(particle) = scene_particle_conversion_from_object(
+            project, output_dir, object, report, context, resources,
+        )
     {
-        scene_merge_node_properties(&mut node, properties);
+        scene_merge_node_properties(&mut node, particle.properties);
+        if let Some(properties) = particle.render_properties {
+            scene_merge_node_properties(&mut node, properties);
+        }
+        if let Some(resource) = particle.render_resource {
+            node.entry("resource".to_owned())
+                .or_insert_with(|| Value::String(resource));
+        }
         push_unique(&mut report.converted_features, "native-particle-runtime");
     }
     if let Some(source_path) = &source_path {
@@ -2106,12 +2121,14 @@ fn scene_property_is_audio_response(property: &str) -> bool {
         || property.contains("treble")
 }
 
-fn scene_particle_properties_from_object(
+fn scene_particle_conversion_from_object(
     project: &WallpaperEngineProject,
+    output_dir: &Path,
     object: &Map<String, Value>,
     report: &mut ConversionReport,
     context: &mut SceneDocumentBuildContext,
-) -> Option<Value> {
+    resources: &mut Vec<Value>,
+) -> Option<SceneParticleConversion> {
     let spawn_width = scene_size_component_from_object(object, 0);
     let spawn_height = scene_size_component_from_object(object, 1);
     let spawn_size = match (spawn_width, spawn_height) {
@@ -2120,13 +2137,33 @@ fn scene_particle_properties_from_object(
     };
     let particle_definition =
         scene_particle_definition_from_object(project, object, report, context);
-    SceneParticleIr::from_wallpaper_engine_object(
+    let mut properties = SceneParticleIr::from_wallpaper_engine_object(
         object,
         scene_particle_seed_from_object(object),
         spawn_size,
         particle_definition.as_ref(),
     )
-    .map(|particle| particle.properties_value())
+    .map(|particle| particle.properties_value())?;
+    let (render_resource, render_properties) = particle_definition
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|definition| {
+            scene_particle_material_from_definition(
+                project,
+                output_dir,
+                definition,
+                &mut properties,
+                report,
+                context,
+                resources,
+            )
+        })
+        .unwrap_or((None, None));
+    Some(SceneParticleConversion {
+        properties,
+        render_resource,
+        render_properties,
+    })
 }
 
 fn scene_particle_definition_from_object(
@@ -2170,6 +2207,117 @@ fn scene_particle_definition_source_path(source: &str) -> bool {
             .rsplit_once('.')
             .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("json"))
         || source.to_ascii_lowercase().starts_with("particles/")
+}
+
+fn scene_particle_material_from_definition(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    definition: &Map<String, Value>,
+    particle_properties: &mut Value,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) -> Option<(Option<String>, Option<Value>)> {
+    let material = string_field(definition, &["material"])?;
+    let material_path = scene_material_path(&material);
+    if let Some(resource) = scene_copy_resource_as(
+        project,
+        output_dir,
+        &material_path,
+        "material",
+        Some("we-particle-material"),
+        report,
+        context,
+        resources,
+    ) {
+        scene_particle_insert_property_string(particle_properties, "material_resource", resource);
+    }
+    let Some(material_json) = read_scene_project_json(
+        project,
+        &material_path,
+        "we-particle-material-json",
+        report,
+        context,
+    ) else {
+        return Some((None, None));
+    };
+    let (textures, texture_resources, render_resource, render_properties, render_kind) =
+        scene_material_textures(
+            project,
+            output_dir,
+            &material_json,
+            None,
+            report,
+            context,
+            resources,
+        );
+    if !textures.is_empty() {
+        scene_particle_insert_property_array(
+            particle_properties,
+            "textures",
+            textures.into_iter().map(Value::String).collect(),
+        );
+    }
+    if !texture_resources.is_empty() {
+        scene_particle_insert_property_array(
+            particle_properties,
+            "texture_resources",
+            texture_resources.into_iter().map(Value::String).collect(),
+        );
+    }
+    if let Some(resource) = &render_resource {
+        scene_particle_insert_property_string(
+            particle_properties,
+            "render_resource",
+            resource.clone(),
+        );
+        push_unique(
+            &mut context.converted_features,
+            "scene-we-particle-material-runtime",
+        );
+        push_unique(
+            &mut report.converted_features,
+            "scene-we-particle-material-runtime",
+        );
+    } else {
+        scene_push_unsupported(
+            context,
+            "we-particle-material-texture-runtime",
+            "Wallpaper Engine particle material was preserved, but no renderable texture resource was resolved.",
+            Some(&material_path),
+        );
+    }
+    if let Some(render_kind) = render_kind {
+        scene_particle_insert_property_string(
+            particle_properties,
+            "render_kind",
+            render_kind.to_owned(),
+        );
+    }
+    Some((render_resource, render_properties))
+}
+
+fn scene_particle_insert_property_string(properties: &mut Value, key: &str, value: String) {
+    if let Some(particle) = properties
+        .as_object_mut()
+        .and_then(|properties| properties.get_mut("particle"))
+        .and_then(Value::as_object_mut)
+    {
+        particle.insert(key.to_owned(), Value::String(value));
+    }
+}
+
+fn scene_particle_insert_property_array(properties: &mut Value, key: &str, value: Vec<Value>) {
+    if value.is_empty() {
+        return;
+    }
+    if let Some(particle) = properties
+        .as_object_mut()
+        .and_then(|properties| properties.get_mut("particle"))
+        .and_then(Value::as_object_mut)
+    {
+        particle.insert(key.to_owned(), Value::Array(value));
+    }
 }
 
 fn scene_child_nodes_from_object(
@@ -3755,6 +3903,16 @@ fn scene_full_scene_status(
         status
             .pending_boundaries
             .retain(|boundary| boundary != "particle-systems");
+    }
+    if report
+        .converted_features
+        .iter()
+        .any(|feature| feature == "scene-we-particle-material-runtime")
+    {
+        push_unique(
+            &mut status.completed_boundaries,
+            "scene-we-particle-material-runtime",
+        );
     }
     if scene_material_graph_runtime_ready(report, context) {
         push_unique(
@@ -7740,6 +7898,11 @@ void main() {}
             }"##,
         );
         source.write_file(
+            "materials/spark.json",
+            r#"{ "passes": [{ "textures": ["textures/spark.png"] }] }"#,
+        );
+        source.write_file("textures/spark.png", "not real png");
+        source.write_file(
             PROJECT_FILE,
             r#"{
               "type": "scene",
@@ -7769,6 +7932,23 @@ void main() {}
         assert_eq!(particle["gravity_x"], 0.0);
         assert_eq!(particle["gravity_y"], 18.0);
         assert_eq!(particle["fade"], true);
+        assert_eq!(particle["material_resource"], "resource-1-spark");
+        assert_eq!(particle["render_resource"], "resource-2-spark");
+        assert_eq!(scene["nodes"][0]["resource"], "resource-2-spark");
+        assert_eq!(
+            scene["resources"][1]["source"],
+            "assets/scene-resources/scene/resource-2-spark.png"
+        );
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(500, |_| None);
+        assert_eq!(snapshot.layers.len(), 32);
+        assert_eq!(snapshot.layers[0].kind, crate::core::SceneNodeKind::Image);
+        assert_eq!(
+            snapshot.layers[0].source.as_ref().map(|path| path.as_str()),
+            Some("assets/scene-resources/scene/resource-2-spark.png")
+        );
 
         let report: ConversionReport = serde_json::from_str(
             &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
@@ -7778,6 +7958,19 @@ void main() {}
             report
                 .converted_features
                 .contains(&"wallpaper-engine-particle-definition-lowering".to_owned())
+        );
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-particle-material-runtime".to_owned())
+        );
+        assert!(
+            report
+                .full_scene
+                .as_ref()
+                .unwrap()
+                .completed_boundaries
+                .contains(&"scene-we-particle-material-runtime".to_owned())
         );
     }
 

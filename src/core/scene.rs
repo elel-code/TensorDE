@@ -580,7 +580,7 @@ impl SceneNode {
         let transform = parent_transform.compose(transform);
         let opacity = (parent_opacity * opacity).clamp(0.0, 1.0);
         if self.kind == SceneNodeKind::ParticleEmitter
-            && self.push_particle_snapshot_layers(time_ms, transform, opacity, output)
+            && self.push_particle_snapshot_layers(time_ms, transform, opacity, resources, output)
         {
             for child in &self.children {
                 child.push_snapshot_layers(
@@ -649,6 +649,7 @@ impl SceneNode {
         time_ms: u64,
         transform: SceneTransform,
         opacity: f64,
+        resources: &BTreeMap<&str, &SceneResource>,
         output: &mut Vec<SceneSnapshotLayer>,
     ) -> bool {
         let Some(settings) = SceneParticleEmitterSettings::from_node(self) else {
@@ -658,6 +659,17 @@ impl SceneNode {
         if particle_count == 0 || opacity <= 0.0 {
             return true;
         }
+        let source = self
+            .resource
+            .as_deref()
+            .and_then(|resource| resources.get(resource))
+            .map(|resource| resource.source.clone());
+        let texture_region = scene_texture_region_from_properties(&self.properties, time_ms);
+        let layer_kind = if source.is_some() {
+            SceneNodeKind::Image
+        } else {
+            settings.shape
+        };
         for index in 0..particle_count {
             let layer_opacity = opacity * settings.opacity_at(time_ms, index);
             if layer_opacity <= 0.0 {
@@ -666,9 +678,9 @@ impl SceneNode {
             let (x, y, rotation_deg) = settings.transform_at(time_ms, index);
             output.push(SceneSnapshotLayer {
                 id: format!("{}::particle-{index}", self.id),
-                kind: settings.shape,
-                source: None,
-                texture_region: None,
+                kind: layer_kind,
+                source: source.clone(),
+                texture_region,
                 audio: if index == 0 {
                     self.audio.clone()
                 } else {
@@ -2202,6 +2214,77 @@ mod tests {
                 .iter()
                 .all(|layer| layer.kind != SceneNodeKind::ParticleEmitter)
         );
+    }
+
+    #[test]
+    fn particle_emitter_with_resource_expands_to_sampled_image_layers() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                {
+                    "id": "resource-spark",
+                    "type": "image",
+                    "source": "assets/scene-resources/spark.gtex"
+                }
+            ],
+            "nodes": [
+                {
+                    "id": "spark-emitter",
+                    "type": "particle-emitter",
+                    "resource": "resource-spark",
+                    "properties": {
+                        "particle": {
+                            "count": 2,
+                            "seed": 11,
+                            "lifetime_ms": 1000,
+                            "size": 12,
+                            "speed": 0,
+                            "spawn_width": 0,
+                            "spawn_height": 0,
+                            "fade": false
+                        },
+                        "spritesheet": {
+                            "type": "atlas-grid",
+                            "atlas_width": 64,
+                            "atlas_height": 32,
+                            "frame_width": 32,
+                            "frame_height": 32,
+                            "columns": 2,
+                            "rows": 1,
+                            "frame_count": 2,
+                            "fps": 2,
+                            "loop": true
+                        }
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(500, |_| None);
+
+        assert_eq!(snapshot.layers.len(), 2);
+        assert_eq!(snapshot.layers[0].kind, SceneNodeKind::Image);
+        assert_eq!(
+            snapshot.layers[0].source,
+            Some(PackagePath::new("assets/scene-resources/spark.gtex").unwrap())
+        );
+        assert_eq!(
+            snapshot.layers[0].texture_region,
+            Some(SceneTextureRegion {
+                u_min: 0.5,
+                v_min: 0.0,
+                u_max: 1.0,
+                v_max: 1.0,
+                frame_index: 1,
+                frame_count: 2,
+                columns: 2,
+                rows: 1,
+                fps: Some(2.0),
+                loop_playback: true,
+            })
+        );
+        assert!(snapshot.layers.iter().all(|layer| layer.source.is_some()));
     }
 
     #[test]

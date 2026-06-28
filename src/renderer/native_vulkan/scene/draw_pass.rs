@@ -129,6 +129,7 @@ pub(super) struct NativeVulkanSceneDrawPassPlan {
     pub(super) quad_vertex_buffer_bytes: u64,
     pub(super) quad_index_buffer_bytes: u64,
     pub(super) sampled_image_quads: Vec<NativeVulkanSceneSampledImageQuad>,
+    pub(super) sampled_image_sources: Vec<PathBuf>,
     pub(super) sampled_image_recording_ready: bool,
     pub(super) sampled_image_implicit_full_extent_ready: bool,
     pub(super) sampled_image_recording_steps: Vec<NativeVulkanSceneSampledImageRecordingStep>,
@@ -376,6 +377,7 @@ pub(super) fn native_vulkan_scene_draw_pass_plan(
         quad_vertex_buffer_bytes,
         quad_index_buffer_bytes,
         sampled_image_quads,
+        sampled_image_sources: sampled_image_recording_payload.sources,
         sampled_image_recording_ready,
         sampled_image_implicit_full_extent_ready,
         sampled_image_recording_steps: sampled_image_recording_payload.steps,
@@ -664,6 +666,7 @@ struct NativeVulkanSceneQuadRecordingPayload {
 }
 
 struct NativeVulkanSceneSampledImageRecordingPayload {
+    sources: Vec<PathBuf>,
     steps: Vec<NativeVulkanSceneSampledImageRecordingStep>,
     vertices: Vec<NativeVulkanSceneSampledImageVertex>,
     indices: Vec<u32>,
@@ -722,6 +725,7 @@ fn native_vulkan_scene_quad_recording_payload(
 fn native_vulkan_scene_sampled_image_recording_payload(
     quads: &[NativeVulkanSceneSampledImageQuad],
 ) -> NativeVulkanSceneSampledImageRecordingPayload {
+    let mut sources = Vec::new();
     let mut steps = Vec::new();
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
@@ -729,9 +733,10 @@ fn native_vulkan_scene_sampled_image_recording_payload(
         .iter()
         .filter(|quad| native_vulkan_scene_sampled_image_quad_has_recordable_geometry(quad))
     {
-        let index = steps.len();
         if let Some(quad_vertices) = native_vulkan_scene_sampled_image_vertices(quad) {
-            let resource_index = index as u32;
+            let index = steps.len();
+            let resource_index =
+                native_vulkan_scene_sampled_image_source_index(&mut sources, quad.source.clone());
             let first_vertex = (index as u32).saturating_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT);
             let first_index = (index as u32).saturating_mul(SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT);
             steps.push(NativeVulkanSceneSampledImageRecordingStep {
@@ -767,10 +772,23 @@ fn native_vulkan_scene_sampled_image_recording_payload(
         }
     }
     NativeVulkanSceneSampledImageRecordingPayload {
+        sources,
         steps,
         vertices,
         indices,
     }
+}
+
+fn native_vulkan_scene_sampled_image_source_index(
+    sources: &mut Vec<PathBuf>,
+    source: PathBuf,
+) -> u32 {
+    if let Some(index) = sources.iter().position(|existing| existing == &source) {
+        return index.min(u32::MAX as usize) as u32;
+    }
+    let index = sources.len().min(u32::MAX as usize) as u32;
+    sources.push(source);
+    index
 }
 
 fn native_vulkan_scene_solid_has_recordable_geometry(
