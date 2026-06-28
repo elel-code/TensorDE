@@ -1237,7 +1237,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
         completed_boundaries.push("wallpaper-engine-material-graph-texture-runtime");
     }
     if scene_audio_response_ready {
-        completed_boundaries.push("pipewire-audio-response-runtime");
+        completed_boundaries.push("native-audio-response-visual-runtime");
     }
     if cursor_parallax_input_ready {
         completed_boundaries.push("cursor-parallax-input-source");
@@ -1264,6 +1264,8 @@ fn native_vulkan_full_scene_runtime_snapshot(
     }
     if !scene_audio_response_ready {
         pending_boundaries.push("pipewire-audio-response-runtime");
+    } else {
+        pending_boundaries.push("pipewire-audio-spectrum-input-source");
     }
     if scene_particle_system_detected && !scene_particle_system_ready {
         pending_boundaries.push("particle-systems");
@@ -1931,6 +1933,61 @@ mod tests {
                 .full_scene
                 .completed_boundaries
                 .contains(&"scene-audio-cue-pipewire-present-runtime")
+        );
+    }
+
+    #[test]
+    fn full_scene_runtime_executes_native_audio_response_visual_geometry() {
+        let mut response = scene_test_layer("bass-bars", SceneNodeKind::AudioResponse);
+        response.color = Some("#44ccff".to_owned());
+        response.width = Some(320.0);
+        response.height = Some(48.0);
+        let mut item = scene_test_item(vec![response], None);
+        let NativeVulkanRenderItem::Scene {
+            scene_systems,
+            scene_audio_response_binding_count,
+            ..
+        } = &mut item
+        else {
+            unreachable!("scene_test_item always returns a scene item");
+        };
+        scene_systems.audio_response = SceneSystemStatus::Ready;
+        *scene_audio_response_binding_count = 1;
+
+        let snapshot = native_vulkan_scene_runtime_snapshot(&item).unwrap();
+
+        assert!(snapshot.native_draw_ready);
+        assert!(snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.draw_pass_backend_status,
+            "solid-quad-recording-ready"
+        );
+        assert_eq!(snapshot.draw_ops[0].kind, "audio-response");
+        assert_eq!(
+            snapshot.draw_pass_recordable_quads[0].kind,
+            "audio-response"
+        );
+        assert_eq!(snapshot.full_scene.native_runtime_layer_count, 1);
+        assert_eq!(snapshot.full_scene.native_runtime_pending_layer_count, 0);
+        assert!(snapshot.full_scene.scene_audio_response_detected);
+        assert!(snapshot.full_scene.scene_audio_response_ready);
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"native-audio-response-visual-runtime")
+        );
+        assert!(
+            !snapshot
+                .full_scene
+                .pending_boundaries
+                .contains(&"pipewire-audio-response-runtime")
+        );
+        assert!(
+            snapshot
+                .full_scene
+                .pending_boundaries
+                .contains(&"pipewire-audio-spectrum-input-source")
         );
     }
 

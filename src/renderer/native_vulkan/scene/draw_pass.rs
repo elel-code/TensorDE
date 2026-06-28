@@ -181,7 +181,9 @@ pub(super) fn native_vulkan_scene_draw_pass_plan(
             NativeVulkanSceneDrawOpKind::ColorQuad => {
                 color_op_count = color_op_count.saturating_add(1);
             }
-            NativeVulkanSceneDrawOpKind::Rectangle | NativeVulkanSceneDrawOpKind::Ellipse => {
+            NativeVulkanSceneDrawOpKind::Rectangle
+            | NativeVulkanSceneDrawOpKind::Ellipse
+            | NativeVulkanSceneDrawOpKind::AudioResponse => {
                 vector_shape_op_count = vector_shape_op_count.saturating_add(1);
             }
             NativeVulkanSceneDrawOpKind::Text => {
@@ -503,7 +505,18 @@ pub(super) fn native_vulkan_scene_solid_geometry_from_render_layer(
             return Err("particle-layer-needs-scene-particle-runtime");
         }
         SceneNodeKind::AudioResponse => {
-            return Err("audio-response-layer-needs-scene-audio-runtime");
+            if native_vulkan_scene_render_layer_has_shape_paint(layer)
+                && layer
+                    .width
+                    .is_some_and(|width| width.is_finite() && width > 0.0)
+                && layer
+                    .height
+                    .is_some_and(|height| height.is_finite() && height > 0.0)
+            {
+                "audio-response"
+            } else {
+                return Err("audio-response-layer-missing-native-visual-geometry");
+            }
         }
         SceneNodeKind::Script => return Err("script-layer-needs-scene-script-runtime"),
         SceneNodeKind::Unknown => return Err("unknown-layer-kind"),
@@ -763,7 +776,7 @@ fn native_vulkan_scene_solid_has_recordable_geometry(
     quad: &NativeVulkanSceneRecordableQuad,
 ) -> bool {
     match quad.kind {
-        "rectangle" | "rounded-rectangle" => {
+        "rectangle" | "rounded-rectangle" | "audio-response" => {
             quad.width
                 .is_some_and(|width| width.is_finite() && width > 0.0)
                 && quad
@@ -822,7 +835,7 @@ fn native_vulkan_scene_solid_geometry(
     quad: &NativeVulkanSceneRecordableQuad,
 ) -> Option<(Vec<NativeVulkanSceneQuadVertex>, Vec<u32>)> {
     match quad.kind {
-        "rectangle" => native_vulkan_scene_rectangle_geometry(quad),
+        "rectangle" | "audio-response" => native_vulkan_scene_rectangle_geometry(quad),
         "rounded-rectangle" => native_vulkan_scene_rounded_rectangle_geometry(quad),
         "ellipse" => native_vulkan_scene_ellipse_geometry(quad),
         "path" => native_vulkan_scene_path_geometry(quad),
@@ -1946,6 +1959,9 @@ fn native_vulkan_scene_recordable_quad(
         }
         NativeVulkanSceneDrawOpKind::Text => {
             native_vulkan_scene_recordable_quad_from_op(op, "text")
+        }
+        NativeVulkanSceneDrawOpKind::AudioResponse => {
+            native_vulkan_scene_recordable_quad_from_op(op, "audio-response")
         }
         _ => None,
     }

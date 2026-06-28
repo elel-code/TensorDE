@@ -193,6 +193,17 @@ fn convert_static_image_with_variant_tools(
     report: &mut ConversionReport,
     variant_tools: Option<StaticImageVariantTools<'_>>,
 ) -> Result<Value, ConversionError> {
+    let audio_sources = static_image_audio_sources(project);
+    if !audio_sources.is_empty() {
+        return convert_static_image_audio_scene_with_variant_tools(
+            project,
+            output_dir,
+            report,
+            variant_tools,
+            audio_sources,
+        );
+    }
+
     let source = project.entry_file.as_ref().ok_or_else(|| {
         ConversionError::MissingEntry("image project does not define an entry file".to_owned())
     })?;
@@ -238,6 +249,150 @@ fn convert_static_image_with_variant_tools(
         object.insert("variants".to_owned(), Value::Array(variants));
     }
     Ok(manifest)
+}
+
+fn convert_static_image_audio_scene_with_variant_tools(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    report: &mut ConversionReport,
+    variant_tools: Option<StaticImageVariantTools<'_>>,
+    audio_sources: Vec<String>,
+) -> Result<Value, ConversionError> {
+    let source = project.entry_file.as_ref().ok_or_else(|| {
+        ConversionError::MissingEntry("image project does not define an entry file".to_owned())
+    })?;
+    let copied = copy_project_file(
+        &project.root,
+        source,
+        output_dir.join("assets"),
+        "wallpaper",
+        report,
+    )?;
+    let preview = copy_preview_or_generate(
+        project,
+        output_dir,
+        report,
+        MissingPreviewFallback::StaticImage { source },
+    )?;
+    let dimensions =
+        probe_static_image_dimensions_for_manifest(project, source, report, variant_tools);
+    let scene_source = write_static_image_audio_scene_document(
+        project,
+        output_dir,
+        source,
+        &copied.package_path,
+        dimensions,
+        &audio_sources,
+        report,
+    )?;
+
+    push_unique(&mut report.detected_features, "audio");
+    push_unique(&mut report.converted_features, "static-image");
+    push_unique(&mut report.converted_features, "static-image-audio-scene");
+    push_unique(&mut report.converted_features, "scene");
+    push_unique(&mut report.converted_features, "audio-policy");
+    push_unique(
+        &mut report.converted_features,
+        "scene-audio-cue-renderer-boundary",
+    );
+    push_unique(
+        &mut report.converted_features,
+        "scene-audio-cue-pipewire-present-runtime",
+    );
+    record_full_scene_runtime_boundary(report, None);
+    report.warnings.push(
+        "Converted static image with audio to a first-class Gilder scene document: one static image layer plus native FFmpeg/PipeWire scene audio cues. Static audio is not dropped."
+            .to_owned(),
+    );
+
+    Ok(base_manifest(
+        project,
+        "scene",
+        preview,
+        report,
+        json!({
+            "type": "scene",
+            "source": scene_source
+        }),
+    ))
+}
+
+fn write_static_image_audio_scene_document(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    source_entry: &str,
+    image_package_path: &str,
+    dimensions: Option<ImageDimensions>,
+    audio_sources: &[String],
+    report: &mut ConversionReport,
+) -> Result<String, ConversionError> {
+    let package_path = "assets/scene.gscene.json";
+    let scene_path = output_dir.join(package_path);
+    if let Some(parent) = scene_path.parent() {
+        fs::create_dir_all(parent).map_err(ConversionError::CreateDir)?;
+    }
+
+    let mut resources = vec![json!({
+        "id": "static-image",
+        "type": "image",
+        "source": image_package_path
+    })];
+    let mut cues = Vec::with_capacity(audio_sources.len());
+    for (index, source) in audio_sources.iter().enumerate() {
+        let copied = copy_project_file(
+            &project.root,
+            source,
+            output_dir.join("assets"),
+            &format!("audio-cue-{index}"),
+            report,
+        )?;
+        let resource_id = format!("static-audio-{index}");
+        resources.push(json!({
+            "id": resource_id,
+            "type": "audio",
+            "source": copied.package_path
+        }));
+        cues.push(json!({
+            "resource": resource_id,
+            "source": copied.package_path,
+            "playback_mode": "loop"
+        }));
+    }
+
+    let mut document = json!({
+        "version": 1,
+        "profile": "native-vulkan-full-scene",
+        "source": {
+            "format": "wallpaper-engine-image",
+            "entry": source_entry
+        },
+        "resources": resources,
+        "nodes": [{
+            "id": "static-image-layer",
+            "type": "image",
+            "resource": "static-image",
+            "fit": "cover",
+            "audio": cues
+        }],
+        "systems": {
+            "audio_response": "absent"
+        },
+        "native_lowering": scene_native_lowering_from_status(
+            &FullSceneConversionStatus::native_vulkan_scene_boundary()
+        )
+    });
+    if let Some(dimensions) = dimensions
+        && let Some(object) = document.as_object_mut()
+    {
+        object.insert(
+            "size".to_owned(),
+            json!({ "width": dimensions.width, "height": dimensions.height }),
+        );
+    }
+    write_json_pretty(&scene_path, &document)?;
+    let package_path = path_to_package_string(Path::new(package_path));
+    report.generated_assets.push(package_path.clone());
+    Ok(package_path)
 }
 
 fn convert_video(
@@ -385,8 +540,7 @@ fn convert_scene(
         report,
         json!({
             "type": "scene",
-            "source": scene_source,
-            "max_fps": 60
+            "source": scene_source
         }),
     ))
 }
@@ -575,8 +729,7 @@ fn convert_playlist_item(
             record_scene_runtime_gaps(report);
             json!({
                 "type": "scene",
-                "source": scene_source,
-                "max_fps": 60
+                "source": scene_source
             })
         }
         SourceType::Shader => {
@@ -2703,6 +2856,8 @@ fn scene_node_from_object(
     if !audio.is_empty() {
         node.insert("audio".to_owned(), Value::Array(audio));
     }
+    let native_audio_response_ready =
+        scene_enable_native_audio_response_if_recordable(&node, &node_id, report, context);
     if let Some(provenance) = scene_node_provenance_from_object(
         object,
         original_type.as_deref(),
@@ -2724,7 +2879,8 @@ fn scene_node_from_object(
                 .as_object()
                 .is_some_and(|properties| properties.contains_key("particle"))
         });
-    if matches!(kind, "shader" | "audio-response" | "script" | "unknown")
+    if matches!(kind, "shader" | "script" | "unknown")
+        || (kind == "audio-response" && !native_audio_response_ready)
         || (kind == "particle-emitter" && !native_particle_ready)
     {
         scene_push_unsupported(
@@ -2755,6 +2911,67 @@ fn scene_merge_node_properties(node: &mut Map<String, Value>, properties: Value)
     for (key, value) in new_properties {
         existing.insert(key.clone(), value.clone());
     }
+}
+
+fn scene_enable_native_audio_response_if_recordable(
+    node: &Map<String, Value>,
+    node_id: &str,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+) -> bool {
+    if node.get("type").and_then(Value::as_str) != Some("audio-response") {
+        return false;
+    }
+    let width = node.get("width").and_then(value_to_f64);
+    let height = node.get("height").and_then(value_to_f64);
+    let has_paint = node
+        .get("color")
+        .and_then(Value::as_str)
+        .is_some_and(|color| !color.is_empty())
+        || node
+            .get("stroke_color")
+            .and_then(Value::as_str)
+            .is_some_and(|color| !color.is_empty());
+    let recordable = width.is_some_and(|width| width.is_finite() && width > 0.0)
+        && height.is_some_and(|height| height.is_finite() && height > 0.0)
+        && has_paint;
+    if !recordable {
+        return false;
+    }
+
+    push_unique(
+        &mut report.converted_features,
+        "native-audio-response-runtime",
+    );
+    if !context.property_bindings.iter().any(|binding| {
+        binding
+            .get("target_node")
+            .and_then(Value::as_str)
+            .is_some_and(|target| target == node_id)
+            && binding
+                .get("property")
+                .and_then(Value::as_str)
+                .is_some_and(scene_property_is_audio_response)
+    }) {
+        let base_width = width.unwrap_or(1.0).max(1.0);
+        context.property_bindings.push(json!({
+            "property": "audio.bass",
+            "target_node": node_id,
+            "target": "width",
+            "scale": base_width * 0.7,
+            "offset": base_width * 0.3
+        }));
+    }
+    true
+}
+
+fn scene_property_is_audio_response(property: &str) -> bool {
+    let property = property.to_ascii_lowercase();
+    property.contains("audio")
+        || property.contains("spectrum")
+        || property.contains("bass")
+        || property.contains("mid")
+        || property.contains("treble")
 }
 
 fn scene_particle_properties_from_object(object: &Map<String, Value>) -> Option<Value> {
@@ -4872,6 +5089,14 @@ fn scene_system_status(report: &ConversionReport, feature: &str) -> &'static str
     {
         return "ready";
     }
+    if feature == "audio-response"
+        && report
+            .converted_features
+            .iter()
+            .any(|converted| converted == "native-audio-response-runtime")
+    {
+        return "ready";
+    }
     if report
         .detected_features
         .iter()
@@ -4910,6 +5135,23 @@ fn scene_full_scene_status(
         status
             .pending_boundaries
             .retain(|boundary| boundary != "shader-material-graph");
+    }
+    if report
+        .converted_features
+        .iter()
+        .any(|feature| feature == "native-audio-response-runtime")
+    {
+        push_unique(
+            &mut status.completed_boundaries,
+            "native-audio-response-visual-runtime",
+        );
+        status
+            .pending_boundaries
+            .retain(|boundary| boundary != "audio-response-runtime");
+        push_unique(
+            &mut status.pending_boundaries,
+            "pipewire-audio-spectrum-input-source",
+        );
     }
     status
 }
@@ -5028,11 +5270,15 @@ fn runtime_allow_audio(project: &WallpaperEngineProject, report: &mut Conversion
 
     push_unique(&mut report.detected_features, "audio");
     match project.source_type {
-        SourceType::Video => {
+        SourceType::Video | SourceType::Scene => {
             push_unique(&mut report.converted_features, "audio-policy");
             true
         }
-        SourceType::Web | SourceType::Scene | SourceType::Shader => {
+        SourceType::Image if !static_image_audio_sources(project).is_empty() => {
+            push_unique(&mut report.converted_features, "audio-policy");
+            true
+        }
+        SourceType::Web | SourceType::Shader => {
             push_unique(&mut report.unsupported_features, "audio-runtime");
             report.warnings.push(
                 "Detected Wallpaper Engine audio features, but audio runtime integration is not available for this converted wallpaper type.".to_owned(),
@@ -5073,7 +5319,7 @@ fn record_scene_runtime_gaps(report: &mut ConversionReport) {
         ("particles", "complex-particles"),
         ("timeline", "timeline-animation"),
         ("parallax", "cursor-parallax-input-source"),
-        ("audio-response", "audio-runtime"),
+        ("audio-response", "audio-response-runtime"),
     ] {
         if report
             .detected_features
@@ -5093,6 +5339,14 @@ fn record_scene_runtime_gaps(report: &mut ConversionReport) {
                     .converted_features
                     .iter()
                     .any(|converted| converted == "scene-we-material-graph-runtime")
+            {
+                continue;
+            }
+            if detected == "audio-response"
+                && report
+                    .converted_features
+                    .iter()
+                    .any(|converted| converted == "native-audio-response-runtime")
             {
                 continue;
             }
@@ -6925,6 +7179,57 @@ fn value_requests_audio(value: &Value) -> bool {
     }
 }
 
+fn static_image_audio_sources(project: &WallpaperEngineProject) -> Vec<String> {
+    let mut sources = BTreeSet::new();
+    collect_static_image_audio_sources_from_value(&project.raw, false, &mut sources);
+    sources
+        .into_iter()
+        .filter(|source| {
+            normalize_relative_path(source)
+                .map(|relative| project.root.join(relative).is_file())
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+fn collect_static_image_audio_sources_from_value(
+    value: &Value,
+    in_audio_field: bool,
+    sources: &mut BTreeSet<String>,
+) {
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object {
+                let normalized = normalize_project_key(key);
+                let audio_field = normalized.contains("audio")
+                    || normalized.contains("sound")
+                    || normalized.contains("music");
+                collect_static_image_audio_sources_from_value(
+                    value,
+                    in_audio_field || audio_field,
+                    sources,
+                );
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_static_image_audio_sources_from_value(value, in_audio_field, sources);
+            }
+        }
+        Value::String(source) if in_audio_field && is_audio_path(source) => {
+            sources.insert(source.clone());
+        }
+        _ => {}
+    }
+}
+
+fn is_audio_path(value: &str) -> bool {
+    Path::new(value.trim())
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(is_audio_extension)
+}
+
 fn string_requests_audio(value: &str) -> bool {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -7339,6 +7644,69 @@ mod tests {
             report
                 .generated_assets
                 .contains(&"previews/thumbnail.png".to_owned())
+        );
+    }
+
+    #[test]
+    fn converts_static_image_audio_to_scene_audio_cue() {
+        let source = TestDir::new("we-static-audio-source");
+        let output = TestDir::new("we-static-audio-output");
+        output.remove();
+        source.write_file("wallpaper.png", "not real png");
+        source.write_file("music.ogg", "not real ogg");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "image",
+              "title": "Static With Audio",
+              "file": "wallpaper.png",
+              "audio": "music.ogg"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(output.path().join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(manifest["kind"], "scene");
+        assert_eq!(manifest["entry"]["type"], "scene");
+        assert_eq!(manifest["entry"]["source"], "assets/scene.gscene.json");
+        assert!(manifest["entry"].get("max_fps").is_none());
+        assert_eq!(manifest["runtime"]["allow_audio"], true);
+        assert!(output.path().join("assets/wallpaper.png").exists());
+        assert!(output.path().join("assets/audio-cue-0.ogg").exists());
+
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene["resources"][0]["type"], "image");
+        assert_eq!(scene["resources"][0]["source"], "assets/wallpaper.png");
+        assert_eq!(scene["resources"][1]["type"], "audio");
+        assert_eq!(scene["resources"][1]["source"], "assets/audio-cue-0.ogg");
+        assert_eq!(scene["nodes"][0]["type"], "image");
+        assert_eq!(scene["nodes"][0]["resource"], "static-image");
+        assert_eq!(scene["nodes"][0]["audio"][0]["resource"], "static-audio-0");
+        assert_eq!(scene["nodes"][0]["audio"][0]["playback_mode"], "loop");
+
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"static-image-audio-scene".to_owned())
+        );
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-audio-cue-pipewire-present-runtime".to_owned())
+        );
+        assert!(
+            !report
+                .unsupported_features
+                .contains(&"audio-runtime".to_owned())
         );
     }
 
@@ -7840,6 +8208,7 @@ void main() {}
         assert_eq!(manifest["kind"], "scene");
         assert_eq!(manifest["entry"]["type"], "scene");
         assert_eq!(manifest["entry"]["source"], "assets/scene.gscene.json");
+        assert!(manifest["entry"].get("max_fps").is_none());
         assert!(manifest["entry"].get("fallback").is_none());
         assert_eq!(manifest["preview"]["poster"], "previews/poster.svg");
         assert!(output.path().join("metadata/source-scene.json").exists());
@@ -8267,7 +8636,7 @@ void main() {}
             "scenescript",
             "custom-shader",
             "cursor-parallax-input-source",
-            "audio-runtime",
+            "audio-response-runtime",
         ] {
             assert!(
                 report.unsupported_features.contains(&feature.to_owned()),
@@ -8294,6 +8663,86 @@ void main() {}
             .expect("particle node");
         assert_eq!(particle["properties"]["particle"]["source"], "sparks");
         assert_eq!(scene["systems"]["particles"], "ready");
+    }
+
+    #[test]
+    fn converts_recordable_audio_response_to_native_scene_runtime() {
+        let source = TestDir::new("we-scene-audio-response-source");
+        let output = TestDir::new("we-scene-audio-response-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r##"{
+              "objects": [
+                {
+                  "id": 7,
+                  "type": "audio-response",
+                  "color": "#44ccff",
+                  "width": 320,
+                  "height": 48,
+                  "sound": "sounds/music.ogg"
+                }
+              ]
+            }"##,
+        );
+        source.write_file("sounds/music.ogg", "not real ogg");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Scene Audio Response",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"native-audio-response-runtime".to_owned())
+        );
+        assert!(
+            !report
+                .unsupported_features
+                .contains(&"audio-response-runtime".to_owned())
+        );
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene["systems"]["audio_response"], "ready");
+        let node = &scene["nodes"].as_array().unwrap()[0];
+        assert_eq!(node["type"], "audio-response");
+        assert_eq!(node["audio"].as_array().unwrap().len(), 1);
+        let bindings = scene["property_bindings"].as_array().unwrap();
+        assert!(bindings.iter().any(|binding| {
+            binding["target_node"] == node["id"]
+                && binding["property"] == "audio.bass"
+                && binding["target"] == "width"
+        }));
+        assert!(
+            scene["native_lowering"]["completed_boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("native-audio-response-visual-runtime"))
+        );
+        assert!(
+            !scene["native_lowering"]["pending_boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("audio-response-runtime"))
+        );
+        assert!(
+            scene["native_lowering"]["pending_boundaries"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("pipewire-audio-spectrum-input-source"))
+        );
     }
 
     #[test]
@@ -9416,6 +9865,7 @@ void main() {}
             items[1]["entry"]["source"],
             "assets/playlist-1-scene.gscene.json"
         );
+        assert!(items[1]["entry"].get("max_fps").is_none());
         assert!(items[1]["entry"].get("fallback").is_none());
         assert!(
             output

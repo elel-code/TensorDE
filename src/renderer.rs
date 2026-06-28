@@ -16,8 +16,8 @@ use crate::core::scene::SceneSnapshotLayer;
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
     SceneAudioCue, SceneDocument, SceneNodeKind, ScenePathFillRule, SceneResource,
-    SceneResourceKind, SceneSize, SceneSystems, SceneTextAlign, SceneTextureRegion, SceneTransform,
-    Transition, WallpaperEntry, WallpaperPackage,
+    SceneResourceKind, SceneSize, SceneSystemStatus, SceneSystems, SceneTextAlign,
+    SceneTextureRegion, SceneTransform, Transition, WallpaperEntry, WallpaperPackage,
 };
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot, PowerState};
 use crate::policy::{PerformanceDecision, RenderMode};
@@ -235,6 +235,7 @@ pub fn scene_wallpaper_plan_from_gscene_path_with_properties(
         render_properties
             .and_then(|properties| properties.get(property))
             .and_then(scene_json_property_number)
+            .or_else(|| scene_audio_response_property_value(&document, snapshot_time_ms, property))
     });
     let layers = scene_render_layers_from_snapshot(package_root, &document, snapshot.layers)?;
     let system_metrics = scene_plan_system_metrics(&document);
@@ -319,7 +320,9 @@ impl SceneWallpaperRuntimeSampler {
     ) -> Result<SceneWallpaperRuntimeFrame, RendererPlanError> {
         let snapshot = self
             .document
-            .snapshot_at_with_property_resolver(time_ms, |_| None);
+            .snapshot_at_with_property_resolver(time_ms, |property| {
+                scene_audio_response_property_value(&self.document, time_ms, property)
+            });
         let layers =
             scene_render_layers_from_snapshot(&self.package_root, &self.document, snapshot.layers)?;
         Ok(SceneWallpaperRuntimeFrame {
@@ -336,7 +339,7 @@ impl SceneWallpaperRuntimeSampler {
     ) -> Result<SceneWallpaperRuntimeFrame, RendererPlanError> {
         self.document.snapshot_layers_at_with_property_resolver(
             time_ms,
-            |_| None,
+            |property| scene_audio_response_property_value(&self.document, time_ms, property),
             &mut self.snapshot_layers_scratch,
         );
         scene_render_layers_from_snapshot_into(
@@ -1758,6 +1761,7 @@ fn scene_wallpaper_plan(
     let document = load_scene_document(&source_path)?;
     let snapshot = document.snapshot_at_with_property_resolver(0, |property| {
         scene_property_value(property, render_properties, &package.manifest.properties)
+            .or_else(|| scene_audio_response_property_value(&document, 0, property))
     });
     let layers = scene_render_layers_from_snapshot(&package.root, &document, snapshot.layers)?;
     let system_metrics = scene_plan_system_metrics(&document);
@@ -2043,6 +2047,63 @@ fn scene_property_value(
         })
 }
 
+fn scene_audio_response_property_value(
+    document: &SceneDocument,
+    time_ms: u64,
+    property: &str,
+) -> Option<f64> {
+    if document.systems.audio_response != SceneSystemStatus::Ready {
+        return None;
+    }
+    let property = property
+        .trim()
+        .replace(['-', ' ', '/'], "_")
+        .to_ascii_lowercase();
+    if property.is_empty() {
+        return None;
+    }
+    let band = if property == "audio"
+        || property == "audio_level"
+        || property == "audio_response"
+        || property.ends_with("_audio")
+    {
+        "full"
+    } else if property.contains("bass") || property.contains("low") {
+        "bass"
+    } else if property.contains("mid") || property.contains("vocal") {
+        "mid"
+    } else if property.contains("treble") || property.contains("high") {
+        "treble"
+    } else if property.contains("spectrum") || property.contains("frequency") {
+        "spectrum"
+    } else {
+        return None;
+    };
+    let seconds = time_ms as f64 / 1000.0;
+    let (frequency, phase, floor, gain) = match band {
+        "bass" => (1.25, 0.0, 0.12, 0.88),
+        "mid" => (2.5, 0.7, 0.08, 0.78),
+        "treble" => (5.0, 1.3, 0.04, 0.72),
+        "spectrum" => (
+            3.5,
+            scene_audio_response_spectrum_phase(&property),
+            0.05,
+            0.8,
+        ),
+        _ => (1.75, 0.35, 0.1, 0.82),
+    };
+    let wave = (seconds.mul_add(frequency * std::f64::consts::TAU, phase)).sin() * 0.5 + 0.5;
+    Some((floor + wave.powf(1.35) * gain).clamp(0.0, 1.0))
+}
+
+fn scene_audio_response_spectrum_phase(property: &str) -> f64 {
+    let bin = property
+        .rsplit('_')
+        .find_map(|part| part.parse::<u32>().ok())
+        .unwrap_or(0);
+    f64::from(bin % 32) * 0.196_349_540_849_362_07
+}
+
 fn scene_json_property_number(value: &Value) -> Option<f64> {
     let number = match value {
         Value::Bool(value) => {
@@ -2286,7 +2347,7 @@ fn scene_snapshot_svg(layers: &[SceneRenderLayer], size: RenderTargetSize) -> St
                     color = xml_attr(color),
                 ));
             }
-            SceneNodeKind::Rectangle => {
+            SceneNodeKind::Rectangle | SceneNodeKind::AudioResponse => {
                 let fill = layer.color.as_deref().unwrap_or("none");
                 let width = layer.width.unwrap_or(f64::from(size.width));
                 let height = layer.height.unwrap_or(f64::from(size.height));
@@ -2357,7 +2418,6 @@ fn scene_snapshot_svg(layers: &[SceneRenderLayer], size: RenderTargetSize) -> St
             | SceneNodeKind::Group
             | SceneNodeKind::Shader
             | SceneNodeKind::ParticleEmitter
-            | SceneNodeKind::AudioResponse
             | SceneNodeKind::Script
             | SceneNodeKind::Unknown => {}
         }
@@ -5469,6 +5529,46 @@ exit 0
                 .unwrap()
                 .contains(r#"opacity="0.25""#)
         );
+    }
+
+    #[test]
+    fn scene_audio_response_ready_properties_drive_geometry_fields() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "systems": { "audio_response": "ready" },
+            "nodes": [
+                {
+                    "id": "bass-bar",
+                    "type": "audio-response",
+                    "color": "#44ccff",
+                    "width": 20,
+                    "height": 4
+                }
+            ],
+            "property_bindings": [
+                {
+                    "property": "audio.bass",
+                    "target_node": "bass-bar",
+                    "target": "width",
+                    "scale": 120,
+                    "offset": 12
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let first = document.snapshot_at_with_property_resolver(0, |property| {
+            scene_audio_response_property_value(&document, 0, property)
+        });
+        let later = document.snapshot_at_with_property_resolver(250, |property| {
+            scene_audio_response_property_value(&document, 250, property)
+        });
+
+        assert_eq!(first.layers[0].kind, SceneNodeKind::AudioResponse);
+        assert_eq!(first.layers[0].color.as_deref(), Some("#44ccff"));
+        assert_ne!(first.layers[0].width, later.layers[0].width);
+        assert!(first.layers[0].width.unwrap() >= 12.0);
+        assert!(later.layers[0].width.unwrap() >= 12.0);
     }
 
     #[test]

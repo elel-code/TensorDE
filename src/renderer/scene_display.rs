@@ -104,9 +104,20 @@ pub(super) fn scene_layer_is_snapshot_renderable(layer: &SceneRenderLayer) -> bo
                         .is_some_and(|color| !color.is_empty()))
         }
         SceneNodeKind::Group => false,
+        SceneNodeKind::AudioResponse => {
+            layer
+                .color
+                .as_deref()
+                .is_some_and(|color| !color.is_empty())
+                && layer
+                    .width
+                    .is_some_and(|width| width.is_finite() && width > 0.0)
+                && layer
+                    .height
+                    .is_some_and(|height| height.is_finite() && height > 0.0)
+        }
         SceneNodeKind::Shader
         | SceneNodeKind::ParticleEmitter
-        | SceneNodeKind::AudioResponse
         | SceneNodeKind::Script
         | SceneNodeKind::Unknown => false,
     }

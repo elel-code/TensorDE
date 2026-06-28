@@ -33,6 +33,7 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneDrawOpKind {
     Ellipse,
     Text,
     Path,
+    AudioResponse,
 }
 
 impl NativeVulkanSceneDrawOpKind {
@@ -45,6 +46,7 @@ impl NativeVulkanSceneDrawOpKind {
             Self::Ellipse => "ellipse",
             Self::Text => "text",
             Self::Path => "path",
+            Self::AudioResponse => "audio-response",
         }
     }
 }
@@ -255,7 +257,20 @@ fn native_vulkan_scene_draw_op_kind(
         SceneNodeKind::Group => Err("group-layer-needs-flattened-children"),
         SceneNodeKind::Shader => Err("shader-layer-needs-scene-shader-runtime"),
         SceneNodeKind::ParticleEmitter => Err("particle-layer-needs-scene-particle-runtime"),
-        SceneNodeKind::AudioResponse => Err("audio-response-layer-needs-scene-audio-runtime"),
+        SceneNodeKind::AudioResponse => {
+            if native_vulkan_scene_layer_has_shape_paint(layer)
+                && layer
+                    .width
+                    .is_some_and(|width| width.is_finite() && width > 0.0)
+                && layer
+                    .height
+                    .is_some_and(|height| height.is_finite() && height > 0.0)
+            {
+                Ok(NativeVulkanSceneDrawOpKind::AudioResponse)
+            } else {
+                Err("audio-response-layer-missing-native-visual-geometry")
+            }
+        }
         SceneNodeKind::Script => Err("script-layer-needs-scene-script-runtime"),
         SceneNodeKind::Unknown => Err("unknown-layer-kind"),
     }
