@@ -57,7 +57,7 @@ use super::scene_draw_pass::{
     native_vulkan_vulkanalia_record_scene_solid_quad_draws_inside_rendering,
 };
 use super::scene_sampled_image::{
-    NativeVulkanVulkanaliaSceneNativeTexture,
+    NativeVulkanVulkanaliaSceneNativeTexture, NativeVulkanVulkanaliaSceneNativeTextureFormat,
     NativeVulkanVulkanaliaSceneSampledImageDescriptorStrategySnapshot,
     NativeVulkanVulkanaliaSceneSampledImageResourceSnapshot,
     NativeVulkanVulkanaliaSceneSampledImageSamplerMode, VulkanaliaSceneSampledImageResources,
@@ -1112,7 +1112,7 @@ fn with_vulkanalia_scene_sampled_image_present(
             present_device.device.destroy_device(None);
         }
         return Err(
-            "scene sampled-image runtime requires textureCompressionBC for native BC7 .gtex resources"
+            "scene sampled-image runtime requires textureCompressionBC for native BC .gtex resources"
                 .to_owned(),
         );
     }
@@ -2583,7 +2583,7 @@ fn run_scene_sampled_image_static_transfer_present(
 ) -> Result<NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot, String> {
     if !texture_compression_bc_enabled {
         return Err(
-            "scene static transfer present requires textureCompressionBC for native BC7 .gtex resources"
+            "scene static transfer present requires textureCompressionBC for native BC .gtex resources"
                 .to_owned(),
         );
     }
@@ -2594,6 +2594,7 @@ fn run_scene_sampled_image_static_transfer_present(
     let filter = scene_static_transfer_blit_filter(
         instance,
         physical_device,
+        texture.format,
         swapchain_plan.format.format,
         options.fit.unwrap_or(FitMode::Stretch),
     )?;
@@ -2809,7 +2810,7 @@ fn run_scene_sampled_image_static_transfer_present_loop(
     Ok(NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot {
         binding: "vulkanalia",
         route: "scene-static-transfer-visible-present",
-        scene_input_model: "static native .gtex BC7 source; no retained scene snapshot or CPU decoded image",
+        scene_input_model: "static native .gtex BC source; no retained scene snapshot or CPU decoded image",
         scene_resource_model: "static-transfer-first-present-source-release",
         scene_solid_quad_draw_count: 0,
         scene_sampled_image_resource_count: 1,
@@ -2869,7 +2870,7 @@ fn run_scene_sampled_image_static_transfer_present_loop(
         descriptor_heap: None,
         pipeline: scene_static_transfer_pipeline_snapshot(swapchain_plan.format.format, extent),
         last_command,
-        command_submit_model: "acquire_next_image_khr -> cmd_blit_image2 static BC7 transfer image into swapchain -> queue_submit2 -> queue_present_khr -> wait render fence -> destroy source transfer image -> sleep until duration",
+        command_submit_model: "acquire_next_image_khr -> cmd_blit_image2 static BC transfer image into swapchain -> queue_submit2 -> queue_present_khr -> wait render fence -> destroy source transfer image -> sleep until duration",
         present_sync_model: "static first-present transfer source release; swapchain/display owns the visible result after submit fence",
         wait_idle_after_present: false,
         retained_frame_telemetry_limit: SCENE_PRESENT_ID_TELEMETRY_RETAINED_FRAMES,
@@ -2882,7 +2883,7 @@ fn run_scene_sampled_image_static_transfer_present_loop(
         uses_dynamic_rendering: false,
         uses_synchronization2: true,
         uses_submit2: true,
-        zero_copy_scope: "static source image is uploaded as BC7 into a transfer-src image, blitted into the swapchain once, then source image memory is destroyed; no CPU image payload is retained",
+        zero_copy_scope: "static source image is uploaded as native BC into a transfer-src image, blitted into the swapchain once, then source image memory is destroyed; no CPU image payload is retained",
         primary_reference: "FFmpeg packet/bitstream lifetime discipline: source payload/resource is released after the submitted work no longer references it",
     })
 }
@@ -2890,20 +2891,21 @@ fn run_scene_sampled_image_static_transfer_present_loop(
 fn scene_static_transfer_blit_filter(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
+    source_format: NativeVulkanVulkanaliaSceneNativeTextureFormat,
     swapchain_format: vk::Format,
     fit: FitMode,
 ) -> Result<vk::Filter, String> {
     let source = unsafe {
-        instance.get_physical_device_format_properties(physical_device, vk::Format::BC7_UNORM_BLOCK)
+        instance.get_physical_device_format_properties(physical_device, source_format.vk_format())
     };
     if !source
         .optimal_tiling_features
         .contains(vk::FormatFeatureFlags::BLIT_SRC)
     {
-        return Err(
-            "scene static transfer present requires BC7_UNORM_BLOCK optimal tiling BLIT_SRC"
-                .to_owned(),
-        );
+        return Err(format!(
+            "scene static transfer present requires {} optimal tiling BLIT_SRC",
+            source_format.label()
+        ));
     }
     let target = unsafe {
         instance.get_physical_device_format_properties(physical_device, swapchain_format)
@@ -3185,11 +3187,11 @@ fn record_scene_sampled_image_static_transfer_command_buffer(
         push_constant_bytes: 0,
         swapchain_layout_transition: "undefined -> transfer-dst-optimal -> present-src-khr",
         sampled_image_layout: "transfer-src-optimal",
-        render_model: "retained BC7 transfer-src image -> cmd_blit_image2 -> Wayland swapchain; no graphics pipeline or CPU RGBA payload",
+        render_model: "retained BC transfer-src image -> cmd_blit_image2 -> Wayland swapchain; no graphics pipeline or CPU RGBA payload",
         command_order: vec![
             "cmd_pipeline_barrier2_swapchain_transfer_dst",
             "cmd_clear_color_image_when_letterboxed",
-            "cmd_blit_image2_static_bc7_to_swapchain",
+            "cmd_blit_image2_static_bc_to_swapchain",
             "cmd_pipeline_barrier2_present",
             "queue_submit2_present",
             "queue_present_khr",
@@ -3281,7 +3283,7 @@ fn scene_static_transfer_pipeline_snapshot(
         push_constant_bytes: 0,
         push_constant_model: "none-transfer-only",
         blend_model: "none-transfer-only",
-        sampled_image_model: "BC7 transfer-src image copied to swapchain with cmd_blit_image2",
+        sampled_image_model: "BC transfer-src image copied to swapchain with cmd_blit_image2",
         uses_pipeline_rendering_create_info: false,
         uses_dynamic_rendering: false,
         uses_synchronization2: true,

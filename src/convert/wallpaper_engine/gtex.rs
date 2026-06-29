@@ -1,20 +1,35 @@
 use super::tex::{self, SceneWeTexImage};
 use std::fs;
-use std::io::{BufReader, Write};
+use std::io::{BufReader, Cursor, Write};
 use std::path::Path;
 
 pub(super) const GILDER_SCENE_TEXTURE_MAGIC: &[u8; 8] = b"GDTEX002";
+pub(super) const GILDER_SCENE_TEXTURE_FORMAT_BC1_RGBA_UNORM_BLOCK: u32 = 1;
+pub(super) const GILDER_SCENE_TEXTURE_FORMAT_BC3_UNORM_BLOCK: u32 = 3;
 pub(super) const GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK: u32 = 7;
 
 const GILDER_SCENE_TEXTURE_MIP_COUNT: u32 = 1;
 const BC_BLOCK_TEXELS: u32 = 4;
+const BC1_BLOCK_BYTES: usize = 8;
+const BC3_BLOCK_BYTES: usize = 16;
 const BC7_BLOCK_BYTES: usize = 16;
 const BC7_MODE6_INDEX_WEIGHTS: [u16; 16] =
     [0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64];
 
 pub(super) fn read_png_as_rgba(path: &Path) -> Result<SceneWeTexImage, String> {
     let file = fs::File::open(path).map_err(|err| format!("failed to open PNG: {err}"))?;
-    let mut decoder = png::Decoder::new(BufReader::new(file));
+    let decoder = png::Decoder::new(BufReader::new(file));
+    read_png_decoder_as_rgba(decoder)
+}
+
+pub(super) fn read_png_bytes_as_rgba(bytes: &[u8]) -> Result<SceneWeTexImage, String> {
+    let decoder = png::Decoder::new(Cursor::new(bytes));
+    read_png_decoder_as_rgba(decoder)
+}
+
+fn read_png_decoder_as_rgba<R: std::io::BufRead + std::io::Seek>(
+    mut decoder: png::Decoder<R>,
+) -> Result<SceneWeTexImage, String> {
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder
         .read_info()
@@ -83,14 +98,48 @@ pub(super) fn write_bc7_gtex(path: &Path, image: &SceneWeTexImage) -> Result<(),
         ));
     }
     let payload = encode_bc7(&image.rgba, image.width, image.height)?;
+    write_bc7_payload_gtex(path, image.width, image.height, &payload)
+}
+
+pub(super) fn write_bc7_payload_gtex(
+    path: &Path,
+    width: u32,
+    height: u32,
+    payload: &[u8],
+) -> Result<(), String> {
+    write_bc_payload_gtex(
+        path,
+        width,
+        height,
+        GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK,
+        payload,
+    )
+}
+
+pub(super) fn write_bc_payload_gtex(
+    path: &Path,
+    width: u32,
+    height: u32,
+    format: u32,
+    payload: &[u8],
+) -> Result<(), String> {
+    let format_label = gtex_format_label(format)?;
+    let expected_len = usize::try_from(bc_payload_len(format, width, height)?)
+        .map_err(|_| format!("{format_label} payload length exceeds usize"))?;
+    if payload.len() != expected_len {
+        return Err(format!(
+            "{format_label} payload has {} bytes, expected {expected_len}",
+            payload.len()
+        ));
+    }
     let mut file = fs::File::create(path).map_err(|err| err.to_string())?;
     file.write_all(GILDER_SCENE_TEXTURE_MAGIC)
         .map_err(|err| err.to_string())?;
-    file.write_all(&image.width.to_le_bytes())
+    file.write_all(&width.to_le_bytes())
         .map_err(|err| err.to_string())?;
-    file.write_all(&image.height.to_le_bytes())
+    file.write_all(&height.to_le_bytes())
         .map_err(|err| err.to_string())?;
-    file.write_all(&GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK.to_le_bytes())
+    file.write_all(&format.to_le_bytes())
         .map_err(|err| err.to_string())?;
     file.write_all(&GILDER_SCENE_TEXTURE_MIP_COUNT.to_le_bytes())
         .map_err(|err| err.to_string())?;
@@ -99,16 +148,42 @@ pub(super) fn write_bc7_gtex(path: &Path, image: &SceneWeTexImage) -> Result<(),
     file.write_all(&payload).map_err(|err| err.to_string())
 }
 
-pub(super) fn bc7_payload_len(width: u32, height: u32) -> Result<u64, String> {
+pub(super) fn bc_payload_len(format: u32, width: u32, height: u32) -> Result<u64, String> {
+    let format_label = gtex_format_label(format)?;
     if width == 0 || height == 0 {
-        return Err("BC7 texture dimensions must be non-zero".to_owned());
+        return Err(format!(
+            "{format_label} texture dimensions must be non-zero"
+        ));
     }
+    let block_bytes = u64::from(bc_block_bytes(format)?);
     let blocks_w = u64::from(width.div_ceil(BC_BLOCK_TEXELS));
     let blocks_h = u64::from(height.div_ceil(BC_BLOCK_TEXELS));
     blocks_w
         .checked_mul(blocks_h)
-        .and_then(|blocks| blocks.checked_mul(BC7_BLOCK_BYTES as u64))
-        .ok_or_else(|| "BC7 payload size overflowed".to_owned())
+        .and_then(|blocks| blocks.checked_mul(block_bytes))
+        .ok_or_else(|| format!("{format_label} payload size overflowed"))
+}
+
+pub(super) fn bc7_payload_len(width: u32, height: u32) -> Result<u64, String> {
+    bc_payload_len(GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK, width, height)
+}
+
+pub(super) fn bc_block_bytes(format: u32) -> Result<u32, String> {
+    match format {
+        GILDER_SCENE_TEXTURE_FORMAT_BC1_RGBA_UNORM_BLOCK => Ok(BC1_BLOCK_BYTES as u32),
+        GILDER_SCENE_TEXTURE_FORMAT_BC3_UNORM_BLOCK => Ok(BC3_BLOCK_BYTES as u32),
+        GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK => Ok(BC7_BLOCK_BYTES as u32),
+        _ => Err(format!("unsupported native .gtex BC format id {format}")),
+    }
+}
+
+pub(super) fn gtex_format_label(format: u32) -> Result<&'static str, String> {
+    match format {
+        GILDER_SCENE_TEXTURE_FORMAT_BC1_RGBA_UNORM_BLOCK => Ok("BC1_RGBA_UNORM_BLOCK"),
+        GILDER_SCENE_TEXTURE_FORMAT_BC3_UNORM_BLOCK => Ok("BC3_UNORM_BLOCK"),
+        GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK => Ok("BC7_UNORM_BLOCK"),
+        _ => Err(format!("unsupported native .gtex BC format id {format}")),
+    }
 }
 
 fn png_frame_to_rgba(

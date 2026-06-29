@@ -2043,8 +2043,12 @@ fn scene_node_from_object(
     if let Some(depth) = number_value_field(object, &["parallax_depth", "parallaxDepth"]) {
         node.insert("parallax_depth".to_owned(), json!(depth));
     }
-    if let Some(color) = scene_color_from_object(object) {
+    if let Some(color) = scene_color_from_object(object)
+        .or_else(|| scene_builtin_util_default_color(source_model.as_ref()))
+    {
         node.insert("color".to_owned(), Value::String(color));
+    } else if kind == "text" {
+        node.insert("color".to_owned(), Value::String("#ffffff".to_owned()));
     }
     if let Some(stroke) = scene_stroke_color_from_object(object) {
         node.insert("stroke_color".to_owned(), Value::String(stroke));
@@ -2739,6 +2743,16 @@ fn scene_builtin_util_uses_viewport(source_model: Option<&SceneSourceModelConver
         .is_some_and(|utility| utility == "fullscreenlayer")
 }
 
+fn scene_builtin_util_default_color(
+    source_model: Option<&SceneSourceModelConversion>,
+) -> Option<String> {
+    source_model
+        .and_then(|model| model.value.get("utility"))
+        .and_then(Value::as_str)
+        .is_some_and(|utility| utility == "solidlayer")
+        .then(|| "#ffffff".to_owned())
+}
+
 fn scene_object_is_audio_cue_only(
     object: &Map<String, Value>,
     source_path: Option<&str>,
@@ -2942,16 +2956,25 @@ fn scene_builtin_util_model(model_path: &str) -> Option<SceneSourceModelConversi
     let utility = match normalized.as_str() {
         "models/util/fullscreenlayer.json" => "fullscreenlayer",
         "models/util/composelayer.json" => "composelayer",
+        "models/util/solidlayer.json" => "solidlayer",
         _ => return None,
     };
     let mut model = Map::new();
     model.insert("source".to_owned(), Value::String(model_path.to_owned()));
     model.insert("builtin".to_owned(), Value::Bool(true));
     model.insert("utility".to_owned(), Value::String(utility.to_owned()));
-    model.insert("passthrough".to_owned(), Value::Bool(true));
+    if utility == "solidlayer" {
+        model.insert("solid_layer".to_owned(), Value::Bool(true));
+    } else {
+        model.insert("passthrough".to_owned(), Value::Bool(true));
+    }
     Some(SceneSourceModelConversion {
         value: Value::Object(model),
-        render_kind: Some("script"),
+        render_kind: Some(if utility == "solidlayer" {
+            "rectangle"
+        } else {
+            "script"
+        }),
         render_resource: None,
         render_properties: None,
         render_size: None,
@@ -3404,8 +3427,8 @@ fn scene_material_path(material: &str) -> String {
 
 fn scene_material_texture_path(texture: &str) -> String {
     if Path::new(texture).extension().is_some()
-        || texture.contains('/')
         || texture.starts_with("_rt_")
+        || scene_builtin_particle_texture_stem(texture).is_some()
     {
         texture.to_owned()
     } else {
@@ -3773,6 +3796,17 @@ fn scene_copy_decoded_tex_resource_as(
     };
     let decoded = match decoded {
         SceneWeTexPayload::Image(decoded) => decoded,
+        SceneWeTexPayload::BlockCompressedImage(decoded) => {
+            return scene_copy_block_compressed_tex_resource(
+                output_dir,
+                source_path,
+                &source,
+                decoded,
+                report,
+                context,
+                resources,
+            );
+        }
         video @ SceneWeTexPayload::Video(_) => {
             return scene_copy_decoded_tex_video_resource(
                 output_dir,
@@ -3875,6 +3909,86 @@ fn scene_copy_decoded_tex_resource_as(
         resource_id,
         render_kind: "image",
         spritesheet,
+    })
+}
+
+fn scene_copy_block_compressed_tex_resource(
+    output_dir: &Path,
+    source_path: &str,
+    source: &Path,
+    decoded: tex::SceneWeTexBlockCompressedImage<'_>,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) -> Option<SceneDecodedTexResource> {
+    let stem = source
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("texture");
+    let format_label = decoded.format.label();
+    let format_suffix = match decoded.format {
+        tex::SceneWeTexBlockCompressedFormat::Bc1RgbaUnormBlock => "bc1",
+        tex::SceneWeTexBlockCompressedFormat::Bc3UnormBlock => "bc3",
+        tex::SceneWeTexBlockCompressedFormat::Bc7UnormBlock => "bc7",
+    };
+    let resource_id = scene_next_resource_id(context, "image", &format!("{stem}-{format_suffix}"));
+    let dest_dir = output_dir
+        .join("assets/scene-resources")
+        .join(&context.resource_scope);
+    if let Err(err) = fs::create_dir_all(&dest_dir) {
+        report
+            .errors
+            .push(format!("Failed to create scene resource directory: {err}."));
+        return None;
+    }
+    let dest = dest_dir.join(format!("{resource_id}.gtex"));
+    if let Err(err) = gtex::write_bc_payload_gtex(
+        &dest,
+        decoded.width,
+        decoded.height,
+        decoded.format.gtex_format(),
+        decoded.payload.as_ref(),
+    ) {
+        report.errors.push(format!(
+            "Failed to wrap Wallpaper Engine {format_label} texture {} as native gtex {}: {err}.",
+            source.display(),
+            dest.display()
+        ));
+        return None;
+    }
+    let package_path = path_to_package_string(dest.strip_prefix(output_dir).unwrap_or(&dest));
+    report.generated_assets.push(package_path.clone());
+    resources.push(json!({
+        "id": resource_id,
+        "type": "image",
+        "source": package_path,
+        "original_source": source_path,
+        "role": format!("we-material-texture-{}-passthrough", format_suffix)
+    }));
+    push_unique(
+        &mut context.converted_features,
+        "scene-we-tex-bc-gpu-texture",
+    );
+    push_unique(
+        &mut context.converted_features,
+        match decoded.format {
+            tex::SceneWeTexBlockCompressedFormat::Bc1RgbaUnormBlock => {
+                "scene-we-tex-bc1-passthrough"
+            }
+            tex::SceneWeTexBlockCompressedFormat::Bc3UnormBlock => "scene-we-tex-bc3-passthrough",
+            tex::SceneWeTexBlockCompressedFormat::Bc7UnormBlock => "scene-we-tex-bc7-passthrough",
+        },
+    );
+    if decoded.format == tex::SceneWeTexBlockCompressedFormat::Bc7UnormBlock {
+        push_unique(
+            &mut context.converted_features,
+            "scene-we-tex-bc7-gpu-texture",
+        );
+    }
+    Some(SceneDecodedTexResource {
+        resource_id,
+        render_kind: "image",
+        spritesheet: None,
     })
 }
 
@@ -7473,7 +7587,7 @@ impl FullSceneConversionStatus {
             current_runtime: "native-vulkan-scene-runtime".to_owned(),
             progress_estimate_percent: 100,
             full_scene_complete: true,
-            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, native scene graph transform/opacity execution, WE text/value wrappers, visible property bindings, shape/solid/radius objects, native deterministic particle emitter expansion, WE particle runtime fields, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, embedded WE property keyframes, deterministic animation-layer keyframes, per-frame fixed-topology timeline geometry updates, geometry field animation, parallax depth, WE TEXV0005/TEXB0004 RGBA textures into native BC7 .gtex GPU textures, and WE TEXB0004 video payloads into native gscene video resources including spritesheet atlases into gscene text/property/shape/timeline/camera/image/video fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime, and explicit unsupported Wallpaper Engine systems without legacy fallback or preview-image scene substitution".to_owned(),
+            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, native scene graph transform/opacity execution, WE text/value wrappers, visible property bindings, shape/solid/radius objects, native deterministic particle emitter expansion, WE particle runtime fields, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, embedded WE property keyframes, deterministic animation-layer keyframes, per-frame fixed-topology timeline geometry updates, geometry field animation, parallax depth, WE TEXV0005/TEXB0004 RGBA textures into native BC7 .gtex GPU textures, WE DXT1/DXT5/BC7 GPU textures into native BC .gtex payloads, and WE TEXB0004 video payloads into native gscene video resources including spritesheet atlases into gscene text/property/shape/timeline/camera/image/video fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime, and explicit unsupported Wallpaper Engine systems without legacy fallback or preview-image scene substitution".to_owned(),
             source_scene_metadata: Vec::new(),
             completed_boundaries: vec![
                 "package-scene-detection".to_owned(),
@@ -7493,6 +7607,7 @@ impl FullSceneConversionStatus {
                 "wallpaper-engine-embedded-property-timeline-lowering".to_owned(),
                 "wallpaper-engine-animation-layer-keyframe-lowering".to_owned(),
                 "wallpaper-engine-tex-bc7-gtex-conversion".to_owned(),
+                "wallpaper-engine-tex-bc-gtex-passthrough".to_owned(),
                 "scene-we-spritesheet-atlas-runtime".to_owned(),
                 "scene-geometry-field-animation-runtime".to_owned(),
                 "per-frame-timeline-geometry-runtime".to_owned(),
@@ -9524,6 +9639,12 @@ void main() {}
                     "value": true
                   },
                   "size": "512 512"
+                },
+                {
+                  "id": 10,
+                  "name": "Solid Layer",
+                  "image": "models/util/solidlayer.json",
+                  "size": "256 128"
                 }
               ]
             }"#,
@@ -9552,6 +9673,17 @@ void main() {}
         );
         assert_eq!(node["provenance"]["model"]["builtin"], true);
         assert_eq!(node["provenance"]["model"]["utility"], "composelayer");
+        let solid = &scene["nodes"][1];
+        assert_eq!(solid["type"], "rectangle");
+        assert_eq!(solid["color"], "#ffffff");
+        assert_eq!(solid["width"], 256.0);
+        assert_eq!(solid["height"], 128.0);
+        assert_eq!(
+            solid["provenance"]["model"]["source"],
+            "models/util/solidlayer.json"
+        );
+        assert_eq!(solid["provenance"]["model"]["utility"], "solidlayer");
+        assert_eq!(solid["provenance"]["model"]["solid_layer"], true);
         assert!(
             !scene["unsupported_features"]
                 .as_array()
@@ -9586,6 +9718,22 @@ void main() {}
                 .warnings
                 .iter()
                 .any(|warning| warning.contains("models/util/composelayer.json"))
+        );
+    }
+
+    #[test]
+    fn maps_extensionless_wallpaper_engine_material_texture_paths_to_tex_assets() {
+        assert_eq!(
+            scene_material_texture_path("workshop/2790231929/WC test"),
+            "materials/workshop/2790231929/WC test.tex"
+        );
+        assert_eq!(
+            scene_material_texture_path("particle/bubbles/bubble3"),
+            "particle/bubbles/bubble3"
+        );
+        assert_eq!(
+            scene_material_texture_path("_rt_FullFrameBuffer"),
+            "_rt_FullFrameBuffer"
         );
     }
 
@@ -10446,6 +10594,217 @@ void main() {}
             report
                 .converted_features
                 .contains(&"scene-we-spritesheet-atlas-runtime".to_owned())
+        );
+    }
+
+    #[test]
+    fn passes_wallpaper_engine_dxt_textures_to_native_bc_gtex() {
+        assert_we_block_compressed_tex_conversion(
+            7,
+            gtex::GILDER_SCENE_TEXTURE_FORMAT_BC1_RGBA_UNORM_BLOCK,
+            tex::SceneWeTexBlockCompressedFormat::Bc1RgbaUnormBlock,
+            &[1; 8],
+            "bc1",
+            "we-material-texture-bc1-passthrough",
+            "scene-we-tex-bc1-passthrough",
+        );
+        assert_we_block_compressed_tex_conversion(
+            4,
+            gtex::GILDER_SCENE_TEXTURE_FORMAT_BC3_UNORM_BLOCK,
+            tex::SceneWeTexBlockCompressedFormat::Bc3UnormBlock,
+            &[3; 16],
+            "bc3",
+            "we-material-texture-bc3-passthrough",
+            "scene-we-tex-bc3-passthrough",
+        );
+    }
+
+    #[test]
+    fn decodes_wallpaper_engine_scene_tex_embedded_png_to_native_gtex() {
+        let rgba = [
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ];
+        let png = test_png_rgba(2, 2, &rgba);
+        let tex = test_we_tex_embedded_png(2, 2, &png);
+        let decoded = tex::decode_we_tex_image(&tex).unwrap();
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(&decoded.rgba[0..4], &[0, 0, 255, 255]);
+        assert_eq!(&decoded.rgba[8..12], &[255, 0, 0, 255]);
+        let texb0003 = test_we_texb0003_embedded_png(2, 2, &png);
+        let decoded = tex::decode_we_tex_image(&texb0003).unwrap();
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(&decoded.rgba[0..4], &[0, 0, 255, 255]);
+
+        let source = TestDir::new("we-scene-embedded-png-tex-source");
+        let output = TestDir::new("we-scene-embedded-png-tex-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                {
+                  "id": 1,
+                  "name": "Embedded PNG Tex",
+                  "image": "models/renderable.json"
+                }
+              ]
+            }"#,
+        );
+        source.write_file(
+            "models/renderable.json",
+            r#"{ "material": "materials/renderable.json", "width": 2, "height": 2 }"#,
+        );
+        source.write_file(
+            "materials/renderable.json",
+            r#"{ "passes": [{ "textures": ["albedo"] }] }"#,
+        );
+        source.write_bytes("materials/albedo.tex", &tex);
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Embedded PNG Tex Scene Model",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene["nodes"][0]["type"], "image");
+        assert_eq!(
+            scene["resources"][2]["role"],
+            "we-material-texture-decoded-frame"
+        );
+        let gtex_path = output
+            .path()
+            .join("assets/scene-resources/scene/resource-3-albedo-frame-0.gtex");
+        assert!(gtex_path.exists());
+        let bytes = fs::read(&gtex_path).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
+            gtex::GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK
+        );
+
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-tex-bc7-gpu-texture".to_owned())
+        );
+    }
+
+    fn assert_we_block_compressed_tex_conversion(
+        we_format: u32,
+        expected_gtex_format: u32,
+        expected_tex_format: tex::SceneWeTexBlockCompressedFormat,
+        payload: &[u8],
+        suffix: &str,
+        expected_role: &str,
+        expected_feature: &str,
+    ) {
+        let tex = test_we_tex_block_compressed(4, 4, we_format, payload, 0);
+        let decoded = tex::decode_we_tex_payload(&tex).unwrap();
+        let SceneWeTexPayload::BlockCompressedImage(decoded) = decoded else {
+            panic!("expected block-compressed WE texture");
+        };
+        assert_eq!(decoded.width, 4);
+        assert_eq!(decoded.height, 4);
+        assert_eq!(decoded.format, expected_tex_format);
+        assert_eq!(decoded.payload.as_ref(), payload);
+        let compressed_tex = test_we_tex_block_compressed(4, 4, we_format, payload, 1);
+        let SceneWeTexPayload::BlockCompressedImage(compressed_decoded) =
+            tex::decode_we_tex_payload(&compressed_tex).unwrap()
+        else {
+            panic!("expected LZ4-wrapped block-compressed WE texture");
+        };
+        assert_eq!(compressed_decoded.format, expected_tex_format);
+        assert_eq!(compressed_decoded.payload.as_ref(), payload);
+
+        let source = TestDir::new(&format!("we-scene-{suffix}-tex-source"));
+        let output = TestDir::new(&format!("we-scene-{suffix}-tex-output"));
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                {
+                  "id": 1,
+                  "name": "Native BC Tex",
+                  "image": "models/renderable.json"
+                }
+              ]
+            }"#,
+        );
+        source.write_file(
+            "models/renderable.json",
+            r#"{ "material": "materials/renderable.json", "width": 4, "height": 4 }"#,
+        );
+        source.write_file(
+            "materials/renderable.json",
+            r#"{ "passes": [{ "textures": ["albedo"] }] }"#,
+        );
+        source.write_bytes("materials/albedo.tex", &tex);
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Native BC Tex Scene Model",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scene["nodes"][0]["type"], "image");
+        let resource_id = scene["nodes"][0]["resource"].as_str().unwrap();
+        let resource = scene["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|resource| resource["id"] == resource_id)
+            .expect("converted BC texture resource");
+        assert_eq!(resource["role"], expected_role);
+        let source_path = resource["source"].as_str().unwrap();
+        assert!(source_path.ends_with(".gtex"));
+        let gtex_path = output.path().join(source_path);
+        let bytes = fs::read(&gtex_path).unwrap();
+        assert_eq!(&bytes[0..8], gtex::GILDER_SCENE_TEXTURE_MAGIC);
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 4);
+        assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()), 4);
+        assert_eq!(
+            u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
+            expected_gtex_format
+        );
+        assert_eq!(
+            u64::from_le_bytes(bytes[24..32].try_into().unwrap()),
+            payload.len() as u64
+        );
+        assert_eq!(&bytes[32..], payload);
+
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-tex-bc-gpu-texture".to_owned())
+        );
+        assert!(
+            report
+                .converted_features
+                .contains(&expected_feature.to_owned())
         );
     }
 
@@ -12181,6 +12540,19 @@ void main() {}
         fs::rename(&temporary_path, path).unwrap();
     }
 
+    fn test_png_rgba(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let writer = std::io::Cursor::new(&mut bytes);
+            let mut encoder = png::Encoder::new(writer, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(rgba).unwrap();
+        }
+        bytes
+    }
+
     fn test_we_tex_rgba(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
         assert_eq!(rgba.len(), tex::rgba_len(width, height).unwrap());
         let compressed = test_lz4_literal_block(rgba);
@@ -12201,6 +12573,85 @@ void main() {}
         test_write_u32_le(&mut bytes, 83, u32::try_from(rgba.len()).unwrap());
         test_write_u32_le(&mut bytes, 87, u32::try_from(compressed.len()).unwrap());
         bytes.extend_from_slice(&compressed);
+        bytes
+    }
+
+    fn test_we_tex_embedded_png(width: u32, height: u32, png: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0; 91];
+        bytes[0..8].copy_from_slice(b"TEXV0005");
+        bytes[9..17].copy_from_slice(b"TEXI0001");
+        test_write_u32_le(&mut bytes, 18, 0);
+        test_write_u32_le(&mut bytes, 22, 2);
+        test_write_u32_le(&mut bytes, 26, width);
+        test_write_u32_le(&mut bytes, 30, height);
+        test_write_u32_le(&mut bytes, 34, width);
+        test_write_u32_le(&mut bytes, 38, height);
+        bytes[46..54].copy_from_slice(b"TEXB0004");
+        test_write_u32_le(&mut bytes, 55, 1);
+        test_write_u32_le(&mut bytes, 59, 13);
+        test_write_u32_le(&mut bytes, 63, 0);
+        test_write_u32_le(&mut bytes, 67, 1);
+        test_write_u32_le(&mut bytes, 71, width);
+        test_write_u32_le(&mut bytes, 75, height);
+        test_write_u32_le(&mut bytes, 79, 0);
+        test_write_u32_le(&mut bytes, 83, 0);
+        test_write_u32_le(&mut bytes, 87, u32::try_from(png.len()).unwrap());
+        bytes.extend_from_slice(png);
+        bytes
+    }
+
+    fn test_we_texb0003_embedded_png(width: u32, height: u32, png: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0; 87];
+        bytes[0..8].copy_from_slice(b"TEXV0005");
+        bytes[9..17].copy_from_slice(b"TEXI0001");
+        test_write_u32_le(&mut bytes, 18, 0);
+        test_write_u32_le(&mut bytes, 22, 2);
+        test_write_u32_le(&mut bytes, 26, width);
+        test_write_u32_le(&mut bytes, 30, height);
+        test_write_u32_le(&mut bytes, 34, width);
+        test_write_u32_le(&mut bytes, 38, height);
+        bytes[46..54].copy_from_slice(b"TEXB0003");
+        test_write_u32_le(&mut bytes, 55, 1);
+        test_write_u32_le(&mut bytes, 59, 13);
+        test_write_u32_le(&mut bytes, 63, 1);
+        test_write_u32_le(&mut bytes, 67, width);
+        test_write_u32_le(&mut bytes, 71, height);
+        test_write_u32_le(&mut bytes, 75, 0);
+        test_write_u32_le(&mut bytes, 79, 0);
+        test_write_u32_le(&mut bytes, 83, u32::try_from(png.len()).unwrap());
+        bytes.extend_from_slice(png);
+        bytes
+    }
+
+    fn test_we_tex_block_compressed(
+        width: u32,
+        height: u32,
+        we_format: u32,
+        payload: &[u8],
+        compression: u32,
+    ) -> Vec<u8> {
+        let encoded = match compression {
+            0 => payload.to_vec(),
+            1 => test_lz4_literal_block(payload),
+            other => panic!("unsupported test compression {other}"),
+        };
+        let mut bytes = vec![0; 91];
+        bytes[0..8].copy_from_slice(b"TEXV0005");
+        bytes[9..17].copy_from_slice(b"TEXI0001");
+        test_write_u32_le(&mut bytes, 18, we_format);
+        test_write_u32_le(&mut bytes, 26, width);
+        test_write_u32_le(&mut bytes, 30, height);
+        test_write_u32_le(&mut bytes, 34, width);
+        test_write_u32_le(&mut bytes, 38, height);
+        bytes[46..54].copy_from_slice(b"TEXB0004");
+        test_write_u32_le(&mut bytes, 55, 1);
+        test_write_u32_le(&mut bytes, 67, 1);
+        test_write_u32_le(&mut bytes, 71, width);
+        test_write_u32_le(&mut bytes, 75, height);
+        test_write_u32_le(&mut bytes, 79, compression);
+        test_write_u32_le(&mut bytes, 83, u32::try_from(payload.len()).unwrap());
+        test_write_u32_le(&mut bytes, 87, u32::try_from(encoded.len()).unwrap());
+        bytes.extend_from_slice(&encoded);
         bytes
     }
 

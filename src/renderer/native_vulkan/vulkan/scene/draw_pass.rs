@@ -1044,7 +1044,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
         push_constant_bytes: SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES,
         push_constant_model: "scene-space pixel extent -> NDC conversion in vertex shader",
         blend_model: "sampled rgba with opacity; src-alpha over one-minus-src-alpha",
-        sampled_image_model: "retained BC7_UNORM_BLOCK sampled image -> VK_EXT_descriptor_heap constant-offset mapping -> fragment shader",
+        sampled_image_model: "retained native BC sampled image -> VK_EXT_descriptor_heap constant-offset mapping -> fragment shader",
         uses_pipeline_rendering_create_info: true,
         uses_dynamic_rendering: true,
         uses_synchronization2: true,
@@ -2193,7 +2193,7 @@ mod tests {
         assert_eq!(snapshot.vertex_opacity_format, "R32_SFLOAT");
         assert_eq!(
             snapshot.sampled_image_model,
-            "retained BC7_UNORM_BLOCK sampled image -> VK_EXT_descriptor_heap constant-offset mapping -> fragment shader"
+            "retained native BC sampled image -> VK_EXT_descriptor_heap constant-offset mapping -> fragment shader"
         );
         assert!(snapshot.uses_pipeline_rendering_create_info);
         assert!(snapshot.uses_dynamic_rendering);
